@@ -96,10 +96,11 @@ sampled rows run on graphs with the FP8 head and MTP; top-k, top-p and
 logprobs work on every family; deadlines and priorities hold from the API
 through the engine; a client failure drains every sequence slot.
 
-MTP at TP16 needs the work in
-[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md#glm5_next-mtp-research-path):
-a TP-sharded MTP head, draft and verify inside graph chains, and
-per-sequence draft KV. glm5_next's MTP path runs at TP1 only today.
+Speculation serves at TP16 with unchanged output from two sources, the
+request's own context and draft models on the hub
+([SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md)). An MTP head
+that drafts inside the engine is not built: it needs a TP-sharded MTP head,
+draft and verify rows inside graph chains, and per-sequence draft KV.
 
 TECHDEBT: speculation, serving API, runtime completion.
 

@@ -17,6 +17,9 @@ struct LingDevice
 	using G = typename P::Geometry;
 	using L = LingLayout<G>;
 
+	static constexpr uint64_t kPartialBytes = G::kTpPartialsF32 ? 4u : 2u;
+	static_assert(!G::kTpPartialsF32 || (L::kGqa && G::kDenseLayers == 0u), "FP32 TP partials cover GQA, KDA and expert layers");
+
 	struct Layer
 	{
 		SparkTensor input_norm;
@@ -46,6 +49,7 @@ struct LingDevice
 		uint32_t ffn;
 		SparkTensor normed;
 		SparkTensor partial;
+		SparkTensor partial_f32;
 		SparkTensor shared_out;
 		SparkDeviceChannelDeltaScratch delta;
 		SparkDeviceLatentAttentionScratch attention;
@@ -82,6 +86,7 @@ struct LingDevice
 		shape->pack_alignment = LG_PACK_ALIGNMENT;
 		shape->epsilon = G::kNormEpsilon;
 		shape->projection = P::kProjection;
+		shape->norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		memset(delta, 0, sizeof(*delta));
 		delta->heads = L::kKdaRankHeads;
 		delta->dimension = G::kKdaDim;
@@ -91,6 +96,8 @@ struct LingDevice
 		delta->l2_epsilon = 1e-6f;
 		delta->minimum_log_decay = G::kKdaLowerBound;
 		delta->beta_mode = G::kKdaDoubledBeta ? SPARK_DELTA_BETA_DOUBLED : SPARK_DELTA_BETA_SIGMOID;
+		delta->conv_swish_once = G::kKdaConvRoundedSum ? 0u : 1u;
+		delta->norm_round_once = G::kKdaNormRoundOnce ? 1u : 0u;
 		memset(attention, 0, sizeof(*attention));
 		attention->heads = G::kMlaHeads;
 		attention->nope = G::kNope;
@@ -98,6 +105,7 @@ struct LingDevice
 		attention->latent = G::kLatent;
 		attention->value_dimension = G::kValueDim;
 		attention->rope_theta = G::kRopeTheta;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		attention->epsilon = G::kNormEpsilon;
 		attention->scale = 1.0f / sqrtf((float)L::kQkDim);
 		attention->head_gate = 1u;
@@ -108,20 +116,24 @@ struct LingDevice
 		state->gqa_shape.epsilon = G::kNormEpsilon;
 		state->gqa_shape.scale = L::kGqa ? 1.0f / sqrtf((float)G::kGqaHeadDim) : 0.0f;
 		state->gqa_shape.qk_plain = 1u;
-		state->gqa_shape.output_gate = SPARK_ATTENTION_GATE_SIGMOID;
+		state->gqa_shape.output_gate = SPARK_ATTENTION_GATE_SIGMOID_BF16;
 		state->gqa_shape.gate_projection = 1u;
 		state->gqa_shape.tensor_prefix = "gqa";
 		memset(experts, 0, sizeof(*experts));
 		experts->experts = G::kExperts;
 		experts->top_k = G::kTopK;
 		experts->intermediate = G::kMoeInter;
-		experts->activation = SPARK_GATED_SILU_CLAMP;
+		experts->activation = G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED_CLAMP : SPARK_GATED_SILU_CLAMP;
 		experts->epsilon = G::kNormEpsilon;
 		experts->routed_scale = G::kRouteScale;
 		experts->groups = G::kGroups;
 		experts->topk_groups = G::kTopkGroups;
 		experts->router = "router";
 		experts->tensor_parallel = G::kLocalExperts == G::kExperts ? 1u : 0u;
+		experts->weight_after_down = G::kExpertWeightAfterDown ? 1u : 0u;
+		experts->output_f32 = G::kTpPartialsF32 ? 1u : 0u;
+		state->gqa_shape.output_f32 = G::kTpPartialsF32 ? 1u : 0u;
+		state->delta_shape.output_f32 = G::kTpPartialsF32 ? 1u : 0u;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -158,7 +170,8 @@ struct LingDevice
 		{
 			{ rows * hidden * 2u, &state->normed },
 			{ rows * hidden * 2u, &state->partial },
-			{ rows * hidden * 2u, &state->shared_out },
+			{ rows * hidden * kPartialBytes, &state->partial_f32 },
+			{ rows * hidden * kPartialBytes, &state->shared_out },
 			{ rows * 3u * width * 2u, &state->delta.qkv },
 			{ rows * L::kKdaRankHeads * 2u, &state->delta.beta },
 			{ rows * Max(G::kKdaRank, 64u) * 2u, &state->delta.low },
@@ -288,11 +301,16 @@ struct LingDevice
 		return SparkDeviceResidualNorm(&state->stage, frame.queue, &frame.t, &addend, weight, state->normed);
 	}
 
+	static SparkTensor Partial(const State *state)
+	{
+		return G::kTpPartialsF32 ? state->partial_f32 : state->partial;
+	}
+
 	static SparkStatus Attention(State *state, const Frame &frame, const Layer &layer)
 	{
 		if constexpr ( L::kGqa )
 			return SparkDeviceAttention(&state->stage, frame.queue, &state->gqa_shape, &state->gqa_rope, &frame.t, &layer.gqa, layer.kv_index, &state->gqa,
-				state->normed, state->partial);
+				state->normed, Partial(state));
 		return SparkDeviceLatentAttention(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention, layer.kv_index,
 			&state->attention, state->normed, state->partial);
 	}
@@ -300,18 +318,20 @@ struct LingDevice
 	static SparkStatus Kda(State *state, const Frame &frame, const Layer &layer)
 	{
 		return SparkDeviceChannelDelta(&state->stage, frame.queue, &state->delta_shape, &frame.t, &layer.delta, layer.recurrent_index, &state->delta,
-			state->normed, state->partial);
+			state->normed, Partial(state));
 	}
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
 	{
+		if constexpr ( G::kTpPartialsF32 )
+			return SparkDeviceStageAllReduceF32(&state->stage, frame.queue, state->partial_f32, state->partial, frame.t.rows);
 		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
 	}
 
 	static SparkStatus Dense(State *state, const Frame &frame, const Layer &layer)
 	{
-		return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, SPARK_GATED_SILU, 0.0f, &frame.t, &layer.ffn, &state->ffn_scratch, state->normed,
-			state->partial);
+		return SparkDeviceGatedFfn(&state->stage, frame.queue, state->ffn, G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED : SPARK_GATED_SILU, 0.0f, &frame.t, &layer.ffn,
+			&state->ffn_scratch, state->normed, state->partial);
 	}
 
 	static SparkStatus Experts(State *state, const Frame &frame, const Layer &layer, uint32_t index)
@@ -319,11 +339,15 @@ struct LingDevice
 		const float routed = G::RoutedLimit(index), shared = G::SharedLimit(index);
 		SparkDeviceExpertsShape shape = state->experts_shape;
 		shape.limit = routed > 0.0f ? routed : INFINITY;
-		SparkStatus status = SparkDeviceGatedFfn(&state->stage, frame.queue, G::kSharedRows, SPARK_GATED_SILU_CLAMP, shared > 0.0f ? shared : INFINITY,
-			&frame.t, &layer.shared, &state->ffn_scratch, state->normed, state->shared_out);
+		const uint32_t activation = G::kFfnSiluRounded ? SPARK_GATED_SILU_ROUNDED_CLAMP : SPARK_GATED_SILU_CLAMP;
+		SparkStatus status = G::kTpPartialsF32 ?
+			SparkDeviceGatedFfnF32(&state->stage, frame.queue, G::kSharedRows, activation, shared > 0.0f ? shared : INFINITY, &frame.t, &layer.shared,
+				&state->ffn_scratch, state->normed, state->shared_out) :
+			SparkDeviceGatedFfn(&state->stage, frame.queue, G::kSharedRows, activation, shared > 0.0f ? shared : INFINITY, &frame.t, &layer.shared,
+				&state->ffn_scratch, state->normed, state->shared_out);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceSigmoidExperts(&state->stage, frame.queue, &shape, &frame.t, &layer.experts, &state->experts, state->normed,
-				state->shared_out, state->partial);
+			status = SparkDeviceSigmoidExperts(&state->stage, frame.queue, &shape, &frame.t, index, &layer.experts, &state->experts, state->normed,
+				state->shared_out, Partial(state));
 		return status;
 	}
 
@@ -375,7 +399,14 @@ struct LingDevice
 			0,
 			BindDevice,
 			0,
-			0
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0u,
+			0u
 		};
 		return &interface_table;
 	}

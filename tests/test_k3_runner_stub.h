@@ -22,6 +22,10 @@ static SparkStatus test_recurrent_status = SPARK_STATUS_OK;
 static SparkStatus test_pack_status = SPARK_STATUS_OK;
 static SparkStatus test_check_status = SPARK_STATUS_OK;
 static uint32_t test_check_calls;
+static SparkDeviceQueue *test_runner_queue;
+static uint32_t test_implementation_flags;
+static SparkStatus test_runner_status = SPARK_STATUS_UNSUPPORTED;
+static uint32_t test_runner_flags;
 
 const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 {
@@ -31,10 +35,10 @@ const SparkStageRunnerModelInterface *SparkK3StageModel(void)
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner,
 	const SparkStageRunnerConfiguration *configuration, const SparkStageRunnerModelInterface *model)
 {
-	(void)runner;
 	(void)configuration;
 	(void)model;
-	return(SPARK_STATUS_UNSUPPORTED);
+	runner->flags = test_runner_flags;
+	return(test_runner_status);
 }
 
 SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner,
@@ -136,6 +140,28 @@ uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner)
 	return(test_recurrent_bytes == 0u ? 1u : 0u);
 }
 
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(0u);
+}
+
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)
+{
+	(void)runner;
+	(void)path_rows;
+	(void)path_begin;
+	(void)kept;
+	(void)sequences;
+	return(SPARK_STATUS_UNSUPPORTED);
+}
+
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences)
 {
 	(void)runner;
@@ -152,10 +178,10 @@ SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner)
 }
 
 SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer,
-	uint32_t slot, void *buffer, uint64_t bytes, void *stream)
+	uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue)
 {
 	(void)runner;
-	(void)stream;
+	(void)queue;
 	if ( slot >= TEST_K3_STUB_SLOTS || bytes != test_recurrent_bytes || buffer == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( test_recurrent_status != SPARK_STATUS_OK )
@@ -180,4 +206,15 @@ SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t
 		return(test_pack_status);
 	memset(digest, 0x5a, digest_bytes);
 	return(SPARK_STATUS_OK);
+}
+
+SparkDeviceQueue *SparkStageRunnerQueue(const SparkStageRunner *runner)
+{
+	(void)runner;
+	return(test_runner_queue);
+}
+
+uint32_t SparkStageRunnerImplementationFlags(void)
+{
+	return(test_implementation_flags);
 }

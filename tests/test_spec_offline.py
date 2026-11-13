@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -11,25 +10,12 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from spec_offline import acceptance, chain, cost, drafters, tapdump, tree  # noqa: E402
+from spec_offline import acceptance, cost, drafters, tapdump, tree  # noqa: E402
 from spec_offline.streams import Stream, read_u32, write_u32  # noqa: E402
 import spec_offline.t0 as t0  # noqa: E402
 import spec_roofline  # noqa: E402
 
 VOCAB = spec_roofline.load_registry()["models"]["glmflash"]["vocab"]
-
-
-def build_replay(directory: Path) -> Path:
-    binary = directory / "replay"
-    subprocess.run(["cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-I.", "-Iinclude", "-Imodel-families/glm5_next/include",
-                    "-Imodel-families/common/include", "tools/glm5_next_spec_replay.c", "src/spark_speculation_lookup_draft.c",
-                    "src/spark_speculation_drafter_mix.c", "src/spark_speculation_policy.c", "src/spark_status.c", "-o", str(binary)], cwd=ROOT, check=True)
-    return binary
-
-
-def c_replay(binary: Path, files: list[Path], *options: str) -> list[dict]:
-    output = subprocess.run([str(binary), *options, "--", *map(str, files)], check=True, capture_output=True, text=True).stdout
-    return [json.loads(line) for line in output.splitlines()]
 
 
 def synthetic_streams(directory: Path) -> list[Path]:
@@ -45,37 +31,6 @@ def synthetic_streams(directory: Path) -> list[Path]:
         write_u32(path, prefix, output)
         files.append(path)
     return files
-
-
-def check_chain_parity(binary: Path, files: list[Path]) -> None:
-    for options in (["--drafter", "lookup"], ["--drafter", "synthetic:1000", "--fixed-depth"], ["--drafter", "synthetic:0"],
-                    ["--drafter", "synthetic:700"], ["--drafter", "synthetic:700", "--rows", "4", "--frame", "32"], ["--drafter", "lookup", "--rows", "3", "--frame", "5", "--block", "16"]):
-        expected = c_replay(binary, files, *options)
-        drafter = options[1]
-        rows = int(options[options.index("--rows") + 1]) if "--rows" in options else 8
-        frame = int(options[options.index("--frame") + 1]) if "--frame" in options else 8
-        block = int(options[options.index("--block") + 1]) if "--block" in options else 64
-        for path, reference in zip(files, expected):
-            stream = read_u32(path)
-            counts = chain.simulate_chain(stream, drafter, VOCAB, rows=rows, frame=frame, block=block, fixed_depth="--fixed-depth" in options).as_dict()
-            for key in ("frames", "verify_frames", "plain_frames", "plain_frame_tokens", "rounds", "proposed", "accepted", "plain_steps", "rows"):
-                assert counts[key] == reference[key], f"{path.name} {options}: {key} python {counts[key]} vs C {reference[key]}"
-            assert counts["tokens"] == reference["generated"]
-    twice = [chain.simulate_chain(read_u32(files[2]), "synthetic:700", VOCAB).as_dict() for _ in range(2)]
-    assert twice[0] == twice[1]
-    for path in files:
-        stream = read_u32(path)
-        for drafter in ("lookup", "synthetic:500"):
-            assert tuple(chain.simulate_chain(stream, drafter, VOCAB).committed) == stream.tokens
-
-
-def check_regime_rules() -> None:
-    assert chain.graph_regime(1, 64) == chain.REGIME_UNSPLIT and chain.graph_regime(64, 64) == chain.REGIME_SPLIT and chain.graph_regime(2049, 64) == chain.REGIME_SELECTED
-    assert chain.rows_fit(60, 8, 64) == 3 and chain.rows_fit(63, 8, 64) == 8 and chain.rows_fit(2045, 8, 64) == 3
-    assert chain.verify_depth(8, 0, 8, 100, 64) == 7 and chain.verify_depth(8, 6, 8, 100, 64) == 1 and chain.verify_depth(8, 7, 8, 100, 64) == 0
-    assert chain.verify_depth(8, 0, 8, 60, 64) == 2
-    assert chain.depth_cap_next(7, 7, 7, 7) == 7 and chain.depth_cap_next(2, 2, 2, 7) == 4 and chain.depth_cap_next(4, 4, 4, 7) == 7 and chain.depth_cap_next(7, 7, 2, 7) == 3
-    assert chain.resolve_chain([5, 6, 7], [5, 6, 8, 9]) == (2, 3) and chain.resolve_chain([1], [2, 3]) == (0, 1)
 
 
 def check_tree_resolver() -> None:
@@ -260,15 +215,12 @@ def check_cost_fit(directory: Path) -> None:
 def main() -> int:
     with tempfile.TemporaryDirectory() as scratch:
         directory = Path(scratch)
-        binary = build_replay(directory)
         files = synthetic_streams(directory)
-        check_regime_rules()
-        check_chain_parity(binary, files)
         check_tree_resolver()
         check_round_replay(files)
         check_tap_dump(directory)
         check_cost_fit(directory)
-    print("PASS spec_offline: chain simulation equals glm5_next_spec_replay on lookup and synthetic streams, tree accept equals the row resolver, "
+    print("PASS spec_offline: tree accept equals the row resolver, "
           "round replays keep the committed stream identical to the no-spec stream, tap dumps round-trip and refuse tampering, "
           "the verify-cost fit recovers the per-row medians and predictions carry roofline lines")
     return 0

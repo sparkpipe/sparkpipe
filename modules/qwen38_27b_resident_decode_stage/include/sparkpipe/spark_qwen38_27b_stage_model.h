@@ -7,7 +7,6 @@
 extern "C" {
 #endif
 
-#define SPARK_QWEN38_27B_STAGE_TP_DEGREE 16u
 #define SPARK_QWEN38_27B_STAGE_PAGE_SLOTS 64u
 #define SPARK_QWEN38_27B_STAGE_VERIFY_ROWS 256u
 #define SPARK_QWEN38_27B_STAGE_KV_HEADS 4u
@@ -55,6 +54,7 @@ struct Qwen38_27bGeometry : QwenHybridDefaults
 	static const char *DumpEnv(void) { return "SPARK_QWEN38_27B_LAYER_DUMP"; }
 	static const char *ReportTag(void) { return "QWEN38_27B-STATE"; }
 	static constexpr bool kGdnSigmoidGate = false;
+	static constexpr bool kRopeRoundedTerms = true;
 };
 #endif
 

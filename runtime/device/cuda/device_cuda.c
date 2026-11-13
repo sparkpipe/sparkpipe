@@ -1,4 +1,5 @@
 #include <errno.h>
+#include "sparkpipe/spark_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +18,8 @@ typedef enum CudaMemoryKind
 	CUDA_MEMORY_PINNED = 3,
 	CUDA_MEMORY_HEAP = 4,
 	CUDA_MEMORY_REGISTERED = 5,
-	CUDA_MEMORY_FILE = 6
+	CUDA_MEMORY_FILE = 6,
+	CUDA_MEMORY_ADOPTED = 7
 } CudaMemoryKind;
 
 typedef struct CudaAllocation
@@ -37,6 +39,7 @@ typedef struct CudaQueue
 	cudaStream_t stream;
 	uint64_t completed;
 	uint8_t *bounce;
+	uint32_t adopted;
 } CudaQueue;
 
 typedef struct CudaCallback
@@ -230,6 +233,16 @@ SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *
 	}
 	allocation->host = host;
 	allocation->device = (SparkDeviceAddress)(uintptr_t)device;
+	allocation->backend = cuda;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
+{
+	CudaAllocation *cuda = CudaNew(allocation,CUDA_MEMORY_ADOPTED,"adopt");
+	if ( cuda == 0 )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	cuda->base = allocation->device != 0u ? (void *)(uintptr_t)allocation->device : allocation->host;
 	allocation->backend = cuda;
 	return(SPARK_STATUS_OK);
 }
@@ -455,24 +468,29 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
+{
+	CudaQueue *cuda = (CudaQueue *)calloc(1u,sizeof(*cuda));
+	if ( cuda == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_adopt",queue->owner,ENOMEM,"out of host memory"));
+	cuda->stream = (cudaStream_t)native;
+	cuda->adopted = 1u;
+	queue->backend = cuda;
+	return(SPARK_STATUS_OK);
+}
+
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 {
 	CudaQueue *cuda = (CudaQueue *)queue->backend;
 	if ( cuda == 0 )
 		return;
 	(void)cudaStreamSynchronize(cuda->stream);
-	(void)cudaStreamDestroy(cuda->stream);
+	if ( cuda->adopted == 0u )
+		(void)cudaStreamDestroy(cuda->stream);
 	if ( cuda->bounce != 0 )
 		(void)cudaFreeHost(cuda->bounce);
 	free(cuda);
 	queue->backend = 0;
-}
-
-static uint64_t CudaNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
 }
 
 static SparkStatus CudaPoll(cudaError_t (*query)(void *), void *handle, cudaError_t (*block)(void *), uint64_t timeout_ns, const char *operation, const char *owner)
@@ -481,14 +499,14 @@ static SparkStatus CudaPoll(cudaError_t (*query)(void *), void *handle, cudaErro
 	cudaError_t error;
 	if ( timeout_ns == SPARK_DEVICE_WAIT_FOREVER )
 		return(CudaStatus(block(handle),operation,owner));
-	deadline = CudaNowNs() + timeout_ns;
+	deadline = SparkMonotonicNs() + timeout_ns;
 	for ( ;; )
 	{
 		struct timespec pause = {0, 50000};
 		error = query(handle);
 		if ( error != cudaErrorNotReady )
 			return(CudaStatus(error,operation,owner));
-		if ( CudaNowNs() >= deadline )
+		if ( SparkMonotonicNs() >= deadline )
 			return(SPARK_STATUS_PENDING);
 		nanosleep(&pause,0);
 	}
@@ -518,7 +536,7 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 {
 	CudaQueue *cuda = (CudaQueue *)queue->backend;
 	SparkStatus status;
-	if ( __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE) >= sequence )
+	if ( cuda->adopted == 0u && __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE) >= sequence )
 		return(SPARK_STATUS_OK);
 	status = CudaPoll(CudaStreamQueryHandle,(void *)cuda->stream,CudaStreamSynchronizeHandle,timeout_ns,"queue_wait",queue->owner);
 	if ( status == SPARK_STATUS_OK )

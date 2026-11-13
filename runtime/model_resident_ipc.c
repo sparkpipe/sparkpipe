@@ -1,42 +1,17 @@
 #include "sparkpipe/spark_model_resident_ipc.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <string.h>
 #include <time.h>
-
-static uint64_t SparkModelResidentIpcMonotonicNs(void)
-{
-	struct timespec now;
-	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
-		return(0u);
-	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
 
 static uint64_t SparkModelResidentIpcDeadlineRemaining(uint64_t deadline_time_ns)
 {
 	uint64_t now;
 	if ( deadline_time_ns == 0u )
 		return(0u);
-	now = SparkModelResidentIpcMonotonicNs();
+	now = SparkMonotonicNs();
 	return(deadline_time_ns > now ? deadline_time_ns - now : 1u);
-}
-
-SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
-	const SparkModelServingAdapterDescriptor *descriptor)
-{
-	SparkStatus status;
-	uint32_t distributed_capabilities;
-	status = SparkModelServingAdapterValidateDescriptor(descriptor);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	distributed_capabilities =
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP;
-	if ( descriptor->stage_count > 1u ||
-		(descriptor->capability_flags & distributed_capabilities) != 0u )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentIpcAddBytes(
@@ -242,7 +217,7 @@ SparkStatus SparkModelResidentIpcValidateHelloAck(
 		SPARK_RETURN(status);
 	if ( rank_index >= descriptor->stage_count || stage_index >= descriptor->stage_count )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( ack->status > SPARK_STATUS_UNSUPPORTED || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->output_vocabulary != runtime_limits->output_vocabulary || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
+	if ( ack->status > SPARK_STATUS_MAXIMUM || ack->client_generation == 0u || ack->session_epoch != session_epoch || ack->header.message_id != message_id || ack->rank_index != rank_index || ack->stage_index != stage_index || ack->adapter_capability_flags != descriptor->capability_flags || ack->max_inflight_submission_count != runtime_limits->max_inflight_submission_count || ack->max_active_sequence_count != runtime_limits->max_active_sequence_count || ack->max_input_row_count != runtime_limits->max_input_row_count || ack->resident_sequence_capacity != runtime_limits->resident_sequence_capacity || ack->kv_logical_page_capacity != runtime_limits->kv_logical_page_capacity || ack->kv_physical_page_capacity != runtime_limits->kv_physical_page_capacity || ack->output_vocabulary != runtime_limits->output_vocabulary || ack->boundary_format != descriptor->boundary_format || ack->boundary_element_count != descriptor->boundary_element_count || ack->boundary_element_bytes != descriptor->boundary_element_bytes || ack->linear_weight_codec != descriptor->linear_weight_codec || ack->expert_weight_codec != descriptor->expert_weight_codec || ack->kv_cache_codec != descriptor->kv_cache_codec || (ack->status == SPARK_STATUS_OK && ack->max_sequence_positions == 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	if ( ack->input_sideband_kind != (stage_index != 0u ? descriptor->boundary_sideband_kinds[stage_index - 1u] : 0u) || ack->input_sideband_bytes_per_sequence != (stage_index != 0u ? descriptor->boundary_sideband_bytes_per_sequence[stage_index - 1u] : 0u) || ack->output_sideband_kind != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_kinds[stage_index] : 0u) || ack->output_sideband_bytes_per_sequence != (stage_index + 1u < descriptor->stage_count ? descriptor->boundary_sideband_bytes_per_sequence[stage_index] : 0u) )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
@@ -257,7 +232,7 @@ SparkStatus SparkModelResidentIpcInitializeSubmitResult(
 	uint64_t submission_id,
 	SparkStatus status)
 {
-	if ( result == 0 || message_id == 0u || submission_id == 0u || status > SPARK_STATUS_UNSUPPORTED )
+	if ( result == 0 || message_id == 0u || submission_id == 0u || status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result,0,sizeof(*result));
 	SparkModelResidentIpcInitializeHeader(&result->header,SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES,message_id);
@@ -276,7 +251,7 @@ SparkStatus SparkModelResidentIpcValidateSubmitResult(
 	status = SparkModelResidentIpcValidateHeader(result != 0 ? &result->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT,SPARK_MODEL_RESIDENT_IPC_SUBMIT_RESULT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( result->header.message_id != message_id || result->submission_id != submission_id || result->status > SPARK_STATUS_UNSUPPORTED || result->reserved0 != 0u )
+	if ( result->header.message_id != message_id || result->submission_id != submission_id || result->status > SPARK_STATUS_MAXIMUM || result->reserved0 != 0u )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -331,7 +306,7 @@ SparkStatus SparkModelResidentIpcInitializeStatusReport(
 	uint32_t residentd_pid,
 	const SparkModelServingAdapterSnapshot *adapter_snapshot)
 {
-	if ( report == 0 || request == 0 || request->header.message_id == 0u || adapter_snapshot == 0 || status > SPARK_STATUS_UNSUPPORTED )
+	if ( report == 0 || request == 0 || request->header.message_id == 0u || adapter_snapshot == 0 || status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(report,0,sizeof(*report));
 	SparkModelResidentIpcInitializeHeader(&report->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES,request->header.message_id);
@@ -355,7 +330,7 @@ SparkStatus SparkModelResidentIpcValidateStatusReport(
 	status = SparkModelResidentIpcValidateHeader(report != 0 ? &report->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT,SPARK_MODEL_RESIDENT_IPC_STATUS_REPORT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->stage_index != stage_index || report->status > SPARK_STATUS_UNSUPPORTED )
+	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->stage_index != stage_index || report->status > SPARK_STATUS_MAXIMUM )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	if ( report->status == (uint32_t)SPARK_STATUS_OK && (report->adapter_snapshot.abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || report->adapter_snapshot.descriptor_bytes != SPARK_MODEL_SERVING_ADAPTER_SNAPSHOT_BYTES) )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
@@ -400,7 +375,7 @@ SparkStatus SparkModelResidentIpcInitializeDecisionResult(
 {
 	SparkStatus validation_status;
 	validation_status = SparkModelResidentIpcValidateDecision(decision,SPARK_MODEL_RESIDENT_IPC_DECISION_BYTES);
-	if ( result == 0 || validation_status != SPARK_STATUS_OK || status > SPARK_STATUS_UNSUPPORTED )
+	if ( result == 0 || validation_status != SPARK_STATUS_OK || status > SPARK_STATUS_MAXIMUM )
 		return(validation_status != SPARK_STATUS_OK ? validation_status : SPARK_STATUS_INVALID_ARGUMENT);
 	memset(result,0,sizeof(*result));
 	SparkModelResidentIpcInitializeHeader(&result->header,SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES,decision->header.message_id);
@@ -424,7 +399,7 @@ SparkStatus SparkModelResidentIpcValidateDecisionResult(
 	status = SparkModelResidentIpcValidateHeader(result != 0 ? &result->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_DECISION_RESULT,SPARK_MODEL_RESIDENT_IPC_DECISION_RESULT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( submission == 0 || result->header.message_id != message_id || result->decision != decision_kind || result->status > SPARK_STATUS_UNSUPPORTED || result->submission_id != submission->submission_id || result->control_generation != submission->control_generation || result->transaction_id != submission->transaction_id || result->dispatch_generation != submission->dispatch_generation )
+	if ( submission == 0 || result->header.message_id != message_id || result->decision != decision_kind || result->status > SPARK_STATUS_MAXIMUM || result->submission_id != submission->submission_id || result->control_generation != submission->control_generation || result->transaction_id != submission->transaction_id || result->dispatch_generation != submission->dispatch_generation )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -434,11 +409,12 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t row_count,
 	uint32_t cache_block_identity_count,
 	uint32_t model_extension_bytes,
+	uint32_t tree_row_count,
 	uint32_t *message_bytes_out)
 {
 	uint32_t total;
 	SparkStatus status;
-	if ( message_bytes_out == 0 || lane_count == 0u || lane_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || cache_block_identity_count > row_count || cache_block_identity_count > SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT || model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES )
+	if ( message_bytes_out == 0 || lane_count == 0u || lane_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT || row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT || cache_block_identity_count > row_count || cache_block_identity_count > SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT || model_extension_bytes > SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES || tree_row_count > row_count || tree_row_count > SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	total = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
 	status = SparkModelResidentIpcAddBytes(&total,lane_count,SPARK_MODEL_SERVING_LANE_BYTES);
@@ -451,12 +427,48 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcAddBytes(&total,row_count,sizeof(uint64_t));
 	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentIpcAddBytes(&total,tree_row_count,sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentIpcAddBytes(&total,tree_row_count,sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcAddBytes(&total,cache_block_identity_count,sizeof(SparkModelServingCacheIdentity));
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcAddBytes(&total,model_extension_bytes,sizeof(uint8_t));
 	if ( status == SPARK_STATUS_OK )
 		*message_bytes_out = total;
 	SPARK_RETURN(status);
+}
+
+SparkStatus SparkModelResidentIpcCalculateSubmitCapacity(
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t *message_bytes_out)
+{
+	if ( runtime_limits == 0 || message_bytes_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SparkModelResidentIpcCalculateSubmitBytes(runtime_limits->max_active_sequence_count,runtime_limits->max_input_row_count,
+		runtime_limits->max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime_limits->max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,
+		SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,
+		runtime_limits->max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ? runtime_limits->max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT,
+		message_bytes_out));
+}
+
+SparkStatus SparkModelResidentIpcStampSubmission(
+	void *message_buffer,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint64_t client_generation)
+{
+	SparkModelResidentIpcSubmit *wire;
+	if ( message_buffer == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES || message_id == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	wire = (SparkModelResidentIpcSubmit *)message_buffer;
+	if ( wire->header.message_bytes != message_bytes || (wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE &&
+		wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS) ||
+		((wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE) != (client_generation != 0u)) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	wire->header.message_id = message_id;
+	wire->client_generation = client_generation;
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentIpcCopySubmissionScalars(
@@ -486,6 +498,7 @@ static void SparkModelResidentIpcCopySubmissionScalars(
 	wire->model_extension_bytes = submission->model_extension_bytes;
 	wire->cache_block_identity_count = submission->cache_block_identity_count;
 	wire->residency = submission->residency;
+	wire->tree_row_count = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u;
 }
 
 static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
@@ -501,9 +514,10 @@ static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
 	uint8_t *bytes;
 	uint32_t message_bytes,offset;
 	SparkStatus status;
-	if ( submission == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || (message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT && message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) || ((message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (client_generation != 0u)) || submission->lanes == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u || (submission->row_count != 0u && (submission->token_ids == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0)) || (submission->model_extension_bytes != 0u && submission->model_extension == 0) || (submission->cache_block_identity_count != 0u) != (submission->cache_block_identities != 0) )
+	if ( submission == 0 || message_id == 0u || message_buffer == 0 || message_bytes_out == 0 || (message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && message_kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) || ((message_kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (client_generation != 0u)) || submission->lanes == 0 || submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u || submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u || (submission->row_count != 0u && (submission->token_ids == 0 || submission->row_lane_indices == 0 || submission->row_positions == 0 || submission->row_sequence_ids == 0)) || (submission->model_extension_bytes != 0u && submission->model_extension == 0) || (submission->cache_block_identity_count != 0u) != (submission->cache_block_identities != 0) || ((submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u) != (submission->row_parent_rows != 0) || ((submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u) != (submission->row_slots != 0) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,submission->model_extension_bytes,&message_bytes);
+	status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,submission->model_extension_bytes,
+		(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u,&message_bytes);
 	if ( status != SPARK_STATUS_OK || message_capacity < message_bytes )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(message_buffer,0,message_bytes);
@@ -532,6 +546,14 @@ static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
 	if ( submission->row_count != 0u )
 		memcpy(bytes + offset,submission->row_sequence_ids,submission->row_count * sizeof(uint64_t));
 	offset += submission->row_count * sizeof(uint64_t);
+	wire->row_parent_rows_offset = offset;
+	if ( wire->tree_row_count != 0u )
+		memcpy(bytes + offset,submission->row_parent_rows,wire->tree_row_count * sizeof(uint32_t));
+	offset += wire->tree_row_count * sizeof(uint32_t);
+	wire->row_slots_offset = offset;
+	if ( wire->tree_row_count != 0u )
+		memcpy(bytes + offset,submission->row_slots,wire->tree_row_count * sizeof(uint32_t));
+	offset += wire->tree_row_count * sizeof(uint32_t);
 	wire->cache_block_identities_offset = offset;
 	if ( submission->cache_block_identity_count != 0u )
 		memcpy(bytes + offset,submission->cache_block_identities,submission->cache_block_identity_count * sizeof(SparkModelServingCacheIdentity));
@@ -543,14 +565,186 @@ static SparkStatus SparkModelResidentIpcEncodeSubmissionKind(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelResidentIpcEncodeSubmission(
+void SparkModelResidentIpcContinueTokenOf(
+	const SparkModelServingLane *lane,
+	SparkModelResidentIpcContinueToken *token)
+{
+	memset(token,0,sizeof(*token));
+	token->request_id = lane->request_id;
+	token->request_generation = lane->request_generation;
+	token->sequence_id = lane->sequence_id;
+	token->sequence_position = lane->sequence_position;
+	token->resident_sequence_slot = lane->resident_sequence_slot;
+	token->input_token_id = lane->input_token_id;
+}
+
+void SparkModelResidentIpcContinuedLane(
+	const SparkModelServingLane *previous,
+	const SparkModelResidentIpcContinueToken *token,
+	uint64_t step_generation,
+	SparkModelServingLane *lane)
+{
+	*lane = *previous;
+	lane->request_id = token->request_id;
+	lane->request_generation = token->request_generation;
+	lane->sequence_id = token->sequence_id;
+	lane->sequence_position = token->sequence_position;
+	lane->resident_sequence_slot = token->resident_sequence_slot;
+	lane->input_token_id = token->input_token_id;
+	lane->step_generation = step_generation;
+	lane->context_token_count = (uint32_t)(token->sequence_position + 1u);
+	lane->state_target_token_count = lane->context_token_count;
+	lane->cache_block_identity_first = 0u;
+	lane->cache_block_identity_count = 0u;
+}
+
+SparkStatus SparkModelResidentIpcCalculateTokenContinuationBytes(
+	uint32_t lane_count,
+	uint32_t *message_bytes_out)
+{
+	uint32_t total = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
+	SparkStatus status;
+	if ( message_bytes_out == 0 || lane_count == 0u || lane_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcAddBytes(&total,lane_count,sizeof(SparkModelResidentIpcContinueToken));
+	if ( status == SPARK_STATUS_OK )
+		*message_bytes_out = total;
+	SPARK_RETURN(status);
+}
+
+SparkStatus SparkModelResidentIpcEncodeTokenContinuation(
 	const SparkModelServingSubmission *submission,
 	uint64_t message_id,
+	uint64_t client_generation,
 	void *message_buffer,
 	uint32_t message_capacity,
 	uint32_t *message_bytes_out)
 {
-	return(SparkModelResidentIpcEncodeSubmissionKind(submission,message_id,SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT,0u,message_buffer,message_capacity,message_bytes_out));
+	SparkModelResidentIpcSubmit *wire;
+	SparkModelResidentIpcContinueToken *tokens;
+	uint32_t lane,message_bytes,end;
+	SparkStatus status;
+	if ( submission == 0 || message_id == 0u || client_generation == 0u || message_buffer == 0 || message_bytes_out == 0 || submission->lanes == 0 ||
+		submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE || submission->flags != 0u || submission->lane_count != submission->active_sequence_count ||
+		submission->row_count != submission->lane_count || submission->token_count != submission->row_count || submission->new_token_count != submission->row_count ||
+		submission->cache_block_identity_count != 0u || submission->model_extension_bytes != 0u || submission->model_extension_kind != 0u ||
+		submission->hidden_input_address != 0 || submission->hidden_input_bytes != 0u || submission->boundary_sideband_input_address != 0 || submission->boundary_sideband_input_bytes != 0u ||
+		submission->hidden_output_address != 0 || submission->hidden_output_bytes != 0u || submission->boundary_sideband_output_address != 0 || submission->boundary_sideband_output_bytes != 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcCalculateTokenContinuationBytes(submission->lane_count,&message_bytes);
+	if ( status != SPARK_STATUS_OK || message_capacity < message_bytes )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(message_buffer,0,message_bytes);
+	wire = (SparkModelResidentIpcSubmit *)message_buffer;
+	SparkModelResidentIpcInitializeHeader(&wire->header,SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES,message_bytes,message_id);
+	SparkModelResidentIpcCopySubmissionScalars(wire,submission);
+	wire->client_generation = client_generation;
+	end = message_bytes;
+	wire->lanes_offset = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
+	wire->token_ids_offset = end;
+	wire->row_lane_indices_offset = end;
+	wire->row_positions_offset = end;
+	wire->row_sequence_ids_offset = end;
+	wire->row_parent_rows_offset = end;
+	wire->row_slots_offset = end;
+	wire->cache_block_identities_offset = end;
+	wire->model_extension_offset = end;
+	tokens = (SparkModelResidentIpcContinueToken *)((uint8_t *)message_buffer + SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
+	for (lane=0u; lane<submission->lane_count; lane++)
+		SparkModelResidentIpcContinueTokenOf(&submission->lanes[lane],&tokens[lane]);
+	*message_bytes_out = message_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcTokenContinuationTokens(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	const SparkModelResidentIpcContinueToken **tokens_out,
+	uint32_t *token_count_out)
+{
+	const SparkModelResidentIpcSubmit *wire;
+	uint32_t expected;
+	SparkStatus status;
+	if ( message_buffer == 0 || tokens_out == 0 || token_count_out == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	wire = (const SparkModelResidentIpcSubmit *)message_buffer;
+	status = SparkModelResidentIpcValidateHeader(&wire->header,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentIpcCalculateTokenContinuationBytes(wire->lane_count,&expected);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( expected != message_bytes || wire->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE || wire->flags != 0u || wire->client_generation == 0u ||
+		wire->active_sequence_count != wire->lane_count || wire->row_count != wire->lane_count || wire->token_count != wire->row_count || wire->new_token_count != wire->row_count ||
+		wire->cache_block_identity_count != 0u || wire->model_extension_bytes != 0u || wire->model_extension_kind != 0u || wire->tree_row_count != 0u || wire->reserved != 0u ||
+		wire->lanes_offset != SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES || wire->token_ids_offset != message_bytes || wire->row_lane_indices_offset != message_bytes ||
+		wire->row_positions_offset != message_bytes || wire->row_sequence_ids_offset != message_bytes || wire->row_parent_rows_offset != message_bytes ||
+		wire->row_slots_offset != message_bytes || wire->cache_block_identities_offset != message_bytes || wire->model_extension_offset != message_bytes )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	*tokens_out = (const SparkModelResidentIpcContinueToken *)((const uint8_t *)message_buffer + SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
+	*token_count_out = wire->lane_count;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcExpandTokenContinuation(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	const SparkModelServingLane *previous_lanes,
+	void *expanded_buffer,
+	uint32_t expanded_capacity,
+	uint32_t *expanded_bytes_out)
+{
+	const SparkModelResidentIpcContinueToken *tokens;
+	const SparkModelResidentIpcSubmit *wire;
+	SparkModelResidentIpcSubmit *expanded;
+	SparkModelServingLane *lanes;
+	uint32_t lane,token_count,expanded_bytes,offset,*token_ids,*row_lanes;
+	uint64_t *row_positions,*row_sequences;
+	uint8_t *bytes;
+	SparkStatus status;
+	if ( previous_lanes == 0 || expanded_buffer == 0 || expanded_bytes_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcTokenContinuationTokens(message_buffer,message_bytes,&tokens,&token_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentIpcCalculateSubmitBytes(token_count,token_count,0u,0u,0u,&expanded_bytes);
+	if ( status != SPARK_STATUS_OK || expanded_capacity < expanded_bytes )
+		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_CAPACITY_EXCEEDED);
+	wire = (const SparkModelResidentIpcSubmit *)message_buffer;
+	bytes = (uint8_t *)expanded_buffer;
+	memset(expanded_buffer,0,expanded_bytes);
+	memcpy(expanded_buffer,wire,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
+	expanded = (SparkModelResidentIpcSubmit *)expanded_buffer;
+	expanded->header.kind = SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE;
+	expanded->header.message_bytes = expanded_bytes;
+	offset = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
+	expanded->lanes_offset = offset;
+	lanes = (SparkModelServingLane *)(bytes + offset);
+	offset += token_count * SPARK_MODEL_SERVING_LANE_BYTES;
+	expanded->token_ids_offset = offset;
+	token_ids = (uint32_t *)(bytes + offset);
+	offset += token_count * (uint32_t)sizeof(uint32_t);
+	expanded->row_lane_indices_offset = offset;
+	row_lanes = (uint32_t *)(bytes + offset);
+	offset += token_count * (uint32_t)sizeof(uint32_t);
+	expanded->row_positions_offset = offset;
+	row_positions = (uint64_t *)(bytes + offset);
+	offset += token_count * (uint32_t)sizeof(uint64_t);
+	expanded->row_sequence_ids_offset = offset;
+	row_sequences = (uint64_t *)(bytes + offset);
+	offset += token_count * (uint32_t)sizeof(uint64_t);
+	expanded->row_parent_rows_offset = offset;
+	expanded->row_slots_offset = offset;
+	expanded->cache_block_identities_offset = offset;
+	expanded->model_extension_offset = offset;
+	for (lane=0u; lane<token_count; lane++)
+	{
+		SparkModelResidentIpcContinuedLane(&previous_lanes[lane],&tokens[lane],wire->step_generation,&lanes[lane]);
+		token_ids[lane] = tokens[lane].input_token_id;
+		row_lanes[lane] = lane;
+		row_positions[lane] = tokens[lane].sequence_position;
+		row_sequences[lane] = tokens[lane].sequence_id;
+	}
+	*expanded_bytes_out = expanded_bytes;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelResidentIpcEncodePreparation(
@@ -582,8 +776,9 @@ static SparkStatus SparkModelResidentIpcValidateSubmitLayout(
 {
 	uint32_t expected,offset;
 	SparkStatus status;
-	status = SparkModelResidentIpcCalculateSubmitBytes(wire->lane_count,wire->row_count,wire->cache_block_identity_count,wire->model_extension_bytes,&expected);
-	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_count != wire->row_count || ((wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (wire->client_generation != 0u)) )
+	status = SparkModelResidentIpcCalculateSubmitBytes(wire->lane_count,wire->row_count,wire->cache_block_identity_count,wire->model_extension_bytes,wire->tree_row_count,&expected);
+	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_count != wire->row_count || ((wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) != (wire->client_generation != 0u)) ||
+		wire->reserved != 0u || (wire->tree_row_count != 0u) != ((wire->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u) || (wire->tree_row_count != 0u && wire->tree_row_count != wire->row_count) )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR);
 	offset = SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES;
 	if ( wire->lanes_offset != offset )
@@ -601,6 +796,12 @@ static SparkStatus SparkModelResidentIpcValidateSubmitLayout(
 	if ( wire->row_sequence_ids_offset != offset )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	offset += wire->row_count * sizeof(uint64_t);
+	if ( wire->row_parent_rows_offset != offset )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	offset += wire->tree_row_count * sizeof(uint32_t);
+	if ( wire->row_slots_offset != offset )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	offset += wire->tree_row_count * sizeof(uint32_t);
 	if ( wire->cache_block_identities_offset != offset )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	offset += wire->cache_block_identity_count * sizeof(SparkModelServingCacheIdentity);
@@ -618,7 +819,7 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	if ( message_buffer == 0 || submission_out == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	wire = (const SparkModelResidentIpcSubmit *)message_buffer;
-	if ( wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT && wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	if ( wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE && wire->header.kind != SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	status = SparkModelResidentIpcValidateHeader(&wire->header,message_bytes,wire->header.kind,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
 	if ( status == SPARK_STATUS_OK )
@@ -635,7 +836,7 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	submission_out->request_id = wire->request_id;
 	submission_out->sequence_id = wire->sequence_id;
 	submission_out->sequence_position = wire->sequence_position;
-	submission_out->deadline_time_ns = wire->deadline_remaining_ns != 0u ? SparkModelResidentIpcMonotonicNs() + wire->deadline_remaining_ns : 0u;
+	submission_out->deadline_time_ns = wire->deadline_remaining_ns != 0u ? SparkMonotonicNs() + wire->deadline_remaining_ns : 0u;
 	submission_out->control_generation = wire->control_generation;
 	submission_out->transaction_id = wire->transaction_id;
 	submission_out->dispatch_generation = wire->dispatch_generation;
@@ -657,6 +858,8 @@ SparkStatus SparkModelResidentIpcDecodeSubmission(
 	submission_out->row_lane_indices = (const uint32_t *)(bytes + wire->row_lane_indices_offset);
 	submission_out->row_positions = (const uint64_t *)(bytes + wire->row_positions_offset);
 	submission_out->row_sequence_ids = (const uint64_t *)(bytes + wire->row_sequence_ids_offset);
+	submission_out->row_parent_rows = wire->tree_row_count != 0u ? (const uint32_t *)(bytes + wire->row_parent_rows_offset) : 0;
+	submission_out->row_slots = wire->tree_row_count != 0u ? (const uint32_t *)(bytes + wire->row_slots_offset) : 0;
 	submission_out->cache_block_identities = wire->cache_block_identity_count != 0u ? (const SparkModelServingCacheIdentity *)(bytes + wire->cache_block_identities_offset) : 0;
 	submission_out->model_extension = wire->model_extension_bytes != 0u ? bytes + wire->model_extension_offset : 0;
 	return(SPARK_STATUS_OK);
@@ -747,16 +950,14 @@ SparkStatus SparkModelResidentIpcEncodeCompletion(
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkModelResidentIpcDecodeCompletion(
+static SparkStatus SparkModelResidentIpcCheckCompletion(
 	const void *message_buffer,
-	uint32_t message_bytes,
-	SparkModelServingCompletion *completion_out)
+	uint32_t message_bytes)
 {
 	const SparkModelResidentIpcCompletion *wire;
-	const uint8_t *bytes;
 	uint32_t expected;
 	SparkStatus status;
-	if ( message_buffer == 0 || completion_out == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES )
+	if ( message_buffer == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	wire = (const SparkModelResidentIpcCompletion *)message_buffer;
 	status = SparkModelResidentIpcValidateHeader(&wire->header,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION,SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES);
@@ -766,8 +967,15 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	if ( status != SPARK_STATUS_OK || expected != message_bytes || wire->token_ids_offset != SPARK_MODEL_RESIDENT_IPC_COMPLETION_BYTES || wire->model_extension_offset != wire->token_ids_offset + (wire->token_count * sizeof(uint32_t)) ||
 		wire->logprobs_offset != SparkModelResidentIpcLogprobsOffset(wire->token_count,wire->model_extension_bytes) || wire->reserved != 0u )
 		return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_SCHEMA_ERROR);
-	bytes = (const uint8_t *)message_buffer;
-	memset(completion_out,0,sizeof(*completion_out));
+	return(SPARK_STATUS_OK);
+}
+
+static void SparkModelResidentIpcFillCompletion(
+	const void *message_buffer,
+	SparkModelServingCompletion *completion_out)
+{
+	const SparkModelResidentIpcCompletion *wire = (const SparkModelResidentIpcCompletion *)message_buffer;
+	const uint8_t *bytes = (const uint8_t *)message_buffer;
 	completion_out->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
 	completion_out->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion_out->status = wire->status;
@@ -797,5 +1005,36 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	completion_out->logprob_entry_count = wire->logprob_entry_count;
 	if ( wire->logprob_entry_count != 0u )
 		memcpy(completion_out->logprobs,bytes + wire->logprobs_offset,(size_t)wire->logprob_entry_count * sizeof(SparkSamplingLogprob));
+}
+
+SparkStatus SparkModelResidentIpcDecodeCompletion(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion_out)
+{
+	SparkStatus status;
+	if ( completion_out == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcCheckCompletion(message_buffer,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(completion_out,0,sizeof(*completion_out));
+	SparkModelResidentIpcFillCompletion(message_buffer,completion_out);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcDecodeCompletionReplacing(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion)
+{
+	SparkStatus status;
+	if ( completion == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkModelResidentIpcCheckCompletion(message_buffer,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	SparkModelServingCompletionReset(completion);
+	SparkModelResidentIpcFillCompletion(message_buffer,completion);
 	return(SPARK_STATUS_OK);
 }

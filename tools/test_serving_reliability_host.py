@@ -12,21 +12,21 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = {
-    "ownership": "memory_buffer arena work_transaction runtime_completion model_runtime launch release status",
-    "serving": "model_serving_adapter model_resident_deployment model_resident_ipc model_resident_deadline model_resident_session model_resident_reconnect model_pipeline_client model_pipeline_client_mock model_batch_engine_mock model_api_text pipeline_runtime serving_cache_admission steploop_admission continuous_batch model_resident_end_to_end orchestrator",
-    "transport": "tp_device_collective_mock tp_collective serving_tp_config distributed_work hidden_transport hidden_transport_rdma_control fabric_topology memlink weightd_mesh_doorbell weightd_mesh_mock serial_tp_replay",
-    "cache": "kv_cache kv_page_layout kv_store nvme_tier kv_model_table",
-    "unlinked_components": "topology_switch",
-    "weights": "weightd weightd_lease weightd_working_set weightd_churn weightd_expert_stress weightd_worker weightd_fd_frames weightd_attach weightd_expert weightd_map stage_module_weightd glm5_next_lazy_dispatch",
-    "model_contracts": "model_description module_library driver_compiler stage_module_common llm_module_contract llm_stagepack_format tokenizer tokenizer_sidecar json numerical_metrics weight_codec gemm_descriptor_cache gemm_tile_k_fallback glm52_stagepack kda_reference rope_plan tensor_map_geometry",
-    "driver_fixtures": "required_cache_refusal hy4_lifecycle_smoke k3_attach_contract k3_kv_cache k3_llm_defines glm52_dspark glm52_mtp_tree kv_mooncake dsv4_cache_plan dsv4_lane_continuity dsv4_paged_cache dsv4_parallel_shape dsv4_pool_layout dsv4_stage_runner dsv4_tp_graph_contract dsv4_w1_loader gemma4_defines gemma4_defines_moe gemma4_defines_negative gemma4_defines_moe_negative k3_run_equivalence qwen38_27b_work_control qwen38_work_control",
-    "speculation": "draft_bridge dspark_drafter_pin dsv4_pro_dspark_drafter_pin speculation_policy_pin speculation_seam speculation_tree_pin speculation_tree_resolve",
+    "ownership": "arena launch release status",
+    "serving": "model_serving_adapter model_resident_deployment model_resident_ipc model_resident_deadline model_resident_session model_resident_reconnect model_pipeline_client model_pipeline_client_mock model_batch_engine_mock model_api_text pipeline_runtime serving_cache_admission steploop_admission model_resident_end_to_end orchestrator",
+    "transport": "tp_device_collective_mock hidden_transport hidden_transport_rdma_control fabric_topology weightd_mesh_mock serial_tp_replay",
+    "cache": "kv_cache kv_page_layout kv_model_table",
+    "unlinked_components": "",
+    "weights": "weightd weightd_lease weightd_working_set weightd_churn weightd_expert_stress weightd_worker weightd_fd_frames weightd_attach weightd_expert weightd_map",
+    "model_contracts": "model_description module_library driver_compiler stage_module_claims tokenizer tokenizer_sidecar json numerical_metrics weight_codec gemm_descriptor_cache gemm_tile_k_fallback glm52_stagepack kda_reference rope_plan tensor_map_geometry",
+    "driver_fixtures": "k3_attach_contract k3_kv_cache k3_llm_defines",
+    "speculation": "draft_bridge",
 }
 PYTHON = {
     "weights": "weightd_supervision weightd_supervised weightd_manifest weightd_lazy_pair weightd_map_fd_ownership",
-    "glm": "tp_mesh_cancel_lifetime glm5_next_graph_failure glm5_next_stage_context glm5_next_embedding_collective glm5_next_adapter_config_load glm5_next_expert_shard_math glm5_next_geometry glm5_next_driver_probe",
-    "deployment": "generate_model_resident_deployment deployment_config_drift fleet_registrar spark_queue multi_dev_orchestrate inference_smoke glm5_next_queue_build mesh_lane_ladder_receipt",
-    "model_contracts": "stage_module_teardown model_families model_driver_contracts glm52_module_contract qwen4_flash_model_header laguna_model_header",
+    "glm": "tp_mesh_cancel_lifetime glm5_next_expert_shard_math glm5_next_geometry",
+    "deployment": "generate_model_resident_deployment deployment_config_drift fleet_registrar spark_queue multi_dev_orchestrate glm5_next_queue_build mesh_lane_ladder_receipt",
+    "model_contracts": "model_families model_driver_contracts",
 }
 FUZZ = ("tp_allreduce_fuzz", "serving_fault_fuzz", "kv_lane_fuzz", "weightd_working_set", "system_loopback")
 GAPS = [

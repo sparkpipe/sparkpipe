@@ -13,8 +13,7 @@
    "weightd_socket": "/tmp/spark_weightd.sock",
    "sequences": 8,
    "rows": 4096,
-   "context_tokens": 786432,
-   "context_reason": "786,432 positions: the BF16 weights take 98 GB a rank, so a 1,048,576-position sequence's KV minimum (517 chunks, 6.5 GB) exceeds what weightd may grant within its 6.9 GB memory margin (441 chunks on 2026-11-04); 786,432 (384 chunks) fits",
+   "context_tokens": 1048576,
    "kv_logical_pages": 131072,
    "state_budget_bytes": 12884901888,
    "memory_max": "28G",
@@ -158,6 +157,21 @@
     "rank": 15,
     "stream": "10.10.201.250:7731"
    }
+  },
+  "qwen3.8-27b-fp8": {
+   "launcher": "stage_lane",
+   "model": "qwen38_27b_fp8",
+   "lane": 9,
+   "runtime_root": "/home/{host}/stage-lanes/qwen38_27b_fp8/lane9/root",
+   "weightd_socket": "/tmp/spark_weightd.sock",
+   "sequences": 8,
+   "rows": 1024,
+   "context_tokens": 262144,
+   "kv_logical_pages": 32768,
+   "state_budget_bytes": 5368709120,
+   "memory_max": "16G",
+   "tokenizer_sha256": "9b79d0392771e25eebe35ddf6fca7eccbd14f0cf6bc44f2fa6a9ae7380231c7e",
+   "text_prompt_prefix_token_ids": []
   },
   "deepseek-v4.1-flash": {
    "launcher": "stage_lane",

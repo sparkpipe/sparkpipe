@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
-#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef DSV41_FLASH_CONTRACT_SHA256
@@ -13,12 +12,10 @@
 #define SPARK_DSV41_FLASH_TP16_MODEL_ID "deepseek-ai/DeepSeek-V4.1-Flash"
 #define SPARK_DSV41_FLASH_TP16_MAX_ROWS 2048u
 #define SPARK_DSV41_FLASH_TP16_LAYERS 40u
-#define SPARK_DSV41_FLASH_TP16_CHAIN_TOKENS 16u
 #define SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS 16384u
 #define SPARK_DSV41_FLASH_TP16_LATENT 512u
 #define SPARK_DSV41_FLASH_TP16_INDEX_KEY 128u
 #define SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH (24u * 256u)
-#define L SPARK_DSV41_FLASH_TP16_LAYERS
 
 static void Dsv41FlashServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -57,55 +54,25 @@ static uint32_t Dsv41FlashServingCollectiveSequences(uint32_t rows, uint32_t tp_
 	return (uint32_t)capacity + 1u;
 }
 
-static const SparkModelServingAdapterDescriptor Dsv41FlashServingDescriptor =
-{
-	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_DSV41_FLASH_TP16_ADAPTER_ID,
-		SPARK_DSV41_FLASH_TP16_MODEL_ID,
-		SPARK_DSV41_FLASH_TP16_ADAPTER_ID,
-		"dsv41_flash",
-		DSV41_FLASH_CONTRACT_SHA256),
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = SPARK_DSV41_FLASH_STAGE_TP_DEGREE,
-	.layer_count = SPARK_DSV41_FLASH_TP16_LAYERS,
-	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = SPARK_DSV41_FLASH_STAGE_HIDDEN,
-	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
-	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = 16u,
-	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = SPARK_DSV41_FLASH_TP16_MAX_ROWS,
-	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_DSV41_FLASH_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
-	.stage_layer_counts = { L, L, L, L, L, L, L, L, L, L, L, L, L, L, L, L },
-	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS,
-	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,
-	.max_verify_row_count = SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS,
-};
-
-#undef L
-
 static const SparkStageServingModel Dsv41FlashStageServing =
 {
-	.descriptor = &Dsv41FlashServingDescriptor,
-	.runner_model = SparkDsv41FlashStageModel,
+	.adapter_id = SPARK_DSV41_FLASH_TP16_ADAPTER_ID,
+	.model_id = SPARK_DSV41_FLASH_TP16_MODEL_ID,
+	.model_revision = SPARK_DSV41_FLASH_TP16_ADAPTER_ID,
+	.program = "dsv41_flash",
+	.contract_sha256 = DSV41_FLASH_CONTRACT_SHA256,
 	.module_tag = "dsv41_flash_stage",
+	.runner_model = SparkDsv41FlashStageModel,
 	.tp_degree = SPARK_DSV41_FLASH_STAGE_TP_DEGREE,
-	.program_id = 1u,
+	.layer_count = SPARK_DSV41_FLASH_TP16_LAYERS,
+	.hidden = SPARK_DSV41_FLASH_STAGE_HIDDEN,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
+	.max_rows = SPARK_DSV41_FLASH_TP16_MAX_ROWS,
+	.verify_rows = SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS,
+	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
+	.cache_block_token_count = SPARK_DSV41_FLASH_STAGE_PAGE_TOKENS,
+	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,
 	.kv_layout = Dsv41FlashServingKvLayout,
 	.collective_sequences = Dsv41FlashServingCollectiveSequences,
 };

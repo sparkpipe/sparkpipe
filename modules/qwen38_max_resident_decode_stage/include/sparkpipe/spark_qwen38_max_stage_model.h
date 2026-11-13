@@ -59,6 +59,7 @@ struct Qwen38MaxGeometry : QwenHybridDefaults
 	static const char *DumpEnv(void) { return "SPARK_QWEN38_MAX_LAYER_DUMP"; }
 	static const char *ReportTag(void) { return "QWEN38_MAX-STATE"; }
 	static constexpr bool kGdnSigmoidGate = false;
+	static constexpr bool kRopeRoundedTerms = true;
 };
 #endif
 

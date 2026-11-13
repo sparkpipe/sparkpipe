@@ -98,41 +98,6 @@ SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *d
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkSpeculationLookupDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result)
-{
-	const SparkSpeculationLookupDraft *draft = (const SparkSpeculationLookupDraft *)context;
-	SparkSpeculationLookupMatch match;
-	const uint32_t *history;
-	uint32_t count,token,confidence;
-	uint64_t source;
-	SparkStatus status;
-	if ( draft == 0 || request == 0 || result == 0 || request->requested_token_count == 0u || request->requested_token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT || request->active_sequence_index >= draft->lane_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	result->token_count = 0u;
-	if ( draft->sequence_ids[request->active_sequence_index] != request->sequence_id )
-		return(SPARK_STATUS_NOT_FOUND);
-	status = SparkSpeculationLookupDraftFind(draft,request->active_sequence_index,request->sequence_position,&match);
-	if ( status == SPARK_STATUS_NOT_FOUND )
-		return(status);
-	if ( status != SPARK_STATUS_OK || match.match_length == 0u )
-		SPARK_RETURN(status);
-	history = draft->tokens + (uint64_t)request->active_sequence_index * draft->lane_capacity;
-	confidence = SPARK_SPECULATION_CONFIDENCE_MILLI_ONE * match.match_length / draft->max_match;
-	for (count=0u; count<request->requested_token_count; count++)
-	{
-		source = (uint64_t)match.source_end + 1u + count;
-		if ( source > request->sequence_position )
-			break;
-		token = history[source];
-		if ( token == SPARK_SPECULATION_LOOKUP_UNKNOWN_TOKEN )
-			break;
-		result->token_ids[count] = token;
-		result->confidence_milli[count] = confidence;
-	}
-	result->token_count = count;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkSpeculationLookupIndexBucket(const SparkSpeculationLookupIndex *index,const uint32_t *gram_tokens)
 {
 	uint64_t hash = UINT64_C(0xcbf29ce484222325);
@@ -231,6 +196,40 @@ SparkStatus SparkSpeculationLookupIndexFindTail(const SparkSpeculationLookupInde
 	match_out->match_length = best_length;
 	match_out->source_end = best_end;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkSpeculationLookupIndexFindRanked(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,
+	SparkSpeculationLookupMatch *matches_out,uint32_t match_capacity,uint32_t *match_count_out)
+{
+	uint32_t anchor,end,length,steps,count = 0u,slot,place;
+	if ( index == 0 || index->heads == 0 || history == 0 || matches_out == 0 || match_count_out == 0 || match_capacity == 0u || max_match < index->gram ||
+		max_match > SPARK_SPECULATION_LOOKUP_MATCH_LIMIT || candidate_limit == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*match_count_out = 0u;
+	if ( index->length <= index->gram )
+		return(SPARK_STATUS_NOT_FOUND);
+	anchor = index->length - 1u;
+	end = index->heads[SparkSpeculationLookupIndexBucket(index,history + anchor + 1u - index->gram)];
+	for (steps=0u; end != SPARK_SPECULATION_LOOKUP_NO_POSITION && steps < candidate_limit; steps++, end=index->chain[end])
+	{
+		if ( end >= anchor || memcmp(history + end + 1u - index->gram,history + anchor + 1u - index->gram,(size_t)index->gram * sizeof(uint32_t)) != 0 )
+			continue;
+		length = index->gram;
+		while ( length < max_match && length <= end && history[end - length] == history[anchor - length] )
+			length++;
+		for (place=0u; place<count && matches_out[place].match_length >= length; place++)
+			;
+		if ( place >= match_capacity )
+			continue;
+		for (slot=(count < match_capacity ? count : match_capacity - 1u); slot>place; slot--)
+			matches_out[slot] = matches_out[slot - 1u];
+		matches_out[place].match_length = length;
+		matches_out[place].source_end = end;
+		if ( count < match_capacity )
+			count++;
+	}
+	*match_count_out = count;
+	return(count != 0u ? SPARK_STATUS_OK : SPARK_STATUS_NOT_FOUND);
 }
 
 SparkStatus SparkSpeculationLookupIndexFind(const SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t max_match,uint32_t candidate_limit,SparkSpeculationLookupMatch *match_out)

@@ -23,14 +23,14 @@ static inline GlmRowShare GlmRowShareOf(uint32_t rows, uint32_t degree, uint32_t
 	return row;
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, bool ROUND_FIRST = false>
 static void GlmRowShareNorm(const GlmRowShare *row, const uint16_t *reduced, uint16_t *residual, const uint16_t *weight, uint32_t keep_residual,
 	uint16_t *normed, uint32_t dimension, float epsilon, cudaStream_t stream)
 {
 	uint16_t *own = residual + (uint64_t)row->first * dimension;
 	if ( row->count == 0u )
 		return;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<THREADS,uint16_t>), row->count, THREADS, (dimension + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<THREADS,uint16_t,ROUND_FIRST>), row->count, THREADS, (dimension + 8u) * sizeof(float), stream,
 		reduced, own, weight, keep_residual != 0u ? own : (uint16_t *)0, normed, dimension, dimension, epsilon);
 }
 

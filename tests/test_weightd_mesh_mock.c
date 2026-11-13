@@ -359,7 +359,7 @@ static SparkStatus test_post_route(uint32_t band, uint32_t rank,
     status = SparkWeightdMeshPostSlot(band,rank,seq,
         (uint64_t)rank * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK +
             ((seq - 1u) & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)),bytes,route,
-        SparkWeightdMeshMonotonicNs());
+        SparkMonotonicNs());
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     return status;
 }
@@ -752,7 +752,7 @@ static void test_half_slots(uint32_t local_rank)
             (uint64_t)(SPARK_WEIGHTD_MESH_DOORBELL_CELL_CANCEL + 2u * band) * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES);
         CHECK(SparkWeightdMeshSetActivity(5u,1u) == SPARK_STATUS_OK,"half-slot lane producer begins");
         (void)test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_SHIPPED,seq + 4u,0u,cancel);
-        SparkWeightdMeshWaitRequestsPoll(SparkWeightdMeshMonotonicNs());
+        SparkWeightdMeshWaitRequestsPoll(SparkMonotonicNs());
         CHECK(request->ready == 1u && request->error == UINT64_MAX,"a shipped wait on the failed chunk reports the failure");
         CHECK(SparkWeightdMeshSetActivity(5u,0u) == SPARK_STATUS_OK,"half-slot lane producer ends");
     }
@@ -1375,9 +1375,9 @@ static void test_mesh_hardware_wait(void)
         uint64_t started;
         CHECK(SparkWeightdMeshSetActivity(band / 2u,1u) == SPARK_STATUS_OK,"idle producer holds activity");
         weightd_mesh.work_ns = 0u;
-        started = SparkWeightdMeshMonotonicNs();
+        started = SparkMonotonicNs();
         SparkWeightdMeshWaitForActivity();
-        CHECK(SparkWeightdMeshMonotonicNs() - started >= UINT64_C(150000),
+        CHECK(SparkMonotonicNs() - started >= UINT64_C(150000),
             "an active lane without traffic polls at the dormant cadence instead of spinning");
         SparkWeightdMeshDoorbellPoll();
         CHECK(SparkWeightdMeshSetActivity(band / 2u,0u) == SPARK_STATUS_OK,"idle producer releases activity");
@@ -2560,12 +2560,12 @@ static void test_mesh_record_addresses(uint32_t local_rank)
 
     (void)snprintf(log_path,sizeof(log_path),"%s/capture-address-wait.log",SPARK_WEIGHTD_MESH_DIR);
     spark_stub_ibv_empty_gids(3u);
-    started = SparkWeightdMeshMonotonicNs();
+    started = SparkMonotonicNs();
     test_capture_begin(log_path);
     status = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,0,0u,0u);
     test_capture_end();
     CHECK(status == SPARK_STATUS_BUSY,"init waits for its own address and then publishes");
-    CHECK(SparkWeightdMeshMonotonicNs() - started >= 3ull * (uint64_t)SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS,
+    CHECK(SparkMonotonicNs() - started >= 3ull * (uint64_t)SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS,
         "init polls the gid table instead of publishing an empty gid");
     CHECK(test_file_count(log_path,"WD-MESH-WAIT-ADDRESS") == 1u,"the address wait is reported once");
     CHECK(test_file_contains(log_path,"WD-MESH-ADDRESS interface=rocep1s0f1 sgid=3 address=10.103.0.1"),

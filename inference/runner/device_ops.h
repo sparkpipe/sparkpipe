@@ -151,6 +151,14 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_DIFFERENTIAL_GATE,
 	SPARK_OPS_HC_SITE_CLAMPED,
 	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED,
+	SPARK_OPS_KV_MOVE,
+	SPARK_OPS_ROUTE_SIGMOID_PINNED,
+	SPARK_OPS_ROUTE_SQRT_SOFTPLUS_PINNED,
+	SPARK_OPS_SILU_ROUNDED_CLAMP_MUL,
+	SPARK_OPS_RANK_SUM_F32,
+	SPARK_OPS_GEMV_ROUTED_F32,
+	SPARK_OPS_ROUTE_COMBINE_WEIGHTED_SHARED_F32,
+	SPARK_OPS_SAMPLE_ROWS,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -168,6 +176,7 @@ typedef struct SparkDeviceOps
 	SparkDeviceBuffer partial;
 	SparkDeviceQueue *partial_queue;
 	uint32_t lane;
+	uint32_t compute_units;
 } SparkDeviceOps;
 
 typedef struct SparkOpsSequences
@@ -176,6 +185,11 @@ typedef struct SparkOpsSequences
 	SparkTensor row_begin;
 	uint32_t sequences;
 	uint32_t commit;
+	uint32_t tree;
+	SparkTensor parent_rows;
+	SparkTensor state_loads;
+	SparkTensor state_saves;
+	SparkTensor snapshots;
 } SparkOpsSequences;
 
 typedef struct SparkOpsPaged
@@ -188,6 +202,10 @@ typedef struct SparkOpsPaged
 	uint32_t pages_per_sequence;
 	uint32_t pool_pages;
 	uint32_t kv_heads;
+	uint32_t tree;
+	SparkTensor slots;
+	SparkTensor fork_positions;
+	SparkTensor slot_offsets;
 } SparkOpsPaged;
 
 SparkStatus SparkDeviceOpsOpen(SparkDeviceOps *ops, const char *library_path);
@@ -206,6 +224,7 @@ SparkStatus SparkOpsGatherSlice(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 SparkStatus SparkOpsRouteLocal(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor experts, const SparkRouteParams *params);
 SparkStatus SparkOpsHeadGate(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkHeadGateParams *params);
 SparkStatus SparkOpsRankSumBf16(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
+SparkStatus SparkOpsRankSumF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankMaxU64(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor lanes, SparkTensor full, uint32_t ranks, uint64_t elements);
 SparkStatus SparkOpsRankRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor gathered, SparkTensor rows, uint32_t ranks, uint32_t row_count,
 	uint32_t width);
@@ -228,6 +247,8 @@ SparkStatus SparkOpsChannelDelta(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	const SparkDeltaParams *params);
 SparkStatus SparkOpsKvStore(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor key, SparkTensor value,
 	const SparkKvParams *params);
+SparkStatus SparkOpsKvMove(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor sources, SparkTensor destinations,
+	const SparkKvParams *params);
 SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params, const uint32_t *host_positions,
 	const uint32_t *host_sequence_of_row);
@@ -249,10 +270,14 @@ SparkStatus SparkOpsRouteCombineWeighted(SparkDeviceOps *ops, SparkDeviceQueue *
 	const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineWeightedShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
 	SparkTensor output, const SparkRouteParams *params);
+SparkStatus SparkOpsRouteCombineWeightedSharedF32(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor weights, SparkTensor shared,
+	SparkTensor output, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteCombineShared(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor expert_out, SparkTensor shared, SparkTensor output,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsSigmoidGateRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor values, SparkTensor logits, const SparkRouteParams *params);
 SparkStatus SparkOpsRouteSigmoid(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor experts, SparkTensor weights,
+	const SparkRouteParams *params);
+SparkStatus SparkOpsRouteSigmoidPinned(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor bias, SparkTensor pinned, SparkTensor experts, SparkTensor weights,
 	const SparkRouteParams *params);
 SparkStatus SparkOpsAttnResScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor bank, SparkTensor partial, SparkTensor weight, SparkTensor scores,
 	const SparkAttnResParams *params);
@@ -300,6 +325,8 @@ SparkStatus SparkOpsLinearRoutedNvfp4(SparkDeviceOps *ops, SparkDeviceQueue *que
 	SparkTensor y, SparkTensor experts, uint32_t expert_count, const SparkGemvParams *params);
 SparkStatus SparkOpsLogprob(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor targets, SparkTensor result,
 	SparkTensor argmax, const SparkLogprobParams *params);
+SparkStatus SparkOpsSampleRows(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor logits, SparkTensor rows, SparkTensor tokens,
+	SparkTensor chosen_logits, SparkTensor logprobs, const SparkSampleParams *params);
 SparkStatus SparkOpsStreamRead(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor words, SparkTensor sink, uint32_t groups);
 SparkStatus SparkOpsBlockQdq(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor input, SparkTensor output, const SparkQdqParams *params);
 SparkStatus SparkOpsHcSiteLagged(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor streams, SparkTensor fn, SparkTensor base, SparkTensor scale,

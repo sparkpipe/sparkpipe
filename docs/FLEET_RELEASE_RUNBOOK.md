@@ -99,9 +99,19 @@ Environment=SPARK_TP_WAIT_MODE=hardware
 | --- | --- |
 | `G5_GRAPH_PATH=1` | No longer read. GLM Flash takes `graph_path` from its stage config (`tools/glm5_next_gen_deployment.py`). |
 | `G5_PIN_EXPERTS=1` | No longer read. GLM Flash takes `pin_experts` from its stage config. Graphs require full pinning since `78c2c21`. |
-| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The device collective takes `wait_mode` from the stage config's `tp_collective` (default `spin`). |
+| `SPARK_TP_WAIT_MODE=hardware` | No longer read. The device collective takes `wait_mode` from the stage config's `device_collective`; the member is required (`hardware` or `spin`) and a config without it is refused at configure. |
 | `G5_API_DISABLED=1` | No longer read. Since #1261 the agent has no `ensure_api` and never starts an API; the model APIs run on the hub (section 6). The line is inert and can leave the drop-in. |
 | `G5_WARMUP=0` | Rank 0 does not send its warmup completion to `G5_API_HOST`, which defaults to `100.123.97.61:8433` (`:529`, `:550`). |
+
+The nodes' drop-ins also set `SPARK_WEIGHTD_KV_RESERVE_BYTES` and
+`SPARK_WEIGHTD_KV_WRITE_BUDGET_BYTES_PER_DAY`. The agent passes weightd no
+environment: it starts weightd with `--device-bytes-max` and
+`--kv-reserve-bytes` from its own `WEIGHTD_DEVICE_BYTES_MAX` and
+`WEIGHTD_KV_RESERVE_BYTES`, which `tests/test_lane_records.py` holds equal to
+`deployment/lanes.json`'s `weightd` block (8 GiB, the reserve every node ran
+with on 2026-11-10). Both lines are inert from the next weightd restart under
+an agent that carries this; [ENVIRONMENT.md](ENVIRONMENT.md) lists every
+variable still read.
 
 With this drop-in, GLM 5.3 Flash measured 36 tok/s at B1: 23-24.5 ms/token,
 8-step graph chains, all 12096 experts pinned (lead-dev measurement,
@@ -265,11 +275,11 @@ directories it installs into.
 3. On `BUILD_HOST` (default `lenovo7`; every aarch64 build runs on a
    Lenovo, never on a fleet node, so it takes no fleet lock): unpack into `~/build-rp/fw-<sha>-src` and build residentd, weightd,
    `weightd_warm`, `weightd_receipt`, `weightdctl`, `sparkpipe_model_batch`,
-   the RDMA transport and the same adapters (log `~/build-rp/fw-<sha>.out`).
+   the RDMA transport, the device library every adapter loads
+   (`runtime_libs/libsparkpipe_device_cuda.so`) and the same adapters (log `~/build-rp/fw-<sha>.out`).
 4. It prints the first error lines of both logs and writes the firmware
    directory `/Users/mac/sparkpipe-coord/lanes/driver-sprint/fw-release-<sha>`:
-   the node files, the adapters, `tools/weightd_spine_budget.py`,
-   `SOURCE_COMMIT`, `SHA16` and `SHA256SUMS`. The hub build gets a `SHA16`
+   the node files, the adapters, `SOURCE_COMMIT`, `SHA16` and `SHA256SUMS`. The hub build gets a `SHA16`
    too.
 
 The last lines are `FW-DIR <dir>` and `APIB $HUB_WORK/api-build-<sha>/build`,
@@ -294,14 +304,14 @@ release are committed under `qualification/releases/<sha>/`.
 | Step | Fleet | What it checks, then does |
 | --- | --- | --- |
 | `precheck` | serving | it unpacks the release source (`$HUB_WORK/src/rp-src-<sha>.tar`, written by `release_build.sh`) into `$HUB_WORK/release-<sha>/tree`, from which every qualification tool and reference file runs; the swap controller is idle with `qwen3.8-max` active; all sixteen nodes answer; `FW` has every node file and every model's adapter, and `APIB` has the API, the tokenizer tool and every adapter; the hub's `WEIGHTSD_BIN` is `OLD_WD`; at least 20 GiB free on `HUB_WORK` and 2 GiB in the hub home. It copies the capture and compare tools to `$HUB_WORK/release-<sha>/kit` |
-| `old` | serving, swapping | activates each model through the controller (`POST /activate` on `:8440`, with the controller token, through `swap` in `scripts/rollover_lib.sh`) and captures its reference outputs (`tools/release_capture.py`), plus logprob goldens for GLM Full, K3, the Qwen models and DeepSeek V4.1 Flash; it ends on `qwen3.8-max` |
+| `old` | serving, swapping | activates each model through the controller (`POST /activate` on `:8440`, with the controller token, through `swap` in `scripts/rollover_lib.sh`) and captures its reference outputs (`tools/release_capture.py`: every prompt greedy one step at a time with top-4 logprobs, greedy as decode chains, greedy with speculation on, seeded sampled, and all prompts at once, with the engine's draft counters from the API log; a fifth argument, a comma-separated list of prompt names, limits a run to those prompts, for a quick check after an API restart; `tools/release_compare.py` requires every path's tokens to match the reference and the chain, speculating and batch tokens to equal the one-step tokens), plus logprob goldens for GLM Full, K3, the Qwen models and DeepSeek V4.1 Flash; it ends on `qwen3.8-max` |
 | `stage` | serving | copies `FW` to `~/rp-release-<sha>` on every node and checks `SHA256SUMS`: one result on all sixteen, or it fails |
 | `backup` | serving | stamps the backup (`STATE/utc`) and copies every lane root to `root.prev-<utc>` (without `kvsnapshot` and `kvcache`), every hub API directory to `$HUB_WORK/backups/<api>.prev-<utc>`, `weightd_warm` and the installed weightd to `.prev-<utc>` on every node, the production weightd to `~/release-staging/weightd-rollback/sparkpipe_weightd.<OLD_WD>` and `model_swap.json` to `.prev-<utc>` on the hub |
 | `down` | **down from here** | runs the controller's own `node_stop` for every record, whether or not its API answers (a lane started outside the controller is stopped too), and `api_stop` for every model whose API answers; fails unless no residentd runs anywhere |
 | `weightd` | down | section 5.2; it changes nothing when `FW` carries the production weightd |
-| `install` | down | per model: residentd, `weightd_warm`, the spine budget, the batch client where the lane has one, the transport and the adapter into `~/<lane>/root`, each install one hash variant on all sixteen; the API, the tokenizer tool and the adapter into the hub's `~/<model>-kv-api`, dropping its `runtime/prefix_index.spi`; the shared `~/sparkdata/swap/weightd_warm` |
+| `install` | down | per model: residentd, `weightd_warm`, the spine budget, the batch client where the lane has one, the transport, the adapter and the device library beside it (`lib/runtime_libs/`) into `~/<lane>/root`, each install one hash variant on all sixteen; the API, the tokenizer tool, the adapter and its device library into the hub's `~/<model>-kv-api`, dropping its `runtime/prefix_index.spi`; the shared `~/sparkdata/swap/weightd_warm` |
 | `records` | down | for every record, first `weightd_warm --reclaim-pack` of the pack its lane names now (`packs/pack.sha256`) on all sixteen, which must answer 0 (a busy answer stops the step before that record is pushed): once the record switches the pack no lane names the old one, so no swap-controller reclaim would ever free its cold arena and the next activation would be short of memory. Then `tools/lane_config.py push` (each lane's `deployment.json`, `config/adapter.json` and `lane.sh` on all sixteen and its hub `model_resident.json`, audited), then the release's `deployment/hub/model_swap.json` as the controller config and a controller restart. A pack switch, such as a precision change, lands here: `lane.sh start` takes the pack digest and spine budget from the pack the pushed config names |
-| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; `tools/ui_smoke.py` through LiteLLM, reading the efforts each model takes from the chat layer's `/v1/models` (LiteLLM's lists none); COMPSEC-17 (`tools/compsec17_openai.py`, at `minimal` with 2,048 tokens where the model can turn reasoning off and at `low` with 4,096 where it cannot, `tools/compsec_effort.py`) unless `tools/release_compare.py` proves every prompt's tokens equal (it exits 0 only then, so a failed, missing or empty capture runs the gate) or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
+| `qualify` | serving, swapping | per model (`ONLY=<ids>` limits it): activate, capture and compare against `old`; restart the model's API under its serving lane with the controller's `api_stop` and `api_start`, wait until `/health` shows every rank, capture the prompts `capital` and `story` and compare them with the capture just taken (`API-RESTART-FAILED <id>` names an API that did not come back, a failed capture or different outputs; `restart` runs this check alone); `tools/ui_smoke.py` through LiteLLM, reading the efforts each model takes from the chat layer's `/v1/models` (LiteLLM's lists none); COMPSEC-17 (`tools/compsec17_openai.py`, at `minimal` with 2,048 tokens where the model can turn reasoning off and at `low` with 4,096 where it cannot, `tools/compsec_effort.py`) unless `tools/release_compare.py` proves every prompt's tokens equal (it exits 0 only then, so a failed, missing or empty capture runs the gate) or `COMPSEC` is set; `api_serving_perf.py` cases `o256` and `ttft6000`; the count of error lines in the rank logs. It ends on `qwen3.8-max` |
 | `rollback` | down, then swapping | refuses unless every backup of the stamp exists; runs `down`; restores every lane root, hub API directory, `weightd_warm` and the controller config (with a controller restart); restores the production weightd and `WEIGHTSD_BIN` (section 5.2); then activates, captures and compares each model against `old` |
 
 Run `precheck`, `old`, `stage` and `backup` while production serves, then the

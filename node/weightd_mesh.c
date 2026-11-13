@@ -2,6 +2,7 @@
 #define _POSIX_C_SOURCE 200809L
 #endif
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_latency_histogram.h"
@@ -340,14 +341,6 @@ static uint64_t SparkWeightdMeshRealtimeNs(void)
     return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
 }
 
-static uint64_t SparkWeightdMeshMonotonicNs(void)
-{
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC,&now) != 0)
-        return 0ull;
-    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
-
 static void SparkWeightdMeshChanged(void)
 {
     (void)__atomic_add_fetch(&weightd_mesh.mesh_generation,1u,__ATOMIC_RELAXED);
@@ -359,7 +352,7 @@ static void SparkWeightdMeshPeerSet(uint32_t peer,uint32_t state,uint32_t record
     if ( weightd_mesh.peer_state[peer] == state )
         return;
     weightd_mesh.peer_state[peer] = state;
-    weightd_mesh.peer_since_ns[peer] = SparkWeightdMeshMonotonicNs();
+    weightd_mesh.peer_since_ns[peer] = SparkMonotonicNs();
     SparkWeightdMeshChanged();
 }
 
@@ -861,7 +854,7 @@ static void SparkWeightdMeshWireAcquire(void)
 
 static void SparkWeightdMeshWake(void)
 {
-    weightd_mesh.work_ns = SparkWeightdMeshMonotonicNs();
+    weightd_mesh.work_ns = SparkMonotonicNs();
     pthread_cond_broadcast(&SparkWeightdMeshActivityCondition);
 }
 
@@ -1228,7 +1221,7 @@ static uint32_t SparkWeightdMeshWaitRequestsPoll(uint64_t now_ns)
 static void SparkWeightdMeshDormantWait(void)
 {
     struct timespec wake;
-    if ( SparkWeightdMeshMonotonicNs() - weightd_mesh.work_ns < SPARK_WEIGHTD_MESH_DORMANT_AFTER_NS ||
+    if ( SparkMonotonicNs() - weightd_mesh.work_ns < SPARK_WEIGHTD_MESH_DORMANT_AFTER_NS ||
          clock_gettime(CLOCK_REALTIME,&wake) != 0 )
         return;
     wake.tv_nsec += SPARK_WEIGHTD_MESH_DORMANT_POLL_NS;
@@ -1384,9 +1377,9 @@ static uint32_t SparkWeightdMeshWirePeerLocked(const SparkWeightdMeshWirePlan *p
     char text[40];
     SparkStatus status;
     int error;
-    (void)SparkWeightdMeshDrainCqLocked(SparkWeightdMeshMonotonicNs());
+    (void)SparkWeightdMeshDrainCqLocked(SparkMonotonicNs());
     status = SparkWeightdMeshTransitionQp(weightd_mesh.send_qps[peer],record->recv_qpn[mine],lid,gid,sgid,&stage);
-    (void)SparkWeightdMeshDrainCqLocked(SparkWeightdMeshMonotonicNs());
+    (void)SparkWeightdMeshDrainCqLocked(SparkMonotonicNs());
     SparkWeightdMeshSendQueueReset(peer);
     if ( status == SPARK_STATUS_OK )
     {
@@ -1438,7 +1431,7 @@ static void SparkWeightdMeshWireReadyLocked(uint32_t wired)
     }
     if ( weightd_mesh.mesh_ready == 0u )
     {
-        weightd_mesh.ready_since_ns = SparkWeightdMeshMonotonicNs();
+        weightd_mesh.ready_since_ns = SparkMonotonicNs();
         SparkWeightdMeshChanged();
     }
     SparkWeightdMeshPhase("wired");
@@ -1498,7 +1491,7 @@ static void SparkWeightdMeshTryWire(void)
     if ( plan.changed == 0u )
         return;
     SparkWeightdMeshWireAcquire();
-    repair = SparkWeightdMeshDrainCqLocked(SparkWeightdMeshMonotonicNs());
+    repair = SparkWeightdMeshDrainCqLocked(SparkMonotonicNs());
     republish = 0u;
     for ( peer = 0u; peer < SPARK_WEIGHTD_MESH_PEERS; peer++ )
         if ( plan.repair[peer] != 0u && plan.records[peer].boot_ns == weightd_mesh.wired_boot_ns[peer] )
@@ -1552,7 +1545,7 @@ static SparkStatus SparkWeightdMeshWaitAddress(struct ibv_context *context,const
     uint32_t sgid_index,struct ibv_port_attr *port_attr,union ibv_gid *gid)
 {
     struct timespec pause = {0,SPARK_WEIGHTD_MESH_ADDRESS_POLL_NS};
-    uint64_t started = SparkWeightdMeshMonotonicNs();
+    uint64_t started = SparkMonotonicNs();
     const char *reason,*logged = 0;
     char text[40];
     for (;;)
@@ -1571,10 +1564,10 @@ static SparkStatus SparkWeightdMeshWaitAddress(struct ibv_context *context,const
             fprintf(stderr,"WD-MESH-WAIT-ADDRESS interface=%s sgid=%u: %s\n",interface_name,sgid_index,reason);
             logged = reason;
         }
-        if (SparkWeightdMeshMonotonicNs() - started >= weightd_mesh_address_wait_ns)
+        if (SparkMonotonicNs() - started >= weightd_mesh_address_wait_ns)
         {
             fprintf(stderr,"WD-MESH-ADDRESS-DEADLINE interface=%s sgid=%u after %llu ms: %s; startup failed\n",
-                interface_name,sgid_index,(unsigned long long)((SparkWeightdMeshMonotonicNs() - started) / 1000000ull),reason);
+                interface_name,sgid_index,(unsigned long long)((SparkMonotonicNs() - started) / 1000000ull),reason);
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
         if (nanosleep(&pause,0) != 0 && errno == EINTR)
@@ -1585,7 +1578,7 @@ static SparkStatus SparkWeightdMeshWaitAddress(struct ibv_context *context,const
     }
     SparkWeightdMeshGidText(gid->raw,text,sizeof(text));
     fprintf(stderr,"WD-MESH-ADDRESS interface=%s sgid=%u address=%s waited=%llu ms\n",interface_name,sgid_index,text,
-        (unsigned long long)((SparkWeightdMeshMonotonicNs() - started) / 1000000ull));
+        (unsigned long long)((SparkMonotonicNs() - started) / 1000000ull));
     return SPARK_STATUS_OK;
 }
 
@@ -1714,7 +1707,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
         {
             weightd_mesh.peer_state[peer] = SPARK_WEIGHTD_MESH_PEER_NO_RECORD;
             weightd_mesh.peer_record_status[peer] = SPARK_STATUS_BUSY;
-            weightd_mesh.peer_since_ns[peer] = SparkWeightdMeshMonotonicNs();
+            weightd_mesh.peer_since_ns[peer] = SparkMonotonicNs();
         }
     status = SparkWeightdMeshOpenDevice(interface_name,sgid_index,&weightd_mesh.context,&weightd_mesh.lid,weightd_mesh.gid);
     if (status != SPARK_STATUS_OK)
@@ -1871,6 +1864,7 @@ SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     return SPARK_STATUS_BUSY;
 }
 
+#ifdef DEBUG
 void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     uint64_t bytes)
 {
@@ -1923,6 +1917,7 @@ void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     }
     fflush(stderr);
 }
+#endif
 
 uint32_t SparkWeightdMeshReady(void)
 {
@@ -1945,7 +1940,7 @@ SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
     result->boot_ns = weightd_mesh.boot_ns;
     if ( weightd_mesh.pair_protection_domain != 0 && weightd_mesh.second_rail == 0u )
         result->pair_rank = weightd_mesh.local_rank ^ 1u;
-    result->now_mono_ns = SparkWeightdMeshMonotonicNs();
+    result->now_mono_ns = SparkMonotonicNs();
     result->peers[weightd_mesh.local_rank].state = SPARK_WEIGHTD_MESH_PEER_SELF;
     result->wired_mask = 1u << weightd_mesh.local_rank;
     for (peer=0u; peer<SPARK_WEIGHTD_MESH_PEERS; peer++)
@@ -2260,7 +2255,7 @@ static SparkStatus SparkWeightdMeshPostSlot(uint32_t band,uint32_t rank,uint64_t
     weightd_mesh.issued[index] = seq;
     SparkWeightdMeshPostRoute(record,band,slot,((uint64_t)band * SPARK_WEIGHTD_MESH_SLOTS_PER_BAND + slot) * SPARK_WEIGHTD_MESH_SLOT_BYTES,bytes,route,physical_mask,logical,rank);
     {
-        uint64_t spent = SparkWeightdMeshMonotonicNs() - now_ns;
+        uint64_t spent = SparkMonotonicNs() - now_ns;
         weightd_mesh.timing.route_count++;
         weightd_mesh.timing.route_ns += spent;
         weightd_mesh.timing.route_max_ns = spent > weightd_mesh.timing.route_max_ns ? spent : weightd_mesh.timing.route_max_ns;
@@ -2345,7 +2340,7 @@ static void SparkWeightdMeshDrainCq(void)
 {
     uint32_t repair_needed;
     SparkWeightdMeshWireAcquire();
-    repair_needed = SparkWeightdMeshDrainCqLocked(SparkWeightdMeshMonotonicNs());
+    repair_needed = SparkWeightdMeshDrainCqLocked(SparkMonotonicNs());
     pthread_mutex_unlock(&SparkWeightdMeshWireLock);
     if (repair_needed != 0u)
         __atomic_store_n(&weightd_mesh.repair_pending,1u,__ATOMIC_RELEASE);
@@ -2392,7 +2387,7 @@ static void SparkWeightdMeshTimingReport(void)
 
 static void SparkWeightdMeshRepairAndReport(void)
 {
-    uint64_t now = SparkWeightdMeshMonotonicNs();
+    uint64_t now = SparkMonotonicNs();
     if ( __atomic_load_n(&weightd_mesh.repair_pending,__ATOMIC_ACQUIRE) != 0u &&
          now - weightd_mesh.repair_ns >= SPARK_WEIGHTD_MESH_REPAIR_INTERVAL_NS )
     {
@@ -2642,7 +2637,7 @@ static void SparkWeightdMeshDoorbellPoll(void)
     uint32_t work;
     SparkWeightdMeshDrainCq();
     SparkWeightdMeshWireAcquire();
-    now_ns = SparkWeightdMeshMonotonicNs();
+    now_ns = SparkMonotonicNs();
     if ( weightd_mesh.mesh_ready == 0u || SparkWeightdMeshRealtimeNs() < weightd_mesh.quiesce_until_ns )
         work = SparkWeightdMeshWaitRequestsPoll(now_ns);
     else

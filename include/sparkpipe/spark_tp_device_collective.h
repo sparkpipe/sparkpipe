@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 16u
+#define SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION 17u
 #define SPARK_TP_DEVICE_COLLECTIVE_WAIT_SPIN 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE 16u
@@ -34,7 +34,6 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_DEVICE 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_MEMORY_MODE_MAPPED_HOST 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_HIDDEN_TRANSPORT 0u
-#define SPARK_TP_DEVICE_COLLECTIVE_BACKEND_NCCL 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER 0u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 1u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 2u
@@ -43,6 +42,7 @@ extern "C" {
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER 5u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 6u
 #define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 7u
+#define SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32 8u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_RECURSIVE_DOUBLING 0x00000001u
 #define SPARK_TP_DEVICE_COLLECTIVE_ALGORITHM_COUNTER_ROTATING_SPLIT_RING \
     0x00000002u
@@ -219,7 +219,7 @@ typedef struct SparkTpDeviceCollectiveTopology
 struct SparkWeightdClient;
 struct SparkWeightdMeshTopology;
 SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,
-    struct SparkWeightdMeshTopology *topology);
+    const uint32_t *mesh_ranks,struct SparkWeightdMeshTopology *topology);
 
 typedef struct SparkTpDeviceCollectiveConfig
 {
@@ -242,9 +242,12 @@ typedef struct SparkTpDeviceCollectiveConfig
     uint16_t session_ports[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE]
         [SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
     uint64_t collective_identifier;
+    const char *weightd_socket_path;
     struct SparkWeightdClient *mesh_lane_client;
+    uint32_t mesh_lane;
     uint32_t mesh_band_index;
     uint32_t wait_mode;
+    uint32_t mesh_ranks[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
 	const char *backend_module_path;
     const char *local_host;
     const char *rank_hosts[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE];
@@ -456,6 +459,9 @@ void SparkTpDeviceCollectiveBroadcastCancel(
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK \
     ((1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) - 1ull)
+#define SPARK_TP_DEVICE_COLLECTIVE_EPOCH_KEYS UINT64_C(65521)
+#define SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX \
+    (UINT64_C(0xffffffff) - SPARK_TP_DEVICE_COLLECTIVE_EPOCH_KEYS)
 
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,

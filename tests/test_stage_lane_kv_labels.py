@@ -11,7 +11,10 @@ import stage_lane  # noqa: E402
 def main():
     tags = {}
     for source in ROOT.glob("modules/*/source/*serving*.c"):
-        for tag in re.findall(r'\.module_tag\s*=\s*"([^"]+)"', source.read_text()):
+        text = source.read_text()
+        literal = re.findall(r'\.module_tag\s*=\s*"([^"]+)"', text)
+        through_names = [tag for name in re.findall(r'\.module_tag\s*=\s*(\w+)\s*,', text) for tag in re.findall(r'#define\s+' + name + r'\s+"([^"]+)"', text)]
+        for tag in literal + through_names:
             tags[tag] = source.parent.parent.name
     makefile = (ROOT / "Makefile").read_text()
     recipes = dict(re.findall(r"^define (\w+)\n(.*?)^endef", makefile, re.M | re.S))

@@ -402,11 +402,21 @@ cudaError_t cudaStreamQuery(cudaStream_t stream)
 }
 
 uint32_t cuda_stub_stream_sync_calls;
+static spark_stub_cuda_sync_hook_t cuda_stub_sync_hook;
+static void *cuda_stub_sync_hook_context;
+
+void spark_stub_cuda_set_sync_hook(spark_stub_cuda_sync_hook_t hook, void *context)
+{
+    __atomic_store_n(&cuda_stub_sync_hook_context, context, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&cuda_stub_sync_hook, hook, __ATOMIC_SEQ_CST);
+}
 
 cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
-    (void)stream;
+    spark_stub_cuda_sync_hook_t hook = __atomic_load_n(&cuda_stub_sync_hook, __ATOMIC_SEQ_CST);
     cuda_stub_stream_sync_calls++;
+    if (hook != 0)
+        hook(__atomic_load_n(&cuda_stub_sync_hook_context, __ATOMIC_SEQ_CST), stream);
     return cudaSuccess;
 }
 
@@ -724,6 +734,44 @@ cudaError_t cudaDeviceGetAttribute(int *value,int attribute,int device)
     if ( value == 0 || device != 0 )
         return cudaErrorInvalidValue;
     *value = attribute == 88 || attribute == 100 ? cuda_stub_pageable_coherent : 0;
+    return cudaSuccess;
+}
+
+cudaError_t cudaMallocManaged(void **pointer, size_t bytes, unsigned int flags)
+{
+    (void)flags;
+    return cuda_stub_alloc(pointer, bytes);
+}
+
+cudaError_t cudaGetDeviceCount(int *count)
+{
+    if (count == 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    *count = 1;
+    return cudaSuccess;
+}
+
+cudaError_t cudaSetDevice(int device)
+{
+    return device == 0 ? cudaSuccess : cudaErrorInvalidDevice;
+}
+
+cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int device)
+{
+    if (properties == 0 || device != 0)
+    {
+        return cudaErrorInvalidValue;
+    }
+    memset(properties, 0, sizeof(*properties));
+    strcpy(properties->name, "cuda stub");
+    properties->totalGlobalMem = (size_t)1 << 36;
+    properties->warpSize = 32;
+    properties->multiProcessorCount = 48;
+    properties->major = 12;
+    properties->minor = 1;
+    properties->integrated = 1;
     return cudaSuccess;
 }
 
@@ -1827,7 +1875,7 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
             volatile uint64_t *end_word = (volatile uint64_t *)
                 (band + ((uint64_t)peer_rank * slots_per_rank + parity) *
                     slot_bytes + slot_bytes - 8ull);
-            while (*end_word < tag)
+            while ((*end_word >> 32) != (tag >> 32) || *end_word < tag)
             {
                 if (*cancel != expected_cancel)
                 {

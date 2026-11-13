@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "runtime/slow_path.h"
 
 #define LM_LAUNCH_OK 0
 #define LM_LAUNCH_GRID_Y_MAX 65535u

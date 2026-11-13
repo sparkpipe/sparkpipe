@@ -100,11 +100,10 @@ compile_cuda()
 compile_cuda "${output_directory}/probe.cu" probe
 
 translation_units=(
-	tools/mb_doorbell.cu
 	tools/hardware/spark_cuda_characterize.cu
 	tools/hardware/spark_nvme_characterize.cu
-	inference/llms/kimi_k3/bind.cu
-	inference/llms/kimi_k3/unity.cu
+	model-families/k3/source/bind.cu
+	model-families/k3/source/unity.cu
 )
 for relative_source in "${translation_units[@]}"; do
 	artifact_name="${relative_source//\//__}"
@@ -112,10 +111,7 @@ for relative_source in "${translation_units[@]}"; do
 	compile_cuda "${relative_source}" "${artifact_name}"
 done
 
-for direct_mode in 0 1; do
-	compile_cuda ring/transport/rdma.cu "rdma_mode_${direct_mode}" \
-		-DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT="${direct_mode}"
-done
+compile_cuda ring/transport/rdma.cu rdma
 
 make_variable()
 {
@@ -127,7 +123,7 @@ make_variable()
 adapters=()
 while IFS= read -r variable; do
 	adapters+=("$(make_variable "${variable}")")
-done < <(sed -n 's/^\([A-Z0-9_]*_SERVING_ADAPTER\)[[:space:]]*:=.*/\1/p' "${repository_root}/Makefile")
+done < <(sed -n 's/^\([A-Z0-9_]*_SERVING_ADAPTER\)[[:space:]]*:=.*/\1/p' "${repository_root}/Makefile" | grep -v '_METAL_SERVING_ADAPTER$')
 if [[ "${#adapters[@]}" -eq 0 ]]; then
 	echo "the Makefile names no serving adapters" >&2
 	exit 5

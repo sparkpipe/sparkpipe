@@ -65,7 +65,9 @@ void LmGqaShardPartialKernel(
 	const uint32_t *__restrict__ block_mask,
 	uint32_t mask_words,
 	uint32_t block_tokens,
-	uint32_t window)
+	uint32_t window,
+	const uint32_t *__restrict__ fork_positions,
+	const uint32_t *__restrict__ slot_offsets)
 {
 	constexpr uint32_t KEYS = HEAD_DIM / 32u;
 	constexpr uint32_t VALUES = VALUE_DIM / 32u;
@@ -79,7 +81,7 @@ void LmGqaShardPartialKernel(
 	const uint32_t record = width + 2u * slots;
 	float query[KEYS], key[KEYS], value[VALUES], accumulator[VALUES];
 	float running_max = -INFINITY, running_sum = 0.0f, score, previous, rescale, weight;
-	uint32_t sequence, limit, count, local, position, index, destination, first, last, element;
+	uint32_t sequence, limit, count, local, position, index, destination, first, last, element, fork, offset, start, phase, begin_key, end_key, shift, semantic;
 	const uint8_t *slot;
 
 	if ( row >= rows || warp >= group )
@@ -104,36 +106,46 @@ void LmGqaShardPartialKernel(
 	#pragma unroll
 	for (index = 0u; index < VALUES; ++index)
 		accumulator[index] = 0.0f;
-	count = SparkKvShardLocalKeys(cache.shard,limit);
-	count = count < LmKvKeyWindowEnd(cache) ? count : LmKvKeyWindowEnd(cache);
-	for (local = window != 0u && limit > window ? SparkKvShardLocalKeys(cache.shard,limit - window) : 0u, local = local > LmKvKeyWindowBegin(cache) ? local : LmKvKeyWindowBegin(cache);
-		local < count; ++local)
+	fork = fork_positions != 0 && fork_positions[row] < limit ? fork_positions[row] : limit;
+	offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
+	start = window != 0u && limit > window ? limit - window : 0u;
+	for (phase = 0u; phase < (fork < limit ? 2u : 1u); ++phase)
 	{
-		position = SparkKvShardLocalPosition(cache.shard,local);
-		if ( block_mask != 0 && position / block_tokens < limit / block_tokens &&
-			((block_mask[(uint64_t)row * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) == 0u )
-			continue;
-		slot = LmKvShardSlotRequired<Geometry>(cache,sequence,position,row,LM_KV_ACCESS_READ);
-		if ( slot == 0 )
-			return;
-		LmGqaShardLoad<KEYS>((const uint16_t *)slot + kv_head * HEAD_DIM + lane * KEYS,key);
-		LmGqaShardLoad<VALUES>((const uint16_t *)slot + KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + lane * VALUES,value);
-		score = 0.0f;
-		#pragma unroll
-		for (index = 0u; index < KEYS; ++index)
-			score = fmaf(query[index],key[index],score);
-		#pragma unroll
-		for (index = 16u; index > 0u; index >>= 1u)
-			score += __shfl_xor_sync(0xffffffffu,score,index);
-		score *= qk_scale;
-		previous = running_max;
-		running_max = fmaxf(previous,score);
-		rescale = __expf(previous - running_max);
-		weight = __expf(score - running_max);
-		running_sum = fmaf(running_sum,rescale,weight);
-		#pragma unroll
-		for (index = 0u; index < VALUES; ++index)
-			accumulator[index] = fmaf(accumulator[index],rescale,weight * value[index]);
+		begin_key = phase == 0u ? (start < fork ? start : fork) : (start > fork ? start : fork) + offset;
+		end_key = phase == 0u ? fork : limit + offset;
+		shift = phase == 0u ? 0u : offset;
+		count = SparkKvShardLocalKeys(cache.shard,end_key);
+		count = count < LmKvKeyWindowEnd(cache) ? count : LmKvKeyWindowEnd(cache);
+		for (local = SparkKvShardLocalKeys(cache.shard,begin_key), local = local > LmKvKeyWindowBegin(cache) ? local : LmKvKeyWindowBegin(cache);
+			local < count; ++local)
+		{
+			position = SparkKvShardLocalPosition(cache.shard,local);
+			semantic = position - shift;
+			if ( block_mask != 0 && semantic / block_tokens < limit / block_tokens &&
+				((block_mask[(uint64_t)row * mask_words + semantic / block_tokens / 32u] >> ((semantic / block_tokens) % 32u)) & 1u) == 0u )
+				continue;
+			slot = LmKvShardSlotRequired<Geometry>(cache,sequence,position,row,LM_KV_ACCESS_READ);
+			if ( slot == 0 )
+				return;
+			LmGqaShardLoad<KEYS>((const uint16_t *)slot + kv_head * HEAD_DIM + lane * KEYS,key);
+			LmGqaShardLoad<VALUES>((const uint16_t *)slot + KV_HEADS * HEAD_DIM + kv_head * VALUE_DIM + lane * VALUES,value);
+			score = 0.0f;
+			#pragma unroll
+			for (index = 0u; index < KEYS; ++index)
+				score = fmaf(query[index],key[index],score);
+			#pragma unroll
+			for (index = 16u; index > 0u; index >>= 1u)
+				score += __shfl_xor_sync(0xffffffffu,score,index);
+			score *= qk_scale;
+			previous = running_max;
+			running_max = fmaxf(previous,score);
+			rescale = __expf(previous - running_max);
+			weight = __expf(score - running_max);
+			running_sum = fmaf(running_sum,rescale,weight);
+			#pragma unroll
+			for (index = 0u; index < VALUES; ++index)
+				accumulator[index] = fmaf(accumulator[index],rescale,SparkMathAttentionValueWeight(weight) * value[index]);
+		}
 	}
 	first = head * VALUE_DIM;
 	last = first + VALUE_DIM;
@@ -196,7 +208,9 @@ void LmGqaShardTiledKernel(
 	const uint32_t *__restrict__ block_mask,
 	uint32_t mask_words,
 	uint32_t block_tokens,
-	uint32_t window)
+	uint32_t window,
+	const uint32_t *__restrict__ fork_positions,
+	const uint32_t *__restrict__ slot_offsets)
 {
 	constexpr uint32_t TILE = LmGqaShardTiledTile<HEAD_DIM>(), PART = LmGqaShardTiledValuePart<VALUE_DIM>();
 	constexpr uint32_t KEY_BYTES = HEAD_DIM * 2u, VALUE_BYTES = PART * 2u;
@@ -222,7 +236,7 @@ void LmGqaShardTiledKernel(
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys), value_base = (uint32_t)__cvta_generic_to_shared(values);
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,degree), slot_count = LmGqaShardHeadSlots(heads,VALUE_DIM,degree);
 	const uint32_t record = width + 2u * slot_count;
-	uint32_t query[QUERY_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
+	uint32_t query[QUERY_STEPS][4], vector[2], row[2], head[2], limit[2], count[2], begin[2], extra_begin[2], extra_end[2], offset[2], cursor, run_end, sequence, low, high, tile_low, tile_end, tile, index, step, frag, entry, side;
 	float output[VALUE_FRAGS][4], running_max[2] = { -INFINITY, -INFINITY }, running_sum[2] = { 0.0f, 0.0f };
 	const float scale_log2 = qk_scale * 1.4426950408889634f;
 	bool valid[2], member[2];
@@ -235,7 +249,7 @@ void LmGqaShardTiledKernel(
 		valid[side] = vector[side] < vectors;
 		row[side] = valid[side] ? vector[side] / group : 0u;
 		head[side] = kv_head * group + (valid[side] ? vector[side] % group : 0u);
-		limit[side] = count[side] = begin[side] = 0u;
+		limit[side] = count[side] = begin[side] = extra_begin[side] = extra_end[side] = offset[side] = 0u;
 	}
 	auto query_fragment = [&](uint32_t at, uint32_t *fragment)
 	{
@@ -304,20 +318,37 @@ void LmGqaShardTiledKernel(
 		}
 		for (side = 0u; side < 2u; ++side)
 		{
+			uint32_t fork, start;
 			member[side] = valid[side] && row[side] >= cursor && row[side] <= run_end;
+			extra_begin[side] = extra_end[side] = offset[side] = 0u;
 			if ( !member[side] )
 				continue;
 			limit[side] = context_length[sequence];
 			if ( row_position != 0 && row_position[row[side]] != LM_KV_POSITION_UNUSED && row_position[row[side]] + 1u < limit[side] )
 				limit[side] = row_position[row[side]] + 1u;
-			count[side] = SparkKvShardLocalKeys(cache.shard,limit[side]);
+			fork = fork_positions != 0 && fork_positions[row[side]] < limit[side] ? fork_positions[row[side]] : limit[side];
+			offset[side] = slot_offsets != 0 ? slot_offsets[row[side]] : 0u;
+			start = window != 0u && limit[side] > window ? limit[side] - window : 0u;
+			count[side] = SparkKvShardLocalKeys(cache.shard,fork);
 			count[side] = count[side] < LmKvKeyWindowEnd(cache) ? count[side] : LmKvKeyWindowEnd(cache);
-			begin[side] = window != 0u && limit[side] > window ? SparkKvShardLocalKeys(cache.shard,limit[side] - window) : 0u;
+			begin[side] = SparkKvShardLocalKeys(cache.shard,start < fork ? start : fork);
 			begin[side] = begin[side] > LmKvKeyWindowBegin(cache) ? begin[side] : LmKvKeyWindowBegin(cache);
+			if ( fork < limit[side] )
+			{
+				extra_begin[side] = SparkKvShardLocalKeys(cache.shard,(start > fork ? start : fork) + offset[side]);
+				extra_begin[side] = extra_begin[side] > LmKvKeyWindowBegin(cache) ? extra_begin[side] : LmKvKeyWindowBegin(cache);
+				extra_end[side] = SparkKvShardLocalKeys(cache.shard,limit[side] + offset[side]);
+				extra_end[side] = extra_end[side] < LmKvKeyWindowEnd(cache) ? extra_end[side] : LmKvKeyWindowEnd(cache);
+			}
 			if ( (lane & 3u) == 0u && begin[side] < count[side] )
 			{
 				atomicMin(&run[2],begin[side]);
 				atomicMax(&run[3],count[side]);
+			}
+			if ( (lane & 3u) == 0u && extra_begin[side] < extra_end[side] )
+			{
+				atomicMin(&run[2],extra_begin[side]);
+				atomicMax(&run[3],extra_end[side]);
 			}
 		}
 		__syncthreads();
@@ -378,8 +409,9 @@ void LmGqaShardTiledKernel(
 				}
 			}
 			peak[0] = peak[1] = -INFINITY;
-			whole = __all_sync(0xffffffffu,block_mask == 0 && member[0] && member[1] && begin[0] <= tile * TILE && begin[1] <= tile * TILE &&
-				tile * TILE + TILE <= count[0] && tile * TILE + TILE <= count[1]);
+			whole = __all_sync(0xffffffffu,block_mask == 0 && member[0] && member[1] &&
+				((begin[0] <= tile * TILE && tile * TILE + TILE <= count[0]) || (extra_begin[0] <= tile * TILE && tile * TILE + TILE <= extra_end[0])) &&
+				((begin[1] <= tile * TILE && tile * TILE + TILE <= count[1]) || (extra_begin[1] <= tile * TILE && tile * TILE + TILE <= extra_end[1])));
 			if ( whole )
 			{
 				#pragma unroll
@@ -396,10 +428,11 @@ void LmGqaShardTiledKernel(
 					for (entry = 0u; entry < 4u; ++entry)
 					{
 						const uint32_t local = tile * TILE + frag * 8u + 2u * (lane & 3u) + (entry & 1u), which = entry / 2u;
-						bool visible = member[which] && local >= begin[which] && local < count[which];
+						const bool branch = local >= extra_begin[which] && local < extra_end[which];
+						bool visible = member[which] && ((local >= begin[which] && local < count[which]) || branch);
 						if ( visible && block_mask != 0 )
 						{
-							const uint32_t position = SparkKvShardLocalPosition(cache.shard,local);
+							const uint32_t position = SparkKvShardLocalPosition(cache.shard,local) - (branch ? offset[which] : 0u);
 							visible = position / block_tokens >= limit[which] / block_tokens ||
 								((block_mask[(uint64_t)row[which] * mask_words + position / block_tokens / 32u] >> ((position / block_tokens) % 32u)) & 1u) != 0u;
 						}
@@ -559,10 +592,12 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 	const uint32_t *block_mask = 0,
 	uint32_t mask_words = 0u,
 	uint32_t block_tokens = 1u,
-	uint32_t window = 0u)
+	uint32_t window = 0u,
+	const uint32_t *fork_positions = 0,
+	const uint32_t *slot_offsets = 0)
 {
 	const uint32_t degree = cache.shard.degree;
-	if ( rows == 0u || query_bf16 == 0 || send == 0 || sequence_of_row == 0 || context_length == 0 ||
+	if ( rows == 0u || query_bf16 == 0 || send == 0 || sequence_of_row == 0 || context_length == 0 || (fork_positions == 0) != (slot_offsets == 0) ||
 		LmGqaShardGeometryValid(heads,KV_HEADS,VALUE_DIM,degree) == 0u ||
 		SparkKvShardValid(cache.shard,Geometry::kPageSlots) == 0u ||
 		destination_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,degree) ||
@@ -582,11 +617,13 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 		}
 		LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
 			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream>>>(
-			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window);
+			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
+			fork_positions,slot_offsets);
 		return(cudaPeekAtLastError());
 	}
 	LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream>>>(
-		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window);
+		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
+		fork_positions,slot_offsets);
 	return(cudaPeekAtLastError());
 }
 

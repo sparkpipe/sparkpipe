@@ -636,6 +636,15 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 		"{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",
 		response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
+	{
+		char request[160];
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[11,%u],\"max_tokens\":1}",(unsigned)TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[11,%u],\"max_tokens\":1}",(unsigned)TEST_MODEL_RESIDENT_OUTPUT_VOCABULARY - 1u);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+	}
 	body = TestApiResponseJsonBody(response);
 	assert(TestApiBodyContains(body,"\"object\":\"text_completion\""));
 	assert(TestApiBodyContains(body,"\"status\":0"));
@@ -1352,6 +1361,17 @@ static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *
 	printf("test_model_api_text: %s refuses startup OK\n",label);
 }
 
+static void TestApiModelList(TestApiStack *stack)
+{
+	char response[4096];
+	TestApiHttpCall(stack->api_port,"GET","/v1/models",0,response,sizeof(response));
+	const char *length = strstr(response,"\"max_model_len\":");
+	assert(TestApiResponseStatus(response) == 200);
+	assert(strstr(response,"\"id\":\"test/model\"") != 0);
+	assert(length != 0 && strtoul(length + strlen("\"max_model_len\":"),0,10) > 0u);
+	printf("test_model_api_text: /v1/models names the served adapter's model and its context\n");
+}
+
 static void TestApiIdleWake(TestApiStack *stack)
 {
 	struct timespec delay = {0,120000000L};
@@ -1385,6 +1405,7 @@ int main(void)
 	TestApiStartStack(&stack,0);
 	TestApiStartApi(&stack);
 	TestApiIdleWake(&stack);
+	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiContextLimit(&stack);
 	TestApiStopApi(&stack);

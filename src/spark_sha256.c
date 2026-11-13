@@ -11,7 +11,6 @@
 
 #define SPARK_SHA256_BLOCK_BYTES 64u
 #define SPARK_SHA256_ROUND_COUNT 64u
-#define SPARK_SHA256_READ_BUFFER_BYTES 65536u
 #define SPARK_SHA256_PIPELINE_BUFFER_BYTES (4ull * 1024ull * 1024ull)
 #define SPARK_SHA256_PIPELINE_BUFFERS 2u
 
@@ -575,7 +574,6 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
     FILE *file;
     SparkSha256Context context;
     uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-    const char *pipeline_setting;
     SparkStatus status;
 
     if (path == 0 || hex == 0)
@@ -590,27 +588,7 @@ SparkStatus SparkSha256File(const char *path, char hex[SPARK_SHA256_HEX_BYTES])
     }
 
     SparkSha256Initialize(&context);
-    pipeline_setting = getenv("SPARK_SHA256_FILE_PIPELINE");
-    if (pipeline_setting != 0 && pipeline_setting[0] == '0' &&
-        pipeline_setting[1] == '\0')
-    {
-        uint8_t buffer[SPARK_SHA256_READ_BUFFER_BYTES];
-        size_t bytes_read;
-        while ((bytes_read = fread(buffer, 1u, sizeof(buffer), file)) != 0u)
-        {
-            SparkSha256Update(&context, buffer, bytes_read);
-        }
-        if (ferror(file) != 0)
-        {
-            fclose(file);
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        status = SPARK_STATUS_OK;
-    }
-    else
-    {
-        status = SparkSha256FilePipelined(fileno(file), &context);
-    }
+    status = SparkSha256FilePipelined(fileno(file), &context);
     if (fclose(file) != 0 && status == SPARK_STATUS_OK)
     {
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);

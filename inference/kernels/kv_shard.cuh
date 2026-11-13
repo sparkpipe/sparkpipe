@@ -223,6 +223,28 @@ void LmKvShardStoreKernel(LmKvShardView view, const uint16_t *__restrict__ rows_
 
 template<class Geometry, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmKvShardPathMoveKernel(LmKvShardView view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ path_rows, const uint32_t *__restrict__ path_count, const uint32_t *__restrict__ slots, uint32_t elements)
+{
+	const uint32_t index = blockIdx.x;
+	uint32_t source,destination,element;
+	const uint8_t *from;
+	uint8_t *to;
+	if ( index == 0u || index >= path_count[0] )
+		return;
+	source = slots[path_rows[index]];
+	destination = slots[path_rows[0]] + index;
+	if ( source == destination || SparkKvShardOwns(view.shard,destination) == 0u )
+		return;
+	from = LmKvShardSlotRequired<Geometry>(view,sequence_of_row[path_rows[index]],source,path_rows[index],LM_KV_ACCESS_READ);
+	to = (uint8_t *)LmKvShardSlotRequired<Geometry>(view,sequence_of_row[path_rows[0]],destination,path_rows[0],LM_KV_ACCESS_WRITE);
+	if ( from == 0 || to == 0 )
+		return;
+	for (element = threadIdx.x; element < elements; element += THREADS)
+		((uint16_t *)to)[element] = ((const uint16_t *)from)[element];
+}
+
+template<class Geometry, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmKvShardGatherPackKernel(LmKvShardView view, const uint32_t *__restrict__ sequences, const uint32_t *__restrict__ key_offset, const uint32_t *__restrict__ key_context, uint32_t key_begin, uint32_t key_end, uint8_t *__restrict__ keys)
 {
 	static_assert(Geometry::kSlotBytes % 16u == 0u, "a gathered key moves as whole 16-byte words");

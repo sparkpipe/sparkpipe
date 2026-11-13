@@ -4,11 +4,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
 RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
-MODEL = MODULE / "spark_k3_stage_model.cu"
+MODEL = ROOT / "model-families" / "k3" / "source" / "k3_stage.cuh"
 ADAPTER = ROOT / "inference" / "runner" / "stage_serving_adapter.c"
-TRANSPORT = ROOT / "ring" / "transport" / "host_staged_tcp.c"
 
 
 def body(text, name):
@@ -85,8 +83,11 @@ def check_runner(failures):
         failures.append("the step does not report a failed copy or collective "
                         "before it completes")
     chain = body(text, "StageRunnerChainBegin")
-    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, key)" not in chain:
-        failures.append("StageRunnerChainBegin does not key the device collective")
+    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id)" not in chain:
+        failures.append("StageRunnerChainBegin does not key the device collective with the whole request id")
+    if "CHAIN_ID_MASK" in chain:
+        failures.append("StageRunnerChainBegin masks the request id; a wave's epoch rises with the whole id "
+                        "and a masked id falls back after 16.7 million waves")
     if "device_collective_wide" in text + model:
         failures.append("the runner still opens a second mesh band; every "
                         "collective runs on the lane's first band")
@@ -100,17 +101,13 @@ def check_runner(failures):
 def check_adapter(failures):
     adapter = ADAPTER.read_text()
     copy_inputs = body(adapter, "StageServingCopyInputs")
-    copies = re.findall(r"SparkMemoryBufferCopy\(&state->(\w+),[^;]*?,\s*([^,;]+)\)\s*!=", copy_inputs)
-    device = [(name, stream) for name, stream in copies if name.endswith("_device")]
-    if not device:
+    submit = body(adapter, "StageServingSubmit")
+    device = re.findall(r"\{ &state->(\w+_device), &state->\w+_host,", copy_inputs)
+    if not device or not re.search(r"if \( SparkDeviceCopy\(queue, [^;]*\) != SPARK_STATUS_OK \)", copy_inputs):
         failures.append("the adapter's device index copies are not checked")
-    if not re.search(r"void \*stream = state->runner_config\.execution_stream;", copy_inputs):
-        failures.append("the adapter's index copies do not take the runner's execution stream")
-    for name, stream in device:
-        if stream.strip() != "stream":
-            failures.append(f"the adapter copies {name} on {stream.strip()}, not the "
-                            f"execution stream the step kernels run on")
-    if re.search(r"\(void\)SparkMemoryBufferCopy\(", adapter):
+    if "queue = SparkStageRunnerQueue(&state->runner);" not in submit or "StageServingCopyInputs(state, queue, " not in submit:
+        failures.append("the adapter's index copies do not run on the runner's queue, the queue the step kernels run on")
+    if re.search(r"\(void\)SparkDeviceCopy\(", adapter):
         failures.append("the adapter discards a copy result")
     emits = re.findall(r"if \(([^\n]*)\)\s*\n\s*StageServingTapEmit\(", adapter)
     if not emits or any("SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u" not in guard for guard in emits):
@@ -118,23 +115,10 @@ def check_adapter(failures):
                         "run and the tap rows hold an earlier wave's hidden states")
 
 
-def check_transport(failures):
-    match = body(TRANSPORT.read_text(), "host_staged_match")
-    async_copy = match.find("cudaMemcpyAsync((void *)packet->hidden_bf16")
-    sync = match.find("cudaStreamSynchronize((cudaStream_t)packet->cuda_stream)")
-    complete = match.find("host_staged_complete(state,packet,status)")
-    if re.search(r"\bcudaMemcpy\(", match):
-        failures.append("the transport receive copies a frame on the legacy stream")
-    if async_copy < 0 or sync < 0 or complete < 0 or not async_copy < sync < complete:
-        failures.append("the transport completes a received packet before its "
-                        "stream-ordered copy has landed")
-
-
 def main():
     failures = []
     check_runner(failures)
     check_adapter(failures)
-    check_transport(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:

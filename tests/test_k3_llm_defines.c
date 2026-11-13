@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "inference/llms/kimi_k3/config.h"
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/config.h"
+#include "model-families/k3/source/generated_config.h"
 #include "sparkpipe/spark_k3_llm_defines.h"
 
 _Static_assert(K3_HIDDEN == SPARK_K3_MODEL_HIDDEN_DIMENSION &&

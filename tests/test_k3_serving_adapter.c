@@ -1,14 +1,10 @@
 #include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/generated_config.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
-#if SPARK_K3_SERVING_TOPOLOGY == 16
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"
-#else
-#define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident.json"
-#endif
 
 #include "tests/test_k3_runner_stub.h"
 
@@ -23,8 +19,8 @@ static int32_t TestK3Check(int32_t condition, const char *what)
 static int32_t TestK3Descriptor(void)
 {
 	const SparkModelServingAdapterInterface *adapter = SparkModelServingAdapterGetInterface();
-	const SparkModelServingAdapterDescriptor *descriptor = &K3ServingDescriptor;
-	uint32_t index, stage_layers = 0u, tiled = 1u;
+	const SparkModelServingAdapterDescriptor *descriptor = SparkStageServingDescriptor();
+	uint32_t index, tiled = 1u;
 	int32_t failures = 0;
 	failures += TestK3Check(adapter != 0 && adapter->descriptor == descriptor,
 		"the adapter interface exports the K3 descriptor");
@@ -38,7 +34,6 @@ static int32_t TestK3Descriptor(void)
 		"the cache block is one KV page of the kernel's slot count");
 	failures += TestK3Check(strcmp(descriptor->driver_program_name, "k3") == 0,
 		"the descriptor names the k3 driver program");
-#if SPARK_K3_SERVING_TOPOLOGY == 16
 	failures += TestK3Check(strcmp(descriptor->adapter_id, "k3-tp16") == 0 &&
 		descriptor->parallel_group_size == 0u && descriptor->stage_count == 16u &&
 		(descriptor->capability_flags &
@@ -56,22 +51,9 @@ static int32_t TestK3Descriptor(void)
 	failures += TestK3Check(tiled != 0u &&
 		descriptor->layer_count == SPARK_K3_MODEL_LAYER_COUNT,
 		"TP16: every rank carries all 93 layers and no residual-bank sideband");
-	return(failures);
-#endif
-	failures += TestK3Check(descriptor->parallel_group_size != 0u &&
-		descriptor->stage_count == SPARK_K3_PP_STAGE_COUNT * descriptor->parallel_group_size,
-		"the ranks are the PP stages times the TP group");
-	for (index = 0u; index < descriptor->stage_count && descriptor->parallel_group_size != 0u; index++)
-	{
-		if ( descriptor->stage_layer_counts[index] !=
-			SPARK_K3_PP_STAGE_LAYERS(index / descriptor->parallel_group_size) )
-			tiled = 0u;
-		if ( index % descriptor->parallel_group_size == 0u )
-			stage_layers += descriptor->stage_layer_counts[index];
-	}
-	failures += TestK3Check(tiled != 0u && stage_layers == SPARK_K3_MODEL_LAYER_COUNT &&
-		descriptor->layer_count == SPARK_K3_MODEL_LAYER_COUNT,
-		"every rank carries its PP stage's layers and the stages tile the model");
+	failures += TestK3Check(descriptor->max_output_token_count == SPARK_STAGE_SERVING_MAX_LANES * SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE &&
+		descriptor->max_active_sequence_count == SPARK_STAGE_SERVING_MAX_LANES,
+		"the runner's chain length holds at every lane count the adapter serves");
 	return(failures);
 }
 
@@ -87,7 +69,7 @@ static int32_t TestK3Deployment(const char *path)
 		"residentd's loader parses the deployment") != 0 )
 		return(1);
 	failures += TestK3Check(SparkModelResidentDeploymentValidateForAdapter(&deployment,
-		&K3ServingDescriptor) == SPARK_STATUS_OK,
+		SparkStageServingDescriptor()) == SPARK_STATUS_OK,
 		"residentd accepts the K3 deployment for the prefix-reusing adapter");
 	failures += TestK3Check(deployment.eos_token_count == 1u &&
 		deployment.eos_token_ids[0] == K3_EOS_TOKEN,
@@ -96,13 +78,13 @@ static int32_t TestK3Deployment(const char *path)
 	zero_pages.runtime_limits.kv_logical_page_capacity = 0u;
 	zero_pages.runtime_limits.kv_physical_page_capacity = 0u;
 	failures += TestK3Check(SparkModelResidentDeploymentValidateForAdapter(&zero_pages,
-		&K3ServingDescriptor) != SPARK_STATUS_OK,
+		SparkStageServingDescriptor()) != SPARK_STATUS_OK,
 		"zero KV page capacities are refused");
 	short_pages = deployment;
 	short_pages.runtime_limits.kv_physical_page_capacity =
 		deployment.runtime_limits.max_active_sequence_count - 1u;
 	failures += TestK3Check(SparkModelResidentDeploymentValidateForAdapter(&short_pages,
-		&K3ServingDescriptor) != SPARK_STATUS_OK,
+		SparkStageServingDescriptor()) != SPARK_STATUS_OK,
 		"fewer physical pages than active sequences are refused");
 	SparkModelResidentDeploymentDestroy(&deployment);
 	return(failures);
@@ -196,9 +178,9 @@ static int32_t TestK3SharedRows(void)
 	return(failures);
 }
 
-static const uint32_t *TestK3Host(const SparkMemoryBuffer *buffer)
+static const uint32_t *TestK3Host(const SparkDeviceBuffer *buffer)
 {
-	return((const uint32_t *)buffer->pointer);
+	return((const uint32_t *)buffer->host);
 }
 
 static int32_t TestK3Grouping(void)
@@ -210,7 +192,7 @@ static int32_t TestK3Grouping(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lanes[2];
 	SparkStatus status = SPARK_STATUS_OK;
-	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+	SparkDeviceBuffer *host[] = { &state.positions_host, &state.context_host,
 		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
 	uint32_t row_slots[8], index, active = 0u;
 	uint64_t row_sequences[8], row_positions[8];
@@ -219,7 +201,7 @@ static int32_t TestK3Grouping(void)
 	state.max_rows = 8u;
 	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
-		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+		status = SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows");
 	if ( TestK3Check(status == SPARK_STATUS_OK, "the grouping buffers allocate") != 0 )
 		return(1);
 	memset(&submission, 0, sizeof(submission));
@@ -301,7 +283,7 @@ static int32_t TestK3Grouping(void)
 			"a decode whose rows are not in lane order gives each slot its own context and each lane its own row");
 	}
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
-		SparkMemoryBufferFree(host[index]);
+		(void)SparkDeviceFree(host[index]);
 	return(failures);
 }
 
@@ -329,7 +311,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	SparkModelServingSubmission submission;
 	SparkModelServingLane lane;
 	SparkStatus status = SPARK_STATUS_OK;
-	SparkMemoryBuffer *host[] = { &state.positions_host, &state.context_host,
+	SparkDeviceBuffer *host[] = { &state.positions_host, &state.context_host,
 		&state.state_host, &state.runs_host, &state.seqslot_host, &state.order_host, &state.target_host };
 	uint32_t index, untouched = 1u;
 	int32_t failures = 0;
@@ -339,7 +321,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	state.max_shared_rows = 8u;
 	state.runner_config.max_active_sequence_count = 4u;
 	for ( index = 0u; status == SPARK_STATUS_OK && index < sizeof(host) / sizeof(host[0]); index++ )
-		status = SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t));
+		status = SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows");
 	if ( TestK3Check(status == SPARK_STATUS_OK, "the verify buffers allocate") != 0 )
 		return(1);
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
@@ -368,7 +350,7 @@ static int32_t TestK3VerifyPublishRefused(void)
 	failures += TestK3Check(status == SPARK_STATUS_INVALID_ARGUMENT && untouched != 0u,
 		"a verify frame with a publishing lane is refused before any row reaches the runner, so no recurrent state is captured ahead of keep_rows");
 	for ( index = 0u; index < sizeof(host) / sizeof(host[0]); index++ )
-		SparkMemoryBufferFree(host[index]);
+		(void)SparkDeviceFree(host[index]);
 	return(failures);
 }
 
@@ -492,7 +474,7 @@ static int32_t TestK3TapStream(void)
 	state.tap_stream = strdup(endpoint);
 	memset(&state.tap_hello, 0x5c, sizeof(state.tap_hello));
 	failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) == 0u && state.tap_stream_down != 0u && state.tap_socket < 0 &&
-		state.tap_retry_ns > StageServingNowNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
+		state.tap_retry_ns > SparkMonotonicNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
 	listener = TestK3Listen(&port);
 	if ( listener >= 0 )
 	{
@@ -520,13 +502,37 @@ static int32_t TestK3TapStream(void)
 	return(failures);
 }
 
+static int32_t TestK3ResetAfterStreamedFailure(void)
+{
+	SparkStageServingState state;
+	SparkModelServingAdapterSnapshot snapshot;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	state.kv.resident_sequence_capacity = 4u;
+	failures += TestK3Check(StageServingReset(&state, 9u) != SPARK_STATUS_INTERNAL_ERROR,
+		"a lane whose streamed prefills all held is not refused a reset for one");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) == 0u,
+		"a healthy lane's snapshot does not report it lane-fatal");
+	state.streamed_failed = 1u;
+	failures += TestK3Check(StageServingReset(&state, 9u) == SPARK_STATUS_INTERNAL_ERROR,
+		"after a streamed prefill left published blocks without KV, a reset is refused, so the rank exits instead of serving them");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) != 0u,
+		"its snapshot reports the lane fatal, which residentd reads after the failed route to exit");
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
-	int32_t failures = TestK3Descriptor();
+	int32_t failures = TestK3Check(SparkDeviceInitialize(0) == SPARK_STATUS_OK, "the device API opens");
+	failures += TestK3Descriptor();
 	failures += TestK3ReleaseValidation();
 	failures += TestK3SharedRows();
 	failures += TestK3Grouping();
 	failures += TestK3VerifyPublishRefused();
+	failures += TestK3ResetAfterStreamedFailure();
 	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )

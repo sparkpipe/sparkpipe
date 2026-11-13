@@ -626,6 +626,49 @@ SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *documen
     return matched_count == member_count ? SPARK_STATUS_OK : SPARK_STATUS_SCHEMA_ERROR;
 }
 
+SparkStatus SparkJsonValidateObjectMembersKnown(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count, int32_t *unknown_key_token_out)
+{
+    int32_t key_token_index;
+
+    if (unknown_key_token_out != 0)
+    {
+        *unknown_key_token_out = -1;
+    }
+    if (!SparkJsonTokenIsType(document, object_token_index, SPARK_JSON_TOKEN_OBJECT) || member_names == 0 || member_count == 0u)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, object_token_index);
+    while (key_token_index >= 0)
+    {
+        int32_t value_token_index;
+        uint32_t member_index;
+
+        value_token_index = SparkJsonFindNextDirectChild(document, object_token_index, key_token_index);
+        if (!SparkJsonTokenIsType(document, key_token_index, SPARK_JSON_TOKEN_STRING) || value_token_index < 0)
+        {
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+        }
+        for (member_index = 0u; member_index < member_count; ++member_index)
+        {
+            if (member_names[member_index] != 0 && SparkJsonStringEquals(document, key_token_index, member_names[member_index]))
+            {
+                break;
+            }
+        }
+        if (member_index == member_count || SparkJsonFindObjectMember(document, object_token_index, member_names[member_index]) != value_token_index)
+        {
+            if (unknown_key_token_out != 0)
+            {
+                *unknown_key_token_out = key_token_index;
+            }
+            SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+        }
+        key_token_index = SparkJsonFindNextDirectChild(document, object_token_index, value_token_index);
+    }
+    return SPARK_STATUS_OK;
+}
+
 uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_t array_token_index)
 {
     if (!SparkJsonTokenIsType(document, array_token_index, SPARK_JSON_TOKEN_ARRAY))
@@ -977,4 +1020,102 @@ SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token
         return SPARK_STATUS_OK;
     }
     SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+}
+
+uint32_t SparkJsonUtf8Sequence(const unsigned char *text, size_t available, uint32_t *valid)
+{
+	unsigned char lead = text[0],low = 0x80u,high = 0xbfu;
+	uint32_t need,index;
+	*valid = 1u;
+	if ( lead < 0x80u )
+		return 1u;
+	need = lead >= 0xc2u && lead <= 0xdfu ? 2u : lead >= 0xe0u && lead <= 0xefu ? 3u : lead >= 0xf0u && lead <= 0xf4u ? 4u : 0u;
+	*valid = 0u;
+	if ( need == 0u )
+		return 1u;
+	if ( lead == 0xe0u )
+		low = 0xa0u;
+	else if ( lead == 0xedu )
+		high = 0x9fu;
+	else if ( lead == 0xf0u )
+		low = 0x90u;
+	else if ( lead == 0xf4u )
+		high = 0x8fu;
+	for (index = 1u; index < need; index++)
+	{
+		if ( index >= available || text[index] < low || text[index] > high )
+			return index;
+		low = 0x80u;
+		high = 0xbfu;
+	}
+	*valid = 1u;
+	return need;
+}
+
+bool SparkJsonAppendEscaped(char *buffer, size_t capacity, size_t *length, const char *text, size_t text_bytes)
+{
+	static const char replacement[] = "\xef\xbf\xbd";
+	static const char hex[] = "0123456789abcdef";
+	size_t i = 0u;
+	while ( i < text_bytes )
+	{
+		const unsigned char c = (unsigned char)text[i];
+		char control[7];
+		const char *escape = 0;
+		size_t escape_bytes;
+		uint32_t step = 1u,valid = 1u;
+		switch ( c )
+		{
+			case '"': escape = "\\\""; break;
+			case '\\': escape = "\\\\"; break;
+			case '\n': escape = "\\n"; break;
+			case '\r': escape = "\\r"; break;
+			case '\t': escape = "\\t"; break;
+			case '\b': escape = "\\b"; break;
+			case '\f': escape = "\\f"; break;
+			default:
+				if ( c < 0x20u )
+				{
+					control[0] = '\\'; control[1] = 'u'; control[2] = '0'; control[3] = '0';
+					control[4] = hex[c >> 4u]; control[5] = hex[c & 0x0fu]; control[6] = '\0';
+					escape = control;
+				}
+				else if ( c >= 0x80u )
+				{
+					step = SparkJsonUtf8Sequence((const unsigned char *)text + i,text_bytes - i,&valid);
+					if ( valid == 0u )
+						escape = replacement;
+				}
+				break;
+		}
+		escape_bytes = escape != 0 ? strlen(escape) : step;
+		if ( *length + escape_bytes + 1u > capacity )
+			return false;
+		memcpy(buffer + *length,escape != 0 ? escape : text + i,escape_bytes);
+		*length += escape_bytes;
+		i += step;
+	}
+	buffer[*length] = '\0';
+	return true;
+}
+
+char *SparkJsonEscapeString(const char *text)
+{
+	size_t bytes,capacity,length = 0u;
+	char *escaped;
+	if ( text == 0 )
+		return 0;
+	bytes = strlen(text);
+	if ( bytes > (SIZE_MAX - 1u) / 6u )
+		return 0;
+	capacity = bytes * 6u + 1u;
+	escaped = (char *)malloc(capacity);
+	if ( escaped == 0 )
+		return 0;
+	if ( !SparkJsonAppendEscaped(escaped,capacity,&length,text,bytes) )
+	{
+		free(escaped);
+		return 0;
+	}
+	return escaped;
 }

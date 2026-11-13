@@ -5,11 +5,13 @@
 
 #include "inference/runner/device_layers.h"
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
+#include "sparkpipe/spark_qwen35_small_geometry.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
 #include "sparkpipe/spark_qwen38_family.h"
 #include "sparkpipe/spark_qwen38_flash_stage_model.h"
+#include "sparkpipe/spark_qwen38_max_stage_model.h"
 
-#define QD_SLICES 48u
+#define QD_SLICES 49u
 #define QD_PLE_WINDOW_POOL 2u
 #define QD_PLE_HISTORY_POOL 3u
 #define QD_DENSE_INDEX_POSITIONS(G) ((G::kIndexBudget / G::kIndexRatio + 1u) * G::kIndexRatio - 1u)
@@ -20,9 +22,10 @@ struct QwenDevice
 	using G = typename P::Geometry;
 	using L = QwenHybridLayout<G>;
 
-	static_assert(G::kTpDegree == 1u, "a device stage is one whole rank");
-	static_assert(!G::kRankHeads, "a device stage holds every head");
-	static_assert(L::kHyper == L::kPle && L::kHyper == G::kMoe, "the device layers cover the plain and the hyper-connection Qwen variants");
+	static_assert(L::kHyper == L::kPle, "the device layers run the n-gram embedding inside the hyper-connection streams");
+	static_assert(G::kTpDegree == 1u || !L::kHyper, "the hyper-connection variant runs on one rank");
+	static_assert(G::kGdnKeyHeads % G::kTpDegree == 0u && G::kGdnValueHeads % G::kTpDegree == 0u, "each rank holds whole gated-delta heads");
+	static_assert(!G::kMoe || G::kExperts % G::kTpDegree == 0u, "each rank holds whole experts");
 
 	struct Hyper
 	{
@@ -130,9 +133,10 @@ struct QwenDevice
 		shape->epsilon = QH_EPSILON;
 		shape->projection = P::kProjection;
 		shape->prenormed_head = L::kHyper ? 1u : 0u;
+		shape->tied_head = G::kTiedHead ? 1u : 0u;
 		memset(delta, 0, sizeof(*delta));
-		delta->key_heads = G::kGdnKeyHeads;
-		delta->value_heads = G::kGdnValueHeads;
+		delta->key_heads = G::kGdnKeyHeads / G::kTpDegree;
+		delta->value_heads = G::kGdnValueHeads / G::kTpDegree;
 		delta->key_dimension = QH_KEY_DIM;
 		delta->value_dimension = QH_VALUE_DIM;
 		delta->conv_taps = QH_CONV;
@@ -144,9 +148,10 @@ struct QwenDevice
 		attention->head_dimension = G::kHeadDim;
 		attention->rope_dimension = G::kRopeDim;
 		attention->rope_theta = G::kRopeTheta;
+		attention->rope_rounding = G::kRopeRoundedTerms ? SPARK_ROPE_ROUNDING_TERMS : SPARK_ROPE_ROUNDING_FP32;
 		attention->epsilon = QH_EPSILON;
 		attention->scale = (float)(1.0 / sqrt((double)G::kHeadDim));
-		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID;
+		attention->output_gate = SPARK_ATTENTION_GATE_SIGMOID_BF16;
 	}
 
 	static uint64_t Max(uint64_t a, uint64_t b)
@@ -183,11 +188,12 @@ struct QwenDevice
 			{ rows * GatedWidth(state) * 2u, &state->delta.gated },
 			{ rows * SparkDeviceAttentionQueryWidth(attention) * 2u, &state->attention.query },
 			{ rows * SparkDeviceAttentionKvWidth(attention) * 2u, &state->attention.key },
-			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads, attention->head_dimension, state->stage.max_positions),
+			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, attention->heads / G::kTpDegree, attention->head_dimension, state->stage.max_positions),
 				&state->attention.records },
 			{ rows * 2u * state->ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * state->ffn * 2u, &state->ffn_scratch.act },
 			{ SparkDeviceGatedDeltaKeepBytes(delta, state->stage.verify_rows, L::kGdnLayers), &state->delta.keep },
+			{ L::kPle ? 0u : SparkDeviceGatedDeltaSnapshotBytes(delta), &state->delta.snapshots },
 			{ state->fp8 != 0u ? Max(Max(2u * (uint64_t)state->ffn, MixWidth(state)), Max(GatedWidth(state), state->ffn)) * hidden * 2u : 0u,
 				&state->stage.dequant },
 			{ residual, &state->residual },
@@ -214,7 +220,9 @@ struct QwenDevice
 			{ ple, &state->ple_gated },
 			{ ple, &state->ple_conv_in },
 			{ ple, &state->ple_conv_out },
-			{ L::kPle ? (uint64_t)state->stage.verify_rows * L::kResidual * 2u : 0u, &state->ple_keep }
+			{ L::kPle ? (uint64_t)state->stage.verify_rows * L::kResidual * 2u : 0u, &state->ple_keep },
+			{ G::kTpDegree > 1u ? rows * SparkDeviceAttentionFusedWidth(attention) / G::kTpDegree * 2u : 0u, &state->attention.qkv_local },
+			{ G::kTpDegree > 1u ? rows * SparkDeviceAttentionFusedWidth(attention) * 2u : 0u, &state->attention.qkv_gathered }
 		};
 		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
 		for ( uint32_t index = 0u; index < count; index++ )
@@ -234,17 +242,19 @@ struct QwenDevice
 		const SparkDeviceStageRecurrentPlan pools[] = { { L::kGdnLayers, SparkDeviceGatedDeltaStateBytes(&state->delta_shape) },
 			{ L::kGdnLayers, SparkDeviceGatedDeltaWindowBytes(&state->delta_shape) },
 			{ 1u, (uint64_t)L::kResidual * SPARK_CONV_SPAN(G::kPleConv, G::kPleDilation) * 2u }, { 1u, L::kPleHistory * sizeof(int32_t) } };
-		const SparkDeviceStageConfigValue config[] = { { "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab_rows", G::kVocab } };
-		const SparkDeviceStageConfigValue hyper[] = { { "experts", G::kExperts }, { "local_experts", G::kExperts }, { "top_k", G::kTopK },
-			{ "moe_inter", G::kMoeInter }, { "hc_streams", G::kStreams }, { "hc_lowrank", G::kHcLowRank }, { "index_heads", G::kIndexHeads },
+		const SparkDeviceStageConfigValue config[] = { { "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab_rows", G::kVocab / G::kTpDegree } };
+		const SparkDeviceStageConfigValue moe[] = { { "experts", G::kExperts }, { "local_experts", G::kLocalExperts }, { "top_k", G::kTopK },
+			{ "moe_inter", G::kMoeInter } };
+		const SparkDeviceStageConfigValue hyper[] = { { "hc_streams", G::kStreams }, { "hc_lowrank", G::kHcLowRank }, { "index_heads", G::kIndexHeads },
 			{ "index_dim", G::kIndexDim }, { "index_budget", G::kIndexBudget }, { "index_ratio", G::kIndexRatio }, { "ple_table_first", 0u } };
+		const SparkDeviceStageConfigValue windows[] = { { "attn_rank_heads", 0u } };
 		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
 		if constexpr ( G::kMoe )
 		{
 			if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK )
 				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks shared_rows");
 			if ( status == SPARK_STATUS_OK )
-				status = SparkDeviceStageExpectConfig(&state->stage, hyper, sizeof(hyper) / sizeof(hyper[0]));
+				status = SparkDeviceStageExpectConfig(&state->stage, moe, sizeof(moe) / sizeof(moe[0]));
 		}
 		else
 		{
@@ -256,6 +266,12 @@ struct QwenDevice
 				state->fp8 = SparkNamedPackEntryLoad(&state->stage.pack, "layers.0.ffn_gate_up", &entry) == SPARK_STATUS_OK && strcmp(entry.kind, "fp8_e4m3") == 0 ? 1u : 0u;
 			}
 		}
+		if constexpr ( L::kHyper )
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDeviceStageExpectConfig(&state->stage, hyper, sizeof(hyper) / sizeof(hyper[0]));
+		if constexpr ( G::kRankHeads && G::kTpDegree > 1u )
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDeviceStageExpectConfig(&state->stage, windows, sizeof(windows) / sizeof(windows[0]));
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageExpectConfig(&state->stage, config, sizeof(config) / sizeof(config[0]));
 		if ( status == SPARK_STATUS_OK )
@@ -264,7 +280,9 @@ struct QwenDevice
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		SparkDeviceAttentionRopePrepare(&state->attention_shape, &state->rope);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		status = SparkDeviceStageGeometry(&state->stage, geometry);
+		geometry->tree_verify = status == SPARK_STATUS_OK && !L::kPle ? 1u : 0u;
+		return status;
 	}
 
 	static void HyperName(char *name, size_t bytes, uint32_t index, const char *prefix, const char *part)
@@ -298,7 +316,7 @@ struct QwenDevice
 		SparkDeviceExpertMatrix *bound)
 	{
 		char scale_name[64];
-		const uint64_t experts = G::kExperts, plane = experts * rows * (columns / SPARK_NVFP4_GROUP);
+		const uint64_t experts = G::kLocalExperts, plane = experts * rows * (columns / SPARK_NVFP4_GROUP);
 		SparkTensor scale;
 		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "nvfp4_e2m1", experts * rows * (columns / 2u), &bound->values);
 		bound->codec = SPARK_WEIGHT_CODEC_NVFP4_E2M1;
@@ -309,7 +327,7 @@ struct QwenDevice
 		{
 			bound->global = SparkTensorSlice(scale, 0u, experts * sizeof(float));
 			bound->scale = SparkTensorSlice(scale, experts * sizeof(float), plane);
-			SparkDeviceStageNoteRouted(&state->stage, bound->values.bytes + scale.bytes, G::kExperts, G::kTopK);
+			SparkDeviceStageNoteRouted(&state->stage, bound->values.bytes + scale.bytes, G::kLocalExperts, G::kTopK);
 		}
 		return status;
 	}
@@ -317,11 +335,7 @@ struct QwenDevice
 	static SparkStatus BindMoe(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Layer *layer)
 	{
 		const uint64_t hidden = G::kHidden, shared = state->shared_rows;
-		SparkStatus status = BindHyper(state, weights, index, "attn_hc_", 1u, &layer->hyper[0]);
-		if ( status == SPARK_STATUS_OK )
-			status = BindHyper(state, weights, index, "mlp_hc_", 1u, &layer->hyper[1]);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "moe_router", "bf16", (uint64_t)G::kExperts * hidden * 2u, &layer->router);
+		SparkStatus status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "moe_router", "bf16", (uint64_t)G::kExperts * hidden * 2u, &layer->router);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "moe_shared_gate", "bf16", hidden * 2u, &layer->shared_gate);
 		if ( status == SPARK_STATUS_OK )
@@ -379,16 +393,25 @@ struct QwenDevice
 	{
 		Layer *layer = &state->layers[index];
 		SparkStatus status;
-		if constexpr ( G::kMoe )
-			status = BindMoe(state, weights, index, layer);
+		if constexpr ( L::kHyper )
+		{
+			status = BindHyper(state, weights, index, "attn_hc_", 1u, &layer->hyper[0]);
+			if ( status == SPARK_STATUS_OK )
+				status = BindHyper(state, weights, index, "mlp_hc_", 1u, &layer->hyper[1]);
+		}
 		else
 		{
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "input_norm", "f32", G::kHidden * 4u, &layer->input_norm);
 			if ( status == SPARK_STATUS_OK )
 				status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "post_norm", "f32", G::kHidden * 4u, &layer->post_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = SparkDeviceFfnBind(&state->stage, weights, index, state->ffn, &layer->ffn);
 		}
+		if constexpr ( G::kMoe )
+		{
+			if ( status == SPARK_STATUS_OK )
+				status = BindMoe(state, weights, index, layer);
+		}
+		else if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceFfnBind(&state->stage, weights, index, state->ffn, &layer->ffn);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( L::Attention(index) )
@@ -437,6 +460,8 @@ struct QwenDevice
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "route overrides are not built for these experts");
 		if ( status == SPARK_STATUS_OK && L::kPle && frame->t.token_ids.bytes == 0u )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the n-gram embedding needs the step's token ids");
+		if ( status == SPARK_STATUS_OK && L::kPle && frame->t.tree != 0u )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED, "the n-gram embedding hashes chains of rows; tree frames are refused");
 		if constexpr ( L::kIndexer )
 			for ( uint32_t row = 0u; row < frame->t.rows && status == SPARK_STATUS_OK; row++ )
 				if ( frame->t.host_positions[row] >= QD_DENSE_INDEX_POSITIONS(G) )
@@ -595,7 +620,7 @@ struct QwenDevice
 	{
 		const uint32_t rows = frame.t.rows, hidden = G::kHidden, shared = state->shared_rows;
 		SparkDeviceOps *ops = state->stage.ops;
-		const SparkDeviceRoutedFfnShape ffn = { G::kExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU, 1u, 0.0f, 0.0f, 0u };
+		const SparkDeviceRoutedFfnShape ffn = { G::kLocalExperts, G::kTopK, G::kMoeInter, SPARK_GATED_SILU, 1u, 0.0f, 0.0f, 0u };
 		SparkRouteParams route;
 		SparkSiluMulParams act;
 		memset(&route, 0, sizeof(route));
@@ -609,6 +634,13 @@ struct QwenDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsRouteTopk(ops, frame.queue, state->router_logits, SparkDeviceStageUnitScale(&state->stage), 0, state->experts.experts,
 				state->experts.weights, &route);
+		if constexpr ( G::kTpDegree > 1u )
+		{
+			route.local_experts = G::kLocalExperts;
+			route.first_expert = state->stage.tp_rank * G::kLocalExperts;
+			if ( status == SPARK_STATUS_OK )
+				status = SparkOpsRouteLocal(ops, frame.queue, state->experts.experts, &route);
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceRoutedFfn(&state->stage, frame.queue, &ffn, rows, &layer.gate, &layer.up, &layer.down, &state->experts, state->normed);
 		if ( status == SPARK_STATUS_OK )
@@ -644,9 +676,7 @@ struct QwenDevice
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
 	{
-		(void)state;
-		(void)frame;
-		return SPARK_STATUS_OK;
+		return SparkDeviceStageAllReduce(&state->stage, frame.queue, state->partial, frame.t.rows);
 	}
 
 	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
@@ -707,6 +737,8 @@ struct QwenDevice
 		if constexpr ( L::kPle )
 			if ( status == SPARK_STATUS_OK && keep.rows != 0u )
 				status = KeepPle(state, (SparkDeviceQueue *)queue, &frame, &keep);
+		if ( status == SPARK_STATUS_OK && step->tree != 0u )
+			status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
 		return status;
 	}
 
@@ -735,7 +767,14 @@ struct QwenDevice
 			0,
 			BindDevice,
 			0,
-			0
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0u,
+			0u
 		};
 		return &interface_table;
 	}
@@ -765,4 +804,62 @@ struct Qwen38FlashDevice
 const SparkStageRunnerModelInterface *SparkQwen38FlashDeviceStageModel(void)
 {
 	return QwenDevice<Qwen38FlashDevice>::Interface();
+}
+
+template<uint32_t TP>
+struct Qwen38MaxDevice
+{
+	using Geometry = Qwen38MaxGeometry<TP>;
+	static constexpr const char *kTag = "sparkpipe_qwen38_max_device";
+	static constexpr const char *kName = "qwen3.8-max";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+template<template<uint32_t> class P>
+static const SparkStageRunnerModelInterface *QwenDeviceAt(uint32_t tp_degree)
+{
+	switch ( tp_degree )
+	{
+	case 1u:
+		return QwenDevice<P<1u>>::Interface();
+	case 2u:
+		return QwenDevice<P<2u>>::Interface();
+	case 4u:
+		return QwenDevice<P<4u>>::Interface();
+	case 8u:
+		return QwenDevice<P<8u>>::Interface();
+	default:
+		return 0;
+	}
+}
+
+const SparkStageRunnerModelInterface *SparkQwen38MaxDeviceStageModelAt(uint32_t tp_degree)
+{
+	return QwenDeviceAt<Qwen38MaxDevice>(tp_degree);
+}
+
+struct Qwen35_4bDevice
+{
+	using Geometry = Qwen35_4bGeometry;
+	static constexpr const char *kTag = "sparkpipe_qwen35_4b_device";
+	static constexpr const char *kName = "qwen3.5-4b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+const SparkStageRunnerModelInterface *SparkQwen35_4bDeviceStageModel(void)
+{
+	return QwenDevice<Qwen35_4bDevice>::Interface();
+}
+
+struct Qwen35_2bDevice
+{
+	using Geometry = Qwen35_2bGeometry;
+	static constexpr const char *kTag = "sparkpipe_qwen35_2b_device";
+	static constexpr const char *kName = "qwen3.5-2b";
+	static constexpr uint32_t kProjection = SPARK_PROJECTION_ROW_TILES;
+};
+
+const SparkStageRunnerModelInterface *SparkQwen35_2bDeviceStageModel(void)
+{
+	return QwenDevice<Qwen35_2bDevice>::Interface();
 }

@@ -7,10 +7,11 @@ fi
 : "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry, or STAGE_RECORD names a deployment/lanes.json record}"
 : "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
-[ -z "${STAGE_EXPERT_POOL_BYTES:-}" ] || { echo "stage_lane: STAGE_EXPERT_POOL_BYTES is gone; weightd sizes the expert pool from the pack, and STAGE_EXPERT_POOL_CAP_BYTES (the record's expert_pool_cap_bytes) is the optional explicit cap" >&2; exit 2; }
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
+STAGE_FIRST_NODE="${STAGE_FIRST_NODE:-0}"
 LANE_TOOL=stage_lane
-LANE_RANKS=16
+LANE_RANKS="$(python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(len(stage_lane.lane_hosts(stage_lane.MODELS['$STAGE_MODEL'], $STAGE_FIRST_NODE)))")"
+LAST_RANK=$((LANE_RANKS - 1))
 . "$HERE/lane_run_log.sh"
 . "$HERE/lane_weights.sh"
 HEX=0123456789abcdef
@@ -18,16 +19,16 @@ SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-${STAGE_MODEL//_/-}-rd$STAGE_LANE"
 model_field() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(stage_lane.MODELS['$STAGE_MODEL']['$1'])"; }
 ADAPTER_FILE="$(model_field adapter)"
-host_of() { echo "spark${HEX:$1:1}"; }
+host_of() { echo "spark${HEX:$((STAGE_FIRST_NODE + $1)):1}"; }
 root_of() { echo "/home/$1/stage-lanes/$STAGE_MODEL/lane$STAGE_LANE/root"; }
-weight_files_of() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(' '.join(stage_lane.rank_weight_files(stage_lane.MODELS['$STAGE_MODEL'], $1)))"; }
+weight_files_of() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(' '.join(stage_lane.rank_weight_files(stage_lane.MODELS['$STAGE_MODEL'], $1, $STAGE_FIRST_NODE)))"; }
 pack_of() { weight_files_of "$1" | cut -d' ' -f1; }
 KV_LABEL="$(model_field kv_label)"
 PIDS=()
 
 join_ranks() {
   local label="$1" rank failed=""
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     wait "${PIDS[$rank]}" || failed="$failed $(host_of "$rank")"
   done
   PIDS=()
@@ -51,9 +52,8 @@ case "\${1:-}" in
     eval "\$(lane_log_prelude $host "\$run_id")" || exit 2
     pack="\$(lane_pack)" || exit 2
     head -c 64 "\$pack.sha256" > packs/pack.sha256.tmp && mv -f packs/pack.sha256.tmp packs/pack.sha256 || exit 2
-    python3 bin/weightd_spine_budget.py "\$pack" > spine_budget.tmp && mv -f spine_budget.tmp spine_budget || exit 2
     systemctl --user reset-failed $UNIT 2>/dev/null
-    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=$STAGE_WEIGHTD_SOCKET -E SPARK_WEIGHTD_LANE=$STAGE_LANE -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 ${STAGE_EXPERT_POOL_CAP_BYTES:+-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=$STAGE_EXPERT_POOL_CAP_BYTES }-E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=\$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
+    systemd-run --user --unit=$UNIT -p MemoryMax=$STAGE_MEMORY_MAX -p MemorySwapMax=0 -p TimeoutStopSec=75 -p LimitMEMLOCK=infinity --working-directory=$root -E LD_LIBRARY_PATH=$root/lib -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c "exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index $rank > \$(lane_log_file "\$run_id") 2>&1" > /dev/null ;;
   ready)
     state="\$(systemctl --user is-active $UNIT)"
     if [ "\$state" = active ] && grep -q 'model_residentd ready' "\$(lane_log_file "\${2:?ready RUN_ID}")" 2>/dev/null; then echo READY
@@ -79,11 +79,12 @@ render() {
     python3 "$HERE/stage_lane.py" --record "$STAGE_RECORD" --output-dir "$1"
     return
   fi
-  python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" \
+  python3 "$HERE/stage_lane.py" --model "$STAGE_MODEL" --lane "$STAGE_LANE" --first-node "$STAGE_FIRST_NODE" \
     --sequences "${STAGE_SEQUENCES:-8}" --rows "${STAGE_ROWS:-1024}" --kv-pages "${STAGE_KV_PAGES:-64}" \
     ${STAGE_KV_PHYSICAL_PAGES_CAP:+--kv-physical-pages-cap "$STAGE_KV_PHYSICAL_PAGES_CAP"} \
     ${STAGE_KV_LOGICAL_PAGES:+--kv-logical-pages "$STAGE_KV_LOGICAL_PAGES"} \
     ${STAGE_STATE_BUDGET_BYTES:+--state-budget-bytes "$STAGE_STATE_BUDGET_BYTES"} \
+    ${STAGE_EXPERT_POOL_CAP_BYTES:+--expert-pool-cap-bytes "$STAGE_EXPERT_POOL_CAP_BYTES"} \
     ${STAGE_TOKENIZER_SHA256:+--tokenizer-sha256 "$STAGE_TOKENIZER_SHA256"} \
     ${STAGE_TOKENIZER_DIR:+--tokenizer-dir "$STAGE_TOKENIZER_DIR"} \
     ${STAGE_SWAP_ENTRY:+--swap-entry} \
@@ -93,8 +94,8 @@ render() {
 
 setup() {
   local generated rank host root pack state busy=""
-  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
-  for rank in $(seq 0 15); do
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
     case "$state" in active|activating|deactivating|reloading|refreshing) busy="$busy $host($state)" ;; esac
@@ -102,20 +103,21 @@ setup() {
   [ -z "$busy" ] || { echo "stage_lane setup: $UNIT is running on:$busy; setup rewrites the lane's pack digest and clears its KV cache, snapshots and links, so stop the lane first (stage_lane.sh stop)" >&2; exit 1; }
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$HERE/weightd_spine_budget.py" "$host:$root/bin/"
+      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$host:$root/bin/"
       scp -q "$STAGE_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/$ADAPTER_FILE"
+      scp -q "$STAGE_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
       scp -q "$STAGE_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
-      $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256 && python3 $root/bin/weightd_spine_budget.py $pack > $root/spine_budget" < /dev/null
-      echo "$host ready spine_budget=$($SSH "$host" cat "$root/spine_budget")"
+      $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256" < /dev/null
+      echo "$host ready"
     ) &
     PIDS[$rank]=$!
   done
@@ -127,7 +129,7 @@ start() {
   local rank host root run_id
   run_id="$(lane_run_id "${STAGE_RUN_ID:-}")" || exit 2
   echo "stage_lane: $STAGE_MODEL run $run_id; rank logs are $(lane_log_file "$run_id") under each lane root"
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     $SSH "$host" "$root/lane.sh start $run_id" < /dev/null &
@@ -137,13 +139,14 @@ start() {
 }
 
 api_setup() {
-  : "${STAGE_API_FIRMWARE:?STAGE_API_FIRMWARE is the hub directory holding the x86 sparkpipe_model_api, sparkpipe_tokenize_prompt and the model adapter library}"
+  : "${STAGE_API_FIRMWARE:?STAGE_API_FIRMWARE is the hub directory holding the x86 sparkpipe_model_api, sparkpipe_tokenize_prompt, the model adapter library and runtime_libs/libsparkpipe_device_cuda.so}"
   local hub="${STAGE_HUB:-rtx5090}" api="${STAGE_MODEL}-kv-api" generated tokenizer_json sha
   tokenizer_json="$(model_field tokenizer_json)"
   generated="$(mktemp -d)"
-  $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib $api/runtime/tokenizer
+  $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib/runtime_libs $api/runtime/tokenizer
     install -m 755 $STAGE_API_FIRMWARE/sparkpipe_model_api $STAGE_API_FIRMWARE/sparkpipe_tokenize_prompt $api/bin/
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
+    install -m 755 $STAGE_API_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so $api/runtime/lib/runtime_libs/
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"
   mkdir -p "$generated/tokenizer"
@@ -164,7 +167,7 @@ api_setup() {
 
 status() {
   local rank host
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     printf '%s %s\n' "$host" "$($SSH "$host" "systemctl --user show $UNIT -p ActiveState --value; tail -1 $(lane_latest_log "$(root_of "$host")") 2>/dev/null | cut -c1-160" | tr '\n' ' ')"
   done
@@ -172,7 +175,7 @@ status() {
 
 stop() {
   local rank host root
-  for rank in $(seq 0 15); do
+  for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     root="$(root_of "$host")"
     $SSH "$host" "if [ -x $root/lane.sh ]; then $root/lane.sh stop; else systemctl --user stop $UNIT 2>/dev/null; ! systemctl --user is-active -q $UNIT; fi" < /dev/null &
@@ -184,7 +187,7 @@ stop() {
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   lane-scripts)
-    for rank in $(seq 0 15); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
+    for rank in $(seq 0 $LAST_RANK); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
   setup) setup ;;
   start) start ;;
   status) status ;;

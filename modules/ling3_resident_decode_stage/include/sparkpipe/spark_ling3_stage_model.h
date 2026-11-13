@@ -65,7 +65,13 @@ struct Ling3Geometry : LingDefaults
 	static const char *ReportTag(void) { return "LING3-STATE"; }
 	static constexpr uint32_t kAttention = LING_ATTENTION_MLA;
 	static constexpr float kNormEpsilon = LG_EPSILON;
+	static constexpr bool kNormRoundFirst = true;
 	static constexpr bool kKdaDoubledBeta = false;
+	static constexpr bool kKdaConvRoundedSum = false;
+	static constexpr bool kKdaNormRoundOnce = true;
+	static constexpr bool kFfnSiluRounded = true;
+	static constexpr bool kExpertWeightAfterDown = true;
+	static constexpr bool kTpPartialsF32 = false;
 };
 #endif
 

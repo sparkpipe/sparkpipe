@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_sampling.h"
@@ -13,12 +14,13 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 4u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 6u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
 #define SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL 0x00000001u
-#define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL)
+#define SPARK_STAGE_RUNNER_FLAG_OWN_PACK 0x00000002u
+#define SPARK_STAGE_RUNNER_KNOWN_FLAGS (SPARK_STAGE_RUNNER_FLAG_TENSOR_PARALLEL | SPARK_STAGE_RUNNER_FLAG_OWN_PACK)
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL 0x00000001u
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_VERIFY 0x00000002u
 #define SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER 0x00000004u
@@ -54,7 +56,7 @@ typedef struct SparkStageRunnerWeights
 	const char *socket_path;
 	char pack_sha256[SPARK_STAGE_RUNNER_DIGEST_HEX + 1u];
 	uint64_t expert_pool_cap_bytes;
-	uint64_t spine_budget_bytes;
+	uint32_t read_only;
 } SparkStageRunnerWeights;
 
 typedef struct SparkStageRunnerStreamedPrefillConfig
@@ -141,6 +143,15 @@ typedef struct SparkStageRunnerDispatch
 	const uint32_t *host_positions;
 	const uint32_t *host_sequence_of_row;
 	const uint32_t *host_state_target;
+	uint32_t tree;
+	const uint32_t *slots;
+	const uint32_t *fork_positions;
+	const uint32_t *slot_offsets;
+	const uint32_t *parent_rows;
+	const uint32_t *state_loads;
+	const uint32_t *state_saves;
+	const uint32_t *host_slots;
+	const uint32_t *host_parent_rows;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv
@@ -169,6 +180,7 @@ typedef struct SparkStageRunnerStats
 	uint64_t completed_count;
 	uint64_t failed_count;
 	uint64_t collective_count;
+	uint32_t lane_fatal;
 } SparkStageRunnerStats;
 
 typedef struct SparkStageRunner
@@ -196,17 +208,22 @@ uint32_t SparkStageRunnerKvLayerCount(const SparkStageRunner *runner);
 SparkStatus SparkStageRunnerAttachKv(SparkStageRunner *runner, const SparkStageRunnerKv *kv);
 uint64_t SparkStageRunnerRecurrentBytes(const SparkStageRunner *runner);
 uint32_t SparkStageRunnerVerifyCapable(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerTreeVerifyCapable(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner);
 uint64_t SparkStageRunnerTakeCaptureNs(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerKeepRows(SparkStageRunner *runner, const uint32_t *kept, uint32_t sequences);
+SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences);
 SparkStatus SparkStageRunnerCheck(SparkStageRunner *runner);
 SparkStatus SparkStageRunnerSetTaps(SparkStageRunner *runner, const SparkStageRunnerTapEntry *entries, uint32_t entry_count, uint32_t capture);
 SparkStatus SparkStageRunnerTapShape(const SparkStageRunner *runner, uint32_t *hidden, uint32_t *total_layers);
 const uint16_t *SparkStageRunnerTapRows(const SparkStageRunner *runner, uint32_t step, uint32_t rows, uint64_t *row_stride_elements);
 uint32_t SparkStageRunnerTapFirstRow(const SparkStageRunner *runner);
-SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream);
+SparkStatus SparkStageRunnerRecurrentCopy(SparkStageRunner *runner, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, SparkDeviceQueue *queue);
 SparkStatus SparkStageRunnerPackIdentity(const SparkStageRunner *runner, uint8_t *digest, uint32_t digest_bytes);
 const void *SparkStageRunnerProbeBuffers(const SparkStageRunner *runner);
 void *SparkStageRunnerModel(const SparkStageRunner *runner);
+SparkDeviceQueue *SparkStageRunnerQueue(const SparkStageRunner *runner);
+uint32_t SparkStageRunnerImplementationFlags(void);
 
 #ifdef __cplusplus
 }

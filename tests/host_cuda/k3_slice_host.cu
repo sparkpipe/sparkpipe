@@ -39,7 +39,7 @@ struct LmHostRecorderFormat
 	}
 };
 #include "tests/host_cuda/lm_host_skinny_recorder.cuh"
-#include "inference/llms/kimi_k3/slice.cuh"
+#include "model-families/k3/source/slice.cuh"
 
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)

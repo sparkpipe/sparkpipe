@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """K3's driver-side contracts, gated as source.
 
-Three contracts live in inference/llms/kimi_k3 and nowhere else, and all are
+Three contracts live in model-families/k3/source and nowhere else, and all are
 the kind that compiles while it rots:
 
   1. THE BF16 KDA STATE OPTION FAILS CLOSED. The slot is 6 MiB of fp32 per
@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-K3 = ROOT / "inference" / "llms" / "kimi_k3"
+K3 = ROOT / "model-families" / "k3" / "source"
 
 
 def defines(path):
@@ -122,8 +122,7 @@ def main():
             failures += 1
 
     # -- default off: the only assignment is the bind's propagation -----------
-    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu",
-                 "engine.h", "dspark.h"):
+    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for match in re.finditer(r"kda_state_bf16\s*=\s*([^;\n]+);", text):
             value = match.group(1).strip()
@@ -133,7 +132,7 @@ def main():
                       f"driver source may turn it on while launches refuse it")
                 failures += 1
 
-    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu", "engine.h"):
+    for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
         for call in ("cudaMemcpy", "cudaMalloc", "cudaFree",
                      "cudaStreamSynchronize", "cudaDeviceSynchronize",

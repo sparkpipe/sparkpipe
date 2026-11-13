@@ -1,11 +1,11 @@
 # Parallel driver debugging
 
-Start with the [multideveloper quickstart](MULTIDEV_QUICKSTART.md) for the current
-controller client, the shared production daemon, lane assignments, lane tiers and
-the performance-evidence rule.
+Lanes, their records and the test lanes beside production are in
+[LANES.md](LANES.md); fleet roles and releases are in
+[FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
 
 This is the shared workflow for every driver lane. Family code owns geometry,
-tensor descriptions and model math. Reuse stage_module_common for ownership,
+tensor descriptions and model math. Reuse the stage module claims for ownership,
 weightd for shared residency, the serving adapter/session lifecycle, the topology
 generator and tp_device_collective. Do not fork these protocols per model.
 
@@ -139,7 +139,7 @@ manifest producer and verify it against the exact accepted pack. Generic byte
 segments are not a substitute for routed-expert IDs.
 
 An enabled weightd attach must return errors for missing identity/daemon,
-rejected pack and failed consumer import. stage_module_common must propagate
+rejected pack and failed consumer import. The stage runner propagates
 them without allocating a direct copy. Explicitly disabled attach remains a
 direct-load request; it is not a recovery path and is not lazy debugging.
 Families with a specialized pack identity use SparkWeightdAttachMappedPack,
@@ -178,24 +178,29 @@ BUSY retry and submission.
 
 ## Collective regression runs
 
-Build `build/mb_doorbell` and
-`build/libhidden_transport_spark_host_rdma_verbs.so` in each synced main checkout
-through a per-node CPU queue job. The benchmark target uses sm_121a and the same
-shared transport library as the runtime. Then set `BENCH_CWD` to the sync result
-and `BENCH_ID` to a unique job ID and run:
+`build/mesh_round_bench` measures the served collective: each rank connects to
+its node's weightd, acquires one mesh lane, creates the device collective on
+that lane exactly as a serving rank does and times graph-captured rounds.
 
 ```sh
-BENCH_ORDINAL_BASE_JUMP=1 tools/mb_run.sh 1 256 7 17 65536
+build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB [PREFETCH]]
 ```
 
-Arguments are sync mode (0 async, 1 sync), iterations, live rows, credits and
-the direct-all-to-all byte threshold (0 selects tree). This example tests seven
-rows, seventeen credits and an ordinal jump during the timed interval. Use
-`BENCH_SKEW_US=500` for rank-8 skew. The wrapper submits all sixteen participants
-to the authoritative queue as one exclusive job; it does not launch detached
-SSH children or decide completion from a readiness log line. Inspect the queue
-receipt and every rank's numerical result. Logs include source and binary SHAs.
-These are transport component measurements, not GLM serving throughput.
+`RANK_MAP` lists the physical mesh rank of each TP rank, comma separated, as a
+stage config's `device_collective.mesh_ranks` does; `START_UNIX_MS` makes every
+rank start its timed interval at the same moment. Run one per rank on a lane no
+serving process holds. `WORK_KIB` puts a memory-bound kernel in front of every
+round: round `r` reads its own `WORK_KIB` window of a private buffer, so a
+launch reads `ROUNDS x WORK_KIB` cold, as a decode step reads its weights.
+With it the result shows how long each rank waits for the slowest one, round
+by round. `PREFETCH` 1 registers each window with the weight prefetch, as a
+decode graph's GEMVs register their weights, so the wait in front of a window
+prefetches it; 0 or absent leaves every read cold. On the sixteen Sparks on
+2026-11-11, `1 1 5120 128 32` (a 5,120-value all-reduce, 128 rounds a
+launch) took 25.8 us a round alone (19.6 waiting for the fifteen peers), 156
+us with `WORK_KIB` 26624 and no prefetch (122 reading, 28 waiting) and 144
+with the prefetch. These are collective component measurements, not serving
+throughput.
 
 ## GLM firmware build for development and PR testing
 

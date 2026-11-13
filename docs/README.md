@@ -26,6 +26,9 @@ current authority.
 - [`MODEL_SUPPORT.md`](MODEL_SUPPORT.md): product model set: checkpoint
   contracts, owner direction, qualification contract.
 - [`MODULE_MAP.md`](MODULE_MAP.md): source ownership boundaries.
+- [`ENVIRONMENT.md`](ENVIRONMENT.md): every environment variable a process
+  reads: the serving path's two-variable handoff, weightd's flag fallbacks,
+  tool variables and DEBUG diagnostics.
 - [`INFERENCE_OS_DESIGN.md`](INFERENCE_OS_DESIGN.md): device-layer memory
   model for hardware independence.
 - [`METAL_BACKEND.md`](METAL_BACKEND.md): kernel launch in the device API,
@@ -67,6 +70,9 @@ current authority.
   consolidation plan.
 - [`T1_REFERENCE_COMPARE.md`](T1_REFERENCE_COMPARE.md): T1 reference-decoder
   comparison contract.
+- [`VARIANT_GATE.md`](VARIANT_GATE.md): how a precision variant is measured
+  against the full-precision lane, what is published and the one thing a
+  variant is refused for.
 - [`SERVING_FUZZ_COVERAGE.md`](SERVING_FUZZ_COVERAGE.md): serving coverage
   map and runtime contract.
 - [`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md): the LiteLLM door.
@@ -79,8 +85,6 @@ current authority.
   gates (quality, parity, prefix, throughput receipts).
 - [`GLM_LAZY_DRIVER_INTEGRATION.md`](GLM_LAZY_DRIVER_INTEGRATION.md): GLM
   expert residency and lazy loading, including the production pin-all mode.
-- [`GLM_REAL_DRIVER_PROBE.md`](GLM_REAL_DRIVER_PROBE.md): single-rank driver
-  probe.
 - [`MIGRATION_GLM5_NEXT_COMMON.md`](MIGRATION_GLM5_NEXT_COMMON.md):
   glm5_next adoption of the common GLM modules.
 
@@ -93,12 +97,14 @@ current authority.
 ## Speculation
 
 - [`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md):
-  speculation seam, source mask, draft bridge, per-family state and
-  direction.
+  speculation as built: the batch engine's draft planning, lookup and draft
+  model sources, the frame cost model, the draft bridge, control, the
+  guarantee and direction.
 - [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub
   (release hub, model APIs, draft farm, drafter store).
-- [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
-  drafters per model, and the PR sequence.
+- [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
+  frames over the production path: node table, slot and position split,
+  ancestor attention, path-form `keep_rows`, composition, phases and gates.
 
 ## Operations and development
 
@@ -108,8 +114,6 @@ current authority.
 - [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
   production fleet guide (hub, fleet-agent, releases, the hub serving
   stack, bootstrap, triage). This is the release and operations procedure.
-- [`MULTIDEV_QUICKSTART.md`](MULTIDEV_QUICKSTART.md): parallel development
-  guide: lanes, tiers, queue, performance-evidence rule, model work rules.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract
   and PR evidence.
 - [`DEVCYCLE.md`](DEVCYCLE.md): queue builds and the shared development
@@ -136,6 +140,12 @@ current authority.
 ## Changing status
 
 - [`../TECHDEBT.md`](../TECHDEBT.md): unfinished implementation work only.
+- [`CODEBASE_AUDIT_2026-11-09.md`](CODEBASE_AUDIT_2026-11-09.md): production
+  codebase audit (DRY, footguns, performance architecture), the target
+  architecture, the order of work and what has landed.
+- [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
+  the mega-PR against the product: what an engineer saves after it, what the
+  site promises that is not built, and what to do first.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
   milestone's exit criterion. It now includes M10 (speculation at B1-B64)
   and M11 (drivers in parallel).

@@ -75,7 +75,7 @@ the partial softmax results with log-sum-exp legs over RoCE.
 
 SparkPipe shards every sequence's MLA latent by context across all 16 ranks:
 each node holds 1/16 of the KV. Each decode step, the K3 dispatch
-(`modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu`)
+(`model-families/k3/source/k3_resident_decode_stage_cuda.cu`)
 chooses one of two exchanges by a cost model:
 
 - **Gather:** gather the keys every rank needs.
@@ -83,14 +83,12 @@ chooses one of two exchanges by a cost model:
   exchange the float partials all-to-all and merge them.
 
 The scatter is the same partial-softmax structure as DCP's LSE legs
-(`K3_COLLECTIVE_MLA_PARTIALS` in `spark_k3_stage_model.cu`). It is what lets
+(`K3_COLLECTIVE_MLA_PARTIALS` in `model-families/k3/source/k3_stage.cuh`). It is what lets
 K3 serve a 1,048,576-token window on a per-node KV pool.
 
 The range-scan and merge kernels that the 2026-09-21 audit landed
-compile-gated (`LmAttentionDecodeRangeKernel` and
-`LmAttentionRangeMergeKernel` in `inference/kernels/attn.cuh`, with
-`K3MlaDecodeRange` and `K3MlaRangeMerge` in `inference/llms/kimi_k3/bind.cu`)
-were never wired. The shard attention replaced them, and they have no caller.
+compile-gated were never wired; the shard attention replaced them and they
+are deleted.
 
 ### MoE padding: not applicable
 

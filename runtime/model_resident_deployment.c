@@ -7,13 +7,13 @@
 
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
-#include "sparkpipe/spark_model_runtime.h"
+#include "sparkpipe/spark_sha256.h"
 
 static const char *const SparkModelResidentDeploymentRootMembers[] =
 {
 	"schema_version","coordinator_rank_index","adapter","driver","transport",
 	"runtime_limits","nodes","tokenizer","weightd","eos_token_ids",
-	"chat_template","draft_server"
+	"chat_template","draft_server","request_inflight_budget_ms"
 };
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_ROOT_REQUIRED_MEMBER_COUNT 7u
 #define SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_OBJECT_MEMBER_COUNT 16u
@@ -469,7 +469,7 @@ static SparkStatus SparkModelResidentDeploymentParseTokenizer(
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentString(document,object,"sha256",&deployment->tokenizer_asset_sha256);
 	if ( status == SPARK_STATUS_OK && (deployment->tokenizer_vocabulary_size == 0u ||
-			!SparkModelRuntimeArtifactSha256IsValid(deployment->tokenizer_asset_sha256)) )
+			!SparkSha256HexIsValid(deployment->tokenizer_asset_sha256)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	deployment->tokenizer_text_prompt_prefix_count = 0u;
 	if ( status == SPARK_STATUS_OK && prefix >= 0 )
@@ -789,7 +789,7 @@ static SparkStatus SparkModelResidentDeploymentValidateStructure(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->max_sequence_positions == 1u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( strcmp(deployment->transport_mode,"host-rdma") != 0 && strcmp(deployment->transport_mode,"gpudirect-rdma") != 0 && strcmp(deployment->transport_mode,"host-staged") != 0 )
+	if ( strcmp(deployment->transport_mode,"host-rdma") != 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( deployment->transport_control_port_base == 0u || deployment->transport_control_port_base > UINT16_MAX - (deployment->node_count - 1u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -915,6 +915,12 @@ SparkStatus SparkModelResidentDeploymentLoad(
 		status = SparkModelResidentDeploymentParseDraftServer(&document,root,deployment);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentParseChatTemplate(&document,root,deployment);
+	if ( status == SPARK_STATUS_OK && SparkModelResidentDeploymentMember(&document,root,"request_inflight_budget_ms") >= 0 )
+	{
+		status = SparkModelResidentDeploymentUnsigned(&document,root,"request_inflight_budget_ms",&deployment->request_inflight_budget_ms);
+		if ( status == SPARK_STATUS_OK && deployment->request_inflight_budget_ms < 1000u )
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentDeploymentObject(&document,root,"runtime_limits",&runtime_object);
 	if ( status == SPARK_STATUS_OK )

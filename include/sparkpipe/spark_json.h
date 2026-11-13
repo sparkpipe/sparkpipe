@@ -44,6 +44,7 @@ SparkStatus SparkJsonLoadFile(const char *path, SparkJsonDocument *document);
 int32_t SparkJsonGetRootToken(const SparkJsonDocument *document);
 int32_t SparkJsonFindObjectMember(const SparkJsonDocument *document, int32_t object_token_index, const char *member_name);
 SparkStatus SparkJsonValidateObjectMembersExact(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count);
+SparkStatus SparkJsonValidateObjectMembersKnown(const SparkJsonDocument *document, int32_t object_token_index, const char *const *member_names, uint32_t member_count, int32_t *unknown_key_token_out);
 uint32_t SparkJsonGetArrayElementCount(const SparkJsonDocument *document, int32_t array_token_index);
 int32_t SparkJsonGetArrayElement(const SparkJsonDocument *document, int32_t array_token_index, uint32_t element_index);
 int32_t SparkJsonGetArrayElementFirst(const SparkJsonDocument *document, int32_t array_token_index);
@@ -56,6 +57,9 @@ SparkStatus SparkJsonGetUInt32(const SparkJsonDocument *document, int32_t token_
 SparkStatus SparkJsonGetUInt64(const SparkJsonDocument *document, int32_t token_index, uint64_t *value);
 SparkStatus SparkJsonGetFloat(const SparkJsonDocument *document, int32_t token_index, float *value);
 SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token_index, bool *value);
+uint32_t SparkJsonUtf8Sequence(const unsigned char *text, size_t available, uint32_t *valid);
+bool SparkJsonAppendEscaped(char *buffer, size_t capacity, size_t *length, const char *text, size_t text_bytes);
+char *SparkJsonEscapeString(const char *text);
 
 #ifdef __cplusplus
 }

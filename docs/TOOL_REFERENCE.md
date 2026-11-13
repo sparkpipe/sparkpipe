@@ -1,7 +1,7 @@
 # Tool reference
 
-This file describes command-line tools under `tools/` and the libraries they
-link. For each tool it gives the purpose, the arguments as the tool's
+This file describes command-line tools under `tools/`, the host turn bench
+under `tests/`, and the libraries they link. For each tool it gives the purpose, the arguments as the tool's
 `main()` parses them, and the meaning of each exit code. Behaviour notes
 describe what the code does, including known gaps.
 
@@ -778,6 +778,186 @@ and the element passes.
 
 ## Other tools
 
+### roofline_meter.py (tools/)
+
+Says where a lane's frame time goes and how far its decode is from the memory
+roofline, from lines the lane already writes. It runs nothing on the lane.
+
+```sh
+tools/roofline_meter.py --api-log API.log [--rank-log RANK.log ...]
+    [--node-gb-per-token GB] [--read-gb-s 243] [--rounds-per-step N] [--label TEXT] [--json]
+```
+
+- From the API log it reads every `batch_step` line (the engine prints one for
+  each frame that carries one sequence): per kind (`prefill`, `single`,
+  `chain`, `verify`) the frames, tokens, tokens per second, rows, service
+  time, host time (wall minus service), the gap since the request's previous
+  frame and the draft wait.
+- From each rank log it reads `STAGE-STEP-TIMING` (the step and its time in
+  collectives: peer wait, source wait, copy and combine), `STAGE-CHAIN-HOST`
+  and `STAGE-WAVE-HOST` (the rank's host time around a chain and a prefill
+  wave), `WD-SPINE-PRIVATE` (the rank's weight bytes) and `STAGE-STEP-ARRIVAL`
+  (when each peer's data lands after the rank starts to wait).
+- With more than one rank log it lists every rank's weight bytes, own work a
+  step (the step without its time in collectives) and peer wait, and names
+  the rank with the most own work: the collectives hold every rank to that
+  rank's pace, so the others' extra wait is its extra work. Give it every
+  rank's log to see an uneven split.
+- It states, per round with `--rounds-per-step` and per step without, when
+  the first, the median and the on-average slowest peer land and when all
+  have, as a range over the rank logs.
+- `--rounds-per-step` is the number of collective rounds one decode step
+  issues, from the model's schedule (two all-reduces a layer for most
+  families); with it the report states the peer wait a round. The timing
+  line's own round counts include prefill waves, so the meter does not use
+  them.
+- `--node-gb-per-token` is what the heaviest node reads for one decode pass:
+  a dense rank's weights without the embedding table (the `WD-SPINE-PRIVATE
+  bytes=` line of its log is an upper bound), or the spine plus the active
+  experts.
+  The floor is that over `--read-gb-s`, which defaults to the measured read
+  rate in `tools/spec_offline/models.json`.
+
+For `single`, `chain` and `verify` it splits a pass into the memory floor,
+collectives (the share of its step that the rank with the most own work
+spends in collectives, applied to the frame's service time), the rank's
+remainder, host and wire, and the gap, and
+states the pass's share of the one-token roofline. When the rank's own work
+is shorter than its floor, its waits prefetched part of the weights, and the
+remainder reads `less N of the floor read during the waits`. A chain counts each step as
+a pass; a verify frame is one pass that yields its kept tokens, so its share
+can exceed 100%. A frame whose gap is over half its service time waited behind
+other work and is left out of the split and counted. The rank windows mix
+every kind of step, so read the split from a log of one kind of traffic when
+the kinds differ much.
+
+Exit codes: 0; 1 when the API log has no `batch_step` line; 2 on a usage
+error. `tests/test_roofline_meter.py` covers it.
+
+### arrival_probe.py (tools/)
+
+Measures how long a short request waits beside a long stream, against an API
+on this host. It is the probe behind the drafter split's numbers
+(`qualification/fleet-gate-20261111/`).
+
+```sh
+tools/arrival_probe.py PORT TAG ROUNDS TOKENS
+```
+
+It runs one greedy stream of `TOKENS` tokens twice (with
+`draft_replay_server.py` behind the API, the first run teaches the drafter
+the stream and the second is drafted), then times a one-token request with a
+prompt of its own thirty times alone, and then sends such requests back to
+back while the stream runs, for `ROUNDS` streams. The arrivals turn
+speculation off for themselves, so they never ask the drafter.
+
+Lines, each starting `probe TAG`: `stream_learn` and `stream_drafted` with the
+drafted run's tok/s; `arrival_alone` and `arrival_during_stream` with n,
+median, mean, 90th percentile and maximum in ms; `stream_with_arrivals` with
+each stream's tokens, seconds and tok/s.
+
+### draft_replay_server.py (tools/)
+
+A DFT3 draft server with no drafter model and no GPU, for gating the batch
+engine's model drafts on a lane that has no drafter. Every draft request
+carries the request's committed tokens. The server keeps, per sampling rule
+(seed, inverse temperature, nucleus, top-k), the longest token stream it has
+been shown. A request whose committed tokens begin a kept stream gets the
+stream's next tokens as one draft chain, at most the request's depth and node
+capacity; any other request gets the anchor alone, which the engine declines
+without backing the request off. A deterministic stream therefore drafts
+perfectly the second time it runs.
+
+```sh
+tools/draft_replay_server.py --port PORT [--host 127.0.0.1] [--delay-ms MS] [--confidence 0.9]
+    [--wrong-every N] [--silent-every N] [--streams 256] [--report-every 64]
+```
+
+Point the API's `draft_server` block at the port (`depth` and `wait_ms` as the
+lane's drafter would have them), run the same requests twice and compare both
+runs with a run that has no draft server: the tokens must be equal, and the
+second run's `batch_speculation` line shows model frames and kept drafts.
+
+- `--delay-ms` holds every reply, to stand in for the drafter's latency.
+- `--wrong-every N` flips the low bit of every Nth draft token, so frames
+  reject drafts.
+- `--silent-every N` leaves every Nth request unanswered until the client
+  closes the connection, so the engine's time limit (the lane's `wait_ms`
+  plus 100 ms) is reached.
+- `--port 0` takes a free port; the first output line,
+  `DRAFT-REPLAY-READY host:port ...`, names it.
+
+It serves one connection at a time, as the drafters do, and prints
+`DRAFT-REPLAY requests= drafted= draft_tokens= unknown= bad= silent= streams=`
+every `--report-every` requests and when a connection closes. A request with
+another magic closes its connection; one whose anchor is not its last
+committed token, or that names no source, is answered with status 1.
+`tests/test_draft_replay_server.py` covers it.
+
+### host_turn_bench.c (tests/)
+
+Measures what the host spends per frame on the serving path, with no GPU. The
+batch engine, the pipeline client and the sixteen resident clients run on the
+bench's thread and drive sixteen `sparkpipe_model_residentd` ranks over
+loopback TCP. Every rank loads `tests/fixtures/host_turn_bench_adapter.c`, a
+parallel-fanout adapter that completes each submission at once, or after
+`FRAME_US` microseconds of sleep, and returns on the last rank the tokens the
+frame asks for: one per lane for a prefill, and a decode chain of up to 8 per
+lane for a decode frame, so a decode frame is not a token. The engine is
+configured as `node/model_api.c` configures it (128 requests, 8 messages per
+rank per progress unless MESSAGES_PER_PROGRESS says otherwise, at most 4 new
+submissions per progress, the default inflight budget). The deployment allows 4 submissions in flight, 16 active
+sequences, 1,024 input rows and a 131,072-token context.
+
+```sh
+make build/host_turn_bench
+build/host_turn_bench decode LANES PROMPT_TOKENS FRAMES FRAME_US [MESSAGES_PER_PROGRESS]
+build/host_turn_bench prefill REQUESTS PROMPT_TOKENS ROUNDS FRAME_US [MESSAGES_PER_PROGRESS]
+```
+
+Run it from the repository root. It writes the deployment, copies of the two
+modules and one log per rank into a new `build/host-turn-bench-XXXXXX` and
+removes that directory when the run succeeds. While the ranks start, the
+engine retries its connection every 20 ms for up to 300 attempts, and each
+refused attempt logs `client_connect_fail` on stderr.
+
+- `decode`: LANES requests (1 to 16), each with its own prompt and an output
+  budget that reaches the context. Once every lane has 64 tokens and 64 more
+  frames have completed, it measures the next FRAMES frames: the decode
+  continuations and the cache publications between them. A lane that finishes
+  inside the window fails the run.
+- `prefill`: ROUNDS rounds of REQUESTS requests (1 to 128), each with its own
+  prompt and one output token, measured from the first submission to the last
+  completion: the prefill waves and the release frames. A round's next
+  submissions go out as soon as its last request completes.
+- PROMPT_TOKENS is 1 to 65,536, FRAME_US 0 to 1,000,000 and
+  MESSAGES_PER_PROGRESS 1 to 64; 1 is the limit
+  `SparkModelPipelineClientRecover` reads with, which leaves messages
+  buffered between progress calls.
+
+Output: one line per run,
+`<scenario> frame_us= frames= prefill= decode= release= publish= continued= tokens= coordinator_us_per_frame= rank_us_per_frame_mean= rank_us_per_frame_max= wall_us_per_frame=`.
+The coordinator figure is the CPU time of the bench's thread per completed
+frame; the rank figures are each residentd process's CPU time (all of its
+threads) per frame, as the mean over the ranks and for the busiest rank; wall
+is the elapsed time per frame. One line per frame kind follows,
+`kind= frames= coordinator_us_per_frame= wall_us_per_frame= bubble_us_per_frame=`.
+It charges the time between two frames finishing on all sixteen ranks to the
+kind of the frame that finished, and the bubble subtracts the slowest rank's
+reported service time. The kind lines are exact only while one frame is in
+flight; when frames overlap, read the totals.
+
+These are host numbers. The ranks share the machine with the coordinator and
+talk over loopback, so their syscalls, copies and wakeups are real and the
+network hop is not. On macOS, timer slack and wakeups inflate the `FRAME_US`
+runs. To compare two revisions, build the bench in each tree, interleave their
+runs and take the median of at least three.
+
+Exit codes: 0 on success; 2 on a usage error, a setup failure (work
+directory, deployment, ranks, connection) or a request that fails or is
+cancelled, which keeps the work directory and prints its path. A run still
+going after 300 seconds is killed by `SIGALRM`, together with its ranks.
+
 ### hy4_wo_fleet_apply.c
 
 Writes a repair payload into byte regions of one deployed hy4 rank GGUF, then
@@ -819,15 +999,14 @@ connects to a running weightd, lazily attaches a pack, then calls
 
 ```sh
 make build/mesh_register_attach_repro
-build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY
+build/mesh_register_attach_repro SOCKET PACK SHA256 REVISION TOPOLOGY [EXPERT_POOL_CAP_BYTES]
 ```
 
-`tools/mesh_attach_repro_run.sh` runs it against the shared weightd socket.
 The make target links the real CUDA runtime only when
 `$(CUDA_HOME)/include/cuda_runtime.h` exists; otherwise it links
 `tests/cuda_stub/cuda_runtime_stub.c` and the registrations never reach CUDA.
 
-Arguments and environment:
+Arguments:
 
 - `SOCKET`: weightd socket path.
 - `PACK`: a regular, non-empty file. `<PACK>.experts` must load with
@@ -835,13 +1014,11 @@ Arguments and environment:
 - `SHA256`: 64 characters, the pack identity digest.
 - `REVISION`: the identity revision.
 - `TOPOLOGY`: 1 to 65535.
-- `SPARK_WEIGHTD_EXPERT_POOL_BYTES`: optional, 1 to 2^40-1, the explicit
-  expert pool cap. The request's `expert_pool_bytes` is
-  `SparkWeightdManifestPoolPlan` of the loaded manifest and that cap (see
-  Pool sizing in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)); a cap
-  the plan refuses exits 2.
-- `SPARK_WEIGHTD_SPINE_BUDGET_BYTES` is parsed but has no effect:
-  `SparkWeightdLazyAttachRequest` has no spine-budget field.
+- `EXPERT_POOL_CAP_BYTES`: optional, 1 to 2^40-1, the explicit expert pool
+  cap. The request's `expert_pool_bytes` is `SparkWeightdManifestPoolPlan` of
+  the loaded manifest and that cap (see Pool sizing in
+  [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)); a cap the plan refuses
+  exits 2.
 
 The identity model is fixed to `glm5_next_stage`. `arena_bytes` is the pack
 file size and `abi_version` is `SPARK_WEIGHTD_IPC_ABI_VERSION`.
@@ -903,63 +1080,3 @@ setup fails.
 `SPARK_WEIGHTD_MESH_REGION_BYTES`, which `include/sparkpipe/spark_weightd.h`
 defines as 268632064, so the probe registers a smaller region than the
 transport does.
-
-### qwen4_flash_nvfp4_smoke.cu
-
-Checks the two NVFP4 MoE launchers the qwen4_flash module calls,
-`SparkLmHostLaunchGroupedScalarLinear` and
-`SparkLmHostLaunchGroupedExpertTileMloop`. It uses one layer's W1, W3 and
-DOWN tensors from a wire-8 rank pack and compares against a host dequant of
-the same bytes.
-
-```sh
-qwen4_flash_nvfp4_smoke <pack.q4fsp> [layer]
-```
-
-`layer` defaults to 1.
-
-Pack parsing:
-
-- Header: directory entry size u32 at byte 12, tensor count u32 at byte 16,
-  directory offset u64 at byte 104.
-- Entries: kind, layer, format, rows, columns, group (u32 at 0 to 20), payload
-  offset and bytes, scale offset and bytes (u64 at 24 to 48).
-- The layer must have format-8 entries of kind 6 (W1), 7 (W3) and 8 (DOWN).
-
-Fixed assumptions: 64 expert groups, hidden size 2560, intermediate size 640,
-8 token rows, SwiGLU limit 7. The tool treats each entry as 64 expert
-segments. Each expert's scale segment is `scale_bytes / 64` bytes: an e4m3
-plane of `rows/64 * cols/16` bytes followed by an 8-byte tail. The launchers
-get scale stride `plane + 8`, and the host dequant reads the F32 weight
-global at tail offset 4. All 8 rows are routed to expert group 5. The device
-buffers hold the full entries, so the launchers stride experts as serving
-does.
-
-Legs:
-
-1. `scalar W1`: grouped-scalar launcher, gate projection.
-2. Decode check: `SparkLmTileDecodeRun<16>` decodes the start of row 0 of W1
-   expert 5 on the device. The tool prints the first 16 device and host
-   values; there is no verdict.
-3. `tile W3`: tile Mloop launcher, up projection, with extra
-   nearest-reference diagnostics.
-4. `tile DOWN`: tile Mloop launcher. Its input is the reference activations:
-   gate and up rounded to bf16, gate clamped above at 7, up clamped to
-   [-7, 7], `silu(gate) * up` rounded to bf16.
-
-A leg passes when, over all its outputs, rel L2 <= 5e-2 and cosine >= 0.999.
-These are the bounds the module's CUDA validation passes to
-`SparkQwen4FlashValReport`. The per-element count (relative error > 0.02 and
-absolute error > 1e-3) is printed but does not decide the verdict, for any
-leg. Lines: `SMOKE <leg>: ... outside tolerance ...`,
-`SMOKE <leg> aggregate: rel_l2=... cosine=...`, then `aggregate PASS` or
-`FAILS the module aggregate contract`, and finally `SMOKE PASS|FAIL`.
-
-Exit codes: 0 when all legs pass; 1 when a leg fails or a launch fails; 2 on
-usage error, unreadable header, directory or segment, or missing entries.
-
-Build with nvcc for `sm_121a`. `sparkpipe/spark_lm_kernels.cuh` is in
-`model-families/common/include` and includes
-`inference/kernels/activation.cuh` (relative to the repository root) and
-`sparkpipe/spark_head_screen.h` (under `include/`), so the repository root,
-`include/` and `model-families/common/include` must all be on the include path.

@@ -114,7 +114,6 @@ static void SparkTestSetEnv(const char *name, const char *value)
 static void SparkTestClearAttachEnv(void)
 {
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_MODEL, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_REVISION, 0);
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
@@ -143,48 +142,12 @@ static void SparkTestConfigurationGates(void)
     SparkTestWritePack(SPARK_TEST_PACK, 11u, 65536ull, digest);
     SparkTestMakeSlice(&slice, 65536ull);
     SparkTestClearAttachEnv();
-
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_UNSUPPORTED);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_OK);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "typo");
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "");
-    assert(SparkWeightdAttachRequested() == SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
-
-    SparkTestClearAttachEnv();
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
         SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
     assert(outcome.client == 0);
     assert(strcmp(reason, "no_socket") == 0);
 
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
-    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, SPARK_WEIGHTD_SHARE_READONLY);
-    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
-        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_UNSUPPORTED);
-    assert(outcome.client == 0);
-    assert(strcmp(reason, "share_unsupported") == 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, "typo");
-    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
-        SPARK_TEST_TIMEOUT_NS, &outcome, reason) == SPARK_STATUS_UNSUPPORTED);
-    assert(outcome.client == 0);
-    assert(strcmp(reason, "share_unsupported") == 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_SHARE_ENV, 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, 0);
-
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET, SPARK_TEST_SOCKET);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, "0");
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
-    assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,
-        SPARK_TEST_TIMEOUT_NS, &outcome, reason) != SPARK_STATUS_OK);
-    assert(outcome.client == 0);
-    assert(strcmp(reason, "attach_config") == 0);
-    SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH, 0);
-
     SparkTestSetEnv(SPARK_WEIGHTD_ATTACH_ENV_SHA256, digest);
     (void)unlink(SPARK_TEST_SOCKET);
     assert(SparkWeightdAttachPack(&slice, SPARK_TEST_PACK,

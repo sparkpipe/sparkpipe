@@ -248,23 +248,37 @@ kernel void spark_gemv_mxfp4_routed(constant SparkGemvParams &p [[buffer(0)]], d
 		out[(ulong)route * p.output_stride + first + lane] = SparkMathFloatToBf16(total);
 }
 
+template <bool F32>
 kernel void spark_gemv_routed(constant SparkGemvParams &p [[buffer(0)]], device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]],
-	device ushort *out [[buffer(3)]], device const uint *experts [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
+	device void *out [[buffer(3)]], device const uint *experts [[buffer(4)]], uint2 group [[threadgroup_position_in_grid]],
 	uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
 	threadgroup float partial[SPARK_GEMV_SIMDS * SPARK_GEMV_OUTPUTS];
 	const uint route = group.y;
+	const ulong at = (ulong)route * p.output_stride;
 	if ( experts[route] == SPARK_ROUTE_SKIP )
 	{
 		if ( simd == 0u && lane < SPARK_GEMV_OUTPUTS && group.x * SPARK_GEMV_OUTPUTS + lane < p.output_dimension )
-			out[(ulong)route * p.output_stride + group.x * SPARK_GEMV_OUTPUTS + lane] = 0u;
+		{
+			if ( F32 )
+				((device float *)out)[at + group.x * SPARK_GEMV_OUTPUTS + lane] = 0.0f;
+			else
+				((device ushort *)out)[at + group.x * SPARK_GEMV_OUTPUTS + lane] = 0u;
+		}
 		return;
 	}
 	device const ushort *row = x + (ulong)(route / p.route_divisor) * p.input_stride;
 	device const ushort *weights = w + (ulong)experts[route] * p.output_dimension * p.input_dimension;
-	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, false>(p, row, weights, out + (ulong)route * p.output_stride, group.x * SPARK_GEMV_OUTPUTS, lane, simd,
-		partial);
+	device void *target = F32 ? (device void *)((device float *)out + at) : (device void *)((device ushort *)out + at);
+	SparkGemvRows<1u, SPARK_GEMV_OUTPUTS, F32>(p, row, weights, target, group.x * SPARK_GEMV_OUTPUTS, lane, simd, partial);
 }
+
+template [[host_name("spark_gemv_routed")]] kernel void spark_gemv_routed<false>(constant SparkGemvParams &p [[buffer(0)]],
+	device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]], device void *out [[buffer(3)]], device const uint *experts [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]);
+template [[host_name("spark_gemv_routed_f32")]] kernel void spark_gemv_routed<true>(constant SparkGemvParams &p [[buffer(0)]],
+	device const ushort *x [[buffer(1)]], device const ushort *w [[buffer(2)]], device void *out [[buffer(3)]], device const uint *experts [[buffer(4)]],
+	uint2 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]]);
 
 #define SPARK_GEMV_INSTANCE(rows, f32, name) \
 	template [[host_name(name)]] kernel void spark_gemv<rows, SPARK_GEMV_ROW_OUTPUTS(rows), f32>(constant SparkGemvParams &p [[buffer(0)]], \

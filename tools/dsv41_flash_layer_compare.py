@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compare a DSV4.1 stage-runner layer dump with a t1r reference fixture.
 
-The runner model writes, on rank 0 when SPARK_DSV41_FLASH_LAYER_DUMP names a
+A DEBUG build of the runner model writes, on rank 0 when SPARK_DSV41_FLASH_LAYER_DUMP names a
 file, one record per layer per step: u32 magic 'DL4D', layer, rows, top_k,
 then the four hyper-connection streams of every row (bf16 [rows][4][5120]),
 the routed expert ids (u32 [rows][top_k]) and route weights (f32). The

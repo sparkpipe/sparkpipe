@@ -84,9 +84,9 @@ tensor sizes before each launch.
 | Kernel | Operation |
 | --- | --- |
 | `spark_gather_rows` | embedding rows by id; an id outside the table raises the device error word |
-| `spark_rmsnorm_residual` | the FP32 sum `s = h + r`, `h = bf16(s)` written back, and `bf16(rmsnorm(s) * w)` with an FP32 gain, the statistic and the normed value taken from the unrounded sum as CUDA's `LmFusedResidualRmsNormKernel` does (the Gemma, Qwen, Ling and GLM 5.2 add-and-norms); or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
-| `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and an output gate read from a fused row: SiLU, or sigmoid when `sigmoid_gate` is set (Qwen 3.8 Flash), as CUDA's `LmHeadRmsNormSiluGateKernel` / `LmHeadRmsNormSigmoidGateKernel`; with `weight_f32` (GLM 5.3 Flash's KDA, `SparkDeviceChannelDeltaShape.norm_f32`) the gain is FP32 and the result is rounded once, `bf16(x r w sigmoid(g))`, as `LmRmsNormSigmoidGateKernel`; `round_norm` rounds the normed product before the gate, `bf16(bf16(x r w) sigmoid(g))` (Kimi K3's KDA) |
-| `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding over the head's first `rope_dimension` dimensions with rotate-half pairs or, `interleaved`, adjacent pairs `(2i, 2i + 1)` (CUDA's `LM_ROPE_INTERLEAVED`), written at `output_head_stride` per head when that is set (latent attention ropes 64 dimensions of each 192-wide query head straight into its 576-wide packed row), a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is; YaRN fills it from `SparkRopePlanBuildYarnInvFrequency`), cos and sin times the rope scale, and either one FP32 rotation rounded once, CUDA's `LmRopePair` (`SparkMathRopeLow`, `SparkMathRopeHigh`), or the publisher's eager rounding (`bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`), which the Gemma family keeps |
+| `spark_rmsnorm_residual` | the residual add rounded first, `h = bf16(h + r)` (`SparkMathResidualSum`), written back, then `bf16(rmsnorm(h) * w)` with an FP32 gain, the statistic and the normed value taken from the rounded sum as the publishers' eager modules and CUDA's `LmFusedResidualRmsNormKernel` do (the Gemma, Qwen, Ling and GLM 5.2 add-and-norms); with `round_first`, `bf16(bf16(rmsnorm(h)) * w)` (`SparkMathNormGainRounded`), the publisher's `weight * x.to(bf16)` that Ling, Laguna, K-EXAONE, Solar Open 2, GLM 5.3, A.X K2, Kimi K3 and Motif 3 use (`SparkDeviceStageShape.norm_round_first`, CUDA's `ROUND_FIRST`); or weightless `bf16(rmsnorm(h))`, which may write in place (Muse Glimmer's embedding norm, CUDA's one-head `LmHeadRmsNormKernel`) |
+| `spark_rmsnorm_gate` | per-head RMSNorm with a BF16 gain and an output gate read from a fused row: SiLU, or sigmoid when `sigmoid_gate` is set (Qwen 3.8 Flash), as CUDA's `LmHeadRmsNormSiluGateKernel` / `LmHeadRmsNormSigmoidGateKernel`; with `weight_f32` (GLM 5.3 Flash's KDA, `SparkDeviceChannelDeltaShape.norm_f32`) the gain is FP32 and the result is rounded once, `bf16(x r w sigmoid(g))`, as `LmRmsNormSigmoidGateKernel`; `round_norm` rounds the normed product before the gate, `bf16(bf16(x r w) sigmoid(g))` (Kimi K3's KDA); `round_once` with a BF16 gain rounds once, `bf16(x r w act(g))` (`SparkMathRmsNormGateOnce`, CUDA's `LmHeadRmsNormSigmoidGateOnceKernel`): FLA's `FusedRMSNormGated` and transformers' `KimiLinearRMSNormGated`, the KDA output norm of Ling 3.0 Flash, Fin and Solar Open 2. Without it the BF16 gain rounds three times, `bf16(bf16(bf16(x r) w) act(g))`, Qwen 3.8's `RMSNormGated` |
+| `spark_head_rmsnorm_rope` | per-head RMSNorm (or, `plain`, no norm at all) with an optional FP32 gain, rounded once or, `round_first` (Laguna's and K-EXAONE's q/k norms, `SparkDeviceAttentionShape.norm_round_first`, CUDA's `LmHeadRmsNormKernel` with `ROUND_FIRST`), the normed value rounded before the gain, and an optional multiplier applied after the norm's BF16 rounding and rounded again (CUDA's `head_multiply`), then rotary embedding over the head's first `rope_dimension` dimensions with rotate-half pairs or, `interleaved`, adjacent pairs `(2i, 2i + 1)` (CUDA's `LM_ROPE_INTERLEAVED`), written at `output_head_stride` per head when that is set (latent attention ropes 64 dimensions of each 192-wide query head straight into its 576-wide packed row), a table of up to 256 inverse frequencies (a zero frequency leaves its pair as it is; YaRN fills it from `SparkRopePlanBuildYarnInvFrequency`), cos and sin times the rope scale, and the publisher's rounding (`rope_rounding`, CUDA's `LmRopeRounding`): one FP32 rotation rounded once (`SparkMathRopeLow`, `SparkMathRopeHigh`; K3, DeepSeek V4.1 Flash, Qwen 3.8 Flash), every term rounded as transformers' `(q * cos) + (rotate_half(q) * sin)` and vLLM's rotary kernel on BF16 tensors do (`SparkMathRopeRoundedTerm`, `bf16(bf16(x bf16(cos)) + bf16(p bf16(sin)))`; the Gemma family with Laguna and K-EXAONE, MiMo, Ling 3 and Fin, Qwen 3.8 27B and Max, GLM 5.3 Full, A.X K2, HY4), or BF16 cos and sin in one FP32 rotation rounded once (Motif 3's `apply_rotary_pos_emb_single(q.float(), ...)`) |
 | `spark_rmsnorm_branches` | sandwich norms: `h = bf16(h + bf16(rms(a) w))`, or with two branches `c = bf16(bf16(rms(a) w1) + bf16(rms(b) w2))` and `h = bf16(h + bf16(rms(c) w))`, then optionally `bf16(h * scalar)` |
 | `spark_rmsnorm_scaled` | `bf16(bf16(bf16(rms(x)) s) c)`: a weightless norm, a per-channel scale and a constant, each rounded (an expert router's input) |
 | `spark_gemv_r{1,2,4,8}`, `spark_gemv_f32_r*` | the GEMV family's projections for one or two rows, its verify frames, and any projection whose inner dimension is not a multiple of the 64-wide row-tile depth (Solar Open 2's 160-wide expert slices at TP8), in passes of up to eight rows: BF16 weights `[N, K]`, 4, 4, 2 and 1 outputs per threadgroup at 1, 2, 4 and 8 rows, the inner dimension split across the threadgroup's four SIMD groups, FP32 accumulation, BF16 or FP32 out |
@@ -95,22 +95,22 @@ tensor sizes before each launch.
 | `spark_gemv_mxfp8_r{1,2,4,8}`, `spark_dequant_mxfp8`, `spark_gemv_mxfp8_routed` | MXFP8 projections and routed experts (HY4: `fp8` E4M3 weights with a `<name>_scale` UE8M0 byte per 32 inputs; `scale_group` 32 in the GEMV parameters and in `SparkDeviceWeight`): the FP8 kernels above with the block scale `SparkMathUe8m0ToFloat(s)`, CUDA's `LmSkinnyFormat<LmMxfp8>` (16-weight chunks, one FMA per chunk with its group's scale); the routed form runs one route per grid row on its expert's rows (`SparkOpsLinearRoutedFp8` with `scale_group` 32, `SPARK_ROUTE_SKIP` writes zeros) |
 | `spark_gemv_fp8_routed` | the same routed form for CUDA's FP8 experts (`LmFp8`, GLM 5.3 Flash): E4M3 weights with an FP32 scale per row and 128 inputs (`SparkOpsLinearRoutedFp8` with `scale_group` 0, `SparkDeviceExpertMatrix.scale_group` 0) |
 | `spark_gemm`, `spark_gemm_f32` | prefill projections on the Metal 4 tensor operations (`matmul2d`, 128 x 64 tiles, FP32 accumulation, relaxed precision off) |
-| `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`); with a dilation the window holds `(taps - 1) dilation + 1` entries and the taps read every `dilation`-th one, oldest first, as `LmCausalConvLaunch`'s dilated form (the n-gram embedding's conv); with `weight_f32` the taps are FP32 and the sum goes to the swish unrounded (Kimi K3's KDA) |
+| `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`); with a dilation the window holds `(taps - 1) dilation + 1` entries and the taps read every `dilation`-th one, oldest first, as `LmCausalConvLaunch`'s dilated form (the n-gram embedding's conv); with `weight_f32` the taps are FP32 and the sum goes to the swish unrounded (Kimi K3's KDA); with `swish_once` BF16 taps' FP32 sum also goes to the swish unrounded, rounded once after it, as FLA's `ShortConvolution` (Ling 3.0 Flash and Fin, CUDA's `LM_CONV_SWISH_ONCE`; Solar Open 2's publisher rounds the sum first) |
 | `spark_gated_delta_prepare`, `spark_channel_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column. The gated form has one decay per value head (Qwen's gated delta); the channel form (`SparkOpsChannelDelta`, the KDA layers of Ling and Solar) has one per key channel, `SparkMathBoundedDecay`: `exp(lower sigmoid(exp(a) (f + b)))` as CUDA's `LmBoundedDecayKernel`, a write strength by `beta_mode`: `sigmoid(beta)` (`LmSigmoidRowsKernel`), doubled `2 bf16(sigmoid(beta))` or rounded `bf16(sigmoid(beta))` (`LmBf16SigmoidRowsKernel`, GLM 5.3 Flash), and the rule multiplies each key row of the state by its channel's decay. With `prenorm_epsilon` the query and key are L2-normalised twice, first `bf16(x rsqrt(sum x^2 + prenorm_epsilon))` and then the usual normalisation of that (Kimi K3) |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table; a position outside its sequence's pages or a page outside the pool raises the device error word (`SparkKvPage`, shared with the attention kernels) |
-| `spark_attention_{decode,prefill_blocks,combine}_d{128,256,512,192v128,576v512}` | causal grouped-query attention over paged KV for 128-, 256- and 512-wide heads, for 192-wide queries and keys with 128-wide values, and for latent attention's 576-wide queries and keys (latent and rope) with 512-wide values (`value_dimension`; a KV slot then holds the keys then the values at their own widths), split into key partitions and merged, with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate, the sigmoid in FP32 (`SPARK_ATTENTION_GATE_SIGMOID`, Qwen's `LmOutputGateKernel`) or rounded to BF16 first (`SPARK_ATTENTION_GATE_SIGMOID_BF16`, Gemma's `GemmaSigmoidGateKernel`), read from the fused projection or from a separate gate projection; and optional per-head sinks (`has_sinks`), which the combine takes into the running maximum and adds as `exp(sink - max)` to the denominator, as CUDA's `LmGqaShardMergeLaunch` does; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions one key per SIMD group, prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the FP32 probability-times-value product in `matmul2d`, the online softmax in FP32 between them); both online softmaxes rescale the running sum and accumulators at every new maximum, as CUDA's GQA softmax does |
+| `spark_attention_{decode,prefill_blocks,combine}_d{128,256,512,192v128,576v512}` | causal grouped-query attention over paged KV for 128-, 256- and 512-wide heads, for 192-wide queries and keys with 128-wide values, and for latent attention's 576-wide queries and keys (latent and rope) with 512-wide values (`value_dimension`; a KV slot then holds the keys then the values at their own widths), decode split into 128-key partitions and merged, prefill in FlashAttention-2's plain forward (one partition; each row's 64-key tiles, aligned from key 0, walked from the diagonal back to the first key through `kernel_math.cuh`'s `SparkMathFlashTiles` and `SparkMathFlashTile`, so the running maximum starts at the diagonal and each tile's weights round to BF16 against the maximum so far), with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate, the sigmoid in FP32 (`SPARK_ATTENTION_GATE_SIGMOID`, `LmOutputGateKernel` as Kimi K3 uses it) or rounded to BF16 first as the publishers' code rounds it (`SPARK_ATTENTION_GATE_SIGMOID_BF16`: Gemma's `GemmaSigmoidGateKernel`, and `LmOutputGateKernel` with `ROUND_GATE` for Qwen 3.8 and the Ling family's GQA), read from the fused projection or from a separate gate projection; and optional per-head sinks (`has_sinks`), which the combine takes into the running maximum and adds as `exp(sink - max)` to the denominator, as CUDA's `LmGqaShardMergeLaunch` does; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions in two passes (the 8 SIMD groups score their strided keys into threadgroup memory, then every group weights against the partition's one maximum), prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the probability-times-value product in `matmul2d`, the online softmax in FP32 between them); prefill's online softmax rescales the running sum and accumulators at every new maximum, as CUDA's GQA softmax does. Both take the publishers' FlashAttention form (`SparkMathAttentionValueWeight`): the weight `exp(s - m)` multiplies the values rounded to BF16, against each 128-key partition's maximum in decode and against the running maximum per 64-key tile in prefill (a BF16 `matmul2d` operand), while the running sum adds the FP32 weight. A key whose score is the maximum keeps weight exactly 1, so every independent maximum leaves one large weight unrounded: decode used to keep a running maximum in each SIMD group, 8 per 128-key partition (48 for a 700-key row), and so rounded systematically less than the references' one maximum per row (Muse's decode positions sat +0.041 past the floor; with one maximum per partition +0.015, and the multi-floor rule goes from +1.11 to -0.15 sigma) |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_silu_clamp_mul`, `spark_silu_gate_limit_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`, `bf16(min(silu(g), L) clamp(u, -L, L))` with `SparkMathClampedGlu`, CUDA's `LmSiluMulLimitKernel`, and `bf16(silu(min(g, L)) clamp(u, -L, L))` with `SparkMathGateLimitedGlu`, CUDA's `LmSiluMulGateLimitKernel`) and the final residual add; `spark_situ_mul` is SiTU, `bf16(SparkMathSitu(g, u, limit, up_limit))`: `limit tanh(g / limit) sigmoid(g)` times `u`, or `up_limit tanh(u / up_limit)` when `up_limit` is set, shared with CUDA's `LmSituMulKernel` (Kimi K3's first layer and shared experts) |
 | `spark_attnres_score`, `spark_attnres_mix` | attention residuals over a bank of block sums and the running partial (at most `SPARK_ATTNRES_MAX_SOURCES`, the partial last): each source's score is the FP32 dot of its RMS-normalised row with the site's BF16 query weight, then a softmax over the sources and the FP32 mix of the sources rounded once (Kimi K3's residual stream) |
 | `spark_silu_mul_routed`, `spark_gelu_tanh_mul_routed`, `spark_silu_clamp_mul_routed`, `spark_silu_gate_limit_mul_routed` | the experts' gated activations with the route weight folded in before the down projection, as CUDA's `LmSwigluPackedKernel`, `LmGeluTanhPackedKernel` and `LingSiluClampPackedKernel` do: `bf16(silu(g) u w)`, `bf16(bf16(gelu_tanh(g)) u w)` with `SparkMathGeluTanhScaleFirst`, `bf16(min(silu(g), L) clamp(u, -L, L) w)`, and `bf16(silu(min(g, L)) clamp(u, -L, L) w)` (`LmSwigluPackedValue` with a finite limit: K-EXAONE's last 16 layers, HY4's experts) |
 | `spark_gemv_mxfp4_routed` | each route's MXFP4 expert on its row (`SparkOpsLinearRoutedMxfp4`): E2M1 weights two per byte, low nibble first, with an E8M0 scale per 32 inputs, in CUDA's skinny arithmetic (`LmSkinnyFormat<LmMxfp4>`): each 32-weight chunk summed by a sequential FMA chain over `SparkMathE2m1ToFloat` in element order, then added to the FP32 accumulator by one FMA with `SparkMathUe8m0ToFloat` of its scale |
-| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised over a pairwise sum tree plus 1e-20 (the order of CUDA's warp top-k) and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`); and the routes' already weighted outputs summed in FP32 in route order and rounded once to BF16, as CUDA's `LmMoeLocalFinalizeKernel` does |
+| `spark_route_topk`, `spark_route_pinned`, `spark_gemv_routed`, `spark_gemv_routed_f32`, `spark_route_combine` | expert routing: softmax over the router's BF16 logits (a NaN or infinite logit raises the device error word), the top k in a total order (NaN below every probability, lowest index on ties) or, pinned, the experts a route override names, renormalised over a pairwise sum tree plus 1e-20 (the order of CUDA's warp top-k) and times a per-expert scale; the GEMV of each route's expert on its row (the same per-row arithmetic as `spark_gemv_r1`, or `spark_gemv_f32_r1` written in FP32); and the routes' already weighted outputs summed in FP32 in route order and rounded once to BF16, as CUDA's `LmMoeLocalFinalizeKernel` does |
 | `spark_head_gate` | a per-head scalar gate on a head's values, `bf16(v g)`: `g = bf16(softplus(z))` (`SparkMathSoftplusGate`, Laguna's `GemmaHeadSoftplusGateKernel`) or `g = bf16(sigmoid(z))` (latent attention's head gate, Ling's `LingHeadGateKernel`); with `gate_head_stride` one gate per element read from a row at a head stride and offset (A.X K2's query gate, `LmHeadSigmoidGateKernel`), and `SPARK_HEAD_GATE_SIGMOID` keeps the sigmoid unrounded, `bf16(v sigmoid(z))` |
 | `spark_rmsnorm_bf16` | `bf16(bf16(rms(x)) w)` with a BF16 gain, the normed value rounded before the gain, as CUDA's `LmBf16RmsNormKernel` (MiMo V2.6) |
 | `spark_route_sigmoid_topk` | sigmoid routing with a selection bias (`noaux_tc`), as CUDA's `LmTopkGroupLimitedKernel`: `sigmoid(z)` per expert; with `groups` above one, each group scored by the sum of its two best `sigmoid(z) + bias` and the best `topk_groups` groups kept (first group on ties); the top k of `sigmoid(z) + bias` in the kept groups picked one at a time (lowest index on ties), weights `sigmoid / (sum + 1e-20)` summed in pick order, or with `tree_sum` in the warp tree of CUDA's `LmTopkWarpKernel` (top 8: `((v0+v4)+(v2+v6))+((v1+v5)+(v3+v7))`, GLM 5.3 Flash), times the routed scale |
-| `spark_silu_rounded_mul`, `spark_route_combine_weighted` | the gated SiLU with the activation rounded first, `bf16(bf16(silu(g)) u)`, as `MimoSwigluKernel`; and the routes' outputs times their weights, `fma(bf16(out), w, total)` in route order and rounded once, as `MimoMoeCombineKernel` |
+| `spark_silu_rounded_mul`, `spark_silu_rounded_clamp_mul`, `spark_route_combine_weighted` | the gated SiLU with the activation rounded first, `bf16(bf16(silu(g)) u)`, as `MimoSwigluKernel`, and with the serving limits, `bf16(min(bf16(silu(g)), L) clamp(u, -L, L))`, as CUDA's `LmSiluRoundedMulLimitKernel` (the Ling family); and the routes' outputs times their weights, `fma(bf16(out), w, total)` in route order and rounded once, as `MimoMoeCombineKernel` (`spark_route_combine_weighted_shared` adds the shared expert before the rounding, as `LmMoeLocalWeightedFinalizeKernel`; `spark_route_combine_weighted_shared_f32` reads FP32 outputs and shared expert and writes the FP32 sum unrounded, a TP rank's FP32 partial) |
 | `spark_gemv_nvfp4_routed` | each route's NVFP4 expert on its row (`SparkOpsLinearRoutedNvfp4`): E2M1 weights two per byte, low nibble first, with a UE4M3 scale per 16 inputs times the expert's FP32 global scale, in CUDA's skinny arithmetic (`LmSkinnyFormat<LmNvfp4>`) and lane layout: 32 lanes per output row (16 when the input has fewer than 1,024 elements, 8 below 512), each lane taking 32-element chunks in ascending order, each chunk two 16-element FMA chains joined as `fma(s_hi, hi, fma(s_lo, lo, acc))`, the lanes summed by CUDA's xor butterfly; bit-for-bit CUDA's decode result |
 | `spark_hyper_expand`, `spark_group_rmsnorm`, `spark_hyper_gate`, `spark_hyper_mix`, `spark_hyper_inject_weights`, `spark_hyper_inject`, `spark_hyper_key_gate`, `spark_hyper_add` | hyper-connection streams (Qwen 3.8 Flash), each CUDA kernel of `hyper_mix.cuh` with its per-element formula from `kernel_math.cuh` (`SparkMathHyperGate`, `SparkMathHyperMixGate` / `SparkMathHyperMixTerm`, `SparkMathHyperInjectWeight`, `SparkMathHyperInjected`, `SparkMathHyperKeyGate`, `SparkMathHyperAddend`): the residual copied into every stream, a per-stream RMS norm with an FP32 gain, the low-rank gate `bf16(v sigmoid(v))` of `v = bf16(x / 4)`, the stream mix `bf16(sum bf16(bf16(sigmoid(u)) n) / 4)` in stream order, the inject weights `bf16(2 bf16(sigmoid(bf16(bf16(n.w) / 4))))`, the injection `bf16(r + bf16(out w))`, the n-gram key gate and the n-gram residual add `bf16(r + bf16(g + c))` |
-| `spark_hc_mix{8,4}`, `spark_hc_post` | HY4's hyper-connections (CUDA's `HyHcPreKernel`, `HyHcPostKernel`): per row, the flattened streams dotted with each mix's coefficients and with themselves in FP32, `pre_s = sigmoid(m_s r scale0 + base_s) + eps` and, with eight mixes, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s}) + eps` (`r = SparkMathRmsScale` of the sum of squares), the branch input `bf16(sum_s pre_s x_s)` in stream order; four mixes collapse the streams before the head; the post update is `bf16(fma(post_s, out, x_s))`, one rounding |
+| `spark_hc_mix{8,4}`, `spark_hc_post` | HY4's hyper-connections (CUDA's `LmHcMix` and `LmHcPostKernel` in `hc.cuh`): per row, the flattened streams dotted with each mix's coefficients and with themselves in FP32, `pre_s = sigmoid(m_s r scale0 + base_s) + eps` and, with eight mixes, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s}) + eps` (`r = SparkMathRmsScale` of the sum of squares), the branch input `bf16(sum_s pre_s x_s)` in stream order; four mixes collapse the streams before the head; the post update is `bf16(fma(post_s, out, x_s))`, one rounding |
 | `spark_hc_site`, `spark_hc_post_comb`, `spark_stream_mean` | GLM 5.3 Flash's Sinkhorn hyper-connections (CUDA's `LmHcSiteKernel` with `Glm5NextHcPolicy`, `LmHcPostBf16Kernel`, `LmStreamMeanRowsKernel`): per row 24 mixes, `pre_s = sigmoid(m_s r scale0 + base_s) + eps`, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s})`, and a 4x4 combination from the other 16, softmax per row from its maximum plus eps, then `iterations` Sinkhorn passes (from the second pass a row normalisation, then a column normalisation, each `+ eps`) with sequential sums; the branch input `bf16(sum_s pre_s x_s)`; the post update `bf16(bf16(bf16(P) out) + bf16(sum_s fma(bf16(C_st), x_s)))` per stream `t`; `spark_stream_mean` collapses the streams as `bf16(sum_s x_s / 4)` before the head |
 | `spark_sigmoid_gate_rows`, `spark_route_combine_shared` | the shared expert's gate, `bf16(v sigmoid(bf16 logit))` per row, as `QwenHybridSigmoidGateRowsKernel`; and the routes' outputs summed in FP32 in pick order with the shared expert's row added last, rounded once, as `LmMoeLocalFinalizeKernel` |
 | `spark_ngram_hash`, `spark_ngram_gather_fp8`, `spark_ngram_history` | the n-gram embedding's ids, rows and carried tokens, as `LmNgramHashKernel`, `LmNgramGatherScaledKernel` and `LmNgramHistoryKernel`: each row's current and previous tokens (from the step, else the sequence's history), blocked from the first end-of-text token on, hashed by an int64 rolling XOR of token times multiplier with C's remainder per head; `bf16(e4m3 x scale)` table rows; the last tokens kept on a committed step |
@@ -118,7 +118,7 @@ tensor sizes before each launch.
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_block_qdq` | an activation's quantise-dequantise round trip in place or into another buffer, one block per thread, as DeepSeek V4.1 Flash's CUDA kernels do before every FP8 or FP4 consumer: FP8 per 32 values with the power-of-two scale `SparkMathFp8QdqScale` (`2^ceil(log2(amax / 448))` from the FP32 product's bits, amax floored at 1e-4), FP4 per 16 with an E4M3 scale `SparkMathFp4QdqScale` (`e4m3(amax / 6)`, amax floored at `6 * 2^-9`, the compressed keys), and FP4 per 32 with a power-of-two scale; each value `bf16(round(clamp(x / s)) s)` onto the E4M3 or E2M1 grid, ties to even (`SparkMathRoundE4m3`, `SparkMathRoundE2m1`) |
 | `spark_route_sqrt_softplus_topk` | `spark_route_sigmoid_topk` with the score `sqrt(softplus(z))` (`SparkMathSqrtSoftplus`, CUDA's `LM_TOPK_SCORE_SQRT_SOFTPLUS`), selected by `SparkRouteParams.score` |
-| `spark_hc_site_lagged`, `spark_hc_post_comb_f32`, `spark_hc_collapse` | DeepSeek V4.1 Flash's hyper-connections (CUDA's `D41HcSinkhornRowsKernel`, `D41HcPostRowsKernel`, `D41HcPreRowsKernel`): `spark_hc_site`'s mixes, but the branch input collapses the streams with the pre weights the previous site computed (a per-row FP32 buffer the kernel reads and then overwrites with its own); the post update in FP32 with one rounding, `bf16(fma(P_t, out, sum_s C_st x_s))`; the head input `bf16(sum_s pre_s x_s)` |
+| `spark_hc_site_lagged`, `spark_hc_post_comb_f32`, `spark_hc_collapse` | DeepSeek V4.1 Flash's hyper-connections (CUDA's `LmHcSinkhornMixes`, `LmHcPostF32SourceMajorKernel` and `LmHcCollapseKernel` in `hc.cuh`): `spark_hc_site`'s mixes, but the branch input collapses the streams with the pre weights the previous site computed (a per-row FP32 buffer the kernel reads and then overwrites with its own); the post update in FP32 with one rounding, `bf16(fma(P_t, out, sum_s C_st x_s))`; the head input `bf16(sum_s pre_s x_s)` |
 | `spark_stream_key_gate` | a value added to every stream through a signed square-root gate (DeepSeek's engram, CUDA's `SparkDsv41FlashEngramGateKernel`): per stream `d = (h . (q k) key) rsqrt(mean h^2 + e) rsqrt(mean key^2 + e) / sqrt(H)`, `g = sigmoid(copysign(sqrt(max(|d|, 1e-6)), d))` (`SparkMathSignedSqrtGate`), `h = bf16(h + g v)` |
 | `spark_kv_compress`, `spark_kv_compress_save`, `spark_compressed_positions` | the compressed-key pool's input: a row whose position closes a group of `ratio` (one or two) pools its FP32 projections softmax-gated over the group (`SparkMathSoftmaxPool2`, CUDA's `D41CompressorRowsKernel`), the group's earlier row taken from the step or from the sequence's carried FP32 state, which a committed step's last open row saves; and per row the store index (or `SPARK_KV_SKIP`), the group's first position for its rope and the last compressed key it sees |
 | `spark_kv_store_paged_skip`, `spark_attention_decode_extra_d512`, `spark_attention_combine_extra_d512` | the KV store that leaves a row whose position is `SPARK_KV_SKIP`; and 512-wide attention over two key ranges in one softmax: the window of the layer's own pages and a second paged range (`SparkOpsAttentionExtra`: the compressed keys up to each row's own last key), each decoded into its own partitions of one record buffer (`partition_base`), merged with the sinks by the combine (`extra_partitions`) |
@@ -144,13 +144,22 @@ bf16 conversion and rounding, the scaled sigmoid with sigmoid and SiLU as
 its cases, softplus, the head-gate softplus (`SparkMathSoftplusGate`), the
 gated-delta decay, the bounded per-channel decay of the KDA layers
 (`SparkMathBoundedDecay`), the clamped GLU (`SparkMathClampedGlu`), the tanh
-GeLU, the softcap, the RMS scale and the rotary rotation
+GeLU, the softcap, the RMS scale, the residual add before a norm
+(`SparkMathResidualSum`, the sum rounded to BF16 as the publishers' eager
+`residual + hidden_states` rounds it), the gain after a rounded norm
+(`SparkMathNormGainRounded`, the publishers' `weight * x.to(bf16)`) and the
+rotary rotation
 (`SparkMathRopeCos`, `SparkMathRopeSin`, `SparkMathRopeLow`,
-`SparkMathRopeHigh`).
+`SparkMathRopeHigh`, and `SparkMathRopeRoundedTerm` for the publishers that
+round every term).
 The experts' tanh GeLU is `SparkMathGeluTanhScaleFirst`, which multiplies
 `0.044715 g g g` from the left as CUDA's expert kernels always have; the
-dense GeLU cubes first. Both backends use the same two, so the choice
-between them is made in one place.
+dense GeLU cubes first, as PyTorch's does. Both backends use the same two,
+so the choice between them is made in one place. The two give the same BF16
+GeLU for every BF16 input: in FP32 with NumPy's tanh, the inner argument
+differs by one FP32 ulp for 260 of the 34,048 inputs below 64 in magnitude,
+and none of those moves the rounded output. CUDA's expert kernels keep their
+text.
 Each is an inline function that the CUDA kernels (through `dtype.cuh`), the
 Metal kernels (through `common.metal`) and the host CUDA shim of the host
 tests include. A formula is defined once, so a change to it reaches both
@@ -218,6 +227,86 @@ The model interface is used with these meanings on a device backend:
 - `round` is the collective of a tensor-parallel rank (below). A TP1 runner
   never sees one: `SparkDeviceStageAllReduce` returns at once on one rank.
 
+## Serving through the common stack
+
+A Studio serves through the same processes and code as the fleet: the model
+API and batch engine, the resident daemon, the stage serving adapter
+(`inference/runner/stage_serving_adapter.c`) and the KV binding
+(`runtime/stage_kv_binding.c`) with the prefix cache, page cache and snapshot
+tiers. Nothing in that path is written twice. What differs per backend lies
+below the stage-runner API (`include/sparkpipe/spark_stage_runner.h`) and the
+device API:
+
+- **The runner.** The stage-runner API has two implementations, chosen at
+  link time per target: the CUDA runner (`inference/runner/stage_runner.cu`)
+  and the device runner, which implements it over `SparkDeviceStageRunner`.
+  A dispatch runs as one or more runner steps: prefill and decode rows,
+  decode chains (each step's sampled token feeds the next) and verify frames
+  (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
+  runner's queue (`SparkStageRunnerQueue`) through the device API instead of
+  on a CUDA stream; the CUDA runner adopts its execution stream as that queue
+  (`SparkDeviceQueueAdopt`).
+- **Memory.** The KV binding allocates its page table, staging pages and
+  recurrent-state buffers with the device API and copies with it. Before it
+  loads its configuration, the adapter reads the flags the linked runner
+  always sets (`SparkStageRunnerImplementationFlags`). The CUDA runner sets
+  none: the adapter takes weightd's attach environment, and the KV pool is
+  weightd's, adopted into the device API (`SparkDeviceAdopt`), with the
+  shared prefix window, the seal a restarted engine reattaches, and the
+  thread that grows and shrinks the pool. The device runner sets
+  `SPARK_STAGE_RUNNER_FLAG_OWN_PACK`: the adapter reads no weightd
+  environment, refuses `streamed_prefill` and `device_collective`, and the
+  KV pool is one `DEVICE_PRIVATE` buffer at the full physical page count
+  (`SPARK_STAGE_KV_POOL_SOURCE_DEVICE`), with no shared window, no reattach
+  and no resizing; a prefix outlives a restart through the snapshot store.
+  Either way the KV layout takes its pack identity from
+  `SparkStageRunnerPackIdentity`. The runner reads the binding's pool and
+  page table through `attach_kv`, so pages are shared between sequences with
+  copy-on-write, and a resumed sequence's recurrent state is restored into
+  its slot before its first row.
+- **Sampling.** Distribution rows are sampled on the device by
+  `spark_sample_rows`, the CUDA sampler's algorithm (`inference/kernels/sample.cuh`)
+  with its formulas from `inference/kernels/kernel_math.cuh`: the 64-bit key
+  order, top-k and top-p by radix select, the fixed-point mass and Gumbel-max
+  with the hashed noise. Metal has no 64-bit atomic add, so a mass is added
+  as two 32-bit words with an exact carry, and no double, so the top-p target
+  reproduces CUDA's double product (rounded to 53 bits, then truncated) in
+  integers. A seed and position pick the same token on both backends except
+  where the two GPUs' `exp` or `log` round a mass or the noise differently.
+
+A request therefore resumes from the longest prefix the cache holds, on a
+Studio as on the fleet, and computes only the rest.
+
+**Build.** `make build/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib`
+links the 27B glue (`QWEN38_27B_DEVICE_STAGE`), the stage serving adapter,
+the device serving runner (`inference/runner/device_serving_runner.c`), the
+KV binding, its copier, the claims and the cache with the device runner and
+the Qwen 3.8 device stage, against the Metal device library only. The
+serving path's calls into weightd's KV pool and lane client and into the
+CUDA mesh are CUDA-host services; a host that runs no weightd links
+`runtime/spark_weightd_absent.c` and
+`ring/transport/tp_device_collective_absent.c`, which answer each call
+`SPARK_STATUS_UNSUPPORTED`, as the host device backend refuses what it
+cannot do. The adapter never reaches them there: a runner that maps its own
+pack takes the device pool and refuses `device_collective`. A deployment
+root holds the adapter in `lib/` and the device library with
+`sparkpipe_kernels.metallib` in `lib/runtime_libs/`; the deployment names
+no weightd and no chat template, since the chat layer renders prompts and
+sends token ids. Off a Mac the target prints SKIP, and the CUDA compile gate
+(`tools/cuda13_sm121a_compile_gate.sh`) leaves every `*_METAL_SERVING_ADAPTER`
+out of the adapters it builds for sm_121a.
+
+**Proven** on one M5 Ultra
+([receipt](../qualification/metal/qwen38_27b/serving-c671eccab/RECEIPT.json),
+`tools/serving_greedy_check.py`): through `sparkpipe_model_api` and
+`sparkpipe_model_residentd`, greedy tokens equal `metal_stage_run`'s token
+for token when both split the prefill alike (one of four prompts sits on a
+0.019-nat tie that a different split decides). A continuation from a cached
+prefix equals the uninterrupted run (I27), prompts resume from the snapshot
+store after both processes restart, a seed repeats its draw, and concurrent
+requests equal the same requests alone. One sequence decodes 18.1 tokens a
+second.
+
 ## Tensor parallel ranks
 
 A runner opened with `tp_degree` N > 1 is one rank of N. It reads its own
@@ -239,7 +328,13 @@ through `round`, with the operations and meanings of
   rounding to BF16 (`SparkMathBf16ToFloat`, `SparkMathFloatToBf16`), so a
   reduction does not depend on the transport. ALL_GATHER and ALL_TO_ALL land
   in the destination directly; REDUCE_SCATTER sums the rank's segment;
-  PAIR_GATHER is refused.
+  PAIR_GATHER is refused. ALL_REDUCE_SUM_F32 exchanges FP32 lanes, twice the
+  bytes, and `spark_rank_sum_f32` sums them the same way into BF16 rows
+  (`SparkDeviceStageAllReduceF32`, which on one rank only rounds): a model
+  whose geometry sets `kTpPartialsF32` writes its partials in FP32
+  (`output_f32` in the attention, KDA and experts shapes,
+  `SparkDeviceGatedFfnF32`), so each rank's partial is not rounded before
+  the sum.
 - Attention is head-parallel. The packers split the fused QKV rows evenly
   over the ranks, not by head, so each rank projects its rows, the ranks
   all-gather them (`SparkDeviceStageGatherRows`) and every rank stores keys and
@@ -387,6 +482,38 @@ Between 3 and 16 rows the FP8 projection loops the GEMV in passes of eight
 rows, which beats BF16 up to B4 but trails its tensor-operation row tiles at
 B16 (TECHDEBT).
 
+The same backend places Qwen3.5-4B and Qwen3.5-2B, the same
+`Qwen3_5ForConditionalGeneration` hybrid at smaller sizes
+(`model-families/qwen38/include/sparkpipe/spark_qwen35_small_geometry.h`):
+- 32 and 24 layers of 2,560 and 2,048;
+- 32 and 16 gated-delta value heads over the same 16 key heads;
+- 16 and 8 attention heads over 4 and 2 KV heads;
+- SwiGLU FFNs of 9,216 and 6,144;
+- the head tied to the embedding table (the stage shape's `tied_head`, as for
+  Gemma).
+
+`tools/qwen38_27b_tp16_pack.py` reads the geometry from the checkpoint's
+`config.json`. It refuses a checkpoint whose fixed dimensions differ from the
+stages' (gated-delta heads of 128, a convolution of 4, attention heads of 256
+with 64 rotary dimensions at base 10^7, epsilon 10^-6). For a tied checkpoint
+it writes no `head`, and `--name qwen35_4b` names the pack.
+`tools/qwen38_27b_reference.c` reads the same geometry, checks the same fixed
+dimensions, and takes a tied head from the embedding.
+
+The small checkpoints store the gated-delta `A_log` and the gated norm weight
+in F32, where the 27B's are BF16. The publisher's `Qwen3_5RMSNormGated`
+multiplies its weight with the BF16-rounded normed values, and
+`modeling_qwen3_5.py` keeps no module in FP32. So the publisher's `bfloat16`
+load rounds the weight to BF16, and the packer (`bf16_rounded`) and the
+reference round it to nearest even the same way. `A_log`'s F32 values are all
+BF16 values, so it is exact either way.
+
+Their tokenizers have the 27B's 248,044-token base vocabulary but not its
+seven audio and TTS tokens (ids 248,070 to 248,076), so `metal_stage_run`
+gives them an output vocabulary of 248,070 against the 27B's 248,077. Text
+tokenizes the same, so `tools/metal_gates.sh qwen3.5-4b` and `qwen3.5-2b` run
+on the 27B's gate prompts.
+
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
 full attention (16 query and 2 KV heads of 512, keys shared as values, rotary
@@ -522,6 +649,30 @@ overwritten when the sequence reaches them again.
   the 48 gated-delta layers. The attention layers keep nothing, since their
   KV rows are already in place.
 
+A tree frame (`docs/TREE_VERIFICATION_DESIGN.md`) is a verify step with
+`SparkDeviceStageRunnerBatch.parent_rows`: one sequence, rows at the
+anchor's position plus their depth, the trunk first and each branch's rows
+consecutively. The runner builds the layout
+(`SparkSpeculationTreeLayoutBuild`, grain 1) and writes six more shared
+tables: the storage slots, the fork positions and slot offsets that map a
+row's semantic keys to slots, the parents, and the delta-rule state loads
+and saves. `spark_kv_store_paged` stores at the slots;
+`spark_attention_decode` reads key q at slot q below the row's fork position
+and at q plus its offset above it, so a tree row attends exactly the keys
+of its own root path and is bitwise the row of that path verified as a
+chain; `spark_causal_conv_silu` builds a row's taps from its parent chain
+and the committed window; `spark_gated_delta_rule` loads a branch's first
+row from the snapshot its fork saved (eight snapshots in the stage's
+scratch). A model declares the mode with the geometry's `tree_verify`;
+Qwen3.8-27B does, the n-gram variant does not. After the step
+`SparkDeviceStageRunnerKeepPath(runner, path_rows, path_begin, sequences)`
+replays the accepted path through the recurrent layers and
+`SparkDeviceStageKeepRelocate` moves the kept branch slots to the trunk
+positions with `spark_kv_move_paged`, so the lane continues as a chain.
+`metal_stage_run --mode spec` composes trees from the lookup index's ranked
+matches (`--tree-branches`, default 2) and reports `tree_frames`,
+`branches` and `accepted_off_trunk` per prompt.
+
 Drafts come from the request's own context, as in the CUDA serving path:
 `metal_stage_run --mode spec` indexes the prompt and the generated
 tokens with the common lookup index (`src/spark_speculation_lookup_draft.c`,
@@ -559,6 +710,35 @@ partitions and the block prefill attention (FP32 scores, FP32
 probabilities times BF16 values with FP32 accumulation on the tensor
 operations) only reorder FP32 sums; every value in the table above is
 rounded where it was before.
+
+Prefill attention follows FlashAttention-2's plain forward, the form the
+user chose for the publishers' attention (2026-11-07). FA2 tiles a row's
+keys at 64 for causal head size 128 on every GPU class (kBlockN in
+`run_mha_fwd_hdim128`: sm80 and sm90 launch 128 x 64, sm86 and sm89 64 x
+64) and walks the tiles from the diagonal back to the first key; the BF16
+rounding of each tile's weights depends on the running maximum at that
+tile, so the walk is part of the form. FA2 runs that one unsplit kernel
+whenever the launch fills the GPU (`flash_api.cpp`'s
+`num_splits_heuristic`: batch x heads x ceil(rows / 64) at least 0.8 x 2 x
+the SM count), which every gate prefill chunk does; smaller launches split
+the keys into 128-key blocks by the GPU's SM count. Metal walked
+its 64-key tiles forward and split every row longer than 1,024 keys into
+partitions. It now walks back, and takes FA2's rule for when to split:
+`OpsAttentionFillsDevice` counts the launch's query blocks (each
+sequence's rows in `SPARK_ATTENTION_BLOCK_ROWS` blocks) times its heads,
+and at 0.8 x 2 x the GPU's core count or more (`compute_units`, read from
+the device at `SparkDeviceOpsOpen`; the M5 Ultra has 64) prefill runs as
+one partition; below it the keys split into 1,024-key partitions, each
+walked back, which `spark_attention_combine` merges. The choice depends on
+the launch's shape and the device alone. Solar's gate prefill chunks
+(1,024 rows, 8 heads per rank) are 256 blocks and run whole; only a
+chunk of fewer than 385 rows splits, as design's 59-row tail does, and
+FA2 would split it too. `test_metal_kernels` models both sides (the
+forward-walking kernel fails three of its prefill cases). The references'
+flash form (`tools/reference_flash.py`) walks the same way, whole. Decode keeps its 128-key
+partitions: FA2's KV-cache path, like its small prefill launches, uses
+128-key blocks split by the GPU's SM count, so it has no single form to
+follow.
 
 The delta-rule state, the L2-normalised query and key, the decay and write
 strength, the attention scores and softmax stay FP32. Rotary angles are
@@ -624,10 +804,35 @@ the error a GPU's has (`tools/reference_device_error.py`: on the M5 Ultra
 under `-fno-fast-math`, exp is off by a relative 1.64e-7 mean and 4.35e-7
 standard deviation, about 18 times FP32 rounding, and tanh by an absolute
 3.7e-8; the error is a fixed function of the input, drawn from a hash of its
-bits). The KL divergences among A, B and H are the floors: FP32
-reduction-order noise plus the transcendental noise any GPU adds, under BF16
-rounding. Every reference (the Python ones too) computes A, B and H by
-default.
+bits), and every matrix product carrying a GPU matrix unit's accumulation
+error. The KL divergences among A, B and H are the floors: FP32
+reduction-order noise plus the transcendental and accumulation noise any GPU
+adds, under BF16 rounding. Every reference (the Python ones too) computes A,
+B and H by default.
+
+The accumulation error is the M5 Ultra's. Its MPP matmul, which `spark_gemm`
+runs for every prefill projection of more than 64 rows, keeps one FP32
+accumulator for the whole inner dimension and adds four products to it at a
+time. Against exact sums, on random bf16 operands with K = 4,096, its error
+is 1.21e-8 of the summed absolute products (rms), unbiased, and it flips 0.031%
+of the bf16-rounded outputs; the hub's BLAS is at 3.28e-9 and 0.015%, so the
+references alone sit closer to each other than any GPU sits to them. An
+emulated FP32 chain of four-product tree sums reproduces the MPP numbers.
+Accumulating 512-wide blocks into a fresh partial sum (the form
+`spark_gemm_fp8_blocks` already uses) brings the GEMM to BLAS's error, but at
+66 TFLOPS against 94 on the M5 Ultra, and Solar's gate excess only fell from
+0.026 to 0.016. H therefore models the chain instead
+(`reference_device_error.accumulated`): each product gains a normal draw whose
+variance is 0.11 u^2 (u = 2^-24) times the chain's expected sum of squared
+running sums, computed per 1,024-wide chunk from the chunk's partial sum and
+its sum of squared products. 0.11 matches the M5 Ultra's bf16 flip rate and
+mean error, in bf16 steps, on the random operands and on four of Solar Open 2's
+projections (layers 1, 4 and 24, flips within 15% and mean error within 10%).
+A chain over the whole inner dimension is the longest a GPU needs; CUDA's
+k16 MMA steps, split-K and tensor-parallel shards all accumulate less, so the
+allowance covers them. A and B multiply exactly as before; references
+computed before the model carry only the transcendental error, a tighter
+floor, so a gate passed against them stands.
 
 The floor used to be A against B, reduction order alone. It failed the
 reference itself: the same numpy reference of Gemma 4 31B run on a second CPU
@@ -673,15 +878,37 @@ its floors, and a candidate passes when all three hold:
   rate at which a floor-like draw lands above F, so the null is measured
   rather than assumed to be one half, and a candidate distributed like a
   further variant has an expected excess of zero. The mean excess may be at
-  most 3 standard errors above zero, with the same 128-position block error.
+  most 3 standard errors above zero, the error taken over contiguous
+  512-position blocks.
+
+The multi-floor test's blocks are 512 positions because the excess is
+correlated over hundreds of positions: from 128- to 1,024-position blocks the
+standard error grows 1.6 to 2.4 times for Qwen 3.8 27B and Flash, Gemma 4 26B,
+HY4 and Muse. With 128-position blocks, two Qwen 3.8 27B Metal builds whose
+logits differ by exactly the reference floor (KL 0.0420 against a to b's
+0.0419) gave -2.88 and +1.89 sigma; with 512-position blocks they give -1.78
+and +1.09. The gate prompts hold 5,636 positions, about a dozen blocks.
+
+The longer blocks widen the error for the controls too, and every required
+control must still fail. Where two rows of the probe swapped in every layer
+move the logits barely more than the floors, the model's all-layer control
+takes its own tensor (`probe_layers` in `tools/metal_gates.sh`): MiMo Pro and
+HY4 exchange experts 0 and 1 of every MoE layer's `moe_w2` (+13.74 and +53.3
+sigma, where their `attn_out` and attention `gate` swaps gave -0.82 and
++2.01), and Qwen 3.8 Flash swaps rows 0 and 1 of every layer's
+hyper-connection `mlp_hc_down`, which every token passes through (+19.4
+sigma, KL 4.1 to 4.4 times; its `moe_shared_down` swap gave +1.52 and a
+`moe_router` swap +6.24).
 
 The orderings are only exchangeable when the three variants sit about equally
 far apart, so the receipt lists all six floors (`multi_floor.floors`, mean KL
 and top-1 per ordered pair). For Solar Open 2 they do: A to B 0.078 and 0.084
-nats, B to H 0.076, A to H 0.076 and 0.083. Motif 3 at TP8 passes at +2.77
-standard errors (KL 1.08, 1.03 and 1.02 times the floors against A, B and H),
-its required controls fail at +36 and +59, and the one-layer probe fails too,
-at +5.3.
+nats, B to H 0.076, A to H 0.076 and 0.083. Solar's Metal run passes at +2.18
+standard errors (KL 1.01, 1.09 and 1.13 times the floors against A, B and H)
+and its required controls fail at +25 and +118. Motif 3 at TP8 fails at
++3.71 (KL 1.09, 1.06 and 1.03 times), where the two-leg rule passes it; its
+required controls fail at +39 and +60 and the one-layer probe at +7.1. Its
+remaining differences from its reference are in TECHDEBT.
 
 `tools/pack_tensor_control.py` writes APFS clones of the pack with tensors
 corrupted, and the gate runs each through the same teacher-forced pass:
@@ -766,9 +993,10 @@ positions); Muse Glimmer has its own tokenizer and chat template and
 `qualification/metal/muse_glimmer/` (5,640 positions). Gemma 4 31B and Muse
 are dense, so their gate is the Qwen gate's set: free decode against a with
 b as the floor, and the three weight controls. The reference is
-`tools/gemma4_reference.py teacher --variants a,b,bp` (a and b for the dense
-models): numpy, the publisher's eager rounding, a and b in the two reduction
-orders.
+`tools/gemma4_reference.py teacher --variants a,b,h,bp,hp` (a, b and h for
+the dense models): numpy, the publisher's eager rounding, a and b in the two
+reduction orders, h with a GPU's exp and tanh error, and bp and hp b and h
+with a's experts.
 
 The router makes the free-route floor useless as a gate. Its logits are
 BF16, so the eighth and ninth experts of a row are often a rounding step
@@ -787,14 +1015,25 @@ fills a route override for every step (`SparkStageRunnerStep.route_override`,
 `[layer][row][rank]`) that the experts layer kind uses instead of its top-k
 (`spark_route_pinned`). Pinned, a against bp is 0.063 nats.
 
-The receipt applies the rule to both sets. Free routes: Metal against a
-and b with b and a as the floor; it must pass, which shows the end-to-end
-noise is that of a correct implementation. Pinned routes: Metal, the same
-pass prefilled in 64-row chunks (`metal_rows64`, the skinny tensor-unit
-projection the batches use) and the controls (run pinned), against a and bp
-with each other as the floor; the Metal runs must pass and
-`control_layers`, `control_rotate` and `control_experts` (experts 0 and 1 of
-every layer's `moe_w2` swapped, the reach of a misindexed expert) must fail. Metal's own top-k is
+The receipt applies the multi-floor rule to both sets. Free routes: Metal
+against a, b and h, each the reference in turn; it must pass, which shows the
+end-to-end noise is that of a correct implementation. Pinned routes: Metal,
+the same pass prefilled in 64-row chunks (`metal_rows64`, the skinny
+tensor-unit projection the batches use) and the controls (run pinned),
+against a, bp and hp the same way (`metal_gate_floors.sh`'s `pmf` labels);
+the Metal runs must pass and `control_layers`, `control_rotate` and
+`control_experts` (experts 0 and 1 of every layer's `moe_w2` swapped, the
+reach of a misindexed expert) must fail. References without bp fall back to
+the single floor, a against hp. When the pinned set is judged on the
+multi-floor rule, the required controls must fail there; the free set reports
+its controls without requiring them to fail, because its floor is the one
+the router makes too wide (Gemma 4 26B's all-layer `ffn_down` swap sits at
++2.87 sigma against free routes and +17.5 sigma pinned, with 512-position
+blocks). One floor draw was not enough here either:
+on one build the two pinned runs, which differ only in prefill chunking,
+gave +3.02 and +1.07 sigma against a and +1.55 and +3.62 against hp, and
+against a, bp and hp they gave +0.52 and +0.78, with the required controls
+at +27.9, +495 and +71.5. Metal's own top-k is
 checked by the kernel test (exact experts at 128 experts, top 8).
 
 The fast batch ladder is not identical to solo decode for most sequences,
@@ -856,6 +1095,49 @@ packs on the packs' volume, where `cp -c` clones them and only the corrupted
 blocks take space.
 
 
+### Qwen 3.8 Max on eight ranks
+
+Qwen 3.8 Max (92 layers of 8,192: 69 gated-delta layers with 16 key and 128
+value heads, and every fourth layer from the fourth gated attention with 64
+query and 4 KV heads of 256; 512 NVFP4 experts, top 10, 2,048 wide, and a
+2,048-wide shared expert behind its sigmoid gate) is the Qwen family
+schedule's plain layout with the routed FFN, and `QwenDevice` places it at
+TP 1, 2, 4 or 8 (`SparkQwen38MaxDeviceStageModelAt`): the 27B's residual
+norms and layers with Flash's experts (`spark_route_topk`,
+`SparkDeviceRoutedFfn` on the NVFP4 experts with the route weight before the
+down projection, the shared expert gated by `spark_sigmoid_gate_rows` and
+added last by `spark_route_combine_shared`). No Metal kernel is new. Each rank
+holds 16/T key and 128/T value heads of every gated-delta layer with their
+recurrent state and convolution window, its window of the fused attention
+projection (gathered before the rank's heads run), 512/T whole experts
+(`spark_route_local` skips the others) and 2,048/T shared-expert rows, and the
+attention and FFN partials are all-reduced.
+
+CUDA's Max geometry sets `kRankHeads`: its TP16 packs
+(`tools/qwen38_max_tp16_convert.py`) put each rank's own query heads, then its
+slices of the key and value rows, in its `attn_qkv`, and CUDA's split kernel
+reorders the gathered row. The Metal attention reads the fused rows in order,
+as for every Metal model, so the Metal packer writes windows and declares
+`attn_rank_heads` 0, and the stage refuses a TP > 1 pack that does not. At TP1
+the two layouts are the same tensor.
+
+The checkpoint (`qwen3.8-max-nvfp4-radixark-bf16-spine`, 1.4 TB: NVFP4 experts
+with an E4M3 scale per 16 inputs and an FP32 `weight_scale_2` per expert,
+everything else BF16) does not fit one Studio, so Max gates at TP8 with the
+packs paged from the SSD (`tools/qwen38_max_tp16_pack.py --tp-degree 8`, 180 GB
+per rank). The experts' `input_scale` is the checkpoint's W4A4
+activation scale; CUDA and Metal multiply BF16 activations and apply neither.
+`tools/qwen38_max_reference.py gate-prompts` writes
+`qualification/metal/qwen38_max/` (the Gemma set in the Qwen 3.8 chat turn;
+Max's tokenizer is the 27B's, so the framing tokens are the 27B set's), and
+`teacher` writes references a, b and h in FP32 through the Flash reference's
+gated delta rule, attention and experts, with the 27B reference's residual
+and norms and the SiLU gate of the gated norm. The controls corrupt
+`moe_shared_down`, layer 11 for the single-layer ones:
+
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh qwen3.8-max PACKS/qwen38_max.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
 ### Ling 3.0 Flash on eight ranks
 
 Ling 3.0 Flash runs on the Ling family schedule (`LingSchedule` in
@@ -903,8 +1185,15 @@ The experts are `SparkDeviceSigmoidExperts` with the router named `router`,
 top 8 times 2.5, and the layer's SwiGLU limits from the geometry
 (`RoutedLimit`, `SharedLimit`: 4 for the routed experts from layer 35, 5
 and 7 for the shared expert from layers 34 and 40) through
-`spark_silu_clamp_mul_routed` and `spark_silu_clamp_mul`. The shared expert
-is computed first and joined in route order by `spark_route_combine_shared`.
+`spark_silu_rounded_clamp_mul`. Every FFN takes the publisher's rounding
+(`kFfnSiluRounded`): `modeling_bailing_moe_v3.py` computes
+`down(act_fn(gate(x)) * up(x))` on BF16 tensors, so `silu(g)` rounds before
+the up product (the dense layers take `spark_silu_rounded_mul`). Its
+`moe_infer` multiplies each expert's BF16 output by its FP32 weight and sums
+them in FP32 (`kExpertWeightAfterDown`, `weight_after_down` in the experts
+shape), where both backends had folded the weight into the activation before
+the down projection. The shared expert is computed first and joined in
+route order by `spark_route_combine_weighted_shared`.
 The geometry's shared rows follow the TP degree (`768 / TP`, padded to a
 multiple of 64: 64 rows at TP16 as before, 128 at TP8).
 
@@ -944,7 +1233,18 @@ low-rank decay and gate projections (rank 128) and a doubled write strength
 `1e-6` while the gate norm takes the model's `1e-5` (`l2_epsilon`). Each
 rank holds every one of the 320 experts, split by their intermediate width
 (`tensor_parallel` in the experts shape: no routes are skipped, and the
-ranks' partial sums meet in the all-reduce). The geometry's expert and shared
+ranks' partial sums meet in the all-reduce). Its FFNs take the Ling
+publisher's form, as `modular_solar_open2.py` writes it: `silu(g)` rounded
+before the up product, and each expert's BF16 output times its weight.
+Its TP partials stay FP32 through the all-reduce (`kTpPartialsF32`): the
+attention and KDA output projections, every expert's slice of its down
+projection, the shared expert's and the combine write FP32, and the ranks'
+FP32 lanes are summed and rounded once. Solar's first token carries
+activations up to about 250 in a few channels, and rounding each rank's
+partial to BF16 moves them. In a reference forward with the TP8 split
+modelled, BF16 partials gave KL 1.12 / 1.27 / 1.33 times the floors on the
+korean prompt and FP32 partials 0.94 / 0.87 / 0.90. On Metal, FP32 partials
+cut the gate's paired excess share from 0.036 to 0.026. The geometry's expert and shared
 widths follow the TP degree (80 and 128 at TP16 as before, 160 and 192 at
 TP8), and `tools/solar_open2_tp16_pack.py --tp-degree` writes the packs.
 `tools/solar_open2_reference.py` gains the Ling reference's `gate-prompts` and
@@ -1001,7 +1301,15 @@ near 0.6), so those layers' `attn_out` reaches the residual only as values far
 below a BF16 step, and a corrupted layer-11 `attn_out` leaves the logits
 byte-identical. Shifting the layer's query rows by one breaks that alignment
 and moves the logits (mean KL 4.1), and rotating layer 7's `attn_out` moves
-them by a mean KL of 0.56.
+them by a mean KL of 0.56. The all-layer control corrupts the experts' down
+projection instead (`probe_layers=moe_w2`: experts 0 and 1 of each rank's 48
+exchanged in layers 1 to 69, the reach of a misindexed expert). Rows 0 and 1
+of every layer's `attn_out` swapped left Pro as close to the references as
+Metal itself (multi-floor -0.82 sigma, KL 0.88 to 1.04 times the floors);
+the expert swap fails at +13.74 sigma (KL 1.63 to 1.67). The single-layer
+controls stay on `attn_out`: rotating all 48 experts of layer 7 moved the
+logits less than the floor (-3.88 sigma), and rotating its `attn_out` fails
+at +6.13 sigma.
 
 ### HY4 on eight ranks
 
@@ -1025,10 +1333,20 @@ FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
 (`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
 `gate-prompts` and `teacher` modes (variant b sums every product in
 1,024-wide chunks last first, reverses the norms' and softmax sums and adds
-the experts in descending order):
+the experts in descending order). Until 6e9f4b535 the tool's 32 MiB read size
+overwrote that chunk, so every b computed before it took its products whole,
+as a does; HY4 is not proven on Metal until its b and h are recomputed and
+its logits re-judged against them:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh hy4-preview PACKS/hy4.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+HY4's all-layer control swaps two experts in every MoE layer
+(`probe_layers=moe_w2`: experts 0 and 1 of each rank's 32 exchanged in layers
+1 to 77): rows 0 and 1 of every layer's attention `gate` swapped moved the
+logits only 1.05 to 1.14 times the floors' KL (+3.78 sigma with 128-position
+blocks, +2.01 with 512), and the expert swap fails at +53.3 sigma (KL 5.2
+times). The single-layer controls stay on layer 11's `gate`.
 
 ### GLM 5.3 Flash on eight ranks
 
@@ -1062,6 +1380,13 @@ the Ling reference's FP32 variants):
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh glm-5.3-flash PACKS/glm53flash.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
+Its gate passed on a hand-written prompt format
+(`model-families/glm5_next/chat_template.json`: a newline after each role tag,
+thinking closed), not the publisher's. The publisher's `chat_template.jinja`
+(46a050be) renders a single user turn as `[gMASK]<sop><|system|>Reasoning
+Effort: Max<|user|>...<|assistant|><think>`; the re-gate on prompts rendered
+from it follows.
+
 ### GLM 5.3 on eight ranks
 
 GLM 5.3 (Full: 78 layers of 6,144, latent attention on every layer, 256 FP8
@@ -1080,8 +1405,8 @@ experts with a plain SiLU and no route weight, `spark_route_combine_weighted`
 and the shared expert added, as CUDA's finalize and add. The projections stay
 FP8 (`fp8_e4m3` with an FP32 scale per row and 128 inputs, CUDA's skinny FP8
 arithmetic), and the last layer's partial is added and the head norm taken
-in the stage (`prenormed_head`) from the FP32 sum, as CUDA's closing
-`LmFusedResidualRmsNormKernel` does. The indexer is not built,
+in the stage (`prenormed_head`) from the rounded sum, as the publisher's
+closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do. The indexer is not built,
 so a row past position 2,047 is refused. The 704 GB checkpoint packs to about
 780 GB at TP8 (`tools/glm52_tp16_pack.py --model glm53full --tp-degree 8`,
 through the CUDA stagepack's reader), paged from the SSD;
@@ -1190,7 +1515,7 @@ and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
 
 Kimi K3 (93 layers of 7,168: 69 KDA layers, 24 rope-free latent attention
 layers, 896 MXFP4 experts) runs on `K3Schedule` through `K3Device`
-(`model-families/k3/device/`), geometry from `inference/llms/kimi_k3/config.h`.
+(`model-families/k3/device/`), geometry from `model-families/k3/source/config.h`.
 The schedule's CUDA-only paths (context-sharded attention, expert cells, lazy
 experts) sit behind `kShardedMla`, `kExpertCells` and `kLazyExperts`, which the
 CUDA backend sets and the Metal one does not. The residual stream is AttnRes:

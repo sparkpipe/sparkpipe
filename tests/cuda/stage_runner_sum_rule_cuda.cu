@@ -29,6 +29,14 @@ static uint32_t fake_paired = 1u;
 static FakeModel fake_lanes[SPARK_STAGE_RUNNER_LANES];
 static int failures;
 
+static SparkStatus FakeStreamedFails(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services)
+{
+	(void)model;
+	(void)request;
+	(void)services;
+	return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
 static void FakeRecord(uint32_t operation, uint32_t stage, uint32_t rows)
 {
 	pthread_mutex_lock(&fake_lock);
@@ -374,6 +382,37 @@ int main(void)
 		Expect(calls[0].status == SPARK_STATUS_OK && calls[1].status == SPARK_STATUS_OK && fake_count == 2u && found == 3u,
 			"two concurrent lanes each sum by their own dispatch's rule, not the runner's");
 		fake_count = 0u;
+	}
+	{
+		SparkStageRunnerDispatch dispatch;
+		uint32_t next = 64u, slot = 0u;
+		memset(&dispatch, 0, sizeof(dispatch));
+		dispatch.host_positions = &next;
+		dispatch.host_sequence_of_row = &slot;
+		dispatch.row_count = 1u;
+		runner.private_state = state;
+		Expect(SparkStageRunnerCheck(&runner) == SPARK_STATUS_OK, "a lane with no failed streamed prefill checks clean");
+		{
+			SparkStageRunnerStats stats;
+			Expect(SparkStageRunnerGetStats(&runner, &stats) == SPARK_STATUS_OK && stats.lane_fatal == 0u, "a clean lane's stats do not report it fatal");
+		}
+		model_interface.streamed_prefill = FakeStreamedFails;
+		state->deferred_active = 1u;
+		state->deferred_first = 0u;
+		state->deferred_count = 64u;
+		state->deferred_slot = 0u;
+		Expect(StageRunnerRunDeferred(state, &dispatch) == SPARK_STATUS_INVALID_ARGUMENT, "a failed streamed prefill fails its request");
+		Expect(state->deferred_active == 0u, "the failed streamed prefill gives up its deferred tokens");
+		Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_INTERNAL_ERROR, "the next submit is refused at once instead of queuing behind unfinished rounds");
+		Expect(SparkStageRunnerCheck(&runner) == SPARK_STATUS_INTERNAL_ERROR, "the lane check reports the failed streamed prefill");
+		Expect(SparkStageRunnerResetSlots(&runner, &slot, 1u) == SPARK_STATUS_INTERNAL_ERROR, "a reset is refused, so the rank exits instead of serving behind unfinished rounds");
+		{
+			SparkStageRunnerStats stats;
+			Expect(SparkStageRunnerGetStats(&runner, &stats) == SPARK_STATUS_OK && stats.lane_fatal == 1u, "the runner stats report the lane fatal");
+		}
+		state->streamed_failure = SPARK_STATUS_OK;
+		model_interface.streamed_prefill = 0;
+		runner.private_state = 0;
 	}
 	StageRunnerDestroyLanes(state);
 	cudaFree(buffer);

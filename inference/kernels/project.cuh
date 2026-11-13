@@ -57,7 +57,7 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 	}
 }
 
-template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta, const float *inv_freq_table = 0, float attention_scale = 1.0f, uint32_t rope_offset = 0xffffffffu)
 {
@@ -67,7 +67,7 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 		+ (rope_offset == 0xffffffffu ? (head_dimension - rope_dimension) : rope_offset);
 	float position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
-		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+		LmRopeRotate<PAIRING,ROUNDING>(rows_bf16,base,index,half,
 			position * (inv_freq_table != 0 ? inv_freq_table[index]
 				: __powf(theta,-2.0f * (float)index / (float)rope_dimension)),
 			attention_scale);
@@ -187,7 +187,8 @@ static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16,
 template<
 	uint32_t THREADS,
 	LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT,
-	bool TABLE = false>
+	bool TABLE = false,
+	LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
 void LmExtractRopePerHeadKernel(
 	const uint16_t *__restrict__ input_bf16,
@@ -225,7 +226,7 @@ void LmExtractRopePerHeadKernel(
 		else
 			angle = position * __powf(
 				theta,-2.0f * (float)index / (float)rope_dimension);
-		LmRopePair(&low,&high,angle);
+		LmRopePairRounded<ROUNDING>(&low,&high,angle);
 		output_bf16[output_base + low_offset] = LmFloatToBf16(low);
 		output_bf16[output_base + high_offset] = LmFloatToBf16(high);
 	}

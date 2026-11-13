@@ -18,15 +18,6 @@ static SparkStatus SparkModelResidentConfigureSocket(int fd)
 	return(SPARK_STATUS_OK);
 }
 
-static ssize_t SparkModelResidentSend(int fd,const void *bytes,size_t count)
-{
-#if defined(__APPLE__)
-	return(send(fd,bytes,count,0));
-#else
-	return(send(fd,bytes,count,MSG_NOSIGNAL));
-#endif
-}
-
 static SparkStatus SparkModelResidentConfigureTcp(int fd)
 {
 	int enabled = 1, idle = 10, interval = 5, count = 3;

@@ -60,6 +60,7 @@ typedef struct SparkDeviceStageShape
 	uint32_t embed_alias_row;
 	uint32_t projection;
 	uint32_t prenormed_head;
+	uint32_t norm_round_first;
 } SparkDeviceStageShape;
 
 #define SPARK_DEVICE_STAGE_KV_WINDOWS 4u
@@ -127,6 +128,12 @@ typedef struct SparkDeviceStepTensors
 	SparkTensor row_identity;
 	SparkTensor route_override;
 	uint32_t route_override_width;
+	uint32_t tree;
+	SparkTensor slots;
+	SparkTensor fork_positions;
+	SparkTensor slot_offsets;
+	const uint32_t *host_slots;
+	const uint32_t *host_parent_rows;
 } SparkDeviceStepTensors;
 
 typedef struct SparkDeviceKeepTensors
@@ -135,6 +142,9 @@ typedef struct SparkDeviceKeepTensors
 	SparkOpsSequences sequences;
 	uint32_t rows;
 	uint32_t frame_rows;
+	uint32_t moves;
+	SparkTensor move_sources;
+	SparkTensor move_destinations;
 } SparkDeviceKeepTensors;
 
 SparkStatus SparkDeviceStageRefuse(const SparkDeviceStage *stage, SparkStatus status, const char *what);
@@ -159,11 +169,14 @@ SparkStatus SparkDeviceStageNoteKvRead(SparkDeviceStage *stage, uint32_t window,
 uint64_t SparkDeviceStageStateBytes(const SparkDeviceStage *stage, uint32_t context);
 SparkStatus SparkDeviceStageStepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, SparkDeviceStepTensors *tensors);
 SparkStatus SparkDeviceStageKeepTables(SparkDeviceStage *stage, const SparkStageRunnerStep *step, const uint32_t *kept, SparkDeviceKeepTensors *keep);
+SparkStatus SparkDeviceStageKeepRelocate(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkStageRunnerStep *step,
+	const SparkDeviceKeepTensors *keep);
 SparkOpsPaged SparkDeviceStagePaged(const SparkDeviceStage *stage, const SparkDeviceStepTensors *tensors, uint32_t kv_layer);
 void SparkDeviceStageLayerDone(const SparkDeviceStage *stage, uint32_t layer);
 void SparkDeviceStageNoteRouted(SparkDeviceStage *stage, uint64_t bytes, uint32_t experts, uint32_t top_k);
 SparkStatus SparkDeviceStageAllReduce(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count);
 SparkStatus SparkDeviceStageAllReduceWidth(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor rows, uint32_t count, uint32_t width);
+SparkStatus SparkDeviceStageAllReduceF32(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor partial, SparkTensor rows, uint32_t count);
 SparkStatus SparkDeviceStageGatherRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, SparkTensor local, SparkTensor gathered, SparkTensor rows,
 	uint32_t count, uint32_t width);
 SparkStatus SparkDeviceStageDumpRows(SparkDeviceStage *stage, SparkDeviceQueue *queue, const SparkDeviceStepTensors *tensors, SparkTensor rows,

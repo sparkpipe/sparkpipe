@@ -39,10 +39,8 @@ Each needs a token or topology decision in the JSON before a rename:
 | Root | Deviation | Source |
 | --- | --- | --- |
 | `laguna-s-2.1.bf16.tp8pp2` | no laguna token; `tp8pp2` is not a listed topology; packs `laguna_stage.tp8.pp2.stage<S>.rank<R>.lgsp` | `tools/lag_t1_launch.sh`, `tools/devcycle/laguna_warm_receipt.sh` |
-| `muse.tp16.bf16` | topology before quant; no muse token | `tools/muse_gen_deployment.py` |
 | `gemma4_31b.bf16.tp16` | no gemma4 token; packs `gemma4_31b_tp16_rank<hex>_stage0.gemma4sp` | `tools/gemma4_tp16_gen_deployment.py`, `tools/gemma4_build_release.sh` |
 | `qwen38max.tp16` | no quant; the registered token is `qwenmax` | `tools/qwen38max_multidev_run_family.sh` |
-| `minimax.text.bf16.tp4` | no minimax token; packs `.rank<r>.mntx` | `tools/spark_station_profile.py` |
 
 The JSON's `rename_executed` note lists further trees still under legacy names.
 

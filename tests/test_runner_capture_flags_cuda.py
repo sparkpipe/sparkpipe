@@ -1,4 +1,4 @@
-"""Refuse a stage-runner graph capture on an sm_121 device after a copy and a collective failure were recorded, and check the failures survive the refusal."""
+"""A stage-runner decode graph that cannot be captured on an sm_121 device aborts the rank instead of running eager."""
 import subprocess
 import sys
 from pathlib import Path

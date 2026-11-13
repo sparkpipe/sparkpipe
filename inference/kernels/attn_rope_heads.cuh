@@ -111,7 +111,7 @@ void LmLatentWarpSplitKernel(
 			run_sum[head] = run_sum[head] * scaled_previous + weight;
 			#pragma unroll
 			for (i = 0u; i < 16u; ++i)
-				acc[head][i] = acc[head][i] * scaled_previous + weight * key[i];
+				acc[head][i] = acc[head][i] * scaled_previous + SparkMathAttentionValueWeight(weight) * key[i];
 		}
 	}
 	#pragma unroll

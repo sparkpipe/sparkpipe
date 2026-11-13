@@ -54,14 +54,14 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const SparkWeightdLazyAttachRequest *request,uint64_t budget)
+static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const SparkWeightdLazyAttachRequest *request)
 {
 	uint64_t bytes = pack->manifest.spine_allocation_bytes;
 	const void *pool;
 	SparkStatus status;
 	if ( bytes == 0u )
 		return(SPARK_STATUS_OK);
-	if ( bytes > (SIZE_MAX - 255u) || (bytes + 255u) > budget )
+	if ( bytes > (SIZE_MAX - 255u) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkWeightdMapPool(pack->map,&pool);
 	if ( status == SPARK_STATUS_OK )
@@ -80,7 +80,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	return(SparkWeightdSpineLoad(request->pack_path,fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
 }
 
-static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t cap,uint64_t budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
+static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t cap,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
 {
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
 	SparkWeightdLazyAttachRequest sized;
@@ -130,7 +130,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	status = lazy_spine_load(pack,fd,request,budget);
+	status = lazy_spine_load(pack,fd,request);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pack->attached.loaded_from_pack != 0u )
@@ -151,7 +151,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t pool_cap,uint64_t spine_budget,uint64_t timeout,SparkWeightdManifestCheck check,void *context,SparkWeightdLazyPack **out)
+SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,const SparkWeightdLazyPackOptions *options,SparkWeightdLazyPack **out)
 {
 	SparkWeightdLazyPack *pack;
 	SparkWeightdIdentity identity;
@@ -159,13 +159,12 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 	SparkStatus status;
 	struct stat info;
 	int32_t fd;
-	uint32_t read_only;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
 	char absolute[4096];
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
-	if ( socket == 0 || request == 0 || request->pack_path[0] == 0 || memchr(request->pack_path,0,sizeof(request->pack_path)) == 0 )
+	if ( socket == 0 || socket[0] == '\0' || request == 0 || options == 0 || options->read_only > 1u || request->pack_path[0] == 0 || memchr(request->pack_path,0,sizeof(request->pack_path)) == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->expert_pool_bytes != 0u )
 	{
@@ -173,9 +172,6 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		    (unsigned long long)request->expert_pool_bytes);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	status = SparkWeightdShareModeFromEnvironment(&read_only);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
 	if ( request->pack_path[0] != '/' )
 	{
 		if ( realpath(request->pack_path,absolute) == 0 )
@@ -203,9 +199,9 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		(void)close(fd);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	pack->read_only = read_only;
+	pack->read_only = options->read_only;
 	memcpy(pack->pack_sha256,digest,sizeof(pack->pack_sha256));
-	status = lazy_pack_initialize(pack,fd,socket,request,pool_cap,spine_budget,timeout,check,context);
+	status = lazy_pack_initialize(pack,fd,socket,request,options->expert_pool_cap_bytes,options->timeout_nanoseconds,options->manifest_check,options->manifest_check_context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK && SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK )
@@ -214,11 +210,6 @@ SparkStatus SparkWeightdLazyPackCreateChecked(const char *socket,const SparkWeig
 		pack->ready = 1u;
 	*out = pack;
 	SPARK_RETURN(status);
-}
-
-SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t pool_cap,uint64_t spine_budget,uint64_t timeout,SparkWeightdLazyPack **out)
-{
-	return(SparkWeightdLazyPackCreateChecked(socket,request,pool_cap,spine_budget,timeout,0,0,out));
 }
 
 SparkStatus SparkWeightdLazyPackSlice(const SparkWeightdLazyPack *pack,uint64_t offset,uint64_t bytes,const void **pointer)

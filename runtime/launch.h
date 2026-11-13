@@ -2,9 +2,12 @@
 
 
 #include "inference/kernels/layout.cuh"
+#include "runtime/slow_path.h"
 #include <stdint.h>
+#include <stdio.h>
 
 #define LM_UNPAREN(...) __VA_ARGS__
+
 #ifdef __CUDACC__
 #include <utility>
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...) \

@@ -39,32 +39,50 @@ struct MimoSchedule
 	using State = typename B::State;
 	using Frame = typename B::Frame;
 
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
+	{
+		return B::Begin(state, step, queue, frame);
+	}
+
+	static SparkStatus Layer(State *state, const Frame &frame, uint32_t index)
+	{
+		const typename B::Layer &layer = B::LayerOf(state, index);
+		SparkStatus status = B::RmsNorm(state, frame, layer.input_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = L::Full(index) ? B::template Attention<true>(state, frame, layer) : B::template Attention<false>(state, frame, layer);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AddResidual(state, frame);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		status = B::RmsNorm(state, frame, layer.post_attn_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = index < G::kDenseLayers ? B::Dense(state, frame, layer) : B::Experts(state, frame, layer);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AddResidual(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::LayerDone(state, frame, index);
+		return status;
+	}
+
+	static SparkStatus End(State *state, const Frame &frame, SparkStatus status)
+	{
+		(void)state;
+		(void)frame;
+		return status;
+	}
+
 	static SparkStatus Step(State *state, const SparkStageRunnerStep *step, void *queue)
 	{
 		Frame frame;
-		SparkStatus status = B::Begin(state, step, queue, &frame);
+		SparkStatus status = Begin(state, step, queue, &frame);
+		if ( status != SPARK_STATUS_OK )
+			return status;
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const typename B::Layer &layer = B::LayerOf(state, index);
-			status = B::RmsNorm(state, frame, layer.input_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = L::Full(index) ? B::template Attention<true>(state, frame, layer) : B::template Attention<false>(state, frame, layer);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AddResidual(state, frame);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			status = B::RmsNorm(state, frame, layer.post_attn_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = index < G::kDenseLayers ? B::Dense(state, frame, layer) : B::Experts(state, frame, layer);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AddResidual(state, frame);
-			if ( status == SPARK_STATUS_OK )
-				status = B::LayerDone(state, frame, index);
-		}
-		return status;
+			status = Layer(state, frame, index);
+		return End(state, frame, status);
 	}
 };

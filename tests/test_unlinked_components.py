@@ -3,9 +3,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-UNLINKED = {
-    "scheduler/topology_switch.c": {"topology_switch"},
-}
+UNLINKED = {}
 UNLINKED_GROUP = "unlinked_components"
 RULE = re.compile(r"^(?![\t#])([^\s:=][^:=]*?):(?!=)", re.MULTILINE)
 

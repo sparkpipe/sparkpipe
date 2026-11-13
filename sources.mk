@@ -4,20 +4,13 @@ include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_io.c \
     src/spark_quant_arm.c \
     src/spark_ck128.c \
     src/spark_admission.c \
-    src/spark_speculation_policy.c \
-    src/spark_speculation_seam.c \
-    src/spark_speculation_reference_draft.c \
-    src/spark_speculation_recorded_draft.c \
     src/spark_speculation_lookup_draft.c \
     src/spark_speculation_frame.c \
-    src/spark_speculation_ngram_draft.c \
-    src/spark_speculation_drafter_mix.c \
-    src/spark_speculation_relay_draft.c \
-    src/spark_speculation_relay_link.c \
-    src/spark_speculation_tap.c \
+    src/spark_speculation_tree_frame.c \
     src/spark_tap_stream.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
@@ -34,8 +27,6 @@ SPARKPIPE_RUNTIME_SOURCES := \
     runtime/stagepack_format.c \
     runtime/named_pack.c \
     runtime/spark_expert_working_set.c \
-    runtime/runtime_completion.c \
-    runtime/model_runtime.c \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \
 	runtime/model_resident_deployment.c \
@@ -52,7 +43,6 @@ SPARKPIPE_RUNTIME_SOURCES := \
 SPARKPIPE_TRANSPORT_SOURCES := \
     ring/transport/hidden_transport.c \
     ring/transport/fabric_topology.c \
-    ring/transport/memlink.c \
     ring/transport/tp_device_collective.c
 
 SPARKPIPE_CACHE_SOURCES := \
@@ -61,10 +51,7 @@ SPARKPIPE_CACHE_SOURCES := \
     cache/kv_page_store.c \
     cache/kv_snapshot.c \
     cache/kv_model_table.c \
-    cache/prefix_cache.c \
-    cache/store/kv_store.c \
-    cache/store/stage_kv_client.c \
-    cache/nvme_tier.c
+    cache/prefix_cache.c
 
 SPARKPIPE_MODEL_COMMON_SOURCES := \
     $(SPARKPIPE_WEIGHTD_SOURCES) \
@@ -72,20 +59,17 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     $(SPARKPIPE_CACHE_SOURCES) \
     text/tokenizer.c \
     text/tokenizer_sidecar.c \
-    runtime/stage_module_common.c \
+    runtime/stage_module_claims.c \
     runtime/stage_kv_binding.c \
-    runtime/kv_device_copy.c \
-    runtime/serving_adapter_template.c \
-    runtime/memory_buffer.c \
-    runtime/work_transaction.c
+    runtime/kv_device_copy.c
 
 SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c
 
 SPARKPIPE_K3_SOURCES := \
-    modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \
-    modules/k3_resident_decode_stage/source/spark_k3_bind.c \
-    modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+    model-families/k3/src/spark_k3_pack_load.c \
+    model-families/k3/src/spark_k3_bind.c \
+    model-families/k3/src/spark_k3_resident_decode_stage_module.c
 
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c

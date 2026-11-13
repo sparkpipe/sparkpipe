@@ -264,7 +264,7 @@ class LatentBlockDrafter:
     def walk(self, candidates, unary, total, edges, sampling=None, position=None, sampled=None):
         previous = torch.zeros((), dtype=torch.long, device=candidates.device)
         tail = total + torch.log1p(-torch.exp(torch.logsumexp(unary, -1) - total).clamp(max=1.0 - 1e-7))
-        tokens, scores = [], []
+        tokens, scores, alternates, alternate_scores = [], [], [], []
         for step in range(candidates.shape[0]):
             row = torch.index_select(edges[step], 0, previous.view(1))[0]
             choice = torch.argmax(row)
@@ -272,10 +272,13 @@ class LatentBlockDrafter:
                 choice = torch.where(sampled, coupled_candidates(row, candidates[step], sampling, position + step), choice)
             normalizer = torch.logaddexp(torch.logsumexp(row, -1), tail[step])
             picked = choice.view(1)
+            runner_up = torch.argmax(torch.where(torch.arange(row.shape[0], device=row.device) == choice, torch.full_like(row, float("-inf")), row)).view(1)
             scores.append(torch.exp(torch.index_select(row, 0, picked) - normalizer))
             tokens.append(torch.index_select(candidates[step], 0, picked))
+            alternate_scores.append(torch.exp(torch.index_select(row, 0, runner_up) - normalizer))
+            alternates.append(torch.index_select(candidates[step], 0, runner_up))
             previous = choice
-        return torch.cat(tokens), torch.cat(scores)
+        return torch.cat(tokens), torch.cat(scores), torch.cat(alternates), torch.cat(alternate_scores)
 
     def propose(self, y, anchor_token, sampling=None, position=None, sampled=None):
         return self.walk(*self.lattice(y[1:], anchor_token), sampling, position, sampled)
@@ -283,14 +286,20 @@ class LatentBlockDrafter:
     def sequential_sampled(self, y, base, anchor_token, slots, sampling, position):
         rows = y[torch.as_tensor(list(slots), device=y.device)]
         with torch.no_grad():
-            tokens, _ = self.walk(*self.lattice(rows, int(anchor_token)), sampling, torch.tensor(int(position), device=self.device), torch.tensor(True, device=self.device))
+            tokens = self.walk(*self.lattice(rows, int(anchor_token)), sampling, torch.tensor(int(position), device=self.device), torch.tensor(True, device=self.device))[0]
         return tokens.tolist()
 
     def sequential(self, y, base, anchor_token, slots):
         rows = y[torch.as_tensor(list(slots), device=y.device)]
         with torch.no_grad():
-            tokens, scores = self.walk(*self.lattice(rows, int(anchor_token)))
+            tokens, scores, _, _ = self.walk(*self.lattice(rows, int(anchor_token)))
         return tokens.tolist(), scores.tolist()
+
+    def sequential_alternates(self, y, anchor_token, slots):
+        rows = y[torch.as_tensor(list(slots), device=y.device)]
+        with torch.no_grad():
+            _, _, alternates, scores = self.walk(*self.lattice(rows, int(anchor_token)))
+        return alternates.tolist(), scores.tolist()
 
 
 def is_latent_checkpoint(directory):
@@ -361,8 +370,8 @@ class LatentDraftGraph:
                 absorbed, query_rope, block_rows = self.staged[index]
                 self.latent[index].copy_(d.attend(absorbed, query_rope, block_rows, contexts[index]))
             self.graphs[-1].replay()
-            tokens, scores = self.staged[-1]
-            return tokens[:count].tolist(), scores[:count].tolist()
+            tokens, scores, alternates, alternate_scores = self.staged[-1]
+            return tokens[:count].tolist(), scores[:count].tolist(), alternates[:count].tolist(), alternate_scores[:count].tolist()
 
 
 class LatentContext:

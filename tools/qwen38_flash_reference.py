@@ -35,9 +35,12 @@ read from the checkpoint directly. R() is a round to bf16.
   with dilation 3 (oldest tap first) of the group-normed gated rows, R'd and
   swished; residual = R(residual + R(gated + conv))
 - GDN as tools/qwen38_27b_reference.c, with the sigmoid output gate
-- attention as tools/qwen38_27b_reference.c (2 KV heads); the indexer keeps
-  every block below 2,052 positions, so it is not modelled and longer prompts
-  are refused
+- attention as tools/qwen38_27b_reference.c (2 KV heads), in the publishers'
+  flash form: weights w = exp(s - m) in FP32 with m the running maximum over FA2's 64-key tiles walked back from the
+  diagonal (tools/reference_flash.py), the values multiplied by R(w) in
+  FP32, that product divided by the sum of the FP32 weights and R'd; the
+  indexer keeps every block below 2,052 positions, so it is not modelled and
+  longer prompts are refused
 - MoE: router logits R(x @ router), FP32 softmax, top-10 (ties to the lower
   expert), weights p / (sum + 1e-20); each route R(R(silu(gate) x up x
   weight) @ down); the routes in pick order plus the shared expert R(R(R(silu
@@ -56,6 +59,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device
+import reference_flash as flash
 
 PREFIX = "model.language_model."
 EPSILON = np.float32(1e-6)
@@ -92,12 +96,12 @@ def ordered(count):
 
 def matmul(left, right, chunk=CHUNK):
     if not REVERSED or left.shape[-1] <= chunk:
-        return left @ right
+        return device.accumulated(left, right, left @ right)
+    parts = [left[..., first:first + chunk] @ right[first:first + chunk] for first in range(0, left.shape[-1], chunk)]
     total = None
-    for first in reversed(range(0, left.shape[-1], chunk)):
-        part = left[..., first:first + chunk] @ right[first:first + chunk]
+    for part in reversed(parts):
         total = part if total is None else total + part
-    return total
+    return device.accumulated(left, right, total, parts, chunk)
 
 
 def e4m3_table():
@@ -180,6 +184,8 @@ class Reference:
         self.checkpoint = Checkpoint(directory)
         text = json.loads((Path(directory) / "config.json").read_text())["text_config"]
         self.threads = threads
+        self.prefix = PREFIX
+        self.output_gate = sigmoid
         self.hidden = text["hidden_size"]
         self.layers = text["num_hidden_layers"]
         self.streams = text["hc_count"]
@@ -304,7 +310,7 @@ class Reference:
 
     def gdn(self, layer, x, spans):
         c = self.checkpoint
-        p = f"{PREFIX}layers.{layer}.linear_attn."
+        p = f"{self.prefix}layers.{layer}.linear_attn."
         qk, v_width = self.key_heads * self.key_dim, self.value_heads * self.value_dim
         mix = self.linear(x, c.bf16(p + "in_proj_qkv.weight"))
         z = self.linear(x, c.bf16(p + "in_proj_z.weight"))
@@ -343,7 +349,7 @@ class Reference:
         mean = reduce_sum(core * core, keepdims=True) / np.float32(self.value_dim)
         scale = (1.0 / np.sqrt((mean + EPSILON).astype(np.float64))).astype(np.float32)
         normed = bf16(bf16(core * scale) * norm)
-        gated = bf16(normed * sigmoid(z.reshape(core.shape)))
+        gated = bf16(normed * self.output_gate(z.reshape(core.shape)))
         return self.linear(gated.reshape(x.shape[0], -1), c.bf16(p + "out_proj.weight"))
 
     def head_norm_rope(self, values, weight, positions):
@@ -361,7 +367,7 @@ class Reference:
 
     def attention(self, layer, x, spans):
         c = self.checkpoint
-        p = f"{PREFIX}layers.{layer}.self_attn."
+        p = f"{self.prefix}layers.{layer}.self_attn."
         rows = x.shape[0]
         gq = self.linear(x, c.bf16(p + "q_proj.weight")).reshape(rows, self.heads, 2 * self.head_dim)
         k = self.linear(x, c.bf16(p + "k_proj.weight")).reshape(rows, self.kv_heads, self.head_dim)
@@ -375,17 +381,17 @@ class Reference:
             key = self.head_norm_rope(k[first:first + count], k_norm, positions)
             visible = positions[None, :] <= positions[:, None]
             for head in range(self.heads):
-                scores = (query[:, head] @ key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
+                scores = matmul(query[:, head], key[:, head // group].T) * np.float32(1.0 / np.sqrt(self.head_dim))
                 scores = np.where(visible, scores, -np.inf)
-                weights = device.exp((scores - scores.max(axis=-1, keepdims=True)).astype(np.float64)).astype(np.float32)
-                weights = weights / reduce_sum(weights, keepdims=True)
-                out = bf16(matmul(weights, v[first:first + count, head // group]))
-                gated[first:first + count, head] = bf16(out * sigmoid(gq[first:first + count, head, self.head_dim:]))
+                attended, total, _ = flash.attend(scores, v[first:first + count, head // group], matmul, reduce_sum,
+                                                  lambda shifted: device.exp(shifted.astype(np.float64)).astype(np.float32), bf16)
+                out = bf16(flash.normalize(attended, total))
+                gated[first:first + count, head] = bf16(out * bf16(sigmoid(gq[first:first + count, head, self.head_dim:])))
         return self.linear(gated.reshape(rows, -1), c.bf16(p + "o_proj.weight"))
 
     def moe(self, layer, x):
         c = self.checkpoint
-        m = f"{PREFIX}layers.{layer}.mlp."
+        m = f"{self.prefix}layers.{layer}.mlp."
         logits = self.linear(x, c.bf16(m + "gate.weight")).astype(np.float64)
         probs = device.exp(logits - logits.max(axis=-1, keepdims=True)).astype(np.float32)
         probs = probs / reduce_sum(probs, keepdims=True)
@@ -414,7 +420,7 @@ class Reference:
             total += routed[:, slot]
         return bf16(total + shared)
 
-    def forward(self, sequences):
+    def forward(self, sequences, dump=None):
         spans, first = [], 0
         for tokens in sequences:
             if len(tokens) > DENSE_INDEX_POSITIONS:
@@ -435,6 +441,8 @@ class Reference:
             residual = self.inject(residual, out, weights)
             mixed, weights = self.mixer(p + "mlp_hyper_connection.", residual, True)
             residual = self.inject(residual, self.moe(layer, mixed), weights)
+            if dump is not None:
+                dump[f"mlp{layer:02d}"] = residual.copy()
             print(f"layer {layer} {'attention' if self.full(layer) else 'gdn'} done in {time.time() - started:.1f}s", file=sys.stderr, flush=True)
         final, _ = self.mixer(PREFIX + "hyper_connection_mixer.", residual, False)
         return final, spans
@@ -447,12 +455,12 @@ class Reference:
         return np.concatenate(parts, axis=-1)
 
 
-def teacher(args):
+def teacher(args, reference=None):
     global REVERSED
     variants = args.variants.split(",")
     if not variants or any(label not in ("a", "b", "h") for label in variants) or len(set(variants)) != len(variants):
         raise SystemExit("--variants takes distinct a, b and h")
-    reference = Reference(args.checkpoint, args.threads)
+    reference = reference if reference is not None else Reference(args.checkpoint, args.threads)
     prompts = json.loads(Path(args.prompts).read_text())["prompts"]
     if args.only:
         prompts = [prompt for prompt in prompts if prompt["name"] in args.only.split(",")]
@@ -461,7 +469,11 @@ def teacher(args):
     for label in variants:
         REVERSED = label != "a"
         device.select(label)
-        hidden, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts])
+        dump = {} if args.dump else None
+        hidden, spans = reference.forward([prompt["prompt_token_ids"] for prompt in prompts], dump)
+        if dump is not None:
+            np.savez(f"{args.dump}.{label}.npz", names=np.array([prompt["name"] for prompt in prompts]),
+                     bounds=np.cumsum([0] + [count for _, count in spans]), **dump)
         for prompt, (first, count) in zip(prompts, spans):
             with open(out / f"{prompt['name']}.ref_{label}.logits", "wb") as handle:
                 for row in range(0, count - 1, 128):
@@ -478,6 +490,7 @@ def main():
     parser.add_argument("--variants", default="a,b,h")
     parser.add_argument("--only", help="comma-separated prompt names (default every prompt)")
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--dump", help="teacher: write every layer's residual streams for all rows to DUMP.<variant>.npz")
     parser.add_argument("--out", required=True)
     teacher(parser.parse_args())
     return 0

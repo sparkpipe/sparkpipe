@@ -23,20 +23,19 @@
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
+#include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/weight_codec.cuh"
-#include "sparkpipe/spark_error_site.h"
+#include "inference/runner/stage_model_cuda.cuh"
 #include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
 #include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_stagepack.h"
-#include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
-#include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
 
 #define G5N_HIDDEN SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
@@ -304,6 +303,8 @@ static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *act
 	status = Glm5NextSkinny(b, weight, activation, output, (float *)0, rows, input_dimension, output_dimension, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE || b->row_invariant != 0u )
 		return status;
+	if ( rows <= LM_SKINNY_ROWS_WIDE )
+		LmSlowPath("glm5 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
@@ -661,7 +662,7 @@ static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, con
 
 static int32_t Glm5NextHcPost(const Glm5NextLayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
-	LM_LAUNCH((LmHcPostBf16Kernel), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
+	LM_LAUNCH((LmHcPostBf16Kernel<G5N_HC>), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
 		b->hc_post_f32, b->hc_comb_f32, b->hidden_bf16, rows, G5N_HC, G5N_HIDDEN);
 	return Glm5NextLaunched();
 }
@@ -724,6 +725,8 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	}
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 	{
+		if ( rows <= LM_SKINNY_ROWS_WIDE )
+			LmSlowPath("glm5 kda: the skinny pair refused a small wave", rows, G5N_HIDDEN, fused);
 		status = Glm5NextLinear(b, b->normed_bf16, w->kda_qkv_beta, b->fused_qkvb_bf16, rows, G5N_HIDDEN, fused, sms, stream);
 		if ( status == LM_LAUNCH_OK )
 			status = Glm5NextLinear(b, b->normed_bf16, w->kda_decay_gate_down, b->fused_decay_gate_bf16, rows, G5N_HIDDEN, 2u * G5N_KDA_LOW_RANK, sms, stream);
@@ -800,6 +803,32 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	return Glm5NextLaunched();
 }
 
+static uint32_t Glm5NextIndexKeep(void)
+{
+	return G5N_SELECTED / G5N_KPOOL;
+}
+
+static uint32_t Glm5NextIndexCandidates(uint32_t rows, uint32_t local_stride)
+{
+	return rows >= G5N_POOL_ROWS_MIN && local_stride > 2u * Glm5NextIndexKeep() ? 1u : 0u;
+}
+
+static int32_t Glm5NextIndexCandidatePack(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, cudaStream_t stream)
+{
+	const uint32_t degree = b->index_owner_degree, local_stride = SparkGlm5NextIndexCpLocalStride(SparkGlm5NextIndexCpPools(context), degree);
+	SparkKvShard shard;
+	if ( Glm5NextIndexCandidates(rows, local_stride) == 0u )
+		return LM_LAUNCH_OK;
+	shard.degree = degree;
+	shard.rank = b->index_owner_rank;
+	shard.grain = 1u;
+	LmTopkExactRowsLaunch<G5N_THREADS>(b->index_local_scores, rows, local_stride, Glm5NextIndexKeep(), b->selected_pools, stream);
+	if ( LmIndexShardCandidatePackLaunch<G5N_THREADS>(shard, b->index_local_scores, local_stride, b->selected_pools, Glm5NextIndexKeep(), rows,
+		(uint2 *)b->selection_scores, stream) != cudaSuccess )
+		return LM_LAUNCH_ERR_LAUNCH;
+	return Glm5NextLaunched();
+}
+
 static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
@@ -819,6 +848,8 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 		status = Glm5NextSkinnyMulti(b, targets, 4u, b->normed_bf16, rows, G5N_HIDDEN, stream);
 	}
 	projected = status == LM_LAUNCH_OK ? 1u : 0u;
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u && rows <= LM_SKINNY_ROWS_WIDE )
+		LmSlowPath("glm5 mla: the skinny group refused a small wave", rows, G5N_HIDDEN, G5N_QA);
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = Glm5NextLinear(b, b->normed_bf16, w->q_a, b->q_compressed_bf16, rows, G5N_HIDDEN, G5N_QA, sms, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -832,15 +863,24 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 		(const uint16_t *)w->kv_a_norm, b->kv_slot_bf16, G5N_LATENT, G5N_LATENT, G5N_EPS);
 	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->cache, b->kv_slot_bf16, b->sequence_of_row,
 		b->positions, rows, G5N_LATENT);
-	return Glm5NextIndexScore(b, rows, context, sms, projected, stream);
+	status = Glm5NextIndexScore(b, rows, context, sms, projected, stream);
+	return status == LM_LAUNCH_OK ? Glm5NextIndexCandidatePack(b, rows, context, stream) : status;
 }
 
 static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, cudaStream_t stream)
 {
 	const uint32_t degree = b->index_owner_degree, pools = SparkGlm5NextIndexCpPools(context);
 	const uint32_t local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
-	LM_LAUNCH((Glm5NextPoolPermuteKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_gathered_scores, b->selection_scores, pools,
-		local_stride, (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, local_stride) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS, degree);
+	if ( Glm5NextIndexCandidates(rows, local_stride) != 0u )
+	{
+		const uint64_t peer_stride = (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, 2u * Glm5NextIndexKeep()) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS / 2u;
+		if ( LmIndexShardCandidateScatterLaunch<G5N_THREADS>((const uint2 *)b->index_gathered_scores, peer_stride, degree, Glm5NextIndexKeep(), rows, pools,
+			b->selection_scores, stream) != cudaSuccess )
+			return LM_LAUNCH_ERR_LAUNCH;
+	}
+	else
+		LM_LAUNCH((Glm5NextPoolPermuteKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_gathered_scores, b->selection_scores, pools,
+			local_stride, (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, local_stride) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS, degree);
 	LmTopkExactRowsLaunch<G5N_THREADS>(b->selection_scores, rows, pools, G5N_SELECTED / G5N_KPOOL, b->selected_pools, stream);
 	LM_LAUNCH((Glm5NextPoolExpandKernel<G5N_THREADS, G5N_KPOOL, G5N_SELECTED, G5N_INDEX_WIDTH>), rows, G5N_THREADS, 0, stream, b->selected_pools,
 		b->sequence_of_row, b->context_length, b->positions, b->selected_positions, rows);
@@ -961,6 +1001,8 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	gemm.source_row_count = rows;
 	gemm.output_bf16 = b->gate_up_bf16;
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+		LmSlowPath("glm5 experts: the skinny kernels refused w1", packed_rows, G5N_HIDDEN, b->expert_w1_rows);
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = LmGemmWeightOnlyIndirectLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, b->expert_w1_weight,
 			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -985,6 +1027,8 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	gemm.group_row_offset = b->group_row_offset;
 	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->expert_out_bf16;
+	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+		LmSlowPath("glm5 experts: the skinny kernels refused w2", packed_rows, b->expert_intermediate, G5N_HIDDEN);
 	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
 		status = LmGemmWeightOnlyLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->intermediate_bf16, b->expert_w2_weight,
 			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, b->expert_intermediate, G5N_HIDDEN, sms, true, stream);

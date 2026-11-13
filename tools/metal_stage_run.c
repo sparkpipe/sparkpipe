@@ -7,6 +7,7 @@
 
 #include "inference/runner/device_stage_model.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 #include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_motif_device_stage.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
@@ -31,6 +32,7 @@
 #define RUN_LOOKUP_MAX_MATCH 64u
 #define RUN_LOOKUP_BUCKETS 4096u
 #define RUN_LOOKUP_CANDIDATES 64u
+#define RUN_TREE_MATCHES 8u
 #define RUN_FRAME_SIZES 7u
 #define RUN_WEIGHT_SEGMENT_BYTES (1ull << 30)
 
@@ -52,6 +54,7 @@ typedef struct RunOptions
 	const char *spec_prompts;
 	const char *model;
 	uint32_t draft_max;
+	uint32_t tree_branches;
 	const char *pin_routes;
 	uint32_t exact_rows;
 	uint32_t tp_degree;
@@ -77,7 +80,7 @@ typedef const SparkStageRunnerModelInterface *(*RunModelGetter)(void);
 typedef const SparkStageRunnerModelInterface *(*RunModelAt)(uint32_t tp_degree);
 
 static const RunModelGetter run_models[] = { SparkQwen38_27bDeviceStageModel, SparkGemma4_26bDeviceStageModel, SparkGemma4_31bDeviceStageModel,
-	SparkMuseGlimmerDeviceStageModel, SparkQwen38FlashDeviceStageModel };
+	SparkMuseGlimmerDeviceStageModel, SparkQwen38FlashDeviceStageModel, SparkQwen35_4bDeviceStageModel, SparkQwen35_2bDeviceStageModel };
 static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, SparkGemma4_31bDeviceStageModelAt, SparkMuseGlimmerDeviceStageModelAt,
 	SparkLagunaDeviceStageModelAt, SparkLing3FlashDeviceStageModelAt, SparkLing3FinDeviceStageModelAt, SparkSolarOpen2DeviceStageModelAt,
 	SparkGlm53FlashDeviceStageModelAt,
@@ -85,7 +88,7 @@ static const RunModelAt run_models_at[] = { SparkGemma4_26bDeviceStageModelAt, S
 	SparkHy4DeviceStageModelAt,
 	SparkMimo26FlashDeviceStageModelAt, SparkMimo26ProDeviceStageModelAt,
 	SparkGlm53FullDeviceStageModelAt, SparkAxk2DeviceStageModelAt, SparkDsv41FlashDeviceStageModelAt,
-	SparkK3DeviceStageModelAt, SparkMotif3DeviceStageModelAt };
+	SparkK3DeviceStageModelAt, SparkMotif3DeviceStageModelAt, SparkQwen38MaxDeviceStageModelAt };
 
 typedef struct RunOutputVocabulary
 {
@@ -93,7 +96,7 @@ typedef struct RunOutputVocabulary
 	uint32_t vocabulary;
 } RunOutputVocabulary;
 
-static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "gemma4-26b-a4b", 262144u },
+static const RunOutputVocabulary run_output_vocabularies[] = { { "qwen3.8-27b", 248077u }, { "qwen3.8-flash", 248077u }, { "qwen3.8-max", 248077u }, { "qwen3.5-4b", 248070u }, { "qwen3.5-2b", 248070u }, { "gemma4-26b-a4b", 262144u },
 	{ "gemma4-31b", 262144u }, { "muse-glimmer-30b", 202048u }, { "mimo-v2.6-flash", 151675u }, { "mimo-v2.6-pro", 151675u },
 	{ "laguna-s-2.1", 100352u }, { "k-exaone-2.0", 153600u }, { "ling-3.0-flash", 157153u }, { "ling-3.0-flash-fin", 157153u },
 	{ "solar-open-2", 196608u }, { "hy4-preview", 120832u }, { "glm-5.3-flash", 154856u }, { "glm-5.3-full", 154856u }, { "ax-k2", 163840u },
@@ -127,7 +130,7 @@ static uint32_t RunModelOutputVocabulary(const SparkStageRunnerModelInterface *m
 static int Usage(const char *program)
 {
 	fprintf(stderr,"usage: %s --pack PACK --prompts PROMPTS.json --mode teacher|greedy|pairs|bench|ladder|spec --out DIR [--prefill-rows N] [--new-tokens N] "
-		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--model qwen3.8-27b|qwen3.8-flash|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2|deepseek-v4.1-flash|kimi-k3|motif-3] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
+		"[--repeats N] [--bench-prompt NAME] [--verify-pack] [--batches 1,2,4,...] [--prompt-tokens N] [--spec-prompts PROMPTS.json] [--draft-max N] [--tree-branches N, spec: lookup alternates verified as branches, 0 for chains only] [--model qwen3.8-27b|qwen3.8-flash|qwen3.8-max|gemma4-26b-a4b|gemma4-31b|muse-glimmer-30b|mimo-v2.6-flash|mimo-v2.6-pro|laguna-s-2.1|k-exaone-2.0|ling-3.0-flash|ling-3.0-flash-fin|solar-open-2|hy4-preview|glm-5.3-flash|glm-5.3-full|ax-k2|deepseek-v4.1-flash|kimi-k3|motif-3] [--pin-routes DIR] [--exact-rows] [--tp 2|4|8, the pack named for rank 00] [--rank R [--tp-hosts H0,H1,...] [--tp-port P]: one rank process over TCP] [--stream-weights] [--bench-long-tokens N] [--decode-positions N, teacher: decode only the last N positions]\n",program);
 	return(2);
 }
 
@@ -141,6 +144,7 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 	options->repeats = 3u;
 	options->prompt_tokens = 1024u;
 	options->draft_max = 15u;
+	options->tree_branches = 2u;
 	for ( index = 1; index < argc; index++ )
 	{
 		const char *flag = argv[index], *value = index + 1 < argc ? argv[index + 1] : 0;
@@ -184,6 +188,8 @@ static int ParseOptions(int argc, char **argv, RunOptions *options)
 			options->spec_prompts = value;
 		else if ( strcmp(flag,"--draft-max") == 0 )
 			options->draft_max = (uint32_t)strtoul(value,0,10);
+		else if ( strcmp(flag,"--tree-branches") == 0 )
+			options->tree_branches = (uint32_t)strtoul(value,0,10);
 		else if ( strcmp(flag,"--pin-routes") == 0 )
 			options->pin_routes = value;
 		else if ( strcmp(flag,"--tp") == 0 )
@@ -251,8 +257,10 @@ typedef struct Session
 	uint32_t *sequence;
 	uint32_t *targets;
 	uint32_t *kept;
+	uint32_t *parents;
 	uint32_t capacity;
 	uint32_t layers;
+	uint32_t tree_verify;
 	SparkDeviceBuffer routes;
 	uint16_t *pinned;
 	uint32_t pinned_positions;
@@ -880,16 +888,20 @@ typedef struct SpecRun
 	uint32_t frames;
 	uint32_t drafted;
 	uint32_t accepted;
+	uint32_t tree_frames;
+	uint32_t branches;
+	uint32_t off_trunk;
 	uint64_t ns;
 } SpecRun;
 
-static SparkStatus SpecFrame(Session *session, const uint32_t *rows, uint32_t count, uint32_t first, SparkDeviceStageRunnerResult *result)
+static SparkStatus SpecFrame(Session *session, const uint32_t *rows, uint32_t count, uint32_t first, const uint32_t *parents,
+	SparkDeviceStageRunnerResult *result)
 {
 	SparkDeviceStageRunnerBatch batch;
 	uint32_t row;
 	for ( row = 0u; row < count; row++ )
 	{
-		session->positions[row] = first + row;
+		session->positions[row] = parents != 0 && row != 0u ? session->positions[parents[row]] + 1u : first + row;
 		session->sequence[row] = 0u;
 		session->rows[row] = row;
 	}
@@ -901,7 +913,46 @@ static SparkStatus SpecFrame(Session *session, const uint32_t *rows, uint32_t co
 	batch.head_rows = count;
 	batch.head_row_index = session->rows;
 	batch.verify = 1u;
+	batch.parent_rows = parents;
 	return(SparkDeviceStageRunnerStep(session->runner,&batch,result));
+}
+
+static uint32_t SpecTreeBranches(const Session *session, const RunOptions *options, const uint32_t *history, uint32_t length,
+	const SparkSpeculationLookupMatch *matches, uint32_t match_count, uint32_t *frame, uint32_t *parents, uint32_t rows)
+{
+	const uint32_t trunk = rows;
+	uint32_t index, branches = 0u;
+	if ( session->tree_verify == 0u || options->tree_branches == 0u || trunk < 2u )
+		return(rows);
+	for ( index = 1u; index < match_count && branches < options->tree_branches; index++ )
+	{
+		const uint32_t *alternate = history + matches[index].source_end + 1u;
+		const uint32_t available = length - 1u - matches[index].source_end;
+		uint32_t fork = 1u, sibling, count, step;
+		while ( fork < trunk && fork <= available && alternate[fork - 1u] == frame[fork] )
+			fork++;
+		if ( fork >= trunk || fork > available )
+			continue;
+		for ( sibling = 1u; sibling < rows && (parents[sibling] != fork - 1u || frame[sibling] != alternate[fork - 1u]); sibling++ )
+			continue;
+		if ( sibling < rows )
+			continue;
+		count = available - (fork - 1u);
+		if ( count > trunk - fork )
+			count = trunk - fork;
+		if ( count > SPARK_DEVICE_STAGE_VERIFY_ROWS - rows )
+			count = SPARK_DEVICE_STAGE_VERIFY_ROWS - rows;
+		if ( count == 0u )
+			continue;
+		for ( step = 0u; step < count; step++ )
+		{
+			frame[rows + step] = alternate[fork - 1u + step];
+			parents[rows + step] = step == 0u ? fork - 1u : rows + step - 1u;
+		}
+		rows += count;
+		branches++;
+	}
+	return(rows);
 }
 
 static uint32_t SpecChoose(SpecRun *run, SparkSpeculationHazard *hazards, const SparkSpeculationLookupMatch *match, uint32_t feasible, uint32_t context,
@@ -942,56 +993,87 @@ static SparkStatus SpecGreedy(Session *session, const RunOptions *options, const
 	memset(hazards,0,sizeof(hazards));
 	memset(run->model->classes,0,sizeof(run->model->classes));
 	start = NowNs();
+	run->tree_frames = run->branches = run->off_trunk = 0u;
 	while ( status == SPARK_STATUS_OK && run->count < options->new_tokens )
 	{
-		SparkSpeculationLookupMatch match = { 0u, 0u };
-		uint32_t drafts = 0u, accepted = 0u, kept, position = length, frame_class = 0u;
+		SparkSpeculationLookupMatch matches[RUN_TREE_MATCHES];
+		uint32_t parents[SPARK_DEVICE_STAGE_VERIFY_ROWS], path[SPARK_DEVICE_STAGE_VERIFY_ROWS], path_begin[2] = { 0u, 1u };
+		uint32_t drafts = 0u, accepted = 0u, kept, position = length, frame_class = 0u, match_count = 0u, rows, trunk_accepted = 0u, bonus_row = 0u;
 		uint64_t before;
 		history[length++] = next;
 		run->tokens[run->count++] = next;
 		status = SparkSpeculationLookupIndexAppend(&index,history,length);
+		memset(matches,0,sizeof(matches));
 		if ( status == SPARK_STATUS_OK && speculate != 0u &&
-			SparkSpeculationLookupIndexFind(&index,history,RUN_LOOKUP_MAX_MATCH,RUN_LOOKUP_CANDIDATES,&match) == SPARK_STATUS_OK )
+			SparkSpeculationLookupIndexFindRanked(&index,history,RUN_LOOKUP_MAX_MATCH,RUN_LOOKUP_CANDIDATES,matches,RUN_TREE_MATCHES,&match_count) == SPARK_STATUS_OK &&
+			match_count != 0u )
 		{
-			drafts = length - 1u - match.source_end;
-			drafts = SpecChoose(run,hazards,&match,drafts < options->draft_max ? drafts : options->draft_max,length,proven,&frame_class);
+			drafts = length - 1u - matches[0].source_end;
+			drafts = SpecChoose(run,hazards,&matches[0],drafts < options->draft_max ? drafts : options->draft_max,length,proven,&frame_class);
 		}
 		frame[0] = next;
-		memcpy(frame + 1,history + match.source_end + 1u,(size_t)drafts * sizeof(uint32_t));
+		memcpy(frame + 1,history + matches[0].source_end + 1u,(size_t)drafts * sizeof(uint32_t));
+		parents[0] = SPARK_SPECULATION_TREE_FRAME_NO_ROW;
+		for ( rows = 1u; rows <= drafts; rows++ )
+			parents[rows] = rows - 1u;
+		rows = SpecTreeBranches(session,options,history,length,matches,match_count,frame,parents,drafts + 1u);
 		if ( status != SPARK_STATUS_OK )
 			break;
 		before = NowNs();
 		if ( drafts == 0u )
 			status = SessionStep(session,&next,position,1u,0u,0,&result);
 		else
-			status = SpecFrame(session,frame,drafts + 1u,position,&result);
+			status = SpecFrame(session,frame,rows,position,rows > drafts + 1u ? parents : 0,&result);
 		if ( status == SPARK_STATUS_OK && drafts == 0u )
 			SparkSpeculationFrameObserveChain(run->model,1u,length,NowNs() - before);
 		if ( status != SPARK_STATUS_OK )
 			break;
-		while ( accepted < drafts && result.argmax[accepted] == frame[accepted + 1u] )
-			accepted++;
+		if ( rows > drafts + 1u )
+		{
+			path_begin[1] = SparkSpeculationTreeResolvePath(parents,frame,result.argmax,rows,path);
+			accepted = path_begin[1] - 1u;
+			while ( trunk_accepted < accepted && path[trunk_accepted + 1u] == trunk_accepted + 1u )
+				trunk_accepted++;
+			bonus_row = path[accepted];
+			status = SparkDeviceStageRunnerKeepPath(session->runner,path,path_begin,1u);
+			run->tree_frames++;
+			run->off_trunk += accepted - trunk_accepted;
+			for ( kept = drafts + 1u; kept < rows; kept++ )
+				run->branches += parents[kept] != kept - 1u ? 1u : 0u;
+		}
+		else
+		{
+			while ( accepted < drafts && result.argmax[accepted] == frame[accepted + 1u] )
+				accepted++;
+			trunk_accepted = accepted;
+			bonus_row = accepted;
+			for ( kept = 0u; kept <= accepted; kept++ )
+				path[kept] = kept;
+			if ( drafts != 0u )
+			{
+				kept = accepted + 1u;
+				status = SparkDeviceStageRunnerKeepRows(session->runner,&kept,1u);
+			}
+		}
 		if ( drafts != 0u )
 		{
-			kept = accepted + 1u;
-			status = SparkDeviceStageRunnerKeepRows(session->runner,&kept,1u);
-			SparkSpeculationFrameObserveFrame(run->model,drafts + 1u,length,NowNs() - before);
-			SparkSpeculationHazardObserve(&run->model->classes[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
-			SparkSpeculationHazardObserve(&hazards[frame_class],drafts,accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
-			if ( accepted > proven )
-				proven = accepted;
+			SparkSpeculationFrameObserveFrame(run->model,rows,length,NowNs() - before);
+			SparkSpeculationHazardObserve(&run->model->classes[frame_class],drafts,trunk_accepted,SPARK_SPECULATION_FRAME_ENGINE_DECAY);
+			SparkSpeculationHazardObserve(&hazards[frame_class],drafts,trunk_accepted,SPARK_SPECULATION_FRAME_REQUEST_DECAY);
+			if ( trunk_accepted > proven )
+				proven = trunk_accepted;
 			run->frames++;
-			run->drafted += drafts;
+			run->drafted += rows - 1u;
 			run->accepted += accepted;
 		}
 		for ( kept = 0u; kept < accepted && run->count < options->new_tokens; kept++ )
 		{
-			history[length++] = frame[kept + 1u];
-			run->tokens[run->count++] = frame[kept + 1u];
+			history[length++] = frame[path[kept + 1u]];
+			run->tokens[run->count++] = frame[path[kept + 1u]];
 		}
 		if ( kept < accepted )
 			break;
-		next = result.argmax[accepted];
+		next = result.argmax[bonus_row];
 	}
 	run->ns = NowNs() - start;
 	free(history);
@@ -1025,7 +1107,7 @@ static SparkStatus SpecCostCurve(Session *session, const RunOptions *options, co
 				status = SessionPrefill(session,prompt,length,options->prefill_rows,&next,0);
 			before = NowNs();
 			if ( status == SPARK_STATUS_OK )
-				status = SpecFrame(session,prompt,run_frame_sizes[size],length,&result);
+				status = SpecFrame(session,prompt,run_frame_sizes[size],length,0,&result);
 			verify[repeat] = (NowNs() - before) / 1e6;
 			before = NowNs();
 			if ( status == SPARK_STATUS_OK )
@@ -1091,14 +1173,17 @@ static int RunSpec(Session *session, const RunOptions *options, const SparkToken
 		qsort(spec_rate + 1,options->repeats,sizeof(double),CompareDoubles);
 		fprintf(json,"%s{\"name\":\"%s\",\"prompt_tokens\":%u,\"tokens_identical\":%u,\"plain_tokens_per_second\":%.4f,\"spec_tokens_per_second\":%.4f,"
 			"\"plain_runs_tokens_per_second\":[%.4f,%.4f],\"spec_runs_tokens_per_second\":[%.4f,%.4f],\"frames\":%u,\"drafted\":%u,\"accepted\":%u,"
+			"\"tree_frames\":%u,\"branches\":%u,\"accepted_off_trunk\":%u,"
 			"\"spec_tokens\":[",index != 0u ? "," : "",prompt->name,prompt->count,same,plain_rate[1u + options->repeats / 2u],spec_rate[1u + options->repeats / 2u],
-			plain_rate[1],plain_rate[options->repeats],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.drafted,spec.accepted);
+			plain_rate[1],plain_rate[options->repeats],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.drafted,spec.accepted,spec.tree_frames,
+			spec.branches,spec.off_trunk);
 		for ( token = 0u; token < spec.count; token++ )
 			fprintf(json,"%s%u",token != 0u ? "," : "",spec.tokens[token]);
 		fprintf(json,"]}");
 		printf("%s: %u of %u tokens identical in every run; %.2f tok/s plain (%.2f-%.2f), %.2f tok/s with lookup speculation (%.2f-%.2f); "
-			"%u frames, %u of %u drafts accepted\n",prompt->name,same,options->new_tokens,plain_rate[1u + options->repeats / 2u],plain_rate[1],
-			plain_rate[options->repeats],spec_rate[1u + options->repeats / 2u],spec_rate[1],spec_rate[options->repeats],spec.frames,spec.accepted,spec.drafted);
+			"%u frames, %u of %u drafts accepted, %u tree frames with %u branches, %u accepted off the trunk\n",prompt->name,same,options->new_tokens,
+			plain_rate[1u + options->repeats / 2u],plain_rate[1],plain_rate[options->repeats],spec_rate[1u + options->repeats / 2u],spec_rate[1],
+			spec_rate[options->repeats],spec.frames,spec.accepted,spec.drafted,spec.tree_frames,spec.branches,spec.off_trunk);
 		fflush(stdout);
 	}
 	if ( json != 0 )
@@ -1219,7 +1304,8 @@ int main(int argc, char **argv)
 	session.sequence = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.targets = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
 	session.kept = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
-	if ( session.rows == 0 || session.positions == 0 || session.sequence == 0 || session.targets == 0 || session.kept == 0 )
+	session.parents = (uint32_t *)calloc(session.capacity,sizeof(uint32_t));
+	if ( session.rows == 0 || session.positions == 0 || session.sequence == 0 || session.targets == 0 || session.kept == 0 || session.parents == 0 )
 		return(1);
 	{
 		const uint64_t start = NowNs();
@@ -1227,6 +1313,7 @@ int main(int argc, char **argv)
 			return(1);
 		SparkDeviceStageRunnerInfoGet(session.runner,&info);
 		session.layers = info.layers;
+		session.tree_verify = info.tree_verify;
 		printf("opened %s on %s (%s) in %.2f s: pack %llu bytes%s%s, device state %llu bytes\n",options.pack,info.device,info.target,
 			(NowNs() - start) / 1e9,(unsigned long long)info.pack_bytes,options.verify != 0u ? ", sha256 " : "",options.verify != 0u ? info.pack_sha256 : "",
 			(unsigned long long)info.device_state_bytes);
@@ -1282,6 +1369,7 @@ int main(int argc, char **argv)
 	free(session.sequence);
 	free(session.targets);
 	free(session.kept);
+	free(session.parents);
 	free(session.pinned);
 	if ( session.routes.host != 0 )
 		SparkDeviceFree(&session.routes);

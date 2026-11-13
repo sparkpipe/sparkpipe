@@ -201,6 +201,52 @@ Validation rejects any capability bit outside `SPARK_MODEL_SERVING_ADAPTER_KNOWN
 - Bits `0x1`, `0x2`, `0x4`, `0x20`, `0x40`, `0x80` and `0x100` are retired. They stay reserved and are rejected.
 - Never reassign a retired bit or accept it as a compatibility alias.
 
+### Tree verify frames
+
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY` (`0x200000`) says the
+adapter verifies a tree of drafts in one frame. It requires
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY` and a nonzero
+`tree_slot_grain` in the descriptor: the KV ownership granularity the frame's
+branch slots must respect (1 on an unsharded cache, the shard grain times the
+degree on a position-sharded one). Without the bit `tree_slot_grain` is 0.
+
+A tree frame is a verify submission with `SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE`:
+
+- one active lane, at most `SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT`
+  (256) rows, `tokens_per_sequence == row_count`;
+- `row_parent_rows[row]` names each node's parent row in the submission
+  (`UINT32_MAX` for the anchor, row 0) and `row_slots[row]` its storage slot;
+  both are null on every other submission;
+- `row_positions[row]` is the node's semantic position, the anchor's plus its
+  depth, so siblings share a position; `SparkSpeculationTreeLayoutBuild`
+  (`include/sparkpipe/spark_speculation_tree_frame.h`) derives the slots and
+  the lane context from the parents, the tokens and the grain, and the
+  validator refuses a frame whose positions, slots or
+  `context_token_count` differ from that layout;
+- branches fork only from the trunk (the chain of first children), siblings
+  carry distinct tokens, and a node's parent is an earlier row;
+- the trunk's rows come first and each branch's rows are consecutive: a row
+  that continues its parent's branch is the row right after its parent, so a
+  recurrent state replayed row by row is the parent's state exactly when the
+  row does not start a branch.
+
+The completion holds the accepted root path's outputs, the bonus token, then
+`SPARK_MODEL_SERVING_NO_TOKEN`, so `SparkModelServingCompletionKeptRows` and
+the lease rule are unchanged. A tree frame on an adapter without the bit is
+`SPARK_STATUS_UNSUPPORTED`.
+
+Inside a stage, `SparkStageRunnerStep.tree` marks the step and carries the
+device tables the layout derives (`slots`, `fork_positions`, `slot_offsets`,
+`parent_rows`, `state_loads`, `state_saves`) with host mirrors of the slots
+and parents; the geometry's `tree_verify` says the model honours them.
+After acceptance the runner calls the model's `keep_rows` with the kept
+path rather than a prefix count: `sequence_row_indices` lists the accepted
+rows in path order, `sequence_row_begin` delimits them per sequence and
+`kept` holds the path lengths (`SparkStageRunnerKeepPath`,
+`SparkDeviceStageRunnerKeepPath`). The model replays those rows into its
+recurrent state and moves each kept branch slot to the trunk position the
+path gives it, so the lane continues as a chain.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats
@@ -289,7 +335,7 @@ The host RDMA backend in `ring/transport/rdma.cu` declares, in its default build
 - `SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS`;
 - `SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS`.
 
-When `SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT` is nonzero it instead declares `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS` and `SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_RECEIVE_CREDITS`. A module must declare only capabilities it implements. This backend implements neither multi-lane nor the remote-completion doorbell, so it does not declare them.
+A module must declare only capabilities it implements. This backend implements neither multi-lane nor the remote-completion doorbell, so it does not declare them.
 
 Poll descriptors:
 

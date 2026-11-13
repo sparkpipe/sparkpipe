@@ -29,9 +29,10 @@ for i in $(seq 0 15); do
   hex=$(printf '%x' "$i")
   host="spark$hex"
   runtime="/home/$host/sparkdata/k3.mxfp4.$RT"
-  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "mkdir -p $runtime/bin $runtime/lib $runtime/config $runtime/kvcache"
+  ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "mkdir -p $runtime/bin $runtime/lib/runtime_libs $runtime/config $runtime/kvcache"
   scp -q "$BUILD_HOST:$BUILD_DIR/sparkpipe_model_residentd" "$host:$runtime/bin/"
-  scp -q "$BUILD_HOST:$BUILD_DIR/libk3_serving_adapter.so" "$host:$runtime/lib/"
+  scp -q "$BUILD_HOST:$BUILD_DIR/libk3_tp16_serving_adapter.so" "$host:$runtime/lib/"
+  scp -q "$BUILD_HOST:$BUILD_DIR/runtime_libs/libsparkpipe_device_cuda.so" "$host:$runtime/lib/runtime_libs/"
   scp -q "$BUILD_HOST:$BUILD_DIR/libhidden_transport_spark_host_rdma_verbs.so" "$host:$runtime/lib/hidden_transport.so"
   ssh -o BatchMode=yes -o ConnectTimeout=8 "$host" "chmod +x $runtime/bin/sparkpipe_model_residentd"
   if [ "$TP" = "16" ]; then

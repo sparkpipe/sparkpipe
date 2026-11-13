@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 24u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 28u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -17,7 +17,6 @@ extern "C" {
 
 #define SPARK_MODEL_RESIDENT_IPC_KIND_HELLO 1u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_HELLO_ACK 2u
-#define SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT 3u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT 4u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION 5u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE 6u
@@ -27,12 +26,11 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST 10u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT 11u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT 12u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS 13u
 
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
 
-SparkStatus SparkModelResidentIpcValidateDirectSubmitDescriptor(
-	const SparkModelServingAdapterDescriptor *descriptor);
 
 typedef struct SparkModelResidentIpcHeader
 {
@@ -88,6 +86,7 @@ typedef struct SparkModelResidentIpcHelloAck
 	char model_revision[SPARK_MODEL_RESIDENT_IPC_REVISION_BYTES];
 	char artifact_sha256[SPARK_MODEL_RESIDENT_IPC_SHA256_BYTES];
 	uint64_t session_epoch;
+	uint64_t submission_id_floor;
 } SparkModelResidentIpcHelloAck;
 
 typedef struct SparkModelResidentIpcSubmit
@@ -124,7 +123,21 @@ typedef struct SparkModelResidentIpcSubmit
 	uint32_t cache_block_identity_count;
 	uint32_t cache_block_identities_offset;
 	uint32_t model_extension_offset;
+	uint32_t tree_row_count;
+	uint32_t row_parent_rows_offset;
+	uint32_t row_slots_offset;
+	uint32_t reserved;
 } SparkModelResidentIpcSubmit;
+
+typedef struct SparkModelResidentIpcContinueToken
+{
+	uint64_t request_id;
+	uint64_t request_generation;
+	uint64_t sequence_id;
+	uint64_t sequence_position;
+	uint32_t resident_sequence_slot;
+	uint32_t input_token_id;
+} SparkModelResidentIpcContinueToken;
 
 typedef struct SparkModelResidentIpcSubmitResult
 {
@@ -330,13 +343,16 @@ SparkStatus SparkModelResidentIpcCalculateSubmitBytes(
 	uint32_t row_count,
 	uint32_t cache_block_identity_count,
 	uint32_t model_extension_bytes,
+	uint32_t tree_row_count,
 	uint32_t *message_bytes_out);
-SparkStatus SparkModelResidentIpcEncodeSubmission(
-	const SparkModelServingSubmission *submission,
-	uint64_t message_id,
+SparkStatus SparkModelResidentIpcCalculateSubmitCapacity(
+	const SparkModelServingRuntimeLimits *runtime_limits,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcStampSubmission(
 	void *message_buffer,
-	uint32_t message_capacity,
-	uint32_t *message_bytes_out);
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint64_t client_generation);
 SparkStatus SparkModelResidentIpcEncodePreparation(
 	const SparkModelServingSubmission *submission,
 	uint64_t message_id,
@@ -350,6 +366,36 @@ SparkStatus SparkModelResidentIpcEncodeContinuation(
 	void *message_buffer,
 	uint32_t message_capacity,
 	uint32_t *message_bytes_out);
+void SparkModelResidentIpcContinueTokenOf(
+	const SparkModelServingLane *lane,
+	SparkModelResidentIpcContinueToken *token);
+void SparkModelResidentIpcContinuedLane(
+	const SparkModelServingLane *previous,
+	const SparkModelResidentIpcContinueToken *token,
+	uint64_t step_generation,
+	SparkModelServingLane *lane);
+SparkStatus SparkModelResidentIpcCalculateTokenContinuationBytes(
+	uint32_t lane_count,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcEncodeTokenContinuation(
+	const SparkModelServingSubmission *submission,
+	uint64_t message_id,
+	uint64_t client_generation,
+	void *message_buffer,
+	uint32_t message_capacity,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcTokenContinuationTokens(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	const SparkModelResidentIpcContinueToken **tokens_out,
+	uint32_t *token_count_out);
+SparkStatus SparkModelResidentIpcExpandTokenContinuation(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	const SparkModelServingLane *previous_lanes,
+	void *expanded_buffer,
+	uint32_t expanded_capacity,
+	uint32_t *expanded_bytes_out);
 SparkStatus SparkModelResidentIpcDecodeSubmission(
 	const void *message_buffer,
 	uint32_t message_bytes,
@@ -369,6 +415,10 @@ SparkStatus SparkModelResidentIpcDecodeCompletion(
 	const void *message_buffer,
 	uint32_t message_bytes,
 	SparkModelServingCompletion *completion_out);
+SparkStatus SparkModelResidentIpcDecodeCompletionReplacing(
+	const void *message_buffer,
+	uint32_t message_bytes,
+	SparkModelServingCompletion *completion);
 
 #ifdef __cplusplus
 }

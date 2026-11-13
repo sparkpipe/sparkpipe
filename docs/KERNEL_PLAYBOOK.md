@@ -268,20 +268,19 @@ which could be mistaken for the qualified route.
   by the source row as well (`LmRouteSourceRow`). Otherwise another token's
   scale is applied, with no fault.
 
-**Speculative verify (`speculate.cuh`)**
+**Speculative verify**
 
-- **Greedy.** `LmSpeculativeVerifyGreedyKernel` accepts the longest prefix
-  where the draft matches the target argmax. At the divergence point it
-  writes the target argmax (the bonus token) and sets
-  `accepted_count = accepted + 1`. It then rolls `context_length` back by
-  `draft_length - accepted`.
-- **Sampled.** `LmSpeculativeVerifySampledKernel` accepts each draft token
-  with probability `min(1, p_target / p_draft)`. On rejection it resamples
-  from the positive part of `target - draft`.
-- **Cache rollback.** A rejected token's KV has already been written. The
-  context length is set from the accepted count, and nothing else.
-- **Where the rest lives.** The speculation seam, tree and policy are in
-  `include/sparkpipe/spark_speculation_*.h` and `src/spark_speculation_*.c`.
+- **Acceptance is on the host.** No kernel accepts drafts. A verify frame
+  computes each row as a one-row decode does and returns the target's token
+  per row; the batch engine keeps the longest path whose drafts equal those
+  tokens, plus the target's next token.
+- **Cache rollback.** A rejected row's KV has already been written. The
+  model's `keep_rows` hook sets the context length from the kept count and
+  folds recurrent state to the last kept row.
+- **Where the rest lives.** The batch engine plans drafts
+  (`runtime/model_batch_engine.c`); the lookup index, the frame cost model
+  and the tree frame layout are in `src/spark_speculation_*.c`
+  (`docs/SPECULATION_UNIFIED_DESIGN.md`).
 
 **GQA (`gqa.cuh`)**
 
@@ -503,13 +502,28 @@ value_dim]` in BF16. The decode accumulator is sized from `VALUE_DIM`.
   - On GB10, absorbing the value half would grow the output projection
     from 8.30 GB to 19.55 GB across 24 layers. That costs about 55 ms per
     token to save a 302 MFLOP kernel that takes 46 µs.
+- **Per-head projections in a row-exact step** (`project_chain.cuh`).
+  `LmPerHeadProjectChainLaunch` runs 1 to 8 rows on the chain kernel and
+  more rows on the tensor-core kernel (`LmPerHeadProjectMmaKernel`), whose
+  summation order differs from the chain kernel's. A row-exact step (a
+  verify frame, `commit = 0`) passes `row_exact`, and above 8 rows it then
+  runs the CUDA-core tile kernel (`LmPerHeadProjectRowsLaunch`), which adds
+  each output's products in the chain kernel's order. Every row of a verify
+  frame so has the bits of its one-row decode
+  (`tests/test_project_chain_cuda.py`, `tests/test_glm52_verify_frames.py`).
 
 ## 2.5 Norm and linear attention (`norm.cuh`, `linear_attn.cuh`)
 
 - **Block reductions.** `LmBlockSum` and `LmBlockMax` reduce with warp
   shuffles first, then do one round through shared memory.
 - **Fused residual and norm.** `LmFusedResidualRmsNormKernel` reads the
-  residual once and writes both the normed row and the new residual.
+  residual once and writes both the normed row and the new residual. The
+  sum is rounded to BF16 before the statistic (`SparkMathResidualSum`), as
+  the publishers' eager `residual + hidden_states` rounds it, so the norm
+  reads the residual it stores. `ROUND_FIRST` rounds the normed value
+  before the gain (`SparkMathNormGainRounded`), as a publisher's
+  `weight * x.to(bf16)` does; each geometry of the Gemma, Ling and GLM 5.2
+  families chooses it (`kNormRoundFirst`).
 - **Activation quantize.** `LmQuantiseRowsKernel` rounds each group scale
   to UE4M3 first and encodes the codes against that stored scale, so the
   consumer's `code * scale` is the nearest grid point. A nonzero group never
@@ -694,11 +708,57 @@ that disagrees on it fails to build. The consumers are:
 
 ## 2.7 Dependent launch around mesh waits (`spark_tp_mesh_kernels.cuh`)
 
-A mesh round runs publish, then arrival (one warp spinning on the peers'
-tails while it prefetches the next weights), then combine. The combine is
-the arrival's programmatic dependent, and it waits on the tails itself
-(`own_wait`).
+A mesh round runs publish, then arrival, then combine. The arrival is one
+block: its first warp spins on the peers' tails, and when the kernels after
+the round registered weights (`LmWeightPrefetchNote`), a second warp
+prefetches them. The combine is the arrival's programmatic dependent, and it
+waits on the tails itself (`own_wait`).
 
+- **The prefetch warp does not poll, and the polling warp does not
+  prefetch.** `cp.async.bulk.prefetch.L2` blocks while memory is busy: one
+  thread issues 12 MiB in 16 KiB pieces in about 39 us whether one, 8 or 32
+  threads share the work. Issued from the polling warp, eight pieces a poll,
+  it was paced by the poll loop and slowed the poll. The second warp issues
+  the group at memory speed, up to `LM_WEIGHT_PREFETCH_BUDGET_BYTES`
+  (12 MiB), and stops when the polling warp's wait is over; the next wait
+  of the same group resumes where it stopped. Thirty-two threads issue 512
+  KiB between two looks at that flag, about 1.7 us: with 8 threads the
+  round bench prefetched a quarter less in the same wait and with 2 almost
+  nothing, because finding each piece then costs more than the memory.
+  - Measured on a GB10 (2026-11-11): a cold 26 MiB read takes about 120 us
+    (225 to 230 GB/s). After a prefetch of its first N MiB the read is
+    shorter by the time the prefetch took, up to about 20 MiB, which is what
+    the cache holds; all 26 MiB cached read in 36 us. A hint is as reliable
+    as a load: over 6,280 reads a node, under 1% ran more than 15 us over
+    the median after either. Hints for pieces of 256 KiB or more load little
+    or nothing.
+  - A prefetch only pays in time when memory would otherwise be idle. Hints
+    for a kernel's own data inside that kernel do not make its cold read
+    faster, and hints for the next round's weights issued during the current
+    round's read are evicted by it and cost their full time: the round bench
+    went from 156 to 189-240 us a round.
+  - The rank that publishes last has no wait to fill, so it reads its next
+    weights cold and the step follows it. Running the whole group there
+    regardless of the peers moves that rank's read into the arrival kernel
+    without shortening it, and holds its combine behind the prefetch.
+    `tp_mesh_hardware_probe --prefetch` holds one rank back and checks both
+    sides: the ranks that waited reach the end of their group, the rank whose
+    peers had landed stops.
+  - Qwen3.8-27B (BF16, TP16, chain decode at about 1,000 tokens of context,
+    2026-11-11, the same lane and load for each build, identical output):
+
+    | Prefetch during the wait | ms a token | heavy rank: own, wait, combine (ms a step) |
+    |---|---:|---|
+    | none | 22.05 | 16.81, 4.13, 0.44 |
+    | on the polling warp, eight pieces a poll | 21.03 | 15.74, 4.04, 0.44 |
+    | own warp, whole group regardless of the peers | 20.39 | 10.81, 7.09, 1.83 |
+    | own warp, until the peers land | 20.15 | 13.45, 5.41, 0.58 |
+
+  - `mesh_round_bench` on the sixteen Sparks, a 5,120-value all-reduce after
+    a cold 26 MiB read every round, ranks identical: 156 us a round with no
+    prefetch, 146 to 151 on the polling warp, 144 on its own warp until the
+    peers land, 139 to 141 for the whole group. The bench and the lane
+    disagree on the last two; the lane decides.
 - **A spinning kernel releases its dependents only when they are small.**
   A released dependent becomes resident at once and spins in its own wait.
   - Large combines (up to 192 blocks) pinned the GPU this way: every rank
@@ -719,6 +779,55 @@ the arrival's programmatic dependent, and it waits on the tails itself
     release saved. With 256 threads each thread sums one quad.
 - **Larger combines are released after the wait**, so a resident dependent
   never holds more than four blocks while it waits.
+
+## 2.8 Hyper-connections (`hc.cuh`, `hc_site.cuh`)
+
+Every CUDA hyper-connection kernel lives in these two headers. A family
+selects its variant by name and template arguments and defines none of its
+own. The variants stay separate because their arithmetic differs: merging
+any two would change a served model's bits.
+
+- **Expansion copies the residual into the streams.**
+  - `LmHcExpandStreamsKernel<HIDDEN>`: one element per thread, stored to all
+    four streams (GLM 5.3 Flash, Motif 3, DeepSeek V4.1 Flash).
+  - `LmHcExpandFlatKernel<STREAMS>`: one element of the flattened streams
+    per thread (HY4). Its launch covers `STREAMS * width` threads.
+- **Mixes.**
+  - `LmHcSite<HIDDEN, P>`: an eight-block cluster splits the flattened
+    streams. The family's policy `P` declares the gates and the combination
+    (`Glm5NextHcPolicy`, `MotifHcPolicy`). The same kernel collapses the
+    streams with the new pre weights and snapshots them for the post update.
+  - `LmHcSinkhornMixes<STREAMS>` (DeepSeek V4.1 Flash): eight per-warp
+    partial dot products a row, from `LmHcSinkhornPartialKernel` below 32
+    rows or `LmHcSinkhornPartialRowsKernel` (four rows a block) from 32 on.
+    The two give the same bits (`tests/test_dsv41_hc_mix.cu`).
+    `LmHcSinkhornKernel` then sums the partials in warp order and writes
+    `pre = 1 / (1 + exp(-u)) + eps`, `post = 2 / (1 + exp(-u))` and a
+    source-major combination: a softmax over each row from its maximum plus
+    eps, a column normalisation, then `iterations - 1` row and column
+    normalisations, each `+ eps`. The collapse runs separately, in
+    `LmHcCollapseKernel` or fused into the consumer through
+    `LmHcCollapseElement`.
+  - `LmHcMix<THREADS, STREAMS, MIXES, WIDTH>` (HY4): no combination. It
+    writes the pre weights `sigmoid(u) + eps` and, with `2 * STREAMS` mixes,
+    the post weights `magnitude * sigmoid(u) + eps`, and it collapses the
+    streams in the same pass. Up to `LM_HC_MIX_SPLIT_ROWS` (16) rows it
+    splits each dot product over 256 lanes (`LmHcMixDotKernel`, then
+    `LmHcMixRowKernel`). Above that it runs four rows a block
+    (`LmHcMixKernel`). `LmHcMixPartialBytes` sizes the split's buffer.
+- **Post updates.**
+  - `LmHcPostKernel<STREAMS>` (HY4): `bf16(fma(post_s, out, x_s))`, with no
+    combination.
+  - `LmHcPostBf16Kernel<STREAMS>` (GLM 5.3 Flash): post weights and a
+    source-major combination rounded to BF16, and each term rounded.
+  - `LmHcPostF32Kernel<STREAMS>` (Motif 3): a target-major combination in
+    FP32 with one rounding, one row per `blockIdx.x`.
+  - `LmHcPostF32SourceMajorKernel<STREAMS>` (DeepSeek V4.1 Flash): the same
+    FP32 formula over a source-major combination, one row per `blockIdx.y`.
+- **The reference set is test code.** The single-block kernels used by the
+  DeepSeek V4.1 Flash layer test and `build/libdsv41_flash_kernels.so` live
+  in `tests/cuda/dsv41_flash_hc_reference.cuh`. Their block sums differ from
+  every production variant, and no production stage launches them.
 
 # Part 3 — Finding kernels and their numbers
 

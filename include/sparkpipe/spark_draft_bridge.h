@@ -37,6 +37,9 @@ extern "C" {
 #define SPARK_DRAFT_BRIDGE_SERVER_STATUS_INTERNAL 3u
 #define SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE 4u
 
+#define SPARK_DRAFT_BRIDGE_POLL_READ 1u
+#define SPARK_DRAFT_BRIDGE_POLL_WRITE 2u
+
 typedef struct SparkDraftBridge SparkDraftBridge;
 
 typedef struct SparkDraftBridgeConfig
@@ -79,7 +82,7 @@ SparkStatus SparkDraftBridgeInitialize(
     SparkDraftBridge **bridge_out);
 void SparkDraftBridgeDestroy(
     SparkDraftBridge *bridge);
-SparkStatus SparkDraftBridgeProposeTree(
+SparkStatus SparkDraftBridgeRequestTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
     uint64_t sequence_id,
@@ -94,10 +97,19 @@ SparkStatus SparkDraftBridgeProposeTree(
     uint32_t time_budget_ms,
     uint32_t max_depth,
     const SparkRowSampling *sampling,
+    uint32_t node_capacity);
+SparkStatus SparkDraftBridgeReply(
+    SparkDraftBridge *bridge,
     SparkDraftBridgeNode *nodes_out,
-    uint32_t node_capacity,
     uint32_t *node_count_out,
     SparkDraftBridgeProposalInfo *info_out);
+void SparkDraftBridgeCancel(
+    SparkDraftBridge *bridge);
+uint32_t SparkDraftBridgePoll(
+    const SparkDraftBridge *bridge,
+    int *fd_out,
+    uint32_t *events_out,
+    uint64_t *deadline_ns_out);
 
 #ifdef __cplusplus
 }

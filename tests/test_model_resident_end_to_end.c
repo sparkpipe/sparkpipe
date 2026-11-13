@@ -474,6 +474,13 @@ static void TestModelResidentRunCase(
 	assert(view.rejected_count == 1u);
 	assert(view.continued_count == 2u);
 	assert(view.completed_count == 4u);
+	assert(view.submission_id_floor == 0u);
+	SparkModelResidentClientDestroy(client);
+	client = 0;
+	assert(SparkModelResidentClientConnect(&configuration,&client) == SPARK_STATUS_OK);
+	assert(SparkModelResidentClientGetView(client,&view) == SPARK_STATUS_OK);
+	assert(view.connected == 1u && view.submitted_count == 0u);
+	assert(view.submission_id_floor == 506u);
 	SparkModelResidentClientDestroy(client);
 	SparkModelServingAdapterUnloadInterface(&adapter);
 	assert(kill(child,SIGTERM) == 0);

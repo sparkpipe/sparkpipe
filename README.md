@@ -126,9 +126,10 @@ their own served names (`glm-5.3-fp8`, `glm-5.3-nvfp4`), so the user chooses
 between speed, cache capacity and full precision. A variant is the
 publisher's or a vetted community release with pinned provenance where one
 exists, and otherwise the output of the shared quantizing packer; every
-variant passes the accuracy gate against the full-precision model before it
-is offered, and the Fleet List gives its measured speed, accuracy and cache
-capacity. A model that does not fit one fleet at full precision (Qwen 3.8
+variant is measured against the full-precision model by one method before it
+is offered ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)), and the Fleet
+List gives its measured speed, accuracy and cache capacity for the user to
+choose by. A model that does not fit one fleet at full precision (Qwen 3.8
 Max) serves the best variant that does. Formats live in one codec layer per
 backend (`inference/kernels/weight_codec.cuh` on CUDA,
 `inference/runner/device_layers.c` on Metal): no model stage names a format,
@@ -302,7 +303,7 @@ not depend on the class.
     the embedding and the per-layer health checks.
   - A model supplies its buffers, weight binding, layer math and recurrent
     states through hooks (Kimi K3's are in
-    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+    `model-families/k3/source/k3_streamed_prefill.cuh`).
   - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
   - Storing a pass's keys into the decode shards and gathering older keys back
     is in `inference/runner/pass_keys.cuh`.
@@ -468,24 +469,26 @@ reordering cannot deadlock the mesh.
 
 ## Speculative decoding
 
-Speculation goes through one seam per serving adapter. Each family has one
-source mask, `SPARK_<FAMILY>_SPECULATORS`, that selects its draft sources:
-local drafts the model makes itself (MTP heads, DSpark) and remote drafts
-from a drafter host through the DFT3 draft bridge (DFlash2, n-gram and suffix
-sources). One model-neutral policy engine does all acceptance accounting: the
-longest accepted path plus one bonus token, with a chain treated as a
-degenerate tree.
+The batch engine plans every draft and the model verifies it. A draft comes
+from the request's own context, as the tokens that followed the longest
+earlier match of the text just written, or from a draft model on a drafter
+host, asked through the DFT3 draft bridge without stopping the engine. For
+each frame the engine picks the depth, and the branches of a tree, that give
+the most expected tokens per second, from the acceptance and the frame times
+it has measured. The model keeps the longest path whose tokens it would have
+emitted itself, plus one token of its own, with a chain treated as a tree of
+one branch.
 
-A model customizes exactly three things:
+A model supplies two things:
 
-- a model contract: geometry, draft limits and hidden-tap layers;
-- a draft function, or the hidden-tap rows a remote drafter needs;
-- a fold/rollback for its own recurrent and paged state.
+- a verify frame in its stage, which computes several rows of one sequence
+  in one pass;
+- a fold of its own recurrent and paged state to the last kept row.
 
-**Sources.** A new method arrives as a new source behind the seam, not as
-edits to every family. A tree verifier checks several drafters' candidates
-in one target pass, and multi-drafter composition races decorrelated
-drafters and retires the ones that stop paying for themselves
+**Sources.** A new draft method arrives as a draft model behind the bridge,
+not as edits to every family. A tree frame checks several drafters'
+candidates in one target pass, and the engine stops asking a drafter that
+stops paying for itself
 ([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
 **Guarantees.** Verification pins every emitted token to the target model's
@@ -645,7 +648,7 @@ model's cached prefixes come back from the KV snapshot store.
 
 | Served name | Model | Family | Context | Speculation |
 | --- | --- | --- | ---: | :---: |
-| `glm-5.3` | GLM 5.3 Full | `glm52` | 768K | yes |
+| `glm-5.3` | GLM 5.3 Full | `glm52` | 1M | yes |
 | `glm-5.3-flash` | GLM 5.3 Flash | `glm5_next` | 128K | yes |
 | `kimi-k3` | Kimi K3 | `k3` | 1M | yes |
 | `kimi-k3.1-pro` | Kimi K3.1 Pro | `k3` | 1M | yes |
@@ -664,6 +667,7 @@ model's cached prefixes come back from the KV snapshot store.
 | `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
 | `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
 | `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-27b-fp8` | Qwen 3.8 27B, FP8 variant | `qwen38` | 256K | yes |
 | `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
@@ -678,9 +682,14 @@ model's cached prefixes come back from the KV snapshot store.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
-- **Precision variants:** every row is the publisher's precision; the 8-bit
-  and 4-bit variants of a model serve under its name with `-fp8`, `-nvfp4` or
-  `-mxfp4` appended (Packs, above).
+- **Precision variants:** a row whose name ends in `-fp8`, `-nvfp4` or
+  `-mxfp4` is the 8-bit or 4-bit variant of the model above it (Packs,
+  above); every other row is the publisher's precision. A variant is its own
+  lane record on its model's mesh lane, with its own pack, adapter build and
+  KV label, and its record lands with its measured figures against the
+  full-precision lane ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)).
+  `qwen3.8-27b-fp8` is the publisher's FP8 release
+  ([figures](qualification/qwen38_27b/fp8-variant-20261112/README.md)).
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.
@@ -798,6 +807,8 @@ Each document is the authority for one thing:
   separate from projections;
 - [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md): host
   roles, releases and fleet operations;
+- [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md): every environment variable a
+  process reads; the serving path reads only residentd's own handoff;
 - [`docs/README.md`](docs/README.md): index of maintained technical
   references.
 

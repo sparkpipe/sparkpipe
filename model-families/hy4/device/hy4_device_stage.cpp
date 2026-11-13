@@ -92,6 +92,7 @@ struct HyDevice
 		attention->heads = G::kHeads;
 		attention->nope = G::kNope;
 		attention->rope = G::kRope;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		attention->latent = G::kLatent;
 		attention->value_dimension = G::kValueDim;
 		attention->rope_theta = G::kRopeTheta;
@@ -419,7 +420,14 @@ struct HyDevice
 			0,
 			BindDevice,
 			0,
-			0
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0u,
+			0u
 		};
 		return &interface_table;
 	}

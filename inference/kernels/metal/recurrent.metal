@@ -5,7 +5,7 @@
 
 kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], device ushort *window [[buffer(1)]],
 	device const uint *state_index [[buffer(2)]], device const uint *row_begin [[buffer(3)]], device const ushort *input [[buffer(4)]],
-	device const ushort *weight [[buffer(5)]], device ushort *output [[buffer(6)]],
+	device const ushort *weight [[buffer(5)]], device ushort *output [[buffer(6)]], device const uint *parent_rows [[buffer(7)]],
 	uint2 group [[threadgroup_position_in_grid]], uint tid [[thread_index_in_threadgroup]], uint2 group_size [[threads_per_threadgroup]])
 {
 	const uint threads = group_size.x;
@@ -23,12 +23,32 @@ kernel void spark_causal_conv_silu(constant SparkConvParams &p [[buffer(0)]], de
 	for ( uint row = row_begin[sequence]; row < row_begin[sequence + 1u]; row++ )
 	{
 		float total = 0.0f;
-		for ( uint entry = 0u; entry + 1u < span; entry++ )
-			taps[entry] = taps[entry + 1u];
-		taps[span - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
+		if ( p.tree != 0u )
+		{
+			uint ancestor = row, missing = span;
+			for ( uint t = 0u; t < span; t++ )
+			{
+				if ( ancestor != 0xffffffffu )
+				{
+					taps[span - 1u - t] = SparkMathBf16ToFloat(input[(ulong)ancestor * p.row_stride + channel]);
+					ancestor = parent_rows[ancestor];
+				}
+				else
+				{
+					missing = missing == span ? t : missing;
+					taps[span - 1u - t] = SparkMathBf16ToFloat(slot[span - t + missing - 1u]);
+				}
+			}
+		}
+		else
+		{
+			for ( uint entry = 0u; entry + 1u < span; entry++ )
+				taps[entry] = taps[entry + 1u];
+			taps[span - 1u] = SparkMathBf16ToFloat(input[(ulong)row * p.row_stride + channel]);
+		}
 		for ( uint tap = 0u; tap < taps_count; tap++ )
 			total += taps[tap * dilation] * weights[tap];
-		if ( p.weight_f32 == 0u )
+		if ( p.weight_f32 == 0u && p.swish_once == 0u )
 			total = SparkMathRoundBf16(total);
 		output[(ulong)row * p.row_stride + channel] = SparkMathFloatToBf16(SparkMathSwishFast(total));
 	}
@@ -128,7 +148,8 @@ kernel void spark_channel_delta_prepare(constant SparkDeltaParams &p [[buffer(0)
 kernel void spark_gated_delta_rule(constant SparkDeltaParams &p [[buffer(0)]], device float *state [[buffer(1)]],
 	device const uint *state_index [[buffer(2)]], device const uint *row_begin [[buffer(3)]], device const float *query [[buffer(4)]],
 	device const float *key [[buffer(5)]], device const float *decay [[buffer(6)]], device const float *beta [[buffer(7)]],
-	device const ushort *mix [[buffer(8)]], device ushort *output [[buffer(9)]],
+	device const ushort *mix [[buffer(8)]], device ushort *output [[buffer(9)]], device const uint *state_loads [[buffer(10)]],
+	device const uint *state_saves [[buffer(11)]], device float *snapshots [[buffer(12)]],
 	uint3 group [[threadgroup_position_in_grid]], uint lane [[thread_index_in_simdgroup]], uint simd [[simdgroup_index_in_threadgroup]])
 {
 	const uint column = group.x * SPARK_DELTA_COLUMNS + simd, head = group.y, sequence = group.z;
@@ -144,6 +165,11 @@ kernel void spark_gated_delta_rule(constant SparkDeltaParams &p [[buffer(0)]], d
 		const float4 q = *(device const float4 *)(query + vector);
 		const float strength = beta[(ulong)row * p.value_heads + head];
 		const float value = SparkMathBf16ToFloat(mix[(ulong)row * p.mix_stride + p.value_offset + head * V + column]);
+		if ( p.tree != 0u && state_loads[row] != 0u )
+		{
+			device const float *snap = snapshots + (((ulong)(state_loads[row] - 1u) * p.value_heads + head) * K) * V + column;
+			cell = float4(snap[(lane * 4u) * V], snap[(lane * 4u + 1u) * V], snap[(lane * 4u + 2u) * V], snap[(lane * 4u + 3u) * V]);
+		}
 		if ( p.channel_decay != 0u )
 			cell *= *(device const float4 *)(decay + ((ulong)row * p.value_heads + head) * K + lane * 4u);
 		else
@@ -153,6 +179,16 @@ kernel void spark_gated_delta_rule(constant SparkDeltaParams &p [[buffer(0)]], d
 		const float result = simd_sum(dot(cell, q));
 		if ( lane == 0u )
 			output[(ulong)row * p.output_stride + head * V + column] = SparkMathFloatToBf16(result);
+		if ( p.tree != 0u && state_saves[row] != 0u )
+			for ( uint branch = 0u; branch < SPARK_DELTA_SNAPSHOT_MAX; branch++ )
+				if ( ((state_saves[row] >> branch) & 1u) != 0u )
+				{
+					device float *snap = snapshots + (((ulong)branch * p.value_heads + head) * K) * V + column;
+					snap[(lane * 4u) * V] = cell.x;
+					snap[(lane * 4u + 1u) * V] = cell.y;
+					snap[(lane * 4u + 2u) * V] = cell.z;
+					snap[(lane * 4u + 3u) * V] = cell.w;
+				}
 	}
 	if ( p.commit != 0u )
 	{

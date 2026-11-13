@@ -101,13 +101,11 @@ def main() -> int:
         encoding="utf-8"
     )
     require(
-        'strcmp(deployment->transport_mode,"host-rdma")' in deployment_source
-        and 'strcmp(deployment->transport_mode,"gpudirect-rdma")'
-        in deployment_source,
-        "deployment transport modes are not explicit",
+        'strcmp(deployment->transport_mode,"host-rdma")' in deployment_source,
+        "the deployment transport mode is not explicit",
     )
     require('strcmp(mode,"host-rdma")' in resident, "host RDMA mode missing")
-    require('strcmp(mode,"gpudirect-rdma")' in resident, "GPUDirect mode missing")
+    require('strcmp(mode,"gpudirect-rdma")' not in resident and 'strcmp(mode,"host-staged")' not in resident, "an unserved transport mode is back")
     require('strcmp(mode,"device")' not in resident, "device alias reintroduces fallback")
     require(
         "SPARKPIPE_RING_TRANSPORT_PORT_BASE" not in resident,
@@ -138,15 +136,13 @@ def main() -> int:
         "static SparkStatus SparkModelResidentdProcessSubmission", 1
     )[1].split("static SparkStatus SparkModelResidentdProcessDecision", 1)[0]
     require(
-        "SparkModelResidentIpcValidateDirectSubmitDescriptor" in submission_path
+        "SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT " not in resident
+        and "SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT\n" not in resident
         and submission_path.index(
-            "SparkModelResidentIpcValidateDirectSubmitDescriptor"
-        )
-        < submission_path.index(
             "SparkModelServingAdapterValidateRuntimeSubmission"
         )
         < submission_path.index("SparkModelServingAdapterPrepareSubmission"),
-        "distributed direct SUBMIT reaches adapter/cache admission",
+        "a one-phase SUBMIT is back, or cache admission runs before validation",
     )
     decision_path = resident.split(
         "static SparkStatus SparkModelResidentdProcessDecision", 1
@@ -262,7 +258,8 @@ def main() -> int:
         "batch client does not require its local packaged runtime root",
     )
     require(
-        "SparkModelResidentClientPrepare" in pipeline_client
+        "SparkModelResidentIpcEncodePreparation" in pipeline_client
+        and "SparkModelResidentClientQueueEncoded" in pipeline_client
         and "SparkModelResidentClientCommit" in pipeline_client
         and "SparkModelResidentClientAbort" in pipeline_client
         and "for (rank=pipeline->rank_count" in pipeline_client,
@@ -510,16 +507,6 @@ def main() -> int:
         "resident does not enforce active and persistent KV slot ownership",
     )
 
-    template_spine = (
-        ROOT / "runtime/serving_adapter_template.c"
-    ).read_text(encoding="utf-8")
-    require(
-        "create_request.kv_logical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_logical_page_capacity"
-        in template_spine
-        and "create_request.kv_physical_page_capacity =\n\t\tconfiguration->runtime_limits.kv_physical_page_capacity"
-        in template_spine,
-        "the serving template does not pass neutral KV page budgets to the driver",
-    )
     deployment_header = (
         ROOT / "include/sparkpipe/spark_model_resident_deployment.h"
     ).read_text(encoding="utf-8")

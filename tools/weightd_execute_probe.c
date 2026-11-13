@@ -114,7 +114,7 @@ int main(int argc,char **argv)
 		fprintf(stderr,"probe-7 identity invalid\n");
 		return(1);
 	}
-	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,pool_bytes,request.identity.arena_bytes + 255ull,timeout_ns,&pack) != SPARK_STATUS_OK )
+	if ( SparkWeightdLazyPackCreate(getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET),&request,&(SparkWeightdLazyPackOptions){ .expert_pool_cap_bytes = pool_bytes, .timeout_nanoseconds = timeout_ns },&pack) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"probe-8 attach failed\n");
 		return(1);

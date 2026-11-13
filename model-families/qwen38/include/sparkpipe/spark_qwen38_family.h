@@ -26,6 +26,7 @@ struct QwenHybridDefaults
 	static constexpr uint32_t kIndexBudget = 0u;
 	static constexpr uint32_t kIndexRatio = 1u;
 	static constexpr uint32_t kVerifyRows = 0u;
+	static constexpr bool kTiedHead = false;
 };
 
 template<class G>
@@ -65,71 +66,88 @@ struct QwenHybridSchedule
 		return L::Attention(index) ? B::Attention(state, frame, layer) : B::Gdn(state, frame, layer);
 	}
 
-	static SparkStatus HyperLayers(State *state, const Frame &frame)
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
 	{
-		SparkStatus status = B::HyperBegin(state, frame);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const typename B::Layer &layer = B::LayerOf(state, index);
-			if constexpr ( L::kPle )
-				if ( index == G::kPleLayer )
-					status = B::Ple(state, frame);
-			for ( uint32_t part = 0u; part < 2u && status == SPARK_STATUS_OK; ++part )
-			{
-				status = B::HyperPre(state, frame, layer, part);
-				if ( status == SPARK_STATUS_OK )
-					status = part == 1u ? B::Ffn(state, frame, layer) : Mixer(state, frame, index);
-				if ( status == SPARK_STATUS_OK )
-					status = B::AllReduce(state, frame);
-				if ( status == SPARK_STATUS_OK )
-					status = B::HyperPost(state, frame);
-			}
+		SparkStatus status = B::Begin(state, step, queue, frame);
+		if constexpr ( L::kHyper )
 			if ( status == SPARK_STATUS_OK )
-				status = B::LayerDone(state, frame, index);
-		}
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		return B::HyperEnd(state, frame);
+				status = B::HyperBegin(state, *frame);
+		return status;
 	}
 
-	static SparkStatus PlainLayers(State *state, const Frame &frame)
+	static SparkStatus HyperLayer(State *state, const Frame &frame, uint32_t index)
 	{
+		const typename B::Layer &layer = B::LayerOf(state, index);
 		SparkStatus status = SPARK_STATUS_OK;
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
+		if constexpr ( L::kPle )
+			if ( index == G::kPleLayer )
+				status = B::Ple(state, frame);
+		for ( uint32_t part = 0u; part < 2u && status == SPARK_STATUS_OK; ++part )
 		{
-			const typename B::Layer &layer = B::LayerOf(state, index);
-			status = index == 0u ? B::RmsNorm(state, frame, layer.input_norm) : B::AddRmsNorm(state, frame, layer.input_norm);
+			status = B::HyperPre(state, frame, layer, part);
 			if ( status == SPARK_STATUS_OK )
-				status = Mixer(state, frame, index);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			status = B::AddRmsNorm(state, frame, layer.post_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = B::Ffn(state, frame, layer);
+				status = part == 1u ? B::Ffn(state, frame, layer) : Mixer(state, frame, index);
 			if ( status == SPARK_STATUS_OK )
 				status = B::AllReduce(state, frame);
 			if ( status == SPARK_STATUS_OK )
-				status = B::LayerDone(state, frame, index);
+				status = B::HyperPost(state, frame);
 		}
+		if ( status == SPARK_STATUS_OK )
+			status = B::LayerDone(state, frame, index);
+		return status;
+	}
+
+	static SparkStatus PlainLayer(State *state, const Frame &frame, uint32_t index)
+	{
+		const typename B::Layer &layer = B::LayerOf(state, index);
+		SparkStatus status = index == 0u ? B::RmsNorm(state, frame, layer.input_norm) : B::AddRmsNorm(state, frame, layer.input_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = Mixer(state, frame, index);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		status = B::AddRows(state, frame);
+		status = B::AddRmsNorm(state, frame, layer.post_norm);
 		if ( status == SPARK_STATUS_OK )
-			status = B::Check(state, frame);
+			status = B::Ffn(state, frame, layer);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::LayerDone(state, frame, index);
 		return status;
+	}
+
+	static SparkStatus Layer(State *state, const Frame &frame, uint32_t index)
+	{
+		if constexpr ( L::kHyper )
+			return HyperLayer(state, frame, index);
+		else
+			return PlainLayer(state, frame, index);
+	}
+
+	static SparkStatus End(State *state, const Frame &frame, SparkStatus status)
+	{
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if constexpr ( L::kHyper )
+			return B::HyperEnd(state, frame);
+		else
+		{
+			status = B::AddRows(state, frame);
+			if ( status == SPARK_STATUS_OK )
+				status = B::Check(state, frame);
+			return status;
+		}
 	}
 
 	static SparkStatus Step(State *state, const SparkStageRunnerStep *step, void *queue)
 	{
 		Frame frame;
-		const SparkStatus status = B::Begin(state, step, queue, &frame);
+		SparkStatus status = Begin(state, step, queue, &frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if constexpr ( L::kHyper )
-			return HyperLayers(state, frame);
-		else
-			return PlainLayers(state, frame);
+		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
+			status = Layer(state, frame, index);
+		return End(state, frame, status);
 	}
 };

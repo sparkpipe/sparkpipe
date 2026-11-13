@@ -105,88 +105,110 @@ struct GemmaSchedule
 		return L::Full(index) ? B::template Attention<true>(state, frame, layer) : B::template Attention<false>(state, frame, layer);
 	}
 
-	static SparkStatus PreNormLayers(State *state, const Frame &frame)
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *queue, Frame *frame)
 	{
-		SparkStatus status = B::RmsNorm(state, frame, B::LayerOf(state, 0u).input_norm);
-		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const typename B::Layer &layer = B::LayerOf(state, index);
-			const bool moe = G::kMoe && index >= G::kFirstMoeLayer;
-			const GemmaBranch ffn = moe ? GEMMA_EXPERT_BRANCH : GEMMA_ATTENTION_BRANCH;
+		SparkStatus status = B::Begin(state, step, queue, frame);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if constexpr ( G::kEmbedNorm )
+			status = B::EmbedNorm(state, *frame);
+		else if constexpr ( G::kEmbedScale != 1.0f )
+			status = B::EmbedScale(state, *frame, G::kEmbedScale);
+		if constexpr ( G::kPreNorm )
+			if ( status == SPARK_STATUS_OK )
+				status = B::RmsNorm(state, *frame, B::LayerOf(state, 0u).input_norm);
+		return status;
+	}
+
+	static SparkStatus PreNormLayer(State *state, const Frame &frame, uint32_t index)
+	{
+		const typename B::Layer &layer = B::LayerOf(state, index);
+		const bool moe = G::kMoe && index >= G::kFirstMoeLayer;
+		const GemmaBranch ffn = moe ? GEMMA_EXPERT_BRANCH : GEMMA_ATTENTION_BRANCH;
+		SparkStatus status = Attention(state, frame, index);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, 1u);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		status = B::AddRmsNorm(state, frame, GEMMA_ATTENTION_BRANCH, layer.pre_ff_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = B::Mlp(state, frame, layer);
+		if constexpr ( G::kMoe && G::kSigmoidRouter )
+			if ( status == SPARK_STATUS_OK && moe )
+				status = B::SigmoidExperts(state, frame, layer);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame, ffn, 1u);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( index + 1u < G::kLayers )
+			status = B::AddRmsNorm(state, frame, ffn, B::LayerOf(state, index + 1u).input_norm);
+		else
+			status = B::AddRows(state, frame, ffn);
+		if ( status == SPARK_STATUS_OK )
+			status = B::Check(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::LayerDone(state, frame, index);
+		return status;
+	}
+
+	static SparkStatus PostNormLayer(State *state, const Frame &frame, uint32_t index)
+	{
+		const typename B::Layer &layer = B::LayerOf(state, index);
+		SparkStatus status = B::RmsNorm(state, frame, layer.input_norm);
+		if ( status == SPARK_STATUS_OK )
 			status = Attention(state, frame, index);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, 1u);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		status = B::NormAdd(state, frame, layer.post_attn_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = B::RmsNorm(state, frame, layer.pre_ff_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = B::Mlp(state, frame, layer);
+		if constexpr ( G::kMoe )
 			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, 1u);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			status = B::AddRmsNorm(state, frame, GEMMA_ATTENTION_BRANCH, layer.pre_ff_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = B::Mlp(state, frame, layer);
-			if constexpr ( G::kMoe && G::kSigmoidRouter )
-				if ( status == SPARK_STATUS_OK && moe )
-					status = B::SigmoidExperts(state, frame, layer);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame, ffn, 1u);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			if ( index + 1u < G::kLayers )
-				status = B::AddRmsNorm(state, frame, ffn, B::LayerOf(state, index + 1u).input_norm);
-			else
-				status = B::AddRows(state, frame, ffn);
-			if ( status == SPARK_STATUS_OK )
-				status = B::Check(state, frame);
-			if ( status == SPARK_STATUS_OK )
-				status = B::LayerDone(state, frame, index);
-		}
+				status = B::Experts(state, frame, layer);
+		if ( status == SPARK_STATUS_OK )
+			status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, G::kMoe ? 2u : 1u);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if constexpr ( G::kMoe )
+			status = B::BranchNormAdd(state, frame, layer.post_ff_norm_1, layer.post_ff_norm_2, layer.post_ff_norm, layer.layer_scalar);
+		else if constexpr ( G::kLayerScalar )
+			status = B::NormAddScaled(state, frame, layer.post_ff_norm, layer.layer_scalar);
+		else
+			status = B::NormAdd(state, frame, layer.post_ff_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = B::Check(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = B::LayerDone(state, frame, index);
+		return status;
+	}
+
+	static SparkStatus Layer(State *state, const Frame &frame, uint32_t index)
+	{
+		if constexpr ( G::kPreNorm )
+			return PreNormLayer(state, frame, index);
+		else
+			return PostNormLayer(state, frame, index);
+	}
+
+	static SparkStatus End(State *state, const Frame &frame, SparkStatus status)
+	{
+		(void)state;
+		(void)frame;
 		return status;
 	}
 
 	static SparkStatus Step(State *state, const SparkStageRunnerStep *step, void *queue)
 	{
 		Frame frame;
-		SparkStatus status = B::Begin(state, step, queue, &frame);
+		SparkStatus status = Begin(state, step, queue, &frame);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if constexpr ( G::kEmbedNorm )
-			status = B::EmbedNorm(state, frame);
-		else if constexpr ( G::kEmbedScale != 1.0f )
-			status = B::EmbedScale(state, frame, G::kEmbedScale);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if constexpr ( G::kPreNorm )
-			return PreNormLayers(state, frame);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
-		{
-			const typename B::Layer &layer = B::LayerOf(state, index);
-			status = B::RmsNorm(state, frame, layer.input_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = Attention(state, frame, index);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, 1u);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			status = B::NormAdd(state, frame, layer.post_attn_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = B::RmsNorm(state, frame, layer.pre_ff_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = B::Mlp(state, frame, layer);
-			if constexpr ( G::kMoe )
-				if ( status == SPARK_STATUS_OK )
-					status = B::Experts(state, frame, layer);
-			if ( status == SPARK_STATUS_OK )
-				status = B::AllReduce(state, frame, GEMMA_ATTENTION_BRANCH, G::kMoe ? 2u : 1u);
-			if ( status != SPARK_STATUS_OK )
-				break;
-			if constexpr ( G::kMoe )
-				status = B::BranchNormAdd(state, frame, layer.post_ff_norm_1, layer.post_ff_norm_2, layer.post_ff_norm, layer.layer_scalar);
-			else if constexpr ( G::kLayerScalar )
-				status = B::NormAddScaled(state, frame, layer.post_ff_norm, layer.layer_scalar);
-			else
-				status = B::NormAdd(state, frame, layer.post_ff_norm);
-			if ( status == SPARK_STATUS_OK )
-				status = B::Check(state, frame);
-			if ( status == SPARK_STATUS_OK )
-				status = B::LayerDone(state, frame, index);
-		}
-		return status;
+			status = Layer(state, frame, index);
+		return End(state, frame, status);
 	}
 };

@@ -67,6 +67,7 @@ struct Qwen38FlashGeometry : QwenHybridDefaults
 	static constexpr uint32_t kPleDilation = 3u;
 	static constexpr uint32_t kPleEos = 248044u;
 	static constexpr bool kGdnSigmoidGate = true;
+	static constexpr bool kRopeRoundedTerms = false;
 	static constexpr uint32_t kIndexHeads = 4u;
 	static constexpr uint32_t kIndexDim = 128u;
 	static constexpr uint32_t kIndexBudget = 2048u;

@@ -308,15 +308,16 @@ struct Probe
         }
         return static_cast<double>(Now()-begin)/1e6;
     }
+    void LaunchRank(uint32_t rank,bool graph)
+    {
+        uint64_t begin=Now();
+        if (graph) CUDA(cudaGraphLaunch(ranks[rank].executable,ranks[rank].stream));else Enqueue(rank);
+        CUDA(cudaEventRecord(ranks[rank].done,ranks[rank].stream));enqueue_ns[rank]=Now()-begin;
+    }
     void Launch(bool graph)
     {
         launch_count++;
-        for (uint32_t rank=0u;rank<degree;rank++)
-        {
-            uint64_t begin=Now();
-            if (graph) CUDA(cudaGraphLaunch(ranks[rank].executable,ranks[rank].stream));else Enqueue(rank);
-            CUDA(cudaEventRecord(ranks[rank].done,ranks[rank].stream));enqueue_ns[rank]=Now()-begin;
-        }
+        for (uint32_t rank=0u;rank<degree;rank++) LaunchRank(rank,graph);
     }
     bool Done()
     {
@@ -336,6 +337,12 @@ struct Probe
             std::this_thread::sleep_for(std::chrono::microseconds(20));
         }
         return static_cast<double>(Now()-begin)/1e6;
+    }
+    uint64_t AllToAllAdvances(uint32_t n,uint64_t count) const
+    {
+        if ((routes&SPARK_TP_MESH_ROUTES_PEER)==0u) return SparkTpMeshAllToAllChunks(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES);
+        return SparkTpMeshAllToAllPipelined(count,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SparkTpMeshPipelineChunks(count,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES) :
+            SparkTpMeshAllToAllPeerChunks(count,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES);
     }
     void Verify(bool failed=false,bool timed_out=false)
     {
@@ -373,7 +380,7 @@ struct Probe
                 uint64_t advances=rows==1u && SparkTpMeshDirectPipelined(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)!=0u ?
                     SparkTpMeshPipelineChunks(SparkTpMeshDirectLocalElements(elements,degree,operation),SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+
                         ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u && SparkTpMeshGatherPairFirst(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS : 0u) :
-                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? SparkTpMeshPairFirstScatterChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u : SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(elements,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(elements,degree,SPARK_WEIGHTD_MESH_SLOT_BYTES)) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
+                    operation==SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ? (SparkTpMeshScatterPipelined(elements,degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)!=0u ? ((routes&SPARK_TP_MESH_ROUTES_PAIR_FIRST)!=0u ? SparkTpMeshPairFirstScatterChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)+2u : SparkTpMeshPipelineChunks(elements/degree,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES)) : SparkTpMeshScatterChunks(elements,degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)) : operation==SPARK_TP_MESH_OPERATION_ALL_TO_ALL ? AllToAllAdvances(degree,elements) : rows==1u ? ((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u && SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)==2u ? ((SparkTpMeshDirectLocalElements(elements,degree,operation)-1u)/SparkTpMeshDirectPeerCapacity(degree,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES)+1u)*2u : SparkTpMeshDirectChunks(elements,degree,operation,SPARK_WEIGHTD_MESH_SLOT_BYTES)*SparkTpMeshDirectPhasesPerChunk(elements,degree,operation,routes)) : chunks*2u*SparkTpMeshTreeLevels(degree);
                 REQUIRE(control.seq-seq_base[rank]==launch_count*rounds*advances);
             }
             if (failed) REQUIRE(std::all_of(output.begin(),output.end(),[](uint8_t byte){return byte==0xcdu;}));
@@ -396,7 +403,7 @@ struct Probe
                     routes=route_set;
                     Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,false);Case(n,SPARK_TP_MESH_OPERATION_ALL_TO_ALL,1u,count,true);
                     std::printf("ALL-TO-ALL routes=%s degree=%u per_peer=%llu rounds=%llu PASS\n",(routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? "peer" : "scatter",n,(unsigned long long)count,
-                        (unsigned long long)((routes&SPARK_TP_MESH_ROUTES_PEER)!=0u ? SparkTpMeshAllToAllPeerChunks(count,SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES) : SparkTpMeshAllToAllChunks(count,n,SPARK_WEIGHTD_MESH_SLOT_BYTES)));
+                        (unsigned long long)AllToAllAdvances(n,count));
                 }
         routes=saved;
     }
@@ -724,6 +731,67 @@ struct Probe
         Setup(4u,1u,2u,513u,2u,true);Data(13u);StartWorker();begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
         completed_cases++;std::puts("PASS missing peer times out with output untouched, drains and recovers same executable");
     }
+    void PrefetchCapture(std::vector<LmWeightPrefetchPlan> &plans,std::vector<uint8_t *> &weights,uint64_t bytes)
+    {
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            plans[rank]={};plans[rank].host=static_cast<LmWeightPrefetchGroup *>(std::calloc(4u,sizeof(LmWeightPrefetchGroup)));REQUIRE(plans[rank].host!=nullptr);
+            CUDA(cudaMalloc(reinterpret_cast<void **>(&plans[rank].device),4u*sizeof(LmWeightPrefetchGroup)));plans[rank].capacity=4u;
+            CUDA(cudaMalloc(reinterpret_cast<void **>(&weights[rank]),bytes));
+            CUDA(cudaStreamSynchronize(ranks[rank].stream));
+            LmWeightPrefetchArm(&plans[rank],ranks[rank].stream);
+            CUDA(cudaStreamBeginCapture(ranks[rank].stream,cudaStreamCaptureModeThreadLocal));
+            Enqueue(rank);LmWeightPrefetchNote(ranks[rank].stream,weights[rank],bytes);
+            CUDA(cudaStreamEndCapture(ranks[rank].stream,&ranks[rank].graph));
+            CUDA(LmWeightPrefetchDisarm(&plans[rank],1u));
+            CUDA(cudaGraphInstantiate(&ranks[rank].executable,ranks[rank].graph,nullptr,nullptr,0u));
+            REQUIRE(plans[rank].groups==1u && plans[rank].dropped==0u && plans[rank].host[0].count==1u && plans[rank].host[0].total==bytes);
+        }
+    }
+    std::vector<uint64_t> PrefetchProgress(std::vector<LmWeightPrefetchPlan> &plans)
+    {
+        std::vector<uint64_t> progress(degree);
+        for (uint32_t rank=0u;rank<degree;rank++)
+        {
+            LmWeightPrefetchGroup group={};CUDA(cudaMemcpy(&group,plans[rank].device,sizeof(group),cudaMemcpyDeviceToHost));
+            progress[rank]=group.progress;group.progress=0u;CUDA(cudaMemcpy(plans[rank].device,&group,sizeof(group),cudaMemcpyHostToDevice));
+        }
+        return progress;
+    }
+    void PrefetchFree(std::vector<LmWeightPrefetchPlan> &plans,std::vector<uint8_t *> &weights)
+    {
+        for (uint32_t rank=0u;rank<degree;rank++) { CUDA(cudaFree(weights[rank]));CUDA(cudaFree(plans[rank].device));std::free(plans[rank].host); }
+    }
+    void Prefetch()
+    {
+        const uint64_t small=99984u,large=LM_WEIGHT_PREFETCH_BUDGET_BYTES,piece=LM_WEIGHT_PREFETCH_PIECE_BYTES;
+        std::vector<LmWeightPrefetchPlan> plans(4u);std::vector<uint8_t *> weights(4u,nullptr);
+        Setup(4u,1u,1u,513u,3u);Data(30u);PrefetchCapture(plans,weights,small);
+        for (uint32_t replay=0u;replay<2u;replay++)
+        {
+            if (replay!=0u) { Setup(4u,1u,1u,513u,3u,true);Data(31u); }
+            StartWorker();uint64_t begin=Now();Launch(true);Wait(begin);Verify();EndWorker();
+            for (uint64_t reached:PrefetchProgress(plans)) REQUIRE(reached==((small+piece-1u)&~(piece-1u)));
+        }
+        PrefetchFree(plans,weights);
+        completed_cases++;std::puts("PASS a graph's mesh waits prefetch the weights registered after them to the end of their group on every replay, and the sums stay exact");
+        Setup(4u,1u,1u,513u,1u);Data(32u);PrefetchCapture(plans,weights,large);
+        StartWorker();uint64_t begin=Now(),shipped_before=transfers.load();launch_count++;
+        for (uint32_t rank=0u;rank+1u<degree;rank++) LaunchRank(rank,true);
+        while (transfers.load()<shipped_before+degree-1u) REQUIRE(Now()-begin<UINT64_C(10000000000));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        LaunchRank(degree-1u,true);Wait(begin);Verify();EndWorker();
+        std::vector<uint64_t> reached=PrefetchProgress(plans);
+        for (uint32_t rank=0u;rank+1u<degree;rank++) REQUIRE(reached[rank]==large);
+        if (reached[degree-1u]>=large)
+        {
+            std::fprintf(stderr,"FAIL prefetch: the rank whose peers had landed before its wait began still prefetched its whole %llu-byte group\n",(unsigned long long)large);
+            std::exit(1);
+        }
+        PrefetchFree(plans,weights);
+        completed_cases++;std::printf("PASS ranks that wait prefetch their whole group; the rank whose peers had already landed stopped at %llu of %llu bytes\n",
+            (unsigned long long)reached[degree-1u],(unsigned long long)large);
+    }
     void Timings()
     {
         Setup(16u,1u,1u,257u,91u);Data(20u);double construction=Capture();StartWorker();
@@ -755,9 +823,9 @@ int main(int argc,char **argv)
 {
     if (argc!=2 || (std::strcmp(argv[1],"--run")!=0 && std::strcmp(argv[1],"--all-to-all")!=0 && std::strcmp(argv[1],"--peer-reduce")!=0 && std::strcmp(argv[1],"--reduce-scatter")!=0 &&
         std::strcmp(argv[1],"--pipelined")!=0 && std::strcmp(argv[1],"--pair-first")!=0 && std::strcmp(argv[1],"--pair-first-gather")!=0 &&
-        std::strcmp(argv[1],"--pair-allreduce")!=0 && std::strcmp(argv[1],"--pair-first-boundary")!=0))
+        std::strcmp(argv[1],"--pair-allreduce")!=0 && std::strcmp(argv[1],"--pair-first-boundary")!=0 && std::strcmp(argv[1],"--prefetch")!=0))
     {
-        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-allreduce | --pair-first-boundary\n",argv[0]);
+        std::fprintf(stderr,"usage: %s --run | --all-to-all | --peer-reduce | --reduce-scatter | --pipelined | --pair-first | --pair-first-gather | --pair-allreduce | --pair-first-boundary | --prefetch\n",argv[0]);
         return 2;
     }
     REQUIRE(std::setvbuf(stdout,nullptr,_IOLBF,0)==0);
@@ -773,6 +841,12 @@ int main(int argc,char **argv)
         return 2;
     }
     Probe probe;
+    if (std::strcmp(argv[1],"--prefetch")==0)
+    {
+        probe.Prefetch();
+        std::printf("PASS tp_mesh_hardware_probe prefetch cases=%u\n",probe.completed_cases);
+        return 0;
+    }
     if (std::strcmp(argv[1],"--pipelined")==0)
     {
         probe.Pipelined();

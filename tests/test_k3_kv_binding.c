@@ -39,36 +39,70 @@ static int RemoveEntry(const char *path, const struct stat *info, int flag, stru
 	return(remove(path));
 }
 
+static void Configure(SparkModelServingAdapterConfiguration *configuration, uint32_t logical, uint32_t physical)
+{
+	memset(configuration, 0, sizeof(*configuration));
+	configuration->runtime_limits.kv_logical_page_capacity = logical;
+	configuration->runtime_limits.kv_physical_page_capacity = physical;
+	configuration->runtime_limits.output_vocabulary = 32000u;
+	configuration->kv_backing_directory = DIRECTORY;
+	configuration->kv_backing_maximum_bytes = UINT64_C(1) << 26;
+	configuration->kv_snapshot_directory = SNAPSHOT_DIRECTORY;
+	configuration->kv_ledger_path = "/tmp/sparkpipe-k3-kv-binding-ledger";
+}
+
 static SparkStatus BindWith(SparkStageServingState *state, uint32_t logical, uint32_t physical)
 {
 	SparkModelServingAdapterConfiguration configuration;
-	memset(&configuration, 0, sizeof(configuration));
-	configuration.runtime_limits.kv_logical_page_capacity = logical;
-	configuration.runtime_limits.kv_physical_page_capacity = physical;
-	configuration.runtime_limits.output_vocabulary = 32000u;
-	configuration.kv_backing_directory = DIRECTORY;
-	configuration.kv_backing_maximum_bytes = UINT64_C(1) << 26;
-	configuration.kv_snapshot_directory = SNAPSHOT_DIRECTORY;
-	configuration.kv_ledger_path = "/tmp/sparkpipe-k3-kv-binding-ledger";
+	Configure(&configuration, logical, physical);
 	return(StageServingBindKv(state, &configuration));
+}
+
+static void MakeDirectories(void)
+{
+	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
+	assert(mkdtemp(DIRECTORY) != 0);
+	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
+	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+}
+
+static void RemoveDirectories(void)
+{
+	assert(rmdir(DIRECTORY) == 0);
+	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
+}
+
+static SparkStageServingState *NewState(void)
+{
+	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
+	assert(state != 0);
+	state->model = &K3StageServing;
+	state->implementation_flags = test_implementation_flags;
+	StageServingDescribe(&K3StageServing, &StageServingDescriptor);
+	if ( (test_implementation_flags & SPARK_STAGE_RUNNER_FLAG_OWN_PACK) == 0u )
+		assert((state->weightd_socket_path = strdup(TestKvServerSocket)) != 0);
+	return(state);
+}
+
+static uint32_t ExpectedPoolSource(void)
+{
+	return((test_implementation_flags & SPARK_STAGE_RUNNER_FLAG_OWN_PACK) != 0u ? SPARK_STAGE_KV_POOL_SOURCE_DEVICE : SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD);
 }
 
 static SparkStageServingState *Open(void)
 {
-	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
-	SparkMemoryBuffer *host[7], *device[8];
+	SparkStageServingState *state = NewState();
+	SparkDeviceBuffer *host[7], *device[8];
 	uint32_t index;
-	assert(state != 0);
-	state->model = &K3StageServing;
 	host[0] = &state->positions_host; host[1] = &state->context_host; host[2] = &state->state_host;
 	host[3] = &state->runs_host; host[4] = &state->seqslot_host; host[5] = &state->order_host; host[6] = &state->target_host;
 	device[0] = &state->positions_device; device[1] = &state->context_device; device[2] = &state->state_device;
 	device[3] = &state->runs_device; device[4] = &state->seqslot_device; device[5] = &state->order_device;
 	device[6] = &state->output_tokens; device[7] = &state->output_scores;
 	for ( index = 0u; index < 7u; index++ )
-		assert(SparkMemoryBufferAllocate(host[index], SPARK_MEMORY_SPACE_HOST_COHERENT, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
+		assert(SparkDeviceAllocate(host[index], SPARK_DEVICE_SPACE_HOST_PINNED, 9u * sizeof(uint32_t), "k3 test rows") == SPARK_STATUS_OK);
 	for ( index = 0u; index < 8u; index++ )
-		assert(SparkMemoryBufferAllocate(device[index], SPARK_MEMORY_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t)) == SPARK_STATUS_OK);
+		assert(SparkDeviceAllocate(device[index], SPARK_DEVICE_SPACE_DEVICE_PRIVATE, 9u * sizeof(uint32_t), "k3 test rows") == SPARK_STATUS_OK);
 	state->max_rows = 8u;
 	state->max_shared_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
@@ -79,14 +113,13 @@ static SparkStageServingState *Open(void)
 	state->state_memory_bytes = UINT64_C(1) << 26;
 	state->completion_function = Completion;
 	SparkStageModuleAtomicStateArrayInitialize(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES);
-	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
-	assert(mkdtemp(DIRECTORY) != 0);
-	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
-	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+	MakeDirectories();
 	test_attach_calls = 0u;
+	test_recurrent_to_buffer = 0u;
+	test_recurrent_from_buffer = 0u;
 	memset(test_recurrent_lanes, 0, sizeof(test_recurrent_lanes));
 	COMPLETIONS = 0u;
-	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_OK);
+	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_OK && state->kv.pool_source == ExpectedPoolSource());
 	assert(test_attach_calls == 1u && test_attached_kv.pool == state->kv.region_base[0] && test_attached_kv.page_table == state->kv.page_table);
 	assert(test_attached_kv.layer_count == test_kv_layers && test_attached_kv.pool_page_count == 8u && test_attached_kv.page_table_stride == state->kv.pages_per_sequence);
 	assert(test_attached_kv.layer_stride_bytes == state->kv.region_layer_stride_bytes[0] && test_attached_kv.sequence_count == 4u);
@@ -98,8 +131,7 @@ static SparkStageServingState *Open(void)
 static void Close(SparkStageServingState *state)
 {
 	StageServingDestroy(state);
-	assert(rmdir(DIRECTORY) == 0);
-	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
+	RemoveDirectories();
 }
 
 static void WorkInit(TestK3Work *work, uint32_t kind)
@@ -317,36 +349,27 @@ static void TestK3Reset(void)
 
 static void TestK3Refusals(void)
 {
-	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
-	assert(state != 0);
-	state->model = &K3StageServing;
+	SparkStageServingState *state = NewState();
 	state->max_rows = 8u;
 	state->max_shared_rows = 8u;
 	state->runner_config.resident_sequence_capacity = 4u;
 	state->runner_config.kv_pages_per_sequence = 2u;
-	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
-	assert(mkdtemp(DIRECTORY) != 0);
-	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
-	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+	MakeDirectories();
 	test_pack_status = SPARK_STATUS_INVALID_ARGUMENT;
 	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_INVALID_ARGUMENT && state->kv.mutex_initialized == 0u);
 	test_pack_status = SPARK_STATUS_OK;
 	assert(BindWith(state, 4u, 8u) != SPARK_STATUS_OK && state->kv.mutex_initialized == 0u);
 	SparkStageKvBindingDestroy(&state->kv);
-	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
-	assert(rmdir(DIRECTORY) == 0);
-	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
+	RemoveDirectories();
 	printf("K3 on the KV binding: no pack identity or too few logical pages refuse the binding: ok\n");
 }
 
 static void TestK3ContextShard(void)
 {
-	SparkStageServingState *state = (SparkStageServingState *)calloc(1u, sizeof(*state));
+	SparkStageServingState *state = NewState();
 	const uint64_t page = (uint64_t)SPARK_K3_KV_PAGE_SLOTS * SPARK_K3_MODEL_MLA_KV_A_DIMENSION * SPARK_K3_KV_BYTES_PER_SCALAR;
 	uint32_t rows;
-	assert(state != 0);
-	state->model = &K3StageServing;
 	state->max_rows = 8u;
 	state->max_shared_rows = 8u;
 	state->runner_config.max_input_row_count = 8u;
@@ -356,12 +379,9 @@ static void TestK3ContextShard(void)
 	state->runner_config.tp_degree = 16u;
 	state->runner_config.tp_rank = 5u;
 	state->state_memory_bytes = UINT64_C(1) << 26;
-	strcpy(DIRECTORY, "/tmp/sparkpipe-k3-kv-XXXXXX");
-	assert(mkdtemp(DIRECTORY) != 0);
-	strcpy(SNAPSHOT_DIRECTORY, "/tmp/sparkpipe-k3-snapshot-XXXXXX");
-	assert(mkdtemp(SNAPSHOT_DIRECTORY) != 0);
+	MakeDirectories();
 	test_attach_calls = 0u;
-	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_OK && test_attach_calls == 1u);
+	assert(BindWith(state, 16u, 8u) == SPARK_STATUS_OK && test_attach_calls == 1u && state->kv.pool_source == ExpectedPoolSource());
 	assert(state->kv.context_shard.degree == 16u && state->kv.context_shard.rank == 5u && state->kv.context_shard.grain == 1u);
 	assert(test_attached_kv.context_shard.degree == 16u && test_attached_kv.context_shard.rank == 5u && test_attached_kv.context_shard.grain == 1u);
 	assert(test_attached_kv.layer_page_bytes == page);
@@ -391,23 +411,87 @@ static void TestK3ContextShard(void)
 			(uint64_t)SparkK3TpSequenceCapacity(rows, 16u) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_TP_GATE_UP_ROW_ELEMENTS &&
 			(uint64_t)SparkK3TpSequences((uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION) * SPARK_K3_TP_ROW_ELEMENTS >= (uint64_t)rows * SPARK_K3_MODEL_MOE_ROUTED_EXPERT_HIDDEN_DIMENSION);
 	SparkStageKvBindingDestroy(&state->kv);
-	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
-	assert(rmdir(DIRECTORY) == 0);
-	assert(nftw(SNAPSHOT_DIRECTORY, RemoveEntry, 16, FTW_DEPTH | FTW_PHYS) == 0);
+	RemoveDirectories();
 	printf("K3 on the KV binding: at TP16 rank 5 the binding splits context 5/16 and the runner gets 1/16 pages: ok\n");
 }
 
-int main(void)
+static SparkStatus InitializeOwnModel(const SparkModelServingAdapterInterface *adapter, const char *members, void **adapter_state)
 {
-	setvbuf(stdout, 0, _IONBF, 0);
-	TestKvServerStart(UINT64_C(64) << 20);
+	SparkModelServingAdapterConfiguration configuration;
+	char path[96];
+	FILE *file;
+	SparkStatus status;
+	(void)snprintf(path, sizeof(path), "/tmp/sparkpipe-k3-own-pack-%ld.json", (long)getpid());
+	file = fopen(path, "w");
+	assert(file != 0 && fprintf(file, "{\"stage_pack_path\":\"/nonexistent/k3.pack\",\"state_budget_bytes\":1048576,\"state_memory_bytes\":67108864,"
+		"\"hidden\":%u,\"tp_degree\":1,\"tp_rank\":0,\"world_size\":1,\"max_sequences\":4,\"max_rows\":8,\"resident_capacity\":4,\"kv_pages\":2%s}",
+		StageServingDescriptor.boundary_element_count, members) > 0 && fclose(file) == 0);
+	Configure(&configuration, 16u, 8u);
+	configuration.adapter_configuration_path = path;
+	configuration.completion_function = Completion;
+	*adapter_state = 0;
+	status = adapter->initialize(&configuration, adapter_state);
+	assert(unlink(path) == 0);
+	return(status);
+}
+
+static void TestOwnPackInitialize(void)
+{
+	static SparkStageServingModel model;
+	const SparkModelServingAdapterInterface *adapter;
+	SparkStageServingState *state;
+	void *adapter_state;
+	model = K3StageServing;
+	model.tp_degree = 1u;
+	adapter = SparkStageServingAdapterInterface(&model);
+	assert(adapter != 0 && getenv("SPARK_WEIGHTD_SOCKET") == 0 && getenv(SPARK_WEIGHTD_ATTACH_ENV_SHA256) == 0);
+	MakeDirectories();
+	test_runner_status = SPARK_STATUS_OK;
+	test_implementation_flags = 0u;
+	test_runner_flags = 0u;
+	assert(InitializeOwnModel(adapter, "", &adapter_state) == SPARK_STATUS_INVALID_ARGUMENT && adapter_state == 0);
+	test_implementation_flags = SPARK_STAGE_RUNNER_FLAG_OWN_PACK;
+	assert(InitializeOwnModel(adapter, "", &adapter_state) == SPARK_STATUS_INTERNAL_ERROR && adapter_state == 0);
+	test_runner_flags = SPARK_STAGE_RUNNER_FLAG_OWN_PACK;
+	assert(InitializeOwnModel(adapter, ",\"streamed_prefill\":{}", &adapter_state) == SPARK_STATUS_UNSUPPORTED && adapter_state == 0);
+	assert(InitializeOwnModel(adapter, ",\"device_collective\":{}", &adapter_state) == SPARK_STATUS_UNSUPPORTED && adapter_state == 0);
+	test_pack_status = SPARK_STATUS_NOT_FOUND;
+	assert(InitializeOwnModel(adapter, "", &adapter_state) == SPARK_STATUS_NOT_FOUND && adapter_state == 0);
+	test_pack_status = SPARK_STATUS_OK;
+	test_attach_calls = 0u;
+	assert(InitializeOwnModel(adapter, "", &adapter_state) == SPARK_STATUS_OK && adapter_state != 0);
+	state = (SparkStageServingState *)adapter_state;
+	assert(state->kv.pool_source == SPARK_STAGE_KV_POOL_SOURCE_DEVICE && state->kv.pool.space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE && state->kv.kv_pool.client == 0);
+	assert(state->lane_client == 0 && state->runner_config.weights.socket_path == 0 && state->runner_config.weights.pack_sha256[0] == '\0');
+	assert(test_attach_calls == 1u && test_attached_kv.page_table == state->kv.page_table && state->runner.flags == SPARK_STAGE_RUNNER_FLAG_OWN_PACK);
+	adapter->destroy(adapter_state);
+	test_runner_status = SPARK_STATUS_UNSUPPORTED;
+	test_runner_flags = 0u;
+	RemoveDirectories();
+	printf("own-pack runner: with no weightd in the environment the adapter skips the weightd attach, binds the KV pool to one device buffer and takes the pack identity from the runner; a runner whose flag disagrees with its implementation, streamed_prefill and device_collective refuse, and a weightd runner still needs its attach environment: ok\n");
+}
+
+static void RunScenarios(void)
+{
 	TestK3PrefillDecodeRelease();
 	TestK3PrefixRestore();
 	TestK3Reset();
 	TestK3Refusals();
 	TestK3ContextShard();
+}
+
+int main(void)
+{
+	setvbuf(stdout, 0, _IONBF, 0);
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK && SparkDeviceQueueCreate(&test_runner_queue, "k3 test runner") == SPARK_STATUS_OK);
+	TestKvServerStart(UINT64_C(64) << 20);
+	RunScenarios();
 	TestKvServerFinish();
-	printf("PASS k3 kv binding: K3 admits, claims, restores and finishes through the common KV binding with its KDA state as the recurrent record\n");
+	test_implementation_flags = SPARK_STAGE_RUNNER_FLAG_OWN_PACK;
+	RunScenarios();
+	TestOwnPackInitialize();
+	assert(SparkDeviceQueueDestroy(test_runner_queue) == SPARK_STATUS_OK && SparkDeviceShutdown() == SPARK_STATUS_OK);
+	printf("PASS k3 kv binding: K3 admits, claims, restores and finishes through the common KV binding with its KDA state as the recurrent record, on a weightd pool and, for an own-pack runner with no weightd, on a device pool\n");
 	return(0);
 }

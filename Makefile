@@ -9,6 +9,7 @@ CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 CUDA_STUB_INCLUDE_FLAGS := -Itests/cuda_stub -Imodel-families/common/include
+DEVICE_CUDA_STUB_TEST_SOURCES := runtime/device/device.c runtime/device/cuda/device_cuda.c
 CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
 ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS)
@@ -25,14 +26,13 @@ SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
-DEFAULT_BATCH_FLAGS := -DSPARK_BATCH_BUCKET=1024u
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
 MODEL_FAMILY_INCLUDE_FLAGS := \
     -Imodel-families/common/include \
     -Imodel-families/glm52/include \
     -Imodel-families/k3/include
 DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
-CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src $(DEFAULT_BATCH_FLAGS)
+CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
 LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
@@ -67,9 +67,11 @@ DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+DEVICE_CUDA_NVCC_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
 	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal \
-	inference/kernels/metal/hyper.metal inference/kernels/metal/ngram.metal inference/kernels/metal/collective.metal
+	inference/kernels/metal/hyper.metal inference/kernels/metal/ngram.metal inference/kernels/metal/collective.metal \
+	inference/kernels/metal/sample.metal
 METAL_KERNEL_INCLUDES := inference/kernels/metal/common.metal inference/kernels/metal/kernel_params.h inference/kernels/kernel_math.cuh
 METAL_KERNEL_LIBRARY := $(DEVICE_RUNTIME_DIR)/sparkpipe_kernels.metallib
 METAL_TEST_KERNEL_LIBRARY := build/metal/test_device_kernels.metallib
@@ -88,8 +90,6 @@ MOONCAKE_ROOT ?=
 MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
 MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
-HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
-HIDDEN_TRANSPORT_HOST_STAGED_TCP := build/libhidden_transport_host_staged_tcp.$(SHARED_LIBRARY_EXT)
 
 include sources.mk
 
@@ -132,7 +132,6 @@ RUNTIME_LIBRARY := build/libsparkpipe_runtime.a
 COMMON_LIBRARY := $(CORE_LIBRARY)
 LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY)
 
-K3_SERVING_ADAPTER := build/libk3_serving_adapter.$(SHARED_LIBRARY_EXT)
 K3_TP16_SERVING_ADAPTER := build/libk3_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 K31_PRO_TP16_SERVING_ADAPTER := build/libk31_pro_tp16_serving_adapter.$(SHARED_LIBRARY_EXT)
 K31_PRO_TP16_CONTRACT := model_contracts/k31_pro_authoritative.json
@@ -222,6 +221,32 @@ MIMO26_PRO_TP16_SERVING_ADAPTER := build/libmimo26_pro_tp16_serving_adapter.$(SH
 MIMO26_PRO_TP16_CONTRACT := model_contracts/mimo26_pro_authoritative.json
 MIMO26_PRO_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(MIMO26_PRO_TP16_CONTRACT)"; else shasum -a 256 "$(MIMO26_PRO_TP16_CONTRACT)"; fi | awk '{print $$1}')
 MIMO26_PRO_TP16_SOURCES := modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_model.cu
+STAGE_RUNNER_BINARIES := \
+	$(K3_TP16_SERVING_ADAPTER) \
+	$(QWEN38_27B_TP16_SERVING_ADAPTER) \
+	$(DSV41_FLASH_TP16_SERVING_ADAPTER) \
+	$(QWEN38_27B_BF16_TP16_SERVING_ADAPTER) \
+	$(QWEN38_MAX_TP16_SERVING_ADAPTER) \
+	$(QWEN38_FLASH_TP16_SERVING_ADAPTER) \
+	$(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER) \
+	$(GEMMA4_31B_TP16_SERVING_ADAPTER) \
+	$(GEMMA4_26B_TP16_SERVING_ADAPTER) \
+	$(LING3_FLASH_TP16_SERVING_ADAPTER) \
+	$(LING3_FIN_TP16_SERVING_ADAPTER) \
+	$(HY4_TP16_SERVING_ADAPTER) \
+	$(GLM53_FULL_TP16_SERVING_ADAPTER) \
+	$(GLM53_FULL_BF16_TP16_SERVING_ADAPTER) \
+	$(AXK2_TP16_SERVING_ADAPTER) \
+	$(SOLAR_OPEN2_TP16_SERVING_ADAPTER) \
+	$(MUSE_TP16_SERVING_ADAPTER) \
+	$(GLM53_FLASH_TP16_SERVING_ADAPTER) \
+	$(MOTIF3_TP16_SERVING_ADAPTER) \
+	$(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER) \
+	$(LAGUNA_TP16_SERVING_ADAPTER) \
+	$(KEXAONE2_TP16_SERVING_ADAPTER) \
+	$(MIMO26_FLASH_TP16_SERVING_ADAPTER) \
+	$(MIMO26_PRO_TP16_SERVING_ADAPTER) \
+	build/runner_capture_flags_cuda build/runner_verify_step_cuda build/stage_runner_sum_rule_cuda
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -236,9 +261,6 @@ TOOL_NAMES := \
     sparkpipe_nfc \
     sparkpipe_split \
     sparkpipe_tokenizer_benchmark \
-    sparkpipe_memlink \
-    sparkpipe_prevcp \
-    sparkpipe_nextcp \
     sparkpipe_release_manager \
     spark_model_kernel_characterize \
     spark_transport_characterize \
@@ -257,10 +279,6 @@ TEST_NAMES := \
     test_gemm_descriptor_cache \
     test_launch \
     test_arena \
-    test_work_transaction \
-    test_runtime_completion \
-	test_memory_buffer \
-    test_model_runtime \
     test_model_serving_adapter \
 	test_model_resident_deployment \
     test_model_resident_ipc \
@@ -288,18 +306,14 @@ TEST_NAMES := \
     test_kv_page_cache_lru \
     test_model_resident_end_to_end \
     test_model_resident_reconnect \
-    test_distributed_work \
 	    test_json \
 	    test_quant_arm \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
-    test_speculation_seam \
     test_row_layout_round_span \
     test_fabric_topology \
-    test_memlink \
     test_release \
-    test_kv_store \
     test_serving_cache_admission \
     test_kda_reference \
     test_gdn_reference \
@@ -316,19 +330,14 @@ TEST_NAMES := \
 	test_k3_pool_sizing \
 	test_k3_pack_bind \
 	test_k3_serving_adapter \
-	test_k3_tp16_serving_adapter \
 	test_kv_model_table \
-    test_nvme_tier \
-	test_continuous_batch \
     test_gemm_tile_k_fallback \
     test_serial_tp_replay \
-    test_speculation_tree_resolve \
-    test_serving_tp_config \
     test_rope_plan \
     test_glm52_stagepack \
     test_tokenizer \
     test_model_description \
-    test_stage_module_common \
+    test_stage_module_claims \
     test_weightd \
     test_weightd_lease \
     test_weightd_pool_bytes \
@@ -339,29 +348,19 @@ TEST_NAMES := \
     test_weightd_expert_stress \
     test_glm5_next_index_cp_math \
     test_weightd_worker \
-    test_host_staged_tcp \
     test_weightd_direct \
     test_weightd_fd_frames \
     test_weightd_attach \
     test_weightd_receipt \
     test_weightd_expert \
-    test_stage_module_weightd \
     test_weightd_map \
     test_expert_working_set \
-    test_graph_reloc \
     test_weightd_mesh_mock \
     test_module_library \
-    test_speculation_reference_draft \
-    test_speculation_recorded_draft \
     test_speculation_lookup_draft \
     test_weightd_pacer \
-    test_speculation_ngram_draft \
-    test_speculation_drafter_mix \
-    test_speculation_relay_draft \
-    test_speculation_tap \
-    test_speculation_relay_link \
-    test_speculation_depth \
     test_speculation_frame \
+    test_speculation_tree_frame \
     test_topk_exact_plan \
     test_driver_compiler \
     test_orchestrator \
@@ -370,13 +369,15 @@ TEST_NAMES := \
     test_kv_geometry \
     test_mma_fragment_mapping \
     test_weight_codec \
-    test_topology_switch \
     test_stage_kv_layout_digest \
+    test_stage_kv_binding \
+    test_stage_kv_pool_resize \
+    test_k3_kv_binding \
     test_dsv41_flash_pack_directory \
     test_named_pack_bind
 
 ifneq ($(UNAME_S),Darwin)
-TEST_NAMES += test_stage_kv_binding test_stage_kv_pool_resize test_stage_kv_shared_prefix test_k3_kv_binding
+TEST_NAMES += test_stage_kv_shared_prefix
 TEST_NAMES += test_device_contract test_device_instance
 endif
 
@@ -396,8 +397,13 @@ PYTHON_TESTS := \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
 	tests/test_metal_stage_run_inputs.py \
+	tests/test_qwen38_pack_geometry.py \
 	tests/test_metal_gate_summary.py \
+	tests/test_reference_device_error.py \
+	tests/test_reference_flash.py \
 	tests/test_ab_verdict.py \
+	tests/test_ab_api_score.py \
+	tests/test_ds4_eval92_order.py \
 	tests/test_ab_arm.py \
 	tests/test_ab_receipt.py \
 	tests/test_ab_suite_compare.py \
@@ -420,7 +426,6 @@ PYTHON_TESTS := \
 	tests/test_spark_queue.py \
 	tests/test_sparkcp.py \
 	tests/test_multi_dev_orchestrate.py \
-	tests/test_inference_smoke.py \
 	tests/test_gemma4_smoke_manifest.py \
 	tests/test_ling_contract_freeze.py \
 	tests/test_laguna_reference_fixture.py \
@@ -478,11 +483,9 @@ PYTHON_TESTS := \
 	tests/test_k3_driver_contracts.py \
 	tests/test_k3_device_combine.py \
 	tests/test_k3_stage_ordering.py \
-	tests/test_k3_engine.py \
 	tests/test_k3_head_rank_host.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
-	tests/test_k3_multidev_lane.py \
 	tests/test_k3_pack.py \
 	tests/test_k3_pack_layout.py \
 	tests/test_k3_pack_append.py \
@@ -527,7 +530,6 @@ PYTHON_TESTS := \
 	tests/test_perf_estimate.py \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
-	tests/test_p3_batched_small_rows_host.py \
 	tests/test_glm53full_compsec17.py \
 	tests/test_ling_stagepack_resume.py \
 	tests/test_mimo26_emit_order.py \
@@ -553,7 +555,6 @@ PYTHON_TESTS := \
 	tests/test_gateway_capacity_check.py \
 	tests/test_chat_controls.py \
 	tests/test_weightd_manifest.py \
-	tests/test_weightd_spine_budget.py \
 	tests/test_glm5_next_range_manifest.py \
 	tests/test_glm5_next_routed_oracle.py \
 	tests/test_glm52_experts_manifest.py \
@@ -564,12 +565,9 @@ PYTHON_TESTS := \
 	tests/test_glm5_next_graph_regime.py \
 	tests/test_glm5_next_verify_regime.py \
 	tests/test_spec_verify_bench.py \
-	tests/test_spec_tap_dump.py \
-	tests/test_glm5_next_spec_replay.py \
 	tests/test_spec_offline.py \
 	tests/test_spec_bakeoff.py \
 	tests/test_spec_bakeoff_corpus.py \
-	tests/test_glm5_next_spec_ab.py \
 	tests/test_glm5_next_rows_kernels_host.py \
 	tests/test_head_sampling_host.py \
 	tests/test_skinny_grouped_host.py \
@@ -636,6 +634,7 @@ PYTHON_TESTS := \
 	tests/test_layer_norm_cuda.py \
 	tests/test_hidden_transport_host_rdma_load.py \
 	tests/test_skinny_dependent_cuda.py \
+	tests/test_skinny_frame_rows_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_attn_prefill_cuda.py \
 	tests/test_attn_prefill_sparse_cuda.py \
@@ -698,7 +697,6 @@ PYTHON_TESTS := \
 	tests/test_glm53_contract.py \
 	tests/test_draftd_mtp_g8.py \
 	tests/test_glm53flash_mtp_reference.py \
-	tests/test_spec_recorded_drafts.py \
 	tests/test_glm5_next_geometry.py \
 	tests/test_head_host.py \
 	tests/test_sample_host.py \
@@ -770,6 +768,7 @@ PYTHON_TESTS := \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
+	tests/test_dft3_tree_nodes.py \
 	tests/test_block_draftd_retention.py \
 	tests/test_block_draftd_reserve.py \
 	tests/test_block_draftd_owner.py \
@@ -782,8 +781,11 @@ PYTHON_TESTS := \
 	tests/test_laguna_reference_torch.py \
 	tests/test_python_tests_registered.py \
 	tests/test_spark_pack_common_extents.py \
+	tests/test_spark_pack_core.py \
+	tests/test_host_turn_bench.py \
+	tests/test_draft_replay_server.py \
+	tests/test_roofline_meter.py \
 	tests/test_tokenizer_text_prefix.py \
-	tests/test_k3_spec_verify.py \
 	tests/test_ling_verify_pack.py \
 	tests/test_ling_reference_agreement.py \
 	tests/test_mesh_lane_ladder_receipt.py \
@@ -829,6 +831,7 @@ PYTHON_TESTS := \
 	tests/test_mesh_status_tool.py \
 	tests/test_weightd_warm_family.py
 PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
+	build/host_turn_bench \
 	build/logit_compare \
 	build/test_child_guard_thread \
 	build/weightd_lazy_consumer \
@@ -873,16 +876,17 @@ TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
     $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
+HOST_TURN_BENCH_ADAPTER_MODULE := \
+    build/test_modules/libhost_turn_bench_adapter.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
 TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
-.PHONY: all clean test tools hardware_tools hardware_cuda_tools hardware_handoff runtime_completion_tests demo FORCE \
+.PHONY: all clean test tools hardware_tools hardware_cuda_tools hardware_handoff demo FORCE \
     hidden_transport_spark_host_rdma_verbs \
-    hidden_transport_spark_gpudirect_rdma_verbs \
     tree_summary \
     architecture_audit \
     model_driver_contracts
 
-all: $(LIBRARIES) tools $(K3_SERVING_ADAPTER) $(K3_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER)
+all: $(LIBRARIES) tools $(K3_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER)
 
 tools: $(TOOL_BINARIES)
 
@@ -901,8 +905,8 @@ architecture_audit: audit-boundaries
 
 non_glm_model_driver_contracts:
 
-model_driver_contracts: build/test_model_description build/test_stage_module_common non_glm_model_driver_contracts
-	./build/test_stage_module_common
+model_driver_contracts: build/test_model_description build/test_stage_module_claims non_glm_model_driver_contracts
+	./build/test_stage_module_claims
 	python3 tests/test_model_driver_contracts.py
 
 MODEL_COMMON_LINK_TARGETS := \
@@ -910,18 +914,11 @@ MODEL_COMMON_LINK_TARGETS := \
     build/sparkpipe_nfc \
     build/sparkpipe_split \
     build/sparkpipe_tokenizer_benchmark \
-    build/sparkpipe_memlink \
-    build/sparkpipe_prevcp \
-    build/sparkpipe_nextcp \
     build/test_hidden_transport \
     build/test_draft_bridge \
-    build/test_speculation_seam \
-    build/test_memlink \
-    build/test_kv_store \
     build/test_tokenizer \
     build/test_tokenizer_sidecar \
-    $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
-    $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
+    $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 GLM52_LINK_TARGETS := \
     $(filter build/sparkpipe_glm52_% build/test_glm52_%,$(TOOL_BINARIES) $(TEST_BINARIES)) \
     build/sparkpipe_glm52_batchplane_model \
@@ -937,7 +934,7 @@ $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBR
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
-KERNEL_TEST_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -MMD -MP -MF $@.d -I. -Iinclude -Imodel-families/common/include $(DEFAULT_BATCH_FLAGS)
+KERNEL_TEST_NVCC = $(NVCC) -std=c++17 $(NVCCFLAGS) -MMD -MP -MF $@.d -I. -Iinclude -Imodel-families/common/include
 CUDA_HEADER_DEPS := $(wildcard inference/kernels/*.cuh inference/kernels/*.h inference/kernels/formats/*.cuh inference/kernels/formats/*.h \
 	inference/runner/*.cuh inference/runner/*.h runtime/*.cuh runtime/*.h runtime/device/*.h \
 	model-families/common/include/sparkpipe/*.h model-families/common/include/sparkpipe/*.cuh \
@@ -1077,14 +1074,6 @@ test-working-set-rollback: build/test_working_set_rollback
 
 .PHONY: kernel-codegen-diff
 
-build/test_cuda_stream_receipt: tests/test_cuda_stream_receipt.c $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
-	test -f $(CUDA_HOME)/include/cuda_runtime.h
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) $(SPARKPIPE_CUDA_DRIVER_LINK) -o $@
-
-.PHONY: test-cuda-stream-receipt
-test-cuda-stream-receipt: build/test_cuda_stream_receipt
-	./build/test_cuda_stream_receipt --run
-
 build/test_modules:
 	mkdir -p build/test_modules
 
@@ -1159,7 +1148,6 @@ hardware_cuda_tools: $(CUDA_HEADER_DEPS)
 		mkdir -p build; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware tools/hardware/spark_cuda_characterize.cu -o build/spark_cuda_characterize; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Xcompiler=-pthread tools/hardware/spark_nvme_characterize.cu -o build/spark_nvme_characterize -lpthread; \
-		$(MAKE) build/spark_tp_device_collective_characterize; \
 	fi
 
 .PHONY: test-tp-f32-arithmetic-gpu
@@ -1175,11 +1163,8 @@ build/tp_mesh_hardware_probe: tools/tp_mesh_hardware_probe.cu tests/fixtures/tp_
 build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/tp_reduce.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -o $@
 
-build/mesh_round_bench: tools/mesh_round_bench.cu runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
+build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
-
-build/spark_tp_device_collective_characterize: tools/hardware/spark_tp_device_collective_characterize.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -lcuda -ldl -lpthread -o $@
 
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py
@@ -1229,7 +1214,7 @@ test-kv-snapshot-cuda: build/test_kv_snapshot_cuda
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_k3_llm_defines: tests/test_k3_llm_defines.c inference/llms/kimi_k3/config.h inference/llms/kimi_k3/generated_config.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
+build/test_k3_llm_defines: tests/test_k3_llm_defines.c model-families/k3/source/config.h model-families/k3/source/generated_config.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
 	$(CC) -I. -Iinclude -Imodel-families/k3/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 HOST_CUDA_CXX := $(shell for v in 20 19 18 17 16 15 14 13 12 11; do command -v g++-$$v >/dev/null 2>&1 && echo g++-$$v && break; done)
@@ -1237,25 +1222,22 @@ ifeq ($(strip $(HOST_CUDA_CXX)),)
 HOST_CUDA_CXX := g++
 endif
 
-build/test_k3_attach_contract: tests/test_k3_attach_contract.c include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_status.h $(K3_SERVING_ADAPTER) | build
-	@if [ -f "$(K3_SERVING_ADAPTER)" ]; then $(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include -DTEST_K3_SERVING_ADAPTER_PATH=\"$(K3_SERVING_ADAPTER)\" $(CFLAGS) $< $(LDFLAGS) -ldl -o $@; else echo "SKIP $@ ($(K3_SERVING_ADAPTER) not built on this host; spark-gated test)"; fi
+build/test_k3_attach_contract: tests/test_k3_attach_contract.c include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_status.h $(K3_TP16_SERVING_ADAPTER) | build
+	@if [ -f "$(K3_TP16_SERVING_ADAPTER)" ]; then $(CC) $(CPPFLAGS) -I. -Iinclude -Imodules/k3_resident_decode_stage/include -DTEST_K3_SERVING_ADAPTER_PATH=\"$(K3_TP16_SERVING_ADAPTER)\" $(CFLAGS) $< $(LDFLAGS) -ldl -o $@; else echo "SKIP $@ ($(K3_TP16_SERVING_ADAPTER) not built on this host; spark-gated test)"; fi
 
-build/test_k3_pool_sizing: tests/test_k3_pool_sizing.c modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_pool_sizing.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
+build/test_k3_pool_sizing: tests/test_k3_pool_sizing.c model-families/k3/include/sparkpipe/spark_k3_pool_sizing.h model-families/k3/include/sparkpipe/spark_k3_llm_defines.h | build
 	$(CC) -I. -Iinclude -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-K3_PACK_BIND_SOURCES := runtime/named_pack.c modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+K3_PACK_BIND_SOURCES := runtime/named_pack.c model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c
 
 build/test_k3_pack_bind: tests/test_k3_pack_bind.c $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/k3/include -Imodules/k3_resident_decode_stage/include $(CFLAGS) $< $(K3_PACK_BIND_SOURCES) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_k3_serving_adapter: tests/test_k3_serving_adapter.c tests/test_k3_runner_stub.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c include/sparkpipe/spark_stage_serving_adapter.h modules/k3_resident_decode_stage/configs/model_resident.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_TOPOLOGY=404 -DSPARK_K3_SERVING_INDEXER=0 $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_INDEXER=0 $< $(DEVICE_CUDA_STUB_TEST_SOURCES) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_k3_kv_binding: tests/test_k3_kv_binding.c tests/test_k3_runner_stub.h tests/test_weightd_kv_server.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c include/sparkpipe/spark_stage_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_TOPOLOGY=404 -DSPARK_K3_SERVING_INDEXER=0 $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
-
-build/test_k3_tp16_serving_adapter: tests/test_k3_serving_adapter.c tests/test_k3_runner_stub.h modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c include/sparkpipe/spark_stage_serving_adapter.h modules/k3_resident_decode_stage/configs/model_resident_tp16.json $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_TOPOLOGY=16 -DSPARK_K3_SERVING_INDEXER=0 $< $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
+	$(CC) $(CPPFLAGS) -Itests/cuda_stub -Imodules/k3_resident_decode_stage/include $(CFLAGS) -Wno-unused-function -DSPARK_K3_SERVING_INDEXER=0 $< $(DEVICE_CUDA_STUB_TEST_SOURCES) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
 build/test_k3_run_equivalence: tests/host_cuda/k3_run_equivalence.cu tests/host_cuda/lm_host_cuda.cuh inference/kernels/linear_attn.cuh inference/kernels/norm.cuh inference/kernels/dtype.cuh
 	$(HOST_CUDA_CXX) -std=c++17 -O0 -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
@@ -1284,27 +1266,18 @@ build/sparkpipe_split: tools/sparkpipe_split.c $(COMMON_LIBRARY)
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_memlink: node/memlink_tool.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_prevcp: node/memlink_tool.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"prevcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_nextcp: node/memlink_tool.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"nextcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_model_residentd: node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_residentd.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 
-build/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c include/sparkpipe/spark_continuous_batch.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_batch.c scheduler/continuous_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_model_batch: node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_batch.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/debug/sparkpipe_model_batch: node/model_batch.c scheduler/continuous_batch.c runtime/model_batch_engine.c include/sparkpipe/spark_continuous_batch.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+build/debug/sparkpipe_model_batch: node/model_batch.c runtime/model_batch_engine.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	@mkdir -p $(dir $@)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -DDEBUG node/model_batch.c scheduler/continuous_batch.c runtime/model_batch_engine.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -DDEBUG node/model_batch.c runtime/model_batch_engine.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
 	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tools/sparkpipe_registrar.c $(LDFLAGS) -o $@
@@ -1312,7 +1285,7 @@ build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
 build/sparkpipe_model_api: node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
-$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(CUDA_HEADER_DEPS)
+$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(CUDA_HEADER_DEPS)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
@@ -1320,29 +1293,10 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
-
-$(HIDDEN_TRANSPORT_HOST_STAGED_TCP): ring/transport/host_staged_tcp.c include/sparkpipe/spark_hidden_transport.h | build
-	$(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/host_staged_tcp.c $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lpthread -o $@
-
-build/test_host_staged_tcp: tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_host_staged_tcp.c ring/transport/host_staged_tcp.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
-
-$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_memlink.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(CUDA_HEADER_DEPS)
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
-	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
-		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: CUDA headers unavailable" >&2; exit 1; \
-	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
-		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
-	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
-	fi
-
-hidden_transport_spark_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 
 FORCE:
 
@@ -1394,6 +1348,12 @@ $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE): tests/fixtures/model_serving
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+$(HOST_TURN_BENCH_ADAPTER_MODULE): tests/fixtures/host_turn_bench_adapter.c include/sparkpipe/spark_model_serving_adapter.h | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
+build/host_turn_bench: tests/host_turn_bench.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(HOST_TURN_BENCH_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CPPFLAGS) -DHOST_TURN_BENCH_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DHOST_TURN_BENCH_ADAPTER_PATH=\"$(HOST_TURN_BENCH_ADAPTER_MODULE)\" -DHOST_TURN_BENCH_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/host_turn_bench.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -1408,15 +1368,6 @@ build/test_status: tests/test_status.c $(CORE_LIBRARY)
 
 build/test_score_dump_keys: tests/test_score_dump_keys.c src/spark_score_dump.c include/sparkpipe/spark_score_dump.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_score_dump_keys.c src/spark_score_dump.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_runtime_completion: tests/test_runtime_completion.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_runtime_completion.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_model_runtime: tests/test_model_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_model_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_serving_cache_admission: tests/test_serving_cache_admission.c include/sparkpipe/spark_serving_cache_admission.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1446,6 +1397,7 @@ $(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
 $(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
 	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
+$(STAGE_RUNNER_BINARIES): $(DEVICE_CUDA_LIBRARY)
 
 build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
@@ -1507,17 +1459,38 @@ build/test_metal_kernels: tests/test_metal_kernels.c $(DEVICE_OPS_SOURCES) $(DEV
 DEVICE_RUNNER_SOURCES := inference/runner/device_stage_runner.c inference/runner/device_stage_model.c inference/runner/device_layers.c inference/runner/device_collective.c inference/runner/device_collective_tcp.c $(DEVICE_OPS_SOURCES) runtime/named_pack.c runtime/json.c runtime/filesystem.c src/spark_sha256.c
 DEVICE_RUNNER_INCLUDE_FLAGS := -Imodel-families/common/include
 DEVICE_RUNNER_HEADERS := inference/runner/device_stage_runner.h inference/runner/device_stage_model.h inference/runner/device_layers.h inference/runner/device_collective.h $(DEVICE_OPS_HEADERS) include/sparkpipe/spark_stage_runner_model.h model-families/common/include/sparkpipe/spark_rope_plan.h
+DEVICE_SERVING_SOURCES := inference/runner/stage_serving_adapter.c inference/runner/device_serving_runner.c runtime/stage_kv_binding.c runtime/kv_device_copy.c \
+	runtime/stage_module_claims.c runtime/model_serving_adapter.c runtime/spark_weightd_memory.c runtime/spark_weightd_absent.c \
+	ring/transport/tp_device_collective_absent.c cache/kv_ledger.c cache/kv_snapshot_purge.c $(SPARKPIPE_CACHE_SOURCES)
 QWEN38_DEVICE_SOURCES := model-families/qwen38/device/qwen38_device_stage.cpp
 QWEN38_DEVICE_HEADERS := model-families/qwen38/include/sparkpipe/spark_qwen38_family.h model-families/qwen38/include/sparkpipe/spark_qwen38_device_stage.h \
+	model-families/qwen38/include/sparkpipe/spark_qwen35_small_geometry.h \
 	modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h \
-	modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h
+	modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h \
+	modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_stage_model.h
 QWEN38_DEVICE_INCLUDE_FLAGS := -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include \
-	-Imodules/qwen38_flash_resident_decode_stage/include
+	-Imodules/qwen38_flash_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include
 QWEN38_DEVICE_OBJECT := build/metal/qwen38_device_stage.o
 
 $(QWEN38_DEVICE_OBJECT): $(QWEN38_DEVICE_SOURCES) $(QWEN38_DEVICE_HEADERS) $(DEVICE_RUNNER_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CXXFLAGS) -c $(QWEN38_DEVICE_SOURCES) -o $@
+QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen38_27b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN38_27B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen38_27b_resident_decode_stage/source/spark_qwen38_27b_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN38_27B_TP16_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN38_27B_BF16=1 -DQWEN38_27B_DEVICE_STAGE=1 -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
+QWEN35_4B_CONTRACT := model_contracts/qwen35_4b_authoritative.json
+QWEN35_4B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN35_4B_CONTRACT)"; else shasum -a 256 "$(QWEN35_4B_CONTRACT)"; fi | awk '{print $$1}')
+QWEN35_4B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen35_4b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN35_4B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen35_small_stage/source/spark_qwen35_small_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN35_4B_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN35_4B=1 -DQWEN35_SMALL_CONTRACT_SHA256=\"$(QWEN35_4B_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
+QWEN35_2B_CONTRACT := model_contracts/qwen35_2b_authoritative.json
+QWEN35_2B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN35_2B_CONTRACT)"; else shasum -a 256 "$(QWEN35_2B_CONTRACT)"; fi | awk '{print $$1}')
+QWEN35_2B_BF16_TP1_METAL_SERVING_ADAPTER := build/libqwen35_2b_bf16_tp1_metal_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN35_2B_BF16_TP1_METAL_SERVING_ADAPTER): modules/qwen35_small_stage/source/spark_qwen35_small_stage_serving.c $(DEVICE_SERVING_SOURCES) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(QWEN38_DEVICE_OBJECT) $(QWEN35_2B_CONTRACT) $(CORE_LIBRARY) $(DEVICE_METAL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) -DQWEN35_2B=1 -DQWEN35_SMALL_CONTRACT_SHA256=\"$(QWEN35_2B_CONTRACT_SHA256)\" $(filter %.c,$^) $(QWEN38_DEVICE_OBJECT) $(CORE_LIBRARY) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP $(notdir $@) (no Metal device library)"; fi
 GEMMA4_DEVICE_SOURCES := model-families/gemma4/device/gemma4_device_stage.cpp
 GEMMA4_DEVICE_HEADERS := model-families/gemma4/include/sparkpipe/spark_gemma4_family.h model-families/gemma4/include/sparkpipe/spark_gemma4_device_stage.h \
 	modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h \
@@ -1601,7 +1574,7 @@ $(DSV41_DEVICE_OBJECT): $(DSV41_DEVICE_SOURCES) $(DSV41_DEVICE_HEADERS) $(DEVICE
 
 K3_DEVICE_SOURCES := model-families/k3/device/k3_device_stage.cpp
 K3_DEVICE_HEADERS := model-families/k3/include/sparkpipe/spark_k3_family.h model-families/k3/include/sparkpipe/spark_k3_device_stage.h \
-	inference/llms/kimi_k3/config.h
+	model-families/k3/source/config.h
 K3_DEVICE_INCLUDE_FLAGS := -Imodel-families/k3/include
 K3_DEVICE_OBJECT := build/metal/k3_device_stage.o
 
@@ -1619,8 +1592,8 @@ $(MOTIF_DEVICE_OBJECT): $(MOTIF_DEVICE_SOURCES) $(MOTIF_DEVICE_HEADERS) $(DEVICE
 	@mkdir -p $(dir $@)
 	$(CXX) $(CORE_INCLUDE_FLAGS) $(MOTIF_DEVICE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CXXFLAGS) -c $(MOTIF_DEVICE_SOURCES) -o $@
 
-build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
-	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(GLM52_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(K3_DEVICE_INCLUDE_FLAGS) $(MOTIF_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
+build/metal_stage_run: tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c src/spark_speculation_tree_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) $(DEVICE_RUNNER_HEADERS) $(DEVICE_METAL_LIBRARY) $(METAL_KERNEL_LIBRARY) | build
+	@if [ -f "$(DEVICE_METAL_LIBRARY)" ] && [ -f "$(METAL_KERNEL_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(QWEN38_DEVICE_INCLUDE_FLAGS) $(GEMMA4_DEVICE_INCLUDE_FLAGS) $(MIMO26_DEVICE_INCLUDE_FLAGS) $(LING_DEVICE_INCLUDE_FLAGS) $(GLM5_NEXT_DEVICE_INCLUDE_FLAGS) $(HY4_DEVICE_INCLUDE_FLAGS) $(GLM52_DEVICE_INCLUDE_FLAGS) $(DSV41_DEVICE_INCLUDE_FLAGS) $(K3_DEVICE_INCLUDE_FLAGS) $(MOTIF_DEVICE_INCLUDE_FLAGS) $(CFLAGS) tools/metal_stage_run.c tools/token_prompts.c src/spark_speculation_lookup_draft.c src/spark_speculation_frame.c src/spark_speculation_tree_frame.c $(QWEN38_DEVICE_OBJECT) $(GEMMA4_DEVICE_OBJECT) $(MIMO26_DEVICE_OBJECT) $(LING_DEVICE_OBJECT) $(GLM5_NEXT_DEVICE_OBJECT) $(HY4_DEVICE_OBJECT) $(GLM52_DEVICE_OBJECT) $(DSV41_DEVICE_OBJECT) $(K3_DEVICE_OBJECT) $(MOTIF_DEVICE_OBJECT) $(DEVICE_RUNNER_SOURCES) -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_metal $(DEVICE_RPATH_FLAGS) $(LDLIBS) -lc++ -lm -o $@; else echo "SKIP metal_stage_run (no Metal device or kernel library)"; fi
 
 build/qwen38_27b_reference: tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c | build
 	@if [ "$(UNAME_S)" = Darwin ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fblocks -DACCELERATE_NEW_LAPACK tools/qwen38_27b_reference.c tools/token_prompts.c runtime/json.c runtime/filesystem.c -framework Accelerate $(LDLIBS) -lm -o $@; else echo "SKIP qwen38_27b_reference (it uses the Accelerate BLAS)"; fi
@@ -1639,9 +1612,6 @@ build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.
 
 build/test_device_instance: tests/test_device_instance.c $(DEVICE_HOST_LIBRARY) build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_MODULE_EXT='"$(SHARED_LIBRARY_EXT)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
-
-build/test_memory_buffer: tests/test_memory_buffer.c runtime/memory_buffer.c include/sparkpipe/spark_memory_buffer.h tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_memory_buffer.c tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_resident_session: tests/test_model_resident_session.c node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) tests/test_model_resident_session.c node/weightd_spawn.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
@@ -1688,44 +1658,67 @@ build/test_steploop_admission: tests/test_steploop_admission.c tests/fixtures/mo
 build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(K3_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -libverbs -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
-
 build/runner_capture_flags_cuda: tests/cuda/runner_capture_flags_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_capture_flags_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_capture_flags_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 build/runner_verify_step_cuda: tests/cuda/runner_verify_step_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_verify_step_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_verify_step_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 
 build/stage_runner_sum_rule_cuda: tests/cuda/stage_runner_sum_rule_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_sum_rule_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_sum_rule_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 
-build/k3_tp_context_cuda: tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs -o $@
+build/k3_tp_context_cuda: tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_stage.cuh model-families/k3/source/k3_streamed_prefill.cuh model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_tp_context_cuda.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs -o $@
 
-build/k3_index_exchange_cuda: tests/cuda/k3_index_exchange_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=404 -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_index_exchange_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs -o $@
+build/k3_index_exchange_cuda: tests/cuda/k3_index_exchange_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_stage.cuh model-families/k3/source/k3_streamed_prefill.cuh model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_index_exchange_cuda.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs -o $@
 
-$(K3_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=16 -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -libverbs -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+$(K3_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -libverbs -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(K31_PRO_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard inference/llms/kimi_k3/*.cu inference/llms/kimi_k3/*.cuh inference/llms/kimi_k3/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/include/sparkpipe/*.h) $(K31_PRO_TP16_CONTRACT) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_TOPOLOGY=16 -DSPARK_K3_SERVING_INDEXER=1 -DK31_PRO_CONTRACT_SHA256=\"$(K31_PRO_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu inference/llms/kimi_k3/bind.cu inference/llms/kimi_k3/unity.cu modules/k3_resident_decode_stage/source/spark_k3_pack_load.c modules/k3_resident_decode_stage/source/spark_k3_bind.c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -libverbs -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+$(K31_PRO_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(K31_PRO_TP16_CONTRACT) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=1 -DK31_PRO_CONTRACT_SHA256=\"$(K31_PRO_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -libverbs -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-define QWEN38_27B_TP16_LINK
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) $(1) -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_27b_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_27B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+QWEN38_27B_ADAPTER_DEPS := $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+
+define QWEN38_27B_LINK
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_27B_LINEAR_CODEC=$(1) -DQWEN38_27B_TP_DEGREE=$(2) -DQWEN38_27B_ADAPTER_ID=\"$(3)\" -DQWEN38_27B_MODULE_TAG=\"$(4)\" -DQWEN38_27B_CONTRACT_SHA256=\"$(QWEN38_27B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_27b_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_27B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
-$(QWEN38_27B_TP16_SERVING_ADAPTER): $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(call QWEN38_27B_TP16_LINK,)
+$(QWEN38_27B_TP16_SERVING_ADAPTER): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,16u,qwen38_27b-tp16,qwen38_27b_fp8_stage)
 
-$(QWEN38_27B_BF16_TP16_SERVING_ADAPTER): $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	$(call QWEN38_27B_TP16_LINK,-DQWEN38_27B_BF16=1)
+$(QWEN38_27B_BF16_TP16_SERVING_ADAPTER): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,16u,qwen38_27b-bf16-tp16,qwen38_27b_stage)
+
+build/libqwen38_27b_tp8_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,8u,qwen38_27b-tp8,qwen38_27b_fp8_tp8_stage)
+
+build/libqwen38_27b_bf16_tp8_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,8u,qwen38_27b-bf16-tp8,qwen38_27b_tp8_stage)
+
+build/libqwen38_27b_tp4_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,4u,qwen38_27b-tp4,qwen38_27b_fp8_tp4_stage)
+
+build/libqwen38_27b_bf16_tp4_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,4u,qwen38_27b-bf16-tp4,qwen38_27b_tp4_stage)
+
+build/libqwen38_27b_tp2_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,2u,qwen38_27b-tp2,qwen38_27b_fp8_tp2_stage)
+
+build/libqwen38_27b_bf16_tp2_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,2u,qwen38_27b-bf16-tp2,qwen38_27b_tp2_stage)
+
+build/libqwen38_27b_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,1u,qwen38_27b-tp1,qwen38_27b_fp8_tp1_stage)
+
+build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,1u,qwen38_27b-bf16-tp1,qwen38_27b_tp1_stage)
 
 $(QWEN38_MAX_TP16_SERVING_ADAPTER): $(QWEN38_MAX_TP16_SOURCES) $(QWEN38_MAX_TP16_CONTRACT) modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_MAX_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_max_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_MAX_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_MAX_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_max_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_MAX_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 define QWEN38_FLASH_ADAPTER_RECIPE
-@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_FLASH_CONTRACT_SHA256=\"$(QWEN38_FLASH_TP16_CONTRACT_SHA256)\" -DQWEN38_FLASH_EXPERT_CODEC=$(1) -DQWEN38_FLASH_PLE_TABLE_CODEC=$(2) -DQWEN38_FLASH_ADAPTER_ID=\"$(3)\" -DQWEN38_FLASH_MODULE_TAG=\"$(4)\" -I. -Iinclude -Isrc -Imodules/qwen38_flash_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DQWEN38_FLASH_CONTRACT_SHA256=\"$(QWEN38_FLASH_TP16_CONTRACT_SHA256)\" -DQWEN38_FLASH_EXPERT_CODEC=$(1) -DQWEN38_FLASH_PLE_TABLE_CODEC=$(2) -DQWEN38_FLASH_ADAPTER_ID=\"$(3)\" -DQWEN38_FLASH_MODULE_TAG=\"$(4)\" -I. -Iinclude -Isrc -Imodules/qwen38_flash_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
 $(QWEN38_FLASH_TP16_SERVING_ADAPTER): $(QWEN38_FLASH_TP16_SOURCES) $(QWEN38_FLASH_TP16_CONTRACT) modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -1735,12 +1728,12 @@ $(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER): $(QWEN38_FLASH_TP16_SOURCES) $(QWEN38
 	$(call QWEN38_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,SPARK_WEIGHT_CODEC_BF16,qwen38_flash-bf16-tp16,qwen38_flash_bf16_stage)
 
 $(GEMMA4_31B_TP16_SERVING_ADAPTER): $(GEMMA4_31B_TP16_SOURCES) $(GEMMA4_31B_TP16_CONTRACT) modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGEMMA4_31B_CONTRACT_SHA256=\"$(GEMMA4_31B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_31b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_31B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGEMMA4_31B_CONTRACT_SHA256=\"$(GEMMA4_31B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_31b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_31B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(MUSE_TP16_SERVING_ADAPTER): $(MUSE_TP16_SOURCES) $(MUSE_TP16_CONTRACT) modules/muse_glimmer_tp16_resident_decode_stage/include/sparkpipe/spark_muse_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMUSE_TP16_CONTRACT_SHA256=\"$(MUSE_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/muse_glimmer_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MUSE_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMUSE_TP16_CONTRACT_SHA256=\"$(MUSE_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/muse_glimmer_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MUSE_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 define GLM53_FLASH_ADAPTER_RECIPE
-@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FLASH_TP16_CONTRACT_SHA256=\"$(GLM53_FLASH_TP16_CONTRACT_SHA256)\" -DGLM53_FLASH_EXPERT_CODEC=$(1) -DGLM53_FLASH_ADAPTER_ID=\"$(2)\" -DGLM53_FLASH_MODULE_TAG=\"$(3)\" -DGLM53_FLASH_MODEL_ID=\"$(4)\" -DGLM53_FLASH_MODEL_REVISION=\"$(5)\" -I. -Iinclude -Isrc -Imodules/glm53_flash_tp16_resident_decode_stage/include -Imodel-families/glm5_next/source -Imodel-families/glm5_next/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FLASH_TP16_CONTRACT_SHA256=\"$(GLM53_FLASH_TP16_CONTRACT_SHA256)\" -DGLM53_FLASH_EXPERT_CODEC=$(1) -DGLM53_FLASH_ADAPTER_ID=\"$(2)\" -DGLM53_FLASH_MODULE_TAG=\"$(3)\" -DGLM53_FLASH_MODEL_ID=\"$(4)\" -DGLM53_FLASH_MODEL_REVISION=\"$(5)\" -I. -Iinclude -Isrc -Imodules/glm53_flash_tp16_resident_decode_stage/include -Imodel-families/glm5_next/source -Imodel-families/glm5_next/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
 $(GLM53_FLASH_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -1750,26 +1743,26 @@ $(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FL
 	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,glm53_flash-bf16-tp16,glm53_flash_bf16_stage,zai-org/GLM-5.3-Flash-BF16,f12e0fe1f6b2ea274c11a569582edfd99d993c5e)
 
 $(MOTIF3_TP16_SERVING_ADAPTER): $(MOTIF3_TP16_SOURCES) $(MOTIF3_TP16_CONTRACT) modules/motif3_tp16_resident_decode_stage/include/sparkpipe/spark_motif3_tp16_stage_model.h model-families/motif/source/motif_stage.cuh model-families/motif/include/sparkpipe/spark_motif_family.h model-families/motif/include/sparkpipe/spark_motif_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMOTIF3_TP16_CONTRACT_SHA256=\"$(MOTIF3_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/motif3_tp16_resident_decode_stage/include -Imodel-families/motif/source -Imodel-families/motif/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MOTIF3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMOTIF3_TP16_CONTRACT_SHA256=\"$(MOTIF3_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/motif3_tp16_resident_decode_stage/include -Imodel-families/motif/source -Imodel-families/motif/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MOTIF3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(LAGUNA_TP16_SERVING_ADAPTER): $(LAGUNA_TP16_SOURCES) $(LAGUNA_TP16_CONTRACT) modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DLAGUNA_TP16_CONTRACT_SHA256=\"$(LAGUNA_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/laguna_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LAGUNA_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DLAGUNA_TP16_CONTRACT_SHA256=\"$(LAGUNA_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/laguna_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LAGUNA_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(KEXAONE2_TP16_SERVING_ADAPTER): $(KEXAONE2_TP16_SOURCES) $(KEXAONE2_TP16_CONTRACT) modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DKEXAONE2_TP16_CONTRACT_SHA256=\"$(KEXAONE2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/kexaone2_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(KEXAONE2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DKEXAONE2_TP16_CONTRACT_SHA256=\"$(KEXAONE2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/kexaone2_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(KEXAONE2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(MIMO26_FLASH_TP16_SERVING_ADAPTER): $(MIMO26_FLASH_TP16_SOURCES) $(MIMO26_FLASH_TP16_CONTRACT) modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h model-families/mimo26/source/mimo26_stage.cuh model-families/mimo26/include/sparkpipe/spark_mimo26_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMIMO26_FLASH_TP16_CONTRACT_SHA256=\"$(MIMO26_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodel-families/mimo26/source -Imodel-families/mimo26/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MIMO26_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMIMO26_FLASH_TP16_CONTRACT_SHA256=\"$(MIMO26_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodel-families/mimo26/source -Imodel-families/mimo26/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MIMO26_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(MIMO26_PRO_TP16_SERVING_ADAPTER): $(MIMO26_PRO_TP16_SOURCES) $(MIMO26_PRO_TP16_CONTRACT) modules/mimo26_pro_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_pro_tp16_stage_model.h model-families/mimo26/source/mimo26_stage.cuh model-families/mimo26/include/sparkpipe/spark_mimo26_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMIMO26_PRO_TP16_CONTRACT_SHA256=\"$(MIMO26_PRO_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/mimo26_pro_tp16_resident_decode_stage/include -Imodel-families/mimo26/source -Imodel-families/mimo26/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MIMO26_PRO_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DMIMO26_PRO_TP16_CONTRACT_SHA256=\"$(MIMO26_PRO_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/mimo26_pro_tp16_resident_decode_stage/include -Imodel-families/mimo26/source -Imodel-families/mimo26/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MIMO26_PRO_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(HY4_TP16_SERVING_ADAPTER): $(HY4_TP16_SOURCES) $(HY4_TP16_CONTRACT) modules/hy4_tp16_resident_decode_stage/include/sparkpipe/spark_hy4_tp16_stage_model.h model-families/hy4/source/hy4_stage.cuh model-families/hy4/include/sparkpipe/spark_hy4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DHY4_TP16_CONTRACT_SHA256=\"$(HY4_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/hy4_tp16_resident_decode_stage/include -Imodel-families/hy4/source -Imodel-families/hy4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(HY4_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DHY4_TP16_CONTRACT_SHA256=\"$(HY4_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/hy4_tp16_resident_decode_stage/include -Imodel-families/hy4/source -Imodel-families/hy4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(HY4_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 define GLM53_FULL_ADAPTER_RECIPE
 @test -n "$(2)" -a -n "$(6)" || { echo "glm53_full: tools/glm52_model_contract.py gave no $(8) build identity" >&2; exit 1; }
-@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FULL_CONTRACT_SHA256=\"$(2)\" -DGLM53_FULL_MODEL_REVISION=\"$(1)\" -DGLM53_FULL_LINEAR_CODEC=$(3) -DGLM53_FULL_EXPERT_CODEC=$(4) -DGLM53_FULL_ADAPTER_ID=\"$(5)\" -DGLM53_FULL_MODEL_ID=\"$(6)\" -DGLM53_FULL_MODULE_TAG=\"$(7)\" -I. -Iinclude -Isrc -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FULL_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGLM53_FULL_CONTRACT_SHA256=\"$(2)\" -DGLM53_FULL_MODEL_REVISION=\"$(1)\" -DGLM53_FULL_LINEAR_CODEC=$(3) -DGLM53_FULL_EXPERT_CODEC=$(4) -DGLM53_FULL_ADAPTER_ID=\"$(5)\" -DGLM53_FULL_MODEL_ID=\"$(6)\" -DGLM53_FULL_MODULE_TAG=\"$(7)\" -I. -Iinclude -Isrc -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FULL_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
 $(GLM53_FULL_TP16_SERVING_ADAPTER): $(GLM53_FULL_TP16_SOURCES) model_contracts/glm52.json tools/glm52_model_contract.py modules/glm53_full_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_full_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/include/sparkpipe/spark_glm52_family.h model-families/glm52/source/glm52_row_shard.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h model-families/glm52/include/sparkpipe/spark_glm52_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -1780,13 +1773,13 @@ $(GLM53_FULL_BF16_TP16_SERVING_ADAPTER): $(GLM53_FULL_TP16_SOURCES) model_contra
 
 $(AXK2_TP16_SERVING_ADAPTER): $(AXK2_TP16_SOURCES) $(AXK2_TP16_CONTRACT) modules/axk2_tp16_resident_decode_stage/include/sparkpipe/spark_axk2_tp16_stage_model.h model-families/glm52/source/glm52_stage.cuh model-families/glm52/include/sparkpipe/spark_glm52_family.h model-families/glm52/source/glm52_row_shard.cuh model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@test -n "$(AXK2_TP16_REVISION)" || { echo "axk2: $(AXK2_TP16_CONTRACT) names no revision" >&2; exit 1; }
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DAXK2_CONTRACT_SHA256=\"$(AXK2_TP16_CONTRACT_SHA256)\" -DAXK2_MODEL_REVISION=\"$(AXK2_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/axk2_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(AXK2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DAXK2_CONTRACT_SHA256=\"$(AXK2_TP16_CONTRACT_SHA256)\" -DAXK2_MODEL_REVISION=\"$(AXK2_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/axk2_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(AXK2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(GEMMA4_26B_TP16_SERVING_ADAPTER): $(GEMMA4_26B_TP16_SOURCES) $(GEMMA4_26B_TP16_CONTRACT) modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGEMMA4_26B_CONTRACT_SHA256=\"$(GEMMA4_26B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_26b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_26B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DGEMMA4_26B_CONTRACT_SHA256=\"$(GEMMA4_26B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_26b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_26B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 define LING3_TP16_LINK
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) $(1) -I. -Iinclude -Isrc -Imodules/ling3_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LING3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) $(1) -I. -Iinclude -Isrc -Imodules/ling3_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LING3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
 $(LING3_FLASH_TP16_SERVING_ADAPTER): $(LING3_FLASH_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -1796,20 +1789,16 @@ $(LING3_FIN_TP16_SERVING_ADAPTER): $(LING3_FIN_TP16_CONTRACT) $(LING3_TP16_SOURC
 	$(call LING3_TP16_LINK,-DLING3_FIN=1 -DLING3_CONTRACT_SHA256=\"$(LING3_FIN_TP16_CONTRACT_SHA256)\")
 
 $(SOLAR_OPEN2_TP16_SERVING_ADAPTER): $(SOLAR_OPEN2_TP16_CONTRACT) $(SOLAR_OPEN2_TP16_SOURCES) modules/solar_open2_tp16_resident_decode_stage/include/sparkpipe/spark_solar_open2_tp16_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSOLAR_OPEN2_CONTRACT_SHA256=\"$(SOLAR_OPEN2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(SOLAR_OPEN2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DSOLAR_OPEN2_CONTRACT_SHA256=\"$(SOLAR_OPEN2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(SOLAR_OPEN2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(DSV41_FLASH_TP16_SERVING_ADAPTER): $(DSV41_FLASH_TP16_SOURCES) $(DSV41_FLASH_TP16_CONTRACT) modules/dsv41_flash_resident_decode_stage/include/sparkpipe/spark_dsv41_flash_stage_model.h modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DDSV41_FLASH_CONTRACT_SHA256=\"$(DSV41_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -Imodel-families/dsv41_flash/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(DSV41_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+$(DSV41_FLASH_TP16_SERVING_ADAPTER): $(DSV41_FLASH_TP16_SOURCES) $(DSV41_FLASH_TP16_CONTRACT) modules/dsv41_flash_resident_decode_stage/include/sparkpipe/spark_dsv41_flash_stage_model.h model-families/dsv41_flash/source/dsv41_flash_stage.cuh model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) $(NVCCFLAGS) -DDSV41_FLASH_CONTRACT_SHA256=\"$(DSV41_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/dsv41_flash_resident_decode_stage/include -Imodel-families/dsv41_flash/source -Imodel-families/dsv41_flash/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(DSV41_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_resident_end_to_end: tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_end_to_end.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-runtime_completion_tests: build/test_runtime_completion build/test_model_runtime
-	./build/test_runtime_completion
-	./build/test_model_runtime
 
 build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h | build
 	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
@@ -1831,9 +1820,6 @@ build/test_launch: tests/test_launch.c runtime/launch.h inference/kernels/layout
 build/test_tensor_map_geometry: tests/test_tensor_map_geometry.c inference/kernels/tensor_map.cuh | build
 	$(CC) $(CPPFLAGS) -I. $(CFLAGS) tests/test_tensor_map_geometry.c $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1849,51 +1835,32 @@ build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY) $(T
 build/test_hidden_transport_rdma_control: tests/test_hidden_transport_rdma_control.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport_rdma_control.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_hidden_transport_rdma_control.c ring/transport/rdma_control.c $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
-build/test_draft_bridge: tests/test_draft_bridge.c ring/transport/draft_bridge.c include/sparkpipe/spark_draft_bridge.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_draft_bridge.c ring/transport/draft_bridge.c $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+build/test_draft_bridge: tests/test_draft_bridge.c ring/transport/draft_bridge.c include/sparkpipe/spark_draft_bridge.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_draft_bridge.c ring/transport/draft_bridge.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_row_layout_round_span: tests/test_row_layout_round_span.c include/sparkpipe/spark_row_layout.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_row_layout_round_span.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_speculation_seam: tests/test_speculation_seam.c ring/transport/draft_bridge.c include/sparkpipe/spark_speculation_seam.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_seam.c ring/transport/draft_bridge.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
-
-build/test_memlink: tests/test_memlink.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_nvme_tier.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c src/spark_sha256.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_continuous_batch: tests/test_continuous_batch.c scheduler/continuous_batch.c include/sparkpipe/spark_continuous_batch.h include/sparkpipe/spark_status.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_continuous_batch.c scheduler/continuous_batch.c $(LDFLAGS) $(LDLIBS) -o $@
-
-
-build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
+build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh inference/kernels/topk_exact.cuh inference/kernels/index_shard.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh inference/kernels/topk_exact.cuh inference/kernels/index_shard.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_kernels (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/moe_local.cuh inference/kernels/route.cuh inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh inference/kernels/cell_pack.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/moe_local.cuh inference/kernels/route.cuh inference/kernels/skinny.cuh inference/kernels/cell_mma.cuh inference/kernels/cell_pack.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_moe_slices (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_landing: tests/test_dsv41_flash_landing.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/attn_shard.cuh inference/kernels/kv_shard.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_flash_landing: tests/test_dsv41_flash_landing.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/attn_shard.cuh inference/kernels/kv_shard.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_landing (no nvcc on this host)"; fi
-build/test_dsv41_window_fold: tests/test_dsv41_window_fold.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_window_fold: tests/test_dsv41_window_fold.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_window_fold (no nvcc on this host)"; fi
-build/test_dsv41_hc_mix: tests/test_dsv41_hc_mix.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_hc_mix: tests/test_dsv41_hc_mix.cu inference/kernels/hc.cuh model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_hc_mix (no nvcc on this host)"; fi
 build/test_skinny_rows: tests/test_skinny_rows.cu inference/kernels/skinny.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_skinny_rows (no nvcc on this host)"; fi
@@ -1902,9 +1869,9 @@ build/test_gemma4_verify_frames: tests/test_gemma4_verify_frames.cu tests/cuda/v
 build/test_ling_verify_frames: tests/test_ling_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/ling/source/ling_stage.cuh $(wildcard modules/solar_open2_tp16_resident_decode_stage/source/*.cu modules/ling3_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/ling/include -Imodel-families/ling/source -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodules/ling3_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_ling_verify_frames (no nvcc on this host)"; fi
 build/test_qwen38_verify_frames: tests/test_qwen38_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/qwen38/source/qwen38_hybrid_stage.cuh $(wildcard modules/qwen38_27b_resident_decode_stage/source/*.cu modules/qwen38_max_resident_decode_stage/source/*.cu modules/qwen38_flash_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_NVFP4_E2M1 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_NVFP4_E2M1 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames (no nvcc on this host)"; fi
 build/test_qwen38_verify_frames_bf16: tests/test_qwen38_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/qwen38/source/qwen38_hybrid_stage.cuh $(wildcard modules/qwen38_27b_resident_decode_stage/source/*.cu modules/qwen38_max_resident_decode_stage/source/*.cu modules/qwen38_flash_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames_bf16 (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames_bf16 (no nvcc on this host)"; fi
 build/test_glm52_verify_frames: tests/test_glm52_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/glm52/source/glm52_stage.cuh $(wildcard modules/glm53_full_tp16_resident_decode_stage/source/*.cu modules/axk2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DGLM53_FULL_LINEAR_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -DGLM53_FULL_EXPERT_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames (no nvcc on this host)"; fi
 build/test_glm52_verify_frames_bf16: tests/test_glm52_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/glm52/source/glm52_stage.cuh $(wildcard modules/glm53_full_tp16_resident_decode_stage/source/*.cu modules/axk2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
@@ -1922,16 +1889,11 @@ build/exact_grouped_experts_bench: tools/exact_grouped_experts_bench.cu inferenc
 build/test_mimo26_verify_frames: tests/test_mimo26_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/mimo26/source/mimo26_stage.cuh $(wildcard modules/mimo26_flash_tp16_resident_decode_stage/source/*.cu modules/mimo26_pro_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/mimo26/include -Imodel-families/mimo26/source -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodules/mimo26_pro_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_mimo26_verify_frames (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
+build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_rope_parity (no nvcc on this host)"; fi
 
 build/test_rope_plan: tests/test_rope_plan.c model-families/common/include/sparkpipe/spark_rope_plan.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -Imodel-families/common/include $< -lm -o $@
-
-build/test_serving_tp_config: tests/test_serving_tp_config.c include/sparkpipe/spark_serving_adapter_template.h $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
-
-build/mb_doorbell: tools/mb_doorbell.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c model-families/glm52/include/sparkpipe/spark_glm52_stagepack.h
 	$(CC) $(GLM52_INCLUDE_FLAGS) \
@@ -1942,9 +1904,6 @@ build/test_gemm_tile_k_fallback: tests/test_gemm_tile_k_fallback.c runtime/launc
 
 build/test_serial_tp_replay: tests/test_serial_tp_replay.c tests/serial_tp_replay.c tests/serial_tp_replay.h | build
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) tests/test_serial_tp_replay.c tests/serial_tp_replay.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_tree_resolve: tests/test_speculation_tree_resolve.c $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -1964,22 +1923,22 @@ build/test_system_loopback: tests/test_system_loopback.c tests/fixtures/model_re
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CORE_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_common.c runtime/stage_module_common.c $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_stage_module_claims: tests/test_stage_module_claims.c runtime/stage_module_claims.c $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) tests/test_stage_module_claims.c runtime/stage_module_claims.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES := tests/test_stage_kv_layout_digest.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
+STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES := tests/test_stage_kv_layout_digest.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_claims.c $(DEVICE_CUDA_STUB_TEST_SOURCES) cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c
 build/test_stage_kv_layout_digest: $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(STAGE_KV_LAYOUT_DIGEST_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
+STAGE_KV_BINDING_TEST_SOURCES := tests/test_stage_kv_binding.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_claims.c $(DEVICE_CUDA_STUB_TEST_SOURCES) cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
 build/test_stage_kv_binding: $(STAGE_KV_BINDING_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_BINDING_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-STAGE_KV_SHARED_PREFIX_TEST_SOURCES := tests/test_stage_kv_shared_prefix.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
+STAGE_KV_SHARED_PREFIX_TEST_SOURCES := tests/test_stage_kv_shared_prefix.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_claims.c $(DEVICE_CUDA_STUB_TEST_SOURCES) cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
 build/test_stage_kv_shared_prefix: $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_SHARED_PREFIX_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_common.c cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
+STAGE_KV_POOL_RESIZE_TEST_SOURCES := tests/test_stage_kv_pool_resize.c runtime/stage_kv_binding.c runtime/kv_device_copy.c runtime/stage_module_claims.c $(DEVICE_CUDA_STUB_TEST_SOURCES) cache/kv_cache.c cache/kv_page_cache.c cache/kv_page_store.c cache/kv_snapshot.c cache/kv_model_table.c $(SPARKPIPE_WEIGHTD_SOURCES)
 build/test_stage_kv_pool_resize: $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) tests/test_weightd_kv_server.h tests/test_stderr_capture.h $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Imodel-families/common/include $(CFLAGS) $(STAGE_KV_POOL_RESIZE_TEST_SOURCES) $(SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1992,13 +1951,13 @@ build/sparkpipe_weightsd: node/weightd.c node/weightd_mesh.c $(RUNTIME_LIBRARY) 
 build/glm5_next_experts_manifest: tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_expert_planes.h $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) -Imodel-families/glm5_next/include $(CFLAGS) tools/glm5_next_experts_manifest.c runtime/spark_weightd_manifest.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-DSV41_FLASH_PACK_TOOL_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/dsv41_flash/include -Imodules/dsv41_flash_resident_decode_stage/include -Imodules/dsv41_flash_resident_decode_stage/source -D_FILE_OFFSET_BITS=64
-DSV41_FLASH_PACK_FORMAT_HEADER := modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stagepack_format.h
+DSV41_FLASH_PACK_TOOL_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/dsv41_flash/include -D_FILE_OFFSET_BITS=64
+DSV41_FLASH_PACK_FORMAT_HEADER := model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_stagepack.h
 
-build/dsv41_flash_pack_synthesize: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_pack_synthesize.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+build/dsv41_flash_pack_synthesize: tools/dsv41_flash_pack_synthesize.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
 	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-build/dsv41_flash_experts_manifest: modules/dsv41_flash_resident_decode_stage/tools/dsv41_flash_experts_manifest.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
+build/dsv41_flash_experts_manifest: tools/dsv41_flash_experts_manifest.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
 	$(CC) $(DSV41_FLASH_PACK_TOOL_FLAGS) $(CFLAGS) $< src/spark_ck128.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_dsv41_flash_pack_contract: tests/test_dsv41_flash_pack_contract.c src/spark_ck128.c $(DSV41_FLASH_PACK_FORMAT_HEADER) | build
@@ -2055,7 +2014,7 @@ build/test_weightd_churn: tests/test_weightd_churn.c tests/fixtures/test_child_g
 build/test_weightd_expert_stress: tests/test_weightd_expert_stress.c tests/fixtures/test_child_guard.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_direct.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_worker.c runtime/spark_weightd_pacer.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_weightd_fd_frames: tests/test_weightd_fd_frames.c runtime/spark_weightd_spine.c runtime/spark_weightd_direct.c runtime/spark_weightd_receipt.c runtime/spark_weightd.c runtime/spark_weightd_memory.c runtime/spark_weightd_worker.c runtime/spark_weightd_pacer.c runtime/spark_weightd_manifest.c runtime/spark_weightd_lease.c include/sparkpipe/spark_weightd.h include/sparkpipe/spark_weightd_manifest.h include/sparkpipe/spark_weightd_lease.h $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$(filter-out runtime/spark_weightd.c runtime/spark_weightd_direct.c,$^)) $(LDFLAGS) -o $@
 
 build/test_weightd: tests/test_weightd.c tests/fixtures/test_child_guard.c tests/test_stderr_capture.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build build/sparkpipe_weightd
@@ -2068,21 +2027,11 @@ build/test_weightd_attach: tests/test_weightd_attach.c $(RUNTIME_LIBRARY) $(CORE
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 build/test_weightd_expert: tests/test_weightd_expert.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
-build/test_stage_module_weightd: tests/test_stage_module_weightd.c runtime/stage_module_common.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_expert_working_set: tests/test_expert_working_set.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-build/test_graph_reloc: tests/test_graph_reloc.c runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c tests/cuda_stub/cuda_runtime_stub.c include/sparkpipe/spark_graph_reloc.h $(CORE_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_graph_reloc_gpu: tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c include/sparkpipe/spark_graph_reloc.h $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude tests/test_graph_reloc_gpu.cu runtime/spark_graph_reloc.c runtime/spark_graph_reloc_cuda.c -L$(CUDA_HOME)/lib64 -lcudart -lcuda -o $@
-
 .PHONY: test-graph-reloc-gpu
-test-graph-reloc-gpu: build/test_graph_reloc_gpu
-	./build/test_graph_reloc_gpu
 
 build/test_weightd_map: tests/test_weightd_map.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
@@ -2092,20 +2041,8 @@ build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-build/test_speculation_reference_draft: tests/test_speculation_reference_draft.c include/sparkpipe/spark_speculation_reference_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_reference_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_recorded_draft: tests/test_speculation_recorded_draft.c include/sparkpipe/spark_speculation_recorded_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_recorded_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_lookup_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_ngram_draft: tests/test_speculation_ngram_draft.c include/sparkpipe/spark_speculation_ngram_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_ngram_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_drafter_mix: tests/test_speculation_drafter_mix.c include/sparkpipe/spark_speculation_drafter_mix.h include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_drafter_mix.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_exact_plan.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topk_exact_plan.c $(LDFLAGS) -o $@
@@ -2113,20 +2050,8 @@ build/test_topk_exact_plan: tests/test_topk_exact_plan.c inference/kernels/topk_
 build/test_speculation_frame: tests/test_speculation_frame.c include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
 
-build/test_speculation_depth: tests/test_speculation_depth.c include/sparkpipe/spark_speculation_depth.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_depth.c $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_relay_draft: tests/test_speculation_relay_draft.c include/sparkpipe/spark_speculation_relay_draft.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_draft.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_tap: tests/test_speculation_tap.c include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tap.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/test_speculation_relay_link: tests/test_speculation_relay_link.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_relay_link.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/spark_speculation_relay_probe: tools/spec_relay_probe.c include/sparkpipe/spark_speculation_relay_link.h include/sparkpipe/spark_speculation_tap.h $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tools/spec_relay_probe.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_speculation_tree_frame: tests/test_speculation_tree_frame.c include/sparkpipe/spark_speculation_tree_frame.h include/sparkpipe/spark_speculation_frame.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_speculation_tree_frame.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
 
 
 build/test_driver_compiler: tests/test_driver_compiler.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)

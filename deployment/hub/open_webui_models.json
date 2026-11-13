@@ -34,7 +34,7 @@
     {
       "id": "glm-5.3",
       "name": "GLM 5.3",
-      "description": "GLM 5.3, the largest GLM. 768K context. Switching to it takes about 40 s."
+      "description": "GLM 5.3, the largest GLM. 1M context. Switching to it takes about 40 s."
     },
     {
       "id": "glm-5.3-flash",
@@ -95,6 +95,11 @@
       "id": "qwen3.8-27b",
       "name": "Qwen 3.8 27B",
       "description": "Qwen 3.8 27B. 256K context. Switching to it takes about 20 s."
+    },
+    {
+      "id": "qwen3.8-27b-fp8",
+      "name": "Qwen 3.8 27B FP8",
+      "description": "Qwen 3.8 27B at 8-bit precision (the publisher's FP8 release). 256K context. Switching to it takes about 20 s."
     },
     {
       "id": "qwen3.8-flash",

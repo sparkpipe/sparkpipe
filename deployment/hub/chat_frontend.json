@@ -26,7 +26,7 @@
    "id": "glm-5.3",
    "model_dir": "models/glm-5.3",
    "engine": "http://127.0.0.1:8475",
-   "context_tokens": 786432,
+   "context_tokens": 1048576,
    "max_output_tokens": 131072,
    "sampling_defaults": {
     "temperature": 1.0,
@@ -284,6 +284,64 @@
    "id": "qwen3.8-27b",
    "model_dir": "models/qwen3.8-27b",
    "engine": "http://127.0.0.1:8461",
+   "context_tokens": 262144,
+   "max_output_tokens": 131072,
+   "sampling_defaults": {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20
+   },
+   "sampling_source": "qwen3.8-27b/generation_config.json",
+   "warm_queue": {
+    "depth": 64,
+    "wait_seconds": 3900,
+    "activation_url": "http://127.0.0.1:8440/activate"
+   },
+   "sequences": 8,
+   "stop_tokens": [
+    "<|im_end|>",
+    "<|endoftext|>"
+   ],
+   "template_defaults": {
+    "enable_thinking": true
+   },
+   "template_kwargs": [
+    "enable_thinking"
+   ],
+   "reasoning_effort": {
+    "minimal": {
+     "enable_thinking": false
+    },
+    "low": {
+     "enable_thinking": true
+    },
+    "medium": {
+     "enable_thinking": true
+    },
+    "high": {
+     "enable_thinking": true
+    }
+   },
+   "reasoning": {
+    "start": "<think>",
+    "end": "</think>",
+    "close": "\n</think>\n\n"
+   },
+   "tool_calls": {
+    "format": "function_xml",
+    "start": "<tool_call>",
+    "end": "</tool_call>",
+    "attribute_end": ">",
+    "function_start": "<function=",
+    "function_end": "</function>",
+    "parameter_start": "<parameter=",
+    "parameter_end": "</parameter>"
+   }
+  },
+  {
+   "id": "qwen3.8-27b-fp8",
+   "model_dir": "models/qwen3.8-27b",
+   "engine": "http://127.0.0.1:8482",
    "context_tokens": 262144,
    "max_output_tokens": 131072,
    "sampling_defaults": {

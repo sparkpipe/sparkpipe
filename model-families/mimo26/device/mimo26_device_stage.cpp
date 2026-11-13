@@ -70,6 +70,7 @@ struct MimoDevice
 		attention->epsilon = G::kEpsilon;
 		attention->scale = G::kAttentionScale;
 		attention->qk_plain = 1u;
+		attention->rope_rounding = SPARK_ROPE_ROUNDING_TERMS;
 		attention->value_scale = G::kValueScale;
 		attention->sinks = full ? 0u : 1u;
 		attention->window = full ? 0u : G::kWindow;
@@ -330,7 +331,14 @@ struct MimoDevice
 			0,
 			BindDevice,
 			0,
-			0
+			0,
+			0,
+			0,
+			0,
+			0,
+			0,
+			0u,
+			0u
 		};
 		return &interface_table;
 	}

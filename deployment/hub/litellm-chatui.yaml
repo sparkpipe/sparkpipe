@@ -13,7 +13,7 @@ model_list:
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:
-    max_input_tokens: 786432
+    max_input_tokens: 1048576
     max_output_tokens: 131072
 - model_name: glm-5.3-flash
   litellm_params:
@@ -130,6 +130,14 @@ model_list:
 - model_name: qwen3.8-27b
   litellm_params:
     model: hosted_vllm/qwen3.8-27b
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 131072
+- model_name: qwen3.8-27b-fp8
+  litellm_params:
+    model: hosted_vllm/qwen3.8-27b-fp8
     api_base: http://127.0.0.1:8433/v1
     api_key: none
   model_info:

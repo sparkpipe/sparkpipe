@@ -1,0 +1,49 @@
+{
+  "schema_version": 2,
+  "eos_token_ids": [
+    248044,
+    248046
+  ],
+  "coordinator_rank_index": 0,
+  "adapter": {
+    "shared_object_path": "lib/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib"
+  },
+  "driver": {
+    "shared_object_path": "lib/libqwen38_27b_bf16_tp1_metal_serving_adapter.dylib",
+    "program_name": "qwen38_27b"
+  },
+  "transport": {
+    "shared_object_path": "lib/hidden_transport.so",
+    "mode": "host-staged",
+    "control_port_base": 64400
+  },
+  "runtime_limits": {
+    "max_inflight_submissions": 4,
+    "max_active_sequences": 4,
+    "max_input_rows": 1024,
+    "resident_sequence_capacity": 4,
+    "kv_logical_page_capacity": 1280,
+    "kv_physical_page_capacity": 1024,
+    "output_vocabulary": 248077,
+    "max_sequence_positions": 16384
+  },
+  "nodes": [
+    {
+      "rank_index": 0,
+      "stage_index": 0,
+      "runtime_root": "/Users/m5u0/serve/q27-root",
+      "node_target": "metal.apple10.qwen38_27b.stage_runner.linear_bf16.kv_bf16",
+      "transport_host": "127.0.0.1",
+      "adapter_configuration_path": "config/adapter.json",
+      "kv_backing_directory": "/Users/m5u0/serve/q27-root/kvcache",
+      "kv_partition": "/",
+      "kv_backing_maximum_bytes": 4328521728,
+      "kv_snapshot_directory": "/Users/m5u0/serve/q27-root/kvsnapshot",
+      "control_endpoint": {
+        "kind": "tcp",
+        "host": "127.0.0.1",
+        "port": 23400
+      }
+    }
+  ]
+}

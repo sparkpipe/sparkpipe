@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "sparkpipe/spark_kv_snapshot.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <dirent.h>
@@ -86,14 +87,6 @@ typedef struct SparkKvSnapshotRuntime
 	uint32_t failed_key_count;
 	uint32_t failed_keys_lost;
 } SparkKvSnapshotRuntime;
-
-static uint64_t SparkKvSnapshotNowNs(void)
-{
-	struct timespec now;
-	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
-		return(0u);
-	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
 
 static uint64_t SparkKvSnapshotWallSeconds(void)
 {
@@ -835,7 +828,7 @@ static SparkStatus SparkKvSnapshotWriteFile(SparkKvSnapshotStore *store,const ch
 
 static SparkStatus SparkKvSnapshotFailureGateLocked(const SparkKvSnapshotStore *store)
 {
-	if ( store->failed_status != SPARK_STATUS_OK && SparkKvSnapshotNowNs() - store->failed_at_ns < store->failure_retry_ns )
+	if ( store->failed_status != SPARK_STATUS_OK && SparkMonotonicNs() - store->failed_at_ns < store->failure_retry_ns )
 		return(store->failed_status);
 	return(SPARK_STATUS_OK);
 }
@@ -852,7 +845,7 @@ static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const Sp
 	SparkKvSnapshotRuntime *runtime = SparkKvSnapshotRuntimeOf(store);
 	SparkKvSnapshotFileHeader header;
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs();
+	uint64_t start_ns = SparkMonotonicNs();
 	uint32_t parented = SparkKvSnapshotHasParent(key,parent);
 	SparkStatus status;
 	status = SparkKvSnapshotPath(store,key,parent,path,sizeof(path));
@@ -895,7 +888,7 @@ static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const Sp
 	{
 		store->write_count++;
 		store->write_bytes += header.file_bytes;
-		store->write_ns += SparkKvSnapshotNowNs() - start_ns;
+		store->write_ns += SparkMonotonicNs() - start_ns;
 		if ( store->failed_status != SPARK_STATUS_OK )
 		{
 			fprintf(stderr,"kv snapshot store %s writes again after status %u\n",store->directory,(unsigned)store->failed_status);
@@ -909,7 +902,7 @@ static SparkStatus SparkKvSnapshotStoreFile(SparkKvSnapshotStore *store,const Sp
 		if ( status == SPARK_STATUS_IO_ERROR || status == SPARK_STATUS_CAPACITY_EXCEEDED )
 		{
 			store->failed_status = status;
-			store->failed_at_ns = SparkKvSnapshotNowNs();
+			store->failed_at_ns = SparkMonotonicNs();
 			fprintf(stderr,"kv snapshot store %s write failed status=%u; writes are refused for %llu ms, then one probes the store\n",
 				store->directory,(unsigned)status,(unsigned long long)(store->failure_retry_ns / 1000000u));
 		}
@@ -1223,10 +1216,10 @@ static SparkStatus SparkKvSnapshotScan(SparkKvSnapshotStore *store)
 static uint32_t SparkKvSnapshotLockWithin(int descriptor,uint64_t wait_ns)
 {
 	const struct timespec pause = {0,50000000L};
-	uint64_t deadline = SparkKvSnapshotNowNs() + wait_ns;
+	uint64_t deadline = SparkMonotonicNs() + wait_ns;
 	while ( flock(descriptor,LOCK_EX | LOCK_NB) != 0 )
 	{
-		if ( errno != EWOULDBLOCK || SparkKvSnapshotNowNs() >= deadline )
+		if ( errno != EWOULDBLOCK || SparkMonotonicNs() >= deadline )
 			return(1u);
 		(void)nanosleep(&pause,0);
 	}
@@ -1525,7 +1518,7 @@ static void SparkKvSnapshotRecordRead(SparkKvSnapshotStore *store,const SparkKvS
 	SparkKvSnapshotIndexTouch(store,key,SparkKvSnapshotWallSeconds());
 	store->read_count++;
 	store->read_bytes += bytes;
-	store->read_ns += SparkKvSnapshotNowNs() - start_ns;
+	store->read_ns += SparkMonotonicNs() - start_ns;
 	pthread_mutex_unlock(&runtime->mutex);
 }
 
@@ -1831,7 +1824,7 @@ SparkStatus SparkKvSnapshotRead(SparkKvSnapshotStore *store,const SparkKvSnapsho
 {
 	SparkKvSnapshotFileHeader header;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs(),bytes = 0u;
+	uint64_t start_ns = SparkMonotonicNs(),bytes = 0u;
 	SparkStatus status;
 	uint32_t index;
 	int descriptor;
@@ -1874,7 +1867,7 @@ SparkStatus SparkKvSnapshotReadSegment(SparkKvSnapshotStore *store,const SparkKv
 {
 	SparkKvSnapshotFileHeader header;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
-	uint64_t start_ns = SparkKvSnapshotNowNs();
+	uint64_t start_ns = SparkMonotonicNs();
 	SparkStatus status;
 	int descriptor;
 	if ( bytes_out == 0 || segment_index >= SPARK_KV_SNAPSHOT_MAX_SEGMENTS )

@@ -122,6 +122,8 @@ class DirectPacks(unittest.TestCase):
         for name in ("sparkpipe_model_residentd", "weightd_warm", "libhidden_transport_spark_host_rdma_verbs.so",
                      "libk3_tp16_serving_adapter.so", stage_lane.MODELS["dsv41_flash"]["adapter"]):
             (firmware / name).write_text(name)
+        (firmware / "runtime_libs").mkdir()
+        (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("device")
         environment = {"PATH": f"{binary}:{os.environ['PATH']}", "HOME": str(fake), "TMPDIR": scratch, "FAKE_FLEET": str(fake)}
         return fake, firmware, environment
 
@@ -165,7 +167,7 @@ class DirectPacks(unittest.TestCase):
                         self.assertEqual(json.loads((local / "config/adapter.json").read_text())["stage_pack_path"], pack)
                         self.assertEqual(sorted(os.listdir(local / "packs")), ["pack.sha256"])
                         self.assertEqual((local / "packs/pack.sha256").read_text(), DIGEST)
-                        self.assertEqual((local / "spine_budget").read_text().strip(), str(4096 + 255))
+                        self.assertFalse((local / "spine_budget").exists())
             self.assertEqual(old.read_text(), "old run\n")
 
     def test_setup_refuses_a_linked_or_missing_weight_file(self):

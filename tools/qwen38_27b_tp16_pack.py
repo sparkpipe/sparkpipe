@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Qwen3.8-27B official FP8 or BF16 checkpoint -> TP16 or TP1 named stage packs.
+"""Qwen 3.8 and 3.5 dense hybrid checkpoints (official FP8 or BF16) -> TP16 or TP1 named stage packs.
+
+The geometry comes from the checkpoint's config.json, checked against the
+dimensions the device and CUDA stages are built for (GDN key and value heads
+of 128, convolution of 4, attention heads of 256 with 64 rotary dimensions).
+A checkpoint with tied embeddings (the Qwen 3.5 small models) writes no head
+entry: the stage reads the embedding rows as the head. The small checkpoints
+store the gated GDN norm weight and A_log in F32; the publisher's model runs in
+bfloat16 and keeps no module in FP32, so the norm weight is rounded to BF16 to
+nearest even as its load does (A_log's F32 values are all BF16 values).
 
 One pass over the checkpoint writes every rank: each tensor is read once and
 its rank slices go to the rank pack writers. --tp-degree 16 writes the
@@ -47,27 +56,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from spark_named_pack import NAMED_PACK_ALIGN, NAMED_PACK_MAGIC, NAMED_PACK_VERSION, PayloadWriter, assemble, source_identity  # noqa: E402
 
 TP = 16
-TP_DEGREES = (1, 16)
-HIDDEN = 5120
-LAYERS = 64
-VOCAB = 248320
-FFN = 17408
+TP_DEGREES = (1, 2, 4, 8, 16)
+SIXTEENTHS = 16
+NAME = "qwen38_27b"
 BLOCK = 128
-GDN_KEY_HEADS = 16
-GDN_VALUE_HEADS = 48
 GDN_KEY_DIM = 128
 GDN_VALUE_DIM = 128
-GDN_QK = GDN_KEY_HEADS * GDN_KEY_DIM
-GDN_V = GDN_VALUE_HEADS * GDN_VALUE_DIM
-ATTN_HEADS = 24
-ATTN_KV_HEADS = 4
+CONV = 4
 HEAD_DIM = 256
-ATTN_Q = ATTN_HEADS * HEAD_DIM
-ATTN_QG = 2 * ATTN_Q
-ATTN_KV = ATTN_KV_HEADS * HEAD_DIM
-ATTN_QKV = ATTN_QG + 2 * ATTN_KV
-FULL_PERIOD = 4
-FULL_PHASE = 3
+ROPE_DIM = 64
+ROPE_THETA = 10000000
+EPSILON = 1e-6
+HIDDEN = LAYERS = VOCAB = FFN = GDN_KEY_HEADS = GDN_VALUE_HEADS = ATTN_HEADS = ATTN_KV_HEADS = 0
+GDN_QK = GDN_V = ATTN_Q = ATTN_QG = ATTN_KV = ATTN_QKV = FULL_PERIOD = FULL_PHASE = 0
+TIED = False
 PREFIX = "model.language_model."
 EXPERTS_MAGIC = 0x58504557
 EXPERTS_VERSION = 2
@@ -75,6 +77,36 @@ EXPERTS_VERSION = 2
 
 class PackFailure(RuntimeError):
     pass
+
+
+def configure(config):
+    global HIDDEN, LAYERS, VOCAB, FFN, GDN_KEY_HEADS, GDN_VALUE_HEADS, ATTN_HEADS, ATTN_KV_HEADS, GDN_QK, GDN_V, ATTN_Q, ATTN_QG, ATTN_KV
+    global ATTN_QKV, FULL_PERIOD, FULL_PHASE, TIED
+    text = config.get("text_config", config)
+    rope = text.get("rope_parameters") or {}
+    fixed = {"linear_key_head_dim": GDN_KEY_DIM, "linear_value_head_dim": GDN_VALUE_DIM, "linear_conv_kernel_dim": CONV, "head_dim": HEAD_DIM,
+             "rms_norm_eps": EPSILON}
+    for key, value in fixed.items():
+        if text.get(key) != value:
+            raise PackFailure(f"checkpoint {key} is {text.get(key)}; the stages are built for {value}")
+    if round(text["head_dim"] * rope.get("partial_rotary_factor", 0)) != ROPE_DIM or rope.get("rope_theta") != ROPE_THETA:
+        raise PackFailure(f"checkpoint rope {rope} is not {ROPE_DIM} rotary dimensions at theta {ROPE_THETA}")
+    HIDDEN, LAYERS, VOCAB, FFN = text["hidden_size"], text["num_hidden_layers"], text["vocab_size"], text["intermediate_size"]
+    GDN_KEY_HEADS, GDN_VALUE_HEADS = text["linear_num_key_heads"], text["linear_num_value_heads"]
+    ATTN_HEADS, ATTN_KV_HEADS = text["num_attention_heads"], text["num_key_value_heads"]
+    GDN_QK, GDN_V = GDN_KEY_HEADS * GDN_KEY_DIM, GDN_VALUE_HEADS * GDN_VALUE_DIM
+    ATTN_Q = ATTN_HEADS * HEAD_DIM
+    ATTN_QG, ATTN_KV = 2 * ATTN_Q, ATTN_KV_HEADS * HEAD_DIM
+    ATTN_QKV = ATTN_QG + 2 * ATTN_KV
+    FULL_PERIOD = text["full_attention_interval"]
+    FULL_PHASE = FULL_PERIOD - 1
+    kinds = text.get("layer_types") or []
+    expected = ["full_attention" if layer % FULL_PERIOD == FULL_PHASE else "linear_attention" for layer in range(LAYERS)]
+    if kinds != expected:
+        raise PackFailure("checkpoint layer_types are not linear attention with full attention every full_attention_interval layers")
+    TIED = bool(config.get("tie_word_embeddings", text.get("tie_word_embeddings", False)))
+    if GDN_VALUE_HEADS % GDN_KEY_HEADS or VOCAB % TP or GDN_KEY_HEADS % TP or GDN_VALUE_HEADS % TP or ATTN_QKV % (TP * BLOCK) or ATTN_Q % (TP * BLOCK):
+        raise PackFailure(f"the geometry does not split into {TP} ranks")
 
 
 class Checkpoint:
@@ -115,9 +147,11 @@ def window(total, rank):
 
 def ffn_window(rank):
     blocks = FFN // BLOCK
-    base, extra = divmod(blocks, TP)
-    first = rank * base + min(rank, extra)
-    return first * BLOCK, (base + (1 if rank < extra else 0)) * BLOCK
+    parts = SIXTEENTHS if blocks >= SIXTEENTHS else TP
+    base, extra = divmod(blocks, parts)
+    first, last = (part * parts // TP for part in (rank, rank + 1))
+    first, last = (part * base + min(part, extra) for part in (first, last))
+    return first * BLOCK, (last - first) * BLOCK
 
 
 class RankPacks:
@@ -127,10 +161,10 @@ class RankPacks:
                         for rank in range(TP)]
 
     def payload(self, rank):
-        return self.out_dir / f"qwen38_27b.tp{TP}.rank{rank:02d}.pack.payload"
+        return self.out_dir / f"{NAME}.tp{TP}.rank{rank:02d}.pack.payload"
 
     def final(self, rank):
-        return self.out_dir / f"qwen38_27b.tp{TP}.rank{rank:02d}.pack"
+        return self.out_dir / f"{NAME}.tp{TP}.rank{rank:02d}.pack"
 
     def add(self, rank, name, array, kind):
         array = np.ascontiguousarray(array)
@@ -186,6 +220,19 @@ def bf16(checkpoint, name, shape=None):
     return array
 
 
+def bf16_rounded(checkpoint, name, shape):
+    dtype, array = checkpoint.array(name)
+    if tuple(array.shape) != tuple(shape):
+        raise PackFailure(f"{name}: shape {tuple(array.shape)} != {tuple(shape)}")
+    if dtype == "BF16":
+        return array
+    if dtype != "F32":
+        raise PackFailure(f"{name}: expected BF16 or F32, found {dtype}")
+    bits = np.asarray(array, dtype=np.float32).view(np.uint32)
+    rounded = ((bits + np.uint32(0x7FFF) + ((bits >> 16) & np.uint32(1))) >> 16).astype(np.uint16)
+    return np.where((bits & np.uint32(0x7FFFFFFF)) > np.uint32(0x7F800000), (bits >> 16).astype(np.uint16) | np.uint16(0x40), rounded)
+
+
 def f32_vector(checkpoint, name, shape):
     dtype, array = checkpoint.array(name)
     if tuple(array.shape) != tuple(shape):
@@ -219,13 +266,16 @@ def cols_blocks(payload, scale, first, count):
 
 def pack_globals(checkpoint, packs):
     embed = bf16(checkpoint, PREFIX + "embed_tokens.weight", (VOCAB, HIDDEN))
-    head = bf16(checkpoint, "lm_head.weight", (VOCAB, HIDDEN))
+    head = None if TIED else bf16(checkpoint, "lm_head.weight", (VOCAB, HIDDEN))
+    if TIED and TP != 1:
+        raise PackFailure("a tied head is read from the embedding rows of a whole-model pack only")
     final = folded_norm(checkpoint, PREFIX + "norm.weight", HIDDEN)
     for rank in range(TP):
         first, count = window(VOCAB, rank)
         packs.add(rank, "embed", embed[first:first + count], "bf16")
         packs.add(rank, "head_norm", final, "f32")
-        packs.add(rank, "head", head[first:first + count], "bf16")
+        if head is not None:
+            packs.add(rank, "head", head[first:first + count], "bf16")
 
 
 def pack_gdn(checkpoint, packs, layer, codec):
@@ -235,10 +285,10 @@ def pack_gdn(checkpoint, packs, layer, codec):
     out, out_scale = linear_pair(checkpoint, p + "out_proj", codec)
     beta = bf16(checkpoint, p + "in_proj_b.weight", (GDN_VALUE_HEADS, HIDDEN))
     decay = bf16(checkpoint, p + "in_proj_a.weight", (GDN_VALUE_HEADS, HIDDEN))
-    conv = bf16(checkpoint, p + "conv1d.weight", (2 * GDN_QK + GDN_V, 1, 4)).reshape(2 * GDN_QK + GDN_V, 4)
+    conv = bf16(checkpoint, p + "conv1d.weight", (2 * GDN_QK + GDN_V, 1, CONV)).reshape(2 * GDN_QK + GDN_V, CONV)
     a_log = f32_vector(checkpoint, p + "A_log", (GDN_VALUE_HEADS,))
     dt_bias = f32_vector(checkpoint, p + "dt_bias", (GDN_VALUE_HEADS,))
-    norm = bf16(checkpoint, p + "norm.weight", (GDN_VALUE_DIM,))
+    norm = bf16_rounded(checkpoint, p + "norm.weight", (GDN_VALUE_DIM,))
     if qkv.shape != (2 * GDN_QK + GDN_V, HIDDEN) or z.shape != (GDN_V, HIDDEN) or out.shape != (HIDDEN, GDN_V):
         raise PackFailure(f"layer {layer}: GDN projection shapes {qkv.shape} {z.shape} {out.shape}")
     heads = GDN_VALUE_HEADS // TP
@@ -309,7 +359,7 @@ def finish(packs, revision, contract_sha256, codec):
         packs.writers[rank].close()
         first, count = ffn_window(rank)
         vocab_first, vocab_count = window(VOCAB, rank)
-        config = {"model": "qwen38_27b", "tp_degree": TP, "tp_rank": rank, "hidden": HIDDEN, "layers": LAYERS,
+        config = {"model": NAME, "tp_degree": TP, "tp_rank": rank, "hidden": HIDDEN, "layers": LAYERS,
                   "vocab": VOCAB, "vocab_first": vocab_first, "vocab_rows": vocab_count,
                   "ffn_first": first, "ffn_rows": count, "full_period": FULL_PERIOD, "full_phase": FULL_PHASE}
         fmt = {"container": "spark_named_pack", "version": NAMED_PACK_VERSION, "alignment": NAMED_PACK_ALIGN,
@@ -328,6 +378,7 @@ def finish(packs, revision, contract_sha256, codec):
 
 
 def main():
+    global TP, NAME
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
@@ -335,16 +386,10 @@ def main():
     parser.add_argument("--codec", choices=("fp8", "bf16"), default="fp8")
     parser.add_argument("--tp-degree", type=int, choices=TP_DEGREES, required=True)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--name", default=NAME, help="the pack's model name and file prefix, such as qwen38_27b or qwen35_4b")
     args = parser.parse_args()
-    global TP
-    TP = args.tp_degree
-    config = json.loads((args.checkpoint / "config.json").read_text())
-    text = config["text_config"]
-    if (text["hidden_size"], text["num_hidden_layers"], text["vocab_size"], text["intermediate_size"],
-            text["num_attention_heads"], text["num_key_value_heads"], text["head_dim"],
-            text["linear_num_key_heads"], text["linear_num_value_heads"]) != (
-            HIDDEN, LAYERS, VOCAB, FFN, ATTN_HEADS, ATTN_KV_HEADS, HEAD_DIM, GDN_KEY_HEADS, GDN_VALUE_HEADS):
-        raise PackFailure("checkpoint geometry differs from the packer's")
+    TP, NAME = args.tp_degree, args.name
+    configure(json.loads((args.checkpoint / "config.json").read_text()))
     revision = json.loads((args.checkpoint / "DOWNLOAD-RECEIPT.json").read_text()).get("revision", "unknown")
     contract_sha256 = hashlib.sha256(args.contract.read_bytes()).hexdigest()
     args.output_dir.mkdir(parents=True, exist_ok=True)

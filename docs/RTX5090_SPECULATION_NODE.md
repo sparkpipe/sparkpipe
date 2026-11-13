@@ -88,7 +88,21 @@ K3 serves model drafts from the RadixArk DSpark block drafter on the hub.
   `10.10.250.2:7701`, the hub's 10 GbE link to sparkf (`eno1`). The 100G
   link it used until 2026-10-23 no longer reaches a Spark.
 - **Clients:** the K3 API (`~/k3-kv-api`, `draft_server` in its
-  `model_resident.json`) asks `127.0.0.1:7702` over DFT3.
+  `model_resident.json`) asks `127.0.0.1:7702` over DFT3. The API's engine
+  asks without waiting on the socket: it sends the request when a decode
+  frame's plan wants a model draft (one or two decoding lanes, no lookup
+  match of 8 or more, the request not backed off), leaves that frame
+  unbuilt, and plans it again when the answer is in. One request is
+  outstanding at a time, so two lanes are asked one after the other. While
+  the frame waits, the engine still takes completions, admits and cancels
+  requests and dispatches prefill, release and publication work. The ask
+  ends with a failure after the lane's `wait_ms` plus 100 ms (200 ms more
+  when the connection has to be opened first); the frame then decodes
+  without model drafts and the request backs off 8 tokens, doubling. A
+  request that is cancelled or fails while it waits has its ask dropped with
+  the connection, and the next ask reconnects. `batch_step` reports each
+  frame's wait as `draft_wait_ms`; `batch_speculation` reports the mean as
+  `wait_ms` and the dropped asks as `abandoned`.
 - **Log:** `/srv/workspace/sparkpipe/logs/draftd.log`. It prints
   `DRAFTD-TIMING` every 32 requests (queue, wait, compute, apply and total
   ms) and `DRAFTD-STATS` every 256 requests.
@@ -216,17 +230,15 @@ folded in).
 
 ## Draft farm
 
-Only qwen38_27b consumes remote drafts, with the tap-free sources NGRAM,
-SUFFIX and NGRAM3; glm5_next has no remote call site and no DFlash2 source,
-so the stored `glm-5.3-flash-dflash2` drafter cannot serve the current GLM
-engine. What GLM needs first is in
-[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md#remote-drafting-on-the-rtx-5090).
-Report the farm as serving only when a served model drafts through it with
-measured acceptance and end-to-end tokens per second.
+Each drafted lane asks its own `block_draftd.py` process, named by the lane
+record's `draft_server`: Kimi K3, Kimi K3.1 Pro, Qwen3.8-27B and DeepSeek
+V4.1 Flash. The earlier farm process in `~/draft_service` (n-gram and suffix
+sources) drafts for no lane, and the stored `glm-5.3-flash-dflash2` drafter
+serves no lane either. Report a drafter as serving only when a served model
+drafts through it with measured acceptance and end-to-end tokens per second.
 
-The fleet side for GLM Flash (hidden-row taps, `SPT1` tap frames, the tap
-dump, the shadow-mode relay and the sparkf-rtx5090 relay probe with measured
-round trips) is in [SPECULATION_TAPS.md](SPECULATION_TAPS.md).
+Hidden rows reach a drafter over the tap stream
+([SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md#taps)).
 
 Drafters in `/srv/workspace/drafters/`, copied 09-03 with the transfer record
 `TRANSFER-RECEIPT.json` (source, route, destination, SHA-256 per weight file):
@@ -276,13 +288,6 @@ Drafters run on this host; the fleet only verifies. Measured on this host
   DFlash-style block drafter from its own weights with synthetic taps and a
   synthetic head of the target's shape. It measures cost only; top-1 needs the
   target's taps and a reference.
-- n-gram drafter. `src/spark_speculation_ngram_draft.c` drafts the most
-  frequent continuation of the longest matching context (orders min..max, the
-  last `scan_limit` verified occurrences, ties to the most recent) and chains
-  through its own drafts. It has the policy draft callback signature of the
-  lookup drafter. `tools/draftd_ngram_eval.py` checks it against a brute-force
-  reference on recorded greedy streams and prices it next to the lookup
-  drafter.
 
 ### Per-sequence MTP KV (S6b)
 
@@ -321,25 +326,7 @@ two device passes for run-to-run identity). `tests/test_draftd_mtp_kv.py`
 (CUDA) covers the row GEMM, the tap, commits, the draft against a
 teacher-forced cache, speculative isolation, rollback and the indexer.
 
-### Recorded draft tables
-
-Until rank 15 broadcasts relay drafts to all ranks (section 11.3 of
-SPECULATION_PLAN.md), a live rtx5090 draft cannot reach the verify. To
-measure B1 speculation with real draftd drafts, draftd writes a draft table
-offline from a tap dump of the same greedy batch, and every rank loads it
-with `SPARK_GLM5_NEXT_VERIFY_DRAFTER=recorded:PATH`
-(`src/spark_speculation_recorded_draft.c`). Every rank reads the same file, so
-the verify rows agree without a broadcast. Because greedy B1 output repeats
-run to run, the committed prefix at each request equals the dump's, and each
-entry is the chain draftd would have sent. The arm pays no draft time; a
-report adds the relay and draftd cost per round to give the live-equivalent
-rate.
-
-Table layout (little endian): a 32-byte header (magic `SPRD`, version 1,
-depth, vocabulary size, entry count, a zero word), then fixed entries sorted
-by (sequence id, position): sequence id u64, position of the last committed
-token u64, chain length u32, a zero word, `depth` u32 tokens with zeros past
-the chain. `tools/spec_recorded_drafts.py` writes and reads it.
+### Gate and admission
 
 `tools/draftd_mtp_g8.py` decides G8 on the real-tap positions only: PASS
 needs at least 1000 of them and top-1 agreement of at least 99%, with

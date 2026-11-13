@@ -12,7 +12,13 @@
 #include <time.h>
 #include <unistd.h>
 
-extern "C" SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site);
+static SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site)
+{
+	if ( error == cudaSuccess )
+		return SPARK_STATUS_OK;
+	fprintf(stderr, "%s cuda_error site=%s error=%s\n", module_tag, site, cudaGetErrorString(error));
+	return error == cudaErrorMemoryAllocation ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_INTERNAL_ERROR;
+}
 
 #define SPARK_FAMILY_CAMEL MeshBench
 #define SPARK_FAMILY_UPPER MESH_BENCH
@@ -79,6 +85,15 @@ static float bench_value(uint32_t rank,uint32_t index)
     return (float)((int32_t)((rank * 13u + index * 7u) % 17u) - 8);
 }
 
+__global__ void BenchWorkKernel(const uint4 *work,uint64_t quads,uint32_t *sink)
+{
+    const uint64_t share = quads / gridDim.x,first = (uint64_t)blockIdx.x * share;
+    uint32_t sum = 0u;
+    for (uint64_t i = first + threadIdx.x; i < first + share; i += blockDim.x)
+        sum += work[i].x;
+    if (sum == UINT32_MAX) atomicAdd(sink,1u);
+}
+
 static int bench_compare(const void *a,const void *b)
 {
     double x = *(const double *)a,y = *(const double *)b;
@@ -87,11 +102,14 @@ static int bench_compare(const void *a,const void *b)
 
 int main(int count,char **arguments)
 {
-    if (count != 12)
+    if (count < 12 || count > 14)
     {
-        fprintf(stderr,"usage: mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS\n");
+        fprintf(stderr,"usage: mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB [PREFETCH]]\n");
         return 2;
     }
+    const uint64_t work_words = count >= 13 ? strtoull(arguments[12],0,10) * 256u : 0u;
+    const uint32_t prefetch = count == 14 && atoi(arguments[13]) != 0 ? 1u : 0u;
+    LmWeightPrefetchPlan plan = {};
     const uint64_t start_ms = strtoull(arguments[11],0,10);
     const char *socket_path = arguments[1];
     const uint32_t rank = (uint32_t)atoi(arguments[2]),degree = (uint32_t)atoi(arguments[3]),lane = (uint32_t)atoi(arguments[4]);
@@ -107,6 +125,7 @@ int main(int count,char **arguments)
     cudaGraphExec_t executable = 0;
     cudaStream_t stream = 0;
     uint16_t *local = 0,*output = 0;
+    uint32_t *work = 0,*sink = 0;
     uint32_t acquired = SPARK_WEIGHTD_LANE_NONE;
     double timed[BENCH_MAX_REPS];
     bench_require(degree >= 2u && degree <= 16u && rank < degree && rows >= 1u && row_elements >= 4u &&
@@ -121,8 +140,18 @@ int main(int count,char **arguments)
     const size_t output_elements = operation == 0u ? local_elements * degree : exchange != 0u ? local_elements :
         operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16 ?
             local_elements / degree : local_elements;
-    bench_require(setenv("SPARK_WEIGHTD_SOCKET",socket_path,1) == 0 && setenv("SPARK_TP_MESH_RANKS",rank_map,1) == 0,"environment");
-    bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,&topology),"topology");
+    {
+        const char *cursor = rank_map;
+        for (uint32_t i = 0u; i < degree; i++)
+        {
+            char *end = 0;
+            const unsigned long physical = strtoul(cursor,&end,10);
+            bench_require(end != cursor && physical < 16u && (i + 1u == degree ? *end == '\0' : *end == ','),"rank-map");
+            config.mesh_ranks[i] = (uint32_t)physical;
+            cursor = end + 1;
+        }
+    }
+    bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,config.mesh_ranks,&topology),"topology");
     bench_require(cudaFree(0) == cudaSuccess,"cuda-init");
     bench_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
     bench_status(SparkWeightdClientLaneAcquire(owner,lane,&topology,&acquired,BENCH_WAIT_NS),"lane-acquire");
@@ -130,6 +159,8 @@ int main(int count,char **arguments)
     bench_require(cudaMalloc((void **)&local,local_elements * 2u) == cudaSuccess &&
         cudaMalloc((void **)&output,output_elements * 2u + 256u) == cudaSuccess &&
         cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess,"cuda-allocation");
+    bench_require(work_words == 0u || (cudaMalloc((void **)&work,(size_t)rounds * work_words * sizeof(*work)) == cudaSuccess && cudaMalloc((void **)&sink,sizeof(*sink)) == cudaSuccess &&
+        cudaMemset(work,1,(size_t)rounds * work_words * sizeof(*work)) == cudaSuccess && cudaMemset(sink,0,sizeof(*sink)) == cudaSuccess),"work-allocation");
     {
         uint16_t *host = (uint16_t *)malloc(local_elements * 2u);
         for (size_t i = 0u; i < local_elements; i++)
@@ -148,9 +179,10 @@ int main(int count,char **arguments)
     config.connect_timeout_milli = 60000u;
     config.operation_timeout_milli = 30000u;
     config.wait_mode = SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE;
+    config.weightd_socket_path = socket_path;
     config.mesh_lane_client = owner;
+    config.mesh_lane = lane;
     config.mesh_band_index = 0u;
-    config.collective_identifier = 2u * (uint64_t)lane;
     SparkMeshBenchModuleRegisterCombines(&config);
     bench_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
     void *mapping = 0;
@@ -178,13 +210,26 @@ int main(int count,char **arguments)
     bench_wait_stream(stream);
     bench_status(SparkTpDeviceCollectiveVerifyDeferred(&collective,stream),"eager-verify");
     bench_status(SparkTpDeviceCollectiveArmCapture(&collective),"capture-arm");
+    if (prefetch != 0u)
+    {
+        plan.host = (LmWeightPrefetchGroup *)calloc(LM_WEIGHT_PREFETCH_GROUPS,sizeof(LmWeightPrefetchGroup));
+        bench_require(plan.host != 0 && cudaMalloc((void **)&plan.device,(size_t)LM_WEIGHT_PREFETCH_GROUPS * sizeof(LmWeightPrefetchGroup)) == cudaSuccess,"prefetch-plan");
+        plan.capacity = LM_WEIGHT_PREFETCH_GROUPS;
+        LmWeightPrefetchArm(&plan,stream);
+    }
     bench_require(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) == cudaSuccess,"capture-begin");
     for (uint32_t r = 0u; r < rounds; r++)
     {
+        if (work_words != 0u)
+        {
+            LmWeightPrefetchNote(stream,work + (uint64_t)r * work_words,work_words * sizeof(*work));
+            BenchWorkKernel<<<96u,256u,0,stream>>>((const uint4 *)(work + (uint64_t)r * work_words),work_words / 4u,sink);
+        }
         submission.ordinal = ordinal++;
         bench_status(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation),"capture-enqueue");
     }
     bench_require(cudaStreamEndCapture(stream,&graph) == cudaSuccess && graph != 0,"capture-end");
+    bench_require(LmWeightPrefetchDisarm(&plan,1u) == cudaSuccess && plan.dropped == 0u,"prefetch-publish");
     bench_status(SparkTpDeviceCollectiveDisarmCapture(&collective),"capture-disarm");
     bench_require(cudaGraphInstantiate(&executable,graph,0) == cudaSuccess,"graph-instantiate");
     SparkTpDeviceCollectiveHardwareTiming before = {},after = {};
@@ -225,8 +270,8 @@ int main(int count,char **arguments)
     }
     qsort(timed,reps,sizeof(double),bench_compare);
     const double per = 1000.0 * rounds * reps;
-    printf("BENCH-RESULT rank=%u operation=%u rows=%u row_elements=%u rounds=%u reps=%u per_round_us p50=%.2f min=%.2f max=%.2f source_wait=%.2f peer_wait=%.2f copy=%.2f combine=%.2f first_arrival=%.2f\n",
-        rank,operation,rows,row_elements,rounds,reps,timed[reps / 2u],timed[0],timed[reps - 1u],
+    printf("BENCH-RESULT rank=%u operation=%u rows=%u row_elements=%u rounds=%u reps=%u work_kib=%llu prefetch_groups=%u per_round_us p50=%.2f min=%.2f max=%.2f source_wait=%.2f peer_wait=%.2f copy=%.2f combine=%.2f first_arrival=%.2f\n",
+        rank,operation,rows,row_elements,rounds,reps,(unsigned long long)(work_words / 256u),plan.groups,timed[reps / 2u],timed[0],timed[reps - 1u],
         (after.source_wait_ns - before.source_wait_ns) / per,(after.peer_wait_ns - before.peer_wait_ns) / per,
         (after.copy_ns - before.copy_ns) / per,(after.combine_ns - before.combine_ns) / per,
         (after.first_arrival_ns - before.first_arrival_ns) / per);
@@ -241,6 +286,10 @@ int main(int count,char **arguments)
     SparkTpDeviceCollectiveDestroy(&collective);
     cudaFree(local);
     cudaFree(output);
+    cudaFree(work);
+    cudaFree(sink);
+    cudaFree(plan.device);
+    free(plan.host);
     cudaStreamDestroy(stream);
     SparkWeightdClientClose(owner);
     return 0;

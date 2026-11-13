@@ -1,4 +1,5 @@
 #include <errno.h>
+#include "sparkpipe/spark_clock.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,13 +74,6 @@ typedef struct HostQueue
 } HostQueue;
 
 static uint64_t host_page_bytes;
-
-static uint64_t HostNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
 
 static void HostDeadline(uint64_t timeout_ns, struct timespec *deadline)
 {
@@ -210,6 +204,11 @@ SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
+{
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,"the host backend holds only memory it allocated, registered or mapped"));
+}
+
 SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd, uint64_t offset)
 {
 	HostAllocation *host = (HostAllocation *)calloc(1u,sizeof(*host));
@@ -265,7 +264,7 @@ static void HostRun(HostQueue *queue, HostOperation *operation)
 		if ( operation->event->completed < operation->generation )
 		{
 			operation->event->completed = operation->generation;
-			operation->event->timestamp_ns = HostNowNs();
+			operation->event->timestamp_ns = SparkMonotonicNs();
 		}
 		pthread_cond_broadcast(&operation->event->done);
 		pthread_mutex_unlock(&operation->event->mutex);
@@ -325,6 +324,12 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	}
 	queue->backend = host;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
+{
+	(void)native;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_adopt",queue->owner,0,"the host backend runs only the queues it created"));
 }
 
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)

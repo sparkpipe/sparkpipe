@@ -9,18 +9,70 @@ It absorbs the 2026-08-30 universal-packer sketch
 Baseline: main `ce2f8d2`; the dsv5 packer was read from
 `origin/lane/dsv5-flash-dev` (`83b1a09`) before main merged it.
 
-## Drift since the study (checked 2026-09-28)
+## Drift since the study (checked 2026-11-10)
 
 The tables below are measurements at `ce2f8d2`. Since then:
 
-* `tools/spark_pack_common.py` is 364 LOC; 19 tools (14 packers, 3
-  verifiers, `acc_parity_oracle.py`, `qwen4_flash_scale_plane_patch.py`) and
-  `tests/test_acc_parity_oracle.py` import it.
-* The dsv41 packer is on main: `tools/dsv41_flash_stagepack.py` (757 LOC).
-  Risk 3 and migration step 7 no longer wait on a lane merge.
+* The common packer core is four modules:
+  * `tools/spark_pack_common.py`: failures, alignment, sha256 and sidecars,
+    receipts, the safetensors header and tensor walk (`SafetensorsSource`,
+    indexed or single-file, no torch; every tensor's data_offsets must lie
+    inside its shard), tensor-parallel windows and plans that fail closed on
+    any extent that does not divide, pipeline-stage checks, pack names and
+    chunked copies (`stream_range`, `window_chunks`). Output is published
+    atomically: `replaced_output` replaces the old file and leaves nothing
+    behind on failure, `publish_new` links a finished file into a path that
+    must not exist yet. `make_directory`, `pack_entry` and `pack_header`
+    (section 1) are gone.
+  * `tools/spark_pack_codecs.py`: payload, codec and scale ids
+    (`include/sparkpipe/spark_weight_codec.h`), the weight codec table, BF16
+    widening and round-to-nearest-even narrowing (with an optional quiet-NaN
+    rule), the E4M3 and E2M1 tables, 128 x 128 block FP8 and NVFP4 decoding,
+    the E8M0 check, sub-byte packing and the encoders that requantize BF16
+    masters to the integer, FP8, NVFP4 and MXFP4 codecs. The scalar helpers
+    need no numpy; only the requantizing encoders import torch.
+  * `tools/spark_pack_wire.py`: the two directory wires. The stage-pack wire
+    (`include/sparkpipe/spark_stagepack_format.h`) is a 120-byte header of 26
+    u32 and 2 u64 with 56-byte entries. The codec-ABI wire is 20 u32, the
+    directory offset and file size, a 65-byte NUL-padded model revision and
+    three 32-byte digests (contract, source config, pack recipe), padded to
+    the family's header size, then 64-byte entries at the 256-byte aligned
+    directory offset. It also holds the payload and scale placement policies,
+    size-checked region emission, ck128 (a port of `src/spark_ck128.c`), the
+    weightd expert manifest (version 2, one 48-byte record per expert plane)
+    and the region journal that lets an interrupted pack resume after the
+    last region whose bytes still match.
+  * `tools/spark_pack_plan.py`: `MappedCheckpoint` reads payloads through
+    memory maps and decodes spine tensors to BF16 once, behind a byte-capped
+    LRU, so an all-rank writer decodes each tensor a single time; routed
+    experts are copied byte for byte, never decoded. `PlanBuilder` turns
+    tensors into directory entries with lazy producers: a rank takes whole
+    rows or whole columns, fused tensors shard each row section so every rank
+    keeps whole heads, the latent kv_b projection splits into per-head
+    transposed keys and values, and routed experts take one row window (gate
+    and up) or column window (down) of every expert.
+  * Together they are 1,281 LOC.
+* The twelve `tools/*_stagepack.py` packers and `tools/k3_pack.py` keep only
+  their tensor-name maps, layouts and family transforms. With the core they
+  are 8,077 LOC, down from 12,622. Each migration was gated on byte identity
+  with the previous packer: synthetic checkpoints with real tensor names,
+  every codec path and several TP degrees and stages, comparing every output
+  file, exit code and dry-run listing.
+* The MiniMax and K3 DSpark-drafter packers are deleted; no lane serves
+  those packs.
+* `tests/test_spark_pack_core.py` pins the core's codecs and wire layout and
+  checks ck128, the stage-pack header and the expert manifest against the
+  runtime's C.
+* The dsv41 packer is on main: `tools/dsv41_flash_stagepack.py`.
 * The K3 TP sharder is `tools/k3_shard.py` (formerly `k3_tp16_shard.py`).
-* `tools/sparkpipe_stagepack.py` and `tools/stagepack_core/` do not exist;
-  nothing in section 5 is implemented.
+* Still open: most lanes in `tools/stage_lane.py` load TP16 packs written by
+  the stage runner's `tools/*_tp16_pack.py` packers. Those sit on a second
+  core, `tools/spark_named_pack.py`, and still repeat rank-pack, checkpoint
+  and finish code per family. The GLM 5.3 Full, GLM 5.3 Flash, AXK2, Kimi
+  K3, DeepSeek V4.1 Flash and Muse Glimmer lanes load packs or code from the
+  stage packers above; the other lanes' packs come from the TP16 packers
+  alone. The two cores are not yet one, and there is no single CLI
+  (section 5).
 
 ## 1. What already exists (do not re-propose it)
 

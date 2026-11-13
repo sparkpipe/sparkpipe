@@ -95,8 +95,6 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
-#define SPARK_WEIGHTD_SHARE_ENV "SPARK_WEIGHTD_SHARE"
-#define SPARK_WEIGHTD_SHARE_READONLY "readonly"
 
 #define SPARK_WEIGHTD_MESH_MAX_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
@@ -393,7 +391,7 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_MEMINFO_PATH "/proc/meminfo"
 #define SPARK_WEIGHTD_KV_EARLYOOM_PERCENT 2u
-#define SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES (4ull << 30)
+#define SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES (5ull << 29)
 
 typedef struct SparkWeightdIdentity
 {
@@ -1464,7 +1462,6 @@ SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
     SparkWeightdLazyAttachResult *result,
     uint64_t timeout_nanoseconds);
 
-SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only);
 
 SparkStatus SparkWeightdClientReclaimPack(SparkWeightdClient *client,
     const char *pack_sha256,

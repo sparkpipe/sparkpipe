@@ -1,0 +1,84 @@
+for each adapter: python3 tools/kernel_codegen_diff.py main-fded9e032-src/<adapter> pr1901-ce30c377b-src/<adapter> --allow LmSampleRowsKernel
+tool sha256 846ba61472a2e0052bbd92774fb8f3376796a7a2684b9b0d0796704075df08f9
+started 2026-11-10 07:40:28 KST
+== build/libaxk2_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 291 identical 290 unexpected 0
+exit 0
+== build/libdsv41_flash_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 327 identical 326 unexpected 0
+exit 0
+== build/libgemma4_26b_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 195 identical 194 unexpected 0
+exit 0
+== build/libgemma4_31b_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 172 identical 171 unexpected 0
+exit 0
+== build/libglm53_flash_bf16_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 245 identical 244 unexpected 0
+exit 0
+== build/libglm53_full_bf16_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 258 identical 257 unexpected 0
+exit 0
+== build/libhy4_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 241 identical 240 unexpected 0
+exit 0
+== build/libk31_pro_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 260 identical 259 unexpected 0
+exit 0
+== build/libk3_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 260 identical 259 unexpected 0
+exit 0
+== build/libkexaone2_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 193 identical 192 unexpected 0
+exit 0
+== build/liblaguna_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 193 identical 192 unexpected 0
+exit 0
+== build/libling3_fin_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 192 identical 191 unexpected 0
+exit 0
+== build/libling3_flash_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 192 identical 191 unexpected 0
+exit 0
+== build/libmimo26_flash_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 227 identical 226 unexpected 0
+exit 0
+== build/libmimo26_pro_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 224 identical 223 unexpected 0
+exit 0
+== build/libmuse_glimmer_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 169 identical 168 unexpected 0
+exit 0
+== build/libqwen38_27b_bf16_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 223 identical 222 unexpected 0
+exit 0
+== build/libqwen38_flash_bf16_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 267 identical 266 unexpected 0
+exit 0
+== build/libqwen38_max_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 245 identical 244 unexpected 0
+exit 0
+== build/libsolar_open2_tp16_serving_adapter.so
+allowed changed REG 58 STACK 0 SHARED 46288 LOCAL 0 -> REG 58 STACK 0 SHARED 46288 LOCAL 0 void LmSampleRowsKernel<1024u>(LmSampleVocab, LmSampleRows)
+kernels 190 identical 189 unexpected 0
+exit 0
+finished 2026-11-10 07:43:22 KST

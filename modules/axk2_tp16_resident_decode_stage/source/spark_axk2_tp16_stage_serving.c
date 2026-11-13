@@ -2,7 +2,6 @@
 #include "sparkpipe/spark_kv_cache.h"
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
-#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef AXK2_CONTRACT_SHA256
@@ -15,8 +14,6 @@
 #define SPARK_AXK2_TP16_ADAPTER_ID "axk2-tp16"
 #define SPARK_AXK2_TP16_MODEL_ID "skt/A.X-K2"
 #define SPARK_AXK2_TP16_MAX_ROWS 4096u
-#define SPARK_AXK2_TP16_CHAIN_TOKENS 16u
-#define Q SPARK_AXK2_TP16_STAGE_LAYERS
 
 static void Axk2Tp16ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -51,55 +48,25 @@ static uint32_t Axk2Tp16ServingCollectiveSequences(uint32_t rows, uint32_t tp_de
 	return rows;
 }
 
-static const SparkModelServingAdapterDescriptor Axk2Tp16ServingDescriptor =
-{
-	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		SPARK_AXK2_TP16_ADAPTER_ID,
-		SPARK_AXK2_TP16_MODEL_ID,
-		AXK2_MODEL_REVISION,
-		"axk2",
-		AXK2_CONTRACT_SHA256),
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = SPARK_AXK2_TP16_STAGE_TP_DEGREE,
-	.layer_count = SPARK_AXK2_TP16_STAGE_LAYERS,
-	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = SPARK_AXK2_TP16_STAGE_HIDDEN,
-	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
-	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = 16u,
-	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = SPARK_AXK2_TP16_MAX_ROWS,
-	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = SPARK_AXK2_TP16_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
-	.stage_layer_counts = { Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q, Q },
-	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = SPARK_AXK2_TP16_STAGE_PAGE_SLOTS,
-	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = 0u,
-	.max_verify_row_count = SPARK_AXK2_TP16_MAX_ROWS,
-};
-
-#undef Q
-
 static const SparkStageServingModel Axk2Tp16StageServing =
 {
-	.descriptor = &Axk2Tp16ServingDescriptor,
-	.runner_model = SparkAxk2Tp16StageModel,
+	.adapter_id = SPARK_AXK2_TP16_ADAPTER_ID,
+	.model_id = SPARK_AXK2_TP16_MODEL_ID,
+	.model_revision = AXK2_MODEL_REVISION,
+	.program = "axk2",
+	.contract_sha256 = AXK2_CONTRACT_SHA256,
 	.module_tag = "axk2_tp16_stage",
+	.runner_model = SparkAxk2Tp16StageModel,
 	.tp_degree = SPARK_AXK2_TP16_STAGE_TP_DEGREE,
-	.program_id = 1u,
+	.layer_count = SPARK_AXK2_TP16_STAGE_LAYERS,
+	.hidden = SPARK_AXK2_TP16_STAGE_HIDDEN,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_FP8_E4M3,
+	.max_rows = SPARK_AXK2_TP16_MAX_ROWS,
+	.verify_rows = SPARK_AXK2_TP16_MAX_ROWS,
+	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
+	.cache_block_token_count = SPARK_AXK2_TP16_STAGE_PAGE_SLOTS,
+	.cache_checkpoint_token_count = 0u,
 	.kv_layout = Axk2Tp16ServingKvLayout,
 	.collective_sequences = Axk2Tp16ServingCollectiveSequences,
 };

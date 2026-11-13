@@ -17,16 +17,24 @@ The rounding points follow the CUDA stage (model-families/glm52/source/
 glm52_stage.cuh): FP8 projections are e4m3 x the FP32 block scale taken in
 FP32 (the skinny kernels' arithmetic), kv_b is bf16(e4m3 x scale) as the CUDA
 pack decodes it, and
-  norms      the residual sum v = hidden + residual in FP32, residual =
-             bf16(v), normed = bf16(v r w) with the BF16 gain; the q_a and
-             kv_a norms bf16(x r w)
+  norms      the publisher's: the residual sum rounded first, v =
+             bf16(hidden + residual), then normed = bf16(bf16(v r) w) with
+             the BF16 gain (weight * x.to(bf16)); the q_a and kv_a norms
+             bf16(bf16(x r) w)
   MLA        q_a -> norm -> q_b (192 nope + 64 rope per head), kv_a -> the
              512 latent norm plus the 64-wide rope key; interleaved rope at
-             theta 8e6 on the pairs (2i, 2i+1), each rotated value rounded
-             once; the query absorbed per head through kv_b's key rows
-             (rounded); softmax((q_l . k_l + q_r . k_r) / 16) in FP32 over
-             every earlier position (below 2,048 keys the indexer keeps them
-             all); the latent output rounded; kv_b's value rows; o_proj
+             theta 8e6 on the pairs (2i, 2i+1), cos and sin rounded to bf16
+             and each product and the sum rounded, as transformers'
+             glm_moe_dsa and axk2 rotate their BF16 q_rot and k_rot; the
+             query absorbed per head through kv_b's key rows
+             (rounded); softmax((q_l . k_l + q_r . k_r) / 16) over every
+             earlier position (below 2,048 keys the indexer keeps them all)
+             in the publishers' flash form: weights w = exp(s - m) in FP32
+             with m the running maximum over FA2's 64-key tiles walked back from the
+             diagonal (tools/reference_flash.py), the
+             latent multiplied by bf16(w) in FP32, that product divided by
+             the sum of the FP32 weights and rounded; kv_b's value rows;
+             o_proj
   MLP        bf16(silu(g) u) rounded once; layers 0-2 dense, the rest the
              shared expert plus top 8 of 256 by sigmoid(z) +
              e_score_correction_bias, weights renormalised and scaled by
@@ -51,6 +59,7 @@ from pathlib import Path
 import numpy as np
 
 import reference_device_error as device  # noqa: E402
+import reference_flash as flash  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ling3_reference as base  # noqa: E402
@@ -137,12 +146,12 @@ class Reference:
     def scale_of(self, values):
         return np.power(base.reduce_sum(values * values) / np.float32(values.shape[-1]) + self.epsilon, np.float32(-0.5))
 
-    def norm_once(self, values, gain):
-        return base.bf16(values * self.scale_of(values) * gain)
+    def norm(self, values, gain):
+        return base.bf16(base.bf16(values * self.scale_of(values)) * gain)
 
     def residual_norm(self, residual, addend, gain):
-        total = residual + addend
-        return base.bf16(total), base.bf16(total * self.scale_of(total) * gain)
+        total = base.bf16(residual + addend)
+        return total, self.norm(total, gain)
 
     def norm_gate(self, normed, prefix):
         if self.model["gate_rank"] == 0:
@@ -155,11 +164,11 @@ class Reference:
 
     def rope(self, values, positions):
         angles = positions[:, None].astype(np.float32) * self.inv_freq[None, :]
-        cos, sin = np.cos(angles)[:, None, :], np.sin(angles)[:, None, :]
+        cos, sin = base.bf16(np.cos(angles))[:, None, :], base.bf16(np.sin(angles))[:, None, :]
         low, high = values[..., 0::2], values[..., 1::2]
         rotated = np.empty_like(values)
-        rotated[..., 0::2] = base.bf16(low * cos - high * sin)
-        rotated[..., 1::2] = base.bf16(low * sin + high * cos)
+        rotated[..., 0::2] = base.bf16(base.bf16(low * cos) - base.bf16(high * sin))
+        rotated[..., 1::2] = base.bf16(base.bf16(high * cos) + base.bf16(low * sin))
         return rotated
 
     def attention_weights(self, a):
@@ -171,12 +180,12 @@ class Reference:
     def mla(self, normed, positions, weights):
         rows, heads = normed.shape[0], self.heads
         raw = self.linear(normed, weights["q_a"])
-        compressed = self.norm_once(raw, weights["q_norm"])
+        compressed = self.norm(raw, weights["q_norm"])
         if self.query_gate:
             compressed = np.concatenate([compressed, raw], axis=-1)
         q = self.linear(compressed, weights["q_b"]).reshape(rows, heads, self.nope + self.rope_dim + self.query_gate)
         kv = self.linear(normed, weights["kv_a"])
-        latent = self.norm_once(kv[:, :self.latent], weights["kv_norm"])
+        latent = self.norm(kv[:, :self.latent], weights["kv_norm"])
         key_rope = self.rope(kv[:, None, self.latent:], positions)[:, 0, :]
         query_rope = self.rope(q[..., self.nope:self.nope + self.rope_dim], positions)
         causal = positions[None, :] <= positions[:, None]
@@ -186,9 +195,8 @@ class Reference:
             query = base.bf16(base.matmul(q[:, head, :self.nope], key_up))
             scores = (base.matmul(query, latent.T) + base.matmul(query_rope[:, head, :], key_rope.T)) * self.scale
             scores = np.where(causal, scores, -np.inf)
-            probabilities = device.exp(scores - scores.max(axis=-1, keepdims=True))
-            probabilities = probabilities / base.reduce_sum(probabilities)
-            attended = base.bf16(base.matmul(probabilities, latent))
+            attended, total, _ = flash.attend(scores, latent, base.matmul, base.reduce_sum, device.exp, base.bf16)
+            attended = base.bf16(flash.normalize(attended, total))
             output[:, head, :] = base.bf16(base.matmul(attended, value_up.T))
             if self.query_gate:
                 output[:, head, :] = base.bf16(output[:, head, :] * base.sigmoid(q[:, head, self.nope + self.rope_dim:]))

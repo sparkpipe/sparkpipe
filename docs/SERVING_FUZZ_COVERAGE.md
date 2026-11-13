@@ -17,7 +17,7 @@ The rtx5090 hub (x86_64, glibc 2.43, gcc 15.2, CUDA toolkit installed) could
 not build the campaign before a22a3af (PR #1258): glibc 2.43 declares
 `rsqrtf`, which clashed with the host CUDA shim in
 `tests/host_cuda/lm_host_cuda.cuh`, and with a toolkit present
-`test_stage_module_common` and `test_dsv4_w1_loader` linked no CUDA stub. No
+`test_stage_module_claims` and `test_dsv4_w1_loader` link no CUDA stub. No
 campaign receipt from the hub exists yet.
 
 An exported source archive additionally requires `--source-commit FULL_SHA`.
@@ -39,7 +39,7 @@ The aggregate campaign stays red if any required gate fails.
 | Boundary and contract | Required scenarios and oracle | Executable evidence | Remaining boundary |
 | --- | --- | --- | --- |
 | HTTP queue, token output, disconnect | Head/middle/tail completion permutations preserve every request, token and queue link; fragmented requests; malformed body; early disconnect; concurrent requests; complete response after recovery | `test_model_api_queue_lifetime.py`, `test_system_loopback`, `test_model_api_text` | Host fixture tokens; no real model numerical claim |
-| Continuous batching and cache admission | Odd/concurrent arrivals, finite capacity, cache hits/misses, cancellation, partial output, error exactly once, no replay after emitted tokens, digest reset after reconnect | `test_model_batch_engine_mock`, `test_continuous_batch`, `test_serving_cache_admission`, `test_steploop_admission` | High-occupancy fairness, EOS from real deployment and GPU reuse need hardware workload evidence |
+| Continuous batching and cache admission | Odd/concurrent arrivals, finite capacity, cache hits/misses, cancellation, partial output, error exactly once, no replay after emitted tokens, digest reset after reconnect | `test_model_batch_engine_mock`, `test_serving_cache_admission`, `test_steploop_admission` | High-occupancy fairness, EOS from real deployment and GPU reuse need hardware workload evidence |
 | Pipeline transaction protocol | Required rank/phase fault matrix before seeded schedules; actual dropped results/decisions/completions; delayed/reordered/duplicate events; rejected or BUSY work; concurrent pressure; matching identity/status and exactly-once terminal callbacks; bounded recovery | `test_serving_fault_fuzz`, pipeline mock and socket integration tests | Resident client boundary is mocked in the state fuzzer; integration tests cover real sockets separately |
 | Resident sessions and IPC | Partial frames/writes, stale generation, disconnect, abort/drain/reset before new admission, reset BUSY/error, deadline and slot ownership, process replacement | Resident session/deadline/IPC/reconnect tests; loopback rank/API replacement | GPU drain and in-flight DMA lifetime require real device injection |
 | Collective lifecycle | Mandatory fault cases plus seeds across 2/4/8/16 ranks; SUM/MAX/GATHER, multiple rows, output canaries; exact accepted/rejected callback identity; missing peers, stale payload, daemon loss, combine/transport errors, capacity and recreation | `test_tp_allreduce_fuzz`, collective mock, TP config tests | Host memory/shipper emulation; GPU progress and RDMA ordering remain unqualified |
@@ -67,9 +67,9 @@ harnesses above test them. They were spot-checked against the source on
   required`); it is never retried as successful inference. A failed chain or
   completion drain keeps the slot and its CUDA resources instead of releasing
   them while the stream may still be running.
+- A failed stage-runner capture (`STAGE-GRAPH-CAPTURE-FAILED`) aborts the rank.
 - A graph the module cannot build returns `UNSUPPORTED`, and that wave runs
-  eager instead: after a failed capture (`GRAPH-CAPTURE-FAILED`, that row count
-  stays eager) or when the stage holds fewer leased experts than it has routed
+  eager instead when the stage holds fewer leased experts than it has routed
   experts (`GLM whole-chain graph requires N leased experts`, 78c2c21).
 - A synchronous collective rejection returns an error and queues no callback.
   Accepted work has one terminal callback.
@@ -107,9 +107,9 @@ Configuration these rules depend on:
   Pinning every expert contradicts the lazy-residency invariants I28-I30.
 - weightd sizes the expert pool from `PACK.experts`; without a cap that is
   the whole arena, which holds every pinned expert.
-  `SPARK_WEIGHTD_EXPERT_POOL_BYTES` is only an explicit cap, and the fleet
-  agent passes one only from `G5_EXPERT_POOL_CAP_BYTES`
-  (`tools/fleet_node_agent.sh`).
+  A cap is only ever explicit, the stage config's `expert_pool_cap_bytes`;
+  the fleet agent refuses to start a root while `G5_EXPERT_POOL_CAP_BYTES`
+  or `G5_EXPERT_POOL_BYTES` is set (`tools/fleet_node_agent.sh`).
 - `SPARK_GLM5_NEXT_PREFETCH` set to anything but `0` makes the module refuse
   to start; warm the daemon with `build/weightd_warm` instead.
 
