@@ -505,6 +505,38 @@ stride of 65,536 would save three in four; a later request that shares a
 prefix would then resume up to 65,535 tokens before its first new token
 instead of up to 16,383. Not changed.
 
+## Fifth pass: two kernels a piece, 2026-11-13
+
+A pipelined round (a gather, a reduce-scatter or an all-to-all of three or
+more half slots) launched four or five kernels for each 131,072-byte piece:
+a ship gate, a stage or a copy, a publish, an arrival wait and a combine,
+about 190,000 kernels a 16,384-row wave. It now launches two: a one-warp
+kernel that waits for the previous piece to ship and for the peers' piece to
+land, and a wide kernel that stages the next piece, combines the landed one
+and rings the doorbell. A first version did all of it in one wide kernel
+whose blocks each waited; with sixteen ranks on one GPU, as in the probe,
+the waiting blocks left no room for the other ranks' kernels, so the wait
+stays in its own small kernel.
+
+Checks on the build host: the GPU probe's ten modes (733 cases, sixteen
+ranks included), `test_tp_allreduce_fuzz`, `test_tp_mesh_pipeline_boundaries`
+and `test_tp_device_collective_mock`. On the lane the answer to the
+40,000-token prompt is the same bytes as before (`b79b025295d2819f…`).
+
+Same lane, same prompts, 16,384-row waves:
+
+| | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| Fourth pass | 2,653 tok/s | 3,117 | 2,693 |
+| Two kernels a piece | 2,725 tok/s | 3,221 | 2,772 |
+
+That is 3%, where the kernel counts suggested 10%: a wave's first 16,384
+rows took 4.80 to 4.83 s. Removing the launches moved the rounds from the
+GPU's pace to the daemon's: a piece now waits on weightd posting and
+completing three 131,072-byte writes. The 1 MiB slots (PR 1932, weightd IPC
+ABI 15) cut those writes to a quarter and measured 23 to 28% a round on the
+Lenovo pair; they need the daemon replaced on the nodes.
+
 ## Drafts, 2026-11-13
 
 The stage taps hidden states and verifies drafted rows at any rank count.

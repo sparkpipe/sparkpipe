@@ -430,12 +430,12 @@ V4.1 Flash on our sixteen:
 | One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.4 ms | 21.5-21.8 ms |
 | One stream with drafts | 82.6 tok/s | 71 tok/s over eight prompts (45 to 114) | 62-64 tok/s |
 | Eight streams | 207.4 tok/s with drafts | 94 tok/s without, 91 with (seven streams) | 151-153 tok/s with |
-| Prefill, 32K prompt | 8,508 tok/s | 3,117 tok/s | 2,373 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 2,693 tok/s | 2,337 tok/s |
+| Prefill, 32K prompt | 8,508 tok/s | 3,221 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 2,772 tok/s | 2,337 tok/s |
 | Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-The four-Spark column is the lane of 2026-11-12 after its fourth pass, with
-16,384-row waves
+The four-Spark column is the lane of 2026-11-12 after its fifth pass, with
+16,384-row waves and two kernels a piece in the large rounds
 (`qualification/dsv41_flash/group4-20261112/`; the first pass prefilled at
 1,897 and 1,888 tok/s and its eight streams are the figure shown), the
 sixteen-Spark column
