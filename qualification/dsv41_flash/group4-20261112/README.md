@@ -276,8 +276,9 @@ every 16,384 tokens, the last wave of a prompt, a longer context).
   of the pieces: `SPARK_WEIGHTD_MESH_SLOT_ROWS` 32, 41,230 checks of
   `tests/test_weightd_mesh_mock.c` pass with the layout pinned anew. It
   cannot be measured on the fleet from a lane: a lane uses the node's
-  released weightd, and the layout is that daemon's. It needs 1.2 GB more
-  pinned memory a node and a release. Not in the code.
+  released weightd, and the layout is that daemon's. It needs 1.15 GiB more
+  pinned memory a node and a release. Not in this lane's code; it is its own
+  change now, measured on two machines outside the fleet (third pass below).
 
 ### Against the sixteen-rank lane, second pass
 
@@ -326,3 +327,123 @@ been run on these positions.
   tree (its adapter keeps 290 of 298 kernels against `179436031`'s: the two
   MoE exchange kernels take two more arguments and four fold kernels are
   added that sixteen ranks do not call), the lane's record.
+
+## Third pass: where the rounds wait, 2026-11-13
+
+### The second pass's trace, read by wave
+
+Only the lower 20 layers run on every row of a wave. The upper 20 run in
+the tail step that follows every 16,384 tokens, on 128 rows fewer a layer.
+The table above is 1.55 s of the trace: a wave and its share of that tail.
+A full 4,096-row wave alone takes 1,409 ms in the same trace (three waves,
+46,909 kernels each; `prefill-rounds.third.txt` holds this reading and the
+third pass's):
+
+| | ms a wave | |
+| --- | ---: | --- |
+| Rounds | 450 | 69 runs of round kernels, 10,045 pieces of 131 KB a peer: 172 ms in arrival waits, 178 ms in the other round kernels, 99 ms between them |
+| Routed experts | 236 | 40 calls of 5.9 ms |
+| Dense linears | 196 | |
+| Hyper-connection mixing and post | 126 | |
+| KV write | 51 | 18 calls |
+| Norms | 48 | |
+| Sparse attention scoring | 46 | |
+| Window merge | 36 | |
+| Between kernels outside the rounds | 61 | |
+
+What the rounds wait for, by the stage that ends before each run:
+
+| stage before the run | runs a wave | ms a run | first piece waits | pieces |
+| --- | ---: | ---: | ---: | ---: |
+| MoE send (the all-to-all) | 20 | 7.0 | 0.18 ms | 192 |
+| Output projection (the attention sum's two halves) | 22 | 6.3 | 0.28 ms | 181 |
+| N-gram gather (the two table layers) | 2 | 50.5 | 44.2 ms | 178 |
+| MoE finalize (the hidden-slice gather) | 20 | 2.9 | 0.24 ms | 80 |
+| Index pack | 3 | 2.2 | 0.20 ms | 65 |
+
+After each of the two table layers rank 0 has its rows and waits 44 ms for
+the other ranks to read theirs: 88 ms a wave, on top of the 74 ms it waits
+for its own first table. No other stage keeps a rank waiting for another.
+
+### What a rank sends, and over which port
+
+Byte counters of both 100G ports of ranks 0 and 1 around a 33,792-token
+prefill: a rank sends 36.6 GB, 1.08 MB a token, 24.4 GB of it on one port
+and 12.2 GB on the other. weightd puts a whole peer on one rail (a link takes
+the second rail when the two ranks' parities differ), so in a group of four
+two of a rank's three peers share a port.
+
+`build/mesh_round_bench` on the same four Sparks under the released weightd
+(256 KiB slots), rounds only, microseconds a round:
+
+| exchange of a 4,096-row wave | a round | the rank waits for peers 1, 2, 3 |
+| --- | ---: | --- |
+| reduce-scatter, 5,120 wide | 1,998 | 547, 100, 536 |
+| all-gather, 1,280 wide | 2,047 | 598, 153, 591 |
+| all-to-all, 3,064 a peer | 4,879 | 1,057, 179, 1,048 |
+
+The port with two peers runs at 10.2 to 10.5 GB/s in all three; peer 2,
+alone on the other port, is done five times sooner. A layer's four rounds
+add up to 11 ms in the bench, 220 ms a wave of 20 layers, against the
+lane's 450 ms: the lane launches its round kernels one by one where the
+bench replays a graph, and it waits for the table reads.
+
+The 1 MiB slots, measured on two GB10 machines outside the fleet with a
+private weightd each and one port (a group of two): reduce-scatter 2,404 to
+1,805 microseconds, all-gather 1,214 to 933, all-to-all 2,978 to 2,137, a
+decode-size round 12.0 either way; the port goes from 8.4-8.7 to 11.2-11.8
+GB/s. On four Sparks the busier port is already at 10.2-10.5 GB/s, so
+there the larger slot is bound by that port until each peer's traffic is
+split over both.
+
+### Table reads
+
+A rank reads about a quarter of a wave's 98,304 rows a table, the columns
+of its own shard. A reader thread took the row file's lock twice for every
+row it read, some 49,000 times a table over 32 threads. A reader now takes
+up to 64 rows a lock and the tables are read by 64 threads; a fetch smaller
+than the reader count wakes one reader a row, as a decode step needs
+(`runtime/row_file.c`, `tests/test_row_file.c`).
+
+Each from a cold start of the lane, the same prompts:
+
+| | 32,768 tokens | 65,536 tokens |
+| --- | ---: | ---: |
+| Second pass | 2,650 tok/s | 2,686 tok/s |
+| Batches and 64 readers | 2,855 tok/s | 2,801 tok/s |
+
+The three usual prompts after a cold start, and one stream, with the final
+adapter (SHA-256 `23de7e9fac51fc048627a63853ee3ecd11fa1ecc83ad9fb51ed73a71f4a52c9f`, commit `880d3dd0a`; the other firmware is the first
+pass's):
+
+| | 8,192 tokens | 32,768 tokens | 131,072 tokens | One stream |
+| --- | ---: | ---: | ---: | ---: |
+| Second pass | 2,374 tok/s | 2,651, 2,695 | 2,498 | 32.2, 33.3, 34.2 ms |
+| Third pass | 2,600 tok/s | 2,908 | 2,519 | 32.2 to 34.4 ms over two runs of the three prompts |
+
+The 131,072-token prompt gains 0.8%, inside the spread of that prompt
+between runs; why it gains less than the shorter prompts is not
+established.
+
+A trace of the final adapter (three full waves of a 32,768-token prompt):
+a wave takes 1,294 ms where it took 1,409. The rounds are 381 ms (450), of
+them 96 ms in arrival waits (172). The run after each table layer waits
+3.9 ms for the other ranks (44). Between kernels the GPU is idle 111 ms a
+wave (160).
+
+The rows read are the same rows: with batches and 64 readers the 2,112
+scored positions come back as the same bytes as the second pass's (score
+file SHA-256 `3ca04f8ca886…`). The final adapter differs from the scored
+one only in how many readers a small fetch wakes.
+
+### Open after the third pass
+
+- The rounds are 381 ms of the 1,294 ms wave: a piece takes 37.9
+  microseconds, 18.2 in its kernels, 10.1 between them and 9.6 waiting,
+  where the busier port needs 22 to 25 for its bytes. 1 MiB mesh slots are
+  their own change and need a weightd release; splitting each peer over
+  both rails is a weightd change after it; the attention sum as a gather of
+  FP8 inputs is the pack change above.
+- Routed experts, dense linears and hyper-connection mixing are 558 ms of
+  the wave and untouched by any of this.
+
