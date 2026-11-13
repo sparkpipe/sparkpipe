@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -47,6 +48,14 @@ def read_directive(path):
     except ValueError as error:
         print(json.dumps({"event": "working_state_directive_malformed", "path": str(path), "error": str(error)}), file=sys.stderr, flush=True)
         return 0, 0, 0
+
+
+def write_directive(path, wiped, held_until, storage_wiped):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    temporary.write_text(directive_text(wiped, held_until, storage_wiped))
+    os.replace(temporary, path)
 
 
 def valid_account(value):

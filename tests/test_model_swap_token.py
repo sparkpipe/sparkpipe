@@ -15,6 +15,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("model_swap", ROOT / "tools" / "serving" / "model_swap.py")
 model_swap = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(model_swap)
+sys.path.insert(0, str(ROOT / "tests"))
+import working_state_fixture  # noqa: E402
 
 GIB = 2 ** 30
 TOKEN = "c" * 40
@@ -69,7 +71,9 @@ async def scenario(failures):
         engine_site = web.TCPSite(engine_runner, "127.0.0.1", 0)
         await engine_site.start()
         port = engine_site._server.sockets[0].getsockname()[1]
+        working_state_fixture.write_token(state)
         swapper = model_swap.Swapper({
+            "working_state": working_state_fixture.block(state),
             "nodes": ["n0", "n1"], "ssh": [sys.executable, os.path.join(state, "fake_ssh.py")], "drop_kv": "DROP {label}",
             "memory_probe": "PROBE", "memory_margin_bytes": GIB,
             "ready_seconds": 5, "api_seconds": 5, "drain_seconds": 5, "node_seconds": 10,
@@ -81,6 +85,7 @@ async def scenario(failures):
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
+        working_state_fixture.unheld(swapper)
         base = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
         good = {"Authorization": "Bearer " + TOKEN}
         bad = [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "Bearer " + TOKEN + "x"}, {"Authorization": "Bearer " + TOKEN[:-1]},
@@ -89,11 +94,12 @@ async def scenario(failures):
             async with aiohttp.ClientSession() as session:
                 for headers in bad:
                     for method, path, body in (("GET", "/status", None), ("POST", "/activate", {"model": "target"}),
-                                               ("POST", "/force", {"model": "target"})):
+                                               ("POST", "/force", {"model": "target"}), ("GET", "/working-state", None),
+                                               ("POST", "/working-state/admit", {"account": "sparkpipe"})):
                         async with session.request(method, base + path, json=body, headers=headers) as response:
                             check(response.status == 401, f"{method} {path} with {headers or 'no Authorization'} answers 401, not {response.status}")
-                check(swapper.wanted is None and swapper.task is None and swapper.history == [],
-                      "refused requests never start a switch")
+                check(swapper.wanted is None and swapper.task is None and swapper.history == [] and swapper.working.handing is None and swapper.working.user is None,
+                      "refused requests never start a switch or a handover")
                 check(not pathlib.Path(state, "api-started-target").exists() and pathlib.Path(state, "api-started-old").exists(),
                       "refused requests never stop or start an engine")
                 async with session.get(base + "/status", headers=good) as response:

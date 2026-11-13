@@ -24,6 +24,7 @@ class FakeEngine:
         self.refused = 0
         self.completions = 0
         self.engine_authorizations = []
+        self.accounts = []
 
     def ready(self):
         return self.ready_at is not None and time.monotonic() >= self.ready_at
@@ -50,6 +51,7 @@ class FakeEngine:
             self.refused += 1
             return web.json_response({"error": "unauthorized"}, status=401)
         self.activations += 1
+        self.accounts.append((await request.json()).get("account"))
         if self.ready_at is None:
             self.ready_at = time.monotonic() + 0.6
         return web.json_response({"ok": True})
@@ -64,7 +66,7 @@ class FakeModel:
 
 async def collect(frontend, model):
     chunks = []
-    async for chunk in frontend.engine_stream(model, {"prompt_token_ids": [1], "max_tokens": 1, "stream": True}, False):
+    async for chunk in frontend.engine_stream(model, {"prompt_token_ids": [1], "max_tokens": 1, "stream": True}, False, "ACWAITER"):
         chunks.append(chunk)
     return chunks
 
@@ -102,6 +104,7 @@ async def run(failures):
         check(all(isinstance(result, list) and result and result[0]["tokens"] == [5] for result in results),
               "requests that arrive during bringup complete once the engine is ready")
         check(engine.activations == 1 and engine.refused == 0, "the cold engine is activated exactly once for concurrent waiters, with the controller token")
+        check(engine.accounts == ["ACWAITER"], f"the activation names the waiting request's account, so the controller can refuse it during another account's held hour: {engine.accounts}")
         check(engine.engine_authorizations and not any(engine.engine_authorizations), "the controller token never reaches the engine")
         check(model.gate.released == 3 and model.gate.waiting == 0 and engine.completions == 3, "every waiter is released and served")
         result = await outcome(frontend, model)
@@ -151,7 +154,7 @@ def main():
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS chat frontend warm queue: bringup waiters drain after readiness with one activation that carries the controller token, which never reaches the engine; overflow and expiry answer 503; latched failures are not queued")
+    print("PASS chat frontend warm queue: bringup waiters drain after readiness with one activation that carries the controller token and the request's account, which never reaches the engine; overflow and expiry answer 503; latched failures are not queued")
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ class Context:
         self.values = [torch.zeros((d.kv_heads, window + d.block, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
         self.positions = np.full(window, -1, dtype=np.int64)
         self.tokens = np.zeros(window, dtype=np.uint32)
-        self.used = time.monotonic()
+        self.used = time.time()
 
     def write(self, first, tokens, taps):
         skip = max(0, len(tokens) - self.window)
@@ -73,7 +73,7 @@ class Context:
         self.positions[self.positions >= first] = -1
         self.positions[slots] = positions
         self.tokens[slots] = tokens
-        self.used = time.monotonic()
+        self.used = time.time()
 
     def held(self, positions):
         return self.positions[positions % self.window] == positions
@@ -112,7 +112,7 @@ class RingContext:
         self.window = drafter.window
         self.positions = np.full(self.window, -1, dtype=np.int64)
         self.tokens = np.zeros(self.window, dtype=np.uint32)
-        self.used = time.monotonic()
+        self.used = time.time()
 
     def write(self, first, tokens, taps):
         stale = self.positions >= first
@@ -125,7 +125,7 @@ class RingContext:
         self.drafter.ingest(self.ring, positions.tolist(), taps)
         self.positions[positions % self.window] = positions
         self.tokens[positions % self.window] = tokens
-        self.used = time.monotonic()
+        self.used = time.time()
 
     def held(self, positions):
         return self.positions[positions % self.window] == positions
@@ -257,13 +257,12 @@ class Server:
         self.evict()
 
     def expire(self, now):
-        stale = expire_contexts(self.contexts, now)
+        stale = expire_contexts(self.contexts, now, self.args.directive)
         if stale and torch.cuda.is_available():
             torch.cuda.empty_cache()
         return stale
 
     def evict(self):
-        self.expire(time.monotonic())
         if evict_contexts(self.contexts, self.args.context_bytes):
             torch.cuda.empty_cache()
 
@@ -273,7 +272,7 @@ class Server:
         while True:
             item = None
             if time.monotonic() >= next_sweep:
-                self.expire(time.monotonic())
+                self.expire(time.time())
                 next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
             try:
                 if pending is None:
@@ -493,6 +492,7 @@ def main():
     parser.add_argument("--context-bytes", type=int, default=8 << 30, help="keys and values held for all sequences; the least recently used goes first")
     parser.add_argument("--switch-interval", type=float, default=0.0005, help="interpreter thread switch interval, seconds")
     parser.add_argument("--record-dir", default="", help="directory that receives a copy of every tap stream, one file per connection")
+    parser.add_argument("--directive", required=True, help="the hub's working-state directive (docs/WORKING_STATE.md); contexts expire by its rule")
     args = parser.parse_args()
     if args.window <= 0:
         parser.error("--window must be positive")
