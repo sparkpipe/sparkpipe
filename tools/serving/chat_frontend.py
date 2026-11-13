@@ -1784,6 +1784,10 @@ class PrefixLedger:
             self.blocks.popitem(last=False)
 
 
+def cache_points(seen, total):
+    return [seen] if 0 < seen < total else []
+
+
 def memory_model(model):
     return {"id": model.id, "context_tokens": model.context_tokens, "reasoning": model.reasoning}
 
@@ -2686,6 +2690,9 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
+        points = cache_points(seen, len(engine["prompt_token_ids"]))
+        if points:
+            engine["cache_points"] = points
         trace.update(seen_tokens=seen, seen_of=seen_of)
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
@@ -3059,6 +3066,9 @@ class Frontend:
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
+        points = cache_points(self.prefix_ledger(model).seen(ids)[0], len(ids))
+        if points:
+            body["cache_points"] = points
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []

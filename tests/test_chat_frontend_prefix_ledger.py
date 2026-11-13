@@ -76,6 +76,37 @@ frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(model).record(first["engine_body"]["prompt_token_ids"] + [9, 9])
 second = asyncio.run(frontend.plan(model, body, None))
 check(second["trace"]["seen_tokens"] == 3 and second["trace"]["seen_of"] == 5, "a repeated prompt's trace reports the earlier request's prefix and length")
+check("cache_points" not in first["engine_body"] and "cache_points" not in second["engine_body"],
+      "a first prompt and a prompt an earlier request carried whole declare no cache point")
+check(chat_frontend.cache_points(0, 9) == [] and chat_frontend.cache_points(9, 9) == [] and chat_frontend.cache_points(4, 9) == [4],
+      "a cache point is declared only where a shared prefix ends inside the prompt")
+
+
+class ForkModel(FakeModel):
+    def render(self, messages, tools, kwargs):
+        text = "t1 t3 t5" if messages[-1]["content"] == "ho" else "t1 t3 t4"
+        return text, self.vocabulary.encode(text, True)
+
+
+fork = ForkModel()
+frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
+frontend.prefix_ledger(fork).record([1, 3, 4, 9, 9])
+diverged = asyncio.run(frontend.plan(fork, {"messages": [{"role": "user", "content": "ho"}]}, None))
+check(diverged["engine_body"].get("cache_points") == [2],
+      f"a prompt that shares a prefix with an earlier one and then diverges declares a cache point where the shared prefix ends: {diverged['engine_body'].get('cache_points')}")
+
+captured = []
+
+
+async def capture(model_, body_):
+    captured.append(body_)
+    yield {"tokens": [], "usage": {}}
+
+
+frontend.gated_events = capture
+background = asyncio.run(frontend.memory_complete(fork, [1, 3, 6, 7], 4))
+check(captured and captured[-1].get("cache_points") == [2],
+      f"a background completion that shares a prefix declares the same cache point: {captured[-1].get('cache_points') if captured else None}")
 
 for failure in failures:
     print("FAIL test_chat_frontend_prefix_ledger: " + failure)
