@@ -242,7 +242,9 @@ device API:
   and the device runner, which implements it over `SparkDeviceStageRunner`.
   A dispatch runs as one or more runner steps: prefill and decode rows,
   decode chains (each step's sampled token feeds the next) and verify frames
-  (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
+  (kept with `SparkStageRunnerKeepRows`); a tree verify frame passes its
+  parent rows to the device runner and keeps its accepted root path with
+  `SparkStageRunnerKeepPath`. The serving adapter waits on the
   runner's queue (`SparkStageRunnerQueue`) through the device API instead of
   on a CUDA stream; the CUDA runner adopts its execution stream as that queue
   (`SparkDeviceQueueAdopt`).
@@ -653,7 +655,9 @@ A tree frame (`docs/TREE_VERIFICATION_DESIGN.md`) is a verify step with
 `SparkDeviceStageRunnerBatch.parent_rows`: one sequence, rows at the
 anchor's position plus their depth, the trunk first and each branch's rows
 consecutively. The runner builds the layout
-(`SparkSpeculationTreeLayoutBuild`, grain 1) and writes six more shared
+(`SparkSpeculationTreeLayoutBuild`, `SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN`, 1)
+from the sequence's next position, which a runner on an external KV binding
+takes from the frame's first row, and writes six more shared
 tables: the storage slots, the fork positions and slot offsets that map a
 row's semantic keys to slots, the parents, and the delta-rule state loads
 and saves. `spark_kv_store_paged` stores at the slots;

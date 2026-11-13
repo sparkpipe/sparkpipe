@@ -297,8 +297,8 @@ def main():
                     for item in prompts["prompts"]},
         "device_contract": (out / "device_contract.txt").read_text().strip().splitlines()[-1],
         "kernels": {"cases": len(kernels), "pass": all(case["pass"] for case in kernels),
-                    "worst_ratio": max(case["worst_ratio"] for case in kernels if case["worst_ratio"] is not None),
-                    "cases_list": [{key: case[key] for key in ("op", "shape", "checked", "worst_ratio", "control_outside", "pass")}
+                    "worst_ratio": max(case["worst_ratio"] for case in kernels if case.get("worst_ratio") is not None),
+                    "cases_list": [{key: case[key] for key in ("op", "shape", "checked", "worst_ratio", "control_outside", "chi_square", "tolerance", "outside", "pass") if key in case}
                                    for case in kernels]},
         "numerics": {"rule": (f"against each reference variant, with the other variant as the floor: mean KL <= {KL_FACTOR:g} x the floor's, "
                               f"top-1 disagreement <= {TOP1_FACTOR:g} x the floor's, and the share of positions further from the reference than "
