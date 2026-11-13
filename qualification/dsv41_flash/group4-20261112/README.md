@@ -531,11 +531,18 @@ Same lane, same prompts, 16,384-row waves:
 | Two kernels a piece | 2,725 tok/s | 3,221 | 2,772 |
 
 That is 3%, where the kernel counts suggested 10%: a wave's first 16,384
-rows took 4.80 to 4.83 s. Removing the launches moved the rounds from the
-GPU's pace to the daemon's: a piece now waits on weightd posting and
-completing three 131,072-byte writes. The 1 MiB slots (PR 1932, weightd IPC
-ABI 15) cut those writes to a quarter and measured 23 to 28% a round on the
-Lenovo pair; they need the daemon replaced on the nodes.
+rows took 4.80 to 4.83 s. A trace of the new build
+(`prefill-rounds.fifth.txt`) has a piece of the large rounds at 30.7 us
+where it was 37.9, and 13.8 us of that is the wait: the rounds moved from
+the GPU's pace to the daemon's, which posts and completes three
+131,072-byte writes a piece, two of them on one port. Rounds are still
+1.47 s of a traced 5.55 s wave: the experts' all-to-all 0.50 s, the sum of
+the attention output 0.35 s (staged, a whole slot a write), the query
+gather 0.29 s, the experts' gather 0.21 s. The 1 MiB slots (PR 1932,
+weightd IPC ABI 15) cut the writes to a quarter and measured 23 to 28% a
+round on the Lenovo pair; they need the daemon replaced on the nodes. After
+the rounds, the same trace has the expert and dense multiplies at 1.47 s,
+the sparse scoring and its top-k at 0.83 s and the stream mixing at 0.52 s.
 
 ## Drafts, 2026-11-13
 
