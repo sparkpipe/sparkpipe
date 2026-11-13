@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 15u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 16u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -96,7 +96,10 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
 
-#define SPARK_WEIGHTD_MESH_MAX_LANES 16u
+#ifndef SPARK_WEIGHTD_MESH_MAX_LANES
+#define SPARK_WEIGHTD_MESH_MAX_LANES 4u
+#endif
+#define SPARK_WEIGHTD_MESH_STATUS_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
 #define SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS 4096u
 #define SPARK_WEIGHTD_MESH_ROW_BYTES_MAX (16u * 1024u * 2u)
@@ -836,7 +839,7 @@ typedef struct SparkWeightdIpcMeshStatusResult
     uint64_t ready_since_mono_ns;
     uint64_t counters[SPARK_WEIGHTD_MESH_STATUS_COUNTERS];
     SparkWeightdMeshPeerStatus peers[SPARK_WEIGHTD_MESH_RANKS];
-    SparkWeightdMeshLaneStatus lanes[SPARK_WEIGHTD_MESH_MAX_LANES];
+    SparkWeightdMeshLaneStatus lanes[SPARK_WEIGHTD_MESH_STATUS_LANES];
     uint8_t reserved_tail[2104];
 } SparkWeightdIpcMeshStatusResult;
 
@@ -845,6 +848,7 @@ _Static_assert(sizeof(SparkWeightdIpcMeshStatus) == 32u &&
     sizeof(SparkWeightdMeshPeerStatus) == 64u &&
     sizeof(SparkWeightdMeshLaneStatus) == 48u &&
     sizeof(SparkWeightdIpcMeshStatusResult) == 4096u &&
+    SPARK_WEIGHTD_MESH_MAX_LANES <= SPARK_WEIGHTD_MESH_STATUS_LANES &&
     sizeof(SparkWeightdIpcMeshStatusResult) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"mesh status frame sizes are fixed for layout 1");
 _Static_assert(offsetof(SparkWeightdIpcMeshStatusResult,status) == 24u &&
     offsetof(SparkWeightdIpcMeshStatusResult,layout) == 28u &&

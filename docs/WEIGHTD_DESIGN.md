@@ -80,14 +80,17 @@ These rules follow from that code:
 ## Concurrent mesh lane reservations
 
 Weightd IPC ABI 7 extended the existing `LANE_ACQUIRE` request with an exact
-`requested_lane`. Each lane owns two mesh bands. There are 16 lanes
-(`SPARK_WEIGHTD_MESH_MAX_LANES`, `include/sparkpipe/spark_weightd.h`; raised from
-8 in 4f0e339). A coordinator must assign a unique lane from 0 through 15 to each
-concurrent job and name it in every participating rank's stage config
+`requested_lane`. Each lane owns two mesh bands. There are 4 lanes
+(`SPARK_WEIGHTD_MESH_MAX_LANES`, `include/sparkpipe/spark_weightd.h`; 8, then
+16 from 4f0e339 until IPC ABI 15). A coordinator must assign a unique lane from
+0 through 3 to each concurrent job and name it in every participating rank's
+stage config
 (`device_collective.mesh_lane`, required). Local first-free allocation alone is
 insufficient: reversed job startup order on two hosts can otherwise assign one
 job different bands. Each production model's lane is its lane record's `lane`
-([LANES.md](LANES.md)).
+([LANES.md](LANES.md)). Records share lanes 0 to 2: two models may hold one
+lane number only if they never run on a node together, as with every pair of
+models the swap controller exchanges. Lane 3 is kept for test lanes.
 
 4f0e339 doubled the mesh region (`SPARK_WEIGHTD_MESH_BANDS` is twice the lane
 count) but left `SPARK_WEIGHTD_IPC_ABI_VERSION` at 8. A client maps the region
@@ -217,14 +220,14 @@ reduce-scatter plus all-gather over slice routes for large sums; the tree
 runs only in spin mode. That the wait mode picks the algorithm is a known
 deviation from I36 ([TECHDEBT.md](../TECHDEBT.md#mesh-collectives)).
 
-The region layout is in `include/sparkpipe/spark_weightd.h`. It has 16 lanes
-(`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-15) with two bands each (GLM uses one for its
+The region layout is in `include/sparkpipe/spark_weightd.h`. It has 4 lanes
+(`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-3) with two bands each (GLM uses one for its
 main and one for its HC collective), 16 ranks per band and two slots per rank.
 A slot holds 32 rows of 32 KiB plus a 64-byte trailer, 1,048,640 bytes, and its
 last 8 bytes are the tail tag the receiver matches. The slot for band `b`, peer
 `p` and ring `r = (tag - 1) mod 2` is `b*32 + p*2 + r`. The slot area is
-32 bands x 32 slots x 1,048,640 bytes = 1,073,807,360 bytes (arithmetic, about
-1 GiB). A 128 KiB area follows it with the doorbells, shipped cells and one
+8 bands x 32 slots x 1,048,640 bytes = 268,451,840 bytes (arithmetic, 256 MiB).
+A 128 KiB area follows it with the doorbells, shipped cells and one
 128-byte hardware wait request per rank and band.
 
 **Slot size (IPC ABI 15, record magic `MESH0008`).** Up to ABI 14 a slot held
@@ -244,6 +247,27 @@ that fit one slot at either size keep their schedule and their time.
   wiring (`WD-MESH-ABI-MISMATCH`), and an engine attaches only to a daemon of
   its own ABI. Roll weightd on every node of a fleet in one window, as the
   release kit does, and rebuild every lane against it.
+
+**Lane count (IPC ABI 16, record magic `MESH0009`).** Every band is pinned
+when the daemon starts, whether a lane uses it or not, and is registered on
+both rails. With 16 lanes of 1 MiB slots that was 1,073,938,432 bytes of region
+and 512 MiB of staging on every node, 1.15 GiB more than under ABI 14. On
+2026-11-13 that was the difference between GLM 5.3 fitting on a node and not:
+with it up, weightd held 97.0 GiB of GPU memory (the arena and the KV pool),
+the rank 9.75 GiB and about 3 GiB more under its first long prompt, and
+`earlyoom`, which kills at 2% of free memory, terminated weightd on six nodes;
+a second activation could not get the KV pool's minimum of 517 chunks.
+
+There are 4 lanes now, 8 bands: 268,582,912 bytes of region and 128 MiB of
+staging, the footprint ABI 14 had, with the 1 MiB slots kept. A node only ever
+runs one or two lanes at a time; the 16 lane numbers served as names for the
+records. The geometry differs from ABI 15's, so the record magic moved to
+`MESH0009` and the same rule holds: every node of a fleet in one window.
+
+`tp_mesh_hardware_probe` puts up to sixteen ranks on one GPU and gives each
+rank a band of one region, so the probe and its fixture daemon build with
+`-DSPARK_WEIGHTD_MESH_MAX_LANES=8u` (sixteen bands). Nothing else sets the
+macro.
 - Measured with `build/mesh_round_bench` on two GB10 machines outside the
   fleet, one 100G port each and a private weightd on each (2026-11-13,
   microseconds a round at rank 0, results checked bit for bit by the bench).
@@ -437,7 +461,7 @@ manifests, receipts and the pack bytes are the same under both ABIs.
 
 **Unchanged from ABI 8:**
 - the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes until
-  ABI 15);
+  ABI 15, 1,073,938,432 under ABI 15, 268,582,912 from ABI 16);
 - the slot geometry (until ABI 15), doorbells, shipped cells and wait requests;
 - the rendezvous record;
 - the FULL, SCATTER and GATHER routes.
@@ -447,8 +471,8 @@ Daemons of both ABIs therefore wire to each other during a per-node roll.
 **PEER route (mode 3).**
 - Staging:
   - Each daemon owns a staging area of `SPARK_WEIGHTD_MESH_STAGING_BYTES` =
-    32 bands x 16 peers x 1 MiB = 512 MiB (256 KiB slots and 128 MiB until
-    ABI 15).
+    8 bands x 16 peers x 1 MiB = 128 MiB (32 bands of 256 KiB slots, 128 MiB,
+    until ABI 15; 32 bands of 1 MiB slots, 512 MiB, under ABI 15).
   - It is a second memfd, registered as a second MR with local access only.
   - The slot for band `b` and logical peer `p` is at
     `SPARK_WEIGHTD_MESH_STAGING_OFFSET(b,p)`.
@@ -685,7 +709,7 @@ all-gather, 2 rounds per chunk):
 | 1,024 | 4,194,304 | 8 | 16 | 1 | 2 |
 
 **Memory.** The staging area is pinned host memory on every node: 128 MiB
-when ABI 9 added it, 512 MiB from ABI 15.
+when ABI 9 added it, 512 MiB under ABI 15, 128 MiB again from ABI 16.
 
 **Host tests:**
 - `test_weightd_mesh_mock` checks PEER routes at 1, 8, 128, 129, 512 and

@@ -243,9 +243,11 @@ second weightd on the same node therefore needs its own latch port and socket. E
 
 Do not start another weightd on a production node, whether from a queue job,
 a shared-weightd unit or the old weightsd system unit
-(`/etc/sparkpipe/weightsd.env`). The mesh has 16 lanes
-(`include/sparkpipe/spark_weightd.h:72`); a procedure for attaching dev lanes
-to the production weightd is not documented yet.
+(`/etc/sparkpipe/weightsd.env`). The mesh has 4 lanes
+(`SPARK_WEIGHTD_MESH_MAX_LANES` in `include/sparkpipe/spark_weightd.h`): the
+lane records use 0 to 2 and a test lane takes 3
+(`STAGE_LANE=3 tools/stage_lane.sh ...` with the production model
+deactivated when the nodes' memory is needed).
 
 ## 4. Releasing firmware and the API
 
