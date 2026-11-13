@@ -468,6 +468,72 @@ def check_keys(failures, home, fake):
     expect(failures, code == 1 and "sparkpipe login" in err, "keys without a session do not ask for a login")
 
 
+def install_fake(fake, api_path, chosen):
+    held = {"fleet": "F1B", "name": "Fleet 1B", "holding": True, "needed": True, "choice": None}
+    booked = {"fleet": "F2A", "name": "Fleet 2A", "holding": False, "needed": False,
+              "choice": {"item": "sparkpipe", "name": "SparkPipe", "at": "2026-11-13T05:00Z", "by": "MB1", "licenses": {"licenses/sparkpipe/LICENSE.txt": "a" * 64}}}
+    refusal = {"error": {"message": "Installing SparkPipe needs Acme's acceptance of its license. Read it at https://sparkpipe.ai/catalogue.html.", "type": "invalid_request_error", "code": "license"}}
+
+    def put(request):
+        body = request["body"]
+        if not session_auth(request):
+            return 403, {}, {"error": {"message": "Managing keys, webhooks and members needs a session.", "code": "invalid_key"}}
+        if body.get("item") == "sparkpipe" and body.get("accept") is not True:
+            return 409, {}, refusal
+        chosen.append(body)
+        licenses = {"licenses/sparkpipe/LICENSE.txt": "c" * 64} if body["item"] == "sparkpipe" else {}
+        return 200, {}, dict(held, needed=False, choice={"item": body["item"], "name": body["item"], "at": "2026-11-13T06:00Z", "by": "MB1", "licenses": licenses})
+
+    fake.route("GET", api_path + "/v1/installs", lambda r: (200, {}, {"fleets": [held, booked]}) if session_auth(r) else (401, {}, {"error": {"message": "Sign in.", "code": "invalid_key"}}))
+    fake.route("PUT", api_path + "/v1/installs/F1B", put)
+    fake.route("GET", "/catalogue.js", (200, {"Content-Type": "text/javascript"}, (ROOT / "site" / "catalogue.js").read_bytes()))
+    return held, booked
+
+
+@scenario
+def check_install(failures, home, fake):
+    api = fake.url + "/pay/api"
+    home.signed_in(api)
+    chosen = []
+    held, booked = install_fake(fake, "/pay/api", chosen)
+    expect(failures, cli.site_root(cli.API) == "https://sparkpipe.ai" and cli.site_root("https://sparkpipe.ai/pay/sandbox/api") == "https://sparkpipe.ai",
+           "the Catalogue is not read from the site that serves the API")
+    code, out, err = home.run("install")
+    expect(failures, code == 0 and "F1B  Fleet 1B  held now  nothing chosen yet" in out and "sparkpipe install F1B ITEM" in out
+           and "F2A  Fleet 2A  booked  SparkPipe, chosen 2026-11-13T05:00Z by MB1" in out and f"accepted licenses/sparkpipe/LICENSE.txt  SHA-256 {'a' * 64}" in out
+           and session_auth(fake.find("GET", "/pay/api/v1/installs")[-1]), f"install does not list the fleets, their choices and the one that needs a choice: {code} {out} {err}")
+    code, out, _ = home.run("install", "--json")
+    expect(failures, code == 0 and json.loads(out) == {"fleets": [held, booked]}, "install --json does not print the API's answer")
+    text = (ROOT / "site" / "catalogue.js").read_text(encoding="utf-8")
+    items = json.loads(text[text.index("{"):text.rindex("}") + 1])["items"]
+    item = next(i for i in items if i["acceptance"])
+    code, out, err = home.run("install", "F1B", item["id"])
+    urls = [f"{fake.url}/{path}" for path in item["license"]["texts"]]
+    expect(failures, code == 1 and item["license"]["name"] in err and all(url in err for url in urls) and "--accept-license" in err and "F1B" in err and not fake.find("PUT", "/pay/api/v1/installs/F1B"),
+           f"an item that asks for acceptance is sent without --accept-license, or the refusal does not name its license and texts: {code} {err}")
+    expect(failures, all("authorization" not in r["headers"] for r in fake.find("GET", "/catalogue.js")), "the session is sent with the request for the published Catalogue")
+    code, out, err = home.run("install", "F1B", item["id"], "--accept-license")
+    sent = fake.find("PUT", "/pay/api/v1/installs/F1B")
+    expect(failures, code == 0 and chosen == [{"item": item["id"], "accept": True}] and session_auth(sent[-1]) and f"F1B  Fleet 1B  held now  {item['id']}, chosen 2026-11-13T06:00Z" in out,
+           f"install with --accept-license does not choose the item with the session: {chosen} {out} {err}")
+    code, out, err = home.run("install", "F1B", "none")
+    expect(failures, code == 0 and chosen[-1] == {"item": "none", "accept": False} and "accepted" not in out, f"install none does not keep the base image without accepting anything: {chosen} {out} {err}")
+    before = len(fake.find("PUT", "/pay/api/v1/installs/F1B"))
+    code, _, err = home.run("install", "F1B", "unlisted")
+    expect(failures, code == 1 and ", ".join(i["id"] for i in items) in err, f"an item the Catalogue does not list is not refused with the listed items: {err}")
+    for argv, text in ((("install", "F1B"), "sparkpipe install F1B ITEM"), (("install", "F1/../keys", "none"), "fleet name"), (("install", "F1B\r\n", "none"), "fleet name")):
+        code, _, err = home.run(*argv)
+        expect(failures, code == 1 and text in err, f"sparkpipe {' '.join(argv)!r} is not refused before it is sent: {err}")
+    expect(failures, len(fake.find("PUT", "/pay/api/v1/installs/F1B")) == before, "a refused install is sent")
+    fake.route("GET", "/catalogue.js", (404, {}, {"error": "Not found."}))
+    code, _, err = home.run("install", "F1B", item["id"])
+    expect(failures, code == 1 and fake.find("PUT", "/pay/api/v1/installs/F1B")[-1]["body"] == {"item": item["id"], "accept": False} and "catalogue.html" in err and "--accept-license" in err,
+           f"without the published Catalogue the API's license refusal is not shown with the flag that accepts it: {err}")
+    home.config.write_text(json.dumps({"api": api}))
+    code, _, err = home.run("install")
+    expect(failures, code == 1 and "sparkpipe login" in err, "install without a session does not ask for a login")
+
+
 @scenario
 def check_status(failures, home, fake):
     home.signed_in(fake.url)
@@ -1574,7 +1640,7 @@ def compare_runs(failures, home, fake):
 
 def main():
     failures = []
-    for check in (check_units, check_login, check_keys, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_fleet, check_setup_schemas, check_setup_undo,
+    for check in (check_units, check_login, check_keys, check_install, check_status, check_book, check_setup_claude_code, check_setup_codex, check_setup_opencode, check_setup_fleet, check_setup_schemas, check_setup_undo,
                   check_tokens, check_fetch, check_storage_sync, check_proxy, check_errors, check_compare_units, check_compare, check_package):
         try:
             check(failures)
@@ -1584,7 +1650,8 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("sparkpipe CLI: login by email code to a revocable bearer session and one key per machine; keys, status, bookings by week and hour priced before confirmation, "
+    print("sparkpipe CLI: login by email code to a revocable bearer session and one key per machine; keys; install listing the fleets and their choices and choosing a Catalogue item with the session, "
+          "refusing an item that asks for acceptance without --accept-license and naming its license and texts from the published Catalogue or the API; status, bookings by week and hour priced before confirmation, "
           "and the waitlist with terms; setup of Claude Code (settings and its MCP server), Codex (config.toml and the sparkpipe profile file) and OpenCode merged into existing settings with a backup, idempotent, "
           "matching each tool's documented keys, and undone key by key, keeping settings written since; "
           "refusing files it cannot merge safely; tokens only in the macOS keychain or secret-tool, never on a command line; fetch, ls, resume and cancel sending a token only to its own host "

@@ -117,6 +117,22 @@ class PrivacyTest(unittest.TestCase):
         self.assertIn("a member's email address only in the lines that invite or add that member", self.en)
         self.assertIn("구성원의 이메일 주소는 그 구성원을 초대하거나 추가하는 줄에만", self.ko)
 
+    def test_acceptance_records_cover_licenses_from_the_catalogue(self):
+        en = row(self.en, "Acceptance records")
+        ko = row(self.ko, "동의기록")
+        self.assertIn("the license of software chosen from the Catalogue", en)
+        self.assertIn("chooses from the Catalogue what to install on a fleet", en)
+        self.assertIn("소프트웨어 목록에서 고른 소프트웨어의 라이선스", ko)
+        self.assertIn("플릿에 설치할 것을 소프트웨어 목록에서 고를 때", ko)
+        self.assertIn("the hashes of the texts accepted", en)
+        self.assertIn("동의한 문서의 해시", ko)
+        self.assertIn("the member who made a choice from the Catalogue", en)
+        self.assertIn("소프트웨어 목록에서 고른 구성원", ko)
+        for text in (en, ko):
+            self.assertIn("IP", text)
+        self.assertIn("its choices from the Catalogue", self.en)
+        self.assertIn("소프트웨어 목록에서의 선택을 기록하는 줄", self.ko)
+
     def test_processing_location_has_no_fixed_machine_count(self):
         self.assertNotIn("sixteen", self.en)
         self.assertNotIn("16대", self.ko)

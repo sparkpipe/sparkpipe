@@ -45,6 +45,7 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Codebase tools (MCP) | `POST /mcp` (Streamable HTTP), and `sparkpipe mcp` for stdio |
 | Batch jobs | `GET/POST /v1/batches`, `GET/DELETE /v1/batches/{id}` |
 | Teams, keys, audit | `GET/POST /v1/members`, `DELETE /v1/members/{id}`, `GET/POST /v1/keys`, `DELETE /v1/keys/{id}`, `GET /v1/audit` |
+| What is installed | `GET /v1/installs`, `PUT /v1/installs/{fleet}` (§16) |
 | Notifications | `GET/PUT /v1/webhooks`, `DELETE /v1/webhooks/{id}` |
 | Several fleets | key option `fleet: "any"`, `POST /v1/state/move` |
 | Inference extras | `POST /v1/tokenize`, `POST /v1/detokenize`, `DELETE /v1/requests/{id}` |
@@ -678,6 +679,7 @@ Uses: evals, bulk edits, test generation, data for a customer model.
 - **Audit log.** `GET /v1/audit` lists events, without prompts or replies, kept like the operational records:
   - sign-ins, member and key changes;
   - bookings and waitlist locks;
+  - each choice of what is installed on a fleet (`install.chosen`, §16);
   - model switches, wipes and storage access;
   - each fetch, with its source and size;
   - Function runs.
@@ -723,6 +725,7 @@ Deliveries run in parallel and are retried when a receiver fails, so they can ar
 | `sparkpipe login` | Email code sign-in, then creates a key for this machine |
 | `sparkpipe status` | Holdings, the fleet's model, cache use, pins, packs, runs, deadlines |
 | `sparkpipe compare [--days 30] [--claude DIR]... [--codex DIR]...` | What the Claude Code and Codex logs on this machine (`*.jsonl` changed in the last `--days`, under `~/.claude/projects` and `~/.codex/sessions` by default) cost at Anthropic's and OpenAI's API prices, figured as the site's cost check figures it from the same price table (`site/compare-prices.js`). It shows the requests that wrote their context again after a pause and, when signed in, the price of a fleet week from the account. The logs stay on the machine: the only call is `GET /market/state` with the session |
+| `sparkpipe install`, `install FLEET ITEM [--accept-license]` | What is installed (§16): without arguments, `GET /v1/installs`; with a fleet and a Catalogue item (`none` for nothing), `PUT /v1/installs/{fleet}`. For an item whose Catalogue entry asks for acceptance, it refuses without `--accept-license` and prints the license's name and the URLs of its texts, read from `https://sparkpipe.ai/catalogue.js` or, failing that, from the API's `license` refusal |
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16). A booking shows the market's quote and sends back the quoted first week and price; if either has changed by then, the market books nothing and answers `409 quote_changed`, stating the new first week and price |
 | `sparkpipe setup claude-code`, `setup codex`, `setup opencode`, `setup [<harness>] --undo` | Writes the client settings and installs the plugins of §3.8; `--undo` restores the keys setup owns (§3.8). With `--fleet F1A` (or `SPARKPIPE_FLEET`), every model and MCP request the harness sends names that fleet in `X-SparkPipe-Fleet`: `ANTHROPIC_CUSTOM_HEADERS` and the MCP entry's headers for Claude Code, `http_headers` in the provider and MCP tables for Codex, the provider's `options.headers` and the MCP headers for OpenCode. Without a fleet, setup removes a fleet an earlier run wrote. Codex and OpenCode read the key from `SPARKPIPE_API_KEY`, and setup prints `export SPARKPIPE_API_KEY="$(sparkpipe keys show)"` for the shell profile, never the key itself |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
@@ -761,6 +764,12 @@ The account endpoints already exist in the payment service under `/market/...`: 
 - If the balance runs short, it sends `booking.deadline` early, with the HC needed.
 
 A held fleet is then never lost to a forgotten Sunday.
+
+**What is installed** (Agreement 1.1, 7.1 and 7.2). A fleet holds only our base image; the account chooses what to install on it from the Catalogue (`site/catalogue.js`, shown on `catalogue.html`), and nothing is one of the choices. Our engine is one item, and its license asks for acceptance: choosing it records the account's acceptance as a clickwrap, as the Customer Agreement's is recorded (`docs/PAYMENTS.md`).
+- `GET /v1/installs`, with a session or a key with `account:read`, lists every fleet the account holds now, including a free fleet a failover gives it (Agreement 15.7), or has a booking of that has not ended: `{"fleets": [{"fleet", "name", "holding", "needed", "choice"}]}`. `choice` is null or `{"item", "name", "at", "by", "licenses", "current"}`, where `licenses` maps each license text's path on the site to the SHA-256 of the copy served when the choice was made (`{}` for an item without a license, such as `none`). `current` is false once a license text accepted for the choice differs from the copy served now or the item left the Catalogue, and `needed` is true while the account holds the fleet and has no current choice for it, or one whose `current` is false.
+- `PUT /v1/installs/{fleet} {"item", "accept"}`, with the session of the owner or an admin, chooses for a fleet the account holds or has a booking of that has not ended, and answers that fleet's entry. An item whose Catalogue entry asks for acceptance needs `accept: true`. Refusals: 400 `invalid_request` for an item the Catalogue does not list, 409 `not_held` for another fleet, 409 `license` without `accept: true` (the message names the license, its texts and `https://sparkpipe.ai/catalogue.html`), and 403 for an API key or a member.
+- A choice lasts while the working state it belongs to lasts (Agreement 6.2): it ends when another account's booking of the fleet, or another account's failover to it, starts, or 24 hours after the last hour the account holds there with no later booking or failover made in between, and never comes back. A failover's fleet comes with only our base image: the choice for the fleet that is down does not carry over. A new choice replaces the last one.
+- The fleet's administration software reads the current holder's choice with the upstream key from `GET /market/fleets/{fleet}/install` (`{"fleet", "account", "choice"}`), beside the holder schedule. The rules and the ledger line are in `docs/FLEET_BOOKINGS.md` (What is installed).
 
 ## 17. Limits and errors
 

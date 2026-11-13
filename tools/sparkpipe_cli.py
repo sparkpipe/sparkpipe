@@ -45,6 +45,7 @@ STREAM_IDLE_MS = 1800000
 PLATFORM = sys.platform
 TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+FLEET_ID = re.compile(r"[A-Za-z0-9_-]{1,32}")
 FLEET_LINE = re.compile(r"X-SparkPipe-Fleet: [A-Za-z0-9_.-]{1,64}")
 CREDENTIAL = re.compile(r"[\x21-\x7e]{1,4096}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -682,6 +683,67 @@ def keys_revoke(ctx):
         ctx.save()
         lines.append("That was this machine's key: run sparkpipe login for a new one.")
     emit(ctx, found, lines)
+    return 0
+
+
+def site_root(api):
+    parts = urllib.parse.urlsplit(api)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def catalogue(api):
+    site = site_root(api)
+    try:
+        with Client(site).open("GET", "/catalogue.js", auth=None) as response:
+            text = receive(response, None, f"The Catalogue at {site}").decode("utf-8")
+        return {item["id"]: item for item in json.loads(text[text.index("{"):text.rindex("}") + 1])["items"]}
+    except (Failure, ValueError, KeyError, TypeError):
+        return None
+
+
+def license_refusal(api, item, fleet):
+    found = item.get("license") or {}
+    texts = " and ".join(f"{site_root(api)}/{path}" for path in found.get("texts") or [])
+    return (f"{item.get('name')} is installed on {fleet} only once you accept, for your company, its license, which governs the copy installed there: {found.get('name')}. "
+            f"Read {texts}, then run this again with --accept-license.")
+
+
+def install_lines(entries):
+    lines = []
+    for entry in entries:
+        choice = entry.get("choice") if isinstance(entry.get("choice"), dict) else None
+        chosen = f"{choice.get('name') or choice.get('item')}, chosen {choice.get('at')}" + (f" by {choice['by']}" if choice.get("by") else "") if choice else "nothing chosen yet"
+        lines.append(f"{entry.get('fleet')}  {entry.get('name')}  {'held now' if entry.get('holding') else 'booked'}  {chosen}")
+        licenses = choice.get("licenses") if choice else None
+        lines += [f"  accepted {path}  SHA-256 {digest}" for path, digest in (licenses.items() if isinstance(licenses, dict) else ())]
+        if entry.get("needed"):
+            lines.append(f"  Choose what to install on it: sparkpipe install {entry.get('fleet')} ITEM, with an item from sparkpipe.ai/catalogue.html")
+    return lines or ["The account holds no fleet now and has no booking that has not ended."]
+
+
+def installs(ctx):
+    args, client = ctx.args, ctx.client()
+    if not args.fleet_id:
+        found = client.call("GET", "/v1/installs", auth="session")
+        emit(ctx, found, install_lines(found.get("fleets") or []))
+        return 0
+    if not FLEET_ID.fullmatch(args.fleet_id):
+        raise Failure(f"{args.fleet_id!r} is not a fleet name such as F1B.")
+    if not args.item:
+        raise Failure(f"Name what to install on {args.fleet_id}: sparkpipe install {args.fleet_id} ITEM, with an item from the Catalogue at sparkpipe.ai/catalogue.html.")
+    if not args.accept_license:
+        listed = catalogue(ctx.api)
+        if listed is not None and args.item not in listed:
+            raise Failure(f"The Catalogue lists {', '.join(listed)}, not {args.item!r}: see sparkpipe.ai/catalogue.html.")
+        if listed and listed[args.item].get("acceptance"):
+            raise Failure(license_refusal(ctx.api, listed[args.item], args.fleet_id))
+    try:
+        found = client.call("PUT", "/v1/installs/" + args.fleet_id, {"item": args.item, "accept": args.accept_license}, auth="session")
+    except ApiError as error:
+        if error.reason == "license":
+            raise Failure(f"{error} Run this again with --accept-license to accept it.")
+        raise
+    emit(ctx, found, install_lines([found]))
     return 0
 
 
@@ -2106,6 +2168,13 @@ def token_commands(commands, base):
     leaf(tokens, "rm", tokens_rm, [base], "Remove a token").add_argument("name")
 
 
+def install_command(commands, base):
+    command = leaf(commands, "install", installs, [base], "Choose what to install from the Catalogue on a fleet you hold or have booked, or list your fleets and their choices")
+    command.add_argument("fleet_id", metavar="FLEET", nargs="?")
+    command.add_argument("item", metavar="ITEM", nargs="?", help="a Catalogue item (sparkpipe.ai/catalogue.html), or none to keep only the base image")
+    command.add_argument("--accept-license", action="store_true", help="accept, for your company, the license of an item that asks for it")
+
+
 def compare_command(commands, base):
     command = leaf(commands, "compare", compare, [base], "What your Claude Code and Codex logs cost at API prices, read on this machine")
     command.add_argument("--days", type=int, default=30, help="read logs changed in the last DAYS days (default 30)")
@@ -2124,6 +2193,7 @@ def parser():
     commands = top.add_subparsers(dest="command", metavar="COMMAND")
     commands.required = True
     account_commands(commands, base)
+    install_command(commands, base)
     fleet_commands(commands, base, fleet)
     token_commands(commands, base)
     compare_command(commands, base)

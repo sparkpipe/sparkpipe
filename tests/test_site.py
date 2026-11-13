@@ -262,11 +262,128 @@ def check_models(failures):
         failures.append(f"the models pricing.js lists differ from the models the Fleet List lists: {listed} {offered}")
 
 
+def published(name):
+    text = (SITE / name).read_text(encoding="utf-8")
+    return json.loads(text[text.index("{"):text.rindex("}") + 1])
+
+
+def check_license_copies(failures):
+    copies = {SITE / "licenses" / "sparkpipe" / "LICENSE.txt": ROOT / "LICENSE", SITE / "licenses" / "sparkpipe" / "LICENSE-PERMISSION.txt": ROOT / "LICENSE-PERMISSION.md", SITE / "licenses" / "vllm" / "LICENSE.txt": ROOT / "LICENSE-APACHE-2.0"}
+    for copy, source in copies.items():
+        if not copy.is_file() or copy.read_bytes() != source.read_bytes():
+            failures.append(f"{copy.relative_to(ROOT)}: not a byte-identical copy of {source.name}, so a customer would accept a text other than the engine's license")
+    extra = sorted(str(path.relative_to(ROOT)) for path in (SITE / "licenses").rglob("*") if path.is_file() and path not in copies)
+    if extra:
+        failures.append(f"site/licenses holds files that no license copy check covers: {extra}")
+
+
+LAUNCH_ITEMS = {
+    "sparkpipe": {"publisher": "HYOR AI Tech Ltd.", "kind": "engine", "acceptance": True,
+                  "license": ("Functional Source License 1.1 (ALv2 future license) with an additional permission", ["licenses/sparkpipe/LICENSE.txt", "licenses/sparkpipe/LICENSE-PERMISSION.txt"])},
+    "vllm": {"publisher": "vLLM project", "kind": "engine", "acceptance": False, "license": ("Apache License 2.0", ["licenses/vllm/LICENSE.txt"])},
+    "none": {"name": "Nothing: keep the base image", "kind": "none", "acceptance": False, "license": None},
+}
+
+
+def license_text_problem(ident, path):
+    if not isinstance(path, str) or not re.fullmatch(rf"licenses/{re.escape(ident)}/[A-Za-z0-9][A-Za-z0-9._-]*\.txt", path):
+        return "is not a .txt file in the item's own folder under site/licenses"
+    found = SITE / path
+    if any(part.is_symlink() for part in (found, *found.parents) if part.is_relative_to(SITE)) or not found.resolve().is_relative_to(SITE.resolve()) or not found.is_file():
+        return "is not a file of its own under site/"
+    return None
+
+
+def item_problem(item):
+    texts = ("id", "name", "nameKo", "publisher", "summary", "summaryKo")
+    license_ = item.get("license")
+    if not all(isinstance(item.get(key), str) and item[key] for key in texts) or item.get("kind") not in ("engine", "none") or not isinstance(item.get("acceptance"), bool):
+        return "lacks a field of the Catalogue contract"
+    if license_ is not None and not (isinstance(license_, dict) and isinstance(license_.get("name"), str) and isinstance(license_.get("nameKo"), str) and isinstance(license_.get("texts"), list) and license_["texts"]):
+        return "has a license without a name, a Korean name or texts"
+    if item["acceptance"] and not license_:
+        return "asks for acceptance but names no license to accept"
+    if item["kind"] == "none" and (license_ or item["acceptance"]):
+        return "installs nothing but carries a license to accept"
+    return next((f"names the license text {path!r}, which {problem}" for path in (license_ or {}).get("texts", []) for problem in [license_text_problem(item["id"], path)] if problem), None)
+
+
+def launch_problem(items):
+    shown = {item.get("id"): item for item in items if isinstance(item, dict)}
+    for ident, wanted in LAUNCH_ITEMS.items():
+        item = shown.get(ident) or {}
+        license_ = item.get("license") if isinstance(item.get("license"), dict) else None
+        found = {key: item.get(key) for key in wanted if key != "license"}
+        found["license"] = (license_.get("name"), license_.get("texts")) if license_ else item.get("license")
+        if found != wanted:
+            return f"{ident} is {found}, but the Catalogue contract between the site and the service says {wanted}"
+    return None
+
+
+def catalogue_items(failures):
+    try:
+        items = published("catalogue.js")["items"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        failures.append(f"catalogue.js: no items between its first {{ and last }}: {error!r}")
+        return None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        failures.append("catalogue.js: items is not a list of objects")
+        return None
+    for item in items:
+        problem = item_problem(item)
+        if problem:
+            failures.append(f"catalogue.js: item {item.get('id')} {problem}")
+    problem = launch_problem(items)
+    if problem:
+        failures.append(f"catalogue.js: {problem}")
+    ids = [item.get("id") for item in items]
+    if len(set(ids)) != len(ids):
+        failures.append(f"catalogue.js: item ids repeat: {ids}")
+    if [item.get("kind") for item in items].count("none") != 1:
+        failures.append("catalogue.js: a customer must always be able to choose to install nothing, through exactly one item of kind none")
+    return None if any(item_problem(item) for item in items) else items
+
+
+def listed_items(source):
+    found = {}
+    for ident, body in re.findall(r'<article class="item" id="([^"]+)">(.*?)</article>', source, re.S):
+        found[ident] = (body, re.findall(r'href="([^"]+)"', body))
+    return found
+
+
+def check_catalogue(failures):
+    items = catalogue_items(failures)
+    if twins().get("catalogue.html") != "catalogue-ko.html":
+        failures.append(f"{LANG_CONF.name}: the Catalogue has no Korean twin")
+    for name, keys in (("catalogue.html", ("name", "summary")), ("catalogue-ko.html", ("nameKo", "summaryKo"))) if items is not None else ():
+        shown = listed_items((SITE / name).read_text(encoding="utf-8"))
+        if list(shown) != [item.get("id") for item in items]:
+            failures.append(f"{name}: lists {list(shown)}, but catalogue.js has {[item.get('id') for item in items]}")
+            continue
+        for item in items:
+            body, links = shown[item["id"]]
+            license_ = item.get("license") or {}
+            wanted = [item[key] for key in keys] + [item["publisher"]] + ([license_["nameKo" if name.endswith("-ko.html") else "name"]] if license_ else [])
+            missing = [text for text in wanted if text not in body]
+            if missing or [link for link in links if link.startswith("licenses/")] != license_.get("texts", []):
+                failures.append(f"{name}: the entry for {item['id']} differs from catalogue.js: missing {missing}, license links {links}")
+    for name, target in (("terms.html", "catalogue.html"), ("terms-ko.html", "catalogue-ko.html")):
+        if not re.search(rf'<td><a href="{target}">', (SITE / name).read_text(encoding="utf-8")):
+            failures.append(f"{name}: the Catalogue is not listed with the documents")
+    for name, target in (("fleets.html", "catalogue.html"), ("fleets-ko.html", "catalogue-ko.html")):
+        source = (SITE / name).read_text(encoding="utf-8")
+        start = source.find('<section id="base-image">')
+        if start < 0 or f'href="{target}"' not in source[start:source.find("</section>", start)]:
+            failures.append(f"{name}: the base-image section does not link the Catalogue")
+
+
 def main():
     pages = {path.name: parse(path) for path in sorted(SITE.glob("*.html"))}
     failures = []
     check_terms(failures)
     check_languages(pages, failures)
+    check_license_copies(failures)
+    check_catalogue(failures)
     check_kr_networks(failures)
     check_brand(failures)
     check_models(failures)
@@ -282,7 +399,8 @@ def main():
         print(f"  FAIL {failure}")
     if failures or not pages:
         return 1
-    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts beyond the Toss Payments SDK on the payment pages and their Content-Security-Policy, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect, every page, script, style and contract text is revalidated on each load")
+    print(f"site: {len(pages)} pages, every local link and anchor resolves, no external scripts beyond the Toss Payments SDK on the payment pages and their Content-Security-Policy, the contract pages match site/terms/, every page with a Korean twin has the language switch and redirect, every page, script, style and contract text is revalidated on each load; "
+          "catalogue.js holds the launch items the site and the service agree on, with unique ids, license texts only as .txt files of their own in each item's folder under site/licenses and always a choice to install nothing, the license copies match the repository's, and both Catalogue pages list exactly its items and are linked from the terms and the base image")
     print(f"hyor.io: {company} pages with the language switch and redirect, no scripts; the logo files match tools/brand_logo.py")
     return 0
 

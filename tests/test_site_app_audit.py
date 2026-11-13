@@ -6,6 +6,7 @@ import sys
 import tempfile
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -143,6 +144,18 @@ def quoted_interpolations(source):
     return found
 
 
+def acceptance_box(account):
+    engine = next(item for item in sp.published(str(ROOT / "site"), "catalogue.js")["items"] if item["acceptance"])
+    values = {"me.company": "Acme", "item.name": engine["name"], "fleetName(entry)": "Fleet 1B", "item.license.name": engine["license"]["name"]}
+    found = re.search(r"make\('span', ('For ' \+ me\.company \+ [^;]*)\);", account)
+    parts = found.group(1).split(" + ") if found else []
+    shown = "".join(values.get(part, part[1:-1] if len(part) > 1 and part[0] == part[-1] == "'" else "\0") for part in parts)
+    hashes = {path: "0" * 64 for path in engine["license"]["texts"]}
+    recorded = sp.install_statement(SimpleNamespace(public="https://sparkpipe.ai"), "Acme", engine, "Fleet 1B", hashes)
+    tail = " License texts: "
+    return shown, recorded, bool(parts) and shown.endswith(tail) and recorded.startswith(shown[:-len(tail)] + " ")
+
+
 def pages(failures):
     site = ROOT / "site"
     for name in ("status.html", "status-ko.html"):
@@ -171,6 +184,16 @@ def pages(failures):
             failures.append(f"{name}: the acceptance box at {label} does not name the Data Processing Agreement next to the Customer Agreement")
     if 'href="dpa.html"' not in account:
         failures.append("account.html does not link the Data Processing Agreement next to the Customer Agreement")
+    if 'src="catalogue.js' not in account or "SP.call('/v1/installs')" not in account or "{ item: item.id, accept }, 'PUT')" not in account:
+        failures.append("account.html does not set up fleets from the published Catalogue through GET and PUT /v1/installs")
+    shown, recorded, same = acceptance_box(account)
+    if not same:
+        failures.append(f"account.html: the license box a customer ticks does not read as the statement the service records: box {shown!r}, record {recorded!r}")
+    if "if (box && !accept)" not in account or "box.type = 'checkbox';" not in account or "box.checked" in account:
+        failures.append("account.html lets an item that asks for acceptance be chosen without the company's own tick of its license box")
+    checkout = (site / "checkout.js").read_text()
+    if "method: method || 'POST'" not in checkout or "typeof data.error === 'object'" not in checkout:
+        failures.append("checkout.js cannot send the account API's PUT or read its error objects")
     if "data.complete === false" not in (site / "market.js").read_text() or 'id="ledger-partial"' not in (site / "market.html").read_text():
         failures.append("the ledger panel does not say when an admin's export leaves lines and fields out")
     if "written order" in (site / "privacy.html").read_text() or "서면 주문서에서 제공" in (site / "privacy-ko.html").read_text():
@@ -192,7 +215,7 @@ def main():
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("site app: periods one good probe apart are one creditable period, marked so on the status page, and credited again as they grow; a third party cannot invalidate or exhaust a customer's codes; a refused sign-in keeps the code; order status is the owner's; an order over the per-order size says to place another; pages read published settings, stop non-owners before payment, name the Data Processing Agreement where the Agreement is accepted, mark a partial ledger export and do not name hubs")
+    print("site app: periods one good probe apart are one creditable period, marked so on the status page, and credited again as they grow; a third party cannot invalidate or exhaust a customer's codes; a refused sign-in keeps the code; order status is the owner's; an order over the per-order size says to place another; pages read published settings, stop non-owners before payment, name the Data Processing Agreement where the Agreement is accepted, set up fleets from the published Catalogue only with the company's acceptance of a license that asks for it, mark a partial ledger export and do not name hubs")
     return 0
 
 
