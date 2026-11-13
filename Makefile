@@ -381,6 +381,7 @@ ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_shared_prefix
 TEST_NAMES += test_device_contract test_device_instance
 endif
+TEST_NAMES += test_device_serving_runner
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
@@ -1610,6 +1611,9 @@ build/logit_compare: tools/logit_compare.c tools/token_prompts.c runtime/json.c 
 build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+build/test_device_serving_runner: tests/test_device_serving_runner.c inference/runner/device_serving_runner.c $(DEVICE_RUNNER_HEADERS) $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CFLAGS) tests/test_device_serving_runner.c inference/runner/device_serving_runner.c $(DEVICE_HOST_SOURCES) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
+
 build/test_device_instance_a.$(SHARED_LIBRARY_EXT) build/test_device_instance_b.$(SHARED_LIBRARY_EXT): tests/device_instance_module.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
@@ -1637,10 +1641,10 @@ build/test_pass_plan: tests/test_pass_plan.c include/sparkpipe/spark_pass_plan.h
 build/test_tp_mesh_pipeline_boundaries: tests/test_tp_mesh_pipeline_boundaries.c model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h include/sparkpipe/spark_weightd.h | build
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_mesh_pipeline_boundaries.c $(LDFLAGS) -o $@
 
-build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
+build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) include/sparkpipe/spark_weightd.h include/sparkpipe/spark_tp_device_collective.h model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_tp_allreduce_fuzz: tests/test_tp_allreduce_fuzz.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY)
+build/test_tp_allreduce_fuzz: tests/test_tp_allreduce_fuzz.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) include/sparkpipe/spark_weightd.h include/sparkpipe/spark_tp_device_collective.h model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_allreduce_fuzz.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_lane_fuzz build/test_kv_page_cache_lru build/test_kv_shared_index: build/test_%: tests/test_%.c build/libsparkpipe_model_common.a build/libsparkpipe_core.a

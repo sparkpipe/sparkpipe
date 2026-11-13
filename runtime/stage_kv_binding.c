@@ -2018,14 +2018,13 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 		else if ( lane_contexts != 0 && lane_contexts[lane] != 0u )
 		{
 			if ( row_positions[row] == 0u || bound[lane] == 0u || sequence_ids[lane] != row_sequence_ids[row] || lane_contexts[lane] >= binding->max_sequence_positions ||
+				row_positions[row] >= lane_contexts[lane] ||
 				(touched[lane] == 0u && row_positions[row] != next_positions[lane]) ||
-				(touched[lane] != 0u && (row_positions[row] <= next_positions[lane] || row_positions[row] >= lane_contexts[lane])) )
+				(touched[lane] != 0u && row_positions[row] <= next_positions[lane]) )
 			{
 				status = SPARK_STATUS_SCHEMA_ERROR;
 				break;
 			}
-			if ( touched[lane] == 0u )
-				next_positions[lane] = lane_contexts[lane];
 			touched[lane] = 1u;
 			continue;
 		}
@@ -2039,6 +2038,9 @@ static SparkStatus SparkStageKvBindingRowContinuity(const SparkStageKvBinding *b
 		next_positions[lane] = row_positions[row] + 1u;
 		touched[lane] = 1u;
 	}
+	for (lane=0u; status==SPARK_STATUS_OK && lane_contexts != 0 && lane<active_count; lane++)
+		if ( lane_contexts[lane] != 0u && touched[lane] != 0u )
+			next_positions[lane] = lane_contexts[lane];
 	free(touched);
 	SPARK_RETURN(status);
 }

@@ -35,10 +35,17 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   modes with one schema for two all-to-all rails, and generate the four-,
   eight-, and sixteen-Spark profiles and the pinned interface, address and
   communicator tables from it.
-- weightd uses rail 2 only for the `rank ^ 1` partner (`--mesh-pair-interface`,
-  `MESH_LINK_MAP` in the agent, still labelled 200 Gb/s). Every other peer goes
-  over rail 1, so rail 2 sits idle for 14 of 15 peers. Spread every peer's
-  traffic over both rails.
+- weightd puts a whole peer on one rail: a link takes the second rail when the
+  two ranks' parities differ (`SparkWeightdMeshSecondRailPeers`). At sixteen
+  ranks that is eight peers against seven. A group of four has two of a rank's
+  three peers on one port, and a pair has its one peer on one port while the
+  other port idles. Measured on Sparks 0-3 on 2026-11-13: over a 33,792-token
+  prefill a rank sent 24.4 GB on the busier port and 12.2 GB on the other, and
+  in `mesh_round_bench` a rank waits 0.54-1.06 ms a round for the two peers on
+  the busier port, which runs at 10.2-10.5 GB/s, against 0.10-0.18 ms for the
+  third. Split each peer's traffic over both rails: two queue pairs a peer and
+  alternate publications, which the half-slot positions and tails already keep
+  apart.
 - Mesh collectives write to all fifteen peers at once. That fifteen-to-one
   incast holds rail 2 all-to-all at 88 of 98 Gb/s a node and gives small
   messages a 0.65-1.3 ms p99 behind PFC pauses. Permutation-scheduled steps
@@ -75,7 +82,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `StageRunnerSumOperation` in `inference/runner/stage_runner.cu`) when the
   dispatch is a prefill and not a verify, the round is not split into begin
   and finish, and the collective takes the size: an even degree of 4 or more
-  with peer routes and rank segments above 131,096 values (342 rows or more
+  with peer routes and rank segments above 524,312 values (1,366 rows or more
   at 6,144 wide and 16 ranks). Both prefill lanes of a wave (#1707) share the
   runner's one collective, and each lane carries its own dispatch's rule.
   Every model on the stage runner gets it, K3's own all-reduce rounds

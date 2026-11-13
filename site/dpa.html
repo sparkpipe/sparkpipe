@@ -50,13 +50,13 @@
 <main class="wrap policy">
 <section>
 <h1>SparkPipe Data Processing Agreement</h1>
-<p class="effective">Version of 10 November 2026</p>
+<p class="effective">Version of 12 November 2026</p>
 <p>This DPA is part of the Customer Agreement and applies whenever we process personal data for a customer on its fleets. The Korean text prevails (clause 11.4).</p>
 </section>
 <div class="notice"><p><b>Published for review.</b> This text may still change. To have it countersigned, or to send comments, write to <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>.</p></div>
 <section id="parties-and-scope">
 <h2>Parties and scope</h2>
-<p>This Data Processing Agreement ("<b>DPA</b>") is made between <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사), business registration number 641-87-03809 ("<b>we</b>"), and the Customer under the SparkPipe Customer Agreement (the "<b>Agreement</b>"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in providing the Fleets, Functions and API ("<b>Customer personal data</b>"). Terms defined in the Agreement have the same meaning here.</p>
+<p>This Data Processing Agreement ("<b>DPA</b>") is made between <b>HYOR AI Tech Ltd.</b> (효르에이아이테크 유한회사), business registration number 641-87-03809 ("<b>we</b>"), and the Customer under the SparkPipe Customer Agreement (the "<b>Agreement</b>"). It forms part of the Agreement and applies whenever we process personal data on Customer's behalf in renting the Fleets and providing the Extras, the preinstalled software, the Functions and the API ("<b>Customer personal data</b>"). Terms defined in the Agreement have the same meaning here.</p>
 </section>
 <section id="s1">
 <h2>1. Roles</h2>
@@ -66,17 +66,17 @@
 </section>
 <section id="s2">
 <h2>2. Instructions and purpose</h2>
-<p id="c2-1">2.1. We process Customer personal data only on Customer's documented instructions. The Agreement, this DPA, the requests Customer sends, the Functions it starts or schedules and the settings it chooses are those instructions. Customer may give further reasonable instructions in writing.</p>
+<p id="c2-1">2.1. We process Customer personal data only on Customer's documented instructions. The Agreement, this DPA, the requests Customer sends, the software and Functions it runs, the Extras it uses and the settings it chooses are those instructions. Customer may give further reasonable instructions in writing.</p>
 <p id="c2-2">2.2. We use Customer personal data for nothing but serving Customer. We do not use it to train any model, sell it, combine it with other customers' data, or process it for any purpose of our own.</p>
 <p id="c2-3">2.3. If we believe an instruction infringes data protection law, we tell Customer. If a law requires us to process Customer personal data otherwise, we tell Customer before we do, unless that law forbids it.</p>
 <p id="c2-4">2.4. The details of the processing:</p>
 <div class="scroll"><table>
 <tr><th>Item</th><th>Details</th></tr>
-<tr><td>Purpose and nature</td><td>Serving Customer's requests to the models on the Fleets it holds, keeping its working state, and running the Functions it starts or schedules</td></tr>
+<tr><td>Purpose and nature</td><td>Renting Customer the Fleets it holds and providing the Extras it uses: running software on them for Customer, serving its requests, running the Functions it starts or schedules, and keeping its data</td></tr>
 <tr><td>Data subjects</td><td>Whoever Customer's requests, files and Functions concern, as Customer decides</td></tr>
 <tr><td>Personal data</td><td>Whatever personal data Customer sends or stores; special categories only if Customer sends them, at its own responsibility</td></tr>
-<tr><td>Duration</td><td>While Customer holds a Fleet, until the deletion in clause 9</td></tr>
-<tr><td>Location</td><td>Only Fleets and servers we operate in Korea, including servers we rent there</td></tr>
+<tr><td>Duration</td><td>While Customer holds a Fleet or uses an Extra, until the deletion in clause 9</td></tr>
+<tr><td>Location</td><td>Only Fleets, Extras and servers we operate in Korea, including servers we rent there</td></tr>
 </table></div>
 </section>
 <section id="s3">
@@ -100,7 +100,7 @@
 </section>
 <section id="s6">
 <h2>6. Transfers</h2>
-<p id="c6-1">6.1. We process Customer personal data only in Korea and transfer none of it abroad, except a transfer Customer asks for itself, to or from a host it names (Agreement clause 6.5).</p>
+<p id="c6-1">6.1. We process Customer personal data only in Korea and transfer none of it abroad, except a transfer Customer asks for itself, or that software Customer runs makes, to or from a host it names (Agreement clause 6.5).</p>
 <p id="c6-2">6.2. The European Commission and the United Kingdom have each recognised Korea as providing an adequate level of protection, so personal data from the EU, the EEA and the UK may come to a Fleet without other transfer safeguards. If either decision stops applying, the European Commission's standard contractual clauses (controller-to-processor or processor-to-processor, as the case may be) or the UK addendum to them apply between the parties, and we sign them on request.</p>
 </section>
 <section id="s7">
@@ -116,7 +116,7 @@
 <section id="s9">
 <h2>9. Deletion and return</h2>
 <p id="c9-1">9.1. Customer can export its working state at any time while it holds the Fleet (Agreement clause 7.5).</p>
-<p id="c9-2">9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet and make no backup.</p>
+<p id="c9-2">9.2. Working state is deleted when another customer's Booking of the Fleet starts, 24 hours after the end of Customer's last hour on it, or earlier when Customer asks (Agreement clause 6.2). We keep no copy outside the Fleet, except in an Extra Customer chooses, and make no backup. Data in an Extra is deleted when Customer stops using that Extra or the Agreement ends (Agreement clause 4.6).</p>
 <p id="c9-3">9.3. Apart from working state, we keep an operational record of each request for 1 year: the model, token counts, timings and identifiers of the request, the session, the key and the user under the Account who sent it. It holds no prompt or reply text and no token numbers. Customer instructs us to keep these records to operate and measure the service. When Customer asks in writing, we delete the records of its requests within 30 days.</p>
 </section>
 <section id="s10">
@@ -133,15 +133,14 @@
 </section>
 <section id="s12">
 <h2>12. Security measures</h2>
-<p id="c12-1">12.1. <b>Isolation.</b> A Fleet a customer holds serves only that customer's requests. Each customer's working state is isolated from other customers and stays on the Fleet that holds it.</p>
-<p id="c12-2">12.2. <b>Handover.</b> Working state is deleted at a change of customer, and before another customer's Booking of a Fleet starts, we restore that Fleet's software to our own image. The sandbox host that runs code for Functions is wiped at every change of customer.</p>
-<p id="c12-3">12.3. <b>Sandbox.</b> Functions that build or run Customer code do so on a sandbox host attached to the Fleet, in a fresh virtual machine for each run, with no network access unless Customer allows it.</p>
+<p id="c12-1">12.1. <b>Measures.</b> We take at least the measures below, and the further measures our security page describes. We may change those measures without amending this DPA, but never so that they protect Customer personal data less.</p>
+<p id="c12-2">12.2. <b>Isolation.</b> A Fleet a customer holds runs only for that customer. Each customer's working state is isolated from other customers and stays on the Fleet that holds it, or in an Extra the customer chooses.</p>
+<p id="c12-3">12.3. <b>Handover.</b> Before another customer's Booking of a Fleet starts, we delete the previous customer's accounts and working state on it and restore its software to our own image.</p>
 <p id="c12-4">12.4. <b>Encryption in transit.</b> All traffic to our public endpoints uses HTTPS, and traffic between our servers runs through encrypted tunnels.</p>
-<p id="c12-5">12.5. <b>Keys and credentials.</b> API keys are stored only as hashes and can be limited by scope, Fleet, expiry and IP address and revoked at any time. A credential for another service is held in memory only while the request that carries it runs, and is never stored, logged or shown.</p>
-<p id="c12-6">12.6. <b>Access control.</b> Only the people who operate SparkPipe can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins. We keep access records and review them after any incident.</p>
+<p id="c12-5">12.5. <b>Keys and credentials.</b> API keys are stored only as hashes and can be revoked at any time. A credential for another service is held in memory only while the request that carries it runs, and is never stored, logged or shown.</p>
+<p id="c12-6">12.6. <b>Access control.</b> Only the people who operate SparkPipe can reach our systems, each with a personal key, and we keep access records and review them after any incident.</p>
 <p id="c12-7">12.7. <b>Physical security.</b> The Fleets are in premises we control in Korea, and our public server is in a data centre in Seoul.</p>
-<p id="c12-8">12.8. <b>Resilience.</b> Each node's working state is mirrored to its pair partner, so the failure of one node loses neither copy.</p>
-<p id="c12-9">12.9. <b>Transparency.</b> The source of the engine that serves the Fleets is public, so Customer can read what processes its data.</p>
+<p id="c12-8">12.8. <b>Transparency.</b> The source of our inference engine is public, so Customer can read what processes its data.</p>
 </section>
 </main>
 

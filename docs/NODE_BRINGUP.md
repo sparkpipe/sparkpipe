@@ -39,33 +39,48 @@ cycle to its first `apt full-upgrade` (see [What went wrong on spark10](#what-we
 ## 1. Owner: first boot and cabling
 
 - In the first-boot setup, create user `sparkN` (uid 1000) and set the hostname
-  to `sparkN`. spark10 came up as `cube-4545` because the hostname was left at
-  its default.
-- Cable port 0 to `cisco0`. A node with no RJ45 on the LAN can still be brought
-  up over rail 2.
+  to `sparkN`. spark10, spark11 and spark12 all kept their factory hostnames
+  (`cube-` and the last four hex digits of the chassis MAC).
+- If the hostname stays at its default, write down which factory hostname
+  belongs to which `sparkN` (`hostname` at the console). On 2026-11-12 the
+  guess for spark11 and spark12 was the wrong way round, so both password
+  prompts failed.
+- Cable either port to `cisco0`. A node with no RJ45 on the LAN can still be
+  brought up over rail 2.
 - The first-boot Wi-Fi step may not save a profile: spark10 had none. Wi-Fi is
   step 5.
 
-## 2. Find the node and get in
+## 2. Find the node and give it an address
 
 On `cisco0` (access: `sparkpipe-coord/network/cisco0.md`),
-`show lldp neighbors` gives the new port, the factory hostname and the MAC of
-port 0.
+`show lldp neighbors interface ethernet 1/<port> detail` gives the factory
+hostname, the cabled netdev (`Port Description`) and its MAC (`Port id`).
 
-The node has no IPv4 address on the fabric, only IPv6 link-local addresses.
-The hub's rail-2 port has no IPv6, so reach the node from a fleet Spark's
-rail-2 netdev and pick its addresses out by MAC:
+A factory node runs NetworkManager's default profile on every cabled port. The
+profile asks for DHCP, gives up after about 45 seconds, drops the port's
+addresses and tries again later, so the node is out of reach most of the time.
+Give it a lease from a static-only DHCP server on a host on the same switch.
+The server answers only the listed MACs and hands out no gateway and no DNS,
+so nothing else on the fabric changes. On lenovo7:
 
 ```bash
-ssh spark0 'ping -6 -c 2 ff02::1%enP2p1s0f0np0 >/dev/null; ip -6 neigh show dev enP2p1s0f0np0 | grep -i <MAC prefix>'
+ssh lenovo7 'sudo systemd-run --unit=bringup-dhcp --collect /usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --port=0 --interface=enp1s0f1np1 --bind-interfaces --dhcp-range=10.10.201.0,static,255.255.255.0,12h --dhcp-host=<MAC>,10.10.201.A --dhcp-option=3 --dhcp-option=6 --dhcp-leasefile=/run/bringup-dhcp.leases --log-dhcp'
 ```
 
-- Both PCIe functions of port 0 answer on a factory node, each with its own
-  address.
-- NetworkManager derives each address from the active connection profile, so
-  an address can change after a reboot. Look it up again by MAC.
-- `ssh -J spark0` to a link-local address fails with `Stdio forwarding request
-  failed`. Nest the command instead: `ssh spark0 'ssh sparkN@fe80::...%enP2p1s0f0np0 ...'`.
+- The bring-up address is the node number: `spark0`-`sparkf` hold
+  `10.10.201.0`-`.15`, `spark10` takes `.16`, `spark11` `.17`, `spark1f` `.31`.
+- Give one `--dhcp-host` per node. The MAC is the LLDP port id. To add a node,
+  stop the unit and start it again with the longer list.
+- `journalctl -u bringup-dhcp` on lenovo7 shows each `DHCPACK` with the
+  factory hostname. The second PCIe function of the same port asks too and gets
+  `no address available`, which is harmless.
+- The lease survives the node's reboots, so the node keeps its address for the
+  whole bring-up. The unit is runtime only: stop it when the bring-up is done
+  (`sudo systemctl stop bringup-dhcp`).
+- Without a DHCP server, the node is reachable only over IPv6 link-local, and
+  only while an attempt runs. The hub's rail-2 port has no IPv6, so that path
+  goes through a fleet Spark (`ssh spark0 'ssh sparkN@fe80::...%enP2p1s0f0np0'`;
+  `ssh -J` to a link-local address fails).
 
 The owner then installs the fleet keys and passwordless sudo, typing the
 first-boot password at each prompt. The first command copies spark0's
@@ -73,23 +88,14 @@ first-boot password at each prompt. The first command copies spark0's
 the fleet's `codexadmin` group and checks the sudoers file.
 
 ```bash
-ssh -t spark0 'ssh -o StrictHostKeyChecking=accept-new sparkN@<link-local>%enP2p1s0f0np0 "mkdir -p -m 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" < ~/.ssh/authorized_keys'
+ssh -t spark0 'ssh -o StrictHostKeyChecking=accept-new sparkN@10.10.201.A "mkdir -p -m 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" < ~/.ssh/authorized_keys'
 ```
 
 ```bash
-ssh -t spark0 'ssh -t sparkN@<link-local>%enP2p1s0f0np0 "sudo groupadd -f codexadmin && sudo usermod -aG codexadmin sparkN && echo \"%codexadmin ALL=(ALL) NOPASSWD: ALL\" | sudo tee /etc/sudoers.d/90-codexadmin >/dev/null && sudo chmod 440 /etc/sudoers.d/90-codexadmin && sudo visudo -c"'
+ssh -t -o StrictHostKeyChecking=accept-new -J rtx5090 sparkN@10.10.201.A 'sudo groupadd -f codexadmin && sudo usermod -aG codexadmin $USER && echo "%codexadmin ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/90-codexadmin >/dev/null && sudo chmod 440 /etc/sudoers.d/90-codexadmin && sudo visudo -c'
 ```
 
-## 3. Rail-2 address and the SSH master
-
-Give port 0 a runtime rail-2 address so the hub reaches the node directly. The
-address is lost at reboot. The bring-up address is the node number:
-`spark0`-`sparkf` hold `10.10.201.0`-`.15`, `spark10` takes `10.10.201.16`,
-`spark1f` takes `.31`.
-
-```bash
-ssh spark0 'ssh sparkN@<link-local>%enP2p1s0f0np0 "sudo nmcli dev set enP2p1s0f0np0 managed no && sudo ip addr add 10.10.201.A/24 dev enP2p1s0f0np0 && sudo ip link set enP2p1s0f0np0 mtu 9000"'
-```
+## 3. The SSH master and the hostname
 
 Open the master from the workstation, then send every later command over it:
 
@@ -99,6 +105,13 @@ ssh -o AddressFamily=inet -o ServerAliveInterval=20 -o ControlMaster=yes -o Cont
 
 ```bash
 ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r'
+```
+
+If the node still has its factory hostname, rename it. The factory image lists
+the name in `/etc/hosts` as `127.0.0.1 cube-XXXX`:
+
+```bash
+ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'old=$(hostname); sudo hostnamectl set-hostname sparkN && sudo sed -i "s/\b$old\b/sparkN/g" /etc/hosts && grep -c "$old" /etc/hosts'
 ```
 
 ## 4. Headless
@@ -147,6 +160,10 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A "sudo apt-mark ma
   ssh -o AddressFamily=inet -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -J rtx5090 -N -R 127.0.0.1:1080 sparkN@10.10.201.A
   ```
 
+  Run one tunnel per node. To background it, add `-f` and send its stderr to a
+  file: a backgrounded ssh keeps stderr open, so a pipe there never closes and
+  the launching command never returns.
+
   `AddressFamily=inet` is required: without it the workstation tries the
   mirrors' IPv6 addresses first and `ports.ubuntu.com` times out. apt takes the
   proxy per command, and nothing is written to its configuration:
@@ -191,8 +208,8 @@ Then rerun the upgrade command above.
 `nvidia-persistenced` fails until the reboot, because the new driver libraries
 do not match the loaded kernel module.
 
-Reboot with `sudo systemctl reboot`. Then find the node again (step 2), re-add
-the rail-2 address, reopen the master, and check:
+Reboot with `sudo systemctl reboot`. The node takes the same lease again
+(step 2). Reopen the master and check:
 
 ```bash
 ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia-smi --query-gpu=driver_version,name --format=csv,noheader; systemctl get-default; systemctl --failed --no-legend; sudo dpkg --audit | wc -l'
@@ -203,12 +220,35 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
 - **`spark0`-`sparkf`:** continue with
   [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node) from step 2
   (firmware).
-- **Later fleets (staged):** firmware (baseline step 2) and the
-  network-independent baseline items: boot masks, watchdog and recovery
-  sysctls, earlyoom and the user slice, the dirty-page cap, emergency SSH and the
-  recovery key, the firewall, the DMA guard, the tool packages and the node
-  layout roots. No Ceph. `ds4_spark_brickproof.py` accepts only `spark0`-`sparkf`
-  today, so staged nodes are not yet applied or audited by it.
+- **Later fleets (staged):** firmware (baseline step 2), then
+  `ds4_spark_brickproof.py` with its staged profile. The tool chooses the
+  profile from the node number, so every node from `spark10` up gets it and
+  `spark0`-`sparkf` never do. The staged profile applies and audits the
+  network-independent baseline: boot masks, watchdog and recovery sysctls,
+  earlyoom and the user slice, the dirty-page cap, emergency SSH and the
+  recovery key, the GRUB fsck and serial settings, the firewall, the DMA guard,
+  the tool packages and the node layout roots. It leaves out Ceph, fabric
+  addressing and QoS, the hub route, NTP to the hub, the fleet host aliases,
+  the GRUB management `ip=` and the PXE-first EFI order. Apply refuses a staged
+  node that holds a Ceph cluster, and audit fails one.
+  - The owner places the firewall ruleset first
+    (`sparkpipe-coord/node-files/etc__spark-firewall.nft` as
+    `/etc/spark-firewall.nft`). Apply refuses to run without it.
+  - The controller reaches a node by its name. Give each staged node a `Host`
+    entry outside the generated block of the workstation's `~/.ssh/config`:
+    `HostName 10.10.201.A`, `User sparkN`, `ProxyJump rtx5090`,
+    `HostKeyAlias sparkN`, `BatchMode yes`.
+  - Without Wi-Fi, open the step 5 tunnel and add
+    `--apt-proxy socks5h://127.0.0.1:1080`. The tool accepts only a loopback
+    proxy.
+  - Run `apply --nodes sparkN`. On a new node its post-apply audit reports
+    only `spark-firewall.service:enabled:inactive`, because the firewall
+    starts at the next boot. Reboot the node, wait more than a minute (the DMA
+    guard timer starts the guard 60 seconds after boot), then run
+    `audit --nodes sparkN`.
+  - The DMA guard reports to the hub's LAN address. A staged node with no LAN
+    or Wi-Fi cannot reach it, and the guard stays armed regardless.
+  - spark11 and spark12 passed the staged audit on 2026-11-12.
 - A new node has no predecessor, so baseline step 3 (identity) does not apply:
   the node keeps its own host keys.
 
@@ -221,11 +261,15 @@ store (`sparkpipe-coord/holdwork/burnin/`).
 
 - **Wiring:** both ports to `cisco0`, used as in service. PCIe link A drives
   port 1 (`enp1s0f1np1`), link B drives port 0 (`enP2p1s0f0np0`), and the other
-  two functions are down. Link B takes the bring-up address and link A the next
-  one, while no other node holds it. Both are in one subnet, so set
-  `arp_ignore=1`, `arp_announce=2` and `rp_filter=2` on both netdevs.
-- **Peers:** one idle node per link, one to one. Two peers sending into one
-  port make the switch drop in the default class and fill the RoCE retransmit
+  two functions are set unmanaged and down. One link keeps the bring-up address
+  and the other takes a runtime address: on 2026-11-12 link B used
+  `10.10.202.A/24`. Both netdevs sit on one VLAN, so set `arp_ignore=1`,
+  `arp_announce=2` and `rp_filter=2` on both. Without that, a node answers ARP
+  for one link's address from the other port.
+- **Peers:** one node per link, one to one. Two new nodes are each other's
+  peers, link A to link A and link B to link B, so both carry the full load at
+  once. A single new node uses idle Lenovos. Two peers sending into one port
+  make the switch drop in the default class and fill the RoCE retransmit
   counters.
 - **Guards first:** the DMA guard reports `event=start mode=armed` on the node
   and on both peers before any load starts.
@@ -245,17 +289,20 @@ store (`sparkpipe-coord/holdwork/burnin/`).
     `roce_adp_retrans` do not change. They count since boot, so snapshot them
     before and after.
   - The GPU pattern check reports `bad=0` and fio `err=0`.
-  - Each link carries about 99.7 Gb/s each way.
+  - Each link carries about 99.7 Gb/s each way. RDMA bypasses the netdev
+    byte counters: read `rx_vport_rdma_unicast_bytes` and
+    `tx_vport_rdma_unicast_bytes` from `ethtool -S`.
 
 | Node | Date | Peers | Result |
 |---|---|---|---|
-| spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 88 TB over RDMA. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
+| spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 89 TB each way per link. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
+| spark11, spark12 | 2026-11-12 | each other | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers, 0 RoCE retransmit and sequence errors (snapshotted before and after). perftest per link, both directions: writes 130.6 Gb/s, reads 65.3 Gb/s; 89.5 TB each way per link (vport counters). GPU 4,277 and 4,263 passes, `bad=0`, at most 66 and 68 °C at 2535 MHz. fio 1,406 GiB of verified writes `err=0` and about 93.6 TiB of reads on each. |
 
 ## Vendor notes
 
 | Vendor and board | Seen on | BIOS | Notes |
 |---|---|---|---|
-| H3C LinSeer MegaCube | spark10, 2026-11-10 | `5.36_CUBE_300` | Factory image: Ubuntu 24.04.4, kernel 6.17.0-1022, driver 580.159.03, CX-7 28.45.4028, Wi-Fi MediaTek MT7925 (`mt7925e`). firefox 148 and thunderbird 140 are Mozilla team (`~mt`) builds with no Mozilla source configured, so the archive's epoch-2 snap transition packages replace them. The vendor firmware path is not checked yet: do not stage FE or Gigabyte capsules on it. |
+| H3C LinSeer MegaCube | spark10 (2026-11-10), spark11 and spark12 (2026-11-12) | `5.36_CUBE_300` | Factory image: Ubuntu 24.04.4, kernel 6.17.0-1022, driver 580.159.03, CX-7 28.45.4028, Wi-Fi MediaTek MT7925 (`mt7925e`, `wlP9s9`), Samsung 4 TB NVMe. Factory hostname `cube-` and the last four hex digits of the chassis MAC. firefox 148 and thunderbird 140 are Mozilla team (`~mt`) builds with no Mozilla source configured, so the archive's epoch-2 snap transition packages replace them. H3C's `cube-*` packages (`cube-oobe`, `cube-release` 1.0.4, user guide, playbooks, desktop init, background, `cube-turingnim`) only customize the first-boot setup and the desktop, with no units, cron jobs or binaries. Their autostart entries open Firefox at H3C's MegaCube document center and at NVIDIA's `dgx-spark-playbooks`, so a headless node never runs them. The document center's file list loads dynamically and has not been read. The vendor firmware path is not checked yet: do not stage FE or Gigabyte capsules on it. |
 
 ## What went wrong on spark10
 

@@ -4,7 +4,6 @@
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_model_serving_adapter.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
-#include "sparkpipe/spark_serving_adapter_template.h"
 #include "sparkpipe/spark_stage_serving_adapter.h"
 
 #ifndef QWEN35_SMALL_CONTRACT_SHA256
@@ -38,7 +37,6 @@
 #define QWEN35_SMALL_KV_SLOT_BYTES (QWEN35_SMALL_KV_HEADS * QWEN35_SMALL_HEAD_DIM * 2u * 2u)
 #define QWEN35_SMALL_QKV_WIDTH (2u * QWEN35_SMALL_HEADS * QWEN35_SMALL_HEAD_DIM + 2u * QWEN35_SMALL_KV_HEADS * QWEN35_SMALL_HEAD_DIM)
 #define QWEN35_SMALL_MAX_ROWS 2048u
-#define QWEN35_SMALL_CHAIN_TOKENS 16u
 #define QWEN35_SMALL_CHECKPOINT_TOKENS 16384u
 
 static void Qwen35SmallServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
@@ -68,57 +66,26 @@ static uint32_t Qwen35SmallServingCollectiveSequences(uint32_t rows, uint32_t tp
 	return (uint32_t)(gathered > rows ? gathered : rows) + 1u;
 }
 
-#define Q QWEN35_SMALL_LAYERS
-
-static const SparkModelServingAdapterDescriptor Qwen35SmallServingDescriptor =
-{
-	SPARK_SERVING_ADAPTER_DESCRIPTOR_IDENTITY(
-		QWEN35_SMALL_ADAPTER_ID,
-		QWEN35_SMALL_MODEL_ID,
-		QWEN35_SMALL_ADAPTER_ID,
-		QWEN35_SMALL_PROGRAM,
-		QWEN35_SMALL_CONTRACT_SHA256),
-	.capability_flags = SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PARALLEL_FANOUT |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CONTINUE_LEASE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
-		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY,
-	.stage_count = 1u,
-	.layer_count = QWEN35_SMALL_LAYERS,
-	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = QWEN35_SMALL_HIDDEN,
-	.boundary_element_bytes = 2u,
-	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
-	.kv_cache_codec = SPARK_WEIGHT_CODEC_BF16,
-	.max_inflight_submission_count = 16u,
-	.max_active_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_input_row_count = QWEN35_SMALL_MAX_ROWS,
-	.max_resident_sequence_count = SPARK_STAGE_SERVING_MAX_LANES,
-	.max_output_token_count = QWEN35_SMALL_CHAIN_TOKENS,
-	.max_speculative_token_count = SPARK_DEVICE_STAGE_VERIFY_ROWS - 1u,
-	.stage_layer_counts = { Q },
-	.minimum_efficient_submission_row_count = 1u,
-	.cache_block_token_count = SPARK_DEVICE_RUNNER_PAGE_SLOTS,
-	.parallel_group_size = 0u,
-	.cache_checkpoint_token_count = QWEN35_SMALL_CHECKPOINT_TOKENS,
-	.max_verify_row_count = SPARK_DEVICE_STAGE_VERIFY_ROWS,
-};
-
-#undef Q
-
 static const SparkStageServingModel Qwen35SmallStageServing =
 {
-	.descriptor = &Qwen35SmallServingDescriptor,
-	.runner_model = QWEN35_SMALL_RUNNER_MODEL,
+	.adapter_id = QWEN35_SMALL_ADAPTER_ID,
+	.model_id = QWEN35_SMALL_MODEL_ID,
+	.model_revision = QWEN35_SMALL_ADAPTER_ID,
+	.program = QWEN35_SMALL_PROGRAM,
+	.contract_sha256 = QWEN35_SMALL_CONTRACT_SHA256,
 	.module_tag = QWEN35_SMALL_PROGRAM "_stage",
+	.runner_model = QWEN35_SMALL_RUNNER_MODEL,
 	.tp_degree = 1u,
-	.program_id = 1u,
+	.layer_count = QWEN35_SMALL_LAYERS,
+	.hidden = QWEN35_SMALL_HIDDEN,
+	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.expert_weight_codec = SPARK_WEIGHT_CODEC_BF16,
+	.max_rows = QWEN35_SMALL_MAX_ROWS,
+	.verify_rows = SPARK_DEVICE_STAGE_VERIFY_ROWS,
+	.tree_slot_grain = SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN,
+	.speculative_tokens = SPARK_DEVICE_STAGE_VERIFY_ROWS - 1u,
+	.cache_block_token_count = SPARK_DEVICE_RUNNER_PAGE_SLOTS,
+	.cache_checkpoint_token_count = QWEN35_SMALL_CHECKPOINT_TOKENS,
 	.kv_layout = Qwen35SmallServingKvLayout,
 	.collective_sequences = Qwen35SmallServingCollectiveSequences,
 };
