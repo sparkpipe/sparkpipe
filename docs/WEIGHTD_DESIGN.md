@@ -220,12 +220,59 @@ deviation from I36 ([TECHDEBT.md](../TECHDEBT.md#mesh-collectives)).
 The region layout is in `include/sparkpipe/spark_weightd.h`. It has 16 lanes
 (`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-15) with two bands each (GLM uses one for its
 main and one for its HC collective), 16 ranks per band and two slots per rank.
-A slot holds 8 rows of 32 KiB plus a 64-byte trailer, 262,208 bytes, and its
+A slot holds 32 rows of 32 KiB plus a 64-byte trailer, 1,048,640 bytes, and its
 last 8 bytes are the tail tag the receiver matches. The slot for band `b`, peer
 `p` and ring `r = (tag - 1) mod 2` is `b*32 + p*2 + r`. The slot area is
-32 bands x 32 slots x 262,208 bytes = 268,500,992 bytes (arithmetic, about
-256 MiB). A 128 KiB area follows it with the doorbells, shipped cells and one
+32 bands x 32 slots x 1,048,640 bytes = 1,073,807,360 bytes (arithmetic, about
+1 GiB). A 128 KiB area follows it with the doorbells, shipped cells and one
 128-byte hardware wait request per rank and band.
+
+**Slot size (IPC ABI 15, record magic `MESH0008`).** Up to ABI 14 a slot held
+8 rows, 262,208 bytes. A round larger than a slot moves in pieces of at most
+half a slot a peer, and every piece costs a gate, a publish, an arrival wait
+and a combine kernel whatever its size, so with 131,072-byte pieces a 100G
+port carried 8.4-8.7 GB/s. The slot is four times larger now, and so are the
+staging slot, the half-slot piece and every capacity derived from them. Rounds
+that fit one slot at either size keep their schedule and their time.
+
+- Memory: the region is 1,073,938,432 bytes and the staging area 512 MiB, both
+  pinned on every node: 1.15 GiB more than under ABI 14 (268,632,064 bytes and
+  128 MiB).
+- Compatibility: a daemon writes into a peer's region at offsets of its own
+  geometry, so daemons of ABI 14 and ABI 15 must never carry a round together.
+  The record magic is `MESH0008`: a daemon of the other geometry is refused at
+  wiring (`WD-MESH-ABI-MISMATCH`), and an engine attaches only to a daemon of
+  its own ABI. Roll weightd on every node of a fleet in one window, as the
+  release kit does, and rebuild every lane against it.
+- Measured with `build/mesh_round_bench` on two GB10 machines outside the
+  fleet, one 100G port each and a private weightd on each (2026-11-13,
+  microseconds a round at rank 0, results checked bit for bit by the bench).
+  Each daemon had its own socket, latch port and mesh directory, the two
+  `mesh-<rank>.rec` files were copied across, and the bench ran with `DEGREE`
+  2 and `RANK_MAP` `0,1` from the same build as its daemon:
+
+| exchange | 256 KiB slots | 512 KiB slots | 1 MiB slots |
+|---|---:|---:|---:|
+| reduce-scatter, 4,096 rows x 5,120 (21 MB a rank) | 2,404 | 1,861 | 1,805 |
+| all-gather, 4,096 rows x 1,280 (10.5 MB) | 1,214 | 947 | 933 |
+| all-to-all, 4,096 rows x 3,064 a peer (25.1 MB) | 2,978 | 2,210 | 2,137 |
+| all-reduce in one operation, 4,096 rows x 5,120 | 6,622 | 5,454 | 4,847 |
+| all-reduce, 64 rows x 5,120 | 106.7 | 93.2 | 77.4 |
+| all-reduce, 1 row x 5,120 | 12.0 | 12.0 | 12.1 |
+| all-gather, 64 rows x 1,280 | 30.2 | 30.2 | 30.2 |
+
+  With 1 MiB slots the port carries 11.2-11.8 GB/s. 512 KiB slots (384 MiB more
+  than ABI 14 instead of 1.15 GiB) reach most of that on the three large
+  exchanges and less on the two sums in the middle of the table.
+- Not measured on a fleet: a lane cannot attach to a daemon of another ABI, so
+  the fleet figures need a weightd release. On four Sparks under ABI 14 the
+  same bench takes 1,998 (reduce-scatter), 2,047 (all-gather) and 4,879
+  (all-to-all) microseconds a round. There the port that carries two of a
+  rank's three peers already runs at 10.2-10.5 GB/s, and a rank waits
+  0.54-1.06 ms a round for those two peers against 0.10-0.18 ms for the third
+  (`BENCH-ARRIVAL`), so at four ranks the larger slot can only close the gap to
+  that port's line rate until both ports carry equal shares
+  ([TECHDEBT.md](../TECHDEBT.md#dual-rail-topology-contract)).
 
 Rendezvous goes through files. weightd writes its record `mesh-<rank hex>.rec`
 (per-peer send and receive QPNs, rkey, receive address, GID, rank mask, boot
@@ -389,8 +436,9 @@ engine upgrade reuses the warm arena instead of loading a second copy. Leases,
 manifests, receipts and the pack bytes are the same under both ABIs.
 
 **Unchanged from ABI 8:**
-- the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes);
-- the slot geometry, doorbells, shipped cells and wait requests;
+- the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes until
+  ABI 15);
+- the slot geometry (until ABI 15), doorbells, shipped cells and wait requests;
 - the rendezvous record;
 - the FULL, SCATTER and GATHER routes.
 
@@ -399,19 +447,20 @@ Daemons of both ABIs therefore wire to each other during a per-node roll.
 **PEER route (mode 3).**
 - Staging:
   - Each daemon owns a staging area of `SPARK_WEIGHTD_MESH_STAGING_BYTES` =
-    32 bands x 16 peers x 256 KiB = 128 MiB.
+    32 bands x 16 peers x 1 MiB = 512 MiB (256 KiB slots and 128 MiB until
+    ABI 15).
   - It is a second memfd, registered as a second MR with local access only.
   - The slot for band `b` and logical peer `p` is at
     `SPARK_WEIGHTD_MESH_STAGING_OFFSET(b,p)`.
 - Doorbell:
   - The route's `slice_bytes` is the per-peer length: 8-byte aligned, at most
-    256 KiB.
+    1 MiB.
   - The doorbell's `bytes` must equal it (`SparkWeightdMeshRouteFits`).
 - Posting: for each peer in the mask, weightd writes `staging[b][p]` to offset
   0 of this rank's receive slot at the peer. The tail tag still ships from the
   sender's own slot.
-- Capacity: each peer receives a full 256 KiB per round, where the SCATTER
-  route gives it a 16 KiB slice at TP16.
+- Capacity: each peer receives a full 1 MiB per round, where the SCATTER
+  route gives it a 64 KiB slice at TP16.
 - One parity is enough. A driver publishes the next round on a band only after
   that band's shipped cell reports the previous round, so weightd has finished
   reading the staging slot before the driver rewrites it.
@@ -429,9 +478,9 @@ chunks at once per band and rank, so that one chunk's publish, gate and combine
 overlap the other chunk on the wire.
 
 - Layout:
-  - Each 262,208-byte slot holds two halves of
-    `SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES` = (262,208 - 64) / 2 = 131,072
-    bytes: the lower half at offset 0 and the upper half at offset 131,072.
+  - Each 1,048,640-byte slot holds two halves of
+    `SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES` = (1,048,640 - 64) / 2 = 524,288
+    bytes: the lower half at offset 0 and the upper half at offset 524,288.
   - The lower half's tail is at `SLOT_BYTES - 16`. The upper half's tail is
     `SLOT_BYTES - 8`, which is also the whole-slot tail.
   - A whole-slot payload ends at `SLOT_BYTES - 16`, so it never touches either
@@ -441,7 +490,7 @@ overlap the other chunk on the wire.
     consecutive chunks therefore take four distinct positions.
 - Route: `half` (bits 58-59 of the route word) is 1 for the lower half and 2
   for the upper half. A half route is a FULL route with `slice_bytes` 0 and at
-  most 131,072 bytes; weightd sends the payload from and to the half's offset
+  most 524,288 bytes; weightd sends the payload from and to the half's offset
   and the inline tail to the half's tail word.
 - Doorbells:
   - Each band and rank has an alternate doorbell cell at
@@ -474,8 +523,8 @@ overlap the other chunk on the wire.
   different revisions refuse to register.
 
 **Pipelined all-gather.** The hardware-wait collective runs an all-gather
-whose local part exceeds one whole slot (`SparkTpMeshDirectCapacity`, 131,096
-elements) as `n = ceil(local / 65,536)` half chunks (`SparkTpMeshPipelineChunks`).
+whose local part exceeds one whole slot (`SparkTpMeshDirectCapacity`, 524,312
+elements) as `n = ceil(local / 262,144)` half chunks (`SparkTpMeshPipelineChunks`).
 `MESH-PATH` names it `direct-pipelined` with `phases=n`. Every other operation,
 and every all-gather that fits one slot, keeps its old schedule. The stream
 order on each rank is:
@@ -516,8 +565,8 @@ The arrival statistics of a pipelined round (`peer_wait_ns`,
 start, because a later publish has already reset the round's wait start.
 
 Fleet bench (16 ranks, experimental weightd beside production, results
-verified on every rank, 2026-10-17), per round, whole-slot schedule against
-pipelined:
+verified on every rank, 2026-10-17, with the 262,208-byte slots of that time),
+per round, whole-slot schedule against pipelined:
 
 | local elements | whole-slot ms | pipelined ms |
 |---|---|---|
@@ -536,11 +585,11 @@ ABI 9. A deployment still chooses its own `execution_row_capacity`.
 hardware-wait device collective maps the staging export once, through the
 lane owner's client. Two operations then use PEER:
 
-- **kv_shard all-to-all.** Each peer receives up to 131,072 BF16 values per
+- **kv_shard all-to-all.** Each peer receives up to 524,288 BF16 values per
   round. The rank's own share goes straight to its own slot.
 - **Large BF16 sums: reduce-scatter + all-gather.**
-  - One chunk carries degree x 131,072 values: 2,097,152 at TP16, against
-    131,096 for the slot chunk.
+  - One chunk carries degree x 524,288 values: 8,388,608 at TP16, against
+    524,312 for the slot chunk.
   - Reduce-scatter: every owner's slice leaves from its staging slot, and the
     owner sums the degree contributions from offset 0 of each peer's slot. The
     per-element order (peers 0..degree-1, fp32 accumulation, the same BF16
@@ -596,7 +645,7 @@ allocates when its peer routes attach (the configured maximum rows times the
 width over the degree, for an even degree of 4 or more), then the pair-first
 all-gather from that buffer into the output, so it also runs in place. It
 takes exactly the sizes both phases take (`SparkTpMeshAllReducePairFirst`:
-rank segments of whole 8-byte words above 131,096 values) on a hardware-wait
+rank segments of whole 8-byte words above 524,312 values) on a hardware-wait
 collective with peer routes, and refuses anything else, an unpaired degree or
 a spinning collective included, with `INVALID_ARGUMENT` before it consumes a
 round; it cannot be split into begin and finish.
@@ -616,26 +665,27 @@ allreduce=<n>`, totals in `STAGE-STEP-TIMING`).
 kv_shard partial all-to-all, per DSA layer, one direction. Payload is 4,112
 bf16 values per row per peer.
 
-| rows | SCATTER (16 KiB per peer per round) | PEER (256 KiB per peer per round) |
+| rows | SCATTER (64 KiB per peer per round) | PEER (1 MiB per peer per round) |
 |---:|---:|---:|
 | 1 | 1 | 1 |
-| 8 | 5 | 1 |
-| 128 | 65 | 5 |
-| 129 | 65 | 5 |
-| 512 | 257 | 17 |
-| 1,024 | 514 | 33 |
+| 8 | 2 | 1 |
+| 128 | 17 | 2 |
+| 129 | 17 | 2 |
+| 512 | 65 | 5 |
+| 1,024 | 129 | 9 |
 
 Hidden all-reduce at 4,096 wide (hardware wait mode, reduce-scatter +
 all-gather, 2 rounds per chunk):
 
-| rows | values | slot chunks (131,096) | rounds | PEER chunks (2,097,152) | rounds |
+| rows | values | slot chunks (524,312) | rounds | PEER chunks (8,388,608) | rounds |
 |---:|---:|---:|---:|---:|---:|
 | 16 | 65,536 | 1 | 2 | 1 | 2 |
-| 128 | 524,288 | 4 | 8 | 1 | 2 |
-| 256 | 1,048,576 | 8 | 16 | 1 | 2 |
-| 1,024 | 4,194,304 | 32 | 64 | 2 | 4 |
+| 128 | 524,288 | 1 | 2 | 1 | 2 |
+| 256 | 1,048,576 | 2 | 4 | 1 | 2 |
+| 1,024 | 4,194,304 | 8 | 16 | 1 | 2 |
 
-**Memory.** +128 MiB of pinned host memory per node, for the staging area.
+**Memory.** The staging area is pinned host memory on every node: 128 MiB
+when ABI 9 added it, 512 MiB from ABI 15.
 
 **Host tests:**
 - `test_weightd_mesh_mock` checks PEER routes at 1, 8, 128, 129, 512 and

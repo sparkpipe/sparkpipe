@@ -1078,5 +1078,5 @@ setup fails.
 
 `REGION_BYTES` is hard-coded to 134283264. That is not
 `SPARK_WEIGHTD_MESH_REGION_BYTES`, which `include/sparkpipe/spark_weightd.h`
-defines as 268632064, so the probe registers a smaller region than the
+defines as 1073938432, so the probe registers a smaller region than the
 transport does.
