@@ -447,3 +447,61 @@ one only in how many readers a small fetch wakes.
 - Routed experts, dense linears and hyper-connection mixing are 558 ms of
   the wave and untouched by any of this.
 
+## Fourth pass: larger waves, 2026-11-13
+
+The framework held a wave to 4,096 rows (`SPARK_STAGE_SERVING_MAX_ROWS`).
+The limit is 16,384 now and a lane chooses its wave size (`STAGE_ROWS`).
+Two of this module's kernels launched one grid row a route, 114,688 of them
+at 16,384 rows where a launch allows 65,535; their routes now span two axes
+of the grid (`D41ItemGrid`), with the same block order and the same bits
+(`tests/test_dsv41_flash_moe_slices.cu` runs a 4,800-row wave at four
+ranks).
+
+One build for all three sizes (adapter SHA-256
+`0bbf49986749d6e7585cc5b60abd2ddefae5419402e11627de3f88071c9b889b`, built
+from the sources of commit `c3237d996`; a rebuild at that commit,
+`4ad02f6030e7…`, has the same `.text`, `.rodata` and `.nv_fatbin`:
+`9eb83a08edd3…`, `24f92de6714b…`, `fbf539d509db…`), a cold start of the
+lane for each, the same requests:
+
+| Waves of | 8,192 tokens | 32,768 tokens | 131,072 tokens | Free memory a node |
+| --- | ---: | ---: | ---: | ---: |
+| 4,096 rows | 2,584 tok/s | 2,900 | 2,527 | 31.5 GiB |
+| 8,192 rows | 2,650 tok/s | 3,011 | 2,613 | 28.6 GiB |
+| 16,384 rows | 2,653 tok/s | 3,117 | 2,693 | 23.0 GiB |
+
+One stream decoding 400 tokens while another request prefills 65,536:
+
+| Waves of | The prefill takes | Stalls of the stream over 1 s | Its longest | The stream takes |
+| --- | ---: | ---: | ---: | ---: |
+| 4,096 rows | 28.5 s | 16 | 2.5 s | 37.1 s |
+| 8,192 rows | 25.7 s | 8 | 3.8 s | 36.0 s |
+| 16,384 rows | 23.6 s | 4 | 6.3 s | 35.0 s |
+
+- One stream alone is the same: 32.2, 34.2 and 34.5 ms a token with
+  16,384-row waves, 32.2, 33.7 and 34.9 with 4,096.
+- The answer to a 40,000-token prompt, 16 tokens with the five likeliest at
+  each, is the same bytes at all three sizes (SHA-256 `b79b025295d2819f…`).
+- The gain is the routed experts. A call reads every expert's weights
+  whatever the wave holds, 3.3 ms, so 16,384 rows cost 13.7 ms a call where
+  four waves of 4,096 cost four times 5.4: 681 ms against 1,066 ms a 16,384
+  rows (`prefill-waves.fourth.txt`). Rounds, dense linears and mixing cost
+  the same a row.
+- The price is memory, 8.5 GiB a node at 16,384 rows for the wave's
+  buffers, and the wait of a stream that decodes beside a prefill: a decode
+  step waits for the wave in front of it, so the stream stalls four times
+  for up to 6.3 s where it stalled sixteen times for up to 2.5 s.
+
+Prefill is at 31% to 37% of the reference with 16,384-row waves.
+
+### The checkpoint stride
+
+Every 16,384 tokens the upper 20 layers run on the last rows, 2,541 at
+layer 20 down to 128 at the top, so that the recurrent state can be saved
+there (the module's `cache_checkpoint_token_count`). That tail takes 490 ms,
+9% of a 16,384-row wave's cycle, 132 ms of it the experts' weights read for
+a few rows. A 131,072-token prompt runs eight tails and needs the last. A
+stride of 65,536 would save three in four; a later request that shares a
+prefix would then resume up to 65,535 tokens before its first new token
+instead of up to 16,383. Not changed.
+

@@ -430,11 +430,12 @@ V4.1 Flash on our sixteen:
 | One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.4 ms | 21.5-21.8 ms |
 | One stream with drafts | 82.6 tok/s | not wired | 62-64 tok/s |
 | Eight streams | 207.4 tok/s with drafts | 96-112 tok/s without | 151-153 tok/s with |
-| Prefill, 32K prompt | 8,508 tok/s | 2,908 tok/s | 2,373 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 2,519 tok/s | 2,337 tok/s |
+| Prefill, 32K prompt | 8,508 tok/s | 3,117 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 2,693 tok/s | 2,337 tok/s |
 | Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-The four-Spark column is the lane of 2026-11-12 after its third pass
+The four-Spark column is the lane of 2026-11-12 after its fourth pass, with
+16,384-row waves
 (`qualification/dsv41_flash/group4-20261112/`; the first pass prefilled at
 1,897 and 1,888 tok/s and its eight streams are the figure shown), the
 sixteen-Spark column
@@ -548,28 +549,34 @@ throughput on one fleet.
    disk (`runtime/row_file.c`), as the reference does; a rank holds a
    76 GB pack and about 83 GiB in all. What is open, in the order the
    traces give:
-   - prefill is at 29% to 34% of the reference (22% in the first pass,
-     31% in the second). The second pass folds a wave's window as matrix
-     products, sends the MoE activations as FP8 codes and reads a wave's
-     engram rows ahead; the third reads them with 64 readers in batches,
-     which ended the 44 ms a table layer that ranks waited for each
-     other's disks. Only the lower 20 layers run on every row of a wave;
-     the upper 20 run in a tail step every 16,384 tokens. A 4,096-row wave
-     takes 1.29 s: 381 ms in rounds (10,045 pieces of 131 KB a peer, 38
-     microseconds a piece), 236 ms reading every routed expert once a call
-     (64 rows an expert in 128-row tiles: waves of 16,384 rows would fill
-     them, the framework's limit is 4,096), 196 ms in dense linears and
-     126 ms in hyper-connection mixing. The round pieces are the mesh's,
-     and every model's wave pays them: the 0.3 s a wave of step 1. A piece
-     is half a mesh slot. Slots of 1 MiB are their own change (weightd IPC
-     ABI 15): on two machines outside the fleet a 100G port goes from
-     8.4-8.7 to 11.2-11.8 GB/s with them; a lane cannot try them, because
-     the layout belongs to the node's released weightd. In a group of four
-     two of a rank's three peers share one port, which already runs at
-     10.2-10.5 GB/s, so there the larger slot is bound by that port until
-     weightd splits each peer over both rails. Replaying a round as a
-     captured graph and chaining its kernels as dependent launches gave 3%
-     each and are not in the code;
+   - prefill is at 31% to 37% of the reference (22% in the first pass).
+     The second pass folds a wave's window as matrix products, sends the
+     MoE activations as FP8 codes and reads a wave's engram rows ahead; the
+     third reads them with 64 readers in batches, which ended the 44 ms a
+     table layer that ranks waited for each other's disks; the fourth lets
+     a wave hold 16,384 rows, where the framework stopped at 4,096. Only
+     the lower 20 layers run on every row of a wave; the upper 20 run on
+     the last rows every 16,384 tokens, where the recurrent state is
+     checkpointed: 490 ms each, 9% of the time, and a longer stride is an
+     option that makes a shared prefix resume further back. A wave of
+     16,384 rows takes about 5.4 s with that tail: 1.6 s in rounds (38
+     microseconds a piece of 131 KB a peer), 0.8 s in dense linears, 0.7 s
+     in the routed experts (a call reads every expert once, so the larger
+     wave pays that a quarter as often a row), 0.5 s in hyper-connection
+     mixing. A larger wave costs memory (8.5 GiB a node at 16,384 rows)
+     and makes a stream that decodes beside a prefill wait for the whole
+     wave, 6.3 s against 2.5 s; the receipt has 4,096, 8,192 and 16,384
+     rows side by side. The round pieces are the mesh's, and every model's
+     wave pays them: the 0.3 s a wave of step 1. A piece is half a mesh
+     slot. Slots of 1 MiB are their own change (weightd IPC ABI 15): on two
+     machines outside the fleet a 100G port goes from 8.4-8.7 to 11.2-11.8
+     GB/s with them; a lane cannot try them, because the layout belongs to
+     the node's released weightd. In a group of four two of a rank's three
+     peers share one port, which already runs at 10.2-10.5 GB/s, so there
+     the larger slot is bound by that port until weightd splits each peer
+     over both rails. Replaying a round as a captured graph and chaining
+     its kernels as dependent launches gave 3% each and are not in the
+     code;
    - drafts are not wired to the group lane, and the sixteen-rank lane's
      62-64 tok/s with drafts is below the reference's 82.6 on a step that
      is 10 ms shorter, so the gap is in how many drafted tokens a step
