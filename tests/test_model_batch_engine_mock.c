@@ -3796,6 +3796,7 @@ static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deploymen
 	MockResidentClientTakeVerifyTrees(&tree_frames,&branches);
 	CHECK(state.completed_events[1] == 1u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u,"tree verify: an output that follows the older of two matching passages emits exactly the greedy stream");
 	CHECK(tree_frames != 0u && branches != 0u && view.speculative_tree_frame_count == tree_frames,"tree verify: lookup alternates that diverge from the trunk are verified as branches of one frame");
+	CHECK(view.speculative_tree_branch_frame_count == view.speculative_tree_frame_count,"tree verify: every tree frame is counted as one that verified branch rows");
 	CHECK(view.speculative_tree_branch_accepted_count != 0u,"tree verify: a frame whose trunk is wrong accepts the branch that is right");
 	CHECK(TestLaneInputsFollowScript(1u,script,256u) != 0u,"tree verify: every decode lane's input token is a committed model token");
 	for (index=0u; index<256u; index++)

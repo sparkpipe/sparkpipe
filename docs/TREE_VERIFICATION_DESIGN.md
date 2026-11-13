@@ -235,9 +235,13 @@ survival is per depth bucket and class rather than per row index.
 The adapter capability bit `TREE_VERIFY`, next to `SPECULATIVE_VERIFY`,
 says that the model's verify frame honours per-row slots, the key mapping
 and a path-form `keep_rows`; it comes with the descriptor's
-`tree_slot_grain`, which the stage serving adapter checks against the
-runner's KV shard at open. An adapter without the bit receives only chain
-frames, as today. The stage runner refuses a tree frame on a model whose
+`tree_slot_grain`. A stage module states that grain among its serving facts
+(`SparkStageServingModel.tree_slot_grain`); the stage serving adapter derives
+the bit from it, copies it into the descriptor and refuses to open when the
+runner's grain differs (`SparkStageRunnerTreeSlotGrain`: the KV shard grain
+times the degree on the CUDA runner, `SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN` on
+the device runner). An adapter without the bit receives only chain frames,
+as today. The stage runner refuses a tree frame on a model whose
 geometry lacks `tree_verify` with `SPARK_STATUS_UNSUPPORTED`, so a
 misconfiguration fails loudly rather than verifying siblings against each
 other. `docs/INTERFACE_CONTRACTS.md` has the submission contract.
@@ -247,7 +251,7 @@ other. `docs/INTERFACE_CONTRACTS.md` has the submission contract.
 | Family | Verify | Tree |
 | --- | --- | --- |
 | Solar Open 2 (CUDA, TP16) | chain | tree: sharded GQA key mapping, KDA parent taps and branch snapshots, path keep with slot relocation; `TREE_VERIFY`, `tree_slot_grain` 16. |
-| Qwen3.8-27B (Metal) | chain in `tools/metal_stage_run.c` | tree: `attention.metal` key mapping, conv parent taps, delta snapshots, `SparkDeviceStageRunnerKeepPath` with `spark_kv_move_paged`; `--tree-branches` in the tool. |
+| Qwen3.8-27B, Qwen3.5-4B and 2B (Metal) | chain, served and in `tools/metal_stage_run.c` | tree, served and in the tool: `attention.metal` key mapping, conv parent taps, delta snapshots, `SparkDeviceStageRunnerKeepPath` with `spark_kv_move_paged`; the device serving runner passes a tree dispatch's parent rows and forwards the kept path; `TREE_VERIFY`, `tree_slot_grain` 1; `--tree-branches` in the tool. |
 | Ling 3.0 (CUDA) | chain | chain only: its latent attention has no key mapping; the stage refuses a tree step. |
 | Kimi K3, DeepSeek V4.1 Flash, GLM 5.3, A.X K2 | chain | chain only: MLA and DSA selection would need per-path key mapping. |
 | K-EXAONE 2.0, Gemma 4, MiMo (CUDA) | chain | the shared GQA kernels take the mapping; the stages lack `tree_verify`, the relocation and the capability until wired. |
@@ -292,6 +296,28 @@ failed gate.
   available alternate, so on the rewrite prompt, where chains already
   accept most drafts, trees cost rows without gain (155 against 182 tok/s);
   the engine adds a branch only when the frame cost model says it pays.
+  Metal serving carries tree frames for the three device-stage adapters:
+  the device serving runner hands a tree dispatch's parent rows to the
+  device runner, which takes the frame's anchor from its first row because
+  the KV binding, not the runner, owns positions in serving, and keeps the
+  accepted path. `tests/test_device_serving_runner.c` checks the forwarding
+  on the host. Served gate on M5U0 (2026-11-10, Qwen3.5-4B through
+  `sparkpipe_model_api` and `sparkpipe_model_residentd`, the six gate and
+  speculation prompts, 128 tokens): greedy tokens equal `metal_stage_run`'s
+  on all six (`tools/serving_greedy_check.py`), tokens served with drafts
+  equal the same requests served without them (a request for logprobs takes
+  no drafts) on all six, cold and from the prefix cache, and 8 of 94 verify
+  frames were trees with 1 to 11 branch rows; no branch row was accepted on
+  this run. The first served tree frame showed that the KV binding's
+  continuity check refused every tree row after the anchor; the check and
+  its test in `tests/test_stage_kv_binding.c` are fixed. A continuation that
+  resumes a prompt plus 64 reference tokens can still differ from the
+  uninterrupted reference at a near tie, with and without drafts alike (design
+  from the 1,099-token checkpoint: 0.009 nats at token 7; prose prefilled
+  cold: 0.02 nats at token 37), as the Metal serving receipt records for
+  prefill splits.
+  The Qwen3.8-27B served gate has not run: M5U0 was swapping under its live
+  deployments and a training job.
 - **P3, K3.** MLA ancestor keys and the KDA tree scan. Gate: the same path
   pin on K3 at TP16, and B1 and B2 tokens per second on the speculation
   receipts' workloads against the chain, in one hold. Serve only if the tree

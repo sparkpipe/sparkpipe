@@ -1601,6 +1601,8 @@ static SparkStatus SparkModelBatchAcceptTreeLane(
 		SPARK_RETURN(status);
 	engine->verify_lane_count++;
 	engine->tree_frames++;
+	if ( draft_count > request->draft_trunk_rows )
+		engine->tree_branch_frames++;
 	engine->frame_count[bucket]++;
 	engine->frame_rows[bucket] += draft_count + 1u;
 	engine->frame_kept[bucket] += kept;
