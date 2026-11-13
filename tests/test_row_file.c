@@ -8,6 +8,7 @@
 
 #define ROWS 1000u
 #define FIRST_ID 5000
+#define WAVE_IDS 5000u
 
 static uint32_t failures;
 
@@ -101,6 +102,42 @@ static void Region(const char *path, uint64_t offset, uint32_t row_bytes, uint32
 	free(out);
 }
 
+static void Wave(const char *path, uint64_t offset, uint32_t buffered)
+{
+	const SparkRowFileOptions options = { offset, ROWS, 256u, 0u, 4u, buffered };
+	const uint64_t stride = 256u;
+	int64_t *ids = (int64_t *)malloc(WAVE_IDS * sizeof(*ids));
+	uint8_t *out = (uint8_t *)malloc(WAVE_IDS * stride);
+	SparkRowFile *file = 0;
+	SparkRowFileCounters counters;
+	uint32_t good = 1u, owned = 0u;
+	if ( ids == 0 || out == 0 || SparkRowFileOpen(path, &options, &file) != SPARK_STATUS_OK )
+	{
+		Check(buffered == 0u && ids != 0 && out != 0, "a buffered region opens for a wave");
+		free(ids);
+		free(out);
+		return;
+	}
+	for ( uint32_t index = 0u; index < WAVE_IDS; ++index )
+		ids[index] = FIRST_ID + (int64_t)((index * 7919u) % (ROWS + 24u)) - 12;
+	memset(out, 0xa5, WAVE_IDS * stride);
+	Check(SparkRowFileFetch(file, ids, WAVE_IDS, FIRST_ID, out, stride) == SPARK_STATUS_OK, "a wave of ids is fetched");
+	for ( uint32_t index = 0u; index < WAVE_IDS; ++index )
+		if ( ids[index] >= FIRST_ID && ids[index] < FIRST_ID + (int64_t)ROWS )
+		{
+			owned++;
+			good &= RowMatches(out + index * stride, offset + (uint64_t)(ids[index] - FIRST_ID) * 256u, 256u);
+		}
+		else
+			good &= out[index * stride] == 0xa5 && out[index * stride + 255u] == 0xa5 ? 1u : 0u;
+	Check(good != 0u, "a wave larger than a reader's batch returns every owned row and leaves foreign ids alone");
+	SparkRowFileCount(file, &counters);
+	Check(owned > 4000u && counters.requested == owned && counters.read == owned && counters.cached == 0u, "every owned id of the wave is read once");
+	SparkRowFileClose(file);
+	free(ids);
+	free(out);
+}
+
 int main(void)
 {
 	char path[256];
@@ -115,6 +152,7 @@ int main(void)
 		Region(path, offset, 256u, buffered, 16u, "256-byte rows through a 16-row cache");
 		Region(path, offset, 8u, buffered, 0u, "8-byte rows without a cache");
 		Region(path, odd_offset, 96u, buffered, 1024u, "96-byte rows that cross block boundaries");
+		Wave(path, offset, buffered);
 	}
 	options.rows = ROWS + 1u;
 	Check(SparkRowFileOpen(path, &options, &file) == SPARK_STATUS_SCHEMA_ERROR && file == 0, "a region longer than the file is refused");

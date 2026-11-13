@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#define SPARK_ROW_FILE_BATCH_ROWS 64u
+
 typedef struct SparkRowFileMiss
 {
 	uint64_t index;
@@ -75,14 +77,22 @@ static void *SparkRowFileWork(void *argument)
 			pthread_cond_wait(&file->job_ready, &file->job_lock);
 		if ( file->stop != 0u )
 			break;
-		const SparkRowFileMiss miss = file->misses[file->miss_next++];
-		uint8_t *target = file->out + miss.index * file->out_stride;
+		const SparkRowFileMiss *misses = file->misses + file->miss_next;
+		uint8_t *out = file->out;
+		const uint64_t stride = file->out_stride;
+		uint64_t take = (file->miss_count - file->miss_next) / (4u * file->workers);
+		uint32_t failed = 0u;
+		take = take == 0u ? 1u : take > SPARK_ROW_FILE_BATCH_ROWS ? SPARK_ROW_FILE_BATCH_ROWS : take;
+		file->miss_next += take;
 		pthread_mutex_unlock(&file->job_lock);
-		const int32_t status = SparkRowFileRead(file, block, miss.row, target);
+		for ( uint64_t index = 0u; index < take; ++index )
+			if ( SparkRowFileRead(file, block, misses[index].row, out + misses[index].index * stride) != 0 )
+				failed = 1u;
 		pthread_mutex_lock(&file->job_lock);
-		if ( status != 0 )
+		if ( failed != 0u )
 			file->failed = 1u;
-		if ( --file->miss_left == 0u )
+		file->miss_left -= take;
+		if ( file->miss_left == 0u )
 			pthread_cond_signal(&file->job_done);
 	}
 	pthread_mutex_unlock(&file->job_lock);
@@ -234,7 +244,11 @@ SparkStatus SparkRowFileFetch(SparkRowFile *file, const int64_t *ids, uint64_t c
 		file->miss_next = 0u;
 		file->miss_left = missing;
 		file->failed = 0u;
-		pthread_cond_broadcast(&file->job_ready);
+		if ( missing >= file->workers )
+			pthread_cond_broadcast(&file->job_ready);
+		else
+			for ( uint64_t wake = 0u; wake < missing; ++wake )
+				pthread_cond_signal(&file->job_ready);
 		while ( file->miss_left != 0u )
 			pthread_cond_wait(&file->job_done, &file->job_lock);
 		if ( file->failed != 0u )
