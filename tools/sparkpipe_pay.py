@@ -76,7 +76,8 @@ EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s.]{2,}$")
 CODE = re.compile(r"^\d{6}$")
 ORDER_PATH = re.compile(r"^/order/(SP[A-Z2-7]{16})$")
 TOSS_PATH = re.compile(r"^/toss/(success|fail)/(SP[A-Z2-7]{16})$")
-HOLDERS_PATH = re.compile(r"^/market/fleets/([A-Za-z0-9_-]{1,32})/holders$")
+FLEET_PATH = re.compile(r"^/market/fleets/([A-Za-z0-9_-]{1,32})/(holders|install)$")
+SITE_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}){0,7}")
 BRN = re.compile(r"^\d{3}-\d{2}-\d{5}$")
 COOKIE = "sp_session"
 SESSION_SECONDS = 30 * 86400
@@ -88,7 +89,7 @@ SKEW_SECONDS = 300
 SPENDING = ("/market/book-hours", "/market/book-weeks", "/market/waitlist", "/market/auto-extend")
 OWNER_ACTIONS = SPENDING + ("/market/buy", "/market/waitlist/leave")
 ACCOUNT_ROLES = {"requests_erase": (("owner",), "Deleting the records of the account's requests"), "webhook_put": (("owner", "admin"), "Changing webhooks"), "webhook_delete": (("owner", "admin"), "Changing webhooks"), "member_put": (("owner",), "Inviting members and changing roles"),
-                 "member_delete": (("owner",), "Removing members"), "audit": (("owner", "admin"), "The audit log")}
+                 "member_delete": (("owner",), "Removing members"), "audit": (("owner", "admin"), "The audit log"), "install_put": (("owner", "admin"), "Choosing what is installed on a Fleet")}
 AUDITED = {"/market/book-hours": ("booking.hours", ("booking", "fleet", "start", "hours", "hc")), "/market/book-weeks": ("booking.weeks", ("booking", "fleet", "first", "weeks", "price")),
            "/market/waitlist": ("waitlist.lock", ("locked",)), "/market/waitlist/leave": ("waitlist.leave", ()), "/market/auto-extend": ("auto_extend.set", ("fleet", "weeks_ahead")),
            "/market/buy": ("hc.bought", ("lot", "hc", "order")), "/market/keys": ("key.created", ("id", "member", "scopes", "fleet")), "/market/keys/revoke": ("key.revoked", ("id",)),
@@ -166,6 +167,8 @@ ACCOUNT_ROUTES = (
     ("POST", r"/v1/members", "write", "member_put"),
     ("DELETE", r"/v1/members/((?:MB|IV)[A-Z2-7]{16})", "write", "member_delete"),
     ("GET", r"/v1/audit", "read", "audit"),
+    ("GET", r"/v1/installs", "read", "installs"),
+    ("PUT", r"/v1/installs/([A-Za-z0-9_-]{1,32})", "write", "install_put"),
 )
 RECORD_TEXT = {"request": 64, "account": 32, "member": 32, "key": 32, "fleet": 32, "model": 128, "pack": 128, "api": 32, "priority": 16, "session": 128, "at": 20}
 RECORD_NUMBERS = ("status", "prompt_tokens", "cached_tokens", "prefill_tokens", "queue_ms", "prefill_ms", "ttft_ms", "output_tokens", "duration_ms", "decode_tps", "draft_accept", "cold_prefill_ms_estimate")
@@ -362,6 +365,12 @@ def upstream_field(text, name):
     return found.hostname, found.port or 80, found.path[:-3] if found.path.endswith("/v1") else found.path.rstrip("/")
 
 
+def published(site, name):
+    with open(os.path.join(site, name), encoding="utf-8") as handle:
+        text = handle.read()
+    return json.loads(text[text.index("{"):text.rindex("}") + 1])
+
+
 def read_secret(path):
     if not path:
         return b""
@@ -418,7 +427,7 @@ class Config:
         if any(self.swift_bank.values()) and not (all(self.swift_bank.values()) and BIC.match(self.swift_bank["bic"]) and all(len(v) <= 200 and v.isprintable() for v in self.swift_bank.values())):
             raise ValueError("Set all of " + ", ".join(SWIFT_SETTINGS.values()) + " on one line each, with an 8 or 11 character SWIFT/BIC, or leave them all empty")
         self.swift = all(self.swift_bank.values()) and not self.sandbox
-        self.terms_seen = {}
+        self.seen = {}
 
     def path(self, name):
         return os.path.join(self.data, name)
@@ -427,18 +436,31 @@ class Config:
         return self.upstreams.get(fleet) or self.pool
 
     def pricing(self):
-        with open(os.path.join(self.site, "pricing.js"), encoding="utf-8") as handle:
-            text = handle.read()
-        return json.loads(text[text.index("{"):text.rindex("}") + 1])
+        return published(self.site, "pricing.js")
 
-    def terms(self, name):
-        path = os.path.join(self.site, "terms", name)
+    def catalogue(self):
+        items = published(self.site, "catalogue.js")["items"]
+        for item in items:
+            found = item["license"]
+            named = found is None or isinstance(found, dict) and isinstance(found.get("name"), str)
+            texts = (found.get("texts") or []) if named and found else []
+            if not named or item["acceptance"] and not texts or not all(isinstance(text, str) and SITE_FILE.fullmatch(text) for text in texts):
+                raise ValueError(f"catalogue.js: {item['id']} has a license without a name, asks for acceptance without license texts, or names a text outside the site")
+        return items
+
+    def served(self, name):
+        if not SITE_FILE.fullmatch(name):
+            raise ValueError(f"{name!r} is not a file of the site")
+        path = os.path.join(self.site, name)
         found = os.stat(path)
         mark = (found.st_mtime_ns, found.st_size, found.st_ino)
-        if self.terms_seen.get(name, (None,))[0] != mark:
+        if self.seen.get(name, (None,))[0] != mark:
             with open(path, "rb") as handle:
-                self.terms_seen[name] = (mark, hashlib.sha256(handle.read()).hexdigest())
-        return self.terms_seen[name][1]
+                self.seen[name] = (mark, hashlib.sha256(handle.read()).hexdigest())
+        return self.seen[name][1]
+
+    def terms(self, name):
+        return self.served("terms/" + name)
 
     def secret_file(self, name):
         path = self.path(name)
@@ -529,6 +551,7 @@ class Book:
         self.member_emails = {}
         self.invites = {}
         self.erased = {}
+        self.installs = {}
         self.market = market.State()
         if os.path.exists(path):
             with open(path, "rb") as handle:
@@ -580,6 +603,8 @@ class Book:
             self.accounts[data["account"]]["accepted"] = dict({name: data.get(name) for name in TERMS}, at=line["at"])
         elif kind == "records_erased":
             self.erased[data["account"]] = data["through"]
+        elif kind == "install":
+            self.installs[(data["account"], data["fleet"])] = data
         elif kind == "member_invite":
             self.invites[data["invite"]] = dict(data, created=line["at"], state="invited")
             for other in self.invites.values():
@@ -1170,6 +1195,15 @@ def statement(cfg, company, terms):
             f"English text: SHA-256 {terms['dpa_en']} ({cfg.public}/terms/dpa-en.md).")
 
 
+def install_statement(cfg, company, item, fleet, hashes):
+    texts = "".join(f" {path}: SHA-256 {found} ({cfg.public}/{path})." for path, found in hashes.items())
+    if item["acceptance"]:
+        return f"For {company}, I accept the license of {item['name']}, which governs the copy installed on {fleet}: {item['license']['name']}.{texts}"
+    if item["kind"] == "none":
+        return f"For {company}, nothing from the Catalogue is installed on {fleet}."
+    return f"For {company}, {item['name']} is installed on {fleet}" + (f", under its own license: {item['license']['name']}.{texts}" if item["license"] else ".")
+
+
 def invoice_body(cfg, quote):
     name = f"{quote['hc']} SparkPipe hour-credits"
     back = f"{cfg.public}/account.html?order={quote['order']}"
@@ -1543,6 +1577,60 @@ class App:
             self.hooks.drop(ident)
         return {"id": ident, "deleted": True}
 
+    def install_current(self, found):
+        item = next((i for i in self.cfg.catalogue() if i["id"] == found["item"]), None)
+        if item is None:
+            return False
+        return not item["acceptance"] or found["licenses"] == {path: self.cfg.served(path) for path in item["license"]["texts"]}
+
+    def current_install(self, account, fleet, now):
+        found = self.book.installs.get((account, fleet))
+        if not found or self.market.kept_until(account, fleet, market.stamp_time(found["now"]), now) <= now:
+            return None
+        return {"item": found["item"], "name": found["name"], "at": found["now"], "by": found["by"], "licenses": found["licenses"], "current": self.install_current(found)}
+
+    def install_view(self, account, fleet, holding, now):
+        choice = self.current_install(account, fleet, now)
+        return {"fleet": fleet, "name": self.market.fleet_name(fleet), "holding": holding, "needed": holding and not (choice and choice["current"]), "choice": choice}
+
+    def installs(self, account):
+        with self.book.lock:
+            now = self.market.now()
+            self.market.advance(now)
+            return {"fleets": [self.install_view(account, fleet, holding, now) for fleet, holding in sorted(self.market.stays(account, now).items())]}
+
+    def install_put(self, actor, fleet, body, ip, agent):
+        account, member, _ = actor
+        items = self.cfg.catalogue()
+        item = next((i for i in items if i["id"] == body.get("item")), None)
+        if not item:
+            raise Refusal("Give item as the id of a Catalogue item: " + ", ".join(i["id"] for i in items) + ".", 400, "invalid_request")
+        company, texts = self.book.accounts[account]["company"], (item["license"] or {}).get("texts") or []
+        with self.book.lock:
+            now = self.market.now()
+            self.market.advance(now)
+            stays = self.market.stays(account, now)
+            if fleet not in stays:
+                raise Refusal(f"This account neither holds {fleet} nor has a booking of it that has not ended.", 409, "not_held")
+            if item["acceptance"] and body.get("accept") is not True:
+                raise Refusal(f"Installing {item['name']} needs {company}'s acceptance of its license, the {item['license']['name']}: " + " and ".join(f"{self.cfg.public}/{path}" for path in texts)
+                              + f". Read it at {self.cfg.public}/catalogue.html, and accept it to continue.", 409, "license")
+            hashes = {path: self.cfg.served(path) for path in texts}
+            self.book.append("install", {"account": account, "fleet": fleet, "item": item["id"], "name": item["name"], "by": member, "licenses": hashes,
+                                         "statement": install_statement(self.cfg, company, item, self.market.fleet_name(fleet), hashes), "ip": ip, "agent": agent, "now": market.stamp(now)})
+            found = self.install_view(account, fleet, stays[fleet], now)
+        self.audit(account, member, "install.chosen", {"fleet": fleet, "item": item["id"]}, now)
+        return found
+
+    def fleet_install(self, fleet):
+        if fleet not in [f["id"] for f in self.cfg.pricing()["fleets"]]:
+            raise Refusal(f"No Fleet {fleet}.", 404, "unknown_fleet")
+        with self.book.lock:
+            now = self.market.now()
+            self.market.advance(now)
+            account = self.market.holder(fleet, now)
+            return {"fleet": fleet, "account": account, "choice": self.current_install(account, fleet, now) if account else None}
+
     def usage_record(self, item, now):
         if not isinstance(item, dict):
             raise Refusal("A record is a JSON object.", 400, "invalid_request")
@@ -1653,7 +1741,7 @@ class App:
                 results.append({"id": item.get("id") if isinstance(item, dict) else None, "error": str(error), "reason": error.reason})
         return {"events": results}
 
-    def account_call(self, action, actor, match, query, body):
+    def account_call(self, action, actor, match, query, body, ip, agent):
         account, member, role = actor
         calls = {
             "requests": lambda: self.requests(actor, query),
@@ -1669,6 +1757,8 @@ class App:
             "member_put": lambda: self.member_put(actor, body),
             "member_delete": lambda: self.member_delete(actor, match.group(1)),
             "audit": lambda: self.audit_list(account, query),
+            "installs": lambda: self.installs(account),
+            "install_put": lambda: self.install_put(actor, match.group(1), body, ip, agent),
         }
         leaving = action == "member_delete" and match.group(1) == member
         if action in ACCOUNT_ROLES and not leaving:
@@ -2543,9 +2633,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path, query = parts.path, urllib.parse.parse_qs(parts.query)
         if path == "/health":
             return self.reply(200, {"ok": True})
-        match = HOLDERS_PATH.match(path)
+        match = FLEET_PATH.match(path)
         if match:
-            return self.holders(match.group(1), query)
+            return self.fleet_feed(match.group(1), match.group(2), query)
         routes = {
             "/account": lambda: app.summary(app.need_actor(self.headers)),
             "/market/state": lambda: app.market_state(app.actor(self.headers)),
@@ -2631,11 +2721,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         app = self.server.app
         return bool(app.cfg.pool_key) and hmac.compare_digest(self.bearer().encode(), app.cfg.pool_key.encode())
 
-    def holders(self, fleet, query):
+    def fleet_feed(self, fleet, feed, query):
         app = self.server.app
         if not self.hub_key():
             return self.refuse(Refusal("Send the upstream key as Authorization: Bearer.", 401, "invalid_key"))
         try:
+            if feed == "install":
+                return self.reply(200, app.fleet_install(fleet))
             start, end = (market.slot_field(query.get(name, [""])[0], name) for name in ("from", "to"))
             self.reply(200, app.market.holder_hours(fleet, start, end))
         except Refusal as error:
@@ -2662,12 +2754,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             need, action, match = route
             account, record, via, member, role = app.principal(self.headers, self.client_ip(), "account:read")
             if need == "write" and record:
-                raise Refusal("Managing keys, webhooks and members needs a session: sign in on the account page or with sparkpipe login.", 403, "invalid_key")
+                raise Refusal("Managing keys, webhooks, members and installs needs a session: sign in on the account page or with sparkpipe login.", 403, "invalid_key")
             if need == "write" and via == "cookie" and self.cross_site():
                 raise Refusal("Cross-site requests are refused.", 403, "invalid_request")
             app.throttle("market", account)
             body = self.json_body(ACCOUNT_LIMIT) if method in ("POST", "PUT") and self.headers.get("Content-Length") not in (None, "0") else {}
-            self.reply(200, app.account_call(action, (account, member, role), match, urllib.parse.parse_qs(parts.query), body))
+            self.reply(200, app.account_call(action, (account, member, role), match, urllib.parse.parse_qs(parts.query), body, self.client_ip(), self.agent()))
         except Refusal as error:
             self.api_error(error)
 

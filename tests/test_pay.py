@@ -37,6 +37,7 @@ HC_LADDER = [{"from": 1, "usd": 20, "krw": 26000}, {"from": 144, "usd": 15, "krw
 TEST_FLEETS = [{"id": "F1", "name": "Fleet 1", "kind": "16 Sparks", "state": "serving", "rate": 1, "hourFleet": True, "storageTB": 4},
                {"id": "F3", "name": "Fleet 3", "kind": "16 Sparks", "state": "building", "rate": 1, "hourFleet": False, "storageTB": 4}]
 NOW = [datetime(2026, 11, 2, 3, 0, 0, tzinfo=timezone.utc)]
+INSTALL_KEY = "sk-pool-install-test"
 
 
 def docs_signature(method, url, stamp, body):
@@ -81,7 +82,8 @@ def check_gateway_units(failures):
     for method, path, scope in SURFACE:
         if sp.hub_scope(method, path) != scope:
             failures.append(f"{method} {path} of the Fleet API is not passed to the hub under the {scope} scope: {sp.hub_scope(method, path)}")
-    for method, path in (("GET", "/v1/requests"), ("GET", "/v1/keys"), ("PUT", "/v1/webhooks"), ("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/health"), ("GET", "/market/state"), ("POST", "/hub/pair-loss"), ("GET", "/v1/members"), ("GET", "/v1/audit")):
+    for method, path in (("GET", "/v1/requests"), ("GET", "/v1/keys"), ("PUT", "/v1/webhooks"), ("POST", "/v1/sparkpipe/switch-now"), ("GET", "/v1/sparkpipe/status"), ("GET", "/health"), ("GET", "/market/state"), ("POST", "/hub/pair-loss"), ("GET", "/v1/members"), ("GET", "/v1/audit"),
+                         ("GET", "/v1/installs"), ("PUT", "/v1/installs/F1")):
         if sp.hub_scope(method, path) is not None:
             failures.append(f"{method} {path} is passed to the hub")
     headers = lambda **found: {name.replace("_", "-"): value for name, value in found.items()}
@@ -335,6 +337,8 @@ def site_copy(work):
     write_pricing(work / "site" / "pricing.js", pricing)
     for name in sp.TERMS.values():
         shutil.copy(ROOT / "site" / "terms" / name, work / "site" / "terms" / name)
+    shutil.copy(ROOT / "site" / "catalogue.js", work / "site" / "catalogue.js")
+    shutil.copytree(ROOT / "site" / "licenses", work / "site" / "licenses")
     (work / "secret").write_text("test-client-secret\n")
 
 
@@ -1279,6 +1283,282 @@ def swift_flows(failures, cfg, app, buyer, mailbox):
         failures.append(f"the account does not list SWIFT orders with their references: {listed}")
 
 
+def check_catalogue(failures):
+    try:
+        items = sp.published(str(ROOT / "site"), "catalogue.js")["items"]
+    except (OSError, ValueError, KeyError) as error:
+        failures.append(f"the service cannot read the Catalogue from site/catalogue.js: {error!r}")
+        return
+    public = type("C", (), {"public": "https://sparkpipe.ai"})
+    for item in items:
+        try:
+            texts = (item["license"] or {}).get("texts", [])
+            sp.install_statement(public, "Acme", item, "Fleet 1", {path: "0" * 64 for path in texts})
+            usable = item["kind"] in ("engine", "none") and isinstance(item["acceptance"], bool) and isinstance(item["name"], str) and (bool(texts) or not item["acceptance"]) \
+                and all((ROOT / "site" / path).is_file() for path in texts)
+        except (KeyError, TypeError, AttributeError):
+            usable = False
+        if not usable:
+            failures.append(f"a Catalogue item lacks what the service records for a choice (kind, name, acceptance, a license with published texts when it asks for acceptance): {item}")
+    kinds = {item.get("id"): (item.get("kind"), item.get("acceptance")) for item in items}
+    if len(kinds) != len(items) or kinds.get("sparkpipe") != ("engine", True) or kinds.get("none") != ("none", False):
+        failures.append(f"the Catalogue's ids are not unique, or it lacks our engine with acceptance and the choice of nothing: {kinds}")
+
+
+def catalogue_item(ident):
+    return next(item for item in sp.published(str(ROOT / "site"), "catalogue.js")["items"] if item["id"] == ident)
+
+
+def customer(app, company):
+    account = sp.new_id("AC")
+    app.book.append("account", {"account": account, "email": f"{company.lower()}@example.com", "company": company, "ip": "127.0.0.1", "agent": "test"})
+    app.accept(account, "127.0.0.1", "test")
+    app.market.credit(account, Decimal(20), "test")
+    return account
+
+
+def teammate(app, account, role):
+    member = sp.new_id("MB")
+    app.book.append("member", {"member": member, "account": account, "email": f"{member.lower()}@example.com", "role": role, "invite": None})
+    return member
+
+
+def session_client(server, subject, headers=None):
+    found = Client(server.server_address[1], origin="https://sparkpipe.ai")
+    if subject:
+        found.cookie = f"{sp.COOKIE}={sp.session_token(server.app.key, subject, 10 ** 10)}"
+    return lambda method, path, body=None: found(method, path, body, headers)
+
+
+def installs_of(client):
+    return client("GET", "/v1/installs")[1].get("fleets")
+
+
+def code_of(answer):
+    return answer[0], (answer[1].get("error") or {}).get("code")
+
+
+def hub_install(server, fleet, key=INSTALL_KEY):
+    return Client(server.server_address[1])("GET", f"/market/fleets/{fleet}/install", headers={"Authorization": f"Bearer {key}"} if key else {})
+
+
+def clock_at(*parts):
+    NOW[0] = datetime(*parts, tzinfo=timezone.utc)
+
+
+def check_installs(failures):
+    work = Path(tempfile.mkdtemp(prefix="sparkpipe-installs-"))
+    mailbox = serve(FakeSMTP, mail=[])
+    begin, server = NOW[0], None
+    try:
+        site_copy(work)
+        (work / "pool_key").write_text(INSTALL_KEY + "\n")
+        cfg = sp.Config({"SPARKPIPE_GATEWAY_CAPACITY": "100000", "SPARKPIPE_PAY_DATA": str(work / "data"), "SPARKPIPE_PAY_SITE": str(work / "site"), "COINPAYMENTS_CLIENT_ID": CLIENT,
+                         "COINPAYMENTS_CLIENT_SECRET_FILE": str(work / "secret"), "SPARKPIPE_PAY_SMTP": f"127.0.0.1:{mailbox.server_address[1]}", "SPARKPIPE_POOL_KEY_FILE": str(work / "pool_key")})
+        sp.clock = lambda: NOW[0]
+        clock_at(2026, 12, 7, 0, 30)
+        server = started(cfg)[0]
+        app = server.app
+        people = {"A": customer(app, "Acme"), "B": customer(app, "Beta")}
+        people.update(admin=teammate(app, people["A"], "admin"), member=teammate(app, people["A"], "member"), key=app.market.create_key(people["A"], {"note": "ci"})["key"])
+        install_paths(failures, cfg, work)
+        server = install_choices(failures, cfg, work, server, people)
+        install_bearer(failures, cfg, server, people)
+        install_lapses(failures, server, people)
+        install_failover(failures, cfg, server, people)
+    finally:
+        NOW[0] = begin
+        if server:
+            server.shutdown()
+        mailbox.shutdown()
+        shutil.rmtree(work)
+
+
+def install_choices(failures, cfg, work, server, people):
+    A, admin = people["A"], people["admin"]
+    owner = session_client(server, A)
+    empty = (owner("GET", "/v1/installs"), hub_install(server, "F1"), code_of(owner("PUT", "/v1/installs/F1", {"item": "none"})))
+    if empty != ((200, {"fleets": []}), (200, {"fleet": "F1", "account": None, "choice": None}), (409, "not_held")):
+        failures.append(f"an account with no booking lists a fleet or chooses for one, or the hub sees a holder of a free fleet: {empty}")
+    for who, start, hours in ((A, "2026-12-07T01:00Z", 2), (people["B"], "2026-12-07T03:00Z", 1), (A, "2026-12-07T05:00Z", 1)):
+        server.app.market.book_hours(who, {"fleet": "F1", "start": start, "hours": hours})
+    away = {"fleet": "F1", "name": "Fleet 1", "holding": False, "needed": False, "choice": None}
+    if installs_of(owner) != [away]:
+        failures.append(f"a fleet booked ahead is not listed, without a choice to make yet: {installs_of(owner)}")
+    clock_at(2026, 12, 7, 1, 30)
+    held = dict(away, holding=True, needed=True)
+    reads = [installs_of(owner), installs_of(session_client(server, None, {"X-Api-Key": people["key"]})), installs_of(session_client(server, people["member"]))]
+    if reads != [[held]] * 3:
+        failures.append(f"the owner, a key with account:read or a member does not see that a held fleet needs a choice: {reads}")
+    refusals = [code_of(session_client(server, None, {"X-Api-Key": people["key"]})("PUT", "/v1/installs/F1", {"item": "none"})), code_of(session_client(server, people["member"])("PUT", "/v1/installs/F1", {"item": "none"})),
+                code_of(owner("PUT", "/v1/installs/F1", {"item": "nonesuch"})), code_of(owner("PUT", "/v1/installs/F3", {"item": "none"})),
+                code_of(owner("PUT", "/v1/installs/F1", {"item": "sparkpipe"})), code_of(owner("PUT", "/v1/installs/F1", {"item": "sparkpipe", "accept": "yes"})),
+                code_of(session_client(server, A, {"Origin": "https://elsewhere.example"})("PUT", "/v1/installs/F1", {"item": "none"})), code_of(owner("PUT", "/v1/installs/F1", {"item": ["none"]})),
+                code_of(owner("PUT", "/v1/installs/F1"))]
+    message, engine_license = owner("PUT", "/v1/installs/F1", {"item": "sparkpipe"})[1].get("error", {}).get("message", ""), catalogue_item("sparkpipe")["license"]
+    if refusals != [(403, "invalid_key"), (403, "role"), (400, "invalid_request"), (409, "not_held"), (409, "license"), (409, "license"), (403, "invalid_request"), (400, "invalid_request"), (400, "invalid_request")] or lines_of(cfg, "install"):
+        failures.append(f"a choice is taken from an API key, a member, another site's page, for an unknown or malformed item or fleet, or for our engine without accepting its license: {refusals}")
+    if engine_license["name"] not in message or "sparkpipe.ai/catalogue.html" not in message or not all(f"https://sparkpipe.ai/{path}" in message for path in engine_license["texts"]):
+        failures.append(f"the license refusal does not name the license, its texts and the Catalogue page: {message}")
+    nothing = session_client(server, A, {"User-Agent": "install-test"})("PUT", "/v1/installs/F1", {"item": "none"})
+    line = (lines_of(cfg, "install") or [{}])[-1]
+    if nothing != (200, dict(held, needed=False, choice={"item": "none", "name": catalogue_item("none")["name"], "at": "2026-12-07T01:30:00Z", "by": A, "licenses": {}, "current": True})) \
+            or (line.get("statement"), line.get("licenses"), line.get("by"), line.get("ip"), line.get("agent")) != ("For Acme, nothing from the Catalogue is installed on Fleet 1.", {}, A, "127.0.0.1", "install-test"):
+        failures.append(f"the owner's choice of nothing is not recorded with its statement, IP address and browser: {nothing} {line}")
+    accepted = session_client(server, admin, {"User-Agent": "install-test"})("PUT", "/v1/installs/F1", {"item": "sparkpipe", "accept": True})
+    install_accepted(failures, cfg, work, server, people, accepted)
+    return install_replayed(failures, cfg, server, people)
+
+
+def install_accepted(failures, cfg, work, server, people, accepted):
+    A, admin, engine = people["A"], people["admin"], catalogue_item("sparkpipe")
+    hashes = {path: hashlib.sha256((work / "site" / path).read_bytes()).hexdigest() for path in engine["license"]["texts"]}
+    choice = {"item": "sparkpipe", "name": engine["name"], "at": "2026-12-07T01:30:00Z", "by": admin, "licenses": hashes, "current": True}
+    entry = {"fleet": "F1", "name": "Fleet 1", "holding": True, "needed": False, "choice": choice}
+    statement = (f"For Acme, I accept the license of {engine['name']}, which governs the copy installed on Fleet 1: {engine['license']['name']}."
+                 + "".join(f" {path}: SHA-256 {found} (https://sparkpipe.ai/{path})." for path, found in hashes.items()))
+    line = lines_of(cfg, "install")[-1]
+    expect = {"account": A, "fleet": "F1", "item": "sparkpipe", "by": admin, "licenses": hashes, "statement": statement, "ip": "127.0.0.1", "agent": "install-test"}
+    if accepted != (200, entry) or {name: line.get(name) for name in expect} != expect or len(hashes) < 2:
+        failures.append(f"an admin's acceptance of our engine's license is not recorded with the SHA-256 of each served text and the statement: {accepted} {line}")
+    owner = session_client(server, A)
+    audit = sorted((e["member"], e["data"]["item"], e["data"]["fleet"]) for e in owner("GET", "/v1/audit?type=install.chosen")[1].get("data", []))
+    if installs_of(owner) != [entry] or audit != sorted([(A, "none", "F1"), (admin, "sparkpipe", "F1")]):
+        failures.append(f"the choice is not listed as accepted, or not in the audit log as install.chosen with the fleet and item: {installs_of(owner)} {audit}")
+    hub = [hub_install(server, "F1"), hub_install(server, "F1", None)[0], hub_install(server, "F1", "wrong")[0], hub_install(server, "F9")[0]]
+    if hub != [(200, {"fleet": "F1", "account": A, "choice": choice}), 401, 401, 404]:
+        failures.append(f"the hub does not read the holder's current choice with the upstream key alone: {hub}")
+    install_license_changed(failures, work, server, people, entry, choice)
+
+
+def install_license_changed(failures, work, server, people, entry, choice):
+    A, admin, engine = people["A"], people["admin"], catalogue_item("sparkpipe")
+    text = work / "site" / engine["license"]["texts"][0]
+    saved = text.read_bytes()
+    text.write_bytes(saved + b"\nA changed line.\n")
+    owner, chooser = session_client(server, A), session_client(server, admin)
+    stale = dict(choice, current=False)
+    changed = (installs_of(owner), hub_install(server, "F1"))
+    again = chooser("PUT", "/v1/installs/F1", {"item": "sparkpipe", "accept": True})[1]
+    renewed = (again.get("needed"), (again.get("choice") or {}).get("current"), (again.get("choice") or {}).get("licenses", {}).get(engine["license"]["texts"][0]))
+    text.write_bytes(saved)
+    restored = chooser("PUT", "/v1/installs/F1", {"item": "sparkpipe", "accept": True})[1]
+    if changed != ([dict(entry, needed=True, choice=stale)], (200, {"fleet": "F1", "account": A, "choice": stale})) \
+            or renewed != (False, True, hashlib.sha256(saved + b"\nA changed line.\n").hexdigest()) or restored != entry:
+        failures.append(f"a changed license text does not make the choice need a new acceptance, or the new acceptance does not record the text served then: {changed} {renewed} {restored}")
+
+
+def install_replayed(failures, cfg, server, people):
+    before = (installs_of(session_client(server, people["A"])), hub_install(server, "F1"))
+    server.shutdown()
+    server.server_close()
+    server = started(cfg)[0]
+    after = (installs_of(session_client(server, people["A"])), hub_install(server, "F1"))
+    if after != before or not (before[0] or [{}])[0].get("choice"):
+        failures.append(f"the choices read differently after a restart replays the ledger: {before} {after}")
+    return server
+
+
+def install_lapses(failures, server, people):
+    A, B = people["A"], people["B"]
+    owner, other = session_client(server, A), session_client(server, B)
+    away = {"fleet": "F1", "name": "Fleet 1", "holding": False, "needed": False, "choice": None}
+    clock_at(2026, 12, 7, 3, 30)
+    if (installs_of(owner), installs_of(other), hub_install(server, "F1")) != ([away], [dict(away, holding=True, needed=True)], (200, {"fleet": "F1", "account": B, "choice": None})):
+        failures.append(f"a choice outlives another account's booking of the fleet: {installs_of(owner)} {installs_of(other)} {hub_install(server, 'F1')}")
+    ahead = owner("PUT", "/v1/installs/F1", {"item": "none"})
+    chosen = ahead[1].get("choice")
+    clock_at(2026, 12, 7, 5, 30)
+    back = (installs_of(owner), hub_install(server, "F1"))
+    if ahead[0] != 200 or back != ([dict(away, holding=True, choice=chosen)], (200, {"fleet": "F1", "account": A, "choice": chosen})):
+        failures.append(f"a choice made for a booking ahead, while another account holds the fleet, does not hold when the booking starts: {ahead} {back}")
+    clock_at(2026, 12, 8, 5, 0)
+    gone = installs_of(owner)
+    server.app.market.book_hours(A, {"fleet": "F1", "start": "2026-12-08T07:00Z", "hours": 1})
+    kept = installs_of(owner)
+    clock_at(2026, 12, 9, 8, 30)
+    server.app.market.book_hours(A, {"fleet": "F1", "start": "2026-12-09T10:00Z", "hours": 1})
+    if gone != [] or kept != [dict(away, choice=chosen)] or installs_of(owner) != [away]:
+        failures.append(f"a choice does not last through a booking made within 24 hours of the last held hour, or comes back after it lapsed: {gone} {kept} {installs_of(owner)}")
+    server.app.market.move_clock(24)
+    server.app.market.book_hours(A, {"fleet": "F1", "start": "2026-12-10T09:00Z", "hours": 1})
+    moved = owner("PUT", "/v1/installs/F1", {"item": "none"})[1].get("choice") or {}
+    if moved.get("at") != "2026-12-10T08:30:00Z" or installs_of(owner) != [dict(away, choice=moved)]:
+        failures.append(f"a choice is not timed by the market's clock, which the sandbox moves: {moved}")
+
+
+def install_paths(failures, cfg, work):
+    escaped, broken, site = [], [], work / "site"
+    for name in ("../pool_key", str(work / "pool_key"), "licenses/../../pool_key", "licenses/./sparkpipe/LICENSE.txt", "licenses//sparkpipe/LICENSE.txt"):
+        try:
+            cfg.served(name)
+            escaped.append(name)
+        except ValueError:
+            pass
+    saved, items = (site / "catalogue.js").read_text(), cfg.catalogue()
+    for found in ({"name": "x", "texts": ["../../pool_key"]}, {"name": "x", "texts": []}, {"texts": ["licenses/sparkpipe/LICENSE.txt"]}, None):
+        (site / "catalogue.js").write_text("window.SP_CATALOGUE = " + json.dumps({"items": [dict(item, license=found) if item["acceptance"] else item for item in items]}) + ";\n")
+        try:
+            cfg.catalogue()
+            broken.append(found)
+        except ValueError:
+            pass
+    (site / "catalogue.js").write_text(saved)
+    if escaped or broken or cfg.served("licenses/sparkpipe/LICENSE.txt") != hashlib.sha256((site / "licenses" / "sparkpipe" / "LICENSE.txt").read_bytes()).hexdigest():
+        failures.append(f"the service hashes a file outside the site, or takes a Catalogue item that asks for acceptance without a license name and texts on the site: {escaped} {broken}")
+
+
+def install_bearer(failures, cfg, server, people):
+    token = server.app.open_bearer(people["A"], people["admin"], "cli")[0]
+    found = session_client(server, None, {"Authorization": f"Bearer {token}", "User-Agent": "sparkpipe-cli"})("PUT", "/v1/installs/F1", {"item": "none"})
+    line = lines_of(cfg, "install")[-1]
+    if found[0] != 200 or (line["by"], line["agent"], line["item"]) != (people["admin"], "sparkpipe-cli", "none"):
+        failures.append(f"an admin's CLI session cannot choose what is installed, or the choice is not attributed to it: {found} {line}")
+
+
+def fail_over(app, account, down):
+    now = app.market.now()
+    app.uptime.observe("F1", not down, now, "test", watch=False)
+    app.uptime.observe("F3", True, now, "test", watch=False)
+    if down:
+        app.book.append("failover", {"failover": sp.market.new_id("FO"), "account": account, "from": "F1", "to": "F3", "start": sp.market.stamp(now), "now": sp.market.stamp(now)})
+    app.market.tick()
+
+
+def fleets_of(client):
+    return {entry["fleet"]: (entry["holding"], entry["needed"], entry["choice"]) for entry in installs_of(client)}
+
+
+def install_failover(failures, cfg, server, people):
+    A, app = people["A"], server.app
+    owner = session_client(server, A, {"User-Agent": "install-test"})
+    clock_at(2026, 12, 9, 9, 10)
+    fail_over(app, A, True)
+    first = (fleets_of(owner), hub_install(server, "F3"))
+    if first[0].get("F3") != (True, True, None) or not (first[0].get("F1") or (0, 0, None))[2] or first[1] != (200, {"fleet": "F3", "account": A, "choice": None}):
+        failures.append(f"the free fleet a failover gives (clause 15.7) is not held by the account with only our base image and a choice to make, or the hub does not name it: {first}")
+    chosen = owner("PUT", "/v1/installs/F3", {"item": "sparkpipe", "accept": True})
+    choice = chosen[1].get("choice")
+    if chosen[0] != 200 or not choice or "the copy installed on Fleet 3:" not in lines_of(cfg, "install")[-1]["statement"] or hub_install(server, "F3") != (200, {"fleet": "F3", "account": A, "choice": choice}):
+        failures.append(f"the account cannot accept our engine's license for the free fleet a failover gives, or the hub does not read that choice: {chosen}")
+    clock_at(2026, 12, 9, 9, 20)
+    fail_over(app, A, False)
+    ended = (fleets_of(owner).get("F3"), hub_install(server, "F3"))
+    app.market.book_hours(A, {"fleet": "F1", "start": "2026-12-11T09:00Z", "hours": 1})
+    app.market.book_hours(A, {"fleet": "F1", "start": "2026-12-12T09:00Z", "hours": 1})
+    clock_at(2026, 12, 10, 9, 15)
+    fail_over(app, A, True)
+    again = (fleets_of(owner).get("F3"), hub_install(server, "F3"))
+    clock_at(2026, 12, 10, 9, 25)
+    fail_over(app, A, False)
+    clock_at(2026, 12, 11, 9, 30)
+    fail_over(app, A, True)
+    lapsed = fleets_of(owner).get("F3")
+    fail_over(app, A, False)
+    if ended != (None, (200, {"fleet": "F3", "account": None, "choice": None})) or again != ((True, False, choice), (200, {"fleet": "F3", "account": A, "choice": choice})) or lapsed != (True, True, None):
+        failures.append(f"a choice for a failover's fleet does not last until 24 hours after the failover ends, or comes back after that: {ended} {again} {lapsed}")
+
+
 def main():
     failures = []
     check_units(failures)
@@ -1289,11 +1569,13 @@ def main():
     check_service(failures)
     check_toss(failures)
     check_swift(failures)
+    check_catalogue(failures)
+    check_installs(failures)
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         return 1
-    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement and its Data Processing Agreement only, re-accepted when either changes, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from")
+    print("pay: every path of the Fleet API mapped to its key scope and nothing else passed to the hub; notices, deliveries and usage records that survive a torn or garbled line and are kept 0600 in 0700 folders; a burst of 64 connections queued and answered while the service is busy;keys read from Bearer, X-Api-Key and Basic; webhooks only to public addresses, signed with HMAC-SHA256 of the time and body; sessions, email codes, acceptance of the Korean and English Customer Agreement and its Data Processing Agreement only, re-accepted when either changes, HC orders by quantity on the price ladder (143 and 144 HC in US dollars and won), USDC and USDT invoices on the chosen network, signed webhooks, receipts, part payments, mismatches, reconciliation, the removed routes, the hash-chained ledger with two writers and the 9-line live ledger replayed; Toss Payments key gating, won amounts fixed on the server and confirmed once, other amounts refused and cancelled, webhooks that only trigger a check, virtual accounts and their expiry, refunds under the named clause (clause 16.4 only up to what lapsed while locked), the tax invoice list and the sandbox's test payments; USD bank transfers (SWIFT) gated on complete bank settings and the customer's clause 3.3(b) declaration, priced on the US dollar ladder with 0% VAT only for them, invoiced by email with the bank details and a unique payment reference, confirmed by the operator only for the whole amount, overpayments sent back under clause 3.5, cancellation and refunds back to the account the payment came from; what is installed on a fleet: the Catalogue read as the service reads it, with no file hashed outside the site, choices only by the owner or an admin with a session and never from another site's page, for an item the Catalogue lists, on a fleet held or booked, with a license accepted when the item asks, recorded with the SHA-256 of each served license text, the statement, the IP address and the browser, audited as install.chosen, read by the hub with the upstream key alone, ended by another account's booking or 24 hours after the last held hour, the free fleet a failover gives held with only our base image and its own choice, timed by the market clock and replayed after a restart")
     return 0
 
 
