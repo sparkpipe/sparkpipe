@@ -1545,6 +1545,60 @@ Ordered by decision value per hour of fleet time.
 | 12 | Sub-0.5 s bursts, correctable AER, pause durations, outstanding reads | Faster counter sampling plus `aer_dev_correctable` in surekill | Script change |
 | 13 | Does the guard always fire before the first IOVA reuse? | Not directly measurable; keep identity mode on Lenovo | — |
 
+### 18.1 Later events on the Lenovo units (2026-11)
+
+The three Lenovo units left the fleet on 2026-10-20. Two of them serve as
+build and test hosts under the names `lenovo7` and `lenovo9` (the `spark7`
+and `spark9` of this record), still on BIOS S0QKT09A, kernel
+`6.17.0-1026-nvidia` and identity mode. Times here are KST.
+
+**lenovo7, 2026-11-11 13:32 to 13:44: a wedge with no log line, and no RDMA
+load.**
+
+- FACT (efi-pstore, archived by systemd-pstore): at uptime 350,925 s the
+  kernel reported an RCU stall on CPU 17, which had taken no hard or soft
+  interrupt and made no context switch for 30 s while in kernel process
+  context. The reports repeated 190 and 380 s later with the same counters.
+  The NMI sent to CPU 17 produced no backtrace; this platform logs `NMI not
+  fully supported` and has no hard-lockup detector.
+- FACT: no AER, SMMU, mlx5, NVMe or NVRM line precedes the stall. The DMA
+  guard was armed in that boot and had no trigger to act on.
+- FACT: 573 s after the stall began, `Kernel panic - not syncing: SBSA
+  Generic Watchdog timeout` (the watchdog's 600 s first stage, action 1).
+  `kernel.panic=60` rebooted the node. `crashkernel=1G-:0M` reserves nothing,
+  so there is no vmcore. The journal's last persisted entry is 13:31:47; the
+  next boot replayed the ext4 journal and the filesystem state is clean.
+- FACT: the node was running the host test suite and nothing else of ours.
+  The last file the suite wrote is the binary of
+  `tests/test_kv_snapshot_cuda.py`, built at 13:30:22. That test saves KV
+  pages from the GPU to files under `/tmp` on the root NVMe and normally
+  takes half a second; here it had not finished about two minutes later,
+  when CPU 17 stopped. The suite sends nothing over the ConnectX-7 before
+  that point: `tools/tp_mesh_hardware_probe.cu`, which ran just before,
+  ships its bands with `memcpy` in host memory.
+- FACT: afterwards the same test ran 400 times in a row on the node, each in
+  about half a second. The full suite passed on the node before and after.
+- INFERENCE: this is the "wedge without a log line" of section 15 on the
+  unit with the most events in October, and it bears on question 3: the
+  node wedged with no RDMA collective in flight at all. What CPU 17 was
+  executing is not known.
+- FACT (2026-11-11): none of the sixteen fleet nodes has a pstore record.
+
+**lenovo9, 2026-11-07 11:59: a different fault.** efi-pstore shows
+`nvidia-persistenced` blocked for more than 122 s in `nvkms_close`
+(`nvidia_modeset`) and `Kernel panic - not syncing: hung_task: blocked
+tasks`. INFERENCE: it happened while the node was being restarted; lenovo7
+was shut down cleanly four minutes later.
+
+**The guard on the Lenovo units.** On 2026-11-11 `spark-dma-guard.timer`
+was found disabled on both, so the guard had been armed only when someone
+started the service (both were started by hand on 2026-11-10 14:52), and
+lenovo7 ran without it from its reboot at 13:44 until 17:26. On the owner's
+order that day the timer was enabled on both hosts after `scan` reported no
+trigger in either boot's log; on lenovo7 it started the service at once
+(`event=start mode=armed`, received by the hub's listener), and lenovo9's
+running guard was left as it was.
+
 ## 19. Corrections to earlier statements
 
 Claims made during the work, in messages or in notes, that the full
