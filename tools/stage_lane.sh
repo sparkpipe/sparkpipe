@@ -184,6 +184,17 @@ stop() {
   join_ranks stop
 }
 
+reclaim() {
+  local rank host root
+  for rank in $(seq 0 $LAST_RANK); do
+    host="$(host_of "$rank")"
+    root="$(root_of "$host")"
+    $SSH "$host" "$root/lane.sh reclaim" < /dev/null &
+    PIDS[$rank]=$!
+  done
+  join_ranks reclaim
+}
+
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   lane-scripts)
@@ -192,6 +203,7 @@ case "${1:-}" in
   start) start ;;
   status) status ;;
   stop) stop ;;
+  reclaim) reclaim ;;
   api-setup) api_setup ;;
-  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|api-setup" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|reclaim|api-setup" >&2; exit 2 ;;
 esac

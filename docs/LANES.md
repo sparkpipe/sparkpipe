@@ -234,6 +234,14 @@ while the lane's unit is active, starting or stopping on any rank: stop the
 lane first. Run `lane_config.py audit` before a setup to see what it will
 replace.
 
+A stopped lane keeps its KV pool and its pack's cold arena in each node's
+weightd, so that a restart finds them: 1.6 to 3.2 GiB a node for the
+four-rank DeepSeek V4.1 Flash lane, which the nodes' other lanes cannot use
+meanwhile. The swap controller releases them for the models it knows. For an
+experiment lane, `stage_lane.sh reclaim` after the last `stage_lane.sh stop`
+runs every rank's `lane.sh reclaim` (the pack by its digest, the KV pool by
+its label) and names the hosts that refuse.
+
 ## Changing a lane
 
 Edit the record, run `tests/test_lane_records.py`, merge, then push and
