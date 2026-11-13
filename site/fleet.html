@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SparkPipe Fleet</title>
+<title>SparkPipe Chat model</title>
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 <style>
 :root {
@@ -51,12 +51,12 @@ li { margin: 2px 0; }
 <body>
 <main>
   <header>
-    <h1><img src="/static/favicon.png" alt="">SparkPipe fleet</h1>
+    <h1><img src="/static/favicon.png" alt="">SparkPipe Chat model</h1>
     <a href="/">Back to chat</a>
   </header>
 
   <section class="card">
-    <div class="label">Loaded on the fleet</div>
+    <div class="label">Loaded for SparkPipe Chat</div>
     <div class="big" id="active">…</div>
     <div class="row"><span class="state"><span class="dot" id="dot"></span><span id="state">Checking</span></span></div>
     <div id="drain" hidden>
@@ -165,9 +165,9 @@ async function poll() {
   try {
     const r = await fetch("/fleet/status", { cache: "no-store", headers: auth });
     if (r.ok) { status = await r.json(); render(); }
-    else $("state").textContent = "Fleet status unavailable (" + r.status + ")";
+    else $("state").textContent = "Model status unavailable (" + r.status + ")";
   } catch (e) {
-    $("state").textContent = "Fleet status unavailable";
+    $("state").textContent = "Model status unavailable";
   }
 }
 
@@ -176,7 +176,7 @@ async function force(body, label) {
   try {
     const r = await fetch("/fleet/switch-now", { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const reply = await r.json().catch(() => ({}));
-    $("msg").textContent = r.ok ? label + ": done, the fleet is switching." : label + " refused: " + ((reply.error && reply.error.message) || reply.error || r.status);
+    $("msg").textContent = r.ok ? label + ": done, SparkPipe Chat is switching." : label + " refused: " + ((reply.error && reply.error.message) || reply.error || r.status);
   } catch (e) {
     $("msg").textContent = label + " failed: " + e;
   }

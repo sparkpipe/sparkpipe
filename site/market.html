@@ -39,7 +39,7 @@
   <div class="row">
     <nav class="mode" aria-label="Mode"><a href="market.html" id="mode-live">Live</a><a href="market.html?sandbox" id="mode-sandbox">Sandbox, no money</a></nav>
     <p class="muted live-only">Real accounts and real payments. Try every flow first in the sandbox.</p>
-    <p class="muted sandbox-only">The same service with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and the API answers with a simulator instead of the fleets.</p>
+    <p class="muted sandbox-only">The same service with its own accounts: purchases settle at once with no money, sign-in codes show on screen, the shared test clock moves time forward, and a simulator answers API calls in place of a fleet running our engine.</p>
   </div>
 </section>
 
@@ -67,9 +67,10 @@
           <li>For business, professional, commercial or independent research and development use, not as a household consumer.</li>
           <li>Prepaid HC, at the price shown for the quantity you buy: now <span data-hc="small-usd">$20</span> each below <span data-hc="bulk-from">144</span> HC and <span data-hc="bulk-usd">$15</span> each from <span data-hc="bulk-from">144</span> HC, plus VAT. Each purchase lapses 12 months after issue unless you book with it.</li>
           <li>HC books whole-fleet hours on an Hour Fleet and weeks on a fleet pinned to you, up to 52 weeks ahead. A booking is final.</li>
+          <li>A fleet comes with our base image only, with no AI model and no software whose purpose is to run one. You install what you run, from the Catalogue or anywhere else, and operate it as your own: we run no AI model for you, and if you use your bookings to offer generative AI to others, you are its provider and bear the duties that apply to it. Installing software and loading a model count as part of your booking.</li>
           <li>A pinned fleet stays yours while you book the next week before 00:00 on the Sunday of your last booked week; otherwise it goes to the waitlist, ordered by locked HC.</li>
-          <li>HC has no cash value and is not refunded, unless we stop offering service for HC, close your account other than for your breach, HC locked in the waitlist would lapse, or the law requires a refund.</li>
-          <li>Requests and data are processed only on machines we operate in Korea and go to no other AI service. Your cache and files are deleted when another customer's booking of your fleet starts or 24 hours after your last hour on it.</li>
+          <li>HC has no cash value and is not refunded, unless we stop renting fleets for HC, close your account other than for your breach, HC locked in the waitlist would lapse, or the law requires a refund.</li>
+          <li>We keep your data only on fleets and servers we operate in Korea and send none of it to any other computing or AI service; whatever you, or software you install or run, send or receive is your own transfer. Your working state, the software you install and your files, is deleted when another customer's booking of your fleet starts or 24 hours after your last hour on it. We make no backup of it: keep your own copies.</li>
           <li>Our liability is capped at what you paid us for HC in the 6 months before the claim. Korean law; arbitration in Seoul.</li>
         </ul>
         <p>The Customer Agreement governs, and its Korean text prevails.</p>
@@ -111,7 +112,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="fleets">
 <section class="card">
   <h2>Fleets</h2>
-  <p class="muted">A pinned fleet serves only its holder. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday. Fleets come in pairs on a shared switch: hold an A fleet and you can also pin its B fleet for the weeks you hold the A fleet, so the two run as one 32-Spark, 4 TB cluster. At least a quarter of the serving fleets always stay open for hours.</p>
+  <p class="muted">A pinned fleet is rented to its holder alone. An available fleet can be pinned from the next Monday, unless the waitlist takes it first at 00:00 on Sunday. Fleets come in pairs on a shared switch: hold an A fleet and you can also pin its B fleet for the weeks you hold the A fleet, so the two run as one cluster of 32 Sparks with 4 TB of memory. At least a quarter of the fleets in service always stay open for hours.</p>
   <p class="num muted" id="pairs-open"></p>
   <div class="scroll"><table><thead><tr><th>Fleet</th><th>Machines</th><th>Rate</th><th>Status</th><th>Yours</th></tr></thead><tbody id="fleets"></tbody></table></div>
 </section>
@@ -134,7 +135,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="hours" hidden>
 <section class="card">
   <h2>Book hours</h2>
-  <p class="muted">Hour Fleets are never pinned. Book them by the hour up to <span data-hourfleet="days">7</span> days ahead, up to <span data-hourfleet="hours">24</span> hours each week per account across all Hour Fleets. Any other available fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate, less your discount: the one for the most weeks you hold on one fleet, or, while you are on the waitlist, for the weeks your lock would book.</p>
+  <p class="muted">An Hour Fleet is pinned only by the holder of its pair's A fleet, for the weeks they hold it. Book Hour Fleets by the hour up to <span data-hourfleet="days">7</span> days ahead, up to <span data-hourfleet="hours">24</span> hours each week per account across all Hour Fleets. Any other available fleet can be booked by the hour until the end of the current week. Each hour is <span data-hour="hc">1</span> HC times the fleet's Rate, less your discount: the one for the most weeks you hold on one fleet, or, while you are on the waitlist, for the weeks your lock would book.</p>
   <p class="num" id="hour-discount"></p>
   <form class="form" id="hours-form" novalidate>
     <div class="row">
@@ -170,7 +171,7 @@
 <div class="tab-panel" role="tabpanel" data-panel="api" hidden>
 <section class="card">
   <h2>Use your fleet</h2>
-  <p class="muted">Your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the fleet loads the model you name if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F1A"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
+  <p class="muted">A fleet starts with our base image only. Install our SparkPipe engine on it from the Catalogue, and your fleet speaks the Anthropic Messages API for Claude Code and OpenCode, the OpenAI Responses API for Codex, and OpenAI chat completions for other tools. Requests go to the fleet you hold at that moment, and the engine loads the model you name from your Customer storage if it is not already loaded. Holding two fleets? Name one with <code>"sparkpipe": {"fleet": "F1A"}</code>. <span class="sandbox-only">The sandbox answers with a simulator.</span></p>
   <p class="muted">Endpoint: <span class="endpoint" id="api-base"></span> (<code>/chat/completions</code>, <code>/models</code>), with an API key below as the bearer token.</p>
   <div class="mk-grid">
     <div class="form">
@@ -180,7 +181,7 @@
       <div class="scroll"><table><thead><tr><th>Key</th><th>Note</th><th>Created</th><th></th></tr></thead><tbody id="keys"></tbody></table></div>
     </div>
     <form class="form" id="try" novalidate>
-      <h3>Try it</h3>
+      <h3>Try your engine</h3>
       <label>Key<input id="try-key" type="text" autocomplete="off"></label>
       <div class="row"><label>Model<select id="try-model"></select></label><label class="check"><input id="try-stream" type="checkbox" checked><span>Stream</span></label></div>
       <label>Message<textarea id="try-prompt" rows="3">Summarize what a pinned fleet keeps from week to week.</textarea></label>

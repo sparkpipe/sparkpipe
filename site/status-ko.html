@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SparkPipe 서비스 상태</title>
-<meta name="description" content="SparkPipe 플릿 상태: 각 플릿이 지금 서비스 중인지, 당사 기록에 따른 가동률, 장애가 있었던 모든 기간, 예정된 점검.">
+<title>SparkPipe 가동 상태</title>
+<meta name="description" content="SparkPipe 플릿 상태: 각 플릿이 지금 가동 중인지, 당사 기록에 따른 가동률, 장애가 있었던 모든 기간, 예정된 점검.">
 <meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/status.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/status-ko.html">
@@ -34,9 +34,9 @@
 
 <main id="main" class="wrap policy">
   <section>
-    <h1>서비스 상태</h1>
+    <h1>가동 상태</h1>
     <p class="effective" id="status-now" aria-live="polite">기록을 불러오는 중…</p>
-    <p>각 플릿이 지금 서비스 중인지, 가동률과 장애가 있었던 모든 기간을 보여 드립니다. 적립에 쓰는 기록과 같은 기록입니다. 고객이 보유한 플릿이 연속 <span data-outage>15</span>분을 초과하여 이용할 수 없거나 접속할 수 없으면, 그 기간이 걸친 예약 시간마다 해당 플릿의 요율만큼 HC가 요청 없이 자동으로 적립됩니다(고객 계약 제4.4조).</p>
+    <p>각 플릿이 지금 가동 중인지, 가동률과 장애가 있었던 모든 기간을 보여 드립니다. 적립에 쓰는 기록과 같은 기록입니다. 고객이 보유한 플릿이 연속 <span data-outage>15</span>분을 초과하여 이용할 수 없거나 접속할 수 없으면, 그 기간이 걸친 예약 시간마다 해당 플릿의 요율만큼 HC가 요청 없이 자동으로 적립됩니다(고객 계약 제4.4조).</p>
   </section>
 
   <section id="fleets">
@@ -47,11 +47,11 @@
   <section id="how">
     <h2>측정 방법</h2>
     <ul>
-      <li>sparkpipe.ai의 게이트웨이가 30초마다 터널을 통해 각 플릿에 올라와 있는 모든 모델이 응답하는지 확인합니다. 플릿은 마지막 정상 응답부터 다음 정상 응답까지 장애로 기록되므로, 기간은 언제나 조금 일찍 시작하고 조금 늦게 끝납니다. 정상 응답 한 번으로만 나뉜 기간들은 적립에서 하나의 기간으로 세며, 그 기간이 적립 대상이면 각각 적립 대상으로 표시합니다.</li>
+      <li>sparkpipe.ai의 게이트웨이가 30초마다 터널을 통해 각 플릿의 모든 장비와 그 장비의 기본 이미지가 응답하는지 확인합니다. 고객이 설치하거나 실행하는 소프트웨어는 확인하지 않으며, 그 소프트웨어 때문에 플릿이 장애로 기록되는 일은 없습니다(제4.4조). 플릿은 마지막 정상 응답부터 다음 정상 응답까지 장애로 기록되므로, 기간은 언제나 조금 일찍 시작하고 조금 늦게 끝납니다. 정상 응답 한 번으로만 나뉜 기간들은 적립에서 하나의 기간으로 세며, 그 기간이 적립 대상이면 각각 적립 대상으로 표시합니다.</li>
       <li>게이트웨이 자체가 실행되지 않았거나 확인할 수 없었던 시간도 장애로 셉니다. 그 시간에는 고객도 플릿에 접속할 수 없었기 때문입니다.</li>
       <li><span data-outage>15</span>분을 초과한 기간은 <span data-outage>15</span>분이 지나는 즉시, 기간이 이어지는 동안 하루마다, 그리고 끝날 때 적립되며, 예약된 시간마다 한 번씩입니다. 공지된 점검 시간은 점검으로 적립되며(제4.3조), 이 페이지의 가동률에서는 제외합니다.</li>
       <li>고객의 기록에는 그런 기간이 있는데 당사 기록에는 없다면, 7일 이내에 <a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a>로 보내 주십시오. 당사 기록이 그동안 플릿을 이용할 수 있었음을 보여 주지 않는 한, 해당 시간을 적립합니다.</li>
-      <li>같은 수치를 <span class="mono">https://sparkpipe.ai/pay/api/status</span>에서 JSON으로도 제공합니다.</li>
+      <li>같은 수치를 <span class="mono">https://sparkpipe.ai/pay/api/status</span>에서 JSON으로도 공개합니다.</li>
     </ul>
   </section>
 </main>

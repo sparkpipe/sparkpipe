@@ -1561,7 +1561,7 @@ class App:
             raise Refusal("Every record names its request, a known account, its fleet and when it ran (at).", 400, "invalid_request")
         moment = market.stamp_field(found["at"], "time the request ran")
         if found["at"] <= self.book.erased.get(found["account"], ""):
-            raise Refusal("The account had the records of its requests up to this time deleted (DPA clause 9.3).", 409, "erased")
+            raise Refusal("The account had the records of its requests up to this time deleted, as our privacy policy provides.", 409, "erased")
         if not now - timedelta(days=RECORD_DAYS) <= moment <= now + timedelta(minutes=5):
             raise Refusal("A record is kept for a year: it must be from the last year, and not from the future.", 400, "invalid_request")
         owner = self.book.market.keys.get(found.get("key"))
@@ -1700,9 +1700,9 @@ class App:
         self.audit(account, by, "records.erased", {"records": count, "through": line["data"]["through"]})
         self.mail(self.cfg.notify, f"Erase the hub's request records of {account} within 30 days",
                   f"{self.who(account)} had the records of its requests deleted on the VPS ({note[:200]}): {count} records up to {line['data']['through']}. "
-                  f"DPA clause 9.3 gives us 30 days for the hub's records too. On the hub, as the chat layer's user in ~/sparkpipe-chat: python3 chat_frontend.py --config config.json --erase-records {account} --note {shlex.quote(note[:100])}")
+                  f"Our privacy policy gives us 30 days for the hub's records too. On the hub, as the chat layer's user in ~/sparkpipe-chat: python3 chat_frontend.py --config config.json --erase-records {account} --note {shlex.quote(note[:100])}")
         self.mail(self.book.accounts[account]["email"], "SparkPipe deleted the records of your requests",
-                  f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)} (Data Processing Agreement clause 9.3). "
+                  f"As you asked ({note[:200]}), we deleted the operational records of the {count} requests your account made up to {market.kst_text(now)}, as our privacy policy provides. "
                   f"Your bookings, payments and HC, which the law has us keep, are unchanged. Records of requests made from now on are kept for a year as before.{FOOTER}")
         return {"erased": count, "through": line["data"]["through"]}
 
@@ -3062,7 +3062,7 @@ def erase_records(app, argv):
         return 2
     found = app.erase_records(account, "operator", argv[3].strip())
     flush(app)
-    print(f"deleted {found['erased']} request records of {argv[2]} up to {found['through']} (DPA clause 9.3); the customer is emailed, and the hub's records are deleted on the hub")
+    print(f"deleted {found['erased']} request records of {argv[2]} up to {found['through']} (privacy policy); the customer is emailed, and the hub's records are deleted on the hub")
     return 0
 
 
