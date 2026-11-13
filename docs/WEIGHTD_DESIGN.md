@@ -266,8 +266,9 @@ records. The geometry differs from ABI 15's, so the record magic moved to
 
 `tp_mesh_hardware_probe` puts up to sixteen ranks on one GPU and gives each
 rank a band of one region, so the probe and its fixture daemon build with
-`-DSPARK_WEIGHTD_MESH_MAX_LANES=8u` (sixteen bands). Nothing else sets the
-macro.
+`tools/mesh_probe_layout` first on their include path, whose
+`sparkpipe/spark_weightd_mesh_lanes.h` gives eight lanes (sixteen bands).
+Every other build takes the four of `include/sparkpipe/`.
 - Measured with `build/mesh_round_bench` on two GB10 machines outside the
   fleet, one 100G port each and a private weightd on each (2026-11-13,
   microseconds a round at rank 0, results checked bit for bit by the bench).
