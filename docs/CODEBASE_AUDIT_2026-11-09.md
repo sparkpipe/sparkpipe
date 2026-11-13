@@ -377,6 +377,154 @@ Landed in the pull request that carries this page:
 - Step 7's diagnostics: the three layer-dump switches and the collective's
   round trace are read only in `DEBUG` builds, so a release build's
   execution shape does not depend on the environment.
+- Step 7's inputs and finding 4.3, on 2026-11-10: a lane's mesh lane, rank
+  map, expert pool cap and read-only arena share are stage config members
+  (`device_collective.mesh_lane` and `mesh_ranks` required, every member
+  parsed strictly); the serving process reads only residentd's own socket
+  and digest handoff, which the adapter passes on in configurations; the
+  spine budget input, the `SPARK_WEIGHTD_ATTACH` switch and the RDMA
+  transport's silent socket default are gone; weightd takes flags first
+  under one rule and the fleet agent passes it explicit flags pinned to
+  `deployment/lanes.json` instead of forwarding the node's environment;
+  `docs/ENVIRONMENT.md` lists every variable still read. Twenty launchers
+  that existed to set the retired variables are deleted. A Qwen3.8-27B
+  test lane booted from the stage config alone and matched the previous
+  head token for token and logprob for logprob on every path of six of the
+  seven release prompts (the seventh ran on a different source file); the
+  K3 lane's start command changed the same way and waits for a production
+  window.
+- Step 4 in full, on 2026-11-10. `inference/runner/stage_model_cuda.cuh`
+  holds the CUDA stage-model plumbing: the named-pack bind over a tensor list,
+  the arena plan, KV attach over declared pools, recurrent copy and reset over
+  declared state, lane state as a shallow clone with declared counters folded
+  back, the report and the interface table. Gemma 4, HY4, MiMo 2.6, Ling 3,
+  Motif 3, the Qwen 3.8 hybrid, GLM 5.3 Full, GLM 5.3 Flash and DeepSeek V4.1
+  Flash now declare their parts on it. DeepSeek V4.1 Flash's backend and
+  kernels live in `model-families/dsv41_flash/source/`, and its module keeps
+  identity and serving wiring. The CUDA hyper-connection kernels live once,
+  in `inference/kernels/hc.cuh` and `hc_site.cuh`. K3's device code and pack
+  binding live in `model-families/k3/`, and K3 keeps its own `step`. Every
+  converted or moved kernel compiles to the same machine code, except HY4's
+  stream expansion and post update and DeepSeek V4.1 Flash's stream
+  expansion, whose outputs are bit-identical on the device.
+- The host turn around each frame, on 2026-11-10 (2.9, 2.10, 2.11 and the
+  fan-out cost of 2.5). A submission is validated once per check and a rank
+  decodes it once. Completions are cleared and copied over their used range
+  instead of 37.5 KB at a time. The pipeline encodes a submission once and
+  sends the same bytes to every rank, stamping only each rank's message id
+  and client generation. A decode continuation whose lanes only advance
+  carries each lane's token and slot (40 bytes) instead of its 168-byte
+  lane, and the rank rebuilds the continuation from the lanes it kept
+  (`CONTINUE_TOKENS`, IPC ABI 27). The coordinator reads each rank with one
+  receive and runs progress only on the ranks with something to read or
+  do. The engine visits only live request slots, a prefix lookup hashes
+  each candidate length once and digests only candidates, and a publication
+  commits only the blocks past the sequence's committed prefix. Tokens,
+  admission, expiry, cancellation, stop and error results are unchanged.
+  `build/host_turn_bench` (`docs/TOOL_REFERENCE.md`) measures the turn
+  against sixteen loopback ranks. On the workstation Mac, as medians of
+  three interleaved runs, the coordinator's CPU per frame went from 166,
+  186 and 211 us to 100, 111 and 103 us in decode at 1, 8 and 16 lanes,
+  from 403 to 232 us in a 64K-token prefill and from 636 to 237 us in a
+  wave of 96 short prompts, and a rank's went from 24-30 us to 20-25 us in
+  decode. Counted with strace at one lane on Linux, the coordinator makes
+  about 18 receives per frame instead of 99, and 5 polls instead of 2.
+  An independent review found no served-behaviour defect; its four small
+  findings are fixed (a malformed header buffered behind a processed
+  message now fails the session at the next progress, a prepared route's
+  deadline is anchored after the adapter's cache prepare again, and the
+  bench no longer idles 100 ms after a prefill round's last completion), and
+  `tests/test_host_turn_bench.py` now runs token continuations and
+  one-message progress through sixteen real ranks, which catches both
+  mutations the review showed the suite missed.
+- The packers (finding 6), on 2026-11-10. The fifteen stage packers of the
+  census are 8,077 lines instead of 12,622 on one core
+  (`tools/spark_pack_common.py`, `spark_pack_codecs.py`, `spark_pack_wire.py`,
+  `spark_pack_plan.py`): the safetensors reader, the codecs and requantizers,
+  the two pack wire formats, ck128 and the expert manifest, TP windows and
+  the no-clobber publish. The MiniMax and K3 DSpark packers, whose formats
+  nothing loads, are deleted with the K3 DSpark wire header. Every changed
+  packer writes the same bytes as before on 171 synthetic cases (638 files);
+  `tests/test_spark_pack_core.py` pins the core against the runtime's ck128,
+  stage-pack header and manifest loader. Left open: the TP16 packers and
+  `tools/spark_named_pack.py`, which write the packs the CUDA lanes load,
+  keep their own core; eight stage packers (Qwen 3.8 and 3.8-27B, Gemma 4,
+  MiMo 2.6, HY4, Laguna, Ling, the GLM 5.2 requantizer) write packs no CUDA
+  lane loads, and whether the Metal deployments load them decides whether
+  they stay. Found and kept byte for byte: Gemma 4's `.experts` manifests
+  are refused by the runtime loader (record count 0, 36-byte records),
+  Laguna's NVFP4 arm reserves one scale global per expert where its producer
+  writes two, Qwen3.8-27B's FP8 fused gate|up checkpoints fail their shape
+  check, and Qwen 3.8 FP8 is refused above TP1.
+- The wave boundary (2.2), on 2026-11-10. A wave no longer takes and drops
+  mesh activity through weightd, and rank 0 no longer broadcasts an epoch
+  that the other ranks spin on. The collective holds mesh activity for its
+  session, derives each wave's epoch on every rank from the submission's
+  request id (the same bytes on every rank) plus a key of the rank map and
+  degree, so ranks that disagree on membership cannot pair a round, and
+  seeds the round control block with two copies and a memset. A new session clears its band's slot
+  tails before its first round, which is what the ever-rising epoch did for
+  an earlier session's tails. On the Qwen3.8-27B lane at TP16 the time from
+  a rank's completion to its next frame fell from 2.4-2.6 ms to 1.1 ms in
+  two runs, and the frame cycle from 60.9 ms to 60.4 and 58.5 ms; outputs
+  matched on every path.
+- The wave boundary's epoch, corrected on 2026-11-11. As landed the day
+  before, it stopped a lane at the first API restart: weightd ships and
+  acknowledges a publication only when its tag is greater than the cell's
+  last one, and keeps that state until the collective attaches again
+  (`node/weightd_mesh.c`, `issued` and `doorbell_posted`), while the epoch
+  came from the low 24 bits of the request id and the API numbers its
+  submissions from 1,000,000 again with every new engine session. After a
+  restart every tag was below the last one shipped, no round was
+  acknowledged and each wave failed on all sixteen ranks until the lane was
+  restarted; the 24-bit key would also have wrapped after 16.7 million
+  waves, and the membership key, taken modulo the whole range, could wrap
+  the epoch sooner. `main` is not affected: it keeps an ever-rising epoch in
+  the mesh and broadcasts it per wave. No gate had restarted the API inside a
+  lane cycle until the one for 2.11 did. Submission ids now rise for as long
+  as a rank lives: residentd reports the highest id it has accepted in its
+  hello acknowledgement (IPC ABI 28), the engine lifts its numbering above
+  the largest floor of its ranks before every dispatch, the runner hands the
+  collective the whole id, the epoch is 1 plus a membership key below 65,521
+  plus the id, which cannot wrap below an id of 2^32 - 65,522, and the
+  collective refuses a request whose epoch falls or leaves the range and
+  says so (`COLLECTIVE-EPOCH-FELL`, `COLLECTIVE-EPOCH-RANGE`). Epochs never
+  repeat within a rank's life, which is also what keeps an earlier
+  publication's slot tail from satisfying a later wait. The fuzz test's
+  shipper now refuses a fallen tag as weightd does, so the host suite fails
+  on this class of defect (608 checks with the guard off).
+- The hub drafter's call (2.11), on 2026-11-11. The draft bridge is a
+  request and a reply (`SparkDraftBridgeRequestTree`, `Reply`, `Cancel`,
+  `Poll`): it never blocks, holds one exchange at a time, and keeps the
+  connect and I/O limits as deadlines of the exchange. The engine asks at the
+  same point of a decode frame's plan, with the same depth, wait and limits.
+  A frame whose lane has no answer yet is not built: its submission slot,
+  selection ages, scan position and work-kind rotation are put back, and it
+  is planned again when the answer is in or its time limit passes. One ask
+  is outstanding at a time and the answers of two requests are kept, so two
+  lanes are still asked one after the other. While a frame waits, the engine
+  takes completions, admits and cancels requests and dispatches prefill,
+  release and publication work, keeping one submission slot for the waiting
+  frame; a request that leaves has its ask dropped. The draft socket and its
+  deadline are in the engine's poll set, so the API and the batch tool wake
+  on the answer. A draft is only ever verified, so tokens cannot change;
+  what changes is who waits for the drafter. On the Qwen3.8-27B lane, with a
+  drafter stand-in that replays streams it has seen
+  (`tools/draft_replay_server.py`, `docs/TOOL_REFERENCE.md`), a 384-token
+  stream drafted while one-token requests arrived back to back. With the
+  drafter answering in 100 ms, an arrival took 283 ms at the median (347 at
+  the 90th percentile, 395 at most) behind the blocking call and 93 ms (109,
+  133) with the split, and 141 arrivals completed during four streams
+  instead of 44; the stream ran at 92 tok/s instead of 101, sharing the GPUs
+  with three times the arrivals. With the drafter answering in 10 ms the
+  arrivals took the same time (130 and 132 ms) and the stream kept 182 tok/s
+  instead of 157, because arrivals that are dispatched at once no longer
+  count as waiting prefill when its next frame is sized. The stream alone is
+  unchanged (the wait for a draft is the drafter's), and the engine's mean
+  wait reads the same on both sides (10.35 and 10.38 ms, 100.41 and 100.40
+  ms). A drafter that does not answer costs the frame that asked its wait
+  plus 100 ms; it used to stop the engine's thread for that long, and for
+  200 ms more whenever the connection had to be opened.
 
 A first fleet gate ran on 2026-11-10 on a Qwen3.8-27B test lane
 (`qualification/fleet-gate-20261110/README.md`): this branch before the Metal
@@ -392,36 +540,177 @@ device library every adapter now loads (fixed).
 
 The second fleet run, Gemma 4 26B-A4B at 16 sequences, is in the same receipt: the work before the Metal line is bit-identical to `main` there too, sixteen streams gain 24%, and the Metal line's numerics leave one open defect (a short prompt's first token depends on its batch) that blocks the release until it is closed.
 
-Still open, in the order above:
+Later on 2026-11-10 the same Qwen3.8-27B lane gated each landing against the
+previous one on the release kit's seven prompts and every path (chain,
+speculate, batch, sampled, sampled batch): step 7's inputs, the host turn,
+step 4 with the packers (frame costs within 0.05 ms of the previous head),
+and the wave boundary, twice. Every run matched token for token and
+logprob for logprob.
 
-- Step 2, the collective half: the wave-boundary IPC and chain key,
-  `FinishAsync` for publish frames, the two-phase commit and validation
-  inflation (2.5, 2.8, 2.9).
-- Step 3, the second half: the runner's sequence-boundary split of a
-  multi-sequence wave, GLM 5.3 Full's wave chunking and DSV4.1's tail rows in
-  the runner, K3's dispatch loop; then the collective plan from the
-  schedule.
-- Step 4: the shared CUDA stage-model plumbing.
-- Step 5: streamed prefill as a schedule backend.
+On 2026-11-11 the gate gained three things. It restarts the API on the
+serving lane: six API sessions in one lane cycle, which is how the wave
+boundary's falling epoch was found and how its correction was proven (no
+epoch refusal and no failed round on the ranks, every request served; the
+restarted API numbers from 1,000,738, above the 737 submissions of the
+session before it, and two prompts match on every path). It restarts a
+rank under a serving API, rank 5 and then rank 0: the API reports fifteen
+ranks, reconnects within seconds, the restarted rank answers the first
+prefix restore with `PENDING` once and the engine retries it, and three
+prompts match on every path with the cached prefix of the long one in use.
+And it drafts through `tools/draft_replay_server.py`: the head with no drafter matches the
+previous head on the seven prompts and every path; with the drafter
+configured and knowing nothing, the same; with the drafter replaying the
+first run, every path still matches token for token and logprob for logprob
+while each prompt's speculating run verifies 23 to 146 model drafts in two
+to five frames and a 32 to 48 token reply takes 0.31-0.39 s instead of
+0.69-1.07 s.
+
+The rank restart exposed one more defect on the build host, in the
+loopback fuzz and not on the lane: a request hung when a stopped rank was
+killed and restarted under it. The pipeline publishes a new session inside
+its progress call, when every rank is connected again; the engine compared
+the session once per pass, before that call. When the last rank came back
+during the engine's own pipeline progress, the engine dispatched in the
+same pass with the bindings of the ended session, then found the new
+session with a submission in flight, refused to invalidate and returned
+before pipeline progress on every later pass. The engine now compares the
+session after pipeline progress too, and a comparison that ever finds
+submissions in flight fails the engine once and keeps the pipeline
+progressing. `TestScenarioRankReturnsDuringProgress` reproduces the order
+with the mock client and fails without the change. The commit
+`3a1cff2da` passed the gate again on a fresh lane: seven of seven prompts
+on every path against the gated build, two of two after an API restart,
+three of three after each of two rank restarts, two session changes with
+nothing in flight (`qualification/fleet-gate-20261111/`).
+
+`tools/roofline_meter.py` now reads a lane's own logs and says where a
+frame's time goes. On the Qwen3.8-27B lane at `3a1cff2da` (BF16, TP16, the
+gate's traffic, all sixteen rank logs) a decode chain takes 22.2 ms a
+token. The heaviest rank reads 3.49 GB a pass, a 14.4 ms floor at 243
+GB/s, so the chain is at 65% of the roofline: 6.2 ms (28%) is collectives
+on that rank, 1.2 ms (5%) its remainder and 0.4 ms (2%) host and wire. A
+single step with logprobs is at 51%, with 1.0 ms of host; a verify frame
+yields 16.8 tokens in 53.1 ms, 4.5 times the one-token roofline. Two
+things stand out in the rank logs.
+
+- The ranks are not loaded alike. The pack splits the FFN's 136 blocks of
+  128 as nine on ranks 0 to 7 and eight on ranks 8 to 15
+  (`tools/qwen38_27b_tp16_pack.py`), so the first eight hold 3.49 GB
+  against 3.24 GB and do 16.8 to 17.5 ms of own work a step against 15.1
+  to 15.6; the other eight wait about 1.8 ms a step for them. An even
+  split, 1,088 columns a rank, would put every rank near 16.3 ms, about a
+  millisecond a step. It changes the pack and the order of the partial
+  sums, so it needs a repack and a new comparison with the reference.
+- A round's wait is the spread between peers more than the wire. This
+  family issues 128 rounds a step, two a layer. After its own publish the
+  heaviest rank sees the first peer's data in 8 us and the median peer's
+  in 15 us, and waits 46 us for all fifteen, because a different peer is
+  late in each round: 5.9 ms a step. The commit round trips (2.5) sit
+  inside the 0.4 to 1.0 ms of host and wire.
+
+The second point was taken apart on 2026-11-11 with `build/mesh_round_bench`
+on the sixteen Sparks and with five firmware builds on the same lane and
+load (chain decode at about 1,000 tokens of context, identical output).
+
+- The network part of a round is 25.8 us for this family's 5,120-value sum:
+  2.8 publishing, 19.6 until the fifteenth peer has landed, 2.7 summing. It
+  is 16.6 us for 1,024 values and 34.4 for 8,192, and the two-hop form is a
+  flat 44 us, so the switch between them at 10,240 values is where it should
+  be. weightd posts a round to its fifteen peers in 0.9 us, within 1 us of
+  the doorbell. A graph node costs 0.54 us and a decode step has 1,601.
+- The rest of the wait is ranks finishing their own work at different times.
+  Identical ranks reproduce it: with a cold 26 MiB read in front of every
+  round each rank waits 28 us, not 19.6. A node's cold read runs at 225 to
+  230 GB/s and differs by 5 to 8% between places in memory, and on a Spark
+  about one read in a hundred falls in a burst that takes 10 to 80% longer
+  (0.35 to 0.7% of its read time; a kernel that reads no memory does not see
+  them). With sixteen ranks a round meets one of those often.
+- A rank that waits can read its next weights meanwhile, and a prefetch
+  during idle memory time comes off the next read one for one, up to the
+  20 MiB the cache holds. The arrival kernel issued its prefetch hints from
+  the warp that polls, which paced the hints and slowed the poll. On its own
+  warp, until the peers land: 21.03 to 20.15 ms a token, 47.5 to 49.6 tok/s;
+  with no prefetch at all the lane takes 22.05. The table and the bench
+  numbers are in the kernel playbook, section 2.7.
+- With the prefetch the step follows the rank that publishes last. It has no
+  wait to fill, so it reads cold: 16.8 ms a step on a heavy rank, plus 0.9
+  publishing and summing, a bound near 17.7 ms for this pack; the lane is at
+  20.15 and a heavy rank's memory still idles about 3 ms a step. A prefetch
+  budget of 16 MiB against 12 gives the same and 20 MiB slightly worse
+  (20.37).
+- A step with logprobs is 5.4 ms longer than a chain step, and that is the
+  logprobs path, not the cost of a separate submission: a chain's first step
+  costs under 2 ms more than its others.
+- Where memory sits matters a little. The first gigabyte or so that a
+  process allocates on the device reads about 8% slower than what it
+  allocates after it (the build host: 140 us against 129 for 26 MiB; taking
+  and freeing 2 GiB first makes the next allocation fast from its start). On
+  two Sparks, whose free memory is fragmented, the same trick gave 0 and
+  2.4%, and their fast level is 134 to 135 us. An extra telemetry query loop
+  on every node, at 1 or 10 Hz, does not move a round.
+
+Still open, by what the meter says each is worth on a decode step:
+
+- Step 3, the second half, and then the collective plan from the schedule:
+  the runner's sequence-boundary split of a multi-sequence wave, GLM 5.3
+  Full's wave chunking and DSV4.1's tail rows in the runner, K3's dispatch
+  loop; then two rounds a layer where a family issues more, with the publish
+  in the producing kernel and the wait in the consumer's prologue. A third
+  of the step is here.
+- Step 5: streamed prefill as a schedule backend, for the families whose
+  prefill is bound by the wire.
 - Step 6: placement as deployment data.
-- Step 7, the inputs: a lane's weightd socket, lane number, mesh ranks,
-  expert pool cap and spine budget still reach the adapter and the
-  collective through the unit's environment (`lane.sh`), not the stage
-  JSON. Moving them changes the contract between the renderer, the lane
-  script and residentd on every lane at once, so it goes with a release
-  that can boot a lane before it is rolled.
+- Step 2, the collective half: the two-phase commit's round trips (2.5),
+  inside the 2 to 3% of a frame that host and wire take. Settled on
+  2026-11-10 without a code change: `FinishAsync` (2.6) is mapped in
+  `docs/ASYNC_KV_FINISH_DESIGN.md`, where the audit's bytes turn out to be
+  on the `CACHE_PUBLISH` path, ten rules keep every result unchanged, and
+  the Qwen3.8-27B lane measures 0.26 ms per publishing lane and 0.2-0.4 ms
+  per chain, under 1% of a frame, so it waits for the GLM 5 Next and K3
+  measurements; 2.8 was closed by step 2's runner half (every adapter mirror
+  is pinned and the token upload no longer drains); and the adapter's own
+  check in `submit` (the rest of 2.9) stays, because it fences a submission
+  prepared before a reset and bounds the buffers sized by `max_rows` for any
+  caller that skips prepare, at the cost of a few comparisons.
 
 Each of these changes the serving path's behaviour and none can be proven
-by a host test or a compile: they need a lane on the fleet, which the
-budget of 2026-11-10 did not allow.
+by a host test or a compile: each needs a lane on the fleet, as the landings
+above had.
+
+Found on 2026-11-11 and removed the same day: the speculation seam, the
+policy engine under it, the recorded, reference, n-gram and relay drafts,
+the relay link, the tap dump, the drafter mix and the static tree header
+were reached only by their tests and by measurement tools written for them.
+The engine drafts through its own lookup and the bridge and verifies trees
+itself. The units, their tests, the tools that compiled or read them and
+the Python model of their chain policy and K3's own test-only engine are
+deleted, about 11,700 lines; the
+lookup index keeps its linear-scan oracle. `docs/SPECULATION_UNIFIED_DESIGN.md`
+now describes speculation as built, and the 2026-09-28 plan and the taps
+contract of the retired GLM module are archived. Still to remove with the
+roofline meter, which replaces them: the bake-off tools' log readers
+(`tools/spec_verify_bench.py log`, the acceptance half of
+`tools/spec_bakeoff.py`, `tools/spec_offline/cost.py` and
+`tools/tp_chain_budget.py`), which parse lines no engine has printed since
+the per-family modules went on 2026-10-11.
+
+The release kit's `qualify` step activated each model on a fresh lane and
+a fresh API, so it never restarted an API under a serving lane, which is
+where the wave boundary's first epoch rule failed. It now restarts each
+model's API with the controller's own commands, waits for every rank and
+compares two prompts with the capture just taken (`scripts/release_rollout.sh`,
+`api_restart`; `restart` runs it alone). `tests/test_release_rollout.py`
+runs it against the fake fleet; its first run on the real controller is the
+next release.
 
 Found while deleting, and left: the committed static deployments
 `deployment/glm5_next_tp16` and `deployment/laguna-s-2.1.bf16.tp8pp2` carry
-stage configs in the `tp_collective` schema the adapter refuses (two tests
-and the cold-launch script use them as fixtures); `tools/k3_multidev_lane.py`
-still knows the dropped TP4xPP4 topology and defaults to it, though
-`tools/k3_lane.sh` passes `tp16` and refuses anything else; the hardware
-characterisation tools keep their `gpudirect` candidate.
+stage configs in the `tp_collective` schema the adapter refuses (the
+deployment loader test and the launcher test use them as fixtures); the
+hardware characterisation tools keep a `gpudirect` candidate, which measures
+the hardware rather than selecting a serving mode. `tools/k3_multidev_lane.py`
+and its TP4xPP4 default went with step 7's inputs: K3 test lanes render
+through `tools/stage_lane.py`.
 
 Merged on 2026-11-10: the tree verification of #1902 (trunk plus single-level
 branches in a verify frame, on Metal for Qwen3.8-27B and on CUDA for Solar

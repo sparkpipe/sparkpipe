@@ -100,11 +100,10 @@ compile_cuda()
 compile_cuda "${output_directory}/probe.cu" probe
 
 translation_units=(
-	tools/mb_doorbell.cu
 	tools/hardware/spark_cuda_characterize.cu
 	tools/hardware/spark_nvme_characterize.cu
-	inference/llms/kimi_k3/bind.cu
-	inference/llms/kimi_k3/unity.cu
+	model-families/k3/source/bind.cu
+	model-families/k3/source/unity.cu
 )
 for relative_source in "${translation_units[@]}"; do
 	artifact_name="${relative_source//\//__}"

@@ -4,9 +4,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODULE = ROOT / "modules" / "k3_resident_decode_stage" / "source"
 RUNNER = ROOT / "inference" / "runner" / "stage_runner.cu"
-MODEL = MODULE / "spark_k3_stage_model.cu"
+MODEL = ROOT / "model-families" / "k3" / "source" / "k3_stage.cuh"
 ADAPTER = ROOT / "inference" / "runner" / "stage_serving_adapter.c"
 
 
@@ -84,8 +83,11 @@ def check_runner(failures):
         failures.append("the step does not report a failed copy or collective "
                         "before it completes")
     chain = body(text, "StageRunnerChainBegin")
-    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, key)" not in chain:
-        failures.append("StageRunnerChainBegin does not key the device collective")
+    if "SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id)" not in chain:
+        failures.append("StageRunnerChainBegin does not key the device collective with the whole request id")
+    if "CHAIN_ID_MASK" in chain:
+        failures.append("StageRunnerChainBegin masks the request id; a wave's epoch rises with the whole id "
+                        "and a masked id falls back after 16.7 million waves")
     if "device_collective_wide" in text + model:
         failures.append("the runner still opens a second mesh band; every "
                         "collective runs on the lane's first band")

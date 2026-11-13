@@ -1,0 +1,39 @@
+{
+    "id": "bf39421e-8da4-40e3-8588-df2100d5df8c",
+    "started_at": "2026-11-05T13:42:35.629295",
+    "updated_at": "2026-11-05T13:45:55.452486",
+    "finished_at": "2026-11-05T13:45:55.452486",
+    "n_total_trials": 1,
+    "stats": {
+        "n_completed_trials": 1,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "claude-code__stub-model__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "fix-git__6sYvKjz"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 38092,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 24,
+        "cost_usd": 0.19106
+    }
+}

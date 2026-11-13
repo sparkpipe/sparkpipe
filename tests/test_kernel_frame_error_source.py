@@ -30,7 +30,7 @@ def main() -> int:
                 failures.append(
                     f"{path.relative_to(ROOT)}: device trap remains as a "
                     f"data-corruption response")
-    for path in sorted((ROOT / "modules").rglob("*.cu")):
+    for path in sorted([*(ROOT / "modules").rglob("*.cu"), *(ROOT / "model-families").rglob("*.cu"), *(ROOT / "model-families").rglob("*.cuh")]):
         body = path.read_text()
         for line in body.splitlines():
             if "asm volatile" in line and "trap" in line:

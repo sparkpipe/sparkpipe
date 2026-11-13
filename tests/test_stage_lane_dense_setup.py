@@ -27,12 +27,7 @@ sources=()
 for argument in "$@"; do case "$argument" in -*) ;; *) sources+=("$argument") ;; esac; done
 unset 'sources[${#sources[@]}-1]'
 for source in "${sources[@]}"; do
-  if [ "$(basename "$source")" = weightd_spine_budget.py ]; then
-    if [ -d "$target" ]; then out="$target/weightd_spine_budget.py"; else out="$target"; fi
-    printf 'import os, sys\\nprint(os.path.getsize(os.path.realpath(sys.argv[1])) + 7)\\n' > "$out"
-  else
-    cp "$source" "$target"
-  fi
+  cp "$source" "$target"
 done
 """
 SYSTEMD_RUN = """#!/usr/bin/env bash
@@ -99,8 +94,10 @@ def main():
             (fake / "systemd-run.args").unlink(missing_ok=True)
             started = subprocess.run(["bash", str(script), "start", f"run{rank}"], env=environment, capture_output=True, text=True, timeout=60)
             arguments = (fake / "systemd-run.args").read_text() if (fake / "systemd-run.args").exists() else ""
-            if started.returncode != 0 or f"SPARK_WEIGHTD_SPINE_BUDGET_BYTES={sizes[rank] + 7} " not in arguments:
-                failures.append(f"{host}: lane.sh start exited {started.returncode} ({started.stderr.strip()[-200:]}) or launched without the configured pack's spine budget: {arguments.strip()[:160]}")
+            if started.returncode != 0 or "SPARK_" in arguments or "--deployment deployment.json" not in arguments:
+                failures.append(f"{host}: lane.sh start exited {started.returncode} ({started.stderr.strip()[-200:]}) or launched residentd with SPARK_ inputs or without its deployment: {arguments.strip()[:160]}")
+            if json.loads(adapter.read_text())["device_collective"]["mesh_lane"] != LANE:
+                failures.append(f"{host}: config/adapter.json does not name mesh lane {LANE}")
             after = sorted(path.name for path in (root / "packs").iterdir() if path.name.endswith(".sha256"))
             if after != ["pack.sha256"] or (root / "packs" / "pack.sha256").read_text() != digests[rank]:
                 failures.append(f"{host}: lane.sh start left packs/ with {after} or changed the digest")
@@ -109,7 +106,7 @@ def main():
     if failures:
         return 1
     print("PASS stage_lane dense setup: a dense lane's packs/ holds exactly one digest, packs/pack.sha256, "
-          "which is the pack's own; lane.sh start keeps that digest and launches with the configured pack's spine budget")
+          "which is the pack's own; the stage config names the lane's mesh lane, and lane.sh start keeps that digest and hands residentd no SPARK_ input")
     return 0
 
 

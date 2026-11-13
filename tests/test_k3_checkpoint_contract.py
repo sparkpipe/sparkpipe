@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "model_contracts" / "k3_authoritative.json"
 GENERATOR = ROOT / "tools" / "generate_k3_contract.py"
 MODEL_HEADER = ROOT / "model-families" / "k3" / "include" / "sparkpipe" / "spark_k3_model.h"
-GENERATED_HEADER = ROOT / "inference" / "llms" / "kimi_k3" / "generated_config.h"
+GENERATED_HEADER = ROOT / "model-families" / "k3" / "source" / "generated_config.h"
 
 
 def load_generator():

@@ -64,6 +64,10 @@ The repository is public. These files stay in the private coordination store
 
 ## Replacing or adding a node
 
+A node still on its factory image goes through
+[NODE_BRINGUP.md](NODE_BRINGUP.md) first: first contact, keys and sudo,
+headless, and the first upgrade. It then continues here at step 2.
+
 1. **Owner:** rack and cable the node exactly like its predecessor (port 0 to
    `cisco0`, port 1 to the CRS804, the USB OSD enclosure moves with it). Create
    the first-boot user `sparkN` (uid 1000) with hostname `sparkN`. Authorize the

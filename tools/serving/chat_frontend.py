@@ -2,17 +2,22 @@ import argparse
 import asyncio
 import base64
 import codecs
+import contextlib
 import copy
+import fcntl
 import functools
 import hashlib
 import importlib.util
 import ipaddress
 import json
+import math
 import os
 import re
 import resource
+import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from array import array
@@ -75,6 +80,7 @@ chat_shapes.RequestError = RequestError
 chat_shapes.chat_replay = chat_replay
 KEEPALIVE_SECONDS = 10.0
 MEMORY_HEALTH_SECONDS = 2.0
+MEMORY_FORGET_SECONDS = 30.0
 MEMORY_COMMAND_SECONDS = 600.0
 MEMORY_IMPORT_SECONDS = 3900.0
 BUSY_WAIT_SECONDS = 60.0
@@ -87,9 +93,11 @@ PRIORITY_HEADER = "X-SparkPipe-Priority"
 PRIORITY_METADATA = "x-sparkpipe-priority"
 PRIORITY_CLASSES = ("interactive", "background")
 CANCEL_WAIT_SECONDS = 5.0
-REQUEST_PATH = re.compile(r"/v1/requests/r_[0-9a-f]{24}")
+REQUEST_ID = re.compile(r"r_[0-9a-f]{24}")
+REQUEST_PATH = re.compile(r"/v1/requests/" + REQUEST_ID.pattern)
 FLEET_HEADER = "X-SparkPipe-Fleet"
 ACCOUNT_HEADER = "X-SparkPipe-Account"
+REQUEST_HEADER = "X-SparkPipe-Request"
 MEMBER_HEADER = "X-SparkPipe-Member"
 KEY_HEADER = "X-SparkPipe-Key"
 ALLOW_SWAP_HEADER = "X-SparkPipe-Allow-Swap"
@@ -97,9 +105,9 @@ ALLOW_SWAP_VALUES = frozenset({"1", "true"})
 HEADER_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 FLEET_VALUE = re.compile(r"[A-Za-z0-9._-]{1,32}")
 REQUEST_CLASS_HEADER = "x-claude-code-request-class"
-BACKGROUND_CLASSES = frozenset({"compaction", "auxiliary"})
+SIDE_CLASSES = frozenset({"compaction", "auxiliary"})
 SUBAGENT_HEADER = "x-openai-subagent"
-BACKGROUND_SUBAGENTS = frozenset({"compact"})
+SIDE_SUBAGENTS = frozenset({"compact"})
 AFFINITY_HEADERS = ("X-Claude-Code-Session-Id", "x-session-affinity", "X-Session-Id")
 MEMORY_HEADER = "X-SparkPipe-Memory"
 AGENT_HEADERS = ("x-claude-code-agent-id", "x-parent-session-id")
@@ -115,6 +123,10 @@ GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
 EXPIRY_SWEEP_SECONDS = 60.0
 OWN_SCOPE = "own"
+RECORD_DAYS = 366
+RECORD_PRUNE_SECONDS = 3600.0
+RECORDS_DIRECTORY = "request-records"
+RECORDS_LOCK = ".lock"
 
 
 def tojson(value, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
@@ -125,9 +137,9 @@ def clean_header(value, pattern=HEADER_VALUE):
     return value if isinstance(value, str) and pattern.fullmatch(value) is not None else None
 
 
-def harness_background(headers):
-    return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in BACKGROUND_CLASSES
-            or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in BACKGROUND_SUBAGENTS)
+def harness_side_request(headers):
+    return ((headers.get(REQUEST_CLASS_HEADER) or "").strip().lower() in SIDE_CLASSES
+            or (headers.get(SUBAGENT_HEADER) or "").strip().lower() in SIDE_SUBAGENTS)
 
 
 def glob_match(pattern, name):
@@ -453,8 +465,8 @@ async def heartbeat(events, interval):
 
 
 class LiveRequest:
-    def __init__(self, scope):
-        self.scope = scope
+    def __init__(self, scope, member):
+        self.scope, self.member = scope, member
         self.cancelled = asyncio.Event()
         self.finished = asyncio.Event()
         self.queue = None
@@ -629,6 +641,17 @@ class TokenizersVocabulary:
                 ids.extend(self.plain.encode(piece, add_special_tokens=False).ids)
         return ids
 
+    def encode_released(self, text):
+        pieces = self.spacing_pattern.split(text) if self.spacing_pattern is not None else [text]
+        plain = iter(self.plain.encode_batch([piece for index, piece in enumerate(pieces) if index % 2 == 0 and piece], add_special_tokens=False))
+        ids = []
+        for index, piece in enumerate(pieces):
+            if index % 2 == 1:
+                ids.append(self.spacing[piece])
+            elif piece:
+                ids.extend(next(plain).ids)
+        return ids
+
     def control_strings(self):
         return [token.content for token in self.tokenizer.get_added_tokens_decoder().values() if token.content not in self.spacing]
 
@@ -659,6 +682,9 @@ class TiktokenVocabulary:
 
     def encode(self, text, special):
         return self.encoding.encode(text, allowed_special="all") if special else self.encoding.encode_ordinary(text)
+
+    def encode_released(self, text):
+        return self.encoding.encode_ordinary(text)
 
     def control_strings(self):
         return list(self.specials)
@@ -1797,6 +1823,78 @@ class MemoryHost:
                                                             request["trace"])}
 
 
+def utc_stamp(moment):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(moment))
+
+
+class RequestRecords:
+    def __init__(self, folder):
+        self.folder = Path(folder)
+        self.lock = threading.Lock()
+        self.pruned = None
+        self.folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.folder.chmod(0o700)
+
+    @staticmethod
+    def owner(scope):
+        return (scope or OWN_SCOPE).replace(":", "-")
+
+    @contextlib.contextmanager
+    def locked(self):
+        with self.lock:
+            descriptor = os.open(self.folder / RECORDS_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                yield
+            finally:
+                os.close(descriptor)
+
+    def append(self, path, line):
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    def add(self, scope, record):
+        folder = self.folder / self.owner(scope)
+        with self.locked():
+            folder.mkdir(mode=0o700, exist_ok=True)
+            self.append(folder / (record["at"][:10] + ".jsonl"), record)
+
+    def erase(self, account, note, now):
+        folder = self.folder / self.owner("account:" + account)
+        with self.locked():
+            records = sum(len(path.read_text(encoding="utf-8").splitlines()) for path in folder.glob("*.jsonl")) if folder.is_dir() else 0
+            if folder.is_dir():
+                shutil.rmtree(folder)
+            self.append(self.folder / "erasures.jsonl", {"account": account, "at": utc_stamp(now), "records": records, "note": note[:200]})
+        return records
+
+    def prune(self, now):
+        if self.pruned is not None and now - self.pruned < RECORD_PRUNE_SECONDS:
+            return 0
+        self.pruned, cutoff, removed = now, utc_stamp(now - RECORD_DAYS * 86400)[:10], 0
+        with self.locked():
+            for folder in [path for path in self.folder.iterdir() if path.is_dir()]:
+                for path in folder.glob("*.jsonl"):
+                    if path.stem < cutoff:
+                        path.unlink()
+                        removed += 1
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+        return removed
+
+
+def records_folder(config, base):
+    records = config.get("records") or {}
+    if not isinstance(records, dict) or set(records) - {"directory"}:
+        raise SystemExit("chat_frontend: records takes directory, where the request records are kept a year by account, outside the working state")
+    folder = (base / records.get("directory", RECORDS_DIRECTORY)).resolve()
+    replay = (config.get("replay") or {}).get("directory")
+    if replay and (folder == (base / replay).resolve() or (base / replay).resolve() in folder.parents):
+        raise SystemExit("chat_frontend: the request records must be kept outside the replay store, which is working state")
+    return folder
+
+
 class Frontend:
     memory = None
     commands = None
@@ -1855,7 +1953,7 @@ class Frontend:
             self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
                                                      repositories["max_packs"])
         self.pack_tasks = set()
-        self.scope_keys = {}
+        self.records = RequestRecords(records_folder(config, base))
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
@@ -1912,6 +2010,8 @@ class Frontend:
         self.directive_state = (wiped, held_until)
         if not (changed or sweep):
             return 0
+        if self.memory is not None:
+            self.memory.notify("expire", {"wiped": wiped, "held_until": held_until, "now": now})
         if self.workspace is not None:
             try:
                 areas = self.workspace.expire(lambda used: working_state.expired(used, wiped, held_until, now))
@@ -1936,7 +2036,27 @@ class Frontend:
             sweep = time.monotonic() - swept >= EXPIRY_SWEEP_SECONDS
             if sweep:
                 swept = time.monotonic()
+                self.prune_records(time.time())
             self.expire_working_state(time.time(), sweep)
+
+    def prune_records(self, now):
+        try:
+            removed = self.records.prune(now)
+        except OSError as error:
+            print(json.dumps({"event": "request_records_prune_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            return
+        if removed:
+            print(json.dumps({"event": "request_records_pruned", "files": removed}), file=sys.stderr, flush=True)
+
+    def keep_record(self, plan, record, shape, headers):
+        scope, member = plan.get("gate", (OWN_SCOPE, None))
+        scope, key = scope or OWN_SCOPE, plan.get("public_key") or {}
+        found = dict(record, at=utc_stamp(time.time()), account=scope[len("account:"):] if scope.startswith("account:") else None, member=member, shape=shape,
+                     key=clean_header(headers.get(KEY_HEADER)) if key.get("gateway") is True else key.get("id"))
+        try:
+            self.records.add(scope, found)
+        except OSError as error:
+            print(json.dumps({"event": "request_record_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
 
     def model_for(self, body):
         name = body.get("model")
@@ -2095,8 +2215,6 @@ class Frontend:
         value = value or self.metadata_priority(metadata)
         if value:
             return INTERACTIVE_PRIORITY if value == "interactive" else BULK_PRIORITY
-        if harness_background(headers):
-            return BULK_PRIORITY
         if key is not None and key.get("priority") == "background":
             return BULK_PRIORITY
         return BULK_PRIORITY if bulk else INTERACTIVE_PRIORITY
@@ -2108,7 +2226,7 @@ class Frontend:
         return session, agent
 
     def api_memory(self, headers, scope, member, fallback):
-        if self.memory is None or (headers.get(MEMORY_HEADER) or "").strip().lower() != "on" or harness_background(headers):
+        if self.memory is None or (headers.get(MEMORY_HEADER) or "").strip().lower() != "on" or harness_side_request(headers):
             return None
         session, agent = self.affinity(headers, fallback)
         if session is None:
@@ -2220,7 +2338,7 @@ class Frontend:
                 "session": session, "agent": agent, "transport": plan.get("transport", "http"), "turn_ms": round((time.monotonic() - started) * 1000)}
 
     def early_headers(self, model, plan, headers):
-        shown = {"X-SparkPipe-Request": plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
+        shown = {REQUEST_HEADER: plan["request_id"], "X-SparkPipe-Model": model.id, "X-SparkPipe-Prompt-Tokens": str(plan["prompt_tokens"]),
                  "X-SparkPipe-Replayed-Tokens": str(replayed_tokens(plan)),
                  "X-SparkPipe-Queue-Ms": str(round((plan["timing"].get("admitted", plan["timing"]["arrived"]) - plan["timing"]["arrived"]) * 1000))}
         fleet = clean_header(headers.get(FLEET_HEADER), FLEET_VALUE)
@@ -2304,12 +2422,14 @@ class Frontend:
             scope = self.scope_of(key, request.headers)
             body = await self.read_body(request)
             model, _, _ = await self.resolve_model(body.get("model"), key, scope)
-            messages, batch = body.get("messages"), body.get("batch", 8)
-            if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1:
-                raise RequestError(400, "invalid_request", "send the conversation to import as messages, and batch as a positive whole number of exchanges")
+            messages, batch, timeout = body.get("messages"), body.get("batch", 8), body.get("timeout_seconds", MEMORY_IMPORT_SECONDS)
+            if not isinstance(messages, list) or not isinstance(batch, int) or isinstance(batch, bool) or batch < 1 \
+                    or not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+                raise RequestError(400, "invalid_request", "send the conversation to import as messages, batch as a positive whole number of exchanges, "
+                                                           "and timeout_seconds, if given, as a positive number of seconds")
             result = await self.memory.call("import", {"model": memory_model(model), "headers": dict(request.headers), "messages": normalize_messages(messages),
                                                        "tools": body.get("tools") or [], "kwargs": template_settings(model, body), "batch": batch},
-                                            MEMORY_IMPORT_SECONDS)
+                                            float(timeout))
         except RequestError as error:
             return error_response(error)
         return web.json_response(result)
@@ -2330,7 +2450,7 @@ class Frontend:
         if request.can_read_body:
             try:
                 body = await request.json()
-            except json.JSONDecodeError:
+            except ValueError:
                 return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
         model = body.get("model") if isinstance(body, dict) else None
         if model is not None and model not in self.models:
@@ -2384,16 +2504,11 @@ class Frontend:
     def scope_directory(scope):
         return chat_replay.scope_file(scope)[:-len(".sqlite")]
 
-    def note_key(self, scope, key):
-        if key is not None and scope is not None:
-            self.scope_keys.setdefault(scope, set()).add(key["id"])
-
     def pack_request(self, scope, pack, headers, key, fallback=None):
         if pack is None:
             return None
         if scope is None:
             raise RequestError(404, "pack_not_found", "packs are served to API keys; send the request with one")
-        self.note_key(scope, key)
         session, _ = self.affinity(headers, fallback)
         return {"scope": scope, "name": pack, "session": session}
 
@@ -2488,9 +2603,7 @@ class Frontend:
         finally:
             await model.sequences.release(scope, None)
         self.prefix_ledger(model).record(list(ids))
-        owners = set(self.scope_keys.get(scope, ())) | ({scope[len("key:"):]} if scope.startswith("key:") else set())
-        for owner in owners:
-            self.public_prefixes.setdefault((owner, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS)).record(list(ids))
+        self.public_prefix_ledger(scope, model).record(list(ids))
         return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
                 "seconds": round(time.monotonic() - started, 3)}
 
@@ -2509,8 +2622,8 @@ class Frontend:
         context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
         return max(PUBLIC_BODY_MIN_BYTES, PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES)
 
-    def public_prefix_ledger(self, key, model):
-        return self.public_prefixes.setdefault((key["id"], model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
+    def public_prefix_ledger(self, scope, model):
+        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         messages, tools, kwargs, trace = self.plan_input(model, body, None)
@@ -2619,14 +2732,7 @@ class Frontend:
         try:
             async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
                 if response.status != 200:
-                    text = await response.text()
-                    try:
-                        payload = json.loads(text)
-                    except json.JSONDecodeError:
-                        payload = error_body("engine_error", text.strip() or f"engine status {response.status}")
-                    if response.status == 503 and payload.get("status") == "starting":
-                        raise RequestError(503, "engine_starting", f"the {model.id} engine is starting: {text}")
-                    raise RequestError(response.status, payload.get("error", {}).get("code", "engine_error"), payload.get("error", {}).get("message", text))
+                    raise self.engine_refusal(model, response.status, await response.text())
                 async for raw in response.content:
                     line = raw.decode("utf-8", "replace").strip()
                     if not line.startswith("data:"):
@@ -2637,11 +2743,32 @@ class Frontend:
                     try:
                         event = json.loads(data)
                     except json.JSONDecodeError:
-                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON: {data[:120]}")
+                        self.engine_detail(model, "stream_event_not_json", 502, data[:120])
+                        raise RequestError(502, "engine_error", f"the {model.id} engine sent a stream event that is not JSON")
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            raise RequestError(503, "engine_unavailable", f"the {model.id} engine at {model.engine} is unreachable: {error}")
+            self.engine_detail(model, "unreachable", 503, f"{model.engine}: {type(error).__name__}: {error}")
+            raise RequestError(503, "engine_unavailable", f"the {model.id} engine is unreachable; try again")
+
+    @staticmethod
+    def engine_detail(model, what, status, detail):
+        print(json.dumps({"event": "engine_error", "model": model.id, "what": what, "status": status, "detail": str(detail)[:400]}), file=sys.stderr, flush=True)
+
+    def engine_refusal(self, model, status, text):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        payload = payload if isinstance(payload, dict) else {}
+        error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+        code = error.get("code") if isinstance(error.get("code"), str) and error.get("code") else "engine_error"
+        self.engine_detail(model, "refused", status, text)
+        if status == 503 and payload.get("status") == "starting":
+            return RequestError(503, "engine_starting", f"the {model.id} engine is starting; try again")
+        if status >= 500 or not isinstance(error.get("message"), str):
+            return RequestError(status, code, f"the {model.id} engine could not serve the request (status {status}); try again")
+        return RequestError(status, code, error["message"])
 
     async def engine_stream(self, model, engine_body, public):
         deadline = None
@@ -2697,7 +2824,8 @@ class Frontend:
             async for chunk in stream:
                 chunks += 1
                 if "error" in chunk:
-                    raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                    self.engine_detail(model, "stream_error", 502, json.dumps(chunk["error"]))
+                    raise RequestError(502, "engine_error", f"the {model.id} engine failed during the reply; try again")
                 if timing is not None and chunk.get("tokens"):
                     timing.setdefault("first", time.monotonic())
                     timing["last"] = time.monotonic()
@@ -2758,8 +2886,9 @@ class Frontend:
 
     def tool_call_fault(self, model, fault, attempt, action):
         self.tool_call_faults[action] = self.tool_call_faults.get(action, 0) + 1
+        text = fault["text"].encode("utf-8", "surrogatepass")
         print(json.dumps({"event": "tool_call_fault", "model": model.id, "kind": fault["kind"], "attempt": attempt, "action": action,
-                          "text": fault["text"][:400]}, ensure_ascii=False), file=sys.stderr, flush=True)
+                          "bytes": len(text), "sha256": hashlib.sha256(text).hexdigest()[:16]}), file=sys.stderr, flush=True)
 
     async def generate(self, model, engine_body, parser, public, timing=None):
         prompt = list(engine_body["prompt_token_ids"])
@@ -2986,7 +3115,7 @@ class Frontend:
 
     def record_public_prefix(self, model, plan, result):
         if "public_key" in plan:
-            self.public_prefix_ledger(plan["public_key"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
+            self.public_prefix_ledger(plan["public_scope"], model).record(list(plan["engine_body"]["prompt_token_ids"]) + list(result.get("token_ids") or []))
 
     def log(self, model, prompt_tokens, usage, started, first, finish, trace=None):
         now = time.monotonic()
@@ -3003,8 +3132,8 @@ class Frontend:
         started = time.monotonic()
         try:
             body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response(error_body("invalid_json", "the request body is not JSON"), status=400)
+        except ValueError:
+            return web.json_response(error_body("invalid_json", "the request body is not UTF-8 JSON"), status=400)
         public = request.get("public_key")
         if not isinstance(body, dict):
             return web.json_response(error_body("invalid_json", "the request body must be a JSON object"), status=400)
@@ -3024,8 +3153,8 @@ class Frontend:
         plan["gate"] = (scope or OWN_SCOPE, self.member_of(public, request.headers))
         if public is not None:
             plan["trace"]["key"] = public["id"]
-            plan["public_key"] = public
-            plan["public_cached"] = max(self.public_prefix_ledger(public, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
+            plan.update(public_key=public, public_scope=scope)
+            plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
             return await self.admitted(request, model, body, plan, started, self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
@@ -3045,7 +3174,14 @@ class Frontend:
 
     async def admitted(self, request, model, body, plan, started, answer, failed):
         scope, member = plan.get("gate", (OWN_SCOPE, None))
-        live = self.track(plan, scope)
+        chosen = request.headers.get(REQUEST_HEADER)
+        if chosen is not None:
+            if not REQUEST_ID.fullmatch(chosen):
+                return failed(RequestError(400, "invalid_request", f"{REQUEST_HEADER} must be r_ followed by 24 lowercase hex digits"))
+            if chosen in self.live:
+                return failed(RequestError(409, "request_id_in_use", f"request {chosen} is already queued or running; choose a new id"))
+            plan["request_id"] = chosen
+        live = self.track(plan, scope, member)
         if self.memory is not None:
             self.memory_foreground(model, 1)
         try:
@@ -3065,8 +3201,8 @@ class Frontend:
             if self.memory is not None:
                 self.memory_foreground(model, -1)
 
-    def track(self, plan, scope):
-        live = LiveRequest(scope)
+    def track(self, plan, scope, member):
+        live = LiveRequest(scope, member)
         self.live[plan["request_id"]] = live
         return live
 
@@ -3083,7 +3219,7 @@ class Frontend:
         except RequestError as error:
             return error_response(error)
         live = self.live.get(identifier)
-        if live is None or live.scope != scope:
+        if live is None or (live.scope, live.member) != (scope, self.member_of(key, request.headers)):
             return error_response(RequestError(404, "request_not_found", f"this account has no queued or running request {identifier}"))
         live.cancel()
         try:
@@ -3098,15 +3234,14 @@ class Frontend:
         if assistant is not None:
             self.replay_record(model, plan, assistant, result, message_handles(assistant))
         record = self.request_record(model, plan, result, usage, started, headers)
-        print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
-              file=sys.stderr, flush=True)
+        self.keep_record(plan, record, shape, headers)
         return usage, record
 
     async def read_body(self, request):
         try:
             body = await request.json()
-        except json.JSONDecodeError:
-            raise RequestError(400, "invalid_request", "the request body is not JSON")
+        except ValueError:
+            raise RequestError(400, "invalid_request", "the request body is not UTF-8 JSON")
         if not isinstance(body, dict):
             raise RequestError(400, "invalid_request", "the request body must be a JSON object")
         return body
@@ -3206,8 +3341,8 @@ class Frontend:
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)
         if key is not None:
-            plan["public_key"] = key
-            plan["public_cached"] = max(self.public_prefix_ledger(key, model).seen(ids)[0], replayed_tokens(plan))
+            plan.update(public_key=key, public_scope=scope)
+            plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(ids)[0], replayed_tokens(plan))
         return plan
 
     async def messages(self, request):
@@ -3310,8 +3445,7 @@ class Frontend:
                 own = translated["messages"][translated["stored_from"]:] + [assistant]
                 self.store_safely(plan, self.replay.put_response, plan["scope"], plan.get("member"), turn.id, translated["previous_response_id"], model.id, own,
                                   reply)
-        print(json.dumps(dict(record, event="request_record", shape=shape, key=(plan.get("public_key") or {}).get("id")), ensure_ascii=False),
-              file=sys.stderr, flush=True)
+        self.keep_record(plan, record, shape, request.headers)
         self.log(model, plan["prompt_tokens"], result.get("usage"), started, first, result.get("finish_reason"), plan.get("trace"))
         self.record_public_prefix(model, plan, result)
         if sink.streamed:
@@ -3372,11 +3506,11 @@ class Frontend:
         key = request.get("public_key")
         identifier = request.match_info["response_id"]
         try:
-            scope = self.scope_of(key, request.headers)
+            scope, member = self.scope_of(key, request.headers), self.member_of(key, request.headers)
             if request.method == "DELETE":
-                found = self.replay.delete_response(scope, identifier) or None
+                found = self.replay.delete_response(scope, member, identifier) or None
             else:
-                found = self.replay.response_body(scope, identifier)
+                found = self.replay.response_body(scope, member, identifier)
         except RequestError as error:
             return responses_error_response(error)
         except chat_replay.STORE_ERRORS as error:
@@ -3405,7 +3539,7 @@ class Frontend:
             body = await self.read_body(request)
             model, _, _ = await self.resolve_model(body.get("model"), key, scope)
             if isinstance(body.get("text"), str):
-                ids = model.vocabulary.encode(body["text"], False)
+                ids = await asyncio.to_thread(model.vocabulary.encode_released, body["text"])
             elif isinstance(body.get("messages"), list):
                 messages = normalize_messages(body["messages"])
                 tools = body.get("tools") or None
@@ -3479,9 +3613,9 @@ class Frontend:
             return error_response(RequestError(400, "invalid_request", "storage is true or false"))
         storage = request.query.get("storage") == "true"
         deleted = self.replay.forget(scope)
-        if key is not None:
-            for name in [name for name in self.public_prefixes if name[0] == key["id"]]:
-                del self.public_prefixes[name]
+        memory = await self.forget_memory(scope)
+        for name in [name for name in self.public_prefixes if name[0] == scope]:
+            del self.public_prefixes[name]
         removed = ["replay_store", "aliases", "stored_responses"]
         if self.workspace is not None:
             scope_dir = self.scope_directory(scope)
@@ -3491,16 +3625,26 @@ class Frontend:
             else:
                 self.workspace.delete_packs(scope_dir)
                 removed.append("packs")
-        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage}), file=sys.stderr, flush=True)
+        removed += ["memory"] if memory is True else []
+        print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage, "memory": memory}), file=sys.stderr, flush=True)
         return web.json_response({"deleted": removed,
-                                  "not_deleted": ["engine_cache"] + (["storage"] if storage and self.workspace is None else []),
+                                  "not_deleted": ["engine_cache"] + (["memory"] if memory is False else []) + (["storage"] if storage and self.workspace is None else []),
                                   "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+
+    async def forget_memory(self, scope):
+        if self.memory is None:
+            return None
+        try:
+            await self.memory.call("forget", {"scope": scope}, MEMORY_FORGET_SECONDS)
+        except RequestError as error:
+            print(json.dumps({"event": "memory_forget_failed", "scope": scope, "code": error.code, "message": error.message}), file=sys.stderr, flush=True)
+            return False
+        return True
 
     def workspace_scope(self, request):
         if self.workspace is None:
             raise RequestError(404, "not_configured", "this fleet keeps no repositories or packs")
         scope = self.scope_of(request.get("public_key"), request.headers)
-        self.note_key(scope, request.get("public_key"))
         return scope, self.scope_directory(scope)
 
     async def create_repository(self, request):
@@ -3862,8 +4006,20 @@ def main():
     parser = argparse.ArgumentParser(description="OpenAI chat front end for SparkPipe engines")
     parser.add_argument("--config", required=True)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--erase-records", metavar="ACCOUNT", help="delete the request records of one market account, as its written request asks, and exit")
+    parser.add_argument("--note", default="", help="the written request an erasure answers")
     arguments = parser.parse_args()
+    if arguments.erase_records is not None:
+        if not working_state.valid_account(arguments.erase_records) or arguments.erase_records == working_state.OWN_ACCOUNT:
+            raise SystemExit("chat_frontend: --erase-records takes a market account id")
+        config_path = Path(arguments.config).resolve()
+        records = RequestRecords(records_folder(json.loads(config_path.read_text()), config_path.parent))
+        erased = records.erase(arguments.erase_records, arguments.note, time.time())
+        print(json.dumps({"event": "request_records_erased", "account": arguments.erase_records, "records": erased}), flush=True)
+        return
+    if arguments.port is None:
+        parser.error("--port is required to serve")
     try:
         loopback = ipaddress.ip_address(arguments.host).is_loopback
     except ValueError:

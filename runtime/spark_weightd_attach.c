@@ -22,30 +22,10 @@ static void SparkWeightdAttachSetReason(char *reason, const char *text)
     }
 }
 
-static int SparkWeightdAttachEnvIsOff(const char *name)
-{
-    const char *text = getenv(name);
-    return text != 0 && text[0] == '0' && text[1] == '\0';
-}
-
 static const char *SparkWeightdAttachEnvText(const char *name)
 {
     const char *text = getenv(name);
     return text != 0 && text[0] != '\0' ? text : 0;
-}
-
-SparkStatus SparkWeightdAttachRequested(void)
-{
-	const char *socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-	const char *setting = getenv(SPARK_WEIGHTD_ATTACH_ENV_SWITCH);
-	if ( setting != 0 && strcmp(setting,"0") != 0 && strcmp(setting,"1") != 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( socket != 0 )
-		return(SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0 ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK);
-	if ( setting != 0 && strcmp(setting,"1") == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	fprintf(stderr,"weightd attach is not configured (%s unset): every driver loads its pack through weightd, so this process cannot load one; start it under model_residentd with a deployment that declares weightd\n",SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }
 
 SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
@@ -72,32 +52,11 @@ SparkStatus SparkWeightdAttachPack(const SparkWeightdPackSlice *slice,
         reason[0] = '\0';
     }
 
-    status = SparkWeightdAttachRequested();
-    if (status == SPARK_STATUS_INVALID_ARGUMENT)
-    {
-        SparkWeightdAttachSetReason(reason, "attach_config");
-        SPARK_RETURN(status);
-    }
-    if (SparkWeightdAttachEnvIsOff(SPARK_WEIGHTD_ATTACH_ENV_SWITCH) != 0)
-    {
-        SparkWeightdAttachSetReason(reason, "env_off");
-        SPARK_FAIL(SPARK_STATUS_BUSY);
-    }
     socket = SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
     if (socket == 0)
     {
         SparkWeightdAttachSetReason(reason, "no_socket");
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    {
-        uint32_t read_only = 0u;
-        if (SparkWeightdShareModeFromEnvironment(&read_only) != SPARK_STATUS_OK || read_only != 0u)
-        {
-            fprintf(stderr,"weightd attach refused: %s is supported only by the lazy pack path (SparkWeightdLazyPackCreate); this module attaches through SparkWeightdAttachPack\n",
-                SPARK_WEIGHTD_SHARE_ENV);
-            SparkWeightdAttachSetReason(reason, "share_unsupported");
-            SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-        }
     }
     digest = slice->pack_sha256 != 0 ? slice->pack_sha256 :
         SparkWeightdAttachEnvText(SPARK_WEIGHTD_ATTACH_ENV_SHA256);

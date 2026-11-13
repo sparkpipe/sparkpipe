@@ -79,6 +79,22 @@ model_list:
   model_info:
     max_input_tokens: 262144
     max_output_tokens: 131072
+- model_name: qwen3.8-27b-fp8
+  litellm_params:
+    model: hosted_vllm/qwen3.8-27b-fp8
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 131072
+- model_name: qwen3.8-27b-fp8-bulk
+  litellm_params:
+    model: hosted_vllm/qwen3.8-27b-fp8-bulk
+    api_base: http://127.0.0.1:8433/v1
+    api_key: none
+  model_info:
+    max_input_tokens: 262144
+    max_output_tokens: 131072
 - model_name: deepseek-v4.1-flash
   litellm_params:
     model: hosted_vllm/deepseek-v4.1-flash

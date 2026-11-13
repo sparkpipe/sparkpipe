@@ -78,6 +78,9 @@ static SparkStageServingState *NewState(void)
 	assert(state != 0);
 	state->model = &K3StageServing;
 	state->implementation_flags = test_implementation_flags;
+	StageServingDescribe(&K3StageServing, &StageServingDescriptor);
+	if ( (test_implementation_flags & SPARK_STAGE_RUNNER_FLAG_OWN_PACK) == 0u )
+		assert((state->weightd_socket_path = strdup(TestKvServerSocket)) != 0);
 	return(state);
 }
 
@@ -422,7 +425,8 @@ static SparkStatus InitializeOwnModel(const SparkModelServingAdapterInterface *a
 	(void)snprintf(path, sizeof(path), "/tmp/sparkpipe-k3-own-pack-%ld.json", (long)getpid());
 	file = fopen(path, "w");
 	assert(file != 0 && fprintf(file, "{\"stage_pack_path\":\"/nonexistent/k3.pack\",\"state_budget_bytes\":1048576,\"state_memory_bytes\":67108864,"
-		"\"max_sequences\":4,\"max_rows\":8,\"resident_capacity\":4,\"kv_pages\":2%s}", members) > 0 && fclose(file) == 0);
+		"\"hidden\":%u,\"tp_degree\":1,\"tp_rank\":0,\"world_size\":1,\"max_sequences\":4,\"max_rows\":8,\"resident_capacity\":4,\"kv_pages\":2%s}",
+		StageServingDescriptor.boundary_element_count, members) > 0 && fclose(file) == 0);
 	Configure(&configuration, 16u, 8u);
 	configuration.adapter_configuration_path = path;
 	configuration.completion_function = Completion;

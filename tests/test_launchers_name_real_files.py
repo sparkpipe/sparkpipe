@@ -26,7 +26,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 from test_lane_direct_packs import FAKE_SSH, fake_bin, links_under, place
 
 HOSTS = [f"spark{index:x}" for index in range(16)]
-DIGEST = "ab" * 32
 STUB = "#!/bin/sh\necho 'model_residentd ready'\n"
 FAKE_EXIT = "#!/bin/sh\nexit 0\n"
 
@@ -34,12 +33,6 @@ FAKE_EXIT = "#!/bin/sh\nexit 0\n"
 def deployment(nodes, named=lambda rank: f"config/stage_{rank:02d}.json", root=None):
     return {"nodes": [{"rank_index": rank, "adapter_configuration_path": named(rank),
                        **({"runtime_root": root} if root else {})} for rank in range(nodes)]}
-
-
-def heredoc(path: Path, after: str) -> str:
-    text = path.read_text()
-    start = text.index("\n", text.index("<<'PYEOF'", text.index(after))) + 1
-    return text[start:text.index("\nPYEOF\n", start)] + "\n"
 
 
 class DirectFiles(unittest.TestCase):
@@ -149,126 +142,6 @@ class DirectFiles(unittest.TestCase):
             for host in HOSTS:
                 self.assertEqual("config-not-direct" in failures.get(host, ""), host == "sparkb", host)
                 self.assertEqual("pack-symlink" in failures.get(host, ""), host == "spark5", host)
-
-    def source_root(self, scratch, nodes):
-        source = Path(scratch) / "source"
-        (source / "packs").mkdir(parents=True)
-        (source / "config").mkdir()
-        for name, data in (("packs/model.sp", b"pack"), ("packs/model.sp.experts", b"manifest"), ("packs/model.sp.ck128", b"ck"),
-                           ("packs/model.sp.sha256", f"{DIGEST}  model.sp\n".encode())):
-            (source / name).write_bytes(data)
-        stage = {"stage_pack_path": "packs/model.sp", "tp_collective": {"backend_module_path": "lib/collective.so", "listen_port": 19000,
-                                                                        "peer_ports": [19000], "peer_hosts": ["spark0"]}}
-        for rank in range(nodes):
-            (source / "config" / f"stage_{rank:02d}.json").write_text(json.dumps(stage))
-        document = deployment(nodes, root=str(source))
-        document.update({"transport": {"shared_object_path": "lib/transport.so", "control_port_base": 1},
-                         "adapter": {"shared_object_path": "lib/adapter.so"}, "driver": {"shared_object_path": "stages/driver.so"}})
-        (Path(scratch) / "deployment.json").write_text(json.dumps(document))
-        return source
-
-    def prepare_cases(self, run, source, extra_files=()):
-        cases = {"pack": "packs/model.sp", "digest": "packs/model.sp.sha256", "manifest": "packs/model.sp.experts", "config": "config/stage_00.json", **dict(extra_files)}
-        for label, name in cases.items():
-            for kind in ("symlink", "missing"):
-                with self.subTest(file=label, kind=kind):
-                    path = source / name
-                    real = path.with_name(path.name + ".real")
-                    path.rename(real)
-                    if kind == "symlink":
-                        path.symlink_to(real)
-                    result, private = run()
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(f"{path} is missing, not a regular file or a symlink", result.stderr)
-                    if kind == "symlink":
-                        path.unlink()
-                    real.rename(path)
-                    shutil.rmtree(private, ignore_errors=True)
-
-    def check_private(self, private, source, name):
-        config = json.loads((private / "runtime" / name).read_text())
-        self.assertEqual(config["stage_pack_path"], str(source / "packs/model.sp"))
-        self.assertEqual(sorted(os.listdir(private / "runtime/packs")), ["pack.sha256"])
-        self.assertEqual((private / "runtime/packs/pack.sha256").read_text(), f"{DIGEST}  model.sp\n")
-        self.assertEqual(links_under(private), [])
-
-    def test_family_template_names_the_real_pack(self):
-        code = heredoc(ROOT / "tools/devcycle/templates/run-family-job.sh.template", "python3 - \"$ROOT\" \"$RANK\" \"$SIZE\"")
-        with tempfile.TemporaryDirectory() as scratch:
-            source = self.source_root(scratch, 1)
-            private = Path(scratch) / "private"
-
-            def run():
-                arguments = [str(private), "0", "1", "23000", "53000", "64000", "23168", "0" * 32, "0", str(Path(scratch) / "deployment.json")]
-                return subprocess.run([sys.executable, "-", *arguments], input=code, capture_output=True, text=True, timeout=60), private
-
-            result, _ = run()
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.check_private(private, source, "config/stage_00.json")
-            shutil.rmtree(private)
-            self.prepare_cases(run, source)
-
-    def test_cold_launch_ab_names_the_real_pack_and_copies_binaries(self):
-        code = heredoc(ROOT / "tools/glm5_next_coldlaunch_ab.sh", "python3 - \"$ROOT\" \"$RANK\" \"$CONTROL_BASE\"")
-        with tempfile.TemporaryDirectory() as scratch:
-            source = self.source_root(scratch, 16)
-            execution = Path(scratch) / "exec"
-            for name in ("lib/transport.so", "lib/adapter.so", "stages/driver.so", "lib/collective.so"):
-                place(execution, "/" + name, name.encode())
-            private = Path(scratch) / "private"
-
-            def run():
-                arguments = [str(private), "0", "23000", "53000", "64000", "23168", "0" * 32, "0", str(Path(scratch) / "deployment.json"), str(source), str(execution)]
-                return subprocess.run([sys.executable, "-", *arguments], input=code, capture_output=True, text=True, timeout=60), private
-
-            result, _ = run()
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.check_private(private, source, "config/stage_00.json")
-            self.assertEqual((private / "runtime/lib/adapter.so").read_text(), "lib/adapter.so")
-            shutil.rmtree(private)
-            self.prepare_cases(run, source, {"whole-pack checksum": "packs/model.sp.ck128"})
-
-    def test_k3_run_family_names_the_deployed_pack(self):
-        text = (ROOT / "tools/k3_multidev_run_family.sh").read_text()
-        start = text.index('for weight in "$DEPLOYED_PACK"')
-        end = text.index("\n", text.index('fail "packs/ must contain exactly one .sha256 sidecar"'))
-        block = 'fail() { echo "k3: $*" >&2; exit 1; }\nmkdir -p "$ROOT/packs"\n' + text[start:end] + "\n"
-        with tempfile.TemporaryDirectory() as scratch:
-            pack = Path(scratch) / "sparkdata/k3.mxfp4.tp4pp4/packs/k3.stage1.rank02.pack"
-            pack.parent.mkdir(parents=True)
-            pack.write_bytes(b"pack")
-            Path(str(pack) + ".experts").write_bytes(bytes.fromhex("57455058020000000100000000000000"))
-            Path(str(pack) + ".sha256").write_text(f"{DIGEST}  {pack.name}\n")
-            private = Path(scratch) / "private"
-            run = lambda: (subprocess.run(["bash", "-c", "set -euo pipefail\n" + block], capture_output=True, text=True, timeout=60,
-                                          env=dict(os.environ, DEPLOYED_PACK=str(pack), ROOT=str(private))), private)
-            result, _ = run()
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(sorted(os.listdir(private / "packs")), ["pack.sha256"])
-            self.assertEqual((private / "packs/pack.sha256").read_text(), DIGEST)
-            self.assertEqual(links_under(Path(scratch)), [])
-            shutil.rmtree(private)
-            manifest = Path(str(pack) + ".experts")
-            manifest.write_bytes(bytes.fromhex("57455058010000000000000000000000"))
-            result, _ = run()
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("is not a v2 routed-expert manifest with records; regenerate it beside the pack", result.stderr)
-            manifest.write_bytes(bytes.fromhex("57455058020000000100000000000000"))
-            for name in (str(pack), str(manifest)):
-                for kind in ("symlink", "missing"):
-                    with self.subTest(file=name, kind=kind):
-                        shutil.rmtree(private, ignore_errors=True)
-                        path = Path(name)
-                        real = path.with_name(path.name + ".real")
-                        path.rename(real)
-                        if kind == "symlink":
-                            path.symlink_to(real)
-                        result, _ = run()
-                        self.assertNotEqual(result.returncode, 0)
-                        self.assertIn(f"{path} is missing, not a regular file or a symlink", result.stderr)
-                        if kind == "symlink":
-                            path.unlink()
-                        real.rename(path)
 
 
 if __name__ == "__main__":

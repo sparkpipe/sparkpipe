@@ -62,6 +62,17 @@ def stamp_time(text):
     return datetime.strptime(text, STAMP).replace(tzinfo=timezone.utc)
 
 
+def joined(spans, within):
+    found = []
+    for span in sorted(spans, key=lambda s: (s["fleet"], s["start"])):
+        last = found[-1] if found else None
+        if last and last["fleet"] == span["fleet"] and last["end"] is not None and stamp_time(span["start"]) - stamp_time(last["end"]) <= within:
+            found[-1] = dict(last, end=None if span["end"] is None else max(last["end"], span["end"]))
+        else:
+            found.append(span)
+    return found
+
+
 def slot_text(moment):
     return moment.astimezone(timezone.utc).strftime(SLOT)
 
@@ -442,13 +453,10 @@ class Market:
 
     def check_hour_fleet(self, pricing, account, start, end, now):
         rules = pricing["bookings"]
-        gate = self.gate(pricing, "hoursFrom")
-        if gate and start < gate:
-            raise Refusal(f"Hour Fleets open on {pricing['hoursFrom']}.", 409, "not_open")
         if end > now + DAY * rules["hourFleetDaysAhead"]:
             raise Refusal(f"Hours on Hour Fleets can be booked at most {rules['hourFleetDaysAhead']} days ahead.", 409, "too_far")
         listed = {f["id"] for f in pricing["fleets"] if f["hourFleet"]}
-        mine = [b for b in self.st.bookings.values() if b["account"] == account and b["fleet"] in listed]
+        mine = [b for b in self.st.bookings.values() if b["account"] == account and b["fleet"] in listed and b["kind"] == "hour"]
         week = week_start(start)
         while week < end:
             used = sum((overlap(b["begins"], b["ends"], week, week + WEEK) for b in mine), timedelta(0))
@@ -461,6 +469,10 @@ class Market:
             raise Refusal(f"{fleet['name']} is not serving.", 409, "not_serving")
         if start <= now:
             raise Refusal("Choose an hour that has not started.", 409, "started")
+        gate = self.gate(pricing, "hoursFrom")
+        if gate and start < gate:
+            raise Refusal(f"Hours can be booked from {pricing['hoursFrom']}.", 409, "not_open")
+        self.check_deadline(fleet, account, start, end, now)
         if fleet["hourFleet"]:
             self.check_hour_fleet(pricing, account, start, end, now)
         elif end > week_start(now) + WEEK:
@@ -472,6 +484,14 @@ class Market:
             raise Refusal(f"{fleet['name']} is already booked at {kst_text(max(taken[0]['begins'], start))}.", 409, "taken")
         if self.maintained(fleet["id"], start, end):
             raise Refusal(f"{fleet['name']} is under maintenance in those hours.", 409, "maintenance")
+
+    def check_deadline(self, fleet, account, start, end, now):
+        week = week_start(start)
+        while week < end:
+            held = [b for b in self.busy(fleet["id"], week - WEEK, week) if b["kind"] == "week" and b["account"] != account]
+            if held and now < week - DAY:
+                raise Refusal(f"{fleet['name']} is pinned to a customer, who may book its next Week until {kst_text(week - DAY)}.", 409, "pinned")
+            week += WEEK
 
     def hour_plan(self, pricing, account, fleet, start, hours, now):
         end = start + HOUR * hours
@@ -586,12 +606,19 @@ class Market:
             self.advance(now)
             return self.hour_plan(pricing, account, fleet, start, hours, now)
 
+    def held_quote(self, plan, body, what):
+        first = slot_field(body["first"], "quoted first Week") if body.get("first") is not None else None
+        price = hc_field(body["price"], "quoted price") if body.get("price") is not None else None
+        if first is not None and first != slot_time(plan["first"]) or price is not None and price != Decimal(plan["price"]):
+            raise Refusal(f"The quote changed: {what(plan)} now costs {plan['price']} HC. Nothing was booked; check the new quote and book again.", 409, "quote_changed")
+
     def book_hours(self, account, body):
         pricing, fleet, start, hours = self.hours_request(body)
         with self.book.lock:
             now = self.now()
             self.advance(now)
             plan = self.hour_plan(pricing, account, fleet, start, hours, now)
+            self.held_quote(plan, {"price": body.get("price")}, lambda p: f"{p['hours']} hour(s) of {p['fleet']} from {p['start']}")
             ident = self.pay(account, fleet, "hour", start, slot_time(plan["end"]), Decimal(plan["price"]), now, {key: plan[key] for key in ("hours", "discount", "waitlist_saving") if key in plan})
             self.confirmed(self.st.bookings[ident], now)
             return self.booking_view(self.st.bookings[ident], now)
@@ -613,6 +640,7 @@ class Market:
             now = self.now()
             self.advance(now)
             plan = self.week_plan(pricing, account, fleet, weeks, now)
+            self.held_quote(plan, body, lambda p: f"{p['weeks']} week(s) of {p['fleet']}, {p['first']} to {p['end']},")
             ident = self.pay(account, fleet, "week", slot_time(plan["first"]), slot_time(plan["end"]), Decimal(plan["price"]), now, {"weeks": weeks, "discount": plan["discount"]})
             self.confirmed(self.st.bookings[ident], now)
             return dict(plan, booking=ident)
@@ -751,7 +779,7 @@ class Market:
 
     def outage_at(self, now):
         found = []
-        for span in self.app.uptime.spans(now - 30 * DAY):
+        for span in self.app.uptime.periods(now - 30 * DAY):
             begins, ends = stamp_time(span["start"]), stamp_time(span["end"]) if span["end"] else None
             ends = ends if ends and ends <= now else None
             if (ends or now) - begins <= OUTAGE:
@@ -759,8 +787,10 @@ class Market:
             done = self.st.downtime.get(span["span"])
             if not done:
                 at = ends or begins + OUTAGE + timedelta(seconds=1)
-            elif ends and not done["end"]:
+            elif ends and done["end"] != stamp(ends):
                 at = ends
+            elif not ends and done["end"]:
+                at = stamp_time(done["end"])
             elif not ends and stamp_time(done["now"]) + OUTAGE_PASS <= now:
                 at = stamp_time(done["now"]) + OUTAGE_PASS
             else:
@@ -886,6 +916,7 @@ class Market:
         else:
             status, since = "unknown", None
         first = stamp_time(entry["first"]) if entry else None
+        periods = [(stamp_time(p["start"]), stamp_time(p["end"]) if p["end"] else now) for p in joined(spans, timedelta(seconds=self.app.cfg.health_seconds))]
         uptime = {}
         for label, days in UPTIME_WINDOWS:
             start = max(now - DAY * days, first) if first else None
@@ -898,7 +929,7 @@ class Market:
                 down += overlap(begins, ends, start, now) - sum((overlap(max(begins, m["begins"]), min(ends, m["ends"]), start, now) for m in self.maintained(fleet["id"], begins, ends)), timedelta(0))
             uptime[label] = round(100 * (1 - down / (now - start)), 3)
         incidents = [{"start": s["start"], "end": s["end"], "minutes": int(((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) // timedelta(minutes=1)), "cause": s["cause"],
-                      "creditable": ((stamp_time(s["end"]) if s["end"] else now) - stamp_time(s["start"])) > OUTAGE} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
+                      "creditable": any(b <= stamp_time(s["start"]) and (stamp_time(s["end"]) if s["end"] else now) <= e and e - b > OUTAGE for b, e in periods)} for s in sorted(spans, key=lambda s: s["start"], reverse=True)]
         return {"id": fleet["id"], "name": listed["name"], "serving": fleet["serving"], "hourFleet": listed["hourFleet"], "status": status, "since": since, "recordsSince": entry["first"] if entry else None,
                 "uptime": uptime, "incidents": incidents, "maintenance": merged((m["begins"], m["ends"]) for m in self.maintained(fleet["id"], now, now + 60 * WEEK))}
 

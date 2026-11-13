@@ -15,6 +15,8 @@ EXTERNAL = ("https://", "http://", "mailto:")
 ALLOWED_STYLES = ("https://fonts.googleapis.com/",)
 CHAT_APP_PAGES = {"fleet.html": {"/", "/static/favicon.svg", "/static/favicon.png"}}
 SSL_CONF = ROOT / "deployment" / "vps" / "sparkpipe-ai-ssl.conf"
+PLAIN_CONF = ROOT / "deployment" / "vps" / "sparkpipe-ai.conf"
+CHAT_LOCAL_CONF = ROOT / "deployment" / "vps" / "sparkpipe-chat-local.conf"
 TOSS_SDK = "https://js.tosspayments.com/v2/standard"
 PAYMENT_PAGES = ("account.html", "buy.html")
 CACHED = (".svg", ".png", ".ico")
@@ -199,6 +201,58 @@ def check_fresh(failures):
         failures.append(f"{SSL_CONF.name}: a browser may keep these after a deploy and run a page against old published settings: {stale}")
 
 
+def check_transport(failures):
+    plain = PLAIN_CONF.read_text(encoding="utf-8")
+    redirect = "RewriteRule ^ https://sparkpipe.ai%{REQUEST_URI} [END,NE,R=permanent]"
+    for line in ("<VirtualHost *:80>", "ServerName sparkpipe.ai", "ServerAlias www.sparkpipe.ai", "RewriteCond %{REQUEST_URI} !^/\\.well-known/acme-challenge/", redirect, "ServerTokens Prod", "ServerSignature Off"):
+        if line not in plain:
+            failures.append(f"{PLAIN_CONF.name}: port 80 must send sparkpipe.ai and www to HTTPS and hide the server version; missing {line!r}")
+    if re.search(r"^\s*(Include|ProxyPass|Alias)\b", plain, re.M):
+        failures.append(f"{PLAIN_CONF.name}: port 80 serves content instead of only redirecting")
+    if f"sudo install -m 644 deployment/vps/{PLAIN_CONF.name} /etc/apache2/sites-available/000-default.conf" not in (ROOT / "docs" / "PAYMENTS.md").read_text(encoding="utf-8"):
+        failures.append(f"docs/PAYMENTS.md: the install steps never install {PLAIN_CONF.name}")
+    for conf, root in ((SSL_CONF, "/var/www/html"), (COMPANY_CONF, "/var/www/hyor"), (PLAIN_CONF, "/var/www/html")):
+        text = conf.read_text(encoding="utf-8")
+        if not re.search(rf"<Directory {re.escape(root)}>\s*Options -Indexes\s*</Directory>", text):
+            failures.append(f"{conf.name}: {root} must not list directories")
+        if conf is PLAIN_CONF:
+            continue
+        secure = re.findall(r"<VirtualHost \*:443>(.*?)</VirtualHost>", text, re.S)
+        if not secure or any('Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains"' not in body for body in secure):
+            failures.append(f"{conf.name}: every HTTPS virtual host must send Strict-Transport-Security")
+    local = CHAT_LOCAL_CONF.read_text(encoding="utf-8")
+    block = re.search(r'<LocationMatch "\^/local\(/\|\$\)">(.*?)</LocationMatch>', local, re.S)
+    body = block.group(1) if block else ""
+    for header in ("Content-Security-Policy", "Permissions-Policy", "X-Frame-Options", "X-Content-Type-Options"):
+        if f"Header always set {header} " not in body:
+            failures.append(f"{CHAT_LOCAL_CONF.name}: /local/ is served without {header}")
+    csp = re.search(r'Content-Security-Policy "([^"]*)"', body)
+    for directive in ("default-src 'self'", "connect-src 'self'", "object-src 'none'", "frame-ancestors 'none'"):
+        if not csp or directive not in csp.group(1).split("; "):
+            failures.append(f"{CHAT_LOCAL_CONF.name}: the /local/ Content-Security-Policy lacks {directive}")
+
+
+def check_mail(failures):
+    doc = (ROOT / "docs" / "VPS_MAIL.md").read_text(encoding="utf-8")
+    rows = re.findall(r"^\| `([^`]+)` \| `(/[^`]+)` \|", doc, re.M)
+    installed = set(re.findall(r"^sudo install -m \d+ deployment/vps/(\S+) (\S+)$", doc, re.M))
+    missing = [name for name, target in rows if (name, target) not in installed]
+    if not rows or missing:
+        failures.append(f"docs/VPS_MAIL.md: the deploy steps never install {missing}")
+    for name, _ in rows:
+        if not (ROOT / "deployment" / "vps" / name).is_file():
+            failures.append(f"docs/VPS_MAIL.md: deployment/vps/{name} does not exist")
+    main = (ROOT / "deployment" / "vps" / "postfix-main.cf").read_text(encoding="utf-8")
+    if not re.search(r"^smtp_tls_security_level = may$", main, re.M):
+        failures.append("postfix-main.cf: outbound mail must use opportunistic TLS, or sign-in codes never reach a mail server without STARTTLS")
+    hook = (ROOT / "deployment" / "vps" / "certbot-reload-mail-services.sh").read_text(encoding="utf-8")
+    if re.search(r"^set -[a-z]*e", hook, re.M) or "systemctl reload postfix || status=1" not in hook or "systemctl reload dovecot || status=1" not in hook:
+        failures.append("certbot-reload-mail-services.sh: a failed Postfix reload must not skip the Dovecot reload")
+    for domain in ("sparkpipe.ai", "hyor.io"):
+        if f"| `{domain}` | TXT | `v=spf1 ip4:27.102.120.99 -all` |" not in doc or f"rua=mailto:dmarc@{domain}` |" not in doc:
+            failures.append(f"docs/VPS_MAIL.md: the expected SPF and DMARC records of {domain} are not written down")
+
+
 def check_models(failures):
     text = (SITE / "pricing.js").read_text()
     listed = [(m["name"], m["id"]) for m in json.loads(text[text.index("{"):text.rindex("}") + 1])["models"]]
@@ -218,6 +272,8 @@ def main():
     check_models(failures)
     check_payment_pages(pages, failures)
     check_fresh(failures)
+    check_transport(failures)
+    check_mail(failures)
     for name, page in pages.items():
         check_links(name, page, pages, SITE, failures, CHAT_APP_PAGES.get(name, frozenset()))
         check_tables(name, page, failures)

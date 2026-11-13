@@ -2,10 +2,11 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_error_site.h"
 
-SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,struct SparkWeightdMeshTopology *topology)
+SparkStatus SparkTpDeviceCollectiveMeshTopology(uint32_t rank,uint32_t degree,const uint32_t *mesh_ranks,struct SparkWeightdMeshTopology *topology)
 {
 	(void)rank;
 	(void)degree;
+	(void)mesh_ranks;
 	(void)topology;
 	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 }

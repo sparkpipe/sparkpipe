@@ -113,8 +113,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   and a 7,168-element all-reduce takes about 38 us direct or 33.1 us as
   reduce-scatter plus all-gather.
 - Left out on purpose (2026-10-02): The wait mode picks the algorithm, against
-  I36. With `SPARK_TP_WAIT_MODE=hardware`
-  (`ring/transport/tp_device_collective.c:1491`) every payload runs chunked
+  I36. With the stage config's `device_collective.wait_mode` `hardware`
+  (`ring/transport/tp_device_collective.c`) every payload runs chunked
   direct rounds through `SparkTpLaunchMeshHardware`, always called with one
   logical row (`:972-983`), and BF16 sums of at least
   `SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE` (10,240) elements at degree 16 or
@@ -171,7 +171,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   for GLM Full, GLM Flash, the Qwen 3.8 hybrid and the Ling and Gemma stages
   (Solar Open 2 +12% and K-EXAONE 2.0 +8% short-prompt prefill on the fleet,
   tokens identical), and `K3LaunchSlicePair`
-  (`inference/llms/kimi_k3/slice.cuh`) for K3. K3 also splits some rounds into
+  (`model-families/k3/source/slice.cuh`) for K3. K3 also splits some rounds into
   Begin and Finish. Every other decode step and multi-sequence wave is still
   one serial chain (compute, all-reduce, compute), so every collective wait is
   exposed. At B1 on 2026-10-02 a GLM-5.3 Full token took 36.7 ms. Of that,
@@ -287,14 +287,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `ring/transport/tp_device_collective.c`). Working-set graphs (Model
   residency and storage) remove the unpinned case without pinning every
   expert.
-- Between two waves every rank ends and restarts mesh activity, with one
-  weightd mesh-activity round trip each way
-  (`SparkTpDeviceCollectiveEndChain`, `SparkTpDeviceCollectiveChainKey`,
-  `ring/transport/tp_device_collective.c`). Rank 0 also broadcasts a new chain
-  epoch that the other ranks spin on (`StageRunnerChainBegin`,
-  `inference/runner/stage_runner.cu`). Resident decode chains pay this once
-  per chain of K steps; prefill waves and single-step waves still pay it every
-  time. Keep the activity and the epoch across the waves of a session.
 - A resident decode chain feeds each step's tokens to the next step on the
   device (`StageRunnerChainAdvanceKernel`,
   `inference/runner/stage_runner.cu`). But after every step the runner still
@@ -327,7 +319,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - The shared runner splits a single-sequence prefill wave into two lanes whose
   collectives overlap the other lane's compute (`StageRunnerLanesStep`,
   `inference/runner/stage_runner.cu`), and K3 pairs its half-waves
-  (`K3LaunchSlicePair`, `inference/llms/kimi_k3/slice.cuh`). The
+  (`K3LaunchSlicePair`, `model-families/k3/source/slice.cuh`). The
   mixture-of-experts families refuse a lane below 1,024 rows (`GLM_LANE_ROWS`,
   `G5N_LANE_ROWS`, `QH_MOE_LANE_ROWS`) because each lane reads every expert
   weight again, which cancelled the overlap on GLM Full (8K prompt: 9,140 ms
@@ -422,7 +414,167 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   5.3 Full's gathered sparse prefill does, would fill the slots; both DSV4.1
   paths must move together because they agree bit for bit.
 
+## Group sizes and placement by usage
+
+Decided on 2026-11-12. Every CUDA lane runs at TP16 on all sixteen Sparks,
+also for models that fit on four, two or one. That costs a single request
+nothing it could not have, and it costs the fleet most of its throughput:
+one TP16 engine serves where four, eight or sixteen smaller ones could.
+
+The measure is a public four-Spark TP4 release of the same model (its
+reference build of 2026-11-07, its page read on 2026-11-12), against DeepSeek
+V4.1 Flash on our sixteen:
+
+| | Reference, 4 Sparks | SparkPipe, 16 Sparks |
+| --- | ---: | ---: |
+| Decode step | 21.05 ms | 23.5 ms (42.5-42.7 tok/s, no drafts, 1M cached context) |
+| One stream with drafts | 82.6 tok/s | 47.5-55.8 tok/s |
+| Eight streams | 207.4 tok/s | 151-153 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s | 1,599 tok/s |
+| Prefill, 1M prompt | 6,012 tok/s | 1,287 tok/s (814 s) |
+
+Ours are the 2026-10-24 batch sweep and the 2026-11-01 prefill run
+(`PERFORMANCE_STATUS.md`). The first goal is to match the reference head to
+head on one group of four Sparks; four such groups then give four times its
+throughput on one fleet.
+
+### The plan
+
+- **Aligned groups.** A model runs on a group of 16, 8, 4, 2 or 1 nodes:
+  0-f; 0-7 or 8-f; 0-3, 4-7, 8-b or c-f; a pair; one node. The pairs are
+  the nodes joined by a direct link, where there is one.
+- **Weights are sixteenths.** Every pack is cut by consecutive rows, heads
+  and vocabulary, so a rank of a group of G nodes holds 16/G consecutive
+  sixteenths and every tensor of a wider rank is a concatenation of the
+  16-rank slices (a fused tensor, segment by segment; checked on a node for
+  Qwen 3.8 27B's 4-rank pack). A node stores only the sixteenths of the
+  smallest group it serves. weightd lays each tensor's slices out in rank
+  order, so the wider groups a node also serves read the same memory.
+- **The KV cache is sixteen position shards.** Rank r of 16 holds the
+  positions with position mod 16 = r (`include/sparkpipe/spark_kv_shard.h`),
+  which fixes the position's shard for 8, 4 and 2 as well. A cached context
+  is stored once on NVMe as those shards, wherever it was last used; the
+  hub's prefix index records which nodes hold which shards; a group that
+  needs a context it does not hold has it moved, not recomputed (DeepSeek
+  V4.1 Flash, 1M tokens: about 3 GB against 814 s of prefill; Qwen 3.8 27B,
+  256K tokens: about 17 GB against about 140 s). A context is replicated
+  only in GPU memory, and only while several groups use it at once.
+- **The same bits at every group size.** A round today adds the sixteen
+  ranks' BF16 partials in rank order
+  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). A
+  wider rank keeps one BF16 partial per sixteenth and the round carries all
+  of them, so the sum is the 16-rank sum whatever the group size, and a
+  cached context is exactly reusable across sizes. The KV identity digest
+  then stops naming the shard degree (`runtime/stage_kv_binding.c`).
+- **Placement follows usage.** How many groups hold a model, and of what
+  size, follows demand: a model used now and then sits on one group, a
+  model many agents saturate spreads until spreading stops paying. Idle
+  nodes are free, so an operation takes every idle node that speeds it up
+  at all; nodes two things want go to the one that gains more per GB and
+  node-second; a load must be expected to pay for itself before it starts,
+  and an eviction waits for demand to stay low. Admission works from a
+  ledger of free memory per node, picks the aligned group whose tightest
+  node has the most room and keeps large holes for large models.
+- **One request, two group sizes.** One stream decodes faster on more
+  nodes, because each node reads fewer weight bytes a token (Qwen 3.8 27B
+  FP8: 60.1 tok/s on sixteen nodes, 43.7 on eight, 25.7 on four, 14.3 on
+  two, 7.9 on one). Many prompts or streams at once go faster on small
+  groups: a group of two or more pays the same wire time a wave whatever
+  its size, and a single node pays none. The scheduler picks per phase: prefill on small groups in parallel,
+  decode on the group size that gives the speed asked for, the KV move in
+  between.
+- **One prompt across groups.** Tensor parallelism cannot make one prompt's
+  prefill much faster at any group size: every round moves about twice the
+  hidden payload per rank. Groups that each hold the whole model can take
+  consecutive row chunks of the same prompt, each chunk one layer behind the
+  one before it, and pass on only that layer's K/V and the recurrent state
+  at the chunk boundary, a few MB a chunk a layer. One prompt's prefill then
+  grows with the number of groups. Not built and not measured.
+- **API.** Placement is managed inside. A request may say what it wants
+  (interactive or batch); the holder of a fleet may declare a plan (models
+  to keep warm, pins, priorities) and read what is loaded where. No request
+  names nodes.
+
+### What exists (branch `topology/group-sizes`)
+
+- Qwen 3.8 27B's module takes its rank count, weight codec, adapter id and KV
+  label from the build. The 8-rank, 4-rank and 1-rank adapters compile with
+  no stage change; on two ranks a rank's attention rows are wider than a
+  collective row, so the gather splits them (`kGatherParts`). The 16-rank
+  adapters keep the gated builds' GPU code and read-only data; their host
+  code differs only in the line numbers its failure sites record.
+- `tools/qwen38_27b_tp16_pack.py --tp-degree 2|4|8` writes group packs whose
+  FFN share is the union of consecutive sixteenths.
+- `tools/stage_lane.py` and `tools/stage_lane.sh` place a lane of an entry's
+  `ranks` on the group that starts at `first_node`; a one-rank lane has no
+  collective. Every 16-rank record renders the bytes it rendered before.
+- Four four-rank lanes of Qwen 3.8 27B FP8 served at once on the sixteen
+  Sparks on 2026-11-12, two two-rank lanes at once, an eight-rank lane and
+  a one-rank lane (`qualification/group-sizes-20261112/README.md`). The
+  common runner gives a one-rank lane's rounds as local copies.
+
+### Still to build, in order
+
+1. Qwen 3.8 27B FP8 has run at 16, 8, 4, 2 and 1 by one method
+   (`qualification/group-sizes-20261112/README.md`): one stream 60.1, 43.7,
+   25.7, 14.3 and 7.9 tok/s, the weight read being 48%, 70%, 83%, 92% and
+   98% of the token; one prompt's prefill 2,612, 2,532, 1,649, 1,061 and
+   785 tok/s. Each doubling up to eight nodes makes a stream 1.7 to 1.8
+   times faster and a prompt's prefill 1.35 to 1.55 times faster; sixteen
+   adds 1.37 and 1.03. The fleet does most as sixteen one-rank lanes (about
+   126 tok/s over sixteen streams, 12.6K tok/s of prefill; a product, not a
+   run). Two things hold prefill down. Every group of two to sixteen pays
+   0.24 to 0.31 s a 1,024-row wave beyond its share of the compute: the
+   rounds move the same rows whatever the number of ranks. And the whole
+   model's wave takes 1.2 to 1.3 s on one node, 42 to 46 TFLOPS, a fifth
+   of the node's FP8 peak: the FP8 prefill kernels. Do the same for the
+   other models that fit a small group. The sizes are options a user picks
+   from by these figures, like precisions; none is the one right size.
+2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
+   CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
+   shards its small KV sixteen ways, which costs it two to three rounds a
+   layer; the November audit's fix is to keep a KV that small whole on each
+   rank of a group, in GPU memory only. Built for four ranks the stage
+   fails two static assertions: a rank's attention records and its index
+   query pack no longer fit a collective row of the hidden width. Both
+   belong to the exchange the whole KV removes. Its rank pack is 20.6 GB at
+   sixteen ranks, so a rank of four holds about 82 GB and the group shares
+   its nodes with no other model.
+3. Rank count as data for every family: the stages that refuse a degree
+   other than 16, the packers, the release kit, and a record field for a
+   lane's group. weightd keeps the topology a mesh lane was first given
+   until it restarts (`SparkWeightdMeshLaneConfigure` in
+   `node/weightd_mesh.c` answers another with `SPARK_STATUS_UNSUPPORTED`); a
+   free lane has to take a new one.
+4. Decide what a group size is numerically, then build it. Today the group
+   size changes the result about half as much as FP8 against BF16 does: on
+   the 12,800 corpus positions the four-rank and sixteen-rank lanes of the
+   same FP8 weights agree on the best token at 99.37%, with a KL lower
+   bound of 0.0012 and no position bit-identical, and the four-rank NLL is
+   0.08% lower. Either the rounds carry one partial per sixteenth, which
+   gives the sixteen-rank bits at every size and keeps its sixteen
+   roundings, or each group size is a variant measured on its own
+   (`docs/VARIANT_GATE.md`) and a cache moved between sizes mixes two
+   approximations that close. The measurements favour the second.
+5. weightd: one arena per model built from sixteenth files, shared by every
+   group size a node serves; no second copy on NVMe or in memory.
+6. The KV index on the hub and the mover between nodes; the KV identity
+   without the shard degree.
+7. Several engines of one model behind one API name: a router that sends a
+   conversation to the group holding its cache.
+8. The placement controller: the per-node memory ledger, load and evict by
+   demand with hysteresis, the fleet plan and the status view. It replaces
+   the swap controller's one-model, one-number admission.
+9. The scheduler choosing a group per phase.
+
+Two engines active on one GPU stall each other unless they share a process
+or an MPS daemon (Multi-model serving, below); groups of different models
+on the same node need that fixed or must not be active at once.
+
 ## Placement beyond TP16
+
+The next placement work is the section above. The pipeline items below stay
+as recorded debt for models too large for a group.
 
 - GLM 5.3 Flash serves only at TP16. Measure B1 latency and aggregate
   throughput from B8 to B1024 for TP16, TP4 x PP4 and PP16 once each runs,
@@ -1013,7 +1165,7 @@ Related common-code debt:
 - K3's BF16-activation/MXFP4-weight expert paths run in production. Decode
   uses the skinny experts. Wide waves use `LmCellMmaExperts`
   (`inference/kernels/cell_mma.cuh`) and `LmGemmKernel<LmBf16Format, LmMxfp4>`
-  (`inference/llms/kimi_k3/unity.cu`), with UE8M0 scales decoded in the load
+  (`model-families/k3/source/unity.cu`), with UE8M0 scales decoded in the load
   and the route build in `inference/kernels/route.cuh`. Only the skinny path
   has a device test against an f64 reference
   (`tests/cuda/skinny_mxfp4_cuda.cu`); the host tests stand a shim in for
@@ -1066,19 +1218,18 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
-- Model drafts and their lookup extension stop at the same cost cap as lookup frames (2x a single step while a prefill waits, or the lower-priority chain cap). No mock scenario runs a waiting prefill beside a drafting request yet, so that path is covered only by its code; add one to tests/test_model_batch_engine_mock.c.
-
-- Tree verification is not wired. The policy engine resolves trees
-  (`SparkSpeculationPolicyResolveVerifierTree`), but no caller passes one.
-  Sequence state stores chains, the seam collapses DFT3 trees to one chain
-  (`SparkSpeculationSeamExtractChain`), and no verify frame applies a
-  tree-attention mask. `spark_speculation_tree.h` has no production includer.
-- Build multi-drafter composition over the seam, after the single-drafter
-  agreement matrix is measured: verify the DFT3 tree instead of collapsing it,
-  allow local plus remote sources together, and attribute acceptance per
-  `source_bit`. `SparkSpeculationDrafterMix`
-  (`src/spark_speculation_drafter_mix.c`) only switches between a primary and
-  a fallback source and has no production caller.
+- Tree frames serve only where the stage maps keys per path: Solar Open 2
+  on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
+  A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
+  Gemma 4 and MiMo share the GQA kernels that take the mapping, but their
+  stages lack the relocation and the capability
+  (`docs/TREE_VERIFICATION_DESIGN.md`, phases P3 and P5).
+- One draft model per lane. A second drafter on a lane waits for the
+  agreement between two drafters on recorded streams, which bounds what its
+  branches can add.
+- A draft is asked when its frame is built, so the frame waits for the
+  answer up to `wait_ms`. Asking one round ahead, while the previous frame
+  runs, is not built.
 - Speculation serves on every model in the README model table, whose
   adapters declare `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY`.
   Still to do:
@@ -1114,7 +1265,24 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   precision"): only each model's default precision serves. Still to build:
   - one lane record, swap entry, chat-layer and LiteLLM name and Open WebUI
     entry per variant, first for the packs already on every node: GLM 5.3
-    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4;
+    FP8, GLM 5.3 Flash FP8 and NVFP4, Qwen 3.8 27B FP8, Qwen 3.8 Flash NVFP4.
+    Qwen 3.8 27B FP8 has them as `qwen3.8-27b-fp8`, with its own KV label,
+    and its figures are measured
+    (`qualification/qwen38_27b/fp8-variant-20261112/`): decode 23% faster,
+    prefill 14% slower, 1.5 GiB a node less; NLL +0.28% [+0.13, +0.45];
+    next-token accuracy 0.18 points lower on short contexts and 0.72 deep in
+    a long one; ds4-eval 92 at 79 against 74, the whole difference in GPQA
+    Diamond (23 against 18 of 25), with the same 92 answers token for token
+    in three orders of the cases and a repeat. The owner decided on
+    2026-11-12 that a
+    variant is offered with its measured figures for the user to choose by,
+    and refused only when it does not repeat itself
+    (`docs/VARIANT_GATE.md`). The record is not deployed, and the Fleet
+    List's row is the owner's to publish; the Fleet List's wording that a
+    variant is measured and offered is PR 1930. Its hub drafter is not
+    wired: the
+    variant drafts from the request's own context only, and the drafter of
+    `qwen3.8-27b` has not been measured on FP8 hidden states;
   - the shared quantizing packer (FP8 in 128-wide blocks, NVFP4 in 16-wide
     blocks with FP8 scales) for models with no publisher or community
     variant: K-EXAONE 2.0, Solar Open 2, Gemma 4, Ling 3.0, Laguna, Muse
@@ -1124,10 +1292,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     DeepSeek V4.1 Flash, HY4, MiMo, Gemma 4, Ling 3.0, Laguna, Solar Open 2,
     K-EXAONE 2.0, Muse Glimmer) moved onto the codec layer, one PR a family,
     and a dry-law check that no stage or packer names a format;
-  - the accuracy gate per variant (paired NLL and distribution comparison,
-    the long-context depth comparison, ds4-eval 92) and the Fleet List's
-    per-variant speed, accuracy and cache capacity generated from its
-    receipts instead of written by hand;
+  - the Fleet List's per-variant speed, accuracy and cache capacity
+    generated from the measurement's receipts instead of written by hand.
+    The measurement itself exists (`tools/ab_api_score.py`,
+    `docs/VARIANT_GATE.md`: paired NLL and distribution comparison, the
+    depth comparison, ds4-eval 92 by family and over several runs). It asks
+    one request a scored position; prompt log-probs from one prefill pass
+    would score a corpus in the time of prefilling it;
   - an EXL3 codec on both backends, once a survey shows which models have
     good EXL3 builds;
   - Qwen 3.8 Max's FP8 default needs two fleets (the pipeline item under
@@ -1176,18 +1347,15 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   pack format revision.
 - Publish one synchronized pack-environment manifest for Python, CUDA, and
   model conversion dependencies.
-- Replace the per-family packers (the stage runner's `tools/*_tp16_pack.py`
-  and `tools/k3_pack.py`, and the remaining `tools/*stagepack*.py`) with the
-  universal packer
-  ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)):
-  one CLI, one codec table, per-family byte-compatible emitters, each gated on
-  byte identity with its existing packs.
+- Merge the TP16 packers' core (`tools/spark_named_pack.py`) into the common
+  packer core the stage packers and `tools/k3_pack.py` use, move the
+  rank-pack, checkpoint and finish code each `tools/*_tp16_pack.py` repeats
+  onto it, and give all packers one CLI
+  ([`docs/DRY_PACKBUILDER_PROPOSAL.md`](docs/DRY_PACKBUILDER_PROPOSAL.md)),
+  each step gated on byte identity with the existing packs.
 
 ## Driver consolidation
 
-- Kimi K3's device code (its slices and unity kernels) lives in
-  `inference/llms/kimi_k3/`, outside `model-families/k3/` where every other
-  model's math lives. Move it there.
 - Every stage-runner model, K3 included, resets every runner slot and the KV
   binding on a client reset and refuses stale-generation submissions
   (`StageServingReset` and the `reset_generation` check in
@@ -1410,26 +1578,26 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Fleet-hours
 
-Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, and the stablecoin checkout: `site/buy.html`, `site/account.html`, `site/two-year.html` and the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`), which opens email accounts, records the acceptance of the Hourly Terms, creates CoinPayments invoices in the USDC or USDT network the customer picks, verifies their webhooks, issues hours in a hash-chained ledger and emails receipts. Nothing else exists.
+Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`, published by `tools/site_terms.py`), the Fleet List, the privacy policy, the price and rate table `site/pricing.js`, the checkout and account pages `site/buy.html`, `site/account.html` and `site/market.html`, the payment service `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) and the market `tools/sparkpipe_market.py` (`docs/FLEET_BOOKINGS.md`). They open email accounts, record the acceptance of the Customer Agreement, take card, stablecoin and SWIFT payments, issue HC in a hash-chained ledger, book Hours, Weeks and the waitlist, and email receipts.
 
 - **Measure gateway_capacity on the VPS and set it.** The gateway now refuses to start without `SPARKPIPE_GATEWAY_CAPACITY`, and neither `/etc/sparkpipe-pay/env` nor the sandbox's env has it yet. Measure it with `tools/gateway_capacity_check.py` against the sandbox on the VPS (`docs/PAYMENTS.md`, before the systemctl commands) and set both files before this release is deployed, or the live gateway stops at its next restart. Until it is measured, holders' share of the gateway (`docs/FLEET_API.md` §17) is only as good as the number written there.
 
-- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Hourly Terms is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses (Hourly Terms 2.2); changing the account email.
-- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, USD wires from abroad for two-year customers, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
+- **Accounts.** Email accounts signed in to with 6-digit codes and a 30-day session cookie; acceptance of the Customer Agreement is a box recorded with the texts' SHA-256 hashes, the time, IP address and browser. Still missing: business details beyond the company name and automatic sanctions screening; the business check (company documents, owners of 25% or more) with its 720-hour holding limit, kept by hand in `approved.json`; recovery email addresses; changing the account email.
+- **Payments.** USDC and USDT through CoinPayments are built (`docs/PAYMENTS.md`). Still missing: refunds of VAT that was not owed, and VAT invoices: tax invoices for Korean businesses and zero-rating evidence for wires. The business check list (`approved.json`) and the signed agreements (`agreements.json`) on the VPS are kept by hand.
 - **Ledger.** The payment service's `ledger.jsonl` chains every order, invoice, payment and issue of hours. Still missing: reservations, displacement, credits and consumption in it, a published daily root and per-customer proofs. Until consumption is recorded, the 168- and 720-hour holding limits count every unexpired hour issued. Balances must come only from replaying it.
-- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry, and the two-year tranches, gates and window elections.
+- **Reservations.** One writer, the per-fleet calendar and its API, the 7-day hourly horizon, displacement of hourly hours more than 6 hours ahead with an email, consumption and expiry.
 - **Fleet access.** Access tokens scoped to an account's reserved hours, the gate in front of the fleet that admits only the current hour's customer, the customer-facing API (sparkpipe.ai has no API today), and loading the reserved model before the hour starts.
 - **`availability.txt`.** Generated from the calendar and fleet state every 30 seconds.
 - **Credits.** Automatic credits for downtime over 15 minutes and for performance below the threshold, from the fleet's own records.
 - **Won payments.** Electronic tax invoices (세금계산서) issued for each won order, matching of incoming bank transfers to orders, and won amounts in the ledger beside the hours they buy.
-- **Korean site.** The checkout, account and two-year pages (`site/buy.html`, `account.html`, `two-year.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
+- **Korean site.** The checkout and account pages (`site/buy.html`, `account.html`, `market.html`) are English only. The Korean address list behind the language redirect (`tools/site_kr_networks.py`, `docs/LITELLM_FRONTEND.md`) is rebuilt by hand; APNIC changes it daily, so it needs a monthly refresh job.
 - **ESTIMATED values on sparkpipe.ai.** The site shows projections marked ESTIMATED (the home page Speed and Roadmap sections, `fleets.html#estimates`). Each is replaced by a fleet measurement, with its receipt in `PERFORMANCE_STATUS.md`:
   - prefill accelerators: boxes of four RTX 5080 cards (PCIe reduce inside a box, 100 Gb/s per box over the 32-port 400 Gb/s switch) prefilling a 128K-token prompt, with 4 / 8 boxes: Kimi K3 37 / 18 s, Qwen 3.8 Max 4-bit 35 / 17 s, K-EXAONE 2.0 35 / 18 s, A.X K2 16 / 8 s; a 1M-token Kimi K3 prompt in about 17 / 9 minutes. Assumes weights streamed once per prompt at 85% of 50 / 100 GB/s, cards at 40% of dense peak (FP8 450, BF16 225 TFLOPS) including attention, and short prompts kept on the fleet. Needs the boxes, the switch and an accelerator prefill path;
-  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Fleet 2 (eight M5 Ultra Mac Studios, 90% of 1.2 TB/s, the same cost per layer): Kimi K3 23 tok/s, K-EXAONE 2.0 23, A.X K2 33; it needs the Metal backend and the Thunderbolt 5 link class. Lowering the per-layer cost raises every figure, and the site follows each measurement;
-  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain, so it has no Fleet 2 estimate; FP8 across Fleets 1 and 2 needs a two-fleet pipeline;
+  - decode estimates take a token's time as each node's share of the weights at the measured 245 GB/s plus 0.44 ms per layer, the fixed cost Kimi K3 measures (GLM 5.3 measures 0.31 ms). Fleet 1: K-EXAONE 2.0 19 tok/s, A.X K2 28. Lowering the per-layer cost raises every figure, and the site follows each measurement;
+  - Qwen 3.8 Max's 4-bit build serves at 10.4 tok/s on Fleet 1, which the per-layer model does not explain;
   - speculation at 1.5 times plain decode on agent coding turns, as measured on short edits; tree drafts carry no estimate until they are built and measured;
   - each candidate model also needs a driver, qualification and a license check: K-EXAONE 2.0, A.X K2 and Solar Open 2 (see Korean models), Nemotron 3 Ultra, Inkling (BF16 across two fleets, or an FP8 build that passes the accuracy A/B) and Muse Spark Open (gated license under review). Nemotron 3 Ultra and Muse Spark Open get site estimates once their layer counts and formats are checked against the per-layer model.
-- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. `tools/generate_litellm_config.py` emits `num_retries: 1`, which can duplicate a generation; the hub's hand-written `config/litellm-config.yaml` uses 0. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
+- **LiteLLM door limits.** LiteLLM consumes a request's `priority` for its own scheduler and does not forward it, so the batch engine's priorities do not cross the door. The LAN door on port 4000 has no accounts, keys, quotas or spend logs.
 
 ## SparkPipe Chat
 
@@ -1456,14 +1624,6 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
   rebuild the exact release on Spark hardware, and retain all receipts.
 - Close exact-checkpoint numerical parity and end-to-end service gates for each
   model before reporting it production-ready.
-- `tools/glm5_next_driver_compare.py` and
-  `tests/test_glm5_next_driver_probe.c` outlived the glm5_next module and
-  probe that `82e63a909` deleted: the compare tool launches a probe binary
-  nothing builds, and the test `#include`s the deleted
-  `tools/glm5_next_driver_probe.c`, so neither can run. Delete both, with
-  `docs/GLM_REAL_DRIVER_PROBE.md`, the probe paragraph of
-  `docs/DRIVER_ACCEPTANCE.md` and the `glm5_next_driver_probe` entry in
-  `tools/test_serving_reliability_host.py`.
 - The GLM 5.3 Full and Flash weight warms in `deployment/hub/model_swap.json`
   are written by hand with the checkpoint revision as a literal, not rendered
   from the lane records like A.X K2's (`expert_warm` in `tools/stage_lane.py`),
@@ -1493,11 +1653,7 @@ Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBO
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
-- The lane pin reaches residentd only as the environment variable
-  `SPARK_WEIGHTD_LANE`, which the `lane.sh` rendered by `tools/stage_lane.sh`
-  sets and `inference/runner/stage_serving_adapter.c` and
-  `ring/transport/tp_device_collective.c` read with `getenv`. Move it into the
-  deployment contract beside `wait_mode`. `sparkpipe-hub-route.service` stays
+- `sparkpipe-hub-route.service` stays
   a runtime step, but only `docs/FLEET_RELEASE_RUNBOOK.md` (section 1)
   describes it: `docs/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
   `tools/fleet_post_reboot.sh` does not check the route.
@@ -1524,6 +1680,20 @@ and the multidev docs on 2026-09-28. Line numbers are in
   setup of every lane, `release_compare` EXACT on every model against the
   linked layout, `find ~/stage-lanes ~/k3-lanes -type l` empty on all 16,
   and an audit with no `LINK` line.
+- Awaiting the owner's first prune (lane `tools/node-pack-prune`):
+  `tools/node_pack_prune.py` lists every file under a node's `sparkdata`
+  that no lane record, swap command, live config, agent root or keep-list
+  entry (`deployment/sparkdata_keep.json`) uses, and `--delete` removes them
+  on the owner's order, refusing open and recently modified entries and
+  every entry on a node that lacks a file a record names. The lead's
+  2026-11-02 dry run (`prune_packs.sh`) found 643 to 725 GB per node. Until
+  the DeepSeek V4.1 Flash pack directory step of `lanes/direct-pack-paths`
+  runs, every node lacks the engram files the record names, so the tool
+  reports them `MISSING` and deletes nothing there; the engram shards still
+  sit in `dsv41flash-1017.mxfp4.tp16` and would otherwise look unused. The
+  open-file check sees only the processes of the user that runs it, and
+  the nodes' `~/KEEP` files are not read: the repository's keep list
+  replaces them.
 - Awaiting fleet proof (lane `lanes/no-weight-links-2`): no tool links a
   weight file or a configuration (`tests/test_no_weight_links.py` holds the
   tree to it; the only link sites left are the CUDA toolkit alias in
@@ -1535,9 +1705,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `lag_t1_launch.sh` refuse a rank whose node names anything else or a
   linked file, and delete an older `config/stage.json` link before a
   start; `fleet_serve.sh` now sees a refused start (the check and the run
-  log guard ran in the background before). The family job template, the
-  GLM cold-launch A/B, `inference_smoke.py` and the K3 run family name the
-  real pack and copy one digest; the A/B `root-check` refuses any link
+  log guard ran in the background before). The A/B `root-check` refuses any link
   under an arm root and a pack named any other way. The dead DSV4 dev cycle
   (`tools/devcycle.sh`, `bbench.sh`), the GLM 5.2 `r3flash_exact_cell.sh`
   and the one-off `glm5_next_pack_swap.sh` are gone. Fleet step before the
@@ -1748,7 +1916,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   have a Metal backend. Still open: the GLM 5.3 Full and A.X
   K2 geometries stay in their `.cu` files until `LmRopePairing` and the
   stagepack geometry hooks have a device-neutral home, and K3 and DeepSeek
-  V4.1 Flash keep their geometry as macros (`inference/llms/kimi_k3/config.h`,
+  V4.1 Flash keep their geometry as macros (`model-families/k3/source/config.h`,
   the `D41_*` defines) rather than a geometry struct. The CUDA backends still
   carry one copy of an operation per family: GQA attention with its gather,
   split and pack-slot kernels in Gemma, MiMo, Ling and Qwen, and the routed
@@ -2119,8 +2287,8 @@ Metal backend and the single-Studio stage are in
   format per model, and the resumable request moves with its cache.
 - Run PP2 across hardware classes once routes waiting on transport input can
   be cancelled when a peer rank fails.
-- Measure each bridge when the Studios arrive: Studio 10GbE into the fabric;
-  IP over Thunderbolt from a Studio to the RTX 5090 host, on that host's
+- Measure each bridge on a Studio pool: Studio 10GbE into the fabric;
+  IP over Thunderbolt from a Studio to the hub, on that host's
   controller; the host's ConnectX-6 into the CRS804. Record the winners as
   named link classes in the deployment JSON.
 - Stand up reference nodes for every hardware combination the provider

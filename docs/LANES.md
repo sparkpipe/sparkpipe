@@ -10,7 +10,7 @@ whether the fleet still matches.
 | Field | Meaning |
 |---|---|
 | `launcher` | `stage_lane` (started by the `lane.sh` that `tools/stage_lane.sh` renders) or `k3_lane` (started by the swap entry's own commands) |
-| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes |
+| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes. A precision variant (`qwen3.8-27b-fp8`) is its own entry and record on its model's mesh lane ([VARIANT_GATE.md](VARIANT_GATE.md)) |
 | `lane` | weightd mesh lane; ports and the collective identifier follow from it |
 | `runtime_root`, `weightd_socket` | per-node root (`{host}` is substituted) and weightd socket |
 | `sequences`, `rows`, `shared_rows` | resident sequences, rows per wave, rows of the shared prefill half |
@@ -21,13 +21,18 @@ whether the fleet still matches.
 | `state_budget_bytes`, `state_memory_bytes` | rank state budget; recurrent checkpoint memory (default twice the minimum) |
 | `taps` | layer taps a hub drafter reads, passed to every rank's adapter; `taps.stream` is also where the draft server listens, so the endpoint is written once |
 | `memory_max` | the residentd unit's MemoryMax: rendered into `lane.sh` for stage lanes; for K3, `tools/k3_lane.sh` with `K3_RECORD` takes it (and the socket, state budget and expert pool cap) from the record and refuses a conflicting `K3_*` value, and the test requires the kimi-k3 swap entry's start and warm commands to carry the record's values |
-| `expert_pool_cap_bytes` | optional, and set by no production record: an explicit cap for a lane that streams experts on purpose, a positive whole number of 2 MiB chunks no larger than the pack's exact expert pool (larger is refused at startup). It renders as `SPARK_WEIGHTD_EXPERT_POOL_BYTES` into `lane.sh` (stage lanes, whose warm command reads it from there) or through `K3_EXPERT_POOL_CAP_BYTES` (`tools/k3_lane.sh`). Without it the variable is not set and every engine and warm sizes the pool from the pack's `PACK.experts` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)). `tests/test_lane_records.py` refuses the old hand-set `expert_pool_bytes` |
+| `expert_pool_cap_bytes` | optional, and set by no production record: an explicit cap for a lane that streams experts on purpose, a positive whole number of 2 MiB chunks no larger than the pack's exact expert pool (larger is refused at startup). It renders as `expert_pool_cap_bytes` into every rank's stage config and as `--expert-pool-cap` into the swap entry's warm command. Without it the member is absent and every engine and warm sizes the pool from the pack's `PACK.experts` ([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#pool-sizing)). `tests/test_lane_records.py` refuses the old hand-set `expert_pool_bytes` |
 | `tokenizer_sha256` | the compiled tokenizer the hub API loads |
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
 
 `weightd` at the top holds the device ceiling and KV reserve every node's
 weightd runs with.
+
+The hub API's `model_resident.json` may also carry `request_inflight_budget_ms`:
+how long a request may wait on a submission that is still in flight before its
+client gets BUSY (at least 1000; without it, the engine's 15 minutes). The API
+reads it from the deployment and from nowhere else; no lane record sets it.
 
 ## Rules
 
@@ -84,7 +89,7 @@ and the engram hash tables under the names the engine opens:
 `engram_tables.bin`.
 
 The lane root holds only small real files: binaries, the rendered
-configuration, `lane.sh`, `spine_budget`, `packs/pack.sha256` (the one digest
+configuration, `lane.sh`, `packs/pack.sha256` (the one digest
 residentd reads from `packs/`), the KV directories and the run logs.
 `stage_lane.sh setup` and `k3_lane.sh setup` check on every node, before
 touching the root, that each weight file of the rank is a regular file and
@@ -104,6 +109,58 @@ weight file, `<host> <record> <role> <path>`, with role `pack`, `experts`,
 `digest`, `sibling`, or `named` for any other `sparkdata` path a rendered node
 file names. It reads nothing on the fleet: pruning and audits work from these
 names and never follow a link.
+
+## Unused files on the nodes
+
+A node keeps under `~/sparkdata` only what something uses:
+
+- the files the lane records name for that host, as `tools/lane_pack_files.py`
+  prints them (packs, their `.experts` and `.sha256`, pack siblings such as
+  the DeepSeek V4.1 engram files, and any other `sparkdata` path a rendered
+  config names, a partner pack for instance);
+- their companions: the same name with `.experts`, `.sha256`, `.verified`,
+  `.receipt.json`, `.ck128` or `.digest`;
+- the files the swap controller's commands name;
+- whatever a live config on the node names (`deployment.json`,
+  `config/*.json` and `lane.sh` in a lane root; `model_resident.json`,
+  `config/*.json` and the env files of a fleet agent root); a named directory
+  keeps its whole tree, and a file that only a live config names is reported,
+  because its record does not name it;
+- the entries of `deployment/sparkdata_keep.json`, each with a reason and the
+  date it was kept: staged packs that no lane serves yet and the
+  infrastructure directories (`core`, `weightd`, `swap`, `working-state`);
+- every FP8 build: a path with `fp8` in any of its names under `sparkdata`
+  (an FP8 or MXFP8 pack, an FP8 checkpoint). FP8 packs and checkpoints are
+  kept when disk is freed, so a new one needs no keep entry;
+- the fleet agent's roots: a directory with a release `MANIFEST`, or one
+  `~/.fleet_agent_roots` or the `fleet-agent` unit names. The release channel
+  owns them.
+
+```bash
+python3 tools/node_pack_prune.py
+python3 tools/node_pack_prune.py --host spark3
+python3 tools/node_pack_prune.py --delete
+```
+
+`tools/node_pack_prune.py` sends one scan to every node. The node walks its
+`sparkdata` without following a link and lists every other file, link and
+directory: `UNUSED <host> <bytes> <path>` (a directory whose whole tree is
+unused is one line), then `TOTAL <host>` with the unused bytes and the kept
+bytes by reason. It also prints `MISSING` for a file a record names that the
+node lacks, `LINKED` for one that is a symlink and `LIVE` for a file that
+only a live config names. The default is a dry run.
+
+`--delete` is the owner's command. Each node deletes its unused entries
+itself, after checking each one again: an entry that a running process holds
+open (a file descriptor, a mapping, a working directory or an executable in
+`/proc`, or `lsof` where there is no `/proc`) or that holds anything modified
+in the last hour is refused. The node walks the entry's tree again just
+before deleting it, so a file written into it after the scan stops the
+delete. A node that lacks any file a record names deletes nothing, since its
+layout is then not the one the records describe.
+Every refusal is a `REFUSED <host> <path>: <reason>` line and makes the
+command exit 1. A full `lane_config.py audit` reports each unused entry as
+`UNUSED <bytes> <host>:<path>` and each absent named file as `MISSING`.
 
 ## Commands
 
@@ -129,7 +186,10 @@ an operator's shell exports reaches a production `lane.sh`.
 - the weightd ceiling and KV reserve in every node's `weightd.log`;
 - lane roots and API directories that no record names;
 - every symlink under `~/stage-lanes` and `~/k3-lanes` (one `LINK` line
-  each; an audit of named records scans their lane roots).
+  each; an audit of named records scans their lane roots);
+- on a full audit, every unused entry under each node's `sparkdata`
+  (`UNUSED <bytes> <host>:<path>`) and every file a record names that the
+  node lacks (`MISSING`), as `tools/node_pack_prune.py` finds them.
 
 It prints one line per finding and exits non-zero when there is any.
 
@@ -145,9 +205,9 @@ every replaced file as `<file>.prev-<UTC>`, and audits the record. It does
 not touch binaries, packs or KV, so a lane restart picks the change up. That
 includes a pack switch, such as a precision change: `lane.sh start` takes the
 expected pack digest (`packs/pack.sha256`, which residentd hands weightd)
-from the `.sha256` beside the pack `config/adapter.json` names, and the spine
-budget from `bin/weightd_spine_budget.py` on that pack, so neither can still
-describe the pack the lane was first staged with. A configured pack without
+from the `.sha256` beside the pack `config/adapter.json` names, so it cannot
+still describe the pack the lane was first staged with; the runtime derives
+the spine allocation from that pack's manifest. A configured pack without
 its sidecar refuses to start. A dense lane (DeepSeek V4.1 Flash) names a pack
 link inside its own `packs/`; residentd reads exactly one `packs/*.sha256`,
 so that lane keeps the `packs/pack.sha256` setup writes from the pack, and

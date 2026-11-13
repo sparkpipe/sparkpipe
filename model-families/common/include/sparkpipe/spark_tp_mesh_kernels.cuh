@@ -30,6 +30,7 @@ __attribute__((used)) static const char SparkTpMeshKernelsBuildMarkerHost[] =
 #define SPARK_TP_MESH_SMALL_MESSAGE_ELEMENTS 131072u
 #define SPARK_TP_MESH_EARLY_ELEMENTS 16384u
 #define SPARK_TP_MESH_EARLY_BLOCKS 4u
+#define SPARK_TP_MESH_PREFETCH_THREADS 32u
 #define SPARK_TP_MESH_WIDE_PUBLISH_BYTES 65536u
 #define SPARK_TP_MESH_WIDE_PUBLISH_UNIT (SPARK_TP_MESH_THREADS * 16u * 4u)
 
@@ -1047,22 +1048,28 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
     SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,uint64_t timeout_ns,
     LmWeightPrefetchGroup *prefetch,uint32_t resume,uint32_t view,uint32_t early)
 {
+    __shared__ uint32_t wait_over;
     const uint32_t lane = threadIdx.x;
     const volatile uint64_t *tail,*cancel;
-    uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other,position = 0u,extent = 0u,base;
-    uint32_t missing,first,step,spans = 0u,issuer,issuers;
-    if ( blockIdx.x != 0u || lane >= 32u || SparkTpLdcvU64(&control->error_word) != 0u ) return;
+    uint64_t tag,ring,expected,started,seen = 0u,fault = 0u,diag = 0u,landed = UINT64_MAX,other,base;
+    uint32_t missing,first,step;
+    if ( lane == 0u ) wait_over = 0u;
+    __syncthreads();
+    if ( blockIdx.x != 0u || SparkTpLdcvU64(&control->error_word) != 0u ) return;
+    if ( lane >= 32u )
+    {
+        const volatile uint32_t *stop = &wait_over;
+        const uint32_t spans = prefetch->count;
+        const uint64_t extent = LmWeightPrefetchExtent(prefetch,spans),stride = (uint64_t)(blockDim.x - 32u) * LM_WEIGHT_PREFETCH_PIECE_BYTES;
+        uint64_t position = resume != 0u ? prefetch->progress : 0u;
+        for ( ; position < extent && *stop == 0u; position += stride )
+            LmWeightPrefetchPiece(prefetch,spans,position + (uint64_t)(lane - 32u) * LM_WEIGHT_PREFETCH_PIECE_BYTES);
+        if ( lane == 32u )
+            prefetch->progress = position < extent ? position : extent;
+        return;
+    }
     if ( early != 0u )
         LmDependentRelease();
-    if ( prefetch != 0 )
-    {
-        spans = prefetch->count;
-        extent = LmWeightPrefetchExtent(prefetch,spans);
-        position = resume != 0u ? prefetch->progress : 0u;
-    }
-    issuers = degree < 32u ? 33u - degree : 1u;
-    issuers = issuers < LM_WEIGHT_PREFETCH_ISSUERS ? issuers : LM_WEIGHT_PREFETCH_ISSUERS;
-    issuer = lane == rank ? 0u : lane >= degree ? lane - degree + 1u : UINT32_MAX;
     tag = control->round_seq - ((view & SPARK_TP_MESH_VIEW_LAG) != 0u ? 1u : 0u);
     ring = (tag - 1u) & (slots_per_rank - 1u);
     tail = (const volatile uint64_t *)(band + ((uint64_t)lane * slots_per_rank + ring) * slot_bytes +
@@ -1074,12 +1081,6 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
     base = view != 0u ? started : control->wait_started_ns;
     for (;;)
     {
-        if ( position < extent )
-        {
-            if ( issuer < issuers )
-                LmWeightPrefetchPiece(prefetch,spans,position + (uint64_t)issuer * LM_WEIGHT_PREFETCH_PIECE_BYTES);
-            position += (uint64_t)issuers * LM_WEIGHT_PREFETCH_PIECE_BYTES;
-        }
         if ( missing != 0u && (seen = SparkTpLdAcquireU64(tail)) == tag )
         {
             missing = 0u;
@@ -1098,10 +1099,10 @@ static __global__ void SparkTpMeshHardwareArrivalKernel(
         if ( fault == tag ) diag = seen;
         break;
     }
+    if ( lane == 0u )
+        *(volatile uint32_t *)&wait_over = 1u;
     if ( early == 0u )
         LmDependentRelease();
-    if ( prefetch != 0 && issuer == 0u )
-        prefetch->progress = position < extent ? position : extent;
     if ( fault == 0u && lane < SPARK_TP_MESH_ROUND_CONTROL_PEERS && landed != UINT64_MAX && landed > base )
         control->peer_arrival_ns[lane] += landed - base;
     for ( step = 16u; step != 0u; step >>= 1u )
@@ -1900,7 +1901,7 @@ static cudaError_t SparkTpMeshHardwareArrivalRelease(cudaStream_t stream,const u
 {
     uint32_t resume;
     LmWeightPrefetchGroup *prefetch = LmWeightPrefetchSlot(stream,&resume);
-    SparkTpMeshHardwareArrivalKernel<<<1,32,0u,stream>>>(band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,prefetch,resume,view,early);
+    SparkTpMeshHardwareArrivalKernel<<<1,prefetch != 0 ? 32u + SPARK_TP_MESH_PREFETCH_THREADS : 32u,0u,stream>>>(band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,prefetch,resume,view,early);
     return cudaPeekAtLastError();
 }
 

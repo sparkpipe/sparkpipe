@@ -3,6 +3,8 @@
 #endif
 
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_io.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_worker.h"
 #include "sparkpipe/spark_weightd_pacer.h"
@@ -55,6 +57,7 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
 __attribute__((weak)) int SparkWeightdMeshStagingFd(void) { return -1; }
 
+#ifdef DEBUG
 extern void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
     uint64_t bytes);
 __attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
@@ -62,6 +65,7 @@ __attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
 {
     (void)tag; (void)device_pointer; (void)bytes;
 }
+#endif
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
 {
@@ -300,22 +304,12 @@ uint32_t SparkWeightdClientAlive(const SparkWeightdClient *client)
     return(1u);
 }
 
-static uint64_t SparkWeightdMonotonicTimeNs(void)
-{
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-    {
-        return 0ull;
-    }
-    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
-
 #define SPARK_WEIGHTD_SERVING_LINGER_NS UINT64_C(1000000000)
 
 static uint64_t SparkWeightdPacerNow(void *context)
 {
     (void)context;
-    return SparkWeightdMonotonicTimeNs();
+    return SparkMonotonicNs();
 }
 
 static void SparkWeightdPacerSleepNs(void *context, uint64_t nanoseconds)
@@ -346,7 +340,7 @@ static uint64_t SparkWeightdConnectionPeerPid(int fd)
 
 static uint32_t SparkWeightdServerServingOther(SparkWeightdServer *server)
 {
-    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t now = SparkMonotonicNs();
     uint64_t requester = 0u;
     uint32_t index;
     if (server->dispatch_connection < SPARK_WEIGHTD_CONNECTION_COUNT_MAX)
@@ -729,7 +723,7 @@ SparkStatus SparkWeightdIpcValidateHeaderVersion(const SparkWeightdIpcHeader *he
 
 static SparkStatus SparkWeightdStatusFromWire(uint32_t wire_status)
 {
-    if (wire_status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
+    if (wire_status > (uint32_t)SPARK_STATUS_MAXIMUM)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
@@ -1342,7 +1336,7 @@ static SparkStatus SparkWeightdServerAttachRegister(SparkWeightdServer *server,
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     arena->refcount++;
-    arena->last_use_ns = SparkWeightdMonotonicTimeNs();
+    arena->last_use_ns = SparkMonotonicNs();
     connection->attaches[connection->attach_count].arena_generation =
         arena->generation;
     connection->attaches[connection->attach_count].arena_slot = arena_slot;
@@ -1362,7 +1356,7 @@ static void SparkWeightdServerDetachRelease(SparkWeightdServer *server,
         server->arenas[arena_slot].refcount != 0u)
     {
         server->arenas[arena_slot].refcount--;
-        server->arenas[arena_slot].last_use_ns = SparkWeightdMonotonicTimeNs();
+        server->arenas[arena_slot].last_use_ns = SparkMonotonicNs();
     }
     for (index = attach_index; index + 1u < connection->attach_count; index++)
     {
@@ -1862,7 +1856,7 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	started_ns = SparkWeightdMonotonicTimeNs();
+	started_ns = SparkMonotonicNs();
 	if ( cuMemCreate(&handle,(size_t)create_bytes,&prop,0ull) != CUDA_SUCCESS )
 	{
 		fprintf(stderr,"WD-POOL-PREMAP-FAIL single-alloc create span=%llu failed\n",
@@ -1893,9 +1887,11 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 		arena->chunk_handles[index] = (void *)handle;
 	arena->pool_committed_bytes += span_bytes;
 	server->resident_bytes += span_bytes;
+#ifdef DEBUG
 	SparkWeightdMeshDeviceProbe("pool",arena->device_base,span_bytes);
+#endif
 	printf("pool single-alloc chunks=%u span=%llu seconds=%.3f (one allocation for the whole arena; pooled chunks never evicted)\n",
-	    arena->chunk_count,(unsigned long long)span_bytes,(double)(SparkWeightdMonotonicTimeNs() - started_ns) / 1e9);
+	    arena->chunk_count,(unsigned long long)span_bytes,(double)(SparkMonotonicNs() - started_ns) / 1e9);
 	fflush(stdout);
 	return(SPARK_STATUS_OK);
 }
@@ -2642,7 +2638,7 @@ static void SparkWeightdCommitLease(SparkWeightdArena *arena,const SparkWeightdL
 	const SparkWeightdRangeGroup *group;
 	const SparkWeightdRange *range;
 	uint32_t i,j,k,first,last,index;
-	uint64_t now = SparkWeightdMonotonicTimeNs();
+	uint64_t now = SparkMonotonicNs();
 	arena->last_use_ns = now;
 	for (i=0u; i<lease->count; i++)
 	{
@@ -3205,7 +3201,7 @@ static uint32_t SparkWeightdServerOnAcquireOrRelease(SparkWeightdServer *server,
         {
             result->lease_identifier = release->lease_identifier;
             result->status = SparkWeightdLeaseRelease(arena->leases,connection->owner,release->lease_identifier);
-            arena->last_use_ns = SparkWeightdMonotonicTimeNs();
+            arena->last_use_ns = SparkMonotonicNs();
         }
         else if ( acquire->reserved0 != 0u )
             result->status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -3264,7 +3260,7 @@ static uint32_t SparkWeightdServerOnMeshActivity(SparkWeightdServer *server, Spa
             connection->mesh_active = activity->active;
             connection->mesh_lane = activity->lane;
             atomic_store_explicit(&connection->serving_until_ns,
-                activity->active != 0u ? UINT64_MAX : SparkWeightdMonotonicTimeNs() + SPARK_WEIGHTD_SERVING_LINGER_NS,
+                activity->active != 0u ? UINT64_MAX : SparkMonotonicNs() + SPARK_WEIGHTD_SERVING_LINGER_NS,
                 memory_order_release);
         }
     }
@@ -3758,7 +3754,7 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 			(unsigned long long)pool->generation,holder,freed,(unsigned)__builtin_popcountll(pool->holder_mask));
 		if ( pool->holder_mask == 0u )
 		{
-			pool->detached_ns = SparkWeightdMonotonicTimeNs();
+			pool->detached_ns = SparkMonotonicNs();
 			fprintf(stderr,"weightd kv shared pool detached label=%s generation=%llu bytes=%llu; kept for reattach\n",pool->label,
 				(unsigned long long)pool->generation,(unsigned long long)(pool->chunk_bytes * pool->chunk_count));
 		}
@@ -3769,7 +3765,7 @@ static void SparkWeightdKvPoolDetachConnection(SparkWeightdServer *server,uint32
 			continue;
 		server->kv_pools[index].owner_connection = 0u;
 		server->kv_pools[index].wanted_chunks = 0u;
-		server->kv_pools[index].detached_ns = SparkWeightdMonotonicTimeNs();
+		server->kv_pools[index].detached_ns = SparkMonotonicNs();
 		connection->kv_pool_count--;
 		fprintf(stderr,"weightd kv pool detached label=%s generation=%llu bytes=%llu; kept for reattach\n",server->kv_pools[index].label,
 			(unsigned long long)server->kv_pools[index].generation,(unsigned long long)(server->kv_pools[index].chunk_bytes * server->kv_pools[index].chunk_count));
@@ -3828,7 +3824,7 @@ static uint32_t SparkWeightdServerOnKvPoolAttach(SparkWeightdServer *server,Spar
 				server->kv_pools[slot].label,(unsigned long long)server->kv_pools[slot].generation,errno);
 			server->kv_pools[slot].owner_connection = 0u;
 			server->kv_pools[slot].wanted_chunks = 0u;
-			server->kv_pools[slot].detached_ns = SparkWeightdMonotonicTimeNs();
+			server->kv_pools[slot].detached_ns = SparkMonotonicNs();
 			connection->kv_pool_count--;
 			status = SPARK_STATUS_IO_ERROR;
 		}
@@ -3970,7 +3966,7 @@ static uint32_t SparkWeightdServerOnKvSharedAttach(SparkWeightdServer *server,Sp
 			pool->holder_connection[holder] = 0u;
 			connection->kv_pool_count--;
 			if ( pool->holder_mask == 0u )
-				pool->detached_ns = SparkWeightdMonotonicTimeNs();
+				pool->detached_ns = SparkMonotonicNs();
 			status = SPARK_STATUS_IO_ERROR;
 		}
 		else
@@ -4776,7 +4772,7 @@ SparkStatus SparkWeightdServerStep(SparkWeightdServer *server)
     SparkWeightdServerCompleteWork(server);
     SparkWeightdMeshPoll();
     if (atomic_load_explicit(&server->dispatch_state,memory_order_acquire) == 0u)
-        (void)SparkWeightdServerExpireKv(server,SparkWeightdMonotonicTimeNs());
+        (void)SparkWeightdServerExpireKv(server,SparkMonotonicNs());
 
     if (server->listen_fd >= 0)
     {
@@ -5047,7 +5043,7 @@ SparkStatus SparkWeightdServerListen(SparkWeightdServer *server)
     }
     server->bound = 1u;
     (void)chmod(server->socket_path, 0600);
-    server->daemon_generation = SparkWeightdMonotonicTimeNs();
+    server->daemon_generation = SparkMonotonicNs();
     return SPARK_STATUS_OK;
 }
 
@@ -5141,7 +5137,7 @@ uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server)
 static SparkStatus SparkWeightdDeadlineRemaining(uint64_t deadline_ns,
     int *timeout_ms)
 {
-    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t now = SparkMonotonicNs();
     if (now == 0ull)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -5154,85 +5150,6 @@ static SparkStatus SparkWeightdDeadlineRemaining(uint64_t deadline_ns,
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkWeightdClientWriteAll(SparkWeightdClient *client,
-    const uint8_t *buffer,
-    uint32_t bytes,
-    uint64_t deadline_ns)
-{
-    uint32_t written = 0u;
-    while (written < bytes)
-    {
-        ssize_t chunk = send(client->fd, buffer + written, bytes - written,
-            MSG_NOSIGNAL);
-        int timeout_ms;
-        if (chunk < 0)
-        {
-            struct pollfd poll_fd;
-            if (errno == EINTR)
-            {
-                continue;
-            }
-            if (errno != EAGAIN && errno != EWOULDBLOCK)
-            {
-                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-            }
-            poll_fd.fd = client->fd;
-            poll_fd.events = POLLOUT;
-            poll_fd.revents = 0;
-            if (SparkWeightdDeadlineRemaining(deadline_ns, &timeout_ms) !=
-                SPARK_STATUS_OK)
-            {
-                SPARK_FAIL(SPARK_STATUS_BUSY);
-            }
-            if (poll(&poll_fd, 1u, timeout_ms) <= 0)
-            {
-                SPARK_FAIL(SPARK_STATUS_BUSY);
-            }
-            continue;
-        }
-        written += (uint32_t)chunk;
-    }
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkWeightdClientReadAll(SparkWeightdClient *client,
-    uint8_t *buffer,
-    uint32_t bytes,
-    uint64_t deadline_ns)
-{
-    uint32_t received = 0u;
-    while (received < bytes)
-    {
-        ssize_t chunk;
-        struct pollfd poll_fd;
-        int timeout_ms;
-        SparkStatus deadline_status = SparkWeightdDeadlineRemaining(
-            deadline_ns, &timeout_ms);
-        if (deadline_status != SPARK_STATUS_OK)
-        {
-            SPARK_RETURN(deadline_status);
-        }
-        poll_fd.fd = client->fd;
-        poll_fd.events = POLLIN;
-        poll_fd.revents = 0;
-        if (poll(&poll_fd, 1u, timeout_ms) <= 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_BUSY);
-        }
-        chunk = recv(client->fd, buffer + received, bytes - received, 0);
-        if (chunk <= 0)
-        {
-            if (chunk < 0 && errno == EINTR)
-            {
-                continue;
-            }
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        received += (uint32_t)chunk;
-    }
-    return SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
     const void *request,
     uint32_t request_bytes,
@@ -5242,7 +5159,7 @@ static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
 {
     const SparkWeightdIpcHeader *request_header = request;
     SparkWeightdIpcHeader *response_header = response;
-    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t now = SparkMonotonicNs();
     uint64_t timeout = timeout_nanoseconds != 0ull
         ? timeout_nanoseconds : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS;
     uint64_t deadline;
@@ -5252,9 +5169,9 @@ static SparkStatus SparkWeightdClientExchange(SparkWeightdClient *client,
     if (now == 0ull || timeout > UINT64_MAX - now)
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     deadline = now + timeout;
-    status = SparkWeightdClientWriteAll(client,request,request_bytes,deadline);
+    status = SparkIoSendAllBefore(client->fd,request,request_bytes,deadline);
     if (status == SPARK_STATUS_OK)
-        status = SparkWeightdClientReadAll(client,response,response_bytes,deadline);
+        status = SparkIoRecvAllBefore(client->fd,response,response_bytes,deadline);
     if (status == SPARK_STATUS_OK)
         status = SparkWeightdIpcValidateHeader(response_header,response_bytes,
             SparkWeightdKindResultKind(request_header->kind));
@@ -5314,7 +5231,7 @@ static SparkStatus SparkWeightdClientOpen(const char *socket_path,
     SparkWeightdIpcHello wire_hello;
     SparkWeightdIpcHelloAck wire_ack;
     SparkStatus status;
-    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t now = SparkMonotonicNs();
     uint64_t timeout = timeout_nanoseconds != 0ull
         ? timeout_nanoseconds : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS;
     uint64_t deadline;
@@ -5381,7 +5298,7 @@ static SparkStatus SparkWeightdClientOpen(const char *socket_path,
         }
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
-    now = SparkWeightdMonotonicTimeNs();
+    now = SparkMonotonicNs();
     if (now >= deadline)
     {
         (void)close(instance->fd);
@@ -5475,7 +5392,7 @@ SparkStatus SparkWeightdClientMeshStatus(SparkWeightdClient *client,
     {
         SPARK_FAIL(SPARK_STATUS_ABI_MISMATCH);
     }
-    if (result->status > (uint32_t)SPARK_STATUS_EVICT_DENIED)
+    if (result->status > (uint32_t)SPARK_STATUS_MAXIMUM)
     {
         SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
@@ -5486,7 +5403,7 @@ static uint64_t SparkWeightdQueryRemaining(uint64_t started_ns,
     uint64_t timeout_nanoseconds,
     uint64_t floor_nanoseconds)
 {
-    uint64_t now = SparkWeightdMonotonicTimeNs();
+    uint64_t now = SparkMonotonicNs();
     uint64_t elapsed = now > started_ns ? now - started_ns : 0ull;
     uint64_t remaining = elapsed < timeout_nanoseconds ? timeout_nanoseconds - elapsed : 0ull;
     return remaining > floor_nanoseconds ? remaining : floor_nanoseconds;
@@ -5500,7 +5417,7 @@ SparkStatus SparkWeightdMeshStatusQuery(const char *socket_path,
     SparkWeightdClient *client = 0;
     SparkWeightdHelloResult hello;
     SparkWeightdHelloResult again;
-    uint64_t started = SparkWeightdMonotonicTimeNs();
+    uint64_t started = SparkMonotonicNs();
     int connect_error = 0;
     SparkStatus status;
     if (socket_path == 0 || result == 0 || outcome == 0 ||
@@ -5695,7 +5612,7 @@ static SparkStatus SparkWeightdClientAttachLazyKind(SparkWeightdClient *client,
     wire.expert_pool_bytes = request->expert_pool_bytes;
     memset(&wire_result, 0, sizeof(wire_result));
     {
-        uint64_t now = SparkWeightdMonotonicTimeNs();
+        uint64_t now = SparkMonotonicNs();
         uint64_t deadline;
         int fds[2];
         uint32_t fds_received = 0u;
@@ -5706,7 +5623,7 @@ static SparkStatus SparkWeightdClientAttachLazyKind(SparkWeightdClient *client,
         deadline = now + (timeout_nanoseconds != 0ull
             ? timeout_nanoseconds
             : SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS);
-        status = SparkWeightdClientWriteAll(client,
+        status = SparkIoSendAllBefore(client->fd,
             (const uint8_t *)&wire, SPARK_WEIGHTD_IPC_ATTACH_LAZY_BYTES,
             deadline);
         if (status == SPARK_STATUS_OK)
@@ -5819,25 +5736,6 @@ SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
 {
     return(SparkWeightdClientAttachLazyKind(client,request,result,
         timeout_nanoseconds,SPARK_WEIGHTD_IPC_KIND_ATTACH_LAZY_SHARED));
-}
-
-SparkStatus SparkWeightdShareModeFromEnvironment(uint32_t *read_only)
-{
-    const char *mode;
-    if (read_only == 0)
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    *read_only = 0u;
-    mode = getenv(SPARK_WEIGHTD_SHARE_ENV);
-    if (mode == 0 || mode[0] == '\0')
-        return SPARK_STATUS_OK;
-    if (strcmp(mode, SPARK_WEIGHTD_SHARE_READONLY) == 0)
-    {
-        *read_only = 1u;
-        return SPARK_STATUS_OK;
-    }
-    fprintf(stderr,"weightd share mode refused: %s=%s; the only accepted value is %s (unset keeps the default private attach)\n",
-        SPARK_WEIGHTD_SHARE_ENV,mode,SPARK_WEIGHTD_SHARE_READONLY);
-    SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkWeightdClientMeshActivity(SparkWeightdClient *client,
@@ -6280,7 +6178,7 @@ fail:
 
 static SparkStatus SparkWeightdClientExportExchange(SparkWeightdClient *client,const void *request,uint32_t request_bytes,void *response,uint32_t response_bytes,int *fds,uint32_t *received,uint64_t timeout)
 {
-	uint64_t now = SparkWeightdMonotonicTimeNs(),deadline;
+	uint64_t now = SparkMonotonicNs(),deadline;
 	SparkStatus status;
 	*received = 0u;
 	if ( timeout == 0u )
@@ -6288,7 +6186,7 @@ static SparkStatus SparkWeightdClientExportExchange(SparkWeightdClient *client,c
 	if ( now == 0u || timeout > (UINT64_MAX - now) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	deadline = (now + timeout);
-	status = SparkWeightdClientWriteAll(client,request,request_bytes,deadline);
+	status = SparkIoSendAllBefore(client->fd,request,request_bytes,deadline);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdClientReadFrameWithFds(client,response,response_bytes,deadline,fds,SPARK_WEIGHTD_EXPORT_BATCH_MAX,received);
 	if ( status != SPARK_STATUS_OK )
@@ -6711,7 +6609,7 @@ SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_
 		expected = SPARK_WEIGHTD_EXPORT_BATCH_MAX;
 	if ( status == SPARK_STATUS_OK &&
 	     (response.header.request_id != request.header.request_id || response.arena_generation != arena_generation ||
-	      response.slot_offset != slot_offset || response.batch_count != received || response.status > (uint32_t)SPARK_STATUS_EVICT_DENIED ||
+	      response.slot_offset != slot_offset || response.batch_count != received || response.status > (uint32_t)SPARK_STATUS_MAXIMUM ||
 	      response.slot_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
 	      (response.status == (uint32_t)SPARK_STATUS_OK ? response.batch_count != expected : response.batch_count != 0u)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
@@ -6758,7 +6656,7 @@ SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_
 	if ( status == SPARK_STATUS_OK &&
 	     (response.header.request_id != request.header.request_id || response.arena_generation != arena_generation ||
 	      response.lease_identifier != lease_identifier || response.batch_offset != batch_offset ||
-	      response.status > (uint32_t)SPARK_STATUS_EVICT_DENIED || response.lease_chunk_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
+	      response.status > (uint32_t)SPARK_STATUS_MAXIMUM || response.lease_chunk_count > SPARK_WEIGHTD_MAP_CHUNK_COUNT_MAX ||
 	      (response.status == (uint32_t)SPARK_STATUS_OK ? response.batch_count != expected || expected == 0u : response.batch_count != 0u)) )
 		status = SPARK_STATUS_SCHEMA_ERROR;
 	for (i=1u; status == SPARK_STATUS_OK && i<response.batch_count; i++)

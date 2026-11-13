@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import pathlib
 import subprocess
 import sys
@@ -36,14 +37,34 @@ def main():
     diverged = json.loads(json.dumps(capture))
     diverged["code"]["tokens"][1] = 9
     missing = {"capital": capture["capital"]}
+    paths = json.loads(json.dumps(capture))
+    for entry in paths.values():
+        for path in ("chain_tokens", "speculate_tokens", "batch_tokens", "sampled_tokens", "sampled_batch_tokens"):
+            entry[path] = list(entry["tokens"])
+    chain_moved = json.loads(json.dumps(paths))
+    chain_moved["code"]["chain_tokens"][1] = 9
+    chain_moved["code"]["speculate_tokens"][1] = 9
+    chain_moved["code"]["batch_tokens"][1] = 9
+    sampled_moved = json.loads(json.dumps(paths))
+    sampled_moved["capital"]["sampled_tokens"][0] = 7
+    split = json.loads(json.dumps(paths))
+    split["capital"]["chain_tokens"] = [1, 2, 8]
+    split_reference = json.loads(json.dumps(split))
+    path_missing = json.loads(json.dumps(paths))
+    del path_missing["code"]["speculate_tokens"]
     with tempfile.TemporaryDirectory() as scratch:
         directory = pathlib.Path(scratch)
         for old, new, wanted, why in ((capture, capture, 0, "identical captures"), (capture, drift, 0, "equal tokens with logprob drift"),
                                       (capture, diverged, 1, "a token that differs"), (capture, missing, 1, "a prompt the new capture lacks"),
-                                      ({}, {}, 1, "an empty capture"), (capture, None, 1, "a missing new capture")):
+                                      ({}, {}, 1, "an empty capture"), (capture, None, 1, "a missing new capture"),
+                                      (paths, paths, 0, "identical captures of every path"), (capture, paths, 0, "a reference without the newer paths"),
+                                      (paths, chain_moved, 1, "chain, speculation and batch tokens that differ from the reference"),
+                                      (paths, sampled_moved, 1, "seeded sampled tokens that differ from the reference"),
+                                      (split_reference, split, 1, "chain tokens that differ from the same build's one-step tokens"),
+                                      (paths, path_missing, 1, "a path the reference has and the new capture lacks")):
             code = compare(directory, old, new)
             if (code == 0) != (wanted == 0):
-                failures.append(f"release_compare on {why} exits {code}; the accuracy gate may be skipped only on proof that every prompt's tokens match")
+                failures.append(f"release_compare on {why} exits {code}; the accuracy gate may be skipped only on proof that every prompt's tokens match on every path")
 
         records = json.loads((ROOT / "deployment" / "lanes.json").read_text())
         record = next(name for name, lane in sorted(records["lanes"].items()) if lane["launcher"] == "stage_lane")
@@ -66,25 +87,34 @@ def main():
                                 cwd=ROOT, env=dict(clean, SPARK_LANES=str(candidate)), capture_output=True, text=True)
         if direct.returncode != 0 or not (directory / "direct" / "deployment.json").is_file():
             failures.append(f"{record}: tools/stage_lane.py must render a candidate lanes file outside the repository (SPARK_LANES), as stage_lane.sh setup does: {direct.stderr.strip()[-200:]}")
+        grace = int(re.search(r"#define SPARK_MODEL_RESIDENTD_STOP_GRACE_SECONDS (\d+)u", (ROOT / "node" / "model_residentd.c").read_text()).group(1))
+        stops = [int(found) for data in baseline.values() for found in re.findall(rb"-p TimeoutStopSec=(\d+)", data)]
+        if len(stops) != 16 or min(stops) <= grace:
+            failures.append(f"{record}: every rendered lane script must give systemd a stop timeout above residentd's {grace} s stop grace, so residentd ends its own shutdown before systemd kills it (found {stops})")
         if any(b"-E SPARK_REQUIRED_CHECK" in data for data in baseline.values()):
             failures.append(f"{record}: a rendered lane.sh carries extra residentd environment")
         scripts = {name: data for name, data in baseline.items() if name.startswith("lane.") and name.endswith(".sh")}
-        if len(scripts) != 16 or any(b"SPARK_WEIGHTD_EXPERT_POOL_BYTES" in data for data in scripts.values()):
-            failures.append(f"{record}: a record without expert_pool_cap_bytes must render 16 lane scripts that never set SPARK_WEIGHTD_EXPERT_POOL_BYTES, so weightd sizes the pool from the pack")
+        adapters = {name: json.loads(data) for name, data in baseline.items() if name.startswith("adapter.") and name.endswith(".json")}
+        if len(scripts) != 16 or any(b"SPARK_" in data for data in scripts.values()):
+            failures.append(f"{record}: the 16 rendered lane scripts must hand residentd no SPARK_ input; the lane, the mesh ranks and the pool cap are stage config members")
+        if len(adapters) != 16 or any("expert_pool_cap_bytes" in config for config in adapters.values()) or \
+                any(config["device_collective"]["mesh_lane"] != records["lanes"][record]["lane"] or config["device_collective"]["mesh_ranks"] != list(range(16))
+                    for config in adapters.values()):
+            failures.append(f"{record}: a record without expert_pool_cap_bytes renders 16 stage configs on its mesh lane, ranks 0..15 in order, with no pool cap, so weightd sizes the pool from the pack")
         capped = json.loads(json.dumps(records))
         capped["lanes"][record]["expert_pool_cap_bytes"] = 4194304
         capped_file = directory / "lanes-capped.json"
         capped_file.write_text(json.dumps(capped))
         capped_dir = directory / "capped"
         capped_dir.mkdir()
-        capped_scripts = {name: data for name, data in render(record, capped_dir, dict(clean, SPARK_LANES=str(capped_file))).items()
-                          if name.startswith("lane.") and name.endswith(".sh")}
-        if len(capped_scripts) != 16 or not all(b"-E SPARK_WEIGHTD_EXPERT_POOL_BYTES=4194304 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES" in data for data in capped_scripts.values()):
-            failures.append(f"{record}: a record with expert_pool_cap_bytes 4194304 must pass that cap to every rank as SPARK_WEIGHTD_EXPERT_POOL_BYTES")
+        capped_files = render(record, capped_dir, dict(clean, SPARK_LANES=str(capped_file)))
+        capped_adapters = [json.loads(data) for name, data in capped_files.items() if name.startswith("adapter.") and name.endswith(".json")]
+        if len(capped_adapters) != 16 or any(config.get("expert_pool_cap_bytes") != 4194304 for config in capped_adapters) or \
+                any(b"SPARK_" in data for name, data in capped_files.items() if name.startswith("lane.") and name.endswith(".sh")):
+            failures.append(f"{record}: a record with expert_pool_cap_bytes 4194304 must render that cap into every rank's stage config and nothing into its environment")
         shell = subprocess.run([sys.executable, str(LANE_CONFIG), "shell", record], env=dict(clean, SPARK_LANES=str(capped_file)), capture_output=True, text=True, timeout=60)
-        plain = subprocess.run([sys.executable, str(LANE_CONFIG), "shell", record], env=clean, capture_output=True, text=True, timeout=60)
-        if "STAGE_EXPERT_POOL_CAP_BYTES=4194304" not in shell.stdout.split() or "STAGE_EXPERT_POOL" in plain.stdout:
-            failures.append(f"{record}: lane_config shell must print STAGE_EXPERT_POOL_CAP_BYTES only for a record with expert_pool_cap_bytes")
+        if shell.returncode != 0 or "EXPERT_POOL" in shell.stdout:
+            failures.append(f"{record}: lane_config shell names the lane's launcher inputs only; the pool cap reaches residentd through the rendered stage config")
         field = subprocess.run([sys.executable, str(LANE_CONFIG), "field", "kimi-k3", "expert_pool_cap_bytes"], env=clean, capture_output=True, text=True, timeout=60)
         if field.returncode != 0 or field.stdout != "\n":
             failures.append("lane_config field must print an empty line for a record without the optional expert_pool_cap_bytes")
@@ -117,20 +147,19 @@ def main():
             continue
         root = f"$HOME/k3-lanes/lane{lane['lane']}/root"
         start, warm = swap[record_id]["node_start"], swap[record_id]["node_warm"]
-        wanted = (root, f"--unit=sp-k3-rd{lane['lane']} ", f"MemoryMax={lane['memory_max']} ", f"SPARK_WEIGHTD_LANE={lane['lane']} ",
-                  f"SPARK_WEIGHTD_SOCKET={lane['weightd_socket']} ")
-        cap = f"SPARK_WEIGHTD_EXPERT_POOL_BYTES={lane['expert_pool_cap_bytes']} " if "expert_pool_cap_bytes" in lane else None
+        wanted = (root, f"--unit=sp-k3-rd{lane['lane']} ", f"MemoryMax={lane['memory_max']} ")
+        cap = f"--expert-pool-cap {lane['expert_pool_cap_bytes']} " if "expert_pool_cap_bytes" in lane else None
         missing = [piece for piece in wanted if piece not in start]
-        pool_wrong = (cap is None and ("SPARK_WEIGHTD_EXPERT_POOL_BYTES" in start or "SPARK_WEIGHTD_EXPERT_POOL_BYTES" in warm)) or \
-            (cap is not None and (f"-E {cap}" not in start or cap not in warm))
-        if lane["runtime_root"] != f"/home/{{host}}/k3-lanes/lane{lane['lane']}/root" or missing or pool_wrong or f" {lane['weightd_socket']} " not in warm:
-            failures.append(f"{record_id}: the swap entry starts and warms the lane with values the record does not hold: {missing or 'runtime_root, expert pool cap or warm'}")
+        pool_wrong = (cap is None and "--expert-pool-cap" in warm) or (cap is not None and cap not in warm)
+        if lane["runtime_root"] != f"/home/{{host}}/k3-lanes/lane{lane['lane']}/root" or missing or pool_wrong or "SPARK_" in start or \
+                f" {lane['weightd_socket']} " not in warm:
+            failures.append(f"{record_id}: the swap entry starts and warms the lane with values the record does not hold, or hands residentd SPARK_ inputs: {missing or 'runtime_root, expert pool cap, environment or warm'}")
     for failure in failures:
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS lane tools: release_compare passes only when every prompt's tokens match (not on a diverged token, a missing prompt, an empty or a missing capture); "
-          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a record sets SPARK_WEIGHTD_EXPERT_POOL_BYTES only from its explicit expert_pool_cap_bytes; a draft server listens where taps.stream points, and a record without one is refused")
+    print("PASS lane tools: release_compare passes only when every prompt's tokens match on the one-step, chain, speculating, batch and seeded sampled paths, and the chain, speculating and batch tokens equal the one-step tokens (not on a diverged token, a missing prompt or path, an empty or a missing capture); "
+          "a lane record renders the same files under an operator's STAGE_* environment, and a changed record renders differently; a record's explicit expert_pool_cap_bytes reaches the stage config and the warm command, and no lane hands residentd SPARK_ inputs; a draft server listens where taps.stream points, and a record without one is refused")
 
 
 if __name__ == "__main__":

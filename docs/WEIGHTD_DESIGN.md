@@ -57,7 +57,7 @@ These rules follow from that code:
 - `ensure_weightd` returns early while any other `*/sparkpipe_weightd`
   executable runs ("unknown owner … refusing automatic startup"). The main loop
   then skips root sync, engine recovery and the API until that process exits.
-  The mesh record exchange runs in its own loop and continues. A private daemon started by `tools/inference_smoke.py`,
+  The mesh record exchange runs in its own loop and continues. A private daemon started by
   `tools/weightd_execute_receipt.py`, `tools/multi_dev_orchestrate.py` or a
   `WEIGHTD_MODE=private` family job therefore freezes fleet management on that
   Spark for the whole run. Do not run them on a serving Spark.
@@ -83,11 +83,11 @@ Weightd IPC ABI 7 extended the existing `LANE_ACQUIRE` request with an exact
 `requested_lane`. Each lane owns two mesh bands. There are 16 lanes
 (`SPARK_WEIGHTD_MESH_MAX_LANES`, `include/sparkpipe/spark_weightd.h`; raised from
 8 in 4f0e339). A coordinator must assign a unique lane from 0 through 15 to each
-concurrent job and set `SPARK_WEIGHTD_LANE` to that same value on every
-participating rank. Local first-free allocation alone is insufficient: reversed
-job startup order on two hosts can otherwise assign one job different bands.
-The lane table, including the lane 0 reservation for production GLM, is in
-[MULTIDEV_QUICKSTART.md](MULTIDEV_QUICKSTART.md#lanes).
+concurrent job and name it in every participating rank's stage config
+(`device_collective.mesh_lane`, required). Local first-free allocation alone is
+insufficient: reversed job startup order on two hosts can otherwise assign one
+job different bands. Each production model's lane is its lane record's `lane`
+([LANES.md](LANES.md)).
 
 4f0e339 doubled the mesh region (`SPARK_WEIGHTD_MESH_BANDS` is twice the lane
 count) but left `SPARK_WEIGHTD_IPC_ABI_VERSION` at 8. A client maps the region
@@ -650,13 +650,13 @@ all-gather, 2 rounds per chunk):
 
 Weightd IPC ABI 8 carries the logical-to-physical rank map with the existing
 lane reservation. The coordinator assigns one lane in 0–15 and one ordered
-`SPARK_TP_MESH_RANKS` list to every rank of a job before launching it. For
-example, TP4 on physical hosts 4–7 uses `4,5,6,7`; logical rank 2 must run on
-physical host 6. The list must have exactly the collective degree, contain
+rank map to every rank of a job before launching it: the stage config's
+`device_collective.mesh_ranks`, one physical rank per TP rank. For example,
+TP4 on physical hosts 4–7 uses `[4, 5, 6, 7]`; logical rank 2 must run on
+physical host 6. The map must have exactly the collective degree, contain
 unique physical ranks in 0–15, and match the daemon's physical rank and
-configured participant mask. Omitting the list selects explicit identity;
-an invalid explicit list fails. Startup logs the resolved map and physical
-peer mask. TP groups with different mappings require separate lane profiles.
+configured participant mask; the adapter refuses any other map at configure.
+Startup logs the resolved map and physical peer mask. TP groups with different mappings require separate lane profiles.
 
 Each daemon fixes a lane's topology on its first configured reservation.
 Changing its root, membership, order or degree returns `UNSUPPORTED`, even
@@ -940,10 +940,11 @@ daemon does not size pools; it keeps validating what it is sent.
   the arena rounded up to whole chunks in whole-arena mode, the request
   otherwise.
 
-`SPARK_WEIGHTD_EXPERT_POOL_BYTES` carries the cap and nothing else. A lane
-record's optional `expert_pool_cap_bytes` renders it into the lane's launch
-environment and warm command ([LANES.md](LANES.md)); without a cap the
-variable is not set, and a set but empty or zero value is refused.
+The stage config's `expert_pool_cap_bytes` carries the cap and nothing else.
+A lane record's optional `expert_pool_cap_bytes` renders it into every rank's
+stage config and into the warm command as `weightd_warm --expert-pool-cap`
+([LANES.md](LANES.md)); without a cap the member is absent, and a zero value
+is refused at configure.
 
 On the daemon side, the daemon rejects 0, `UINT64_MAX` and values above
 `device_bytes_max` less the KV reserve with `INVALID_ARGUMENT`; a pool that
@@ -1084,9 +1085,10 @@ development root of the production model lacked:
    the weights production is serving from.
 3. A pool mismatch failed with a bare `INVALID_ARGUMENT` (lanes/jitkv.md).
 
-Opt-in per lane: `SPARK_WEIGHTD_SHARE=readonly` in the residentd environment.
-Unset or empty keeps today's private attach. Any other value is refused
-(`INVALID_ARGUMENT` and a stderr line); nothing guesses.
+Opt-in per lane: `"weights_share": "readonly"` in the stage config, which the
+runner passes as `SparkWeightdLazyPackOptions.read_only`. Without the member
+the lane attaches privately. Any other value is refused at configure; nothing
+guesses.
 
 - `SparkWeightdLazyPackCreate` sends `ATTACH_LAZY_SHARED` (kinds 37/38, same
   body as `ATTACH_LAZY`). weightd attaches only to a resident arena with an
@@ -1201,35 +1203,20 @@ lease lifecycle itself is under "Leases and consumer mapping".
 
 ### `spark_weightd_attach.h`
 
-`SparkWeightdAttachRequested` reads `SPARK_WEIGHTD_SOCKET` (an empty value
-counts as unset) and `SPARK_WEIGHTD_ATTACH`:
+The served path reads no attach input from the environment and has no switch
+that turns weightd off (I03,
+[sparkpipe_invariants.md](../sparkpipe_invariants.md)). residentd sets
+`SPARK_WEIGHTD_SOCKET` and `SPARK_WEIGHTD_PACK_SHA256` itself, from the
+deployment's `weightd.socket_path` and the root's one `packs/*.sha256`, as its
+handoff to the adapter; the adapter reads the two once and passes the socket
+to the runner, the collective and the KV binding in their configurations.
 
-| `SPARK_WEIGHTD_SOCKET` | `SPARK_WEIGHTD_ATTACH` | result |
-|---|---|---|
-| any | set, not `0` or `1` (empty included) | `INVALID_ARGUMENT` |
-| set | unset or `1` | `OK` |
-| set | `0` | `INVALID_ARGUMENT`: a configured socket cannot be switched off |
-| unset | `1` | `INVALID_ARGUMENT` |
-| unset | unset or `0` | `BUSY` |
+`SparkWeightdAttachPack` is the operator tools' eager attach (`weightdctl
+load`). It takes its socket from `SPARK_WEIGHTD_SOCKET`.
 
-The last row is a known violation, not a loading mode. `BUSY` here reports a
-missing configuration with no operation outstanding (I17), and callers that
-read it as "attach not requested" copy the whole stage pack to the device
-themselves, an opt-out from mandatory attach (I03,
-[sparkpipe_invariants.md](../sparkpipe_invariants.md)). The violation is
-recorded in two open entries under
-[TECHDEBT.md](../TECHDEBT.md#model-residency-and-storage): the
-`SparkWeightdAttachRequested` entry and the entry for a deployment that omits
-the `weightd` member.
-
-`SparkWeightdAttachPack`:
-
-- Failure reasons before the attach request, in check order: `attach_config`
-  (`INVALID_ARGUMENT` from the table above), `env_off` (`BUSY`, the same
-  violation, for `SPARK_WEIGHTD_ATTACH=0` without a socket), `no_socket`
-  (`INVALID_ARGUMENT`), `share_unsupported` (`UNSUPPORTED`, for any non-empty
-  `SPARK_WEIGHTD_SHARE`), `no_identity` and `identity` (`INVALID_ARGUMENT`;
-  the second when `SparkWeightdIdentityPrepare` refuses the identity), then
+- Failure reasons before the attach request, in check order: `no_socket`
+  (`INVALID_ARGUMENT`), `no_identity` and `identity` (`INVALID_ARGUMENT`; the
+  second when `SparkWeightdIdentityPrepare` refuses the identity), then
   `no_daemon` when the connect fails.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION`
   override the slice's model and revision. The slice's `pack_sha256` takes
@@ -1254,16 +1241,18 @@ virtual range is reserved are not released on failure:
 `SparkWeightdAttachRelease` and `SparkWeightdAttachMapUndo` release handles
 only when `map_base` is set. `SparkWeightdAttachImportMap` maps the whole
 arena with `CU_MEM_ACCESS_FLAGS_PROT_READWRITE`; read-only consumer mappings
-exist only on the lazy path (per-chunk imports and
-`SPARK_WEIGHTD_SHARE=readonly`).
+exist only on the lazy path (per-chunk imports and a lane's
+`weights_share`).
 
 ### `spark_weightd_lazy_pack.h`
 
-`SparkWeightdLazyPackCreate` and `SparkWeightdLazyPackCreateChecked` are
-startup calls. They connect, parse `<pack>.experts`, size the pool from it
-and the `pool_cap` argument (`SparkWeightdManifestPoolPlan`, see Pool sizing;
-0 means no cap), attach lazily with that pool (or shared, see "Read-only arena
-sharing"), create the consumer map, place the spine and start a worker thread.
+`SparkWeightdLazyPackCreate` is a startup call. It takes its inputs in
+`SparkWeightdLazyPackOptions`: the expert pool cap, the timeout, `read_only`
+and an optional manifest check. It connects, parses `<pack>.experts`, sizes
+the pool from it and the cap (`SparkWeightdManifestPoolPlan`, see Pool
+sizing; 0 means no cap), attaches lazily with that pool (or shared when
+`read_only` is 1, see "Read-only arena sharing"), creates the consumer map,
+places the spine and starts a worker thread.
 A missing or invalid manifest fails the call like any other failure, before
 the attach. The plan is kept in `pack->pool`.
 
@@ -1277,9 +1266,9 @@ Every input is explicit:
 - A missing pack is `NOT_FOUND`. The pack must be a regular file whose size
   equals `identity.arena_bytes`, otherwise `IO_ERROR`. A relative `pack_path`
   is resolved with `realpath` before it is sent to the daemon.
-- `spine_budget` bounds the spine. `spine_allocation_bytes + 255` above it
-  is `CAPACITY_EXCEEDED`, checked even when the spine will be read from the
-  pool.
+- `read_only` is 0 or 1; any other value is `INVALID_ARGUMENT`.
+- The spine allocation is the one the manifest derives
+  (`spine_allocation_bytes + 255` for alignment); no caller passes a budget.
 
 Failure ownership. On failure the call destroys the partial pack. If that
 cleanup itself does not return `OK`, `*out` is the non-null partial pack and
@@ -1287,8 +1276,7 @@ the status is the original error. That pack is not ready, so
 `SparkWeightdLazyPackSlice` refuses it. Its only valid use is
 `SparkWeightdLazyPackDestroy`, repeated until it returns `OK`.
 
-The `SparkWeightdManifestCheck` callback of
-`SparkWeightdLazyPackCreateChecked` runs after the daemon attach and the
+The options' `manifest_check` callback runs after the daemon attach and the
 manifest parse, and before the consumer map and any spine allocation on the
 GPU. A model can therefore reject a manifest shape it cannot serve before
 the consumer spends device memory. The daemon attach, including the daemon's
@@ -2012,8 +2000,8 @@ and `sparkpipe_weightd_vmm_verify.sh` starts its own server.
 relative to its own working directory, so pass absolute paths.
 
 `build/weightd_warm`, `build/weightdctl` and `build/weightd_lazy_consumer` have
-Makefile targets. Only `tools/weightd_lazy_bake.sh` compiles `weightd_smoke`
-and `weightd_expert_segments`. Nothing builds `weightd_loadall`.
+Makefile targets. Nothing builds `weightd_smoke`, `weightd_expert_segments` or
+`weightd_loadall`.
 
 ### weightd_warm
 
@@ -2037,10 +2025,10 @@ Warm mode:
 
 - The pool comes from `PACK.experts` through `SparkWeightdManifestPoolPlan`,
   exactly as the resident computes it, so the warmed arena is the one the
-  resident attaches. `SPARK_WEIGHTD_EXPERT_POOL_BYTES`, when set, is the cap
-  and must be the resident's: a positive decimal no larger than
-  `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (otherwise usage, exit 2), at most
-  the exact pool and a whole number of chunks (otherwise exit 1).
+  resident attaches. `--expert-pool-cap BYTES` is the cap and must be the
+  resident's stage config `expert_pool_cap_bytes`: a positive decimal no
+  larger than `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (otherwise usage, exit
+  2), at most the exact pool and a whole number of chunks (otherwise exit 1).
 - SHA256 must be 64 hex digits. The tool accepts upper-case digits, but the
   attach identity check accepts only lowercase, so an upper-case SHA256 fails
   the attach (exit 1). The tool does not hash the pack; the daemon verifies it
@@ -2174,11 +2162,8 @@ weightdctl reclaim
   neither detaches nor frees anything, and it cold-loads the pack when no
   arena matches. To free arenas, use `reclaim` or
   `weightd_warm SOCKET --reclaim-pack`.
-- `status` does not contact the daemon. It prints one line,
-  `requested=N socket=…`. N is 1 when `SparkWeightdAttachRequested` accepts
-  the environment (`SPARK_WEIGHTD_SOCKET` non-empty and `SPARK_WEIGHTD_ATTACH`
-  unset or `1`), else 0. `socket=` shows the variable's value, or `(unset)`.
-  It always exits 0.
+- `status` does not contact the daemon. It prints one line, `socket=…`, the
+  value of `SPARK_WEIGHTD_SOCKET` or `(unset)`. It always exits 0.
 - `reclaim` sends `RECLAIM`, which frees every cold arena on the node, and
   prints `RECLAIM status=… reclaimed_bytes=… arenas=… resident=…`. Here
   `arenas` is the number of arenas left afterwards. `tools/weightsd_deploy.sh`
@@ -2187,9 +2172,6 @@ weightdctl reclaim
 Environment for `load` and `unload`:
 
 - `SPARK_WEIGHTD_SOCKET` is required and must be non-empty.
-  `SPARK_WEIGHTD_ATTACH` must be unset or `1`; `0` or any other value fails.
-  `SPARK_WEIGHTD_SHARE` must be unset or empty; any other value fails with
-  `UNSUPPORTED`.
 - `SPARK_WEIGHTD_PACK_SHA256` is the digest when set. When it is unset, the
   tool hashes the whole pack. Set to an empty value, the attach fails.
 - `SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION` replace
@@ -2273,8 +2255,7 @@ single-expert `ENSURE` requests for layer 0, spread evenly over expert ids 0 to
 `SMOKE experts=… touches=… ensure_ns=… pool_mib=…`, where `pool_mib` is the
 cap argument.
 
-- The socket comes from `SPARK_WEIGHTD_SOCKET` only. The tool does not read
-  `SPARK_WEIGHTD_ATTACH`.
+- The socket comes from `SPARK_WEIGHTD_SOCKET` only.
 - The digest comes from `PACK.sha256`. The pool comes from `PACK.experts`,
   which the daemon also needs for the lazy attach.
 - The identity is MODEL, REVISION, topology 16, geometry fingerprint
@@ -2282,9 +2263,6 @@ cap argument.
 - The daemon answers every `ENSURE` with `UNSUPPORTED` (see Leases and
   consumer mapping), so even after a successful attach a run fails at the
   first touch with exit 1.
-- `tools/weightd_lazy_bake.sh` runs `weightd_expert_segments` on each pack it
-  discovers that has no `PACK.experts`, and then runs this tool on every
-  discovered pack except those whose segment generation failed.
 
 Exit codes:
 
@@ -2317,8 +2295,7 @@ then sends TOUCHES `ENSURE` requests per arm, spread the same way as in
 `weightd_smoke`, and prints
 `LOADALL arms=… touches=… cold_faults=… ensure_ns=…`. It never detaches.
 Closing the connection drops its attach references and leaves the arenas
-cold. The socket comes from `SPARK_WEIGHTD_SOCKET`; the tool does not read
-`SPARK_WEIGHTD_ATTACH`.
+cold. The socket comes from `SPARK_WEIGHTD_SOCKET`.
 
 Daemon limits that apply:
 
@@ -2438,11 +2415,9 @@ The legs run in order, and any failure exits 1:
    state after the destroy is not inspected.
 
 Legs 4 and 5 go through `SparkWeightdAttachPack`, which reads the environment.
-Run the script with `SPARK_WEIGHTD_ATTACH` unset or `1`, and with these
-variables unset or empty:
+Run the script with these variables unset or empty:
 
 - `SPARK_WEIGHTD_ATTACH_LAZY`
-- `SPARK_WEIGHTD_SHARE`
 - `SPARK_WEIGHTD_IDENTITY_MODEL`
 - `SPARK_WEIGHTD_IDENTITY_REVISION`
 

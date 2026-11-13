@@ -67,10 +67,10 @@ Use the qsort pattern: one optimized common algorithm parameterized by narrow
 operation callbacks and an opaque context. Call at stage/batch boundaries,
 not once per tensor element. Keep scheduling and cache policy independent of
 hardware; allocation, execution, events, copies and collectives belong behind
-the existing device/backend interfaces. Eight Mac Studios (M5 Ultra,
-256 GB) are on order: CUDA streams, CUDA pointers and NCCL semantics must not
+the existing device/backend interfaces. The Metal backend serves the same
+common algorithms: CUDA streams, CUDA pointers and NCCL semantics must not
 leak into common serving policy. Qualify the common algorithms with the host
-backend now and the Metal backend on that hardware when available.
+backend and the Metal backend.
 
 Execute distinct ready lanes together and reuse dense weight tiles across
 rows; group routed MoE rows by expert for weight reuse. Qualify odd batch sizes
@@ -191,10 +191,10 @@ of the 17 completions change with batch composition.
 Support every speculation type — MTP, DFlash, DSpark, DFlash2, the
 coming DSpark2, and whatever follows — because not every model gets
 today's best. Design and direction:
-[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) (one
-speculation seam per adapter, one source mask per family, local drafts plus
-remote drafts through the DFT3 draft bridge; DSpark2 = a new source behind
-the seam, not five family edits).
+[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) (the batch
+engine plans every draft and the model verifies it; drafts come from the
+request's context and from draft models through the DFT3 draft bridge;
+DSpark2 = a new draft model behind the bridge, not five family edits).
 
 Direction (operator, 2026-09-28): the fleet has more compute than bandwidth
 below the batch size where decode turns compute-bound. Speculation can spend
@@ -272,16 +272,21 @@ TP8 deployment generators are gone; GLM Full's TP16 lane is rendered by
 
 ## SPECULATOR PORTFOLIO (operator)
 
-A dozen speculators incoming for head-to-head testing. The speculation
-seam ([`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md)) is
-the harness for it. The operator's multi-speculator-live idea is assessed as
-multi-drafter composition: see that doc's "Direction: multi-drafter trees"
-section.
+A dozen speculators incoming for head-to-head testing. The draft bridge
+and the draft server
+([`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md)) are the
+harness for it: a speculator is tested as a draft model on a lane. The
+operator's multi-speculator-live idea is assessed as multi-drafter
+composition: see that doc's "Direction" section.
 
-## FLEET-HOURS TRACK
+## PRODUCT TRACK
 
-The product is the Fleet-hours section of [`README.md`](../README.md), with
-its terms on sparkpipe.ai. ROADMAP M9 orders the work.
+The product is what sparkpipe.ai and the SparkPipe Customer Agreement
+(`site/terms/`) promise: whole fleets pinned by the week, and hours on Hour
+Fleets and on fleets nobody holds, paid in hour-credits. The "Renting a
+fleet" section of [`README.md`](../README.md) summarises it. Where the code
+disagrees with the site or the Agreement, the code is the bug. ROADMAP M9
+orders the work.
 
 ## The island-catalog manifest (operator-ratified abstraction)
 
@@ -322,7 +327,7 @@ longer applies: the agent cap, the 15-minute cycle and burst approval.
 
 GLM 5.3 Flash now serves on the Sparks. Agents' own inference (drafting,
 analysis, doc summarization) should run on the fleet rather than on paid
-APIs. The live GLM API is the `g53-api` user unit on the rtx5090 hub, port
+APIs. The live GLM API is the `g53-api` user unit on the hub, port
 8433. It is an x86 build of the engines' source commit, and every Spark runs
 no API: `tools/fleet_node_agent.sh` no longer starts one (#1261). The
 LiteLLM front door is the seam: `config/litellm-config.yaml` routes

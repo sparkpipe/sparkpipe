@@ -112,21 +112,6 @@ static inline uint32_t SparkModelServingWorkKindUsesRows(uint32_t work_kind)
 		work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE;
 }
 
-#define SPARK_MODEL_SERVING_MAX_COMPLETION_STATUS SPARK_STATUS_UNSUPPORTED
-
-static inline uint32_t SparkModelServingCompletionStatus(uint32_t status)
-{
-	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
-		return((uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED);
-	return(status);
-}
-
-static inline uint32_t SparkModelServingCompletionStatusStateless(uint32_t status)
-{
-	if ( status == (uint32_t)SPARK_STATUS_NO_LANE || status == (uint32_t)SPARK_STATUS_EVICT_DENIED )
-		return((uint32_t)SPARK_STATUS_BUSY);
-	return(status);
-}
 
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION \
@@ -543,6 +528,18 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	uint32_t tokens_per_sequence,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion);
+SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t stage_index,
+	uint32_t work_kind,
+	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion);
+void SparkModelServingCompletionReset(SparkModelServingCompletion *completion);
+void SparkModelServingCompletionCopy(
+	SparkModelServingCompletion *destination,
+	const SparkModelServingCompletion *source);
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
 	const char *shared_object_path,
 	uint32_t required_capability_flags,

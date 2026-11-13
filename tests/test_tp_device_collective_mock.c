@@ -211,29 +211,12 @@ static void TestComplete(void *context, const SparkTpDeviceCollectiveCompletion 
 	(void)context; (void)completion;
 }
 
-typedef struct PeerWaitArgs
-{
-	SparkTpDeviceCollective *collective;
-	uint64_t request_id;
-	SparkStatus status;
-	uint64_t waited_ns;
-} PeerWaitArgs;
-
 static uint64_t TestNowNs(void)
 {
 	struct timespec now;
 	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
 		return(0ull);
 	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
-
-static void *PeerWaitMain(void *data)
-{
-	PeerWaitArgs *args = (PeerWaitArgs *)data;
-	uint64_t start = TestNowNs();
-	args->status = SparkTpDeviceCollectiveChainKey(args->collective,args->request_id);
-	args->waited_ns = TestNowNs() - start;
-	return(0);
 }
 
 typedef struct TestEpochPublish
@@ -1246,6 +1229,27 @@ static void TestOwnedMesh(SparkTpDeviceCollectiveConfig config)
     CHECK(SparkTpDeviceCollectiveAttachMesh(&collective) == SPARK_STATUS_DUPLICATE,"duplicate mapping is rejected");
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK,"fresh dense mesh can start a chain");
     CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends");
+    {
+        const uint64_t first = SparkTpDeviceCollectiveChainEpoch(&collective);
+        const uint64_t past_chain_id = SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK + 6u;
+        CHECK(first != 0u && SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first,"the same request keeps its epoch");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,5000u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4958u,"a later request's epoch rises by the distance between the requests");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,4999u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainKey(&collective,42u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4958u,"an earlier request is refused and the epoch stays, as when a client restarts its numbering");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,5001u) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + 4959u,"the collective serves the next rising request after a refusal");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,past_chain_id) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + past_chain_id - 42u,"the epoch keeps rising past the 24 bits of a chain identity");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX + 1u) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) == first + past_chain_id - 42u,"a request past the epoch range is refused");
+        CHECK(SparkTpDeviceCollectiveChainKey(&collective,SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) <= UINT64_C(0xffffffff) &&
+            SparkTpDeviceCollectiveChainEpoch(&collective) > first + past_chain_id - 42u,"the last request of the range maps to an epoch of 32 bits");
+        CHECK(SparkTpDeviceCollectiveEndChain(&collective,0) == SPARK_STATUS_OK,"dense mesh chain ends after the range checks");
+    }
     SparkTpDeviceCollectiveDestroy(&collective);
     CHECK(collective.implementation == 0 && mock_clients_live == before,"mapping owner and lane released");
     errno = 0;
@@ -1258,7 +1262,7 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
     SparkWeightdClient *owner = 0;
     uint32_t lane,live = mock_clients_live;
     SparkWeightdMeshTopology topology;
-    CHECK(SparkTpDeviceCollectiveMeshTopology(config.tp_rank,config.tp_degree,&topology) == SPARK_STATUS_OK,"paired topology");
+    CHECK(SparkTpDeviceCollectiveMeshTopology(config.tp_rank,config.tp_degree,config.mesh_ranks,&topology) == SPARK_STATUS_OK,"paired topology");
     uint64_t bands = mock_lane_mask[0];
     config.collective_identifier = 1u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&first) == SPARK_STATUS_OK,
@@ -1277,13 +1281,21 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         rejected.implementation == 0 && mock_clients_live == live,
         "reservation rejection rolls back common create client");
     mock_lane_status = SPARK_STATUS_OK;
-    char invalid_lane[16];
-    snprintf(invalid_lane,sizeof(invalid_lane),"%u",SPARK_WEIGHTD_MESH_MAX_LANES);
-    CHECK(setenv("SPARK_WEIGHTD_LANE",invalid_lane,1) == 0 &&
-        SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+    config.mesh_lane = SPARK_WEIGHTD_MESH_MAX_LANES;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
         rejected.implementation == 0 && mock_clients_live == live,
-        "malformed common lane config fails without leaked client");
-    CHECK(unsetenv("SPARK_WEIGHTD_LANE") == 0,"clear invalid test lane");
+        "a configured lane beyond the mesh fails without a leaked client");
+    config.mesh_lane = SPARK_WEIGHTD_LANE_NONE;
+    config.weightd_socket_path = 0;
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+        rejected.implementation == 0 && mock_clients_live == live,
+        "a configuration without a weightd socket is refused");
+    config.weightd_socket_path = "/tmp/tp_collective_mock.sock";
+    config.mesh_ranks[1] = config.mesh_ranks[0];
+    CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&
+        rejected.implementation == 0 && mock_clients_live == live,
+        "a rank map naming one physical rank twice is refused");
+    config.mesh_ranks[1] = 1u;
     CHECK(SparkWeightdClientConnect("fixture",&owner,0) == SPARK_STATUS_OK &&
         SparkWeightdClientLaneAcquire(owner,7u,&topology,&lane,1u) == SPARK_STATUS_OK,
         "paired owner reserves explicit lane");
@@ -1328,7 +1340,6 @@ int main(void)
 {
 	SparkTpDeviceCollectiveConfig config;
 	TestTopologySlice();
-	(void)setenv("SPARK_WEIGHTD_SOCKET","/tmp/tp_collective_mock.sock",1);
 	SparkTpDeviceCollective collective;
 	SparkStatus status;
 	void *mesh_buffer;
@@ -1356,7 +1367,10 @@ int main(void)
 	config.max_active_sequence_count = 4096u;
 	config.connect_timeout_milli = 1000u;
 	config.operation_timeout_milli = 2000u;
-	config.collective_identifier = 0u;
+	config.weightd_socket_path = "/tmp/tp_collective_mock.sock";
+	config.mesh_lane = SPARK_WEIGHTD_LANE_NONE;
+	for ( uint32_t rank = 0u; rank < SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE; rank++ )
+		config.mesh_ranks[rank] = rank;
 	config.combine_bf16_function = TestCombineBf16;
 	config.combine_fused_bf16_function = TestCombineFusedBf16;
 	config.combine_u64_max_function = TestCombineU64Max;
@@ -1396,11 +1410,6 @@ int main(void)
 
 	(void)peer_tails;
 
-	/* The reset cascade: rank 1 waits on rank 0's chain cell; rank 0
-	 * cancels (its engine's session reset kills the chain locally).
-	 * Rank 1 must fail fast on the cancel cell, not spin out the whole
-	 * round timeout — the fleet symptom was peers wedging 30s per chain
-	 * behind a reset rank. */
 	{
 		SparkTpDeviceCollective peer;
 		SparkTpDeviceCollectiveConfig peer_config = config;
@@ -1413,31 +1422,19 @@ int main(void)
 		CHECK(status == SPARK_STATUS_OK, "peer create");
 		if ( status == SPARK_STATUS_OK )
 		{
-			pthread_t peer_thread;
-			PeerWaitArgs wait_args;
-			peer_config.operation_timeout_milli = 10000u;
+			uint64_t started;
 			status = SparkTpDeviceCollectivePrepareReceiveBf16(&peer, mesh_buffer, 2u, 64u, 0u, 0);
 			CHECK(status == SPARK_STATUS_OK, "peer prepare receive");
-			/* negative control: without a cancel the wait burns the full
-			 * timeout */
-			{
-				uint64_t t0 = TestNowNs();
-				SparkStatus wait_status = SparkTpDeviceCollectiveChainKey(&peer, 4242u);
-				uint64_t waited_ms = (TestNowNs() - t0) / 1000000ull;
-				CHECK( wait_status == SPARK_STATUS_BUSY, "uncancelled wait ends BUSY at the timeout");
-				CHECK( waited_ms >= 8000u, "uncancelled wait really spans the timeout");
-			}
-			/* the fix: rank 0's cancel must cut the wait to milliseconds */
-			wait_args.collective = &peer;
-			wait_args.request_id = 4243u;
-			wait_args.status = SPARK_STATUS_OK;
-			wait_args.waited_ns = 0u;
-			pthread_create(&peer_thread,0,PeerWaitMain,&wait_args);
-			usleep(200000);
-			SparkTpDeviceCollectiveBroadcastCancel(&collective);
-			pthread_join(peer_thread,0);
-			CHECK( wait_args.status == SPARK_STATUS_BUSY, "cancelled wait ends BUSY");
-			CHECK( wait_args.waited_ns < 3000000000ull, "cancelled wait fails fast (<3s, not the 10s timeout)");
+			started = TestNowNs();
+			CHECK(SparkTpDeviceCollectiveChainKey(&peer, 4242u) == SPARK_STATUS_OK &&
+				TestNowNs() - started < 1000000000ull,
+				"a peer keys its chain at once, without waiting for rank 0");
+			CHECK(SparkTpDeviceCollectiveChainKey(&collective, 4242u) == SPARK_STATUS_OK &&
+				SparkTpDeviceCollectiveChainEpoch(&peer) == SparkTpDeviceCollectiveChainEpoch(&collective),
+				"rank 0 and a peer derive one epoch from one request");
+			CHECK(SparkTpDeviceCollectiveChainKey(&peer, 4243u) == SPARK_STATUS_OK &&
+				SparkTpDeviceCollectiveChainEpoch(&peer) != SparkTpDeviceCollectiveChainEpoch(&collective),
+				"the next request derives a new epoch");
 			SparkTpDeviceCollectiveDestroy(&peer);
 		}
 	}

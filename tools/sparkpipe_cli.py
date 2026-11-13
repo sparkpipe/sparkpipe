@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import calendar
 import contextlib
 import getpass
 import hashlib
@@ -7,6 +8,7 @@ import hmac
 import http.client
 import http.server
 import json
+import math
 import os
 import re
 import secrets
@@ -22,7 +24,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 try:
@@ -43,6 +45,7 @@ STREAM_IDLE_MS = 1800000
 PLATFORM = sys.platform
 TOKEN_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 FLEET = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+FLEET_LINE = re.compile(r"X-SparkPipe-Fleet: [A-Za-z0-9_.-]{1,64}")
 CREDENTIAL = re.compile(r"[\x21-\x7e]{1,4096}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 HOST = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
@@ -59,6 +62,8 @@ CODEX_ROOT = ("model", "model_provider")
 CODEX_TABLES = (("model_providers", "sparkpipe"), ("mcp_servers", "sparkpipe"))
 CODEX_PROFILE = "sparkpipe"
 CLAUDE_MCP = ("mcpServers", "sparkpipe")
+CLAUDE_HEADERS = "ANTHROPIC_CUSTOM_HEADERS"
+FLEET_HEADER = "X-SparkPipe-Fleet"
 OPENCODE_AGENTS = {"general": "main", "explore": "main", "compaction": "main", "title": "small", "summary": "small"}
 OPENCODE_OWNED = (("$schema",), ("provider", "sparkpipe"), ("model",), ("small_model",), *(("agent", name, "model") for name in OPENCODE_AGENTS),
                   ("mcp", "sparkpipe"), ("compaction", "prune"), ("share",))
@@ -472,9 +477,9 @@ def verify(client, email, code, args):
         summary = client.call("POST", "/verify", body, auth=None)
     except ApiError as error:
         if error.reason == "new":
-            raise Failure(f"No account uses {email} yet. To open one, read the Customer Agreement on sparkpipe.ai and run: sparkpipe login --email {email} --company 'Your legal name' --accept")
+            raise Failure(f"No account uses {email} yet. To open one, read the Customer Agreement and its Data Processing Agreement at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and run: sparkpipe login --email {email} --company 'Your legal name' --accept")
         if error.reason == "terms":
-            raise Failure("Opening an account needs the Customer Agreement accepted: read it on sparkpipe.ai and add --accept.")
+            raise Failure("Opening an account needs the Customer Agreement and its Data Processing Agreement accepted: read them at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and add --accept.")
         raise
     if not summary.get("session"):
         raise Failure("The sign-in answered without a session.")
@@ -534,7 +539,7 @@ def account_lines(account):
     if account.get("position"):
         lines.append(f"Waitlist: position {account['position']}, {account.get('locked')} HC locked")
     if account.get("termsCurrent") is False:
-        lines.append("The Customer Agreement has changed: read it on sparkpipe.ai and add --accept to your next booking.")
+        lines.append("The Customer Agreement or its Data Processing Agreement has changed: read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html and add --accept to your next booking.")
     return lines
 
 
@@ -574,7 +579,7 @@ def spend(ctx, client, path, body):
         return client.call("POST", path, body, auth="session")
     except ApiError as error:
         if error.reason == "terms":
-            raise Failure("The Customer Agreement has changed since you accepted it. Read it on sparkpipe.ai, then run this again with --accept.")
+            raise Failure("The Customer Agreement or its Data Processing Agreement has changed since you accepted them. Read both at sparkpipe.ai/agreement.html and sparkpipe.ai/dpa.html, then run this again with --accept.")
         raise
 
 
@@ -594,7 +599,7 @@ def book_week(ctx):
     off = percent(plan.get("discount"))
     discount = f" ({off} off)" if off else ""
     confirm(ctx, f"Book {ctx.args.fleet_id} for {ctx.args.weeks} week(s), {plan.get('first')} to {plan.get('end')}, for {plan.get('price')} HC{discount}?")
-    booked = spend(ctx, client, "/market/book-weeks", request)
+    booked = spend(ctx, client, "/market/book-weeks", dict(request, first=plan.get("first"), price=plan.get("price")))
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('first')} to {booked.get('end')} for {booked.get('price')} HC."])
     return 0
 
@@ -606,7 +611,7 @@ def book_hours(ctx):
     off = percent(plan.get("discount"))
     discount = f" ({off} off)" if off else ""
     confirm(ctx, f"Book {request['fleet']} for {request['hours']} hour(s) from {request['start']}, for {plan.get('price')} HC{discount}?")
-    booked = spend(ctx, client, "/market/book-hours", request)
+    booked = spend(ctx, client, "/market/book-hours", dict(request, price=plan.get("price")))
     emit(ctx, booked, [f"Booked {booked.get('booking')}: {booked.get('fleet')} from {booked.get('start')} to {booked.get('end')} for {booked.get('hc')} HC."])
     return 0
 
@@ -657,6 +662,14 @@ def keys_create(ctx):
         body["allow_swap"] = True
     made = ctx.client().call("POST", "/market/keys", body, auth="session")
     emit(ctx, made, [f"Key {made.get('id')}: {made.get('key')}", "It is shown only once: store it now."])
+    return 0
+
+
+def keys_show(ctx):
+    key = ctx.mine().get("key")
+    if not key:
+        raise Failure("This machine has no API key: run sparkpipe login.")
+    print(credential(key, f"The key in {config_path()}"))
     return 0
 
 
@@ -1006,7 +1019,7 @@ def sync_target(dest):
     return LocalTarget(dest)
 
 
-def apply_change(client, target, prefix, change, delete, counts):
+def apply_change(client, target, prefix, change, delete, counts, kept):
     if not isinstance(change, dict):
         raise Failure("The fleet listed a change that is not an object.")
     parts = sync_parts(prefix, change.get("path"))
@@ -1014,10 +1027,14 @@ def apply_change(client, target, prefix, change, delete, counts):
     if kind == "deleted":
         if delete:
             target.remove(parts)
+            kept.discard(change["path"])
+        else:
+            kept.add(change["path"])
         counts["deleted" if delete else "kept"] += 1
         return
     if kind not in ("added", "changed"):
         raise Failure(f"The fleet listed {change.get('path')} with an unknown change {kind!r}.")
+    kept.discard(change["path"])
     expected, sha = listed(change)
     if target.matches(parts, expected, sha):
         counts["unchanged"] += 1
@@ -1033,7 +1050,7 @@ def apply_change(client, target, prefix, change, delete, counts):
     counts["copied"] += 1
 
 
-def sync_lines(counts, prefix, target, delete):
+def sync_lines(counts, prefix, target, delete, kept):
     lines = [f"Copied {counts['copied']} file(s), {size(counts['bytes'])}, from {prefix or 'storage'} to {target.name}."]
     if counts["unchanged"]:
         lines.append(f"{counts['unchanged']} file(s) were already there with the same SHA-256.")
@@ -1041,24 +1058,50 @@ def sync_lines(counts, prefix, target, delete):
         lines.append(f"Skipped {counts['skipped']} file(s) that changed or went away on the fleet during the sync; the change list brings their newer state.")
     if counts["deleted"]:
         lines.append(f"Deleted {counts['deleted']} file(s) deleted on the fleet.")
-    if counts["kept"] and not delete:
-        lines.append(f"Kept {counts['kept']} file(s) deleted on the fleet; add --delete to remove them here too.")
+    if kept and not delete:
+        lines.append(f"{len(kept)} file(s) deleted on the fleet are still here; add --delete to remove them here too.")
     return lines
+
+
+def sync_key(ctx, client, prefix, target):
+    mine = ctx.mine()
+    account = mine.get("email") if mine.get("email") and client.key == mine.get("key") else "key " + hashlib.sha256(client.key.encode()).hexdigest()[:16]
+    return json.dumps([ctx.api, account, client.fleet or "", prefix, target.name])
+
+
+def sync_state(ctx, key):
+    found = ctx.cfg.get("sync", {}).get(key)
+    found = found if isinstance(found, dict) else {}
+    kept = found.get("kept")
+    return found.get("since"), {path for path in kept if isinstance(path, str)} if isinstance(kept, list) else set()
+
+
+def save_sync(ctx, key, since, kept):
+    ctx.cfg.setdefault("sync", {})[key] = {"since": since, "kept": sorted(kept)}
+    ctx.save()
 
 
 def storage_sync(ctx):
     prefix = remote_prefix(ctx.args.path)
     target = sync_target(ctx.args.dest)
     client = ctx.client()
-    key = f"{ctx.api} {prefix} {target.name}"
-    since = ctx.cfg.get("sync", {}).get(key)
+    if not client.key:
+        raise Failure("This machine has no API key: run sparkpipe login, or set SPARKPIPE_API_KEY.")
+    key = sync_key(ctx, client, prefix, target)
+    since, kept = sync_state(ctx, key)
     counts = {"copied": 0, "bytes": 0, "unchanged": 0, "skipped": 0, "deleted": 0, "kept": 0}
+    if ctx.args.delete and kept:
+        for path in sorted(kept):
+            target.remove(sync_parts(prefix, path))
+            counts["deleted"] += 1
+        kept = set()
+        save_sync(ctx, key, since, kept)
     while True:
         query = dict({"prefix": prefix}, **({"since": since} if since else {}))
         page = client.call("GET", "/v1/storage/changes", query=query)
         for change in page.get("data") or []:
             try:
-                apply_change(client, target, prefix, change, ctx.args.delete, counts)
+                apply_change(client, target, prefix, change, ctx.args.delete, counts, kept)
             except Skipped as error:
                 counts["skipped"] += 1
                 print(f"sparkpipe: skipped {error}", file=sys.stderr)
@@ -1066,11 +1109,10 @@ def storage_sync(ctx):
             raise Failure("The fleet's list of changes did not advance; nothing more was copied.")
         if page.get("until") and page["until"] != since:
             since = page["until"]
-            ctx.cfg.setdefault("sync", {})[key] = since
-            ctx.save()
+        save_sync(ctx, key, since, kept)
         if not page.get("more"):
             break
-    emit(ctx, dict(counts, until=since), sync_lines(counts, prefix, target, ctx.args.delete))
+    emit(ctx, dict(counts, until=since, pending_deletions=len(kept)), sync_lines(counts, prefix, target, ctx.args.delete, kept))
     return 0
 
 
@@ -1112,12 +1154,17 @@ def limits(listing, model, fields=MODEL_FIELDS):
 def key_reminder(client, tool):
     if os.environ.get("SPARKPIPE_API_KEY") == client.key:
         return
-    print(f"{tool} reads the key from SPARKPIPE_API_KEY. Add this line to your shell profile:")
-    print(f"  export SPARKPIPE_API_KEY={client.key}")
+    print(f"{tool} reads the key from SPARKPIPE_API_KEY. Add this line to your shell profile; it reads this machine's key from {config_path()} without printing it:")
+    print('  export SPARKPIPE_API_KEY="$(sparkpipe keys show)"')
 
 
-def claude_env(api, key, main, haiku, context):
+def fleet_headers(client):
+    return {FLEET_HEADER: client.fleet} if client.fleet else {}
+
+
+def claude_env(api, key, main, haiku, context, fleet=None):
     return {
+        **({CLAUDE_HEADERS: f"{FLEET_HEADER}: {fleet}"} if fleet else {}),
         "ANTHROPIC_BASE_URL": api,
         "ANTHROPIC_AUTH_TOKEN": key,
         "ANTHROPIC_MODEL": main,
@@ -1156,8 +1203,12 @@ def claude_state():
     return modern
 
 
-def claude_mcp(api, key):
-    return {"type": "http", "url": api + "/mcp", "headers": {"Authorization": "Bearer " + key}}
+def claude_mcp(api, key, headers):
+    return {"type": "http", "url": api + "/mcp", "headers": dict({"Authorization": "Bearer " + key}, **headers)}
+
+
+def fleet_text(client):
+    return f" for fleet {client.fleet}" if client.fleet else ""
 
 
 def setup_all(ctx):
@@ -1177,21 +1228,25 @@ def setup_claude_code(ctx):
     state_path = claude_state()
     state = read_json(state_path)
     object_fields(state_path, state, (CLAUDE_MCP[0],))
-    env = claude_env(ctx.api, client.key, main, haiku, context)
+    env = claude_env(ctx.api, client.key, main, haiku, context, client.fleet)
     settings["env"] = dict(settings.get("env", {}), **env)
+    if not client.fleet and FLEET_LINE.fullmatch(str(settings["env"].get(CLAUDE_HEADERS, ""))):
+        del settings["env"][CLAUDE_HEADERS]
     settings["modelOverrides"] = dict(settings.get("modelOverrides", {}), **{name: main if role == "main" else haiku for name, role in CLAUDE_MODELS.items()})
-    state.setdefault(CLAUDE_MCP[0], {})[CLAUDE_MCP[1]] = claude_mcp(ctx.api, client.key)
-    owned = [("env", name) for name in env] + [("modelOverrides", name) for name in CLAUDE_MODELS]
+    state.setdefault(CLAUDE_MCP[0], {})[CLAUDE_MCP[1]] = claude_mcp(ctx.api, client.key, fleet_headers(client))
+    owned = [("env", name) for name in (*env, CLAUDE_HEADERS)] + [("modelOverrides", name) for name in CLAUDE_MODELS]
     print(commit("claude-code", "json", path, json_text(settings), 0o600, owned))
     print(commit("claude-code", "json", state_path, json_text(state), 0o600, [CLAUDE_MCP]))
     background = f", and {haiku} for background calls" if haiku != main else ""
-    print(f"Claude Code uses {main} on {ctx.api}{background}, with the fleet's MCP server as sparkpipe. sparkpipe setup claude-code --undo restores the previous settings.")
+    print(f"Claude Code uses {main} on {ctx.api}{fleet_text(client)}{background}, with the fleet's MCP server as sparkpipe. sparkpipe setup claude-code --undo restores the previous settings.")
     if "ANTHROPIC_API_KEY" in settings["env"] or os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY is also set: Claude Code would send it to SparkPipe as X-Api-Key. Remove it from your settings and shell.")
     return 0
 
 
 def toml_value(value):
+    if isinstance(value, dict):
+        return "{ " + ", ".join(f"{json.dumps(name, ensure_ascii=False)} = {toml_value(item)}" for name, item in value.items()) + " }"
     return str(value) if isinstance(value, int) else json.dumps(value, ensure_ascii=False)
 
 
@@ -1271,11 +1326,12 @@ def merge_codex(text, root, tables):
     return codex_text("\n".join(toml_pairs(root)), split_codex(text)[0], [toml_block(path, pairs) for path, pairs in tables])
 
 
-def codex_tables(api):
+def codex_tables(api, headers):
+    extra = [("http_headers", headers)] if headers else []
     return [
         (("model_providers", "sparkpipe"), [("name", "SparkPipe"), ("base_url", api + "/v1"), ("env_key", "SPARKPIPE_API_KEY"), ("wire_api", "responses"),
-                                            ("stream_idle_timeout_ms", 600000), ("model_catalog_url", api + "/v1/codex/models")]),
-        (("mcp_servers", "sparkpipe"), [("url", api + "/mcp"), ("bearer_token_env_var", "SPARKPIPE_API_KEY")]),
+                                            ("stream_idle_timeout_ms", 600000), ("model_catalog_url", api + "/v1/codex/models"), *extra]),
+        (("mcp_servers", "sparkpipe"), [("url", api + "/mcp"), ("bearer_token_env_var", "SPARKPIPE_API_KEY"), *extra]),
     ]
 
 
@@ -1328,23 +1384,24 @@ def setup_codex(ctx):
     path = Path(ctx.args.config or Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "config.toml")
     profile = path.with_name(CODEX_PROFILE + ".config.toml")
     before = read_text(path)
-    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api)
+    root, tables = [("model", main), ("model_provider", "sparkpipe")], codex_tables(ctx.api, fleet_headers(client))
     after = merge_codex(before, root, tables)
     check_codex(path, before, after, root, tables)
     print(commit("codex", "codex", path, after, file_mode(path, 0o600), ()))
     print(commit("codex", "whole", profile, codex_profile(main, found), file_mode(profile, 0o600), ()))
-    print(f"Codex uses {main} on {ctx.api}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents. "
+    print(f"Codex uses {main} on {ctx.api}{fleet_text(client)}. codex --profile {CODEX_PROFILE} also sets its context window, compaction limit and subagents. "
           "sparkpipe setup codex --undo restores the previous settings.")
     key_reminder(client, "Codex")
     return 0
 
 
-def opencode_provider(api, main, small, listing):
+def opencode_provider(api, main, small, listing, headers):
     models = {}
     for name in dict.fromkeys((main, small)):
         found = limits(listing, name, ("context_window", "max_output_tokens"))
         models[name] = {"name": name, "limit": {"context": found["context_window"], "output": found["max_output_tokens"]}}
-    return {"npm": "@ai-sdk/anthropic", "name": "SparkPipe", "options": {"baseURL": api + "/v1", "apiKey": "{env:SPARKPIPE_API_KEY}"}, "models": models}
+    options = dict({"baseURL": api + "/v1", "apiKey": "{env:SPARKPIPE_API_KEY}"}, **({"headers": headers} if headers else {}))
+    return {"npm": "@ai-sdk/anthropic", "name": "SparkPipe", "options": options, "models": models}
 
 
 def setup_opencode(ctx):
@@ -1355,18 +1412,18 @@ def setup_opencode(ctx):
     settings = read_json(path)
     object_fields(path, settings, ("provider", "agent", "mcp", "compaction"))
     settings.setdefault("$schema", "https://opencode.ai/config.json")
-    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, small, listing)
+    settings.setdefault("provider", {})["sparkpipe"] = opencode_provider(ctx.api, main, small, listing, fleet_headers(client))
     settings["model"] = "sparkpipe/" + main
     settings["small_model"] = "sparkpipe/" + small
     agents = settings.setdefault("agent", {})
     for name, role in OPENCODE_AGENTS.items():
         agents[name] = dict(agents.get(name) if isinstance(agents.get(name), dict) else {}, model="sparkpipe/" + (main if role == "main" else small))
-    settings.setdefault("mcp", {})["sparkpipe"] = {"type": "remote", "url": ctx.api + "/mcp", "headers": {"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, "enabled": True}
+    settings.setdefault("mcp", {})["sparkpipe"] = {"type": "remote", "url": ctx.api + "/mcp", "headers": dict({"Authorization": "Bearer {env:SPARKPIPE_API_KEY}"}, **fleet_headers(client)), "enabled": True}
     if settings.get("compaction", {}).get("prune"):
         settings["compaction"]["prune"] = False
     settings["share"] = "disabled"
     print(commit("opencode", "json", path, json_text(settings), file_mode(path, 0o600), OPENCODE_OWNED))
-    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}, and sparkpipe/{small} for titles and summaries. sparkpipe setup opencode --undo restores the previous settings.")
+    print(f"OpenCode uses sparkpipe/{main} on {ctx.api}{fleet_text(client)}, and sparkpipe/{small} for titles and summaries. sparkpipe setup opencode --undo restores the previous settings.")
     key_reminder(client, "OpenCode")
     return 0
 
@@ -1579,6 +1636,385 @@ def proxy(ctx):
     return 0
 
 
+API_PRICES = {
+    "checked": "2026-11-05",
+    "sources": {"anthropic": "https://platform.claude.com/docs/en/about-claude/pricing", "openai": "https://developers.openai.com/api/docs/pricing"},
+    "anthropic": [
+        {"id": "claude-fable-5-1", "name": "Claude Fable 5.1", "input": 10, "write5m": 12.5, "write1h": 20, "read": 0.25, "output": 50},
+        {"id": "claude-mythos-5-1", "name": "Claude Mythos 5.1", "input": 10, "write5m": 12.5, "write1h": 20, "read": 0.25, "output": 50},
+        {"id": "claude-fable-5", "name": "Claude Fable 5", "input": 10, "write5m": 12.5, "write1h": 20, "read": 1, "output": 50},
+        {"id": "claude-mythos-5", "name": "Claude Mythos 5", "input": 10, "write5m": 12.5, "write1h": 20, "read": 1, "output": 50},
+        {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "input": 4, "write5m": 5, "write1h": 8, "read": 0.2, "output": 20},
+        {"id": "claude-opus-5", "name": "Claude Opus 5", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-8", "name": "Claude Opus 4.8", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-7", "name": "Claude Opus 4.7", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-5", "name": "Claude Opus 4.5", "input": 5, "write5m": 6.25, "write1h": 10, "read": 0.5, "output": 25},
+        {"id": "claude-opus-4-1", "name": "Claude Opus 4.1", "input": 15, "write5m": 18.75, "write1h": 30, "read": 1.5, "output": 75},
+        {"id": "claude-opus-4", "name": "Claude Opus 4", "input": 15, "write5m": 18.75, "write1h": 30, "read": 1.5, "output": 75},
+        {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "input": 2, "write5m": 2.5, "write1h": 4, "read": 0.1, "output": 10},
+        {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "input": 2, "write5m": 2.5, "write1h": 4, "read": 0.2, "output": 10},
+        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-sonnet-4-5", "name": "Claude Sonnet 4.5", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-sonnet-4", "name": "Claude Sonnet 4", "input": 3, "write5m": 3.75, "write1h": 6, "read": 0.3, "output": 15},
+        {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5", "input": 0.1, "write5m": 0.125, "write1h": 0.2, "read": 0.01, "output": 0.5, "long": {"over": 100000, "input": 0.5, "write5m": 0.625, "write1h": 1, "read": 0.05, "output": 2.5}},
+        {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "input": 1, "write5m": 1.25, "write1h": 2, "read": 0.1, "output": 5},
+        {"id": "claude-3-5-haiku", "name": "Claude Haiku 3.5", "input": 0.8, "write5m": 1, "write1h": 1.6, "read": 0.08, "output": 4},
+    ],
+    "openai": [
+        {"id": "gpt-6-astra", "name": "GPT-6 Astra", "input": 10, "cached": 1, "output": 50, "long": {"over": 272000, "input": 20, "cached": 2, "output": 75}},
+        {"id": "gpt-6.1-sol", "name": "GPT-6.1 Sol", "input": 2, "cached": 0.1, "output": 10, "long": {"over": 272000, "input": 4, "cached": 0.2, "output": 15}},
+        {"id": "gpt-6.1-terra", "name": "GPT-6.1 Terra", "input": 1, "cached": 0.05, "output": 5, "long": {"over": 272000, "input": 2, "cached": 0.1, "output": 7.5}},
+        {"id": "gpt-6-luna", "name": "GPT-6 Luna", "input": 0.1, "cached": 0.01, "output": 0.5, "long": {"over": 272000, "input": 0.2, "cached": 0.02, "output": 0.75}},
+        {"id": "gpt-6-sol", "name": "GPT-6 Sol", "input": 2, "cached": 0.2, "output": 10, "long": {"over": 272000, "input": 4, "cached": 0.4, "output": 15}},
+        {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol", "input": 4, "cached": 0.4, "output": 20, "long": {"over": 272000, "input": 8, "cached": 0.8, "output": 30}},
+        {"id": "gpt-5.6-terra", "name": "GPT-5.6 Terra", "input": 2, "cached": 0.2, "output": 12, "long": {"over": 272000, "input": 4, "cached": 0.4, "output": 18}},
+        {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna", "input": 0.2, "cached": 0.02, "output": 1.2, "long": {"over": 272000, "input": 0.4, "cached": 0.04, "output": 1.8}},
+        {"id": "gpt-5.5", "name": "GPT-5.5", "input": 5, "cached": 0.5, "output": 30, "long": {"over": 272000, "input": 10, "cached": 1, "output": 45}},
+        {"id": "gpt-5.5-pro", "name": "GPT-5.5 Pro", "input": 30, "cached": None, "output": 180, "long": {"over": 272000, "input": 60, "cached": None, "output": 270}},
+        {"id": "gpt-5.4", "name": "GPT-5.4", "input": 2.5, "cached": 0.25, "output": 15, "long": {"over": 272000, "input": 5, "cached": 0.5, "output": 22.5}},
+        {"id": "gpt-5.4-pro", "name": "GPT-5.4 Pro", "input": 30, "cached": None, "output": 180, "long": {"over": 272000, "input": 60, "cached": None, "output": 270}},
+        {"id": "gpt-5.4-mini", "name": "GPT-5.4 mini", "input": 0.75, "cached": 0.075, "output": 4.5},
+        {"id": "gpt-5.4-nano", "name": "GPT-5.4 nano", "input": 0.2, "cached": 0.02, "output": 1.25},
+        {"id": "gpt-5.3-codex", "name": "GPT-5.3 Codex", "input": 1.75, "cached": 0.175, "output": 14},
+        {"id": "gpt-5.2", "name": "GPT-5.2", "input": 1.75, "cached": 0.175, "output": 14},
+        {"id": "gpt-5.2-pro", "name": "GPT-5.2 Pro", "input": 21, "cached": None, "output": 168},
+        {"id": "gpt-5.1", "name": "GPT-5.1", "input": 1.25, "cached": 0.125, "output": 10},
+        {"id": "gpt-5", "name": "GPT-5", "input": 1.25, "cached": 0.125, "output": 10},
+        {"id": "gpt-5-mini", "name": "GPT-5 mini", "input": 0.25, "cached": 0.025, "output": 2},
+        {"id": "gpt-5-nano", "name": "GPT-5 nano", "input": 0.05, "cached": 0.005, "output": 0.4},
+        {"id": "gpt-5-pro", "name": "GPT-5 Pro", "input": 15, "cached": None, "output": 120},
+    ],
+}
+COMPARE_PROMPT = 10000
+COMPARE_TTL = 300
+COMPARE_TTL_1H = 3600
+PRICE_SUFFIX = re.compile(r"(-[0-9]{8}|-[0-9]{4}-[0-9]{2}-[0-9]{2})?(-v[0-9]+)?")
+STAMP = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})(?:T([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?")
+LOG_MARKS = (b'"assistant"', b"token_count", b"session_meta", b"turn_context")
+
+
+def truthy(value):
+    return not (value is None or value is False or value == "" or (isinstance(value, (int, float)) and value == 0))
+
+
+def tokens(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def refuse_constant(name):
+    raise ValueError(name)
+
+
+def stamp_ms(value):
+    found = STAMP.fullmatch(value) if isinstance(value, str) else None
+    if not found:
+        return 0
+    year, month, day, hour, minute, second, fraction, zone = found.groups()
+    try:
+        moment = datetime(int(year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0))
+    except ValueError:
+        return 0
+    if hour is not None and zone is None:
+        seconds = int(time.mktime(moment.timetuple()))
+    else:
+        offset = 0 if zone in (None, "Z") else (1 if zone[0] == "+" else -1) * (int(zone[1:3]) * 3600 + int(zone[4:6]) * 60)
+        seconds = calendar.timegm(moment.timetuple()) - offset
+    return seconds * 1000 + int((fraction or "")[:3].ljust(3, "0"))
+
+
+def local_date(ms):
+    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
+
+
+def priced_model(value):
+    text = str(value).lower() if truthy(value) else ""
+    start = text.find("claude-")
+    if start > 0:
+        text = text[start:]
+    return re.split(r"[\[@:]", text)[0]
+
+
+def price_entry(table, model):
+    best = None
+    for entry in table:
+        if model.startswith(entry["id"]) and PRICE_SUFFIX.fullmatch(model[len(entry["id"]):]) and (best is None or len(entry["id"]) > len(best["id"])):
+            best = entry
+    return best
+
+
+def request_rates(request):
+    entry = price_entry(API_PRICES[request["kind"]], request["model"])
+    if entry is None:
+        return None
+    prompt = request["input"] + request["w5"] + request["w1"] + request["read"] if request["kind"] == "anthropic" else request["input"]
+    long = entry.get("long")
+    return entry, long if long and prompt > long["over"] else entry
+
+
+def request_cost(request, rates):
+    if request["kind"] == "anthropic":
+        return (request["input"] * rates["input"] + request["w5"] * rates["write5m"] + request["w1"] * rates["write1h"] + request["read"] * rates["read"]
+                + request["output"] * rates["output"]) / 1e6
+    cached = 0 if rates.get("cached") is None else min(request["cached"], request["input"])
+    return ((request["input"] - cached) * rates["input"] + cached * (rates.get("cached") or 0) + request["output"] * rates["output"]) / 1e6
+
+
+def claude_session(row):
+    side = ":" + str(row.get("agentId") or "side") if truthy(row.get("isSidechain")) else ""
+    return str(row.get("sessionId") or "") + side
+
+
+def claude_line(row, found):
+    message = row.get("message")
+    usage, model = (message.get("usage"), message.get("model")) if isinstance(message, dict) else (None, None)
+    if row.get("type") != "assistant" or not truthy(usage) or not isinstance(model, str) or not model or model.startswith("<"):
+        return False
+    usage = usage if isinstance(usage, dict) else {}
+    cache = usage.get("cache_creation") if isinstance(usage.get("cache_creation"), dict) else {}
+    written, hour, five = tokens(usage.get("cache_creation_input_tokens")), tokens(cache.get("ephemeral_1h_input_tokens")), cache.get("ephemeral_5m_input_tokens")
+    request = {"kind": "anthropic", "model": priced_model(model), "time": stamp_ms(row.get("timestamp")), "session": claude_session(row),
+               "input": tokens(usage.get("input_tokens")), "w5": tokens(five) if five is not None else max(0, written - hour), "w1": hour,
+               "read": tokens(usage.get("cache_read_input_tokens")), "output": tokens(usage.get("output_tokens"))}
+    key = f"{message.get('id') or row.get('uuid')}|{row.get('requestId') or ''}"
+    old = found.get(key)
+    if old is None or request["output"] >= old["output"]:
+        found[key] = request
+    return True
+
+
+def codex_line(row, state, found):
+    payload = row.get("payload") if truthy(row.get("payload")) else {}
+    if not isinstance(payload, dict):
+        return False
+    if row.get("type") == "session_meta" and truthy(payload.get("id")):
+        state["session"] = str(payload["id"])
+    if row.get("type") == "turn_context" and truthy(payload.get("model")):
+        state["model"] = str(payload["model"]).lower()
+    info = payload.get("info")
+    if payload.get("type") != "token_count" or not isinstance(info, dict) or not truthy(info.get("last_token_usage")):
+        return False
+    total = info.get("total_token_usage")
+    signature = json.dumps(total if truthy(total) else info["last_token_usage"], separators=(",", ":"), ensure_ascii=False)
+    if signature == state["last"]:
+        return False
+    state["last"] = signature
+    usage = info["last_token_usage"] if isinstance(info["last_token_usage"], dict) else {}
+    found.append({"kind": "openai", "model": state["model"] or "unknown", "time": stamp_ms(row.get("timestamp")), "session": state["session"],
+                  "input": tokens(usage.get("input_tokens")), "cached": tokens(usage.get("cached_input_tokens")), "output": tokens(usage.get("output_tokens"))})
+    return True
+
+
+def log_rows(path):
+    with open(path, "rb") as handle:
+        for number, raw in enumerate(handle):
+            if not any(mark in raw for mark in LOG_MARKS):
+                continue
+            text = raw.decode("utf-8", "replace")
+            try:
+                row = json.loads(text[1:] if number == 0 and text.startswith("﻿") else text, parse_constant=refuse_constant)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def read_log(path, found):
+    state, any_request = {"model": "", "session": path.name, "last": None}, False
+    for row in log_rows(path):
+        any_request = claude_line(row, found["claude"]) or any_request
+        any_request = codex_line(row, state, found["codex"]) or any_request
+    found["files"] += any_request
+
+
+def log_folders(given, default):
+    if not given:
+        return [default] if default.is_dir() else []
+    for folder in given:
+        if not Path(folder).is_dir():
+            raise Failure(f"{folder} is not a folder.")
+    return [Path(folder) for folder in given]
+
+
+def log_files(folders, since):
+    seen, files = set(), []
+    for folder in folders:
+        for root, subfolders, names in os.walk(folder):
+            subfolders.sort()
+            for name in sorted(names):
+                path = Path(root) / name
+                try:
+                    fresh = path.suffix.lower() == ".jsonl" and path.is_file() and path.stat().st_mtime >= since
+                except OSError:
+                    continue
+                if fresh and os.path.realpath(path) not in seen:
+                    seen.add(os.path.realpath(path))
+                    files.append(path)
+    return files
+
+
+def usage_rows(requests):
+    models, sessions, days, unpriced = {}, {}, set(), {}
+    figures = {"total": 0, "first": None, "last": None}
+    for request in requests:
+        rates = request_rates(request)
+        row = models.setdefault(request["model"], {"id": request["model"], "name": rates[0]["name"] if rates else request["model"], "requests": 0,
+                                                   "uncached_input": 0, "cache_writes": 0, "cache_reads": 0, "output": 0, "cost": 0 if rates else None})
+        row["requests"] += 1
+        row["output"] += request["output"]
+        if request["kind"] == "anthropic":
+            row["uncached_input"], row["cache_writes"], row["cache_reads"] = row["uncached_input"] + request["input"], row["cache_writes"] + request["w5"] + request["w1"], row["cache_reads"] + request["read"]
+        else:
+            row["uncached_input"], row["cache_reads"] = row["uncached_input"] + request["input"] - request["cached"], row["cache_reads"] + request["cached"]
+        if rates:
+            cost = request_cost(request, rates[1])
+            row["cost"] += cost
+            figures["total"] += cost
+        else:
+            unpriced[request["model"]] = True
+        sessions.setdefault(request["session"], []).append(request)
+        if request["time"]:
+            figures["first"] = min(figures["first"] or request["time"], request["time"])
+            figures["last"] = max(figures["last"] or request["time"], request["time"])
+            days.add(local_date(request["time"]))
+    return sorted(models.values(), key=lambda row: -(row["cost"] or 0)), sessions, len(days), list(unpriced), figures
+
+
+def rewrite(request, gap, rates):
+    if request["kind"] == "anthropic":
+        written = request["w5"] + request["w1"]
+        prompt = request["input"] + written + request["read"]
+        if gap > (COMPARE_TTL_1H if request["w1"] > 0 else COMPARE_TTL) and prompt >= COMPARE_PROMPT and written * 2 >= prompt:
+            return written, (request["w5"] * (rates["write5m"] - rates["read"]) + request["w1"] * (rates["write1h"] - rates["read"])) / 1e6 if rates else 0
+        return None, 0
+    uncached = request["input"] - request["cached"]
+    if gap > COMPARE_TTL and request["input"] >= COMPARE_PROMPT and uncached * 2 >= request["input"]:
+        return uncached, uncached * (rates["input"] - rates["cached"]) / 1e6 if rates and rates.get("cached") is not None else 0
+    return None, 0
+
+
+def rewrites(sessions):
+    found = {"requests": 0, "tokens": 0, "saved": 0}
+    for requests in sessions.values():
+        ordered = sorted(requests, key=lambda request: request["time"])
+        for previous, request in zip(ordered, ordered[1:]):
+            if not request["time"] or not previous["time"]:
+                continue
+            rates = request_rates(request)
+            written, saved = rewrite(request, (request["time"] - previous["time"]) / 1000, rates[1] if rates else None)
+            if written is not None:
+                found["requests"], found["tokens"], found["saved"] = found["requests"] + 1, found["tokens"] + written, found["saved"] + saved
+    return found
+
+
+def fleet_week(ctx):
+    if not ctx.mine().get("session"):
+        return None
+    try:
+        state = ctx.client().call("GET", "/market/state", auth="session")
+        hc = state["bookings"]["weekHC"]
+        week = float(hc) * float(state["hc"]["prices"][-1]["usd"])
+    except Failure as error:
+        sys.stderr.write(f"sparkpipe: the price of a fleet week is left out: {error}\n")
+        return None
+    except (KeyError, IndexError, TypeError, ValueError):
+        sys.stderr.write("sparkpipe: the price of a fleet week is left out: the market did not give the week's HC and the price of an HC.\n")
+        return None
+    return {"hc": hc, "usd": week, "per_engineer_usd": {"3": week / 3, "5": week / 5}}
+
+
+def compare_report(requests, files, week):
+    models, sessions, worked, unpriced, figures = usage_rows(requests)
+    first, last, total = figures["first"], figures["last"], figures["total"]
+    span = (last - first) / 86400000 if first is not None and last > first else 0
+    return {"files": files, "requests": len(requests), "sessions": len(sessions), "prices_checked": API_PRICES["checked"],
+            "period": {"first": local_date(first), "last": local_date(last), "days": max(1, math.floor(span + 0.5))} if first is not None else None,
+            "span_days": span, "days_worked": worked, "total_usd": total, "per_day_worked_usd": total / worked if worked else None,
+            "per_week_usd": total / span * 7 if span >= 1 else None, "rewrites": rewrites(sessions), "models": models, "unpriced": unpriced, "fleet_week": week}
+
+
+def money(value):
+    return None if value is None else round(value, 6)
+
+
+def compare_json(report):
+    week = report["fleet_week"]
+    found = dict(report, total_usd=money(report["total_usd"]), per_day_worked_usd=money(report["per_day_worked_usd"]), per_week_usd=money(report["per_week_usd"]),
+                 span_days=round(report["span_days"], 6), rewrites={"requests": report["rewrites"]["requests"], "tokens": report["rewrites"]["tokens"], "saved_usd": money(report["rewrites"]["saved"])},
+                 models=[dict({k: v for k, v in row.items() if k != "cost"}, cost_usd=money(row["cost"])) for row in report["models"]])
+    if week:
+        found["fleet_week"] = {"hc": week["hc"], "usd": money(week["usd"]), "per_engineer_usd": {k: money(v) for k, v in week["per_engineer_usd"].items()}}
+    return found
+
+
+def usd(value):
+    exact = Decimal(repr(value)).quantize(Decimal(1) if value >= 100 else Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return "$" + format(exact, ",f")
+
+
+def whole(value):
+    return f"{math.floor(value + 0.5):,}"
+
+
+def counted(value, word):
+    return f"{whole(value)} {word}" + ("" if value == 1 else "s")
+
+
+def compare_facts(report):
+    period, saved = report["period"], report["rewrites"]
+    days = f"{period['days']} day" + ("" if period["days"] == 1 else "s") if period else ""
+    facts = [("Period", f"{period['first']} – {period['last']} ({days})" if period else "–"), ("Days worked", str(report["days_worked"])),
+             ("Total", usd(report["total_usd"])), ("Per day worked", usd(report["per_day_worked_usd"]) if report["per_day_worked_usd"] is not None else "–"),
+             ("Scaled to a week", usd(report["per_week_usd"]) if report["per_week_usd"] is not None else "–"),
+             ("Requests that wrote their context again after a pause", whole(saved["requests"])), ("Tokens written again", whole(saved["tokens"])),
+             ("Saved had they been cache reads", usd(saved["saved"]))]
+    week = report["fleet_week"]
+    if week:
+        facts += [("A week of a SparkPipe fleet", usd(week["usd"])), ("Shared by three to five engineers, each", f"{usd(week['per_engineer_usd']['5'])} – {usd(week['per_engineer_usd']['3'])}")]
+    return facts
+
+
+def model_table(models):
+    header = ("Model", "Requests", "Uncached input", "Cache writes", "Cache reads", "Output", "Cost")
+    body = [(row["name"], *(whole(row[k]) for k in ("requests", "uncached_input", "cache_writes", "cache_reads", "output")),
+             "no published price" if row["cost"] is None else usd(row["cost"])) for row in models]
+    widths = [max(len(line[i]) for line in (header, *body)) for i in range(len(header))]
+    return ["  ".join(cell.ljust(width) if i == 0 else cell.rjust(width) for i, (cell, width) in enumerate(zip(line, widths))) for line in (header, *body)]
+
+
+def compare_lines(report, signed_in):
+    facts = compare_facts(report)
+    width = max(len(label) for label, _ in facts)
+    lines = [f"Read {counted(report['files'], 'file')}: {counted(report['requests'], 'request')} in {counted(report['sessions'], 'session')}, on this machine only.",
+             f"Priced as Anthropic and OpenAI published their API prices on {report['prices_checked']}.", ""]
+    lines += [f"{label.ljust(width)}  {value}" for label, value in facts] + [""] + model_table(report["models"])
+    if report["unpriced"]:
+        lines.append("Requests on models without a published price are left out of the total: " + ", ".join(report["unpriced"]))
+    if not signed_in:
+        lines.append("Sign in with sparkpipe login to compare with the price of a fleet week.")
+    return lines
+
+
+def compare(ctx):
+    if ctx.args.days < 1:
+        raise Failure("--days must be 1 or more.")
+    folders = log_folders(ctx.args.claude, Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects")
+    folders += log_folders(ctx.args.codex, Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions")
+    found = {"claude": {}, "codex": [], "files": 0}
+    for path in log_files(folders, time.time() - ctx.args.days * 86400):
+        try:
+            read_log(path, found)
+        except OSError as error:
+            sys.stderr.write(f"sparkpipe: skipped {path}: {error.strerror or type(error).__name__}\n")
+    requests = list(found["claude"].values()) + found["codex"]
+    if not requests:
+        where = ", ".join(str(folder) for folder in folders) or "~/.claude/projects and ~/.codex/sessions"
+        raise Failure(f"No Claude Code or Codex requests in .jsonl files changed in the last {ctx.args.days} days under {where}. Name other folders with --claude or --codex.")
+    report = compare_report(requests, found["files"], fleet_week(ctx))
+    emit(ctx, compare_json(report), compare_lines(report, bool(ctx.mine().get("session"))))
+    return 0
+
+
 def leaf(group, name, run_, parents, text):
     command = group.add_parser(name, parents=parents, help=text, description=text)
     command.set_defaults(run=run_)
@@ -1587,14 +2023,14 @@ def leaf(group, name, run_, parents, text):
 
 def spending(command):
     command.add_argument("--yes", action="store_true", help="do not ask for confirmation")
-    command.add_argument("--accept", action="store_true", help="accept the current Customer Agreement")
+    command.add_argument("--accept", action="store_true", help="accept the current Customer Agreement and its Data Processing Agreement")
 
 
 def account_commands(commands, base):
     login_ = leaf(commands, "login", login, [base], "Sign in with an email code and create a key for this machine")
     login_.add_argument("--email")
     login_.add_argument("--company", help="open a new account under this legal name")
-    login_.add_argument("--accept", action="store_true", help="accept the Customer Agreement")
+    login_.add_argument("--accept", action="store_true", help="accept the Customer Agreement and its Data Processing Agreement")
     book = commands.add_parser("book", help="Book a fleet by the week or by the hour").add_subparsers(dest="action", metavar="ACTION")
     book.required = True
     week = leaf(book, "week", book_week, [base], "Book weeks of a fleet")
@@ -1620,6 +2056,7 @@ def account_commands(commands, base):
     create.add_argument("--note")
     create.add_argument("--fleet", dest="key_fleet", help="limit the key to one fleet")
     create.add_argument("--allow-swap", action="store_true", help="let the key replace resident models")
+    leaf(keys, "show", keys_show, [base], "Print this machine's key, for $(sparkpipe keys show) in a shell profile")
     leaf(keys, "revoke", keys_revoke, [base], "Revoke a key").add_argument("id")
 
 
@@ -1669,6 +2106,13 @@ def token_commands(commands, base):
     leaf(tokens, "rm", tokens_rm, [base], "Remove a token").add_argument("name")
 
 
+def compare_command(commands, base):
+    command = leaf(commands, "compare", compare, [base], "What your Claude Code and Codex logs cost at API prices, read on this machine")
+    command.add_argument("--days", type=int, default=30, help="read logs changed in the last DAYS days (default 30)")
+    command.add_argument("--claude", action="append", metavar="DIR", help="a Claude Code projects folder (default ~/.claude/projects); repeat for more")
+    command.add_argument("--codex", action="append", metavar="DIR", help="a Codex sessions folder (default ~/.codex/sessions); repeat for more")
+
+
 def parser():
     base = argparse.ArgumentParser(add_help=False)
     base.add_argument("--api", help="the API address (default " + API + ")")
@@ -1682,6 +2126,7 @@ def parser():
     account_commands(commands, base)
     fleet_commands(commands, base, fleet)
     token_commands(commands, base)
+    compare_command(commands, base)
     return top
 
 

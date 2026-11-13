@@ -96,10 +96,11 @@ sampled rows run on graphs with the FP8 head and MTP; top-k, top-p and
 logprobs work on every family; deadlines and priorities hold from the API
 through the engine; a client failure drains every sequence slot.
 
-MTP at TP16 needs the work in
-[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md#glm5_next-mtp-research-path):
-a TP-sharded MTP head, draft and verify inside graph chains, and
-per-sequence draft KV. glm5_next's MTP path runs at TP1 only today.
+Speculation serves at TP16 with unchanged output from two sources, the
+request's own context and draft models on the hub
+([SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md)). An MTP head
+that drafts inside the engine is not built: it needs a TP-sharded MTP head,
+draft and verify rows inside graph chains, and per-sequence draft KV.
 
 TECHDEBT: speculation, serving API, runtime completion.
 
@@ -162,13 +163,13 @@ steady-state decode hot-path audit, production qualification.
 Exit:
 
 - modules run behind the device layer, with Metal and ROCm backends;
-- eight Mac Studios serve the catalog as replicas and Thunderbolt 5 islands;
+- a Mac Studio pool serves the catalog as replicas and Thunderbolt 5 islands;
 - a mixed fleet that prefills on Sparks and decodes on Studios serves a
   workload faster end to end than either pool alone;
 - the fleet grows from 4 to 8 to 16 Sparks with rollback receipts.
 
 The Studio pool needs the device layer and a Metal backend, not the GLM work
-of M1-M3, so it can proceed alongside them once the Studios arrive. Pipeline
+of M1-M3, so it can proceed alongside them. Pipeline
 stages across the two classes also need M5's pipeline execution.
 
 TECHDEBT: hardware independence, Mac Studio deployment, incremental
@@ -209,7 +210,7 @@ Work:
 - a draft tree fed by several drafters, cut short or extended conditionally,
   that spends the compute left idle below the compute-bound batch size
   (GOALS.md);
-- drafters on the rtx5090 hub. It is 22.6 us p50 from sparkf and about
+- drafters on the hub. It is 22.6 us p50 from sparkf and about
   300 us p50 from the other Sparks, which reach it through sparkf
   (PERFORMANCE_STATUS.md, Measured fabric). GLM needs a glm5_next
   `DraftRemoteChain` call site first, with drafting pipelined one round
@@ -227,7 +228,8 @@ TECHDEBT: speculation, dynamic batching.
 
 Exit: every driver module meets three conditions on merged main. It builds
 for sm_121a and links. It is releasable by
-`tools/module_build_release.sh`. It has a functional receipt (COMPSEC-17 or
+`scripts/release_build.sh`: its lane in `deployment/lanes.json` resolves
+through `tools/lane_config.py release-row`. It has a functional receipt (COMPSEC-17 or
 its model's equivalent) and a B1 measurement in PERFORMANCE_STATUS.md.
 
 Drivers are taken in the order that GOALS.md's model direction sets.

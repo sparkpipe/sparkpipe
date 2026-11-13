@@ -16,6 +16,7 @@
 <link rel="stylesheet" href="checkout.css?v=3">
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <header class="nav">
   <div class="wrap">
     <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">hour-credits</span></a>
@@ -32,7 +33,7 @@
   </div>
 </header>
 
-<main class="wrap">
+<main id="main" class="wrap">
 <section class="co-head">
   <p class="label">Buy hour-credits · <span class="signal">Card · Won transfer · USDC · USDT · USD bank transfer (SWIFT)</span></p>
   <h1>Hour-credits for your own AI fleet.</h1>
@@ -61,6 +62,7 @@
         <div id="known" hidden class="form">
           <p>Signed in as <b id="known-email"></b> for <b id="known-company"></b>. <button class="linkish" type="button" id="switch">Use another email</button></p>
           <button class="btn solid big" type="button" id="known-go">Continue</button>
+          <p class="flash" id="m-known" hidden></p>
         </div>
         <form class="form" id="f-2" novalidate>
           <label>Company legal name, or your full name<input id="company" autocomplete="organization" maxlength="200" placeholder="Acme Co., Ltd. or Jane Kim"></label>
@@ -81,7 +83,7 @@
             </ul>
             <p>The Customer Agreement governs, and its Korean text prevails.</p>
           </div>
-          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> for business, professional, commercial or independent research and development use, not as a household consumer. The <a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">Korean text</a> prevails.</span></label>
+          <label class="check"><input type="checkbox" id="accept"><span>I accept the <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a>, with the <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> it incorporates, for business, professional, commercial or independent research and development use, not as a household consumer. The Korean texts (<a href="agreement-ko.html" target="_blank" rel="noopener" hreflang="ko">Agreement</a>, <a href="dpa-ko.html" target="_blank" rel="noopener" hreflang="ko">DPA</a>) prevail.</span></label>
           <p class="flash" id="m-2" hidden></p>
           <button class="btn solid big" type="submit" id="send">Email me a 6-digit code</button>
           <p class="hint">The code confirms your email. It becomes your account: receipts, your hours and sign-in all use it. Already have an account? Use the same email.</p>
@@ -111,7 +113,7 @@
             <label class="check"><input type="checkbox" id="declare"><span>My company has no place of business in the Republic of Korea and pays this order by bank transfer in US dollars from its own account outside the Republic of Korea (<a href="agreement.html" target="_blank" rel="noopener">Customer Agreement</a>, clause 3.3(b)).</span></label>
           </div>
         </div>
-        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement changed since you accepted it. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> (the Korean text prevails) on behalf of my company.</span></label>
+        <label class="check" id="reaccept" hidden><input type="checkbox" id="accept-again"><span>The Customer Agreement or its Data Processing Agreement changed since you accepted them. I accept the current <a href="agreement.html" target="_blank" rel="noopener">SparkPipe Customer Agreement</a> and <a href="dpa.html" target="_blank" rel="noopener">Data Processing Agreement</a> (the Korean texts prevail) on behalf of my company.</span></label>
         <p class="flash" id="m-3" hidden></p>
         <button class="btn solid big" type="submit" id="pay">Pay</button>
         <p class="hint" id="hint-toss" hidden>Pay in won with a card issued in Korea or abroad (Visa, Mastercard, JCB), by bank transfer, into a virtual account, or with a Korean easy-pay wallet, all through Toss Payments. A card, transfer or wallet payment issues your HC as soon as Toss Payments confirms it; a virtual account issues it when your deposit arrives, and expires with the order if nothing arrives by its deadline. For a card, the card slip is your VAT document; for a bank transfer or virtual account we issue an electronic tax invoice to the business registration number above.</p>
@@ -170,8 +172,8 @@
 </footer>
 
 <script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
-<script src="pricing.js?v=2"></script>
-<script src="prices.js?v=3"></script>
+<script src="pricing.js?v=3"></script>
+<script src="prices.js?v=4"></script>
 <script src="checkout.js?v=4"></script>
 <script>
 (() => {
@@ -262,6 +264,10 @@
   };
 
   const go = (step) => {
+    if (step === 3 && S.me && S.me.role !== 'owner') {
+      step = 2;
+      SP.say($('m-known'), 'Only the account owner can buy HC. You are signed in as ' + S.me.role + ' of ' + S.me.company + '; ask the owner, or use another email.', 'error');
+    } else if (step === 2) SP.say($('m-known'), '');
     S.step = step;
     [1, 2, 3].forEach((n) => {
       const el = $('step-' + n);
@@ -281,6 +287,7 @@
   };
   [1, 2].forEach((n) => $('step-' + n).querySelector('.step-head').addEventListener('click', () => { if (S.step > n) go(n); }));
 
+  const whole = (n) => (Number.isFinite(n) ? BigInt(n).toString() : String(n));
   const busy = async (button, note, task) => {
     button.disabled = true;
     SP.say(note, '');
@@ -310,7 +317,7 @@
     event.preventDefault();
     busy($('send'), $('m-2'), async () => {
       if (!$('company').value.trim()) throw new Error('Enter your company’s legal name, or your full name.');
-      if (!$('accept').checked) throw new Error('Accept the Customer Agreement to continue.');
+      if (!$('accept').checked) throw new Error('Accept the Customer Agreement and its Data Processing Agreement to continue.');
       await flow.send($('email').value.trim());
       $('f-2').hidden = true;
     });
@@ -326,7 +333,7 @@
       go(3);
     });
   });
-  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A new code is on its way.', 'ok'); }));
+  $('resend').addEventListener('click', () => busy($('resend'), $('m-code'), async () => { await flow.send(flow.email()); SP.say($('m-code'), 'A code is on its way again. Any code we sent in the last 10 minutes still works.', 'ok'); }));
   $('change').addEventListener('click', () => { $('f-code').hidden = true; $('f-2').hidden = false; $('email').focus(); });
   $('switch').addEventListener('click', async () => {
     await SP.call('/signout', {}).catch(() => {});
@@ -343,14 +350,14 @@
       const coin = SP.chosen($('f-3'), 'coin');
       if (!toss && !bank && !coin) throw new Error('Choose USDC or USDT and its network.');
       if (bank && !$('declare').checked) throw new Error('A USD bank transfer (SWIFT) is for a company with no place of business in Korea, paying from its own account outside Korea. Confirm both, or choose another way to pay.');
-      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement to continue.');
+      if (!$('reaccept').hidden && !$('accept-again').checked) throw new Error('Accept the current Customer Agreement and Data Processing Agreement to continue.');
       const brn = $('brn').value.trim();
       if (toss && brn && !/^\d{3}-\d{2}-\d{5}$/.test(brn)) throw new Error('Give the Korean business registration number as 123-45-67890, or leave it empty.');
       if (toss) SP.tossReady();
       $('pay').textContent = toss ? 'Opening the payment…' : 'Creating your invoice…';
       const accept = $('accept-again').checked || undefined;
-      const body = toss ? { product: 'credits', hc: String(S.hc), processor: 'toss', brn: brn || undefined, accept }
-        : bank ? { product: 'credits', hc: String(S.hc), processor: 'swift', declare: true, accept } : { product: 'credits', hc: String(S.hc), coin, accept };
+      const body = toss ? { product: 'credits', hc: whole(S.hc), processor: 'toss', brn: brn || undefined, accept }
+        : bank ? { product: 'credits', hc: whole(S.hc), processor: 'swift', declare: true, accept } : { product: 'credits', hc: whole(S.hc), coin, accept };
       let placed;
       try {
         placed = await SP.call('/order', body);

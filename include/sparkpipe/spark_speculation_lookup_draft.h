@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-#include "sparkpipe/spark_speculation_policy.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -44,7 +43,6 @@ SparkStatus SparkSpeculationLookupDraftInitialize(SparkSpeculationLookupDraft *d
 void SparkSpeculationLookupDraftDestroy(SparkSpeculationLookupDraft *draft);
 SparkStatus SparkSpeculationLookupDraftObserve(SparkSpeculationLookupDraft *draft,uint32_t lane,uint64_t sequence_id,uint64_t position,const uint32_t *token_ids,uint32_t token_count);
 SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *draft,uint32_t lane,uint64_t anchor_position,SparkSpeculationLookupMatch *match_out);
-SparkStatus SparkSpeculationLookupDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result);
 SparkStatus SparkSpeculationLookupIndexBind(SparkSpeculationLookupIndex *index,uint32_t *heads,uint32_t bucket_count,uint32_t *chain,uint32_t capacity,uint32_t gram);
 void SparkSpeculationLookupIndexReset(SparkSpeculationLookupIndex *index);
 SparkStatus SparkSpeculationLookupIndexAppend(SparkSpeculationLookupIndex *index,const uint32_t *history,uint32_t length);

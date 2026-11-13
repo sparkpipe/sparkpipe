@@ -72,6 +72,7 @@ typedef struct SparkModelResidentClientView
 	uint32_t max_sequence_positions;
 	uint32_t reserved0;
 	uint64_t client_generation;
+	uint64_t submission_id_floor;
 	uint64_t submitted_count;
 	uint64_t prepared_count;
 	uint64_t continued_count;
@@ -114,6 +115,15 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 SparkStatus SparkModelResidentClientContinue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes);
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes);
 SparkStatus SparkModelResidentClientCanQueueDecision(
 	const SparkModelResidentClient *client,
 	uint64_t submission_id,
@@ -128,6 +138,8 @@ SparkStatus SparkModelResidentClientProgress(
 	SparkModelResidentClient *client,
 	uint32_t maximum_message_count);
 uint64_t SparkModelResidentClientNextProgressNs(
+	const SparkModelResidentClient *client);
+uint32_t SparkModelResidentClientNeedsProgress(
 	const SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,

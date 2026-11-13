@@ -73,9 +73,14 @@ nodes:
 | `AGENT_SYNC` | `local` (never synced from the hub release) |
 | `AGENT_MEMORY_MAX` | residentd cgroup limit, `20G` |
 | `AGENT_MEMORY_NEED_GIB` | residentd plus the arena if this arm is the first to map it in its slot (F1 50, F1AA 12, F2 33, F3 24, F0 12) |
-| `SPARK_WEIGHTD_LANE` | the arm's own mesh lane |
-| `SPARK_WEIGHTD_EXPERT_POOL_BYTES` | only for an arm with `pool_cap_bytes`, its explicit cap; otherwise unset and weightd sizes the pool from the pack. Arms that share an arena must carry the same cap or none, or weightd refuses the attach; a spec that still names `pool_bytes` is refused |
-| `SPARK_WEIGHTD_ATTACH`, `SPARK_WEIGHTD_SOCKET`, `SPARK_TP_MESH_RANKS`, `SPARK_TP_WAIT_MODE`, pin and graph switches | from the spec's `common_env`, equal to production's execution mode |
+| any `SPARK_` key | refused: residentd reads its inputs from `model_resident.json` and the stage configs |
+
+Each arm's stage configs carry its weightd inputs, and `tools/ab_fleet.py
+root-check` compares them with the spec: `device_collective.mesh_lane` is the
+arm's own mesh lane, and `expert_pool_cap_bytes` is the arm's `pool_cap_bytes`
+or absent when it has none, in which case weightd sizes the pool from the
+pack. Arms that share an arena must carry the same cap or none, or weightd
+refuses the attach; a spec that still names `pool_bytes` is refused.
 
 The window scripts start the arm residentds as lane-owned transient units
 (`sp-qabw1-<arm>`) with the same env, `MemoryMax` and gate as the fleet agent
@@ -118,9 +123,8 @@ configuration through a link.
 ### 2.3 Lanes and ports
 
 Arms take mesh lanes from the free set. A lane is free when no residentd
-holds it on any node (`SPARK_WEIGHTD_LANE` in the process environment;
-production without the variable takes the lowest free lane, 0) and no other
-lane's notes reserve it. On 2026-09-29 the free set was 1, 2, 11, 13, 14 and 15;
+holds it on any node (`device_collective.mesh_lane` in its stage config) and
+no other lane's notes reserve it. On 2026-09-29 the free set was 1, 2, 11, 13, 14 and 15;
 lane 11 is left out because the dormant laguna plan reserves it with the same
 port formula.
 
@@ -202,13 +206,13 @@ ready again.
 ### 4.1 Production's arena after F0
 
 weightd maps an attached arena read-write for every client unless the
-client asks for `SPARK_WEIGHTD_SHARE=readonly` (#1345). F0 runs experiment
+client's stage config asks for `"weights_share": "readonly"` (#1345). F0 runs experiment
 firmware on production's arena, so production never restarts on an arena
 that an arm mapped read-write:
 
 - With `W1_SHARE_READONLY=1` (fleet weightd and campaign commit both carry
-  #1345; the scripts refuse the flag if the campaign commit has no
-  `SPARK_WEIGHTD_SHARE` client code) and production's arena not evicted, F0
+  #1345; the scripts refuse the flag if the campaign commit's adapter has no
+  `weights_share` member) and production's arena not evicted, F0
   maps it read-only and production may restart on it warm.
 - Otherwise slot C drops production's arena after F0 stops, while production
   is still held: pack-scoped reclaim if available, else the node-global

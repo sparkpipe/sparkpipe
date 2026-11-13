@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_weightd_kv_pool.h"
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_weightd_attach.h"
 #include "sparkpipe/spark_error_site.h"
 
@@ -11,13 +12,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-
-static uint64_t SparkWeightdKvPoolNowNs(void)
-{
-	struct timespec now;
-	(void)clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
 
 SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes)
 {
@@ -119,7 +113,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 {
 	SparkWeightdKvPoolState state;
 	struct timespec pause;
-	uint64_t minimum = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes,deadline = SparkWeightdKvPoolNowNs() + timeout_nanoseconds;
+	uint64_t minimum = (request->minimum_bytes + request->chunk_bytes - 1u) / request->chunk_bytes,deadline = SparkMonotonicNs() + timeout_nanoseconds;
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( minimum == 0u )
 		minimum = 1u;
@@ -129,7 +123,7 @@ static SparkStatus SparkWeightdKvPoolAwaitMinimum(const SparkWeightdKvPoolReques
 			mapping->chunk_count,(unsigned long long)minimum,(unsigned long long)mapping->kv_reserve_bytes,(unsigned long long)mapping->kv_committed_bytes);
 	while ( mapping->chunk_count < minimum )
 	{
-		if ( SparkWeightdKvPoolNowNs() >= deadline )
+		if ( SparkMonotonicNs() >= deadline )
 		{
 			fprintf(stderr,"%s kv pool refused: weightd granted %u of the minimum %llu chunks of %llu bytes within %llu ms; kv_reserve=%llu kv_committed=%llu\n",request->label,
 				mapping->chunk_count,(unsigned long long)minimum,(unsigned long long)request->chunk_bytes,(unsigned long long)(timeout_nanoseconds / 1000000ull),
@@ -193,23 +187,20 @@ static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,co
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdKvPoolMap(const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
+SparkStatus SparkWeightdKvPoolMap(const char *socket,const SparkWeightdKvPoolRequest *request,const uint64_t *chunk_offsets,uint64_t timeout_nanoseconds,SparkWeightdKvPoolMapping *mapping)
 {
 	SparkWeightdKvPoolGrant grant;
-	const char *socket;
 	SparkStatus status;
 	if ( request == 0 || chunk_offsets == 0 || mapping == 0 || request->label == 0 || request->chunk_bytes == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(mapping,0,sizeof(*mapping));
 	memset(&grant,0,sizeof(grant));
 	grant.metadata_fd = -1;
-	status = SparkWeightdAttachRequested();
-	if ( status != SPARK_STATUS_OK )
+	if ( socket == 0 || socket[0] == '\0' )
 	{
-		fprintf(stderr,"%s kv pool refused: weightd owns node KV memory and %s does not name its socket\n",request->label,SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
-		SPARK_RETURN(status);
+		fprintf(stderr,"%s kv pool refused: weightd owns node KV memory and the binding names no weightd socket\n",request->label);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	status = SparkWeightdClientConnect(socket,&mapping->client,0);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -315,19 +306,14 @@ void SparkWeightdKvSharedUnmap(SparkWeightdKvSharedMapping *mapping)
 	memset(mapping,0,sizeof(*mapping));
 }
 
-SparkStatus SparkWeightdKvSharedAttach(const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
+SparkStatus SparkWeightdKvSharedAttach(const char *socket,const SparkWeightdKvSharedRequest *request,uint64_t timeout_nanoseconds,SparkWeightdKvSharedMapping *mapping)
 {
 	SparkWeightdKvSharedGrant grant;
-	const char *socket;
 	void *metadata;
 	SparkStatus status;
-	if ( request == 0 || mapping == 0 || request->label == 0 )
+	if ( socket == 0 || socket[0] == '\0' || request == 0 || mapping == 0 || request->label == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(mapping,0,sizeof(*mapping));
-	status = SparkWeightdAttachRequested();
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	socket = getenv(SPARK_WEIGHTD_ATTACH_ENV_SOCKET);
 	status = SparkWeightdClientConnect(socket,&mapping->client,0);
 	if ( status != SPARK_STATUS_OK )
 	{

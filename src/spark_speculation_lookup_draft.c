@@ -98,41 +98,6 @@ SparkStatus SparkSpeculationLookupDraftFind(const SparkSpeculationLookupDraft *d
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkSpeculationLookupDraftTokens(void *context,const SparkSpeculationPolicyDraftRequest *request,SparkSpeculationPolicyDraftResult *result)
-{
-	const SparkSpeculationLookupDraft *draft = (const SparkSpeculationLookupDraft *)context;
-	SparkSpeculationLookupMatch match;
-	const uint32_t *history;
-	uint32_t count,token,confidence;
-	uint64_t source;
-	SparkStatus status;
-	if ( draft == 0 || request == 0 || result == 0 || request->requested_token_count == 0u || request->requested_token_count > SPARK_SPECULATION_MAX_SPECULATIVE_TOKEN_COUNT || request->active_sequence_index >= draft->lane_count )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	result->token_count = 0u;
-	if ( draft->sequence_ids[request->active_sequence_index] != request->sequence_id )
-		return(SPARK_STATUS_NOT_FOUND);
-	status = SparkSpeculationLookupDraftFind(draft,request->active_sequence_index,request->sequence_position,&match);
-	if ( status == SPARK_STATUS_NOT_FOUND )
-		return(status);
-	if ( status != SPARK_STATUS_OK || match.match_length == 0u )
-		SPARK_RETURN(status);
-	history = draft->tokens + (uint64_t)request->active_sequence_index * draft->lane_capacity;
-	confidence = SPARK_SPECULATION_CONFIDENCE_MILLI_ONE * match.match_length / draft->max_match;
-	for (count=0u; count<request->requested_token_count; count++)
-	{
-		source = (uint64_t)match.source_end + 1u + count;
-		if ( source > request->sequence_position )
-			break;
-		token = history[source];
-		if ( token == SPARK_SPECULATION_LOOKUP_UNKNOWN_TOKEN )
-			break;
-		result->token_ids[count] = token;
-		result->confidence_milli[count] = confidence;
-	}
-	result->token_count = count;
-	return(SPARK_STATUS_OK);
-}
-
 static uint32_t SparkSpeculationLookupIndexBucket(const SparkSpeculationLookupIndex *index,const uint32_t *gram_tokens)
 {
 	uint64_t hash = UINT64_C(0xcbf29ce484222325);

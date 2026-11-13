@@ -4,21 +4,13 @@ include $(dir $(lastword $(MAKEFILE_LIST)))runtime/weightd_sources.mk
 SPARKPIPE_CORE_SOURCES := \
     src/spark_status.c \
     src/spark_sha256.c \
+    src/spark_io.c \
     src/spark_quant_arm.c \
     src/spark_ck128.c \
     src/spark_admission.c \
-    src/spark_speculation_policy.c \
-    src/spark_speculation_seam.c \
-    src/spark_speculation_reference_draft.c \
-    src/spark_speculation_recorded_draft.c \
     src/spark_speculation_lookup_draft.c \
     src/spark_speculation_frame.c \
     src/spark_speculation_tree_frame.c \
-    src/spark_speculation_ngram_draft.c \
-    src/spark_speculation_drafter_mix.c \
-    src/spark_speculation_relay_draft.c \
-    src/spark_speculation_relay_link.c \
-    src/spark_speculation_tap.c \
     src/spark_tap_stream.c \
     ring/transport/draft_bridge.c \
     runtime/filesystem.c \
@@ -75,9 +67,9 @@ SPARKPIPE_GLM52_SOURCES := \
 	model-families/glm52/src/spark_glm52_chat_template.c
 
 SPARKPIPE_K3_SOURCES := \
-    modules/k3_resident_decode_stage/source/spark_k3_pack_load.c \
-    modules/k3_resident_decode_stage/source/spark_k3_bind.c \
-    modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c
+    model-families/k3/src/spark_k3_pack_load.c \
+    model-families/k3/src/spark_k3_bind.c \
+    model-families/k3/src/spark_k3_resident_decode_stage_module.c
 
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c

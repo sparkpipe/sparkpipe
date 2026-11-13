@@ -1,7 +1,7 @@
 # LiteLLM front end — one door for the SparkPipe fleet
 
 Status, 2026-10-02: GLM-5.3 Full (TP16, 65,536 positions per sequence) serves
-through this stack on the rtx5090 hub:
+through this stack on the hub:
 
 | Port | Process | Protocol |
 | --- | --- | --- |
@@ -78,8 +78,8 @@ public door follow the Fleet API busy rule instead (`docs/FLEET_API.md`
 for one and then gets 429 `busy` with an integer `Retry-After` and
 `x-should-retry: true`. Background requests (`<model>-bulk`,
 `X-SparkPipe-Priority: background` or `metadata["x-sparkpipe-priority"]`,
-Claude Code's compaction and auxiliary calls, and chat-memory jobs, which
-take a sequence at the gate like any request) leave two sequences for
+and chat-memory jobs, which take a sequence at the gate like any request;
+a harness's own marks never make a request background) leave two sequences for
 interactive ones, and a freed sequence goes to a waiting interactive request
 first. Among waiters of the same priority, a
 freed sequence goes to the account (a gateway account, a direct key, or our
@@ -142,7 +142,7 @@ another model waits while the fleet swaps.
 
 | Piece | Where | What |
 | --- | --- | --- |
-| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}`, `POST /force`, `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
+| Swap controller | `tools/serving/model_swap.py`, config `deployment/hub/model_swap.json`, hub unit `sparkpipe-swap` on 127.0.0.1:8440 | `GET /status`, `POST /activate {"model": id}` (400 when `model` is not a name string, 404 when it is not configured), `POST /force` (the same checks when it names a model), `POST /deactivate` (stops every model's engines and API, releases every KV pool, frees every model's cold weightd arenas, leaves no active model; 409 while a switch runs); every call needs the controller token (see Control-plane access) |
 | Chat layer | `tools/serving/chat_frontend.py`, config `deployment/hub/chat_frontend.json`, hub unit `sparkpipe-chat` on 127.0.0.1:8433 | every model's `warm_queue.activation_url` is the controller; `GET /v1/sparkpipe/status` passes through to it; `/` redirects to the fleet page |
 | LiteLLM | `config/litellm-config.yaml`, hub unit `sparkpipe-litellm` on 4000 | the three names, and `*` routes to `glm-5.3` |
 
@@ -193,7 +193,7 @@ OpenAI `reasoning_effort` maps onto K3's `thinking_effort`: low → low, medium 
 ZCode reaches the door as a custom provider in `~/.zcode/v2/provider_config.json`:
 
 - `"providerId": "custom:sparkpipe"`;
-- `"api": {"type": "anthropic-messages", "baseUrl": "http://rtx5090:4000"}`;
+- `"api": {"type": "anthropic-messages", "baseUrl": "http://hub:4000"}`;
 - all 16 served model ids, with each context window in `modelConfigRules` taken from the chat layer's `context_tokens` (2026-10-16: `kimi-k3` 737280, `glm-5.3` and `qwen3.8-27b` 262144, `glm-5.3-flash` 131072, `deepseek-v4.1-flash` 16384, the rest 32768).
 
 LiteLLM runs without a master key, so the provider's API key is a placeholder. Picking a model in ZCode swaps the fleet on its first request.
@@ -207,7 +207,7 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | Route | Request | Response |
 | --- | --- | --- |
 | `GET /health` | — | `200 {"status":"ok","served":N,"tokenizer":bool,"ranks":R,"connected_ranks":R,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"OK","live_requests":L}`; `503` with `"status":"degraded"` while a rank is disconnected (`missing_rank` names the first one), a rank's driver runs on a degraded path (`degraded_rank`, `"degraded_path":"eager"` after a GLM Flash graph replay stuck or timed out), or the engine has latched a failure |
-| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is `SPARK_MODEL_ID`, default `sparkpipe-model` |
+| `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is the served adapter's model id (for example `google/gemma-4-26B-A4B-it`); 503 with the bring-up state until every rank is ready |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
 | anything else | — | `404 {"error":"not found"}` |
@@ -340,12 +340,12 @@ completion off-node and compare it bit for bit.
 OpenAI clients (tools, streaming, `reasoning_effort` low, medium or high):
 
 ```sh
-curl http://100.123.97.61:4000/v1/chat/completions \
+curl http://hub:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"glm-5.3","messages":[{"role":"user","content":"Hello"}],"max_tokens":2048}'
 ```
 
-Anthropic clients such as Claude Code: `ANTHROPIC_BASE_URL=http://100.123.97.61:4000`,
+Anthropic clients such as Claude Code: `ANTHROPIC_BASE_URL=http://hub:4000`,
 any `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL=glm-5.3`. The proxy maps any
 model name to `glm-5.3`, so the client's small-model calls land there too.
 
@@ -379,7 +379,7 @@ to GLM.
 
 `https://sparkpipe.ai` is static apart from the payment service. It holds the home page, the Fleet List, the terms and the data processing agreement, the privacy policy, the security page, the cost check, the USDC and USDT checkout and the customer account page. They are copied from `site/` to `/var/www/html` on the KCInfra VPS (27.102.120.99). `tools/site_terms.py` generates the terms pages from `site/terms/`; `tests/test_site.py` fails when they differ. The pages carry the HYOR AI logo and colors.
 
-Apache serves these pages from the port-443 virtual host `deployment/vps/sparkpipe-ai-ssl.conf` (`/etc/apache2/sites-available/000-default-le-ssl.conf`) and proxies `/pay/api/` to the payment service on 127.0.0.1:18090 (`deployment/vps/sparkpipe-pay.conf`, `docs/PAYMENTS.md`), which also runs the email sign-in of customer accounts; nothing else. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
+Apache serves these pages only over HTTPS. The port-80 virtual host `deployment/vps/sparkpipe-ai.conf` (`/etc/apache2/sites-available/000-default.conf`) answers nothing but the ACME challenge and sends every other request for `sparkpipe.ai` or `www.sparkpipe.ai` to `https://sparkpipe.ai` with a 301; it also sets `ServerTokens Prod` and `ServerSignature Off` for the whole server. Both port-443 virtual hosts send `Strict-Transport-Security` for two years with subdomains and list no directories. Apache serves the pages from the port-443 virtual host `deployment/vps/sparkpipe-ai-ssl.conf` (`/etc/apache2/sites-available/000-default-le-ssl.conf`) and proxies `/pay/api/` to the payment service on 127.0.0.1:18090 (`deployment/vps/sparkpipe-pay.conf`, `docs/PAYMENTS.md`), which also runs the email sign-in of customer accounts; nothing else. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
 `https://hyor.io` is the company's page: one page in English and Korean (`deployment/vps/hyor.io/`, copied to `/var/www/hyor` on the same VPS), linked from the seal in every sparkpipe.ai footer. `deployment/vps/hyor-io.conf` is its virtual host (`/etc/apache2/sites-available/hyor-io.conf`, enabled with `a2ensite hyor-io`). It sends `www.hyor.io` to `hyor.io`, chooses the language the way sparkpipe.ai does (the `lang` cookie, then the Korean /24 map), allows no scripts, and logs to the same Apache logs. The HTTPS virtual host and the port-80 redirect switch on by themselves once `/etc/letsencrypt/live/hyor.io/` exists. The certificate comes from `certbot certonly --webroot -w /var/www/hyor -d hyor.io -d www.hyor.io --deploy-hook 'systemctl reload apache2'`, so certbot never edits the virtual host. DNS for hyor.io is at Spaceship: `@` A `27.102.120.99`, `www` CNAME `hyor.io`, and the mail records. Mail for hyor.io runs on the VPS mail server that serves sparkpipe.ai (Postfix, Dovecot and rspamd, `docs/VPS_MAIL.md`): `@` MX `sparkpipe.ai`, `@` TXT `v=spf1 ip4:27.102.120.99 -all`, `_dmarc` TXT with `p=quarantine` and reports to `dmarc@hyor.io`, and `s202610._domainkey` TXT for rspamd's hyor.io DKIM key. `cem@hyor.io` is a mailbox of its own and the page's contact address; `postmaster@`, `abuse@` and `dmarc@hyor.io` deliver to it. Fleet-hour customers will reach their fleet through the customer API that TECHDEBT lists under fleet-hours.
 
@@ -408,7 +408,7 @@ Check the md5 against the downloaded `.md5` first. The builder refuses a file wi
 | `:8443/` | VPS 127.0.0.1:18082, then hub 8090 (Open WebUI, next section) |
 | `:8443/fleet`, `/fleet/status`, `/fleet/switch-now` | VPS 127.0.0.1:18081, then hub 8433 (the chat layer's admin page) |
 
-The tunnel is the hub system unit `sparkpipe-ai-door` (root, key `/root/.ssh/sparkpipe_ai_tunnel_ed25519`). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
+The tunnel is the hub system unit `sparkpipe-ai-door` (root, with its own tunnel key). It also forwards 127.0.0.1:18080 to the hub's port 4001, where nothing listens, and the VPS key may listen on 18080. Dropping 18080 from both is an SSH change, which the owner decides.
 
 ### Public API keys (2026-10-24)
 
@@ -461,10 +461,12 @@ public models:
   own scope, so a gateway key made without `--gateway` would make all
   customers one account: the gateway's pool key must be made with
   `--gateway`.
-- `cached_tokens` in a public reply counts only prefixes that key itself sent
-  (a per-key ledger of 64-token blocks) or that its account's replay store
-  holds, so a key cannot test whether someone else sent a prompt. Prefix
-  reuse itself is shared.
+- `cached_tokens` in a public reply counts only prefixes that the request's
+  scope itself sent (a ledger of 64-token blocks per direct key, or per
+  market account behind the gateway key) or that its replay store holds, so
+  a key or account cannot test whether someone else sent a prompt.
+  `DELETE /v1/cache` clears only that scope's ledger. Prefix reuse itself is
+  shared.
 - A public request for a model that is not resident is served only when no
   model is resident or the controller is already switching to it. Otherwise
   it gets 409 `model_not_loaded` naming the resident models, unless its key
@@ -504,12 +506,16 @@ gives a key's requests background priority unless a request sends its own
 `deployment/hub/chat_frontend.json` makes every model public except the
 Qwen models, as `docs/MODEL_SUPPORT.md` requires.
 
-`https://sparkpipe.ai/v1` is this door: `deployment/vps/sparkpipe-public-api.conf`,
-included in the port-443 virtual host after the language rules
-(`/etc/apache2/sparkpipe/public-api.conf`), strips the header from every
-request, sets it on `/v1/` and proxies `/v1/` to the chat layer through the
-hub tunnel's port 18081. The chat app on port 8443 and the LAN door are
-unchanged.
+The internet reaches this door only through the pay gateway at
+`https://sparkpipe.ai/pay/api` (`docs/FLEET_API.md` §2), which checks the
+account, routes by Fleet, applies the gateway limits, records usage and
+forwards with the gateway key over the hub tunnel. Apache never proxies to a
+hub: `deployment/vps/sparkpipe-public-api.conf`, included in the port-443
+virtual host after the language rules (`/etc/apache2/sparkpipe/public-api.conf`),
+strips the header from every request and answers 404 on `/v1/`, so the gateway
+key is never accepted from a client and a key made without `--gateway` reaches
+no Fleet from the internet (`tests/test_gateway_holder_cap.py`). The chat app on
+port 8443 and the LAN door are unchanged.
 
 ### Fleet API shapes (2026-11-04)
 
@@ -624,7 +630,8 @@ prompt. The non-streamed body and the last stream event carry the
 `pack`, prompt, cached, prefill and replayed tokens, `queue_ms`,
 `prefill_ms`, `ttft_ms`, `output_tokens`, `decode_tps`, `draft_accept`,
 `cold_prefill_ms_estimate`, `priority`, `session`, `agent`), and the chat
-layer logs it as a `request_record` line. `X-SparkPipe-Request`, `-Model`,
+layer keeps it as the request's record (Request records, below), never in
+its log. `X-SparkPipe-Request`, `-Model`,
 `-Prompt-Tokens`, `-Replayed-Tokens`, `-Queue-Ms`, `-Fleet` and `-Pack` come with the
 headers. `cold_prefill_ms_estimate` applies the measured cold prefill rate
 of the model near this prompt length (cold requests of 512 tokens or more,
@@ -632,6 +639,39 @@ in quarter-octave length buckets, used within two buckets) to the cached
 tokens; with no measurement near that length it is null. `draft_accept` is
 null until the engine reports draft and accepted tokens per request. `pack`
 names the pack version the request ran on (`core@3672dbc4f1f9`), or is null.
+
+### Request records
+
+The operational record of each request (the `sparkpipe` object above, with
+`at`, `account`, `member`, `key` and `shape`) is a line of
+`request-records/<owner>/<day>.jsonl` next to the config, or in the config's
+`records.directory`; the hub's config keeps them in
+`/srv/workspace/sparkpipe/request-records`, beside the replay store but not
+inside it. `<owner>` is `account-<id>` for a gateway request, `key-<id>`
+for a direct key and `own` for our own requests. The folder is mode 700 and
+its files mode 600. It is not working state: the chat layer refuses a
+records directory inside the replay store, and a wipe does not touch it. A
+record holds counts, times and ids, never prompt text, reply text or token
+numbers, and nothing of it goes to stderr, so the chat layer's log keeps no
+copy; the log lines keep only the model, counts, times and settings. Day
+files are deleted 366 days after their day (checked hourly).
+
+When a customer asks in writing to have the records of its requests deleted
+(Data Processing Agreement clause 9.3: within 30 days), run on the hub, as
+the chat layer's user, in `~/sparkpipe-chat`, with the config the
+`sparkpipe-chat` unit serves:
+
+```sh
+python3 chat_frontend.py --config config.json --erase-records AC... --note "request of 2027-01-03"
+```
+
+It deletes that account's folder, appends `{account, at, records, note}` to
+`erasures.jsonl` in the records folder and prints `request_records_erased`
+with the count. Records of later requests are kept again. The chat layer may
+keep running: the erasure, each record write and the pruning of year-old
+days take an exclusive lock on `.lock` in the records folder, so an erasure
+never races a request being recorded. The VPS's copy is deleted with
+`sparkpipe_pay.py erase-records` (`docs/PAYMENTS.md`).
 
 Priority and affinity (§3.8). `X-SparkPipe-Priority: background`, a key with
 `"priority": "background"`, `<model>-bulk`, Claude Code's
@@ -776,7 +816,7 @@ SearXNG (not enabled yet).
 | Open WebUI | hub Docker container `sparkpipe-chatui`, `127.0.0.1:8090` -> 8080, data `/srv/workspace/open-webui/data` | settings `deployment/hub/open_webui.env`, secrets `/srv/workspace/open-webui/secrets.env` (root, 600: `WEBUI_SECRET_KEY`, `OPENAI_API_KEYS`) |
 | Chat LiteLLM | hub user unit `sparkpipe-litellm-chatui` on `172.17.0.1:4002` (Docker bridge only), `~/sparkpipe-chat/litellm-chatui.yaml` (copy of `deployment/hub/litellm-chatui.yaml`), key in `~/sparkpipe-chat/chatui.env` | serves every fleet model; K3 is the default (owner 2026-10-14) |
 | Tunnel | hub `sparkpipe-ai-door`, `-R 127.0.0.1:18082:127.0.0.1:8090` | the VPS key may listen on 18082 |
-| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth; includes `/etc/apache2/sparkpipe/chat-local.conf` (copy of `deployment/vps/sparkpipe-chat-local.conf`) before its proxy lines |
+| Apache | VPS `/etc/apache2/sites-available/sparkpipe-chat-8443.conf` | TLS with the sparkpipe.ai certificate, websocket upgrade, no Basic auth; includes `/etc/apache2/sparkpipe/chat-local.conf` (copy of `deployment/vps/sparkpipe-chat-local.conf`, which also gives `/local/` its own Content-Security-Policy and Permissions-Policy) before its proxy lines |
 
 **Controls and languages.** `deployment/hub/open_webui_loader.js` is mounted
 as Open WebUI's `static/loader.js` (`open_webui_run.sh`; the hub copy is
@@ -853,7 +893,7 @@ fresh data directory starts the same. That is how `ui.default_models`
 2026-10-14.
 
 The first account created becomes the admin: it was created through
-`ssh -N -L 8090:127.0.0.1:8090 rtx5090` and http://localhost:8090 before port
+`ssh -N -L 8090:127.0.0.1:8090 hub` and http://localhost:8090 before port
 8443 was opened. Creating it turns sign-up off by itself (`ui.enable_signup`
 false); it was turned back on because the owner chose open sign-up with
 approval. New accounts arrive with the `pending` role and see only a waiting
@@ -880,9 +920,9 @@ The chat LiteLLM serves all 16 fleet models (`deployment/hub/litellm-chatui.yaml
 generated from `deployment/hub/open_webui_models.json`, contexts checked
 against the chat layer). Each has an Open WebUI model entry from that file,
 applied inside the container with `tools/serving/open_webui/open_webui_models.py`: name,
-description (context window and switch time), text-only input, web search
-and the code interpreter on by default, the GitHub tool, the trimmed
-built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
+description (context window and switch time), text-only input, the code
+interpreter on by default, web search and the GitHub tool offered but off
+until the user turns them on in a chat, the trimmed built-in tools. Open WebUI's own context compaction stays off: SparkPipe chat
 memory serves every model, and the memory program refuses a
 memory session once a compaction summary appears. The global "Full context"
 filter, one of the Open WebUI functions the memory program installs, is
@@ -953,8 +993,9 @@ without asking, bounded by what their identity can do.
   sockets plus `IPAddressDeny=any` (no TCP or UDP, so none of the fleet's
   services: the swap controller, the chat layer, LiteLLM, the engine APIs),
   the owner's `.ssh`, `.env`, `.config`, the known secret files and both
-  token directories hidden, `CPUQuota=200%`, `MemoryMax=4G`, `TasksMax=128` and
-  `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
+  token directories hidden, the `sync` and `syncfs` system calls and the
+  `@reboot` set refused with `EPERM` (`SystemCallFilter`), `CPUQuota=200%`,
+  `MemoryMax=4G`, `TasksMax=128` and `RuntimeMaxSec` of the timeout plus 5 s. It can read the machine and the
   SparkPipe trees, logs and configs, list processes and read interface and
   RDMA counters; it cannot change anything. Checked live on the hub and
   spark3 on 2026-10-14. Nothing is created on the hosts; there is no account
@@ -963,8 +1004,12 @@ without asking, bounded by what their identity can do.
   spark under `timeout -k 5`) after the admin approves that exact command.
   This is the path for anything that changes state or needs the network or
   the GPU.
-- **Both paths** pass the refusal rules in the config first (a global
-  `sync`, killing flychess, power-off, deleting a root, home, workspace or
+- **Both paths** check the request first: a body that is not a JSON object,
+  or a `timeout` that is not a finite number of seconds of at least 1, answers 400
+  and is never audited as a run. Then the refusal rules in the config (a
+  global `sync` as any separate word, such as `/bin/sync`, `env sync`,
+  `bash -c 'sync'`, `ssh spark2 sync` or `do sync`, so a search for the word
+  is written `grep '[s]ync'`; killing flychess, power-off, deleting a root, home, workspace or
   mount directory, raw disk writes, secret files; on sparks also anything
   that adds to the boot path). These are a best-effort backstop against
   mistakes, not a security boundary. Runs are written before and after to
@@ -995,10 +1040,9 @@ local accounts could still reach. Verified on the hub before the fix:
 | --- | --- |
 | The swap controller (127.0.0.1:8440) switched or stopped the fleet for any local caller | fixed: every route needs the controller token |
 | The chat layer listened on 0.0.0.0:8433, and its `POST /v1/sparkpipe/activate` started a switch for anyone | fixed: the route is gone and the layer serves loopback only |
-| LiteLLM 4000 (`config/litellm-config.yaml`) serves the LAN and the tailnet without a master key | open, owner decision: a key breaks ZCode until ZCode carries it |
-| Six root `sparkpipe_model_api` test processes from 2026-09-27 (`--runtime-root /tmp/chatfix`) and one spec test instance from 2026-09-28 answer on 0.0.0.0 | open, owner step: stop them |
-| `glm-5.3-fp8` (145 files) and `glm-5.3-bf16` (11 files) on `/mnt/model-warm` are 0666, and five directories there are 2777 | open, owner step: remove the world write bit |
-| `/etc/exports.d/qpn.exports` exports `/srv/qpn` rw with `no_root_squash` to 10.10.0.0/16 and 192.168.50.0/24; no client mounts it and it holds two empty probe files | open, owner step: drop the export or squash root |
+
+Exposures still open are tracked in the operator's private notes, not in
+this public repository.
 
 **The controller token.** `model_swap.py` refuses to start without
 `--token-file`, or when the file can be read by its group or others or holds
@@ -1098,10 +1142,13 @@ rate-limited it and Google and the others answered.
 
 Open WebUI offers the two tools only when web search is on globally, the user
 has the `web_search` permission, the model has the `web_search` capability
-and the chat's Web Search toggle is on. The `kimi-k3` model entry (Admin
-Panel -> Settings -> Models) turns the toggle on by default
-(`defaultFeatureIds`), so K3 itself decides when to search or read a page;
-the entry also marks K3 as text-only, so image uploads are not offered.
+and the chat's Web Search toggle is on. The toggle starts off in every chat:
+the privacy policy sends search terms to public search engines only when
+the user turns web search on, so no model entry lists `web_search` in
+`defaultFeatureIds` (`tests/test_open_webui_models_opt_in.py`). Once the
+user turns it on, the model itself decides when to search or read a page.
+The entries also mark the models as text-only, so image uploads are not
+offered.
 `fetch_url` refuses private and loopback addresses
 (`ENABLE_RAG_LOCAL_WEB_FETCH=false`, checked against the swap controller,
 the hub, the LAN and 10/8), so a user cannot make the hub read internal
@@ -1140,8 +1187,9 @@ The owner asked for these four after K3 told a user it could not browse:
     ghcr.io/docling-project/docling-serve-cpu@sha256:5a8367f3f657c26755605c3b2255546674833209a18afc2011598f4c045c6db3
   ```
 - **GitHub.** `tools/serving/open_webui/tools/github.py`, installed as the
-  Open WebUI tool `github` with public read access and attached to K3
-  (`toolIds`): `github_search` (repositories, code, issues), `github_read`
+  Open WebUI tool `github` with public read access, which a user turns on
+  per chat; no model entry attaches it by default (`toolIds`), because the
+  privacy policy runs tools only when the user turns them on: `github_search` (repositories, code, issues), `github_read`
   (files and directories, the README with the top level), `github_list`
   (issues, pulls, commits, releases) and `github_item` (one issue or pull
   request with its comments and changed files). It only sends GET requests to
@@ -1195,29 +1243,25 @@ repository.
 
 ## Config
 
-`config/litellm-config.yaml` is generated, never edited by hand:
+`config/litellm-config.yaml` is maintained by hand. Every served model has a
+`hosted_vllm/<name>` route to the chat layer (`api_base`
+`http://127.0.0.1:8433/v1`, `api_key: none`) with `model_info.max_input_tokens`
+equal to its lane record's `context_tokens`, and a `<name>-bulk` twin to the
+same chat layer; `*` routes to `glm-5.3`. `litellm_settings` keeps
+`drop_params: true`, `num_retries: 0` (a retry would run a generation twice)
+and `request_timeout: 604800` (a request may wait a week in the queue), and
+`general_settings.cancel_on_disconnect: true` cancels the upstream call when
+the client leaves. `tests/test_litellm_queue_settings.py` checks all of this
+for this door and the chat door. To require a key, add
+`general_settings.master_key: os.environ/LITELLM_MASTER_KEY`, as
+`deployment/hub/litellm-chatui.yaml` has.
 
-```sh
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 \
-  --master-key --out config/litellm-config.yaml
-```
-
-The generator writes one `openai/<name>` deployment per `--pair` (or per
-`--registry models.json` entry, `[{"name": ..., "base_url": ...}]`), with
-`api_base` ending in `/v1`, `drop_params: true`, `num_retries: 1` and
-`request_timeout: 600`. `--master-key` adds bearer auth through
-`SPARK_LITELLM_MASTER_KEY`; the generator omits it by default, so always pass
-it for the door. Upstream calls send `SPARK_API_KEY`, which `model_api`
-ignores; set it to any value. Older setups named these `LITELLM_MASTER_KEY`
-and `SPARKPIPE_UPSTREAM_KEY`.
-
-Keep both secrets in their own mode-600 file outside the repository, not in
+Keep the key in its own mode-600 file outside the repository, not in
 the repository's `.env`, which also holds the GitHub PAT:
 
 ```sh
 mkdir -p ~/.config/sparkpipe
-( umask 077; printf 'SPARK_LITELLM_MASTER_KEY="sk-sparkpipe-%s"\nSPARK_API_KEY="unused"\n' \
+( umask 077; printf 'LITELLM_MASTER_KEY="sk-sparkpipe-%s"\n' \
     "$(openssl rand -hex 16)" > ~/.config/sparkpipe/litellm.env )
 ```
 
@@ -1225,7 +1269,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 
 | model_name | Upstream | Evidence |
 | --- | --- | --- |
-| `glm-5.3` and `*` | the chat layer on the rtx5090, `http://127.0.0.1:8433/v1` (LiteLLM runs on the hub) | smoke receipts above, 2026-10-02 |
+| `glm-5.3` and `*` | the chat layer on the hub, `http://127.0.0.1:8433/v1` (LiteLLM runs there too) | smoke receipts above, 2026-10-02 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
 (`docs/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).
@@ -1244,13 +1288,13 @@ kill $(cat /tmp/litellm-sparkpipe.pid)
 
 Uvicorn access lines and LiteLLM error details land in
 `/tmp/litellm-sparkpipe.stdout`, the usage log of the database-free setup.
-Probe an upstream directly with `curl http://100.123.97.61:8433/health`.
+Probe an upstream directly on the hub with `curl http://127.0.0.1:8433/health`; the chat layer serves loopback only.
 Smoke the door with the standard tester, which sends two temperature-0 text
 completions per listed model and requires identical output:
 
 ```sh
 python3 tools/model_api_smoke.py --endpoint http://127.0.0.1:4000 \
-  --token "$SPARK_LITELLM_MASTER_KEY"
+  --token "$LITELLM_MASTER_KEY"
 ```
 
 ## Postgres (virtual keys and spend logs)
@@ -1263,11 +1307,10 @@ Spark:
 brew install postgresql@16
 /opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 start
 /opt/homebrew/opt/postgresql@16/bin/createdb litellm
-python3 tools/generate_litellm_config.py \
-  --pair glm-5.3-flash=http://100.123.97.61:8433 --master-key \
-  --database-url postgresql://mac@localhost:5432/litellm \
-  --out config/litellm-config.yaml
 ```
+
+and add `database_url: os.environ/DATABASE_URL` to `general_settings` in
+`config/litellm-config.yaml`.
 
 LiteLLM ships a prisma schema; generate the client and push the schema once:
 
@@ -1278,7 +1321,7 @@ PATH=~/litellm-venv/bin:$PATH DATABASE_URL=postgresql://mac@localhost:5432/litel
 ```
 
 Then start the proxy with `DATABASE_URL` exported next to
-`SPARK_LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
+`LITELLM_MASTER_KEY`. On 2026-09-05 this setup, with mock upstreams,
 served the admin page, routed completions by name and wrote one
 `LiteLLM_SpendLogs` row per request.
 
@@ -1286,8 +1329,9 @@ served the admin page, routed completions by name and wrote one
 
 1. Bring the deployment's `model_api` up on a known host and port and record
    them with the deployment.
-2. Regenerate `config/litellm-config.yaml` with one `--pair` per route, the
-   existing ones included.
+2. Add the model's route and its `-bulk` twin to `config/litellm-config.yaml`
+   by hand, as described under Config, and run
+   `tests/test_litellm_queue_settings.py`.
 3. Restart the proxy.
 4. Prove routing: `GET /v1/models` through the door lists the name, and
    `tools/model_api_smoke.py` through the door passes.

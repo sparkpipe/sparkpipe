@@ -29,8 +29,8 @@ The backends:
 | HY4 | `HyModel<G>` in `model-families/hy4/source/hy4_stage.cuh` | not yet |
 | GLM 5.3 Flash | `Glm5NextStage<G>` in `model-families/glm5_next/source/glm5_next_stage_model.cuh` | not yet |
 | GLM 5.3 Full (GLM 5.3 Full, A.X K2) | `GlmModel<G>` in `model-families/glm52/source/glm52_stage.cuh` | not yet |
-| K3 | `K3Cuda<Format, Geometry>` in `inference/llms/kimi_k3/slice.cuh` | not yet |
-| DeepSeek V4.1 Flash | `D41Cuda` in `modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_model.cu` | `D41Device<TP>` in `model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp` (dense, below position 512) |
+| K3 | `K3Cuda<Format, Geometry>` in `model-families/k3/source/slice.cuh` | not yet |
+| DeepSeek V4.1 Flash | `D41Cuda` in `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | `D41Device<TP>` in `model-families/dsv41_flash/device/dsv41_flash_device_stage.cpp` (dense, below position 512) |
 
 A backend defines `State`, `Frame` (the per-step handles: the CUDA stream and
 step, or the Metal queue and step tables), `Layer` (the bound weights of one
@@ -77,6 +77,60 @@ CUDA backend's way of running a step.
 Both backends bind the same pack tensor names (`layers.N.attn_qkv`,
 `layers.N.ffn_gate_up`, ...), and the Metal packs are the CUDA packers run
 with `--tp-degree 1`.
+
+## The CUDA backend's plumbing
+
+Every CUDA backend except K3's derives `CudaStage<Backend>`
+(`inference/runner/stage_model_cuda.cuh`), the CUDA counterpart of the Metal
+runner's `device_stage_model.c`. The base writes the model interface once:
+open, the named-pack configure, the dense manifest check, bind, allocation,
+close, the step entries through `Backend::Schedule`, the sideband refusal, KV
+attach, recurrent copy and reset, the probe buffers, the report, the lane
+clone and the interface table. A backend writes its operations and declares
+the rest:
+
+- State. `State` derives `CudaStageState` (services, rank, rows, slots, the
+  arena and the second-lane arena, the lane states and their counter bases,
+  the KV error word, the attach flag), or `CudaStagePackState` when it reads a
+  named pack.
+- Facts. `kTpDegree`, `kLayers`, `kHidden`, `kVocab`, `kEpsilon`,
+  `kPackAlignment`, `Tag`, `ReportTag`, `WeightdModel` and, when it is not
+  `official`, `WeightdRevision`. Switches default to off: `kLanes`,
+  `kKeepRows`, `kTapPlan`, `kGraphKey`, `kCheck` and `kWaves` put the matching
+  entry into the interface table; `kChunkRows` is the frame minimum and
+  `kLaneRefusal` the status a lane request without lane state gets.
+- Memory. `Plan(state, base, lane)` lists the arena's slices
+  (`CudaStagePlace`, 256-byte aligned, a zero-byte slice gets no pointer).
+  `Shape` derives the sizes the plan reads, and the base's `Size` runs it and
+  sizes the arena and the second lane's arena, so a test that calls `Size` and
+  `Allocate` gets the arena `Open` would. `Arrange` runs before allocation,
+  and `Upload` and `Release` around it.
+- Weights. `GlobalTensors` and `LayerTensors` list each tensor's name, kind,
+  bytes and field (`CudaStageTensors::Add`, `AddScaled` for a scale plane);
+  the base binds every entry through `SparkNamedPackBindSized` and refuses a
+  size mismatch, and `LayerBound` checks one layer after its bind.
+- KV. `Kv` declares the views over the attached pools
+  (`CudaStageKvViews<Geometry, &State::views, pool, layers, first, offset,
+  Shard>`, combined with `CudaStageKv`), so attach checks every pool's layer
+  count and page size and initialises every view.
+- Recurrent state. `RecurrentParts` lists each part's pool, row width and
+  layer count; copy and reset walk the list.
+- Lanes. A lane is a shallow copy of the state. `LaneReady` and `LaneAdmit`
+  refuse what the backend cannot split. For the second lane the base re-plans
+  the copy over the second arena and then restores the `LaneShared` fields
+  from the first state; `LaneScratch` adds what else the backend points
+  elsewhere. `LaneCounters` names the counters each lane folds back into the
+  report.
+- Report. `ReportFields` lists name and value pairs that the base prints as
+  one line.
+
+A backend overrides a base function only where its model differs. GLM 5.3
+Full reads its own stage pack, checks the expert planes in its manifest,
+attaches page-major KV and sizes its second lane as a whole arena. GLM 5.3
+Flash keeps a plain `CudaStageState` and declares its latent and index
+shard policies. DeepSeek V4.1 Flash configures, plans, binds and uploads its
+own pack. K3 keeps its own interface and `step` around its dispatch engine
+(`model-families/k3/source/k3_stage.cuh`).
 
 ## Adding a model or a device
 

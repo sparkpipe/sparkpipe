@@ -1,4 +1,6 @@
 #include "sparkpipe/spark_draft_bridge.h"
+#include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_io.h"
 #include "sparkpipe/spark_error_site.h"
 
 #include <arpa/inet.h>
@@ -12,22 +14,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/time.h>
 #include <unistd.h>
 
 #define SPARK_DRAFT_BRIDGE_HOST_BYTES 256u
 #define SPARK_DRAFT_BRIDGE_PORT_TEXT_BYTES 8u
 #define SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC "DFT3"
 #define SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES 4u
-#define SPARK_DRAFT_BRIDGE_MS_PER_SECOND 1000u
-#define SPARK_DRAFT_BRIDGE_US_PER_MS 1000u
+#define SPARK_DRAFT_BRIDGE_NS_PER_MS UINT64_C(1000000)
 #define SPARK_DRAFT_BRIDGE_DISCONNECTED_FD (-1)
 
-#ifdef MSG_NOSIGNAL
-#define SPARK_DRAFT_BRIDGE_SEND_FLAGS MSG_NOSIGNAL
-#else
-#define SPARK_DRAFT_BRIDGE_SEND_FLAGS 0
-#endif
+#define SPARK_DRAFT_BRIDGE_PHASE_IDLE 0u
+#define SPARK_DRAFT_BRIDGE_PHASE_CONNECT 1u
+#define SPARK_DRAFT_BRIDGE_PHASE_SEND 2u
+#define SPARK_DRAFT_BRIDGE_PHASE_HEADER 3u
+#define SPARK_DRAFT_BRIDGE_PHASE_BODY 4u
+#define SPARK_DRAFT_BRIDGE_PHASE_FAILED 5u
+
 
 struct SparkDraftBridge
 {
@@ -45,6 +47,20 @@ struct SparkDraftBridge
     uint32_t connect_timeout_ms;
     uint32_t io_timeout_ms;
     int socket_fd;
+    struct addrinfo *address_list;
+    struct addrinfo *address;
+    uint64_t deadline_ns;
+    uint64_t request_bytes;
+    uint64_t request_sent;
+    uint64_t response_bytes;
+    uint64_t response_expected;
+    uint64_t sequence_id;
+    uint64_t generation;
+    uint32_t node_capacity;
+    uint32_t node_count;
+    uint32_t server_status;
+    uint32_t stale;
+    uint32_t phase;
 };
 
 static void SparkDraftBridgePutU32Le(
@@ -103,6 +119,17 @@ static float SparkDraftBridgeGetF32Le(
     return value;
 }
 
+static void SparkDraftBridgeFreeAddresses(
+    SparkDraftBridge *bridge)
+{
+    if (bridge->address_list != 0)
+    {
+        freeaddrinfo(bridge->address_list);
+    }
+    bridge->address_list = 0;
+    bridge->address = 0;
+}
+
 static void SparkDraftBridgeDropConnection(
     SparkDraftBridge *bridge)
 {
@@ -111,87 +138,27 @@ static void SparkDraftBridgeDropConnection(
         (void)close(bridge->socket_fd);
         bridge->socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
     }
+    SparkDraftBridgeFreeAddresses(bridge);
 }
 
 static SparkStatus SparkDraftBridgeFailTransport(
     SparkDraftBridge *bridge)
 {
     SparkDraftBridgeDropConnection(bridge);
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
     SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
-static SparkStatus SparkDraftBridgeWaitConnected(
-    int socket_fd,
-    const struct sockaddr *address,
-    socklen_t address_bytes,
+static uint64_t SparkDraftBridgeDeadline(
     uint32_t timeout_ms)
 {
-    struct pollfd poll_descriptor;
-    int flags;
-    int connect_status;
-    int poll_status;
-    int socket_error;
-    socklen_t socket_error_bytes;
-
-    flags = fcntl(socket_fd, F_GETFL, 0);
-    if (flags < 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    if (fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) != 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    connect_status = connect(socket_fd, address, address_bytes);
-    if (connect_status != 0)
-    {
-        if (errno != EINPROGRESS)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        memset(&poll_descriptor, 0, sizeof(poll_descriptor));
-        poll_descriptor.fd = socket_fd;
-        poll_descriptor.events = POLLOUT;
-        do
-        {
-            poll_status = poll(
-                &poll_descriptor,
-                1u,
-                (int)timeout_ms);
-        } while (poll_status < 0 && errno == EINTR);
-        if (poll_status <= 0 ||
-            (poll_descriptor.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        socket_error = 0;
-        socket_error_bytes = (socklen_t)sizeof(socket_error);
-        if (getsockopt(
-                socket_fd,
-                SOL_SOCKET,
-                SO_ERROR,
-                &socket_error,
-                &socket_error_bytes) != 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        if (socket_error != 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-    }
-    if (fcntl(socket_fd, F_SETFL, flags) != 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    return SPARK_STATUS_OK;
+    return SparkMonotonicNs() +
+        (uint64_t)timeout_ms * SPARK_DRAFT_BRIDGE_NS_PER_MS;
 }
 
 static SparkStatus SparkDraftBridgeConfigureSocket(
-    int socket_fd,
-    uint32_t io_timeout_ms)
+    int socket_fd)
 {
-    struct timeval timeout;
     int enabled;
 
     enabled = 1;
@@ -201,28 +168,6 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
             TCP_NODELAY,
             &enabled,
             (socklen_t)sizeof(enabled)) != 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    timeout.tv_sec = (time_t)(io_timeout_ms / SPARK_DRAFT_BRIDGE_MS_PER_SECOND);
-    timeout.tv_usec =
-        (suseconds_t)((io_timeout_ms % SPARK_DRAFT_BRIDGE_MS_PER_SECOND) *
-            SPARK_DRAFT_BRIDGE_US_PER_MS);
-    if (setsockopt(
-            socket_fd,
-            SOL_SOCKET,
-            SO_RCVTIMEO,
-            &timeout,
-            (socklen_t)sizeof(timeout)) != 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    if (setsockopt(
-            socket_fd,
-            SOL_SOCKET,
-            SO_SNDTIMEO,
-            &timeout,
-            (socklen_t)sizeof(timeout)) != 0)
     {
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
@@ -241,15 +186,65 @@ static SparkStatus SparkDraftBridgeConfigureSocket(
     return SPARK_STATUS_OK;
 }
 
+static void SparkDraftBridgeConnected(
+    SparkDraftBridge *bridge)
+{
+    SparkDraftBridgeFreeAddresses(bridge);
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_SEND;
+    bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
+}
+
+static SparkStatus SparkDraftBridgeConnectNext(
+    SparkDraftBridge *bridge)
+{
+    const struct addrinfo *address;
+    int socket_fd;
+    int flags;
+
+    while (bridge->address != 0)
+    {
+        address = bridge->address;
+        bridge->address = address->ai_next;
+        socket_fd = socket(
+            address->ai_family,
+            address->ai_socktype,
+            address->ai_protocol);
+        if (socket_fd < 0)
+        {
+            continue;
+        }
+        flags = fcntl(socket_fd, F_GETFL, 0);
+        if (flags < 0 ||
+            fcntl(socket_fd, F_SETFL, flags | O_NONBLOCK) != 0 ||
+            SparkDraftBridgeConfigureSocket(socket_fd) != SPARK_STATUS_OK)
+        {
+            (void)close(socket_fd);
+            continue;
+        }
+        if (connect(socket_fd, address->ai_addr, address->ai_addrlen) == 0)
+        {
+            bridge->socket_fd = socket_fd;
+            SparkDraftBridgeConnected(bridge);
+            return SPARK_STATUS_OK;
+        }
+        if (errno == EINPROGRESS || errno == EINTR)
+        {
+            bridge->socket_fd = socket_fd;
+            bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_CONNECT;
+            bridge->deadline_ns =
+                SparkDraftBridgeDeadline(bridge->connect_timeout_ms);
+            return SPARK_STATUS_OK;
+        }
+        (void)close(socket_fd);
+    }
+    return SparkDraftBridgeFailTransport(bridge);
+}
+
 static SparkStatus SparkDraftBridgeConnect(
     SparkDraftBridge *bridge)
 {
     struct addrinfo hints;
-    struct addrinfo *address_list;
-    struct addrinfo *address;
     char port_text[SPARK_DRAFT_BRIDGE_PORT_TEXT_BYTES];
-    int socket_fd;
-    int address_status;
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -259,106 +254,197 @@ static SparkStatus SparkDraftBridgeConnect(
         sizeof(port_text),
         "%u",
         (unsigned)bridge->port);
-    address_list = 0;
-    address_status = getaddrinfo(
-        bridge->host,
-        port_text,
-        &hints,
-        &address_list);
-    if (address_status != 0)
+    bridge->address_list = 0;
+    if (getaddrinfo(
+            bridge->host,
+            port_text,
+            &hints,
+            &bridge->address_list) != 0)
     {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+        bridge->address_list = 0;
+        return SparkDraftBridgeFailTransport(bridge);
     }
-    socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
-    for (address = address_list; address != 0; address = address->ai_next)
+    bridge->address = bridge->address_list;
+    return SparkDraftBridgeConnectNext(bridge);
+}
+
+static SparkStatus SparkDraftBridgeAwaitConnect(
+    SparkDraftBridge *bridge)
+{
+    struct pollfd poll_descriptor;
+    int poll_status;
+    int socket_error;
+    socklen_t socket_error_bytes;
+
+    memset(&poll_descriptor, 0, sizeof(poll_descriptor));
+    poll_descriptor.fd = bridge->socket_fd;
+    poll_descriptor.events = POLLOUT;
+    do
     {
-        socket_fd = socket(
-            address->ai_family,
-            address->ai_socktype,
-            address->ai_protocol);
-        if (socket_fd < 0)
+        poll_status = poll(&poll_descriptor, 1u, 0);
+    } while (poll_status < 0 && errno == EINTR);
+    if (poll_status == 0 && SparkMonotonicNs() < bridge->deadline_ns)
+    {
+        return SPARK_STATUS_PENDING;
+    }
+    socket_error = 0;
+    socket_error_bytes = (socklen_t)sizeof(socket_error);
+    if (poll_status > 0 &&
+        getsockopt(
+            bridge->socket_fd,
+            SOL_SOCKET,
+            SO_ERROR,
+            &socket_error,
+            &socket_error_bytes) == 0 &&
+        socket_error == 0)
+    {
+        SparkDraftBridgeConnected(bridge);
+        return SPARK_STATUS_OK;
+    }
+    (void)close(bridge->socket_fd);
+    bridge->socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
+    return SparkDraftBridgeConnectNext(bridge);
+}
+
+static SparkStatus SparkDraftBridgeBlocked(
+    SparkDraftBridge *bridge)
+{
+    if (SparkMonotonicNs() < bridge->deadline_ns)
+    {
+        return SPARK_STATUS_PENDING;
+    }
+    return SparkDraftBridgeFailTransport(bridge);
+}
+
+static SparkStatus SparkDraftBridgeSend(
+    SparkDraftBridge *bridge)
+{
+    ssize_t put;
+
+    while (bridge->request_sent < bridge->request_bytes)
+    {
+        put = SparkIoSend(
+            bridge->socket_fd,
+            bridge->request_buffer + bridge->request_sent,
+            (size_t)(bridge->request_bytes - bridge->request_sent));
+        if (put < 0 && errno == EINTR)
         {
             continue;
         }
-        if (SparkDraftBridgeWaitConnected(
-                socket_fd,
-                address->ai_addr,
-                address->ai_addrlen,
-                bridge->connect_timeout_ms) == SPARK_STATUS_OK &&
-            SparkDraftBridgeConfigureSocket(
-                socket_fd,
-                bridge->io_timeout_ms) == SPARK_STATUS_OK)
+        if (put < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
         {
-            break;
+            return SparkDraftBridgeBlocked(bridge);
         }
-        (void)close(socket_fd);
-        socket_fd = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
+        if (put <= 0)
+        {
+            return SparkDraftBridgeFailTransport(bridge);
+        }
+        bridge->request_sent += (uint64_t)put;
     }
-    freeaddrinfo(address_list);
-    if (socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
-    {
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    }
-    bridge->socket_fd = socket_fd;
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
+    bridge->response_bytes = 0u;
+    bridge->response_expected = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkDraftBridgeWriteAll(
-    int socket_fd,
-    const uint8_t *data,
-    uint64_t data_bytes)
+static SparkStatus SparkDraftBridgeReceive(
+    SparkDraftBridge *bridge)
 {
-    uint64_t offset;
-    ssize_t written;
+    ssize_t got;
 
-    offset = 0u;
-    while (offset < data_bytes)
+    while (bridge->response_bytes < bridge->response_expected)
     {
-        written = send(
-            socket_fd,
-            data + offset,
-            (size_t)(data_bytes - offset),
-            SPARK_DRAFT_BRIDGE_SEND_FLAGS);
-        if (written < 0 && errno == EINTR)
-        {
-            continue;
-        }
-        if (written <= 0)
-        {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-        }
-        offset += (uint64_t)written;
-    }
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkDraftBridgeReadAll(
-    int socket_fd,
-    uint8_t *data,
-    uint64_t data_bytes)
-{
-    uint64_t offset;
-    ssize_t received;
-
-    offset = 0u;
-    while (offset < data_bytes)
-    {
-        received = recv(
-            socket_fd,
-            data + offset,
-            (size_t)(data_bytes - offset),
+        got = recv(
+            bridge->socket_fd,
+            bridge->response_buffer + bridge->response_bytes,
+            (size_t)(bridge->response_expected - bridge->response_bytes),
             0);
-        if (received < 0 && errno == EINTR)
+        if (got < 0 && errno == EINTR)
         {
             continue;
         }
-        if (received <= 0)
+        if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
         {
-            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+            return SparkDraftBridgeBlocked(bridge);
         }
-        offset += (uint64_t)received;
+        if (got <= 0)
+        {
+            return SparkDraftBridgeFailTransport(bridge);
+        }
+        bridge->response_bytes += (uint64_t)got;
     }
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkDraftBridgeReadHeader(
+    SparkDraftBridge *bridge)
+{
+    const uint8_t *reader;
+    uint64_t response_sequence_id;
+    uint64_t response_generation;
+
+    if (memcmp(
+            bridge->response_buffer,
+            SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC,
+            SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES) != 0)
+    {
+        return SparkDraftBridgeFailTransport(bridge);
+    }
+    reader = bridge->response_buffer + SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
+    bridge->server_status = SparkDraftBridgeGetU32Le(reader);
+    reader += sizeof(uint32_t);
+    bridge->node_count = SparkDraftBridgeGetU32Le(reader);
+    reader += sizeof(uint32_t);
+    response_sequence_id = SparkDraftBridgeGetU64Le(reader);
+    reader += sizeof(uint64_t);
+    response_generation = SparkDraftBridgeGetU64Le(reader);
+    if (bridge->node_count > bridge->node_capacity)
+    {
+        SparkDraftBridgeDropConnection(bridge);
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+    }
+    bridge->stale =
+        response_sequence_id != bridge->sequence_id ||
+        response_generation != bridge->generation ? 1u : 0u;
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_BODY;
+    bridge->response_expected =
+        (uint64_t)SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES +
+        (uint64_t)bridge->node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES +
+        (uint64_t)SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkDraftBridgeAdvance(
+    SparkDraftBridge *bridge)
+{
+    SparkStatus status;
+
+    status = SPARK_STATUS_OK;
+    while (status == SPARK_STATUS_OK)
+    {
+        if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_CONNECT)
+        {
+            status = SparkDraftBridgeAwaitConnect(bridge);
+        }
+        else if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+        {
+            status = SparkDraftBridgeSend(bridge);
+        }
+        else if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_HEADER)
+        {
+            status = SparkDraftBridgeReceive(bridge);
+            if (status == SPARK_STATUS_OK)
+            {
+                status = SparkDraftBridgeReadHeader(bridge);
+            }
+        }
+        else
+        {
+            return SparkDraftBridgeReceive(bridge);
+        }
+    }
+    return status;
 }
 
 SparkStatus SparkDraftBridgeValidateConfig(
@@ -480,7 +566,7 @@ void SparkDraftBridgeDestroy(
     free(bridge);
 }
 
-SparkStatus SparkDraftBridgeProposeTree(
+SparkStatus SparkDraftBridgeRequestTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
     uint64_t sequence_id,
@@ -495,30 +581,13 @@ SparkStatus SparkDraftBridgeProposeTree(
     uint32_t time_budget_ms,
     uint32_t max_depth,
     const SparkRowSampling *sampling,
-    SparkDraftBridgeNode *nodes_out,
-    uint32_t node_capacity,
-    uint32_t *node_count_out,
-    SparkDraftBridgeProposalInfo *info_out)
+    uint32_t node_capacity)
 {
     SparkStatus status;
     uint8_t *cursor;
-    const uint8_t *reader;
-    const uint8_t *record;
-    const uint8_t *footer;
-    uint64_t request_bytes;
-    uint64_t response_node_bytes;
-    uint64_t response_sequence_id;
-    uint64_t response_generation;
-    uint32_t server_status;
-    uint32_t node_count;
-    uint32_t node_index;
-    uint32_t stage_index;
+    uint32_t token_index;
 
-    if (bridge == 0 ||
-        committed_token_ids == 0 ||
-        nodes_out == 0 ||
-        node_count_out == 0 ||
-        info_out == 0)
+    if (bridge == 0 || committed_token_ids == 0)
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
@@ -559,17 +628,9 @@ SparkStatus SparkDraftBridgeProposeTree(
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-
-    *node_count_out = 0u;
-    memset(info_out, 0, sizeof(*info_out));
-
-    if (bridge->socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
+    if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_IDLE)
     {
-        status = SparkDraftBridgeConnect(bridge);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
+        SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
     cursor = bridge->request_buffer;
@@ -625,9 +686,9 @@ SparkStatus SparkDraftBridgeProposeTree(
         SparkDraftBridgePutU32Le(cursor, 0u);
         cursor += sizeof(uint32_t);
     }
-    for (node_index = 0u; node_index < committed_token_count; ++node_index)
+    for (token_index = 0u; token_index < committed_token_count; ++token_index)
     {
-        SparkDraftBridgePutU32Le(cursor, committed_token_ids[node_index]);
+        SparkDraftBridgePutU32Le(cursor, committed_token_ids[token_index]);
         cursor += sizeof(uint32_t);
     }
     if (tap_row_count != 0u)
@@ -638,63 +699,82 @@ SparkStatus SparkDraftBridgeProposeTree(
             (size_t)tap_row_count * bridge->tap_row_bytes);
         cursor += (size_t)tap_row_count * bridge->tap_row_bytes;
     }
-    request_bytes = (uint64_t)(cursor - bridge->request_buffer);
+    bridge->request_bytes = (uint64_t)(cursor - bridge->request_buffer);
+    bridge->request_sent = 0u;
+    bridge->response_bytes = 0u;
+    bridge->response_expected = 0u;
+    bridge->sequence_id = sequence_id;
+    bridge->generation = generation;
+    bridge->node_capacity = node_capacity;
+    bridge->node_count = 0u;
+    bridge->server_status = 0u;
+    bridge->stale = 0u;
+    if (bridge->socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
+    {
+        status = SparkDraftBridgeConnect(bridge);
+    }
+    else
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_SEND;
+        bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
+        status = SPARK_STATUS_OK;
+    }
+    if (status == SPARK_STATUS_OK &&
+        bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+    {
+        status = SparkDraftBridgeSend(bridge);
+    }
+    if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_FAILED;
+    }
+    return SPARK_STATUS_OK;
+}
 
-    status = SparkDraftBridgeWriteAll(
-        bridge->socket_fd,
-        bridge->request_buffer,
-        request_bytes);
+SparkStatus SparkDraftBridgeReply(
+    SparkDraftBridge *bridge,
+    SparkDraftBridgeNode *nodes_out,
+    uint32_t *node_count_out,
+    SparkDraftBridgeProposalInfo *info_out)
+{
+    SparkStatus status;
+    const uint8_t *reader;
+    const uint8_t *record;
+    uint32_t node_index;
+    uint32_t stage_index;
+
+    if (bridge == 0 ||
+        nodes_out == 0 ||
+        node_count_out == 0 ||
+        info_out == 0)
+    {
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    }
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    {
+        SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+    }
+    *node_count_out = 0u;
+    memset(info_out, 0, sizeof(*info_out));
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_FAILED)
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    }
+    status = SparkDraftBridgeAdvance(bridge);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkDraftBridgeFailTransport(bridge);
+        return status;
     }
-    status = SparkDraftBridgeReadAll(
-        bridge->socket_fd,
-        bridge->response_buffer,
-        SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES);
-    if (status != SPARK_STATUS_OK)
-    {
-        return SparkDraftBridgeFailTransport(bridge);
-    }
-    if (memcmp(
-            bridge->response_buffer,
-            SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC,
-            SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES) != 0)
-    {
-        return SparkDraftBridgeFailTransport(bridge);
-    }
-    reader = bridge->response_buffer + SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
-    server_status = SparkDraftBridgeGetU32Le(reader);
-    reader += sizeof(uint32_t);
-    node_count = SparkDraftBridgeGetU32Le(reader);
-    reader += sizeof(uint32_t);
-    response_sequence_id = SparkDraftBridgeGetU64Le(reader);
-    reader += sizeof(uint64_t);
-    response_generation = SparkDraftBridgeGetU64Le(reader);
-    if (node_count > node_capacity)
-    {
-        SparkDraftBridgeDropConnection(bridge);
-        SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-    }
-    response_node_bytes =
-        (uint64_t)node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES;
-    status = SparkDraftBridgeReadAll(
-        bridge->socket_fd,
-        bridge->response_buffer + SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES,
-        response_node_bytes + SPARK_DRAFT_BRIDGE_RESPONSE_FOOTER_BYTES);
-    if (status != SPARK_STATUS_OK)
-    {
-        return SparkDraftBridgeFailTransport(bridge);
-    }
-    if (response_sequence_id != sequence_id ||
-        response_generation != generation)
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+    if (bridge->stale != 0u)
     {
         SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
-    info_out->server_status = server_status;
-    footer = bridge->response_buffer +
-        SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES + response_node_bytes;
-    reader = footer;
+    info_out->server_status = bridge->server_status;
+    reader = bridge->response_buffer +
+        SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES +
+        (uint64_t)bridge->node_count * SPARK_DRAFT_BRIDGE_NODE_RECORD_BYTES;
     for (stage_index = 0u;
          stage_index < SPARK_DRAFT_BRIDGE_DRAFTER_STAGE_COUNT;
          ++stage_index)
@@ -707,11 +787,11 @@ SparkStatus SparkDraftBridgeProposeTree(
     info_out->expansions = SparkDraftBridgeGetU32Le(reader);
     reader += sizeof(uint32_t);
     info_out->elapsed_us = SparkDraftBridgeGetU32Le(reader);
-    if (server_status != SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK)
+    if (bridge->server_status != SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK)
     {
         SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
-    for (node_index = 0u; node_index < node_count; ++node_index)
+    for (node_index = 0u; node_index < bridge->node_count; ++node_index)
     {
         record = bridge->response_buffer +
             SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES +
@@ -726,6 +806,69 @@ SparkStatus SparkDraftBridgeProposeTree(
         record += sizeof(uint32_t);
         nodes_out[node_index].score = SparkDraftBridgeGetF32Le(record);
     }
-    *node_count_out = node_count;
+    *node_count_out = bridge->node_count;
     return SPARK_STATUS_OK;
+}
+
+void SparkDraftBridgeCancel(
+    SparkDraftBridge *bridge)
+{
+    if (bridge == 0 || bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    {
+        return;
+    }
+    if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_SEND ||
+        bridge->request_sent != 0u)
+    {
+        SparkDraftBridgeDropConnection(bridge);
+    }
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+}
+
+uint32_t SparkDraftBridgePoll(
+    const SparkDraftBridge *bridge,
+    int *fd_out,
+    uint32_t *events_out,
+    uint64_t *deadline_ns_out)
+{
+    if (fd_out != 0)
+    {
+        *fd_out = SPARK_DRAFT_BRIDGE_DISCONNECTED_FD;
+    }
+    if (events_out != 0)
+    {
+        *events_out = 0u;
+    }
+    if (deadline_ns_out != 0)
+    {
+        *deadline_ns_out = 0u;
+    }
+    if (bridge == 0 || bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    {
+        return 0u;
+    }
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_FAILED)
+    {
+        if (deadline_ns_out != 0)
+        {
+            *deadline_ns_out = 1u;
+        }
+        return 1u;
+    }
+    if (fd_out != 0)
+    {
+        *fd_out = bridge->socket_fd;
+    }
+    if (events_out != 0)
+    {
+        *events_out =
+            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_CONNECT ||
+            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND ?
+            SPARK_DRAFT_BRIDGE_POLL_WRITE : SPARK_DRAFT_BRIDGE_POLL_READ;
+    }
+    if (deadline_ns_out != 0)
+    {
+        *deadline_ns_out = bridge->deadline_ns;
+    }
+    return 1u;
 }

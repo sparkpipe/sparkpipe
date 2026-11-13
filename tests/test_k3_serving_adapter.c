@@ -1,7 +1,7 @@
 #include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/generated_config.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"
@@ -474,7 +474,7 @@ static int32_t TestK3TapStream(void)
 	state.tap_stream = strdup(endpoint);
 	memset(&state.tap_hello, 0x5c, sizeof(state.tap_hello));
 	failures += TestK3Check(StageServingTapStreamConnect(&state, STAGE_SERVING_TAP_RECONNECT_MS) == 0u && state.tap_stream_down != 0u && state.tap_socket < 0 &&
-		state.tap_retry_ns > StageServingNowNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
+		state.tap_retry_ns > SparkMonotonicNs(), "an unreachable tap stream pauses the taps with a retry time instead of failing");
 	listener = TestK3Listen(&port);
 	if ( listener >= 0 )
 	{

@@ -64,8 +64,8 @@ def evaluate(expression, values):
 
 def k_extents():
     found = []
-    for layer in sorted(glob.glob(os.path.join(ROOT, "inference/llms/*/layer.cuh"))):
-        model = os.path.basename(os.path.dirname(layer))
+    for layer in sorted(glob.glob(os.path.join(ROOT, "model-families/*/source/layer.cuh"))):
+        model = os.path.basename(os.path.dirname(os.path.dirname(layer)))
         values = config_defines(os.path.join(os.path.dirname(layer), "config.h"))
         # widths derived in layer.cuh count too: QWEN38_27B_Q_DIM and
         # QWEN38_27B_GDN_V_DIM are K extents and live there, not in config.h
@@ -107,7 +107,7 @@ def main():
         # tile and would have computed zero tiles.
         still_open = []
         for model, expression in unresolved:
-            layer = os.path.join(ROOT, "inference", "llms", model, "layer.cuh")
+            layer = os.path.join(ROOT, "model-families", model, "source", "layer.cuh")
             asserted = (os.path.exists(layer) and
                         open(layer).read().count("static_assert") >= 4)
             if not asserted:

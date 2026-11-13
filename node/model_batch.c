@@ -470,27 +470,13 @@ static int32_t SparkModelBatchWriteStageProfile(
 
 static int32_t SparkModelBatchWriteJsonString(const char *text)
 {
-	const uint8_t *cursor;
-	uint8_t value;
-	if ( fputc('"',stdout) == EOF )
+	char *escaped = SparkJsonEscapeString(text);
+	int32_t result;
+	if ( escaped == 0 )
 		return(-1);
-	for (cursor=(const uint8_t *)text; *cursor!=0u; cursor++)
-	{
-		value = *cursor;
-		if ( value == '"' || value == '\\' )
-		{
-			if ( fputc('\\',stdout) == EOF || fputc(value,stdout) == EOF )
-				return(-2);
-		}
-		else if ( value < 0x20u )
-		{
-			if ( fprintf(stdout,"\\u%04x",(uint32_t)value) < 0 )
-				return(-3);
-		}
-		else if ( fputc(value,stdout) == EOF )
-			return(-4);
-	}
-	return(fputc('"',stdout) == EOF ? -5 : 0);
+	result = fputc('"',stdout) == EOF || fputs(escaped,stdout) == EOF || fputc('"',stdout) == EOF ? -2 : 0;
+	free(escaped);
+	return(result);
 }
 
 static int32_t SparkModelBatchWriteQuantArm(
@@ -542,7 +528,7 @@ static int32_t SparkModelBatchPoll(
 	uint32_t descriptor_count,
 	uint64_t deadline_ns)
 {
-	struct pollfd poll_descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	struct pollfd poll_descriptors[SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS];
 	uint32_t index;
 	int32_t status,timeout_ms;
 	uint64_t now_ns,remaining_ms;
@@ -577,7 +563,7 @@ static SparkStatus SparkModelBatchRun(
 	uint32_t *submitted_count,
 	uint32_t admission_closed)
 {
-	SparkModelResidentClientPollDescriptor descriptors[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT];
+	SparkModelResidentClientPollDescriptor descriptors[SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS];
 	SparkModelBatchEngineView view;
 	uint32_t descriptor_count;
 	uint32_t submitted;
@@ -611,7 +597,7 @@ static SparkStatus SparkModelBatchRun(
 			break;
 		if ( file->sequential_submissions != 0u && submitted < file->request_count && output->terminal_count == submitted )
 			continue;
-		status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT,&descriptor_count);
+		status = SparkModelBatchEngineGetPollDescriptors(engine,descriptors,SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS,&descriptor_count);
 		if ( status == SPARK_STATUS_OK && SparkModelBatchPoll(descriptors,descriptor_count,SparkModelBatchEngineNextProgressNs(engine)) < 0 )
 			status = SPARK_STATUS_IO_ERROR;
 	}

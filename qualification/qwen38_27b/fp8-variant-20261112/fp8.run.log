@@ -1,0 +1,25 @@
+== corpus start 2026-11-12T03:19:18Z
+code:runtime/pack/model_description.c done, 12800 positions in 1483 s
+runs/fp8.corpus.jsonl: 12800 new positions, 12800 in all, 1483 s
+== corpus end 2026-11-12T03:44:01Z rc=0
+== ds4 start 2026-11-12T03:44:01Z
+ds4 rc=0
+{"format": "sparkpipe-ds4-eval92-phase-v1", "phase": "batch", "model": "qwen3.8-27b", "endpoint": "http://127.0.0.1:8490", "max_tokens": 16000, "temperature": 0.0, "top_p": null, "top_k": null, "seed"
+== ds4 end 2026-11-12T04:03:25Z rc=0
+== reference start 2026-11-12T04:03:25Z
+capital 7
+arith 32
+code 32
+== reference end 2026-11-12T04:03:27Z rc=0
+== speed start 2026-11-12T04:03:27Z
+chain 0: prompt_tokens=957 completion_tokens=256 seconds=4.621
+chain 1: prompt_tokens=914 completion_tokens=256 seconds=4.844
+chain 2: prompt_tokens=975 completion_tokens=256 seconds=4.866
+chain 3: prompt_tokens=916 completion_tokens=256 seconds=4.890
+single 0: prompt_tokens=957 completion_tokens=96 seconds=2.273
+single 1: prompt_tokens=914 completion_tokens=96 seconds=2.388
+prefill 8192 tokens x 1: wall 3.17 s, 2580 tok/s in all, per request [3.17] s, cached [0]
+prefill 32768 tokens x 1: wall 12.54 s, 2612 tok/s in all, per request [12.54] s, cached [0]
+prefill 8192 tokens x 4: wall 9.11 s, 3597 tok/s in all, per request [0.06, 9.11, 3.32, 9.1] s, cached [8191, 0, 0, 0]
+== speed end 2026-11-12T04:04:16Z rc=0
+GATE-ARM-DONE fp8 2026-11-12T04:04:16Z

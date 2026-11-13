@@ -1,0 +1,3145 @@
+{
+ "block_tokens": 64,
+ "builder_commit": "e4cf62f330ae9a4fce013254613a71c44c6fa6a1",
+ "corpus_sha256": "fb1248163729b3c58fdc192f9c52eefb53d05b24948e9c62313790e0dbc5d825",
+ "document_tokens": 1280,
+ "documents": [
+  {
+   "id": "arxiv:2607.29138",
+   "length": 1280,
+   "offset": 0,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29138",
+    "primary_category": "hep-ex",
+    "text_sha256": "6561c949b88bb7eb48c06521a55de18dc0ff7343a882b00e97de087dcb040b2b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3e90b9c330fea1c893e4e2316634084bcc68ade7b21d885dfcd1c7d21af001d9"
+  },
+  {
+   "id": "arxiv:2607.08100",
+   "length": 1280,
+   "offset": 1280,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08100",
+    "primary_category": "eess.SY",
+    "text_sha256": "fa3998141379828022516ac8dcc43c2cc5fc51ce07b5d3005778ddf02646e965"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a7d55ab0ce1317993db9fa711d8b7607bbcb77480ce61508b96fb17951ee585d"
+  },
+  {
+   "id": "arxiv:2607.21543",
+   "length": 1280,
+   "offset": 2560,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21543",
+    "primary_category": "physics.ins-det",
+    "text_sha256": "959308e48ff1416e9852d893e7a24d644bc2cc97877ccd60531293034850fdc2"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "44b96307bd7553d204c6968c905fa0372c11bc87153786f35ca839e203112148"
+  },
+  {
+   "id": "arxiv:2607.12720",
+   "length": 1280,
+   "offset": 3840,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.12720",
+    "primary_category": "cond-mat.mes-hall",
+    "text_sha256": "4a4b935a00abc475f1ab398ae6e74411e6146c4887676831a987bd3a17ff6bf9"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "efc21018d49035b34c82a11a57429f1730afc948e04a9eaf2f75cbd35209dd57"
+  },
+  {
+   "id": "arxiv:2607.04306",
+   "length": 1280,
+   "offset": 5120,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.04306",
+    "primary_category": "cs.LG",
+    "text_sha256": "76455fd3a32a05c51ea60cf9fbf965666d025fa415c5fe4cf82b14c2b9489b23"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "65a404c3ed114475c044b33df43e4754059f14a8a223fe08c80b925c284713c4"
+  },
+  {
+   "id": "arxiv:2607.12687",
+   "length": 1280,
+   "offset": 6400,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.12687",
+    "primary_category": "cs.CL",
+    "text_sha256": "d01d7ef8399cb93c5c098c3ef3aca1d195e0a77ed6171e091c83820daaa1d823"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "99dee4af376b379e1a3fb55454736508cf44085277530e145f360d41465c6e9e"
+  },
+  {
+   "id": "arxiv:2607.08826",
+   "length": 1280,
+   "offset": 7680,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08826",
+    "primary_category": "cond-mat.str-el",
+    "text_sha256": "5ec3122d457c83336a9cdadefaf903103a37b363100735a68d228d310a1cae36"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "19c1b581db1652dc1a7d66d7dad5d2b42224b4d98d1760de99b36d4ed0a756d6"
+  },
+  {
+   "id": "arxiv:2607.13997",
+   "length": 1280,
+   "offset": 8960,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13997",
+    "primary_category": "cond-mat.soft",
+    "text_sha256": "4c9960a77cdcd446d3427c2a6e44bcee223bf137d378d7353e877f9fbebd07f9"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "30552fef6dd09bcb0023267cf4f62c43fac136ef60324f38283c6a25b7d93e47"
+  },
+  {
+   "id": "arxiv:2607.27248",
+   "length": 1280,
+   "offset": 10240,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.27248",
+    "primary_category": "cs.AI",
+    "text_sha256": "9154cffb1721fde92a314f11b57e863d9723cb1a80fac6809140e621d2b2dc8b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "7afabef7afd8f02a75a83a9f219c90427b704661362f48d745cbee16fea33168"
+  },
+  {
+   "id": "arxiv:2607.28376",
+   "length": 1280,
+   "offset": 11520,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28376",
+    "primary_category": "math.FA",
+    "text_sha256": "4fbf8fb8bda7366970c9ad9df03237965ea429da8fd4756e3fa7545370b82f62"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "26321354db9a5008b435c3e3d7dcebfa630c69cd55d5bb09e5dd6858d9e4a340"
+  },
+  {
+   "id": "arxiv:2607.15126",
+   "length": 1280,
+   "offset": 12800,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15126",
+    "primary_category": "hep-ph",
+    "text_sha256": "8cbf7bbd8354955d3dc908f43ba2ffaa7f47a16b30a58fa2d917d22dbe5ea20d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "e75664f5f2518ccde9aaa945c8b6b9de9aa3a33c87d16b2f47e1b0436060ce30"
+  },
+  {
+   "id": "arxiv:2607.02900",
+   "length": 1280,
+   "offset": 14080,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02900",
+    "primary_category": "cs.SI",
+    "text_sha256": "4cbe93e972b3c0028f4817714e19f6dc981f46a65a20f1e422906fd14ded2cd9"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "2d16099a3e57f7881ba48b983ae914ac69fdacb8d7e6b18c69b0b2274033a333"
+  },
+  {
+   "id": "arxiv:2607.01184",
+   "length": 1280,
+   "offset": 15360,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01184",
+    "primary_category": "math.NT",
+    "text_sha256": "8ac40ce80b6d28372e97c62dfd0669094ca63069f6ffcebebb9fc71d66b48c3e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "41ad79f1febad9f14498edec4d3562d8421993f01cc3b2aad5814192deb4d2d0"
+  },
+  {
+   "id": "arxiv:2607.28591",
+   "length": 1280,
+   "offset": 16640,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28591",
+    "primary_category": "cs.SE",
+    "text_sha256": "84e0ba38f432f67a114b421e91fc80299af28dc8591323558885314f1ac709c5"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "d99d824521548ee926dc6dfe59488b34e27839bcc3af0771339f418c5ed78193"
+  },
+  {
+   "id": "arxiv:2607.14966",
+   "length": 1280,
+   "offset": 17920,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14966",
+    "primary_category": "cs.CV",
+    "text_sha256": "a5a1d3307fca474acd8b62addc33d12932ff3034344f10ca91653c38b305a332"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "68f8902f3c370f01103806678f14dd4b3dbcb4613295ff42757aee110060c3b4"
+  },
+  {
+   "id": "arxiv:2607.11607",
+   "length": 1280,
+   "offset": 19200,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11607",
+    "primary_category": "cs.AI",
+    "text_sha256": "2589cf51e0d245a7ff49c8b5685ea34dff47ccb65f54dd8b6a6d910794844a0d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a4505a4bb7a03dc35af68e593c4baea1d0342319c1e22cb13656b663c4a16380"
+  },
+  {
+   "id": "arxiv:2607.18076",
+   "length": 1280,
+   "offset": 20480,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.18076",
+    "primary_category": "cs.CL",
+    "text_sha256": "3299c96619293db347d38f77943d2d644a458d4f1069d2ffb7f5fa62d933bdb3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "d183060a5eb81c7cfbf0e93958ffc896c83b4e84b76e0f97f458e174b4229694"
+  },
+  {
+   "id": "arxiv:2607.17142",
+   "length": 1280,
+   "offset": 21760,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17142",
+    "primary_category": "cs.IR",
+    "text_sha256": "90d257bdba1b53cada6388b0e0f17b40469cfbbf49b428c95304fbf2b0adb5b8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "da482a02a026f2111084b2bb6b22d0b1047aa6f9215ef594adbfb387f9218d15"
+  },
+  {
+   "id": "arxiv:2607.08709",
+   "length": 1280,
+   "offset": 23040,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08709",
+    "primary_category": "quant-ph",
+    "text_sha256": "29c6cdf15319d4f97460a28eebc27cf5c3ae46ef7c05f5026ebe41e673847448"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "18e5c5d539805f9ea368d47e42f0e4815ea6bbfb68ca0eac6af453a2c5e82932"
+  },
+  {
+   "id": "arxiv:2607.14260",
+   "length": 1280,
+   "offset": 24320,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14260",
+    "primary_category": "quant-ph",
+    "text_sha256": "8827675c97d307b4db0af30224f76a65fb077492b090481e361d73eb9be98dfc"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b4b90c6f03ecda22c18724df93270ddb2b3be7049c4af7998f3f3251e938ce45"
+  },
+  {
+   "id": "arxiv:2607.07533",
+   "length": 1280,
+   "offset": 25600,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.07533",
+    "primary_category": "cs.RO",
+    "text_sha256": "7d227c14fc59d2da9a5aecf522924941a8538aa5aa98942f1cca81b5de8d11cb"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "03da467ca199d4f5dc94dba19da9e07a3d7eff90acb8d8862115fca688814da9"
+  },
+  {
+   "id": "arxiv:2607.11958",
+   "length": 1280,
+   "offset": 26880,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11958",
+    "primary_category": "cs.LG",
+    "text_sha256": "bc67cb7d96edb5e4be76082f4010d35f8e87fec3d9b228a1828cb2ffd1a53507"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "d7c4acea7c7a42374b2ccedb840b99e39fb3108970c06f50c5b447a38976b210"
+  },
+  {
+   "id": "arxiv:2607.22996",
+   "length": 1280,
+   "offset": 28160,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.22996",
+    "primary_category": "cs.CL",
+    "text_sha256": "06266b1ba098dd0ebcd80b391fcea634f18124aef69cf4c5dfd847304ea62b21"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "77567f97c97c92d80043f0edeb86540c3e155c741d81d1e44b31e416fd3aeff8"
+  },
+  {
+   "id": "arxiv:2607.05361",
+   "length": 1280,
+   "offset": 29440,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.05361",
+    "primary_category": "quant-ph",
+    "text_sha256": "66d64d914dd329bb09d4f93bf7106dae09770835aaf6605b16b920406cd7c15e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "23b1dfdff3f2053089effe99832a8c874b557a29f05ca826502091b415e1663e"
+  },
+  {
+   "id": "arxiv:2607.23841",
+   "length": 1280,
+   "offset": 30720,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23841",
+    "primary_category": "math.CO",
+    "text_sha256": "ded110995c9d6d78783be051ce234df8d4c51ecc1660f6e18e12dfb1284a1c4e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "de0051329e4bf13755f1a11894167ad12872cb7b6d414e562747c685ad77b1f5"
+  },
+  {
+   "id": "arxiv:2607.14490",
+   "length": 1280,
+   "offset": 32000,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14490",
+    "primary_category": "nlin.CD",
+    "text_sha256": "04987ba9deadb0663331eb92d1863093a21bc00e84f1732d36e8fc57595d9edf"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "26a2a18f6a243b9ee8c64f5959ad7b42783ec582b186fdec8f116ec98065e020"
+  },
+  {
+   "id": "arxiv:2607.13863",
+   "length": 1280,
+   "offset": 33280,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13863",
+    "primary_category": "cond-mat.mtrl-sci",
+    "text_sha256": "d8af645388cf195bbc6b3e7ab43b59f3802e389d2e074dcdd36c2e98622109da"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "336e58dd504ef7205c65ef61c7345514fed49bd896b90ae36b8e3af961e55490"
+  },
+  {
+   "id": "arxiv:2607.16360",
+   "length": 1280,
+   "offset": 34560,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.16360",
+    "primary_category": "cs.IT",
+    "text_sha256": "2f53b75471cad747c22d980677cb08137bc532cd933351fae4b121e9355a4a23"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4313d7d37e5bff42936b7fcf1e3e94ee5e74fb8362ffa6c319768203fbb6eed9"
+  },
+  {
+   "id": "arxiv:2607.29615",
+   "length": 1280,
+   "offset": 35840,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29615",
+    "primary_category": "cond-mat.str-el",
+    "text_sha256": "eb09f1b0dde1dbe4280053bc29fb9a0bd8d34d60931f689a3a4416f57ab542f8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a1dbb5e263bab4ee367a6cd01779b813b6b7380be2b7b36483897189b8b85b3e"
+  },
+  {
+   "id": "arxiv:2607.25257",
+   "length": 1280,
+   "offset": 37120,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25257",
+    "primary_category": "stat.AP",
+    "text_sha256": "84fa62a6896b9ea13290b1c39b183c978afeab187b830f87782dce0478553232"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3daf818b3829151ce6d5d6dc48f3b9d77dfad0c199b9f797a2471575d5ab2cd2"
+  },
+  {
+   "id": "arxiv:2607.10834",
+   "length": 1280,
+   "offset": 38400,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.10834",
+    "primary_category": "astro-ph.SR",
+    "text_sha256": "53e3d1f3a6de2f8227700bfd5c105c01431ef1abf5ba4d025f7d368c8f69351a"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "6d51f84343750ca4fc12735de5547fffe7b8779d7df8422dad209f72d0a6fee0"
+  },
+  {
+   "id": "arxiv:2607.12911",
+   "length": 1280,
+   "offset": 39680,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.12911",
+    "primary_category": "cs.CV",
+    "text_sha256": "2198db388520e096c5ec9e9d9466bfc1a004dc262424d6d21b966591f4a764b6"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "fb2b916cb393f814f6f3319b050794b6213c142833543ddbcb712dee29a9d9af"
+  },
+  {
+   "id": "arxiv:2607.28523",
+   "length": 1280,
+   "offset": 40960,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28523",
+    "primary_category": "cs.AI",
+    "text_sha256": "0aaaebb293a7cafa591d3e2cc075e9e23a74ac378f7c4278b7f793bba8f0ae96"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a4eb427b45733d10640840208c55feef9ae917ad35d16b662cb2c98561dcd223"
+  },
+  {
+   "id": "arxiv:2607.24168",
+   "length": 1280,
+   "offset": 42240,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.24168",
+    "primary_category": "cs.LG",
+    "text_sha256": "b32563f9100c767543cee516dd4141328d929f825e0f939c08dfb3b9a1b55294"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "127e63b03aeb78563681bebf566b200c45ee0f53db5abf95553b2d4ad582823f"
+  },
+  {
+   "id": "arxiv:2607.07255",
+   "length": 1280,
+   "offset": 43520,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.07255",
+    "primary_category": "hep-th",
+    "text_sha256": "36de991cede69ed6561deb4885191ea235723e3a30caf07e78dbcf2953842e81"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a4edda4040033b465f7dd11290090aacade3e850c30be6b57ac76760afb23f4e"
+  },
+  {
+   "id": "arxiv:2607.21981",
+   "length": 1280,
+   "offset": 44800,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21981",
+    "primary_category": "cs.CL",
+    "text_sha256": "22a1cfee18dc0c89acebe8178630fae10aaa33d3964d48a4ae4198dcf5f50ed1"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "e16f41885e5a0ed63fed5703f12a05a527534f6d593b85ad0cd65752356fa37f"
+  },
+  {
+   "id": "arxiv:2607.06764",
+   "length": 1280,
+   "offset": 46080,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.06764",
+    "primary_category": "cs.AI",
+    "text_sha256": "3ebd6ad53365f8ddb9ae0a33bfaa4ea9536c597f8c414c9cbb43974ccfc32d93"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "7fc74f637985504f01d19c25209936ee333f04b416521a31dc9b2ff4414783bd"
+  },
+  {
+   "id": "arxiv:2607.02446",
+   "length": 1280,
+   "offset": 47360,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02446",
+    "primary_category": "math-ph",
+    "text_sha256": "d8d329b1b2c1ad903844d9a66629a60dfbfdaab240153ebe174008d36c27622e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "8ae79f1f174d52431bc4e169a15b32d8a2ac3fdf0742044e6331a390c9e5dc90"
+  },
+  {
+   "id": "arxiv:2607.16412",
+   "length": 1280,
+   "offset": 48640,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.16412",
+    "primary_category": "cs.AI",
+    "text_sha256": "418b2d7a204a810c2dfb47fae0f2ee7bfcd996886b081bf9fedf785e927ae88e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "ff51c4c15b71adff19e7b5a82c940e2340c6b20b49228ed43d6c3617c7a05b4d"
+  },
+  {
+   "id": "arxiv:2607.00611",
+   "length": 1280,
+   "offset": 49920,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.00611",
+    "primary_category": "math.OC",
+    "text_sha256": "a0be74ab14005308317b6fc66f9be1bfc967c8a29f6dbf63125baf70f396a7c6"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "2ceac3d11e896790c351d03d81bb2f0b12fc34baad2482b3f05990cf042a7424"
+  },
+  {
+   "id": "arxiv:2607.18137",
+   "length": 1280,
+   "offset": 51200,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.18137",
+    "primary_category": "quant-ph",
+    "text_sha256": "8fd4c96988aa73ff8f78dc66d1a1fae70b248f40ced43c356d0a99f8fb4eb5bb"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4173e1b45462c55f72f66081511f7b866e8cd1d21eab88b4c7e9f3ea4693e677"
+  },
+  {
+   "id": "arxiv:2607.08613",
+   "length": 1280,
+   "offset": 52480,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08613",
+    "primary_category": "astro-ph.CO",
+    "text_sha256": "138fb12aeb34d8898f982d728a81ba18c60c027891e531859a4d92201020f439"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "84253e2071855b58b01729c83c6c922d2fcb1ea30eccdc55469570383a607fe2"
+  },
+  {
+   "id": "arxiv:2607.15816",
+   "length": 1280,
+   "offset": 53760,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15816",
+    "primary_category": "cs.NI",
+    "text_sha256": "31cd052354cf688645d5235d91ed104221f7512a4b266d975011132c2edab233"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3078e067f4761ac1efb6075370099751723439987ffde77baac8964a4453e7bc"
+  },
+  {
+   "id": "arxiv:2607.23561",
+   "length": 1280,
+   "offset": 55040,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23561",
+    "primary_category": "cs.IR",
+    "text_sha256": "b09593c53d63ea2144da311b7373e542fa623c4662b44fbc2c55dd4444ce40d6"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "543d50e2aa709fa3bbb387bf8b1fd4f2b3886c45748a5a2ba08d95c10bd4a1c5"
+  },
+  {
+   "id": "arxiv:2607.28175",
+   "length": 1280,
+   "offset": 56320,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28175",
+    "primary_category": "cs.AI",
+    "text_sha256": "381f83def478bf56cacca393bfd54ce88c36b99acfa2bb8057415764cdd81ceb"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "f7040bbe640fcb2199622e54271832edeffba0c40b7faed768a3cec4aff76957"
+  },
+  {
+   "id": "arxiv:2607.13717",
+   "length": 1280,
+   "offset": 57600,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13717",
+    "primary_category": "math.AG",
+    "text_sha256": "dad74865307693421a8a0dbe6e7be864c743f0bdb8fee61da73cac2777383da4"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "00634a55be4f04f02741468aebfee3a842f1a496a9c0aca468ad32a0d191db05"
+  },
+  {
+   "id": "arxiv:2607.15370",
+   "length": 1280,
+   "offset": 58880,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15370",
+    "primary_category": "math.CO",
+    "text_sha256": "36d0a8de1b029f67d438f1326df6ea927f3501a93cd525cef0d7231c037054c0"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "5376687aec2f858113784285a7ba7dd366fb8108b9e2d1e7b6e855e792683d48"
+  },
+  {
+   "id": "arxiv:2607.14703",
+   "length": 1280,
+   "offset": 60160,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14703",
+    "primary_category": "cs.CV",
+    "text_sha256": "bb2e4118e18b64d45515fccfa488b78a92ee2d859c05a95a164948b9c4c27edf"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "96c5c13025bc8168f3bc77bcba47f6c1100f0d2e5aac17e4f343b9ad5f24028f"
+  },
+  {
+   "id": "arxiv:2607.06906",
+   "length": 1280,
+   "offset": 61440,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.06906",
+    "primary_category": "cs.AI",
+    "text_sha256": "c271dd8a88b35cfd46d76f0f9e0d9706fcb72cbfbffbb3e82f164d7e8f32c5a4"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "9f705d89e4ba939b0ef431a3168798f5d2ca1921386a1458b87bb0ba4fdd4bbe"
+  },
+  {
+   "id": "arxiv:2607.02399",
+   "length": 1280,
+   "offset": 62720,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02399",
+    "primary_category": "math.DG",
+    "text_sha256": "8ff5a31381df8a2719a635b992d0f31f51394b2572f4376d2aaa275f3ba6aa58"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "19bdd2c38ccb52eb0b5831f2a224c1c09ef05778d1bea6264c67758a1ad7e68e"
+  },
+  {
+   "id": "arxiv:2607.26280",
+   "length": 1280,
+   "offset": 64000,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.26280",
+    "primary_category": "cs.DL",
+    "text_sha256": "b9a53d6fe3b328a042c2c3688eaad3a835a985aca1aebe09b26b19e169a1b139"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "085d46fba49411209786db343ce81d91cadd9718c73e155133f781c7132cfea9"
+  },
+  {
+   "id": "arxiv:2607.23235",
+   "length": 1280,
+   "offset": 65280,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23235",
+    "primary_category": "cs.CV",
+    "text_sha256": "3894108183ecfcc08223d2f1214017d67fbc662dcf6b6320333c313d7e545a66"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4529ee01b76a78f6fe24348fb1b2548a5aa4d6d695a2d3b2389ff121e1dff33b"
+  },
+  {
+   "id": "arxiv:2607.27741",
+   "length": 1280,
+   "offset": 66560,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.27741",
+    "primary_category": "physics.med-ph",
+    "text_sha256": "25e4682424542d28a8a6df3e07caf24eef405867bccd8c694839c8b92a0a2b63"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "87b4041a9fc07806937dc357cfd6361c41b8d1c1dbe56e37b309e1022e313a25"
+  },
+  {
+   "id": "arxiv:2607.03281",
+   "length": 1280,
+   "offset": 67840,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.03281",
+    "primary_category": "cs.DS",
+    "text_sha256": "b7d4f02a621ad8172492ab618d35903043bb1cc72e6c3c64ec910fad538028b8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "1aa7c41d80f455e3abf603948b13547a9f584fa00f00d2469a13ca44e9cbaf82"
+  },
+  {
+   "id": "arxiv:2607.29411",
+   "length": 1280,
+   "offset": 69120,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29411",
+    "primary_category": "cond-mat.mtrl-sci",
+    "text_sha256": "dfc9cd0e329eca1a46ed8e5e7a56c187371004f72ea6010b47fd437810a82a9a"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "0ee4b5b6537822b6cf6043871c88d79a987947877ed66c503ab229f3606cbeef"
+  },
+  {
+   "id": "arxiv:2607.23054",
+   "length": 1280,
+   "offset": 70400,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23054",
+    "primary_category": "cs.LG",
+    "text_sha256": "0e757680e9d8d855f1fd4d3ecb68b34e723b38b02fedc4b539ebf83898329c8a"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "31fce78d726ef42147bf4fb05bb68df5a3c137e0a1172f0505eaf843cf2acf51"
+  },
+  {
+   "id": "arxiv:2607.21820",
+   "length": 1280,
+   "offset": 71680,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21820",
+    "primary_category": "cs.SD",
+    "text_sha256": "cce6e59cec39ce7a12f045c26d5ba662285ce4b7419b77c6e9e0dc002afa635d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "18dda5d2c62088b110fd62aa22153d4adcee17db3557da90464764fcdc104003"
+  },
+  {
+   "id": "arxiv:2607.02082",
+   "length": 1280,
+   "offset": 72960,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02082",
+    "primary_category": "cs.NE",
+    "text_sha256": "2f8e360a98173a60219da7e940030ed5fffbc704cdee5fb70a20244dcc167c3a"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "acfdfb93103e5b1921689794b74064478d2140103819f7de69f61f03d074b8ba"
+  },
+  {
+   "id": "arxiv:2607.02702",
+   "length": 1280,
+   "offset": 74240,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02702",
+    "primary_category": "stat.ME",
+    "text_sha256": "3b7e07c58faa0a14763ce0dc3d8bc1a16cd00aec705cc589a1d242fe0576ec73"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "15cf5b4f69271d98cabee103e3f0186504c2f254b6cfe4557afff7703bb34a26"
+  },
+  {
+   "id": "arxiv:2607.29082",
+   "length": 1280,
+   "offset": 75520,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29082",
+    "primary_category": "cs.CL",
+    "text_sha256": "9476f2cd9f558bcac83b7336f22063f5ec2c776e257ad3356bd8daf7f8f6e437"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "0a2311d36b1425cf459ced258b8cf2d18e74da9237c1ac7ac8e54da0274ffaf9"
+  },
+  {
+   "id": "arxiv:2607.29190",
+   "length": 1280,
+   "offset": 76800,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29190",
+    "primary_category": "cs.AI",
+    "text_sha256": "adab47f6dbada7fb9dd68930dee07d119aadcb1ce6a1b3507595b55758444b41"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "8ab1f6ca3b3fa35eed09b8d7151cb14191b11029103b3833477da242a607a3f6"
+  },
+  {
+   "id": "arxiv:2607.11337",
+   "length": 1280,
+   "offset": 78080,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11337",
+    "primary_category": "cs.DS",
+    "text_sha256": "83bf6f2122e446ae891af8ffc57b1d9d30af9b29f47e5ef5687e4848fa54c1e3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "066b80b9b0ff7d4744f20bd1c59f6f2c0271b54d02a434137a316c7ff798bc04"
+  },
+  {
+   "id": "arxiv:2607.15710",
+   "length": 1280,
+   "offset": 79360,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15710",
+    "primary_category": "eess.SP",
+    "text_sha256": "9f7cb9398357d8050bc6066dc7645f66d0306305c183d96c11a39fbfad35b778"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3c216ee548adb8fe18825ad1ef2a2d917158162496834f524841472e6a72469c"
+  },
+  {
+   "id": "arxiv:2607.14235",
+   "length": 1280,
+   "offset": 80640,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14235",
+    "primary_category": "astro-ph.HE",
+    "text_sha256": "368b76c1c56ed1ff4af8bd3bacb3ffa767432dbfd05c8a1171b295eda03831e8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "8344c50ec0d83c137c5b561aaaec35cdeee8d5c7a6052c7573e64c2efa978081"
+  },
+  {
+   "id": "arxiv:2607.12474",
+   "length": 1280,
+   "offset": 81920,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.12474",
+    "primary_category": "cs.AI",
+    "text_sha256": "cbb51ed81f5a7f5bf74441addc15a10d53315b492ff72cef8807e40bb2633fa6"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "71a45dd177eb9f3f97d045c1a0737d8de4d766e6b7885865becd1e96b75f7a55"
+  },
+  {
+   "id": "arxiv:2607.05226",
+   "length": 1280,
+   "offset": 83200,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.05226",
+    "primary_category": "math.PR",
+    "text_sha256": "46a4c432e9e5d2d572b5b52a4f1927c6752dc91e2fb022fba3fdb2d1964a9fc9"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "49c273682cd288833bd5c9535a24c0841d5bd091684ecc05f3022cd53d8ab813"
+  },
+  {
+   "id": "arxiv:2607.20662",
+   "length": 1280,
+   "offset": 84480,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.20662",
+    "primary_category": "cs.RO",
+    "text_sha256": "9619952be2af05e7be98b10fb09d0594eb01a2c5c86c054bad75e4dec6e30197"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "41c713c7229fc01931c40e6752fce0104b9153296c0c2358e18d58236611e28f"
+  },
+  {
+   "id": "arxiv:2607.24505",
+   "length": 1280,
+   "offset": 85760,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.24505",
+    "primary_category": "physics.plasm-ph",
+    "text_sha256": "1490dfcf5dd3c83e775b5ff2bd955c91cd486fc4ba15a1e96d00b532f9d1fd8b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "871af1efbe4ffae5e993f9539a2358f3a24fb5044bfb29e32a5a503e5cde6958"
+  },
+  {
+   "id": "arxiv:2607.17648",
+   "length": 1280,
+   "offset": 87040,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17648",
+    "primary_category": "astro-ph.EP",
+    "text_sha256": "97118e43d14232b09db95a1b3e1f40383a2c9d976dc64fc71879e63044cf0083"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "811e55db2145a32c094940f0ba7279f862e733feeba8233ba876720ae626e89f"
+  },
+  {
+   "id": "arxiv:2607.11976",
+   "length": 1280,
+   "offset": 88320,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11976",
+    "primary_category": "cs.LG",
+    "text_sha256": "09c48639290565818a6a7df319fd0e772422b21699679e134ee799cfcd982c4a"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "dfad9c095d8e69aabac0caa83b869f0e2ba7ae0f5fc2ca4a33d2305a00086d4e"
+  },
+  {
+   "id": "arxiv:2607.09051",
+   "length": 1280,
+   "offset": 89600,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/publicdomain/zero/1.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09051",
+    "primary_category": "quant-ph",
+    "text_sha256": "3febe20789c1ae7fe71c00dac3aa6f3b4811931e0c6f8368e3842dae3de31b1b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "191e1b280c306903b394d9ab6bc57891da79d24104ca92d5b1e644d3b04a8ede"
+  },
+  {
+   "id": "arxiv:2607.11294",
+   "length": 1280,
+   "offset": 90880,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11294",
+    "primary_category": "cs.AR",
+    "text_sha256": "80de3632b0e9270bf9946510530644510be6153776653b2f32c65d54f8e95bc7"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "dc65e259a566372be0fb68593e694696c65fb236127937cf379b0fa34023905f"
+  },
+  {
+   "id": "arxiv:2607.01356",
+   "length": 1280,
+   "offset": 92160,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01356",
+    "primary_category": "cs.CR",
+    "text_sha256": "8405eed6b80582b8c262d341b329b835b65df4d6713e91e6855889ac01ee4f71"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "bf987c3be5ea58490ac76324b05a8a9bfc13474c38ad4f60b7418360216676bd"
+  },
+  {
+   "id": "arxiv:2607.03795",
+   "length": 1280,
+   "offset": 93440,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.03795",
+    "primary_category": "cs.CV",
+    "text_sha256": "3d75a79a6faf6b66f1a6580b5ed63c2def23893c7ba391269878a87a9d992a12"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "dd26c189ed48a53db54eab5e47643fee1f0b1260d65df3a38ec9766a1a7528b6"
+  },
+  {
+   "id": "arxiv:2607.01173",
+   "length": 1280,
+   "offset": 94720,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01173",
+    "primary_category": "math.AG",
+    "text_sha256": "a096d9d32225a45817cd17fcafecd3e36d8065c8a2896dd22c4dc423fba22e6d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "73ff4cf6c0b00f64a83deb92438d75ac95ad15fc406954d57219e6dc1ebe83ef"
+  },
+  {
+   "id": "arxiv:2607.21019",
+   "length": 1280,
+   "offset": 96000,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21019",
+    "primary_category": "cs.AI",
+    "text_sha256": "d1e061caaebcff5ebf3e4c54db7b2223ec4c5e236528338b710d6b4045aad603"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a2fb8aaf425105921836f4faecb198865756e323475415b54e3059c511256e59"
+  },
+  {
+   "id": "arxiv:2607.15419",
+   "length": 1280,
+   "offset": 97280,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/publicdomain/zero/1.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15419",
+    "primary_category": "math.NT",
+    "text_sha256": "1b32d5b36d3a8d5b88a1a0065417052d589de32265bad830c5e9663d9c9d1576"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "60a1f5a85f8d85adc3f0556ad082516458f5c6b40ec0f867409b4b5e022861c0"
+  },
+  {
+   "id": "arxiv:2607.16238",
+   "length": 1280,
+   "offset": 98560,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.16238",
+    "primary_category": "cs.LG",
+    "text_sha256": "ce487d5e7982fc53b45935c555881c0b07b8f0b2310e77127bf66777737a0f50"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "6c1d3ebc5fef276669b589d3aa8319370ffafbc2510689ffc11dfbbea98366f2"
+  },
+  {
+   "id": "arxiv:2607.01282",
+   "length": 1280,
+   "offset": 99840,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01282",
+    "primary_category": "cs.LG",
+    "text_sha256": "db2e747bc6deb634e8dc36aa1b70af8b67e9aa4fe70ebae82520a949d13408b8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "38bf64c81bb457eaf44c0ae1cc010f6562b79e58188204ddb418b611288ff51e"
+  },
+  {
+   "id": "arxiv:2607.25705",
+   "length": 1280,
+   "offset": 101120,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25705",
+    "primary_category": "math.GT",
+    "text_sha256": "844218c43fb3595b800d678fda88c693b931ac26262a2ed19aa44053f3c4121f"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "7111290566762d48f920e1e919438151ccd4f1ab29d35c3c39df8fbd2dd9ad0b"
+  },
+  {
+   "id": "arxiv:2607.07562",
+   "length": 1280,
+   "offset": 102400,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/publicdomain/zero/1.0/",
+    "month": "2026-07",
+    "paper_id": "2607.07562",
+    "primary_category": "quant-ph",
+    "text_sha256": "969ee38c2396d6d986cd995a543c18c4f27a38a74074119a81cb833b8eeae3de"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "5765034666f7cbcdb88361e916b086c52e01dc02428e5ab8b841f75392339596"
+  },
+  {
+   "id": "arxiv:2607.23796",
+   "length": 1280,
+   "offset": 103680,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23796",
+    "primary_category": "math.FA",
+    "text_sha256": "d42e3d4d88f3ee708b4b621e74d14de09ff32aa21922d8c9949cac404e6e7f30"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4cbabbd097fd21eb8cf30327c4e9da101f7b059098f1b801cc03318702434911"
+  },
+  {
+   "id": "arxiv:2607.00650",
+   "length": 1269,
+   "offset": 104960,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.00650",
+    "primary_category": "hep-ph",
+    "text_sha256": "4273104a40d10fd90c04c944650e8352252b4d612e1f96e4ceb60a27c2b1c85f"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "eee6b2d2e165469f19d04031334de705a0a5d0ed877130440f555f7eca219527"
+  },
+  {
+   "id": "arxiv:2607.13459",
+   "length": 1280,
+   "offset": 106229,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13459",
+    "primary_category": "cs.LO",
+    "text_sha256": "28cfd070121b6351a0a8ef3d09506367a376040ebb53bc85f19fc27c87beeb06"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "fe7b0965e153a915a326f13a25d5b5ccaa0883430b39e8281cb5a716a6bc195d"
+  },
+  {
+   "id": "arxiv:2607.29029",
+   "length": 1280,
+   "offset": 107509,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.29029",
+    "primary_category": "math.AP",
+    "text_sha256": "6fc6ce23bab58bfecb5ee7d463bac5fee1fac4a57b4de9492eeb383ee25a8040"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "368065b5f884f50801a05159faddfe80d751bef528b68bbec1b98c5852d81341"
+  },
+  {
+   "id": "arxiv:2607.10604",
+   "length": 1280,
+   "offset": 108789,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.10604",
+    "primary_category": "cs.HC",
+    "text_sha256": "cd2c1577acfc62f0c65dd229dea8b15206bfa9c466f9dc489989a5241e1bccd1"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b1dad754cff28c105d7d7bd14ffde9f2491a03c2f97793342c52437ad95a619d"
+  },
+  {
+   "id": "arxiv:2607.07788",
+   "length": 1280,
+   "offset": 110069,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.07788",
+    "primary_category": "hep-ph",
+    "text_sha256": "bebf5c56191ca9e7a7995089cb5e5182246a09ea6448d48e56301257d839a1de"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b3f1d7b7f9d8a4cd06ea209c2a8048ff85f5e4c1b5917e74be15737a3feac35f"
+  },
+  {
+   "id": "arxiv:2607.23165",
+   "length": 1280,
+   "offset": 111349,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23165",
+    "primary_category": "stat.ML",
+    "text_sha256": "929905f70ddf7669881dde04c2e777c8b86d954b415ece8cd89764752fccdcd1"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "edaa076e6e8d16413fe615ee77260108a2461c83c95c8bf1efe06c5bf916afea"
+  },
+  {
+   "id": "arxiv:2607.17265",
+   "length": 1280,
+   "offset": 112629,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17265",
+    "primary_category": "cond-mat.mtrl-sci",
+    "text_sha256": "080c9e0c6e7a9d36e761f219fe864d8b195f511dea8e38183efd1e87dd3cf275"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "afc041434cebc4633c0cd9075c765776a3c53be03145cf3e454e05d7c701768d"
+  },
+  {
+   "id": "arxiv:2607.04683",
+   "length": 1280,
+   "offset": 113909,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.04683",
+    "primary_category": "cs.CV",
+    "text_sha256": "8ae42d843e441b1e9830690e03167faf460daa4a0540968f85f7afbfa8ee5dc0"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "f89ba0d171e98584df6479c5d0c49a051bf78bea84e1f9110c5243c5376494dd"
+  },
+  {
+   "id": "arxiv:2607.14096",
+   "length": 1280,
+   "offset": 115189,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14096",
+    "primary_category": "cs.AI",
+    "text_sha256": "b51def329e1cd0153fd995b18035beae91e015fbdf0f3594e1038b7ce054fb8b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "69b3796eb15f83fa1c86b3be0aa00e942cfc51dbda89974d77c52ce195b24906"
+  },
+  {
+   "id": "arxiv:2607.24871",
+   "length": 1280,
+   "offset": 116469,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.24871",
+    "primary_category": "cond-mat.mtrl-sci",
+    "text_sha256": "d3a2dffc14fff8321e8a4028a5273eb4785075b7c8e2b23dddcdc466e6859273"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "7bf9641eae18009e84b489f08ddde54a556cdc8d11e1566a39ba21745f6a73c0"
+  },
+  {
+   "id": "arxiv:2607.13189",
+   "length": 1280,
+   "offset": 117749,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13189",
+    "primary_category": "cs.CL",
+    "text_sha256": "4aa3a50a782bab3c1dab07a551eb4791078916ab97d9e68baf4c5e5e4b6d6159"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "8bb6a871d583a918353121a441522d476c39a35852b1a4eeada87203bcb3cb48"
+  },
+  {
+   "id": "arxiv:2607.24534",
+   "length": 1280,
+   "offset": 119029,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.24534",
+    "primary_category": "cond-mat.stat-mech",
+    "text_sha256": "7eebe98d546b190289dce889549533eb8048f5c138ea5911684b68d0bfe51a8f"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "47bdcfb9dbb6e5e7184a5ee251b4565b93010e4d5d6aa867db62c2f0d6f97c32"
+  },
+  {
+   "id": "arxiv:2607.09670",
+   "length": 1280,
+   "offset": 120309,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09670",
+    "primary_category": "math.RA",
+    "text_sha256": "55602f57eddf7905c426103a627fc3a89468ba635d999c1378fd5ba6cd1962ed"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "140f52ac36223d74241e4faacb412b56f6ec12d7d5255bc087dd7676f2d5f731"
+  },
+  {
+   "id": "arxiv:2607.01477",
+   "length": 1280,
+   "offset": 121589,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01477",
+    "primary_category": "physics.optics",
+    "text_sha256": "d3fbef2c321c4ac260d92253ce567142850fc664defce7da49d9ba59c033d821"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a7b1d01e2d5cc7279a87a67d8ec520dcbfa498a5b0d0eb51a92f2f53ad844bac"
+  },
+  {
+   "id": "arxiv:2607.25292",
+   "length": 1280,
+   "offset": 122869,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25292",
+    "primary_category": "cs.AI",
+    "text_sha256": "35343b84fcf6d5b42cdb5df7b74ed7cb965ae3fb90cded5a8c2b4b5ead272d73"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "c10fa6b31023aacb5af1d896334eef429ef5d6e77de312adca565206f94dad5a"
+  },
+  {
+   "id": "arxiv:2607.03152",
+   "length": 1280,
+   "offset": 124149,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.03152",
+    "primary_category": "math.DG",
+    "text_sha256": "0b5521b0c21d81dad66e858d2857c03f640fbfa70acfdc3c1d4033d8b2404bb2"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "fb5f1834afdd914c38185b835d5c8ccf15ce52047d09a0f44e9436b688d53ff2"
+  },
+  {
+   "id": "arxiv:2607.08433",
+   "length": 1280,
+   "offset": 125429,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.08433",
+    "primary_category": "math.AP",
+    "text_sha256": "c1480e447c243e89e674aa78fc87abcc3109a7ed6d772b21b3292a6f6df09b1f"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "472c6e38b4be073c05dae8ea7173ef5049adad92d9c15850fe3fa9564fddc6b7"
+  },
+  {
+   "id": "arxiv:2607.28161",
+   "length": 1280,
+   "offset": 126709,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28161",
+    "primary_category": "stat.ME",
+    "text_sha256": "70e5deb2be55dea0c8c2936f9c01a7075fcf6a37b27be624fddc8dbc32496fa3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "5dadab17c03a33e254b6cddaf44cc7b56fb18ba5348fd63cbbdf9c5f451e8eab"
+  },
+  {
+   "id": "arxiv:2607.26912",
+   "length": 1280,
+   "offset": 127989,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.26912",
+    "primary_category": "nucl-th",
+    "text_sha256": "881b6bd57f6caa930d769e431e963aa8d00d7937c2f3253c5cc114c1170e9804"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4d289d89d183622cad2a3402da956e3af267c79c9d26e44c7f47677ac08e6a7f"
+  },
+  {
+   "id": "arxiv:2607.01272",
+   "length": 1280,
+   "offset": 129269,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01272",
+    "primary_category": "cs.GR",
+    "text_sha256": "641f384ca9a58c6b6cf5cb88207bfb6e7e51050cae9a61bfec1bf149467faf33"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "ecc74e4fad3dceadeabcc46ae38d216e989189395037e333815a8aaec0d050c0"
+  },
+  {
+   "id": "arxiv:2607.09748",
+   "length": 1280,
+   "offset": 130549,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09748",
+    "primary_category": "cs.AI",
+    "text_sha256": "2cabe714c923e93e1761bbbf914d9ea57663a9183feffbf6bb1dc34132d47bc3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "2db80d5160a3ecf3b7606cd861bc9edf5c2ec0edae08cae0663c527ef4f16c13"
+  },
+  {
+   "id": "arxiv:2607.19553",
+   "length": 1280,
+   "offset": 131829,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.19553",
+    "primary_category": "math.OC",
+    "text_sha256": "5b27fc9e5ebb8b917b94ffad875351d1a78cc5e6dbd8526cdf3befdee53053a5"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "ea6c4162e59d9bca4856a7b7e24376b5d129c8a90c4ce395f0171725fa7dbb67"
+  },
+  {
+   "id": "arxiv:2607.09099",
+   "length": 1280,
+   "offset": 133109,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09099",
+    "primary_category": "cs.AI",
+    "text_sha256": "ffeb743f1b2af304dbda9a30a0cc5d157c829311b4c65a433009487daf2ac437"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "61ee95b5e4d560540eb7076bb484692cb838d3e488e930123caf450a7006906d"
+  },
+  {
+   "id": "arxiv:2607.09857",
+   "length": 1280,
+   "offset": 134389,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09857",
+    "primary_category": "quant-ph",
+    "text_sha256": "3c6f47aca50cf2fbcd3699f70e4bf8f2c978e1d7888b04ccb4e1554ac8775da6"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "69489cddaed5d913d4ea9bfc43db3fa6d0e3b2325de0c10d11ad47f7aae183de"
+  },
+  {
+   "id": "arxiv:2607.28926",
+   "length": 1280,
+   "offset": 135669,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28926",
+    "primary_category": "eess.SY",
+    "text_sha256": "d77c91a875a038572562ef59ffe25462d7e1ff8466ad070ec6fe651231473332"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "31af0008edffac4d08c1d3c31934cb5491cab00a5bc8362c9005a9b369b077cb"
+  },
+  {
+   "id": "arxiv:2607.10947",
+   "length": 1280,
+   "offset": 136949,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.10947",
+    "primary_category": "math.CO",
+    "text_sha256": "aa22490e671e35b325be6fa05a8d7a74f3f52dc78d9639ae998a3a45e0064e0b"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b59deec74c525bd01d6fe9da71db6ca48cc367f26b967b6a89bfbfa082e6cb02"
+  },
+  {
+   "id": "arxiv:2607.20188",
+   "length": 1280,
+   "offset": 138229,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.20188",
+    "primary_category": "cs.LO",
+    "text_sha256": "691b63382fcc095c4b3c2340f214a792e155f4fb66ae333bd6e05b4b6e1749d5"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "404a5e74b8e865b80ed1b825d91593bb4a888a656e4a372be142c033489846e3"
+  },
+  {
+   "id": "arxiv:2607.13609",
+   "length": 1280,
+   "offset": 139509,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13609",
+    "primary_category": "cs.LG",
+    "text_sha256": "189e6a24b59f111d4404605aff4eefed8a4b49a775bde21fe3e377a2d08f7cb8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "31776f8847dd2c329e3a55774172f3d24815319352731c881e318fa680c59e1f"
+  },
+  {
+   "id": "arxiv:2607.23697",
+   "length": 1280,
+   "offset": 140789,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23697",
+    "primary_category": "math.RT",
+    "text_sha256": "53e68bd0d0de977461af19dd456a654c41d88dab9fcbb39f681cf1f952442c4c"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "6f7ed92c9977321b254cce7cac717e008b124e5b75882dcc56d5542a58260ec0"
+  },
+  {
+   "id": "arxiv:2607.06393",
+   "length": 1280,
+   "offset": 142069,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.06393",
+    "primary_category": "cs.DS",
+    "text_sha256": "a837bc02dd01cf3c71a69a015798ea6987079ddbf8b8f2b9ca06fd6ff7585991"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "8592942d7ce73712e88e9148060181d11700f60c4a62164ac88f4c9eacf405b3"
+  },
+  {
+   "id": "arxiv:2607.21091",
+   "length": 1280,
+   "offset": 143349,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21091",
+    "primary_category": "physics.optics",
+    "text_sha256": "4cbdbd28fcadf00d82cf9dc8c9ef634df8e1def346d04c65dada9ab3909e2836"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "a009ec848eb82de9aa11edf641c71dd13be92454ec68b44a946c69d998fc023f"
+  },
+  {
+   "id": "arxiv:2607.21302",
+   "length": 1280,
+   "offset": 144629,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.21302",
+    "primary_category": "cs.AI",
+    "text_sha256": "e203f29bbf2ef9c00ffd097fd97e05574fb86e129d18e4c9724ba04fec40dfe7"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "2fe70aea80557e688c806d235bfdf8a560a4b5107fa31d0b3fa9b95dcaa05c7e"
+  },
+  {
+   "id": "arxiv:2607.09840",
+   "length": 1280,
+   "offset": 145909,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.09840",
+    "primary_category": "gr-qc",
+    "text_sha256": "140a41ce83d385a79728ef5960389530b62e245854d75d6cef0c6a0637185ce7"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "e58ddacd785fdc911306b6e7f276f386cc9ba864715be43485de787a5f59b943"
+  },
+  {
+   "id": "arxiv:2607.03525",
+   "length": 1280,
+   "offset": 147189,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.03525",
+    "primary_category": "cs.SE",
+    "text_sha256": "f030378287bd2d3c8c88ec51f6407ccaadef2e3997795e8b5ce04b4f649ea54d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "9bcc352001e957f4dd5cc56940cf5e2decfa17493d06770e0db1b1f9d05f1b18"
+  },
+  {
+   "id": "arxiv:2607.24988",
+   "length": 1280,
+   "offset": 148469,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.24988",
+    "primary_category": "quant-ph",
+    "text_sha256": "cd652c7ce9658f6ab46ca75d494fe8e688f3b401930eb7f0c81c836f4fd658d2"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3e36104438f8dfc30e48e30ababcde40ab9324aae7f3f3a29760f66eef7d8fd7"
+  },
+  {
+   "id": "arxiv:2607.17990",
+   "length": 1280,
+   "offset": 149749,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17990",
+    "primary_category": "cs.LG",
+    "text_sha256": "ad0ae163f79738bba2173d932f1de014e8abb349498ff88b0ca0fde834e9db62"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "780765a2531205a907851a9b39f5b8b4dc2713431ca1277f2d52e13de31a0071"
+  },
+  {
+   "id": "arxiv:2607.25798",
+   "length": 1280,
+   "offset": 151029,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25798",
+    "primary_category": "cs.RO",
+    "text_sha256": "12932dac331174a5abfcf939f482f53a5e3efaefda8fa477930d4eed09c7660f"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b19418c49999a77992cc66e1bd0c41812e108cd367997b651e49f667f7b733df"
+  },
+  {
+   "id": "arxiv:2607.25122",
+   "length": 1280,
+   "offset": 152309,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25122",
+    "primary_category": "cs.LG",
+    "text_sha256": "1ee5b7e23191cf9ab60b9a616f7069ce389334be670bbc7cee2ed136ea1c1b62"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "b2396e253a00903b71db95f898416522b40feceb1fb658b0a9d5c49e3d3afac6"
+  },
+  {
+   "id": "arxiv:astro-ph/0101052",
+   "length": 1280,
+   "offset": 153589,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101052",
+    "primary_category": "astro-ph",
+    "text_sha256": "2615685c9e58a074dfa94f412a087916aae6f7c7655b9e99b156e22b41e17b72"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "9ba04369654c7ce681198b154adadd9afe194fcca714a4142a68cfdaaae971a3"
+  },
+  {
+   "id": "arxiv:astro-ph/0101028",
+   "length": 1280,
+   "offset": 154869,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101028",
+    "primary_category": "astro-ph",
+    "text_sha256": "2df6a03405b53d3d0b063fa6c4a27d579e8bbefb0c2a25f862af25e83029b49c"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "903b2f6649329030835265f1b0dbc75529f30a20eb6392b025ce7eee6744475c"
+  },
+  {
+   "id": "arxiv:astro-ph/0101053",
+   "length": 1280,
+   "offset": 156149,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101053",
+    "primary_category": "astro-ph",
+    "text_sha256": "0394c616bdb6009a88032415fd8e0ab89bec001c46c9c614f489e5d900f31182"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "23f56bc32c15749868485887be2f1c90d56f5f66e255cc8c894baf4ba2e53808"
+  },
+  {
+   "id": "arxiv:astro-ph/0101011",
+   "length": 1280,
+   "offset": 157429,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101011",
+    "primary_category": "astro-ph",
+    "text_sha256": "7f6b7f5f0bcd097958ffc90bf7b4b77adeb93dedca35703429f523fa73d20feb"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "cde5fbb2a079dfe9d2126789d3f5f04481a63ffec9237008e367c66bfd424b1e"
+  },
+  {
+   "id": "arxiv:astro-ph/0101036",
+   "length": 1280,
+   "offset": 158709,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101036",
+    "primary_category": "astro-ph",
+    "text_sha256": "ba90795095b72e791949ee454e3e50a9b4f1e000c9c9b9695ec7c8235bc7fef9"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "6b10b2ec7e8c45dbe81e02df3ed04f9fc34a955dcc382034b2ec485c6892b46d"
+  },
+  {
+   "id": "arxiv:astro-ph/0101043",
+   "length": 1280,
+   "offset": 159989,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101043",
+    "primary_category": "astro-ph",
+    "text_sha256": "49a14c0e5b286a2f7f8fad2580e51160f2cc1d727e8cc580ff82f673db4ada1a"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "27b5eddc8efb6bc6ce824ba1c7cea5cabccd69704af25acbb0281e4e8b2d5f64"
+  },
+  {
+   "id": "arxiv:astro-ph/0101049",
+   "length": 1280,
+   "offset": 161269,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101049",
+    "primary_category": "astro-ph",
+    "text_sha256": "6fea83c8f25d9ccd98db450fd9f1406168bab2cc94bf087c25a0898839f0c6f9"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "17660f25494f7a46f244dd82e49a58ef33990ab4dee44e1dacb7ad0a1db18abe"
+  },
+  {
+   "id": "arxiv:astro-ph/0101039",
+   "length": 1280,
+   "offset": 162549,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101039",
+    "primary_category": "astro-ph",
+    "text_sha256": "2684e96b2069a8be85eddb1896011d436b3dd0578172314bb2fac0ba2e5f5e6f"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "b18b64e641388a3aa5eb61113c5b5949b6bd342299561fd98cb3081ae06e7ffb"
+  },
+  {
+   "id": "arxiv:astro-ph/0101029",
+   "length": 1280,
+   "offset": 163829,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101029",
+    "primary_category": "astro-ph",
+    "text_sha256": "16706dff0958d19d6cb35e9b897d6fd4b43b828c0e26115ca6b2cf47db85405e"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "00ee2e98f16de4fb4c00b748026251bad7c14690f72ad45e321f5e0c117d7741"
+  },
+  {
+   "id": "arxiv:astro-ph/0101020",
+   "length": 1280,
+   "offset": 165109,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101020",
+    "primary_category": "astro-ph",
+    "text_sha256": "e866aa8f42b6ec13524ceb8cd724fa434aae341bbc31969f383a6013105c29a2"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "332588860452b225288aa5799fd2281ec6de4be233881cabe5c8a86a173a45a1"
+  },
+  {
+   "id": "arxiv:astro-ph/0101037",
+   "length": 1280,
+   "offset": 166389,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101037",
+    "primary_category": "astro-ph",
+    "text_sha256": "65395a618a5f0905423133928f652a1ce8586067dbd941b6fc51cc920d2eff8e"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "849f52be7f6d16a1b60d97107394d00987167902d96ca1501e3dd7bf43b38eb7"
+  },
+  {
+   "id": "arxiv:astro-ph/0101018",
+   "length": 1280,
+   "offset": 167669,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101018",
+    "primary_category": "astro-ph",
+    "text_sha256": "47e64ac0c70d885309acfb464674b9d54b2bdaa3455c54b5b24040846bc6f92d"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "0255761a0d6d3cda68b1c061694f0ecf9765a9bb7d6367e7a9fb253bbf82eb86"
+  },
+  {
+   "id": "arxiv:astro-ph/0101022",
+   "length": 1280,
+   "offset": 168949,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101022",
+    "primary_category": "astro-ph",
+    "text_sha256": "81947836ba05845ec6b311dd580f68c77a01d59955f29501f11d72e92f9e8aff"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "cc151ee49871aff60d63bbe9dd44b34876588d7cd659f0e755c5b8d62b9b907e"
+  },
+  {
+   "id": "arxiv:astro-ph/0101030",
+   "length": 1280,
+   "offset": 170229,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101030",
+    "primary_category": "astro-ph",
+    "text_sha256": "0c95a996a004a2d30d053ff2023fcd9b61739e6c71fb4a85e70a493ecbbc8b16"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "7236024314c9be91acf4de56964a5a1eac95a0925fec3d9ef5d2d07f008392b1"
+  },
+  {
+   "id": "arxiv:astro-ph/0101040",
+   "length": 1280,
+   "offset": 171509,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101040",
+    "primary_category": "astro-ph",
+    "text_sha256": "c2cb6ca26a49aa7eb36e19d7b6452a1e697675f2ebda44965f33a32d4556befc"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "da99b9a325e7e301017a8c73338bdee68f6666ec416567609001eb6c164b53e4"
+  },
+  {
+   "id": "arxiv:astro-ph/0101013",
+   "length": 1280,
+   "offset": 172789,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101013",
+    "primary_category": "astro-ph",
+    "text_sha256": "2a35ad06d4de2a9b2212df902ca46a9ce0737be4fe59d5f02e342a8480e64bf5"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "1aa3ed11ba19e165ed2b75d4189f4141764d57a9ca9c00a7c39fb1e943de3f40"
+  },
+  {
+   "id": "arxiv:astro-ph/0101015",
+   "length": 1280,
+   "offset": 174069,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101015",
+    "primary_category": "astro-ph",
+    "text_sha256": "d8742966c2b5999eeee9d358fc95e2a4c0a171d4986480cc845e98ba1c8c31c8"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "5bbd231a41b56d7e496cdb873b25bcbff238a19b2388fb56e00402be12b0f5b2"
+  },
+  {
+   "id": "arxiv:astro-ph/0101006",
+   "length": 1280,
+   "offset": 175349,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101006",
+    "primary_category": "astro-ph",
+    "text_sha256": "fa63c8941f3a59f05bfdb316eb46fc34448b7c21ac707f2357a49b90c6e40204"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "053d46798da2dd87e57dd33890c19a165e4adb195e68ccf684020cb127366b73"
+  },
+  {
+   "id": "arxiv:astro-ph/0101038",
+   "length": 1280,
+   "offset": 176629,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101038",
+    "primary_category": "astro-ph",
+    "text_sha256": "3e07b383eceddca85c0a49983da0823dd5d11b41274755f7b71d4a3e5fb8d76f"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "e18961a0e47fa3a9cad4ec211dfe34cd06a641cc006f14753e7a2bed884c35f0"
+  },
+  {
+   "id": "arxiv:astro-ph/0101001",
+   "length": 1280,
+   "offset": 177909,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101001",
+    "primary_category": "astro-ph",
+    "text_sha256": "c425a0b17cf838896ab213a462a04aea4e659094a91b7e68bd945272c637abcc"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "3b9314c46a4edf39b29982bf0c8e616f0368a688d1e9be1cba35d93cf399d0b6"
+  },
+  {
+   "id": "arxiv:astro-ph/0101017",
+   "length": 1280,
+   "offset": 179189,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101017",
+    "primary_category": "astro-ph",
+    "text_sha256": "8d30bd0c4265fedd26832512c2a46e90092467e72435c18c5989f57d253c194c"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "474a9834fd8605f38795e7ed59926518503e10c234dfb5129ad0a08280a0d463"
+  },
+  {
+   "id": "arxiv:astro-ph/0101042",
+   "length": 1280,
+   "offset": 180469,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101042",
+    "primary_category": "astro-ph",
+    "text_sha256": "132632195624047f70263a1e424419e59eb345cc638e6925310e24f0446d9e63"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "06d7cea2b1699aa36192a27e81efddc2554b8a973082f5cc9966c305ef72b8ab"
+  },
+  {
+   "id": "arxiv:astro-ph/0101004",
+   "length": 1280,
+   "offset": 181749,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101004",
+    "primary_category": "astro-ph",
+    "text_sha256": "3a23630cc2b7415441daaa05ac0002848e00407e810e3d84de3ba2a185442032"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "f262354fc2757ee4cceeb970cdb8988e3af8c89c75615d5ecd952f1c919c6d07"
+  },
+  {
+   "id": "arxiv:astro-ph/0101027",
+   "length": 1280,
+   "offset": 183029,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101027",
+    "primary_category": "astro-ph",
+    "text_sha256": "384f4afce6a5b46b5b68f78ddeabfab3fdcca74bc350805f977ea1ef927b056a"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "acc7ed579883176cd3f47d0ecf3a4b682767b3454799a9b071b5b3f2de0ce706"
+  },
+  {
+   "id": "arxiv:astro-ph/0101016",
+   "length": 1280,
+   "offset": 184309,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101016",
+    "primary_category": "astro-ph",
+    "text_sha256": "54b28ec88b3f757a521e9dbcd15dc6007bd6a13fc8d3670bc753df8c514d93f7"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "aa95f809d31bb73fc7f2fd2958b8596fa2ecdca169ee88a9c5393ad5a52ce0a0"
+  },
+  {
+   "id": "arxiv:astro-ph/0101050",
+   "length": 1280,
+   "offset": 185589,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101050",
+    "primary_category": "astro-ph",
+    "text_sha256": "8344a7368e0f6168606fd4c71aebb0d90f188614cd7c14f70e67ce0ab940537b"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "61b848618de4d3705cfd3de81ac84b4c86753655d89a571ae079c20891c6dee4"
+  },
+  {
+   "id": "arxiv:astro-ph/0101008",
+   "length": 1280,
+   "offset": 186869,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101008",
+    "primary_category": "astro-ph",
+    "text_sha256": "bc22fa5a65a1474f1cc0839c9b4d68ba562c8240efcde8dbda1c8b500faa6beb"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "0b7c95b5e3fa14ac1f0479c9389b2a5bfa97b44e577f93fb212838348bca9a2c"
+  },
+  {
+   "id": "arxiv:astro-ph/0101021",
+   "length": 1280,
+   "offset": 188149,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101021",
+    "primary_category": "astro-ph",
+    "text_sha256": "d96ddb97b54add032ab4d06c4bd25b726846ac11d8c9117101c765676422a5d3"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "e7621ffa296721e8d53913ea5594984a6c5decaac85938ea0b91e98363e306f3"
+  },
+  {
+   "id": "arxiv:astro-ph/0101035",
+   "length": 1280,
+   "offset": 189429,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101035",
+    "primary_category": "astro-ph",
+    "text_sha256": "4736bda29edbd1b142f9628ed7218b23bcb744f082f9949621886776330595c8"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "725537d657f9b48204e985b43e10ad19389d1aa224a2b1737bb5882b409a7f66"
+  },
+  {
+   "id": "arxiv:astro-ph/0101054",
+   "length": 1280,
+   "offset": 190709,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101054",
+    "primary_category": "astro-ph",
+    "text_sha256": "2051a9b99525cf952da45b445e667a60e9be52139cadd74d3636cbaf53dd3cc4"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "b22724902ab2d71af9ac70d82dbe2e0b139b409efa83aac247775eb8ec982d15"
+  },
+  {
+   "id": "arxiv:astro-ph/0101002",
+   "length": 1280,
+   "offset": 191989,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101002",
+    "primary_category": "astro-ph",
+    "text_sha256": "37446588103018ade95e0c7e8dc734821f6e09b830e6ef12e8477c925a493b7e"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "30950444b3d323878db5a70988b71b63bef37e10dceb97f8f5f83440013cbe88"
+  },
+  {
+   "id": "arxiv:astro-ph/0101009",
+   "length": 1280,
+   "offset": 193269,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101009",
+    "primary_category": "astro-ph",
+    "text_sha256": "9c8936905ac70b4ac3d7f67379d82090ead7385915c3ba26d3a2b95dcfc0c0cb"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "aa49109e5b892c3fb90d54aa1ca9b252291805b480466f2467ca5552abf02050"
+  },
+  {
+   "id": "arxiv:astro-ph/0101019",
+   "length": 1280,
+   "offset": 194549,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101019",
+    "primary_category": "astro-ph",
+    "text_sha256": "2f7c7e258ca08fc61049121eb5303584a235dd13223d8637df02bdfc47ed8b81"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "80d18ef8f4805726042b3ef2cd162f97a432e1701d0fbcab6699dd59a4ede00e"
+  },
+  {
+   "id": "arxiv:astro-ph/0101026",
+   "length": 1280,
+   "offset": 195829,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101026",
+    "primary_category": "astro-ph",
+    "text_sha256": "13cda562097d1814709f53c47c2bf9c9d289d529446408a54be6bdb9c24a2539"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "98e4d578d8f39bdb9855868871ba5ec17376656f1fd1dd7c6f79d19ca5590fab"
+  },
+  {
+   "id": "arxiv:astro-ph/0101024",
+   "length": 1280,
+   "offset": 197109,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101024",
+    "primary_category": "astro-ph",
+    "text_sha256": "12d65ab4a85e8914d14803436637e110d2364ce0e421ec28f069d1cbef2a06b8"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "a3a8554c20746493977a3e0eeba1596bc99cdbfef62bd211557563fcdf49e21a"
+  },
+  {
+   "id": "arxiv:astro-ph/0101025",
+   "length": 1280,
+   "offset": 198389,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101025",
+    "primary_category": "astro-ph",
+    "text_sha256": "0dc1b7c4750e763d2eadffb2ac0c9427e159f1fb8117ff974a3309343d37d5b2"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "f38a7de131a93542c2ba3cd00715d5b9275b0a2da6710c881febb8e32f51571a"
+  },
+  {
+   "id": "arxiv:astro-ph/0101051",
+   "length": 1280,
+   "offset": 199669,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101051",
+    "primary_category": "astro-ph",
+    "text_sha256": "1118cc645366cd5a5565be51eb3cccfd94a99e4ba01590684cad18496e4edd00"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "c26bc428d9207bf970c0b897ee8edab827936a70966a4a4e85f9d0933f08f965"
+  },
+  {
+   "id": "arxiv:astro-ph/0101031",
+   "length": 1280,
+   "offset": 200949,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101031",
+    "primary_category": "astro-ph",
+    "text_sha256": "ae2c11574b16fd9a51b7e4d54e437b51bf9039e329f1e8d35bc93659f1058176"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "f354bd57dd6a15e4b100c7efbd11d614e4870eec599864cca2cdb31b58bdc1a4"
+  },
+  {
+   "id": "arxiv:astro-ph/0101005",
+   "length": 1280,
+   "offset": 202229,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101005",
+    "primary_category": "astro-ph",
+    "text_sha256": "cc53ad83e1d1948cd628e80ce626ef8739c6387f1ae0ed18dc487f139b3ffc1f"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "3da17781cb8a8436aa9525991462c13a948b299b0c067f0b0d9fe1c46a9e083c"
+  },
+  {
+   "id": "arxiv:astro-ph/0101044",
+   "length": 1280,
+   "offset": 203509,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101044",
+    "primary_category": "astro-ph",
+    "text_sha256": "7df556bd8f3847ea3896fa14773b808039a0f1e621bd454031267ea7f96923b9"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "b077ffe33a8f05372989c6ff72596181ff5171b8143bf48205c4bd33a833f27d"
+  },
+  {
+   "id": "code:model-families/dsv4/src/spark_dsv4_cache_plan.c",
+   "length": 1280,
+   "offset": 204789,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/dsv4/src/spark_dsv4_cache_plan.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "e8a7314d1c9191a10aacd5aa7b2142e3407c0cc736ed54db467ebc1da488ea3f"
+  },
+  {
+   "id": "code:runtime/model_pipeline_client.c",
+   "length": 1280,
+   "offset": 206069,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_pipeline_client.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "ceca3255a368cf16643fc0f53d63903437042fccc984b062f03d6ed264a533ce"
+  },
+  {
+   "id": "code:modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
+   "length": 1280,
+   "offset": 207349,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "f222d1c65c303cf8ef64e66c6b75fae5274b69873be35d23b712df801dc576e9"
+  },
+  {
+   "id": "code:modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 208629,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "f4eb80a71b08c2d720889dd66564e1d959d57fab23211b1b2896095ba08c7b76"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu",
+   "length": 1280,
+   "offset": 209909,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "dec1d9dab4cd10c54a21d06aa408420438307001340a18ced026f2dbe195d0f9"
+  },
+  {
+   "id": "code:tools/sparkpipe_dsv4_driver_cuda_smoke.c",
+   "length": 1280,
+   "offset": 211189,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/sparkpipe_dsv4_driver_cuda_smoke.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "7617971dff2b2d8cb62afe1eb2f706724cc872d781305d21df05d85183fc1153"
+  },
+  {
+   "id": "code:inference/llms/qwen_3_6/unity.cu",
+   "length": 1280,
+   "offset": 212469,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "inference/llms/qwen_3_6/unity.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "caac67affd2262bd36960f5005940d1a6c2b6c8d5739743f17f9076b83ffb3ae"
+  },
+  {
+   "id": "code:qualification/dsv4/performance/tp4_b1_20260814/gate_route_fusion_probe_da7f/probe.cu",
+   "length": 1280,
+   "offset": 213749,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "qualification/dsv4/performance/tp4_b1_20260814/gate_route_fusion_probe_da7f/probe.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "7bba2766df79040e76c3e55c22f0c0c2834a8d6f24a9e02a49113378b7c31427"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_distributed_work.h",
+   "length": 1280,
+   "offset": 215029,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_distributed_work.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "f1eb44b4bd59e094129c773f90b35e1ece614b5e8ae56ff709be57c5efbc9209"
+  },
+  {
+   "id": "code:modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu",
+   "length": 1280,
+   "offset": 216309,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "8fececa3ff6eb14998703add02629122a0102b69c73141a0634accc442b0d7e6"
+  },
+  {
+   "id": "code:modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c",
+   "length": 1280,
+   "offset": 217589,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "1afa9054ee94602b454c950aecccda7a3429906bf6f20a0e34ad3d54fad7ed00"
+  },
+  {
+   "id": "code:tools/qwen36_native_warp_specialized_bench.cu",
+   "length": 1280,
+   "offset": 218869,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen36_native_warp_specialized_bench.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "a0bac326287fd2f68b090882b1f08517ec23907a8f4178f9583b89510cbbee88"
+  },
+  {
+   "id": "code:tools/qwen38_tp4_collective_bench.c",
+   "length": 1280,
+   "offset": 220149,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen38_tp4_collective_bench.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "2598b3c3d980fed6c9e7c0cd3b503e19024b779d92bb30e0e5bda1aba5502b05"
+  },
+  {
+   "id": "code:runtime/model_resident_ipc.c",
+   "length": 1280,
+   "offset": 221429,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_ipc.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "7ea8fb183905757ede5f5662302701a28d6a0be278d26faf85d2c36d6478236b"
+  },
+  {
+   "id": "code:modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu",
+   "length": 1280,
+   "offset": 222709,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "568810557a9a5b716f210dde8a1344d7a365590713062fc4302739402737d3a2"
+  },
+  {
+   "id": "code:qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/projection_precollective_overlap_probe.cu",
+   "length": 1280,
+   "offset": 223989,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/projection_precollective_overlap_probe.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "bc1303904f9ed5e2be383583f5ac336547c7d3dc7813a9de490a86a0b585cc50"
+  },
+  {
+   "id": "code:modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
+   "length": 1280,
+   "offset": 225269,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "15d39621d83d142b3d5ab62e74dd7d4d8dc564b1076c885b248ac35c506443a8"
+  },
+  {
+   "id": "code:modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 226549,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "39b171e18a6d9ff90fe03f3b20f33e533e93b08c12ccc53a8ed8fc275149d0b3"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_admission.h",
+   "length": 1280,
+   "offset": 227829,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_admission.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "4078c32474cc19d64039b68b16c2958839a0451d51b5deb596c8d8a8b44f88d8"
+  },
+  {
+   "id": "code:runtime/model_resident_deployment.c",
+   "length": 1280,
+   "offset": 229109,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_deployment.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "63b537ca359172010acc91c26799f402ce98fd2d90157d0fa7dc6bc86594c769"
+  },
+  {
+   "id": "code:inference/kernels/dtype.cuh",
+   "length": 1280,
+   "offset": 230389,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "inference/kernels/dtype.cuh"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "39c9be8921f8a47058d83422c34533f24e84f8643857e5da1b6d024cbf9f3ac3"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_stage_module_common.h",
+   "length": 1280,
+   "offset": 231669,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_stage_module_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "0fe4b129baf4c941a92ea0c1ae2bfbc421faa34f2929b8d3e3c7c4453bb3bcac"
+  },
+  {
+   "id": "code:ring/transport/fixed_ring.c",
+   "length": 1280,
+   "offset": 232949,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "ring/transport/fixed_ring.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "11364072ee451aedf6cc85a5cd05240b387e8ee9f38b8ac27f78b95392eba477"
+  },
+  {
+   "id": "code:runtime/spark_graph_reloc.c",
+   "length": 1280,
+   "offset": 234229,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/spark_graph_reloc.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "88b4ca2a79a5b6b8f4a0c0cd8619554092b6467f58b23990ad7258873c147691"
+  },
+  {
+   "id": "code:tools/weightd_execute_probe.c",
+   "length": 1280,
+   "offset": 235509,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/weightd_execute_probe.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "4cff3f0074fc9fc201081357b9802127489cf92f0acd548ce8b8bb3d0694b39e"
+  },
+  {
+   "id": "code:runtime/model_resident_client.c",
+   "length": 1280,
+   "offset": 236789,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_client.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "bf3953b031fde4a31b57de6a187cac221cd504aad7d04ad9cae82958124d3767"
+  },
+  {
+   "id": "code:cache/nvme_tier.c",
+   "length": 1280,
+   "offset": 238069,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "cache/nvme_tier.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "0f8b5c6056e667ce5d7d5de1147cb8a919e99c205c4c683ffdcc22f8779940ca"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_kernels.cuh",
+   "length": 1280,
+   "offset": 239349,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_kernels.cuh"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "13325f37a6bf1bc3ee9b5ac05bac854b4983b4e13270965f5eca0575082235a4"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_model_driver_support.h",
+   "length": 1280,
+   "offset": 240629,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_model_driver_support.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "844fd67a2606bb0873e1888405fedf764e115c5e906b5cad26d29a1526427a70"
+  },
+  {
+   "id": "code:model-families/common/include/sparkpipe/spark_pack_load_common.h",
+   "length": 1280,
+   "offset": 241909,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/common/include/sparkpipe/spark_pack_load_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "4c206f8077cfc72178c26cdcfd0c12adc435c2384d6ae312e4c2534ae9831996"
+  },
+  {
+   "id": "code:model-families/common/include/sparkpipe/spark_pack_synthesize_common.h",
+   "length": 1280,
+   "offset": 243189,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/common/include/sparkpipe/spark_pack_synthesize_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "0484afa5b74d05abced1269882792340b859efc8cf1ecf1a60bcc8afb0c60212"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h",
+   "length": 1280,
+   "offset": 244469,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "c5893182447544accb3b0f6718df6cafbfa8759e36049c9e1b7d673a7e1ec7e6"
+  },
+  {
+   "id": "code:cache/prefix_cache.c",
+   "length": 1280,
+   "offset": 245749,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "cache/prefix_cache.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "6569850f9a84bd06e9ad482513b9c522b803c793c68f9f8217f2cdd1c731f4ef"
+  },
+  {
+   "id": "code:tools/qwen4_flash_nvfp4_smoke.cu",
+   "length": 1280,
+   "offset": 247029,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen4_flash_nvfp4_smoke.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "b4e59a7d0506967d5be61a977313cbfd6e4e3cc03967b4f63714dd57e53e1ebc"
+  },
+  {
+   "id": "code:tools/perf_r1_head_bench.cu",
+   "length": 1280,
+   "offset": 248309,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/perf_r1_head_bench.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "41554b897d866f7de05ccf19d92f489e951abe29a110a12f1d8b661167022a18"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_model_runtime.h",
+   "length": 1280,
+   "offset": 249589,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_model_runtime.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "00c94c5cb730e868fa84f7db59a3218eb0106c7c2a017633c8ae0aeda5eadc32"
+  },
+  {
+   "id": "code:modules/gemma4_resident_decode_stage/tools/gemma4_pack_synthesize.c",
+   "length": 1280,
+   "offset": 250869,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/gemma4_resident_decode_stage/tools/gemma4_pack_synthesize.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "89c568f8e44e908c97482029f3262947cf193acf9df19822c0edcdd480eba0fc"
+  },
+  {
+   "id": "code:modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 252149,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "7ef6ca4b9db47958e948b1a10da180130d30c1660069f4b9f9e94dc85c51b47a"
+  },
+  {
+   "id": "code:text/tokenizer_sidecar.c",
+   "length": 1280,
+   "offset": 253429,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "text/tokenizer_sidecar.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "81c5ec0ee021d2eef063bbda81063e3921c7b6076b29b5c387415bf38392003c"
+  },
+  {
+   "id": "code:runtime/pack/model_description.c",
+   "length": 1280,
+   "offset": 254709,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/pack/model_description.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "fa405d89fb8db44a8d1139808982948dfee5c5b4183a1f27e53c03ed5a319002"
+  }
+ ],
+ "format": "sparkpipe-ab-corpus-v1",
+ "name": "CT-short",
+ "notes": [
+  "prose-recent: arXiv 2607.x (July 2026), CC-BY/BY-SA/CC0 only; newest papers in secemp9/arxiv-complete@cee89483; GLM-5.3 was published about 2026-08, so these may or may not predate its training cutoff (unverified). prose-old: arXiv astro-ph/0101 (January 2001), almost certainly in pre-training data; the contrast measures the contamination effect (memorized text understates KL and flips). Report the strata separately.",
+  "code: SparkPipe C/CUDA sources at 266b6adbc (not public), leading include/pragma lines stripped so documents do not share a first block.",
+  "on-policy stratum is a separate corpus (CT-onpolicy), generated from the production API by the lead; its dNLL never enters a verdict.",
+  "retokenized from zai-org/GLM-5.3-Flash@04c4e9e95c5da8862dced7e5056455116f83a7e0 tokenizer.json by decoding each document and encoding it with Qwen/Qwen3.8-27B tokenizer.json, cut to 1280 tokens"
+ ],
+ "skipped": [],
+ "strata": {
+  "code": 40,
+  "prose-old": 40,
+  "prose-recent": 120
+ },
+ "tokenizer": "Qwen/Qwen3.8-27B tokenizer.json",
+ "tokenizer_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+ "total_tokens": 255989
+}

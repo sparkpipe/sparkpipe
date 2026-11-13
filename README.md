@@ -113,7 +113,10 @@ byte layout the kernels read, and it is identified by SHA-256 at every
 storage tier. A pack directory holds the pack and every file the engine opens
 beside it, all real files, and a lane names the pack by that path: no lane,
 launcher or harness reaches a weight file or a configuration through a
-symlink ([`docs/LANES.md`](docs/LANES.md)).
+symlink ([`docs/LANES.md`](docs/LANES.md)). A node keeps only the files a lane
+names, their companions and a short reasoned keep list of staged packs;
+`tools/node_pack_prune.py` lists everything else and deletes it on the
+owner's order.
 
 Every model serves at its publisher's full precision by default whenever it
 fits one fleet: BF16, or the format it was trained or released in (A.X K2's
@@ -123,9 +126,10 @@ their own served names (`glm-5.3-fp8`, `glm-5.3-nvfp4`), so the user chooses
 between speed, cache capacity and full precision. A variant is the
 publisher's or a vetted community release with pinned provenance where one
 exists, and otherwise the output of the shared quantizing packer; every
-variant passes the accuracy gate against the full-precision model before it
-is offered, and the Fleet List gives its measured speed, accuracy and cache
-capacity. A model that does not fit one fleet at full precision (Qwen 3.8
+variant is measured against the full-precision model by one method before it
+is offered ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)), and the Fleet
+List gives its measured speed, accuracy and cache capacity for the user to
+choose by. A model that does not fit one fleet at full precision (Qwen 3.8
 Max) serves the best variant that does. Formats live in one codec layer per
 backend (`inference/kernels/weight_codec.cuh` on CUDA,
 `inference/runner/device_layers.c` on Metal): no model stage names a format,
@@ -244,9 +248,10 @@ class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
 and above is interactive, which is what a request gets when it names
 nothing; below is background. The chat layer maps `x-sparkpipe-priority:
 interactive|background` (a header, or the same key in the request's
-`metadata`), Claude Code's compaction and auxiliary calls, a background
-key, `<model>-bulk` and chat-memory jobs onto these priorities. Greedy output
-does not depend on the class.
+`metadata`), a background key, `<model>-bulk` and chat-memory jobs onto
+these priorities. A harness's own marks, such as Claude Code's compaction
+and auxiliary calls, never lower a request's priority. Greedy output does
+not depend on the class.
 
 - While background work runs, `SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES`
   (2) resident sequences stay free for interactive requests: background
@@ -298,7 +303,7 @@ does not depend on the class.
     the embedding and the per-layer health checks.
   - A model supplies its buffers, weight binding, layer math and recurrent
     states through hooks (Kimi K3's are in
-    `modules/k3_resident_decode_stage/source/spark_k3_streamed_prefill.cuh`).
+    `model-families/k3/source/k3_streamed_prefill.cuh`).
   - The plan and balancer arithmetic is in `include/sparkpipe/spark_pass_plan.h`.
   - Storing a pass's keys into the decode shards and gathering older keys back
     is in `inference/runner/pass_keys.cuh`.
@@ -331,9 +336,10 @@ change its tokens. Decode graphs are captured for each row count. A frame
 that no graph covers enqueues the same launches in one pass and checks its
 collective rounds once, at the end of the frame.
 
-**The harness.** `tools/glm5_next_batch_roofline.cu` runs the real kernels
-on one GPU at any batch and context. It prints per-phase time against the
-memory bound, so the next bottleneck can be read off directly.
+**The roofline.** `tools/roofline_estimator.py` derives each lane's bytes
+per token from the pack layouts and prints receipted tokens per second
+against the measured memory bound, so the gap to the bound can be read off
+per lane.
 
 ## KV cache and model state
 
@@ -463,24 +469,26 @@ reordering cannot deadlock the mesh.
 
 ## Speculative decoding
 
-Speculation goes through one seam per serving adapter. Each family has one
-source mask, `SPARK_<FAMILY>_SPECULATORS`, that selects its draft sources:
-local drafts the model makes itself (MTP heads, DSpark) and remote drafts
-from a drafter host through the DFT3 draft bridge (DFlash2, n-gram and suffix
-sources). One model-neutral policy engine does all acceptance accounting: the
-longest accepted path plus one bonus token, with a chain treated as a
-degenerate tree.
+The batch engine plans every draft and the model verifies it. A draft comes
+from the request's own context, as the tokens that followed the longest
+earlier match of the text just written, or from a draft model on a drafter
+host, asked through the DFT3 draft bridge without stopping the engine. For
+each frame the engine picks the depth, and the branches of a tree, that give
+the most expected tokens per second, from the acceptance and the frame times
+it has measured. The model keeps the longest path whose tokens it would have
+emitted itself, plus one token of its own, with a chain treated as a tree of
+one branch.
 
-A model customizes exactly three things:
+A model supplies two things:
 
-- a model contract: geometry, draft limits and hidden-tap layers;
-- a draft function, or the hidden-tap rows a remote drafter needs;
-- a fold/rollback for its own recurrent and paged state.
+- a verify frame in its stage, which computes several rows of one sequence
+  in one pass;
+- a fold of its own recurrent and paged state to the last kept row.
 
-**Sources.** A new method arrives as a new source behind the seam, not as
-edits to every family. A tree verifier checks several drafters' candidates
-in one target pass, and multi-drafter composition races decorrelated
-drafters and retires the ones that stop paying for themselves
+**Sources.** A new draft method arrives as a draft model behind the bridge,
+not as edits to every family. A tree frame checks several drafters'
+candidates in one target pass, and the engine stops asking a drafter that
+stops paying for itself
 ([`docs/SPECULATION_UNIFIED_DESIGN.md`](docs/SPECULATION_UNIFIED_DESIGN.md)).
 
 **Guarantees.** Verification pins every emitted token to the target model's
@@ -591,7 +599,7 @@ Scheduling and cache policy contain no CUDA, NCCL or Metal assumptions
 | 4 Sparks | TP4 models; entry system |
 | 8 Sparks | TP8 or TP4 × PP2 |
 | 16 Sparks | TP16, TP4 × PP4, PP16 or other splits, chosen by measurement |
-| 1 to 8 Mac Studios (M5 Ultra, 256 GB) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
+| 1 to 8 Mac Studios (Apple silicon) | one replica per Studio, TP inside a Thunderbolt 5 island of four, or TP4 × PP2 across two islands |
 | Sparks with Mac Studios | one catalog: Sparks prefill and Studios decode, or PP2 across both |
 | Prefill accelerators (4 RTX 5080) | compute long prompts for a fleet and hand it the KV cache |
 
@@ -624,8 +632,8 @@ evidence rules.
 
 **Hub.** One host outside the Sparks publishes release roots, collects node
 heartbeats and serves the model API. In the reference fleet it is an x86
-workstation with an RTX 5090, so the API is built for x86 separately from
-the aarch64 Spark binaries. Host roles and the release procedure are in
+host, so the API is built for x86 separately from the aarch64 Spark
+binaries. Host roles and the release procedure are in
 [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
 
 ## Models
@@ -659,6 +667,7 @@ model's cached prefixes come back from the KV snapshot store.
 | `muse-glimmer-30b` | Muse Glimmer 30B | `muse_glimmer` | 128K | yes |
 | `qwen3.8-max` | Qwen 3.8 Max | `qwen38` | 32K | yes |
 | `qwen3.8-27b` | Qwen 3.8 27B | `qwen38` | 256K | yes |
+| `qwen3.8-27b-fp8` | Qwen 3.8 27B, FP8 variant | `qwen38` | 256K | yes |
 | `qwen3.8-flash` | Qwen 3.8 Flash (internal) | `qwen38` | 256K | yes |
 
 - **Context** is the window the chat layer serves
@@ -673,9 +682,14 @@ model's cached prefixes come back from the KV snapshot store.
 - Qwen 3.8 Flash (internal) serves on the LAN door but not on sparkpipe.ai:
   its license requires a separate agreement with Qwen for any
   model-as-a-service business.
-- **Precision variants:** every row is the publisher's precision; the 8-bit
-  and 4-bit variants of a model serve under its name with `-fp8`, `-nvfp4` or
-  `-mxfp4` appended (Packs, above).
+- **Precision variants:** a row whose name ends in `-fp8`, `-nvfp4` or
+  `-mxfp4` is the 8-bit or 4-bit variant of the model above it (Packs,
+  above); every other row is the publisher's precision. A variant is its own
+  lane record on its model's mesh lane, with its own pack, adapter build and
+  KV label, and its record lands with its measured figures against the
+  full-precision lane ([`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md)).
+  `qwen3.8-27b-fp8` is the publisher's FP8 release
+  ([figures](qualification/qwen38_27b/fp8-variant-20261112/README.md)).
 - **Korean models:** K-EXAONE 2.0 (LG AI Research, BF16), A.X K2 (SK Telecom,
   FP8, the precision it was trained in) and Solar Open 2 (Upstage, BF16) serve
   on the same runner, each with its publisher's drafter where there is one.
@@ -736,19 +750,20 @@ chat layer, in Korean and English, for accounts the operator approves
   current primary sources and cites them. Korean law comes from the national
   law database; each tool says where its queries go before it is ticked.
 
-## Fleet-hours
+## Renting a fleet
 
-HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from Seoul, first of all to Korean companies whose data must stay in Korea. The terms, the Fleet List and the privacy policy are on [sparkpipe.ai](https://sparkpipe.ai), in Korean and English: visitors from Korean addresses get the Korean pages first, everyone else the English ones, and an EN / 한국어 switch on every page keeps their choice.
+HYOR AI Tech Ltd. rents whole SparkPipe fleets from Seoul to engineers and small teams who work all day in a large codebase with coding agents: companies, professionals and independent developers, not household consumers. The product is defined by [sparkpipe.ai](https://sparkpipe.ai) and the SparkPipe Customer Agreement published there, in Korean and English: visitors from Korean addresses get the Korean pages first, everyone else the English ones, and an EN / 한국어 switch on every page keeps their choice. Code follows the site and the Agreement; where they disagree, the code is wrong.
 
-- **A fleet-hour** is one entire fleet for sixty minutes. During it the fleet serves only the customer's requests, with the model the customer chose from the [Fleet List](https://sparkpipe.ai/fleets.html).
-- **Two ways to buy:**
-  - **Hourly:** prepaid at the hourly price, with no commitment and no business check. A customer holds up to 168 hours (a week), or 720 after a business check. A two-year customer may take an hourly reservation until 6 hours before it starts, and the hour returns to the balance.
-  - **The two-year agreement:** every hour of a two-year term at a lower price, after a business check, negotiated clause by clause. The models the customer names stay available for the term.
-- **Self-serve:** an account is a verified email address, signed in to with one-time codes. The customer accepts the terms, reserves hours on each fleet's calendar and changes its account while signed in, or through the API with its access tokens. `https://sparkpipe.ai/availability.txt` publishes live capacity every 30 seconds.
-- **Payment:** prepaid. Korean businesses pay in won by bank transfer against an electronic tax invoice (세금계산서); any customer may pay in USDC or USDT through our payment processor, CoinPayments, and two-year customers may also wire USD. Korean VAT applies except to a zero-rated wire from abroad.
-- **Records:** every payment, issue of hours, reservation, displacement, credit and consumption is a line in an append-only, hash-chained ledger whose daily root is published. Downtime credits are issued automatically from the fleet's own records.
-- **Access:** during its hours, the access tokens a customer issues under its key reach its fleet through the SparkPipe API; outside them they reach nothing.
-- **Responsibility:** we provide capacity only. The customer decides what runs, answers for its users and anyone it passes hours to, and carries any AI-law duties toward its own users. Our system has no feature for transferring hours.
+- **A fleet of your own, by the week.** A Week runs from Monday 00:00 to Sunday 24:00 KST and pins one entire fleet to the customer: nobody else's requests run on it and nobody else can book its hours. Seven days cost the price of six. The customer keeps the fleet by booking the next Week before 00:00 on the Sunday of its last booked Week, up to 52 Weeks ahead, and every Week held ahead raises the discount on Weeks and hours. When every fleet is taken, the customer joins the waitlist.
+- **Hours.** Hour Fleets are booked by the hour, and so is any other serving fleet that nobody holds, up to the end of the current Week, for example as a burst beside a pinned fleet.
+- **Pairs and teams.** Fleets come in pairs on a shared switch: the holder of a pair's A fleet may also pin its B fleet for the same Weeks. At least a quarter of the serving fleets always stay open for hours. A team of three to five shares a fleet, each member with their own sign-in and keys.
+- **Hour-credits.** Everything is paid in hour-credits (HC), prepaid in any quantity. The HC price, the HC for an Hour and a Week, the discounts, each fleet's Rate and the maintenance allowance are published settings on the site; what a customer has bought keeps its price.
+- **What stays on the fleet.** The fleet keeps its cache and the customer's storage from turn to turn and Week to Week, with no copies off the fleet and no backups. They are deleted when another customer's booking of the fleet starts, or 24 hours after the customer's last hour. The customer can export its storage at any time and leaves with its data.
+- **Self-serve.** An account is a verified email address, signed in to with one-time codes. The customer accepts the Agreement, buys HC, books Weeks and hours and joins the waitlist in its account, or through the API with its access tokens. A sandbox runs every flow with no money.
+- **Access.** The access tokens a customer issues reach the fleet it holds at that moment through the SparkPipe API, which loads the model the request names; outside its bookings they reach nothing.
+- **Payment.** Prepaid, in won through Toss Payments (card, bank transfer, virtual account or easy pay), in USDC or USDT through CoinPayments, or in US dollars by bank transfer from abroad. Korean VAT applies except to a zero-rated transfer from a customer with no place of business in Korea.
+- **Records and credits.** Every payment, HC lot, booking, waitlist entry and credit is a line in an append-only, hash-chained ledger; a customer downloads its own entries with proof that they were not altered. Downtime is credited in HC automatically, from the fleet's own records.
+- **Responsibility.** We provide capacity only. The customer decides what runs, answers for its users, and carries any AI-law duties toward them.
 
 ## Repository
 
@@ -773,7 +788,7 @@ HYOR AI Tech Ltd. rents SparkPipe fleets to businesses whole, by the hour, from 
 | `tools/` | packers, recipe generator, harnesses, fleet tooling |
 | `tests/` | host, contract, host-shim kernel and GPU tests |
 | `experiments/` | research code outside the code-size ratchet; no serving path links it |
-| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the USDC and USDT checkout (`buy.html`), the customer account (`account.html`) and the two-year planner (`two-year.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
+| `site/` | sparkpipe.ai in Korean (`*-ko.html`) and English: home page, Fleet List, terms (generated from `site/terms/` by `tools/site_terms.py`), privacy policy, the HC checkout (`buy.html`), the customer account with bookings and the waitlist (`market.html`), the payment status page (`account.html`), the sandbox (`market.html?sandbox`) and the cost check (`compare.html`), served by `tools/sparkpipe_pay.py` (`docs/PAYMENTS.md`) |
 
 Common runtime code does not choose a model family, codec, topology, batch
 width or fallback implementation by name. A deployment package binds those
@@ -792,6 +807,8 @@ Each document is the authority for one thing:
   separate from projections;
 - [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md): host
   roles, releases and fleet operations;
+- [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md): every environment variable a
+  process reads; the serving path reads only residentd's own handoff;
 - [`docs/README.md`](docs/README.md): index of maintained technical
   references.
 

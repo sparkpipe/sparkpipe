@@ -1,4 +1,5 @@
 #include <arpa/inet.h>
+#include "sparkpipe/spark_clock.h"
 #include <infiniband/verbs.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,13 +56,6 @@ struct SparkWeightStream
 	uint32_t early_capacity;
 	uint32_t broken;
 };
-
-static uint64_t WeightStreamNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
-}
 
 static uint32_t WeightStreamImmediate(uint32_t tag, uint32_t source, uint32_t half, uint32_t chunk)
 {
@@ -443,7 +437,7 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 			status = WeightStreamReady(stream,peer,tag);
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
-	start = WeightStreamNowNs();
+	start = SparkMonotonicNs();
 	while ( call.done[WEIGHT_STREAM_FABRIC] < expected[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < expected[WEIGHT_STREAM_PAIR] ||
 		call.got[WEIGHT_STREAM_FABRIC] < expected[WEIGHT_STREAM_FABRIC] || call.got[WEIGHT_STREAM_PAIR] < expected[WEIGHT_STREAM_PAIR] )
 	{
@@ -467,7 +461,7 @@ static SparkStatus WeightStreamEveryPeer(SparkWeightStream *stream, uint64_t sen
 			status = WeightStreamPollAll(stream,&call);
 		if ( status != SPARK_STATUS_OK )
 			return WeightStreamFail(stream,status);
-		if ( WeightStreamNowNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
+		if ( SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
 		{
 			fprintf(stderr,"weight_stream: rank %u transfer tag %u stalled: done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",config->rank,tag,
 				call.done[WEIGHT_STREAM_FABRIC],expected[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],expected[WEIGHT_STREAM_PAIR],call.got[WEIGHT_STREAM_FABRIC],
@@ -567,7 +561,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 		status = WeightStreamReady(stream,writers[index],tag);
 	if ( status != SPARK_STATUS_OK )
 		return WeightStreamFail(stream,status);
-	start = WeightStreamNowNs();
+	start = SparkMonotonicNs();
 	block->ready_ns = block->posted_ns = 0u;
 	while ( call.done[WEIGHT_STREAM_FABRIC] < expect_done[WEIGHT_STREAM_FABRIC] || call.done[WEIGHT_STREAM_PAIR] < expect_done[WEIGHT_STREAM_PAIR] ||
 		call.got[WEIGHT_STREAM_FABRIC] < expect_got[WEIGHT_STREAM_FABRIC] || call.got[WEIGHT_STREAM_PAIR] < expect_got[WEIGHT_STREAM_PAIR] )
@@ -591,13 +585,13 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 		}
 		while ( moved != 0u );
 		if ( block->ready_ns == 0u && WeightStreamAllReady(&call,stream,targets,target_count) != 0u )
-			block->ready_ns = WeightStreamNowNs() - start;
+			block->ready_ns = SparkMonotonicNs() - start;
 		if ( block->posted_ns == 0u && WeightStreamAllSent(sent,target_count,per_half) != 0u )
-			block->posted_ns = WeightStreamNowNs() - start;
+			block->posted_ns = SparkMonotonicNs() - start;
 		status = WeightStreamPollAll(stream,&call);
 		if ( status != SPARK_STATUS_OK )
 			return WeightStreamFail(stream,status);
-		if ( WeightStreamNowNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
+		if ( SparkMonotonicNs() - start > SPARK_WEIGHT_STREAM_TIMEOUT_NS )
 		{
 			fprintf(stderr,"weight_stream: rank %u rotation step %u (block of rank %u) stalled: sent %u + %u done %u/%u + %u/%u got %u/%u + %u/%u ready 0x%x + 0x%x\n",rank,step,
 				source,sent[0],sent[1],call.done[WEIGHT_STREAM_FABRIC],expect_done[WEIGHT_STREAM_FABRIC],call.done[WEIGHT_STREAM_PAIR],expect_done[WEIGHT_STREAM_PAIR],
@@ -608,7 +602,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	}
 	block->source = source;
 	block->reserved0 = 0u;
-	block->total_ns = WeightStreamNowNs() - start;
+	block->total_ns = SparkMonotonicNs() - start;
 	if ( source == rank )
 	{
 		block->half_offset[0] = own_offset;

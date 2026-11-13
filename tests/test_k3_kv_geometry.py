@@ -11,13 +11,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFINES = ROOT / "model-families/k3/include/sparkpipe/spark_k3_llm_defines.h"
-CONFIG = ROOT / "inference/llms/kimi_k3/config.h"
+CONFIG = ROOT / "model-families/k3/source/config.h"
 CONTRACT = ROOT / "model_contracts/k3.json"
 SHIMS = [
     ROOT / "model-families/k3/include/sparkpipe/spark_k3_model.h",
     ROOT / "model-families/k3/include/sparkpipe/spark_k3_kv_geometry.h",
-    ROOT / "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_pool_sizing.h",
-    ROOT / "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_module.h",
+    ROOT / "model-families/k3/include/sparkpipe/spark_k3_pool_sizing.h",
+    ROOT / "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_module.h",
 ]
 
 

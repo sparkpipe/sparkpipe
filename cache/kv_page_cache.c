@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_kv_page_cache.h"
+#include "sparkpipe/spark_clock.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1464,7 +1465,6 @@ static uint32_t SparkKvPageCacheResidentLivePages(const SparkKvPageCache *cache)
 	return(count);
 }
 
-static uint64_t SparkKvPageCacheNowNs(void);
 
 static uint32_t SparkKvPageCacheDiscardInsteadOfSpill(SparkKvPageCache *cache,uint64_t slots_needed)
 {
@@ -2307,14 +2307,6 @@ SparkStatus SparkKvPageCacheBeginPinnedLaneTransaction(
 	return(SPARK_STATUS_OK);
 }
 
-static uint64_t SparkKvPageCacheNowNs(void)
-{
-	struct timespec now;
-	if ( clock_gettime(CLOCK_MONOTONIC,&now) != 0 )
-		return(0u);
-	return((uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec);
-}
-
 SparkStatus SparkKvPageCacheAttachDeviceCopy(SparkKvPageCache *cache,const SparkKvPageCacheDeviceCopy *copy)
 {
 	if ( SparkKvPageCacheIsValid(cache) == 0u || copy == 0 || copy->copy_page == 0 || copy->retire_copies == 0 ||
@@ -2786,7 +2778,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 		terminal = snapshot->pending_terminals[snapshot->pending_head];
 		if ( snapshot->head_start_ns == 0u )
 		{
-			snapshot->head_start_ns = SparkKvPageCacheNowNs();
+			snapshot->head_start_ns = SparkMonotonicNs();
 			snapshot->head_saved_pages = 0u;
 		}
 		entry_index = SparkKvPageCacheSaveUnsavedEntry(cache,terminal,&file_kind);
@@ -2795,7 +2787,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			if ( snapshot->head_saved_pages != 0u )
 			{
 				snapshot->save_count++;
-				snapshot->save_ns += SparkKvPageCacheNowNs() - snapshot->head_start_ns;
+				snapshot->save_ns += SparkMonotonicNs() - snapshot->head_start_ns;
 			}
 			SparkKvPageCacheSavePop(cache);
 			continue;
@@ -2845,7 +2837,7 @@ SparkStatus SparkKvPageCacheSaveTake(SparkKvPageCache *cache,SparkKvPageCacheSav
 			continue;
 		}
 		if ( cache->write_meter != 0 )
-			SparkKvWriteMeterRecord(cache->write_meter,work->ticket.file_bytes,SparkKvPageCacheNowNs());
+			SparkKvWriteMeterRecord(cache->write_meter,work->ticket.file_bytes,SparkMonotonicNs());
 		snapshot->in_flight = 1u;
 		snapshot->in_flight_entry = entry_index;
 		return(SPARK_STATUS_OK);
@@ -3062,7 +3054,7 @@ SparkStatus SparkKvPageCacheRestoreBegin(SparkKvPageCache *cache,SparkKvPageCach
 	job->need = SPARK_KV_PAGE_CACHE_RESTORE_DONE;
 	job->imported_pages = 0u;
 	job->read_errors = 0u;
-	job->start_ns = SparkKvPageCacheNowNs();
+	job->start_ns = SparkMonotonicNs();
 	existing = SparkKvPageCacheFindEntryConst(cache,identity,token_count);
 	if ( existing != SPARK_KV_PAGE_CACHE_NO_INDEX && ((cache->entries[existing].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) == 0u || cache->state_store == 0) )
 		return(SPARK_STATUS_OK);
@@ -3385,7 +3377,7 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 		SPARK_RETURN(status);
 	}
 	snapshot->restore_count++;
-	snapshot->restore_ns += SparkKvPageCacheNowNs() - job->start_ns;
+	snapshot->restore_ns += SparkMonotonicNs() - job->start_ns;
 	return(SPARK_STATUS_OK);
 }
 

@@ -40,7 +40,7 @@ GATED_ROOTS = (
     "text",
 )
 BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal")
-DEVICE_DIRS = ("inference/kernels", "inference/llms", "inference/runner", "model-families", "modules") + BACKEND_DIRS
+DEVICE_DIRS = ("inference/kernels", "inference/runner", "model-families", "modules") + BACKEND_DIRS
 EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 HOST_SUFFIXES = {".c", ".h", ".cc", ".cpp", ".hpp", ".m", ".mm"}
 DEVICE_SUFFIXES = {".cu", ".cuh", ".metal"}
@@ -90,19 +90,19 @@ PENDING = {
     "include/sparkpipe/spark_weightd_map.h": {"header": 1, "token": 1},
     "inference/kernels/layer_kind.cuh": {"rename": 1},
     "inference/kernels/tensor_map.cuh": {"rename": 1},
-    "inference/llms/kimi_k3/config.h": {"device-include": 1},
+    "model-families/k3/source/config.h": {"device-include": 1},
     "model-families/common/include/sparkpipe/spark_lm_certified_launch.h": {"device-include": 1, "token": 8},
     "model-families/common/include/sparkpipe/spark_tp_mesh_register.h": {"header": 1, "token": 8},
     "model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h": {"token": 48},
     "model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h": {"token": 3},
     "model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h": {"token": 3},
     "model-families/k3/include/sparkpipe/spark_k3_kv_shard.h": {"token": 3},
-    "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1, "header": 1, "token": 3},
+    "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1, "header": 1, "token": 3},
     "node/model_residentd.c": {"header": 1, "token": 29},
     "node/weightd_mesh.c": {"header": 1, "token": 3},
     "ring/transport/hidden_transport.c": {"handle": 1},
     "ring/transport/rdma.cu": {"placement": 1, "rename": 1},
-    "ring/transport/tp_device_collective.c": {"handle": 14, "token": 100},
+    "ring/transport/tp_device_collective.c": {"handle": 14, "token": 98},
     "runtime/gemm.cuh": {"placement": 1},
     "runtime/gemm_descriptor_cache.h": {"token": 5},
     "runtime/launch.h": {"device-include": 1, "token": 23},

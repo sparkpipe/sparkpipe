@@ -1,4 +1,5 @@
 #include <errno.h>
+#include "sparkpipe/spark_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -492,27 +493,20 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	queue->backend = 0;
 }
 
-static uint64_t CudaNowNs(void)
-{
-	struct timespec now;
-	clock_gettime(CLOCK_MONOTONIC,&now);
-	return((uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec);
-}
-
 static SparkStatus CudaPoll(cudaError_t (*query)(void *), void *handle, cudaError_t (*block)(void *), uint64_t timeout_ns, const char *operation, const char *owner)
 {
 	uint64_t deadline;
 	cudaError_t error;
 	if ( timeout_ns == SPARK_DEVICE_WAIT_FOREVER )
 		return(CudaStatus(block(handle),operation,owner));
-	deadline = CudaNowNs() + timeout_ns;
+	deadline = SparkMonotonicNs() + timeout_ns;
 	for ( ;; )
 	{
 		struct timespec pause = {0, 50000};
 		error = query(handle);
 		if ( error != cudaErrorNotReady )
 			return(CudaStatus(error,operation,owner));
-		if ( CudaNowNs() >= deadline )
+		if ( SparkMonotonicNs() >= deadline )
 			return(SPARK_STATUS_PENDING);
 		nanosleep(&pause,0);
 	}

@@ -9,7 +9,6 @@
       "usage": true
     },
     "defaultFeatureIds": [
-      "web_search",
       "code_interpreter"
     ],
     "builtinTools": {
@@ -23,7 +22,6 @@
       "knowledge": false
     },
     "toolIds": [
-      "github",
       "sparkpipe_chat_timer_tool"
     ]
   },
@@ -97,6 +95,11 @@
       "id": "qwen3.8-27b",
       "name": "Qwen 3.8 27B",
       "description": "Qwen 3.8 27B. 256K context. Switching to it takes about 20 s."
+    },
+    {
+      "id": "qwen3.8-27b-fp8",
+      "name": "Qwen 3.8 27B FP8",
+      "description": "Qwen 3.8 27B at 8-bit precision (the publisher's FP8 release). 256K context. Switching to it takes about 20 s."
     },
     {
       "id": "qwen3.8-flash",

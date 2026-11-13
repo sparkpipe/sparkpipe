@@ -23,7 +23,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LLMS = ROOT / "inference" / "llms"
+MODELS = {path.parent.parent.name: path.parent for path in sorted((ROOT / "model-families").glob("*/source/config.h"))}
 
 # What an entry point implementing this kind looks like in a name.
 KIND_ENTRY = {
@@ -55,14 +55,14 @@ def selector_kinds(model):
     contracts frequently define it through another macro, so parsing only a
     decimal literal silently evaluated the wrong number of layers.
     """
-    config = LLMS / model / "config.h"
+    config = MODELS[model] / "config.h"
     text = config.read_text()
     prefix = re.search(r"#define\s+(\w+)_LAYER_KIND\(layer\)", text)
     if not prefix:
         return None, None
     layer_count_macro = f"{prefix.group(1)}_LAYERS"
     program = f"""#include <stdio.h>
-#include "inference/llms/{model}/config.h"
+#include "{config.relative_to(ROOT).as_posix()}"
 int main(void)
 {{
     int layer;
@@ -100,7 +100,7 @@ int main(void)
 
 
 def entry_points(model):
-    unity = LLMS / model / "unity.cu"
+    unity = MODELS[model] / "unity.cu"
     if not unity.exists():
         return set()
     exports = set(re.findall(r'extern "C" int32_t (\w+)', unity.read_text()))
@@ -124,18 +124,18 @@ def driver_dispatches(model):
     loop moved to slice.cuh precisely so a host harness can execute it, and a
     gate that only reads bind.cu would push the dispatch back into the one
     file a CPU cannot compile."""
-    bind = LLMS / model / "bind.cu"
+    bind = MODELS[model] / "bind.cu"
     if not bind.exists():
         return None
     driver = bind.read_text()
-    for part in sorted((LLMS / model).glob("slice.cuh")):
+    for part in sorted(MODELS[model].glob("slice.cuh")):
         driver += part.read_text()
     return "LAYER_KIND" in driver
 
 
 def main():
     failures = 0
-    for model in sorted(p.name for p in LLMS.iterdir() if p.is_dir()):
+    for model in sorted(MODELS):
         kinds, count = selector_kinds(model)
         if kinds is None:
             print(f"  FAIL {model}: no LAYER_KIND selector this gate can evaluate")
@@ -175,8 +175,7 @@ def main():
             note = f", {len(excused)} kind(s) not implemented" if excused else ""
             print(f"  {mark}   {model}: {count} layers, kinds [{summary}]{note}{no_driver_note}")
     print()
-    stale = [k for k in KNOWN_INCOMPLETE if k[0] not in
-             {p.name for p in LLMS.iterdir() if p.is_dir()}]
+    stale = [k for k in KNOWN_INCOMPLETE if k[0] not in MODELS]
     if stale:
         print(f"stale exemptions for models that no longer exist: {stale}")
         return 1

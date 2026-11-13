@@ -14,11 +14,11 @@ module, never from common infrastructure back to a model family.
 | Text | Tokenizer and prompt template primitives | `text/` |
 | Model Families | Generated model facts and host-side family contracts | `model-families/`, `model_contracts/` |
 | Stage runner | The one TP stage runner every driver runs on (weight attach through weightd, the TP collective, CUDA graphs, KV attach, decode chains, lanes) and the serving adapter that wraps it | `inference/runner/`, `include/sparkpipe/spark_stage_runner*.h`, `include/sparkpipe/spark_stage_serving_adapter.h`, `model-families/common/include/sparkpipe/` |
-| Stage models | Each family's math behind the runner's model interface (open, bind, step, KV attach); no system code | `model-families/<family>/source/`, `inference/llms/kimi_k3/` |
+| Stage models | Each family's math behind the runner's model interface (open, bind, step, KV attach); no system code | `model-families/<family>/source/` |
 | Family templates | Code shared across forked model families ([FAMILY_TEMPLATES](FAMILY_TEMPLATES.md)) | `include/sparkpipe/family/` |
 | Kernels | Shared compile-time CUDA mechanisms and formats ([KERNEL_PLAYBOOK](KERNEL_PLAYBOOK.md)) | `inference/kernels/` |
 | Model Modules | Per-driver serving glue (KV region layout, adapter descriptor, topology) and the stage-model instantiation, built into one serving adapter library | `modules/*_resident_decode_stage/` |
-| Speculation | Speculation seam, draft sources, tree and policy; the RTX 5090 drafter node | `include/sparkpipe/spark_speculation_*.h`, `src/spark_speculation_*.c`, `deployment/rtx5090_speculation/` ([RTX5090_SPECULATION_NODE](RTX5090_SPECULATION_NODE.md)) |
+| Speculation | Speculation seam, draft sources, tree and policy; the hub's drafter node | `include/sparkpipe/spark_speculation_*.h`, `src/spark_speculation_*.c`, `deployment/rtx5090_speculation/` ([RTX5090_SPECULATION_NODE](RTX5090_SPECULATION_NODE.md)) |
 | Node | One resident process per rank, the generic batch client, and the HTTP API process | `node/model_residentd.c`, `node/model_batch.c`, `node/model_api.c` |
 | Deployment | Release build and rollout, the hub's core channel, and node convergence by MANIFEST diff ([FLEET_RELEASE_RUNBOOK](FLEET_RELEASE_RUNBOOK.md)) | `deployment/`, `scripts/release_build.sh`, `scripts/release_rollout.sh`, `tools/fleet_release_serve.py`, `tools/fleet_node_agent.sh`, `tools/fleet-agent.service` |
 | Chat layer | OpenAI-compatible chat front end over the C API (chat templates, tool and reasoning parsers) and the model swap controller | `tools/serving/` |
@@ -65,7 +65,9 @@ A new model family provides:
   under `model-families/<family>/source/`;
 - a module directory with its serving glue (KV region layout, adapter
   descriptor) and the stage-model instantiation;
-- a stage packer built on `tools/spark_pack_common.py`;
+- a stage packer that keeps only its tensor-name map, layout and family
+  transforms, built on the common packer core (`tools/spark_pack_common.py`,
+  `spark_pack_codecs.py`, `spark_pack_wire.py`, `spark_pack_plan.py`);
 - a `tools/stage_lane.py` model entry, a production lane record in
   `deployment/lanes.json` (docs/LANES.md) and a chat-layer model entry.
 

@@ -107,7 +107,7 @@ EXEMPT = {
 
 def main() -> int:
     failures = 0
-    for model in sorted(p for p in (ROOT / "inference/llms").iterdir() if p.is_dir()):
+    for model in sorted(p.parent for p in (ROOT / "model-families").glob("*/source/config.h")):
         config = model / "config.h"
         if not config.exists():
             continue
@@ -134,17 +134,17 @@ def main() -> int:
         # the models that DO have a sequence and skip something in it.
         has_sequence = (model / "layer.cuh").exists()
         if not has_sequence:
-            print(f"  --   {model.name}: no layer.cuh; {len(declared)} constants "
+            print(f"  --   {model.parent.name}: no layer.cuh; {len(declared)} constants "
                   f"unused because nothing sequences them yet")
             continue
         if unused:
-            print(f"  FAIL {model.name}: declared and never used by its sequence")
+            print(f"  FAIL {model.parent.name}: declared and never used by its sequence")
             for name in unused:
                 print(f"         {name}")
             failures += len(unused)
         else:
             exempt_here = [d for d in declared if d in EXEMPT]
-            print(f"  ok   {model.name}: {len(declared)} constants, "
+            print(f"  ok   {model.parent.name}: {len(declared)} constants, "
                   f"{len(exempt_here)} exempt with a stated reason")
     print(f"\n{'FAIL' if failures else 'PASS'} ({failures} unused)")
     return 1 if failures else 0

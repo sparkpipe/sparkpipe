@@ -66,6 +66,16 @@ reason below. Two more were deleted instead of archived (end of this file).
 - SPECULATION_SUBSYSTEM_BOUNDARY.md (2026-09-28) — the 08-17
   "unified"-branch inventory and agent-lane ownership; its steps landed or
   were superseded. The live inventory is SPECULATION_UNIFIED_DESIGN.md.
+- SPECULATION_PLAN.md (2026-11-11) — the 2026-09-28 plan of record: drafts
+  relayed through rank 15, per-family verify switches and the GLM A/B arms.
+  The per-family engines it measured went on 2026-10-11; the batch engine
+  plans every draft now (SPECULATION_UNIFIED_DESIGN.md).
+- SPECULATION_TAPS.md (2026-11-11) — the 2026-09-29 contract for the GLM
+  Flash module's taps: `SPT1` datagrams over the sparkf-rtx5090 relay link,
+  the `SPTD` dump and the shadow-mode relay, with their measured round
+  trips. The module went on 2026-10-11 and the relay and dump code on
+  2026-11-11; taps now go over the `SPT2` stream
+  (SPECULATION_UNIFIED_DESIGN.md, Taps).
 
 ## Measurements/receipts (historical records, one-time)
 - DSPARK_* (5 receipts/runbooks), P1P2_*, RESIDENTD_B1_PROFILE,
@@ -150,7 +160,7 @@ reason below. Two more were deleted instead of archived (end of this file).
 - PARALLEL_RESIDENT_QUALIFICATION.md (2026-09-28) — the PR #1082 and
   shared-serving-20260922 campaigns, 8 lanes.
 - WEIGHTSD.md (2026-09-28) — the retired weightsd channel; superseded by
-  MULTIDEV_QUICKSTART.md.
+  MULTIDEV_QUICKSTART.md, itself archived on 2026-11-10.
 - BATCH_CACHE_PARALLEL_STATUS.md (2026-09-28) — the 2026-09-22 qualification
   status; fleet-agent is production now. Its still-required items are in
   TECHDEBT.md.
@@ -161,13 +171,19 @@ reason below. Two more were deleted instead of archived (end of this file).
 - HILLCLIMB_20260920.md (2026-09-28) — the allreduce session log of 09-20 to
   09-24; its wedge playbook and deploy facts must not be followed.
 - K3_FLEET_LAUNCH_STATE.md (2026-09-28) — the 2026-08-29/30 lane snapshot;
-  the bring-up is obsolete, use tools/k3_multidev_run_family.sh.
+  the bring-up is obsolete; K3 lanes run through tools/k3_lane.sh.
 - QWEN38_DFLASH2_RUNBOOK.md (2026-09-28) — do not run it: spark2 is a GLM
   TP16 rank, and its launch contract SPARK_QWEN38_27B_SPECULATORS=0x4
   (tools/qwen38_27b_dflash2_serve.sh) fails adapter init with SCHEMA_ERROR
   (SPECULATION_UNIFIED_DESIGN.md). It is not a working procedure.
 - MODEL_DEV_GUIDE.md (2026-09-28) — the pre-Queue-v2 guide; its rules moved
   to MULTIDEV_QUICKSTART.md "Model work rules".
+- MULTIDEV_QUICKSTART.md (2026-11-10) — the multidev job wrappers, queue
+  tiers and environment-set lanes; every lane is now a lane record rendered by
+  tools/stage_lane.py (LANES.md), and a lane's mesh lane, rank map and pool cap
+  are stage config members.
+- GLM_REAL_DRIVER_PROBE.md (2026-11-10) — the single-rank GLM 5 Next driver
+  probe; the module, the probe and its compare tool are deleted.
 - PR1077_SERVING_RELIABILITY.md (2026-09-28) — a PR write-up; its runtime
   contract moved to SERVING_FUZZ_COVERAGE.md and its timing fields to
   GLM5_NEXT_ROOFLINE.md.
@@ -178,6 +194,11 @@ reason below. Two more were deleted instead of archived (end of this file).
   tools/ling_multidev_build.sh) are gone; Ling now serves from stage-lanes
   through the swap controller and is released by scripts/release_rollout.sh.
   Its hub API step (LING_API_*), which built in the hub home, was dropped.
+- MANAGED_DRIVER_STATION_20260924.md (2026-11-10) — was
+  docs/operations/managed-driver-station.md: the 2026-09-24 station layout.
+  Its lane table names a MiniMax driver that is gone and lanes, ports and
+  a workstation station registry that deployment/lanes.json and
+  FLEET_RELEASE_RUNBOOK.md replace. Do not follow it.
 
 ## Deleted, not archived (2026-09-28)
 - STATUS.md (root) — README.md's Documentation section now does its job.

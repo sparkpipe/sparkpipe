@@ -58,15 +58,6 @@ static inline int32_t SparkNetConfigureLowLatencyTcp(int32_t fd)
 	return 0;
 }
 
-static inline uint64_t SparkNetMonotonicNs(void)
-{
-	struct timespec timestamp;
-	if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
-		return 0u;
-	return (((uint64_t)timestamp.tv_sec * 1000000000ull) +
-		(uint64_t)timestamp.tv_nsec);
-}
-
 static inline int32_t SparkNetCreateListenSocket(const char *bind_address, uint32_t port)
 {
 	struct sockaddr_in address;

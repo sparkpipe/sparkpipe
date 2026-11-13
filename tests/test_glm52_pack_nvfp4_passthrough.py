@@ -20,6 +20,7 @@ Covers (no checkpoint, no torch, no safetensors lib):
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import struct
 import sys
@@ -101,6 +102,12 @@ def write_synthetic_nvfp4_store(root: Path, experts: int = 256,
     return payloads, scales, globals_, bf16
 
 
+def fused_expert_globals(reader):
+    builder = packer.Packer(reader, {}, (5, 5), False, False, 1, 0, packer.CODEC_NVFP4)
+    item = builder.add_experts(packer.K_EXPERT_UP_GATE, 5, ["up_proj", "gate_proj"], 16, 32)
+    return b"".join(itertools.islice(item.produce_scale(), 256))
+
+
 def check_reader():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -127,20 +134,20 @@ def check_reader():
             pass
 
         # block scales: one UE4M3 byte per 16 elements
-        got = np.frombuffer(reader.nvfp4_block_scales(name, 0, 16, 0, 32),
+        got = np.frombuffer(reader.nvfp4_block_scale(name, 0, 16, 0, 32),
                             dtype=np.uint8).reshape(16, 2)
         assert np.array_equal(got, scales[(3, "up_proj")]), "block scale drift"
-        got = np.frombuffer(reader.nvfp4_block_scales(name, 4, 8, 16, 32),
+        got = np.frombuffer(reader.nvfp4_block_scale(name, 4, 8, 16, 32),
                             dtype=np.uint8).reshape(4, 1)
         assert np.array_equal(got, scales[(3, "up_proj")][4:8, 1:]), \
             "block scale slice drift"
 
         # global: scalar F32, little-endian exact
-        value = struct.unpack("<f", reader.nvfp4_global(name))[0]
+        value = struct.unpack("<f", reader.nvfp4_weight_global(name))[0]
         assert value == globals_[(3, "up_proj")], "global scale drift"
 
         # fused-entry globals: 256 experts, one global each (up == gate)
-        fused = reader.nvfp4_expert_globals(5, ["up_proj", "gate_proj"])
+        fused = fused_expert_globals(reader)
         assert len(fused) == 256 * 4, "fused globals byte count"
         got = np.frombuffer(fused, dtype=np.float32)
         assert np.array_equal(got, [globals_[(e, "up_proj")] for e in range(256)]), \
@@ -152,7 +159,7 @@ def check_reader():
             write_synthetic_nvfp4_store(bad_root, globals_mismatch_at=7)
             bad_reader = packer.Fp8SourceReader(bad_root)
             try:
-                bad_reader.nvfp4_expert_globals(5, ["up_proj", "gate_proj"])
+                fused_expert_globals(bad_reader)
                 raise AssertionError("mismatched up/gate global accepted")
             except packer.PackFailure as error:
                 assert "disagree" in str(error), str(error)

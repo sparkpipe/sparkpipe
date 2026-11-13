@@ -1,0 +1,25 @@
+== corpus start 2026-11-12T01:56:34Z
+code:runtime/pack/model_description.c done, 12800 positions in 1588 s
+runs/bf16.corpus.jsonl: 12800 new positions, 12800 in all, 1588 s
+== corpus end 2026-11-12T02:23:02Z rc=0
+== depth start 2026-11-12T02:23:02Z
+ab_api_score: joined:fb1248163729b3c5@8576: the reply has no logprobs: {"object": "text_completion", "choices": [{"index": 0, "text": "", "finish_reason": "stop"}], "usage": {"prompt_tokens": 8576, "completion_tokens": 0, "total_tokens": 8576, "prompt_tokens_details": {"cached_tokens": 8559}}, "tokens": [], "token_logprobs": [], "status": 0}
+== depth end 2026-11-12T02:23:15Z rc=0
+== ds4 start 2026-11-12T02:23:15Z
+ds4 rc=0
+{"format": "sparkpipe-ds4-eval92-phase-v1", "phase": "batch", "model": "qwen3.8-27b", "endpoint": "http://127.0.0.1:8490", "max_tokens": 16000, "temperature": 0.0, "top_p": null, "top_k": null, "seed"
+== ds4 end 2026-11-12T02:45:02Z rc=0
+== reference start 2026-11-12T02:45:02Z
+capital 7
+arith 32
+code 32
+== reference end 2026-11-12T02:45:04Z rc=0
+== speed start 2026-11-12T02:45:04Z
+chain 0: prompt_tokens=957 completion_tokens=256 seconds=5.833
+chain 1: prompt_tokens=914 completion_tokens=256 seconds=5.770
+chain 2: prompt_tokens=975 completion_tokens=256 seconds=5.698
+chain 3: prompt_tokens=916 completion_tokens=256 seconds=5.785
+single 0: prompt_tokens=957 completion_tokens=96 seconds=2.776
+single 1: prompt_tokens=914 completion_tokens=96 seconds=2.725
+== speed end 2026-11-12T02:45:33Z rc=0
+GATE-ARM-DONE bf16 2026-11-12T02:45:33Z

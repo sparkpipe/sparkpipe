@@ -64,7 +64,7 @@
    "kv_label": "k3_stage",
    "node_memory_bytes": 104689827840,
    "node_reclaim": "cd $HOME/k3-lanes/lane8/root && $HOME/sparkdata/swap/weightd_warm /tmp/spark_weightd.sock --reclaim-pack $(cut -d' ' -f1 packs/pack.sha256)",
-   "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs && if [ -L residentd.log ]; then rm -f residentd.log; elif [ -f residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && systemctl --user reset-failed sp-k3-rd8 2>/dev/null; systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lanes/lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lanes/lane8/root/lib -E SPARK_WEIGHTD_ATTACH=1 -E SPARK_WEIGHTD_SOCKET=/tmp/spark_weightd.sock -E SPARK_WEIGHTD_LANE=8 -E SPARK_TP_MESH_RANKS=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 -E SPARK_WEIGHTD_SPINE_BUDGET_BYTES=$(cat spine_budget) -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
+   "node_start": "cd $HOME/k3-lanes/lane8/root && mkdir -p logs && if [ -L residentd.log ]; then rm -f residentd.log; elif [ -f residentd.log ]; then mv residentd.log logs/residentd-before-{run_id}.log; fi && systemctl --user reset-failed sp-k3-rd8 2>/dev/null; systemd-run --user --unit=sp-k3-rd8 -p MemoryMax=16G -p MemorySwapMax=0 -p TimeoutStopSec=75 -p LimitMEMLOCK=infinity --working-directory=$HOME/k3-lanes/lane8/root -E LD_LIBRARY_PATH=$HOME/k3-lanes/lane8/root/lib -E CUDA_MODULE_LOADING=LAZY -E CUDA_DEVICE_MAX_CONNECTIONS=32 bash -c 'exec ./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index {rank} > logs/residentd-{run_id}.log 2>&1' >/dev/null",
    "node_ready": "cd $HOME/k3-lanes/lane8/root; a=$(systemctl --user is-active sp-k3-rd8); if [ \"$a\" = active ] && grep -q 'model_residentd ready' logs/residentd-{run_id}.log 2>/dev/null; then echo READY; elif [ \"$a\" = active ] || [ \"$a\" = activating ]; then echo WAIT; else echo DEAD; fi",
    "node_stop": "systemctl --user stop sp-k3-rd8 2>/dev/null; systemctl --user reset-failed sp-k3-rd8 2>/dev/null; ! systemctl --user is-active -q sp-k3-rd8",
    "warm_with_engines": true,
@@ -77,7 +77,7 @@
   },
   {
    "id": "kimi-k3.1-pro",
-   "hub_start": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-k31.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-6a2ef20a05ef DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7721 DRAFTD_DRAFT_PORT=7722 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=17179869184 DRAFTD_RESTART=on-failure DRAFTD_RECORD_DIR=/srv/workspace/sparkpipe/k31-taps bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-k31-dspark",
+   "hub_start": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-k31.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-6a2ef20a05ef DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7721 DRAFTD_DRAFT_PORT=7722 DRAFTD_WINDOW=4096 DRAFTD_CONTEXT_BYTES=17179869184 DRAFTD_RESTART=on-failure bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-k31-dspark",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-k31-dspark && env DRAFTD_UNIT=sparkpipe-draftd-k31 bash hub_draftd.sh stop",
    "kv_label": "k31_stage",
    "node_memory_bytes": 105226698752,
@@ -88,7 +88,7 @@
    "api_start": "systemctl --user reset-failed kv-k31-pro-api 2>/dev/null; systemctl --user is-active -q kv-k31-pro-api || systemd-run --user --unit=kv-k31-pro-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/k31_pro-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/k31_pro-kv-api/runtime --port 8481 >> /srv/workspace/sparkpipe/logs/k31_pro-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-k31-pro-api 2>/dev/null; systemctl --user reset-failed kv-k31-pro-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8481/health",
-   "node_warm": "cd $HOME/stage-lanes/k31_pro/lane8/root && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) mxfp4 16 --model kimi-k3.1-pro --shared 93 896 3600 > warm.log 2>&1"
+   "node_warm": "cd $HOME/stage-lanes/k31_pro/lane8/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) mxfp4 16 --model kimi-k3.1-pro --shared 93 896 3600 > warm.log 2>&1"
   },
   {
    "id": "qwen3.8-27b",
@@ -103,6 +103,18 @@
    "health": "http://127.0.0.1:8461/health",
    "hub_start": "cd /srv/workspace/sparkpipe/draftd-q27-dspine && env DRAFTD_UNIT=sparkpipe-draftd-q27 DRAFTD_LOG=/srv/workspace/sparkpipe/logs/draftd-q27.log DRAFTD_DRAFTER=/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b-dspine-b16-ac90f1df842e DRAFTD_TARGET_SHARD=/srv/workspace/sparkpipe/drafter-weights/qwen3.8-27b/head-e3ccfb68dc41.safetensors DRAFTD_TAP_HOST=10.10.201.250 DRAFTD_TAP_PORT=7731 DRAFTD_DRAFT_PORT=7732 DRAFTD_WINDOW=8176 DRAFTD_CONTEXT_BYTES=8589934592 DRAFTD_RESTART=on-failure DRAFTD_TARGET_EMBED=model.language_model.embed_tokens.weight DRAFTD_TARGET_HEAD=lm_head.weight DRAFTD_TARGET_NORM=model.language_model.norm.weight bash hub_draftd.sh start /srv/workspace/sparkpipe/draftd-q27-dspine",
    "hub_stop": "cd /srv/workspace/sparkpipe/draftd-q27-dspine && env DRAFTD_UNIT=sparkpipe-draftd-q27 bash hub_draftd.sh stop"
+  },
+  {
+   "id": "qwen3.8-27b-fp8",
+   "kv_label": "qwen38_27b_fp8_stage",
+   "node_memory_bytes": 16106127360,
+   "node_reclaim": "$HOME/stage-lanes/qwen38_27b_fp8/lane9/root/lane.sh reclaim",
+   "node_start": "$HOME/stage-lanes/qwen38_27b_fp8/lane9/root/lane.sh start {run_id}",
+   "node_ready": "$HOME/stage-lanes/qwen38_27b_fp8/lane9/root/lane.sh ready {run_id}",
+   "node_stop": "$HOME/stage-lanes/qwen38_27b_fp8/lane9/root/lane.sh stop",
+   "api_start": "systemctl --user reset-failed kv-qwen38-27b-fp8-api 2>/dev/null; systemctl --user is-active -q kv-qwen38-27b-fp8-api || systemd-run --user --unit=kv-qwen38-27b-fp8-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/qwen38_27b_fp8-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/qwen38_27b_fp8-kv-api/runtime --port 8482 >> /srv/workspace/sparkpipe/logs/qwen38_27b_fp8-kv-api.log 2>&1' >/dev/null",
+   "api_stop": "systemctl --user stop kv-qwen38-27b-fp8-api 2>/dev/null; systemctl --user reset-failed kv-qwen38-27b-fp8-api 2>/dev/null; true",
+   "health": "http://127.0.0.1:8482/health"
   },
   {
    "id": "deepseek-v4.1-flash",
@@ -273,7 +285,7 @@
    "api_start": "systemctl --user reset-failed kv-axk2-api 2>/dev/null; systemctl --user is-active -q kv-axk2-api || systemd-run --user --unit=kv-axk2-api -p MemoryMax=2G -p MemorySwapMax=0 --working-directory=$HOME/axk2-kv-api bash -c 'mkdir -p /srv/workspace/sparkpipe/logs && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root $HOME/axk2-kv-api/runtime --port 8478 >> /srv/workspace/sparkpipe/logs/axk2-kv-api.log 2>&1' >/dev/null",
    "api_stop": "systemctl --user stop kv-axk2-api 2>/dev/null; systemctl --user reset-failed kv-axk2-api 2>/dev/null; true",
    "health": "http://127.0.0.1:8478/health",
-   "node_warm": "cd $HOME/stage-lanes/axk2/lane3/root && env $(grep -o 'SPARK_WEIGHTD_EXPERT_POOL_BYTES=[0-9]*' lane.sh | head -1) ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) d0805cfd1fc647b4078c0d9f232c80d34ee0c893 16 --model axk2_stage --shared 61 256 1800 > warm.log 2>&1"
+   "node_warm": "cd $HOME/stage-lanes/axk2/lane3/root && ./bin/weightd_warm /tmp/spark_weightd.sock $(./lane.sh pack) $(cut -c1-64 packs/pack.sha256) d0805cfd1fc647b4078c0d9f232c80d34ee0c893 16 --model axk2_stage --shared 61 256 1800 > warm.log 2>&1"
   },
   {
    "id": "solar-open-2",

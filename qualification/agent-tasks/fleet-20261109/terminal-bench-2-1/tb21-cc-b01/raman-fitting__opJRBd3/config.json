@@ -1,0 +1,19 @@
+{
+    "task": {
+        "name": "terminal-bench/raman-fitting",
+        "ref": "sha256:97ca4025332b20739da553cab0658f2ead925d1b5b3b9b7664dc9eb5e7fbeab7",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "raman-fitting__opJRBd3",
+    "trials_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b01",
+    "agent": {
+        "name": "claude-code",
+        "model_name": "deepseek-v4.1-flash",
+        "kwargs": {
+            "version": "2.1.311",
+            "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+            "reasoning_effort": "max"
+        }
+    },
+    "job_id": "8d5a71f0-50cb-471f-a80b-95bdd432f5e2"
+}

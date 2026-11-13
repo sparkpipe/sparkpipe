@@ -534,91 +534,6 @@ static SparkStatus SparkModuleComputeValidationKey(
     return SPARK_STATUS_OK;
 }
 
-static char *SparkModuleEscapeJsonString(const char *text)
-{
-    size_t source_bytes;
-    size_t destination_capacity;
-    char *escaped_text;
-    size_t source_index;
-    size_t destination_index;
-
-    if (text == 0)
-    {
-        return 0;
-    }
-    source_bytes = strlen(text);
-    if (source_bytes > (SIZE_MAX - 1u) / 6u)
-    {
-        return 0;
-    }
-    destination_capacity = (source_bytes * 6u) + 1u;
-    escaped_text = (char *)malloc(destination_capacity);
-    if (escaped_text == 0)
-    {
-        return 0;
-    }
-
-    destination_index = 0u;
-    for (source_index = 0u; source_index < source_bytes; ++source_index)
-    {
-        unsigned char character;
-
-        character = (unsigned char)text[source_index];
-        switch (character)
-        {
-            case '"':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = '"';
-                break;
-            case '\\':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = '\\';
-                break;
-            case '\b':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = 'b';
-                break;
-            case '\f':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = 'f';
-                break;
-            case '\n':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = 'n';
-                break;
-            case '\r':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = 'r';
-                break;
-            case '\t':
-                escaped_text[destination_index++] = '\\';
-                escaped_text[destination_index++] = 't';
-                break;
-            default:
-            {
-                if (character < 0x20u)
-                {
-                    static const char HexDigits[] = "0123456789abcdef";
-
-                    escaped_text[destination_index++] = '\\';
-                    escaped_text[destination_index++] = 'u';
-                    escaped_text[destination_index++] = '0';
-                    escaped_text[destination_index++] = '0';
-                    escaped_text[destination_index++] = HexDigits[character >> 4u];
-                    escaped_text[destination_index++] = HexDigits[character & 0x0fu];
-                }
-                else
-                {
-                    escaped_text[destination_index++] = (char)character;
-                }
-                break;
-            }
-        }
-    }
-    escaped_text[destination_index] = '\0';
-    return escaped_text;
-}
-
 static SparkStatus SparkModuleFormatRecord(
     const SparkModulePublishRequest *request,
     SparkModuleLinkUnitKind link_unit_kind,
@@ -650,18 +565,18 @@ static SparkStatus SparkModuleFormatRecord(
     *record_text = 0;
     *record_bytes = 0u;
 
-    module_id = SparkModuleEscapeJsonString(request->module_id);
-    target = SparkModuleEscapeJsonString(request->target);
-    link_unit_path = SparkModuleEscapeJsonString(relative_link_unit_path);
-    validation_recipe = SparkModuleEscapeJsonString(request->validation_recipe);
-    initialize_symbol = SparkModuleEscapeJsonString(
+    module_id = SparkJsonEscapeString(request->module_id);
+    target = SparkJsonEscapeString(request->target);
+    link_unit_path = SparkJsonEscapeString(relative_link_unit_path);
+    validation_recipe = SparkJsonEscapeString(request->validation_recipe);
+    initialize_symbol = SparkJsonEscapeString(
         request->initialize_symbol != 0 ? request->initialize_symbol : "");
-    execute_symbol = SparkModuleEscapeJsonString(request->execute_symbol);
-    admit_symbol = SparkModuleEscapeJsonString(
+    execute_symbol = SparkJsonEscapeString(request->execute_symbol);
+    admit_symbol = SparkJsonEscapeString(
         request->admit_symbol != 0 ? request->admit_symbol : "");
-    snapshot_symbol = SparkModuleEscapeJsonString(
+    snapshot_symbol = SparkJsonEscapeString(
         request->snapshot_symbol != 0 ? request->snapshot_symbol : "");
-    destroy_symbol = SparkModuleEscapeJsonString(
+    destroy_symbol = SparkJsonEscapeString(
         request->destroy_symbol != 0 ? request->destroy_symbol : "");
     if (module_id == 0 || target == 0 || link_unit_path == 0 ||
         validation_recipe == 0 || initialize_symbol == 0 ||

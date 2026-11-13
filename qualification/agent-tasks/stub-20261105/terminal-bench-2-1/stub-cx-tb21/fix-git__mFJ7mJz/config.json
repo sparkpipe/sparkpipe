@@ -1,0 +1,18 @@
+{
+    "task": {
+        "name": "terminal-bench/fix-git",
+        "ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "fix-git__mFJ7mJz",
+    "trials_dir": "/Users/cem/sparkpipe-agent-e2e/tb21/jobs/stub-cx-tb21",
+    "agent": {
+        "name": "codex",
+        "model_name": "stub-model",
+        "kwargs": {
+            "version": "0.166.0",
+            "config": "/Users/cem/sparkpipe-agent-e2e/tb21/codex-stub.toml"
+        }
+    },
+    "job_id": "c6dd0d37-1ec0-4111-8039-8991204d03a5"
+}
