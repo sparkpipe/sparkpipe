@@ -33,6 +33,10 @@ Both rails reach every rank. Partner traffic is not special on the wire any
 more: it crosses `cisco0` like any other rail 2 traffic. The hub, rtx5090, is on
 `cisco0` at `10.10.201.250`; its draft servers still take the tap rank's stream
 over the 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1).
+Stage lanes do not use that path for serving: the API reaches each rank at
+`10.10.201.<rank>` and taps reach the hub at `10.10.201.250`, direct over rail 2
+through the cisco0 switch at 100 Gb/s (0.100 ms to spark0, against 0.375 ms
+forwarded through sparkf).
 `MESH_LINK_MAP` in `tools/fleet_node_agent.sh` still lists the eight partner
 pairs, for which the agent passes weightd its rail 2 flags.
 
