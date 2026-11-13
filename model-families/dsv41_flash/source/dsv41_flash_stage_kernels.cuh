@@ -815,9 +815,41 @@ static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ rece
 		received[(uint64_t)source * source_stride + (uint64_t)route * slice + element - source * slice]));
 }
 
+static __global__ void D41SharedSendKernel(const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t rows, uint32_t width,
+	uint32_t degree, uint64_t destination_stride)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows || element >= width )
+		return;
+	const float activation = LmBf16ToFloat(shared[(uint64_t)row * width + element]);
+	float amax = fabsf(activation);
+	for ( uint32_t offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u )
+		amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset));
+	const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+	const uint8_t code = LmFloatToE4m3(fminf(fmaxf(activation / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
+	const uint8_t exponent = (uint8_t)(__float_as_uint(scale) >> 23u);
+	for ( uint32_t destination = 0u; destination < degree; ++destination )
+	{
+		uint8_t *bytes = (uint8_t *)(send + (uint64_t)destination * destination_stride);
+		bytes[(uint64_t)row * width + element] = code;
+		if ( element % SPARK_DSV41_FLASH_FP8_BLOCK == 0u )
+			bytes[(uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK] = exponent;
+	}
+}
+
+static __global__ void D41SharedDequantKernel(const uint8_t *__restrict__ bytes, uint16_t *__restrict__ act, uint32_t rows, uint32_t width)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows || element >= width )
+		return;
+	const uint32_t exponent = bytes[(uint64_t)rows * width + (uint64_t)row * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK];
+	act[(uint64_t)row * width + element] = LmFloatToBf16(LmE4m3ToFloat(bytes[(uint64_t)row * width + element]) * __uint_as_float(exponent << 23u));
+}
+
 static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice_out, const uint16_t *__restrict__ received,
 	const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row, uint16_t *__restrict__ output, uint32_t top_k,
-	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset)
+	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset,
+	const uint16_t *__restrict__ shared_partial)
 {
 	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
 	float sum = 0.0f;
@@ -832,7 +864,8 @@ static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice
 			if ( route_expert[route] / local_experts == source )
 				total += LmBf16ToFloat(slice_out[(uint64_t)route_packed_row[route] * hidden_slice + element]);
 		}
-		total += LmBf16ToFloat(received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
+		total += LmBf16ToFloat(shared_partial != 0 ? shared_partial[((uint64_t)source * gridDim.y + row) * hidden_slice + element] :
+			received[(uint64_t)source * source_stride + shared_offset + (uint64_t)row * hidden_slice + element]);
 		sum += LmBf16ToFloat(LmFloatToBf16(total));
 	}
 	output[(uint64_t)row * hidden_slice + element] = __bfloat16_as_ushort(__float2bfloat16_rn(sum));

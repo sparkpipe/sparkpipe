@@ -108,7 +108,11 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_HIDDEN_SLICE (D41_HIDDEN / D41_TP)
 #define D41_MOE_CODES (D41_TP != 16u && D41_EXPERT_SLICE % (2u * D41_FP8_BLOCK) == 0u ? 1u : 0u)
 #define D41_MOE_ROUTE_ELEMENTS (D41_MOE_CODES != 0u ? D41_EXPERT_SLICE / 2u + D41_EXPERT_SLICE / (2u * D41_FP8_BLOCK) : D41_EXPERT_SLICE)
-#define D41_MOE_ROW_ELEMENTS ((D41_TOPK * D41_MOE_ROUTE_ELEMENTS + D41_HIDDEN_SLICE + 7u) / 8u * 8u)
+#define D41_SHARED_ROUTED D41_MOE_CODES
+#define D41_SHARED_SLICE_MAX ((D41_MOE_INTER / D41_SHARED_GRANULE + D41_TP - 1u) / D41_TP * D41_SHARED_GRANULE)
+#define D41_MOE_SHARED_ELEMENTS (D41_SHARED_ROUTED != 0u ? (D41_SHARED_SLICE_MAX / 2u + D41_SHARED_SLICE_MAX / (2u * D41_FP8_BLOCK) + 7u) / 8u * 8u : 0u)
+#define D41_MOE_ROW_ELEMENTS (D41_SHARED_ROUTED != 0u ? (D41_MOE_SHARED_ELEMENTS + D41_TOPK * D41_MOE_ROUTE_ELEMENTS + 7u) / 8u * 8u : \
+	(D41_TOPK * D41_MOE_ROUTE_ELEMENTS + D41_HIDDEN_SLICE + 7u) / 8u * 8u)
 #define D41_WO_A_ROWS (D41_OGROUPS * D41_OLORA / D41_TP)
 #define D41_RING_ROWS (D41_WINDOW / D41_KV_TP)
 #define D41_VERIFY_ROWS SPARK_DSV41_FLASH_STAGE_VERIFY_ROWS
@@ -163,6 +167,8 @@ static_assert(D41_MOE_INTER % D41_TP == 0u && D41_HIDDEN % D41_TP == 0u && D41_E
 static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u == 0u && D41_HIDDEN_SLICE % 8u == 0u,
 	"the MoE exchange rows fit a collective row and keep 16-byte copies");
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
+static_assert(D41_SHARED_ROUTED == 0u || (D41_SHARED_GRANULE % (4u * D41_FP8_BLOCK) == 0u && D41_HIDDEN_SLICE % D41_FP8_BLOCK == 0u),
+	"a routed shared slice is whole 16-byte rows of fp8 codes with 4-byte scale rows, and each rank's down columns are whole fp8 row blocks");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 static_assert(D41_ENGRAM_KV_ROWS == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && D41_ENGRAM_EMBED == SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS &&
 	D41_ENGRAM_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION && D41K_HC == SPARK_DSV41_FLASH_MODEL_HC_MULT, "the stage reads the engram shard the format check accepts");
@@ -197,7 +203,7 @@ typedef struct D41Layer
 	const float *router_bias;
 	const uint8_t *e_w13, *e_w13_scale, *e_w2, *e_w2_scale;
 	const uint8_t *e_w13_cells, *e_w2_cells;
-	D41Fp8Linear sh_w1, sh_w2, sh_w3;
+	D41Fp8Linear sh_w1, sh_w2, sh_w3, sh_w2_part[D41_SHARED_ROUTED != 0u ? D41_TP : 1u];
 } D41Layer;
 
 struct D41ModelState;
@@ -1249,10 +1255,42 @@ static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint
 		output_dimension, LM_SKINNY_CELL_TILE_K, stream);
 }
 
+static void D41SharedSlice(uint32_t rank, uint32_t *first, uint32_t *width)
+{
+	const uint32_t blocks = D41_MOE_INTER / D41_SHARED_GRANULE, base = blocks / D41_TP, extra = blocks % D41_TP;
+	*first = (rank * base + (rank < extra ? rank : extra)) * D41_SHARED_GRANULE;
+	*width = (base + (rank < extra ? 1u : 0u)) * D41_SHARED_GRANULE;
+}
+
+static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, cudaStream_t stream)
+{
+	for ( uint32_t source = 0u; source < (D41_SHARED_ROUTED != 0u ? D41_TP : 0u); ++source )
+	{
+		uint32_t first, width;
+		const uint8_t *codes = (const uint8_t *)(state->moe_received + (uint64_t)source * stride);
+		uint16_t *partial = state->shared_out + (uint64_t)source * rows * D41_HIDDEN_SLICE;
+		int32_t launched;
+		D41SharedSlice(source, &first, &width);
+		if ( D41MxReady(&state->mx, rows, width, state->row_invariant) != 0u )
+			launched = LmMxGemmDense(codes, codes + (uint64_t)rows * width, layer->sh_w2_part[source].weight, layer->sh_w2_part[source].scale, partial,
+				rows, width, D41_HIDDEN_SLICE, 0u, 0u, sms, stream);
+		else
+		{
+			D41SharedDequantKernel<<<dim3(D41Blocks(width), rows), D41_THREADS, 0, stream>>>(codes, state->shared_act, rows, width);
+			launched = D41Linear(&layer->sh_w2_part[source], state->shared_act, partial, rows, width, D41_HIDDEN_SLICE, sms, state->row_invariant,
+				(const D41Mx *)0, stream);
+		}
+		if ( launched != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	return D41Launched();
+}
+
 static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
 	const uint64_t stride = (uint64_t)rows * D41_MOE_ROW_ELEMENTS, shared_offset = (uint64_t)routes * D41_MOE_ROUTE_ELEMENTS;
+	const uint64_t route_base = (uint64_t)rows * D41_MOE_SHARED_ELEMENTS;
 	SparkStatus status;
 	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
@@ -1275,25 +1313,35 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
 		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
-	if ( D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx,
+	if ( D41_SHARED_ROUTED != 0u )
+		D41SharedSendKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_act, state->moe_send, rows,
+			state->shared_width, D41_TP, stride);
+	else if ( D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx,
 		stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41MoeSendKernel<<<D41ItemGrid(D41Blocks(D41_HIDDEN), routes + rows), D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight,
-		state->shared_out, state->moe_send, routes, rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT,
-		D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
+	D41MoeSendKernel<<<D41ItemGrid(D41Blocks(D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
+		D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
+		D41_SHARED_ROUTED != 0u ? 0u : rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, rows, D41_MOE_ROW_ELEMENTS, state->moe_send,
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received, state->expert_act,
+	D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received + route_base, state->expert_act,
 		D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( D41_SHARED_ROUTED != 0u )
+	{
+		status = D41SharedPartials(state, layer, rows, stride, sms, stream);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+	}
 	D41FinalizeSliceKernel<<<dim3(D41Blocks(D41_HIDDEN_SLICE), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->moe_received,
-		state->route_expert, state->route_packed_row, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_TP, D41_HIDDEN_SLICE, stride, shared_offset);
+		state->route_expert, state->route_packed_row, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_TP, D41_HIDDEN_SLICE, stride, shared_offset,
+		D41_SHARED_ROUTED != 0u ? state->shared_out : (const uint16_t *)0);
 	status = D41Launched();
 	if ( state->dump != 0 && step->rows < 64u && status == SPARK_STATUS_OK )
 	{
@@ -1821,7 +1869,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 	{
 		const uint32_t rows = frame.current->rows;
 		SparkStatus status = D41Moe(state, &state->layers[index], frame.current, frame.stream);
-		if ( status == SPARK_STATUS_OK && index < 2u )
+		if ( D41_SHARED_ROUTED == 0u && status == SPARK_STATUS_OK && index < 2u )
 			status = D41DumpRows(state, index, 5u, state->shared_out, rows, D41_HIDDEN, frame.stream);
 		if ( status == SPARK_STATUS_OK && index < 2u )
 			status = D41DumpRows(state, index, 2u, state->partial, rows, D41_HIDDEN, frame.stream);
@@ -2239,11 +2287,7 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 	status = D41Frequencies(state->full_frequency);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	{
-		const uint32_t blocks = D41_MOE_INTER / D41_SHARED_GRANULE, base = blocks / D41_TP, extra = blocks % D41_TP;
-		state->shared_first = (state->tp_rank * base + (state->tp_rank < extra ? state->tp_rank : extra)) * D41_SHARED_GRANULE;
-		state->shared_width = (base + (state->tp_rank < extra ? 1u : 0u)) * D41_SHARED_GRANULE;
-	}
+	D41SharedSlice(state->tp_rank, &state->shared_first, &state->shared_width);
 	state->shard.degree = D41_KV_TP;
 	state->shard.rank = D41_KV_RANK(state);
 	state->shard.grain = D41_GRAIN;
@@ -2434,7 +2478,15 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		D41_PAYLOAD(EXPERT_W2_SLICE, index, layer->e_w2);
 		D41_SCALE(EXPERT_W2_SLICE, index, layer->e_w2_scale);
 		D41_FP8_SLICE(SHARED_W1, index, layer->sh_w1, state->shared_first, state->shared_width, 0u, 0u);
-		D41_FP8_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
+		if ( D41_SHARED_ROUTED != 0u )
+			for ( uint32_t source = 0u; source < (D41_SHARED_ROUTED != 0u ? D41_TP : 0u); ++source )
+			{
+				uint32_t first, width;
+				D41SharedSlice(source, &first, &width);
+				D41_FP8_SLICE(SHARED_W2, index, layer->sh_w2_part[source], state->tp_rank * D41_HIDDEN_SLICE, D41_HIDDEN_SLICE, first, width);
+			}
+		else
+			D41_FP8_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
 		D41_FP8_SLICE(SHARED_W3, index, layer->sh_w3, state->shared_first, state->shared_width, 0u, 0u);
 		if ( D41KvSource(index) )
 		{
