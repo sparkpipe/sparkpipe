@@ -536,13 +536,92 @@ rows took 4.80 to 4.83 s. A trace of the new build
 where it was 37.9, and 13.8 us of that is the wait: the rounds moved from
 the GPU's pace to the daemon's, which posts and completes three
 131,072-byte writes a piece, two of them on one port. Rounds are still
-1.47 s of a traced 5.55 s wave: the experts' all-to-all 0.50 s, the sum of
-the attention output 0.35 s (staged, a whole slot a write), the query
-gather 0.29 s, the experts' gather 0.21 s. The 1 MiB slots (PR 1932,
+1.47 s of a traced 5.55 s wave: the sum of the attention output 0.64 s
+(0.35 s through the staged path, a whole slot a write, and 0.29 s through
+the split sum), the experts' all-to-all 0.50 s, the experts' gather 0.21 s.
+The 1 MiB slots (PR 1932,
 weightd IPC ABI 15) cut the writes to a quarter and measured 23 to 28% a
 round on the Lenovo pair; they need the daemon replaced on the nodes. After
 the rounds, the same trace has the expert and dense multiplies at 1.47 s,
 the sparse scoring and its top-k at 0.83 s and the stream mixing at 0.52 s.
+
+## Sixth pass: row-wise work once per row, 2026-11-13
+
+At four ranks every rank held every row and repeated all the work that
+depends on one row alone: the stream mixing, the collapse and norm before
+attention and before the experts, the stream update after them, the engram
+gate, the index scoring with its top-k, and the q and kv projections. Four
+ranks did the same arithmetic on the same 16,384 rows.
+
+In a committed wave of 2,048 rows or more each rank now owns a quarter of
+the rows and does that work for its own rows only:
+
+- Stream mixing, collapse and norm, stream update and the engram gate run
+  on the owner. The owner gathers the normed row to the group where a layer
+  needs it on every rank (before the experts, and before attention on the
+  compressor and index layers) and every rank quantizes the gathered rows
+  itself.
+- On the other layers the owner also projects q and kv and gathers the
+  normed q latent and the window kv, 1,792 values a row instead of 4,096.
+- The index scoring and top-k run on the owner, which gathers the 512
+  selected positions a row.
+- The sum of the attention output is a reduce-scatter that lands on the
+  owner only, and each rank returns its slice of the expert output to the
+  owner only.
+- Layers 20 to 39 only ever run on a wave's last 2,541 rows or fewer, so the
+  split covers layers 0 to 19 and the streams go back to every rank at layer
+  20.
+- A prompt of N tokens prefills N-1 rows, so a prompt's last wave is never
+  a multiple of 32. The stage rounds the wave up to a multiple of 32 inside:
+  the pad rows start as zeros, stay zeros, are never selected, and only the
+  real rows leave the stage.
+
+The answer to the 40,000-token prompt is the same bytes as before
+(`b79b025295d2819f…`) at every step, on all three node groups.
+
+Same prompts, 16,384-row waves, 1 MiB mesh slots (main of 2026-11-13 on the
+released weightd), a 14 GiB state budget because the rank state grows to
+13.5 GB:
+
+| | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| Fifth pass on 131,072-byte slots | 2,725 tok/s | 3,221 | 2,772 |
+| The same code on 1 MiB slots | 2,869 tok/s | 3,403 | 2,915 |
+| Row split, first step | 2,899 tok/s | 3,608 | 3,482 |
+| With own-row q and kv projections | 2,899 tok/s | 3,689 | 3,606 |
+| With padded waves, nodes 0-3 | 3,321 tok/s | 4,115 | 3,834 |
+| The same build, nodes 4-7 | 3,269 tok/s | 4,079 | 3,817 |
+| The same build, nodes 8-b | 3,308 tok/s | 4,125 | 3,845 |
+
+The gain grows with the context because the index scoring it no longer
+repeats grows with the index. 8,192-row waves measure within 2% of
+16,384-row waves (2,865 / 3,579 / 3,411 against 2,894 / 3,576 / 3,475 on
+the first step), so the wave size is not a lever.
+
+A traced 16,384-row wave is now 4.05 s where it was 5.55 s
+(`prefill-rounds.sixth.txt`, rank 0, the second and third waves of a
+65,536-token prompt):
+
+- Rounds 1.13 s: the experts' all-to-all 395 ms, the attention
+  reduce-scatter 235 ms, the gathers of the normed row 170 ms, the engram's
+  rounds 88 ms, the gathers of q latent and kv 59 ms, the expert return
+  57 ms, the hand-back of the streams 29 ms. A piece of a large round now
+  carries about 2.5 MB out of a rank in 93 us, which is the two ports' rate,
+  so what is left here is the bytes: the experts' all-to-all sends every
+  route's activation slice and the shared expert's partial to every rank.
+- Multiplies 1.43 s: the experts 0.68 s and the dense layers 0.75 s, at 40
+  to 50 TFLOPS with the BF16 tensor-core form. The native MXFP8 and MXFP4
+  forms are wrapped in `inference/kernels/mma.cuh` and no kernel uses them.
+- The rest 1.5 s, the largest being the attention over the selected blocks
+  194 ms, the merge of window and block attention 154 ms, the expert send
+  packing 119 ms, quantize passes 98 ms, stream mixing 90 ms, sparse scoring
+  84 ms, stream update 84 ms, activation assembly 83 ms, top-k 74 ms.
+
+Seen once and not again: on the first run of the padded build, before the
+pad rows were zeroed, rank 3's first decode graph capture failed
+(`MESH-LAUNCH-FAIL cuda=901`) right after a padded first wave. Seven later
+runs in the same order, four of them with zeroed pad rows, captured without
+a fault.
 
 ## Drafts, 2026-11-13
 
