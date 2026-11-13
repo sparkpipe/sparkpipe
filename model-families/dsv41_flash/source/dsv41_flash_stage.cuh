@@ -1213,16 +1213,16 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	D41Fp8Qdq(state->shared_act, (uint64_t)rows * state->shared_width, stream);
 	if ( D41Linear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41MoeSendKernel<<<dim3(D41Blocks(D41_HIDDEN), routes + rows), D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight,
-		state->shared_out, state->moe_send, routes, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS,
-		D41_MOE_CODES);
+	D41MoeSendKernel<<<D41ItemGrid(D41Blocks(D41_HIDDEN), routes + rows), D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight,
+		state->shared_out, state->moe_send, routes, rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT,
+		D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, rows, D41_MOE_ROW_ELEMENTS, state->moe_send,
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41ActAssembleQdqKernel<<<dim3(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received, state->expert_act,
+	D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received, state->expert_act,
 		D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream) !=
 		LM_LAUNCH_OK )

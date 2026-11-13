@@ -445,6 +445,7 @@ static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wav
 }
 
 #define D41K_FOLD_BLOCK 128u
+#define D41K_GRID_ITEMS 32768u
 #define D41K_FOLD_SPAN (2u * D41K_FOLD_BLOCK)
 #define D41K_FOLD_WARPS (D41K_THREADS / 32u)
 
@@ -748,14 +749,20 @@ static __global__ void D41ScaleRowsKernel(uint16_t *__restrict__ data, uint64_t 
 		data[index] = LmFloatToBf16(LmBf16ToFloat(data[index]) * factor);
 }
 
-static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
-	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t slice, uint32_t hidden_slice, uint32_t degree,
-	uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
+static inline dim3 D41ItemGrid(uint32_t blocks, uint32_t items)
 {
-	const uint32_t element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( blockIdx.y < routes )
+	const uint32_t span = items < D41K_GRID_ITEMS ? (items != 0u ? items : 1u) : D41K_GRID_ITEMS;
+	return dim3(blocks, span, (items + span - 1u) / span);
+}
+
+static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, const float *__restrict__ packed_weight,
+	const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t routes, uint32_t rows, uint32_t slice, uint32_t hidden_slice,
+	uint32_t degree, uint64_t destination_stride, float limit, uint32_t route_elements, uint32_t codes)
+{
+	const uint32_t item = blockIdx.z * gridDim.y + blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( item < routes )
 	{
-		const uint32_t route = blockIdx.y;
+		const uint32_t route = item;
 		if ( element >= slice )
 			return;
 		const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * slice + element], gate_up[(uint64_t)route * 2u * slice + slice + element],
@@ -782,8 +789,8 @@ static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, co
 		}
 		return;
 	}
-	const uint32_t row = blockIdx.y - routes;
-	if ( element >= hidden_slice * degree )
+	const uint32_t row = item - routes;
+	if ( row >= rows || element >= hidden_slice * degree )
 		return;
 	send[(uint64_t)(element / hidden_slice) * destination_stride + (uint64_t)routes * route_elements + (uint64_t)row * hidden_slice +
 		element % hidden_slice] = shared[(uint64_t)row * hidden_slice * degree + element];
@@ -792,8 +799,8 @@ static __global__ void D41MoeSendKernel(const uint16_t *__restrict__ gate_up, co
 static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ received, uint16_t *__restrict__ act, uint32_t slice, uint32_t width,
 	uint64_t source_stride, uint32_t routes, uint32_t codes)
 {
-	const uint32_t route = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = element / slice;
-	if ( element >= width )
+	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = element / slice;
+	if ( route >= routes || element >= width )
 		return;
 	if ( codes != 0u )
 	{

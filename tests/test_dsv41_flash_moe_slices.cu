@@ -79,7 +79,7 @@ static uint64_t Run(void)
 	constexpr uint32_t ROW_ELEMENTS = (TOPK * ROUTE_ELEMENTS + HIDDEN_SLICE + 7u) / 8u * 8u;
 	const uint64_t up_bytes = (uint64_t)INTER * (HIDDEN / 2u), up_scales = (uint64_t)INTER * (HIDDEN / 32u);
 	const uint64_t down_bytes = (uint64_t)HIDDEN * (INTER / 2u), down_scales = (uint64_t)HIDDEN * (INTER / 32u);
-	const uint32_t row_counts[] = {1u, 3u, 16u, 17u, 64u};
+	const uint32_t row_counts[] = {1u, 3u, 16u, 17u, 64u, 4800u};
 	uint8_t *w1 = (uint8_t *)Device(EXPERTS * up_bytes), *w3 = (uint8_t *)Device(EXPERTS * up_bytes), *w2 = (uint8_t *)Device(EXPERTS * down_bytes);
 	uint8_t *s1 = (uint8_t *)Device(EXPERTS * up_scales), *s3 = (uint8_t *)Device(EXPERTS * up_scales), *s2 = (uint8_t *)Device(EXPERTS * down_scales);
 	std::vector<uint8_t *> local_up(DEGREE), local_gate(DEGREE), local_down(DEGREE), slice_up(DEGREE), slice_down(DEGREE);
@@ -126,6 +126,8 @@ static uint64_t Run(void)
 	{
 		const uint32_t rows = row_counts[trial], routes = rows * TOPK;
 		const uint64_t stride = (uint64_t)rows * ROW_ELEMENTS;
+		if ( DEGREE == 16u && routes + rows > D41K_GRID_ITEMS )
+			continue;
 		std::vector<uint32_t> host_expert(routes);
 		std::vector<float> host_weight(routes);
 		srand(1234u + rows);
@@ -181,14 +183,14 @@ static uint64_t Run(void)
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			REQUIRE(Experts(slice_up[rank], xq, gate_up, offsets, source, EXPERTS, rows, routes, 0u, HIDDEN, 2u * SLICE) == LM_LAUNCH_OK);
-			D41MoeSendKernel<<<dim3(HIDDEN / THREADS, routes + rows), THREADS>>>(gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
-				send + (uint64_t)rank * DEGREE * stride, routes, SLICE, HIDDEN_SLICE, DEGREE, stride, LIMIT, ROUTE_ELEMENTS, CODES);
+			D41MoeSendKernel<<<D41ItemGrid(HIDDEN / THREADS, routes + rows), THREADS>>>(gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
+				send + (uint64_t)rank * DEGREE * stride, routes, rows, SLICE, HIDDEN_SLICE, DEGREE, stride, LIMIT, ROUTE_ELEMENTS, CODES);
 		}
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			for ( uint32_t peer = 0u; peer < DEGREE; ++peer )
 				CUDA(cudaMemcpy(received + (uint64_t)peer * stride, send + ((uint64_t)peer * DEGREE + rank) * stride, stride * 2u, cudaMemcpyDeviceToDevice));
-			D41ActAssembleQdqKernel<<<dim3(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride, routes, CODES);
+			D41ActAssembleQdqKernel<<<D41ItemGrid(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride, routes, CODES);
 			REQUIRE(Experts(slice_down[rank], act, slice_out, offsets, source, EXPERTS, rows, routes, 1u, INTER, HIDDEN_SLICE) == LM_LAUNCH_OK);
 			D41FinalizeSliceKernel<<<dim3((HIDDEN_SLICE + THREADS - 1u) / THREADS, rows), THREADS>>>(slice_out, received, global, packed_row,
 				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * ROUTE_ELEMENTS);

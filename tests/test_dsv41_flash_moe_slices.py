@@ -5,7 +5,8 @@ Builds build/test_dsv41_flash_moe_slices and runs it on an sm_121 device: 16 and
 ranks, the same random MXFP4 experts in both layouts, steps of 1, 3, 16, 17 and 64 rows.
 Every output must be the same bits as the per-rank finalize plus the rank-ordered sum. At
 sixteen ranks the activation slices travel as BF16; at four they travel as FP8 codes with
-one exponent a block of 32, which must change no output bit.
+one exponent a block of 32, which must change no output bit. Four ranks also run a wave of
+4,800 rows, whose routes and rows need more than one plane of the launch grid.
 """
 
 import subprocess
