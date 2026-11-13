@@ -623,6 +623,143 @@ pad rows were zeroed, rank 3's first decode graph capture failed
 runs in the same order, four of them with zeroed pad rows, captured without
 a fault.
 
+## Seventh pass: the reference on our nodes, stage by stage, 2026-11-13
+
+### The reference on nodes 0-3
+
+The reference (build 1107, stock 4 KiB kernel, the same four Sparks and
+switches as this lane) prefills cold prompts from the same corpus at:
+
+| Prompt | tok/s |
+| --- | ---: |
+| 8,192 tokens | 7,410 and 7,637 |
+| 16,384 tokens | 7,770 and 8,094 |
+| 32,768 tokens | 5,807 on the first prompt of that length, then 8,467 |
+| 65,536 tokens | 6,924, 8,490 and 8,417; 8,576 with every rank traced |
+| 131,072 tokens | 8,407 |
+
+With our kernel tracer loaded into its four containers, one 16,384-token step
+(the second of a 65,536-token prompt) takes 1,816 ms on rank 0 and the GPU is
+busy for 99.9% of it. A middle step runs only layers 0 to 19: its router runs
+20 times. Layers 20 to 39 run in the last step only.
+
+### Stage by stage
+
+The same rows of the same prompt (positions 16,384 to 32,767 of a
+65,536-token prompt), rank 0, ms per 16,384-token step:
+
+| Stage | Ours, sixth pass | Ours, native MXFP8 | Reference |
+| --- | ---: | ---: | ---: |
+| Whole step | 4,003 | 3,828 | 1,816 |
+| Rounds (all collective kernels) | 1,077 | 1,135 | 425 |
+| Dense projections | 768 | 502 | 291 |
+| Experts | 668 | 667 | 484 |
+| Attention (block attention, window merge) | 367 | 363 | 311 |
+| Separate quantize, norm, column and rope passes | 297 | 316 | 31 |
+| Expert send, activation assembly, finalize, route build | 307 | 305 | 174 |
+| Index scoring and top-k | 176 | 169 | 44 |
+| Stream mixing, update, collapse | 182 | 175 | 140 |
+
+What the columns hold:
+
+- The reference exchanges FP8 codes where we exchange BF16: its WO-A output
+  crosses as MXFP8 (2,112 bytes a row against our 10,240-byte BF16 partial),
+  and its expert input crosses as MXFP8 with the routes taken on the owner.
+  Its collectives also overlap its multiplies by about 110 ms a step; ours do
+  not overlap.
+- Its dense projections and experts multiply MXFP8 natively. Ours multiplied
+  a BF16 copy of every FP8 weight with BF16 tensor-core instructions at 52 to
+  69 TFLOPS.
+- Our middle waves also run layers 20 to 39 on their last 2,541 rows. The
+  engine asks every prefill wave for the state at the next 16,384-token cache
+  point, and a resumable state at a cache point needs the decoder layers'
+  windows there. By the per-layer kernel durations that tail is about
+  300 ms of our 3,828 ms; 134 ms of our expert time is the tail alone. The
+  reference keeps no state mid-prompt and skips those layers.
+- Our expert kernel runs about 67 TFLOPS with BF16 instructions, close to the
+  reference's FP8-by-FP4 kernel for the same work; the expert row's gap is
+  mostly the tail.
+
+### Native MXFP8 projections
+
+Every input to the dense projections was already rounded to MXFP8 (E4M3
+codes and one power-of-two scale per 32, `SparkMathFp8QdqScale`), and every
+weight is MXFP8 in the pack. `inference/kernels/mx_gemm.cuh` adds a
+quantizer that writes the codes and scales with that rounding and a GEMM on
+the block-scaled `mma.sync ... kind::mxf8f6f4.block_scale` instruction. On
+this toolchain the instruction takes its scale registers in braces with
+16-bit byte and lane selectors, and lane 4g carries row g's scale with lane
+4g+1 carrying row g+8's (`tests/cuda/mx_gemm_cuda.cu` checks the kernel that
+relies on it).
+
+Each 32-wide block's product goes into an FP32 total, as the BF16 path did.
+Letting the instruction chain its own accumulator instead is faster by
+under 3% and is up to 8.7 BF16 ulp off the fp64 sum on a cancelling output
+(the BF16 path and the block-summed form stay within 0.51 ulp on the same
+samples). At the lane's shapes the native kernel runs 100 to 121 TFLOPS
+against 52 to 69:
+
+| Projection (rows x K x N) | BF16 path | Native MXFP8 |
+| --- | ---: | ---: |
+| q_a, own rows (4,096 x 5,120 x 1,280) | 67.0 TFLOPS | 114.4 |
+| kv_a, own rows (4,096 x 5,120 x 512) | 51.1 | 104.3 |
+| q_b (16,384 x 1,280 x 8,192) | 64.5 | 118.5 |
+| o_b (16,384 x 2,048 x 5,120) | 65.8 | 121.2 |
+| shared w1 shape (16,384 x 5,120 x 576) | 57.6 | 105.0 |
+| engram wkv (16,384 x 6,144 x 6,400) | 68.4 | 118.2 |
+
+99.99% of the outputs are the same bits as the BF16 path's on random MXFP8
+data, and the lane's 40,000-token answer is unchanged.
+
+| Build | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| Sixth pass, nodes c-f, same hour | 3,296 tok/s | 4,118 | 3,839 |
+| Native MXFP8, nodes 4-7 | 3,492 tok/s | 4,347 | 4,061 |
+| Native MXFP8, nodes 8-b | 3,450 tok/s | 4,390 | 4,076 |
+| Native MXFP8, nodes c-f | 3,513 tok/s | 4,389 | 4,074 |
+
+### The shared expert as a route
+
+Each rank sent every other rank a 2,560-byte BF16 partial of the shared
+expert for every row: its K slice's contribution to the destination's output
+columns. Every rank pack holds the whole shared down matrix, so the exchange
+now carries the rank's shared activation slice instead (FP8 codes with one
+scale per 32, like a routed expert's slice; 640 or 512 values, at most 660
+bytes a row), and each rank computes the four K-slice partials for its own
+output columns. `D41FinalizeSliceKernel` keeps the publisher's per-source
+sums (each source rank's experts plus its shared partial, rounded to BF16,
+then summed), so the outputs are the same bits. An exchange row is 4,240 bytes
+a destination instead of 6,128.
+
+The first build changed the 40,000-token answer: the send kernel's grid
+rounds the item count up to whole 32,768-item spans, and the rounded-up items
+ran the old shared-partial branch into the next destination's shared codes.
+Waves of 16,384 rows (exactly three spans) and short waves were clean; a
+7,230-row last wave and a wave resumed from a cached prefix were not. With
+that branch given no rows the 40,000-token answer is `b79b025295d2819f…`
+again and 1,000-, 3,000- and 20,000-token prompts answer as before.
+
+| Build | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| Native MXFP8, nodes c-f, same hour | 3,514 tok/s | 4,383 | 4,077 |
+| Shared expert as a route, nodes 4-7 | 3,636 tok/s | 4,511 | 4,224 |
+
+### What is left, largest first
+
+Against the reference's 1,816 ms step, by the table above:
+
+1. Rounds: the attention sum still crosses as a 10,240-byte BF16 partial a
+   row where the reference sends 2,112 bytes of MXFP8 (it needs every rank to
+   hold the whole o_b; the pack holds a rank's columns), the expert input
+   crosses as BF16 rows where FP8 codes and the owner's routes would carry
+   half, and no round overlaps a multiply.
+2. The quantize, norm, column and rope passes (316 ms against 31): the
+   reference writes FP8 codes from the producing kernel.
+3. Layers 20 to 39 on every wave's last 2,541 rows, about 300 ms a wave, for
+   a resumable state at each 16,384-token cache point.
+4. Index scoring and top-k (169 ms against 44), and the expert send,
+   assembly and finalize kernels (305 ms against 174).
+
 ## Drafts, 2026-11-13
 
 The stage taps hidden states and verifies drafted rows at any rank count.
