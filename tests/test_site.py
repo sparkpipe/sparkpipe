@@ -256,10 +256,10 @@ def check_mail(failures):
 def check_models(failures):
     text = (SITE / "pricing.js").read_text()
     listed = [(m["name"], m["id"]) for m in json.loads(text[text.index("{"):text.rindex("}") + 1])["models"]]
-    rows = re.findall(r'<tr><td><b>([^<]+)</b><br><span class="mono">([^<]+)</span></td>.*?<td>(Offered[^<]*|Not offered)</td></tr>', (SITE / "fleets.html").read_text())
-    offered = [(name, ident) for name, ident, state in rows if state.startswith("Offered")]
+    rows = re.findall(r'<tr><td><b>([^<]+)</b><br><span class="mono">([^<]+)</span></td>.*?<td>(Listed[^<]*|Not listed)</td></tr>', (SITE / "fleets.html").read_text())
+    offered = [(name, ident) for name, ident, state in rows if state.startswith("Listed")]
     if not offered or listed != offered:
-        failures.append(f"the models pricing.js lists differ from the Fleet List's offered models: {listed} {offered}")
+        failures.append(f"the models pricing.js lists differ from the models the Fleet List lists: {listed} {offered}")
 
 
 def main():

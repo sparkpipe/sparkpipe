@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe Security</title>
-<meta name="description" content="How a SparkPipe fleet is kept yours: a fleet that serves only you, deletion and a fresh image at every handover, sandboxed Functions, what we record, who can reach the machines, and an engine whose source you can read.">
+<meta name="description" content="How a SparkPipe fleet is kept yours: a fleet that runs only for you, only our base image on it until you choose what to install, deletion and a fresh base image at every handover, what we record, who can reach the machines, and an engine whose source you can read.">
 <meta name="theme-color" content="#0a0c10">
 <link rel="alternate" hreflang="en" href="https://sparkpipe.ai/security.html">
 <link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/security-ko.html">
@@ -48,48 +48,47 @@
 <main id="main" class="wrap policy">
   <section>
     <h1>Security</h1>
-    <p class="effective">Published 12 November 2026</p>
-    <p>A fleet you hold serves only you. This page explains how we keep it that way: what runs on it, what happens when it changes hands, what we record, and who can reach the machines. The <a href="agreement.html">Customer Agreement</a>, our <a href="dpa.html">data processing agreement</a> and our <a href="privacy.html">privacy policy</a> are the binding texts; where this page and they differ, they govern.</p>
+    <p class="effective">Published 13 November 2026</p>
+    <p>A fleet you hold is yours alone. This page explains how we keep it that way: what we put on it, what happens when it changes hands, what we record, and who can reach the machines. The <a href="agreement.html">Customer Agreement</a>, our <a href="dpa.html">data processing agreement</a> (DPA) and our <a href="privacy.html">privacy policy</a> are the binding texts; where this page and they differ, they govern. The DPA commits us to the measures this page describes. We may change them, but never so that they protect the personal data we process for you less (DPA clause 12.1).</p>
   </section>
 
   <section id="tenancy">
     <h2>1. One customer per fleet</h2>
     <ul>
-      <li><b>A fleet you hold runs only your requests.</b> While your booking lasts you have the exclusive use of the whole fleet (Agreement clause 5.1): no other customer's requests, cache or code run on it, and there is no shared queue.</li>
-      <li><b>Your cache and storage stay on that fleet,</b> isolated from other customers, from one booking of yours to the next (clause 6.2). We keep no copy of them anywhere else, make no backup of them and use them for nothing but serving you (clause 6.3).</li>
-      <li><b>Nothing goes to another AI service.</b> Requests and data are processed only on machines we operate in Korea, and no request, prompt, output or other data of yours is sent to any other computing or AI service (clause 6.5). The only exceptions are transfers you ask for yourself, such as a download into your storage or a backup to your own bucket.</li>
-      <li><b>We never train on your data.</b> We access it only as needed to run and secure the service, or where the law requires (clause 6.1).</li>
+      <li><b>A fleet you hold runs only for you.</b> While your booking lasts you have the exclusive use of its machines: their computing, memory and storage and the network that joins them (Agreement clause 4.1). No other customer's software or files are on them: at the start of each booking the fleet holds only our base image and your own working state, if you left any (clause 7.1).</li>
+      <li><b>Your working state stays on that fleet.</b> The software you install there and the files in your Customer storage are kept on it, isolated from other customers, from one booking of yours to the next (clause 6.2). We keep no copy of it outside the fleet, except in an Extra you choose for it, make no backup of it and use it for no purpose of our own (clause 6.3).</li>
+      <li><b>We send none of your data to another AI service.</b> We keep your data only on fleets and servers we operate in Korea, carry your traffic between the internet and your fleet only through them, and send none of it to any other computing or AI service (clause 6.5). What you send or receive, yourself or through software you install or run, such as a download into your Customer storage or a backup to your own bucket, is sent or received by you, not by us, and where it goes is up to you.</li>
+      <li><b>We never train on your data.</b> We access it only as needed to operate and secure the fleets and our servers, or where the law requires (clause 6.1), and we do not monitor or review what you run, the data you process or the outputs you obtain (clause 5.1).</li>
     </ul>
   </section>
 
   <section id="handover">
     <h2>2. When a fleet changes hands</h2>
     <ul>
-      <li>Your working state, the cache and your storage on the fleet, is deleted when another customer's booking of that fleet starts, or 24 hours after your last hour on it, whichever comes first, or sooner when you ask (clause 6.2).</li>
-      <li>Before another customer's booking starts, we stop everything your own account on the machines runs, delete the account with its files, restart the machines and restore the fleet's software to our own image (clause 6.3), so nothing you ran, including a driver for your own model or your own software, can reach the next customer.</li>
-      <li>The sandbox host that runs code for your Functions is wiped at every change of customer as well.</li>
+      <li>Your working state, the software you installed and the files in your Customer storage, is deleted when another customer's booking of that fleet starts, or 24 hours after your last hour on it, whichever comes first, or sooner when you ask (clause 6.2).</li>
+      <li>The software you run on a fleet is warned 30 seconds before your hold of it ends, and stopped when it ends (clause 14.3). Before another customer's booking starts, we stop everything your own account on the machines runs, delete the account with its files, restart the machines and restore every machine to our base image (clause 6.3), so nothing you ran or installed, from the Catalogue or anywhere else, including a driver for your own model, can reach the next customer.</li>
+      <li>Data you keep in an Extra is deleted when you stop using that Extra or the Agreement ends (clause 4.6).</li>
     </ul>
   </section>
 
   <section id="sandbox">
     <h2>3. Functions and the sandbox</h2>
     <ul>
-      <li>Functions, and the tools your agent calls, that build, run or browse your code do it on a sandbox host attached to your fleet, never on the machines that serve the model.</li>
-      <li>The tools' indexes, build caches and dependency mirror are working state: kept while you hold the fleet, and deleted with the rest of it.</li>
-      <li>Each run gets a fresh virtual machine with no network access unless you allow it, and the virtual machine is destroyed when the run ends.</li>
-      <li>Fetch downloads only from the public internet over HTTPS. It refuses private, loopback and link-local addresses and our own hosts, and pins the address it checked. What it downloads is data and is never run; model weights are accepted as safetensors or GGUF, never in pickle formats.</li>
-      <li>A Function runs only when you start or schedule it, and what it produces is yours.</li>
+      <li>Functions are part of our software in the Catalogue, so they are on a fleet only if you install that software. A Function runs only when you start or schedule it, on a fleet you hold, and processes only the data you give it (clause 7.4).</li>
+      <li>Each run of your code, by a Function or by a tool of our engine that your agent calls, gets a fresh virtual machine with no network access unless you allow it, and the virtual machine is destroyed when the run ends.</li>
+      <li>What the Functions and tools keep, such as their indexes, build caches and dependency mirror, is working state: kept while you hold the fleet, and deleted with the rest of it.</li>
+      <li>The Fetch Function downloads into your Customer storage only from the public internet over HTTPS. It refuses private, loopback and link-local addresses and our own hosts, and pins the address it checked. What it downloads is data and is never run; model weights are accepted as safetensors or GGUF, never in pickle formats.</li>
+      <li>What a Function produces, including any model it trains, is yours and is kept as working state; we use it for no purpose of our own (clause 7.4).</li>
     </ul>
   </section>
 
   <section id="own-software">
-    <h2>4. Your own software</h2>
+    <h2>4. Our base image and your software</h2>
     <ul>
-      <li>On a fleet you hold you have your own account on every machine, without administrative rights, to install and run your own software, such as your own build of vLLM or of our engine. You alone decide what runs on the fleets you hold (Agreement clause 5.1).</li>
-      <li>Our engine runs under an account of its own. Neither account can read the other's files.</li>
-      <li>While our engine runs, your account has a small share of each machine and no GPU, so it cannot slow down or stop the engine that serves you. Stop our engine with one command and your account has the whole fleet: the GPUs, the memory, the links between the machines, and the cache and storage space, and if you ask, the space our model packs use too. Start it again and it copies its packs back if they were removed and loads its models, with an empty cache.</li>
-      <li>A firewall on each machine, which your account cannot change, lets your software reach the internet and the machines of your own fleet, and nothing else: not our other machines and not other customers' fleets. What your own software sends, and where, is up to you.</li>
-      <li>While our engine is stopped, nothing on the fleet is mirrored, so a failed machine loses what was on it: keep your own copies.</li>
+      <li>We put only our base image on each fleet's machines: the operating system, device drivers, general development tools and administration software that the <a href="fleets.html#base-image">Fleet List</a> states, with no AI model and no software whose purpose is to run one (clause 7.1).</li>
+      <li>When you first start a fleet you hold, a menu shows the Catalogue, the software our website lists for you to install. Our SparkPipe inference engine is one choice there, beside other publishers' software. You can also install anything else you have the right to use, from anywhere, such as your own build of vLLM or of our engine. You choose, install and run every model you use, and the software that runs it; we run no model for you (clause 5.2).</li>
+      <li>On a fleet you hold you have your own account on every machine, without administrative rights, to install and run your software. You operate what you install as your own, under each item's licence, and run, stop and remove it as you decide; you alone decide what runs on the fleets you hold (clauses 5.1 and 7.1).</li>
+      <li>A firewall on each machine, which your account cannot change, lets your software reach the internet and the machines of your own fleet, and nothing else: not our other machines and not other customers' fleets. What your software sends, and where, is up to you.</li>
     </ul>
   </section>
 
@@ -97,20 +96,20 @@
     <h2>5. Keys and credentials</h2>
     <ul>
       <li><b>API keys</b> are stored only as SHA-256 hashes, never the key itself. Each key can be limited by scope, fleet, expiry and IP address, and revoked at any time.</li>
-      <li><b>A token for another service,</b> such as Hugging Face, comes with each download request, is used only with the host it is for, is held in memory only while that download runs, and is never stored, logged or shown (clause 6.7).</li>
+      <li><b>A token for another service</b> that you send with a request to our API, such as a token for your own storage, is used only to carry out that request and only with the hosts it is meant for. We hold it in memory only while that request runs, and never store, log or show it (clause 6.7). A credential you give software you install stays with that software. The Fetch Function, for one, uses a token you give it, such as a Hugging Face token, only with the host it is for, holds it in memory only while that download runs, and never stores, logs or shows it.</li>
       <li><b>Your repository</b> is pushed to the fleet as a git remote, so we never hold a token for your git host. <b>Daily backups</b> are pulled by a scheduled command on your own machine with your own credentials, so we never hold those either.</li>
     </ul>
   </section>
 
   <section id="records">
     <h2>6. What we record</h2>
-    <p>The payment service that carries your API requests passes requests and replies between your tools and your fleet without storing them. Apart from your working state, we keep only the records below. The <a href="privacy.html#data">privacy policy</a> lists every kind of data and its legal basis.</p>
+    <p>Our public server carries traffic between the internet and your fleet through an encrypted tunnel and stores none of it (DPA clause 5.1). What the software you install records, our engine included, is part of your working state, and we keep no copy of it (Agreement clause 6.3). Apart from your working state and the data you keep in an Extra, we keep only the records below. The <a href="privacy.html#data">privacy policy</a> lists every kind of data and its legal basis.</p>
     <div class="scroll">
     <table>
       <tr><th>Record</th><th>What it holds</th><th>Kept</th></tr>
-      <tr><td>Operational record of each request</td><td>Model, token counts, timings, and the identifiers of the request, session and key. No prompt or reply text and no token numbers</td><td>1 year, or deleted within 30 days when you ask in writing</td></tr>
-      <tr><td>Working state on your fleet</td><td>The computed cache of your requests; the token numbers of replies, so that a reply sent back is processed with exactly the same tokens; conversations stored for Responses requests that do not set "store" to false; your files</td><td>Until another customer's booking starts, 24 hours after your last hour, or sooner when you ask</td></tr>
+      <tr><td>Your working state on your fleet</td><td>The software you install, and the files that you, your software and the Functions you run keep in your Customer storage, including any records your software keeps</td><td>Until another customer's booking starts, 24 hours after your last hour, or sooner when you ask</td></tr>
       <tr><td>Access logs</td><td>IP address, time, requested address, response code and size, referring page, browser; for a login to your own account on a fleet's machines, the account and key used</td><td>3 months, as Korean law requires</td></tr>
+      <tr><td>Account audit log</td><td>What the account's owner and members did in the account, such as sign-ins and sign-outs, invitations, joins, role changes and removals, with the member who acted and the email address concerned</td><td>1 year</td></tr>
       <tr><td>Account, payments and bookings</td><td>The account, orders, hour-credits, bookings and the acceptance of our terms</td><td>5 years, as Korean tax law requires</td></tr>
       <tr><td>Notices to your account</td><td>Each event and its delivery</td><td>30 days</td></tr>
     </table>
@@ -120,9 +119,9 @@
   <section id="access">
     <h2>7. Who can reach the machines</h2>
     <ul>
-      <li>Only the people who operate SparkPipe can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins.</li>
+      <li>Only the people who operate our fleets and servers can reach our systems, each with a personal key. Servers sit behind firewalls that block addresses after repeated failed logins.</li>
       <li>On a fleet you hold, you log in to your own account on its machines with SSH keys you add. That account reaches nothing of ours beyond those machines (section 4).</li>
-      <li>They access stored data only to run the service, give support, keep it secure or meet a legal obligation.</li>
+      <li>The people who operate our fleets and servers are each bound to confidentiality, and access the personal data we process for you only to operate and secure them, give support or meet a legal obligation (DPA clause 3.1).</li>
       <li>The fleets are in premises we control in Korea. Our public server, which ends HTTPS and forwards traffic to the fleets through an encrypted tunnel, is in a data centre in Seoul.</li>
       <li>All traffic to sparkpipe.ai is encrypted with HTTPS, and traffic between our servers runs through encrypted tunnels.</li>
       <li>We keep access records for our systems and review them after any incident.</li>
@@ -132,18 +131,18 @@
   <section id="incidents">
     <h2>8. Incidents and outages</h2>
     <ul>
-      <li>We tell you without delay of any intrusion, any leak of your information and any unannounced interruption of the service (clause 6.4).</li>
-      <li>Each node's cache and storage is mirrored to its pair partner, so a failed node loses neither, except while you have stopped our engine (section 4). If an event destroys both copies of part of your working state, we tell you what was lost and credit 24 hours of the fleet (clause 6.6).</li>
-      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). Downtime means the fleet's machines, or our network to them, failing; a fault in software, ours or yours, is not downtime. If your fleet is down, we give you another free fleet without its working state, or credit the hours (clause 15.7).</li>
+      <li>We tell you without delay of any intrusion into our systems or the machines of a fleet you hold, any leak of your information from them and any unannounced interruption of a fleet you hold (Agreement clause 6.4). We tell you of a personal data breach affecting the personal data we process for you without undue delay, and at the latest 48 hours after we become aware of it (DPA clause 8.1).</li>
+      <li>We make no backup of your working state, and it can be lost to a failure of the fleet (Agreement clause 6.3), so keep your own copies: we recommend exporting your Customer storage at least daily (clause 7.5). If an event on a fleet you hold that neither you nor your software caused destroys storage holding part of your working state, so that you lose that part, we tell you which machines and storage failed and credit 24 hours of the fleet (clause 6.6).</li>
+      <li>Downtime of more than 15 consecutive minutes credits every booked hour it touches, automatically, from our own records (clause 4.4). Downtime means the fleet's machines, our base image on them or our network to them failing; a fault in software you install or run, from the Catalogue or anywhere else, is not downtime. If your fleet is down, we give you, as you choose, another free fleet, with our base image and without your working state, or credit the hours (clause 15.7).</li>
     </ul>
   </section>
 
   <section id="source">
-    <h2>9. Read what runs</h2>
+    <h2>9. Read our engine's code</h2>
     <ul>
-      <li>The engine that serves your fleet is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the Functional Source License with an added permission. You can read it, build it and run it on your own hardware, or in your own account on a fleet you hold.</li>
-      <li>Some parts of the service run as separately licensed modules, which are not public. They run only on our machines in Korea and send nothing elsewhere (Agreement clause 7.8). Today there is one: memory, which keeps long conversations within reach for SparkPipe Chat and for API sessions that turn it on.</li>
-      <li>You can always leave with your data: export your storage, cache snapshots, draft model and adapters, and restore them to any fleet you hold, or take them home.</li>
+      <li>The source of our inference engine in the Catalogue is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the Functional Source License with an added permission, so you can read its code before you install it (DPA clause 12.8). You can also build it and run it on your own hardware, or install it, or your own build of it, on a fleet you hold.</li>
+      <li>Some parts of our software in the Catalogue are separately licensed modules, which are not public. A module runs only where you install it, on the fleets you hold and the Extras you use, all of them machines we operate in Korea; it processes only the data you give it and sends it nowhere you do not choose (Agreement clause 7.8). Today there is one: memory, which keeps long conversations within reach for the sessions on our engine's API that turn it on.</li>
+      <li>You can always leave with your data: export the files in your Customer storage through our API while they are kept, including any model a Function trained, and restore them to any fleet you hold, or take them home. Only our software whose source we do not publish cannot be exported (clause 7.5).</li>
     </ul>
   </section>
 

@@ -657,7 +657,7 @@ copy; the log lines keep only the model, counts, times and settings. Day
 files are deleted 366 days after their day (checked hourly).
 
 When a customer asks in writing to have the records of its requests deleted
-(Data Processing Agreement clause 9.3: within 30 days), run on the hub, as
+(our privacy policy: within 30 days), run on the hub, as
 the chat layer's user, in `~/sparkpipe-chat`, with the config the
 `sparkpipe-chat` unit serves:
 
