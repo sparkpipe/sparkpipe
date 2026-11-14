@@ -863,3 +863,33 @@ Next, largest first:
    its per-rank sums are the publisher's own four-GPU arithmetic.
 3. The expert send kernel, the separate quantization passes and the column
    copies.
+
+### The down projection on fp8 by fp4, o_a without column copies, and the cache stride
+
+`4247654d4` runs the experts' down projection on the block-scaled FP8-by-FP4
+instruction from the exchanged codes, and lets each o_a group read its
+columns in place and write into its columns of the WO-A row. The up
+projection stays on the BF16 cells: on its gathered rows the native kernel
+was no faster (11.9 against 12.0 ms), because the BF16 cell kernel already
+runs at about 86 TFLOPS.
+
+The engine runs layers 20 to 39 on a wave's last rows whenever the wave ends
+at a cache point, every 16,384 tokens (the module's
+`cache_checkpoint_token_count`). Engine builds with a stride of 65,536 and
+with no stride, on the same ranks, measure what that costs. Four groups, two
+rounds, every run answering the 40,000-token prompt with
+`b79b025295d2819f`:
+
+| Rank build | Engine stride | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | --- | ---: | ---: | ---: |
+| eighth pass | 16,384 | 3,748 tok/s | 4,714 | 4,426 |
+| with `4247654d4` | 16,384 | 3,872 | 4,954 | 4,601 |
+| eighth pass | 65,536 | 3,754 | 5,112 | 5,096 |
+| eighth pass | none | 3,769 | 5,120 | 5,224 |
+| with `4247654d4` | none | 3,869 | 5,316 | 5,459 |
+
+A coarser stride is a product choice: a later request that shares a prefix
+resumes at the last cache point before it, so with no stride it resumes only
+where an earlier prompt ended. Saving each cache point's layer-20 input rows
+and running layers 20 to 39 on them only when a request resumes there would
+keep the 16,384-token resume points at the no-stride speed.
