@@ -1,0 +1,33 @@
+fixed tools on the hub
+== 2026-11-14T07:17:47Z rerun qwen3.8-max
+activate qwen3.8-max: idle qwen3.8-max 61.8 null
+LONG-FILL qwen3.8-max 32767 tokens 45.2 s 725 tok/s, fastest 0 tok/s
+== 2026-11-14T07:18:38Z rerun gemma-4-31b
+activate gemma-4-31b: idle gemma-4-31b 36.0 null
+LONG-FILL gemma-4-31b 32767 tokens 17.9 s 1832 tok/s, fastest 0 tok/s
+== 2026-11-14T07:19:36Z rerun hy4-preview
+activate hy4-preview: idle hy4-preview 45.8 null
+LONG-FILL hy4-preview 32767 tokens 89.7 s 365 tok/s, fastest 0 tok/s
+== 2026-11-14T07:21:55Z rerun laguna-s-2.1
+activate laguna-s-2.1: idle laguna-s-2.1 38.5 null
+LONG-FILL laguna-s-2.1 32767 tokens 12.5 s 2617 tok/s, fastest 0 tok/s
+== 2026-11-14T07:22:53Z rerun mimo-v2.6-flash
+activate mimo-v2.6-flash: idle mimo-v2.6-flash 37.9 null
+LONG-FILL mimo-v2.6-flash 32767 tokens 14.8 s 2217 tok/s, fastest 0 tok/s
+== 2026-11-14T07:23:48Z rerun mimo-v2.6-pro
+activate mimo-v2.6-pro: idle mimo-v2.6-pro 41.8 null
+LONG-FILL mimo-v2.6-pro 32767 tokens 37.1 s 884 tok/s, fastest 0 tok/s
+== 2026-11-14T07:25:09Z rerun kimi-k3.1-pro
+activate kimi-k3.1-pro: idle kimi-k3.1-pro 75.3 null
+kimi-k3.1-pro b1_o256 decode 21.86 prefill None ttft_ms None
+kimi-k3.1-pro ttft6000 decode None prefill 510.3 ttft_ms 14471.3
+LONG-FILL kimi-k3.1-pro 33000 tokens 65.2 s 506 tok/s, fastest 0 tok/s
+== 2026-11-14T07:28:00Z rerun deepseek-v4.1-flash
+activate deepseek-v4.1-flash: idle deepseek-v4.1-flash 66.2 null
+deepseek-v4.1-flash ttft6000 decode None prefill 2302.8 ttft_ms 3206.5
+== 2026-11-14T07:29:16Z rerun qwen3.8-flash
+activate qwen3.8-flash: idle qwen3.8-flash 39.5 null
+qwen3.8-flash ttft6000 decode None prefill 2440.9 ttft_ms 3030.0
+activate qwen3.8-max: idle qwen3.8-max 53.2 null
+== 2026-11-14T07:31:00Z rerun done
+RERUN-RC=0

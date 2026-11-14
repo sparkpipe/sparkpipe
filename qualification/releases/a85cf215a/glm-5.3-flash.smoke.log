@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 1.38s content='The capital of France is Paris.' reasoning=218 chars
+stream        PASS  | finish='stop' 1.3s content='The capital of France is Paris.' reasoning=218 chars
+tool          PASS  | finish='tool_calls' 1.9s content='' reasoning=224 chars
+tool_result   PASS  | finish='stop' 1.28s content='The weather in Paris right now is **sunny** with a temperature of **18°C** (about 64°F). A' reasoning=70 chars
+reasoning_off FAIL HTTP 400: {"error":{"message":"litellm.BadRequestError: Hosted_vllmException - {\"error\": {\"message\": \"reasoning_effort must be one of ['high', 'low', 'medium']\", \"type\": \"invalid_request_error\", \"code\": \"unsupported_parameter\"}}. Received Model Group=glm-5.3-flash\nAvailable Model Group Fallbacks=None","type":"invalid_request_error","param":null,"code":"400"}} | finish=None 0.02s content='' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 1.12s content='391' reasoning=73 chars
+UI-SMOKE glm-5.3-flash: 5/6
