@@ -24,6 +24,7 @@ def stream_completion(endpoint, body):
     usage = None
     error = None
     finish = None
+    finished_at = None
     buffer = b""
     while True:
         chunk = response.read1(65536) if hasattr(response, "read1") else response.read(65536)
@@ -48,12 +49,13 @@ def stream_completion(endpoint, body):
             choice = document.get("choices", [{}])[0]
             if choice.get("finish_reason"):
                 finish = choice["finish_reason"]
+                finished_at = now - started if finished_at is None else finished_at
             if "usage" in document:
                 usage = document["usage"]
     connection.close()
     if response.status != 200 and error is None:
         error = {"http_status": response.status}
-    return {"started": started, "token_times": token_times, "usage": usage, "error": error, "finish_reason": finish}
+    return {"started": started, "token_times": token_times, "usage": usage, "error": error, "finish_reason": finish, "finished_at": finished_at}
 
 
 def summarize(result):
@@ -62,6 +64,9 @@ def summarize(result):
               "completion_tokens": len(times)}
     if times:
         record["ttft_ms"] = round(times[0] * 1000.0, 1)
+    elif result["error"] is None and result["finish_reason"] == "stop" and result.get("finished_at") is not None:
+        record["ttft_ms"] = round(result["finished_at"] * 1000.0, 1)
+        record["first_token_stop"] = True
     if len(times) > 1:
         record["decode_tok_s"] = round((len(times) - 1) / (times[-1] - times[0]), 2)
         record["decode_ms_per_token"] = round((times[-1] - times[0]) * 1000.0 / (len(times) - 1), 2)
