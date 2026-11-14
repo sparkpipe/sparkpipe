@@ -958,7 +958,7 @@ SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     const SparkWeightdMeshTopology *topology)
 {
     SparkStatus status = SPARK_STATUS_OK;
-    uint32_t rank,mask = 0u,reason = 0u,where = 0u;
+    uint32_t rank,mask = 0u,reason = 0u,where = 0u,changed;
     if ( lane >= SPARK_WEIGHTD_MESH_MAX_LANES || topology == 0 ||
          topology->rank_count > SPARK_WEIGHTD_MESH_RANKS_PER_BAND )
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -977,19 +977,22 @@ SparkStatus SparkWeightdMeshLaneConfigure(uint32_t lane,
     }
     if ( topology->physical_ranks[topology->local_rank] != weightd_mesh.local_rank )
     { status = SPARK_STATUS_INVALID_ARGUMENT; goto done; }
-    if ( weightd_mesh.lane_topology[lane].rank_count != 0u &&
-         (weightd_mesh.lane_topology[lane].rank_count != topology->rank_count ||
-          weightd_mesh.lane_topology[lane].local_rank != topology->local_rank ||
-          memcmp(weightd_mesh.lane_topology[lane].physical_ranks,topology->physical_ranks,
-              topology->rank_count * sizeof(uint32_t)) != 0) )
-    { status = SPARK_STATUS_UNSUPPORTED; goto done; }
+    changed = weightd_mesh.lane_topology[lane].rank_count != 0u &&
+        (weightd_mesh.lane_topology[lane].rank_count != topology->rank_count ||
+         weightd_mesh.lane_topology[lane].local_rank != topology->local_rank ||
+         memcmp(weightd_mesh.lane_topology[lane].physical_ranks,topology->physical_ranks,
+             topology->rank_count * sizeof(uint32_t)) != 0) ? 1u : 0u;
     reason = SparkWeightdMeshLaneCheckLocked(lane,&where);
     if ( reason != 0u )
     {
         SparkWeightdMeshLaneBusyLocked(lane,reason,where);
-        status = SPARK_STATUS_BUSY;
+        status = changed != 0u ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_BUSY;
         goto done;
     }
+    if ( changed != 0u )
+        fprintf(stderr,"WD-LANE-TOPOLOGY rank=%u lane=%u ranks=%u->%u local=%u->%u\n",weightd_mesh.local_rank,lane,
+            weightd_mesh.lane_topology[lane].rank_count,topology->rank_count,
+            weightd_mesh.lane_topology[lane].local_rank,topology->local_rank);
     weightd_mesh.lane_busy_logged[lane] = 0u;
     SparkWeightdMeshLaneResetLocked(lane);
     weightd_mesh.lane_topology[lane] = *topology;

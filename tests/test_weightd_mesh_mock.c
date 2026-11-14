@@ -1559,8 +1559,14 @@ static void test_mesh_topology(void)
         test_shipped(band,local) == 0u && weightd_mesh.doorbell_posted[band * SPARK_WEIGHTD_MESH_RANKS_PER_BAND + local] == 0u,
         "re-acquired idle lane starts from zero cells (WD-LANE-RESET)");
     bad = subset;bad.physical_ranks[0] = 0u;
-    CHECK(SparkWeightdMeshLaneConfigure(7u,&bad) == SPARK_STATUS_UNSUPPORTED,
-        "even drained lane rejects a changed topology until daemon restart");
+    CHECK(SparkWeightdMeshLaneConfigure(7u,&bad) == SPARK_STATUS_OK && entry[0] == 0u && test_shipped(band,local) == 0u,
+        "a drained lane takes a changed topology and starts from zero cells");
+    CHECK(SparkWeightdMeshSetActivity(7u,1u) == SPARK_STATUS_OK &&
+        SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_UNSUPPORTED &&
+        SparkWeightdMeshSetActivity(7u,0u) == SPARK_STATUS_OK,
+        "a lane in use refuses a changed topology");
+    CHECK(SparkWeightdMeshLaneConfigure(7u,&subset) == SPARK_STATUS_OK,
+        "the drained lane returns to its first topology");
     CHECK(SparkWeightdMeshSetActivity(7u,1u) == SPARK_STATUS_OK,"mapped wait producer begins");
     test_wait_publish(request,SPARK_WEIGHTD_MESH_WAIT_PEERS,tag,1u << 1u,0u);
     CHECK(SparkWeightdMeshSetActivity(7u,0u) == SPARK_STATUS_OK,"wait outlives terminal producer");
