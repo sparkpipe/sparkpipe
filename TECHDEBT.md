@@ -477,13 +477,16 @@ throughput on one fleet.
   V4.1 Flash, 1M tokens: about 3 GB against 814 s of prefill; Qwen 3.8 27B,
   256K tokens: about 17 GB against about 140 s). A context is replicated
   only in GPU memory, and only while several groups use it at once.
-- **The same bits at every group size.** A round today adds the sixteen
-  ranks' BF16 partials in rank order
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). A
-  wider rank keeps one BF16 partial per sixteenth and the round carries all
-  of them, so the sum is the 16-rank sum whatever the group size, and a
-  cached context is exactly reusable across sizes. The KV identity digest
-  then stops naming the shard degree (`runtime/stage_kv_binding.c`).
+- **The same bits at one group size, not across sizes.** The owner dropped
+  the goal of the same bits at every group size on 2026-11-14. A group size
+  gives the same bits on every run and for every batch, and a round adds the
+  ranks' partials in rank order; a group of another size may differ. So a
+  model may sum partial results across ranks, as the four-Spark DeepSeek V4.1
+  Flash MoE does with one reduce-scatter of partials instead of sending the
+  activations so that one rank computes each output whole (about 250 ms of a
+  16,384-row wave). A cached context is exactly reusable only at the group
+  size that made it, and the KV identity digest keeps naming the shard degree
+  (`runtime/stage_kv_binding.c`).
 - **Placement follows usage.** How many groups hold a model, and of what
   size, follows demand: a model used now and then sits on one group, a
   model many agents saturate spreads until spreading stops paying. Idle

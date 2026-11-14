@@ -9,13 +9,23 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define SPARK_ROW_FILE_BATCH_ROWS 64u
+#define SPARK_ROW_FILE_BATCH_SPANS 16u
+#define SPARK_ROW_FILE_SPAN_BYTES 65536u
+#define SPARK_ROW_FILE_RADIX_BITS 11u
 
 typedef struct SparkRowFileMiss
 {
 	uint64_t index;
 	uint64_t row;
 } SparkRowFileMiss;
+
+typedef struct SparkRowFileSpan
+{
+	uint64_t first;
+	uint64_t bytes;
+	uint64_t miss_begin;
+	uint64_t miss_end;
+} SparkRowFileSpan;
 
 struct SparkRowFile
 {
@@ -28,8 +38,11 @@ struct SparkRowFile
 	uint8_t *blocks[SPARK_ROW_FILE_MAX_WORKERS];
 	pthread_mutex_t fetch_lock, job_lock;
 	pthread_cond_t job_ready, job_done;
-	SparkRowFileMiss *misses;
-	uint64_t miss_capacity, miss_count, miss_next, miss_left;
+	SparkRowFileMiss *misses, *sorted;
+	uint64_t miss_capacity;
+	uint64_t *radix_counts;
+	SparkRowFileSpan *spans;
+	uint64_t span_capacity, span_count, span_next, span_left;
 	uint8_t *out;
 	uint64_t out_stride;
 	uint32_t stop, failed;
@@ -42,25 +55,31 @@ typedef struct SparkRowFileWorker
 	uint32_t index;
 } SparkRowFileWorker;
 
-static int32_t SparkRowFileRead(SparkRowFile *file, uint8_t *block, uint64_t row, uint8_t *target)
+static int32_t SparkRowFileReadSpan(SparkRowFile *file, uint8_t *block, const SparkRowFileSpan *span, uint8_t *out, uint64_t stride)
 {
-	const uint64_t at = file->offset + row * file->row_bytes;
-	const uint64_t first = at - at % SPARK_ROW_FILE_BLOCK_BYTES;
-	const uint64_t end = at + file->row_bytes;
-	uint64_t span = ((end + SPARK_ROW_FILE_BLOCK_BYTES - 1u) / SPARK_ROW_FILE_BLOCK_BYTES) * SPARK_ROW_FILE_BLOCK_BYTES - first;
 	uint64_t done = 0u;
-	if ( end > file->file_bytes )
+	if ( span->first + span->bytes > file->file_bytes &&
+		file->offset + (file->sorted[span->miss_end - 1u].row + 1u) * file->row_bytes > file->file_bytes )
 		return(-1);
-	while ( done < end - first )
+	while ( done < span->bytes )
 	{
-		const ssize_t got = pread(file->descriptor, block + done, (size_t)(span - done), (off_t)(first + done));
+		const ssize_t got = pread(file->descriptor, block + done, (size_t)(span->bytes - done), (off_t)(span->first + done));
 		if ( got < 0 && errno == EINTR )
 			continue;
-		if ( got <= 0 )
+		if ( got < 0 )
 			return(-2);
+		if ( got == 0 )
+			break;
 		done += (uint64_t)got;
 	}
-	memcpy(target, block + (at - first), file->row_bytes);
+	for ( uint64_t at = span->miss_begin; at < span->miss_end; ++at )
+	{
+		const SparkRowFileMiss *miss = &file->sorted[at];
+		const uint64_t start = file->offset + miss->row * file->row_bytes - span->first;
+		if ( start + file->row_bytes > done )
+			return(-3);
+		memcpy(out + miss->index * stride, block + start, file->row_bytes);
+	}
 	return(0);
 }
 
@@ -73,30 +92,90 @@ static void *SparkRowFileWork(void *argument)
 	pthread_mutex_lock(&file->job_lock);
 	for ( ;; )
 	{
-		while ( file->stop == 0u && file->miss_next >= file->miss_count )
+		while ( file->stop == 0u && file->span_next >= file->span_count )
 			pthread_cond_wait(&file->job_ready, &file->job_lock);
 		if ( file->stop != 0u )
 			break;
-		const SparkRowFileMiss *misses = file->misses + file->miss_next;
+		const SparkRowFileSpan *spans = file->spans + file->span_next;
 		uint8_t *out = file->out;
 		const uint64_t stride = file->out_stride;
-		uint64_t take = (file->miss_count - file->miss_next) / (4u * file->workers);
+		uint64_t take = (file->span_count - file->span_next) / (4u * file->workers);
 		uint32_t failed = 0u;
-		take = take == 0u ? 1u : take > SPARK_ROW_FILE_BATCH_ROWS ? SPARK_ROW_FILE_BATCH_ROWS : take;
-		file->miss_next += take;
+		take = take == 0u ? 1u : take > SPARK_ROW_FILE_BATCH_SPANS ? SPARK_ROW_FILE_BATCH_SPANS : take;
+		file->span_next += take;
 		pthread_mutex_unlock(&file->job_lock);
 		for ( uint64_t index = 0u; index < take; ++index )
-			if ( SparkRowFileRead(file, block, misses[index].row, out + misses[index].index * stride) != 0 )
+			if ( SparkRowFileReadSpan(file, block, &spans[index], out, stride) != 0 )
 				failed = 1u;
 		pthread_mutex_lock(&file->job_lock);
 		if ( failed != 0u )
 			file->failed = 1u;
-		file->miss_left -= take;
-		if ( file->miss_left == 0u )
+		file->span_left -= take;
+		if ( file->span_left == 0u )
 			pthread_cond_signal(&file->job_done);
 	}
 	pthread_mutex_unlock(&file->job_lock);
 	return(0);
+}
+
+static void SparkRowFileSortMisses(SparkRowFile *file, uint64_t count)
+{
+	const uint64_t buckets = 1ull << SPARK_ROW_FILE_RADIX_BITS;
+	uint32_t bits = 1u;
+	SparkRowFileMiss *from = file->misses, *to = file->sorted;
+	while ( bits < 64u && (file->rows - 1u) >> bits != 0u )
+		++bits;
+	for ( uint32_t shift = 0u; shift < bits; shift += SPARK_ROW_FILE_RADIX_BITS )
+	{
+		uint64_t total = 0u;
+		memset(file->radix_counts, 0, (size_t)buckets * sizeof(uint64_t));
+		for ( uint64_t at = 0u; at < count; ++at )
+			++file->radix_counts[(from[at].row >> shift) & (buckets - 1u)];
+		for ( uint64_t bucket = 0u; bucket < buckets; ++bucket )
+		{
+			const uint64_t here = file->radix_counts[bucket];
+			file->radix_counts[bucket] = total;
+			total += here;
+		}
+		for ( uint64_t at = 0u; at < count; ++at )
+			to[file->radix_counts[(from[at].row >> shift) & (buckets - 1u)]++] = from[at];
+		SparkRowFileMiss *swap = from;
+		from = to;
+		to = swap;
+	}
+	if ( from != file->sorted )
+		memcpy(file->sorted, from, (size_t)count * sizeof(*from));
+}
+
+static uint64_t SparkRowFilePlanSpans(SparkRowFile *file, uint64_t count)
+{
+	uint64_t spans = 0u;
+	for ( uint64_t at = 0u; at < count; ++at )
+	{
+		const uint64_t begin = file->offset + file->sorted[at].row * file->row_bytes, end = begin + file->row_bytes;
+		const uint64_t first = begin - begin % SPARK_ROW_FILE_BLOCK_BYTES;
+		const uint64_t last = (end + SPARK_ROW_FILE_BLOCK_BYTES - 1u) / SPARK_ROW_FILE_BLOCK_BYTES * SPARK_ROW_FILE_BLOCK_BYTES;
+		SparkRowFileSpan *span = spans != 0u ? &file->spans[spans - 1u] : 0;
+		if ( span != 0 && first < span->first + span->bytes )
+		{
+			if ( last > span->first + span->bytes )
+				span->bytes = last - span->first;
+			span->miss_end = at + 1u;
+			continue;
+		}
+		if ( span != 0 && first == span->first + span->bytes && last - span->first <= SPARK_ROW_FILE_SPAN_BYTES )
+		{
+			span->bytes = last - span->first;
+			span->miss_end = at + 1u;
+			continue;
+		}
+		file->spans[spans].first = first;
+		file->spans[spans].bytes = last - first;
+		file->spans[spans].miss_begin = at;
+		file->spans[spans].miss_end = at + 1u;
+		++spans;
+	}
+	return(spans);
 }
 
 void SparkRowFileClose(SparkRowFile *file)
@@ -118,6 +197,9 @@ void SparkRowFileClose(SparkRowFile *file)
 	pthread_mutex_destroy(&file->job_lock);
 	pthread_mutex_destroy(&file->fetch_lock);
 	free(file->misses);
+	free(file->sorted);
+	free(file->spans);
+	free(file->radix_counts);
 	free(file->cache);
 	free(file->tags);
 	free(file);
@@ -173,8 +255,14 @@ SparkStatus SparkRowFileOpen(const char *path, const SparkRowFileOptions *option
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 	}
+	file->radix_counts = (uint64_t *)malloc(((size_t)1u << SPARK_ROW_FILE_RADIX_BITS) * sizeof(uint64_t));
+	if ( file->radix_counts == 0 )
+	{
+		SparkRowFileClose(file);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	for ( uint32_t index = 0u; index < file->workers; ++index )
-		if ( posix_memalign((void **)&file->blocks[index], SPARK_ROW_FILE_BLOCK_BYTES, 2u * SPARK_ROW_FILE_BLOCK_BYTES) != 0 )
+		if ( posix_memalign((void **)&file->blocks[index], SPARK_ROW_FILE_BLOCK_BYTES, SPARK_ROW_FILE_SPAN_BYTES + SPARK_ROW_FILE_BLOCK_BYTES) != 0 )
 		{
 			file->blocks[index] = 0;
 			SparkRowFileClose(file);
@@ -211,13 +299,21 @@ SparkStatus SparkRowFileFetch(SparkRowFile *file, const int64_t *ids, uint64_t c
 	if ( count > file->miss_capacity )
 	{
 		SparkRowFileMiss *grown = (SparkRowFileMiss *)realloc(file->misses, (size_t)count * sizeof(*grown));
-		if ( grown == 0 )
+		SparkRowFileMiss *grown_sorted = grown != 0 ? (SparkRowFileMiss *)realloc(file->sorted, (size_t)count * sizeof(*grown_sorted)) : 0;
+		SparkRowFileSpan *grown_spans = grown_sorted != 0 ? (SparkRowFileSpan *)realloc(file->spans, (size_t)count * sizeof(*grown_spans)) : 0;
+		if ( grown != 0 )
+			file->misses = grown;
+		if ( grown_sorted != 0 )
+			file->sorted = grown_sorted;
+		if ( grown_spans != 0 )
+			file->spans = grown_spans;
+		if ( grown == 0 || grown_sorted == 0 || grown_spans == 0 )
 		{
 			pthread_mutex_unlock(&file->fetch_lock);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		file->misses = grown;
 		file->miss_capacity = count;
+		file->span_capacity = count;
 	}
 	uint64_t missing = 0u, wanted = 0u;
 	for ( uint64_t index = 0u; index < count; ++index )
@@ -237,29 +333,31 @@ SparkStatus SparkRowFileFetch(SparkRowFile *file, const int64_t *ids, uint64_t c
 	}
 	if ( missing != 0u )
 	{
+		SparkRowFileSortMisses(file, missing);
+		const uint64_t spans = SparkRowFilePlanSpans(file, missing);
 		pthread_mutex_lock(&file->job_lock);
 		file->out = out;
 		file->out_stride = out_stride;
-		file->miss_count = missing;
-		file->miss_next = 0u;
-		file->miss_left = missing;
+		file->span_count = spans;
+		file->span_next = 0u;
+		file->span_left = spans;
 		file->failed = 0u;
-		if ( missing >= file->workers )
+		if ( spans >= file->workers )
 			pthread_cond_broadcast(&file->job_ready);
 		else
-			for ( uint64_t wake = 0u; wake < missing; ++wake )
+			for ( uint64_t wake = 0u; wake < spans; ++wake )
 				pthread_cond_signal(&file->job_ready);
-		while ( file->miss_left != 0u )
+		while ( file->span_left != 0u )
 			pthread_cond_wait(&file->job_done, &file->job_lock);
 		if ( file->failed != 0u )
 			status = SPARK_STATUS_IO_ERROR;
-		file->miss_count = 0u;
+		file->span_count = 0u;
 		pthread_mutex_unlock(&file->job_lock);
 		if ( status == SPARK_STATUS_OK && file->cache_rows != 0u )
 			for ( uint64_t index = 0u; index < missing; ++index )
 			{
-				const uint64_t row = file->misses[index].row, slot = row % file->cache_rows;
-				memcpy(file->cache + slot * file->row_bytes, out + file->misses[index].index * out_stride, file->row_bytes);
+				const uint64_t row = file->sorted[index].row, slot = row % file->cache_rows;
+				memcpy(file->cache + slot * file->row_bytes, out + file->sorted[index].index * out_stride, file->row_bytes);
 				file->tags[slot] = row + 1u;
 			}
 	}
