@@ -1737,9 +1737,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
   describes it: `docs/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
   `tools/fleet_post_reboot.sh` does not check the route.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
-  assume 8 lanes, and `lane_assignments.json` gives lane 0 to a GLM development
-  lane while production GLM runs on lane 6. Replace both with the lane
-  allocator of lane B04 (TD287/TD288).
+  assume 8 developer lanes; the mesh has 4, and the lane records use 0 to 2.
+  Replace both with the lane allocator of lane B04 (TD287/TD288).
+- weightd sizes a KV pool against `MemAvailable` with a fixed 2.5 GiB of
+  runtime headroom, but a rank's state budget is populated only as waves touch
+  it: GLM 5.3's rank holds 9.75 GiB of GPU memory when idle and about 3 GiB
+  more under its first long prompt, which left 0.8 GiB above `earlyoom`'s 2%
+  before 2026-11-13 and nothing once the mesh region grew (IPC ABI 15). The
+  mesh is back to its old size (ABI 16); the sizing is still a guess. A rank
+  should tell weightd its state budget, or touch it before the KV pool
+  attaches.
+- Every mesh band is pinned at daemon start. Registering a lane's bands when
+  the lane is reserved would let the lane count follow the records again.
 - Awaiting fleet proof (lane `lanes/direct-pack-paths`): lanes name their
   weight files directly (docs/LANES.md, Weight files). `stage_lane.sh` and
   `k3_lane.sh` setup no longer link packs, refuse a missing or linked weight

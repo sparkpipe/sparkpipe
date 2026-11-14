@@ -38,7 +38,7 @@
   <section>
     <h1>Availability</h1>
     <p class="effective" id="av-now" aria-live="polite">Loading the bookings…</p>
-    <p>Eight fleets in four pairs, live from our booking system. Each row is a fleet; each column is an hour or a week, in Korea Standard Time. You see what is taken and until when, never by whom. Fleets still being built are striped, and open when they start serving.</p>
+    <p>Eight fleets in four pairs, live from our booking system. Each row is a fleet; each column is an hour or a week, in Korea Standard Time. You see what is taken and until when, never by whom. Fleets still being built are striped, and open when they come into service.</p>
     <nav class="av-modes" aria-label="Data"><a id="av-mode-live" href="availability.html">Live</a><a id="av-mode-sandbox" href="availability.html?sandbox">Sandbox</a></nav>
     <p class="av-note av-sandbox-only" id="av-sandbox"></p>
     <ul class="av-chips" id="av-chips" aria-live="polite"></ul>
@@ -65,7 +65,7 @@
       <li><h3>Two halves to every pair</h3><p>Fleets come in pairs of 16 Sparks each, on one 32-port 100 Gb/s switch. The <b>A half</b> is rented by the week. The <b>B half</b> is an <b>Hour Fleet</b>: anyone can book it by the hour, up to <span data-hourfleet="days">7</span> days ahead and <span data-hourfleet="hours">24</span> hours a week per account.</p></li>
       <li><h3>Winning an A fleet</h3><p>If an A fleet is free next week, the first account to book it pins it from Monday. If every A fleet is held, you join the <b>waitlist</b> by locking at least <span data-week="hc">144</span> HC. Every Sunday at 00:00 KST, each A fleet whose holder did not book the next week goes to the <b>biggest lock</b>, and at equal locks to whoever joined first. That whole lock then books as many weeks as it pays for.</p></li>
       <li><h3>Keeping it</h3><p>A pinned fleet is yours alone: nobody can book its hours or its future weeks. You keep it by booking the next week before 00:00 KST on the Sunday of your last booked week, and auto-extend does that for you. No booking is ever bumped, by another customer or by us.</p></li>
-      <li><h3>Losing it</h3><p>Miss that Sunday deadline and the fleet goes to the waitlist that night, or to the first account that books it. Your cache and storage stay until the next customer's first hour starts, and are then wiped.</p></li>
+      <li><h3>Losing it</h3><p>Miss that Sunday deadline and the fleet goes to the waitlist that night, or to the first account that books it. Your working state, the software you installed and your files, stays until the next customer's first hour starts or 24 hours after your last hour ends, whichever comes first, and is then wiped.</p></li>
       <li><h3>Adding the pair</h3><p>Holding an A fleet lets you also pin its B half for the same weeks: one cluster of 32 Sparks with 4 TB of memory. At least a quarter of the fleets must stay open for hours, so only half of the B halves can be pinned at a time. The first holder to pin one gets it, and keeps it by extending, like any fleet.</p></li>
       <li><h3>Discounts for commitment</h3><p>The more weeks you hold on one fleet, the less every new week and every hour costs: <span data-off="list">5% from 4, 10% from 13, 15% from 26 and 20% at 52</span>. On the waitlist, your hours get the discount your lock would get, repaid from your lock if you leave before it wins a fleet.</p></li>
     </ol>
@@ -78,7 +78,7 @@
       <li><b>Fleets do not come back by themselves.</b> A holder who keeps booking keeps the fleet for as long as they like. Once every A fleet is held, the only way in is the waitlist, and the waitlist goes to the biggest lock, not the earliest.</li>
       <li><b>A bigger lock wins sooner and pays less per week.</b> When you win, your whole lock books weeks at the discount for that many weeks, so a 26-week lock both outranks a 4-week lock and buys 15% off every week.</li>
       <li><b>Booking ahead is your protection.</b> Nobody can take a week you have booked. The only way to lose a fleet is to let a Sunday deadline pass, so keep several weeks booked ahead with auto-extend, and keep enough HC for it.</li>
-      <li><b>Pairs are the scarcest thing on the board.</b> Only half of the B halves can be pinned at once. If you will need 4 TB, pin your pair while one is open; once you hold it, nobody can take it while you extend.</li>
+      <li><b>Pairs are the scarcest thing on the board.</b> Only half of the B halves can be pinned at once. If you will need 4 TB of memory, pin your pair while one is open; once you hold it, nobody can take it while you extend.</li>
       <li><b>Hours are first come, first served.</b> They open <span data-hourfleet="days">7</span> days ahead and are capped at <span data-hourfleet="hours">24</span> a week per account, so no team can take them all, and at least a quarter of the fleets always stay open for hours.</li>
       <li><b>Everyone sees the same board.</b> It shows what is held and until when, how many locks are waiting and how many pairs are open, never who. Your own place on the waitlist is on <a href="market.html">your account page</a>.</li>
     </ul>

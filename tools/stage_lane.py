@@ -40,6 +40,7 @@ HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 MAX_ROWS = 16384
 MAX_SEQUENCES = 128
+MESH_LANES = 4
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 KV_BLOCK_TOKENS = 64
 KV_BACKING_IN_FLIGHT_PAGES = 2
@@ -721,8 +722,8 @@ def render(value: dict) -> str:
 
 
 def check_arguments(model: dict, args) -> None:
-    if not 0 <= args.lane <= 15:
-        raise SystemExit("lane must be within 0..15")
+    if not 0 <= args.lane < MESH_LANES:
+        raise SystemExit(f"lane must be within 0..{MESH_LANES - 1}")
     lane_hosts(model, args.first_node)
     if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
         raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")

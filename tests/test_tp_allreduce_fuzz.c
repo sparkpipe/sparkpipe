@@ -1326,6 +1326,11 @@ static void FuzzRegistrationOwnership(void)
     CHECK(SparkTpDeviceCollectivePrepareReceiveBf16(&owners[0],g_regions[1],1u,
         FUZZ_HIDDEN,0u,0) == SPARK_STATUS_UNSUPPORTED,
         "bound collective rejects mapping replacement without changing ownership");
+    calls = cuda_stub_host_unregister_calls;
+    SparkTpDeviceCollectiveDestroy(&owners[0]);
+    CHECK(owners[0].implementation == 0 && cuda_stub_host_unregister_calls == calls &&
+        spark_stub_cuda_host_registered(g_regions[0]) != 0u,
+        "first shared owner cannot unregister the remaining owner's mapping");
     {
         SparkTpDeviceCollective skip_owner;
         SparkStatus skip_status;
@@ -1367,11 +1372,6 @@ static void FuzzRegistrationOwnership(void)
             }
         }
     }
-    calls = cuda_stub_host_unregister_calls;
-    SparkTpDeviceCollectiveDestroy(&owners[0]);
-    CHECK(owners[0].implementation == 0 && cuda_stub_host_unregister_calls == calls &&
-        spark_stub_cuda_host_registered(g_regions[0]) != 0u,
-        "first shared owner cannot unregister the remaining owner's mapping");
     cuda_stub_host_unregister_result = 2;
     SparkTpDeviceCollectiveDestroy(&owners[1]);
     CHECK(owners[1].implementation != 0 && spark_stub_cuda_host_registered(g_regions[0]) != 0u,
@@ -2220,7 +2220,7 @@ static void FuzzMeshTopology(void)
     FuzzMeshFixture(&config);
     config.mesh_ranks[0] = 1u;
     config.mesh_ranks[1] = 0u;
-    config.mesh_lane = 7u;
+    config.mesh_lane = SPARK_WEIGHTD_MESH_MAX_LANES - 1u;
     config.tp_degree = 2u;
     config.local_hidden_dimension = FUZZ_HIDDEN;
     config.max_active_sequence_count = 1u;

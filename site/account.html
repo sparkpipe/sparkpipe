@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Payments · SparkPipe</title>
-<meta name="description" content="Your SparkPipe payments: purchases of hour-credits and their receipts.">
+<meta name="description" content="Your SparkPipe payments and fleet setup: purchases of hour-credits, their receipts, and what to install from the Catalogue on the fleets you hold.">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#0a0c10">
 <link rel="icon" href="/favicon.ico" sizes="32x32">
@@ -15,6 +15,19 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
 <link rel="stylesheet" href="site.css?v=91e4a0e1">
 <link rel="stylesheet" href="checkout.css?v=3">
+<style>
+.installs { display: grid; gap: 18px; }
+.install { padding-top: 18px; border-top: 1px solid var(--rule); }
+.install-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
+.install-now { font-size: 14px; color: var(--steel); }
+.install-body { display: grid; gap: 14px; }
+.install-pick summary { cursor: pointer; font: 600 12px/1.4 var(--mono); color: var(--signal); text-decoration: underline; text-underline-offset: 3px; }
+.install-pick[open] summary { margin-bottom: 14px; }
+.install .tile span { font: 400 13px/1.5 var(--text); }
+.install .tile:has(input:checked) b::before { content: '✓ '; }
+.install-call { display: grid; gap: 6px; padding: 14px 16px; border: 1px solid var(--rule-strong); border-left: 4px solid var(--signal); border-radius: 2px; background: var(--raise); color: var(--ink); font: 400 15px/1.5 var(--text); }
+.install-call b { font-weight: 700; }
+</style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -43,7 +56,7 @@
   <section class="card" id="status" hidden aria-live="polite">
     <p class="label">Order <span id="st-order"></span></p>
     <h2 id="st-title">Checking your payment…</h2>
-    <ol class="timeline" id="st-line"><li>Invoice</li><li>Payment seen</li><li>Confirmed</li><li>Hours issued</li></ol>
+    <ol class="timeline" id="st-line"><li>Invoice</li><li>Payment seen</li><li>Confirmed</li><li>HC issued</li></ol>
     <p class="flash" id="st-text"></p>
     <div class="table-wrap" id="st-bank-wrap" hidden><table style="min-width: 0"><tbody id="st-bank"></tbody></table></div>
     <div class="actions" id="st-actions"></div>
@@ -79,6 +92,15 @@
       <div class="actions"><a class="btn solid" href="market.html">Open your account</a><a class="btn" href="buy.html">Buy HC</a></div>
     </section>
 
+    <section class="card" id="installs">
+      <p class="label">Fleets</p>
+      <h2>Set up your fleets</h2>
+      <div class="install-call" id="i-needed" hidden></div>
+      <p class="install-now">Every fleet starts each booking with only our base image and your own working state on it, if any. For each fleet you hold or have booked, choose what to install on it from the <a href="catalogue.html">Catalogue</a>, or nothing. An item whose license asks for acceptance is chosen only with your acceptance of that license for your company. Your choice stays with your working state on that fleet. Installing software and loading a model count as part of your booking.</p>
+      <div class="installs" id="install-list"></div>
+      <p class="flash" id="m-installs" hidden></p>
+    </section>
+
     <section class="card" id="next">
       <p class="label">What happens next</p>
       <ul class="perks">
@@ -100,7 +122,7 @@
     <section class="card">
       <p class="label">Orders</p>
       <p class="flash" id="no-orders">No orders yet. <a href="buy.html">Buy your first HC.</a></p>
-      <p class="flash" id="not-owner" hidden>Only the account owner buys HC and sees the account's orders. Ask the owner, or see your keys and usage in <a href="market.html">your account</a>.</p>
+      <p class="flash" id="not-owner" hidden>Only the account owner buys HC and sees the account's orders. Ask the owner, or see your keys and bookings in <a href="market.html">your account</a>.</p>
       <div class="table-wrap" id="orders-wrap"><table>
         <thead><tr><th>Order</th><th>What</th><th>Total</th><th>Paid with</th><th>State</th><th></th></tr></thead>
         <tbody id="orders"></tbody>
@@ -122,10 +144,11 @@
 <script src="https://js.tosspayments.com/v2/standard" id="toss-sdk" async></script>
 <script src="pricing.js?v=3"></script>
 <script src="prices.js?v=4"></script>
-<script src="checkout.js?v=4"></script>
+<script src="catalogue.js?v=1"></script>
+<script src="checkout.js?v=5"></script>
 <script>
 (() => {
-  const P = window.SP_PRICING, SP = window.SP;
+  const P = window.SP_PRICING, SP = window.SP, CATALOGUE = (window.SP_CATALOGUE || { items: [] }).items;
   const $ = (id) => document.getElementById(id);
   const OPEN = new Set(['created', 'unpaid', 'pending', 'paid', 'waiting']);
   const STEPS = { created: 0, unpaid: 1, pending: 2, paid: 3, completed: 4 };
@@ -222,6 +245,131 @@
     }
   };
 
+  let installs = [], installsFor = null;
+  const make = (tag, text, cls) => { const node = document.createElement(tag); if (text) node.textContent = text; if (cls) node.className = cls; return node; };
+  const kstTime = (text) => {
+    const ms = Date.parse(text && text.length === 17 ? text.replace('Z', ':00Z') : text || '');
+    return Number.isFinite(ms) ? new Date(ms).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Seoul' }) + ' KST' : text || '-';
+  };
+  const fleetName = (entry) => entry.name || entry.fleet;
+  const listed = (names) => (names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names[0]);
+  const chooser = () => me.role === 'owner' || me.role === 'admin';
+  const choiceLines = (entry) => {
+    const c = entry.choice;
+    if (!c) return [make('p', 'Nothing chosen yet.', 'install-now')];
+    const item = CATALOGUE.find((i) => i.id === c.item);
+    const texts = Object.entries(c.licenses || {});
+    const lines = [make('p', 'Chosen on ' + kstTime(c.at) + ': ' + (item && item.kind === 'none' ? 'nothing from the Catalogue.' : (c.name || c.item) + '.'), 'install-now')];
+    if (texts.length) lines.push(make('p', 'License accepted for ' + me.company + ': ' + texts.map(([path, hash]) => path.split('/').pop() + ' SHA-256 ' + String(hash).slice(0, 16) + '…').join(' · '), 'hint'));
+    if (c.current === false) lines.push(make('p', 'The license of ' + (c.name || c.item) + ' has changed since it was accepted, or the item left the Catalogue. Choose again below before anything is installed again.', 'hint'));
+    return lines;
+  };
+  const licenseBox = (item, entry) => {
+    const label = make('label', '', 'check');
+    label.dataset.item = item.id;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    const span = make('span', 'For ' + me.company + ', I accept the license of ' + item.name + ', which governs the copy installed on ' + fleetName(entry) + ': ' + item.license.name + '. License texts: ');
+    item.license.texts.forEach((path, i) => {
+      const a = link(path, path.split('/').pop());
+      Object.assign(a, { target: '_blank', rel: 'noopener' });
+      span.append(i ? ', ' : '', a);
+    });
+    span.append('.');
+    label.append(box, span);
+    return label;
+  };
+  const itemTile = (item, entry) => {
+    const label = make('label', '', 'tile method');
+    const input = document.createElement('input');
+    Object.assign(input, { type: 'radio', name: 'item', value: item.id, checked: !!entry.choice && entry.choice.item === item.id });
+    label.append(input, make('b', item.name), make('span', item.summary));
+    return label;
+  };
+  const saveInstall = async (form, entry, boxes) => {
+    const flash = form.querySelector('.flash'), button = form.querySelector('button[type=submit]');
+    const item = CATALOGUE.find((i) => i.id === SP.chosen(form, 'item'));
+    const box = item && boxes.find((b) => b.dataset.item === item.id);
+    const accept = !!box && box.querySelector('input').checked;
+    if (!item) return SP.say(flash, 'Choose what to install on ' + fleetName(entry) + '.', 'error');
+    if (box && !accept) return SP.say(flash, 'Tick the box to accept the license of ' + item.name + ' for ' + me.company + ', or choose another item.', 'error');
+    button.disabled = true;
+    SP.say(flash, 'Saving…');
+    try {
+      const done = await SP.call('/v1/installs/' + encodeURIComponent(entry.fleet), { item: item.id, accept }, 'PUT');
+      installs = installs.map((e) => (e.fleet === done.fleet ? done : e));
+      renderInstalls();
+      const saved = $('install-' + done.fleet);
+      if (saved) SP.say(saved.querySelector('.flash'), 'Saved: ' + (item.kind === 'none' ? 'nothing from the Catalogue is installed on ' + fleetName(done) + '.' : item.name + ' is chosen for ' + fleetName(done) + '.'), 'ok');
+    } catch (error) {
+      SP.say(flash, error.message, 'error');
+      button.disabled = false;
+    }
+  };
+  const installForm = (entry) => {
+    const form = make('form', '', 'form install');
+    form.id = 'install-' + entry.fleet;
+    form.noValidate = true;
+    const head = make('div', '', 'install-head');
+    head.append(make('h3', fleetName(entry)), make('span', entry.holding ? 'Held now' : 'Booked', 'state' + (entry.holding ? ' live' : ' building')));
+    form.append(head, ...choiceLines(entry));
+    if (!chooser()) {
+      form.append(make('p', 'The account’s owner or an admin chooses what to install.', 'hint'));
+      return form;
+    }
+    const tiles = make('div', '', 'tiles methods');
+    tiles.setAttribute('role', 'radiogroup');
+    tiles.setAttribute('aria-label', 'What to install on ' + fleetName(entry));
+    tiles.append(...CATALOGUE.map((item) => itemTile(item, entry)));
+    const boxes = CATALOGUE.filter((item) => item.acceptance && item.license).map((item) => licenseBox(item, entry));
+    const actions = make('div', '', 'actions');
+    const button = make('button', 'Save the choice', 'btn solid');
+    button.type = 'submit';
+    actions.append(button);
+    const flash = make('p', '', 'flash');
+    flash.hidden = true;
+    const body = make('div', '', 'install-body');
+    body.append(tiles, ...boxes, actions);
+    const pick = entry.choice ? make('details', '', 'install-pick') : body;
+    if (entry.choice) pick.append(make('summary', 'Change what to install'), body);
+    form.append(pick, flash);
+    const sync = () => { const picked = SP.chosen(form, 'item'); boxes.forEach((box) => { box.hidden = box.dataset.item !== picked; }); };
+    form.addEventListener('change', sync);
+    form.addEventListener('submit', (event) => { event.preventDefault(); saveInstall(form, entry, boxes); });
+    sync();
+    return form;
+  };
+  const renderInstalls = () => {
+    if (!me) return;
+    const needed = installs.filter((e) => e.needed).map(fleetName);
+    const stale = installs.filter((e) => e.needed && e.choice).length > 0;
+    $('i-needed').hidden = needed.length === 0;
+    const one = needed.length === 1;
+    const why = stale ? (one ? 'You hold it now, and nothing current is chosen for it: nothing is chosen, or the license accepted for it has changed.' : 'You hold them now, and nothing current is chosen for them: nothing is chosen, or the license accepted has changed.')
+      : (one ? 'You hold it now, and nothing from the Catalogue is chosen for it.' : 'You hold them now, and nothing from the Catalogue is chosen for them.');
+    if (needed.length && chooser()) $('i-needed').replaceChildren(make('b', 'Choose what to install on ' + listed(needed) + '.'), make('span', why));
+    else if (needed.length) $('i-needed').replaceChildren(make('b', 'Nothing current from the Catalogue is chosen for ' + listed(needed) + ', which the account holds now.'), make('span', 'The account’s owner or an admin chooses what to install.'));
+    if (!CATALOGUE.length) SP.say($('m-installs'), 'The Catalogue did not load. Reload the page to choose what to install.', 'error');
+    const empty = make('p', 'The account holds no fleet now and has no booking that has not ended.', 'install-now');
+    if (me.role === 'owner') empty.append(' ', link('market.html' + (SP.sandbox ? '?sandbox' : ''), 'Book one in your account'), ', then choose here what to install on it.');
+    $('install-list').replaceChildren(...(installs.length ? installs.map(installForm) : [empty]));
+  };
+  const loadInstalls = async () => {
+    const who = me.member;
+    installsFor = who;
+    try {
+      const found = (await SP.call('/v1/installs')).fleets || [];
+      if (!me || me.member !== who) return;
+      installs = found;
+      SP.say($('m-installs'), '');
+      renderInstalls();
+    } catch (error) {
+      if (!me || me.member !== who) return;
+      installsFor = null;
+      SP.say($('m-installs'), error.message, 'error');
+    }
+  };
+
   const renderHome = () => {
     $('signin').hidden = true;
     $('home').hidden = false;
@@ -247,12 +395,13 @@
       state.textContent = part && OPEN.has(o.state) ? 'Part paid: ' + SP.usd(o.received) : part && !o.issued && (o.state === 'cancelled' || o.state === 'timedout') ? (SP.STATES[o.state] || o.state) + ', refunded' : SP.stateOf(o);
       return row([cell(o.order), cell(what(o)), cell(SP.priced(o.total, o.currency), 'figure'), cell(SP.paidWith(o)), cell(state), cell(action)]);
     }));
+    if (installsFor !== me.member) loadInstalls();
   };
 
   const load = async (follow) => {
     me = await SP.me();
     if (me) { renderHome(); if (follow) watch(); }
-    else { $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments.'; }
+    else { installs = []; installsFor = null; $('install-list').replaceChildren(); $('i-needed').hidden = true; $('home').hidden = true; $('signin').hidden = false; $('title').textContent = 'Sign in to see your payments.'; }
   };
 
   const flow = SP.codeFlow({ codeForm: $('f-code'), code: $('code'), sentTo: $('sent-to'), autoSubmit: true });

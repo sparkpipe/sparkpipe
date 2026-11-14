@@ -1236,6 +1236,29 @@ class Market:
             self.advance(now)
             return fleet in self.held(account, now)
 
+    def stays(self, account, now):
+        found = {f["to"]: True for f in self.active_failovers() if f["account"] == account}
+        for b in self.st.bookings.values():
+            if b["account"] == account and b["ends"] > now:
+                found[b["fleet"]] = found.get(b["fleet"], False) or b["begins"] <= now
+        return found
+
+    def holder(self, fleet_id, now):
+        found = [b["account"] for b in self.busy(fleet_id, now, now + timedelta(seconds=1))] + [f["account"] for f in self.active_failovers() if f["to"] == fleet_id]
+        return found[0] if found else None
+
+    def holds_of(self, fleet_id, now):
+        found = [(b["account"], b["begins"], b["ends"], stamp_time(b["now"])) for b in self.on_fleet(fleet_id)]
+        found += [(f["account"], f["begins"], f["ends"] or now, f["begins"]) for f in self.st.failovers.values() if f["to"] == fleet_id]
+        return sorted(found, key=lambda hold: hold[3])
+
+    def kept_until(self, account, fleet_id, since, now):
+        kept, holds = since, self.holds_of(fleet_id, now)
+        for who, _, ends, made in holds:
+            if who == account and made < kept + DAY:
+                kept = max(kept, ends)
+        return min([kept + DAY] + [begins for who, begins, _, _ in holds if who != account and begins > since])
+
     def hold_left(self, account, fleet_id):
         with self.book.lock:
             now = self.now()

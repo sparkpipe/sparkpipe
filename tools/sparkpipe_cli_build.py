@@ -53,6 +53,7 @@ sparkpipe setup claude-code
 - `sparkpipe status` shows what the account holds, its deadlines and the fleet's working state.
 - `sparkpipe book week F3 4`, `sparkpipe book hours F1 2027-01-05T10 2` and `sparkpipe waitlist lock 144` book fleets.
 - `sparkpipe keys ls`, `keys create` and `keys revoke` manage API keys.
+- `sparkpipe install` lists your fleets and what is chosen for each, and `sparkpipe install F1B sparkpipe --accept-license` chooses what to install on a fleet from the Catalogue.
 - `sparkpipe setup claude-code`, `setup codex` and `setup opencode` configure the three coding agents for the fleet.
 - `sparkpipe tokens set hf` keeps a source token in the operating system's keychain only.
 - `sparkpipe fetch hf://org/model@revision models/x/` has the fleet download straight into its storage.

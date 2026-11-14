@@ -1,17 +1,18 @@
 (() => {
   const SANDBOX = new URLSearchParams(window.location.search).has('sandbox');
   const API = SANDBOX ? '/pay/sandbox/api' : '/pay/api';
-  const call = async (path, body) => {
+  const call = async (path, body, method) => {
     const options = body === undefined
       ? { cache: 'no-store', credentials: 'same-origin' }
-      : { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+      : { method: method || 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
     let response;
     try { response = await fetch(API + path, options); } catch (_) { throw new Error('Could not reach sparkpipe.ai. Check your connection and try again.'); }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(data.error || 'The payment service did not answer (' + response.status + '). Try again in a minute.');
+      const found = data.error && typeof data.error === 'object' ? data.error : { message: data.error, code: data.reason };
+      const error = new Error(found.message || 'The payment service did not answer (' + response.status + '). Try again in a minute.');
       error.status = response.status;
-      error.reason = data.reason;
+      error.reason = found.code;
       throw error;
     }
     return data;

@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SparkPipe 플릿 목록</title>
-<meta name="description" content="SparkPipe 플릿 목록: 플릿과 그 캐시·저장공간, 요율, 이용 가능한 모델과 그 라이선스.">
+<meta name="description" content="SparkPipe 플릿 목록: 각 플릿의 장비, 요율, 쌍 구성과 고객 저장공간, 모든 플릿에 두는 기본 이미지, 그리고 소프트웨어 목록에 있는 저희 엔진이 실행하는 모델과 그 라이선스.">
 <meta name="theme-color" content="#0a0c10">
 <link rel="canonical" href="https://sparkpipe.ai/fleets-ko.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="SparkPipe">
 <meta property="og:title" content="SparkPipe 플릿 목록">
-<meta property="og:description" content="SparkPipe 플릿 목록: 플릿과 그 캐시·저장공간, 요율, 이용 가능한 모델과 그 라이선스.">
+<meta property="og:description" content="SparkPipe 플릿 목록: 각 플릿의 장비, 요율, 쌍 구성과 고객 저장공간, 모든 플릿에 두는 기본 이미지, 그리고 소프트웨어 목록에 있는 저희 엔진이 실행하는 모델과 그 라이선스.">
 <meta property="og:url" content="https://sparkpipe.ai/fleets-ko.html">
 <meta property="og:image" content="https://sparkpipe.ai/apple-touch-icon.png">
 <meta property="og:locale" content="ko_KR">
@@ -48,6 +48,7 @@
     <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">플릿 목록</span></a>
     <nav class="nav-links" aria-label="섹션">
       <a href="#fleets">플릿</a>
+      <a href="#base-image">기본 이미지</a>
       <a href="#models">모델</a>
       <a href="#speculation">추측 디코딩</a>
       <a href="#prefill">긴 프롬프트</a>
@@ -64,8 +65,8 @@
 <main id="main" class="wrap policy">
   <section>
     <h1>플릿 목록</h1>
-    <p class="effective">2026년 11월 12일 갱신</p>
-    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록이자 이용 가능한 모델의 목록입니다. 모든 플릿은 저희가 서울에서 직접 운영하는 장비로 이루어져 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 그 플릿의 1주는 <span data-week="hc">144</span> HC에 요율을 곱한 값입니다. 플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 각 쌍의 A 플릿은 주 단위로 고정합니다. B 플릿은 시간 단위로 예약하는 시간 플릿이며, A 플릿의 보유자는 A 플릿을 보유한 주 동안 B 플릿도 고정하여 그 쌍을 Spark 32대, 4 TB 메모리의 한 클러스터로 쓸 수 있습니다. 서비스 중인 플릿의 최소 4분의 1은 항상 시간 예약용으로 남습니다: 모두 가동 중일 때 <span data-fleets="all">8</span>개 중 <span data-hourfleet="free">2</span>개. 아무도 보유하지 않은 다른 플릿도 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 각 계정은 시간 플릿에서 주 최대 <span data-hourfleet="hours">24</span>시간을 보유할 수 있습니다. 모든 플릿은 그 플릿을 보유한 고객에게 8 TB의 캐시와 <span data-storage>4 TB</span>의 고객 저장공간을 제공합니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
+    <p class="effective">2026년 11월 13일 갱신</p>
+    <p>이 페이지는 <a href="agreement-ko.html">SparkPipe 고객 계약</a>이 가리키는 플릿 목록입니다. 각 플릿의 장비, 요율과 고객 저장공간, 어느 플릿이 시간 플릿인지와 쌍 구성, 그리고 모든 플릿에 두는 기본 이미지를 기재합니다. 또한 소프트웨어 목록에 있는 저희 추론 엔진이 실행하는 오픈소스 모델을 게시합니다(제7.1조). 모든 플릿은 저희가 서울에서 직접 운영하는 장비로 이루어져 있습니다. 플릿의 요율은 그 플릿을 1시간 쓰는 데 드는 시간 크레딧(HC) 수이며, 그 플릿의 1주는 <span data-week="hc">144</span> HC에 요율을 곱한 값입니다. 플릿은 32포트 100 Gb/s 스위치를 공유하는 쌍으로 구성됩니다. 각 쌍의 A 반쪽은 주 단위로 고정합니다. B 반쪽은 시간 단위로 예약하는 시간 플릿이며, A 반쪽의 보유자는 A 반쪽을 보유한 주 중 B 반쪽이 비어 있는 주에는 B 반쪽도 고정하여 그 쌍을 Spark 32대, 4 TB 메모리의 한 클러스터로 쓸 수 있습니다. 가동 중인 플릿의 최소 4분의 1은 항상 시간 예약용으로 남습니다: 모두 가동 중일 때 <span data-fleets="all">8</span>개 중 <span data-hourfleet="free">2</span>개. 아무도 보유하지 않은 다른 플릿도 현재 주의 끝까지 시간 단위로 예약할 수 있습니다. 각 계정은 시간 플릿에서 주 최대 <span data-hourfleet="hours">24</span>시간을 보유할 수 있습니다. 모든 플릿에는 그 플릿을 보유한 고객이 쓰는 <span data-storage>56 TB</span>의 고객 저장공간이 있습니다. 저희는 플릿에 인공지능 모델이나 이를 실행하는 것을 목적으로 하는 소프트웨어 없이 기본 이미지만 두며, 설치할 것은 고객이 고릅니다. 영문판(<a href="fleets.html" hreflang="en">fleets.html</a>)과 같은 내용이며, 서로 다르면 국문판이 우선합니다.</p>
   </section>
 
   <div class="notice"><p><b>약관은 검토용으로 공개되어 있습니다.</b> 시간 플릿의 시간은 <span data-start="hours">2026년 12월 1일</span>부터, 고정 플릿의 주는 <span data-start="weeks">2027년 1월 4일</span>부터 예약할 수 있습니다.</p></div>
@@ -74,59 +75,69 @@
     <h2>플릿</h2>
     <div class="scroll" tabindex="0" role="region" aria-label="플릿">
     <table>
-      <tr><th>플릿</th><th>장비</th><th>상태</th><th>예약</th><th class="num">시간당 HC(요율)</th><th class="num">캐시</th><th class="num">고객 저장공간</th><th>모델</th></tr>
-      <tr><td><b>플릿&nbsp;1A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;1B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;1B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리, 100 Gb/s RDMA 스위치와 노드 쌍 직결 링크로 연결; 플릿&nbsp;1A와 32포트 100 Gb/s 스위치를 공유</td><td>가동 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;1A의 보유자는 같은 주 동안 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>아래 모델</td></tr>
-      <tr><td><b>플릿&nbsp;2A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;2B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;2B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;2A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;2A의 보유자는 같은 주 동안 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;3A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;3B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;3B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;3A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;3A의 보유자는 같은 주 동안 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;4A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;4B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
-      <tr><td><b>플릿&nbsp;4B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리; 플릿&nbsp;4A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;4A의 보유자는 같은 주 동안 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">8 TB</td><td class="num">4 TB</td><td>플릿을 열 때 여기에 게시</td></tr>
+      <tr><th>플릿</th><th>장비</th><th>상태</th><th>예약</th><th class="num">시간당 HC(요율)</th><th class="num">고객 저장공간</th></tr>
+      <tr><td><b>플릿&nbsp;1A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;1B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;1B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간, 100 Gb/s RDMA 스위치로 연결; 플릿&nbsp;1A와 32포트 100 Gb/s 스위치를 공유</td><td>가동 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;1A의 보유자는 같은 주 중 이 플릿이 비어 있는 주에 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;2A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;2B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;2B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;2A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;2A의 보유자는 같은 주 중 이 플릿이 비어 있는 주에 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;3A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;3B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;3B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;3A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;3A의 보유자는 같은 주 중 이 플릿이 비어 있는 주에 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;4A</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;4B와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>주 단위, 고정; 아무도 보유하지 않는 동안 시간 단위</td><td class="num">1</td><td class="num">56 TB</td></tr>
+      <tr><td><b>플릿&nbsp;4B</b></td><td>NVIDIA DGX Spark(GB10) 16대, 각 128GB 메모리와 3.5 TB 고객 저장공간; 플릿&nbsp;4A와 32포트 100 Gb/s 스위치를 공유</td><td>구축 중</td><td>시간 플릿: 시간 단위; 플릿&nbsp;4A의 보유자는 같은 주 중 이 플릿이 비어 있는 주에 이 플릿도 고정하여 Spark 32대, 4 TB의 한 쌍으로 쓸 수 있음</td><td class="num">1</td><td class="num">56 TB</td></tr>
     </table>
     </div>
-    <p>각 노드는 1 TB의 캐시와 500 GB의 고객 저장공간을 자체 NVMe 드라이브에 두고, 노드 쌍 직결 링크로 짝 노드에 미러링합니다. 그래서 플릿 하나에 8 TB의 캐시와 4 TB의 저장공간이 있으며, 노드 하나가 고장 나도 어느 것도 잃지 않습니다. 한 쌍의 두 노드가 함께 고장 나면 그 부분의 캐시를 다시 구축해야 하며, 고객 계약에 따라 그러한 사유마다 플릿 24시간분을 적립합니다(제6.6조). 고객 저장공간은 작업 공간이므로, 보존하려는 것은 매일 백업하세요. 고객이 보유한 플릿에서 저희 엔진을 멈춘 동안에는 그 플릿의 고객 저장공간이 그 공간 전체, 즉 노드마다 1.5 TB이며 미러링하지 않습니다. 고객이 원하면 저희 모델 팩이 쓰는 노드마다 2 TB도 더합니다. 저희 엔진을 다시 시작하면 두 부분을 비우고 저희 팩을 다시 복사합니다.</p>
+    <p>고객 저장공간은 플릿 장비의 파일 저장공간으로, 장비마다 3.5 TB, 플릿의 장비 16대를 합쳐 56 TB입니다. 여기에 고객의 작업 상태, 즉 고객이 설치한 소프트웨어와, 고객이 받은 모델과 고객의 소프트웨어가 두는 캐시를 포함한 고객의 파일이 보관됩니다(제6.2조). 저희는 그 어느 것도 미러링하지 않고 백업하지도 않으므로(제6.3조), 드라이브나 장비가 고장 나면 거기에 있던 것은 사라집니다. 고객이 보유한 플릿에서 고객이나 고객의 소프트웨어로 인한 것이 아닌 사유로 고객의 작업 상태 일부를 담은 저장공간이 파괴되어 고객이 그 부분을 잃으면, 고객 계약에 따라 그러한 사유마다 한 번, 그 플릿의 요율로 24시간에 해당하는 HC를 적립하고, 어느 장비와 저장공간이 고장 났는지 알려 드립니다(제6.6조). 고객 저장공간은 작업 공간이므로, 보존하려는 것은 매일 백업하세요.</p>
     <p>저희 시스템은 플릿별 상태, 그 플릿이 시간 플릿인지, 고정되어 있는지 또는 비어 있는지, 그리고 대기 중인 대기 명단 잠금 수를 담은 실시간 가용 용량을 <span class="mono">https://sparkpipe.ai/availability.txt</span>에 공개하며, 최소 30초마다 갱신합니다.</p>
   </section>
 
+  <section id="base-image">
+    <h2>기본 이미지</h2>
+    <p>저희는 모든 플릿에 기본 이미지, 즉 아래의 소프트웨어만 두며, 인공지능 모델이나 이를 실행하는 것을 목적으로 하는 소프트웨어는 두지 않습니다(고객 계약 제7.1조). 예약이 시작될 때 플릿에는 기본 이미지와, 있는 경우 고객 자신의 작업 상태만 있습니다. 고객은 보유한 플릿을 처음 시작할 때와 그 후 언제든 설치할 것을 <a href="catalogue-ko.html">소프트웨어 목록</a>에서 고르거나, 사용할 권리가 있는 다른 소프트웨어를 직접 설치합니다. 소프트웨어 목록에서 SparkPipe 추론 엔진은 다른 배포자의 소프트웨어와 나란히 놓인 선택지 중 하나입니다. 설치한 것은 각각의 라이선스에 따라 고객이 직접 운영하며, 실행하고 멈추고 제거하는 것도 고객이 정합니다.</p>
+    <ul>
+      <li><b>운영체제:</b> Ubuntu 24.04와 그 표준 명령줄 도구.</li>
+      <li><b>장치 드라이버:</b> NVIDIA GPU 드라이버와 네트워크 어댑터 및 드라이브의 드라이버.</li>
+      <li><b>범용 개발 도구:</b> Python 3.12, Ninja 빌드 시스템, GitHub CLI, 네트워크와 드라이브를 시험하는 iperf3와 fio 같은 도구.</li>
+      <li><b>관리용 소프트웨어:</b> 저희가 각 장비와 그 네트워크를 설정하고, 장비마다 고객 계정을 만들어 고객이 추가한 SSH 키로 로그인하게 하며, 장비마다 방화벽을 운영하는 데 쓰는 소프트웨어. 이 소프트웨어는 또한 장비의 상태를 지켜보다가 장애가 나면 복구하고, 장비의 메모리가 바닥나기 직전에는 프로세스를 멈추며, 다른 고객의 예약이 시작되기 전에 장비를 이 기본 이미지로 복원합니다.</li>
+    </ul>
+  </section>
 
   <section id="models">
-    <h2>플릿 1의 모델</h2>
-    <p>플릿 1에 설치된 모든 모델입니다. <b>제공</b> 모델은 고객이 보유한 어느 플릿에서든 고객 자신의 키로 저희 API를 통해 쓸 수 있습니다. 고객이 자신의 저장공간에 추가한 모델은 그 고객의 계정에만 표시됩니다. 플릿은 메모리에 들어가는 만큼 여러 모델을 동시에 적재합니다. 적재되지 않은 모델에 대한 요청은 그 모델을 적재하는 동안(보통 20~80초) 기다립니다. 모두 들어가지 않을 때에만 다른 모델을 내리며, 내린 모델의 캐시는 그 모델이 다시 적재될 때를 위해 보관합니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 제공됩니다. <b>검증 중</b> 모델은 서비스 중이고 채팅 점검을 통과했으며, 출력 토큰을 게시자의 참조 구현과 비교하는 중입니다.</p>
-    <div class="scroll" tabindex="0" role="region" aria-label="플릿 1의 모델">
+    <h2>저희 엔진이 실행하는 모델</h2>
+    <p>소프트웨어 목록에 있는 SparkPipe 추론 엔진이 실행하는 오픈소스 모델입니다(고객 계약 제7.1조). 고객은 보유한 플릿에 소프트웨어 목록에서 엔진을 설치하고, 고른 모델을 그 배포자로부터 그 라이선스에 따라 고객 저장공간으로 받습니다. 소프트웨어를 설치하는 시간과 모델을 적재하는 시간은 예약에 포함됩니다(제14.3조). 예약을 할 때 여기에 <b>게시</b>된 모델은 그 예약 동안 소프트웨어 목록의 소프트웨어로 실행할 수 있으며, 그 밖의 모델은 게시되어 있는 동안 실행할 수 있습니다. 게시되지 않은 모델을 고객이 직접 고객 저장공간에 추가하면, 그 모델은 고객이 보유한 플릿에서 그 고객만 쓸 수 있습니다(제7.6조). 엔진은 플릿의 메모리에 들어가는 만큼 여러 모델을 동시에 적재합니다. 적재되지 않은 모델에 대한 요청은 그 모델을 적재하는 동안(보통 20~80초) 기다립니다. 모두 들어가지 않을 때에만 다른 모델을 내리며, 내린 모델의 캐시는 그 모델이 다시 적재될 때를 위해 보관합니다. <b>핵심</b> 모델은 계속 성능을 개선하며, <b>검증</b> 모델은 릴리스 검증을 통과해 표의 속도로 실행됩니다. <b>검증 중</b> 모델은 실행할 수 있고 채팅 점검을 통과했으며, 출력 토큰을 배포자의 참조 구현과 비교하는 중입니다.</p>
+    <div class="scroll" tabindex="0" role="region" aria-label="저희 엔진이 실행하는 모델">
     <table>
-      <tr><th>모델</th><th>게시자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th>분류</th><th>제공 여부</th></tr>
-      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>핵심</td><td>제공</td></tr>
-      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">768K</td><td class="num">–</td><td class="num">–</td><td>핵심</td><td>제공</td></tr>
-      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">–</td><td class="num">–</td><td>핵심</td><td>제공</td></tr>
-      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">29.5 tok/s</td><td class="num">182 tok/s</td><td>핵심</td><td>제공</td></tr>
-      <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>Motif 3</b><br><span class="mono">motif-3</span></td><td>모티프테크놀로지스</td><td><a href="https://huggingface.co/Motif-Technologies/Motif-3">MIT</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증 중</td><td>제공</td></tr>
-      <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 tok/s</td><td class="num">55 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 tok/s</td><td class="num">157 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>검증</td><td>제공, 텍스트만</td></tr>
-      <tr><td><b>Gemma 4 26B A4B</b><br><span class="mono">gemma-4-26b-a4b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-26B-A4B-it">Apache 2.0</a></td><td class="num">256K</td><td class="num">89.5 tok/s</td><td class="num">1,848 tok/s</td><td>검증</td><td>제공, 텍스트만</td></tr>
-      <tr><td><b>Ling 3.0 Flash</b><br><span class="mono">ling-3.0-flash</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash">MIT</a></td><td class="num">256K</td><td class="num">80.4 tok/s</td><td class="num">1,514 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Ling 3.0 Flash Finance</b><br><span class="mono">ling-3.0-flash-fin</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin">MIT</a></td><td class="num">256K</td><td class="num">79.2 tok/s</td><td class="num">1,550 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Laguna S 2.1</b><br><span class="mono">laguna-s-2.1</span></td><td>Poolside</td><td><a href="https://huggingface.co/poolside/Laguna-S-2.1">OpenMDW 1.1</a></td><td class="num">32K</td><td class="num">51.0 tok/s</td><td class="num">773 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Muse Glimmer 30B</b><br><span class="mono">muse-glimmer-30b</span></td><td>meta-models</td><td><a href="https://huggingface.co/meta-models/Muse-Glimmer-30B">Apache 2.0</a></td><td class="num">128K</td><td class="num">37.9 tok/s</td><td class="num">1,186 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Hunyuan Hy4 Preview</b><br><span class="mono">hy4-preview</span></td><td>Tencent</td><td><a href="https://huggingface.co/tencent/Hy4-preview-FP8">Apache 2.0</a></td><td class="num">32K</td><td class="num">14.2 tok/s</td><td class="num">53 tok/s</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증</td><td>제공</td></tr>
-      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증</td><td>제공하지 않음</td></tr>
-      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>검증</td><td>제공</td></tr>
+      <tr><th>모델</th><th>배포자</th><th>라이선스</th><th class="num">컨텍스트 창</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th>분류</th><th>게시 여부</th></tr>
+      <tr><td><b>Kimi K3</b><br><span class="mono">kimi-k3</span></td><td>Moonshot AI</td><td><a href="https://huggingface.co/moonshotai/Kimi-K3">Kimi K3 License</a></td><td class="num">1M</td><td class="num">16.2 tok/s</td><td class="num">590 tok/s</td><td>핵심</td><td>게시</td></tr>
+      <tr><td><b>GLM 5.3</b><br><span class="mono">glm-5.3</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3">GLM-5.3 License</a></td><td class="num">768K</td><td class="num">–</td><td class="num">–</td><td>핵심</td><td>게시</td></tr>
+      <tr><td><b>GLM 5.3 Flash</b><br><span class="mono">glm-5.3-flash</span></td><td>Z.AI</td><td><a href="https://huggingface.co/zai-org/GLM-5.3-Flash">MIT</a></td><td class="num">128K</td><td class="num">–</td><td class="num">–</td><td>핵심</td><td>게시</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b><br><span class="mono">deepseek-v4.1-flash</span></td><td>DeepSeek</td><td><a href="https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017">MIT</a></td><td class="num">1M</td><td class="num">29.5 tok/s</td><td class="num">182 tok/s</td><td>핵심</td><td>게시</td></tr>
+      <tr><td><b>K-EXAONE 2.0</b><br><span class="mono">k-exaone-2.0</span></td><td>LG AI연구원</td><td><a href="https://huggingface.co/LGAI-EXAONE/K-EXAONE-2.0-750B-A37B">Apache 2.0</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>게시</td></tr>
+      <tr><td><b>A.X K2</b><br><span class="mono">a.x-k2</span></td><td>SK텔레콤</td><td><a href="https://huggingface.co/skt/A.X-K2">Apache 2.0</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>게시</td></tr>
+      <tr><td><b>Solar Open 2</b><br><span class="mono">solar-open-2</span></td><td>업스테이지</td><td><a href="https://huggingface.co/upstage/Solar-Open2-250B">Upstage Solar License</a></td><td class="num">256K</td><td class="num">– ¹</td><td class="num">–</td><td>검증 중</td><td>게시</td></tr>
+      <tr><td><b>Motif 3</b><br><span class="mono">motif-3</span></td><td>모티프테크놀로지스</td><td><a href="https://huggingface.co/Motif-Technologies/Motif-3">MIT</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증 중</td><td>게시</td></tr>
+      <tr><td><b>MiMo V2.6 Pro</b><br><span class="mono">mimo-v2.6-pro</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Pro-RL">MIT</a></td><td class="num">32K</td><td class="num">19.0 tok/s</td><td class="num">55 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>MiMo V2.6 Flash</b><br><span class="mono">mimo-v2.6-flash</span></td><td>Xiaomi</td><td><a href="https://huggingface.co/XiaomiMiMo/MiMo-V2.6-Flash-RL">MIT</a></td><td class="num">32K</td><td class="num">40.9 tok/s</td><td class="num">157 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Gemma 4 31B</b><br><span class="mono">gemma-4-31b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-31B-it">Apache 2.0</a></td><td class="num">32K</td><td class="num">34.4 tok/s</td><td class="num">834 tok/s</td><td>검증</td><td>게시, 텍스트만</td></tr>
+      <tr><td><b>Gemma 4 26B A4B</b><br><span class="mono">gemma-4-26b-a4b</span></td><td>Google</td><td><a href="https://huggingface.co/google/gemma-4-26B-A4B-it">Apache 2.0</a></td><td class="num">256K</td><td class="num">89.5 tok/s</td><td class="num">1,848 tok/s</td><td>검증</td><td>게시, 텍스트만</td></tr>
+      <tr><td><b>Ling 3.0 Flash</b><br><span class="mono">ling-3.0-flash</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash">MIT</a></td><td class="num">256K</td><td class="num">80.4 tok/s</td><td class="num">1,514 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Ling 3.0 Flash Finance</b><br><span class="mono">ling-3.0-flash-fin</span></td><td>inclusionAI</td><td><a href="https://huggingface.co/inclusionAI/Ling-3.0-flash-Fin">MIT</a></td><td class="num">256K</td><td class="num">79.2 tok/s</td><td class="num">1,550 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Laguna S 2.1</b><br><span class="mono">laguna-s-2.1</span></td><td>Poolside</td><td><a href="https://huggingface.co/poolside/Laguna-S-2.1">OpenMDW 1.1</a></td><td class="num">32K</td><td class="num">51.0 tok/s</td><td class="num">773 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Muse Glimmer 30B</b><br><span class="mono">muse-glimmer-30b</span></td><td>meta-models</td><td><a href="https://huggingface.co/meta-models/Muse-Glimmer-30B">Apache 2.0</a></td><td class="num">128K</td><td class="num">37.9 tok/s</td><td class="num">1,186 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Hunyuan Hy4 Preview</b><br><span class="mono">hy4-preview</span></td><td>Tencent</td><td><a href="https://huggingface.co/tencent/Hy4-preview-FP8">Apache 2.0</a></td><td class="num">32K</td><td class="num">14.2 tok/s</td><td class="num">53 tok/s</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Qwen 3.8 27B</b><br><span class="mono">qwen3.8-27b</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-27B">Apache 2.0</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증</td><td>게시</td></tr>
+      <tr><td><b>Qwen 3.8 Flash</b><br><span class="mono">qwen3.8-flash</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-Flash-Next">Qwen Community License 1.0</a></td><td class="num">256K</td><td class="num">–</td><td class="num">–</td><td>검증</td><td>게시하지 않음</td></tr>
+      <tr><td><b>Qwen 3.8 Max</b><br><span class="mono">qwen3.8-max</span></td><td>Qwen</td><td><a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">Qwen3.8-Max License</a></td><td class="num">32K</td><td class="num">10.4 tok/s</td><td class="num">35 tok/s</td><td>검증</td><td>게시</td></tr>
     </table>
     </div>
-    <p>컨텍스트 창은 제공 기준입니다. 디코드는 산문 256토큰을 쓰는 단일 요청이고 프리필은 7,000~8,000토큰 프롬프트이며, 둘 다 릴리스 91c0e6be3 검증에서 플릿 1이 다른 작업을 하지 않는 상태로, 예열 후 측정했습니다. DeepSeek V4.1 Flash는 2026-10-13 공유 전문가 분할 이후 측정값입니다. 오늘 제공하는 빌드를 다루는 공개된 근거가 없는 모델은 –로 표시하며, 2026-11-04부터 게시자의 BF16 가중치로 제공하는 네 모델도 여기에 해당합니다. 각 모델은 기본으로 제공하는 추측 디코딩을 켠 채 측정했으며, 산문에서는 추측 디코딩이 디코드 속도를 0.97~1.07배 바꿉니다. GLM 5.3은 게시자의 BF16 가중치로 768K를 제공하며, FP8 빌드는 1M을 제공합니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
+    <p>컨텍스트 창은 저희 엔진 기준입니다. 디코드는 산문 256토큰을 쓰는 단일 요청이고 프리필은 7,000~8,000토큰 프롬프트이며, 둘 다 릴리스 91c0e6be3 검증에서 플릿 1이 다른 작업을 하지 않는 상태로, 저희 엔진으로 예열 후 측정했습니다. DeepSeek V4.1 Flash는 2026-10-13 공유 전문가 분할 이후 측정값입니다. 오늘 저희 엔진이 실행하는 빌드를 다루는 공개된 근거가 없는 모델은 –로 표시하며, 2026-11-04부터 배포자의 BF16 가중치로 실행하는 네 모델도 여기에 해당합니다. 각 모델은 저희 엔진이 기본으로 쓰는 추측 디코딩을 켠 채 측정했으며, 산문에서는 추측 디코딩이 디코드 속도를 0.97~1.07배 바꿉니다. GLM 5.3은 배포자의 BF16 가중치로는 768K, FP8 빌드로는 1M의 컨텍스트로 실행됩니다. 방법과 근거: <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문).</p>
     <p>¹ 추측 디코딩을 켜면 약 3,800토큰 파일에서 함수 하나의 이름만 바꿔 전체를 다시 쓰는 요청이 K-EXAONE 2.0에서 190.9 tok/s, A.X K2에서 298.0 tok/s, Solar Open 2에서 513.7 tok/s로 처리되며(프롬프트 프리필 포함), 출력은 추측 디코딩 없이 디코딩한 결과와 같습니다(2026-10-26).</p>
-    <p>Qwen 3.8 Max는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 메모리 2TB보다 크므로, 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4) 중 하나로 제공합니다.</p>
-    <p>Qwen 3.8 Flash는 제공하지 않습니다. 그 라이선스는 모델을 서비스로 제공하는 모든 사업에 Qwen과의 별도 계약을 요구하므로, 저희 회사 내부에서만 씁니다.</p>
+    <p>Qwen 3.8 Max는 공개된 FP8 정밀도(2.5TB)로는 플릿 하나의 메모리 2TB보다 크므로, 저희 엔진은 플릿 하나에 담기고 저희 정확도 A/B 검증을 통과하는 4비트 빌드(AMD MXFP4, Red Hat 또는 RadixArk의 NVFP4) 중 하나로 실행합니다.</p>
+    <p>Qwen 3.8 Flash는 게시하지 않습니다. 그 라이선스는 모든 모델 서비스 사업에 Qwen과의 별도 계약을 요구합니다. 저희는 이 모델을 회사 내부에서만 씁니다.</p>
   </section>
 
   <section id="precision">
     <h2>정밀도: BF16과 FP8·NVFP4 비교(실측)</h2>
-    <p>2026-11-04부터 네 모델이 게시자의 BF16 가중치로 제공됩니다. 높은 정밀도로 무엇을 얻는지 보려고, 각 모델로 92문항 ds4-eval 세트(GPQA Diamond 25, SuperGPQA 25, AIME 2025 25, COMPSEC 17)를 같은 빌드에서 두 번 실행했습니다. 한 번은 BF16으로, 한 번은 이전에 제공하던 정밀도로 실행했습니다. 온도 0, 답변당 최대 16,000토큰, 한 번에 16문항씩, 채팅 엔드포인트를 통해 실행했습니다.</p>
+    <p>2026-11-04부터 저희 엔진은 네 모델을 배포자의 BF16 가중치로 실행합니다. 높은 정밀도로 무엇을 얻는지 보려고, 각 모델로 92문항 ds4-eval 세트(GPQA Diamond 25, SuperGPQA 25, AIME 2025 25, COMPSEC 17)를 같은 빌드에서 두 번 실행했습니다. 한 번은 BF16으로, 한 번은 이전에 실행하던 정밀도로 실행했습니다. 온도 0, 답변당 최대 16,000토큰, 한 번에 16문항씩, 엔진의 채팅 엔드포인트를 통해 실행했습니다.</p>
     <div class="scroll" tabindex="0" role="region" aria-label="정밀도: BF16과 FP8·NVFP4 비교(실측)">
     <table>
       <tr><th>모델</th><th class="num">BF16</th><th class="num">FP8 또는 NVFP4</th><th class="num">둘 다 정답</th><th class="num">BF16만 정답</th><th class="num">FP8·NVFP4만 정답</th><th class="num">92문항 소요 시간, BF16 / 다른 정밀도</th></tr>
@@ -142,7 +153,7 @@
 
   <section id="precision-choice">
     <h2>정밀도 선택(예정)</h2>
-    <p>모든 모델을 게시자의 원래 정밀도(기본)로 제공하고, 8비트(FP8)와 4비트(NVFP4 또는 MXFP4)로도 제공하며, 좋은 빌드가 있는 경우 EXL3로도 제공할 예정입니다. 모델 이름으로 고르며, 예를 들어 <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span>, <span class="mono">glm-5.3-nvfp4</span>입니다. 정밀도가 낮을수록 더 빠르고 캐시에 쓸 메모리가 더 많이 남아, 더 긴 대화나 더 많은 요청을 한 번에 처리할 수 있습니다. 이 목록은 각 변형의 속도, 원래 정밀도 모델 대비 정확도, 캐시 용량을 모두 같은 방법으로 실측해 보여 줄 것이며, 선택은 고객의 몫입니다. 정확도가 떨어진다는 이유로 변형을 빼지 않고, 얼마나 떨어지는지를 보여 드립니다. 제공하지 않는 변형은 하나뿐으로, 새로 시작한 상태에서 같은 요청을 두 번 했을 때 결과가 서로 다른 변형입니다. 현재는 각 모델이 위 모델 표에 있는 한 가지 정밀도로만 제공됩니다. 지금까지 측정한 네 모델은 다음과 같습니다.</p>
+    <p>저희 엔진은 모든 모델을 배포자의 원래 정밀도(기본)로, 그리고 8비트(FP8)와 4비트(NVFP4 또는 MXFP4)로도, 좋은 빌드가 있는 경우 EXL3로도 실행할 예정입니다. 모델 이름으로 고르며, 예를 들어 <span class="mono">glm-5.3</span>, <span class="mono">glm-5.3-fp8</span>, <span class="mono">glm-5.3-nvfp4</span>입니다. 정밀도가 낮을수록 더 빠르고 캐시에 쓸 메모리가 더 많이 남아, 더 긴 대화나 더 많은 요청을 한 번에 처리할 수 있습니다. 이 목록은 각 변형의 속도, 원래 정밀도 모델 대비 정확도, 캐시 용량을 모두 같은 방법으로 실측해 보여 줄 것이며, 선택은 고객의 몫입니다. 정확도가 떨어진다는 이유로 변형을 빼지 않고, 얼마나 떨어지는지를 보여 드립니다. 게시하지 않는 변형은 하나뿐으로, 새로 시작한 상태에서 같은 요청을 두 번 했을 때 결과가 서로 다른 변형입니다. 현재 저희 엔진은 각 모델을 위 모델 표에 있는 한 가지 정밀도로만 실행합니다. 지금까지 측정한 네 모델은 다음과 같습니다.</p>
     <div class="scroll" tabindex="0" role="region" aria-label="정밀도 선택(예정)">
     <table>
       <tr><th>모델</th><th>정밀도</th><th class="num">디코드, 단일 요청</th><th class="num">프리필, 7K 프롬프트</th><th class="num">ds4-eval, 92문항 중</th><th class="num">GPU 메모리의 캐시</th><th class="num">컨텍스트 창</th></tr>
@@ -156,7 +167,7 @@
       <tr><td><b>Qwen 3.8 Flash</b></td><td>NVFP4</td><td class="num">–</td><td class="num">–</td><td class="num">78</td><td class="num">65M 토큰</td><td class="num">256K</td></tr>
     </table>
     </div>
-    <p>2026-11-04에 측정했습니다. 디코드와 프리필은 위의 모델 표처럼 공개된 근거가 다루게 될 때까지 –로 표시합니다. GPU 메모리의 캐시는 가중치가 남긴 메모리에 플릿이 모든 요청에 걸쳐 한 번에 GPU 메모리에 담아 두는 프롬프트와 답변의 토큰 수이며, 나머지는 SSD에 두었다가 필요할 때 다시 불러옵니다. Qwen 3.8 Flash의 4비트 빌드는 이전 프리필 경로를 쓰기 때문에 프리필이 더 느립니다. Qwen 3.8 Flash는 저희 회사 내부에서만 씁니다.</p>
+    <p>2026-11-04에 측정했습니다. 디코드와 프리필은 위의 모델 표처럼 공개된 근거가 다루게 될 때까지 –로 표시합니다. GPU 메모리의 캐시는 가중치가 남긴 메모리에 저희 엔진이 플릿 하나에서 모든 요청에 걸쳐 한 번에 GPU 메모리에 담아 두는 프롬프트와 답변의 토큰 수이며, 나머지는 SSD에 두었다가 필요할 때 다시 불러옵니다. Qwen 3.8 Flash의 4비트 빌드는 이전 프리필 경로를 쓰기 때문에 프리필이 더 느립니다. Qwen 3.8 Flash는 저희 회사 내부에서만 씁니다.</p>
   </section>
 
   <section id="limits">
@@ -189,7 +200,7 @@
 
   <section id="speculation">
     <h2>추측 디코딩(실측)</h2>
-    <p>추측 디코딩은 요청 자체의 컨텍스트와 드래프트 모델에서 토큰 초안을 만들고, 모델이 한 번에 검증하므로 출력은 모델 자신의 것과 정확히 같습니다. 플릿 1에서 측정했으며, 따로 적지 않으면 단일 요청입니다.</p>
+    <p>저희 엔진의 추측 디코딩은 요청 자체의 컨텍스트와 드래프트 모델에서 토큰 초안을 만들고, 모델이 한 번에 검증하므로 출력은 모델 자신의 것과 정확히 같습니다. 저희 엔진으로 플릿 1에서 측정했으며, 따로 적지 않으면 단일 요청입니다.</p>
     <div class="scroll" tabindex="0" role="region" aria-label="추측 디코딩(실측)">
     <table>
       <tr><th>모델</th><th>작업</th><th class="num">일반 디코드</th><th class="num">추측 디코딩</th></tr>
@@ -206,16 +217,16 @@
 
   <section id="prefill">
     <h2>긴 프롬프트(실측)</h2>
-    <p>플릿 1만으로, 프리필 전용으로 설정해 그동안 디코드는 제공하지 않은 상태에서 측정했습니다. 990,881토큰 Kimi K3 프롬프트를 처음부터 16.2분(971.6초)에 프리필하며, 요청 후 975.7초에 첫 토큰을, 16.3분(979.1초)에 답을 냅니다. 258,339토큰 프롬프트는 144.8초 한 번에 프리필하며, 요청 후 150.0초에 답을 냅니다. 고객이 보유한 플릿에서는 프롬프트를 한 번 프리필하면 그 캐시가 남으므로, 이후 턴은 거기서 시작합니다.</p>
+    <p>저희 엔진으로 플릿 1만 써서, 프리필 전용으로 설정해 그동안 디코드는 실행하지 않은 상태에서 측정했습니다. 990,881토큰 Kimi K3 프롬프트를 처음부터 16.2분(971.6초)에 프리필하며, 요청 후 975.7초에 첫 토큰을, 16.3분(979.1초)에 답을 냅니다. 258,339토큰 프롬프트는 144.8초 한 번에 프리필하며, 요청 후 150.0초에 답을 냅니다. 고객이 보유한 플릿에서 저희 엔진을 쓰면 프롬프트를 한 번 프리필한 캐시가 남으므로, 이후 턴은 거기서 시작합니다.</p>
     <p>두 플릿을 합치면 메모리가 4TB이므로, 공개된 정밀도로는 플릿 하나에 담기지 않는 모델도 두 플릿에 걸쳐 실행할 수 있습니다. FP8의 Qwen 3.8 Max(2.5TB)나, 캐시 공간을 남기는 BF16의 Inkling(1.9TB)이 그렇습니다.</p>
   </section>
 
   <section id="next-models">
     <h2>다음에 오는 모델</h2>
-    <p>중국 외 게시자의 대형 오픈 모델로, 사업자에게 서비스로 제공할 수 있는 라이선스를 가진 모델입니다. 각 모델은 제공 전에 검증합니다.</p>
+    <p>중국 외 배포자의 대형 오픈 모델로, 기업이 직접 실행하고 다른 이들에게 서비스할 수 있는 라이선스를 가진 모델입니다. 각 모델은 게시하기 전에 저희 엔진으로 검증합니다.</p>
     <div class="scroll" tabindex="0" role="region" aria-label="다음에 오는 모델">
     <table>
-      <tr><th>모델</th><th>게시자</th><th class="num">파라미터</th><th class="num">크기</th><th>라이선스</th><th>비고</th></tr>
+      <tr><th>모델</th><th>배포자</th><th class="num">파라미터</th><th class="num">크기</th><th>라이선스</th><th>비고</th></tr>
       <tr><td><b>Nemotron 3 Ultra</b></td><td>NVIDIA, 미국</td><td class="num">550B, 활성 55B</td><td class="num">1.12 TB</td><td><a href="https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16">OpenMDW 1.1</a></td><td>NVIDIA의 최대 오픈 모델</td></tr>
       <tr><td><b>Inkling</b></td><td>Thinking Machines, 미국</td><td class="num">975B, 활성 41B</td><td class="num">1.91 TB</td><td><a href="https://huggingface.co/thinkingmachines/Inkling">Apache 2.0</a></td><td>공개된 BF16 정밀도로는 두 플릿(4TB)에 걸쳐 실행하며, FP8 빌드라면 플릿 하나에 담깁니다</td></tr>
     </table>
@@ -224,7 +235,7 @@
 
   <section id="licenses">
     <h2>모델 라이선스</h2>
-    <p>각 모델은 게시자가 자체 라이선스로 공개한 오픈 웨이트 소프트웨어이며, 고객은 그 라이선스를 지켜야 합니다(<a href="agreement-ko.html">SparkPipe 고객 계약</a>). 제공 모델의 조건은 다음과 같습니다.</p>
+    <p>각 모델은 배포자가 자체 라이선스로 공개한 오픈 웨이트 소프트웨어이며, 고객은 그 라이선스를 지켜야 합니다(<a href="agreement-ko.html">SparkPipe 고객 계약</a> 제7.2조). 게시된 모델의 조건은 다음과 같습니다.</p>
     <ul>
       <li><b>Kimi K3:</b> 그룹 매출이 어느 12개월 동안이든 2,000만 달러를 넘는 모델 서비스 사업은 Moonshot AI와 별도 계약이 필요하며, 월간 활성 사용자가 1억 명을 넘거나 월 매출이 2,000만 달러를 넘는 상용 제품은 인터페이스에 "Kimi K3"를 표시해야 합니다.</li>
       <li><b>GLM 5.3:</b> 그룹 매출이 어느 12개월 동안이든 100억 달러를 넘는 모델 서비스 사업은 상업적 이용 전에 Z.AI의 보안 심사를 통과해야 합니다.</li>
@@ -233,7 +244,7 @@
       <li><b>Upstage Solar License</b>(Solar Open 2): Apache 2.0 조건에, Solar Open 2를 바탕으로 만들어 다른 사람에게 배포하는 모델은 "Solar" 브랜드를 밝혀야 한다는 규칙이 더해집니다. 이용 분야나 매출 조건은 없습니다.</li>
       <li><b>OpenMDW 1.1</b>(Laguna S 2.1): 이용이나 출력물에 대한 조건이 없으며, 모델이 특허나 저작권을 침해한다고 소송을 제기한 자에 대해서는 라이선스가 종료됩니다.</li>
     </ul>
-    <p>Kimi K3, GLM-5.3, Qwen 3.8 Max 라이선스는 모든 이용이 관련 법령을 지키도록 요구합니다. 모든 라이선스는 가중치 사본에 게시자의 고지를 함께 두도록 요구하며, 고객은 저희 플릿에서 모델을 이용할 뿐 사본을 받지 않습니다.</p>
+    <p>Kimi K3, GLM-5.3, Qwen 3.8 Max 라이선스는 모든 이용이 관련 법령을 지키도록 요구합니다. 모든 라이선스는 가중치 사본에 배포자의 고지를 함께 두도록 요구합니다. 고객은 각 모델의 가중치를 그 배포자로부터 라이선스 및 고지와 함께 고객 저장공간으로 받으므로, 이를 함께 보관하세요. 그 사본은 고객의 작업 상태에 속하며 작업 상태와 함께 삭제됩니다(제6.2조).</p>
   </section>
 </main>
 

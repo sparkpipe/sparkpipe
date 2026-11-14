@@ -154,7 +154,7 @@
       const open = !own && f.firstWeek ? `available from ${kstDay(f.firstWeek)}` : '';
       const status = own ? 'Pinned to you' : [statusText[f.status] || f.status, open].filter(Boolean).join(', ');
       const detail = own ? (() => { const box = document.createElement('div'); box.append(cell('p', yours), autoExtendControl(own)); return box; })() : yours;
-      return row([f.name, (f.kind || '-') + (f.pair ? ` · pairs with ${(st.fleets.find((x) => x.id === f.pair) || { name: f.pair }).name}` : ''), String(f.rate), f.serving === false ? 'Not serving yet' : status, detail]);
+      return row([f.name, (f.kind || '-') + (f.pair ? ` · pairs with ${(st.fleets.find((x) => x.id === f.pair) || { name: f.pair }).name}` : ''), String(f.rate), f.serving === false ? 'Not in service yet' : status, detail]);
     }), 'No fleet is listed yet.');
     const nameOf = (id) => (st.fleets.find((f) => f.id === id) || { name: id }).name;
     const pairable = (f) => !mine(f.id) && f.hourFleet && f.pair && mine(f.pair) && st.pairs && st.pairs.open > 0;
@@ -369,7 +369,7 @@
         reply.textContent = data.choices[0].message.content;
         meta = data.sparkpipe;
       }
-      say('m-try', `Answered on ${meta && meta.fleet ? meta.fleet : 'your fleet'}.`, 'ok');
+      say('m-try', `Answered by the engine on ${meta && meta.fleet ? meta.fleet : 'your fleet'}.`, 'ok');
       await refresh();
     } catch (error) {
       say('m-try', error.message, 'error');

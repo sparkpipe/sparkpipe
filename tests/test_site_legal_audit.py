@@ -50,6 +50,17 @@ class AgreementTest(unittest.TestCase):
         for name, text in (("en", self.en), ("ko", self.ko)):
             self.assertIsNone(re.search(r"https?://|sparkpipe\.ai/|\.html\b|\.txt\b", text), name)
 
+    def test_fleets_carry_no_ai_software_of_ours(self):
+        self.assertIn("we run no AI model for Customer", clause(self.en, "5.2"))
+        self.assertIn("공급자는 고객을 위하여 어떠한 인공지능 모델도 실행하지 아니한다", clause(self.ko, "5.2"))
+        self.assertIn("with no AI model and no software whose purpose is to run one", clause(self.en, "7.1"))
+        self.assertIn("인공지능 모델이나 이를 실행하는 것을 목적으로 하는 소프트웨어는 두지 아니한다", clause(self.ko, "7.1"))
+        for text in (self.en, self.ko):
+            self.assertNotIn("Preinstalled", text)
+            self.assertNotIn("preinstall", text)
+            self.assertNotIn("사전 설치", text)
+            self.assertNotIn("미리 설치", text)
+
     def test_dpa_names_no_module_licensor(self):
         en = (TERMS / "dpa-en.md").read_text(encoding="utf-8")
         ko = (TERMS / "dpa-ko.md").read_text(encoding="utf-8")
@@ -82,17 +93,19 @@ class PrivacyTest(unittest.TestCase):
         self.en = (ROOT / "site" / "privacy.html").read_text(encoding="utf-8")
         self.ko = (ROOT / "site" / "privacy-ko.html").read_text(encoding="utf-8")
 
-    def test_operational_records_match_the_dpa(self):
+    def test_request_records_and_their_deletion_are_in_the_privacy_policy(self):
         en = row(self.en, "Operational records for each request")
         ko = row(self.ko, "요청별 운영기록")
         self.assertIn("no prompt or reply text and no token numbers", en)
         self.assertNotIn("hash of the prompt", en)
         self.assertNotIn("rebuilt", en)
+        self.assertIn("within 30 days", en)
         self.assertIn("토큰 번호는 포함하지 않음", ko)
         self.assertNotIn("단방향 해시", ko)
         self.assertNotIn("복원", ko)
-        dpa = clause((TERMS / "dpa-en.md").read_text(encoding="utf-8"), "9.3")
-        self.assertIn("no prompt or reply text and no token numbers", dpa)
+        self.assertIn("30일 이내에 삭제", ko)
+        for name in ("dpa-en.md", "dpa-ko.md"):
+            self.assertEqual(clause((TERMS / name).read_text(encoding="utf-8"), "9.3"), "", name)
 
     def test_members_invitations_and_audit_log_are_disclosed(self):
         self.assertTrue(row(self.en, "Account members and invitations"))
@@ -103,6 +116,22 @@ class PrivacyTest(unittest.TestCase):
         self.assertIn("1년", row(self.ko, "계정 감사기록"))
         self.assertIn("a member's email address only in the lines that invite or add that member", self.en)
         self.assertIn("구성원의 이메일 주소는 그 구성원을 초대하거나 추가하는 줄에만", self.ko)
+
+    def test_acceptance_records_cover_licenses_from_the_catalogue(self):
+        en = row(self.en, "Acceptance records")
+        ko = row(self.ko, "동의기록")
+        self.assertIn("the license of software chosen from the Catalogue", en)
+        self.assertIn("chooses from the Catalogue what to install on a fleet", en)
+        self.assertIn("소프트웨어 목록에서 고른 소프트웨어의 라이선스", ko)
+        self.assertIn("플릿에 설치할 것을 소프트웨어 목록에서 고를 때", ko)
+        self.assertIn("the hashes of the texts accepted", en)
+        self.assertIn("동의한 문서의 해시", ko)
+        self.assertIn("the member who made a choice from the Catalogue", en)
+        self.assertIn("소프트웨어 목록에서 고른 구성원", ko)
+        for text in (en, ko):
+            self.assertIn("IP", text)
+        self.assertIn("its choices from the Catalogue", self.en)
+        self.assertIn("소프트웨어 목록에서의 선택을 기록하는 줄", self.ko)
 
     def test_processing_location_has_no_fixed_machine_count(self):
         self.assertNotIn("sixteen", self.en)
