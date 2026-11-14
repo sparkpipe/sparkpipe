@@ -893,3 +893,21 @@ resumes at the last cache point before it, so with no stride it resumes only
 where an earlier prompt ended. Saving each cache point's layer-20 input rows
 and running layers 20 to 39 on them only when a request resumes there would
 keep the 16,384-token resume points at the no-stride speed.
+
+### Engram rows: one read per distinct block
+
+The 2026-11-14 trace of a middle wave waited 99 ms at the first Engram layer:
+the rows of 16,384 tokens came from disk one 4 KiB read per id. `539e08834`
+sorts a fetch's misses, merges rows that share or neighbour a block into
+spans of up to 64 KiB, and reads each span once. Four groups on the same
+engine (`hubbuild-rall`), two of each rank build, each answering the
+40,000-token prompt with `b79b025295d2819f`:
+
+| Rank build | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| before (`d41rel-cols`) | 3,851 / 3,871 tok/s | 5,267 / 5,300 | 5,433 / 5,458 |
+| merged reads (`d41rel-eng`) | 3,900 / 3,885 | 5,365 / 5,421 | 5,501 / 5,481 |
+
+One to two percent: the fetch starts when the wave starts, so part of it
+still lands after the first Engram layer is reached. Hiding the rest needs
+the next wave's tokens before that wave begins.

@@ -714,7 +714,7 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && own != 0u )
 	{
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, own * D41_TP, D41_ENGRAM_EMBED,
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, 2u * own * D41_TP, D41_ENGRAM_HALF,
 			state->engram_embed, state->engram_kv_local);
 		if ( status != SPARK_STATUS_OK )
 			return status;
