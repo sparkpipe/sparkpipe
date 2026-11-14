@@ -1829,6 +1829,33 @@ one budget, `device_bytes_max`, under these rules
   pool an engine owns is never taken: the attach is refused with the reason,
   and the swap controller's `KV_POOL_DROP` of the stopped model frees it at a
   switch.
+- **Node memory admission** (`SparkWeightdNodeMemoryAdmit`). The arena
+  ceiling counts only weightd's own arenas. An engine's private weight
+  spine, and every other engine on the node, are outside it. So every
+  large weight allocation also checks the node: `MemAvailable` minus the
+  memory margin above must hold it, or it fails with
+  `SPARK_STATUS_CAPACITY_EXCEEDED` and logs
+  `node memory refused: <what> for model=<m> needs <bytes> beside the
+  <margin>-byte margin and MemAvailable is <available> of <total>`. An
+  unreadable `/proc/meminfo` refuses too.
+  - The checks run before the allocation: weightd's weight arena load,
+    expert pool slots, the single-allocation expert pool, the lazy spine
+    preload and expert chunk creation (once per load, for all of its
+    missing chunks), and the engine's private spine `cudaMalloc`.
+  - The private spine takes the node-wide lock
+    `SPARK_WEIGHTD_NODE_MEMORY_LOCK_PATH` across the check and the
+    allocation, so two engines starting together on one node cannot both
+    pass on the same free memory. weightd's own checks need no lock,
+    because its server loop serializes them.
+  - The stage runner repeats the check with no extra bytes after every
+    startup phase (`begin` through `buffers`), so startup stops, and frees
+    what it holds, as soon as the node falls below the margin.
+  - Why: on 2026-11-14 a DeepSeek V4.1 Flash TP4 engine started on five
+    Sparks that already held Qwen 3.8 Max. It reached `cudaMalloc` for a
+    119 GB spine with 22.7 GB available. The allocation drove the nodes out
+    of memory, earlyoom could not kill the engine, and all five hung until
+    they rebooted. The check now refuses that start before anything is
+    allocated.
 - **Logs**. `kv pool attached`, `kv pool resized` and `kv shared pool
   attached` carry `kv_committed`, `kv_reserve` and `kv_limit`, and the
   attach also `margin_bytes`. Every grow logs `weightd kv capacity` with the

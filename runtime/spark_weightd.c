@@ -1603,6 +1603,15 @@ static void SparkWeightdServerAttachCold(SparkWeightdServer *server,
         result->arena_count = server->arena_count;
         return;
     }
+    if (SparkWeightdNodeMemoryAdmit(server->meminfo_path, identity.arena_bytes,
+            "weight arena", identity.model) != SPARK_STATUS_OK)
+    {
+        (void)close(pack_fd);
+        result->status = (uint32_t)SPARK_STATUS_CAPACITY_EXCEEDED;
+        result->resident_bytes = server->resident_bytes;
+        result->arena_count = server->arena_count;
+        return;
+    }
 
     if (SparkWeightdVmmAllocate(identity.arena_bytes, &pending) !=
         SPARK_STATUS_OK)
@@ -1794,6 +1803,9 @@ static SparkStatus SparkWeightdCreateSlots(SparkWeightdServer *server,
 		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	status = SparkWeightdNodeMemoryAdmit(server->meminfo_path,slot_bytes,"expert pool",arena->identity.model);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	arena->slot_handles = calloc(count,sizeof(*arena->slot_handles));
 	arena->free_slots = calloc(count,sizeof(*arena->free_slots));
 	arena->chunk_slots = calloc(arena->chunk_count,sizeof(*arena->chunk_slots));
@@ -1856,6 +1868,8 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 		    (unsigned long long)server->config.kv_reserve_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	if ( SparkWeightdNodeMemoryAdmit(server->meminfo_path,create_bytes,"expert pool",arena->identity.model) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	started_ns = SparkMonotonicNs();
 	if ( cuMemCreate(&handle,(size_t)create_bytes,&prop,0ull) != CUDA_SUCCESS )
 	{
@@ -2192,8 +2206,24 @@ static SparkStatus SparkWeightdPreloadSpine(SparkWeightdServer *server,
 {
     const SparkWeightdSpan *span;
     uint32_t first_chunk,last_chunk,chunk,index;
+    uint64_t missing = 0u;
     if (arena->manifest.spine_count == 0u)
         return(SPARK_STATUS_OK);
+    for ( index = 0u; arena->slot_handles == 0 && index < arena->manifest.spine_count; index++ )
+    {
+        span = &arena->manifest.spine[index];
+        first_chunk = (uint32_t)(span->offset / arena->chunk_bytes);
+        last_chunk = (uint32_t)((span->offset + span->bytes - 1u) / arena->chunk_bytes);
+        for ( chunk = first_chunk; chunk <= last_chunk; chunk++ )
+            if ( arena->chunk_handles[chunk] == 0 )
+                missing += arena->chunk_bytes;
+    }
+    if ( missing != 0u )
+    {
+        SparkStatus admit = SparkWeightdNodeMemoryAdmit(server->meminfo_path,missing,"weight spine",arena->identity.model);
+        if ( admit != SPARK_STATUS_OK )
+            SPARK_RETURN(admit);
+    }
     for ( index = 0u; index < arena->manifest.spine_count; index++ )
     {
         span = &arena->manifest.spine[index];
@@ -2680,6 +2710,19 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 	{
 		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=budget status=%u\n",(unsigned)status);
 		SPARK_RETURN(status);
+	}
+	if ( arena->slot_handles == 0 )
+	{
+		uint64_t missing = 0u;
+		for (i=0u; i<arena->chunk_count; i++)
+			if ( arena->needed_chunks[i] != 0u && arena->chunk_handles[i] == 0 )
+				missing += arena->chunk_bytes;
+		status = missing != 0u ? SparkWeightdNodeMemoryAdmit(server->meminfo_path,missing,"expert chunks",arena->identity.model) : SPARK_STATUS_OK;
+		if ( status != SPARK_STATUS_OK )
+		{
+			fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=node_memory status=%u\n",(unsigned)status);
+			SPARK_RETURN(status);
+		}
 	}
 	for (i=0u; i<arena->chunk_count; i++)
 		if ( arena->needed_chunks[i] != 0u && arena->chunk_handles[i] == 0 )

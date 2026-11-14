@@ -391,6 +391,7 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #define SPARK_WEIGHTD_KV_POOL_LABEL_BYTES 64u
 #define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_MEMINFO_PATH "/proc/meminfo"
+#define SPARK_WEIGHTD_NODE_MEMORY_LOCK_PATH "/tmp/sparkpipe-node-memory.lock"
 #define SPARK_WEIGHTD_KV_EARLYOOM_PERCENT 2u
 #define SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES (5ull << 29)
 
@@ -1435,6 +1436,9 @@ SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,
 uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
 SparkStatus SparkWeightdMemInfoRead(const char *path,uint64_t *total_bytes,uint64_t *available_bytes);
 uint64_t SparkWeightdKvMemoryMargin(uint64_t total_bytes);
+SparkStatus SparkWeightdNodeMemoryAdmit(const char *meminfo_path,uint64_t bytes,const char *what,const char *model);
+SparkStatus SparkWeightdNodeMemoryLock(const char *lock_path,int *lock_fd);
+void SparkWeightdNodeMemoryUnlock(int lock_fd);
 uint64_t SparkWeightdServerKvMarginBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns);

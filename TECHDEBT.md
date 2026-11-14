@@ -571,7 +571,12 @@ throughput on one fleet.
    conversation to the group holding its cache.
 8. The placement controller: the per-node memory ledger, load and evict by
    demand with hysteresis, the fleet plan and the status view. It replaces
-   the swap controller's one-model, one-number admission.
+   the swap controller's one-model, one-number admission. Until it exists, a
+   start a node cannot hold fails at its first large weight allocation
+   (`SparkWeightdNodeMemoryAdmit`,
+   [WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md)) instead of driving the node
+   out of memory, as five Sparks did on 2026-11-14. Nothing yet picks a
+   group with room, or makes room.
 9. The scheduler choosing a group per phase.
 
 Two engines active on one GPU stall each other unless they share a process
