@@ -18,7 +18,8 @@
 #define SPARK_DSV41_FLASH_STAGEPACK_MODEL_REVISION_BYTES 65u
 #define SPARK_DSV41_FLASH_STAGEPACK_SHA256_BYTES 32u
 #define SPARK_DSV41_FLASH_STAGEPACK_FLAG_DSPARK UINT32_C(0x00000001)
-#define SPARK_DSV41_FLASH_STAGEPACK_KNOWN_FLAGS SPARK_DSV41_FLASH_STAGEPACK_FLAG_DSPARK
+#define SPARK_DSV41_FLASH_STAGEPACK_FLAG_WHOLE_EXPERTS UINT32_C(0x00000002)
+#define SPARK_DSV41_FLASH_STAGEPACK_KNOWN_FLAGS (SPARK_DSV41_FLASH_STAGEPACK_FLAG_DSPARK | SPARK_DSV41_FLASH_STAGEPACK_FLAG_WHOLE_EXPERTS)
 #define SPARK_DSV41_FLASH_STAGEPACK_FP8_BLOCK 32u
 #define SPARK_DSV41_FLASH_STAGEPACK_CHECK_SHAPE (-1)
 #define SPARK_DSV41_FLASH_STAGEPACK_CHECK_BYTES (-2)
@@ -230,8 +231,10 @@ static inline void SparkDsv41FlashStagePackShapeMxfp4(SparkDsv41FlashStagePackTe
 
 #include "sparkpipe/family/stagepack/spark_stagepack_shape_f32.h"
 
-static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kind,uint32_t expert_weight_codec,uint32_t tp_degree,SparkDsv41FlashStagePackTensorShape *shape)
+static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kind,uint32_t expert_weight_codec,uint32_t tp_degree,uint32_t flags,
+	SparkDsv41FlashStagePackTensorShape *shape)
 {
+	const uint32_t whole = (flags & SPARK_DSV41_FLASH_STAGEPACK_FLAG_WHOLE_EXPERTS) != 0u ? 1u : 0u;
 	switch ( tensor_kind )
 	{
 	case SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING:
@@ -311,17 +314,17 @@ static inline uint32_t SparkDsv41FlashStagePackExpectedShape(uint32_t tensor_kin
 		return(1u);
 	case SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W13_SLICE:
 		if ( tp_degree == 0u || (SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION % tp_degree) != 0u ||
-			expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+			(SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u || expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
 			return(0u);
-		SparkDsv41FlashStagePackShapeMxfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT,
-			2u * (SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / tp_degree),SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / 2u);
+		SparkDsv41FlashStagePackShapeMxfp4(shape,whole != 0u ? SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree : SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT,
+			2u * (SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / (whole != 0u ? 1u : tp_degree)),SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / 2u);
 		return(1u);
 	case SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W2_SLICE:
 		if ( tp_degree == 0u || (SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION % tp_degree) != 0u ||
-			expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
+			(SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT % tp_degree) != 0u || expert_weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 )
 			return(0u);
-		SparkDsv41FlashStagePackShapeMxfp4(shape,SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT,
-			SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / tp_degree,SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / 2u);
+		SparkDsv41FlashStagePackShapeMxfp4(shape,whole != 0u ? SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / tp_degree : SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT,
+			SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION / (whole != 0u ? 1u : tp_degree),SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION / 2u);
 		return(1u);
 	case SPARK_DSV41_FLASH_STAGEPACK_TENSOR_SHARED_W1:
 	case SPARK_DSV41_FLASH_STAGEPACK_TENSOR_SHARED_W3:
@@ -407,7 +410,7 @@ static inline int32_t SparkDsv41FlashStagePackDirectoryCheck(const SparkDsv41Fla
 		entry = &entries[index];
 		*at = index;
 		if ( entry->tensor_kind >= SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT || entry->tensor_kind >= 64u ||
-			SparkDsv41FlashStagePackExpectedShape(entry->tensor_kind,header->expert_weight_codec,header->tp_degree,&shape) == 0u ||
+			SparkDsv41FlashStagePackExpectedShape(entry->tensor_kind,header->expert_weight_codec,header->tp_degree,header->flags,&shape) == 0u ||
 			entry->payload_type != shape.payload_type || entry->weight_codec != shape.weight_codec || entry->scale_encoding != shape.scale_encoding ||
 			entry->group_count != shape.group_count || entry->rows != shape.rows || entry->columns != shape.columns )
 			return(SPARK_DSV41_FLASH_STAGEPACK_CHECK_SHAPE);

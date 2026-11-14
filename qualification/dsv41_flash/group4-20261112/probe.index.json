@@ -1,0 +1,1538 @@
+{
+ "block_tokens": 64,
+ "builder_commit": "e4cf62f330ae9a4fce013254613a71c44c6fa6a1",
+ "corpus_sha256": "4e74b70c284cd1ddd0ce76fb12137aea282fac4b25543b0d5a9680473f514376",
+ "document_tokens": 1280,
+ "documents": [
+  {
+   "id": "arxiv:2607.28591",
+   "length": 1279,
+   "offset": 0,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28591",
+    "primary_category": "cs.SE",
+    "text_sha256": "84e0ba38f432f67a114b421e91fc80299af28dc8591323558885314f1ac709c5"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3f3d89d5391ccb58cff93ac7a316fc3e23f248df252d1214bb1e9355d3e52528"
+  },
+  {
+   "id": "arxiv:2607.14966",
+   "length": 1280,
+   "offset": 1279,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.14966",
+    "primary_category": "cs.CV",
+    "text_sha256": "a5a1d3307fca474acd8b62addc33d12932ff3034344f10ca91653c38b305a332"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "82e3b5b00e53ca4e6101fb67ef0f1840f95f3e217395a5c03c2b38743eccde9a"
+  },
+  {
+   "id": "arxiv:2607.11607",
+   "length": 1267,
+   "offset": 2559,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11607",
+    "primary_category": "cs.AI",
+    "text_sha256": "2589cf51e0d245a7ff49c8b5685ea34dff47ccb65f54dd8b6a6d910794844a0d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "0bc6e41f0096bbb5e30f3fdb3995b7a1adc3f1762a457ccb4320380b0920f89f"
+  },
+  {
+   "id": "arxiv:2607.18076",
+   "length": 1268,
+   "offset": 3826,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.18076",
+    "primary_category": "cs.CL",
+    "text_sha256": "3299c96619293db347d38f77943d2d644a458d4f1069d2ffb7f5fa62d933bdb3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "9b35d0056f2f66413b981f59765ed6c13775fa4ecb82c3b80dd24a7757715b83"
+  },
+  {
+   "id": "arxiv:2607.17142",
+   "length": 1274,
+   "offset": 5094,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17142",
+    "primary_category": "cs.IR",
+    "text_sha256": "90d257bdba1b53cada6388b0e0f17b40469cfbbf49b428c95304fbf2b0adb5b8"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "2b7973591354ce8f3ec1c81663557bda258d885b27ca5077b55f3e209adb3fa5"
+  },
+  {
+   "id": "arxiv:2607.16412",
+   "length": 1265,
+   "offset": 6368,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.16412",
+    "primary_category": "cs.AI",
+    "text_sha256": "418b2d7a204a810c2dfb47fae0f2ee7bfcd996886b081bf9fedf785e927ae88e"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "4c90497396ebf983c1a6fe3e53c8e480c3c6435d2b26768d12829ab205984b3e"
+  },
+  {
+   "id": "arxiv:2607.15816",
+   "length": 1267,
+   "offset": 7633,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.15816",
+    "primary_category": "cs.NI",
+    "text_sha256": "31cd052354cf688645d5235d91ed104221f7512a4b266d975011132c2edab233"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "cba95c1a4805f37239bfefb35224371fb9831df11931672c0ddfc44aeabb13b9"
+  },
+  {
+   "id": "arxiv:2607.28175",
+   "length": 1280,
+   "offset": 8900,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.28175",
+    "primary_category": "cs.AI",
+    "text_sha256": "381f83def478bf56cacca393bfd54ce88c36b99acfa2bb8057415764cdd81ceb"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "66a560bfb38c8afd11605e317fa885de4fc4725d3abbbfc74640263fe8326132"
+  },
+  {
+   "id": "arxiv:2607.06906",
+   "length": 1280,
+   "offset": 10180,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.06906",
+    "primary_category": "cs.AI",
+    "text_sha256": "c271dd8a88b35cfd46d76f0f9e0d9706fcb72cbfbffbb3e82f164d7e8f32c5a4"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "6055d6f7f73f589bda62131b2d5c575d3443586fda51db98ec1e244c23396c40"
+  },
+  {
+   "id": "arxiv:2607.02399",
+   "length": 1280,
+   "offset": 11460,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.02399",
+    "primary_category": "math.DG",
+    "text_sha256": "8ff5a31381df8a2719a635b992d0f31f51394b2572f4376d2aaa275f3ba6aa58"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "137e40ead18a5d5ddc0f1035309e90c5206c697e1d8ce1074ca7de96537cc424"
+  },
+  {
+   "id": "arxiv:2607.26280",
+   "length": 1280,
+   "offset": 12740,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.26280",
+    "primary_category": "cs.DL",
+    "text_sha256": "b9a53d6fe3b328a042c2c3688eaad3a835a985aca1aebe09b26b19e169a1b139"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "1b0914d8bbd47634b6c3429e0bf1db1c09cdca61dc5c639520130079c8beedc1"
+  },
+  {
+   "id": "arxiv:2607.23235",
+   "length": 1280,
+   "offset": 14020,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23235",
+    "primary_category": "cs.CV",
+    "text_sha256": "3894108183ecfcc08223d2f1214017d67fbc662dcf6b6320333c313d7e545a66"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3e53a96799b55a1a2d384672c6c3825ad81fb1b06a186099352e1312fcbfcbbe"
+  },
+  {
+   "id": "arxiv:2607.11337",
+   "length": 1280,
+   "offset": 15300,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11337",
+    "primary_category": "cs.DS",
+    "text_sha256": "83bf6f2122e446ae891af8ffc57b1d9d30af9b29f47e5ef5687e4848fa54c1e3"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "6aee0453018c7d1147541c2a55c905b80e58f93c81e7c04aa2867eea2d08fdac"
+  },
+  {
+   "id": "arxiv:2607.20662",
+   "length": 1280,
+   "offset": 16580,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.20662",
+    "primary_category": "cs.RO",
+    "text_sha256": "9619952be2af05e7be98b10fb09d0594eb01a2c5c86c054bad75e4dec6e30197"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "1abd2817bd7de02cff0be9d0be5a3dcff97bf8239dc8f6556afb60bd1beaa6e6"
+  },
+  {
+   "id": "arxiv:2607.11294",
+   "length": 1280,
+   "offset": 17860,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.11294",
+    "primary_category": "cs.AR",
+    "text_sha256": "80de3632b0e9270bf9946510530644510be6153776653b2f32c65d54f8e95bc7"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "450e6b40e772c99225976d9c4d757bbc9b664578a0253f0f377a5779c85cad27"
+  },
+  {
+   "id": "arxiv:2607.01356",
+   "length": 1267,
+   "offset": 19140,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.01356",
+    "primary_category": "cs.CR",
+    "text_sha256": "8405eed6b80582b8c262d341b329b835b65df4d6713e91e6855889ac01ee4f71"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "d006532092a8f7339d6665e71ac717d3345ca56b379f9620e15ec4933f2a8793"
+  },
+  {
+   "id": "arxiv:2607.13459",
+   "length": 1275,
+   "offset": 20407,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.13459",
+    "primary_category": "cs.LO",
+    "text_sha256": "28cfd070121b6351a0a8ef3d09506367a376040ebb53bc85f19fc27c87beeb06"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "18a1a47a9e149899848a7c455486676ee959704211f81ca9382995b0ddc8d007"
+  },
+  {
+   "id": "arxiv:2607.10604",
+   "length": 1277,
+   "offset": 21682,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.10604",
+    "primary_category": "cs.HC",
+    "text_sha256": "cd2c1577acfc62f0c65dd229dea8b15206bfa9c466f9dc489989a5241e1bccd1"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "0eaf58dc5923b7aec8e2eb54c43a266041514335cd4c07845bee88895a051a15"
+  },
+  {
+   "id": "arxiv:2607.23165",
+   "length": 1267,
+   "offset": 22959,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.23165",
+    "primary_category": "stat.ML",
+    "text_sha256": "929905f70ddf7669881dde04c2e777c8b86d954b415ece8cd89764752fccdcd1"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "242443af03afc233e5d69a4831665271eed3595c31814dab5e88024c9a5228b9"
+  },
+  {
+   "id": "arxiv:2607.19553",
+   "length": 1279,
+   "offset": 24226,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by-sa/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.19553",
+    "primary_category": "math.OC",
+    "text_sha256": "5b27fc9e5ebb8b917b94ffad875351d1a78cc5e6dbd8526cdf3befdee53053a5"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "87efb43366966395c97c5f45324ce7952d59bcd024756ecf481288f367834fc0"
+  },
+  {
+   "id": "arxiv:2607.03525",
+   "length": 1278,
+   "offset": 25505,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.03525",
+    "primary_category": "cs.SE",
+    "text_sha256": "f030378287bd2d3c8c88ec51f6407ccaadef2e3997795e8b5ce04b4f649ea54d"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "d079a641e2aa5aacaca88242c692fa986ad25c683b8f9a544ac49c0250b9157f"
+  },
+  {
+   "id": "arxiv:2607.17990",
+   "length": 1270,
+   "offset": 26783,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.17990",
+    "primary_category": "cs.LG",
+    "text_sha256": "ad0ae163f79738bba2173d932f1de014e8abb349498ff88b0ca0fde834e9db62"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "3d71bff24a5ccc25691c60badb2ce36fc33aa89d11febea78b90ba9985ff55eb"
+  },
+  {
+   "id": "arxiv:2607.25122",
+   "length": 1266,
+   "offset": 28053,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": "http://creativecommons.org/licenses/by/4.0/",
+    "month": "2026-07",
+    "paper_id": "2607.25122",
+    "primary_category": "cs.LG",
+    "text_sha256": "1ee5b7e23191cf9ab60b9a616f7069ce389334be670bbc7cee2ed136ea1c1b62"
+   },
+   "stratum": "prose-recent",
+   "tokens_sha256": "ba7bc2656254f57a0aa2132e6f5f9e0c7fa4ee6caeca033da677ae496092c399"
+  },
+  {
+   "id": "arxiv:astro-ph/0101028",
+   "length": 1270,
+   "offset": 29319,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101028",
+    "primary_category": "astro-ph",
+    "text_sha256": "2df6a03405b53d3d0b063fa6c4a27d579e8bbefb0c2a25f862af25e83029b49c"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "2d239e6881948614cdce9990e763f81d354f56ffacdac0832bd875ad5ee7f468"
+  },
+  {
+   "id": "arxiv:astro-ph/0101049",
+   "length": 1270,
+   "offset": 30589,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101049",
+    "primary_category": "astro-ph",
+    "text_sha256": "6fea83c8f25d9ccd98db450fd9f1406168bab2cc94bf087c25a0898839f0c6f9"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "709f4c98f924d23e2c5509d2e0dbd5a872dae50f52a335983ee2d052304a29cc"
+  },
+  {
+   "id": "arxiv:astro-ph/0101054",
+   "length": 1266,
+   "offset": 31859,
+   "source": {
+    "cut": "after \\begin{document}",
+    "dataset": "secemp9/arxiv-complete@cee894837962fede5612cccf2a4c7cacf49b4c3a",
+    "license": null,
+    "month": "2001-01",
+    "paper_id": "astro-ph/0101054",
+    "primary_category": "astro-ph",
+    "text_sha256": "2051a9b99525cf952da45b445e667a60e9be52139cadd74d3636cbaf53dd3cc4"
+   },
+   "stratum": "prose-old",
+   "tokens_sha256": "d9c8dd0c6166a54113d9ba31eda97090587e3321d23d28320cec76f3857ceedc"
+  },
+  {
+   "id": "code:model-families/dsv4/src/spark_dsv4_cache_plan.c",
+   "length": 1280,
+   "offset": 33125,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/dsv4/src/spark_dsv4_cache_plan.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "73d5361767ceaacbb117f0889d9217d64cade21acc3848a8a986aea4cb46991e"
+  },
+  {
+   "id": "code:runtime/model_pipeline_client.c",
+   "length": 1280,
+   "offset": 34405,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_pipeline_client.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "e2d4fc47b5075b6f994c6ed239980e0a56ae1b9779c559644c8c07c10331b36e"
+  },
+  {
+   "id": "code:modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu",
+   "length": 1280,
+   "offset": 35685,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/glm5_next_resident_decode_stage/validation/spark_glm5_next_resident_decode_stage_mtp_parity.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "409d7af465d6b06a88d12755b37164e1be5c96c0a11b2be1fac49ca633c29575"
+  },
+  {
+   "id": "code:modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 36965,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/ling_resident_decode_stage/source/spark_ling_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "68643ae4b3f51b9511eb774c7f898f89008b7375b413b0413ccf3bdd49caafcf"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu",
+   "length": 1280,
+   "offset": 38245,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_cuda.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "da2530e4010104430705f58409551ed3d04c0c61d020e79a96e51d85e542593e"
+  },
+  {
+   "id": "code:tools/sparkpipe_dsv4_driver_cuda_smoke.c",
+   "length": 1280,
+   "offset": 39525,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/sparkpipe_dsv4_driver_cuda_smoke.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "525be01a7dadd7154488a0a354dac4e7a2cd37aafd7c9af030a94ca2a80290ed"
+  },
+  {
+   "id": "code:inference/llms/qwen_3_6/unity.cu",
+   "length": 1280,
+   "offset": 40805,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "inference/llms/qwen_3_6/unity.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "62f006f513ab5702561a4a709637210d84fb66b0b3f63fa279edc120f45554bf"
+  },
+  {
+   "id": "code:qualification/dsv4/performance/tp4_b1_20260814/gate_route_fusion_probe_da7f/probe.cu",
+   "length": 1280,
+   "offset": 42085,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "qualification/dsv4/performance/tp4_b1_20260814/gate_route_fusion_probe_da7f/probe.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "bd52d561e1c5568e594a316c8890a42cd65671ae9ced0c6ac91c72bd1e98e205"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_distributed_work.h",
+   "length": 1280,
+   "offset": 43365,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_distributed_work.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "f0c3d4b883572630d3a230c7fe1d04d9041f2983864cc5d601042dd3f6a0d662"
+  },
+  {
+   "id": "code:modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu",
+   "length": 1280,
+   "offset": 44645,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "86ddb23272c4feffbba0c8be8c7f249794604e1dd22301c844572428e64faa12"
+  },
+  {
+   "id": "code:modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c",
+   "length": 1280,
+   "offset": 45925,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/minimax_resident_decode_stage/source/spark_minimax_serving_adapter.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "4780ebc23614cf03ddd417e2f19fa2e28266c317934d468bc249eb09e42d9d19"
+  },
+  {
+   "id": "code:tools/qwen36_native_warp_specialized_bench.cu",
+   "length": 1280,
+   "offset": 47205,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen36_native_warp_specialized_bench.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "69ee61aacb8f2ea06e2ce0b9218adf3f4dd64c585930fd5c554d20434b32da99"
+  },
+  {
+   "id": "code:tools/qwen38_tp4_collective_bench.c",
+   "length": 1280,
+   "offset": 48485,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen38_tp4_collective_bench.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "9ed19529361c17a55fb8cf5e6ea1c655f1d88fbdb94d1d2ca37b46a9368f2393"
+  },
+  {
+   "id": "code:runtime/model_resident_ipc.c",
+   "length": 1280,
+   "offset": 49765,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_ipc.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "f09568abb51c26288fe25fc66097779d0a3dba3598c223f26700f945cc46bd12"
+  },
+  {
+   "id": "code:modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu",
+   "length": 1280,
+   "offset": 51045,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/mimo26_resident_decode_stage/validation/mimo26_model_cuda.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "e6473a42c90bd45d68145584126da5ec6406c4f162fa9a5318a767abcda05da2"
+  },
+  {
+   "id": "code:qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/projection_precollective_overlap_probe.cu",
+   "length": 1280,
+   "offset": 52325,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "qualification/dsv4/performance/tp4_b1_20260814/projection_precollective_overlap_da7f/projection_precollective_overlap_probe.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "d20b42b2ae4ac0b19cc0b000c7f3086b120e5cb79a0f59a710a8025f09fac140"
+  },
+  {
+   "id": "code:modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c",
+   "length": 1280,
+   "offset": 53605,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/gemma4_resident_decode_stage/source/spark_gemma4_serving_adapter.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "6a74b7876d0ee74ccb23ebf384d138e29d43d3564e4c0d22f41176b086a201e1"
+  },
+  {
+   "id": "code:modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 54885,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/laguna_resident_decode_stage/source/spark_laguna_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "c33688dc8feff5310c45acc5c747c15d9a26d17c3e55bef2dfc7b135e45a2b7c"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_admission.h",
+   "length": 1280,
+   "offset": 56165,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_admission.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "d3c00248e1add8f3be06f2445ec5d8a096c34da0e418453b75f8c3242f6e218f"
+  },
+  {
+   "id": "code:runtime/model_resident_deployment.c",
+   "length": 1280,
+   "offset": 57445,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_deployment.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "de4aae7b6413f6f526298a4d81ba14cbb51946e43a701434c8c1ee5234d06489"
+  },
+  {
+   "id": "code:inference/kernels/dtype.cuh",
+   "length": 1280,
+   "offset": 58725,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "inference/kernels/dtype.cuh"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "c0a9edee2236f9da322bf0484396a6036934a090f210210f6e04caea658805ce"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_stage_module_common.h",
+   "length": 1280,
+   "offset": 60005,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_stage_module_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "cf73a5dd650d083fa446a3c7c6eab95b85af25ba6008a5f83eebde611fc8a1d4"
+  },
+  {
+   "id": "code:ring/transport/fixed_ring.c",
+   "length": 1280,
+   "offset": 61285,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "ring/transport/fixed_ring.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "320fbeb1153782eb83753761958dfe6e172136d263980b3a7c9a292d02cfd54e"
+  },
+  {
+   "id": "code:runtime/spark_graph_reloc.c",
+   "length": 1280,
+   "offset": 62565,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/spark_graph_reloc.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "6e1d49c8460432569bddadf3085058e02ac1cfca5c0bc3b9a12e42ed2e195543"
+  },
+  {
+   "id": "code:tools/weightd_execute_probe.c",
+   "length": 1280,
+   "offset": 63845,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/weightd_execute_probe.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "9da2f24fcd8b4187f54f4584f328b7542d8d7dde8bc5230fcbc7b7251111c48e"
+  },
+  {
+   "id": "code:runtime/model_resident_client.c",
+   "length": 1280,
+   "offset": 65125,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/model_resident_client.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "e81cbc7327240d5237093677e3554fc5e94fe69bc6530f59de8da5763890b29a"
+  },
+  {
+   "id": "code:cache/nvme_tier.c",
+   "length": 1280,
+   "offset": 66405,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "cache/nvme_tier.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "ae0df3e20c0bbfbf953a55c46561800da0369eb97bdb199255d93398ddffdb88"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_kernels.cuh",
+   "length": 1280,
+   "offset": 67685,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/source/spark_dsv4_dspark_kernels.cuh"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "95be463eb68937b16103ab85907c1cb9760ae5c7b7f42562f4788418b2e7e6b3"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_model_driver_support.h",
+   "length": 1280,
+   "offset": 68965,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_model_driver_support.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "d6178a2440094b707feced8afa893a9ec3326f4314d58ed2b085b39834428b44"
+  },
+  {
+   "id": "code:model-families/common/include/sparkpipe/spark_pack_load_common.h",
+   "length": 1280,
+   "offset": 70245,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/common/include/sparkpipe/spark_pack_load_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "0a67b7247c2ea1a7b2041e474fba3ba743dc9996724496d9ec69a6b2d01d5117"
+  },
+  {
+   "id": "code:model-families/common/include/sparkpipe/spark_pack_synthesize_common.h",
+   "length": 1280,
+   "offset": 71525,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "model-families/common/include/sparkpipe/spark_pack_synthesize_common.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "a9bad7229a2edef2815f5b04886d450cc01f2054ea839c2c3ed4e18084cb5826"
+  },
+  {
+   "id": "code:modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h",
+   "length": 1280,
+   "offset": 72805,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/dsv4_resident_decode_stage/include/sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "096dab705e7e36c53e05a7670a6f2b00e71f24bd7920a76b941ce589ef2a602e"
+  },
+  {
+   "id": "code:cache/prefix_cache.c",
+   "length": 1280,
+   "offset": 74085,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "cache/prefix_cache.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "a48766669619d377066b6da8f4fe5fa1a3bfb285fc9657a180a0b144682c738b"
+  },
+  {
+   "id": "code:tools/qwen4_flash_nvfp4_smoke.cu",
+   "length": 1280,
+   "offset": 75365,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/qwen4_flash_nvfp4_smoke.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "05439f87d2dac885806c366067c2f27c74a9a2f19cbe08bf2537c915ad842a53"
+  },
+  {
+   "id": "code:tools/perf_r1_head_bench.cu",
+   "length": 1280,
+   "offset": 76645,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "tools/perf_r1_head_bench.cu"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "867bd5551a62f576b5e8b5f1c5533237536de468d5f10956e6590371c23e3439"
+  },
+  {
+   "id": "code:include/sparkpipe/spark_model_runtime.h",
+   "length": 1280,
+   "offset": 77925,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "include/sparkpipe/spark_model_runtime.h"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "719dda2d68620c234efb21cf0f2efa2980f3302f29472fe48dfdea277b0ba432"
+  },
+  {
+   "id": "code:modules/gemma4_resident_decode_stage/tools/gemma4_pack_synthesize.c",
+   "length": 1280,
+   "offset": 79205,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/gemma4_resident_decode_stage/tools/gemma4_pack_synthesize.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "de73d2e226ddeca901491e5dd7dcc5554368a108b68342ece75455b3272065c5"
+  },
+  {
+   "id": "code:modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c",
+   "length": 1280,
+   "offset": 80485,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "modules/minimax_resident_decode_stage/source/spark_minimax_resident_decode_stage_module.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "d6444e0e2e1bfb775efeaabd309199d1241a59c8dc05da30f95423298bd765df"
+  },
+  {
+   "id": "code:text/tokenizer_sidecar.c",
+   "length": 1280,
+   "offset": 81765,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "text/tokenizer_sidecar.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "ac63ab1aa0edaf47074d35c61c504dc11fd2da0b7693d550350ef2211995166f"
+  },
+  {
+   "id": "code:runtime/pack/model_description.c",
+   "length": 1280,
+   "offset": 83045,
+   "source": {
+    "commit": "266b6adbc1276aa8d200cbba767a204f22a356f9",
+    "paths": [
+     "runtime/pack/model_description.c"
+    ],
+    "repository": "sparkpipe"
+   },
+   "stratum": "code",
+   "tokens_sha256": "17273b3b9661e0b765bd74b268aab6e1113768c39317d220701fc5a182659e67"
+  }
+ ],
+ "format": "sparkpipe-ab-corpus-v1",
+ "name": "CT-short",
+ "notes": [
+  "prose-recent: arXiv 2607.x (July 2026), CC-BY/BY-SA/CC0 only; newest papers in secemp9/arxiv-complete@cee89483; GLM-5.3 was published about 2026-08, so these may or may not predate its training cutoff (unverified). prose-old: arXiv astro-ph/0101 (January 2001), almost certainly in pre-training data; the contrast measures the contamination effect (memorized text understates KL and flips). Report the strata separately.",
+  "code: SparkPipe C/CUDA sources at 266b6adbc (not public), leading include/pragma lines stripped so documents do not share a first block.",
+  "on-policy stratum is a separate corpus (CT-onpolicy), generated from the production API by the lead; its dNLL never enters a verdict.",
+  "retokenized from zai-org/GLM-5.3-Flash@04c4e9e95c5da8862dced7e5056455116f83a7e0 tokenizer.json by decoding each document and encoding it with deepseek-v4.1-flash, cut to 1280 tokens"
+ ],
+ "skipped": [
+  {
+   "id": "arxiv:2607.29138",
+   "reason": "1219 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.08100",
+   "reason": "1242 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21543",
+   "reason": "1234 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.12720",
+   "reason": "1221 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.04306",
+   "reason": "1250 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.12687",
+   "reason": "1226 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.08826",
+   "reason": "1233 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.13997",
+   "reason": "1243 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.27248",
+   "reason": "1254 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.28376",
+   "reason": "1116 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.15126",
+   "reason": "1191 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.02900",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.01184",
+   "reason": "1199 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.08709",
+   "reason": "1239 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.14260",
+   "reason": "1231 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.07533",
+   "reason": "1222 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.11958",
+   "reason": "1259 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.22996",
+   "reason": "1204 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.05361",
+   "reason": "1243 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.23841",
+   "reason": "1236 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.14490",
+   "reason": "1246 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.13863",
+   "reason": "1229 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.16360",
+   "reason": "1233 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.29615",
+   "reason": "1216 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.25257",
+   "reason": "1254 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.10834",
+   "reason": "1245 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.12911",
+   "reason": "1255 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.28523",
+   "reason": "1213 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.24168",
+   "reason": "1255 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.07255",
+   "reason": "1210 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21981",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.06764",
+   "reason": "1255 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.02446",
+   "reason": "1214 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.00611",
+   "reason": "1236 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.18137",
+   "reason": "1195 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.08613",
+   "reason": "1239 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.23561",
+   "reason": "1261 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.13717",
+   "reason": "1204 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.15370",
+   "reason": "1254 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.14703",
+   "reason": "1249 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.27741",
+   "reason": "1234 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.03281",
+   "reason": "1138 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.29411",
+   "reason": "1250 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.23054",
+   "reason": "1226 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21820",
+   "reason": "1252 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.02082",
+   "reason": "1258 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.02702",
+   "reason": "1257 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.29082",
+   "reason": "1250 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.29190",
+   "reason": "1222 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.15710",
+   "reason": "1259 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.14235",
+   "reason": "1246 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.12474",
+   "reason": "1259 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.05226",
+   "reason": "1239 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.24505",
+   "reason": "1237 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.17648",
+   "reason": "1241 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.11976",
+   "reason": "1240 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09051",
+   "reason": "1212 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.03795",
+   "reason": "1248 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.01173",
+   "reason": "1208 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21019",
+   "reason": "1252 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.15419",
+   "reason": "1221 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.16238",
+   "reason": "1254 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.01282",
+   "reason": "1223 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.25705",
+   "reason": "1202 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.07562",
+   "reason": "1238 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.23796",
+   "reason": "1235 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.00650",
+   "reason": "1223 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.29029",
+   "reason": "1173 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.07788",
+   "reason": "1221 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.17265",
+   "reason": "1095 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.04683",
+   "reason": "1257 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.14096",
+   "reason": "1249 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.24871",
+   "reason": "1228 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.13189",
+   "reason": "1249 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.24534",
+   "reason": "1235 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09670",
+   "reason": "1209 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.01477",
+   "reason": "1237 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.25292",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.03152",
+   "reason": "1187 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.08433",
+   "reason": "1219 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.28161",
+   "reason": "1204 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.26912",
+   "reason": "1245 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.01272",
+   "reason": "1247 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09748",
+   "reason": "1237 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09099",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09857",
+   "reason": "1226 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.28926",
+   "reason": "1253 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.10947",
+   "reason": "1238 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.20188",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.13609",
+   "reason": "1242 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.23697",
+   "reason": "1166 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.06393",
+   "reason": "1188 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21091",
+   "reason": "1264 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.21302",
+   "reason": "1262 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.09840",
+   "reason": "1197 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.24988",
+   "reason": "1154 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:2607.25798",
+   "reason": "1177 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101052",
+   "reason": "1243 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101053",
+   "reason": "1259 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101011",
+   "reason": "1246 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101036",
+   "reason": "1244 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101043",
+   "reason": "1257 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101039",
+   "reason": "1236 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101029",
+   "reason": "1256 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101020",
+   "reason": "1259 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101037",
+   "reason": "1221 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101018",
+   "reason": "1252 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101022",
+   "reason": "1234 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101030",
+   "reason": "1239 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101040",
+   "reason": "1220 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101013",
+   "reason": "1206 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101015",
+   "reason": "1252 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101006",
+   "reason": "1251 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101038",
+   "reason": "1244 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101001",
+   "reason": "1264 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101017",
+   "reason": "1235 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101042",
+   "reason": "1247 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101004",
+   "reason": "1255 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101027",
+   "reason": "1241 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101016",
+   "reason": "1205 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101050",
+   "reason": "1234 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101008",
+   "reason": "1248 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101021",
+   "reason": "1246 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101035",
+   "reason": "1254 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101002",
+   "reason": "1235 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101009",
+   "reason": "1175 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101019",
+   "reason": "1240 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101026",
+   "reason": "1247 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101024",
+   "reason": "1260 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101025",
+   "reason": "1260 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101051",
+   "reason": "1249 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101031",
+   "reason": "1228 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101005",
+   "reason": "1223 target tokens, fewer than 1265"
+  },
+  {
+   "id": "arxiv:astro-ph/0101044",
+   "reason": "1218 target tokens, fewer than 1265"
+  }
+ ],
+ "strata": {
+  "code": 40,
+  "prose-old": 3,
+  "prose-recent": 23
+ },
+ "tokenizer": "deepseek-v4.1-flash",
+ "tokenizer_sha256": "c90dfa01249db1be4245780a052ede752e1361c612ac6d08e2bdada7d599476b",
+ "total_tokens": 84325
+}

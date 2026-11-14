@@ -52,7 +52,7 @@
    "taps": {
     "entries": "o19,o37,o66,o78,o90",
     "rank": 15,
-    "stream": "10.10.250.2:7701"
+    "stream": "10.10.201.250:7701"
    },
    "tokenizer_sha256": "58578ae8cb9f99f2b928afd7af00c6ac87d8262a01484fb7a51b7dc608742ad9",
    "text_prompt_prefix_token_ids": [],
@@ -187,7 +187,7 @@
    "state_memory_bytes": 12248064,
    "taps": {
     "entries": "o36,o37,o38",
-    "stream": "10.10.250.2:7711",
+    "stream": "10.10.201.250:7711",
     "rank": 15,
     "window": 128
    },

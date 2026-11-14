@@ -92,6 +92,17 @@ render() {
     --weightd-socket "$STAGE_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
+firmware_copy() {
+  local host="$1" destination="$2" file sources=""
+  shift 2
+  for file in "$@"; do sources="$sources $STAGE_FIRMWARE/$file"; done
+  if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+    $SSH "$STAGE_FIRMWARE_HOST" "scp -q -o BatchMode=yes$sources $host:$destination" < /dev/null
+  else
+    scp -q $sources "$host:$destination"
+  fi
+}
+
 setup() {
   local generated rank host root pack state busy=""
   : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
@@ -109,10 +120,10 @@ setup() {
     pack="$(pack_of "$rank")"
     (
       $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$host:$root/bin/"
-      scp -q "$STAGE_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/$ADAPTER_FILE"
-      scp -q "$STAGE_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
-      scp -q "$STAGE_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
+      firmware_copy "$host" "$root/bin/" sparkpipe_model_residentd weightd_warm
+      firmware_copy "$host" "$root/lib/$ADAPTER_FILE" "$ADAPTER_FILE"
+      firmware_copy "$host" "$root/lib/runtime_libs/" runtime_libs/libsparkpipe_device_cuda.so
+      firmware_copy "$host" "$root/lib/hidden_transport.so" libhidden_transport_spark_host_rdma_verbs.so
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
@@ -184,6 +195,17 @@ stop() {
   join_ranks stop
 }
 
+reclaim() {
+  local rank host root
+  for rank in $(seq 0 $LAST_RANK); do
+    host="$(host_of "$rank")"
+    root="$(root_of "$host")"
+    $SSH "$host" "$root/lane.sh reclaim" < /dev/null &
+    PIDS[$rank]=$!
+  done
+  join_ranks reclaim
+}
+
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   lane-scripts)
@@ -192,6 +214,7 @@ case "${1:-}" in
   start) start ;;
   status) status ;;
   stop) stop ;;
+  reclaim) reclaim ;;
   api-setup) api_setup ;;
-  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|api-setup" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|reclaim|api-setup" >&2; exit 2 ;;
 esac

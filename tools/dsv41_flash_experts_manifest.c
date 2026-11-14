@@ -42,14 +42,17 @@ static int32_t range_write(FILE *pack,FILE *out,uint32_t layer,uint32_t expert,u
 
 static int32_t entry_write(FILE *pack,FILE *out,const SparkDsv41FlashStagePackHeader *header,const SparkDsv41FlashStagePackEntry *entry,uint32_t *count)
 {
+	const uint32_t whole = (header->flags & SPARK_DSV41_FLASH_STAGEPACK_FLAG_WHOLE_EXPERTS) != 0u ? 1u : 0u;
 	uint64_t per,offset,bytes,directory_end;
-	uint32_t plane,expert,kind;
+	uint32_t plane,expert,kind,first;
 	if ( SparkDsv41FlashStagePackKindIsExpert(entry->tensor_kind) == 0u )
 		return(0);
 	if ( entry->weight_codec != SPARK_WEIGHT_CODEC_MXFP4_E2M1 && entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 )
 		return(-4);
-	if ( entry->group_count != header->routed_expert_count || entry->payload_bytes == 0u )
+	if ( header->tp_degree == 0u || header->tp_rank >= header->tp_degree || (header->routed_expert_count % header->tp_degree) != 0u ||
+		entry->group_count != (whole != 0u ? header->routed_expert_count / header->tp_degree : header->routed_expert_count) || entry->payload_bytes == 0u )
 		return(-5);
+	first = whole != 0u ? header->tp_rank * entry->group_count : 0u;
 	if ( (entry->payload_bytes % entry->group_count) != 0u || (entry->scale_bytes % entry->group_count) != 0u )
 		return(-6);
 	directory_end = header->directory_offset + ((uint64_t)header->tensor_count * sizeof(*entry));
@@ -71,7 +74,7 @@ static int32_t entry_write(FILE *pack,FILE *out,const SparkDsv41FlashStagePackHe
 		{
 			if ( *count == SPARK_WEIGHTD_RANGE_COUNT_MAX )
 				return(-9);
-			if ( range_write(pack,out,entry->layer_index,expert,kind,(offset + (expert * per)),per) < 0 )
+			if ( range_write(pack,out,entry->layer_index,first + expert,kind,(offset + (expert * per)),per) < 0 )
 				return(-10);
 			*count += 1u;
 		}

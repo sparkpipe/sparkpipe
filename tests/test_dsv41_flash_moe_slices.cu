@@ -12,14 +12,9 @@
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define EXPERTS 64u
-#define DEGREE 16u
-#define LOCAL (EXPERTS / DEGREE)
 #define TOPK 6u
 #define HIDDEN 5120u
 #define INTER 2304u
-#define SLICE (INTER / DEGREE)
-#define HIDDEN_SLICE (HIDDEN / DEGREE)
-#define ROW_ELEMENTS (TOPK * SLICE + HIDDEN_SLICE)
 #define LIMIT 10.0f
 #define THREADS 256u
 #define SKINNY_ROWS 16u
@@ -75,11 +70,16 @@ static int32_t Experts(const void *cells, const uint16_t *activation, uint16_t *
 		LM_SKINNY_CELL_TILE_K, 0);
 }
 
-int main(void)
+template<uint32_t DEGREE>
+static uint64_t Run(void)
 {
+	constexpr uint32_t LOCAL = EXPERTS / DEGREE, SLICE = INTER / DEGREE, HIDDEN_SLICE = HIDDEN / DEGREE;
+	constexpr uint32_t CODES = DEGREE != 16u && SLICE % 64u == 0u ? 1u : 0u;
+	constexpr uint32_t ROUTE_ELEMENTS = CODES != 0u ? SLICE / 2u + SLICE / 64u : SLICE;
+	constexpr uint32_t ROW_ELEMENTS = (TOPK * ROUTE_ELEMENTS + HIDDEN_SLICE + 7u) / 8u * 8u;
 	const uint64_t up_bytes = (uint64_t)INTER * (HIDDEN / 2u), up_scales = (uint64_t)INTER * (HIDDEN / 32u);
 	const uint64_t down_bytes = (uint64_t)HIDDEN * (INTER / 2u), down_scales = (uint64_t)HIDDEN * (INTER / 32u);
-	const uint32_t row_counts[] = {1u, 3u, 16u, 17u, 64u};
+	const uint32_t row_counts[] = {1u, 3u, 16u, 17u, 64u, 4800u};
 	uint8_t *w1 = (uint8_t *)Device(EXPERTS * up_bytes), *w3 = (uint8_t *)Device(EXPERTS * up_bytes), *w2 = (uint8_t *)Device(EXPERTS * down_bytes);
 	uint8_t *s1 = (uint8_t *)Device(EXPERTS * up_scales), *s3 = (uint8_t *)Device(EXPERTS * up_scales), *s2 = (uint8_t *)Device(EXPERTS * down_scales);
 	std::vector<uint8_t *> local_up(DEGREE), local_gate(DEGREE), local_down(DEGREE), slice_up(DEGREE), slice_down(DEGREE);
@@ -126,6 +126,8 @@ int main(void)
 	{
 		const uint32_t rows = row_counts[trial], routes = rows * TOPK;
 		const uint64_t stride = (uint64_t)rows * ROW_ELEMENTS;
+		if ( DEGREE == 16u && routes + rows > D41K_GRID_ITEMS )
+			continue;
 		std::vector<uint32_t> host_expert(routes);
 		std::vector<float> host_weight(routes);
 		srand(1234u + rows);
@@ -181,17 +183,17 @@ int main(void)
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			REQUIRE(Experts(slice_up[rank], xq, gate_up, offsets, source, EXPERTS, rows, routes, 0u, HIDDEN, 2u * SLICE) == LM_LAUNCH_OK);
-			D41MoeSendKernel<<<dim3(HIDDEN / THREADS, routes + rows), THREADS>>>(gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
-				send + (uint64_t)rank * DEGREE * stride, routes, SLICE, HIDDEN_SLICE, DEGREE, stride, LIMIT);
+			D41MoeSendKernel<<<D41ItemGrid(HIDDEN / THREADS, routes + rows), THREADS>>>(gate_up, packed_weight, shared + (uint64_t)rank * rows * HIDDEN,
+				send + (uint64_t)rank * DEGREE * stride, routes, rows, SLICE, HIDDEN_SLICE, DEGREE, stride, LIMIT, ROUTE_ELEMENTS, CODES);
 		}
 		for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
 		{
 			for ( uint32_t peer = 0u; peer < DEGREE; ++peer )
 				CUDA(cudaMemcpy(received + (uint64_t)peer * stride, send + ((uint64_t)peer * DEGREE + rank) * stride, stride * 2u, cudaMemcpyDeviceToDevice));
-			D41ActAssembleQdqKernel<<<dim3(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride);
+			D41ActAssembleQdqKernel<<<D41ItemGrid(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride, routes, CODES);
 			REQUIRE(Experts(slice_down[rank], act, slice_out, offsets, source, EXPERTS, rows, routes, 1u, INTER, HIDDEN_SLICE) == LM_LAUNCH_OK);
 			D41FinalizeSliceKernel<<<dim3((HIDDEN_SLICE + THREADS - 1u) / THREADS, rows), THREADS>>>(slice_out, received, global, packed_row,
-				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * SLICE);
+				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * ROUTE_ELEMENTS);
 		}
 		D41SliceGatherKernel<<<dim3(HIDDEN / THREADS, rows), THREADS>>>(final_slices, candidate, rows, HIDDEN_SLICE, DEGREE);
 		CUDA(cudaDeviceSynchronize());
@@ -205,8 +207,9 @@ int main(void)
 				differ += want[index] != got[index] ? 1u : 0u;
 				nonzero += (want[index] & 0x7FFFu) != 0u ? 1u : 0u;
 			}
-			printf("%s rows %u: %llu of %llu outputs differ (%llu nonzero, %s path)\n", differ == 0u && nonzero > want.size() / 2u ? "PASS" : "FAIL", rows,
-				(unsigned long long)differ, (unsigned long long)want.size(), (unsigned long long)nonzero, rows <= SKINNY_ROWS ? "skinny" : "tensor-core");
+			printf("%s ranks %u rows %u: %llu of %llu outputs differ (%llu nonzero, %s path, activations sent as %s)\n",
+				differ == 0u && nonzero > want.size() / 2u ? "PASS" : "FAIL", DEGREE, rows, (unsigned long long)differ, (unsigned long long)want.size(),
+				(unsigned long long)nonzero, rows <= SKINNY_ROWS ? "skinny" : "tensor-core", CODES != 0u ? "fp8 codes" : "bf16");
 			failures += differ != 0u || nonzero <= want.size() / 2u ? 1u : 0u;
 		}
 		void *buffers[] = {xq, shared, global, expert, global_copy, weight, packed_weight, weight_copy, offsets, packed_row, source, tiles_up, tiles_down,
@@ -214,8 +217,21 @@ int main(void)
 		for ( void *buffer : buffers )
 			CUDA(cudaFree(buffer));
 	}
-	if ( failures != 0u )
+	void *weights[] = {w1, w3, w2, s1, s3, s2};
+	for ( void *buffer : weights )
+		CUDA(cudaFree(buffer));
+	for ( uint32_t rank = 0u; rank < DEGREE; ++rank )
+	{
+		CUDA(cudaFree(local_gate[rank])); CUDA(cudaFree(local_up[rank])); CUDA(cudaFree(local_down[rank]));
+		CUDA(cudaFree(slice_up[rank])); CUDA(cudaFree(slice_down[rank]));
+	}
+	return failures;
+}
+
+int main(void)
+{
+	if ( Run<16u>() + Run<4u>() != 0u )
 		return 1;
-	printf("PASS dsv41 expert slices: the sliced MoE equals the per-rank-expert MoE plus the rank-ordered all-reduce bit for bit\n");
+	printf("PASS dsv41 expert slices: the sliced MoE equals the per-rank-expert MoE plus the rank-ordered all-reduce bit for bit, at sixteen ranks with BF16 activations on the wire and at four with FP8 codes and block exponents\n");
 	return 0;
 }

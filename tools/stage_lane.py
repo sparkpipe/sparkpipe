@@ -38,7 +38,7 @@ GROUP_RANKS = (1, 2, 4, 8, 16)
 CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
-MAX_ROWS = 4096
+MAX_ROWS = 16384
 MAX_SEQUENCES = 128
 MESH_LANES = 4
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
@@ -113,6 +113,20 @@ DSV41_FLASH = {
     "kv_page_bytes": (3 * 128 + 256) * 1280 // WORLD,
     "kv_block_tokens": 256,
     "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
+}
+
+DSV41_FLASH_TP4 = {
+    **DSV41_FLASH,
+    "swap_id": "deepseek-v4.1-flash-tp4",
+    "ranks": 4,
+    "api_port": 8487,
+    "kv_label": "dsv41_flash_tp4_stage",
+    "node_memory_bytes": 104 << 30,
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp4.xs/packs/rank{rank}.spstage",
+    "pack_siblings": ("engram.spengram", "engram.spengram.digest", "engram_tables.bin"),
+    "adapter": "libdsv41_flash_tp4_serving_adapter.so",
+    "kv_page_bytes": (3 * 128 + 256) * 1280,
+    "recurrent_bytes": (40 * 128 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
 QWEN38_MAX = {
@@ -443,6 +457,7 @@ K31_PRO = {
 }
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "dsv41_flash_tp4": DSV41_FLASH_TP4,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,

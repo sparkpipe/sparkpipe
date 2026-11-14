@@ -432,17 +432,28 @@ The measure is a public four-Spark TP4 release of the same model (its
 reference build of 2026-11-07, its page read on 2026-11-12), against DeepSeek
 V4.1 Flash on our sixteen:
 
-| | Reference, 4 Sparks | SparkPipe, 16 Sparks |
-| --- | ---: | ---: |
-| Decode step | 21.05 ms | 23.5 ms (42.5-42.7 tok/s, no drafts, 1M cached context) |
-| One stream with drafts | 82.6 tok/s | 47.5-55.8 tok/s |
-| Eight streams | 207.4 tok/s | 151-153 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 1,599 tok/s |
-| Prefill, 1M prompt | 6,012 tok/s | 1,287 tok/s (814 s) |
+| | Reference, 4 Sparks | SparkPipe, 4 Sparks | SparkPipe, 16 Sparks |
+| --- | ---: | ---: | ---: |
+| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.4 ms | 21.5-21.8 ms |
+| One stream with drafts | 82.6 tok/s | 71 tok/s over eight prompts (45 to 114) | 62-64 tok/s |
+| Eight streams | 207.4 tok/s with drafts | 94 tok/s without, 91 with (seven streams) | 151-153 tok/s with |
+| Prefill, 32K prompt | 8,508 tok/s; 8,467 on our nodes 0-3 | 4,511 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s; 8,407 on our nodes 0-3 | 4,224 tok/s | 2,337 tok/s |
+| Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-Ours are the 2026-10-24 batch sweep and the 2026-11-01 prefill run
-(`PERFORMANCE_STATUS.md`). The first goal is to match the reference head to
-head on one group of four Sparks; four such groups then give four times its
+The four-Spark column is the lane of 2026-11-12 after its seventh pass
+(2026-11-14), with 16,384-row waves, 1 MiB mesh slots, the row-wise work
+done once per row, native MXFP8 projections and the shared expert sent as a
+route; the README there sets one traced step against the reference's, stage
+by stage, on the same four Sparks
+(`qualification/dsv41_flash/group4-20261112/`; the first pass prefilled at
+1,897 and 1,888 tok/s and its eight streams are the figure shown), the
+sixteen-Spark column
+that day's production lane, its eight streams the 2026-10-24 sweep and its
+1M prompt the 2026-11-01 run. The reference's 21.05 ms, which an earlier
+version of this table set against our single stream, is its mean step over
+twenty batch shapes. The first goal is to match the reference head to head
+on one group of four Sparks; four such groups then give four times its
 throughput on one fleet.
 
 ### The plan
@@ -466,13 +477,16 @@ throughput on one fleet.
   V4.1 Flash, 1M tokens: about 3 GB against 814 s of prefill; Qwen 3.8 27B,
   256K tokens: about 17 GB against about 140 s). A context is replicated
   only in GPU memory, and only while several groups use it at once.
-- **The same bits at every group size.** A round today adds the sixteen
-  ranks' BF16 partials in rank order
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). A
-  wider rank keeps one BF16 partial per sixteenth and the round carries all
-  of them, so the sum is the 16-rank sum whatever the group size, and a
-  cached context is exactly reusable across sizes. The KV identity digest
-  then stops naming the shard degree (`runtime/stage_kv_binding.c`).
+- **The same bits at one group size, not across sizes.** The owner dropped
+  the goal of the same bits at every group size on 2026-11-14. A group size
+  gives the same bits on every run and for every batch, and a round adds the
+  ranks' partials in rank order; a group of another size may differ. So a
+  model may sum partial results across ranks, as the four-Spark DeepSeek V4.1
+  Flash MoE does with one reduce-scatter of partials instead of sending the
+  activations so that one rank computes each output whole (about 250 ms of a
+  16,384-row wave). A cached context is exactly reusable only at the group
+  size that made it, and the KV identity digest keeps naming the shard degree
+  (`runtime/stage_kv_binding.c`).
 - **Placement follows usage.** How many groups hold a model, and of what
   size, follows demand: a model used now and then sits on one group, a
   model many agents saturate spreads until spreading stops paying. Idle
@@ -537,16 +551,77 @@ throughput on one fleet.
    of the node's FP8 peak: the FP8 prefill kernels. Do the same for the
    other models that fit a small group. The sizes are options a user picks
    from by these figures, like precisions; none is the one right size.
-2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
-   CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
-   shards its small KV sixteen ways, which costs it two to three rounds a
-   layer; the November audit's fix is to keep a KV that small whole on each
-   rank of a group, in GPU memory only. Built for four ranks the stage
-   fails two static assertions: a rank's attention records and its index
-   query pack no longer fit a collective row of the hidden width. Both
-   belong to the exchange the whole KV removes. Its rank pack is 20.6 GB at
-   sixteen ranks, so a rank of four holds about 82 GB and the group shares
-   its nodes with no other model.
+2. DeepSeek V4.1 Flash on one group of four, against the table above. The
+   first lane runs (`dsv41_flash_tp4`, nodes 0-3; the receipt above). The
+   module takes its rank count from the build (16, 8 or 4). Under sixteen a
+   rank keeps the whole context and attends with its own heads, so the
+   query all-gather, the record exchange and the pair gather are gone: a
+   layer has the attention all-reduce and the two MoE rounds, the eight
+   index layers one more. The model with its 203 GB of engram tables is
+   larger than four Sparks' memory, so the group reads engram rows from
+   disk (`runtime/row_file.c`), as the reference does; a rank holds a
+   76 GB pack and about 83 GiB in all. What is open, in the order the
+   traces give:
+   - prefill is at 31% to 37% of the reference (22% in the first pass).
+     The second pass folds a wave's window as matrix products, sends the
+     MoE activations as FP8 codes and reads a wave's engram rows ahead; the
+     third reads them with 64 readers in batches, which ended the 44 ms a
+     table layer that ranks waited for each other's disks; the fourth lets
+     a wave hold 16,384 rows, where the framework stopped at 4,096. Only
+     the lower 20 layers run on every row of a wave; the upper 20 run on
+     the last rows every 16,384 tokens, where the recurrent state is
+     checkpointed: 490 ms each, 9% of the time, and a longer stride is an
+     option that makes a shared prefix resume further back. A wave of
+     16,384 rows takes about 5.4 s with that tail: 1.6 s in rounds (38
+     microseconds a piece of 131 KB a peer), 0.8 s in dense linears, 0.7 s
+     in the routed experts (a call reads every expert once, so the larger
+     wave pays that a quarter as often a row), 0.5 s in hyper-connection
+     mixing. A larger wave costs memory (8.5 GiB a node at 16,384 rows)
+     and makes a stream that decodes beside a prefill wait for the whole
+     wave, 6.3 s against 2.5 s; the receipt has 4,096, 8,192 and 16,384
+     rows side by side. The round pieces are the mesh's, and every model's
+     wave pays them: the 0.3 s a wave of step 1. A piece is half a mesh
+     slot. Slots of 1 MiB are their own change (weightd IPC ABI 15): on two
+     machines outside the fleet a 100G port goes from 8.4-8.7 to 11.2-11.8
+     GB/s with them; a lane cannot try them, because the layout belongs to
+     the node's released weightd. In a group of four two of a rank's three
+     peers share one port, which already runs at 10.2-10.5 GB/s, so there
+     the larger slot is bound by that port until weightd splits each peer
+     over both rails. Replaying a round as a captured graph and chaining
+     its kernels as dependent launches gave 3% each and are not in the
+     code;
+   - the wave's linears and routed experts multiply in BF16: the stream
+     GEMM and the expert cell kernel turn the FP8 and MXFP4 weights into
+     BF16 pairs for `LmMmaBf16`, at 40 to 54 TFLOPS. A node's measured
+     peaks are 90 TFLOPS in BF16 and 210 in FP8
+     ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)), the linears'
+     weights are FP8 and their inputs block-scaled FP8, and
+     `inference/kernels/mma.cuh` has the block-scaled forms
+     (`LmMmaMxf8Mxf8`, `LmMmaMxf8Mxf4`), which no wave kernel uses. Dense
+     linears and experts are 1.5 s of a 16,384-row wave's 5.4 s. How the
+     reference spends its 1.9 s has not been measured;
+   - drafts run on the group lane by configuration (a lane record with
+     taps and a draft server, the sixteen-rank lane's drafter): one stream
+     decodes at 71 tok/s over eight prompts against 30 without, the same
+     text. A verify row costs 5.5 ms, because every rank reads its slice
+     of six more experts for it, so a drafted step takes 50 to 80 ms where
+     a plain one takes 32, and drafts stop paying by three streams (seven
+     streams: 94 tok/s without, 91 with). The lane has no record in
+     `deployment/lanes.json` yet;
+   - a step of eight streams reads up to eight times a stream's expert
+     bytes: 72 to 83 ms;
+   - a captured decode step scores the whole window's stride on every
+     rank (3 ms a step at 262,144 tokens); the scoring can be split by
+     position again while the KV stays whole;
+   - with the wave fold four ranks give the corpus token 0.84% less NLL
+     than sixteen [-1.56, -0.11] and 1.88% less than the first pass
+     [-2.70, -1.07], whose sequential fold gave 1.17% more than sixteen.
+     The wave fold rounds each window weight against the window's
+     maximum, the sequential fold against a running maximum; why the
+     model does better with the first is not established, and the
+     sixteen-rank lane still folds sequentially. Which is nearer the
+     publisher's code is not measured; the stored reference tokens and T1
+     fixtures are of an earlier checkpoint.
 3. Rank count as data for every family: the stages that refuse a degree
    other than 16, the packers, the release kit, and a record field for a
    lane's group. weightd keeps the topology a mesh lane was first given
