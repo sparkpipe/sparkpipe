@@ -808,3 +808,58 @@ eight, on its own prompts; these prompts are not its prompts. A row needs
 lane reads at about four fifths of the nodes' memory bandwidth. How the
 reference's eight-stream figure fits those bytes is not established here.
 
+
+## Eighth pass: the owner's rows cross as MXFP8, 2026-11-14
+
+The branch now carries main at a242ef38e (weightd IPC ABI 16, four mesh
+lanes), so the lanes run on the released weightd, on mesh lane 3. Two
+exchanges of a wave split by rows move fewer bytes, and the outputs keep
+their bits:
+
+- The expert input. Every rank ran the router over all rows from a gathered
+  BF16 copy of the normed input (10,240 bytes a row). The owner now routes
+  its own rows and the group gathers E4M3 codes with one power-of-two scale
+  per 32 and the routes, 5,328 bytes a row. The decoded codes are the values
+  the gathered copy's quantization gave, and the router reads the same rows.
+- The attention output. Every rank multiplied its o_b K-slice for all rows
+  and the group reduce-scattered BF16 partials (10,240 bytes a row). Each
+  rank now sends each owner its rows' WO-A output as the MXFP8 codes its
+  multiply used (2,112 bytes a row). The owner multiplies them by all four
+  K-slices of o_b, gathered once from every rank's pack slice at the first
+  wave (1.6 GiB a rank), and adds the four BF16 partials in FP32 in rank
+  order with one round-to-nearest-even, which is the pipelined
+  reduce-scatter's rule.
+
+Four groups, two rounds with the variants swapped between groups; every run
+answered the 40,000-token prompt with `b79b025295d2819f`:
+
+| Build | Groups | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | --- | ---: | ---: | ---: |
+| Seventh pass on the new weightd | 0-3, 4-7 | 3,627 tok/s | 4,530 | 4,230 |
+| fp8 expert input | 4-7, 8-b | 3,655 | 4,639 | 4,324 |
+| fp8 expert input and attention output to owners | 0-3, c-f | 3,785 | 4,755 | 4,435 |
+
+The 8,192-token figure of the last row includes the one-time o_b gather.
+The rank state grows by the gathered slices: the lane needs a 16 GiB state
+budget where it needed 14.
+
+### Where a middle wave goes now
+
+The MXFP8 trace's middle 16,384-row wave (3,819 ms on rank 0, before these
+two changes) by kernel: the experts' cell multiplies 667 ms, the round
+kernels about 1,050 ms (572 waiting for peers, 372 copying pieces, 94
+arrivals; about 10 GB a wave a rank, so bytes drive them), the MXFP8
+multiplies 325 ms, latent attention 203 ms and the window merge 148 ms, the
+remaining BF16 multiplies (router, compressor, index) 175 ms, the expert
+send 119 ms, the stream mixing about 170 ms, separate quantization 88 ms.
+Next, largest first:
+
+1. The experts multiply BF16 copies of FP8 activations and FP4 weights. The
+   native FP8-by-FP4 block-scaled instruction ran the dense projections at
+   100 to 121 TFLOPS against 52 to 69.
+2. The expert exchange (189 MB a layer a rank) sends every route's
+   activation slice to every rank. Expert parallelism sends the input once to
+   each rank that holds one of the row's experts and returns BF16 sums, and
+   its per-rank sums are the publisher's own four-GPU arithmetic.
+3. The expert send kernel, the separate quantization passes and the column
+   copies.
