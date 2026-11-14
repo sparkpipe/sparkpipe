@@ -3,12 +3,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_glm5_next_device_stage.h"
 #include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm53_flash_tp16_stage_model.h"
 
-#define GD_SLICES 40u
+#define GD_SLICES 49u
 #define GD_ALIGNMENT 128u
 
 template<class P>
@@ -39,6 +41,12 @@ struct Glm5NextDevice
 	static constexpr uint32_t kStreams = SPARK_GLM5_NEXT_MODEL_HC_MULT;
 	static constexpr uint32_t kResidual = kStreams * kHidden;
 	static constexpr uint32_t kDenseKeys = SPARK_GLM5_NEXT_MODEL_INDEX_TOP_K;
+	static constexpr uint32_t kIndexHeads = SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_COUNT;
+	static constexpr uint32_t kIndexDim = SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_DIMENSION;
+	static constexpr uint32_t kIndexQuery = SPARK_GLM5_NEXT_MODEL_INDEX_QUERY_DIMENSION;
+	static constexpr uint32_t kPool = SPARK_GLM5_NEXT_MODEL_INDEX_KPOOL;
+	static constexpr uint32_t kSelectedPools = SPARK_GLM5_NEXT_MODEL_INDEX_POOL_SELECT_COUNT;
+	static constexpr uint32_t kExpandedKeys = SPARK_GLM5_NEXT_MODEL_INDEX_OUTPUT_WIDTH;
 	static constexpr uint32_t kScaleBlock = SPARK_GLM5_NEXT_MODEL_FP8_SCALE_BLOCK;
 	static constexpr float kEpsilon = SPARK_GLM5_NEXT_MODEL_RMS_NORM_EPSILON;
 
@@ -49,12 +57,36 @@ struct Glm5NextDevice
 		SparkTensor scale;
 	};
 
+	struct Indexer
+	{
+		SparkDeviceWeight query;
+		SparkDeviceWeight key;
+		SparkDeviceWeight gate;
+		SparkDeviceWeight head;
+		SparkTensor norm;
+		SparkTensor norm_bias;
+		SparkTensor ape;
+	};
+
+	struct IndexScratch
+	{
+		SparkTensor query;
+		SparkTensor key;
+		SparkTensor gate;
+		SparkTensor head;
+		SparkTensor scores;
+		SparkTensor pools;
+		SparkTensor selected;
+		SparkTensor partial;
+	};
+
 	struct Layer
 	{
 		Hyper hyper[2];
 		SparkTensor norm[2];
 		SparkDeviceChannelDeltaWeights delta;
 		SparkDeviceLatentAttentionWeights attention;
+		Indexer indexer;
 		SparkDeviceFfnWeights ffn;
 		SparkDeviceFfnWeights shared;
 		SparkTensor router;
@@ -73,6 +105,8 @@ struct Glm5NextDevice
 		SparkDeviceChannelDeltaShape delta_shape;
 		SparkDeviceLatentAttentionShape attention_shape;
 		SparkDeviceLatentAttentionRope rope;
+		SparkIndexerShape index_shape;
+		uint32_t score_stride;
 		Layer layers[kLayers];
 		SparkTensor final_norm;
 		SparkTensor streams;
@@ -85,6 +119,7 @@ struct Glm5NextDevice
 		SparkTensor router_logits;
 		SparkDeviceChannelDeltaScratch delta;
 		SparkDeviceLatentAttentionScratch attention;
+		IndexScratch index;
 		SparkDeviceFfnScratch ffn_scratch;
 		SparkDeviceExpertsScratch experts;
 	};
@@ -94,6 +129,7 @@ struct Glm5NextDevice
 		SparkDeviceStepTensors t;
 		SparkDeviceQueue *queue;
 		const Layer *layer;
+		uint32_t sparse_rows;
 	};
 
 	static uint64_t Max(uint64_t a, uint64_t b)
@@ -139,12 +175,28 @@ struct Glm5NextDevice
 		attention->scale = SPARK_GLM5_NEXT_MODEL_MLA_QK_SCALE;
 		attention->query_lora = kQueryLora;
 		attention->norm_bf16 = 1u;
+		memset(&state->index_shape, 0, sizeof(state->index_shape));
+		state->index_shape.heads = kIndexHeads;
+		state->index_shape.head_dimension = kIndexDim;
+		state->index_shape.key_norm = SPARK_INDEXER_NORM_LAYER;
+		state->index_shape.key_norm_epsilon = SPARK_GLM5_NEXT_MODEL_INDEX_NORM_EPSILON;
+		state->index_shape.score_scale = SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE;
+		state->index_shape.topk = kSelectedPools;
+		state->index_shape.key_ratio = kPool;
+		state->index_shape.query_stride = kIndexQuery;
+		state->index_shape.weight_stride = kIndexHeads;
+		state->index_shape.weight_scale = SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE;
+		state->index_shape.key_stride = kIndexDim;
+		state->index_shape.gate_stride = kIndexDim;
+		shape->index_layers = kMlaLayers;
+		shape->index_page_bytes = (uint64_t)SPARK_DEVICE_RUNNER_PAGE_SLOTS * SparkIndexerSlotPitch(&state->index_shape, 1u) * sizeof(uint16_t);
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
 	{
 		const uint64_t rows = state->stage.max_rows, hidden = kHidden, routes = rows * kTopK, heads = kMlaHeads, width = kKdaWidth;
 		const uint64_t ffn = Max(kDenseRows, kMoeRows);
+		state->score_stride = SparkIndexerScoreStride(state->stage.max_positions / kPool);
 		const SparkDeviceStageSlice plan[] =
 		{
 			{ rows * kResidual * 2u, &state->streams },
@@ -170,6 +222,14 @@ struct Glm5NextDevice
 			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, kMlaHeads, kLatent, state->stage.max_positions), &state->attention.records },
 			{ rows * heads * kLatent * 2u, &state->attention.latent },
 			{ rows * heads * kValueDim * 2u, &state->attention.value },
+			{ rows * kIndexQuery * 2u, &state->index.query },
+			{ rows * kIndexDim * 2u, &state->index.key },
+			{ rows * kIndexDim * 2u, &state->index.gate },
+			{ rows * kIndexHeads * 2u, &state->index.head },
+			{ SparkIndexerScoreBytes(state->stage.max_rows, state->score_stride), &state->index.scores },
+			{ SparkIndexerSelectedBytes(state->stage.max_rows, kSelectedPools), &state->index.pools },
+			{ SparkIndexerSelectedBytes(state->stage.max_rows, kExpandedKeys), &state->index.selected },
+			{ SparkIndexerAttentionScratchBytes(state->stage.max_rows, kMlaHeads, kLatent, kExpandedKeys), &state->index.partial },
 			{ rows * 2u * ffn * 2u, &state->ffn_scratch.gate_up },
 			{ rows * ffn * 2u, &state->ffn_scratch.act },
 			{ routes * sizeof(uint32_t), &state->experts.experts },
@@ -209,6 +269,8 @@ struct Glm5NextDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageReserve(&state->stage, SparkDeviceStagePlan(0, slices, ScratchSlices(state, slices)), pools,
 				SPARK_DEVICE_GATED_DELTA_POOLS, request->configuration->state_budget_bytes);
+		if ( status == SPARK_STATUS_OK && SparkIndexerExpandWidth(&state->index_shape) != kExpandedKeys )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the expanded selection holds every selected pool and the open pool");
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, kMlaHeads, &state->rope);
@@ -228,6 +290,27 @@ struct Glm5NextDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, name, "f32", SPARK_GLM5_NEXT_MODEL_HC_SCALE_COUNT * sizeof(float),
 				&hyper->scale);
+		return status;
+	}
+
+	static SparkStatus BindIndexer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Indexer *indexer)
+	{
+		SparkStatus status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_q", kIndexQuery, kQueryLora, &indexer->query);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_k", kIndexDim, kHidden, &indexer->key);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_gate", kIndexDim, kHidden, &indexer->gate);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_head", kIndexHeads, kHidden, &indexer->head);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm", "bf16", kIndexDim * 2u, &indexer->norm);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm_bias", "bf16", kIndexDim * 2u, &indexer->norm_bias);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_ape", "f32", (uint64_t)kPool * kIndexDim * sizeof(float),
+				&indexer->ape);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageNoteKvRead(&state->stage, 0u, state->stage.shape->index_page_bytes / SPARK_DEVICE_RUNNER_PAGE_SLOTS);
 		return status;
 	}
 
@@ -266,6 +349,8 @@ struct Glm5NextDevice
 		{
 			layer->kv_index = (*kv)++;
 			status = SparkDeviceLatentAttentionBind(&state->stage, weights, index, &state->attention_shape, &layer->attention);
+			if ( status == SPARK_STATUS_OK )
+				status = BindIndexer(state, weights, index, &layer->indexer);
 		}
 		if ( status == SPARK_STATUS_OK && !L::Routed(index) )
 			return SparkDeviceFfnBind(&state->stage, weights, index, kDenseRows, &layer->ffn);
@@ -331,10 +416,13 @@ struct Glm5NextDevice
 		frame->queue = (SparkDeviceQueue *)queue;
 		frame->layer = 0;
 		SparkStatus status = SparkDeviceStageStepTables(&state->stage, step, &frame->t);
+		frame->sparse_rows = 0u;
+		if ( status == SPARK_STATUS_OK && frame->t.host_positions == 0 )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the indexer needs the step's host positions");
 		for ( uint32_t row = 0u; status == SPARK_STATUS_OK && row < frame->t.rows; row++ )
-			if ( frame->t.host_positions == 0 || frame->t.host_positions[row] >= kDenseKeys )
-				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-					"the sparse-attention indexer is not built: a row may see at most the indexer's selected keys, where attention is dense");
+			frame->sparse_rows += Sparse(frame->t.host_positions[row]) ? 1u : 0u;
+		if ( status == SPARK_STATUS_OK && frame->sparse_rows != 0u && frame->t.tree != 0u )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "a tree frame attends densely: every row must see at most the indexer's selected keys");
 		return status;
 	}
 
@@ -373,11 +461,98 @@ struct Glm5NextDevice
 			&state->delta, state->normed, state->partial);
 	}
 
+	static bool Sparse(uint32_t position)
+	{
+		return position >= kDenseKeys;
+	}
+
+	static SparkIndexerCache IndexCache(const State *state, const Frame &frame)
+	{
+		SparkIndexerCache cache = SparkDeviceStageIndexCache(&state->stage, frame.layer->kv_index);
+		cache.slot_pitch = SparkIndexerSlotPitch(&state->index_shape, 1u);
+		return cache;
+	}
+
+	static SparkStatus IndexKeys(State *state, Frame &frame, const SparkIndexerCache &cache)
+	{
+		const Indexer &indexer = frame.layer->indexer;
+		const uint32_t rows = frame.t.rows;
+		SparkStatus status = SparkDeviceLinearWeight(&state->stage, frame.queue, state->normed, kHidden, &indexer.key, state->index.key, kIndexDim, rows,
+			kHidden, kIndexDim);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLinearWeight(&state->stage, frame.queue, state->normed, kHidden, &indexer.gate, state->index.gate, kIndexDim, rows, kHidden,
+				kIndexDim);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerStoreGatedKeys(state->stage.ops, frame.queue, &cache, state->index.key, state->index.gate, &indexer.norm, &indexer.norm_bias, 0,
+				frame.t.sequence_of_row, frame.t.positions, frame.t.positions, &state->index_shape, rows);
+		return status;
+	}
+
+	static SparkStatus IndexSelect(State *state, Frame &frame, const SparkIndexerCache &cache)
+	{
+		const Indexer &indexer = frame.layer->indexer;
+		const uint32_t rows = frame.t.rows;
+		SparkStatus status = SparkDeviceLinearWeight(&state->stage, frame.queue, state->attention.query_lora, kQueryLora, &indexer.query, state->index.query,
+			kIndexQuery, rows, kQueryLora, kIndexQuery);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLinearWeight(&state->stage, frame.queue, state->normed, kHidden, &indexer.head, state->index.head, kIndexHeads, rows, kHidden,
+				kIndexHeads);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerScorePooled(state->stage.ops, frame.queue, &cache, state->index.query, state->index.head, indexer.ape, frame.t.sequence_of_row,
+				frame.t.positions, state->index.scores, &state->index_shape, rows, state->score_stride);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerTopk(state->stage.ops, frame.queue, state->index.scores, state->index.pools, rows, state->score_stride, kSelectedPools);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerExpandPools(state->stage.ops, frame.queue, state->index.pools, frame.t.positions, state->index.selected, &state->index_shape,
+				rows, kExpandedKeys);
+		return status;
+	}
+
+	static SparkStatus AttendSelected(State *state, Frame &frame, uint32_t first, uint32_t count)
+	{
+		SparkDeviceLatentSelection selection;
+		memset(&selection, 0, sizeof(selection));
+		selection.sparse = 1u;
+		selection.selected = state->index.selected;
+		selection.topk = kExpandedKeys;
+		selection.key_ratio = 1u;
+		return SparkDeviceLatentAttentionAttendSelected(&state->stage, frame.queue, &state->attention_shape, &frame.t, &frame.layer->attention,
+			frame.layer->kv_index, &state->attention, &selection, state->index.partial, first, count);
+	}
+
+	static SparkStatus Attend(State *state, Frame &frame)
+	{
+		SparkStatus status = SPARK_STATUS_OK;
+		for ( uint32_t first = 0u, row = 1u; status == SPARK_STATUS_OK && row <= frame.t.rows; row++ )
+		{
+			const bool sparse = Sparse(frame.t.host_positions[first]);
+			if ( row < frame.t.rows && Sparse(frame.t.host_positions[row]) == sparse )
+				continue;
+			status = sparse ? AttendSelected(state, frame, first, row - first) :
+				SparkDeviceLatentAttentionAttend(&state->stage, frame.queue, &state->attention_shape, &frame.t, &frame.layer->attention, frame.layer->kv_index,
+					&state->attention, first, row - first);
+			first = row;
+		}
+		return status;
+	}
+
 	static SparkStatus Attention(State *state, Frame &frame, uint32_t layer)
 	{
+		const SparkIndexerCache cache = IndexCache(state, frame);
 		(void)layer;
-		return SparkDeviceLatentAttention(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &frame.layer->attention,
-			frame.layer->kv_index, &state->attention, state->normed, state->partial);
+		SparkStatus status = SparkDeviceLatentAttentionProject(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t,
+			&frame.layer->attention, frame.layer->kv_index, &state->attention, state->normed);
+		if ( status == SPARK_STATUS_OK )
+			status = IndexKeys(state, frame, cache);
+		if ( status == SPARK_STATUS_OK && frame.sparse_rows != 0u )
+			status = IndexSelect(state, frame, cache);
+		if ( status == SPARK_STATUS_OK )
+			status = frame.sparse_rows == 0u ? SparkDeviceLatentAttentionAttend(&state->stage, frame.queue, &state->attention_shape, &frame.t,
+				&frame.layer->attention, frame.layer->kv_index, &state->attention, 0u, frame.t.rows) : Attend(state, frame);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLatentAttentionOutput(&state->stage, frame.queue, &state->attention_shape, &frame.t, &frame.layer->attention, &state->attention,
+				state->partial);
+		return status;
 	}
 
 	static SparkStatus AllReduce(State *state, Frame &frame)

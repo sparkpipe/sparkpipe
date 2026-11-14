@@ -8,6 +8,7 @@
 
 #include "sparkpipe/spark_device.h"
 #include "inference/runner/device_ops.h"
+#include "inference/runner/device_indexer.h"
 
 #define UNIT_BF16 (1.0 / 256.0)
 #define UNIT_F32 (1.0 / 16777216.0)
@@ -6549,6 +6550,428 @@ static void TestHcClamped(uint32_t rows)
 	SparkDeviceFree(&mixed);
 }
 
+static uint32_t IndexerTopkKey(float value)
+{
+	uint32_t bits;
+	memcpy(&bits,&value,4);
+	return(bits ^ ((bits >> 31u) != 0u ? 0xffffffffu : 0x80000000u));
+}
+
+static int IndexerKeyDescending(const void *left, const void *right)
+{
+	const uint32_t a = *(const uint32_t *)left, b = *(const uint32_t *)right;
+	return(a < b ? 1 : a > b ? -1 : 0);
+}
+
+static void IndexerExpectTopk(const float *scores, uint32_t n, uint32_t k, uint32_t *expected)
+{
+	uint32_t *keys, i, threshold, greater = 0u, taken = 0u, out = 0u;
+	if ( n <= k )
+	{
+		for ( i = 0u; i < k; i++ )
+			expected[i] = i < n ? i : SPARK_INDEXER_NONE;
+		return;
+	}
+	keys = (uint32_t *)malloc((uint64_t)n * sizeof(uint32_t));
+	for ( i = 0u; i < n; i++ )
+		keys[i] = IndexerTopkKey(scores[i]);
+	qsort(keys,n,sizeof(uint32_t),IndexerKeyDescending);
+	threshold = keys[k - 1u];
+	for ( i = 0u; i < n; i++ )
+		if ( IndexerTopkKey(scores[i]) > threshold )
+			greater++;
+	for ( i = 0u; i < n; i++ )
+	{
+		const uint32_t key = IndexerTopkKey(scores[i]);
+		if ( key > threshold || (key == threshold && taken < k - greater) )
+		{
+			taken += key == threshold ? 1u : 0u;
+			expected[out++] = i;
+		}
+	}
+	free(keys);
+}
+
+static void TestIndexerTopk(uint32_t topk)
+{
+	enum { ROWS = 5u, VISIBLE = 1000u };
+	static const float specials[6] = { 0.0f, -0.0f, 1.0e-40f, -1.0e-40f, 3.0f, -3.0f };
+	const uint32_t stride = SparkIndexerScoreStride(4000u), small = SparkIndexerScoreStride(200u);
+	SparkDeviceBuffer scores, selected;
+	float *sv = (float *)Shared(&scores,(uint64_t)ROWS * stride * 4u,"indexer topk scores");
+	uint32_t *ov = (uint32_t *)Shared(&selected,(uint64_t)ROWS * topk * 4u,"indexer topk selected");
+	uint32_t *expected = (uint32_t *)malloc((uint64_t)ROWS * topk * sizeof(uint32_t));
+	Check clean, corrupted;
+	char shape[96];
+	uint32_t pass, row, i;
+	for ( row = 0u; row < ROWS; row++ )
+		for ( i = 0u; i < stride; i++ )
+		{
+			const uint32_t pick = (uint32_t)(NextRandom() % 8u);
+			sv[(uint64_t)row * stride + i] = row == 0u ? (float)Normal() : row == 1u ? (float)(floor(2.0 * Normal()) / 2.0) :
+				row == 2u ? (i < VISIBLE ? (float)Normal() : -INFINITY) : row == 3u ? (pick < 6u ? specials[pick] : (float)Normal()) : 1.0f;
+		}
+	for ( row = 0u; row < ROWS; row++ )
+		IndexerExpectTopk(sv + (uint64_t)row * stride,stride,topk,expected + (uint64_t)row * topk);
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			sv[expected[0]] = -1.0e30f;
+		if ( !Run(SparkIndexerTopk(&ops,queue,Whole(&scores),Whole(&selected),ROWS,stride,topk),"indexer_topk") )
+			break;
+		for ( i = 0u; i < ROWS * topk; i++ )
+			Observe(check,(double)ov[i],(double)expected[i],0.0);
+	}
+	if ( Run(SparkIndexerTopk(&ops,queue,Whole(&scores),Whole(&selected),1u,small,topk),"indexer_topk short row") )
+		for ( i = 0u; i < topk; i++ )
+			Observe(&clean,(double)ov[i],i < small ? (double)i : (double)SPARK_INDEXER_NONE,0.0);
+	snprintf(shape,sizeof(shape),"5 rows x %u scores, top %u, ties, -inf, signed zeros, short row",stride,topk);
+	Report("indexer_topk",shape,&clean,&corrupted,"exact: the k largest radix keys, ties to the lower index, ascending; the control lowers one chosen score");
+	free(expected);
+	SparkDeviceFree(&scores);
+	SparkDeviceFree(&selected);
+}
+
+static void TestIndexerExpand(void)
+{
+	enum { ROWS = 4u, TOPK = 8u, RATIO = 4u };
+	static const uint32_t positions_init[ROWS] = { 40u, 43u, 2u, 200u };
+	static const uint32_t pools_init[ROWS][TOPK] = {
+		{ 0u, 3u, 5u, 9u, 10u, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE },
+		{ 1u, 2u, 4u, 6u, 8u, 10u, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE },
+		{ 0u, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE, SPARK_INDEXER_NONE },
+		{ 7u, 13u, 22u, 31u, 40u, 44u, 48u, 49u } };
+	SparkIndexerShape shape;
+	SparkDeviceBuffer pools, positions, selected;
+	Check clean, corrupted;
+	uint32_t *pv, *rv, *ov, *expected, width, pass, row, i, j;
+	memset(&shape,0,sizeof(shape));
+	shape.topk = TOPK;
+	shape.key_ratio = RATIO;
+	width = SparkIndexerExpandWidth(&shape);
+	pv = (uint32_t *)Shared(&pools,ROWS * TOPK * 4u,"indexer expand pools");
+	rv = (uint32_t *)Shared(&positions,ROWS * 4u,"indexer expand positions");
+	ov = (uint32_t *)Shared(&selected,(uint64_t)ROWS * width * 4u,"indexer expand selected");
+	expected = (uint32_t *)malloc((uint64_t)ROWS * width * sizeof(uint32_t));
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		const uint32_t context = positions_init[row] + 1u, closed = context / RATIO * RATIO;
+		rv[row] = positions_init[row];
+		memcpy(pv + row * TOPK,pools_init[row],TOPK * 4u);
+		for ( i = 0u; i < width; i++ )
+			expected[row * width + i] = SPARK_INDEXER_NONE;
+		for ( i = 0u; i < TOPK; i++ )
+			for ( j = 0u; j < RATIO; j++ )
+				if ( pools_init[row][i] != SPARK_INDEXER_NONE && pools_init[row][i] * RATIO + j < closed )
+					expected[row * width + i * RATIO + j] = pools_init[row][i] * RATIO + j;
+		for ( j = 0u; closed + j < context; j++ )
+			expected[row * width + TOPK * RATIO + j] = closed + j;
+	}
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			pv[3u * TOPK + 2u] = 23u;
+		if ( !Run(SparkIndexerExpandPools(&ops,queue,Whole(&pools),Whole(&positions),Whole(&selected),&shape,ROWS,width),"indexer_expand_pools") )
+			break;
+		for ( i = 0u; i < ROWS * width; i++ )
+			Observe(check,(double)ov[i],(double)expected[i],0.0);
+	}
+	Report("indexer_expand_pools","4 rows, top 8 pools of 4, open, NONE and unclosed pools",&clean,&corrupted,
+		"exact: each closed chosen pool's positions, then the open pool's, NONE elsewhere; the control moves one chosen pool");
+	free(expected);
+	SparkDeviceFree(&pools);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&selected);
+}
+
+static void TestIndexerScore(uint32_t heads, uint32_t mode)
+{
+	enum { DIM = 128u, CONTEXT = 600u, SEQUENCES = 2u, ROWS = 4u, SLOTS = 64u };
+	static const uint32_t sequence_init[ROWS] = { 0u, 0u, 1u, 1u }, position_init[ROWS] = { 599u, 300u, 63u, 0u };
+	static const char *const modes[3] = { "bf16 weights", "f32 weights", "shared f32 weights in head order" };
+	const uint32_t pages = (CONTEXT + SLOTS - 1u) / SLOTS, pool_pages = SEQUENCES * pages, stride = SparkIndexerScoreStride(CONTEXT);
+	const float scale = 0.08838834764831845f;
+	SparkIndexerShape shape;
+	SparkIndexerCache cache;
+	SparkDeviceBuffer pool, table, query, weights, sequence, positions, scores;
+	uint16_t *kp = (uint16_t *)Shared(&pool,(uint64_t)pool_pages * SLOTS * DIM * 2u,"indexer score pool");
+	uint32_t *tv = (uint32_t *)Shared(&table,pool_pages * 4u,"indexer score table");
+	uint16_t *qv = (uint16_t *)Shared(&query,(uint64_t)ROWS * heads * DIM * 2u,"indexer score query");
+	uint16_t *wb = (uint16_t *)Shared(&weights,(uint64_t)ROWS * heads * 4u,"indexer score weights");
+	float *wf = (float *)wb;
+	uint32_t *sq = (uint32_t *)Shared(&sequence,ROWS * 4u,"indexer score sequence");
+	uint32_t *ps = (uint32_t *)Shared(&positions,ROWS * 4u,"indexer score positions");
+	float *sv = (float *)Shared(&scores,SparkIndexerScoreBytes(ROWS,stride),"indexer score scores");
+	double *weight = (double *)malloc((uint64_t)ROWS * heads * sizeof(double));
+	double *expect = (double *)malloc((uint64_t)ROWS * CONTEXT * sizeof(double)), *bound = (double *)malloc((uint64_t)ROWS * CONTEXT * sizeof(double));
+	Check clean, corrupted;
+	char shape_text[96];
+	uint32_t pass, row, h, p, d;
+	FillBf16(kp,(uint64_t)pool_pages * SLOTS * DIM,1.0);
+	FillBf16(qv,(uint64_t)ROWS * heads * DIM,1.0);
+	for ( p = 0u; p < pool_pages; p++ )
+		tv[p] = pool_pages - 1u - p;
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		sq[row] = sequence_init[row];
+		ps[row] = position_init[row];
+		for ( h = 0u; h < heads; h++ )
+		{
+			const float w = (float)(0.125 * Normal());
+			if ( mode == 0u )
+			{
+				wb[row * heads + h] = ToBf16(w);
+				weight[row * heads + h] = Bf16(wb[row * heads + h]);
+			}
+			else if ( mode == 1u || row == 0u )
+				weight[row * heads + h] = wf[row * heads + h] = w;
+			else
+				weight[row * heads + h] = wf[h];
+		}
+	}
+	memset(&shape,0,sizeof(shape));
+	shape.heads = heads;
+	shape.head_dimension = DIM;
+	shape.score_scale = scale;
+	shape.topk = 512u;
+	shape.weight_f32 = mode != 0u ? 1u : 0u;
+	shape.weight_shared = mode == 2u ? 1u : 0u;
+	shape.heads_in_order = mode == 2u ? 1u : 0u;
+	memset(&cache,0,sizeof(cache));
+	cache.pool = Whole(&pool);
+	cache.page_table = Whole(&table);
+	cache.page_slots = SLOTS;
+	cache.pages_per_sequence = pages;
+	cache.pool_pages = pool_pages;
+	cache.sequences = SEQUENCES;
+	for ( row = 0u; row < ROWS; row++ )
+		for ( p = 0u; p <= position_init[row]; p++ )
+		{
+			const uint16_t *key = kp + (uint64_t)tv[sequence_init[row] * pages + p / SLOTS] * SLOTS * DIM + (uint64_t)(p % SLOTS) * DIM;
+			double total = 0.0, magnitude = 0.0;
+			for ( h = 0u; h < heads; h++ )
+			{
+				const uint16_t *q = qv + ((uint64_t)row * heads + h) * DIM;
+				double dot = 0.0, size = 0.0;
+				for ( d = 0u; d < DIM; d++ )
+				{
+					dot += (double)Bf16(q[d]) * Bf16(key[d]);
+					size += fabs((double)Bf16(q[d]) * Bf16(key[d]));
+				}
+				total += weight[row * heads + h] * fmax(dot,0.0);
+				magnitude += fabs(weight[row * heads + h]) * size;
+			}
+			expect[row * CONTEXT + p] = total * scale;
+			bound[row * CONTEXT + p] = Gamma(DIM + heads + 2.0) * magnitude * scale;
+		}
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+		{
+			uint16_t *key = kp + (uint64_t)tv[0u * pages + 5u / SLOTS] * SLOTS * DIM + (uint64_t)(5u % SLOTS) * DIM;
+			key[7] = ToBf16(Bf16(key[7]) + 16.0f);
+		}
+		if ( !Run(SparkIndexerScore(&ops,queue,&cache,Whole(&query),Whole(&weights),Whole(&sequence),Whole(&positions),Whole(&scores),&shape,ROWS,stride),"indexer_score") )
+			break;
+		for ( row = 0u; row < ROWS; row++ )
+			for ( p = 0u; p < stride; p++ )
+			{
+				const float got = sv[(uint64_t)row * stride + p];
+				if ( p <= position_init[row] )
+					Observe(check,got,expect[row * CONTEXT + p],bound[row * CONTEXT + p]);
+				else
+					Observe(check,isinf(got) && got < 0.0f ? 0.0 : 1.0,0.0,0.0);
+			}
+	}
+	snprintf(shape_text,sizeof(shape_text),"4 rows, %u heads x 128, 600 keys, %s",heads,modes[mode]);
+	Report("indexer_score",shape_text,&clean,&corrupted,"gamma_(128 + heads + 2) sum_h |w_h| sum_d |q k| x scale; -inf past each row's position; the control moves one key");
+	free(weight);
+	free(expect);
+	free(bound);
+	SparkDeviceFree(&pool);
+	SparkDeviceFree(&table);
+	SparkDeviceFree(&query);
+	SparkDeviceFree(&weights);
+	SparkDeviceFree(&sequence);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&scores);
+}
+
+static void TestIndexerAttention(uint32_t heads, uint32_t kv, uint32_t dim)
+{
+	enum { CONTEXT = 3000u, SEQUENCES = 2u, ROWS = 4u, CHOSEN = 2000u, LATE = 3u, TOPK = SPARK_INDEXER_MAX_TOPK + 3u };
+	static const uint32_t sequence_init[ROWS] = { 0u, 0u, 1u, 1u }, position_init[ROWS] = { 2999u, 2100u, 700u, 1u };
+	const uint32_t pages = (CONTEXT + ATT_SLOTS - 1u) / ATT_SLOTS, pool_pages = SEQUENCES * pages;
+	const uint32_t compact_pages = (TOPK + ATT_SLOTS - 1u) / ATT_SLOTS, compact_pool_pages = ROWS * compact_pages;
+	const uint64_t width = (uint64_t)kv * dim;
+	SparkDeviceBuffer pool, table, fill_sequence, fill_positions, keys, values, compact, compact_table, compact_keys, compact_values;
+	SparkDeviceBuffer compact_fill_sequence, compact_fill_positions, compact_sequence, compact_positions, query, sinks, sequence, positions;
+	SparkDeviceBuffer selected, partial, gathered, dense;
+	uint16_t *kk = (uint16_t *)Shared(&keys,(uint64_t)SEQUENCES * CONTEXT * width * 2u,"indexer attention keys");
+	uint16_t *kvv = (uint16_t *)Shared(&values,(uint64_t)SEQUENCES * CONTEXT * width * 2u,"indexer attention values");
+	uint16_t *ck = (uint16_t *)Shared(&compact_keys,(uint64_t)ROWS * TOPK * width * 2u,"indexer attention compact keys");
+	uint16_t *cv = (uint16_t *)Shared(&compact_values,(uint64_t)ROWS * TOPK * width * 2u,"indexer attention compact values");
+	uint32_t *tv = (uint32_t *)Shared(&table,pool_pages * 4u,"indexer attention table");
+	uint32_t *ctv = (uint32_t *)Shared(&compact_table,compact_pool_pages * 4u,"indexer attention compact table");
+	uint32_t *fs = (uint32_t *)Shared(&fill_sequence,SEQUENCES * CONTEXT * 4u,"indexer attention fill sequence");
+	uint32_t *fp = (uint32_t *)Shared(&fill_positions,SEQUENCES * CONTEXT * 4u,"indexer attention fill positions");
+	uint32_t *cfs = (uint32_t *)Shared(&compact_fill_sequence,ROWS * TOPK * 4u,"indexer attention compact fill sequence");
+	uint32_t *cfp = (uint32_t *)Shared(&compact_fill_positions,ROWS * TOPK * 4u,"indexer attention compact fill positions");
+	uint32_t *cs = (uint32_t *)Shared(&compact_sequence,ROWS * 4u,"indexer attention compact sequence");
+	uint32_t *cp = (uint32_t *)Shared(&compact_positions,ROWS * 4u,"indexer attention compact positions");
+	uint32_t *rs = (uint32_t *)Shared(&sequence,ROWS * 4u,"indexer attention sequence");
+	uint32_t *rp = (uint32_t *)Shared(&positions,ROWS * 4u,"indexer attention positions");
+	uint32_t *sel = (uint32_t *)Shared(&selected,SparkIndexerSelectedBytes(ROWS,TOPK),"indexer attention selected");
+	uint16_t *qv = (uint16_t *)Shared(&query,(uint64_t)ROWS * heads * dim * 2u,"indexer attention query");
+	float *sink = (float *)Shared(&sinks,heads * 4u,"indexer attention sinks");
+	uint16_t *gv = (uint16_t *)Shared(&gathered,(uint64_t)ROWS * heads * dim * 2u,"indexer attention gathered");
+	uint16_t *dv = (uint16_t *)Shared(&dense,(uint64_t)ROWS * heads * dim * 2u,"indexer attention dense");
+	const SparkTensor sink_tensor = Whole(&sinks);
+	SparkOpsPaged paged, packed;
+	SparkKvParams store;
+	SparkAttentionParams params, dense_params;
+	Check clean, corrupted;
+	char shape[96];
+	uint32_t used[ROWS], pass, row, i, j, filled = 0u;
+	Shared(&pool,(uint64_t)pool_pages * ATT_SLOTS * width * 2u * 2u,"indexer attention pool");
+	Shared(&compact,(uint64_t)compact_pool_pages * ATT_SLOTS * width * 2u * 2u,"indexer attention compact pool");
+	Shared(&partial,SparkIndexerAttentionScratchBytes(ROWS,heads,dim,TOPK),"indexer attention partial");
+	FillBf16(kk,(uint64_t)SEQUENCES * CONTEXT * width,1.0);
+	FillBf16(kvv,(uint64_t)SEQUENCES * CONTEXT * width,1.0);
+	FillBf16(qv,(uint64_t)ROWS * heads * dim,1.0);
+	for ( i = 0u; i < heads; i++ )
+		sink[i] = (float)(2.0 * Normal());
+	for ( i = 0u; i < pool_pages; i++ )
+		tv[i] = pool_pages - 1u - i;
+	for ( i = 0u; i < compact_pool_pages; i++ )
+		ctv[i] = compact_pool_pages - 1u - i;
+	for ( i = 0u; i < SEQUENCES * CONTEXT; i++ )
+	{
+		fs[i] = i / CONTEXT;
+		fp[i] = i % CONTEXT;
+	}
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		uint32_t *chosen = sel + (uint64_t)row * TOPK, visible = position_init[row] + 1u, need = CHOSEN, count = 0u;
+		for ( i = 0u; i < visible; i++ )
+			if ( visible <= CHOSEN || NextRandom() % (visible - i) < need )
+			{
+				chosen[count++] = i;
+				need -= need != 0u ? 1u : 0u;
+			}
+		used[row] = count;
+		for ( j = 0u; j < LATE; j++ )
+			chosen[count + j] = visible + j;
+		for ( j = count + LATE; j < TOPK; j++ )
+			chosen[j] = SPARK_INDEXER_NONE;
+		for ( j = 0u; j < count; j++ )
+		{
+			const uint64_t source = (uint64_t)sequence_init[row] * CONTEXT + chosen[j];
+			memcpy(ck + (uint64_t)filled * width,kk + source * width,width * 2u);
+			memcpy(cv + (uint64_t)filled * width,kvv + source * width,width * 2u);
+			cfs[filled] = row;
+			cfp[filled] = j;
+			filled++;
+		}
+		rs[row] = sequence_init[row];
+		rp[row] = position_init[row];
+		cs[row] = row;
+		cp[row] = count - 1u;
+	}
+	memset(&paged,0,sizeof(paged));
+	paged.pool = Whole(&pool);
+	paged.page_table = Whole(&table);
+	paged.sequence_of_row = Whole(&fill_sequence);
+	paged.positions = Whole(&fill_positions);
+	paged.page_slots = ATT_SLOTS;
+	paged.pages_per_sequence = pages;
+	paged.pool_pages = pool_pages;
+	paged.kv_heads = kv;
+	packed = paged;
+	packed.pool = Whole(&compact);
+	packed.page_table = Whole(&compact_table);
+	packed.sequence_of_row = Whole(&compact_fill_sequence);
+	packed.positions = Whole(&compact_fill_positions);
+	packed.pages_per_sequence = compact_pages;
+	packed.pool_pages = compact_pool_pages;
+	memset(&store,0,sizeof(store));
+	store.rows = SEQUENCES * CONTEXT;
+	store.kv_heads = kv;
+	store.head_dimension = dim;
+	store.page_slots = ATT_SLOTS;
+	store.pages_per_sequence = pages;
+	store.key_stride = store.value_stride = (uint32_t)width;
+	store.pool_pages = pool_pages;
+	Run(SparkOpsKvStore(&ops,queue,&paged,Whole(&keys),Whole(&values),&store),"kv_store indexer attention");
+	store.rows = filled;
+	store.pages_per_sequence = compact_pages;
+	store.pool_pages = compact_pool_pages;
+	Run(SparkOpsKvStore(&ops,queue,&packed,SparkTensorSlice(Whole(&compact_keys),0u,(uint64_t)filled * width * 2u),
+		SparkTensorSlice(Whole(&compact_values),0u,(uint64_t)filled * width * 2u),&store),"kv_store indexer attention packed");
+	paged.sequence_of_row = Whole(&sequence);
+	paged.positions = Whole(&positions);
+	packed.sequence_of_row = Whole(&compact_sequence);
+	packed.positions = Whole(&compact_positions);
+	memset(&params,0,sizeof(params));
+	params.rows = ROWS;
+	params.heads = heads;
+	params.kv_heads = kv;
+	params.head_dimension = dim;
+	params.page_slots = ATT_SLOTS;
+	params.pages_per_sequence = pages;
+	params.pool_pages = pool_pages;
+	params.query_stride = params.output_stride = heads * dim;
+	params.scale = (float)(1.0 / sqrt((double)dim));
+	params.has_sinks = 1u;
+	dense_params = params;
+	dense_params.pages_per_sequence = compact_pages;
+	dense_params.pool_pages = compact_pool_pages;
+	Run(SparkOpsAttention(&ops,queue,&packed,Whole(&query),Whole(&query),&sink_tensor,Whole(&partial),Whole(&dense),&dense_params,cp,cs),
+		"attention over packed chosen keys");
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		if ( pass == 1u )
+			sel[10] += 1u;
+		if ( !Run(SparkIndexerAttention(&ops,queue,&paged,Whole(&query),Whole(&query),&sink_tensor,Whole(&selected),TOPK,1u,Whole(&partial),
+			Whole(&gathered),&params),"indexer_attention") )
+			break;
+		for ( i = 0u; i < ROWS * heads * dim; i++ )
+			Observe(check,Bf16(gv[i]),Bf16(dv[i]),0.0);
+	}
+	snprintf(shape,sizeof(shape),"4 rows, %u heads / %u kv x %u, 2,051 gathered keys, sinks",heads,kv,dim);
+	Report("indexer_attention",shape,&clean,&corrupted,"bit-identical to decode attention over the chosen keys packed into their own pages; the control moves one chosen key");
+	SparkDeviceFree(&pool);
+	SparkDeviceFree(&table);
+	SparkDeviceFree(&fill_sequence);
+	SparkDeviceFree(&fill_positions);
+	SparkDeviceFree(&keys);
+	SparkDeviceFree(&values);
+	SparkDeviceFree(&compact);
+	SparkDeviceFree(&compact_table);
+	SparkDeviceFree(&compact_keys);
+	SparkDeviceFree(&compact_values);
+	SparkDeviceFree(&compact_fill_sequence);
+	SparkDeviceFree(&compact_fill_positions);
+	SparkDeviceFree(&compact_sequence);
+	SparkDeviceFree(&compact_positions);
+	SparkDeviceFree(&query);
+	SparkDeviceFree(&sinks);
+	SparkDeviceFree(&sequence);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&selected);
+	SparkDeviceFree(&partial);
+	SparkDeviceFree(&gathered);
+	SparkDeviceFree(&dense);
+}
+
 int main(int argc, char **argv)
 {
 	if ( argc > 1 && (receipt = fopen(argv[1],"w")) == 0 )
@@ -6809,6 +7232,14 @@ int main(int argc, char **argv)
 	TestCompressedPositions(1u);
 	TestAttentionExtra(8u);
 	TestAttentionExtra(64u);
+	TestIndexerTopk(2048u);
+	TestIndexerTopk(512u);
+	TestIndexerExpand();
+	TestIndexerScore(64u,0u);
+	TestIndexerScore(64u,1u);
+	TestIndexerScore(4u,2u);
+	TestIndexerAttention(8u,2u,128u);
+	TestIndexerAttention(16u,1u,512u);
 	TestPolyNorm(5u,1280u,0u,1u,1e6);
 	TestPolyNorm(4u,1000u,1u,1u,3.0);
 	TestPolyNorm(9u,1280u,1u,6u,1e6);
