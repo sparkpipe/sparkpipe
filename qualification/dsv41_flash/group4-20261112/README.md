@@ -911,3 +911,35 @@ engine (`hubbuild-rall`), two of each rank build, each answering the
 One to two percent: the fetch starts when the wave starts, so part of it
 still lands after the first Engram layer is reached. Hiding the rest needs
 the next wave's tokens before that wave begins.
+
+### Whole experts per rank, and Engram rows reduce-scattered to their owners
+
+Two changes, measured together on 2026-11-14 with the same engine
+(`hubbuild-rall`) and 16 GiB of rank state, one group each, every run
+answering the 40,000-token prompt with `b79b025295d2819f` (the bits did not
+move):
+
+- `5a254425d` gives each rank whole experts when the pack says so (a new
+  pack flag; `tools/dsv41_flash_stagepack.py plan ... whole`, `1a8ba58c5`).
+  Rank r holds experts 96r to 96r + 95, runs its own routes from the gathered
+  rows, adds its slice of the shared expert, rounds once, and one rank-order
+  reduce-scatter (126 MB a rank at 16,384 rows) replaces the activation
+  all-to-all (208 MB), its assembly and the slice exchange. The per-rank
+  sums are the publisher's four-GPU arithmetic, so the bits are the same.
+- `fb1dc9fc9` (with `4bce70d28`): an Engram layer reduce-scatters the
+  embeddings to the row owners and each rank projects only its own rows with
+  the whole key and value projection, instead of all-reducing every row and
+  all-gathering 629 MB a rank of keys and values it then ignored.
+
+| Rank build and pack | 8,192 tokens | 32,768 tokens | 131,072 tokens | One stream | Eight streams |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| expert slices | 3,901 tok/s | 5,324 | 5,482 | 33.2 / 35.4 / 35.4 ms a token | 92.9 tok/s |
+| whole experts | 4,099 | 5,518 | 5,701 | 35.6 / 36.8 / 37.5 | 84.5 |
+| expert slices, Engram to owners | 3,904 | 5,633 | 5,723 | 32.9 / 35.3 / 34.9 | 93.6 |
+| whole experts, Engram to owners | 4,236 | 5,876 | 5,991 | 35.8 / 36.7 / 36.9 | 86.1 |
+
+The Engram change is free: 4% on prefill and nothing on decode. Whole experts
+trade: 4% on prefill, but a decoding step waits for the rank that holds the
+most of the step's experts (2.8 of 6 on average against 1.5 slices), about
+1.5 to 2.4 ms a token alone and 9% at eight streams. A pack of whole experts
+is an option for prefill-heavy use; the slice pack stays the default.
