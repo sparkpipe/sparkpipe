@@ -5,7 +5,7 @@ if [ -n "${STAGE_RECORD:-}" ]; then
   eval "$(python3 "$HERE/lane_config.py" shell "$STAGE_RECORD")"
 fi
 : "${STAGE_MODEL:?STAGE_MODEL names a tools/stage_lane.py MODELS entry, or STAGE_RECORD names a deployment/lanes.json record}"
-: "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..15)}"
+: "${STAGE_LANE:?STAGE_LANE is the weightd mesh lane (0..3)}"
 : "${STAGE_WEIGHTD_SOCKET:?STAGE_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${STAGE_MEMORY_MAX:?STAGE_MEMORY_MAX is the residentd unit MemoryMax, e.g. 16G}"
 STAGE_FIRST_NODE="${STAGE_FIRST_NODE:-0}"

@@ -1297,7 +1297,7 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         "a rank map naming one physical rank twice is refused");
     config.mesh_ranks[1] = 1u;
     CHECK(SparkWeightdClientConnect("fixture",&owner,0) == SPARK_STATUS_OK &&
-        SparkWeightdClientLaneAcquire(owner,7u,&topology,&lane,1u) == SPARK_STATUS_OK,
+        SparkWeightdClientLaneAcquire(owner,SPARK_WEIGHTD_MESH_MAX_LANES - 1u,&topology,&lane,1u) == SPARK_STATUS_OK,
         "paired owner reserves explicit lane");
     config.mesh_lane_client = owner;
     config.mesh_band_index = 0u;
@@ -1322,10 +1322,10 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
     cuda_stub_stream_query_result = cudaSuccess;
     SparkTpDeviceCollectiveDestroy(&first);
     CHECK(first.implementation == 0 && ((uint64_t *)owner)[3] == 2u &&
-        (mock_lane_mask[0] & (UINT64_C(1) << 7u)) != 0u,
+        (mock_lane_mask[0] & (UINT64_C(1) << (SPARK_WEIGHTD_MESH_MAX_LANES - 1u))) != 0u,
         "main destroy leaves HC and parent lane reservation alive");
     SparkTpDeviceCollectiveDestroy(&second);
-    CHECK(((uint64_t *)owner)[3] == 0u && (mock_lane_mask[0] & (UINT64_C(1) << 7u)) != 0u,
+    CHECK(((uint64_t *)owner)[3] == 0u && (mock_lane_mask[0] & (UINT64_C(1) << (SPARK_WEIGHTD_MESH_MAX_LANES - 1u))) != 0u,
         "last borrowed destroy leaves reservation with its explicit owner");
     mock_server = 1u;
     CHECK(SparkTpDeviceCollectiveCreate(&config,&rejected) == SPARK_STATUS_INVALID_ARGUMENT &&

@@ -845,31 +845,31 @@ static void SparkTestMeshStatus(void)
     SparkTestExpectConnectionClosed(socket_path, &request, sizeof(request));
     assert(SparkWeightdClientConnectWithin(socket_path, SPARK_TEST_TIMEOUT_NS, &client, &hello_result) == SPARK_STATUS_OK);
     memset(&empty, 0, sizeof(empty));
-    assert(SparkWeightdClientLaneAcquire(client, 6u, &empty, &lane, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && lane == 6u);
+    assert(SparkWeightdClientLaneAcquire(client, 2u, &empty, &lane, SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && lane == 2u);
     for (index = 0u; index < 200u; index++)
     {
         assert(SparkWeightdMeshStatusQuery(socket_path, SPARK_TEST_TIMEOUT_NS, &result, &outcome) == SPARK_STATUS_OK &&
             outcome == SPARK_WEIGHTD_MESH_QUERY_ANSWERED);
-        if ((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u)
+        if ((result.lanes[2].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u)
             break;
         {
             struct timespec pause = {0, 10000000L};
             (void)nanosleep(&pause, 0);
         }
     }
-    assert((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u && (result.lanes[5].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
+    assert((result.lanes[2].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) != 0u && (result.lanes[1].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
     SparkWeightdClientClose(client);
     for (index = 0u; index < 200u; index++)
     {
         assert(SparkWeightdMeshStatusQuery(socket_path, SPARK_TEST_TIMEOUT_NS, &result, &outcome) == SPARK_STATUS_OK);
-        if ((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u)
+        if ((result.lanes[2].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u)
             break;
         {
             struct timespec pause = {0, 10000000L};
             (void)nanosleep(&pause, 0);
         }
     }
-    assert((result.lanes[6].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
+    assert((result.lanes[2].flags & SPARK_WEIGHTD_MESH_LANE_OWNED) == 0u);
     SparkTestStopServer(&thread_context, thread_handle);
     assert(access(socket_path, F_OK) != 0);
     memset(&clean, 0, sizeof(clean));
