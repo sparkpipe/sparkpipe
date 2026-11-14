@@ -128,7 +128,7 @@ def layer_kind_bits(layer: int) -> int:
     return bits
 
 
-def entry_shape(kind: int, tp: int):
+def entry_shape(kind: int, tp: int, layout: str):
     if kind in (K_EMBEDDING, K_LM_HEAD):
         return (VOCAB // tp, HIDDEN)
     if kind in (K_ATTN_NORM, K_FFN_NORM, K_FINAL_NORM):
@@ -172,18 +172,18 @@ def entry_shape(kind: int, tp: int):
     if kind in (K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return (1, 384)
     if kind == K_EXP_W13:
-        return (2 * (EXPERT_WIDTH // tp), HIDDEN // 2)
+        return (2 * EXPERT_WIDTH, HIDDEN // 2) if layout == "whole" else (2 * (EXPERT_WIDTH // tp), HIDDEN // 2)
     if kind == K_EXP_W2:
-        return (HIDDEN // tp, EXPERT_WIDTH // 2)
+        return (HIDDEN, EXPERT_WIDTH // 2) if layout == "whole" else (HIDDEN // tp, EXPERT_WIDTH // 2)
     if kind == K_SH_W2:
         return (HIDDEN, EXPERT_WIDTH)
     return (EXPERT_WIDTH, HIDDEN)
 
 
-def expected_entry(kind: int, layer: int, tp: int) -> dict:
-    rows, cols = entry_shape(kind, tp)
+def expected_entry(kind: int, layer: int, tp: int, layout: str) -> dict:
+    rows, cols = entry_shape(kind, tp, layout)
     if kind in EXPERT_KINDS:
-        groups = ROUTED_EXPERTS
+        groups = ROUTED_EXPERTS // tp if layout == "whole" else ROUTED_EXPERTS
         return {"kind": kind, "layer": layer, "payload_type": 4, "codec": 7, "scale_encoding": 3,
                 "groups": groups, "rows": rows, "cols": cols,
                 "payload_bytes": rows * cols * groups,
@@ -276,7 +276,7 @@ def source_ref(kind: int, layer: int, plane: int):
     fail(f"unknown kind {kind}")
 
 
-def derive_layout(tp: int):
+def derive_layout(tp: int, layout: str):
     order = [(K_EMBEDDING, GLOBAL_LAYER), (K_FINAL_NORM, GLOBAL_LAYER), (K_LM_HEAD, GLOBAL_LAYER)]
     for layer in range(LAYER_COUNT):
         for kind in range(K_ATTN_NORM, KIND_COUNT):
@@ -286,7 +286,7 @@ def derive_layout(tp: int):
     cursor = (directory_offset + len(order) * ENTRY_BYTES + ALIGN - 1) & ~(ALIGN - 1)
     entries = []
     for kind, layer in order:
-        entry = expected_entry(kind, layer, tp)
+        entry = expected_entry(kind, layer, tp, layout)
         cursor = (cursor + ALIGN - 1) & ~(ALIGN - 1)
         entry["payload_offset"] = cursor
         cursor += entry["payload_bytes"]
@@ -300,7 +300,7 @@ def derive_layout(tp: int):
     return order, entries, cursor
 
 
-def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int) -> list:
+def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int, layout: str) -> list:
     pieces = []
     for entry, (kind, layer) in zip(entries, order):
         for plane, offset, total in ((0, entry["payload_offset"], entry["payload_bytes"]),
@@ -309,16 +309,19 @@ def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int
                 continue
             name, mode = source_ref(kind, layer, plane)
             if mode == "slice":
-                per = total // ROUTED_EXPERTS
+                groups = entry["groups"]
+                per = total // groups
                 part = per // len(name)
                 for rank in range(tp):
-                    for g in range(ROUTED_EXPERTS):
+                    for g in range(groups):
+                        expert = rank * groups + g if layout == "whole" else g
                         for index, template in enumerate(name):
-                            src = flat[template.format(e=g)]
-                            step = src["shape"][0] // tp
+                            src = flat[template.format(e=expert)]
+                            step = src["shape"][0] if layout == "whole" else src["shape"][0] // tp
+                            first = 0 if layout == "whole" else rank * step
                             if step * src["shape"][1] * DTYPE_BYTES[src["dtype"]] != part:
                                 fail(f"slice of {src['name']} is not {part} bytes")
-                            pieces.append((rank, kind, layer, plane, src, rank * step, (rank + 1) * step,
+                            pieces.append((rank, kind, layer, plane, src, first, first + step,
                                            0, src["shape"][1], offset + g * per + index * part, part))
                 continue
             src0 = flat[name]
@@ -369,12 +372,12 @@ def compare_piece(src_fd: int, dst_fd: int, piece: tuple) -> int:
 
 
 def verify_header(fd: int, rank: int, tp: int, plan: dict, entries: list,
-                  directory_offset: int, file_bytes: int) -> None:
+                  directory_offset: int, file_bytes: int, layout: str) -> None:
     raw = os.pread(fd, HEADER_BYTES, 0)
     if len(raw) != HEADER_BYTES:
         fail(f"rank{rank}: short header")
     fields = struct.unpack_from("<20I2Q", raw, 0)
-    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0,
+    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 2 if layout == "whole" else 0, len(entries), 1, 0, 0,
                LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
     if fields[:20] != literal:
         fail(f"rank{rank}: header fields {fields[:20]} != literals {literal}")
@@ -408,6 +411,9 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
     with open(plan_path, encoding="utf-8") as handle:
         plan = json.load(handle)
     tp = plan["tp"]
+    layout = plan["expert_layout"]
+    if layout not in ("slice", "whole"):
+        fail(f"plan expert layout {layout!r} is neither slice nor whole")
     with open(headers_json, encoding="utf-8") as handle:
         document = json.load(handle)
     flat = {}
@@ -418,7 +424,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
             meta["shape"] = normalize(meta["shape"])
             meta["name"] = name
             flat[name] = meta
-    order, entries, file_bytes = derive_layout(tp)
+    order, entries, file_bytes = derive_layout(tp, layout)
     if len(entries) != plan["tensor_count"] or file_bytes != plan["file_bytes"]:
         fail(f"derived layout {len(entries)}/{file_bytes} != plan "
              f"{plan['tensor_count']}/{plan['file_bytes']}")
@@ -453,10 +459,10 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
     compared = 0
     try:
         for rank in range(tp):
-            verify_header(dst_fds[rank], rank, tp, plan, entries, directory_offset, file_bytes)
+            verify_header(dst_fds[rank], rank, tp, plan, entries, directory_offset, file_bytes, layout)
         verify_directory(dst_fds[0], 0, entries, directory_offset)
         verify_directory(dst_fds[tp - 1], tp - 1, entries, directory_offset)
-        for piece in pieces_for(flat, tp, order, entries, lo, hi):
+        for piece in pieces_for(flat, tp, order, entries, lo, hi, layout):
             shard = piece[4]["shard"]
             if shard not in src_fds:
                 src_fds[shard] = os.open(

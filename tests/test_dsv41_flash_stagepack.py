@@ -113,53 +113,74 @@ def expect_fail(callable_fn, needle: str):
     raise AssertionError("expected verify failure did not raise")
 
 
+def check_layout(root: Path, warm: Path, total: int, layout: str) -> dict:
+    out = root / f"out-{layout}"
+    conv.cmd_plan(str(root / "headers.json"), str(out), TP, "selftest-revision",
+                  "aa" * 32, "bb" * 32, "cc" * 32, layout)
+    plan = json.loads((out / "plan.json").read_text())
+    assert plan["tensor_count"] == 4 * 24 + 7 + 2 + 3, plan["tensor_count"]
+    assert plan["tp"] == TP and plan["expert_layout"] == layout
+    experts = [e for e in plan["entries"] if e["kind"] in (conv.K_EXP_W13, conv.K_EXP_W2)]
+    whole = layout == "whole"
+    for entry in experts:
+        assert entry["groups"] == (conv.ROUTED_EXPERTS // TP if whole else conv.ROUTED_EXPERTS), entry
+        width = conv.EXPERT_WIDTH if whole else conv.EXPERT_WIDTH // TP
+        rows = 2 * width if entry["kind"] == conv.K_EXP_W13 else (conv.HIDDEN if whole else conv.HIDDEN // TP)
+        assert entry["rows"] == rows, entry
+    for piece in plan["pieces"]:
+        if piece["kind"] in (conv.K_EXP_W13, conv.K_EXP_W2):
+            expert = int(piece["name"].split(".experts.")[1].split(".")[0])
+            local = conv.ROUTED_EXPERTS // TP
+            assert (expert // local == piece["rank"]) if whole else piece["row0"] > 0 or piece["rank"] == 0, piece
+    with open(out / "rank1.spstage", "rb") as handle:
+        flags = struct.unpack_from("<I", handle.read(24), 20)[0]
+    assert flags == (conv.FLAG_WHOLE_EXPERTS if whole else 0), flags
+    conv.cmd_copy(str(root / "headers.json"), str(out / "plan.json"), str(out),
+                  str(warm), 1, conv.SHARD_COUNT)
+    report = json.loads((out / "engram_report.json").read_text())
+    assert report["accounting"]["engram_excluded"] == 12
+    assert report["accounting"]["dspark_sidecar"] == 2
+    assert report["accounting"]["vision_aligner_out_of_scope"] == 3
+    assert report["accounting"]["pack_consumed"] + 12 + 2 + 3 == total
+    ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
+                   str(out / "plan.json"), 1, conv.SHARD_COUNT)
+    pack3 = out / "rank3.spstage"
+    payload = next(e for e in plan["entries"] if e["kind"] == conv.K_Q_A)
+    expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W13)
+    for target, label in ((payload, "spine"), (expert, "expert")):
+        with open(pack3, "r+b") as handle:
+            handle.seek(target["payload_offset"] + 3)
+            original = handle.read(1)
+            handle.seek(target["payload_offset"] + 3)
+            handle.write(bytes([original[0] ^ 0xFF]))
+        expect_fail(lambda: ver.cmd_verify(str(root / "headers.json"), str(out),
+                                           str(warm), str(out / "plan.json"),
+                                           1, conv.SHARD_COUNT),
+                    "BYTE MISMATCH")
+        with open(pack3, "r+b") as handle:
+            handle.seek(target["payload_offset"] + 3)
+            handle.write(original)
+    ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
+                   str(out / "plan.json"), 1, conv.SHARD_COUNT)
+    return plan
+
+
 def main() -> int:
     patch(conv)
     patch(ver)
     root = Path(tempfile.mkdtemp(prefix="dsv41-stagepack-selftest-"))
     try:
         warm = root / "warm"
-        out = root / "out"
         warm.mkdir()
         total = build_checkpoint(warm)
         conv.cmd_headers(str(warm), str(warm / "index.json"), str(root / "headers.json"))
-        conv.cmd_plan(str(root / "headers.json"), str(out), TP, "selftest-revision",
-                      "aa" * 32, "bb" * 32, "cc" * 32)
-        plan = json.loads((out / "plan.json").read_text())
-        assert plan["tensor_count"] == 4 * 24 + 7 + 2 + 3, plan["tensor_count"]
-        assert plan["tp"] == TP
-        conv.cmd_copy(str(root / "headers.json"), str(out / "plan.json"), str(out),
-                      str(warm), 1, conv.SHARD_COUNT)
-        report = json.loads((out / "engram_report.json").read_text())
-        assert report["accounting"]["engram_excluded"] == 12
-        assert report["accounting"]["dspark_sidecar"] == 2
-        assert report["accounting"]["vision_aligner_out_of_scope"] == 3
-        assert report["accounting"]["pack_consumed"] + 12 + 2 + 3 == total
-        ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
-                       str(out / "plan.json"), 1, conv.SHARD_COUNT)
-        pack3 = out / "rank3.spstage"
-        payload = next(e for e in plan["entries"] if e["kind"] == conv.K_Q_A)
-        expert = next(e for e in plan["entries"] if e["kind"] == conv.K_EXP_W13)
-        for target, label in ((payload, "spine"), (expert, "expert")):
-            with open(pack3, "r+b") as handle:
-                handle.seek(target["payload_offset"] + 3)
-                original = handle.read(1)
-                handle.seek(target["payload_offset"] + 3)
-                handle.write(bytes([original[0] ^ 0xFF]))
-            expect_fail(lambda: ver.cmd_verify(str(root / "headers.json"), str(out),
-                                               str(warm), str(out / "plan.json"),
-                                               1, conv.SHARD_COUNT),
-                        "BYTE MISMATCH")
-            with open(pack3, "r+b") as handle:
-                handle.seek(target["payload_offset"] + 3)
-                handle.write(original)
-        ver.cmd_verify(str(root / "headers.json"), str(out), str(warm),
-                       str(out / "plan.json"), 1, conv.SHARD_COUNT)
-        spine = plan["spine_bytes"]
-        expert = plan["expert_bytes"]
-        print(f"dsv41 stagepack selftest PASS: {plan['tensor_count']} entries, "
-              f"tp{TP}, spine {spine} B, expert {expert} B, corruption localized in "
-              f"spine+expert, engram 12 excluded")
+        slice_plan = check_layout(root, warm, total, "slice")
+        whole_plan = check_layout(root, warm, total, "whole")
+        assert slice_plan["file_bytes"] == whole_plan["file_bytes"]
+        assert slice_plan["expert_bytes"] == whole_plan["expert_bytes"]
+        print(f"dsv41 stagepack selftest PASS: {slice_plan['tensor_count']} entries, "
+              f"tp{TP}, spine {slice_plan['spine_bytes']} B, expert {slice_plan['expert_bytes']} B "
+              f"in slice and whole layouts, corruption localized in spine+expert, engram 12 excluded")
         return 0
     finally:
         shutil.rmtree(root, ignore_errors=True)
