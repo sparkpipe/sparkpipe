@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <sys/resource.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -1665,6 +1666,115 @@ static uint64_t SparkTestMonotonicNs(void)
     return (uint64_t)now.tv_sec * UINT64_C(1000000000) + (uint64_t)now.tv_nsec;
 }
 
+static SparkStatus SparkTestCaptureAdmit(const char *meminfo,uint64_t bytes,char **text)
+{
+    TestStderrCapture capture;
+    SparkStatus status;
+    TestStderrCaptureBegin(&capture);
+    status = SparkWeightdNodeMemoryAdmit(meminfo,bytes,"weight arena","node-memory");
+    *text = TestStderrCaptureEnd(&capture);
+    return(status);
+}
+
+static void SparkTestNodeMemoryLockWaits(const char *lock_path)
+{
+    TestStderrCapture capture;
+    int pipe_fds[2],lock_fd = -1,status = 0;
+    uint64_t started;
+    char byte = 0;
+    char *text;
+    pid_t child;
+    (void)unlink(lock_path);
+    lock_fd = open(lock_path,O_WRONLY | O_CREAT | O_EXCL,0444);
+    assert(lock_fd >= 0 && close(lock_fd) == 0);
+    lock_fd = -1;
+    assert(pipe(pipe_fds) == 0);
+    child = TestChildGuardFork();
+    assert(child >= 0);
+    if (child == 0)
+    {
+        int held = -1;
+        (void)close(pipe_fds[0]);
+        if (SparkWeightdNodeMemoryLock(lock_path,&held) != SPARK_STATUS_OK || write(pipe_fds[1],"l",1) != 1)
+            _exit(1);
+        usleep(300000u);
+        SparkWeightdNodeMemoryUnlock(held);
+        _exit(0);
+    }
+    (void)close(pipe_fds[1]);
+    assert(read(pipe_fds[0],&byte,1) == 1 && byte == 'l');
+    started = SparkTestMonotonicNs();
+    assert(SparkWeightdNodeMemoryLock(lock_path,&lock_fd) == SPARK_STATUS_OK);
+    assert(SparkTestMonotonicNs() - started >= 200000000ull);
+    SparkWeightdNodeMemoryUnlock(lock_fd);
+    assert(waitpid(child,&status,0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    (void)close(pipe_fds[0]);
+    (void)unlink(lock_path);
+    TestStderrCaptureBegin(&capture);
+    assert(SparkWeightdNodeMemoryLock("/nonexistent-spark-node-memory/lock",&lock_fd) == SPARK_STATUS_IO_ERROR);
+    text = TestStderrCaptureEnd(&capture);
+    assert(strstr(text,"node memory lock /nonexistent-spark-node-memory/lock cannot open") != 0);
+    free(text);
+}
+
+static void SparkTestNodeMemoryAdmission(void)
+{
+    const char *socket_path = "/tmp/spark_weightd_test_node_memory.sock";
+    const char *meminfo = "/tmp/spark_weightd_test_node_memory.meminfo";
+    const char *pack_path = "/tmp/spark_weightd_test_node_memory.spack";
+    const uint64_t total = 100ull << 30,chunk = SPARK_TEST_KV_CHUNK_BYTES;
+    const uint64_t margin = SparkWeightdKvMemoryMargin(total);
+    SparkWeightdAttachRequest request;
+    SparkWeightdAttachResult attach;
+    SparkWeightdClient *client = 0;
+    SparkTestServerThread context;
+    TestStderrCapture capture;
+    pthread_t thread;
+    char expected[256];
+    char *text;
+
+    SparkTestWriteMeminfo(meminfo,total,margin + chunk);
+    assert(SparkTestCaptureAdmit(meminfo,chunk,&text) == SPARK_STATUS_OK && strstr(text,"node memory refused") == 0);
+    free(text);
+    assert(SparkTestCaptureAdmit(meminfo,chunk + 1u,&text) == SPARK_STATUS_CAPACITY_EXCEEDED);
+    (void)snprintf(expected,sizeof(expected),"node memory refused: weight arena for model=node-memory needs %llu bytes beside the %llu-byte margin and MemAvailable is %llu of %llu",
+        (unsigned long long)(chunk + 1u),(unsigned long long)margin,(unsigned long long)(margin + chunk),(unsigned long long)total);
+    assert(strstr(text,expected) != 0);
+    free(text);
+    SparkTestWriteMeminfo(meminfo,total,margin - 1u);
+    assert(SparkTestCaptureAdmit(meminfo,0u,&text) == SPARK_STATUS_CAPACITY_EXCEEDED && strstr(text,"needs 0 bytes beside") != 0);
+    free(text);
+    (void)unlink(meminfo);
+    assert(SparkTestCaptureAdmit(meminfo,0u,&text) != SPARK_STATUS_OK && strstr(text,"gives no MemTotal and MemAvailable") != 0);
+    free(text);
+
+    SparkTestWriteMeminfo(meminfo,total,margin + chunk / 2u);
+    spark_test_meminfo_path = meminfo;
+    SparkTestPackRequest(pack_path,73u,chunk,"node-memory",&request);
+    (void)unlink(socket_path);
+    SparkTestStartServer(&context,&thread,socket_path,16u * chunk);
+    SparkTestConnect(&client,socket_path,0ull);
+    TestStderrCaptureBegin(&capture);
+    SparkTestAttach(client,&request,&attach);
+    text = TestStderrCaptureEnd(&capture);
+    assert(attach.status == SPARK_STATUS_CAPACITY_EXCEEDED && attach.resident_bytes == 0u && attach.arena_count == 0u);
+    (void)snprintf(expected,sizeof(expected),"node memory refused: weight arena for model=node-memory needs %llu bytes",(unsigned long long)chunk);
+    assert(strstr(text,expected) != 0);
+    free(text);
+    SparkTestWriteMeminfo(meminfo,total,margin + 2u * chunk);
+    SparkTestAttach(client,&request,&attach);
+    assert(attach.status == SPARK_STATUS_OK && attach.arena_count == 1u);
+    SparkWeightdClientClose(client);
+    SparkTestStopServer(&context,thread);
+    spark_test_meminfo_path = 0;
+    (void)unlink(socket_path);
+    (void)unlink(meminfo);
+    (void)unlink(pack_path);
+
+    SparkTestNodeMemoryLockWaits("/tmp/spark_weightd_test_node_memory.lock");
+    printf("weightd node memory admission: an allocation is admitted only while MemAvailable minus the margin holds it, a node already below the margin and an unreadable meminfo both refuse, a weight arena is refused with its bytes named and attaches once memory frees, and the node memory lock makes a second process wait\n");
+}
+
 static void SparkTestKvDetachedRetention(void)
 {
     const char *socket_path = "/tmp/spark_weightd_test_kv_retention.sock";
@@ -1955,6 +2065,7 @@ int main(void)
     SparkTestKvLending();
     SparkTestKvLendingFullArenaTable();
     SparkTestKvMemoryMargin();
+    SparkTestNodeMemoryAdmission();
     SparkTestKvDetachedRetention();
     SparkTestKvSharedPools();
     SparkTestKvAttachRollsBackOnFdFailure();

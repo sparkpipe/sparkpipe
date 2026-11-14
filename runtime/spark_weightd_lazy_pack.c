@@ -58,6 +58,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 {
 	uint64_t bytes = pack->manifest.spine_allocation_bytes;
 	const void *pool;
+	int lock_fd = -1;
 	SparkStatus status;
 	if ( bytes == 0u )
 		return(SPARK_STATUS_OK);
@@ -72,9 +73,19 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	}
 	if ( status != SPARK_STATUS_UNSUPPORTED )
 		SPARK_RETURN(status);
+	status = SparkWeightdNodeMemoryLock(SPARK_WEIGHTD_NODE_MEMORY_LOCK_PATH,&lock_fd);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH,bytes + 255u,"private weight spine",request->identity.model);
+	if ( status == SPARK_STATUS_OK && cudaMalloc(&pack->spine_allocation,(size_t)(bytes + 255u)) != cudaSuccess )
+	{
+		pack->spine_allocation = 0;
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	SparkWeightdNodeMemoryUnlock(lock_fd);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
 	pack->spine_allocation_bytes = (bytes + 255u);
-	if ( cudaMalloc(&pack->spine_allocation,(size_t)pack->spine_allocation_bytes) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
 	fprintf(stderr,"WD-SPINE-PRIVATE spans=%u bytes=%llu\n",pack->manifest.spine_count,(unsigned long long)pack->spine_allocation_bytes);
 	return(SparkWeightdSpineLoad(request->pack_path,fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
