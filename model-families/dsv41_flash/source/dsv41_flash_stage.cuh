@@ -131,6 +131,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_GEMM_TILE_N 128u
 #define D41_SKINNY_EXPERT_ROWS 16u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
+#define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
 #define D41_OWN_ROWS_STEP (D41_TP * 8u)
 #define D41_MX_WIDTH (D41_ENGRAM_EMBED > D41_HIDDEN ? D41_ENGRAM_EMBED : D41_HIDDEN)
 #define D41_NORM_SPLIT_ROWS 16u
@@ -167,6 +168,8 @@ static_assert(D41_MOE_INTER % D41_TP == 0u && D41_HIDDEN % D41_TP == 0u && D41_E
 static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u == 0u && D41_HIDDEN_SLICE % 8u == 0u,
 	"the MoE exchange rows fit a collective row and keep 16-byte copies");
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
+static_assert(!D41_WHOLE || (D41_HIDDEN % D41_FP8_BLOCK == 0u && D41_FFN_GATHER_ELEMENTS <= D41_HIDDEN && 2u * D41_FFN_GATHER_ELEMENTS <= D41_TP * D41_MOE_ROW_ELEMENTS),
+	"an owner's expert input rows cross as fp8 codes, scales and routes inside the MoE exchange buffers");
 static_assert(D41_SHARED_ROUTED == 0u || (D41_SHARED_GRANULE % (4u * D41_FP8_BLOCK) == 0u && D41_HIDDEN_SLICE % D41_FP8_BLOCK == 0u),
 	"a routed shared slice is whole 16-byte rows of fp8 codes with 4-byte scale rows, and each rank's down columns are whole fp8 row blocks");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
@@ -1292,9 +1295,10 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	const uint64_t stride = (uint64_t)rows * D41_MOE_ROW_ELEMENTS, shared_offset = (uint64_t)routes * D41_MOE_ROUTE_ELEMENTS;
 	const uint64_t route_base = (uint64_t)rows * D41_MOE_SHARED_ELEMENTS;
 	SparkStatus status;
-	if ( D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
+	if ( state->own_rows == 0u &&
+		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 &&
 		(cudaStreamSynchronize(stream) != cudaSuccess ||
@@ -1376,6 +1380,35 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		return status;
 	D41SliceGatherKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->moe_gathered, state->partial, rows, D41_HIDDEN_SLICE,
 		D41_TP);
+	return D41Launched();
+}
+
+static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+{
+	const uint32_t own = state->own_rows, rows = step->rows, first = state->own_first;
+	const uint32_t routed = first + own <= rows ? own : rows > first ? rows - first : 0u;
+	uint8_t *block = (uint8_t *)state->moe_send;
+	SparkStatus status;
+	if ( routed != 0u &&
+		(D41Project(layer->router, state->own_x, 0, state->router_logits, routed, D41_HIDDEN, D41_EXPERTS, step->multiprocessors, state->row_invariant,
+		stream) != LM_LAUNCH_OK ||
+		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(routed, state->router_logits, D41_EXPERTS,
+			state->route_expert + (uint64_t)first * D41_TOPK, state->route_weight + (uint64_t)first * D41_TOPK, layer->router_bias, 0, D41_ROUTE_SCALE,
+			step->route_fault, stream) != cudaSuccess) )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( LmMxQuantize(state->own_x, block, block + (uint64_t)own * D41_HIDDEN, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( routed != 0u )
+		D41FfnPackKernel<<<(routed * D41_TOPK + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream>>>(state->route_expert + (uint64_t)first * D41_TOPK,
+			state->route_weight + (uint64_t)first * D41_TOPK, block, own, routed, D41_HIDDEN, D41_TOPK);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_FFN_GATHER_ELEMENTS, state->moe_send,
+			state->moe_received);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	D41FfnUnpackKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>((const uint8_t *)state->moe_received, state->xq,
+		state->route_expert, state->route_weight, own, D41_HIDDEN, D41_TOPK, (uint64_t)own * D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t));
 	return D41Launched();
 }
 
@@ -1826,13 +1859,13 @@ struct D41Cuda : CudaStage<D41Cuda>
 		{
 			status = D41Launched();
 			if ( status == SPARK_STATUS_OK )
-				status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HIDDEN, state->own_x, state->x);
+				status = part == D41_FFN_PART ? D41FfnGather(state, layer, frame.current, frame.stream) :
+					CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HIDDEN, state->own_x, state->x);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			if ( part == D41_FFN_PART )
-				D41Fp8QdqCopy(state->x, state->xq, (uint64_t)rows * D41_HIDDEN, frame.stream);
 		}
-		return index < 2u ? D41DumpRows(state, index, part == D41_FFN_PART ? 4u : 3u, state->x, rows, D41_HIDDEN, frame.stream) : SPARK_STATUS_OK;
+		return index < 2u ? D41DumpRows(state, index, part == D41_FFN_PART ? 4u : 3u, part == D41_FFN_PART && own != 0u ? state->xq : state->x, rows,
+			D41_HIDDEN, frame.stream) : SPARK_STATUS_OK;
 	}
 
 	static SparkStatus Attention(D41ModelState *state, Frame &frame, uint32_t index)

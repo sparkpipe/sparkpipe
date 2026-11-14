@@ -846,6 +846,35 @@ static __global__ void D41SharedDequantKernel(const uint8_t *__restrict__ bytes,
 	act[(uint64_t)row * width + element] = LmFloatToBf16(LmE4m3ToFloat(bytes[(uint64_t)row * width + element]) * __uint_as_float(exponent << 23u));
 }
 
+static __global__ void D41FfnPackKernel(const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint8_t *__restrict__ block,
+	uint32_t own, uint32_t routed, uint32_t hidden, uint32_t top_k)
+{
+	const uint32_t item = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint64_t ids = (uint64_t)own * (hidden + hidden / SPARK_DSV41_FLASH_FP8_BLOCK);
+	if ( item >= routed * top_k )
+		return;
+	((uint32_t *)(block + ids))[item] = route_expert[item];
+	((float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[item] = route_weight[item];
+}
+
+static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_expert,
+	float *__restrict__ route_weight, uint32_t own, uint32_t hidden, uint32_t top_k, uint64_t block_bytes)
+{
+	const uint32_t row = blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x, source = row / own, index = row - source * own;
+	const uint8_t *block = received + (uint64_t)source * block_bytes;
+	const uint64_t ids = (uint64_t)own * (hidden + hidden / SPARK_DSV41_FLASH_FP8_BLOCK);
+	if ( element < top_k )
+	{
+		route_expert[(uint64_t)row * top_k + element] = ((const uint32_t *)(block + ids))[(uint64_t)index * top_k + element];
+		route_weight[(uint64_t)row * top_k + element] =
+			((const float *)(block + ids + (uint64_t)own * top_k * sizeof(uint32_t)))[(uint64_t)index * top_k + element];
+	}
+	if ( element >= hidden )
+		return;
+	const uint32_t exponent = block[(uint64_t)own * hidden + (uint64_t)index * (hidden / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK];
+	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(block[(uint64_t)index * hidden + element]) * __uint_as_float(exponent << 23u));
+}
+
 static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice_out, const uint16_t *__restrict__ received,
 	const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row, uint16_t *__restrict__ output, uint32_t top_k,
 	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset,
