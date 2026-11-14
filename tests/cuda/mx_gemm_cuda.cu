@@ -135,6 +135,20 @@ static void ProbeQuantize(uint64_t elements, uint32_t seed, uint32_t presquashed
 				mismatches++;
 		}
 	}
+	if ( elements % 256u == 0u )
+	{
+		const uint32_t rows = (uint32_t)(elements / 256u);
+		std::vector<uint8_t> strided_codes((size_t)rows * 128u), strided_scales((size_t)rows * 4u);
+		PROBE_OK(LmMxQuantizeRows(device_source,256u,device_codes,device_scales,rows,128u,stream));
+		PROBE_CUDA(cudaStreamSynchronize(stream));
+		PROBE_CUDA(cudaMemcpy(strided_codes.data(),device_codes,strided_codes.size(),cudaMemcpyDeviceToHost));
+		PROBE_CUDA(cudaMemcpy(strided_scales.data(),device_scales,strided_scales.size(),cudaMemcpyDeviceToHost));
+		for (block=0u; block<rows; block++)
+			for (index=0u; index<128u; index++)
+				if ( strided_codes[block * 128u + index] != codes[block * 256u + index] ||
+					strided_scales[block * 4u + index / 32u] != scales[block * 8u + index / 32u] )
+					mismatches++;
+	}
 	PROBE_CUDA(cudaFree(device_source));
 	PROBE_CUDA(cudaFree(device_codes));
 	PROBE_CUDA(cudaFree(device_scales));

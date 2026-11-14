@@ -34,14 +34,15 @@ typedef struct LmMxGemmArguments
 LmMxGemmArguments;
 
 __global__ __launch_bounds__(LM_MX_THREADS) void LmMxQuantizeKernel(const uint16_t *__restrict__ source, uint8_t *__restrict__ codes,
-	uint8_t *__restrict__ scales, uint64_t octets)
+	uint8_t *__restrict__ scales, uint64_t octets, uint64_t row_octets, uint64_t row_stride)
 {
 	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
 	for (uint64_t base = (uint64_t)blockIdx.x * blockDim.x + (threadIdx.x & ~31u); base < octets; base += stride)
 	{
 		const uint64_t octet = base + (threadIdx.x & 31u);
 		const uint32_t live = octet < octets ? 1u : 0u;
-		const uint4 raw = live != 0u ? *(const uint4 *)(source + octet * 8u) : make_uint4(0u,0u,0u,0u);
+		const uint64_t row = row_stride != 0u ? octet / row_octets : 0u;
+		const uint4 raw = live != 0u ? *(const uint4 *)(source + row * row_stride + (octet - row * row_octets) * 8u) : make_uint4(0u,0u,0u,0u);
 		const uint32_t words[4] = { raw.x, raw.y, raw.z, raw.w };
 		float value[8],amax = 0.0f,scale;
 		uint32_t low = 0u,high = 0u,e;
@@ -77,7 +78,21 @@ static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *sca
 		((uintptr_t)codes & 7u) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	blocks = (elements / 8u + LM_MX_THREADS - 1u) / LM_MX_THREADS;
-	LmMxQuantizeKernel<<<(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream>>>(source,codes,scales,elements / 8u);
+	LmMxQuantizeKernel<<<(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream>>>(source,codes,scales,elements / 8u,
+		elements / 8u,0u);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uint8_t *codes, uint8_t *scales, uint32_t rows, uint32_t width, cudaStream_t stream)
+{
+	const uint64_t octets = (uint64_t)rows * width / 8u;
+	uint64_t blocks;
+	if ( source == 0 || codes == 0 || scales == 0 || rows == 0u || width == 0u || width % LM_MX_BLOCK != 0u || row_stride < width || row_stride % 8u != 0u ||
+		((uintptr_t)source & 15u) != 0u || ((uintptr_t)codes & 7u) != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	blocks = (octets + LM_MX_THREADS - 1u) / LM_MX_THREADS;
+	LmMxQuantizeKernel<<<(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream>>>(source,codes,scales,octets,
+		width / 8u,row_stride);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

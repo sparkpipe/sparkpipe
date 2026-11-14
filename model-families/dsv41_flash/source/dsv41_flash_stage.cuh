@@ -28,6 +28,7 @@
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/mx_gemm.cuh"
+#include "inference/kernels/cell_mx.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -169,6 +170,8 @@ static_assert(D41_MOE_INTER % D41_TP == 0u && D41_HIDDEN % D41_TP == 0u && D41_E
 static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u == 0u && D41_HIDDEN_SLICE % 8u == 0u,
 	"the MoE exchange rows fit a collective row and keep 16-byte copies");
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
+static_assert(D41_MOE_CODES == 0u || (D41_EXPERT_SLICE % 16u == 0u && (D41_EXPERT_SLICE / D41_FP8_BLOCK) % 2u == 0u && D41_MOE_INTER % 128u == 0u),
+	"the down projection's fp8 rows assemble from 16-byte code vectors and 2-byte scale pairs of one source each and split into 128-wide tiles");
 static_assert(!D41_WHOLE || (D41_HIDDEN % D41_FP8_BLOCK == 0u && D41_FFN_GATHER_ELEMENTS <= D41_HIDDEN && 2u * D41_FFN_GATHER_ELEMENTS <= D41_TP * D41_MOE_ROW_ELEMENTS),
 	"an owner's expert input rows cross as fp8 codes, scales and routes inside the MoE exchange buffers");
 static_assert(!D41_WHOLE || (D41_WO_A_ROWS % LM_MX_TILE_K == 0u && D41_OWNER_OUTPUT_ELEMENTS % 8u == 0u && D41_OWNER_OUTPUT_ELEMENTS <= D41_HIDDEN &&
@@ -1160,6 +1163,15 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		return status;
 	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
 	{
+		if ( D41MxReady(&state->mx, rows, D41_GROUP_WIDTH, state->row_invariant) != 0u )
+		{
+			if ( LmMxQuantizeRows(state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH, local_width, state->mx.codes, state->mx.scales, rows, D41_GROUP_WIDTH,
+				stream) != LM_LAUNCH_OK ||
+				LmMxGemmDense(state->mx.codes, state->mx.scales, layer->o_a[group].weight, layer->o_a[group].scale, state->wo_a_out, rows, D41_GROUP_WIDTH,
+				D41_GROUP_ROWS, D41_WO_A_ROWS, group * D41_GROUP_ROWS, sms, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			continue;
+		}
 		D41ColumnsKernel<<<dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream>>>(state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH,
 			local_width, state->group_input, D41_GROUP_WIDTH, D41_GROUP_WIDTH);
 		if ( D41QdqLinear(&layer->o_a[group], state->group_input, state->wo_a_group, rows, D41_GROUP_WIDTH, D41_GROUP_ROWS, sms, state->row_invariant,
@@ -1391,9 +1403,18 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received + route_base, state->expert_act,
-		D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
-	if ( D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream) !=
+	const uint32_t mx_down = D41_MOE_CODES != 0u && state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
+	const uint8_t *down_codes = (const uint8_t *)state->expert_act;
+	if ( mx_down != 0u )
+		D41ActAssembleCodesKernel<<<D41ItemGrid(D41Blocks(D41_MOE_INTER / 16u + D41_MOE_INTER / (2u * D41_FP8_BLOCK)), routes), D41_THREADS, 0, stream>>>(
+			state->moe_received + route_base, (uint8_t *)state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes);
+	else
+		D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received + route_base,
+			state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
+	if ( (mx_down != 0u ?
+		LmCellMxExperts(layer->e_w2_cells, down_codes, down_codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset,
+			(const uint32_t *)0, D41_EXPERTS, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream) :
+		D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN_SLICE, stream)) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( D41_SHARED_ROUTED != 0u )

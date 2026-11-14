@@ -815,6 +815,26 @@ static __global__ void D41ActAssembleQdqKernel(const uint16_t *__restrict__ rece
 		received[(uint64_t)source * source_stride + (uint64_t)route * slice + element - source * slice]));
 }
 
+static __global__ void D41ActAssembleCodesKernel(const uint16_t *__restrict__ received, uint8_t *__restrict__ codes, uint32_t slice, uint32_t width,
+	uint64_t source_stride, uint32_t routes)
+{
+	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, vector = blockIdx.x * blockDim.x + threadIdx.x;
+	const uint32_t code_vectors = width / 16u, blocks = slice / SPARK_DSV41_FLASH_FP8_BLOCK;
+	if ( route >= routes || vector >= code_vectors + width / (2u * SPARK_DSV41_FLASH_FP8_BLOCK) )
+		return;
+	if ( vector < code_vectors )
+	{
+		const uint32_t element = vector * 16u, source = element / slice;
+		const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
+		*(uint4 *)(codes + (uint64_t)route * width + element) = *(const uint4 *)(bytes + (uint64_t)route * slice + element - source * slice);
+		return;
+	}
+	const uint32_t block = (vector - code_vectors) * 2u, source = block / blocks;
+	const uint8_t *bytes = (const uint8_t *)(received + (uint64_t)source * source_stride);
+	*(uint16_t *)(codes + (uint64_t)routes * width + (uint64_t)route * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + block) =
+		*(const uint16_t *)(bytes + (uint64_t)routes * slice + (uint64_t)route * blocks + block - source * blocks);
+}
+
 static __global__ void D41SharedSendKernel(const uint16_t *__restrict__ shared, uint16_t *__restrict__ send, uint32_t rows, uint32_t width,
 	uint32_t degree, uint64_t destination_stride)
 {

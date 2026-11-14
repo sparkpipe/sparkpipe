@@ -144,6 +144,35 @@ static __device__ __forceinline__ void LmMmaMxf8Block(
 }
 
 
+static __device__ __forceinline__ void LmMmaMxf8Mxf4Block(
+	float out[4],
+	const uint32_t a[4],
+	const uint32_t b[2],
+	uint32_t scale_a,
+	uint16_t byte_a,
+	uint32_t scale_b)
+{
+#if LM_SM121_NATIVE_COMPUTE_PTX
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
+		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
+		"{%14}, {%15,%16}, {%17}, {%18,%19};\n"
+		: "=f"(out[0]), "=f"(out[1]), "=f"(out[2]), "=f"(out[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]),
+		  "r"(b[0]), "r"(b[1]), "f"(0.0f), "f"(0.0f), "f"(0.0f), "f"(0.0f),
+		  "r"(scale_a), "h"(byte_a), "h"((uint16_t)0u),
+		  "r"(scale_b), "h"((uint16_t)0u), "h"((uint16_t)0u));
+#else
+	(void)a;
+	(void)b;
+	(void)scale_a;
+	(void)byte_a;
+	(void)scale_b;
+	out[0] = out[1] = out[2] = out[3] = 0.0f;
+	asm volatile("trap;\n");
+#endif
+}
+
 #define LM_MMA4_M 16u
 #define LM_MMA4_N 8u
 #define LM_MMA4_K 64u
