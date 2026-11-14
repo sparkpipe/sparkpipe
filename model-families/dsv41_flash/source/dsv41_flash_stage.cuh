@@ -132,6 +132,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_SKINNY_EXPERT_ROWS 16u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
+#define D41_OWNER_OUTPUT_ELEMENTS ((D41_WO_A_ROWS + D41_WO_A_ROWS / D41_FP8_BLOCK) / 2u)
 #define D41_OWN_ROWS_STEP (D41_TP * 8u)
 #define D41_MX_WIDTH (D41_ENGRAM_EMBED > D41_HIDDEN ? D41_ENGRAM_EMBED : D41_HIDDEN)
 #define D41_NORM_SPLIT_ROWS 16u
@@ -170,6 +171,9 @@ static_assert(D41_MOE_ROW_ELEMENTS <= D41_HIDDEN && D41_MOE_ROW_ELEMENTS % 8u ==
 static_assert(D41_MOE_INTER % D41_THREADS == 0u, "the activation assembly covers whole fp8 groups with full warps");
 static_assert(!D41_WHOLE || (D41_HIDDEN % D41_FP8_BLOCK == 0u && D41_FFN_GATHER_ELEMENTS <= D41_HIDDEN && 2u * D41_FFN_GATHER_ELEMENTS <= D41_TP * D41_MOE_ROW_ELEMENTS),
 	"an owner's expert input rows cross as fp8 codes, scales and routes inside the MoE exchange buffers");
+static_assert(!D41_WHOLE || (D41_WO_A_ROWS % LM_MX_TILE_K == 0u && D41_OWNER_OUTPUT_ELEMENTS % 8u == 0u && D41_OWNER_OUTPUT_ELEMENTS <= D41_HIDDEN &&
+	D41_OWNER_OUTPUT_ELEMENTS <= D41_TP * D41_MOE_ROW_ELEMENTS && D41_WO_A_ROWS / 2u <= D41_HIDDEN),
+	"an owner's attention output rows cross as fp8 codes with their scales inside the MoE exchange buffers, and every rank's o_b rows gather as collective rows");
 static_assert(D41_SHARED_ROUTED == 0u || (D41_SHARED_GRANULE % (4u * D41_FP8_BLOCK) == 0u && D41_HIDDEN_SLICE % D41_FP8_BLOCK == 0u),
 	"a routed shared slice is whole 16-byte rows of fp8 codes with 4-byte scale rows, and each rank's down columns are whole fp8 row blocks");
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
@@ -262,7 +266,8 @@ struct D41ModelState : CudaStageState
 	uint32_t *own_selected;
 	D41Mx mx;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *post_ffn, *comb_ffn, *pre_head, *pre_whole;
-	uint32_t own_first, own_rows, own_pad;
+	uint32_t own_first, own_rows, own_pad, o_b_ready, owner_reduced;
+	uint8_t *o_b_all, *o_b_all_scale;
 	float *c_kv, *c_score;
 	uint16_t *c_latent, *c_latent_store, *idx_key, *idx_pack_local, *idx_query, *idx_w_full;
 	uint32_t *emit_row, *bound_ratio2, *bound_ratio1, *length_ratio2, *length_ratio1, *row_lane, *row_ordinal, *tail_row_begin;
@@ -1003,6 +1008,58 @@ static SparkStatus D41FoldPlan(D41ModelState *state, const SparkStageRunnerStep 
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus D41OwnerOutputWeights(D41ModelState *state, cudaStream_t stream)
+{
+	const uint64_t slice = (uint64_t)D41_HIDDEN * D41_WO_A_ROWS, slice_scale = (uint64_t)D41_HIDDEN * (D41_WO_A_ROWS / D41_FP8_BLOCK);
+	SparkStatus status = SPARK_STATUS_OK;
+	for ( uint32_t index = 0u; index < D41_LAYERS && status == SPARK_STATUS_OK; ++index )
+	{
+		const D41Fp8Linear *o_b = &state->layers[index].o_b;
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, D41_HIDDEN, D41_WO_A_ROWS / 2u, o_b->weight,
+			state->o_b_all + (uint64_t)index * D41_TP * slice);
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, D41_HIDDEN, D41_WO_A_ROWS / D41_FP8_BLOCK / 2u,
+				o_b->scale, state->o_b_all_scale + (uint64_t)index * D41_TP * slice_scale);
+	}
+	if ( status == SPARK_STATUS_OK )
+		state->o_b_ready = 1u;
+	return status;
+}
+
+static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	const uint32_t own = state->own_rows;
+	const uint64_t block = (uint64_t)own * D41_OWNER_OUTPUT_ELEMENTS * sizeof(uint16_t), codes_bytes = (uint64_t)own * D41_WO_A_ROWS;
+	const uint64_t slice = (uint64_t)D41_HIDDEN * D41_WO_A_ROWS, slice_scale = (uint64_t)D41_HIDDEN * (D41_WO_A_ROWS / D41_FP8_BLOCK);
+	uint8_t *send = (uint8_t *)state->moe_send;
+	const uint8_t *received = (const uint8_t *)state->moe_received;
+	SparkStatus status;
+	if ( state->own_pad != 0u )
+		cudaMemsetAsync(state->wo_a_out + (uint64_t)rows * D41_WO_A_ROWS, 0, (uint64_t)state->own_pad * D41_WO_A_ROWS * sizeof(uint16_t), stream);
+	for ( uint32_t owner = 0u; owner < D41_TP; ++owner )
+		if ( LmMxQuantize(state->wo_a_out + (uint64_t)owner * own * D41_WO_A_ROWS, send + owner * block, send + owner * block + codes_bytes, codes_bytes,
+			stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, own, D41_OWNER_OUTPUT_ELEMENTS, state->moe_send,
+			state->moe_received);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	for ( uint32_t source = 0u; source < D41_TP; ++source )
+	{
+		const uint64_t at = (uint64_t)index * D41_TP + source;
+		if ( LmMxGemmDense(received + source * block, received + source * block + codes_bytes, state->o_b_all + at * slice,
+			state->o_b_all_scale + at * slice_scale, state->partial + (uint64_t)source * own * D41_HIDDEN, own, D41_WO_A_ROWS, D41_HIDDEN, 0u, 0u, sms,
+			stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	D41SumSourcesKernel<<<(own * D41_HIDDEN / 2u + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream>>>(state->partial, state->own_out,
+		own * D41_HIDDEN / 2u, (uint64_t)own * D41_HIDDEN / 2u, D41_TP);
+	state->owner_reduced = 1u;
+	return D41Launched();
+}
+
 static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
 {
@@ -1111,6 +1168,8 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		D41ColumnsKernel<<<dim3(D41Blocks(D41_GROUP_ROWS), rows), D41_THREADS, 0, stream>>>(state->wo_a_group, D41_GROUP_ROWS,
 			state->wo_a_out + (uint64_t)group * D41_GROUP_ROWS, D41_WO_A_ROWS, D41_GROUP_ROWS);
 	}
+	if ( state->own_rows != 0u && state->o_b_ready != 0u && D41MxReady(&state->mx, state->own_rows, D41_WO_A_ROWS, state->row_invariant) != 0u )
+		return D41OutputToOwners(state, index, rows, sms, stream);
 	if ( D41QdqLinear(&layer->o_b, state->wo_a_out, state->partial, rows, D41_WO_A_ROWS, D41_HIDDEN, sms, state->row_invariant, &state->mx, stream) !=
 		LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1708,6 +1767,12 @@ struct D41Cuda : CudaStage<D41Cuda>
 			state->own_rows = 0u;
 		state->own_first = state->tp_rank * state->own_rows;
 		state->own_pad = state->own_rows != 0u ? state->own_rows * D41_TP - rows : 0u;
+		if ( state->own_rows != 0u && state->o_b_ready == 0u )
+		{
+			status = D41OwnerOutputWeights(state, stream);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+		}
 		if ( state->own_pad != 0u )
 			cudaMemsetAsync(state->streams + (uint64_t)rows * D41K_HC * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41K_HC * D41_HIDDEN * sizeof(uint16_t), stream);
 		if ( state->local_attention != 0u || state->local_upper != 0u )
@@ -1876,6 +1941,11 @@ struct D41Cuda : CudaStage<D41Cuda>
 	static SparkStatus AttentionReduce(D41ModelState *state, Frame &frame, uint32_t index)
 	{
 		const uint32_t rows = frame.current->rows;
+		if ( state->owner_reduced != 0u )
+		{
+			state->owner_reduced = 0u;
+			return SPARK_STATUS_OK;
+		}
 		if ( state->own_pad != 0u )
 			cudaMemsetAsync(state->partial + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), frame.stream);
 		SparkStatus status = state->own_rows != 0u ?
@@ -2018,6 +2088,8 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->own_x, D41_OWN_ROWS_MIN <= r ? r / D41_TP * D41_HIDDEN * 2u : 0u },
 		{ (void **)&state->own_out, D41_OWN_ROWS_MIN <= r ? r / D41_TP * D41_HIDDEN * 2u : 0u },
 		{ (void **)&state->own_selected, D41_OWN_ROWS_MIN <= r ? r / D41_TP * D41_INDEX_TOPK * 4u : 0u },
+		{ (void **)&state->o_b_all, D41_OWN_ROWS_MIN <= r ? D41_LAYERS * D41_TP * D41_HIDDEN * D41_WO_A_ROWS : 0u },
+		{ (void **)&state->o_b_all_scale, D41_OWN_ROWS_MIN <= r ? D41_LAYERS * D41_TP * D41_HIDDEN * (D41_WO_A_ROWS / D41_FP8_BLOCK) : 0u },
 		{ (void **)&state->mx.codes, LM_SKINNY_ROWS_WIDE < r ? r * D41_MX_WIDTH : 0u },
 		{ (void **)&state->mx.scales, LM_SKINNY_ROWS_WIDE < r ? r * D41_MX_WIDTH / D41_FP8_BLOCK : 0u },
 		{ (void **)&state->x, r * D41_HIDDEN * 2u }, { (void **)&state->xq, r * D41_HIDDEN * 2u },

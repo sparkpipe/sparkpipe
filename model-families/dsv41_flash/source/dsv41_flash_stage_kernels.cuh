@@ -875,6 +875,22 @@ static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, 
 	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(block[(uint64_t)index * hidden + element]) * __uint_as_float(exponent << 23u));
 }
 
+static __global__ void D41SumSourcesKernel(const uint16_t *__restrict__ partial, uint16_t *__restrict__ output, uint32_t pairs, uint64_t source_pairs,
+	uint32_t sources)
+{
+	const uint32_t pair = blockIdx.x * blockDim.x + threadIdx.x;
+	float x = 0.0f, y = 0.0f;
+	if ( pair >= pairs )
+		return;
+	for ( uint32_t source = 0u; source < sources; ++source )
+	{
+		const uint32_t packed = ((const uint32_t *)partial)[source * source_pairs + pair];
+		x += __uint_as_float(packed << 16u);
+		y += __uint_as_float(packed & 0xffff0000u);
+	}
+	((uint32_t *)output)[pair] = ((uint32_t)__bfloat16_as_ushort(__float2bfloat16_rn(y)) << 16u) | (uint32_t)__bfloat16_as_ushort(__float2bfloat16_rn(x));
+}
+
 static __global__ void D41FinalizeSliceKernel(const uint16_t *__restrict__ slice_out, const uint16_t *__restrict__ received,
 	const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row, uint16_t *__restrict__ output, uint32_t top_k,
 	uint32_t local_experts, uint32_t degree, uint32_t hidden_slice, uint64_t source_stride, uint64_t shared_offset,
