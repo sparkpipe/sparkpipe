@@ -97,9 +97,10 @@ static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, co
 	if ( weight != 0 )
 		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
 			weight[(uint64_t)blockIdx.x * output_columns + index] = payload[(uint64_t)row * columns + column_first + index];
-	for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
-		wide[(uint64_t)blockIdx.x * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column_first + index]) *
-			LmE8m0ToFloat(block_scale[(uint64_t)(row / 32u) * scale_columns + (column_first + index) / 32u]));
+	if ( wide != 0 )
+		for ( uint32_t index = threadIdx.x; index < output_columns; index += blockDim.x )
+			wide[(uint64_t)blockIdx.x * output_columns + index] = LmFloatToBf16(LmE4m3ToFloat(payload[(uint64_t)row * columns + column_first + index]) *
+				LmE8m0ToFloat(block_scale[(uint64_t)(row / 32u) * scale_columns + (column_first + index) / 32u]));
 }
 
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,

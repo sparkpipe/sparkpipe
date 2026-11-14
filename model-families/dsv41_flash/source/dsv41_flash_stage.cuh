@@ -235,7 +235,7 @@ typedef struct D41EngramAhead
 typedef struct D41Engram
 {
 	const uint8_t *payload, *scale;
-	D41Fp8Linear wkv;
+	D41Fp8Linear wkv, wkv_whole;
 	const uint16_t *q_weight, *k_weight;
 	uint64_t first_row, local_rows;
 	int64_t *multipliers, *primes, *offsets;
@@ -687,10 +687,12 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	const uint32_t ar_rows = split != 0u ? 2u * rows : (rows * D41_ENGRAM_EMBED + D41_HIDDEN - 1u) / D41_HIDDEN;
 	const uint32_t ar_width = split != 0u ? D41_ENGRAM_HALF : D41_HIDDEN;
 	const uint32_t ahead = state->engram_ahead_step == rows ? 1u : 0u;
+	const uint32_t own = D41_WHOLE && split == 0u && state->row_invariant == 0u ? state->own_rows : 0u;
 	SparkStatus status;
 	if ( ahead == 0u )
 		D41EngramHash(state, which, step, state->engram_ids, stream);
-	cudaMemsetAsync(state->engram_embed, 0, (uint64_t)ar_rows * ar_width * sizeof(uint16_t), stream);
+	cudaMemsetAsync(state->engram_embed, 0, own != 0u ? (uint64_t)own * D41_TP * D41_ENGRAM_EMBED * sizeof(uint16_t) :
+		(uint64_t)ar_rows * ar_width * sizeof(uint16_t), stream);
 	if ( ahead != 0u )
 	{
 		if ( cudaLaunchHostFunc(stream, D41EngramAheadJoin, D41EngramCallOf(state, which, rows)) != cudaSuccess )
@@ -710,6 +712,19 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 		LmNgramGatherE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ids, engram->payload, engram->scale,
 			state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS, D41_ENGRAM_HEAD_DIM);
 	status = D41Launched();
+	if ( status == SPARK_STATUS_OK && own != 0u )
+	{
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, own * D41_TP, D41_ENGRAM_EMBED,
+			state->engram_embed, state->engram_kv_local);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( D41QdqLinear(&engram->wkv_whole, state->engram_kv_local, state->engram_kv, own, D41_ENGRAM_EMBED, D41_ENGRAM_KV_ROWS,
+			step->multiprocessors, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK ||
+			SparkDsv41FlashLaunchEngramGate(stream, state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN, state->engram_kv,
+			engram->q_weight, engram->k_weight, own, D41K_HC, D41_HIDDEN, D41_EPS) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		return D41Launched();
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, ar_rows, ar_width, state->engram_embed,
 			state->engram_embed);
@@ -2581,7 +2596,7 @@ static SparkStatus D41SliceEntry(SparkWeightdLazyPack *pack, const D41PackEntry 
 }
 
 static SparkStatus D41Fp8SliceAt(D41ModelState *state, const D41PackEntry *entry, const void *payload, const void *scale, uint32_t row_first,
-	uint32_t rows, uint32_t column_first, uint32_t columns, uint64_t *cursor, D41Fp8Linear *out)
+	uint32_t rows, uint32_t column_first, uint32_t columns, uint32_t widen, uint64_t *cursor, D41Fp8Linear *out)
 {
 	const uint32_t whole_rows = column_first == 0u && entry != 0 && columns == entry->columns ? 1u : 0u;
 	if ( entry == 0 || entry->weight_codec != SPARK_WEIGHT_CODEC_FP8_E4M3 || entry->rows % D41_FP8_BLOCK != 0u ||
@@ -2592,12 +2607,12 @@ static SparkStatus D41Fp8SliceAt(D41ModelState *state, const D41PackEntry *entry
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	const uint64_t scale_bytes = (((uint64_t)rows * (columns / D41_FP8_BLOCK)) + 255u) & ~255ull;
 	const uint64_t weight_bytes = whole_rows != 0u ? 0u : (((uint64_t)rows * columns) + 255u) & ~255ull;
-	const uint64_t wide_bytes = (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull;
+	const uint64_t wide_bytes = widen != 0u ? (((uint64_t)rows * columns * sizeof(uint16_t)) + 255u) & ~255ull : 0u;
 	if ( state->fp8_side != 0 )
 	{
 		uint8_t *row_scale = state->fp8_side + *cursor;
 		uint8_t *weight = whole_rows != 0u ? (uint8_t *)0 : row_scale + scale_bytes;
-		uint16_t *wide = (uint16_t *)(row_scale + scale_bytes + weight_bytes);
+		uint16_t *wide = widen != 0u ? (uint16_t *)(row_scale + scale_bytes + weight_bytes) : (uint16_t *)0;
 		D41Fp8SliceKernel<<<rows, D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, wide, entry->columns,
 			row_first, column_first, columns);
 		out->scale = row_scale;
@@ -2614,7 +2629,7 @@ static SparkStatus D41Fp8Slice(D41ModelState *state, SparkWeightdLazyPack *pack,
 	const void *payload = 0, *scale = 0;
 	if ( entry == 0 || D41SliceEntry(pack, entry, 0u, &payload) != SPARK_STATUS_OK || D41SliceEntry(pack, entry, 1u, &scale) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-	return D41Fp8SliceAt(state, entry, payload, scale, row_first, rows, column_first, columns, cursor, out);
+	return D41Fp8SliceAt(state, entry, payload, scale, row_first, rows, column_first, columns, 1u, cursor, out);
 }
 
 static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor, D41Fp8Linear *out)
@@ -2777,8 +2792,10 @@ static SparkStatus D41BindEngram(D41ModelState *state, uint64_t *cursor, uint64_
 		if ( D41EngramPlane(state, wkv, 0u, resident, &wkv_payload) != SPARK_STATUS_OK ||
 			D41EngramPlane(state, wkv, 1u, resident, &wkv_scale) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( D41Fp8SliceAt(state, wkv, wkv_payload, wkv_scale, state->tp_rank * D41_ENGRAM_KV_LOCAL, D41_ENGRAM_KV_LOCAL, 0u, D41_ENGRAM_EMBED,
-			cursor, &engram->wkv) != SPARK_STATUS_OK )
+		if ( D41Fp8SliceAt(state, wkv, wkv_payload, wkv_scale, state->tp_rank * D41_ENGRAM_KV_LOCAL, D41_ENGRAM_KV_LOCAL, 0u, D41_ENGRAM_EMBED, 1u,
+			cursor, &engram->wkv) != SPARK_STATUS_OK ||
+			(D41_WHOLE && D41Fp8SliceAt(state, wkv, wkv_payload, wkv_scale, 0u, D41_ENGRAM_KV_ROWS, 0u, D41_ENGRAM_EMBED, 0u, cursor,
+			&engram->wkv_whole) != SPARK_STATUS_OK) )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
 	(void)configuration;
