@@ -1,0 +1,25 @@
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/ui_smoke.py", line 217, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/ui_smoke.py", line 179, in main
+    reply = run(args.endpoint, body, args.timeout)
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/ui_smoke.py", line 95, in stream
+    for raw in resp:
+               ^^^^
+  File "/usr/lib/python3.14/http/client.py", line 708, in readline
+    return super().readline(limit)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 700, in peek
+    return self._peek_chunked(n)
+           ~~~~~~~~~~~~~~~~~~^^^
+  File "/usr/lib/python3.14/http/client.py", line 738, in _peek_chunked
+    chunk_left = self._get_chunk_left()
+  File "/usr/lib/python3.14/http/client.py", line 584, in _get_chunk_left
+    chunk_left = self._read_next_chunk_size()
+  File "/usr/lib/python3.14/http/client.py", line 544, in _read_next_chunk_size
+    line = self.fp.readline(_MAXLINE + 1)
+  File "/usr/lib/python3.14/socket.py", line 725, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out
