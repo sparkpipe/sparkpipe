@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import pathlib
 import sys
 import tempfile
@@ -129,6 +130,11 @@ def main():
                     failures.append(f"{record_id}: deployment/hub/model_swap.json {key} differs from the lane record's swap entry")
         elif swap.get(record_id, {}).get("node_memory_bytes") != model["node_memory_bytes"]:
             failures.append(f"{record_id}: deployment/hub/model_swap.json node_memory_bytes differs from tools/stage_lane.py")
+        root = record["runtime_root"].split("/home/{host}/", 1)[-1]
+        for key, value in swap.get(record_id, {}).items():
+            for named in re.findall(r"(?:stage-lanes/[A-Za-z0-9_]+|k3-lanes)/lane[0-9]+/root", value) if isinstance(value, str) else ():
+                if named != root:
+                    failures.append(f"{record_id}: deployment/hub/model_swap.json {key} names {named}, not the record's root {root}")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
         if record_id in chat and chat[record_id].get("sequences") != record.get("sequences"):
