@@ -943,3 +943,56 @@ trade: 4% on prefill, but a decoding step waits for the rank that holds the
 most of the step's experts (2.8 of 6 on average against 1.5 slices), about
 1.5 to 2.4 ms a token alone and 9% at eight streams. A pack of whole experts
 is an option for prefill-heavy use; the slice pack stays the default.
+
+### The window inside the sparse attention, and fewer casts (2026-11-15)
+
+Against the reference measured on the same nodes (8,467 tok/s at 32,768
+tokens, 8,407 at 131,072, 7,410 and 7,637 at 8,192; 1,816 ms for the step
+covering tokens 16,384 to 32,767 of a 65,536-token prompt):
+
+| Rank build | Pack | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | --- | ---: | ---: | ---: |
+| before (`572fd7ca1`) | whole experts | 4,243 tok/s, 56% | 5,819, 69% | 6,035, 72% |
+| fused attention (`1d77aca26`) | whole experts | 4,556, 61% | 6,616, 78% | 6,794, 81% |
+| and codes for WO-A and the query gather (`85cdc722f`) | whole experts | 4,704, 63% | 6,676, 79% | 6,891, 82% |
+| the same | expert slices | 4,384, 58% | 6,283, 74% | 6,484, 77% |
+
+Every run answered the 40,000-token prompt with `b79b025295d2819f`.
+
+- `1d77aca26` (`D41AttendKernel`, `dsv41_flash_attend.cuh`): a wave of more
+  than 16 rows attends its 128-key window (from the wave or the ring) and its
+  selected compressed rows in one online softmax, adds the sink and writes the
+  output. It gives each row's 16 heads all eight consumer warps; the shared
+  sparse kernel padded 16 heads to 32 queries and used four. The window's two
+  matrix products, their FP32 scores and weights, the second set of records and
+  the merge that read both sets back are gone. Weights are rounded against a
+  running maximum taken a tile at a time, so the bits move: over the 2,112
+  corpus positions next-token accuracy is 79.40% against 78.98%, the NLL
+  change +0.4% [-0.5, +1.3], top-1 agreement 97.0%, the size of any two
+  arithmetic variants' difference here.
+- `30a3f644a`: the attention's epilogue undoes the rope and casts the WO-A
+  input to MXFP8, byte for byte the rope kernel and quantizer it replaces.
+- `85cdc722f`: the query latent is gathered as MXFP8 codes (1,320 bytes a row
+  against 2,560) and multiplied from them.
+
+The same step, rank 0, ms (trace of the fused-attention build):
+
+| Stage | Ours | Reference | Ours, % of the reference's time |
+| --- | ---: | ---: | ---: |
+| Whole step | 2,244 | 1,816 | 124% |
+| Rounds | 616 | 425 | 145% |
+| Dense projections | 318 | 291 | 109% |
+| Experts | 483 | 484 | 100% |
+| Attention | 225 | 311 | 72% |
+| Separate passes | 128 | 31 | 413% |
+| Expert send and finalize | 155 | 174 | 89% |
+| Index scoring and top-k | 81 | 44 | 184% |
+| Mixing | 132 | 140 | 94% |
+
+What is left: the rounds hold about 94 ms of waiting for the rank with the
+most routes (whole experts only), about 95 ms of Engram reduce-scatter that
+waits on the slowest rank's disk fetch, and the 110 ms the reference hides
+under its multiplies; the GPU also idles about 64 ms at the first Engram layer.
+The fetch of layer 1's rows takes 65 to 360 ms a wave on a rank and starts
+when the wave starts; more readers and a fourfold row cache did not shorten it.
+Hiding it needs the next wave's tokens during the current wave.
