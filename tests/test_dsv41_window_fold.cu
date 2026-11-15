@@ -7,6 +7,7 @@
 #include <vector>
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_attend.cuh"
+#include "inference/kernels/mx_gemm.cuh"
 
 #define DEGREE 16u
 #define LATENT 512u
@@ -198,6 +199,8 @@ static T *Scratch(size_t count)
 	return device;
 }
 
+static uint32_t coded_mismatch = 0u;
+
 static uint32_t RunWave(const Wave &w, uint32_t perturb)
 {
 	const uint32_t rows = w.count[0] + (w.lanes > 1u ? w.count[1] : 0u), heads = w.heads, packed = rows * heads;
@@ -237,10 +240,42 @@ static uint32_t RunWave(const Wave &w, uint32_t perturb)
 		const uint16_t bumped = (uint16_t)(wave[(size_t)(rows / 2u) * LATENT + 5u] ^ 0x0100u);
 		CUDA(cudaMemcpy(wave_d + (size_t)(rows / 2u) * LATENT + 5u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
+	std::vector<float> frequency(D41K_ROPE_PAIRS);
+	for ( uint32_t pair = 0u; pair < D41K_ROPE_PAIRS; ++pair )
+		frequency[pair] = powf(10000.0f, -(float)pair / (float)D41K_ROPE_PAIRS);
+	float *frequency_d = Device(frequency);
+	const uint32_t group_heads = heads / 2u, width = group_heads * LATENT;
+	uint8_t *codes_d = Scratch<uint8_t>((size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u);
+	uint8_t *reference_d = Scratch<uint8_t>((size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u);
+	uint16_t *roped_d = Scratch<uint16_t>((size_t)packed * LATENT);
 	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
-		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, merged_d, rows, 0)));
+		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, merged_d,
+		(const float *)0, 0u, 0u, (uint8_t *)0, rows, 0)));
+	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
+		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
+		frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, 0)));
+	CUDA(cudaMemcpy(roped_d, merged_d, (size_t)packed * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
+	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(roped_d, heads, LATENT, LATENT - 2u * D41K_ROPE_PAIRS, positions_d, 0, frequency_d, 1u,
+		(const uint32_t *)0);
+	for ( uint32_t group = 0u; group < 2u; ++group )
+		REQUIRE(LmMxQuantizeRows(roped_d + (size_t)group * width, (uint64_t)heads * LATENT, reference_d + (size_t)group * rows * width,
+			reference_d + (size_t)2u * rows * width + (size_t)group * rows * (width / 32u), rows, width, 0) == LM_LAUNCH_OK);
 	CUDA(cudaGetLastError());
 	CUDA(cudaDeviceSynchronize());
+	if ( perturb == 0u )
+	{
+		const size_t bytes = (size_t)rows * heads * LATENT + (size_t)rows * heads * LATENT / 32u;
+		std::vector<uint8_t> coded(bytes), reference(bytes);
+		CUDA(cudaMemcpy(coded.data(), codes_d, bytes, cudaMemcpyDeviceToHost));
+		CUDA(cudaMemcpy(reference.data(), reference_d, bytes, cudaMemcpyDeviceToHost));
+		uint64_t differ = 0u;
+		for ( size_t index = 0u; index < bytes; ++index )
+			differ += coded[index] != reference[index] ? 1u : 0u;
+		printf("attend codes lanes %u rows %u: %llu of %llu code and scale bytes differ from rope then quantize\n", w.lanes, rows,
+			(unsigned long long)differ, (unsigned long long)bytes);
+		coded_mismatch += differ != 0u ? 1u : 0u;
+	}
+	cudaFree(frequency_d); cudaFree(codes_d); cudaFree(reference_d); cudaFree(roped_d);
 	std::vector<uint16_t> expected((size_t)packed * LATENT), merged((size_t)packed * LATENT);
 	CUDA(cudaMemcpy(expected.data(), expected_d, expected.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
 	CUDA(cudaMemcpy(merged.data(), merged_d, merged.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost));
@@ -319,12 +354,12 @@ int main(void)
 		waves_off += RunWave(w, 0u);
 	const uint32_t wave_sensitive = RunWave(waves[3], 1u);
 	const uint32_t unset = InitCase(2048u, 4u, 16u, 0u) + InitCase(4100u, 4u, 16u, 0u) + InitCase(3u, 8u, 16u, 37u);
-	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u )
+	if ( failures != 0u || sensitive == 0u || unset != 0u || waves_off != 0u || wave_sensitive == 0u || coded_mismatch != 0u )
 	{
-		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u fused waves off the sequential fold's attention output, a perturbed wave key %s\n",
-			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected");
+		printf("FAIL dsv41 window fold: %u cases differ from the sequential fold, perturbed keys %s, %u record words not initialized as -inf/0 or padding overwritten, %u fused waves off the sequential fold's attention output, a perturbed wave key %s, %u coded waves off rope then quantize\n",
+			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }

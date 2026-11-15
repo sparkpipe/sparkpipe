@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/attn_shard_prefill.cuh"
+#include "dsv41_flash_stage_kernels.cuh"
 
 #define D41A_QUERIES 16u
 #define D41A_TILE 32u
@@ -57,6 +58,10 @@ void D41AttendKernel(
 	const float *__restrict__ sink,
 	float qk_scale,
 	uint16_t *__restrict__ output,
+	const float *__restrict__ frequency,
+	uint32_t rope_offset,
+	uint32_t group_heads,
+	uint8_t *__restrict__ codes,
 	uint32_t rows)
 {
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
@@ -415,11 +420,62 @@ void D41AttendKernel(
 		{
 			const uint32_t q = (lane >> 2u) + (index >> 1u) * 8u;
 			const float kept = rescale[q], divisor = denominator[q];
-			uint16_t *target = output + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
+			uint16_t value[COLUMN_FRAGS][2];
 #pragma unroll
 			for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
-				*(uint32_t *)(target + frag * 8u) = (uint32_t)LmFloatToBf16(fmaf(accumulator[frag][index], kept, 0.0f) / divisor) |
-					((uint32_t)LmFloatToBf16(fmaf(accumulator[frag][index + 1u], kept, 0.0f) / divisor) << 16u);
+			{
+				value[frag][0] = LmFloatToBf16(fmaf(accumulator[frag][index], kept, 0.0f) / divisor);
+				value[frag][1] = LmFloatToBf16(fmaf(accumulator[frag][index + 1u], kept, 0.0f) / divisor);
+			}
+			if (codes == 0)
+			{
+				uint16_t *target = output + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
+#pragma unroll
+				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+					*(uint32_t *)(target + frag * 8u) = (uint32_t)value[frag][0] | ((uint32_t)value[frag][1] << 16u);
+				continue;
+			}
+			if (warp * WARP_COLUMNS >= rope_offset)
+			{
+				const uint32_t position = positions[row];
+#pragma unroll
+				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+				{
+					const uint32_t pair = (warp * WARP_COLUMNS + frag * 8u + (lane & 3u) * 2u - rope_offset) / 2u;
+					const float real = LmBf16ToFloat(value[frag][0]), imaginary = LmBf16ToFloat(value[frag][1]);
+					float sine, cosine;
+					D41RopeTurn(position, 0, frequency[pair], 1u, &sine, &cosine);
+					value[frag][0] = D41RopeReal(real, imaginary, sine, cosine);
+					value[frag][1] = D41RopeImaginary(real, imaginary, sine, cosine);
+				}
+			}
+			{
+				const uint32_t group = q / group_heads, width = group_heads * DIM;
+				const uint32_t base = (q % group_heads) * DIM + warp * WARP_COLUMNS;
+				uint8_t *group_codes = codes + ((uint64_t)group * rows + row) * width;
+				uint8_t *group_scales = codes + (uint64_t)(QUERIES / group_heads) * rows * width + ((uint64_t)group * rows + row) * (width / 32u);
+#pragma unroll
+				for (uint32_t block = 0u; block < COLUMN_FRAGS / 4u; block++)
+				{
+					float amax = 0.0f;
+#pragma unroll
+					for (uint32_t frag = block * 4u; frag < block * 4u + 4u; frag++)
+						amax = fmaxf(amax, fmaxf(fabsf(LmBf16ToFloat(value[frag][0])), fabsf(LmBf16ToFloat(value[frag][1]))));
+					amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1u));
+					amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2u));
+					const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+#pragma unroll
+					for (uint32_t frag = block * 4u; frag < block * 4u + 4u; frag++)
+					{
+						const uint32_t column = base + frag * 8u + (lane & 3u) * 2u;
+						const uint32_t low = LmFloatToE4m3(fminf(fmaxf(LmBf16ToFloat(value[frag][0]) / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
+						const uint32_t high = LmFloatToE4m3(fminf(fmaxf(LmBf16ToFloat(value[frag][1]) / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
+						*(uint16_t *)(group_codes + column) = (uint16_t)(low | (high << 8u));
+					}
+					if ((lane & 3u) == 0u)
+						group_scales[(base + block * 32u) / 32u] = (uint8_t)(__float_as_uint(scale) >> 23u);
+				}
+			}
 		}
 	}
 }
@@ -428,12 +484,14 @@ template<class Geometry, uint32_t DIM>
 static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
-	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, uint32_t rows,
-	cudaStream_t stream)
+	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
+	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, cudaStream_t stream)
 {
 	const uint64_t shared = D41AttendSharedBytes<DIM>(compressed != 0u && selected != 0 ? topk : 0u);
 	static bool granted = false;
-	if (rows == 0u || query == 0 || output == 0 || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
+	if (rows == 0u || query == 0 || (output == 0) == (codes == 0) ||
+		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
+		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
 		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		(compressed != 0u && (length == 0 || bound == 0 || sequence_of_row == 0 || SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u)))
 		return cudaErrorInvalidValue;
@@ -448,6 +506,7 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
 	const uint32_t grid = rows < resident ? rows : resident;
 	D41AttendKernel<Geometry, DIM><<<grid, D41A_THREADS, shared, stream>>>(cache, compressed, query, sequence_of_row, length, bound, selected, topk, wave_kv,
-		ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, rows);
+		ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, frequency,
+		rope_offset, group_heads, codes, rows);
 	return cudaPeekAtLastError();
 }

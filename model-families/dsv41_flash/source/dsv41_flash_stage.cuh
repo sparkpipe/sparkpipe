@@ -1116,6 +1116,9 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	const uint32_t fused = rows > SPARK_STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
+	const uint32_t coded = fused != 0u && D41MxReady(&state->mx, rows, D41_GROUP_WIDTH, state->row_invariant) != 0u ? 1u : 0u;
+	uint16_t *const merged = coded != 0u ? (uint16_t *)0 : state->attn_merged;
+	uint8_t *const merged_codes = coded != 0u ? (uint8_t *)state->attn_merged : (uint8_t *)0;
 	if ( fused != 0u )
 	{
 		const uint32_t attended = ratio > 0u ? 1u : 0u;
@@ -1123,10 +1126,12 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		if ( (cache < 3u ?
 			D41AttendLaunch<D41Ratio2Kv,D41_HEAD_DIM>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row, length,
 				bound, state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, state->attn_merged, rows, stream) :
+				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, merged, frequency, D41_HEAD_DIM - D41_ROPE,
+				D41_GROUP_WIDTH / D41_HEAD_DIM, merged_codes, rows, stream) :
 			D41AttendLaunch<D41Ratio1Kv,D41_HEAD_DIM>(state->latent_views[cache], attended, state->q_local, step->sequence_of_row, length, bound,
 				state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
-				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, state->attn_merged, rows, stream)) !=
+				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, merged, frequency, D41_HEAD_DIM - D41_ROPE,
+				D41_GROUP_WIDTH / D41_HEAD_DIM, merged_codes, rows, stream)) !=
 			cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
@@ -1162,12 +1167,22 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( fused == 0u )
 		D41MergeSinkKernel<<<dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
 			state->attn_merged);
-	D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
+	if ( coded == 0u )
+		D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
 	{
+		if ( coded != 0u )
+		{
+			const uint64_t codes_bytes = (uint64_t)rows * D41_GROUP_WIDTH;
+			if ( LmMxGemmDense(merged_codes + group * codes_bytes, merged_codes + D41_LOCAL_GROUPS * codes_bytes + group * (codes_bytes / D41_FP8_BLOCK),
+				layer->o_a[group].weight, layer->o_a[group].scale, state->wo_a_out, rows, D41_GROUP_WIDTH, D41_GROUP_ROWS, D41_WO_A_ROWS,
+				group * D41_GROUP_ROWS, sms, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			continue;
+		}
 		if ( D41MxReady(&state->mx, rows, D41_GROUP_WIDTH, state->row_invariant) != 0u )
 		{
 			if ( LmMxQuantizeRows(state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH, local_width, state->mx.codes, state->mx.scales, rows, D41_GROUP_WIDTH,
