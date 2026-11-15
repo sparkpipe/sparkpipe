@@ -34,6 +34,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -92,7 +93,7 @@ def fetch_one(stage: Path, base: dict, attempts: int | None = None) -> dict:
     for attempt in range(attempts):
         resume_from = partial.stat().st_size if partial.is_file() else 0
         request = urllib.request.Request(
-            HF_RESOLVE.format(repo=base["repo"], revision=base["revision"], path=relative)
+            HF_RESOLVE.format(repo=base["repo"], revision=base["revision"], path=urllib.parse.quote(relative))
         )
         request.add_header("User-Agent", "sparkpipe-glm53full-fetch/1.0")
         if resume_from:
