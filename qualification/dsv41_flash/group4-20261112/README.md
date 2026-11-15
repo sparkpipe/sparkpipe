@@ -1030,3 +1030,51 @@ Each figure is the mean of two lanes on different nodes; every run answered the
   compressed key rather than one per position, so half of each row is no longer
   `-inf`; never fewer than 512, so a row with fewer keys pads the same way.
   Such a layer scores all of a rank's rows in one call instead of four.
+
+The step covering tokens 16,384 to 32,767 of a 65,536-token prompt, rank 0,
+whole experts, ms:
+
+| Stage | `85cdc722f` | Now | Reference | Now, % of the reference's time |
+| --- | ---: | ---: | ---: | ---: |
+| Whole step | 2,244 | 2,026 | 1,816 | 112% |
+| Rounds | 616 | 503 | 425 | 118% |
+| Experts | 483 | 482 | 484 | 100% |
+| Dense projections | 318 | 323 | 291 | 111% |
+| Attention | 225 | 245 | 311 | 79% |
+| Expert send and finalize | 155 | 159 | 174 | 91% |
+| Mixing | 132 | 136 | 140 | 97% |
+| Separate passes | 128 | 85 | 31 | 274% |
+| Index scoring and top-k | 81 | 46 | 44 | 105% |
+| GPU idle | 90 | 31 | 2 | |
+
+What is left in this step: the reference hides about 110 ms of its collectives
+under its multiplies (it projects a slice of columns while the previous slice
+is reduce-scattered), and ours do not overlap; 23 ms of the idle time is the
+launch gap between the two kernels of each of 4,379 transport pieces; the
+separate norm and cast passes; dense projections 11% slower. A prompt's last
+wave also runs the upper 20 layers on its last 2,541 rows (fewer at each layer,
+128 at the last), 662 ms at 65,536 tokens and about 410 ms at 8,192: 27% of an
+8,192-token prefill.
+
+### Bounded replay, measured and not in the code
+
+The reference runs the upper 20 layers (20 to 39, which read layer 20's cache)
+on a prompt's last 128 rows only, and each of those rows' windows starts at the
+first of them. The publisher's inference code runs every row through every
+layer, with a 128-key window per layer, so its final row depends on the last
+2,541 rows of layer 20; ours computes exactly that. Measured with the window
+floored at the first replayed row:
+
+| Pack | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| whole experts, exact | 5,292 tok/s, 70% | 7,010, 83% | 6,930, 82% |
+| whole experts, bounded replay | 6,450, 86% | 7,513, 89% | 7,152, 85% |
+| expert slices, exact | 4,994, 66% | 6,626, 78% | 6,545, 78% |
+| expert slices, bounded replay | 5,963, 79% | 7,164, 85% | 6,782, 81% |
+
+(Builds before the top-k and ratio-2 change; the 40,000-token prompt's answer was
+the same.) Against the exact computation over 2,112 corpus positions, each a fresh
+prefill of 256 to 752 tokens: next-token accuracy 79.12% against 79.17%
+(McNemar p = 1.0), NLL +0.27% [-0.11, +0.66], top-1 agreement 98.4%, KL at
+least 0.0024 nats. It changes what the model computes, so it is an option to
+choose, not a speed-up.
