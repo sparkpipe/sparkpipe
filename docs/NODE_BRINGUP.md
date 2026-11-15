@@ -226,7 +226,7 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia
   `spark0`-`sparkf` never do. The staged profile applies and audits the
   network-independent baseline: boot masks, watchdog and recovery sysctls,
   earlyoom and the user slice, the dirty-page cap, emergency SSH and the
-  recovery key, the GRUB fsck and serial settings, the firewall, the DMA guard,
+  recovery key, key-only login on the main sshd, the GRUB fsck and serial settings, the firewall, the DMA guard,
   the tool packages and the node layout roots. It leaves out Ceph, fabric
   addressing and QoS, the hub route, NTP to the hub, the fleet host aliases,
   the GRUB management `ip=` and the PXE-first EFI order. Apply refuses a staged
