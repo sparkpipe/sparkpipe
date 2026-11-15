@@ -131,6 +131,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
 #define D41_ACT_BLOCKS 4096u
+#define D41_Q_CODE_ELEMENTS ((D41_QLORA + D41_QLORA / D41_FP8_BLOCK) / 2u)
 #define D41_SKINNY_EXPERT_ROWS 16u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -1081,6 +1082,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	uint16_t *ring = (uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM;
 	uint16_t *packed = state->q_local + query_stride;
 	uint16_t *own_qrq = state->own_x, *own_kv = state->own_x + (uint64_t)own * D41_QLORA;
+	const uint32_t q_coded = own != 0u && D41MxReady(&state->mx, rows, D41_QLORA, state->row_invariant) != 0u ? 1u : 0u;
 	SparkStatus status;
 	if ( D41LinearPair(&layer->q_a, &layer->kv_a, own != 0u ? state->own_out : state->xq, state->q_latent, state->kv, projected, D41_HIDDEN, D41_QLORA,
 		D41_HEAD_DIM, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
@@ -1091,14 +1093,36 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( own != 0u )
 	{
 		status = D41Launched();
-		if ( status == SPARK_STATUS_OK )
+		if ( status == SPARK_STATUS_OK && q_coded != 0u )
+		{
+			uint8_t *block = (uint8_t *)state->moe_send;
+			if ( LmMxQuantize(own_qrq, block, block + (uint64_t)own * D41_QLORA, (uint64_t)own * D41_QLORA, stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_Q_CODE_ELEMENTS, state->moe_send,
+				state->moe_received);
+		}
+		else if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_QLORA, own_qrq, state->qrq);
 		if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HEAD_DIM, own_kv, state->window_kv);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 	}
-	if ( (indexed != 0u ? D41LinearPair(&layer->q_b, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA,
+	if ( q_coded != 0u )
+	{
+		const uint64_t segment = (uint64_t)own * D41_Q_CODE_ELEMENTS * sizeof(uint16_t);
+		const uint32_t index_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
+		for ( uint32_t source = 0u; source < D41_TP; ++source )
+		{
+			const uint8_t *codes = (const uint8_t *)state->moe_received + source * segment, *scales = codes + (uint64_t)own * D41_QLORA;
+			if ( LmMxGemmDense(codes, scales, layer->q_b.weight, layer->q_b.scale, state->q_local + (uint64_t)source * own * local_width, own, D41_QLORA,
+				local_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK ||
+				(indexed != 0u && LmMxGemmDense(codes, scales, layer->idx_q_b.weight, layer->idx_q_b.scale,
+				state->idx_pack_local + (uint64_t)source * own * index_width, own, D41_QLORA, index_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK) )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		}
+	}
+	else if ( (indexed != 0u ? D41LinearPair(&layer->q_b, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA,
 		local_width, D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
 		D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
