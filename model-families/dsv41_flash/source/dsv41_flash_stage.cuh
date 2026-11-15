@@ -130,6 +130,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_FOLD_GROUPS ((LM_STREAM_SHARED_LIMIT - LM_STREAM_STAGE_BUDGET) / 4u - 1u)
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
+#define D41_ACT_BLOCKS 4096u
 #define D41_SKINNY_EXPERT_ROWS 16u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -1375,6 +1376,28 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 	return D41Launched();
 }
 
+static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	const uint32_t own = state->own_rows;
+	if ( own != 0u && D41MxReady(&state->mx, rows, D41_HIDDEN, state->row_invariant) != 0u )
+	{
+		const uint64_t segment = (uint64_t)own * D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t);
+		for ( uint32_t source = 0u; source < D41_TP; ++source )
+		{
+			const uint8_t *codes = (const uint8_t *)state->moe_received + source * segment;
+			const uint64_t first = (uint64_t)source * own * state->shared_width;
+			if ( LmMxGemmDense(codes, codes + (uint64_t)own * D41_HIDDEN, layer->sh_w1.weight, layer->sh_w1.scale, state->shared_gate + first, own,
+				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK ||
+				LmMxGemmDense(codes, codes + (uint64_t)own * D41_HIDDEN, layer->sh_w3.weight, layer->sh_w3.scale, state->shared_up + first, own,
+				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK )
+				return LM_LAUNCH_ERR_LAUNCH;
+		}
+		return LM_LAUNCH_OK;
+	}
+	return D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN, state->shared_width,
+		state->shared_width, sms, state->row_invariant, &state->mx, stream);
+}
+
 static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
@@ -1400,10 +1423,10 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	if ( D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream) !=
 		LM_LAUNCH_OK ||
-		D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN, state->shared_width,
-		state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
+		D41SharedUp(state, layer, rows, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExpertActKernel<<<D41ItemGrid(D41Blocks(D41_MOE_INTER), routes), D41_THREADS, 0, stream>>>(gate_up, state->packed_weight,
+	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
+		state->packed_weight,
 		state->group_row_offset, D41_LOCAL_EXPERTS, codes, mx_down != 0u ? (uint16_t *)0 : state->expert_act, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
 		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
@@ -1465,8 +1488,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	if ( D41Experts(layer->e_w13_cells, state->xq, state->expert_gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_EXPERT_SLICE, D41_EXPERTS, stream) !=
 		LM_LAUNCH_OK ||
-		D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN, state->shared_width,
-		state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
+		D41SharedUp(state, layer, rows, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
 		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);

@@ -951,26 +951,31 @@ static __global__ void D41ExpertActKernel(const uint16_t *__restrict__ gate_up, 
 	const uint32_t *__restrict__ group_row_offset, uint32_t local_experts, uint8_t *__restrict__ codes, uint16_t *__restrict__ act, uint32_t routes,
 	uint32_t width, float limit)
 {
-	const uint32_t route = blockIdx.z * gridDim.y + blockIdx.y, element = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( route >= routes || route >= group_row_offset[local_experts] || element >= width )
+	const uint32_t element = blockIdx.x * blockDim.x + threadIdx.x, local = group_row_offset[local_experts];
+	const uint32_t count = local < routes ? local : routes;
+	if ( element >= width )
 		return;
-	const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * width + element], gate_up[(uint64_t)route * 2u * width + width + element],
-		packed_weight[route], limit);
-	const float activation = LmBf16ToFloat(value);
-	float amax = fabsf(activation);
-	for ( uint32_t offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u )
-		amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset));
-	const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
-	const uint8_t code = LmFloatToE4m3(fminf(fmaxf(activation / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
-	const uint32_t exponent = (uint8_t)(__float_as_uint(scale) >> 23u);
-	if ( act != 0 )
+	for ( uint32_t route = blockIdx.y; route < count; route += gridDim.y )
 	{
-		act[(uint64_t)route * width + element] = LmFloatToBf16(LmE4m3ToFloat(code) * __uint_as_float(exponent << 23u));
-		return;
+		const uint16_t value = LmSwigluPackedValue(gate_up[(uint64_t)route * 2u * width + element], gate_up[(uint64_t)route * 2u * width + width + element],
+			packed_weight[route], limit);
+		const float activation = LmBf16ToFloat(value);
+		float amax = fabsf(activation);
+		for ( uint32_t offset = SPARK_DSV41_FLASH_FP8_BLOCK / 2u; offset != 0u; offset >>= 1u )
+			amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, offset));
+		const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+		const uint8_t code = LmFloatToE4m3(fminf(fmaxf(activation / scale, -LM_E4M3_MAX), LM_E4M3_MAX));
+		const uint32_t exponent = (uint8_t)(__float_as_uint(scale) >> 23u);
+		if ( act != 0 )
+		{
+			act[(uint64_t)route * width + element] = LmFloatToBf16(LmE4m3ToFloat(code) * __uint_as_float(exponent << 23u));
+			continue;
+		}
+		codes[(uint64_t)route * width + element] = code;
+		if ( element % SPARK_DSV41_FLASH_FP8_BLOCK == 0u )
+			codes[(uint64_t)routes * width + (uint64_t)route * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK] =
+				(uint8_t)exponent;
 	}
-	codes[(uint64_t)route * width + element] = code;
-	if ( element % SPARK_DSV41_FLASH_FP8_BLOCK == 0u )
-		codes[(uint64_t)routes * width + (uint64_t)route * (width / SPARK_DSV41_FLASH_FP8_BLOCK) + element / SPARK_DSV41_FLASH_FP8_BLOCK] = (uint8_t)exponent;
 }
 
 static __global__ void D41SumSourcesKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
