@@ -1,6 +1,8 @@
+import base64
 import importlib.util
 import json
 from pathlib import Path
+import struct
 import tempfile
 import unittest
 from unittest import mock
@@ -15,6 +17,16 @@ SPEC.loader.exec_module(MODULE)
 
 FSID = MODULE.CEPH_CLUSTER_FSID
 PUBLIC_KEY = (ROOT / "tools" / "devcycle" / "sparkpipe_fleet_root.pub").read_text().strip()
+
+
+def login_key(seed: int) -> str:
+    key_type = b"ssh-ed25519"
+    blob = base64.b64encode(struct.pack(">I",len(key_type)) + key_type + bytes([seed]) * 32).decode("ascii")
+    return(f"ssh-ed25519 {blob} login-{seed}")
+
+
+USER_KEYS = f"{login_key(1)}\n{login_key(2)}\n"
+SSHD_EFFECTIVE = "port 22\npasswordauthentication no\nkbdinteractiveauthentication no\npubkeyauthentication yes\n"
 FLEET_NETWORK_MANAGER = """[keyfile]
 unmanaged-devices=interface-name:enp1s0f0np0;interface-name:enp1s0f1np1;interface-name:enP2p1s0f0np0;interface-name:enP2p1s0f1np1
 [device-ds4-uplink-wired]
@@ -52,7 +64,9 @@ class Node:
             "systemctl show -p RuntimeWatchdogUSec --value":"10min","systemctl show -p RebootWatchdogUSec --value":"5min",
             f"loginctl show-user {node} -p Linger --value":"yes",
             "sysctl -n vm.dirty_bytes":"4294967296","sysctl -n vm.dirty_background_bytes":"536870912",
+            "/usr/sbin/sshd -T":SSHD_EFFECTIVE,
         }
+        self.user_keys = USER_KEYS
         for root in ("extnvme","kvcache","sparkdata","srcdata"):
             self.commands[f"findmnt -rn -T /home/{node}/{root} -o TARGET,SOURCE,FSTYPE,OPTIONS"] = "/ /dev/nvme0n1p2 ext4 rw,relatime"
         self.unit_states = {unit:"masked" for unit in MODULE.OPTIONAL_BOOT_UNITS}
@@ -96,6 +110,8 @@ class Node:
             return(MODULE.KERNEL_MODULES_LOAD)
         if text in ("/root/.ssh/authorized_keys","/etc/dropbear/initramfs/authorized_keys"):
             return(PUBLIC_KEY + "\n")
+        if text == f"/home/{self.node}/.ssh/authorized_keys":
+            return(self.user_keys)
         if text == "/etc/default/grub":
             tokens = " ".join(MODULE.recovery_ip_tokens(MODULE.recovery_network_for_node(self.node)))
             return(f'GRUB_DEFAULT=0\nGRUB_CMDLINE_LINUX_DEFAULT="quiet console=tty0 console=ttyS0,921600 {tokens} fsck.mode=skip fsck.repair=no"\n')
@@ -187,6 +203,9 @@ class RemoteAuditTest(unittest.TestCase):
             (lambda n: setattr(n,"enabled_instances",["osd.3","crash"]),{f"ceph-stray-unit:ceph-{FSID}@crash.service"}),
             (lambda n: n.unit_states.__setitem__("plymouth-quit-wait.service","static"),{"optional-boot-unit:plymouth-quit-wait.service=static"}),
             (lambda n: n.unit_states.__setitem__("sparkpipe-roce-qos.service","disabled"),{"sparkpipe-roce-qos.service:disabled:active"}),
+            (lambda n: n.commands.__setitem__("/usr/sbin/sshd -T",SSHD_EFFECTIVE.replace("passwordauthentication no","passwordauthentication yes")),{"sshd-passwordauthentication:yes"}),
+            (lambda n: n.commands.__setitem__("/usr/sbin/sshd -T",""),{"sshd-passwordauthentication:missing","sshd-kbdinteractiveauthentication:missing"}),
+            (lambda n: setattr(n,"user_keys",f"{login_key(1)}\n{PUBLIC_KEY}\n"),{"sshd-user-keys:1"}),
         )
         for change,expected in cases:
             with self.subTest(expected=sorted(expected)):

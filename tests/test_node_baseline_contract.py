@@ -162,7 +162,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                 calls = []
                 names = (
                     "install_packages","install_required_kernel_modules","install_node_identity","atomic_write",
-                    "install_sshd_config","install_recovery_keys","install_grub_policy","install_efi_boot_order",
+                    "install_sshd_config","install_recovery_keys","install_sshd_hardening","install_grub_policy","install_efi_boot_order",
                     "rebuild_initramfs","decouple_optional_boot_work","install_ceph_policy","retire_stale_snap_units",
                     "install_node_layout","heal_time_sync",
                 )
@@ -194,6 +194,7 @@ class NodeBaselineContractTest(unittest.TestCase):
                 self.assertIn(("install_node_layout",(node,["extnvme"])),calls)
                 self.assertLess(max(index for index,name in enumerate(order) if name == "install_assets"),order.index("heal_time_sync"))
                 self.assertIn(("enable_policy_services",(rank,node)),calls)
+                self.assertLess(order.index("install_recovery_keys"),order.index("install_sshd_hardening"))
 
     def test_node_numbers_split_the_fleet_from_staged_nodes(self) -> None:
         for node,number,staged in (("spark0",0,False),("sparkf",15,False),("spark10",16,True),("spark1f",31,True),("spark20",32,True),("SPARK12",18,True)):
@@ -263,7 +264,7 @@ class NodeBaselineContractTest(unittest.TestCase):
             calls = []
             names = (
                 "install_packages","install_required_kernel_modules","install_node_identity","atomic_write",
-                "install_sshd_config","install_recovery_keys","install_grub_policy","install_efi_boot_order",
+                "install_sshd_config","install_recovery_keys","install_sshd_hardening","install_grub_policy","install_efi_boot_order",
                 "rebuild_initramfs","decouple_optional_boot_work","install_ceph_policy","retire_stale_snap_units",
                 "install_node_layout","heal_time_sync",
             )
@@ -297,6 +298,7 @@ class NodeBaselineContractTest(unittest.TestCase):
         self.assertEqual([args for name,args in calls if name == "install_assets"],[tuple(sorted(MODULE.STAGED_ASSET_DESTINATIONS))])
         self.assertIn(("install_packages",("socks5h://127.0.0.1:1080",)),calls)
         self.assertIn(("enable_policy_services",(None,"spark11")),calls)
+        self.assertLess(names.index("install_recovery_keys"),names.index("install_sshd_hardening"))
         self.assertIn(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY)),calls)
         self.assertLess(names.index("enable_policy_services"),calls.index(("run",(MODULE.DMA_GUARD_RUNTIME,"install","--notify",MODULE.HUB_NOTIFY))))
 
