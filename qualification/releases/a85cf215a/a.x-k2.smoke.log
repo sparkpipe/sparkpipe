@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 0.49s content='Paris.' reasoning=0 chars
+stream        PASS  | finish='stop' 0.47s content='Paris.' reasoning=0 chars
+tool          PASS  | finish='tool_calls' 1.83s content='' reasoning=0 chars
+tool_result   PASS  | finish='stop' 1.03s content='The current weather in Paris is **18°C** and **sunny**.' reasoning=0 chars
+reasoning_off PASS  | finish='stop' 0.48s content='391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 2.31s content='391' reasoning=74 chars
+UI-SMOKE a.x-k2: 6/6

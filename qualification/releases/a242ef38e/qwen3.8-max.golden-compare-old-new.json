@@ -1,0 +1,40 @@
+{
+ "prompts": {
+  "capital": {
+   "old_len": 7,
+   "new_len": 7,
+   "compared": 7,
+   "agree": 7,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "arith": {
+   "old_len": 27,
+   "new_len": 27,
+   "compared": 27,
+   "agree": 27,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  },
+  "code": {
+   "old_len": 32,
+   "new_len": 32,
+   "compared": 32,
+   "agree": 32,
+   "first_flip": null,
+   "identical": true,
+   "max_delta": 0.0,
+   "served_max_delta": 0.0
+  }
+ },
+ "compared": 66,
+ "agree": 66,
+ "max_delta": 0.0,
+ "large": [],
+ "served_max_delta": 0.0,
+ "identical": true
+}

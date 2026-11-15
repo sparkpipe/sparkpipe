@@ -1,0 +1,696 @@
+== 2026-11-14T03:03:09Z qualify qwen3.8-max
+activate qwen3.8-max: idle qwen3.8-max 37.1 null
+capture qwen3.8-max new rc=0
+golden rc=0
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=first-diff@42 sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 12, 'draft_tokens': 139, 'accepted_draft_tokens': 139}
+FAIL story: batch_tokens differs from the reference at token 42
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-max/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-max/golden-new.json
+code: IDENTICAL agree 32/32 len 32->32 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 66/66 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture qwen3.8-max restart rc=0
+FAIL capital: batch_tokens differs from the reference at token 5
+FAIL story: batch_tokens differs from the reference at token 42
+EXACT 2/2
+API-RESTART-FAILED qwen3.8-max: the restarted API's outputs differ from the capture taken before the restart
+reasoning_on  PASS  | finish='stop' 4.99s content='\n\n391' reasoning=100 chars
+UI-SMOKE qwen3.8-max: 6/6
+RESULT: 10/17
+qwen3.8-max b1_o256 decode 12.24 prefill None
+qwen3.8-max ttft6000 decode None prefill 852.9
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED qwen3.8-max
+rank log error lines: 16
+== 2026-11-14T04:09:12Z qualify glm-5.3
+activate glm-5.3: failed None 43.8 "glm-5.3 weight warm failed on 16 node(s); first spark0 exit 1: "
+NEW-ACTIVATE-FAILED glm-5.3
+spark4: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark6: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark8: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+sparka: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark2: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark3: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark5: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+spark9: glm53_full_bf16_tp16_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+activate qwen3.8-max: idle qwen3.8-max 46.9 null
+== 2026-11-14T04:10:52Z qualify done (idle qwen3.8-max None)
+Q1-RC=0
+== 2026-11-14T04:17:51Z qualify kimi-k3
+activate kimi-k3: idle kimi-k3 53.7 null
+capture kimi-k3 new rc=0
+golden rc=0
+FAIL long_2k: sampled_batch_tokens differs from the reference at token 7
+FAIL long_2k: the new capture's batch_tokens differ from its one-step tokens at token 25
+FAIL long_8k: batch_tokens differs from the reference at token 32
+FAIL long_8k: sampled_batch_tokens differs from the reference at token 39
+FAIL long_8k: the new capture's batch_tokens differ from its one-step tokens at token 32
+FAIL copy: sampled_batch_tokens differs from the reference at token 9
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/kimi-k3/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/kimi-k3/golden-new.json
+p9k: IDENTICAL agree 48/48 len 48->48 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 192/192 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture kimi-k3 restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 7, 'draft_tokens': 28, 'accepted_draft_tokens': 16}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 15, 'draft_tokens': 70, 'accepted_draft_tokens': 23}
+EXACT 2/2
+api restart kimi-k3: outputs equal
+reasoning_on  PASS  | finish='stop' 1.42s content='391' reasoning=44 chars
+UI-SMOKE kimi-k3: 6/6
+RESULT: 17/17
+kimi-k3 b1_o256 decode 18.83 prefill None
+kimi-k3 ttft6000 decode None prefill 747.9
+LONG-FILL kimi-k3 33000 tokens 44.1 s 748 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T04:24:07Z qualify kimi-k3.1-pro
+activate kimi-k3.1-pro: idle kimi-k3.1-pro 78.9 null
+capture kimi-k3.1-pro new rc=0
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=first-diff@5 speculation={'verify_lanes': 18, 'draft_tokens': 72, 'accepted_draft_tokens': 29}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 19, 'accepted_draft_tokens': 3}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 13, 'draft_tokens': 38, 'accepted_draft_tokens': 17}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 14, 'draft_tokens': 146, 'accepted_draft_tokens': 145}
+FAIL capital: sampled_batch_tokens differs from the reference at token 6
+FAIL story: sampled_batch_tokens differs from the reference at token 5
+EXACT 7/7
+capture kimi-k3.1-pro restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 37, 'accepted_draft_tokens': 13}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 18, 'draft_tokens': 72, 'accepted_draft_tokens': 29}
+EXACT 2/2
+api restart kimi-k3.1-pro: outputs equal
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out
+kimi-k3.1-pro is not in http://127.0.0.1:8433/v1/models
+COMPSEC-SKIPPED kimi-k3.1-pro: no reasoning effort to run it with
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/urllib/request.py", line 1321, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+    ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+              encode_chunked=req.has_header('Transfer-encoding'))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1367, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1413, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1362, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1122, in _send_output
+    self.send(msg)
+    ~~~~~~~~~^^^^^
+  File "/usr/lib/python3.14/http/client.py", line 1066, in send
+    self.connect()
+    ~~~~~~~~~~~~^^
+  File "/usr/lib/python3.14/http/client.py", line 1032, in connect
+    self.sock = self._create_connection(
+                ~~~~~~~~~~~~~~~~~~~~~~~^
+        (self.host,self.port), self.timeout, self.source_address)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/socket.py", line 870, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.14/socket.py", line 855, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 487, in open
+    response = self._open(req, data)
+  File "/usr/lib/python3.14/urllib/request.py", line 504, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+                              '_open', req)
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 1350, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 1324, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+LONG-FILL-FAILED kimi-k3.1-pro
+rank log error lines: 48
+== 2026-11-14T05:08:58Z qualify deepseek-v4.1-flash
+activate deepseek-v4.1-flash: idle deepseek-v4.1-flash 50.2 null
+capture deepseek-v4.1-flash new rc=0
+golden rc=0
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=first-diff@6 speculation={'verify_lanes': 20, 'draft_tokens': 39, 'accepted_draft_tokens': 18}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 20, 'draft_tokens': 40, 'accepted_draft_tokens': 26}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 19, 'draft_tokens': 56, 'accepted_draft_tokens': 27}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 10, 'draft_tokens': 151, 'accepted_draft_tokens': 148}
+FAIL arith: sampled_batch_tokens differs from the reference at token 0
+FAIL story: sampled_batch_tokens differs from the reference at token 6
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/deepseek-v4.1-flash/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/deepseek-v4.1-flash/golden-new.json
+python_square: IDENTICAL agree 12/12 len 12->12 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 36/36 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture deepseek-v4.1-flash restart rc=0
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 20, 'draft_tokens': 39, 'accepted_draft_tokens': 18}
+FAIL capital: sampled_batch_tokens differs from the reference at token 2
+EXACT 2/2
+API-RESTART-FAILED deepseek-v4.1-flash: the restarted API's outputs differ from the capture taken before the restart
+reasoning_on  PASS  | finish='stop' 0.35s content='391' reasoning=55 chars
+UI-SMOKE deepseek-v4.1-flash: 6/6
+RESULT: 16/17
+deepseek-v4.1-flash b1_o256 decode 53.74 prefill None
+deepseek-v4.1-flash ttft6000 decode None prefill None
+LONG-FILL deepseek-v4.1-flash 33000 tokens 12.4 s 2672 tok/s, fastest 2295 tok/s
+rank log error lines: 16
+== 2026-11-14T05:12:02Z qualify glm-5.3-flash
+activate glm-5.3-flash: idle glm-5.3-flash 44.6 null
+capture glm-5.3-flash new rc=0
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 1, 'draft_tokens': 1, 'accepted_draft_tokens': 1}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 142, 'accepted_draft_tokens': 142}
+FAIL capital: sampled_batch_tokens differs from the reference at token 5
+FAIL arith: sampled_batch_tokens differs from the reference at token 3
+EXACT 7/7
+capture glm-5.3-flash restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart glm-5.3-flash: outputs equal
+reasoning_on  PASS  | finish='stop' 1.06s content='391' reasoning=73 chars
+UI-SMOKE glm-5.3-flash: 6/6
+RESULT: 13/17
+glm-5.3-flash b1_o256 decode 49.79 prefill None
+glm-5.3-flash ttft6000 decode None prefill 2095.0
+LONG-FILL glm-5.3-flash 33000 tokens 16.9 s 1949 tok/s, fastest 2002 tok/s
+rank log error lines: 16
+== 2026-11-14T05:15:21Z qualify qwen3.8-27b
+activate qwen3.8-27b: idle qwen3.8-27b 41.9 null
+capture qwen3.8-27b new rc=0
+golden rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 5, 'draft_tokens': 31, 'accepted_draft_tokens': 26}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 4, 'draft_tokens': 43, 'accepted_draft_tokens': 43}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 50, 'accepted_draft_tokens': 8}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 15, 'draft_tokens': 116, 'accepted_draft_tokens': 32}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 78, 'accepted_draft_tokens': 14}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 6, 'draft_tokens': 153, 'accepted_draft_tokens': 153}
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-27b/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-27b/golden-new.json
+code: IDENTICAL agree 32/32 len 32->32 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 71/71 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture qwen3.8-27b restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 7, 'draft_tokens': 50, 'accepted_draft_tokens': 23}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 50, 'accepted_draft_tokens': 8}
+EXACT 2/2
+api restart qwen3.8-27b: outputs equal
+reasoning_on  PASS  | finish='stop' 0.56s content='\n\n391' reasoning=140 chars
+UI-SMOKE qwen3.8-27b: 6/6
+RESULT: 17/17
+qwen3.8-27b b1_o256 decode 44.94 prefill None
+qwen3.8-27b ttft6000 decode None prefill 3225.3
+LONG-FILL qwen3.8-27b 33000 tokens 10.1 s 3268 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T05:20:38Z qualify qwen3.8-27b-fp8
+activate qwen3.8-27b-fp8: idle qwen3.8-27b-fp8 35.7 null
+capture qwen3.8-27b-fp8 new rc=0
+golden rc=0
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 11, 'draft_tokens': 140, 'accepted_draft_tokens': 140}
+FAIL arith: batch_tokens differs from the reference at token 10
+FAIL arith: the new capture's batch_tokens differ from its one-step tokens at token 10
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-27b-fp8/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-27b-fp8/golden-new.json
+code: IDENTICAL agree 32/32 len 32->32 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 71/71 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture qwen3.8-27b-fp8 restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart qwen3.8-27b-fp8: outputs equal
+           ~~~~~~~~~~~~~~~~~~~~^^^
+TimeoutError: timed out
+qwen3.8-27b-fp8 is not in http://127.0.0.1:8433/v1/models
+COMPSEC-SKIPPED qwen3.8-27b-fp8: no reasoning effort to run it with
+qwen3.8-27b-fp8 b1_o256 decode 64.39 prefill None
+qwen3.8-27b-fp8 ttft6000 decode None prefill 3119.8
+LONG-FILL qwen3.8-27b-fp8 33000 tokens 10.4 s 3174 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:02:45Z qualify qwen3.8-flash
+activate qwen3.8-flash: idle qwen3.8-flash 39.0 null
+capture qwen3.8-flash new rc=0
+golden rc=0
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=first-diff@1 speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 6, 'draft_tokens': 52, 'accepted_draft_tokens': 20}
+FAIL code: sampled_batch_tokens differs from the reference at token 1
+EXACT 7/7
+EXACT /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-flash/golden-old.json /srv/workspace/sparkpipe/release-a242ef38e/qwen3.8-flash/golden-new.json
+code: IDENTICAL agree 32/32 len 32->32 served_max_delta 0.0 topk_max_delta 0.0
+TOTAL top-1 agreement 71/71 served_max_delta 0.0 topk_max_delta 0.0 large 0
+capture qwen3.8-flash restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart qwen3.8-flash: outputs equal
+reasoning_on  PASS  | finish='stop' 1.32s content='\n\n391' reasoning=140 chars
+UI-SMOKE qwen3.8-flash: 6/6
+RESULT: 16/17
+qwen3.8-flash b1_o256 decode 45.35 prefill None
+qwen3.8-flash ttft6000 decode None prefill None
+LONG-FILL qwen3.8-flash 33000 tokens 12.9 s 2567 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:09:04Z qualify gemma-4-31b
+activate gemma-4-31b: idle gemma-4-31b 35.8 null
+capture gemma-4-31b new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 3, 'draft_tokens': 9, 'accepted_draft_tokens': 3}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 4, 'accepted_draft_tokens': 4}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 16, 'draft_tokens': 16, 'accepted_draft_tokens': 16}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 11, 'draft_tokens': 24, 'accepted_draft_tokens': 13}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 15, 'draft_tokens': 175, 'accepted_draft_tokens': 120}
+EXACT 7/7
+capture gemma-4-31b restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 6, 'draft_tokens': 17, 'accepted_draft_tokens': 17}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 4, 'accepted_draft_tokens': 4}
+EXACT 2/2
+api restart gemma-4-31b: outputs equal
+reasoning_on  PASS  | finish='stop' 2.42s content='391' reasoning=152 chars
+UI-SMOKE gemma-4-31b: 6/6
+RESULT: 15/17
+gemma-4-31b b1_o256 decode 48.76 prefill None
+gemma-4-31b ttft6000 decode None prefill 1929.8
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED gemma-4-31b
+rank log error lines: 16
+== 2026-11-14T06:12:57Z qualify gemma-4-26b-a4b
+activate gemma-4-26b-a4b: idle gemma-4-26b-a4b 33.6 null
+capture gemma-4-26b-a4b new rc=0
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/kit/release_compare.py", line 40, in <module>
+    a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+                     ~~~~^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'gemma-4-26b-a4b/old.json'
+capture gemma-4-26b-a4b restart rc=0
+capital: exact n=11 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 14, 'draft_tokens': 25, 'accepted_draft_tokens': 25}
+EXACT 2/2
+api restart gemma-4-26b-a4b: outputs equal
+reasoning_on  PASS  | finish='stop' 2.46s content='391' reasoning=450 chars
+UI-SMOKE gemma-4-26b-a4b: 6/6
+RESULT: 16/17
+gemma-4-26b-a4b b1_o256 decode 128.03 prefill None
+gemma-4-26b-a4b ttft6000 decode None prefill 5893.1
+LONG-FILL gemma-4-26b-a4b 33000 tokens 6.1 s 5420 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:15:30Z qualify ling-3.0-flash
+activate ling-3.0-flash: idle ling-3.0-flash 36.4 null
+capture ling-3.0-flash new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 12, 'draft_tokens': 147, 'accepted_draft_tokens': 147}
+EXACT 7/7
+capture ling-3.0-flash restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart ling-3.0-flash: outputs equal
+reasoning_on  PASS  | finish='stop' 0.65s content='391' reasoning=44 chars
+UI-SMOKE ling-3.0-flash: 6/6
+RESULT: 14/17
+ling-3.0-flash b1_o256 decode 77.25 prefill None
+ling-3.0-flash ttft6000 decode None prefill 5735.1
+LONG-FILL ling-3.0-flash 33000 tokens 6.7 s 4954 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:17:15Z qualify ling-3.0-flash-fin
+activate ling-3.0-flash-fin: idle ling-3.0-flash-fin 41.0 null
+capture ling-3.0-flash-fin new rc=0
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=first-diff@19 sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 13, 'draft_tokens': 146, 'accepted_draft_tokens': 146}
+FAIL story: batch_tokens differs from the reference at token 19
+EXACT 7/7
+capture ling-3.0-flash-fin restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart ling-3.0-flash-fin: outputs equal
+reasoning_on  PASS  | finish='stop' 0.61s content='391' reasoning=44 chars
+UI-SMOKE ling-3.0-flash-fin: 6/6
+RESULT: 12/17
+ling-3.0-flash-fin b1_o256 decode 79.76 prefill None
+ling-3.0-flash-fin ttft6000 decode None prefill 5793.1
+LONG-FILL ling-3.0-flash-fin 33000 tokens 6.7 s 4926 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:20:46Z qualify hy4-preview
+activate hy4-preview: idle hy4-preview 51.8 null
+capture hy4-preview new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 4, 'draft_tokens': 19, 'accepted_draft_tokens': 19}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 1, 'draft_tokens': 1, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 141, 'accepted_draft_tokens': 134}
+EXACT 7/7
+capture hy4-preview restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart hy4-preview: outputs equal
+reasoning_on  PASS  | finish='stop' 6.16s content='391' reasoning=252 chars
+UI-SMOKE hy4-preview: 6/6
+RESULT: 16/17
+hy4-preview b1_o256 decode 21.73 prefill None
+hy4-preview ttft6000 decode None prefill 372.1
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED hy4-preview
+rank log error lines: 16
+== 2026-11-14T06:30:37Z qualify muse-glimmer-30b
+activate muse-glimmer-30b: idle muse-glimmer-30b 34.3 null
+capture muse-glimmer-30b new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 1}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 1, 'draft_tokens': 1, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 2, 'accepted_draft_tokens': 1}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 10, 'draft_tokens': 141, 'accepted_draft_tokens': 141}
+EXACT 7/7
+capture muse-glimmer-30b restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart muse-glimmer-30b: outputs equal
+reasoning_on  PASS  | finish='stop' 2.58s content='391' reasoning=346 chars
+UI-SMOKE muse-glimmer-30b: 6/6
+RESULT: 17/17
+muse-glimmer-30b b1_o256 decode 42.29 prefill None
+muse-glimmer-30b ttft6000 decode None prefill 3196.8
+LONG-FILL muse-glimmer-30b 33000 tokens 9.7 s 3418 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:35:05Z qualify laguna-s-2.1
+activate laguna-s-2.1: idle laguna-s-2.1 36.6 null
+capture laguna-s-2.1 new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 1}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 3, 'draft_tokens': 6, 'accepted_draft_tokens': 5}
+EXACT 7/7
+capture laguna-s-2.1 restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart laguna-s-2.1: outputs equal
+reasoning_on  FAIL no reasoning_content with reasoning on | finish='stop' 0.25s content='391' reasoning=0 chars
+UI-SMOKE laguna-s-2.1: 5/6
+RESULT: 15/17
+laguna-s-2.1 b1_o256 decode 52.44 prefill None
+laguna-s-2.1 ttft6000 decode None prefill 2780.4
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED laguna-s-2.1
+rank log error lines: 16
+== 2026-11-14T06:38:26Z qualify mimo-v2.6-flash
+activate mimo-v2.6-flash: idle mimo-v2.6-flash 36.4 null
+capture mimo-v2.6-flash new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 6, 'draft_tokens': 17, 'accepted_draft_tokens': 17}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 142, 'accepted_draft_tokens': 142}
+EXACT 7/7
+capture mimo-v2.6-flash restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart mimo-v2.6-flash: outputs equal
+reasoning_on  PASS  | finish='stop' 0.41s content='391' reasoning=13 chars
+UI-SMOKE mimo-v2.6-flash: 6/6
+RESULT: 17/17
+mimo-v2.6-flash b1_o256 decode 57.06 prefill None
+mimo-v2.6-flash ttft6000 decode None prefill 2313.7
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED mimo-v2.6-flash
+rank log error lines: 16
+== 2026-11-14T06:41:02Z qualify mimo-v2.6-pro
+activate mimo-v2.6-pro: idle mimo-v2.6-pro 40.6 null
+capture mimo-v2.6-pro new rc=0
+arith: exact n=4 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 1, 'draft_tokens': 1, 'accepted_draft_tokens': 1}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 11, 'draft_tokens': 140, 'accepted_draft_tokens': 140}
+EXACT 7/7
+capture mimo-v2.6-pro restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart mimo-v2.6-pro: outputs equal
+reasoning_on  PASS  | finish='stop' 0.81s content='391' reasoning=13 chars
+UI-SMOKE mimo-v2.6-pro: 6/6
+RESULT: 16/17
+mimo-v2.6-pro b1_o256 decode 25.99 prefill None
+mimo-v2.6-pro ttft6000 decode None prefill 912.3
+Traceback (most recent call last):
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 50, in <module>
+    main()
+    ~~~~^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 35, in main
+    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+                      ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/srv/workspace/sparkpipe/release-a242ef38e/tree/tools/release_long_fill.py", line 20, in fill
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+         ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 187, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 493, in open
+    response = meth(req, response)
+  File "/usr/lib/python3.14/urllib/request.py", line 602, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "/usr/lib/python3.14/urllib/request.py", line 531, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/usr/lib/python3.14/urllib/request.py", line 464, in _call_chain
+    result = func(*args)
+  File "/usr/lib/python3.14/urllib/request.py", line 611, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: Error
+LONG-FILL-FAILED mimo-v2.6-pro
+rank log error lines: 16
+== 2026-11-14T06:46:18Z qualify k-exaone-2.0
+activate k-exaone-2.0: idle k-exaone-2.0 60.1 null
+capture k-exaone-2.0 new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 1, 'draft_tokens': 1, 'accepted_draft_tokens': 0}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 9, 'draft_tokens': 142, 'accepted_draft_tokens': 142}
+EXACT 7/7
+capture k-exaone-2.0 restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 11, 'draft_tokens': 11, 'accepted_draft_tokens': 11}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart k-exaone-2.0: outputs equal
+reasoning_on  PASS  | finish='stop' 4.53s content='\n\n391' reasoning=283 chars
+UI-SMOKE k-exaone-2.0: 5/6
+RESULT: 14/17
+k-exaone-2.0 b1_o256 decode 28.4 prefill None
+k-exaone-2.0 ttft6000 decode None prefill 944.7
+LONG-FILL k-exaone-2.0 33000 tokens 35.6 s 928 tok/s, fastest 0 tok/s
+rank log error lines: 16
+== 2026-11-14T06:56:21Z qualify a.x-k2
+activate a.x-k2: idle a.x-k2 45.6 null
+capture a.x-k2 new rc=0
+arith: exact n=5 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 11, 'draft_tokens': 140, 'accepted_draft_tokens': 140}
+EXACT 7/7
+capture a.x-k2 restart rc=0
+capital: exact n=2 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart a.x-k2: outputs equal
+reasoning_on  PASS  | finish='stop' 2.13s content='391' reasoning=74 chars
+UI-SMOKE a.x-k2: 6/6
+RESULT: 15/17
+a.x-k2 b1_o256 decode 28.94 prefill None
+a.x-k2 ttft6000 decode None prefill 1746.6
+LONG-FILL a.x-k2 33000 tokens 22.8 s 1446 tok/s, fastest 1461 tok/s
+rank log error lines: 16
+== 2026-11-14T07:00:46Z qualify solar-open-2
+activate solar-open-2: idle solar-open-2 41.5 null
+capture solar-open-2 new rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 4}
+code: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_2k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+long_8k: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+copy: exact n=160 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 8, 'draft_tokens': 143, 'accepted_draft_tokens': 143}
+EXACT 7/7
+capture solar-open-2 restart rc=0
+capital: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+story: exact n=48 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 0, 'draft_tokens': 0, 'accepted_draft_tokens': 0}
+EXACT 2/2
+api restart solar-open-2: outputs equal
+reasoning_on  PASS  | finish='stop' 6.27s content='391' reasoning=1038 chars
+UI-SMOKE solar-open-2: 6/6
+RESULT: 12/17
+solar-open-2 b1_o256 decode 63.46 prefill None
+solar-open-2 ttft6000 decode None prefill 2593.1
+LONG-FILL solar-open-2 33000 tokens 12.4 s 2671 tok/s, fastest 0 tok/s
+rank log error lines: 16
+activate qwen3.8-max: idle qwen3.8-max 61.8 null
+== 2026-11-14T07:04:35Z qualify done (idle qwen3.8-max None)
+Q2-RC=0

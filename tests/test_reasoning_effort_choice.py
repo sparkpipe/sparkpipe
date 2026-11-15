@@ -2,7 +2,9 @@
 import http.server
 import json
 import pathlib
+import subprocess
 import sys
+import tempfile
 import threading
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -19,6 +21,12 @@ LISTINGS = {
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    posts = []
+
+    def do_POST(self):
+        Handler.posts.append(self.path)
+        self.send_error(500)
+
     def do_GET(self):
         prefix, _, rest = self.path.partition("/v1/")
         listing = LISTINGS.get(prefix)
@@ -65,6 +73,14 @@ def main():
                                      ("absent", "/chat", "a model the chat layer does not list")):
             if refused(lambda: compsec_effort.arguments(base + endpoint, model)) is None:
                 failures.append(f"{why} must stop the COMPSEC effort choice instead of guessing")
+        with tempfile.TemporaryDirectory() as scratch:
+            for reasoning in ("both", "none"):
+                smoke = subprocess.run([sys.executable, str(ROOT / "tools" / "ui_smoke.py"), "--endpoint", base + "/litellm", "--models-endpoint", base + "/chat",
+                                        "--model", "absent", "--reasoning", reasoning, "--timeout", "10", "--out", str(pathlib.Path(scratch) / "smoke.json")],
+                                       capture_output=True, text=True, timeout=60)
+                if smoke.returncode == 0 or Handler.posts or "absent is not in" not in smoke.stderr:
+                    failures.append(f"a model the chat layer does not list must stop the smoke (--reasoning {reasoning}) before its first request, which a catch-all route would "
+                                    f"send to another model: rc {smoke.returncode}, requests {Handler.posts}, {smoke.stderr.strip()[-200:]!r}")
     finally:
         server.shutdown()
     for failure in failures:

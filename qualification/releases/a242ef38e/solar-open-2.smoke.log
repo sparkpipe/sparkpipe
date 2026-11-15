@@ -1,0 +1,7 @@
+chat          PASS  | finish='stop' 3.44s content='The capital of France is Paris.' reasoning=744 chars
+stream        PASS  | finish='stop' 3.32s content='The capital of France is Paris.' reasoning=744 chars
+tool          PASS  | finish='tool_calls' 1.37s content='\n' reasoning=236 chars
+tool_result   PASS  | finish='stop' 1.6s content='\n\nThe current weather in Paris is sunny with a temperature of 18°C (64°F).' reasoning=292 chars
+reasoning_off PASS  | finish='stop' 0.22s content='\n\n391' reasoning=0 chars
+reasoning_on  PASS  | finish='stop' 6.27s content='391' reasoning=1038 chars
+UI-SMOKE solar-open-2: 6/6

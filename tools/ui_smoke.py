@@ -170,6 +170,7 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    efforts = advertised_efforts(args.models_endpoint or args.endpoint, args.model, args.timeout) if args.reasoning == "both" or args.models_endpoint else []
     base = {"model": args.model, "temperature": 0, "max_tokens": args.max_tokens}
     checks = [("chat", complete, dict(base, messages=CAPITAL)),
               ("stream", stream, dict(base, messages=CAPITAL)),
@@ -189,7 +190,6 @@ def main() -> int:
         elif name == "tool":
             results.append({"check": "tool_result", "request": None, "reply": None, "problems": ["skipped: no tool call to answer"]})
     if args.reasoning == "both":
-        efforts = advertised_efforts(args.models_endpoint or args.endpoint, args.model, args.timeout)
         for name, effort in (("reasoning_off", args.off_effort), ("reasoning_on", args.on_effort)):
             body = dict(base, messages=PRODUCT, reasoning_effort=effort, max_tokens=args.reasoning_max_tokens)
             if effort not in efforts:

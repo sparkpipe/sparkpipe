@@ -12,6 +12,15 @@ TOKEN_HIGH = 30000
 REGRESSION_SHARE = 0.85
 
 
+def served_positions(endpoint, timeout):
+    with urllib.request.urlopen(endpoint + "/v1/models", timeout=timeout) as response:
+        listing = json.loads(response.read())
+    lengths = [entry["max_model_len"] for entry in listing.get("data", []) if isinstance(entry.get("max_model_len"), int)]
+    if not lengths:
+        raise SystemExit(f"{endpoint}/v1/models gives no max_model_len, so the fill cannot be sized to the deployment")
+    return min(lengths)
+
+
 def fill(endpoint, tokens, timeout):
     ids = [random.randrange(TOKEN_LOW, TOKEN_HIGH) for _ in range(tokens)]
     body = json.dumps({"prompt_token_ids": ids, "max_tokens": 1, "temperature": 0}).encode()
@@ -28,11 +37,12 @@ def main():
     parser = argparse.ArgumentParser(description="Cold fill of a long prompt, compared with the fastest this model has done")
     parser.add_argument("endpoint")
     parser.add_argument("model")
-    parser.add_argument("--tokens", type=int, default=33000)
+    parser.add_argument("--tokens", type=int, default=33000, help="prompt length; a deployment that serves fewer positions gets one less than it serves")
     parser.add_argument("--best", required=True, help="JSON file of each model's fastest fill, tok/s")
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
-    seconds, filled = fill(args.endpoint, args.tokens, args.timeout)
+    tokens = min(args.tokens, served_positions(args.endpoint, args.timeout) - 1)
+    seconds, filled = fill(args.endpoint, tokens, args.timeout)
     rate = filled / seconds
     path = Path(args.best)
     best = json.loads(path.read_text()) if path.exists() else {}
