@@ -996,3 +996,37 @@ under its multiplies; the GPU also idles about 64 ms at the first Engram layer.
 The fetch of layer 1's rows takes 65 to 360 ms a wave on a rank and starts
 when the wave starts; more readers and a fourfold row cache did not shorten it.
 Hiding it needs the next wave's tokens during the current wave.
+
+### Engram reads through io_uring, a top-k for long rows, ratio-2 rows sized by their keys (2026-11-15)
+
+From here the 8,192-token figure is the second request after a lane starts:
+the first one pays about 0.15 s of warm-up (4,746 tok/s against 5,104 to
+5,363 warm on the same build). The reference warms up before it serves. Its
+8,192-token figure is the mean of 7,410 and 7,637, 7,524 tok/s.
+
+| Rank build | Pack | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | --- | ---: | ---: | ---: |
+| `85cdc722f` | whole experts | 5,159 tok/s, 69% | 6,750, 80% | 6,902, 82% |
+| Engram rows through io_uring | whole experts | 5,320, 71% | 7,005, 83% | 6,933, 82% |
+| and the top-k and the ratio-2 rows | whole experts | 5,335, 71% | 7,091, 84% | 7,277, 87% |
+| the same | expert slices | 5,006, 67% | 6,721, 79% | 6,857, 82% |
+
+Each figure is the mean of two lanes on different nodes; every run answered the
+40,000-token prompt with `b79b025295d2819f`.
+
+- Engram rows: each of four readers owns an io_uring ring of 128 reads, refilled
+  as reads complete (`runtime/row_file.c`; other systems keep the blocking
+  readers). On the row file a Spark's NVMe gives 345K random 4 KiB reads a second
+  to 64 blocking threads and 1.67M to 1.72M to four rings. The GPU's idle time in
+  a 16,384-row wave fell from about 90 ms to about 30 ms.
+- Top-k: a row of more than 16,384 scores finds its threshold with one or two
+  histogram passes (eleven bits, counts gathered per warp), keeps the few rows of
+  the threshold's bucket in shared memory and sorts them there
+  (`LmTopkExactWideKernel`). It returns the same indices in the same order as the
+  single-block kernel, ties and `-inf` included (168 device cases), 1.6 to 2 times
+  faster on rows of 28,672 to 131,072 scores. Shorter rows keep the single-block
+  kernel, which is faster while a row stays in L1.
+- The ratio-2 index layers (2, 8 and 14) score half as many columns, one per
+  compressed key rather than one per position, so half of each row is no longer
+  `-inf`; never fewer than 512, so a row with fewer keys pads the same way.
+  Such a layer scores all of a rank's rows in one call instead of four.

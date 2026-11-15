@@ -126,7 +126,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_GROUP_ROWS (D41_WO_A_ROWS / D41_LOCAL_GROUPS)
 #define D41_ENGRAM_KV_PARTS SPARK_DSV41_FLASH_STAGE_ENGRAM_KV_PARTS
 #define D41_ENGRAM_CACHE_ROWS 1048576u
-#define D41_ENGRAM_READERS 64u
+#define D41_ENGRAM_READERS 4u
 #define D41_SELECT_BYTES (1ull << 30)
 #define D41_ENGRAM_TABLES_MAGIC 0x45313444u
 #define D41_GEMM_TILE_N 128u
@@ -264,7 +264,7 @@ struct D41ModelState : CudaStageState
 	uint8_t *cells;
 	uint64_t cells_bytes;
 	uint64_t record_chunk_floats, a2a_units;
-	uint32_t local_score_stride, global_score_stride, step_score_stride, step_blocks;
+	uint32_t local_score_stride, global_score_stride, step_score_stride, step_ratio2_stride, step_blocks;
 	uint32_t candidate_blocks, local_block_stride, global_block_stride, local_block_keep, global_block_keep, block_round_parts;
 	uint16_t *streams, *x, *xq, *q_latent, *qrq, *q_local, *q_gathered, *kv, *window_kv;
 	uint16_t *own_x, *own_out, *streams_whole;
@@ -892,14 +892,17 @@ static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const Sp
 	const uint32_t *length, cudaStream_t stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index), keep = state->local_block_keep;
-	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, stride = state->step_score_stride;
+	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
+	const uint32_t stride = D41Ratio(index) == 2u ? state->step_ratio2_stride : state->step_score_stride;
 	const uint32_t own = state->own_rows, begin = state->own_first, end = own != 0u && begin + own < rows ? begin + own : rows;
 	const SparkKvShard blocks = { 1u, 0u, 1u };
 	D41IndexUnpackKernel<<<dim3(rows, D41_TP), D41_THREADS, 0, stream>>>(state->q_gathered, (uint64_t)rows * D41_INDEX_PACK, state->idx_query,
 		state->idx_w_full, local_width, D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
-	for ( uint32_t first = begin; first < end; first += state->select_rows )
+	const uint64_t fits = (uint64_t)state->select_rows * state->local_score_stride / stride;
+	const uint32_t chunk = D41Ratio(index) != 2u ? state->select_rows : fits < (uint64_t)state->max_rows ? (uint32_t)fits : state->max_rows;
+	for ( uint32_t first = begin; first < end; first += chunk )
 	{
-		const uint32_t count = end - first < state->select_rows ? end - first : state->select_rows;
+		const uint32_t count = end - first < chunk ? end - first : chunk;
 		const uint32_t *sequences = step->sequence_of_row + first, *bounds = bound + first;
 		uint32_t *chosen = state->local_selected + (uint64_t)first * D41_INDEX_TOPK;
 		uint32_t *selected = own != 0u ? state->own_selected + (uint64_t)(first - begin) * D41_INDEX_TOPK : state->selected + (uint64_t)first * D41_INDEX_TOPK;
@@ -1714,6 +1717,9 @@ static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->step_score_stride = ((SparkKvShardGatherKeys(state->shard, reach) + 63u) / 64u) * 64u;
 	state->step_score_stride = state->step_score_stride < state->local_score_stride ? state->step_score_stride : state->local_score_stride;
+	state->step_ratio2_stride = ((SparkKvShardGatherKeys(state->shard, reach / 2u) + 63u) / 64u) * 64u;
+	state->step_ratio2_stride = state->step_ratio2_stride > D41_INDEX_TOPK ? state->step_ratio2_stride : D41_INDEX_TOPK;
+	state->step_ratio2_stride = state->step_ratio2_stride < state->step_score_stride ? state->step_ratio2_stride : state->step_score_stride;
 	state->step_blocks = state->candidate_blocks != 0u && reach > D41_CANDIDATE_ROWS ? 1u : 0u;
 	if ( uncaptured != 0u && contiguous != 0u && step->sequences == 1u && step->rows > D41_TAIL_MIN_ROWS && step->last_rows_only != 0u &&
 		step->every_row_hidden == 0u && step->host_state_target != 0 && step->host_state_target[0] >= reach )

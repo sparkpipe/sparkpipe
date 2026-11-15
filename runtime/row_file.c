@@ -8,10 +8,21 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/io_uring.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#endif
 
 #define SPARK_ROW_FILE_BATCH_SPANS 16u
 #define SPARK_ROW_FILE_SPAN_BYTES 65536u
+#define SPARK_ROW_FILE_SLOT_BYTES (SPARK_ROW_FILE_SPAN_BYTES + SPARK_ROW_FILE_BLOCK_BYTES)
 #define SPARK_ROW_FILE_RADIX_BITS 11u
+#if defined(__linux__)
+#define SPARK_ROW_FILE_SLOTS 128u
+#else
+#define SPARK_ROW_FILE_SLOTS 1u
+#endif
 
 typedef struct SparkRowFileMiss
 {
@@ -27,6 +38,25 @@ typedef struct SparkRowFileSpan
 	uint64_t miss_end;
 } SparkRowFileSpan;
 
+typedef struct SparkRowFileJob
+{
+	const SparkRowFileSpan *spans;
+	uint8_t *out;
+	uint64_t stride, next, end;
+} SparkRowFileJob;
+
+#if defined(__linux__)
+typedef struct SparkRowFileRing
+{
+	int descriptor;
+	void *map, *sqe_map;
+	size_t map_bytes, sqe_bytes;
+	uint32_t *sq_tail, *sq_mask, *sq_array, *cq_head, *cq_tail, *cq_mask;
+	struct io_uring_sqe *sqes;
+	struct io_uring_cqe *cqes;
+} SparkRowFileRing;
+#endif
+
 struct SparkRowFile
 {
 	int descriptor;
@@ -36,6 +66,10 @@ struct SparkRowFile
 	uint8_t *cache;
 	pthread_t threads[SPARK_ROW_FILE_MAX_WORKERS];
 	uint8_t *blocks[SPARK_ROW_FILE_MAX_WORKERS];
+#if defined(__linux__)
+	SparkRowFileRing rings[SPARK_ROW_FILE_MAX_WORKERS];
+	uint32_t rings_open;
+#endif
 	pthread_mutex_t fetch_lock, job_lock;
 	pthread_cond_t job_ready, job_done;
 	SparkRowFileMiss *misses, *sorted;
@@ -55,23 +89,9 @@ typedef struct SparkRowFileWorker
 	uint32_t index;
 } SparkRowFileWorker;
 
-static int32_t SparkRowFileReadSpan(SparkRowFile *file, uint8_t *block, const SparkRowFileSpan *span, uint8_t *out, uint64_t stride)
+static int32_t SparkRowFileCopy(const SparkRowFile *file, const SparkRowFileSpan *span, const uint8_t *block, uint64_t done, uint8_t *out,
+	uint64_t stride)
 {
-	uint64_t done = 0u;
-	if ( span->first + span->bytes > file->file_bytes &&
-		file->offset + (file->sorted[span->miss_end - 1u].row + 1u) * file->row_bytes > file->file_bytes )
-		return(-1);
-	while ( done < span->bytes )
-	{
-		const ssize_t got = pread(file->descriptor, block + done, (size_t)(span->bytes - done), (off_t)(span->first + done));
-		if ( got < 0 && errno == EINTR )
-			continue;
-		if ( got < 0 )
-			return(-2);
-		if ( got == 0 )
-			break;
-		done += (uint64_t)got;
-	}
 	for ( uint64_t at = span->miss_begin; at < span->miss_end; ++at )
 	{
 		const SparkRowFileMiss *miss = &file->sorted[at];
@@ -83,11 +103,184 @@ static int32_t SparkRowFileReadSpan(SparkRowFile *file, uint8_t *block, const Sp
 	return(0);
 }
 
+static uint32_t SparkRowFileTake(SparkRowFile *file, SparkRowFileJob *job)
+{
+	pthread_mutex_lock(&file->job_lock);
+	if ( file->span_next < file->span_count )
+	{
+		uint64_t take = (file->span_count - file->span_next) / (4u * file->workers);
+		take = take == 0u ? 1u : take > SPARK_ROW_FILE_BATCH_SPANS ? SPARK_ROW_FILE_BATCH_SPANS : take;
+		job->spans = file->spans;
+		job->out = file->out;
+		job->stride = file->out_stride;
+		job->next = file->span_next;
+		job->end = file->span_next + take;
+		file->span_next = job->end;
+	}
+	pthread_mutex_unlock(&file->job_lock);
+	return job->next < job->end ? 1u : 0u;
+}
+
+#if defined(__linux__)
+static void SparkRowFileRingClose(SparkRowFileRing *ring)
+{
+	if ( ring->sqe_map != 0 && ring->sqe_map != MAP_FAILED )
+		munmap(ring->sqe_map, ring->sqe_bytes);
+	if ( ring->map != 0 && ring->map != MAP_FAILED )
+		munmap(ring->map, ring->map_bytes);
+	if ( ring->descriptor >= 0 )
+		close(ring->descriptor);
+	ring->descriptor = -1;
+}
+
+static int32_t SparkRowFileRingOpen(SparkRowFileRing *ring)
+{
+	struct io_uring_params params;
+	memset(&params, 0, sizeof(params));
+	memset(ring, 0, sizeof(*ring));
+	ring->descriptor = (int)syscall(__NR_io_uring_setup, SPARK_ROW_FILE_SLOTS, &params);
+	if ( ring->descriptor < 0 || (params.features & IORING_FEAT_SINGLE_MMAP) == 0u )
+	{
+		SparkRowFileRingClose(ring);
+		return(-1);
+	}
+	const size_t sq_bytes = params.sq_off.array + params.sq_entries * sizeof(uint32_t);
+	const size_t cq_bytes = params.cq_off.cqes + params.cq_entries * sizeof(struct io_uring_cqe);
+	ring->map_bytes = sq_bytes > cq_bytes ? sq_bytes : cq_bytes;
+	ring->sqe_bytes = params.sq_entries * sizeof(struct io_uring_sqe);
+	ring->map = mmap(0, ring->map_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring->descriptor, IORING_OFF_SQ_RING);
+	ring->sqe_map = mmap(0, ring->sqe_bytes, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, ring->descriptor, IORING_OFF_SQES);
+	if ( ring->map == MAP_FAILED || ring->sqe_map == MAP_FAILED )
+	{
+		SparkRowFileRingClose(ring);
+		return(-1);
+	}
+	uint8_t *base = (uint8_t *)ring->map;
+	ring->sq_tail = (uint32_t *)(base + params.sq_off.tail);
+	ring->sq_mask = (uint32_t *)(base + params.sq_off.ring_mask);
+	ring->sq_array = (uint32_t *)(base + params.sq_off.array);
+	ring->cq_head = (uint32_t *)(base + params.cq_off.head);
+	ring->cq_tail = (uint32_t *)(base + params.cq_off.tail);
+	ring->cq_mask = (uint32_t *)(base + params.cq_off.ring_mask);
+	ring->cqes = (struct io_uring_cqe *)(base + params.cq_off.cqes);
+	ring->sqes = (struct io_uring_sqe *)ring->sqe_map;
+	return(0);
+}
+
+static void SparkRowFileRingRead(SparkRowFileRing *ring, int descriptor, uint8_t *buffer, uint64_t offset, uint64_t bytes, uint32_t slot)
+{
+	const uint32_t tail = *ring->sq_tail, at = tail & *ring->sq_mask;
+	struct io_uring_sqe *sqe = &ring->sqes[at];
+	memset(sqe, 0, sizeof(*sqe));
+	sqe->opcode = IORING_OP_READ;
+	sqe->fd = descriptor;
+	sqe->addr = (uint64_t)(uintptr_t)buffer;
+	sqe->len = (uint32_t)bytes;
+	sqe->off = offset;
+	sqe->user_data = slot;
+	ring->sq_array[at] = at;
+	__atomic_store_n(ring->sq_tail, tail + 1u, __ATOMIC_RELEASE);
+}
+
+static uint32_t SparkRowFileReadSpans(SparkRowFile *file, uint32_t worker, uint64_t *finished)
+{
+	SparkRowFileRing *ring = &file->rings[worker];
+	uint8_t *buffers = file->blocks[worker];
+	SparkRowFileJob job = { 0, 0, 0u, 0u, 0u };
+	uint64_t span_of[SPARK_ROW_FILE_SLOTS], done_of[SPARK_ROW_FILE_SLOTS];
+	uint32_t idle[SPARK_ROW_FILE_SLOTS], idle_count = SPARK_ROW_FILE_SLOTS, inflight = 0u, unsubmitted = 0u, failed = 0u, more = 1u;
+	for ( uint32_t slot = 0u; slot < SPARK_ROW_FILE_SLOTS; ++slot )
+		idle[slot] = slot;
+	for ( ;; )
+	{
+		while ( idle_count != 0u && more != 0u )
+		{
+			if ( job.next == job.end && SparkRowFileTake(file, &job) == 0u )
+			{
+				more = 0u;
+				break;
+			}
+			const uint32_t slot = idle[--idle_count];
+			span_of[slot] = job.next++;
+			done_of[slot] = 0u;
+			SparkRowFileRingRead(ring, file->descriptor, buffers + (uint64_t)slot * SPARK_ROW_FILE_SLOT_BYTES, job.spans[span_of[slot]].first,
+				job.spans[span_of[slot]].bytes, slot);
+			++inflight;
+			++unsubmitted;
+		}
+		if ( inflight == 0u )
+			return failed;
+		const long entered = syscall(__NR_io_uring_enter, ring->descriptor, unsubmitted, 1u, IORING_ENTER_GETEVENTS, 0, 0);
+		if ( entered < 0 )
+		{
+			if ( errno == EINTR || errno == EAGAIN || errno == EBUSY )
+				continue;
+			*finished += inflight + (job.end - job.next);
+			return 1u;
+		}
+		unsubmitted -= (uint32_t)entered;
+		uint32_t head = *ring->cq_head;
+		const uint32_t tail = __atomic_load_n(ring->cq_tail, __ATOMIC_ACQUIRE);
+		for ( ; head != tail; ++head )
+		{
+			const struct io_uring_cqe *cqe = &ring->cqes[head & *ring->cq_mask];
+			const uint32_t slot = (uint32_t)cqe->user_data;
+			const int32_t result = cqe->res;
+			const SparkRowFileSpan *span = &job.spans[span_of[slot]];
+			uint8_t *block = buffers + (uint64_t)slot * SPARK_ROW_FILE_SLOT_BYTES;
+			if ( result > 0 )
+				done_of[slot] += (uint64_t)result;
+			if ( result == -EINTR || result == -EAGAIN || (result > 0 && done_of[slot] < span->bytes && span->first + done_of[slot] < file->file_bytes) )
+			{
+				SparkRowFileRingRead(ring, file->descriptor, block + done_of[slot], span->first + done_of[slot], span->bytes - done_of[slot], slot);
+				++unsubmitted;
+				continue;
+			}
+			if ( result < 0 || SparkRowFileCopy(file, span, block, done_of[slot], job.out, job.stride) != 0 )
+				failed = 1u;
+			idle[idle_count++] = slot;
+			--inflight;
+			++*finished;
+		}
+		__atomic_store_n(ring->cq_head, head, __ATOMIC_RELEASE);
+	}
+}
+#else
+static uint32_t SparkRowFileReadSpans(SparkRowFile *file, uint32_t worker, uint64_t *finished)
+{
+	SparkRowFileJob job = { 0, 0, 0u, 0u, 0u };
+	uint32_t failed = 0u;
+	while ( SparkRowFileTake(file, &job) != 0u )
+		for ( ; job.next < job.end; ++job.next, ++*finished )
+		{
+			const SparkRowFileSpan *span = &job.spans[job.next];
+			uint64_t done = 0u;
+			while ( done < span->bytes )
+			{
+				const ssize_t got = pread(file->descriptor, file->blocks[worker] + done, (size_t)(span->bytes - done), (off_t)(span->first + done));
+				if ( got < 0 && errno == EINTR )
+					continue;
+				if ( got <= 0 )
+				{
+					failed |= got < 0 ? 1u : 0u;
+					break;
+				}
+				done += (uint64_t)got;
+				if ( span->first + done >= file->file_bytes )
+					break;
+			}
+			if ( SparkRowFileCopy(file, span, file->blocks[worker], done, job.out, job.stride) != 0 )
+				failed = 1u;
+		}
+	return failed;
+}
+#endif
+
 static void *SparkRowFileWork(void *argument)
 {
 	SparkRowFileWorker *worker = (SparkRowFileWorker *)argument;
 	SparkRowFile *file = worker->file;
-	uint8_t *block = file->blocks[worker->index];
+	const uint32_t index = worker->index;
 	free(worker);
 	pthread_mutex_lock(&file->job_lock);
 	for ( ;; )
@@ -96,21 +289,13 @@ static void *SparkRowFileWork(void *argument)
 			pthread_cond_wait(&file->job_ready, &file->job_lock);
 		if ( file->stop != 0u )
 			break;
-		const SparkRowFileSpan *spans = file->spans + file->span_next;
-		uint8_t *out = file->out;
-		const uint64_t stride = file->out_stride;
-		uint64_t take = (file->span_count - file->span_next) / (4u * file->workers);
-		uint32_t failed = 0u;
-		take = take == 0u ? 1u : take > SPARK_ROW_FILE_BATCH_SPANS ? SPARK_ROW_FILE_BATCH_SPANS : take;
-		file->span_next += take;
 		pthread_mutex_unlock(&file->job_lock);
-		for ( uint64_t index = 0u; index < take; ++index )
-			if ( SparkRowFileReadSpan(file, block, &spans[index], out, stride) != 0 )
-				failed = 1u;
+		uint64_t finished = 0u;
+		const uint32_t failed = SparkRowFileReadSpans(file, index, &finished);
 		pthread_mutex_lock(&file->job_lock);
 		if ( failed != 0u )
 			file->failed = 1u;
-		file->span_left -= take;
+		file->span_left -= finished;
 		if ( file->span_left == 0u )
 			pthread_cond_signal(&file->job_done);
 	}
@@ -190,6 +375,10 @@ void SparkRowFileClose(SparkRowFile *file)
 		pthread_join(file->threads[index], 0);
 	for ( uint32_t index = 0u; index < file->workers; ++index )
 		free(file->blocks[index]);
+#if defined(__linux__)
+	for ( uint32_t index = 0u; index < file->rings_open; ++index )
+		SparkRowFileRingClose(&file->rings[index]);
+#endif
 	if ( file->descriptor >= 0 )
 		close(file->descriptor);
 	pthread_cond_destroy(&file->job_done);
@@ -262,12 +451,20 @@ SparkStatus SparkRowFileOpen(const char *path, const SparkRowFileOptions *option
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	for ( uint32_t index = 0u; index < file->workers; ++index )
-		if ( posix_memalign((void **)&file->blocks[index], SPARK_ROW_FILE_BLOCK_BYTES, SPARK_ROW_FILE_SPAN_BYTES + SPARK_ROW_FILE_BLOCK_BYTES) != 0 )
+		if ( posix_memalign((void **)&file->blocks[index], SPARK_ROW_FILE_BLOCK_BYTES, (size_t)SPARK_ROW_FILE_SLOTS * SPARK_ROW_FILE_SLOT_BYTES) != 0 )
 		{
 			file->blocks[index] = 0;
 			SparkRowFileClose(file);
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
+#if defined(__linux__)
+	for ( ; file->rings_open < file->workers; ++file->rings_open )
+		if ( SparkRowFileRingOpen(&file->rings[file->rings_open]) != 0 )
+		{
+			SparkRowFileClose(file);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+#endif
 	for ( uint32_t index = 0u; index < file->workers; ++index )
 	{
 		SparkRowFileWorker *worker = (SparkRowFileWorker *)malloc(sizeof(*worker));
