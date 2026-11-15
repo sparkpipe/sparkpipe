@@ -508,6 +508,7 @@ PYTHON_TESTS := \
 	tests/test_kv_failure_host.py \
 	tests/test_frame_error_host.py \
 	tests/test_weight_prefetch_host.py \
+	tests/test_hf_fetch_resume_paths.py \
 	tests/test_kernel_frame_error_source.py \
 	tests/test_ue8m0_encoder_oracle.py \
 	tests/test_kernel_algorithms.py \
