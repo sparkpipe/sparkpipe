@@ -20,6 +20,7 @@ TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS))
 import dsv41_flash_stagepack as conv
 import dsv41_flash_pack_verify as ver
+import dsv41_flash_expert_placement as place
 
 TINY = {"LAYER_COUNT": 4, "HIDDEN": 128, "VOCAB": 512, "ROUTED_EXPERTS": 8,
         "EXPERT_WIDTH": 32, "SHARD_COUNT": 2,
@@ -113,10 +114,15 @@ def expect_fail(callable_fn, needle: str):
     raise AssertionError("expected verify failure did not raise")
 
 
-def check_layout(root: Path, warm: Path, total: int, layout: str) -> dict:
-    out = root / f"out-{layout}"
+def check_layout(root: Path, warm: Path, total: int, layout: str, placement: list = None) -> dict:
+    out = root / f"out-{layout}{'-placed' if placement is not None else ''}"
+    placement_path = ""
+    if placement is not None:
+        placement_path = str(root / "placement.json")
+        Path(placement_path).write_text(json.dumps({"format": place.FORMAT, "ranks": TP,
+                                                    "experts_per_rank": conv.ROUTED_EXPERTS // TP, "layers": placement}))
     conv.cmd_plan(str(root / "headers.json"), str(out), TP, "selftest-revision",
-                  "aa" * 32, "bb" * 32, "cc" * 32, layout)
+                  "aa" * 32, "bb" * 32, "cc" * 32, layout, placement_path)
     plan = json.loads((out / "plan.json").read_text())
     assert plan["tensor_count"] == 4 * 24 + 7 + 2 + 3, plan["tensor_count"]
     assert plan["tp"] == TP and plan["expert_layout"] == layout
@@ -131,10 +137,20 @@ def check_layout(root: Path, warm: Path, total: int, layout: str) -> dict:
         if piece["kind"] in (conv.K_EXP_W13, conv.K_EXP_W2):
             expert = int(piece["name"].split(".experts.")[1].split(".")[0])
             local = conv.ROUTED_EXPERTS // TP
-            assert (expert // local == piece["rank"]) if whole else piece["row0"] > 0 or piece["rank"] == 0, piece
+            if placement is not None:
+                group = (piece["dst_offset"] - next(e for e in plan["entries"] if e["kind"] == piece["kind"] and e["layer"] == piece["layer"])[
+                    "payload_offset" if piece["plane"] == "payload" else "scale_offset"]) // (piece["dst_bytes"] * (2 if piece["kind"] == conv.K_EXP_W13 else 1))
+                assert expert == placement[piece["layer"]][piece["rank"]][group], (piece, group)
+            else:
+                assert (expert // local == piece["rank"]) if whole else piece["row0"] > 0 or piece["rank"] == 0, piece
     with open(out / "rank1.spstage", "rb") as handle:
         flags = struct.unpack_from("<I", handle.read(24), 20)[0]
-    assert flags == (conv.FLAG_WHOLE_EXPERTS if whole else 0), flags
+    assert flags == (conv.FLAG_WHOLE_EXPERTS if whole else 0) | (conv.FLAG_PLACED_EXPERTS if placement is not None else 0), flags
+    if placement is not None:
+        sidecar = (out / "expert_placement.bin").read_bytes()
+        assert struct.unpack_from("<IIIII", sidecar, 0) == (place.MAGIC, place.VERSION, conv.LAYER_COUNT, TP, conv.ROUTED_EXPERTS // TP)
+        assert list(struct.unpack_from(f"<{conv.LAYER_COUNT * conv.ROUTED_EXPERTS}H", sidecar, 20)) == [
+            expert for layer in placement for group in layer for expert in group]
     conv.cmd_copy(str(root / "headers.json"), str(out / "plan.json"), str(out),
                   str(warm), 1, conv.SHARD_COUNT)
     report = json.loads((out / "engram_report.json").read_text())
@@ -168,6 +184,7 @@ def check_layout(root: Path, warm: Path, total: int, layout: str) -> dict:
 def main() -> int:
     patch(conv)
     patch(ver)
+    patch(place)
     root = Path(tempfile.mkdtemp(prefix="dsv41-stagepack-selftest-"))
     try:
         warm = root / "warm"
@@ -176,11 +193,16 @@ def main() -> int:
         conv.cmd_headers(str(warm), str(warm / "index.json"), str(root / "headers.json"))
         slice_plan = check_layout(root, warm, total, "slice")
         whole_plan = check_layout(root, warm, total, "whole")
+        local = conv.ROUTED_EXPERTS // TP
+        shuffled = [[sorted((rank * local + offset + 3 * layer + 1) % conv.ROUTED_EXPERTS for offset in range(local)) for rank in range(TP)]
+                    for layer in range(conv.LAYER_COUNT)]
+        placed_plan = check_layout(root, warm, total, "whole", shuffled)
+        assert placed_plan["expert_placement"] == shuffled and placed_plan["file_bytes"] == whole_plan["file_bytes"]
         assert slice_plan["file_bytes"] == whole_plan["file_bytes"]
         assert slice_plan["expert_bytes"] == whole_plan["expert_bytes"]
         print(f"dsv41 stagepack selftest PASS: {slice_plan['tensor_count']} entries, "
               f"tp{TP}, spine {slice_plan['spine_bytes']} B, expert {slice_plan['expert_bytes']} B "
-              f"in slice and whole layouts, corruption localized in spine+expert, engram 12 excluded")
+              f"in slice, whole and placed whole layouts, corruption localized in spine+expert, engram 12 excluded")
         return 0
     finally:
         shutil.rmtree(root, ignore_errors=True)

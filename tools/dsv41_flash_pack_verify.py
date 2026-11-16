@@ -300,7 +300,7 @@ def derive_layout(tp: int, layout: str):
     return order, entries, cursor
 
 
-def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int, layout: str) -> list:
+def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int, layout: str, placement: list = None) -> list:
     pieces = []
     for entry, (kind, layer) in zip(entries, order):
         for plane, offset, total in ((0, entry["payload_offset"], entry["payload_bytes"]),
@@ -314,7 +314,7 @@ def pieces_for(flat: dict, tp: int, order: list, entries: list, lo: int, hi: int
                 part = per // len(name)
                 for rank in range(tp):
                     for g in range(groups):
-                        expert = rank * groups + g if layout == "whole" else g
+                        expert = (placement[layer][rank][g] if placement is not None else rank * groups + g) if layout == "whole" else g
                         for index, template in enumerate(name):
                             src = flat[template.format(e=expert)]
                             step = src["shape"][0] if layout == "whole" else src["shape"][0] // tp
@@ -377,7 +377,8 @@ def verify_header(fd: int, rank: int, tp: int, plan: dict, entries: list,
     if len(raw) != HEADER_BYTES:
         fail(f"rank{rank}: short header")
     fields = struct.unpack_from("<20I2Q", raw, 0)
-    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 2 if layout == "whole" else 0, len(entries), 1, 0, 0,
+    literal = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, (2 if layout == "whole" else 0) | (8 if plan.get("expert_placement") else 0),
+               len(entries), 1, 0, 0,
                LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, 5, 7, tp, rank, 0)
     if fields[:20] != literal:
         fail(f"rank{rank}: header fields {fields[:20]} != literals {literal}")
@@ -462,7 +463,7 @@ def cmd_verify(headers_json: str, out_dir: str, warm: str, plan_path: str,
             verify_header(dst_fds[rank], rank, tp, plan, entries, directory_offset, file_bytes, layout)
         verify_directory(dst_fds[0], 0, entries, directory_offset)
         verify_directory(dst_fds[tp - 1], tp - 1, entries, directory_offset)
-        for piece in pieces_for(flat, tp, order, entries, lo, hi, layout):
+        for piece in pieces_for(flat, tp, order, entries, lo, hi, layout, plan.get("expert_placement")):
             shard = piece[4]["shard"]
             if shard not in src_fds:
                 src_fds[shard] = os.open(

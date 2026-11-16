@@ -57,8 +57,16 @@ template <typename T> static std::vector<T> Host(const T *device, size_t count)
 	return host;
 }
 
-static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
+static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot, uint32_t shuffled)
 {
+	std::vector<uint8_t> owner(EXPERTS), place(EXPERTS);
+	for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
+	{
+		const uint32_t at = shuffled != 0u ? (expert * 7u + 5u) % EXPERTS : expert;
+		owner[expert] = (uint8_t)(at / LOCAL);
+		place[expert] = (uint8_t)(at % LOCAL);
+	}
+	uint8_t *owner_d = Device(owner), *place_d = Device(place);
 	std::vector<std::vector<uint32_t>> experts(RANKS), slots(RANKS);
 	std::vector<std::vector<float>> weights(RANKS);
 	std::vector<std::vector<uint8_t>> codes(RANKS), scales(RANKS);
@@ -95,7 +103,7 @@ static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
 		uint32_t *experts_d = Device(experts[source]);
 		CUDA(cudaMalloc(&slot_d[source], (size_t)own * RANKS * sizeof(uint32_t)));
 		CUDA(cudaMalloc(&count_d[source], RANKS * sizeof(uint32_t)));
-		D41ExchangeSlotsKernel<RANKS><<<1u, 1024u>>>(experts_d, routed, TOPK, LOCAL, slot_d[source], count_d[source]);
+		D41ExchangeSlotsKernel<RANKS><<<1u, 1024u>>>(experts_d, routed, TOPK, owner_d, slot_d[source], count_d[source]);
 		CUDA(cudaGetLastError());
 		slots[source] = Host(slot_d[source], (size_t)own * RANKS);
 		const std::vector<uint32_t> count = Host(count_d[source], RANKS);
@@ -106,7 +114,7 @@ static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
 			{
 				uint32_t hit = 0u;
 				for ( uint32_t k = 0u; k < TOPK; ++k )
-					hit |= experts[source][(size_t)row * TOPK + k] / LOCAL == rank ? 1u : 0u;
+					hit |= owner[experts[source][(size_t)row * TOPK + k]] == rank ? 1u : 0u;
 				REQUIRE(slots[source][(size_t)row * RANKS + rank] == (hit != 0u ? expected : UINT32_MAX));
 				expected += hit;
 			}
@@ -155,6 +163,22 @@ static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
 		const std::vector<uint16_t> xq = Host(xq_d, (size_t)RANKS * capacity * HIDDEN);
 		const std::vector<uint32_t> route = Host(route_d, (size_t)RANKS * capacity * TOPK);
 		const std::vector<float> weight = Host(weight_d, (size_t)RANKS * capacity * TOPK);
+		uint32_t *global_d = 0;
+		CUDA(cudaMalloc(&global_d, (size_t)RANKS * capacity * TOPK * sizeof(uint32_t)));
+		D41RouteLocalKernel<<<(RANKS * capacity * TOPK + 255u) / 256u, 256u>>>(route_d, weight_d, global_d, RANKS * capacity * TOPK, owner_d, place_d, rank,
+			LOCAL, EXPERTS);
+		CUDA(cudaGetLastError());
+		const std::vector<uint32_t> local = Host(route_d, (size_t)RANKS * capacity * TOPK), global = Host(global_d, (size_t)RANKS * capacity * TOPK);
+		const std::vector<float> kept = Host(weight_d, (size_t)RANKS * capacity * TOPK);
+		for ( size_t index = 0u; index < local.size(); ++index )
+		{
+			const uint32_t expert = route[index];
+			const uint32_t mine = expert < EXPERTS && owner[expert] == rank ? 1u : 0u;
+			REQUIRE(global[index] == expert);
+			REQUIRE(local[index] == (mine != 0u ? place[expert] : LOCAL));
+			REQUIRE(kept[index] == (mine != 0u ? weight[index] : 0.0f));
+		}
+		cudaFree(global_d);
 		partial[rank].assign((size_t)RANKS * capacity * HIDDEN, 0u);
 		for ( uint32_t source = 0u; source < RANKS; ++source )
 			for ( uint32_t row = 0u; row < routed; ++row )
@@ -228,26 +252,29 @@ static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
 		cudaFree(count_d[source]);
 	}
 	cudaFree(counts_d);
-	printf("exchange own %u routed %u%s: capacity %u, %llu combined values differ\n", own, routed, hot != 0u ? " (two hot ranks)" : "", capacity,
-		(unsigned long long)wrong);
+	cudaFree(owner_d);
+	cudaFree(place_d);
+	printf("exchange own %u routed %u%s%s: capacity %u, %llu combined values differ\n", own, routed, hot != 0u ? " (two hot ranks)" : "",
+		shuffled != 0u ? " (placed experts)" : "", capacity, (unsigned long long)wrong);
 	return wrong != 0u ? 1u : 0u;
 }
 
 int main(void)
 {
 	uint32_t failures = 0u;
-	failures += Case(128u, 128u, 0u);
-	failures += Case(128u, 77u, 0u);
-	failures += Case(1024u, 1024u, 0u);
-	failures += Case(1024u, 1024u, 1u);
-	failures += Case(1544u, 1500u, 0u);
-	failures += Case(64u, 0u, 0u);
+	failures += Case(128u, 128u, 0u, 0u);
+	failures += Case(128u, 77u, 0u, 0u);
+	failures += Case(1024u, 1024u, 0u, 0u);
+	failures += Case(1024u, 1024u, 1u, 0u);
+	failures += Case(1024u, 1024u, 1u, 1u);
+	failures += Case(1544u, 1500u, 0u, 1u);
+	failures += Case(64u, 0u, 0u, 0u);
 	if ( failures != 0u )
 	{
 		fprintf(stderr, "FAIL dsv41 exchange: %u cases differ\n", failures);
 		return 1;
 	}
-	printf("PASS dsv41 exchange: every routed row reaches each rank that holds one of its experts once, in row order, with its codes, scales, "
+	printf("PASS dsv41 exchange: every routed row reaches each rank that holds one of its experts once, by contiguous or placed experts, in row order, and is localized to the rank's own slots, with its codes, scales, "
 		"experts and weights; padding rows carry no routes; the owner sums the ranks' partials in rank order and adds the shared expert as the "
 		"publisher does; rows past the live count are zero\n");
 	return 0;

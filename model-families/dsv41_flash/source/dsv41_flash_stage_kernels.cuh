@@ -709,7 +709,7 @@ static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, 
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t top_k, uint32_t local_experts,
+static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t top_k, const uint8_t *__restrict__ owner,
 	uint32_t *__restrict__ slot, uint32_t *__restrict__ count)
 {
 	__shared__ uint32_t totals[32][RANKS];
@@ -724,7 +724,7 @@ static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route
 		uint32_t mask = 0u, before[RANKS];
 		if ( row < rows )
 			for ( uint32_t k = 0u; k < top_k; ++k )
-				mask |= 1u << (route_expert[(uint64_t)row * top_k + k] / local_experts);
+				mask |= 1u << owner[route_expert[(uint64_t)row * top_k + k]];
 		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 		{
 			const uint32_t vote = __ballot_sync(0xffffffffu, (mask >> rank) & 1u);
@@ -752,6 +752,23 @@ static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route
 	}
 	if ( threadIdx.x < RANKS )
 		count[threadIdx.x] = base[threadIdx.x];
+}
+
+static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
+	uint32_t routes, const uint8_t *__restrict__ owner, const uint8_t *__restrict__ slot, uint32_t rank, uint32_t local_experts, uint32_t experts)
+{
+	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( route >= routes )
+		return;
+	const uint32_t expert = route_expert[route];
+	route_global[route] = expert;
+	if ( expert < experts && owner[expert] == rank )
+		route_expert[route] = slot[expert];
+	else
+	{
+		route_expert[route] = local_experts;
+		route_weight[route] = 0.0f;
+	}
 }
 
 static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,

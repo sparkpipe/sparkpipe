@@ -1103,6 +1103,7 @@ per rank and every rank serves every sequence.
 | rows owned, tail attention split | 8,515, 113% | 13,065, 154% | 14,505, 173% |
 | rows owned, MoE rows sent to their experts' ranks, q_b scales fixed | 8,953, 119% | 14,516, 171% | 16,552, 197% |
 | and layer 20 handed off from owned rows in chunks before the tail | 9,198, 122% | 14,423, 170% | 16,857, 201% |
+| and experts placed by routed load | 8,878, 118% | 15,316, 181% | 18,125, 216% |
 
 Teacher-forced next-token scores over 512 corpus positions (16 documents,
 fresh prefills of 256 to 752 tokens) against the four-Spark build:
@@ -1150,11 +1151,25 @@ Rank 0's CUPTI trace of the fixed build on a 32,768-token prompt (run rw15):
 The rounds are 827 pieces of about 300 us of waiting each. Compute is about
 395 ms a chunk, so the remaining gap to the 27,300 tok/s estimate is the
 rounds: overlapping them with compute, and cutting the gathers below.
-2. Done for chunks before the tail: layer 20's keys are compressed from the
+2. Done: experts placed by routed load. With rank r on experts [24r, 24r+24),
+   one layer's busiest rank took 1.4 to 2.5 times the average rows (the 12
+   busiest of 384 experts carry 29% of the routes, a different group hot in
+   each layer), and the all-to-all pads every pair to the busiest. Placing each
+   layer's experts busiest first on the least-loaded rank
+   (`tools/dsv41_flash_expert_placement.py`, counts from the long corpus,
+   `model-families/dsv41_flash/expert_placement_rows16.json`, written beside
+   the packs as `expert_placement.bin`) cut the busiest rank to 1.41 times the
+   average on chunks it was not built from, and the step 6-8%. The score
+   against the four-Spark build is unchanged (94.1% top-1, KL 0.0145).
+   Copying the busiest 16 experts to every rank, each row's owner computing
+   them, would bring it to 1.34 and keep 29% of the routes off the wire.
+3. Done for chunks before the tail: layer 20's keys are compressed from the
    owned rows' normalized hidden states, gathered (164 MB), instead of every
    row's four streams (671 MB); the inputs are the same bits. It saved about
    28 ms a chunk. The final chunk still gathers the streams for its tail.
-3. The compressed-key layers (2, 8 and 14) gather every row's normalized hidden
+4. The compressed-key layers (2, 8 and 14) gather every row's normalized hidden
    (164 MB each) for a compress every rank repeats.
-4. The tail's MoE repeats routing and the shared expert on every rank and
+5. The tail's MoE repeats routing and the shared expert on every rank and
    all-reduces the tail rows.
+6. The mesh rounds still run with nothing else on the GPU; splitting a step
+   into two halves on two streams would hide them behind compute.

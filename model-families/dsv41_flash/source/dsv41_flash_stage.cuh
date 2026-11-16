@@ -275,6 +275,7 @@ struct D41ModelState : CudaStageState
 	uint16_t *own_x, *own_out, *streams_whole;
 	uint32_t *own_selected, *exchange_slot, *exchange_count, *exchange_counts, *exchange_counts_host;
 	uint32_t exchange_rows;
+	uint8_t *expert_owner, *expert_slot;
 	D41Mx mx;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *post_ffn, *comb_ffn, *pre_head, *pre_whole;
 	uint32_t own_first, own_rows, own_pad, o_b_ready, owner_reduced;
@@ -1601,8 +1602,9 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		cudaMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
 		cudaMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
-		state->tp_rank * D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS);
+	D41RouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
+		state->expert_owner + (uint64_t)(layer - state->layers) * D41_EXPERTS, state->expert_slot + (uint64_t)(layer - state->layers) * D41_EXPERTS,
+		state->tp_rank, D41_LOCAL_EXPERTS, D41_EXPERTS);
 	if ( LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
 		state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1812,8 +1814,8 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( LmMxQuantize(state->own_x, codes, scales, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExchangeSlotsKernel<D41_TP><<<1u, 1024u, 0, stream>>>(state->route_expert, routed, D41_TOPK, D41_LOCAL_EXPERTS, state->exchange_slot,
-		state->exchange_count);
+	D41ExchangeSlotsKernel<D41_TP><<<1u, 1024u, 0, stream>>>(state->route_expert, routed, D41_TOPK,
+		state->expert_owner + (uint64_t)(layer - state->layers) * D41_EXPERTS, state->exchange_slot, state->exchange_count);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, D41_TP * 2u, state->exchange_count,
@@ -2584,6 +2586,59 @@ static void D41Sibling(const char *pack_path, const char *name, char *out, size_
 	snprintf(out, capacity, "%.*s/%s", prefix, slash != 0 ? pack_path : ".", name);
 }
 
+static SparkStatus D41OpenExpertPlacement(D41ModelState *state, const char *pack_path)
+{
+	const uint64_t table = (uint64_t)D41_LAYERS * D41_EXPERTS;
+	uint16_t *ids = (uint16_t *)malloc(table * sizeof(uint16_t));
+	uint8_t *maps = (uint8_t *)calloc(2u * table, 1u);
+	uint32_t head[5], placed = (state->header.flags & SPARK_DSV41_FLASH_STAGEPACK_FLAG_PLACED_EXPERTS) != 0u ? 1u : 0u, valid = 1u;
+	char path[1024];
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( ids == 0 || maps == 0 )
+	{
+		free(ids);
+		free(maps);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	for ( uint64_t index = 0u; index < table; ++index )
+		ids[index] = (uint16_t)(index % D41_EXPERTS);
+	D41Sibling(pack_path, "expert_placement.bin", path, sizeof(path));
+	if ( placed != 0u && (D41ReadFile(path, 0u, head, sizeof(head)) != SPARK_STATUS_OK || head[0] != SPARK_DSV41_FLASH_EXPERT_PLACEMENT_MAGIC ||
+		head[1] != 1u || head[2] != D41_LAYERS || head[3] != D41_TP || head[4] != D41_LOCAL_EXPERTS ||
+		D41ReadFile(path, sizeof(head), ids, table * sizeof(uint16_t)) != SPARK_STATUS_OK) )
+		valid = 0u;
+	for ( uint32_t layer = 0u; layer < D41_LAYERS && valid != 0u; ++layer )
+		for ( uint32_t index = 0u; index < D41_EXPERTS; ++index )
+		{
+			const uint32_t expert = ids[(uint64_t)layer * D41_EXPERTS + index];
+			uint8_t *owner = maps + (uint64_t)layer * D41_EXPERTS, *slot = maps + table + (uint64_t)layer * D41_EXPERTS;
+			if ( expert >= D41_EXPERTS || owner[expert] != 0u )
+			{
+				valid = 0u;
+				break;
+			}
+			owner[expert] = (uint8_t)(index / D41_LOCAL_EXPERTS + 1u);
+			slot[expert] = (uint8_t)(index % D41_LOCAL_EXPERTS);
+		}
+	for ( uint64_t index = 0u; index < table; ++index )
+		maps[index] = (uint8_t)(maps[index] - 1u);
+	free(ids);
+	if ( valid == 0u )
+	{
+		fprintf(stderr, "sparkpipe_dsv41_flash: %s does not place every expert of every layer on one of %u ranks, %u a rank (tools/dsv41_flash_expert_placement.py)\n",
+			path, D41_TP, D41_LOCAL_EXPERTS);
+		free(maps);
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	}
+	if ( cudaMalloc(&state->expert_owner, 2u * table) != cudaSuccess || cudaMemcpy(state->expert_owner, maps, 2u * table, cudaMemcpyHostToDevice) != cudaSuccess )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	state->expert_slot = state->expert_owner + table;
+	free(maps);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_path)
 {
 	char path[1024];
@@ -2705,6 +2760,8 @@ inline void D41Cuda::Release(D41ModelState *state)
 		(void)cudaFreeHost(state->host_error);
 	if ( state->exchange_counts_host != 0 )
 		(void)cudaFreeHost(state->exchange_counts_host);
+	if ( state->expert_owner != 0 )
+		(void)cudaFree(state->expert_owner);
 	if ( state->fp8_side != 0 )
 		(void)cudaFree(state->fp8_side);
 	if ( state->cells != 0 )
@@ -2788,6 +2845,8 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 	status = D41OpenEngramTables(state, configuration->rank_pack_path);
 	if ( status == SPARK_STATUS_OK )
 		status = D41OpenEngramShard(state, configuration->rank_pack_path);
+	if ( status == SPARK_STATUS_OK )
+		status = D41OpenExpertPlacement(state, configuration->rank_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( cudaMalloc(&state->full_frequency, 2u * D41K_ROPE_PAIRS * sizeof(float)) != cudaSuccess )

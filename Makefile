@@ -688,6 +688,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_rope_parity.py \
 	tests/test_dsv41_flash_smoke_experts.py \
 	tests/test_dsv41_flash_stagepack.py \
+	tests/test_dsv41_flash_expert_placement.py \
 	tests/test_dsv41_flash_engram_ranks.py \
 	tests/test_stage_lane_dsv41_group.py \
 	tests/test_gemma4_verify_existing.py \
