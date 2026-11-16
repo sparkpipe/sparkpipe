@@ -45,12 +45,35 @@ cycle to its first `apt full-upgrade` (see [What went wrong on spark10](#what-we
   belongs to which `sparkN` (`hostname` at the console). On 2026-11-12 the
   guess for spark11 and spark12 was the wrong way round, so both password
   prompts failed.
-- Cable either port to `cisco0`. A node with no RJ45 on the LAN can still be
-  brought up over rail 2.
+- On 2026-11-15 the owner created accounts `spark13`-`spark1b` and left all
+  nine factory hostnames, so nobody knew which node held which account. The
+  helper in step 2 finds that out.
+- Cable the node one of two ways:
+  - **LAN, when there is one:** the 10G RJ45 to a copper port of a LAN switch
+    on a network with DHCP and internet, such as `cisco1`. spark10-spark1b were
+    staged this way on 2026-11-15.
+  - **Fabric:** either CX-7 port to `cisco0`. A node with no RJ45 on the LAN can
+    still be brought up over rail 2.
 - The first-boot Wi-Fi step may not save a profile: spark10 had none. Wi-Fi is
   step 5.
 
 ## 2. Find the node and give it an address
+
+### On a LAN with DHCP
+
+- `show lldp neighbors` on the switch lists each port's factory hostname and
+  RJ45 MAC (`Port ID`). `show mac address-table vlan 50` gives the same MACs.
+- The office router gives the node an address, a route and DNS. The node is
+  therefore reachable, and has internet, without a bring-up DHCP server or a
+  proxy.
+- Find each address from the hub: ping the subnet, then match the MACs in
+  `ip neigh` (H3C MACs start `70:2a:d7`). It is a dynamic lease. On
+  2026-11-15 every node kept its lease through all of its reboots.
+- Give each node a workstation `Host` entry in the step 7 form, with that
+  address as `HostName` and `ProxyJump rtx5090`. Use the name from then on, in
+  place of `sparkN@10.10.201.A` in the commands below.
+
+### On the fabric
 
 On `cisco0` (access: `sparkpipe-coord/network/cisco0.md`),
 `show lldp neighbors interface ethernet 1/<port> detail` gives the factory
@@ -94,6 +117,20 @@ ssh -t spark0 'ssh -o StrictHostKeyChecking=accept-new sparkN@10.10.201.A "mkdir
 ```bash
 ssh -t -o StrictHostKeyChecking=accept-new -J rtx5090 sparkN@10.10.201.A 'sudo groupadd -f codexadmin && sudo usermod -aG codexadmin $USER && echo "%codexadmin ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/90-codexadmin >/dev/null && sudo chmod 440 /etc/sudoers.d/90-codexadmin && sudo visudo -c'
 ```
+
+When the accounts exist but nobody knows which node holds which, the owner
+runs the hub helper from `sparkpipe-coord/holdwork/bringup/` instead:
+
+```bash
+ssh -t rtx5090 'BRINGUP_ADDRS="<addresses>" BRINGUP_USERS="spark13 spark14 ..." bringup/find_and_install.sh'
+```
+
+- The owner types the password once. On 2026-11-15 it was the suffix that
+  follows each account name. The helper then continues on the hub, so the
+  terminal can close.
+- It tries every account on every address. Where one logs in, it installs the
+  same keys and sudo as the two commands above.
+- It writes account, address and factory hostname to `~/bringup/nodes-found.txt`.
 
 ## 3. The SSH master and the hostname
 
@@ -148,6 +185,8 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A "sudo apt-mark ma
 
 ## 5. Internet
 
+- **LAN with DHCP.** Nothing to do: the router gives the route and DNS, and apt
+  needs no proxy.
 - **Wi-Fi (owner).** The node joins the fleet's primary Wi-Fi network with the
   fleet profile settings. The command is in the coordination store
   (`sparkpipe-coord/node-files/WIFI_FIRST_CONNECT.md`), because it names the
@@ -188,6 +227,12 @@ ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'P="-o Acquire::h
 - A factory image from 2026-11 takes about 650-690 packages, including the 7.0
   nvidia HWE kernel (7.0.0-1025 on 2026-11-10) and driver 580.178.04. That moves
   the node off the 6.17 nvidia kernel.
+- On 2026-11-15 each of nine cubes took 634-636 upgrades and 30 new packages,
+  3.3 GB, at about 3 MB/s per node from `ports.ubuntu.com` with all nine
+  running at once.
+  - The one removal is `linux-modules-nvidia-580-open-6.17.0-1022-nvidia`, the
+    factory kernel's driver module.
+  - Only `snapd` itself matched `snap`.
 
 If dpkg failed, read the unit's journal and finish the half-installed packages
 before anything else, then run `apt-get -f install` and the upgrade again, each
@@ -214,6 +259,34 @@ Reboot with `sudo systemctl reboot`. The node takes the same lease again
 ```bash
 ssh -o ControlPath=~/.ssh/cm-sparkN-bringup sparkN@10.10.201.A 'uname -r; nvidia-smi --query-gpu=driver_version,name --format=csv,noheader; systemctl get-default; systemctl --failed --no-legend; sudo dpkg --audit | wc -l'
 ```
+
+### Tailscale
+
+Every node joins the fleet's tailnet, so it can be reached wherever it is plugged
+in.
+
+1. **Install.** Copy spark0's `/etc/apt/sources.list.d/tailscale.list` and
+   `/usr/share/keyrings/tailscale-archive-keyring.gpg` to the node. Install the
+   fleet's version as a transient unit, with apt reading only that source:
+
+   ```bash
+   ssh sparkN 'sudo systemd-run --wait --collect --unit=node-tailscale --setenv=DEBIAN_FRONTEND=noninteractive /bin/sh -c "apt-get update -o Dir::Etc::sourcelist=sources.list.d/tailscale.list -o Dir::Etc::sourceparts=- -o APT::Get::List-Cleanup=0 && apt-get install -y tailscale=1.104.7"'
+   ```
+
+2. **Check a reboot.** The package enables `tailscaled` at boot, as on
+   spark0-sparkf. That is a boot-path change, so reboot one node and check it
+   before rebooting the others.
+3. **Join.** Start a tagged login, which waits in a transient unit:
+
+   ```bash
+   ssh sparkN 'sudo systemd-run --collect --unit=ts-login /usr/bin/tailscale up --hostname=sparkN --advertise-tags=tag:spark --operator=sparkN'
+   ```
+
+   `tailscale status` on the node prints the login URL. The owner opens it, as
+   the tag's owner. A tagged node's key does not expire.
+4. **Switch the workstation entry.** Point the node's `Host` entry at its
+   Tailscale address, still with `ProxyJump rtx5090`, so the name keeps working
+   after the move.
 
 ## 7. Hand-off to the baseline
 
@@ -296,13 +369,41 @@ store (`sparkpipe-coord/holdwork/burnin/`).
 | Node | Date | Peers | Result |
 |---|---|---|---|
 | spark10 | 2026-11-10 | lenovo7, lenovo9 | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers. 99.7 Gb/s each way on each link, about 89 TB each way per link. GPU 4,274 passes, `bad=0`, at most 73 °C at 2522 MHz. fio 1,406 GiB of verified writes `err=0`, 68.5 TiB of reads. The RoCE counters were not snapshotted before this run; a 60 s rerun of the same layout moved none of them. |
+| spark13-spark1b | 2026-11-15 | - | Not run. Owner: not enough power at the staging office. The CX-7s were not cabled. |
 | spark11, spark12 | 2026-11-12 | each other | PASS. 2 h: 0 AER, 0 kernel lines, 0 reboots, 0 guard triggers, 0 RoCE retransmit and sequence errors (snapshotted before and after). perftest per link, both directions: writes 130.6 Gb/s, reads 65.3 Gb/s; 89.5 TB each way per link (vport counters). GPU 4,277 and 4,263 passes, `bad=0`, at most 66 and 68 °C at 2535 MHz. fio 1,406 GiB of verified writes `err=0` and about 93.6 TiB of reads on each. |
+
+## Shipping a staged node
+
+A staged node is ready to move to another site once it is on the tailnet and
+passes this check, run from the hub over its Tailscale address with
+`sparkpipe-coord/holdwork/bringup/precheck.sh`:
+
+- `tailscaled` is enabled and active. The node shows `BackendState` `Running`,
+  with `tag:spark` and no key expiry.
+- It has the upgraded kernel and driver, the GPU is listed, it boots
+  `multi-user.target`, has no failed units and an empty `dpkg --audit`, and NTP
+  is synchronized.
+- The RJ45 profile uses DHCP (`ipv4.method auto`) and there are no Wi-Fi
+  profiles, so the node needs nothing from the staging site.
+- The node account holds the workstation, laptop and hub keys.
+- NVMe `critical_warning` and `media_errors` are 0.
+
+Shut the node down with `sudo systemctl poweroff` before removing power. At the
+new site, plug the RJ45 into a network with DHCP and internet, and the node
+rejoins the tailnet by itself.
+
+On 2026-11-15, spark10-spark1b passed the check before shutdown. Still to do on
+them:
+- The staged baseline apply (step 7). It needs the owner's firewall file and
+  turns SSH password login off. spark10 never had it.
+- CX-7 cabling.
+- Burn-in.
 
 ## Vendor notes
 
 | Vendor and board | Seen on | BIOS | Notes |
 |---|---|---|---|
-| H3C LinSeer MegaCube | spark10 (2026-11-10), spark11 and spark12 (2026-11-12) | `5.36_CUBE_300` | Factory image: Ubuntu 24.04.4, kernel 6.17.0-1022, driver 580.159.03, CX-7 28.45.4028, Wi-Fi MediaTek MT7925 (`mt7925e`, `wlP9s9`), Samsung 4 TB NVMe. Factory hostname `cube-` and the last four hex digits of the chassis MAC. firefox 148 and thunderbird 140 are Mozilla team (`~mt`) builds with no Mozilla source configured, so the archive's epoch-2 snap transition packages replace them. H3C's `cube-*` packages (`cube-oobe`, `cube-release` 1.0.4, user guide, playbooks, desktop init, background, `cube-turingnim`) only customize the first-boot setup and the desktop, with no units, cron jobs or binaries. Their autostart entries open Firefox at H3C's MegaCube document center and at NVIDIA's `dgx-spark-playbooks`, so a headless node never runs them. The document center's file list loads dynamically and has not been read. The vendor firmware path is not checked yet: do not stage FE or Gigabyte capsules on it. |
+| H3C LinSeer MegaCube | spark10 (2026-11-10), spark11 and spark12 (2026-11-12), spark13-spark1b (2026-11-15) | `5.36_CUBE_300` | Factory image: Ubuntu 24.04.4, kernel 6.17.0-1022, driver 580.159.03, CX-7 28.45.4028, Wi-Fi MediaTek MT7925 (`mt7925e`, `wlP9s9`), Samsung 4 TB NVMe. Factory hostname `cube-` and the last four hex digits of the chassis MAC. firefox 148 and thunderbird 140 are Mozilla team (`~mt`) builds with no Mozilla source configured, so the archive's epoch-2 snap transition packages replace them. H3C's `cube-*` packages (`cube-oobe`, `cube-release` 1.0.4, user guide, playbooks, desktop init, background, `cube-turingnim`) only customize the first-boot setup and the desktop, with no units, cron jobs or binaries. Their autostart entries open Firefox at H3C's MegaCube document center and at NVIDIA's `dgx-spark-playbooks`, so a headless node never runs them. The document center's file list loads dynamically and has not been read. The vendor firmware path is not checked yet: do not stage FE or Gigabyte capsules on it. The 10G RJ45 is `enP7s7` (Realtek `r8127`), and its MAC is the LLDP port id. The CX-7 sits behind a platform hotplug driver (`cx7-pcie-hotplug`, `MTKP0001:00`). With no QSFP cable it logs `Cable removal` about 17 s after the driver starts and removes the card. `lspci` then shows no Mellanox device, and there are no mlx5 netdevs until a cable is plugged in. |
 
 ## What went wrong on spark10
 
