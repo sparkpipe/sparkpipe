@@ -1101,16 +1101,26 @@ per rank and every rank serves every sequence.
 | production sixteen ranks (heads and context split) | 2,605, 35% | 2,798, 33% | 2,761, 33% |
 | rows owned, tail replicated | 7,979, 106% | 12,881, 152% | 14,261, 170% |
 | rows owned, tail attention split | 8,515, 113% | 13,065, 154% | 14,505, 173% |
+| rows owned, MoE rows sent to their experts' ranks, q_b scales fixed | 8,953, 119% | 14,516, 171% | 16,552, 197% |
 
-The 40,000-token prompt answers `b79b025295d2819f`, the four-Spark build's
-answer. At 200 and 1,500 tokens the 16-token answers part from the four-Spark
-ones after one to seven tokens; two correct layouts do that (the four-Spark
-build and production sixteen ranks agree on 96.7% [95.9, 97.4] of next tokens
-over the 2,112-position corpus, KL at least 0.009 nats). This build's
-teacher-forced score against the four-Spark one is next.
+Teacher-forced next-token scores over 512 corpus positions (16 documents,
+fresh prefills of 256 to 752 tokens) against the four-Spark build:
 
-Five things had to change on the way: the sinks are offset by the attention
-rank (every rank's offset is 0 here; before, ranks 1 to 15 read past the 64
+| Arm | Top-1 agreement | KL at least, nats | NLL change |
+| --- | ---: | ---: | ---: |
+| production sixteen ranks | 94.1% [92.2, 96.1] | 0.016 | -1.2% [-2.6, +0.3] |
+| rows owned, before the q_b scale fix | 90.0% [88.1, 92.0] | 0.072 | +2.2% [-0.6, +5.1] |
+| rows owned, fixed, MoE rows sent to their experts' ranks | 95.1% [93.6, 96.7] | 0.016 | -2.3% [-3.8, -1.0] |
+
+The fixed build agrees with the four-Spark build as closely as production
+does. Its 40,000- and 1,500-token answers are the four-Spark build's
+(`b79b025295d2819f`, `9595ae42ab7d191d`); at 200 tokens it parts after nine
+tokens, as a near tie allows.
+
+Six things had to change on the way: each 16-head part's q_b multiply reads
+its own rows' weight scales (they are stored per row; reading them as 32x32
+blocks gave heads 16 to 63 another part's scales, KL 0.072), the sinks are
+offset by the attention rank (every rank's offset is 0 here; before, ranks 1 to 15 read past the 64
 sinks), the engram reduce-scatter's collective bound covers twice the padded
 rows, the fused attention takes a live-row count so a rank's padding rows are
 never attended, steps of 17 to 256 rows that are not split take the per-head
@@ -1119,10 +1129,10 @@ holds 64), and a whole-expert pack carries the empty experts manifest.
 
 What is left, largest first, for 16,384-row steps:
 
-1. The MoE exchange gathers every row to every rank and reduce-scatters BF16
-   sums: about 244 MB a layer per rank, 4.9 GB over layers 0 to 19, some 425 ms
-   at 11.5 GB/s. Sending each row only to the ranks holding its experts and
-   returning one partial per rank moves about 76 MB a layer, some 133 ms.
+1. Done: each row now goes only to the ranks that hold its experts and comes
+   back as one partial per rank, instead of every row to every rank and BF16
+   sums reduce-scattered back. It measured 2-5% before the scale fix; a trace
+   of the fixed build places the rest.
 2. Layer 20's hand-off gathers all four streams of every row (671 MB) on every
    chunk that has a state target; the tail needs only its own rows' streams and
    layer 20's compressed keys.

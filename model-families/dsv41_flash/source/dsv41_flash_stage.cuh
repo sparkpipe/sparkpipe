@@ -1285,7 +1285,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 	{
 		uint16_t *query = state->q_local + (uint64_t)part * own * part_width;
 		if ( LmMxGemmDense(qcodes, qscales, layer->q_b.weight + (uint64_t)part * part_width * D41_QLORA,
-			layer->q_b.scale + (uint64_t)part * (part_width / D41_FP8_BLOCK) * (D41_QLORA / D41_FP8_BLOCK), query, own, D41_QLORA, part_width, 0u, 0u,
+			layer->q_b.scale + (uint64_t)part * part_width * (D41_QLORA / D41_FP8_BLOCK), query, own, D41_QLORA, part_width, 0u, 0u,
 			sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		D41Rope(query, own, D41A_QUERIES, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions + first, 0, frequency, 0u, 0, stream);
