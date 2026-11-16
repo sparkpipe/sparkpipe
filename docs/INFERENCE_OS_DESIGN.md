@@ -222,6 +222,18 @@ is recorded in the code itself:
   events, never on a CUDA stream or event, and never open-codes a cudaMemcpy
   between an untagged "host pointer" and "device pointer";
   `tests/test_device_neutral.py` keeps device headers and calls out of it.
+- **Leave adopted queues to their owner.** The CUDA stage runner captures
+  its decode graphs on the stream it adopted, while the KV binding's
+  threads copy, free and record events on their own queues. A query of a
+  capturing stream invalidates the capture and the rank aborts with
+  `STAGE-GRAPH-CAPTURE-FAILED`. So the device layer asks the device about an
+  adopted queue only when a caller waits on or queries that queue. When it
+  picks a stamp slot or checks whether a buffer, event or kernel is busy, it
+  reads the completion that the owner's own waits recorded. A queue takes a
+  free stamp slot before it reuses another queue's settled one.
+  `tests/test_device_adopted_capture_cuda.py` checks both rules.
+  `SparkDeviceSynchronize` still waits on every queue, adopted ones included,
+  so only a thread that knows no capture is running may call it.
 - **Record new kinds.** A new allocation kind, or a new CUDA API category in
   a module, goes into TECHDEBT §Hardware independence. That keeps the
   device-layer inventory complete.
