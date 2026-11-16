@@ -129,6 +129,18 @@ DSV41_FLASH_TP4 = {
     "recurrent_bytes": (40 * 128 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
+DSV41_FLASH_ROWS16 = {
+    **DSV41_FLASH,
+    "swap_id": "deepseek-v4.1-flash-rows16",
+    "api_port": 8488,
+    "kv_label": "dsv41_flash_rows16_stage",
+    "node_memory_bytes": 64 << 30,
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16r/packs/rank{rank}.spstage",
+    "adapter": "libdsv41_flash_rows16_serving_adapter.so",
+    "kv_page_bytes": (3 * 128 + 256) * 1280,
+    "recurrent_bytes": (40 * 128 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
+}
+
 QWEN38_MAX = {
     **QWEN38_27B,
     "swap_id": "qwen3.8-max",
@@ -458,6 +470,7 @@ K31_PRO = {
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
     "dsv41_flash_tp4": DSV41_FLASH_TP4,
+    "dsv41_flash_rows16": DSV41_FLASH_ROWS16,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,

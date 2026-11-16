@@ -10,7 +10,7 @@
 
 #define SPARK_DSV41_FLASH_TP16_ADAPTER_ID DSV41_FLASH_ADAPTER_ID
 #define SPARK_DSV41_FLASH_TP16_MODEL_ID "deepseek-ai/DeepSeek-V4.1-Flash"
-#define SPARK_DSV41_FLASH_TP16_MAX_ROWS (SPARK_DSV41_FLASH_STAGE_TP_DEGREE == 16u ? 2048u : SPARK_STAGE_SERVING_MAX_ROWS)
+#define SPARK_DSV41_FLASH_TP16_MAX_ROWS (SPARK_DSV41_FLASH_STAGE_KV_DEGREE == 16u ? 2048u : SPARK_STAGE_SERVING_MAX_ROWS)
 #define SPARK_DSV41_FLASH_TP16_LAYERS 40u
 #define SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS 16384u
 #define SPARK_DSV41_FLASH_TP16_LATENT 512u
@@ -36,8 +36,8 @@ static void Dsv41FlashServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, Spar
 	kv->capacity_request.bytes_per_scalar = sizeof(uint16_t);
 	kv->capacity_request.index_key_layer_count = SPARK_DSV41_FLASH_STAGE_RATIO2_CACHES + SPARK_DSV41_FLASH_STAGE_RATIO1_CACHES;
 	kv->capacity_request.index_key_dimension = SPARK_DSV41_FLASH_TP16_INDEX_KEY;
-	kv->context_shard.degree = tp_degree == 16u ? tp_degree : 1u;
-	kv->context_shard.rank = tp_degree == 16u ? tp_rank : 0u;
+	kv->context_shard.degree = tp_degree == 16u ? SPARK_DSV41_FLASH_STAGE_KV_DEGREE : 1u;
+	kv->context_shard.rank = tp_degree == 16u && SPARK_DSV41_FLASH_STAGE_KV_DEGREE == 16u ? tp_rank : 0u;
 	kv->context_shard.grain = SPARK_DSV41_FLASH_STAGE_SHARD_GRAIN;
 }
 
@@ -46,10 +46,13 @@ static uint32_t Dsv41FlashServingCollectiveSequences(uint32_t rows, uint32_t tp_
 	const uint64_t engram = ((uint64_t)rows * SPARK_DSV41_FLASH_TP16_ENGRAM_WIDTH + SPARK_DSV41_FLASH_STAGE_HIDDEN - 1u) /
 		SPARK_DSV41_FLASH_STAGE_HIDDEN;
 	const uint64_t split = 2u * (uint64_t)(rows < SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS ? rows : SPARK_DSV41_FLASH_STAGE_ENGRAM_SPLIT_ROWS);
-	const uint64_t landing = tp_degree == 16u ? SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS, 1u) : 0u;
+	const uint64_t landing = tp_degree == 16u && SPARK_DSV41_FLASH_STAGE_KV_DEGREE == 16u ? SPARK_DSV41_FLASH_STAGE_LANDING_ROWS(SPARK_DSV41_FLASH_STAGE_MAX_POSITIONS, 1u) : 0u;
 	const uint64_t parts = (uint64_t)rows * SPARK_DSV41_FLASH_STAGE_ENGRAM_KV_PARTS;
+	const uint64_t own_step = SPARK_DSV41_FLASH_STAGE_OWN_ROWS_STEP;
+	const uint64_t owned = SPARK_DSV41_FLASH_STAGE_KV_DEGREE == 1u ? 2u * ((rows + own_step - 1u) / own_step) * own_step : 0u;
 	uint64_t capacity = engram > parts ? engram : parts;
 	capacity = split > capacity ? split : capacity;
+	capacity = owned > capacity ? owned : capacity;
 	capacity = landing > capacity ? landing : capacity;
 	return (uint32_t)capacity + 1u;
 }

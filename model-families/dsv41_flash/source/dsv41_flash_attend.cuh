@@ -62,7 +62,9 @@ void D41AttendKernel(
 	uint32_t rope_offset,
 	uint32_t group_heads,
 	uint8_t *__restrict__ codes,
-	uint32_t rows)
+	uint32_t rows,
+	uint32_t live,
+	uint32_t row_base)
 {
 	constexpr uint32_t ROW_BYTES = DIM * 2u;
 	constexpr uint32_t PITCH = ROW_BYTES + LM_LATENT_SHARD_ROW_PAD;
@@ -114,7 +116,7 @@ void D41AttendKernel(
 		LmMbarrierInit(listed_free, 1u);
 		LmMbarrierInitFence();
 	}
-	if (compressed != 0u && selected != 0 && blockIdx.x < rows && LmKvViewIsConfigured(cache.pages) &&
+	if (compressed != 0u && selected != 0 && blockIdx.x < live && LmKvViewIsConfigured(cache.pages) &&
 		sequence_of_row[blockIdx.x] < cache.pages.sequence_count)
 	{
 		const uint32_t first_bound = bound[blockIdx.x];
@@ -131,11 +133,11 @@ void D41AttendKernel(
 	if (warp == D41A_PLANNER)
 	{
 		uint32_t compactions = 0u;
-		for (block = blockIdx.x, ordinal = 0u; block < rows; block += gridDim.x, ordinal++)
+		for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 		{
 			const uint32_t record = ordinal % PLANS, row = block;
 			const uint32_t step_lane = row_lane[row], begin = sequence_row_begin[step_lane];
-			const uint32_t position = positions[row], wave_first = positions[sequence_row_indices[begin]];
+			const uint32_t position = positions[row_base + row], wave_first = positions[sequence_row_indices[begin]];
 			const uint32_t sequence = compressed != 0u ? sequence_of_row[row] : 0u;
 			const uint32_t valid = compressed == 0u || (LmKvViewIsConfigured(cache.pages) && sequence < cache.pages.sequence_count) ? 1u : 0u;
 			uint32_t listed = 0u, count = 0u, window_begin = 0u, limit = 0u, tile_first = 0u, tile_end = 0u;
@@ -191,7 +193,7 @@ void D41AttendKernel(
 	{
 		uint32_t zeroed[2] = { 0u, 0u };
 		used = 0u;
-		for (block = blockIdx.x, ordinal = 0u; block < rows; block += gridDim.x, ordinal++)
+		for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 		{
 			const uint32_t record = ordinal % PLANS, row = block;
 			const uint32_t *plan = plans + record * PLAN_WORDS;
@@ -274,9 +276,9 @@ void D41AttendKernel(
 		}
 	};
 	used = 0u;
-	if (blockIdx.x < rows)
+	if (blockIdx.x < live)
 		fetch(blockIdx.x);
-	for (block = blockIdx.x, ordinal = 0u; block < rows; block += gridDim.x, ordinal++)
+	for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 	{
 		const uint32_t record = ordinal % PLANS, row = block, following = block + gridDim.x;
 		const uint32_t *plan = plans + record * PLAN_WORDS;
@@ -326,7 +328,7 @@ void D41AttendKernel(
 					score_parts[(qk_half * QUERIES + (lane >> 2u) + (index >> 1u) * 8u) * D41A_SCORE_STRIDE + key_group * 8u + (lane & 3u) * 2u + (index & 1u)] =
 						score[index];
 			}
-			if (tile + 1u == tiles && following < rows)
+			if (tile + 1u == tiles && following < live)
 				fetch(following);
 			D41AttendBarrier();
 			{
@@ -405,7 +407,7 @@ void D41AttendKernel(
 			if (lane == 0u)
 				LmMbarrierArrive(&empty[buffer]);
 		}
-		if (tiles == 0u && following < rows)
+		if (tiles == 0u && following < live)
 			fetch(following);
 		if (threadIdx.x < QUERIES)
 		{
@@ -437,7 +439,7 @@ void D41AttendKernel(
 			}
 			if (warp * WARP_COLUMNS >= rope_offset)
 			{
-				const uint32_t position = positions[row];
+				const uint32_t position = positions[row_base + row];
 #pragma unroll
 				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
 				{
@@ -485,11 +487,13 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
 	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
-	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, cudaStream_t stream)
+	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, cudaStream_t stream)
 {
 	const uint64_t shared = D41AttendSharedBytes<DIM>(compressed != 0u && selected != 0 ? topk : 0u);
 	static bool granted = false;
-	if (rows == 0u || query == 0 || (output == 0) == (codes == 0) ||
+	if (live == 0u)
+		return cudaSuccess;
+	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) ||
 		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
 		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
 		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
@@ -504,9 +508,9 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 		granted = true;
 	}
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
-	const uint32_t grid = rows < resident ? rows : resident;
+	const uint32_t grid = live < resident ? live : resident;
 	D41AttendKernel<Geometry, DIM><<<grid, D41A_THREADS, shared, stream>>>(cache, compressed, query, sequence_of_row, length, bound, selected, topk, wave_kv,
 		ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, frequency,
-		rope_offset, group_heads, codes, rows);
+		rope_offset, group_heads, codes, rows, live, row_base);
 	return cudaPeekAtLastError();
 }

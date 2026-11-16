@@ -1078,3 +1078,55 @@ prefill of 256 to 752 tokens: next-token accuracy 79.12% against 79.17%
 (McNemar p = 1.0), NLL +0.27% [-0.11, +0.66], top-1 agreement 98.4%, KL at
 least 0.0024 nats. It changes what the model computes, so it is an option to
 choose, not a speed-up.
+
+## Sixteen ranks, each owning its rows (2026-11-16)
+
+`build/libdsv41_flash_rows16_serving_adapter.so` (`-DDSV41_FLASH_ROWS=1`, lane
+`dsv41_flash_rows16`) runs the four-Spark design on all sixteen Sparks with
+attention degree 1 and KV degree 1: every rank keeps every head's attention
+weights (q_b, o_a, o_b, the indexer's q_b and weights and the sinks; pack layout
+`rows`, flag 4) and the whole context's keys, and owns a sixteenth of each
+step's rows through layer 19. The routed experts stay whole, 24 per rank. Only
+the rows' KV latents cross for attention, the indexer runs on the owner's rows,
+and the MoE exchange is the four-Spark one at sixteen ranks (MXFP8 rows
+gathered, sums reduce-scattered to their owners). The tail (layers 20 to 39 on
+the last 2,541 rows) splits each layer's attention over the sixteen ranks and
+gathers the outputs; its MoE keeps the replicated routing and an all-reduce.
+There is no fragmentation into groups of four: one sequence's keys live once
+per rank and every rank serves every sequence.
+
+| Build | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| reference, four Sparks | 7,524 tok/s | 8,467 | 8,407 |
+| production sixteen ranks (heads and context split) | 2,605, 35% | 2,798, 33% | 2,761, 33% |
+| rows owned, tail replicated | 7,979, 106% | 12,881, 152% | 14,261, 170% |
+| rows owned, tail attention split | 8,515, 113% | 13,065, 154% | 14,505, 173% |
+
+The 40,000-token prompt answers `b79b025295d2819f`, the four-Spark build's
+answer. At 200 and 1,500 tokens the 16-token answers part from the four-Spark
+ones after one to seven tokens; two correct layouts do that (the four-Spark
+build and production sixteen ranks agree on 96.7% [95.9, 97.4] of next tokens
+over the 2,112-position corpus, KL at least 0.009 nats). This build's
+teacher-forced score against the four-Spark one is next.
+
+Five things had to change on the way: the sinks are offset by the attention
+rank (every rank's offset is 0 here; before, ranks 1 to 15 read past the 64
+sinks), the engram reduce-scatter's collective bound covers twice the padded
+rows, the fused attention takes a live-row count so a rank's padding rows are
+never attended, steps of 17 to 256 rows that are not split take the per-head
+attention decode uses (the fused kernel reads 16 heads a row, and a rank here
+holds 64), and a whole-expert pack carries the empty experts manifest.
+
+What is left, largest first, for 16,384-row steps:
+
+1. The MoE exchange gathers every row to every rank and reduce-scatters BF16
+   sums: about 244 MB a layer per rank, 4.9 GB over layers 0 to 19, some 425 ms
+   at 11.5 GB/s. Sending each row only to the ranks holding its experts and
+   returning one partial per rank moves about 76 MB a layer, some 133 ms.
+2. Layer 20's hand-off gathers all four streams of every row (671 MB) on every
+   chunk that has a state target; the tail needs only its own rows' streams and
+   layer 20's compressed keys.
+3. The compressed-key layers (2, 8 and 14) gather every row's normalized hidden
+   (164 MB each) for a compress every rank repeats.
+4. The tail's MoE repeats routing and the shared expert on every rank and
+   all-reduces the tail rows.

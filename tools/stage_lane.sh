@@ -93,14 +93,18 @@ render() {
 }
 
 firmware_copy() {
-  local host="$1" destination="$2" file sources=""
+  local host="$1" destination="$2" file sources="" attempt
   shift 2
   for file in "$@"; do sources="$sources $STAGE_FIRMWARE/$file"; done
-  if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
-    $SSH "$STAGE_FIRMWARE_HOST" "scp -q -o BatchMode=yes$sources $host:$destination" < /dev/null
-  else
-    scp -q $sources "$host:$destination"
-  fi
+  for attempt in 1 2 3 4 5; do
+    if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+      $SSH "$STAGE_FIRMWARE_HOST" "scp -q -o BatchMode=yes$sources $host:$destination" < /dev/null && return 0
+    else
+      scp -q $sources "$host:$destination" && return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  return 1
 }
 
 setup() {

@@ -250,10 +250,10 @@ static uint32_t RunWave(const Wave &w, uint32_t perturb)
 	uint16_t *roped_d = Scratch<uint16_t>((size_t)packed * LATENT);
 	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
 		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, merged_d,
-		(const float *)0, 0u, 0u, (uint8_t *)0, rows, 0)));
+		(const float *)0, 0u, 0u, (uint8_t *)0, rows, rows, 0u, 0)));
 	CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
 		(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
-		frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, 0)));
+		frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, rows, 0u, 0)));
 	CUDA(cudaMemcpy(roped_d, merged_d, (size_t)packed * LATENT * sizeof(uint16_t), cudaMemcpyDeviceToDevice));
 	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(roped_d, heads, LATENT, LATENT - 2u * D41K_ROPE_PAIRS, positions_d, 0, frequency_d, 1u,
 		(const uint32_t *)0);
@@ -274,6 +274,27 @@ static uint32_t RunWave(const Wave &w, uint32_t perturb)
 		printf("attend codes lanes %u rows %u: %llu of %llu code and scale bytes differ from rope then quantize\n", w.lanes, rows,
 			(unsigned long long)differ, (unsigned long long)bytes);
 		coded_mismatch += differ != 0u ? 1u : 0u;
+		const uint32_t live = rows - rows / 3u;
+		std::vector<uint8_t> partial(bytes);
+		CUDA(cudaMemset(codes_d, 0xa5, bytes));
+		CUDA((D41AttendLaunch<LmKvGeometry<1280u, 64u, true>, LATENT>(none, 0u, query_d, (const uint32_t *)0, (const uint32_t *)0, (const uint32_t *)0,
+			(const uint32_t *)0, 0u, wave_d, ring_d, WINDOW * LATENT, WINDOW, positions_d, lanes_d, begin_d, indices_d, slot_d, sink_d, scale, (uint16_t *)0,
+			frequency_d, LATENT - 2u * D41K_ROPE_PAIRS, group_heads, codes_d, rows, live, 0u, 0)));
+		CUDA(cudaDeviceSynchronize());
+		CUDA(cudaMemcpy(partial.data(), codes_d, bytes, cudaMemcpyDeviceToHost));
+		uint64_t wrong = 0u;
+		for ( uint32_t group = 0u; group < 2u; ++group )
+			for ( uint32_t row = 0u; row < rows; ++row )
+			{
+				const size_t code = ((size_t)group * rows + row) * width, scale_at = (size_t)2u * rows * width + ((size_t)group * rows + row) * (width / 32u);
+				for ( size_t byte = 0u; byte < width; ++byte )
+					wrong += partial[code + byte] != (row < live ? coded[code + byte] : (uint8_t)0xa5u) ? 1u : 0u;
+				for ( size_t byte = 0u; byte < width / 32u; ++byte )
+					wrong += partial[scale_at + byte] != (row < live ? coded[scale_at + byte] : (uint8_t)0xa5u) ? 1u : 0u;
+			}
+		printf("attend codes lanes %u rows %u live %u: %llu bytes differ from the full launch or touch rows past the live count\n", w.lanes, rows, live,
+			(unsigned long long)wrong);
+		coded_mismatch += wrong != 0u ? 1u : 0u;
 	}
 	cudaFree(frequency_d); cudaFree(codes_d); cudaFree(reference_d); cudaFree(roped_d);
 	std::vector<uint16_t> expected((size_t)packed * LATENT), merged((size_t)packed * LATENT);
@@ -360,6 +381,6 @@ int main(void)
 			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte, also over fewer live rows with the rest untouched; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }

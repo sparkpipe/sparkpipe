@@ -6,8 +6,9 @@ subcommands:
       read all safetensors shard headers, cross-check against the index weight_map
   plan HEADERS_JSON OUT_DIR TP REVISION CONTRACT_SHA CONFIG_SHA RECIPE_SHA [EXPERTS]
       validate the checkpoint against the kind map, write pack skeletons + plan.json;
-      EXPERTS is slice (every rank holds a slice of every expert, the default) or
-      whole (rank r holds experts [r*E/TP, (r+1)*E/TP) whole)
+      EXPERTS is slice (every rank holds a slice of every expert, the default),
+      whole (rank r holds experts [r*E/TP, (r+1)*E/TP) whole) or rows (whole
+      experts, and every rank holds every attention head's weights)
   copy HEADERS_JSON PLAN_JSON OUT_DIR WARM_DIR LO HI
       copy payload contributed by source shards [LO,HI] into every rank pack
 Exit 0 = step complete; nonzero = the failure is named on stderr.
@@ -46,7 +47,8 @@ COPY_BUDGET = 16 << 20
 MAGIC = 0x31413444
 FORMAT_VERSION = 2
 FLAG_WHOLE_EXPERTS = 2
-EXPERT_LAYOUTS = ("slice", "whole")
+FLAG_WHOLE_ATTENTION = 4
+EXPERT_LAYOUTS = ("slice", "whole", "rows")
 
 K_EMBEDDING = 0
 K_FINAL_NORM = 1
@@ -85,6 +87,7 @@ K_EXP_W2 = 36
 KIND_COUNT = 37
 UNUSED_KINDS = (29, 30, 31)
 EXPERT_KINDS = (K_EXP_W13, K_EXP_W2)
+WHOLE_ATTENTION_KINDS = (K_Q_B, K_O_A, K_O_B, K_IDX_Q_B, K_IDX_WP, K_ATTN_SINK)
 
 
 def fail(message: str):
@@ -111,7 +114,16 @@ def kind_in_layer(kind: int, layer: int) -> bool:
     return True
 
 
+def attention_degree(tp: int, layout: str) -> int:
+    return 1 if layout == "rows" else tp
+
+
+def whole_experts(layout: str) -> bool:
+    return layout in ("whole", "rows")
+
+
 def entry_shape(kind: int, tp: int, layout: str = "slice"):
+    att = attention_degree(tp, layout)
     if kind in (K_EMBEDDING, K_LM_HEAD):
         return (VOCAB // tp, HIDDEN, 1)
     if kind in (K_ATTN_NORM, K_FFN_NORM, K_FINAL_NORM):
@@ -119,7 +131,7 @@ def entry_shape(kind: int, tp: int, layout: str = "slice"):
     if kind == K_Q_A:
         return (1280, HIDDEN, 1)
     if kind == K_Q_B:
-        return (32768 // tp, 1280, 1)
+        return (32768 // att, 1280, 1)
     if kind == K_KV_A:
         return (512, HIDDEN, 1)
     if kind == K_Q_NORM:
@@ -129,15 +141,15 @@ def entry_shape(kind: int, tp: int, layout: str = "slice"):
     if kind == K_ATTN_SINK:
         return (1, 64, 1)
     if kind == K_O_A:
-        return (8192 // tp, 4096, 1)
+        return (8192 // att, 4096, 1)
     if kind == K_O_B:
-        return (5120, 8192 // tp, 1)
+        return (5120, 8192 // att, 1)
     if kind == K_IDX_Q_B:
-        return (4096 // tp, 1280, 1)
+        return (4096 // att, 1280, 1)
     if kind == K_IDX_WK:
         return (128, 512, 1)
     if kind == K_IDX_WP:
-        return (32 // tp, 5120, 1)
+        return (32 // att, 5120, 1)
     if kind == K_IDX_KN:
         return (1, 128, 1)
     if kind in (K_C_WKV, K_C_WGATE):
@@ -155,11 +167,11 @@ def entry_shape(kind: int, tp: int, layout: str = "slice"):
     if kind in (K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return (1, 384, 1)
     if kind == K_EXP_W13:
-        if layout == "whole":
+        if whole_experts(layout):
             return (2 * EXPERT_WIDTH, HIDDEN // 2, ROUTED_EXPERTS // tp)
         return (2 * EXPERT_WIDTH // tp, HIDDEN // 2, ROUTED_EXPERTS)
     if kind == K_EXP_W2:
-        if layout == "whole":
+        if whole_experts(layout):
             return (HIDDEN, EXPERT_WIDTH // 2, ROUTED_EXPERTS // tp)
         return (HIDDEN // tp, EXPERT_WIDTH // 2, ROUTED_EXPERTS)
     if kind in (K_SH_W1, K_SH_W3):
@@ -411,8 +423,8 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list, layout: str = 
                 rows_per_part = entry["rows"] // len(sources)
                 for rank in range(tp):
                     for group in range(groups):
-                        expert = rank * groups + group if layout == "whole" else group
-                        row0 = 0 if layout == "whole" else rank * rows_per_part
+                        expert = rank * groups + group if whole_experts(layout) else group
+                        row0 = 0 if whole_experts(layout) else rank * rows_per_part
                         for part, names in enumerate(sources):
                             src_name = names[0 if plane == "payload" else 1].format(e=expert)
                             src = flat[src_name]
@@ -423,6 +435,8 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list, layout: str = 
                                            "dst_bytes": per_part})
                 continue
             src0 = flat[name]
+            if layout == "rows" and kind in WHOLE_ATTENTION_KINDS:
+                mode = "repl"
             for rank in range(tp):
                 r0, r1, c0, c1 = rank_window(mode, rank, tp, src0["shape"][0], src0["shape"][1])
                 pieces.append({"rank": rank, "kind": kind, "layer": layer, "plane": plane,
@@ -503,7 +517,7 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
                                           e["scale_offset"], e["scale_bytes"]) for e in entries)
     os.makedirs(out_dir, exist_ok=True)
     for rank in range(tp):
-        fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, FLAG_WHOLE_EXPERTS if layout == "whole" else 0,
+        fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, (FLAG_WHOLE_EXPERTS if whole_experts(layout) else 0) | (FLAG_WHOLE_ATTENTION if layout == "rows" else 0),
                   len(entries), 1, 0, 0, LAYER_COUNT,
                   LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, rank, 0)
         header = codec_header(fields, directory_offset, file_bytes, rev, digests, HEADER_BYTES)
