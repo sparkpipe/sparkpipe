@@ -1133,6 +1133,22 @@ What is left, largest first, for 16,384-row steps:
    back as one partial per rank, instead of every row to every rank and BF16
    sums reduce-scattered back. It measured 2-5% before the scale fix; a trace
    of the fixed build places the rest.
+
+Rank 0's CUPTI trace of the fixed build on a 32,768-token prompt (run rw15):
+
+| Stage | First chunk, 16,384 rows | Final chunk, with the tail |
+| --- | ---: | ---: |
+| Mesh rounds, nothing else on the GPU | 495 ms | 644 ms |
+| Experts (up and down) | 118 | 144 |
+| Expert routing, exchange packing, finalize | 82 | 106 |
+| Dense projections | 94 | 120 |
+| Fused attention and window | 45 | 81 |
+| Stream mixing, norms, quantize, index | 68 | 142 |
+| Whole step | 890 | 1,251 |
+
+The rounds are 827 pieces of about 300 us of waiting each. Compute is about
+395 ms a chunk, so the remaining gap to the 27,300 tok/s estimate is the
+rounds: overlapping them with compute, and cutting the gathers below.
 2. Layer 20's hand-off gathers all four streams of every row (671 MB) on every
    chunk that has a state target; the tail needs only its own rows' streams and
    layer 20's compressed keys.
