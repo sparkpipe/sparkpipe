@@ -38,7 +38,7 @@ GROUP_RANKS = (1, 2, 4, 8, 16)
 CONTROL_HOST = "10.10.201.{rank}"
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
-MAX_ROWS = 4096
+MAX_ROWS = 16384
 MAX_SEQUENCES = 128
 MESH_LANES = 4
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
@@ -447,6 +447,7 @@ MODELS = {
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
     "glm53_full": GLM53_FULL,
+    "glm53_full_ab": {**GLM53_FULL, "swap_id": "glm-5.3-ab", "api_port": 8497},
     "hy4": HY4,
     "k3": K3,
     "k31_pro": K31_PRO,
