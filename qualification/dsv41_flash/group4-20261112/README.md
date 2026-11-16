@@ -1102,6 +1102,7 @@ per rank and every rank serves every sequence.
 | rows owned, tail replicated | 7,979, 106% | 12,881, 152% | 14,261, 170% |
 | rows owned, tail attention split | 8,515, 113% | 13,065, 154% | 14,505, 173% |
 | rows owned, MoE rows sent to their experts' ranks, q_b scales fixed | 8,953, 119% | 14,516, 171% | 16,552, 197% |
+| and layer 20 handed off from owned rows in chunks before the tail | 9,198, 122% | 14,423, 170% | 16,857, 201% |
 
 Teacher-forced next-token scores over 512 corpus positions (16 documents,
 fresh prefills of 256 to 752 tokens) against the four-Spark build:
@@ -1149,9 +1150,10 @@ Rank 0's CUPTI trace of the fixed build on a 32,768-token prompt (run rw15):
 The rounds are 827 pieces of about 300 us of waiting each. Compute is about
 395 ms a chunk, so the remaining gap to the 27,300 tok/s estimate is the
 rounds: overlapping them with compute, and cutting the gathers below.
-2. Layer 20's hand-off gathers all four streams of every row (671 MB) on every
-   chunk that has a state target; the tail needs only its own rows' streams and
-   layer 20's compressed keys.
+2. Done for chunks before the tail: layer 20's keys are compressed from the
+   owned rows' normalized hidden states, gathered (164 MB), instead of every
+   row's four streams (671 MB); the inputs are the same bits. It saved about
+   28 ms a chunk. The final chunk still gathers the streams for its tail.
 3. The compressed-key layers (2, 8 and 14) gather every row's normalized hidden
    (164 MB each) for a compress every rank repeats.
 4. The tail's MoE repeats routing and the shared expert on every rank and

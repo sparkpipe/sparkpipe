@@ -2207,10 +2207,21 @@ struct D41Cuda : CudaStage<D41Cuda>
 	static SparkStatus LayerRows(D41ModelState *state, Frame &frame, uint32_t index)
 	{
 		const uint32_t first = D41TailFirstRow(state, index, frame.step->rows);
-		SparkStatus status = state->tail_target != 0u && index >= D41_CANDIDATE_SOURCE ? WholeRows(state, frame.stream) : SPARK_STATUS_OK;
+		const uint32_t handoff = state->tail_target != 0u && index == D41_CANDIDATE_SOURCE && first == frame.step->rows && state->own_rows != 0u ? 1u : 0u;
+		SparkStatus status = state->tail_target != 0u && index >= D41_CANDIDATE_SOURCE && handoff == 0u ? WholeRows(state, frame.stream) : SPARK_STATUS_OK;
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( index == D41_CANDIDATE_SOURCE && first != 0u )
+		if ( handoff != 0u )
+		{
+			status = CollapseNorm(state, frame, index, D41_ATTENTION_PART);
+			if ( status == SPARK_STATUS_OK )
+				status = D41Compress(state, &state->layers[index], index, frame.step, frame.stream);
+			state->compress_done = 1u;
+			state->own_rows = 0u;
+			state->own_first = 0u;
+			state->own_pad = 0u;
+		}
+		else if ( index == D41_CANDIDATE_SOURCE && first != 0u )
 		{
 			status = D41TailCompress(state, frame.step, frame.stream);
 			state->compress_done = 1u;
