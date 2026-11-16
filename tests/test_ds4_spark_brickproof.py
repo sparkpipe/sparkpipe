@@ -104,6 +104,63 @@ class BrickproofTest(unittest.TestCase):
             required,
         ])
 
+    def test_sshd_password_failures_name_every_enabled_method(self) -> None:
+        enabled = "port 22\npasswordauthentication yes\nkbdinteractiveauthentication no\npubkeyauthentication yes\n"
+        self.assertEqual(MODULE.sshd_password_failures(enabled),["sshd-passwordauthentication:yes"])
+        self.assertEqual(MODULE.sshd_password_failures("passwordauthentication no\nkbdinteractiveauthentication no\n"),[])
+        self.assertEqual(MODULE.sshd_password_failures(""),["sshd-passwordauthentication:missing","sshd-kbdinteractiveauthentication:missing"])
+
+    def test_user_key_count_excludes_the_fleet_key_and_counts_repaired_lines(self) -> None:
+        fleet = f"ssh-ed25519 {self.public_key_blob(7)} recovery"
+        first = self.public_key_blob(8)
+        second = self.public_key_blob(9)
+        joined = f"ssh-ed25519 {first} studionssh-ed25519 {second} laptop\n{fleet}\nssh-ed25519 {first} duplicate\n"
+        self.assertEqual(MODULE.user_key_count(joined,fleet),2)
+        self.assertEqual(MODULE.user_key_count(fleet + "\n",fleet),0)
+        self.assertEqual(MODULE.user_key_count("",fleet),0)
+
+    def sshd_home(self,root: Path,keys: list[str]) -> None:
+        directory = root / "spark13" / ".ssh"
+        directory.mkdir(parents=True)
+        (directory / "authorized_keys").write_text("".join(f"{key}\n" for key in keys))
+
+    def test_sshd_hardening_refuses_below_two_user_keys(self) -> None:
+        fleet = f"ssh-ed25519 {self.public_key_blob(10)} recovery"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.sshd_home(root,[f"ssh-ed25519 {self.public_key_blob(11)} studio",fleet])
+            target = root / "90-spark-hardening.conf"
+            with mock.patch.object(MODULE,"SSHD_HARDENING_PATH",target),mock.patch.object(MODULE,"run") as run:
+                with self.assertRaisesRegex(MODULE.BrickproofError,"spark13 has 1 login keys"):
+                    MODULE.install_sshd_hardening("spark13",fleet,root)
+            self.assertFalse(target.exists())
+            run.assert_not_called()
+
+    def test_sshd_hardening_writes_validates_and_reloads_once(self) -> None:
+        fleet = f"ssh-ed25519 {self.public_key_blob(12)} recovery"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.sshd_home(root,[f"ssh-ed25519 {self.public_key_blob(13)} studio",f"ssh-ed25519 {self.public_key_blob(14)} laptop"])
+            target = root / "90-spark-hardening.conf"
+            with mock.patch.object(MODULE,"SSHD_HARDENING_PATH",target),mock.patch.object(MODULE,"run") as run:
+                self.assertTrue(MODULE.install_sshd_hardening("spark13",fleet,root))
+                self.assertEqual(target.read_text(),"PasswordAuthentication no\nKbdInteractiveAuthentication no\n")
+                self.assertEqual([call.args[0] for call in run.call_args_list],[["/usr/sbin/sshd","-t"],["systemctl","try-reload-or-restart","ssh.service"]])
+                run.reset_mock()
+                self.assertFalse(MODULE.install_sshd_hardening("spark13",fleet,root))
+                self.assertEqual([call.args[0] for call in run.call_args_list],[["/usr/sbin/sshd","-t"]])
+
+    def test_sshd_hardening_removes_its_file_when_sshd_rejects_the_config(self) -> None:
+        fleet = f"ssh-ed25519 {self.public_key_blob(15)} recovery"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.sshd_home(root,[f"ssh-ed25519 {self.public_key_blob(16)} studio",f"ssh-ed25519 {self.public_key_blob(17)} laptop"])
+            target = root / "90-spark-hardening.conf"
+            with mock.patch.object(MODULE,"SSHD_HARDENING_PATH",target),mock.patch.object(MODULE,"run",side_effect=MODULE.BrickproofError("sshd -t failed")):
+                with self.assertRaises(MODULE.BrickproofError):
+                    MODULE.install_sshd_hardening("spark13",fleet,root)
+            self.assertFalse(target.exists())
+
     def test_efi_boot_order_moves_pxe_before_ubuntu(self) -> None:
         source = """BootCurrent: 0007
 BootOrder: 0007,0005
