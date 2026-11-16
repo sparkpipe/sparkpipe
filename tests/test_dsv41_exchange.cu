@@ -1,0 +1,254 @@
+#include <cuda_runtime.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <vector>
+#include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
+
+#define RANKS 16u
+#define EXPERTS 384u
+#define LOCAL (EXPERTS / RANKS)
+#define TOPK 6u
+#define HIDDEN 5120u
+#define RECORD_BYTES ((uint64_t)HIDDEN + HIDDEN / 32u + 8u * TOPK)
+
+#define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
+#define CUDA(call) REQUIRE((call) == cudaSuccess)
+
+static uint32_t state_word = 20261116u;
+
+static uint32_t Next(void)
+{
+	state_word ^= state_word << 13u;
+	state_word ^= state_word >> 17u;
+	state_word ^= state_word << 5u;
+	return state_word;
+}
+
+static float FromBf16(uint16_t value)
+{
+	uint32_t bits = (uint32_t)value << 16u;
+	float out;
+	memcpy(&out, &bits, sizeof(out));
+	return out;
+}
+
+static uint16_t ToBf16(float value)
+{
+	uint32_t bits;
+	memcpy(&bits, &value, sizeof(bits));
+	return (uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u);
+}
+
+template <typename T> static T *Device(const std::vector<T> &host)
+{
+	T *device = 0;
+	CUDA(cudaMalloc(&device, host.size() * sizeof(T) + 16u));
+	CUDA(cudaMemcpy(device, host.data(), host.size() * sizeof(T), cudaMemcpyHostToDevice));
+	return device;
+}
+
+template <typename T> static std::vector<T> Host(const T *device, size_t count)
+{
+	std::vector<T> host(count);
+	CUDA(cudaMemcpy(host.data(), device, count * sizeof(T), cudaMemcpyDeviceToHost));
+	return host;
+}
+
+static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot)
+{
+	std::vector<std::vector<uint32_t>> experts(RANKS), slots(RANKS);
+	std::vector<std::vector<float>> weights(RANKS);
+	std::vector<std::vector<uint8_t>> codes(RANKS), scales(RANKS);
+	std::vector<uint32_t> counts(RANKS * RANKS);
+	for ( uint32_t source = 0u; source < RANKS; ++source )
+	{
+		experts[source].resize((size_t)own * TOPK);
+		weights[source].resize((size_t)own * TOPK);
+		codes[source].resize((size_t)own * HIDDEN);
+		scales[source].resize((size_t)own * (HIDDEN / 32u));
+		for ( uint32_t row = 0u; row < own; ++row )
+			for ( uint32_t k = 0u; k < TOPK; ++k )
+			{
+				uint32_t expert, taken;
+				do
+				{
+					expert = hot != 0u && Next() % 2u == 0u ? Next() % (2u * LOCAL) : Next() % EXPERTS;
+					taken = 0u;
+					for ( uint32_t j = 0u; j < k; ++j )
+						taken |= experts[source][(size_t)row * TOPK + j] == expert ? 1u : 0u;
+				}
+				while ( taken != 0u );
+				experts[source][(size_t)row * TOPK + k] = expert;
+				weights[source][(size_t)row * TOPK + k] = (float)(Next() % 1000u) / 997.0f;
+			}
+		for ( auto &byte : codes[source] )
+			byte = (uint8_t)(Next() % 0x7fu);
+		for ( auto &byte : scales[source] )
+			byte = (uint8_t)(120u + Next() % 12u);
+	}
+	std::vector<uint32_t *> slot_d(RANKS), count_d(RANKS);
+	for ( uint32_t source = 0u; source < RANKS; ++source )
+	{
+		uint32_t *experts_d = Device(experts[source]);
+		CUDA(cudaMalloc(&slot_d[source], (size_t)own * RANKS * sizeof(uint32_t)));
+		CUDA(cudaMalloc(&count_d[source], RANKS * sizeof(uint32_t)));
+		D41ExchangeSlotsKernel<RANKS><<<1u, 1024u>>>(experts_d, routed, TOPK, LOCAL, slot_d[source], count_d[source]);
+		CUDA(cudaGetLastError());
+		slots[source] = Host(slot_d[source], (size_t)own * RANKS);
+		const std::vector<uint32_t> count = Host(count_d[source], RANKS);
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		{
+			uint32_t expected = 0u;
+			for ( uint32_t row = 0u; row < routed; ++row )
+			{
+				uint32_t hit = 0u;
+				for ( uint32_t k = 0u; k < TOPK; ++k )
+					hit |= experts[source][(size_t)row * TOPK + k] / LOCAL == rank ? 1u : 0u;
+				REQUIRE(slots[source][(size_t)row * RANKS + rank] == (hit != 0u ? expected : UINT32_MAX));
+				expected += hit;
+			}
+			REQUIRE(count[rank] == expected);
+			counts[(size_t)source * RANKS + rank] = expected;
+		}
+		cudaFree(experts_d);
+	}
+	uint32_t capacity = 0u;
+	for ( uint32_t value : counts )
+		capacity = value > capacity ? value : capacity;
+	capacity = capacity != 0u ? (capacity + 7u) / 8u * 8u : 8u;
+	std::vector<std::vector<uint8_t>> sent(RANKS);
+	for ( uint32_t source = 0u; source < RANKS; ++source )
+	{
+		uint32_t *experts_d = Device(experts[source]);
+		float *weights_d = Device(weights[source]);
+		uint8_t *codes_d = Device(codes[source]), *scales_d = Device(scales[source]), *send_d = 0;
+		CUDA(cudaMalloc(&send_d, (size_t)RANKS * capacity * RECORD_BYTES));
+		CUDA(cudaMemset(send_d, 0, (size_t)RANKS * capacity * RECORD_BYTES));
+		if ( routed != 0u )
+			D41ExchangePackKernel<<<dim3(routed, RANKS), 256u>>>(codes_d, scales_d, experts_d, weights_d, slot_d[source], RANKS, capacity, HIDDEN, TOPK,
+				RECORD_BYTES, send_d);
+		CUDA(cudaGetLastError());
+		sent[source] = Host(send_d, (size_t)RANKS * capacity * RECORD_BYTES);
+		cudaFree(experts_d); cudaFree(weights_d); cudaFree(codes_d); cudaFree(scales_d); cudaFree(send_d);
+	}
+	uint32_t *counts_d = Device(counts);
+	std::vector<std::vector<uint16_t>> partial(RANKS);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint8_t> received((size_t)RANKS * capacity * RECORD_BYTES);
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+			memcpy(received.data() + (size_t)source * capacity * RECORD_BYTES, sent[source].data() + (size_t)rank * capacity * RECORD_BYTES,
+				(size_t)capacity * RECORD_BYTES);
+		uint8_t *received_d = Device(received);
+		uint16_t *xq_d = 0;
+		uint32_t *route_d = 0;
+		float *weight_d = 0;
+		CUDA(cudaMalloc(&xq_d, (size_t)RANKS * capacity * HIDDEN * sizeof(uint16_t)));
+		CUDA(cudaMalloc(&route_d, (size_t)RANKS * capacity * TOPK * sizeof(uint32_t)));
+		CUDA(cudaMalloc(&weight_d, (size_t)RANKS * capacity * TOPK * sizeof(float)));
+		D41ExchangeUnpackKernel<<<dim3((HIDDEN + 255u) / 256u, RANKS * capacity), 256u>>>(received_d, counts_d, RANKS, rank, capacity, HIDDEN, TOPK,
+			RECORD_BYTES, xq_d, route_d, weight_d);
+		CUDA(cudaGetLastError());
+		const std::vector<uint16_t> xq = Host(xq_d, (size_t)RANKS * capacity * HIDDEN);
+		const std::vector<uint32_t> route = Host(route_d, (size_t)RANKS * capacity * TOPK);
+		const std::vector<float> weight = Host(weight_d, (size_t)RANKS * capacity * TOPK);
+		partial[rank].assign((size_t)RANKS * capacity * HIDDEN, 0u);
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+			for ( uint32_t row = 0u; row < routed; ++row )
+			{
+				const uint32_t at = slots[source][(size_t)row * RANKS + rank];
+				if ( at == UINT32_MAX )
+					continue;
+				const size_t q = (size_t)source * capacity + at;
+				for ( uint32_t k = 0u; k < TOPK; ++k )
+				{
+					REQUIRE(route[q * TOPK + k] == experts[source][(size_t)row * TOPK + k]);
+					REQUIRE(weight[q * TOPK + k] == weights[source][(size_t)row * TOPK + k]);
+				}
+				for ( uint32_t element = 0u; element < HIDDEN; element += 97u )
+				{
+					const uint8_t code = codes[source][(size_t)row * HIDDEN + element], sign = code >> 7u;
+					const uint32_t exponent = (code >> 3u) & 15u, mantissa = code & 7u;
+					const float value = (exponent == 0u ? ldexpf((float)mantissa, -9) : ldexpf(1.0f + (float)mantissa / 8.0f, (int)exponent - 7)) *
+						(sign != 0u ? -1.0f : 1.0f) * ldexpf(1.0f, (int)scales[source][(size_t)row * (HIDDEN / 32u) + element / 32u] - 127);
+					REQUIRE(xq[q * HIDDEN + element] == ToBf16(value));
+				}
+				for ( uint32_t element = 0u; element < HIDDEN; ++element )
+					partial[rank][q * HIDDEN + element] = ToBf16((float)(rank + 1u) * 0.125f + (float)((row * 31u + element) % 257u) / 64.0f);
+			}
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+			for ( uint32_t index = counts[(size_t)source * RANKS + rank]; index < capacity; ++index )
+				for ( uint32_t k = 0u; k < TOPK; ++k )
+				{
+					REQUIRE(route[((size_t)source * capacity + index) * TOPK + k] == UINT32_MAX);
+					REQUIRE(weight[((size_t)source * capacity + index) * TOPK + k] == 0.0f);
+				}
+		cudaFree(received_d); cudaFree(xq_d); cudaFree(route_d); cudaFree(weight_d);
+	}
+	uint64_t wrong = 0u;
+	for ( uint32_t owner = 0u; owner < RANKS; ++owner )
+	{
+		std::vector<uint16_t> landing((size_t)RANKS * capacity * HIDDEN), shared((size_t)own * HIDDEN);
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+			memcpy(landing.data() + (size_t)rank * capacity * HIDDEN, partial[rank].data() + (size_t)owner * capacity * HIDDEN,
+				(size_t)capacity * HIDDEN * sizeof(uint16_t));
+		for ( auto &value : shared )
+			value = ToBf16((float)(Next() % 4096u) / 1024.0f - 2.0f);
+		uint16_t *landing_d = Device(landing), *shared_d = Device(shared), *output_d = 0;
+		CUDA(cudaMalloc(&output_d, (size_t)own * HIDDEN * sizeof(uint16_t)));
+		D41ExchangeCombineKernel<<<dim3((HIDDEN + 255u) / 256u, own), 256u>>>(landing_d, slot_d[owner], shared_d, RANKS, capacity, routed, HIDDEN,
+			output_d);
+		CUDA(cudaGetLastError());
+		const std::vector<uint16_t> output = Host(output_d, (size_t)own * HIDDEN);
+		for ( uint32_t row = 0u; row < own; ++row )
+			for ( uint32_t element = 0u; element < HIDDEN; ++element )
+			{
+				uint16_t expected = 0u;
+				if ( row < routed )
+				{
+					float total = 0.0f;
+					for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+					{
+						const uint32_t at = slots[owner][(size_t)row * RANKS + rank];
+						if ( at != UINT32_MAX )
+							total += FromBf16(partial[rank][((size_t)owner * capacity + at) * HIDDEN + element]);
+					}
+					expected = ToBf16(FromBf16(ToBf16(total)) + FromBf16(shared[(size_t)row * HIDDEN + element]));
+				}
+				wrong += output[(size_t)row * HIDDEN + element] != expected ? 1u : 0u;
+			}
+		cudaFree(landing_d); cudaFree(shared_d); cudaFree(output_d);
+	}
+	for ( uint32_t source = 0u; source < RANKS; ++source )
+	{
+		cudaFree(slot_d[source]);
+		cudaFree(count_d[source]);
+	}
+	cudaFree(counts_d);
+	printf("exchange own %u routed %u%s: capacity %u, %llu combined values differ\n", own, routed, hot != 0u ? " (two hot ranks)" : "", capacity,
+		(unsigned long long)wrong);
+	return wrong != 0u ? 1u : 0u;
+}
+
+int main(void)
+{
+	uint32_t failures = 0u;
+	failures += Case(128u, 128u, 0u);
+	failures += Case(128u, 77u, 0u);
+	failures += Case(1024u, 1024u, 0u);
+	failures += Case(1024u, 1024u, 1u);
+	failures += Case(1544u, 1500u, 0u);
+	failures += Case(64u, 0u, 0u);
+	if ( failures != 0u )
+	{
+		fprintf(stderr, "FAIL dsv41 exchange: %u cases differ\n", failures);
+		return 1;
+	}
+	printf("PASS dsv41 exchange: every routed row reaches each rank that holds one of its experts once, in row order, with its codes, scales, "
+		"experts and weights; padding rows carry no routes; the owner sums the ranks' partials in rank order and adds the shared expert as the "
+		"publisher does; rows past the live count are zero\n");
+	return 0;
+}
