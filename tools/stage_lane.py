@@ -476,6 +476,7 @@ MODELS = {
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
     "glm53_full": GLM53_FULL,
+    "glm53_full_ab": {**GLM53_FULL, "swap_id": "glm-5.3-ab", "api_port": 8497},
     "hy4": HY4,
     "k3": K3,
     "k31_pro": K31_PRO,
