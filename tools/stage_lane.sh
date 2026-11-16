@@ -15,7 +15,7 @@ LAST_RANK=$((LANE_RANKS - 1))
 . "$HERE/lane_run_log.sh"
 . "$HERE/lane_weights.sh"
 HEX=0123456789abcdef
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=3"
 UNIT="sp-${STAGE_MODEL//_/-}-rd$STAGE_LANE"
 model_field() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(stage_lane.MODELS['$STAGE_MODEL']['$1'])"; }
 ADAPTER_FILE="$(model_field adapter)"
