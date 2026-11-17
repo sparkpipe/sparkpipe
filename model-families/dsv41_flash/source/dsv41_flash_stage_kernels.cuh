@@ -833,6 +833,103 @@ static __global__ void D41ExchangeCombineKernel(const uint16_t *__restrict__ lan
 	}
 }
 
+static __global__ void D41WindowAssembleKernel(const uint16_t *__restrict__ own_kv, const uint16_t *__restrict__ edges, uint16_t *__restrict__ window_kv,
+	uint32_t own, uint32_t edge, uint32_t first)
+{
+	const uint32_t block = blockIdx.x;
+	const uint32_t rank = block < own ? 0u : (block - own) / edge, index = block < own ? block : (block - own) - rank * edge;
+	const uint4 *source = (const uint4 *)(block < own ? own_kv + (uint64_t)block * D41K_LATENT : edges + (uint64_t)(block - own) * D41K_LATENT);
+	uint4 *target = (uint4 *)(window_kv + (uint64_t)(block < own ? first + block : rank * own + own - edge + index) * D41K_LATENT);
+	for ( uint32_t i = threadIdx.x; i < D41K_LATENT / 8u; i += blockDim.x )
+		target[i] = source[i];
+}
+
+#define D41K_ENGRAM_DIM 256u
+#define D41K_ENGRAM_SCALES (D41K_ENGRAM_DIM / 32u)
+#define D41K_ENGRAM_RECORD_BYTES (D41K_ENGRAM_DIM + 16u)
+
+static __device__ __forceinline__ uint32_t D41EngramSource(int64_t id, uint64_t part, uint64_t table_rows)
+{
+	return id >= 0 && (uint64_t)id < table_rows ? (uint32_t)((uint64_t)id / part) : UINT32_MAX;
+}
+
+template<uint32_t RANKS>
+static __global__ void D41EngramSlotsKernel(const int64_t *__restrict__ ids, uint32_t rows, uint32_t own, uint32_t columns, uint64_t part,
+	uint64_t table_rows, uint32_t *__restrict__ slot, uint32_t *__restrict__ counts)
+{
+	__shared__ uint32_t totals[32][RANKS];
+	__shared__ uint32_t base[RANKS];
+	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u, owner = blockIdx.x;
+	const uint32_t first = owner * own < rows ? owner * own : rows, last = first + own < rows ? first + own : rows;
+	const uint64_t begin = (uint64_t)first * columns, end = (uint64_t)last * columns;
+	if ( threadIdx.x < RANKS )
+		base[threadIdx.x] = 0u;
+	__syncthreads();
+	for ( uint64_t chunk = begin; chunk < end; chunk += blockDim.x )
+	{
+		const uint64_t entry = chunk + threadIdx.x;
+		const uint32_t source = entry < end ? D41EngramSource(ids[entry], part, table_rows) : UINT32_MAX;
+		uint32_t before = 0u;
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		{
+			const uint32_t vote = __ballot_sync(0xffffffffu, source == rank);
+			before = source == rank ? __popc(vote & ((1u << lane) - 1u)) : before;
+			if ( lane == 0u )
+				totals[warp][rank] = __popc(vote);
+		}
+		__syncthreads();
+		if ( threadIdx.x < RANKS )
+		{
+			uint32_t running = base[threadIdx.x];
+			for ( uint32_t w = 0u; w < warps; ++w )
+			{
+				const uint32_t here = totals[w][threadIdx.x];
+				totals[w][threadIdx.x] = running;
+				running += here;
+			}
+			base[threadIdx.x] = running;
+		}
+		__syncthreads();
+		if ( entry < end )
+			slot[entry] = source < RANKS ? totals[warp][source] + before : UINT32_MAX;
+		__syncthreads();
+	}
+	if ( threadIdx.x < RANKS )
+		counts[threadIdx.x * RANKS + owner] = base[threadIdx.x];
+}
+
+static __global__ void D41EngramPackKernel(const int64_t *__restrict__ ids, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ payload,
+	const uint8_t *__restrict__ scale, uint32_t own, uint32_t columns, uint64_t first_row, uint64_t local_rows, uint32_t capacity,
+	uint8_t *__restrict__ send)
+{
+	const uint32_t row = blockIdx.x, lane = threadIdx.x & 31u;
+	for ( uint32_t column = threadIdx.x >> 5u; column < columns; column += blockDim.x >> 5u )
+	{
+		const uint64_t entry = (uint64_t)row * columns + column;
+		const int64_t id = ids[entry];
+		if ( id < (int64_t)first_row || id >= (int64_t)(first_row + local_rows) )
+			continue;
+		const uint64_t local = (uint64_t)(id - (int64_t)first_row);
+		uint8_t *record = send + ((uint64_t)(row / own) * capacity + slot[entry]) * D41K_ENGRAM_RECORD_BYTES;
+		if ( lane < D41K_ENGRAM_DIM / 16u )
+			((uint4 *)record)[lane] = ((const uint4 *)(payload + local * D41K_ENGRAM_DIM))[lane];
+		else if ( lane == D41K_ENGRAM_DIM / 16u )
+			((uint2 *)(record + D41K_ENGRAM_DIM))[0] = ((const uint2 *)(scale + local * D41K_ENGRAM_SCALES))[0];
+	}
+}
+
+static __global__ void D41EngramUnpackKernel(const int64_t *__restrict__ ids, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ received,
+	uint32_t rows, uint32_t first, uint32_t columns, uint64_t part, uint64_t table_rows, uint32_t capacity, uint16_t *__restrict__ embed)
+{
+	const uint32_t row = first + blockIdx.x, column = blockIdx.y;
+	const uint64_t entry = (uint64_t)row * columns + column;
+	const uint32_t source = row < rows ? D41EngramSource(ids[entry], part, table_rows) : UINT32_MAX;
+	const uint8_t *record = source != UINT32_MAX ? received + ((uint64_t)source * capacity + slot[entry]) * D41K_ENGRAM_RECORD_BYTES : 0;
+	uint16_t *target = embed + ((uint64_t)blockIdx.x * columns + column) * D41K_ENGRAM_DIM;
+	for ( uint32_t c = threadIdx.x; c < D41K_ENGRAM_DIM; c += blockDim.x )
+		target[c] = record != 0 ? LmFloatToBf16(LmE4m3ToFloat(record[c]) * LmE8m0ToFloat(record[D41K_ENGRAM_DIM + c / 32u])) : (uint16_t)0u;
+}
+
 static __global__ void D41SumSourcesKernel(const uint16_t *__restrict__ partial, uint16_t *__restrict__ output, uint32_t pairs, uint64_t source_pairs,
 	uint32_t sources)
 {

@@ -1167,9 +1167,64 @@ rounds: overlapping them with compute, and cutting the gathers below.
    owned rows' normalized hidden states, gathered (164 MB), instead of every
    row's four streams (671 MB); the inputs are the same bits. It saved about
    28 ms a chunk. The final chunk still gathers the streams for its tail.
-4. The compressed-key layers (2, 8 and 14) gather every row's normalized hidden
-   (164 MB each) for a compress every rank repeats.
+4. Done: the compressed-key layers (2, 8, 14 and the layer-20 handoff) no
+   longer gather every row's normalized hidden (164 MB a layer). Each owner
+   projects its own rows' c_kv and c_score (5,120 to 512, FP32) and the ranks
+   gather those (67 MB, 34 MB at layer 20, where only c_kv is used); the
+   compressor, keys and index keys then run on every row as before. A row's
+   projection is the same bits whatever the row count above 16 (the stream
+   GEMM accumulates each output in a fixed K order, with no split-K).
+   Attention builds its queries in a buffer of their own, so the owned rows'
+   normalized hidden stays in place for the indexer; steps whose rows are not
+   owned (the tail, short prefills) still read the full rows.
 5. The tail's MoE repeats routing and the shared expert on every rank and
    all-reduces the tail rows.
 6. The mesh rounds still run with nothing else on the GPU; splitting a step
-   into two halves on two streams would hide them behind compute.
+   into two halves on two streams would hide them behind compute. Built, not
+   on: see below.
+7. Done: the engram exchange. Each rank holds a sixteenth of each engram
+   table by row range. Instead of reduce-scattering a [rows x 6,144] BF16
+   buffer that is zero except the rows the rank holds (201 MB a table on a
+   16,384-row step), every rank numbers the looked-up rows by holder and owner
+   (every rank hashes every row, so the counts need no collective, only one
+   read on the host at layer 1 for both tables), holders send each row's FP8
+   codes and scales (272 bytes) to the row's owner, and the owner decodes them
+   as the holder's own lookup does: about 6 MB a rank instead of 188 MB. Both
+   tables' ids are hashed at layer 1 and the n-gram history is updated there
+   instead of at the step's end.
+8. Done: window keys. Each layer gathered every row's window key (16 MB) for
+   attention that reads only the 127 rows before each owned block and, for
+   the window ring, the step's last 128 rows. The ranks now gather their last
+   min(own, 256) rows (4 MB); 256 covers a window plus the padding rows a
+   rank's block can end with.
+
+| Build | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| experts placed by routed load (above) | 8,878, 118% | 15,316, 181% | 18,125, 216% |
+| and the engram exchange, owned key projections and window keys | 9,637, 128% | 16,202, 191% | 19,360, 230% |
+
+All four changes give the same bits: teacher-forced scores at 56 positions
+deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
+cached prefixes, every final chunk running the tail) are identical to the
+previous build's at every position, as are the 40,000-, 1,500- and 200-token
+answers. A first version had the indexer read the owned rows' hidden even on
+steps whose rows are not owned; the same check caught it (KL 0.0019, all 56
+positions moved), and a single-variable bisect over builds placed it.
+
+Two lanes, built and measured, not on. The runner splits a step of 4,096 rows
+or more into halves on two streams, with their rounds in one fixed order on
+every rank. DSV4.1 needed the second lane's arena sized and planned, the
+per-slot state (window ring, compressor state, n-gram history), the verify
+buffers and the constant layer-0 stream mix shared with the first lane (an
+arena of its own held zeros for that mix, which gave the second half's rows a
+zero layer-0 attention input: KL 0.040 at deep positions while the 40,000-token
+answer still matched), and a row-state fence each layer. With the mix shared,
+two runs of the same lane build still score deep positions differently (8 of
+56 identical, KL 0.004) where one lane repeats bit for bit, and lane runs time
+out on every rank now and then with a peer two phases behind, which points at
+ranks disagreeing on a round's size. A trace of the lane build shows the cost
+the design leaves: both lanes' rounds share one collective stream, so a lane's
+ready round waits behind the other lane's, 224 to 332 ms a 16,384-row step
+with nothing else on the GPU, and the final chunk's 20-layer tail runs on one
+lane alone (about 350 ms). A collective stream per lane and a tail split over
+both lanes would take 200 to 260 ms a step and 150 to 250 ms a final chunk.

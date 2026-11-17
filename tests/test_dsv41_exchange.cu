@@ -259,6 +259,141 @@ static uint32_t Case(uint32_t own, uint32_t routed, uint32_t hot, uint32_t shuff
 	return wrong != 0u ? 1u : 0u;
 }
 
+static uint32_t EngramCase(uint32_t rows, uint32_t own, uint64_t table_rows, uint32_t invalid)
+{
+	const uint32_t columns = 24u, dim = D41K_ENGRAM_DIM, record = D41K_ENGRAM_RECORD_BYTES;
+	const uint64_t part = (table_rows + RANKS - 1u) / RANKS;
+	std::vector<int64_t> ids((size_t)rows * columns);
+	uint64_t wrong = 0u, invalid_ids = 0u;
+	for ( size_t entry = 0u; entry < ids.size(); ++entry )
+	{
+		ids[entry] = (int64_t)(((uint64_t)Next() << 20u ^ Next()) % table_rows);
+		if ( invalid != 0u && Next() % 16u == 0u )
+		{
+			ids[entry] = Next() % 2u == 0u ? -1 - (int64_t)(Next() % 5u) : (int64_t)(table_rows + Next() % 7u);
+			invalid_ids++;
+		}
+	}
+	int64_t *ids_d = Device(ids);
+	uint32_t *slot_d = 0, *counts_d = 0;
+	CUDA(cudaMalloc(&slot_d, ids.size() * sizeof(uint32_t)));
+	CUDA(cudaMalloc(&counts_d, RANKS * RANKS * sizeof(uint32_t)));
+	D41EngramSlotsKernel<RANKS><<<RANKS, 1024u>>>(ids_d, rows, own, columns, part, table_rows, slot_d, counts_d);
+	CUDA(cudaGetLastError());
+	const std::vector<uint32_t> counts = Host(counts_d, RANKS * RANKS);
+	std::vector<uint32_t> expected_counts(RANKS * RANKS, 0u);
+	for ( uint32_t row = 0u; row < rows; ++row )
+		for ( uint32_t column = 0u; column < columns; ++column )
+		{
+			const int64_t id = ids[(size_t)row * columns + column];
+			if ( id >= 0 && (uint64_t)id < table_rows )
+				expected_counts[(size_t)((uint64_t)id / part) * RANKS + row / own]++;
+		}
+	uint32_t capacity = 0u;
+	for ( uint32_t index = 0u; index < RANKS * RANKS; ++index )
+	{
+		wrong += counts[index] != expected_counts[index] ? 1u : 0u;
+		capacity = counts[index] > capacity ? counts[index] : capacity;
+	}
+	capacity = capacity != 0u ? (capacity + 7u) / 8u * 8u : 8u;
+	std::vector<uint8_t *> payload_d(RANKS), scale_d(RANKS), send_d(RANKS);
+	std::vector<uint16_t *> dense_d(RANKS);
+	std::vector<uint64_t> local_rows(RANKS);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		local_rows[rank] = (uint64_t)rank * part >= table_rows ? 0u : (table_rows - (uint64_t)rank * part < part ? table_rows - (uint64_t)rank * part : part);
+		std::vector<uint8_t> payload((size_t)local_rows[rank] * dim + 16u), scale((size_t)local_rows[rank] * (dim / 32u) + 16u);
+		for ( uint8_t &code : payload )
+		{
+			code = (uint8_t)Next();
+			code = (code & 0x7fu) == 0x7fu ? (uint8_t)(code ^ 1u) : code;
+		}
+		for ( uint8_t &exponent : scale )
+			exponent = (uint8_t)(112u + Next() % 24u);
+		payload_d[rank] = Device(payload);
+		scale_d[rank] = Device(scale);
+		CUDA(cudaMalloc(&send_d[rank], (size_t)RANKS * capacity * record));
+		CUDA(cudaMemset(send_d[rank], 0xa5, (size_t)RANKS * capacity * record));
+		D41EngramPackKernel<<<rows, 256u>>>(ids_d, slot_d, payload_d[rank], scale_d[rank], own, columns, (uint64_t)rank * part, local_rows[rank],
+			capacity, send_d[rank]);
+		CUDA(cudaGetLastError());
+		CUDA(cudaMalloc(&dense_d[rank], (size_t)rows * columns * dim * sizeof(uint16_t)));
+		LmNgramGatherE8m0Kernel<<<dim3(rows, columns), 256u>>>(ids_d, payload_d[rank], scale_d[rank], dense_d[rank], (uint64_t)rank * part,
+			local_rows[rank], columns, dim);
+		CUDA(cudaGetLastError());
+	}
+	std::vector<std::vector<uint16_t>> dense(RANKS);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		dense[rank] = Host(dense_d[rank], (size_t)rows * columns * dim);
+	uint8_t *received_d = 0;
+	uint16_t *embed_d = 0;
+	CUDA(cudaMalloc(&received_d, (size_t)RANKS * capacity * record));
+	CUDA(cudaMalloc(&embed_d, (size_t)own * columns * dim * sizeof(uint16_t)));
+	for ( uint32_t owner = 0u; owner < RANKS; ++owner )
+	{
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+			CUDA(cudaMemcpy(received_d + (size_t)source * capacity * record, send_d[source] + (size_t)owner * capacity * record, (size_t)capacity * record,
+				cudaMemcpyDeviceToDevice));
+		CUDA(cudaMemset(embed_d, 0x5a, (size_t)own * columns * dim * sizeof(uint16_t)));
+		D41EngramUnpackKernel<<<dim3(own, columns), 256u>>>(ids_d, slot_d, received_d, rows, owner * own, columns, part, table_rows, capacity, embed_d);
+		CUDA(cudaGetLastError());
+		const std::vector<uint16_t> embed = Host(embed_d, (size_t)own * columns * dim);
+		for ( uint32_t local = 0u; local < own; ++local )
+			for ( uint32_t column = 0u; column < columns; ++column )
+			{
+				const uint32_t row = owner * own + local;
+				const int64_t id = row < rows ? ids[(size_t)row * columns + column] : -1;
+				const uint32_t source = id >= 0 && (uint64_t)id < table_rows ? (uint32_t)((uint64_t)id / part) : UINT32_MAX;
+				for ( uint32_t element = 0u; element < dim; ++element )
+				{
+					const uint16_t expected = source != UINT32_MAX ? dense[source][((size_t)row * columns + column) * dim + element] : 0u;
+					wrong += embed[((size_t)local * columns + column) * dim + element] != expected ? 1u : 0u;
+				}
+			}
+	}
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		cudaFree(payload_d[rank]); cudaFree(scale_d[rank]); cudaFree(send_d[rank]); cudaFree(dense_d[rank]);
+	}
+	cudaFree(received_d); cudaFree(embed_d); cudaFree(ids_d); cudaFree(slot_d); cudaFree(counts_d);
+	printf("engram exchange rows %u own %u table %llu%s: capacity %u of %u entries a pair at most, %llu values differ\n", rows, own,
+		(unsigned long long)table_rows, invalid != 0u ? " (with ids no rank holds)" : "", capacity, own * columns, (unsigned long long)wrong);
+	return wrong != 0u || (invalid_ids == 0u && invalid != 0u) ? 1u : 0u;
+}
+
+static uint32_t WindowCase(uint32_t rows, uint32_t own, uint32_t edge)
+{
+	const uint32_t dim = D41K_LATENT, window = 128u;
+	std::vector<uint16_t> full((size_t)own * RANKS * dim);
+	for ( uint16_t &value : full )
+		value = (uint16_t)Next();
+	std::vector<uint16_t> edges((size_t)RANKS * edge * dim);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		memcpy(&edges[(size_t)rank * edge * dim], &full[((size_t)rank * own + own - edge) * dim], (size_t)edge * dim * sizeof(uint16_t));
+	uint16_t *edges_d = Device(edges), *window_d = 0;
+	CUDA(cudaMalloc(&window_d, full.size() * sizeof(uint16_t)));
+	uint64_t wrong = 0u;
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint16_t> own_kv(&full[(size_t)rank * own * dim], &full[(size_t)(rank + 1u) * own * dim]);
+		uint16_t *own_d = Device(own_kv);
+		CUDA(cudaMemset(window_d, 0xee, full.size() * sizeof(uint16_t)));
+		D41WindowAssembleKernel<<<own + RANKS * edge, 64u>>>(own_d, edges_d, window_d, own, edge, rank * own);
+		CUDA(cudaGetLastError());
+		const std::vector<uint16_t> window_kv = Host(window_d, full.size());
+		const uint32_t first = rank * own, from = first >= window - 1u ? first - (window - 1u) : 0u, to = first + own < rows ? first + own : rows;
+		for ( uint32_t row = from; row < to; ++row )
+			wrong += memcmp(&window_kv[(size_t)row * dim], &full[(size_t)row * dim], dim * sizeof(uint16_t)) != 0 ? 1u : 0u;
+		for ( uint32_t row = rows - window; row < rows; ++row )
+			wrong += memcmp(&window_kv[(size_t)row * dim], &full[(size_t)row * dim], dim * sizeof(uint16_t)) != 0 ? 1u : 0u;
+		cudaFree(own_d);
+	}
+	cudaFree(edges_d);
+	cudaFree(window_d);
+	printf("window edges rows %u own %u edge %u: %llu window rows differ from the full gather\n", rows, own, edge, (unsigned long long)wrong);
+	return wrong != 0u ? 1u : 0u;
+}
+
 int main(void)
 {
 	uint32_t failures = 0u;
@@ -269,6 +404,14 @@ int main(void)
 	failures += Case(1024u, 1024u, 1u, 1u);
 	failures += Case(1544u, 1500u, 0u, 1u);
 	failures += Case(64u, 0u, 0u, 0u);
+	failures += EngramCase(16384u, 1024u, 16u * 20011u + 5u, 1u);
+	failures += EngramCase(8191u, 512u, 16u * 20011u, 0u);
+	failures += EngramCase(4223u, 264u, 16u * 50u - 7u, 1u);
+	failures += WindowCase(16384u, 1024u, 256u);
+	failures += WindowCase(16383u, 1024u, 256u);
+	failures += WindowCase(8191u, 512u, 256u);
+	failures += WindowCase(2049u, 136u, 136u);
+	failures += WindowCase(2048u, 128u, 128u);
 	if ( failures != 0u )
 	{
 		fprintf(stderr, "FAIL dsv41 exchange: %u cases differ\n", failures);
@@ -276,6 +419,8 @@ int main(void)
 	}
 	printf("PASS dsv41 exchange: every routed row reaches each rank that holds one of its experts once, by contiguous or placed experts, in row order, and is localized to the rank's own slots, with its codes, scales, "
 		"experts and weights; padding rows carry no routes; the owner sums the ranks' partials in rank order and adds the shared expert as the "
-		"publisher does; rows past the live count are zero\n");
+		"publisher does; rows past the live count are zero; every engram row a rank holds reaches the owner of the token row that looks it up, "
+		"once, and decodes to the BF16 the holder's own lookup gives, ids no rank holds and padding rows give zero; each rank's own rows, the window "
+		"before them and the step's last window assemble from the ranks' edge rows as the full gather gives them\n");
 	return 0;
 }

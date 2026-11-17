@@ -9,6 +9,14 @@ rows up to the shared capacity must carry no routes. The owner must sum the rank
 rank order in FP32, round once to BF16 as the reduce-scatter it replaces does, add the shared
 expert's BF16 output as the publisher's MoE adds its shared expert, and write zero for rows past
 its live count. Cases cover uneven routing with two hot ranks, a partial last rank and no rows.
+The engram exchange numbers every looked-up engram row by the rank that holds it and the rank
+that owns its token row; each holder packs its rows' FP8 codes and scales, and each owner must
+decode them to the BF16 values the holder's own lookup gives, with zero for ids no rank holds
+and for padding rows. Cases cover a full 16,384-row step, odd row counts and a table that does
+not split evenly over the ranks.
+Window keys gather only each rank's last rows: a rank's own rows, the 127 rows before them and
+the step's last 128 rows must assemble to the values the full gather of every row gives, for full
+steps, steps with padding rows and the smallest owned blocks.
 """
 
 import subprocess
