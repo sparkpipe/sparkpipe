@@ -631,11 +631,30 @@ static uint32_t StageRunnerSplitSum(const SparkStageRunnerState *state, uint32_t
 		rows >= STAGE_RUNNER_SPLIT_SUM_ROWS && rows % state->tp_degree == 0u && elements / state->tp_degree <= state->sum_share_elements ? 1u : 0u;
 }
 
+static SparkStatus StageRunnerLoneRound(SparkStageRunnerState *state, void *stream_void, uint32_t operation, uint32_t stage,
+	uint32_t rows, uint32_t row_elements, const void *local, void *full)
+{
+	const uint64_t elements = (uint64_t)rows * (row_elements != 0u ? row_elements : state->geometry.hidden);
+	const uint64_t element_bytes = operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_MAX_U64 ? sizeof(uint64_t) :
+		operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_F32 ? sizeof(float) : sizeof(uint16_t);
+	if ( stage == SPARK_STAGE_RUNNER_ROUND_FINISH || local == full || elements == 0u )
+		return SPARK_STATUS_OK;
+	if ( local == 0 || full == 0 ||
+		cudaMemcpyAsync(full, local, elements * element_bytes, cudaMemcpyDeviceToDevice, (cudaStream_t)stream_void) != cudaSuccess )
+	{
+		state->tp_collective_failed = 1u;
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerMeshRound(SparkStageRunnerState *state, uint32_t flags, void *stream_void, uint32_t operation, uint32_t stage,
 	uint32_t rows, uint32_t row_elements, const void *local, void *full)
 {
 	SparkTpDeviceCollectiveSubmission submission;
 	SparkStatus status;
+	if ( state->device_collective_created == 0 && state->tp_degree == 1u )
+		return StageRunnerLoneRound(state, stream_void, operation, stage, rows, row_elements, local, full);
 	if ( state->device_collective_created == 0 )
 	{
 		state->tp_collective_failed = 1u;
@@ -1140,6 +1159,18 @@ static void StageRunnerMemoryMark(SparkStageRunnerState *state, const char *phas
 	state->memory_mark_available = available;
 }
 
+static SparkStatus StageRunnerStartupMark(SparkStageRunnerState *state, const char *phase)
+{
+	char what[96];
+	SparkStatus status;
+	StageRunnerMemoryMark(state, phase, 0u);
+	snprintf(what, sizeof(what), "rank %u startup after %s", state->tp_rank, phase);
+	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH, 0u, what, state->model_interface->weightd_model);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerAdoptQueue(SparkStageRunnerState *state)
 {
 	SparkStatus status = SparkDeviceInitialize(0);
@@ -1205,10 +1236,11 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	request.configuration = configuration;
 	request.services = &state->services;
 	request.stream = configuration->execution_stream;
-	StageRunnerMemoryMark(state, "begin", 0u);
-	status = model->open(&request, &state->model, &state->geometry);
+	status = StageRunnerStartupMark(state, "begin");
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "model_open", 0u);
+		status = model->open(&request, &state->model, &state->geometry);
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerStartupMark(state, "model_open");
 	if ( status == SPARK_STATUS_OK && (state->geometry.hidden == 0u || state->geometry.vocab == 0u ||
 		state->geometry.total_layers == 0u || state->geometry.hidden % 8u != 0u) )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -1225,7 +1257,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerAttachWeights(state, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "weights_attached", 0u);
+		status = StageRunnerStartupMark(state, "weights_attached");
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = model->bind(state->model, state->lazy_pack, &state->geometry);
@@ -1233,7 +1265,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 			fprintf(stderr, "sparkpipe_stage_runner: %s weight bind failed status=%d\n", model->tag, (int)status);
 	}
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "model_bound", 0u);
+		status = StageRunnerStartupMark(state, "model_bound");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLeases(state);
 	if ( status == SPARK_STATUS_OK )
@@ -1274,15 +1306,15 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateCollective(state, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "collective", 0u);
+		status = StageRunnerStartupMark(state, "collective");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateHead(state, runner);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "head", 0u);
+		status = StageRunnerStartupMark(state, "head");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateBuffers(state, runner, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "buffers", 0u);
+		status = StageRunnerStartupMark(state, "buffers");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLanes(state);
 	if ( status == SPARK_STATUS_OK )
@@ -1490,10 +1522,9 @@ static SparkStatus StageRunnerCheckResident(SparkStageRunnerState *state)
 
 static SparkStatus StageRunnerChainBegin(SparkStageRunnerState *state, uint64_t request_id)
 {
-	const uint64_t key = request_id & SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK;
 	SparkStatus status = StageRunnerVerifyCollectives(state, state->stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
-		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, key);
+		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id);
 	return status;
 }
 
@@ -2272,8 +2303,11 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	state->graph_score_out[slot] = state->step_dispatch->output_scores;
 	state->graph_distribution_count[slot] = state->step_dispatch->distribution_count;
 	state->capture_ns += SparkMonotonicNs() - started;
-	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_dropped=%u\n", in->graph_key, rows,
-		(unsigned long long)nodes, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, prefetch->dropped);
+	uint64_t prefetch_bytes = 0u;
+	for ( uint32_t group = 0u; group < prefetch->groups; ++group )
+		prefetch_bytes += prefetch->host[group].total;
+	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_mib=%.1f prefetch_dropped=%u\n", in->graph_key, rows,
+		(unsigned long long)nodes, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, (double)prefetch_bytes / 1048576.0, prefetch->dropped);
 }
 
 static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, cudaGraphExec_t exec, cudaStream_t stream)

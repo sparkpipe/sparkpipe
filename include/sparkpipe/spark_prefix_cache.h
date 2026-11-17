@@ -299,6 +299,13 @@ SparkStatus SparkPrefixCacheCommitPrompt(
     const uint32_t *token_ids,
     uint32_t token_count,
     SparkPrefixCacheLookup *lookup);
+SparkStatus SparkPrefixCacheCommitPromptAfter(
+    SparkPrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t committed_token_count,
+    uint32_t token_count,
+    SparkPrefixCacheLookup *lookup);
 
 SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
     SparkPrefixCache *cache,

@@ -402,6 +402,71 @@ static void TestRefusedContinuationIsContained(SparkModelPipelineClient *pipelin
 		"split continuation: ranks that accepted a step another rank refused fail the pipeline");
 }
 
+static void TestTokenStepSubmission(SparkModelServingSubmission *submission, SparkModelServingLane *lanes, uint64_t submission_id, uint64_t position, uint64_t step_generation)
+{
+	static uint32_t token_ids[2];
+	uint32_t lane;
+	TestLeaseSubmission(submission,lanes,submission_id,position,step_generation);
+	for (lane=0u; lane<2u; lane++)
+	{
+		token_ids[lane] = 300u + (uint32_t)position + lane;
+		lanes[lane].input_token_id = token_ids[lane];
+		lanes[lane].state_target_token_count = lanes[lane].context_token_count;
+		lanes[lane].sampling = SparkSamplingRule(0.0f,0u);
+	}
+	submission->token_ids = token_ids;
+}
+
+static void TestTokenStep(const TestCallbackState *cb, SparkModelServingSubmission *submission)
+{
+	uint32_t completions = cb->completion_count;
+	TestFireAllRanksResult(submission->submission_id,SPARK_STATUS_OK);
+	TestLeaseCompletion(submission,SPARK_STATUS_OK);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,"token continuation: the continued step completes");
+}
+
+static void TestContinuationsCarryOnlyTokens(SparkModelPipelineClient *pipeline, const TestCallbackState *cb)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t continues,tokens,rank;
+	TestTokenStepSubmission(&submission,lanes,53u,30u,8000u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK,"token continuation: the leasing step is accepted");
+	TestFireAllRanksResult(53u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(53u,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	TestLeaseCompletion(&submission,SPARK_STATUS_OK);
+	TestTokenStepSubmission(&submission,lanes,54u,31u,8001u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	tokens = MockResidentClientTokenContinuations(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u && MockResidentClientTokenContinuations(0u) == tokens + 1u,
+		"token continuation: a lane that only advances on its lease sends its token alone");
+	for (rank=1u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientTokenContinuations(rank) == MockResidentClientTokenContinuations(0u),"token continuation: every rank gets the same form");
+	TestTokenStep(cb,&submission);
+	TestTokenStepSubmission(&submission,lanes,55u,32u,8002u);
+	lanes[1].sampling = SparkSamplingRule(0.7f,9u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	tokens = MockResidentClientTokenContinuations(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u && MockResidentClientTokenContinuations(0u) == tokens,
+		"token continuation: a lane whose state changed is sent whole");
+	TestTokenStep(cb,&submission);
+	TestTokenStepSubmission(&submission,lanes,56u,33u,8003u);
+	lanes[1].sampling = SparkSamplingRule(0.7f,9u);
+	tokens = MockResidentClientTokenContinuations(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK && MockResidentClientTokenContinuations(0u) == tokens + 1u,
+		"token continuation: the step after a whole send compares against the state that send carried");
+	TestTokenStep(cb,&submission);
+	TestTokenStepSubmission(&submission,lanes,57u,34u,8004u);
+	lanes[1].sampling = SparkSamplingRule(0.7f,9u);
+	submission.token_ids = (const uint32_t[]){334u,999u};
+	tokens = MockResidentClientTokenContinuations(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK && MockResidentClientTokenContinuations(0u) == tokens,
+		"token continuation: rows that are not the lanes' input tokens are sent whole");
+	TestTokenStep(cb,&submission);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -564,6 +629,7 @@ int main(void)
 		"complete new session publishes one fingerprint");
 
 	TestFailedStepDropsLeases(pipeline,&cb);
+	TestContinuationsCarryOnlyTokens(pipeline,&cb);
 	TestRefusedContinuationIsContained(pipeline,&cb);
 	SparkModelPipelineClientDestroy(pipeline);
 	MockResidentClientReset();

@@ -1,0 +1,19 @@
+{
+    "task": {
+        "name": "terminal-bench/sam-cell-seg",
+        "ref": "sha256:37c182b91df18b9c2ea2dceda47430bbd585e7880c56fca2f1975907ce0df8ce",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "sam-cell-seg__LaCMqqB",
+    "trials_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b04",
+    "agent": {
+        "name": "claude-code",
+        "model_name": "deepseek-v4.1-flash",
+        "kwargs": {
+            "version": "2.1.311",
+            "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+            "reasoning_effort": "max"
+        }
+    },
+    "job_id": "1b37e136-ae7e-4fc2-8554-b4d0114a8c21"
+}

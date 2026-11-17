@@ -1,0 +1,4 @@
+Skipping image OS validation for alexgshaw/regex-log:20251031: docker inspect returned 1
+Running command: apt-get update && apt-get install -y curl nodejs npm
+Trial regex-log__d6L2ybs failed: Agent setup timed out after 360.0 seconds
+Collecting main service artifacts

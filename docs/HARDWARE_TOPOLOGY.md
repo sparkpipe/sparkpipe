@@ -13,7 +13,7 @@ Each Spark contributes:
 - one 100 Gb/s port on the CRS804 switched all-to-all fabric (rail 1);
 - one 100 Gb/s port on the `cisco0` switched all-to-all fabric (rail 2). The
   direct `rank XOR 1` links are gone since 2026-11-06; rail 2 still reaches
-  the partner, now through the switch ([FLEET_FABRIC.md](FLEET_FABRIC.md));
+  the partner, now through the switch ([FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md));
 - 128 GB unified memory;
 - one 4 TB internal NVMe; and
 - at least one 4 TB external NVMe.
@@ -77,10 +77,9 @@ Every tier stores content-addressed package bytes. Path names alone never prove
 device placement; startup binds each mount to its expected physical device,
 capacity, role, and package identity.
 
-## RTX 5090 host
+## Hub
 
-The RTX 5090 workstation (`rtx5090`, x86_64, one RTX 5090 with 32 GB) is the
-fleet's release hub, runs the GLM API and is the draft-model host
+The hub (`rtx5090`, x86_64) is the fleet's release hub, runs the GLM API and is the draft-model host
 ([RTX5090_SPECULATION_NODE.md](RTX5090_SPECULATION_NODE.md)). It is not on the
 inference fabric:
 
@@ -94,12 +93,11 @@ The busy-polled 64 B UDP round trip is 22.6 µs p50 and 25.2 µs p99 from
 sparkf, and about 300 µs p50 from the other Sparks through sparkf (lead-dev
 measurement, 2026-09-28). Treat this link as its own link class: a design that
 puts the host in every decode step budgets these round trips. Operations on
-the host are in [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
+the host are in [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 ## Mac Studio pool
 
-Eight Mac Studios with M5 Ultra and 256 GB are on order. Per Apple's
-specifications, each has 256 GB of unified memory at 1.2 TB/s, six
+Per Apple's specifications, a Mac Studio with M5 Ultra has up to 256 GB of unified memory at 1.2 TB/s, six
 Thunderbolt 5 ports (two front, four back) and one 10GbE port. Eight give
 2 TB at 9.6 TB/s: the memory of sixteen Sparks at 2.2 times the bandwidth,
 with a slower interconnect. Per box, the published figures put an M5 Ultra's
@@ -108,7 +106,7 @@ against 26 for an M3 Ultra ([EXO][exo-spark]), and Apple claims up to 4 times
 the M3 Ultra's prompt processing for the M5 Ultra ([Apple][m5-ultra]). Sixteen
 Sparks therefore have about twice the matrix throughput of eight Studios. The
 Studios run SparkPipe through the Metal backend
-([`METAL_BACKEND.md`](METAL_BACKEND.md)). The first Studio measures 1.14 TB/s
+([`METAL_BACKEND.md`](METAL_BACKEND.md)). A Studio measures 1.14 TB/s
 streaming reads from GPU memory and about 95 TFLOPS for a BF16 projection on
 the M5's tensor operations
 ([`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md#mac-studio)).
@@ -185,12 +183,12 @@ input: today a stage that has posted its receive waits forever when a peer
 rank fails.
 
 **The bridge.** Apple's Thunderbolt RDMA is Mac to Mac, so a Mac reaches Linux
-over TCP. The candidates, all to be measured when the Studios arrive:
+over TCP. The candidates, each to be measured before a mixed plan uses it:
 
 - Each Studio's 10GbE port into one switch, uplinked to the CRS804. This
   reaches all eight Studios with no host in the path, and needs a free CRS804
   port.
-- IP over Thunderbolt from a Studio to the RTX 5090 host. Linux's
+- IP over Thunderbolt from a Studio to the hub. Linux's
   `thunderbolt-net` driver speaks Apple's protocol ([kernel docs][tbnet]). It
   has measured about 17 Gb/s from an M1 Mac ([Bergeron][tb-m1]) and 13.7 Gb/s
   between Linux hosts over USB4 ([gist][tb-usb4]), and it receives on one
@@ -199,7 +197,7 @@ over TCP. The candidates, all to be measured when the Studios arrive:
   in July 2026. After the fix, two ASM4242 hosts measured 4.2-5.2 Gb/s, below
   10GbE ([LKML][asm4242-fix]), and distribution kernels without the fix still
   carry no traffic to a Mac ([report][asm4242]).
-- A ConnectX-6 in the RTX 5090 host, which puts that host on the Sparks'
+- A ConnectX-6 in the hub, which puts that host on the Sparks'
   fabric. Each Spark's two ports are already taken, one on the switch and one
   on its pair, so the card joins through the CRS804 and needs a free port
   there. No ConnectX-6 linked directly to a Spark's ConnectX-7 is published;

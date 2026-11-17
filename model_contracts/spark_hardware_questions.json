@@ -286,7 +286,7 @@
       "consumers": [
         "runtime/gemm.cuh",
         "inference/kernels/gqa.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.resources",
@@ -346,7 +346,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/topk.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.moe",
@@ -367,7 +367,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/linear_attn.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.kda",

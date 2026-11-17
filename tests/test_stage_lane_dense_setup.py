@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 import stage_lane
 
 MODEL = "dsv41_flash"
-LANE = 10
+LANE = 3
 HEX = "0123456789abcdef"
 FAKE_SSH = """#!/usr/bin/env bash
 command="${@: -1}"

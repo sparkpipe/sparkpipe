@@ -170,6 +170,29 @@ static void TestPartialReplyIsNotReplayed(void)
 	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
 }
 
+static void TestHelloReportsSubmissionFloor(void)
+{
+	TestSession test;
+	SparkModelResidentIpcHelloAck ack;
+	int peer;
+	TestInitialize(&test);
+	test.runtime.client.last_submission_id = 1000737u;
+	test.runtime.submission_id_floor = 1000737u;
+	SparkModelResidentdCloseClient(&test.runtime);
+	assert(test.runtime.client.last_submission_id == 0u);
+	assert(test.runtime.submission_id_floor == 1000737u);
+	peer = TestAdopt(&test);
+	assert(SparkModelResidentdProgressReset(&test.runtime) == SPARK_STATUS_OK);
+	assert(SparkModelResidentdWriteClient(&test.runtime) == SPARK_STATUS_OK);
+	assert(read(peer,&ack,sizeof(ack)) == sizeof(ack));
+	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),1u,0u,0u,
+		101u,&test.descriptor,&test.runtime.runtime_limits) == SPARK_STATUS_OK);
+	assert(ack.status == SPARK_STATUS_OK && ack.submission_id_floor == 1000737u);
+	close(peer);
+	SparkModelResidentdCloseClient(&test.runtime);
+	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
+}
+
 static void TestCompetingClientPreservesOwner(void)
 {
 	TestSession test;
@@ -378,6 +401,7 @@ int main(void)
 {
 	TestCudaStartupFailureNamesStream();
 	TestCompetingClientPreservesOwner();
+	TestHelloReportsSubmissionFloor();
 	TestPartialReplyIsNotReplayed();
 	TestResetWaitsForOwnedRoute();
 	TestFailedRouteSettlesRanSlots();

@@ -10,7 +10,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "model_contracts" / "k3_authoritative.json"
-GENERATED_HEADER = ROOT / "inference" / "llms" / "kimi_k3" / "generated_config.h"
+GENERATED_HEADER = ROOT / "model-families" / "k3" / "source" / "generated_config.h"
 GENERATED_CONTRACT = ROOT / "model_contracts" / "k3.json"
 GENERATED_DESCRIPTION = ROOT / "examples" / "model_descriptions" / "k3_resident_decode_stage_firmware.json"
 

@@ -4,7 +4,7 @@
 #include <string.h>
 #include <vector>
 
-#include "inference/llms/kimi_k3/streamed.cuh"
+#include "model-families/k3/source/streamed.cuh"
 
 #define ML_SHARDS 16u
 #define ML_ROWS 128u

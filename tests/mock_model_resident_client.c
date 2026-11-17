@@ -62,6 +62,7 @@ struct SparkModelResidentClient
 	uint32_t failed;
 	uint32_t detected;
 	uint32_t stay_dead;
+	uint32_t revive_countdown;
 	uint64_t client_generation;
 	SparkModelResidentSubmitResultFunction submit_result_function;
 	void *submit_result_context;
@@ -76,6 +77,7 @@ struct SparkModelResidentClient
 	uint32_t abort_calls;
 	uint32_t status_request_calls;
 	uint32_t cache_hint_calls;
+	uint32_t token_continuations;
 	uint32_t last_cache_hint_tokens;
 	uint32_t status_outstanding;
 	SparkModelResidentStatusReport status_report;
@@ -110,6 +112,8 @@ static uint32_t mock_identity_log_count;
 static uint32_t mock_token_start = 11u;
 static uint32_t mock_logprob_stride;
 static uint32_t mock_max_sequence_positions[64];
+static uint64_t mock_submission_floors[MOCK_RESIDENT_MAX_RANKS];
+static uint64_t mock_lowest_submission_id = UINT64_MAX;
 static uint32_t mock_logprob_corrupt;
 static uint32_t mock_max_tokens_per_sequence;
 static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
@@ -171,6 +175,12 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_CACHE_HINT: return(c->cache_hint_calls);
 	}
 	return(0u);
+}
+
+uint32_t MockResidentClientTokenContinuations(uint32_t stage_index)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	return( c != 0 ? c->token_continuations : 0u );
 }
 
 uint64_t MockResidentClientGeneration(uint32_t stage_index)
@@ -415,6 +425,7 @@ void MockResidentClientKill(uint32_t stage_index)
 		c->connected = 0u;
 		c->detected = 0u;
 		c->stay_dead = 1u;
+		c->revive_countdown = 0u;
 		MockResidentClientDropInflight(c);
 	}
 }
@@ -424,6 +435,13 @@ void MockResidentClientRevive(uint32_t stage_index)
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	if ( c != 0 )
 		c->stay_dead = 0u;
+}
+
+void MockResidentClientReviveAfter(uint32_t stage_index, uint32_t failed_attempts)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	if ( c != 0 )
+		c->revive_countdown = failed_attempts + 1u;
 }
 
 void MockResidentClientReset(void)
@@ -455,6 +473,8 @@ void MockResidentClientReset(void)
 	mock_logprob_corrupt = 0u;
 	mock_max_tokens_per_sequence = 0u;
 	memset(mock_max_sequence_positions,0,sizeof(mock_max_sequence_positions));
+	memset(mock_submission_floors,0,sizeof(mock_submission_floors));
+	mock_lowest_submission_id = UINT64_MAX;
 	memset(mock_registry,0,sizeof(mock_registry));
 }
 
@@ -468,7 +488,11 @@ static SparkStatus MockResidentClientEnsureConnected(SparkModelResidentClient *c
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	if ( c->stay_dead != 0u )
-		return(SPARK_STATUS_IO_ERROR);
+	{
+		if ( c->revive_countdown == 0u || --c->revive_countdown != 0u )
+			return(SPARK_STATUS_IO_ERROR);
+		c->stay_dead = 0u;
+	}
 	c->connected = 1u;
 	c->detected = 0u;
 	c->client_generation++;
@@ -637,6 +661,8 @@ static SparkStatus MockResidentClientEnqueue(
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
 	client->last_submission_id = submission->submission_id;
+	if ( submission->submission_id < mock_lowest_submission_id )
+		mock_lowest_submission_id = submission->submission_id;
 	if ( submission->lane_count != 0u && submission->lanes != 0 )
 		client->last_lane = submission->lanes[0];
 	if ( client->stage_index == 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && submission->lane_count > mock_max_decode_lanes )
@@ -697,6 +723,35 @@ SparkStatus SparkModelResidentClientContinue(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	client->continue_calls++;
 	return(MockResidentClientEnqueue(client,submission,"continue",MOCK_CALL_CONTINUE));
+}
+
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes)
+{
+	(void)message_bytes;
+	if ( client == 0 || submission_id <= client->last_submission_id )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	return(client->scripted_call_status[MOCK_CALL_CAN_CONTINUE]);
+}
+
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
+	if ( message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
+		return(SparkModelResidentClientPrepare(client,submission));
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS && client != 0 )
+		client->token_continuations++;
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE || header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS )
+		return(SparkModelResidentClientContinue(client,submission));
+	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 SparkStatus SparkModelResidentClientCanQueueDecision(
@@ -782,9 +837,13 @@ SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientPollDescriptor *descriptor)
 {
-	(void)client;
-	(void)descriptor;
-	return(SPARK_STATUS_UNSUPPORTED);
+	if ( client == 0 || descriptor == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(descriptor,0,sizeof(*descriptor));
+	descriptor->abi_version = SPARK_MODEL_RESIDENT_CLIENT_ABI_VERSION;
+	descriptor->descriptor_bytes = SPARK_MODEL_RESIDENT_CLIENT_POLL_DESCRIPTOR_BYTES;
+	descriptor->fd = -1;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkModelResidentClientGetView(
@@ -796,6 +855,7 @@ SparkStatus SparkModelResidentClientGetView(
 	memset(view,0,sizeof(*view));
 	view->connected = client->connected;
 	view->client_generation = client->client_generation;
+	view->submission_id_floor = client->stage_index < MOCK_RESIDENT_MAX_RANKS ? mock_submission_floors[client->stage_index] : 0u;
 	view->queue_capacity = 64u;
 	view->pending_submission_count = client->inflight_count;
 	view->max_active_sequence_count = 4u;
@@ -810,6 +870,19 @@ void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t po
 {
 	if ( stage_index < 64u )
 		mock_max_sequence_positions[stage_index] = positions;
+}
+
+void MockResidentClientSetSubmissionFloor(uint32_t stage_index, uint64_t floor)
+{
+	if ( stage_index < MOCK_RESIDENT_MAX_RANKS )
+		mock_submission_floors[stage_index] = floor;
+}
+
+uint64_t MockResidentClientTakeLowestSubmissionId(void)
+{
+	const uint64_t lowest = mock_lowest_submission_id;
+	mock_lowest_submission_id = UINT64_MAX;
+	return(lowest);
 }
 
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt)
@@ -1159,4 +1232,11 @@ uint64_t SparkModelResidentClientNextProgressNs(
 	const SparkModelResidentClient *client)
 {
 	return(client != 0 && client->connected == 0u ? 1u : 0u);
+}
+
+uint32_t SparkModelResidentClientNeedsProgress(
+	const SparkModelResidentClient *client)
+{
+	(void)client;
+	return(1u);
 }

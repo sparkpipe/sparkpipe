@@ -2,7 +2,7 @@
   "token_file": "/srv/workspace/sparkpipe/fleet-gateway/token",
   "controller_token_file": "/srv/workspace/sparkpipe/swap-controller/token",
   "audit_log": "/srv/workspace/sparkpipe/logs/fleet-gateway-audit.jsonl",
-  "hub": "rtx5090",
+  "hub": "hub",
   "nodes": [
     "spark0",
     "spark1",
@@ -75,6 +75,10 @@
     "-p",
     "LockPersonality=yes",
     "-p",
+    "SystemCallFilter=~@reboot sync syncfs",
+    "-p",
+    "SystemCallErrorNumber=EPERM",
+    "-p",
     "RestrictAddressFamilies=AF_UNIX AF_NETLINK",
     "-p",
     "IPAddressDeny=any",
@@ -103,7 +107,7 @@
   "max_log_lines": 500,
   "refuse": [
     {
-      "pattern": "(?:^|[;&|(`\\n]|\\bsudo)\\s*sync(?:\\s|;|&|\\||$)",
+      "pattern": "(?:^|[\\s;&|(){}`'\"/])sync(?=$|[\\s;&|(){}`'\"])",
       "reason": "a global sync is banned on the fleet; it hung CephFS and rebooted spark0 three times on 2026-10-07"
     },
     {

@@ -123,9 +123,10 @@ void LmPerHeadProjectMmaKernel(const uint16_t *__restrict__ input_bf16, const ui
 }
 
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
-static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream)
+static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream,
+	uint32_t row_exact = 0u)
 {
-	if (rows == 0u)
+	if (rows == 0u || (rows > LM_PROJECT_CHAIN_ROWS && row_exact != 0u))
 		return LmPerHeadProjectRowsLaunch<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>(input_bf16, weight_bf16, output_bf16, heads, rows, stream);
 	if (rows > LM_PROJECT_CHAIN_ROWS)
 	{

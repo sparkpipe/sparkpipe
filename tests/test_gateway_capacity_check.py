@@ -85,13 +85,19 @@ def main():
         refusing.shutdown()
 
         out.unlink()
-        for production in ("https://sparkpipe.ai/v1/chat/completions", "https://api.sparkpipe.ai/v1/messages"):
+        for production in ("https://sparkpipe.ai/v1/chat/completions", "https://api.sparkpipe.ai/v1/messages",
+                           "https://sparkpipe.ai/pay/api/v1/messages?sandbox", "https://sparkpipe.ai/pay/api/v1/messages#staging",
+                           "https://sandbox@sparkpipe.ai/pay/api/v1/messages", "https://sparkpipe.ai/pay/api/sandbox/v1/messages",
+                           "https://sparkpipe.ai/pay/sandbox/api/../../api/v1/messages", "https://sparkpipe.ai/pay/sandbox/api/%2e%2e/%2e%2e/api/v1/messages",
+                           "https://sandboxes.sparkpipe.ai/v1/messages", "https://sparkpipe-staging.ai/v1/messages"):
             code = check_tool.main([production, "--seconds", "0.1", "--out", str(out)])
             if code != 2 or out.exists():
                 failures.append(f"a production URL is refused before any request: {production} exit {code}")
         try:
             check_tool.target("http://staging.sparkpipe.ai/v1/messages")
-            check_tool.target("https://sparkpipe.ai/pay/sandbox/v1/messages")
+            check_tool.target("https://sparkpipe.ai/pay/sandbox/api/v1/messages")
+            check_tool.target("http://127.0.0.2:18091/v1/messages")
+            check_tool.target("http://[::1]:18091/v1/messages")
         except check_tool.Refused as error:
             failures.append(f"staging and sandbox gateways are accepted: {error}")
     for failure in failures:

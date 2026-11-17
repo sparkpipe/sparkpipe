@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_URL = "https://sparkpipe.ai/v1/chat/completions"
 DEFAULT_PROMPTS = (
     "Reply with exactly one short sentence about batching.",
     "Give a terse answer: what is queue pressure?",
@@ -57,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stress SparkPipe OpenAI-compatible API and record JSONL progress."
     )
-    parser.add_argument("--url", default=DEFAULT_URL)
+    parser.add_argument("--url", required=True, help="the chat completions URL to load, such as the sandbox gateway https://sparkpipe.ai/pay/sandbox/api/v1/chat/completions")
     parser.add_argument("--health-url", default="")
     parser.add_argument("--model", default="glm-5.2")
     parser.add_argument("--requests", type=int, default=32)

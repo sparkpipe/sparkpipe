@@ -1,0 +1,52 @@
+{
+    "id": "1d8865cc-c7cf-44ac-ae2a-cdb7e2e12e1e",
+    "started_at": "2026-11-09T18:42:52.432143",
+    "updated_at": "2026-11-09T19:07:33.681484",
+    "finished_at": "2026-11-09T19:07:33.681484",
+    "n_total_trials": 6,
+    "stats": {
+        "n_completed_trials": 6,
+        "n_errored_trials": 3,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "claude-code__deepseek-v4.1-flash__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 4,
+                "n_errors": 3,
+                "metrics": [
+                    {
+                        "mean": 0.5
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "1.0": [
+                            "vulnerable-secret__GWMMruv",
+                            "crack-7z-hash__kXzUmMD",
+                            "bn-fit-modify__quhgKww"
+                        ],
+                        "0.0": [
+                            "extract-elf__Uwn8UjV"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentSetupTimeoutError": [
+                        "adaptive-rejection-sampler__DVQgGNH",
+                        "sparql-university__FcEVhjL"
+                    ],
+                    "AgentTimeoutError": [
+                        "extract-elf__Uwn8UjV"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 4669704,
+        "n_cache_tokens": 4325672,
+        "n_output_tokens": 86190,
+        "cost_usd": 5.122170249999999
+    }
+}

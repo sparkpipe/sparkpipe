@@ -5,7 +5,7 @@
 #include <string.h>
 #include <vector>
 
-#include "inference/llms/kimi_k3/streamed.cuh"
+#include "model-families/k3/source/streamed.cuh"
 #include "tests/cuda/node_collective_emulation.cuh"
 
 #define KDA_SHARDS 16u

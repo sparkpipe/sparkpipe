@@ -15,8 +15,14 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spark_pack_codecs import (CODEC_FP8, CODEC_MXFP4, PAYLOAD_BF16, PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT,  # noqa: E402,F401
+                               SCALE_E8M0, SCALE_NONE, dtype_bytes)
+from spark_pack_common import PackFailure, align_up, read_safetensors_header, tensor_extent, window_chunks  # noqa: E402
+from spark_pack_wire import CODEC_ENTRY, MODEL_REVISION_BYTES, codec_header, region_offsets  # noqa: E402
 
 SHARD_COUNT = 48
 SHARD_NAMING = "model-%05d-of-%05d.safetensors"
@@ -35,11 +41,8 @@ HEADER_BYTES = 257
 ENTRY_BYTES = 64
 ALIGN = 256
 COPY_BUDGET = 16 << 20
-MODEL_REVISION_BYTES = 65
 MAGIC = 0x31413444
 FORMAT_VERSION = 2
-
-DTYPE_BYTES = {"BF16": 2, "F32": 4, "F8_E4M3": 1, "F8_E8M0": 1, "I8": 1}
 
 K_EMBEDDING = 0
 K_FINAL_NORM = 1
@@ -79,21 +82,9 @@ KIND_COUNT = 37
 UNUSED_KINDS = (29, 30, 31)
 EXPERT_KINDS = (K_EXP_W13, K_EXP_W2)
 
-PAYLOAD_BF16 = 1
-PAYLOAD_F32 = 2
-PAYLOAD_PACKED = 4
-CODEC_FP8 = 5
-CODEC_MXFP4 = 7
-SCALE_NONE = 0
-SCALE_E8M0 = 3
-
-
-class Fail(Exception):
-    pass
-
 
 def fail(message: str):
-    raise Fail(message)
+    raise PackFailure(message)
 
 
 def is_global(kind: int) -> bool:
@@ -173,10 +164,10 @@ def entry_shape(kind: int, tp: int):
 def entry_layout(kind: int, tp: int):
     rows, cols, groups = entry_shape(kind, tp)
     if kind in EXPERT_KINDS:
-        return (PAYLOAD_PACKED, CODEC_MXFP4, SCALE_E8M0,
+        return (PAYLOAD_PACKED_WEIGHT, CODEC_MXFP4, SCALE_E8M0,
                 rows * cols * groups, rows * (cols * 2 // 32) * groups)
     if kind in (K_Q_A, K_Q_B, K_KV_A, K_O_A, K_O_B, K_IDX_Q_B, K_SH_W1, K_SH_W2, K_SH_W3):
-        return PAYLOAD_PACKED, CODEC_FP8, SCALE_E8M0, rows * cols, (rows // 32) * (cols // 32)
+        return PAYLOAD_PACKED_WEIGHT, CODEC_FP8, SCALE_E8M0, rows * cols, (rows // 32) * (cols // 32)
     if kind in (K_ATTN_SINK, K_HC_A_FN, K_HC_A_BASE, K_HC_A_SCALE,
                 K_HC_F_FN, K_HC_F_BASE, K_HC_F_SCALE, K_ROUTER_BIAS, K_ROUTER_BIAS_VL):
         return PAYLOAD_F32, 0, SCALE_NONE, rows * cols * 4, 0
@@ -270,6 +261,14 @@ def checkpoint_spec(kind: int, layer: int):
     fail(f"unknown kind {kind}")
 
 
+def fp8_scale_shape(shape: list) -> list:
+    return [shape[0] // 32, shape[1] // 32]
+
+
+def expert_scale_shape(shape: list) -> list:
+    return [shape[0], shape[1] * 2 // 32]
+
+
 def global_spec(kind: int):
     if kind == K_EMBEDDING:
         return ("embed.weight", None, "BF16", [VOCAB, HIDDEN], None, "rows")
@@ -286,22 +285,12 @@ def normalize(shape: list) -> list:
     fail(f"tensor rank {len(shape)} unsupported: {shape}")
 
 
-def expected_bytes(dtype: str, shape: list) -> int:
-    if dtype not in DTYPE_BYTES:
-        fail(f"unknown safetensors dtype {dtype}")
-    count = 1
-    for dim in shape:
-        count *= dim
-    return count * DTYPE_BYTES[dtype]
-
-
 def check_shape(name: str, flat: dict, dtype: str, shape: list):
     got = flat.get(name)
     if got is None:
         fail(f"checkpoint tensor missing: {name}")
     if got["dtype"] != dtype or normalize(got["shape"]) != normalize(shape):
-        fail(f"shape/dtype mismatch {name}: checkpoint {got['dtype']} {got['shape']} "
-             f"!= expected {dtype} {shape}")
+        fail(f"shape/dtype mismatch {name}: checkpoint {got['dtype']} {got['shape']} != expected {dtype} {shape}")
 
 
 def entry_specs() -> list:
@@ -338,7 +327,7 @@ def consumed_names() -> set:
     return names
 
 
-def load_flat(headers_json: str) -> dict:
+def load_flat(headers_json: str):
     with open(headers_json, encoding="utf-8") as handle:
         document = json.load(handle)
     flat = {}
@@ -353,37 +342,30 @@ def load_flat(headers_json: str) -> dict:
     return document, flat
 
 
+def shard_path(warm: str, shard: int) -> str:
+    return os.path.join(warm, SHARD_NAMING % (shard, SHARD_COUNT))
+
+
 def cmd_headers(warm: str, index_path: str, out_json: str):
     with open(index_path, encoding="utf-8") as handle:
         weight_map = json.load(handle)["weight_map"]
     table = {}
     seen = set()
     for shard in range(1, SHARD_COUNT + 1):
-        path = os.path.join(warm, SHARD_NAMING % (shard, SHARD_COUNT))
-        fd = os.open(path, os.O_RDONLY)
-        try:
-            raw_len = os.pread(fd, 8, 0)
-            if len(raw_len) != 8:
-                fail(f"short header length field shard {shard}")
-            header_len = struct.unpack("<Q", raw_len)[0]
-            raw = os.pread(fd, header_len, 8)
-            if len(raw) != header_len:
-                fail(f"short header shard {shard}")
-            header = json.loads(raw)
-            base = 8 + header_len
-            entries = {}
-            for name, meta in header.items():
-                if name == "__metadata__":
-                    continue
-                begin, end = meta["data_offsets"]
-                if end - begin != expected_bytes(meta["dtype"], meta["shape"]):
-                    fail(f"byte span mismatch {name} shard {shard}")
-                entries[name] = {"dtype": meta["dtype"], "shape": meta["shape"],
-                                 "begin": base + begin, "end": base + end}
-                seen.add(name)
-            table[str(shard)] = entries
-        finally:
-            os.close(fd)
+        header, base, file_bytes = read_safetensors_header(Path(shard_path(warm, shard)), f"shard {shard}")
+        entries = {}
+        for name, meta in header.items():
+            if name == "__metadata__":
+                continue
+            begin, end = tensor_extent(meta, name, str(shard), file_bytes - base)
+            count = 1
+            for dim in meta["shape"]:
+                count *= dim
+            if end - begin != count * dtype_bytes(meta["dtype"]):
+                fail(f"byte span mismatch {name} shard {shard}")
+            entries[name] = {"dtype": meta["dtype"], "shape": meta["shape"], "begin": base + begin, "end": base + end}
+            seen.add(name)
+        table[str(shard)] = entries
     wanted = set(weight_map)
     if seen != wanted:
         fail(f"shard headers vs index weight_map disagree: "
@@ -393,23 +375,13 @@ def cmd_headers(warm: str, index_path: str, out_json: str):
     print(f"headers ok: {len(seen)} tensors across {SHARD_COUNT} shards")
 
 
-def fp8_scale_shape(shape: list) -> list:
-    return [shape[0] // 32, shape[1] // 32]
-
-
-def expert_scale_shape(shape: list) -> list:
-    return [shape[0], shape[1] * 2 // 32]
-
-
 def rank_window(mode: str, rank: int, tp: int, rows: int, cols: int):
     if mode == "repl":
         return 0, rows, 0, cols
     if mode == "rows":
-        r = rows // tp
-        return rank * r, (rank + 1) * r, 0, cols
+        return rank * (rows // tp), (rank + 1) * (rows // tp), 0, cols
     if mode in ("sink", "ob"):
-        c = cols // tp
-        return 0, rows, rank * c, (rank + 1) * c
+        return 0, rows, rank * (cols // tp), (rank + 1) * (cols // tp)
     fail(f"unknown mode {mode}")
 
 
@@ -420,9 +392,8 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
         groups = entry["groups"]
         spec = global_spec(kind) if is_global(kind) else checkpoint_spec(kind, layer)
         wname, sname, _, wshape, sshape, mode = spec
-        for plane, offset_field, bytes_field, name, shape in (
-                ("payload", "payload_offset", "payload_bytes", wname, wshape),
-                ("scale", "scale_offset", "scale_bytes", sname, sshape)):
+        for plane, offset_field, bytes_field, name in (("payload", "payload_offset", "payload_bytes", wname),
+                                                       ("scale", "scale_offset", "scale_bytes", sname)):
             if not name:
                 continue
             if mode == "slice":
@@ -431,27 +402,44 @@ def build_pieces(flat: dict, tp: int, entries: list, order: list) -> list:
                 per_part = per_group // len(sources)
                 rows_per_part = entry["rows"] // len(sources)
                 for rank in range(tp):
-                    for g in range(groups):
+                    for group in range(groups):
                         for part, names in enumerate(sources):
-                            src_name = names[0 if plane == "payload" else 1].format(e=g)
+                            src_name = names[0 if plane == "payload" else 1].format(e=group)
                             src = flat[src_name]
-                            pieces.append({"rank": rank, "kind": kind, "layer": layer,
-                                           "plane": plane, "shard": src["shard"],
-                                           "name": src_name, "row0": rank * rows_per_part,
-                                           "row1": (rank + 1) * rows_per_part,
-                                           "col0": 0, "col1": src["shape"][1],
-                                           "dst_offset": entry[offset_field] + g * per_group + part * per_part,
+                            pieces.append({"rank": rank, "kind": kind, "layer": layer, "plane": plane,
+                                           "shard": src["shard"], "name": src_name, "row0": rank * rows_per_part,
+                                           "row1": (rank + 1) * rows_per_part, "col0": 0, "col1": src["shape"][1],
+                                           "dst_offset": entry[offset_field] + group * per_group + part * per_part,
                                            "dst_bytes": per_part})
                 continue
             src0 = flat[name]
             for rank in range(tp):
                 r0, r1, c0, c1 = rank_window(mode, rank, tp, src0["shape"][0], src0["shape"][1])
                 pieces.append({"rank": rank, "kind": kind, "layer": layer, "plane": plane,
-                               "shard": src0["shard"], "name": name,
-                               "row0": r0, "row1": r1, "col0": c0, "col1": c1,
-                               "dst_offset": entry[offset_field],
-                               "dst_bytes": entry[bytes_field]})
+                               "shard": src0["shard"], "name": name, "row0": r0, "row1": r1, "col0": c0, "col1": c1,
+                               "dst_offset": entry[offset_field], "dst_bytes": entry[bytes_field]})
     return pieces
+
+
+def plan_entries(tp: int):
+    order = [(kind, GLOBAL_LAYER) for kind in range(KIND_COUNT) if is_global(kind)]
+    for layer in range(LAYER_COUNT):
+        order += [(kind, layer) for kind in range(K_ATTN_NORM, KIND_COUNT) if kind_in_layer(kind, layer)]
+    entries = []
+    for kind, layer in order:
+        rows, cols, groups = entry_shape(kind, tp)
+        payload_type, codec, scale_enc, payload_bytes, scale_bytes = entry_layout(kind, tp)
+        entries.append({"kind": kind, "layer": layer, "payload_type": payload_type, "codec": codec,
+                        "scale_encoding": scale_enc, "groups": groups, "rows": rows, "cols": cols,
+                        "payload_bytes": payload_bytes, "scale_bytes": scale_bytes})
+    directory_offset = align_up(HEADER_BYTES, ALIGN)
+    payload_base = align_up(directory_offset + len(entries) * ENTRY_BYTES, ALIGN)
+    offsets, file_bytes = region_offsets(((e["payload_bytes"], e["scale_bytes"]) for e in entries), payload_base,
+                                         alignment=ALIGN)
+    for entry, (payload_offset, scale_offset) in zip(entries, offsets):
+        entry["payload_offset"] = payload_offset
+        entry["scale_offset"] = scale_offset
+    return order, entries, directory_offset, file_bytes
 
 
 def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
@@ -487,73 +475,30 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             check_shape(spec[0], flat, spec[2], spec[3])
             if spec[1]:
                 check_shape(spec[1], flat, "F8_E8M0", spec[4])
-    order = [(kind, GLOBAL_LAYER) for kind in range(KIND_COUNT) if is_global(kind)]
-    for layer in range(LAYER_COUNT):
-        for kind in range(K_ATTN_NORM, KIND_COUNT):
-            if kind_in_layer(kind, layer):
-                order.append((kind, layer))
-    entries = []
-    cursor = 0
-    for kind, layer in order:
-        rows, cols, groups = entry_shape(kind, tp)
-        payload_type, codec, scale_enc, payload_bytes, scale_bytes = entry_layout(kind, tp)
-        cursor = (cursor + ALIGN - 1) & ~(ALIGN - 1)
-        entry = {"kind": kind, "layer": layer, "payload_type": payload_type, "codec": codec,
-                 "scale_encoding": scale_enc, "groups": groups, "rows": rows, "cols": cols,
-                 "payload_bytes": payload_bytes, "scale_bytes": scale_bytes,
-                 "payload_offset": cursor}
-        cursor += payload_bytes
-        if scale_bytes:
-            cursor = (cursor + ALIGN - 1) & ~(ALIGN - 1)
-            entry["scale_offset"] = cursor
-            cursor += scale_bytes
-        else:
-            entry["scale_offset"] = 0
-        entries.append(entry)
-    directory_offset = (HEADER_BYTES + ALIGN - 1) & ~(ALIGN - 1)
-    payload_base = (directory_offset + len(entries) * ENTRY_BYTES + ALIGN - 1) & ~(ALIGN - 1)
-    for entry in entries:
-        entry["payload_offset"] += payload_base
-        if entry["scale_offset"]:
-            entry["scale_offset"] += payload_base
-    file_bytes = cursor + payload_base
-    spine_bytes = 0
-    expert_bytes = 0
-    for entry in entries:
-        total = entry["payload_bytes"] + entry["scale_bytes"]
-        if entry["kind"] in EXPERT_KINDS:
-            expert_bytes += total
-        else:
-            spine_bytes += total
-    header = bytearray(HEADER_BYTES)
-    struct.pack_into("<20I2Q", header, 0, MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0,
-                     len(entries), 1, 0, 0, LAYER_COUNT, LAYER_COUNT, HIDDEN, VOCAB,
-                     ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, 0, 0,
-                     directory_offset, file_bytes)
+    order, entries, directory_offset, file_bytes = plan_entries(tp)
+    spine_bytes = sum(e["payload_bytes"] + e["scale_bytes"] for e in entries if e["kind"] not in EXPERT_KINDS)
+    expert_bytes = sum(e["payload_bytes"] + e["scale_bytes"] for e in entries if e["kind"] in EXPERT_KINDS)
     rev = revision.encode()
     if len(rev) >= MODEL_REVISION_BYTES:
         fail("revision does not fit the header field")
-    header[96:96 + len(rev)] = rev
-    for slot, hextext in ((0, contract_hex), (1, config_hex), (2, recipe_hex)):
+    digests = []
+    for slot, hextext in enumerate((contract_hex, config_hex, recipe_hex)):
         if len(hextext) != 64:
             fail(f"digest slot {slot} must be 64 hex chars")
-        header[161 + slot * 32:193 + slot * 32] = bytes.fromhex(hextext)
+        digests.append(bytes.fromhex(hextext))
+    directory = b"".join(CODEC_ENTRY.pack(e["kind"], e["layer"], e["payload_type"], e["codec"], e["scale_encoding"],
+                                          e["groups"], e["rows"], e["cols"], e["payload_offset"], e["payload_bytes"],
+                                          e["scale_offset"], e["scale_bytes"]) for e in entries)
     os.makedirs(out_dir, exist_ok=True)
     for rank in range(tp):
-        struct.pack_into("<I", header, 72, rank)
-        path = os.path.join(out_dir, f"rank{rank}.spstage")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, 1, 0, len(entries), 1, 0, 0, LAYER_COUNT,
+                  LAYER_COUNT, HIDDEN, VOCAB, ROUTED_EXPERTS, CODEC_FP8, CODEC_MXFP4, tp, rank, 0)
+        header = codec_header(fields, directory_offset, file_bytes, rev, digests, HEADER_BYTES)
+        fd = os.open(os.path.join(out_dir, f"rank{rank}.spstage"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
             os.ftruncate(fd, file_bytes)
-            os.pwrite(fd, bytes(header), 0)
-            for index, entry in enumerate(entries):
-                record = struct.pack("<8I4Q", entry["kind"], entry["layer"],
-                                     entry["payload_type"], entry["codec"],
-                                     entry["scale_encoding"], entry["groups"],
-                                     entry["rows"], entry["cols"], entry["payload_offset"],
-                                     entry["payload_bytes"], entry["scale_offset"],
-                                     entry["scale_bytes"])
-                os.pwrite(fd, record, directory_offset + index * ENTRY_BYTES)
+            os.pwrite(fd, header, 0)
+            os.pwrite(fd, directory, directory_offset)
         finally:
             os.close(fd)
     pieces = build_pieces(flat, tp, entries, order)
@@ -565,9 +510,9 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
             "entries": entries, "pieces": pieces}
     with open(os.path.join(out_dir, "plan.json"), "w", encoding="utf-8") as handle:
         json.dump(plan, handle)
-    engram_report = {name: {"shard": meta["shard"], "dtype": meta["dtype"],
-                            "shape": meta["shape"], "bytes": meta["end"] - meta["begin"],
-                            "shard_path": os.path.join(document["warm"], SHARD_NAMING % (meta["shard"], SHARD_COUNT))}
+    engram_report = {name: {"shard": meta["shard"], "dtype": meta["dtype"], "shape": meta["shape"],
+                            "bytes": meta["end"] - meta["begin"],
+                            "shard_path": shard_path(document["warm"], meta["shard"])}
                      for name, meta in sorted(engram.items())}
     accounting = {"checkpoint_tensors": len(flat), "pack_consumed": len(consumed),
                   "engram_excluded": len(engram), "dspark_sidecar": len(sidecar),
@@ -588,27 +533,15 @@ def cmd_plan(headers_json: str, out_dir: str, tp: int, revision: str,
 
 
 def copy_region(src_fd: int, dst_fd: int, src: dict, piece: dict, dst_offset: int) -> int:
-    esz = DTYPE_BYTES[src["dtype"]]
-    row_bytes = src["shape"][1] * esz
-    span = (piece["col1"] - piece["col0"]) * esz
-    r0, r1, c0, c1 = piece["row0"], piece["row1"], piece["col0"], piece["col1"]
+    element = dtype_bytes(src["dtype"])
+    row_bytes = src["shape"][1] * element
     done = 0
-    row = r0
-    while row < r1:
-        block = min(max(COPY_BUDGET // row_bytes, 1), r1 - row)
-        want = block * row_bytes
-        raw = os.pread(src_fd, want, src["begin"] + row * row_bytes)
-        if len(raw) != want:
-            fail(f"short read {src['name']} rows {row}..{row + block}")
-        if span == row_bytes:
-            os.pwrite(dst_fd, raw, dst_offset + done)
-            done += want
-        else:
-            for index in range(block):
-                base = index * row_bytes
-                os.pwrite(dst_fd, raw[base + c0 * esz:base + c1 * esz], dst_offset + done)
-                done += span
-        row += block
+    for chunk in window_chunks(lambda offset, length: os.pread(src_fd, length, offset), src["begin"], row_bytes,
+                               piece["row0"], piece["row1"] - piece["row0"], piece["col0"] * element,
+                               (piece["col1"] - piece["col0"]) * element, COPY_BUDGET,
+                               f"{src['name']} rows {piece['row0']}..{piece['row1']}"):
+        os.pwrite(dst_fd, chunk, dst_offset + done)
+        done += len(chunk)
     return done
 
 
@@ -616,8 +549,7 @@ def cmd_copy(headers_json: str, plan_path: str, out_dir: str, warm: str, lo: int
     with open(plan_path, encoding="utf-8") as handle:
         plan = json.load(handle)
     _, flat = load_flat(headers_json)
-    fds = [os.open(os.path.join(out_dir, f"rank{rank}.spstage"), os.O_WRONLY)
-           for rank in range(plan["tp"])]
+    fds = [os.open(os.path.join(out_dir, f"rank{rank}.spstage"), os.O_WRONLY) for rank in range(plan["tp"])]
     by_shard = {}
     for piece in plan["pieces"]:
         if lo <= piece["shard"] <= hi:
@@ -625,15 +557,13 @@ def cmd_copy(headers_json: str, plan_path: str, out_dir: str, warm: str, lo: int
     copied = 0
     try:
         for shard in sorted(by_shard):
-            path = os.path.join(warm, SHARD_NAMING % (shard, SHARD_COUNT))
-            fd = os.open(path, os.O_RDONLY)
+            fd = os.open(shard_path(warm, shard), os.O_RDONLY)
             try:
                 for piece in by_shard[shard]:
-                    src = flat[piece["name"]]
-                    wrote = copy_region(fd, fds[piece["rank"]], src, piece, piece["dst_offset"])
+                    wrote = copy_region(fd, fds[piece["rank"]], dict(flat[piece["name"]], name=piece["name"]), piece,
+                                        piece["dst_offset"])
                     if wrote != piece["dst_bytes"]:
-                        fail(f"piece size mismatch {piece['name']} rank {piece['rank']} "
-                             f"{wrote} != {piece['dst_bytes']}")
+                        fail(f"piece size mismatch {piece['name']} rank {piece['rank']} {wrote} != {piece['dst_bytes']}")
                     copied += wrote
                 if hasattr(os, "posix_fadvise"):
                     os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
@@ -644,8 +574,7 @@ def cmd_copy(headers_json: str, plan_path: str, out_dir: str, warm: str, lo: int
             os.close(fd)
     with open(os.path.join(out_dir, f"copy_{lo:02d}_{hi:02d}.done"), "w", encoding="utf-8") as handle:
         handle.write(f"{copied}\n")
-    print(f"copy shards [{lo},{hi}] ok: {sum(len(v) for v in by_shard.values())} pieces, "
-          f"{copied} bytes")
+    print(f"copy shards [{lo},{hi}] ok: {sum(len(v) for v in by_shard.values())} pieces, {copied} bytes")
 
 
 def main(argv: list) -> int:
@@ -662,7 +591,7 @@ def main(argv: list) -> int:
         else:
             print(__doc__)
             return 2
-    except Fail as error:
+    except PackFailure as error:
         print(f"dsv41_flash_stagepack FAIL: {error}", file=sys.stderr)
         return 1
     except OSError as error:

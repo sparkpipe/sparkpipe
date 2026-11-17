@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import asyncio
+import contextlib
 import importlib.util
+import io
 from pathlib import Path
 
 import aiohttp
@@ -19,6 +21,10 @@ class Engine:
         self.mode = "complete"
 
     async def completions(self, request):
+        if self.mode == "string_error":
+            return web.json_response({"error": "worker 3 at 10.0.0.7 crashed"}, status=500)
+        if self.mode == "client_error":
+            return web.json_response({"error": {"code": "invalid_request", "message": "max_tokens must be positive"}}, status=400)
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         if self.mode == "garbage":
@@ -68,6 +74,23 @@ async def run(failures):
         result = await collect(frontend, model)
         if not (isinstance(result, RequestError) and result.status == 502 and result.code == "engine_error"):
             failures.append("a stream event that is not JSON is an engine error, not an uncaught exception")
+        engine.mode = "string_error"
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            result = await collect(frontend, model)
+        if not (isinstance(result, RequestError) and result.status == 500 and result.code == "engine_error" and "10.0.0.7" not in result.message
+                and "10.0.0.7" in log.getvalue()):
+            failures.append(f"an engine 500 whose error is a string gives a fixed message, and the detail goes only to the log: {result!r}")
+        engine.mode = "client_error"
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = await collect(frontend, model)
+        if not (isinstance(result, RequestError) and result.status == 400 and result.code == "invalid_request" and result.message == "max_tokens must be positive"):
+            failures.append(f"an engine 400 keeps its code and message, which describe the caller's own request: {result!r}")
+        down = Model("http://127.0.0.1:9")
+        with contextlib.redirect_stderr(io.StringIO()):
+            result = await collect(frontend, down)
+        if not (isinstance(result, RequestError) and result.status == 503 and result.code == "engine_unavailable" and "127.0.0.1" not in result.message):
+            failures.append(f"an unreachable engine answers 503 without its address: {result!r}")
     finally:
         await frontend.session.close()
         await runner.cleanup()
@@ -80,7 +103,7 @@ def main():
         print("FAIL", failure)
     if failures:
         raise SystemExit(1)
-    print("PASS chat frontend engine stream: [DONE] completes; a stream cut short or a non-JSON event becomes a 502 engine error")
+    print("PASS chat frontend engine stream: [DONE] completes; a stream cut short or a non-JSON event becomes a 502 engine error; engine failures reach the caller as fixed messages without addresses or engine text, which go to the log")
 
 
 if __name__ == "__main__":

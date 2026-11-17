@@ -344,6 +344,11 @@ async def stored(harness, check):
         check(response.status == 404, "store false keeps nothing to retrieve")
     async with harness.session.delete(harness.base + "/v1/responses/" + kept["id"], headers=harness.headers(account="bob")) as response:
         check(response.status == 404, "another account cannot delete it")
+    teammate = {"account": "acme", "X-SparkPipe-Member": "MBOTHER"}
+    async with harness.session.get(harness.base + "/v1/responses/" + kept["id"], headers=harness.headers(**teammate)) as response:
+        check(response.status == 404, f"another member of the account cannot read it: {response.status}")
+    async with harness.session.delete(harness.base + "/v1/responses/" + kept["id"], headers=harness.headers(**teammate)) as response:
+        check(response.status == 404, f"another member of the account cannot delete it: {response.status}")
     async with harness.session.delete(harness.base + "/v1/responses/" + kept["id"], headers=harness.headers(account="acme")) as response:
         got = await response.json()
         check(response.status == 200 and got == {"id": kept["id"], "object": "response", "deleted": True}, f"DELETE removes it: {got}")
@@ -450,7 +455,7 @@ def old_store(tmp, check):
     path.chmod(0o600)
     store = chat_frontend.chat_replay.ReplayStore(directory)
     store.put_response("account:acme", None, "resp_new", None, "alpha", [{"role": "user", "content": "x"}], {"id": "resp_new", "object": "response"})
-    check(store.response_body("account:acme", "resp_new") == {"id": "resp_new", "object": "response"} and store.response_body("account:acme", "resp_old") is None and
+    check(store.response_body("account:acme", None, "resp_new") == {"id": "resp_new", "object": "response"} and store.response_body("account:acme", None, "resp_old") is None and
           store.response_messages("account:acme", None, "resp_old") == [], "a replay store written before stored bodies gains the column and keeps its responses")
     store.close()
 

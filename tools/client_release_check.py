@@ -31,7 +31,7 @@ TOOLS = {
 RELEASE = re.compile(r"latest|\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[0-9A-Za-z.]{1,64})?")
 WATCHED = ("x-claude-code-request-class", "x-claude-code-agent-id", "x-claude-code-parent-agent-id", "X-Claude-Code-Session-Id", "x-session-affinity",
            "x-parent-session-id", "x-openai-subagent", "User-Agent")
-BACKGROUND = {"x-claude-code-request-class": ("compaction", "auxiliary"), "x-openai-subagent": ("compact",)}
+SIDE_MARKS = {"x-claude-code-request-class": ("compaction", "auxiliary"), "x-openai-subagent": ("compact",)}
 KEPT_ENV = ("PATH", "LANG", "LC_ALL", "TERM", "TMPDIR", "SYSTEMROOT", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS")
 INSTALL_SECONDS = 900
 TURN_SECONDS = 900
@@ -312,9 +312,9 @@ def checks(tool, installed, setup, turns, plan, seen, hosts):
 
 
 def summary(seen):
-    classes = sorted({record["headers"][name] for record in seen for name in BACKGROUND if record["headers"].get(name)})
-    background = sum(record["headers"].get(name, "").lower() in values for record in seen for name, values in BACKGROUND.items())
-    return {"request_classes": classes, "background_requests": background, "requests": len(seen)}
+    classes = sorted({record["headers"][name] for record in seen for name in SIDE_MARKS if record["headers"].get(name)})
+    side = sum(record["headers"].get(name, "").lower() in values for record in seen for name, values in SIDE_MARKS.items())
+    return {"request_classes": classes, "side_requests": side, "requests": len(seen)}
 
 
 def check_tool(tool, version, endpoint, key, npm, base):

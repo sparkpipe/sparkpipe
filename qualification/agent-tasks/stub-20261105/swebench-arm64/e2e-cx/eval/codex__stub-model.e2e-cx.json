@@ -1,0 +1,29 @@
+{
+    "total_instances": 3,
+    "submitted_instances": 3,
+    "completed_instances": 2,
+    "resolved_instances": 2,
+    "unresolved_instances": 0,
+    "empty_patch_instances": 1,
+    "error_instances": 0,
+    "completed_ids": [
+        "psf__requests-2931",
+        "sympy__sympy-13480"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [
+        "pytest-dev__pytest-7982"
+    ],
+    "submitted_ids": [
+        "psf__requests-2931",
+        "pytest-dev__pytest-7982",
+        "sympy__sympy-13480"
+    ],
+    "resolved_ids": [
+        "psf__requests-2931",
+        "sympy__sympy-13480"
+    ],
+    "unresolved_ids": [],
+    "error_ids": [],
+    "schema_version": 2
+}

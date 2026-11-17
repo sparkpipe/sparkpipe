@@ -2,7 +2,7 @@
 
 > Archived 2026-09-28. Do not follow this file. `tools/fleet_swap.sh` drives a
 > system residentd unit that is not the one serving; every Spark now serves
-> through the `fleet-agent` user unit ([`FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md)).
+> through the `fleet-agent` user unit ([`FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)).
 > The port blocks, ring windows and DSV4 plans are retired, and the Qwen
 > directive below was corrupted by the qwen36 -> qwen38_27b rename (33c69b6):
 > it names the live Qwen 3.8 27B paths where it meant the Qwen 3.6 ones.

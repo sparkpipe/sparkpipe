@@ -1,0 +1,136 @@
+{
+    "id": "f2083206-fb7d-42c6-86b9-8844cac69cda",
+    "task_name": "terminal-bench/vulnerable-secret",
+    "trial_name": "vulnerable-secret__GWMMruv",
+    "trial_uri": "file:///Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b02/vulnerable-secret__GWMMruv",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "vulnerable-secret",
+        "ref": "sha256:d76dfa9e256487c5542905b892156f694137aeef784e1abf3f41e15a8c946eac"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "08ff9cb3cd416576bed330e9b92191ce0acbf5322f64714b6955ea6638361256",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/vulnerable-secret",
+            "ref": "sha256:d76dfa9e256487c5542905b892156f694137aeef784e1abf3f41e15a8c946eac",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "vulnerable-secret__GWMMruv",
+        "trials_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b02",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "claude-code",
+            "import_path": null,
+            "model_name": "deepseek-v4.1-flash",
+            "base_url": null,
+            "model_api_key_name": null,
+            "model_api_format": null,
+            "skip_model_parsing": false,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "version": "2.1.311",
+                "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "1d8865cc-c7cf-44ac-ae2a-cdb7e2e12e1e",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "claude-code",
+        "version": "2.1.311",
+        "model_info": {
+            "name": "deepseek-v4.1-flash",
+            "provider": "anthropic"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 186242,
+        "n_cache_tokens": 155570,
+        "n_output_tokens": 4288,
+        "cost_usd": 0.3763625,
+        "model_usage": {
+            "deepseek-v4.1-flash": {
+                "n_input_tokens": 186242,
+                "n_cache_tokens": 155570,
+                "n_output_tokens": 4288,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-11-09T09:42:52.573456Z",
+    "finished_at": "2026-11-09T09:52:09.653916Z",
+    "environment_setup": {
+        "started_at": "2026-11-09T09:42:52.718217Z",
+        "finished_at": "2026-11-09T09:43:08.160510Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-11-09T09:43:08.160722Z",
+        "finished_at": "2026-11-09T09:48:31.417103Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-11-09T09:48:31.420189Z",
+        "finished_at": "2026-11-09T09:51:40.957692Z"
+    },
+    "verifier": {
+        "started_at": "2026-11-09T09:51:41.493220Z",
+        "finished_at": "2026-11-09T09:51:57.322527Z"
+    },
+    "step_results": null
+}

@@ -1,4 +1,4 @@
-"""Run release_rollout.sh stage, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, and a rollback never activates models on an old weightd that is not ready."""
+"""Run release_rollout.sh stage, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, a rollback never activates models on an old weightd that is not ready, and the restart check fails unless the restarted API reaches every rank and answers as before."""
 import hashlib
 import json
 import os
@@ -313,6 +313,65 @@ exit {3 if host == busy_host else 0}
     return body
 
 
+def restart(connected, compare_rc, capture_rc=0):
+    def body(work, fleet, state, model_lanes, extra, old_wd):
+        shims = work / "restart-shims"
+        shims.mkdir()
+        (shims / "systemctl").write_text('#!/usr/bin/env bash\necho "systemctl $*" >> "$FAKE_FLEET/order.log"\ncase "$*" in *is-active*) exit 1 ;; esac\nexit 0\n')
+        (shims / "systemd-run").write_text('#!/usr/bin/env bash\necho "systemd-run $*" >> "$FAKE_FLEET/order.log"\nexit 0\n')
+        (shims / "curl").write_text(f"""#!/usr/bin/env bash
+echo "curl $*" >> "$FAKE_FLEET/order.log"
+case "$*" in *8464/health*)
+  if [ "$(grep -c 8464/health "$FAKE_FLEET/order.log")" -ge 3 ]; then echo '{{"ranks":16,"connected_ranks":{connected}}}'; else echo '{{"ranks":16,"connected_ranks":9}}'; fi ;;
+esac
+exit 0
+""")
+        (shims / "timeout").write_text('#!/usr/bin/env bash\nshift\nexec "$@"\n')
+        for name in ("systemctl", "systemd-run", "curl", "timeout"):
+            (shims / name).chmod(0o755)
+        (fleet / "rtx5090" / "sparkpipe-swap" / "model_swap.json").write_text((ROOT / "deployment" / "hub" / "model_swap.json").read_text())
+        release = fleet / "srv-workspace" / "release-abcdef123"
+        (release / "kit").mkdir(parents=True)
+        (release / "qwen3.8-max").mkdir()
+        (release / "qwen3.8-max" / "new.json").write_text("{}")
+        (release / "kit" / "release_capture.py").write_text(
+            'import os, sys\nopen(os.environ["FAKE_FLEET"] + "/order.log", "a").write("capture " + " ".join(sys.argv[1:]) + "\\n")\nopen(sys.argv[2], "w").write("{}")\nsys.exit(int(os.environ["FAKE_CAPTURE_RC"]))\n')
+        (release / "kit" / "release_compare.py").write_text(
+            'import os, sys\nopen(os.environ["FAKE_FLEET"] + "/order.log", "a").write("compare " + " ".join(sys.argv[1:]) + "\\n")\n'
+            'print("EXACT 2/2" if os.environ["FAKE_COMPARE_RC"] == "0" else "EXACT 1/2")\nsys.exit(int(os.environ["FAKE_COMPARE_RC"]))\n')
+        result = run("restart", fleet, work, old_wd, state, PATH=f"{shims}:{work / 'shims'}:{os.environ['PATH']}", FAKE_COMPARE_RC=str(compare_rc), FAKE_CAPTURE_RC=str(capture_rc))
+        order = (fleet / "order.log").read_text().splitlines()
+
+        def first(prefix):
+            return next((index for index, line in enumerate(order) if line.startswith(prefix)), None)
+
+        stop, start, health = first("systemctl --user stop kv-qwen38-max-api"), first("systemd-run --user --unit=kv-qwen38-max-api"), first("curl -s -m 3 http://127.0.0.1:8464/health")
+        check(None not in (stop, start, health) and stop < start < health, f"restart did not stop the API, start it and then ask its health, in that order: {order}", result)
+        captures = [line for line in order if line.startswith("capture ")]
+        compares = [line for line in order if line.startswith("compare ")]
+        if connected != 16:
+            check(result.returncode != 0 and "API-RESTART-FAILED qwen3.8-max: its API did not reach every rank" in result.stdout,
+                  "restart passed although the API never reached every rank", result)
+            check(captures == [] and compares == [], f"restart captured from an API that had not reached every rank: {captures}", result)
+            return
+        check(sum(1 for line in order if "8464/health" in line) == 3, "restart did not wait for the health answer that shows every rank connected", result)
+        check(captures == [f"capture 8464 qwen3.8-max/restart.json kit/prompt_source.c {fleet / 'srv-workspace'}/logs/qwen38_max-kv-api.log capital,story"],
+              f"restart did not capture the two restart prompts from the restarted API: {captures}", result)
+        if capture_rc != 0:
+            check(result.returncode != 0 and "API-RESTART-FAILED qwen3.8-max: the capture after the restart failed" in result.stdout and compares == [],
+                  "restart went on although the capture after the restart failed", result)
+            return
+        check(compares == ["compare qwen3.8-max/restart.json qwen3.8-max/new.json"] and first("capture ") < first("compare "),
+              f"restart did not compare the restart capture with the capture taken before it: {compares}", result)
+        if compare_rc != 0:
+            check(result.returncode != 0 and "API-RESTART-FAILED qwen3.8-max: the restarted API's outputs differ" in result.stdout,
+                  "restart passed although the outputs after the restart differ", result)
+            return
+        check(result.returncode == 0 and "api restart qwen3.8-max: outputs equal" in result.stdout and "API-RESTART-FAILED" not in result.stdout,
+              "restart failed on an API that came back with equal outputs", result)
+    return body
+
+
 fleet_case("stage verifies all 16 nodes", stage(""))
 fleet_case("backup puts the hub API backups on the workspace volume, not in the home", backup(104857600))
 fleet_case("backup refuses before any change when the hub workspace is short of space", backup(1048576))
@@ -332,4 +391,8 @@ fleet_case("rollback refuses when a hub API backup is missing",
 fleet_case("rollback refuses when one node misses the weightd_warm backup",
            refusal(lambda fleet, state, lanes: (fleet / "sparkc" / "sparkdata" / "swap" / f"weightd_warm.prev-{STAMP}").unlink()))
 fleet_case("complete rollback restores everything and stops on a weightd that is not ready", complete_rollback)
-print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready")
+fleet_case("restart stops and starts a serving API, waits for every rank, and compares two prompts with the capture before it", restart(16, 0))
+fleet_case("restart fails without capturing when the API does not reach every rank", restart(15, 0))
+fleet_case("restart fails when the outputs after the restart differ", restart(16, 1))
+fleet_case("restart fails when the capture after the restart fails", restart(16, 0, 3))
+print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready; restart stops and starts a serving API with the controller's commands, waits until its health shows every rank, captures two prompts and compares them with the capture before it, and fails on an API that does not come back, a failed capture or different outputs")

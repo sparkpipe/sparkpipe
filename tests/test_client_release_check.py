@@ -251,9 +251,9 @@ def check_good_releases(failures):
             expect(failures, [turn["cached_tokens"] > 0 for turn in item["turns"]] == [False, True, True] and [turn["tool_calls"] > 0 for turn in item["turns"]] == [True, False, True],
                    f"{name} turns report tool calls on the first and third turn and cache hits after the first: {item['turns']}")
         claude = tools["claude-code"]
-        expect(failures, claude["summary"]["request_classes"] == ["auxiliary", "main"] and claude["summary"]["background_requests"] == 1
+        expect(failures, claude["summary"]["request_classes"] == ["auxiliary", "main"] and claude["summary"]["side_requests"] == 1
                and all(record["metadata_session"] == record["headers"]["X-Claude-Code-Session-Id"] for record in claude["requests"] if record["path"] == "/v1/messages"),
-               f"the relay records Claude Code's request classes, its background requests and the metadata.user_id session: {claude['summary']}")
+               f"the relay records Claude Code's request classes, its side requests and the metadata.user_id session: {claude['summary']}")
         expect(failures, all(record["prompt_cache_key"] for record in tools["codex"]["requests"] if record["path"] == "/v1/responses"), "the relay records Codex's prompt_cache_key")
         expect(failures, server.auth and set(server.auth) == {"Bearer " + KEY}, f"the fleet gets the staging key on every request, through the relay: {set(server.auth)}")
         calls = logged(log)

@@ -4,7 +4,7 @@
 #include <string.h>
 #include <vector>
 
-#include "inference/llms/kimi_k3/streamed.cuh"
+#include "model-families/k3/source/streamed.cuh"
 
 #define KDA_SHARDS 16u
 #define KDA_ROWS 256u

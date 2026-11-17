@@ -102,6 +102,8 @@ uint32_t SparkModelPipelineClientAllRanksReady(
 	const SparkModelPipelineClient *pipeline);
 uint64_t SparkModelPipelineClientSessionFingerprint(
 	const SparkModelPipelineClient *pipeline);
+uint64_t SparkModelPipelineClientSubmissionFloor(
+	const SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientRecover(
 	SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientProgress(

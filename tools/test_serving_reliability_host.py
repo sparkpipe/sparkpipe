@@ -20,7 +20,7 @@ GROUPS = {
     "weights": "weightd weightd_lease weightd_working_set weightd_churn weightd_expert_stress weightd_worker weightd_fd_frames weightd_attach weightd_expert weightd_map",
     "model_contracts": "model_description module_library driver_compiler stage_module_claims tokenizer tokenizer_sidecar json numerical_metrics weight_codec gemm_descriptor_cache gemm_tile_k_fallback glm52_stagepack kda_reference rope_plan tensor_map_geometry",
     "driver_fixtures": "k3_attach_contract k3_kv_cache k3_llm_defines",
-    "speculation": "draft_bridge speculation_seam speculation_tree_resolve",
+    "speculation": "draft_bridge",
 }
 PYTHON = {
     "weights": "weightd_supervision weightd_supervised weightd_manifest weightd_lazy_pair weightd_map_fd_ownership",

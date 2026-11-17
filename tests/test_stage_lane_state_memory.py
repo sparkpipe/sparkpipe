@@ -12,8 +12,8 @@ import stage_lane  # noqa: E402
 
 def render(name, directory, *extra):
     return subprocess.run(
-        [sys.executable, str(ROOT / "tools/stage_lane.py"), "--model", name, "--lane", "9",
-         "--runtime-root", "/home/{host}/lane9", "--weightd-socket", "/run/weightd.sock",
+        [sys.executable, str(ROOT / "tools/stage_lane.py"), "--model", name, "--lane", "3",
+         "--runtime-root", "/home/{host}/lane3", "--weightd-socket", "/run/weightd.sock",
          "--output-dir", str(directory), *extra],
         capture_output=True, text=True)
 

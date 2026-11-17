@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 #define SPARK_DEVICE_RUNNER_PAGE_SLOTS 64u
+#define SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN 1u
 
 typedef struct SparkDeviceStageRunner SparkDeviceStageRunner;
 

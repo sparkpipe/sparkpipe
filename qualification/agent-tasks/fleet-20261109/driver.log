@@ -1,0 +1,10 @@
+2026-11-09 18:18:51 KST START tb21-cc-b01 (3 tasks: raman-fitting feal-linear-cryptanalysis multi-source-data-merger) controller='deepseek-v4.1-flash idle None None' live=0 colima_free=55G
+2026-11-09 18:42:41 KST END tb21-cc-b01 rc=0
+2026-11-09 18:42:42 KST START tb21-cc-b02 (6 tasks: crack-7z-hash sparql-university extract-elf vulnerable-secret bn-fit-modify adaptive-rejection-sampler) controller='deepseek-v4.1-flash idle None None' live=0 colima_free=54G
+2026-11-09 19:07:34 KST END tb21-cc-b02 rc=0
+2026-11-09 19:07:35 KST START tb21-cc-b03 (6 tasks: portfolio-optimization hf-model-inference qemu-startup db-wal-recovery train-fasttext regex-log) controller='deepseek-v4.1-flash idle None None' live=0 colima_free=50G
+2026-11-09 20:15:56 KST END tb21-cc-b03 rc=0
+2026-11-09 20:15:59 KST START tb21-cc-b04 (6 tasks: mteb-leaderboard sam-cell-seg install-windows-3.11 regex-chess merge-diff-arc-agi-task circuit-fibsqrt) controller='deepseek-v4.1-flash idle None None' live=0 colima_free=44G
+2026-11-09 21:20:12 KST END tb21-cc-b04 rc=0
+2026-11-09 21:20:12 KST STOP before tb21-cc-b05: it is past 21:00 KST
+2026-11-09 21:20:12 KST DRIVER DONE after 5 batches

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The chat layer reaches memory only through a generic connector to a separate program on localhost: while the program is down the connector logs that memory is unavailable and fails calls at once until its retry time, then says hello and reaches it; the program reaches the chat layer's host services with the same bearer token, and the host refuses a missing token, an unknown method and a body that is not a JSON object, and answers a host failure with its own status; a program error comes back with its status and code and leaves the connector ready, while a timeout marks memory unavailable; when the program gives up on a slow host call, the host stops that work; notices reach the program in the order they were sent; a session handle's calls reach the program with the handle; after the program restarts, the connector says hello again and retries; a program that speaks another protocol or refuses the token counts as unavailable; with the program down, the chat layer serves a chat request raw and logs it."""
+"""The chat layer reaches memory only through a generic connector to a separate program on localhost: while the program is down the connector logs that memory is unavailable and fails calls at once until its retry time, then says hello and reaches it; the program reaches the chat layer's host services with the same bearer token, and the host refuses a missing token, an unknown method and a body that is not a JSON object, and answers a host failure with its own status; a program error comes back with its status and code and leaves the connector ready, while a timeout marks memory unavailable; when the program gives up on a slow host call, the host stops that work; notices reach the program in the order they were sent; a session handle's calls reach the program with the handle; after the program restarts, the connector says hello again and retries; a program that speaks another protocol or refuses the token counts as unavailable; with the program down, the chat layer serves a chat request raw and logs it; an import waits for the program as long as the client's timeout_seconds, which must be a positive number."""
 import asyncio
 import contextlib
 import importlib.util
@@ -76,7 +76,7 @@ class FakeProgram:
             return web.json_response({"tokens": (await self.host("count", {"model": body["model"], "text": "a b c"}))["tokens"]})
         if method == "fail":
             return web.json_response({"error": {"code": "engine_unavailable", "message": "the engine is switching", "status": 503}}, status=503)
-        if method == "sleep":
+        if method in ("sleep", "import"):
             await asyncio.sleep(2)
         if method == "abandon":
             with contextlib.suppress(asyncio.TimeoutError):
@@ -213,19 +213,54 @@ async def fallback(directory, check):
     check('"event": "memory_unavailable"' in logged.getvalue(), "and the chat layer logs that memory is unavailable")
 
 
+async def import_timeout(directory, check):
+    spec = importlib.util.spec_from_file_location("chat_harness_fixture", ROOT / "tests" / "chat_harness_fixture.py")
+    fixture = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixture)
+    token = directory / "memory.token"
+    token.write_text(TOKEN)
+    token.chmod(0o600)
+    port = free_port()
+    program = await FakeProgram(port).start()
+    settings = {"url": f"http://127.0.0.1:{port}", "host_listen": f"127.0.0.1:{free_port()}", "token_file": "memory.token"}
+    body = {"model": "alpha", "messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
+
+    async def imported(harness, timeout):
+        async with harness.session.post(harness.base + "/v1/sparkpipe/memory/import", json=dict(body, timeout_seconds=timeout)) as response:
+            return response.status, await response.text()
+
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            async with fixture.Harness(directory, extra={"memory": settings}) as harness:
+                started = time.monotonic()
+                status, text = await imported(harness, 0.5)
+                waited = time.monotonic() - started
+                check(status == 503 and waited < 1.5, f"an import gives up at its own timeout_seconds: {status} after {waited:.1f} s {text[:160]}")
+                harness.frontend.memory.retry_at = 0.0
+                status, text = await imported(harness, 10)
+                check(status == 200 and json.loads(text).get("method") == "import", f"and finishes when timeout_seconds allows it: {status} {text[:160]}")
+                for wrong in ("soon", 0, -1, True):
+                    status, text = await imported(harness, wrong)
+                    check(status == 400, f"timeout_seconds must be a positive number, not {wrong!r}: {status} {text[:160]}")
+    finally:
+        await program.stop()
+
+
 def main():
     failures = []
     with tempfile.TemporaryDirectory(prefix="memory-connector-") as directory:
         asyncio.run(run(Path(directory), lambda condition, message: failures.append(message) if not condition else None))
     with tempfile.TemporaryDirectory(prefix="memory-fallback-") as directory:
         asyncio.run(fallback(Path(directory), lambda condition, message: failures.append(message) if not condition else None))
+    with tempfile.TemporaryDirectory(prefix="memory-import-") as directory:
+        asyncio.run(import_timeout(Path(directory), lambda condition, message: failures.append(message) if not condition else None))
     for failure in failures:
         print("FAIL test_memory_connector:", failure)
     if failures:
         raise SystemExit(1)
     print("PASS test_memory_connector: unavailable memory is logged and fails fast until the retry time, hello reaches a program that comes up and the log names its version, host services need the token and "
           "keep their own status, program errors keep theirs, a timeout marks memory unavailable, an abandoned host call stops, notices keep their order, session calls "
-          "carry their handle, a restarted program is greeted again, another protocol or token counts as unavailable, and the chat layer serves raw while memory is down")
+          "carry their handle, a restarted program is greeted again, another protocol or token counts as unavailable, the chat layer serves raw while memory is down, and an import waits as long as its timeout_seconds")
 
 
 if __name__ == "__main__":

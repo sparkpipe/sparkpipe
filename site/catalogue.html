@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SparkPipe Catalogue</title>
+<meta name="description" content="The SparkPipe Catalogue: the software our website lists for you to install on a fleet you hold, with each item's publisher, what it installs and its license, and how to choose.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/catalogue.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/catalogue-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/catalogue.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+.policy { padding-block: 48px 64px; display: grid; gap: 28px; }
+.policy h1 { font-size: clamp(36px, 6vw, 64px); }
+.policy h2 { font-size: clamp(22px, 2.6vw, 30px); margin-top: 12px; }
+.policy section { display: grid; gap: 12px; max-width: 76ch; }
+.policy p, .policy li, .policy dd { color: var(--steel); font: 400 16px/1.6 var(--text); }
+.policy ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+.policy b { color: var(--ink); font-weight: 650; }
+.policy code { color: var(--ink); overflow-wrap: anywhere; }
+.items { display: grid; gap: 16px; }
+.item { display: grid; gap: 14px; padding: 20px 22px; border: 1px solid var(--rule-strong); border-radius: 2px; background: var(--sheet); }
+.item h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 20px; }
+.item h3 .mono { font: 500 12px/1.4 var(--mono); color: var(--faint); letter-spacing: 0; }
+.item dl { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px 18px; margin: 0; }
+.item dt { padding-top: 4px; font: 500 11px/1.5 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.item dd { margin: 0; }
+.effective { font: 500 12px/1.6 var(--mono); color: var(--faint); }
+@media (max-width: 560px) {
+  .item { padding: 16px; }
+  .item dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .item dd + dt { margin-top: 10px; }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">catalogue</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#items">Items</a>
+      <a href="#choose">How to choose</a>
+      <a href="fleets.html">Fleet List</a>
+      <a href="terms.html">Terms</a>
+      <a href="index.html">Home</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="Language / 언어"><a href="catalogue.html?lang=en" hreflang="en" aria-current="true">EN</a><a href="catalogue-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a></div>
+    </div>
+  </div>
+</header>
+
+<main id="main" class="wrap policy">
+  <section>
+    <h1>Catalogue</h1>
+    <p class="effective">Updated 13 November 2026</p>
+    <p>The Catalogue is the software, including ours, that our website lists for you to install on a fleet you hold (<a href="agreement.html">Customer Agreement</a>, clauses 1.1 and 7.1). This page is that list. Every fleet starts each Booking with only our base image and your own working state, if any (<a href="fleets.html#base-image">Fleet List</a>). You choose what to install on it: an item below, nothing at all, or any other software you have the right to use. You operate what you install as your own, under its license, and run, stop and remove it as you decide (clauses 7.1 and 7.2). The Korean version (<a href="catalogue-ko.html" hreflang="ko">catalogue-ko.html</a>) has the same content and prevails if they differ.</p>
+  </section>
+
+  <section id="items">
+    <h2>Items</h2>
+    <div class="items">
+      <article class="item" id="sparkpipe">
+        <h3>SparkPipe <span class="mono">sparkpipe</span></h3>
+        <dl>
+          <dt>Publisher</dt><dd>HYOR AI Tech Ltd.</dd>
+          <dt>What it installs</dt><dd>Our inference engine, with its API and Functions. It runs the open-source models listed on the Fleet List on all the machines of your fleet, and your tools reach it through the Anthropic Messages API, the OpenAI Responses API and OpenAI chat completions.</dd>
+          <dt>License</dt><dd>Functional Source License 1.1 (ALv2 future license) with an additional permission: <a href="licenses/sparkpipe/LICENSE.txt">LICENSE.txt</a>, <a href="licenses/sparkpipe/LICENSE-PERMISSION.txt">LICENSE-PERMISSION.txt</a></dd>
+          <dt>Acceptance</dt><dd>Choosing it for a fleet asks you to accept its license for your company. The license governs the copy installed on that fleet.</dd>
+        </dl>
+      </article>
+      <article class="item" id="vllm">
+        <h3>vLLM <span class="mono">vllm</span></h3>
+        <dl>
+          <dt>Publisher</dt><dd>vLLM project</dd>
+          <dt>What it installs</dt><dd>An open-source inference engine published by the vLLM project. It installs the vLLM release from its publisher into your account on all the machines of your fleet. You choose the models it runs and obtain each from its publisher, under its license.</dd>
+          <dt>License</dt><dd>Apache License 2.0: <a href="licenses/vllm/LICENSE.txt">LICENSE.txt</a></dd>
+          <dt>Acceptance</dt><dd>Nothing to accept here: it is open source, and you comply with its license yourself (clause 7.2).</dd>
+        </dl>
+      </article>
+      <article class="item" id="none">
+        <h3>Nothing: keep the base image <span class="mono">none</span></h3>
+        <dl>
+          <dt>Publisher</dt><dd>HYOR AI Tech Ltd.</dd>
+          <dt>What it installs</dt><dd>Installs nothing. The fleet keeps only our base image and your own working state, and you install what you run yourself.</dd>
+          <dt>License</dt><dd>None: nothing is installed.</dd>
+          <dt>Acceptance</dt><dd>Nothing to accept.</dd>
+        </dl>
+      </article>
+    </div>
+  </section>
+
+  <section id="engine">
+    <h2>Our inference engine</h2>
+    <p>Installing SparkPipe, our inference engine, on a fleet asks you to accept its license, the Functional Source License 1.1 (ALv2 future license) with an additional permission. You accept it for your company by ticking the box on your account page that names your company, SparkPipe, the fleet and the license, or by adding <code>--accept-license</code> to <code>sparkpipe install</code>, and the license then governs the copy installed on that fleet. We record the statement you accepted with the SHA-256 hash of each license text as we serve it, who accepted it, the time, your IP address and your browser or command-line tool, as our <a href="privacy.html">privacy policy</a> states.</p>
+    <p>The engine runs the open-source models listed on the <a href="fleets.html#models">Fleet List</a>. You obtain each model you choose from its publisher, under its license, into your Customer storage: we run no AI model for you (clauses 5.2 and 7.1). A model listed when you make a Booking stays runnable with Catalogue software for that Booking, and other models while they are listed.</p>
+    <p>The engine's source is public at <a href="https://github.com/sparkpipe/sparkpipe">github.com/sparkpipe/sparkpipe</a>, under the same license, so you can read its code before you install it.</p>
+  </section>
+
+  <section id="choose">
+    <h2>How to choose</h2>
+    <p>Choose for each fleet you hold, or have a booking on that has not ended, on your <a href="account.html#installs">account page</a> under Set up your fleets, or with the SparkPipe command-line tool:</p>
+    <ul>
+      <li><code>sparkpipe install</code> lists your fleets and what you chose for each.</li>
+      <li><code>sparkpipe install F1B sparkpipe --accept-license</code> chooses our engine for Fleet 1B and accepts its license for your company.</li>
+      <li><code>sparkpipe install F1B vllm</code> installs vLLM from its publisher on Fleet 1B.</li>
+      <li><code>sparkpipe install F1B none</code> keeps only the base image on Fleet 1B.</li>
+    </ul>
+    <p>The account's owner or an admin chooses. Your choice stays with your working state on that fleet (clause 6.2): it carries over from one of your Bookings to the next, and ends when another customer's Booking of the fleet starts or 24 hours after your last hour on it. Then choose again for your next Booking there. Installing software and loading a model count as part of your Booking (clause 14.3).</p>
+  </section>
+
+  <section id="changes">
+    <h2>Changes</h2>
+    <p>We may add, change or remove items without amending the Customer Agreement, and a change does not alter software you have already installed (clause 7.1). Each item is under its own license, which you must comply with (clause 7.2). The Catalogue is listed “as available” (clause 8.4).</p>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="catalogue-ko.html?lang=ko" hreflang="ko" lang="ko">한국어</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+</body>
+</html>

@@ -7,7 +7,7 @@ from typing import Callable, Protocol
 
 import numpy as np
 
-from .chain import LOOKUP_MAX_MATCH, LOOKUP_MIN_MATCH, MASK64, LookupHistory, mix64
+from .lookup import LOOKUP_MAX_MATCH, LOOKUP_MIN_MATCH, MASK64, LookupHistory, mix64
 
 TapFunction = Callable[[np.ndarray, int], list[int]]
 

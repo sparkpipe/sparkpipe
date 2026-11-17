@@ -459,6 +459,9 @@ void SparkTpDeviceCollectiveBroadcastCancel(
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ROUND_BITS 16u
 #define SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_MASK \
     ((1ull << SPARK_TP_DEVICE_COLLECTIVE_CHAIN_ID_BITS) - 1ull)
+#define SPARK_TP_DEVICE_COLLECTIVE_EPOCH_KEYS UINT64_C(65521)
+#define SPARK_TP_DEVICE_COLLECTIVE_REQUEST_ID_MAX \
+    (UINT64_C(0xffffffff) - SPARK_TP_DEVICE_COLLECTIVE_EPOCH_KEYS)
 
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,

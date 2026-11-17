@@ -1,0 +1,16 @@
+raman-fitting feal-linear-cryptanalysis multi-source-data-merger
+crack-7z-hash sparql-university extract-elf vulnerable-secret bn-fit-modify adaptive-rejection-sampler
+portfolio-optimization hf-model-inference qemu-startup db-wal-recovery train-fasttext regex-log
+mteb-leaderboard sam-cell-seg install-windows-3.11 regex-chess merge-diff-arc-agi-task circuit-fibsqrt
+prove-plus-comm openssl-selfsigned-cert large-scale-text-editing nginx-request-logging dna-insert winning-avg-corewars
+cobol-modernization dna-assembly fix-ocaml-gc sqlite-db-truncate video-processing chess-best-move
+count-dataset-tokens compile-compcert log-summary-date-ranges mcmc-sampling-stan path-tracing-reverse polyglot-c-py
+pytorch-model-recovery fix-git largest-eigenval tune-mjcf extract-moves-from-video gpt2-codegolf
+constraints-scheduling mteb-retrieve feal-differential-cryptanalysis build-pmars caffe-cifar-10 write-compressor
+password-recovery sqlite-with-gcov modernize-scientific-stack git-multibranch sanitize-git-repo overfull-hbox
+make-doom-for-mips schemelike-metacircular-eval fix-code-vulnerability cancel-async-tasks build-pov-ray query-optimize
+filter-js-from-html build-cython-ext configure-git-webserver torch-tensor-parallelism rstan-to-pystan protein-assembly
+code-from-image path-tracing pytorch-model-cli llm-inference-batching-scheduler break-filter-js-from-html financial-document-processor
+headless-terminal custom-memory-heap-crash qemu-alpine-ssh git-leak-recovery distribution-search mailman
+gcode-to-text polyglot-rust-c pypi-server model-extraction-relu-logits kv-store-grpc torch-pipeline-parallelism
+make-mips-interpreter reshard-c4-data

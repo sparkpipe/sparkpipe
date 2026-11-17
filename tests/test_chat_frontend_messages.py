@@ -179,11 +179,15 @@ async def run(tmp, check):
 
         engine.reply(ANSWER)
         await harness.post("/v1/messages", dict(stream_body(), stream=False), **{"x-claude-code-request-class": "compaction"})
-        check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "a compaction request runs at background priority")
+        check(engine.requests[-1]["priority"] == chat_frontend.INTERACTIVE_PRIORITY, "a compaction request runs at interactive priority: the agent waits for it")
         engine.reply(ANSWER)
-        await harness.post("/v1/messages", dict(stream_body(), stream=False), **{"x-claude-code-request-class": "auxiliary", "X-Claude-Code-Session-Id": "s-1",
-                                                                                   "x-claude-code-agent-id": "a-2"})
-        check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "an auxiliary request runs at background priority")
+        _, _, text = await harness.post("/v1/messages", dict(stream_body(), stream=False), **{"x-claude-code-request-class": "auxiliary", "X-Claude-Code-Session-Id": "s-1",
+                                                                                              "x-claude-code-agent-id": "a-2"})
+        check(engine.requests[-1]["priority"] == chat_frontend.INTERACTIVE_PRIORITY and json.loads(text)["sparkpipe"]["priority"] == "interactive",
+              "an auxiliary request, such as a WebFetch summary the agent waits for, runs at interactive priority")
+        engine.reply(ANSWER)
+        await harness.post("/v1/messages", dict(stream_body(), stream=False), **{"x-claude-code-request-class": "auxiliary", "X-SparkPipe-Priority": "background"})
+        check(engine.requests[-1]["priority"] == chat_frontend.BULK_PRIORITY, "a client that asks for background priority gets it, whatever the harness marks")
         engine.reply(ANSWER)
         status, _, text = await harness.post("/v1/messages", dict(stream_body(), stream=False), **{"x-claude-code-request-class": "subagent", "X-Claude-Code-Session-Id": "s-1",
                                                                                                      "x-claude-code-agent-id": "a-2"})

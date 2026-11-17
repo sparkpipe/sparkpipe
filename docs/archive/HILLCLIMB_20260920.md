@@ -12,7 +12,7 @@
 >   never ships.
 > - weightd is deployed through the `core/WEIGHTSD_BIN` announce, not by scp;
 >   the sparkf build tree is `~/g5n-rd-build`. See
->   [FLEET_RELEASE_RUNBOOK.md](../FLEET_RELEASE_RUNBOOK.md).
+>   [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 > - `SPARK_GLM5_NEXT_GRAPH_PATH` has no default; it must be `0` or `1`.
 
 ## GOAL (set 09-20, operator)

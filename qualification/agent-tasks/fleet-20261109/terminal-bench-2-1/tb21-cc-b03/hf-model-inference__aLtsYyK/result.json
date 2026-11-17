@@ -1,0 +1,136 @@
+{
+    "id": "af8100e8-4fc9-49f3-b9a6-4116cd20ee97",
+    "task_name": "terminal-bench/hf-model-inference",
+    "trial_name": "hf-model-inference__aLtsYyK",
+    "trial_uri": "file:///Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03/hf-model-inference__aLtsYyK",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "hf-model-inference",
+        "ref": "sha256:01370f37e61286f920dfca1e471496640ebcc8d06e1cc48d874c790715dbd4ad"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "66ef04e259d5846b2106181c2a22bc1bbc391421a9fd9bf070e7320b022ae256",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/hf-model-inference",
+            "ref": "sha256:01370f37e61286f920dfca1e471496640ebcc8d06e1cc48d874c790715dbd4ad",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "hf-model-inference__aLtsYyK",
+        "trials_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "claude-code",
+            "import_path": null,
+            "model_name": "deepseek-v4.1-flash",
+            "base_url": null,
+            "model_api_key_name": null,
+            "model_api_format": null,
+            "skip_model_parsing": false,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "version": "2.1.311",
+                "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+                "reasoning_effort": "max"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "8816425d-3fd0-461a-8097-f2cdf2c1f7bf",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "claude-code",
+        "version": "2.1.311",
+        "model_info": {
+            "name": "deepseek-v4.1-flash",
+            "provider": "anthropic"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 300463,
+        "n_cache_tokens": 274685,
+        "n_output_tokens": 7545,
+        "cost_usd": 0.48666874999999993,
+        "model_usage": {
+            "deepseek-v4.1-flash": {
+                "n_input_tokens": 300463,
+                "n_cache_tokens": 274685,
+                "n_output_tokens": 7545,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 1.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-11-09T10:07:45.198531Z",
+    "finished_at": "2026-11-09T10:15:21.686111Z",
+    "environment_setup": {
+        "started_at": "2026-11-09T10:07:45.872651Z",
+        "finished_at": "2026-11-09T10:08:53.302512Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-11-09T10:08:53.302605Z",
+        "finished_at": "2026-11-09T10:11:04.507010Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-11-09T10:11:04.608875Z",
+        "finished_at": "2026-11-09T10:14:57.156225Z"
+    },
+    "verifier": {
+        "started_at": "2026-11-09T10:14:57.780487Z",
+        "finished_at": "2026-11-09T10:15:08.957216Z"
+    },
+    "step_results": null
+}

@@ -18,7 +18,7 @@
 #define VF_FILL_ROWS 16u
 #define VF_FFN 512u
 
-struct Small27b : Qwen38_27bGeometry<SPARK_QWEN38_27B_STAGE_TP_DEGREE>
+struct Small27b : Qwen38_27bGeometry<16u>
 {
 	static constexpr uint32_t kTpDegree = 1u;
 	static constexpr uint32_t kHidden = 1024u;

@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#include "inference/llms/kimi_k3/config.h"
+#include "model-families/k3/source/config.h"
 
 #define K3_COLLECTIVE_MLA_QUERY 4u
 #define K3_COLLECTIVE_MLA_PARTIALS 5u

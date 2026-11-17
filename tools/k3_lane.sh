@@ -8,12 +8,12 @@ if [ -n "${K3_RECORD:-}" ]; then
     printf -v "$name" '%s' "$value"
   done
 fi
-: "${K3_LANE:?K3_LANE is the weightd mesh lane (1..15, never 0)}"
+: "${K3_LANE:?K3_LANE is the weightd mesh lane (1..3, never 0)}"
 : "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
 : "${K3_STATE_BUDGET_BYTES:?K3_STATE_BUDGET_BYTES is the per-rank KDA state + windows + MLA KV + scratch budget the runner enforces}"
-[ "$K3_LANE" -ge 1 ] && [ "$K3_LANE" -le 15 ] || { echo "k3_lane: lane $K3_LANE outside 1..15" >&2; exit 2; }
+[ "$K3_LANE" -ge 1 ] && [ "$K3_LANE" -le 3 ] || { echo "k3_lane: lane $K3_LANE outside 1..3" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LANE_TOOL=k3_lane
 LANE_RANKS=16

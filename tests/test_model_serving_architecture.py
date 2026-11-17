@@ -258,7 +258,8 @@ def main() -> int:
         "batch client does not require its local packaged runtime root",
     )
     require(
-        "SparkModelResidentClientPrepare" in pipeline_client
+        "SparkModelResidentIpcEncodePreparation" in pipeline_client
+        and "SparkModelResidentClientQueueEncoded" in pipeline_client
         and "SparkModelResidentClientCommit" in pipeline_client
         and "SparkModelResidentClientAbort" in pipeline_client
         and "for (rank=pipeline->rank_count" in pipeline_client,

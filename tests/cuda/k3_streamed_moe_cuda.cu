@@ -5,7 +5,7 @@
 #include <string.h>
 #include <vector>
 
-#include "inference/llms/kimi_k3/streamed.cuh"
+#include "model-families/k3/source/streamed.cuh"
 
 #define MOE_SHARDS 16u
 #define MOE_ROWS 256u

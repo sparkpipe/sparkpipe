@@ -2,7 +2,7 @@
 
 Lanes, their records and the test lanes beside production are in
 [LANES.md](LANES.md); fleet roles and releases are in
-[FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
+[FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 This is the shared workflow for every driver lane. Family code owns geometry,
 tensor descriptions and model math. Reuse the stage module claims for ownership,
@@ -116,7 +116,7 @@ forward-cell pass cannot establish TP16 collective correctness. For a measured
 fleet run, list all sixteen hosts and use --resources exclusive. An exclusive
 job does not stop the fleet agent's production serving, which runs outside the
 queue. Stopping `fleet-agent` takes GLM serving down on every node it touches
-([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
+([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
 so a measured window needs the operator's approval as a planned outage; then
 meet every condition of the quickstart's performance-evidence rule.
 
@@ -183,21 +183,31 @@ its node's weightd, acquires one mesh lane, creates the device collective on
 that lane exactly as a serving rank does and times graph-captured rounds.
 
 ```sh
-build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS
+build/mesh_round_bench SOCKET RANK DEGREE LANE RANK_MAP OPERATION ROWS ROW_ELEMENTS ROUNDS REPS START_UNIX_MS [WORK_KIB [PREFETCH]]
 ```
 
 `RANK_MAP` lists the physical mesh rank of each TP rank, comma separated, as a
 stage config's `device_collective.mesh_ranks` does; `START_UNIX_MS` makes every
 rank start its timed interval at the same moment. Run one per rank on a lane no
-serving process holds. These are collective component measurements, not
-serving throughput.
+serving process holds. `WORK_KIB` puts a memory-bound kernel in front of every
+round: round `r` reads its own `WORK_KIB` window of a private buffer, so a
+launch reads `ROUNDS x WORK_KIB` cold, as a decode step reads its weights.
+With it the result shows how long each rank waits for the slowest one, round
+by round. `PREFETCH` 1 registers each window with the weight prefetch, as a
+decode graph's GEMVs register their weights, so the wait in front of a window
+prefetches it; 0 or absent leaves every read cold. On the sixteen Sparks on
+2026-11-11, `1 1 5120 128 32` (a 5,120-value all-reduce, 128 rounds a
+launch) took 25.8 us a round alone (19.6 waiting for the fifteen peers), 156
+us with `WORK_KIB` 26624 and no prefetch (122 reading, 28 waiting) and 144
+with the prefetch. These are collective component measurements, not serving
+throughput.
 
 ## GLM firmware build for development and PR testing
 
 This section covers development and PR builds. Release builds do not use
 it: `scripts/release_build.sh` builds a source archive with `make` on the
 build host and on the hub
-([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#41-build)).
+([FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#41-build)).
 
 Run `tools/glm5_next_build_release.sh` with no arguments through a GPU-owned
 queue job in the clean checkout returned by `spark_queue.py sync`. Use
@@ -246,7 +256,11 @@ It starts that rank's private weightd and residentd, exchanges only its own
 mesh records, and runs the real model_batch client on the coordinator. Because
 of the private weightd it cannot run on a Spark the fleet agent manages: any
 other `sparkpipe_weightd` process stops the agent from managing that node
-([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)). It accepts
+([WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md#production-ownership)). Any weightd, a
+private one included, applies the node's KV cache rule from its first minute:
+it deletes the KV cache files under its user's home directory that nothing has
+used for a day, so look for stores worth keeping (`find ~ -name .kvs-lock`)
+before starting one on a development machine. It accepts
 replica lanes 0-7 only. Every
 participant stays in its queue cgroup. Read-only peer file transfers do not
 launch remote inference. Completion requires exact reference tokens for every

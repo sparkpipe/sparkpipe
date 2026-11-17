@@ -14,7 +14,7 @@
              and the three variants' distances from one another are the
              gate's floors)
 
-The rounding points follow the CUDA stage (inference/llms/kimi_k3/layer.cuh):
+The rounding points follow the CUDA stage (model-families/k3/source/layer.cuh):
   AttnRes    per source r = rsqrt(mean(v^2) + 1e-5), score = sum v r w with
              the folded bf16(gamma proj) weight, softmax over the sources,
              bf16(sum p v); the bank keeps the running partial at every

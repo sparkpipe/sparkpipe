@@ -1,0 +1,19 @@
+{
+    "task": {
+        "name": "terminal-bench/regex-log",
+        "ref": "sha256:802c16cfd132e6c457529cb864be5a757c1b23b6cadc57f2d01983cb0110292a",
+        "source": "terminal-bench/terminal-bench-2-1"
+    },
+    "trial_name": "regex-log__d6L2ybs",
+    "trials_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b03",
+    "agent": {
+        "name": "claude-code",
+        "model_name": "deepseek-v4.1-flash",
+        "kwargs": {
+            "version": "2.1.311",
+            "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+            "reasoning_effort": "max"
+        }
+    },
+    "job_id": "8816425d-3fd0-461a-8097-f2cdf2c1f7bf"
+}

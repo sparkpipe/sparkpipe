@@ -27,6 +27,11 @@ repeats exactly on the same build and batch composition.
 
 --resume reuses the saved successful responses of an interrupted run in --out
 (wall time and tok/s then cover only the new requests; "resumed" counts them).
+
+--order submits the cases as listed, reversed or shuffled (--order-seed). On a
+lane set up afresh a run repeats token for token in the same order; an
+answer's log-probs depend slightly on the answers generated beside it, so a
+score is measured over several orders (docs/VARIANT_GATE.md).
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import random
 import sys
 import time
 import urllib.error
@@ -47,6 +53,16 @@ from compare_runs import answer_matches, extract_answer, family_name  # noqa: E4
 
 DEFAULT_CASES = ROOT / "qualification" / "ds4_eval" / "runs" / "kimi-k3-api-20260728" / "cases.json"
 PHASES = ("warm", "serial", "batch")
+ORDERS = ("listed", "reversed", "shuffled")
+
+
+def ordered(cases: list, order: str, seed: int) -> list:
+    out = list(cases)
+    if order == "reversed":
+        out.reverse()
+    if order == "shuffled":
+        random.Random(seed).shuffle(out)
+    return out
 
 
 def request(endpoint: str, body: dict, timeout: int) -> tuple[dict, float]:
@@ -109,7 +125,7 @@ def score(case: dict, payload: dict, elapsed: float) -> dict:
 def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
     responses = out / phase / "responses"
     responses.mkdir(parents=True, exist_ok=True)
-    selected = cases["cases"]
+    selected = ordered(cases["cases"], args.order, args.order_seed)
     max_tokens = 1 if phase == "warm" else args.max_tokens
     workers = args.concurrency if phase == "batch" else 1
 
@@ -143,7 +159,8 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
     summary = {"format": "sparkpipe-ds4-eval92-phase-v1", "phase": phase, "model": args.model,
                "endpoint": args.endpoint, "max_tokens": max_tokens, "temperature": args.temperature,
                "top_p": args.top_p, "top_k": args.top_k, "seed": args.seed,
-               "reasoning_effort": args.reasoning_effort, "concurrency": workers, "wall_s": round(wall, 1),
+               "reasoning_effort": args.reasoning_effort, "concurrency": workers,
+               "order": args.order, "order_seed": args.order_seed if args.order == "shuffled" else None, "wall_s": round(wall, 1),
                "completed": sum(record["status"] == "ok" for record in records),
                "resumed": sum(bool(record.get("resumed")) for record in records),
                "errors": sum(record["status"] != "ok" for record in records),
@@ -154,7 +171,7 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
                "completion_tok_s": round(completion / wall, 2) if wall > 0 else None,
                "finish_reasons": {reason: sum(record.get("finish_reason") == reason for record in records)
                                   for reason in sorted({str(record.get("finish_reason")) for record in records})},
-               "results": records}
+               "results": sorted(records, key=lambda record: record["index"])}
     (out / phase / "summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     return summary
 
@@ -162,7 +179,8 @@ def run_phase(args, cases: dict, phase: str, out: Path) -> dict:
 def report(out: Path, args, cases_path: Path, summaries: dict) -> None:
     lines = [f"# ds4-eval 92 — {args.model}", "",
              f"- Endpoint `{args.endpoint}`, temperature `{args.temperature}`, top_p `{args.top_p}`, top_k `{args.top_k}`,"
-             f" seed `{args.seed}`, max_tokens `{args.max_tokens}`, reasoning_effort `{args.reasoning_effort or 'model default'}`",
+             f" seed `{args.seed}`, max_tokens `{args.max_tokens}`, reasoning_effort `{args.reasoning_effort or 'model default'}`,"
+             f" order `{args.order}`" + (f" (seed {args.order_seed})" if args.order == "shuffled" else ""),
              f"- Cases `{cases_path.relative_to(ROOT) if cases_path.is_relative_to(ROOT) else cases_path}`"
              f" sha256 `{hashlib.sha256(cases_path.read_bytes()).hexdigest()}`", "",
              "| Phase | Concurrency | Passed | Errors | Prompt tok | Cached tok | Completion tok | Wall s | Completion tok/s |",
@@ -196,6 +214,8 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--reasoning-effort", choices=("minimal", "low", "medium", "high"), default=None)
     parser.add_argument("--concurrency", type=int, default=92)
+    parser.add_argument("--order", choices=ORDERS, default="listed")
+    parser.add_argument("--order-seed", type=int, default=0)
     parser.add_argument("--phases", default=",".join(PHASES))
     parser.add_argument("--timeout", type=int, default=7200)
     parser.add_argument("--resume", action="store_true",

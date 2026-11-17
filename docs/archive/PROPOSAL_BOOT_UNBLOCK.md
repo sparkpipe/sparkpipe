@@ -1,7 +1,7 @@
 # Superseded Boot-Unblock Proposal
 
 Owner: SYSADMIN. Status: SUPERSEDED by the fleet brickproof policy in
-`docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
+`datacenter:operations/INCIDENT_RECOVERY_PLAYBOOK.md`.
 
 This document preserves the original incident diagnosis. Its proposed Ceph and
 fabric timeout drop-ins must not be deployed. The landed policy instead launches
@@ -43,7 +43,7 @@ ssh/entropy: ssh, pollinate.
 misc boot: systemd-pcrphase, setvtrgb, systemd-user-sessions, update-utmp-runlevel,
 systemd-update-utmp, blk-availability, cups-browsed, docker, podman, samba-ad-dc,
 ubuntu-advantage, apport, fwupd-refresh, cron, getty@tty1, serial-getty@ttyS0,
-user@1000, nvidia-dgx-telemetry, nvidia-spark-run-apt-upgrade-once, centaur-sparkring-agent,
+user@1000, nvidia-dgx-telemetry, nvidia-spark-run-apt-upgrade-once, an agent service,
 sparkpipe_model_residentd, sparkpipe-fsck-health, plymouth-quit, rpc-statd-notify,
 update-notifier-motd/download timers.
 

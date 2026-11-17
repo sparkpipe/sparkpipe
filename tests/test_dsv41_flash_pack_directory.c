@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "spark_dsv41_flash_stagepack_format.h"
+#include "sparkpipe/spark_dsv41_flash_stagepack.h"
 
 #define ENTRIES_MAX 2048u
 

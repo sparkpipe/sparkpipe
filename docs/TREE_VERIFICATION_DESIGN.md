@@ -1,12 +1,12 @@
 # Tree verification over the production speculation path
 
-Status: design, 2026-11-09. Nothing in this document is built. It turns the
-"Direction: multi-drafter trees" section of
-[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) and sections
-2.3 to 2.4 of [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md) into a wiring plan
-for the code that serves today: the batch engine's lookup and model drafts,
-the stage adapter's verify frame, the model `keep_rows` hook and the attention
-kernels. The contract for chain frames in
+Status: phases P1 and P2 of section 8 are built and gated, and the branches
+of P4 are in the engine and the draft server; P3 and P5 are not built. This
+page was written as the design on 2026-11-09, for the code that serves: the
+batch engine's lookup and model drafts, the stage adapter's verify frame, the
+model `keep_rows` hook and the attention kernels.
+[`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md) describes the
+subsystem as built. The contract for chain frames in
 [`SPECULATION_LONG_FRAMES.md`](SPECULATION_LONG_FRAMES.md) stays in force; a
 chain is a tree with one child per node, and every rule below reduces to that
 document when it is.
@@ -41,17 +41,15 @@ The two sources that pay first cost nothing new:
   `tools/spec_offline/block_drafter.py` scores 64 candidates; today
   `tools/block_draftd.py` emits only the argmax chain. The DFT3 protocol
   already carries trees (`SparkDraftBridgeNode.parent_index`, up to 32 deep
-  and 4096 nodes), and `SparkDraftBridgeProposeTree` already receives them;
+  and 4096 nodes), and `SparkDraftBridgeReply` already receives them;
   the engine cuts at the first node whose parent is not the previous row
   (`SparkModelBatchPlanModelDraft`).
 
 A second draft model is a third source behind these two. Drafters
 approximate the same target, so their errors correlate; the agreement matrix
 of section 8, phase P0, decides whether a second model adds branches the
-first two do not. The seam's source mask (`SPARK_SPECULATION_SEAM_SOURCE_*`
-in `include/sparkpipe/spark_speculation_seam.h`) and the node's `source_bit`
-already name sources, so acceptance is attributed per source without new
-fields.
+first two do not. A node's `source_bit` already names its source, so
+acceptance is attributed per source without new fields.
 
 ## 2. The tree frame
 
@@ -91,8 +89,8 @@ frame of `SPECULATION_LONG_FRAMES.md` as follows.
   key range for tree rows (section 3).
 - **Limits.** The row budget is the frame cost model's, as for chains
   (`SparkSpeculationFrameChoose`), within `max_verify_row_count`,
-  `SPARK_SPECULATION_TREE_MAX_PLAN_ROWS` and the completion's 1024 tokens.
-  Depth is bounded by `SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH` (8) for model
+  `SPARK_SPECULATION_TREE_FRAME_MAX_ROWS` (256) and the completion's 1024
+  tokens. Depth is bounded by `SPARK_MODEL_RESIDENT_DRAFT_MAX_DEPTH` (16) for model
   nodes and by the lookup match for lookup nodes, as today.
 - **Block ends.** Chain drafts stop two tokens before a recurrent checkpoint
   and the lane carries one block identity per block end in (p, p+d+1],
@@ -179,13 +177,12 @@ both statements; the family gate corpora pin the tokens.
 
 - **Resolution.** The kept path is the longest root path on which every
   node's token equals its parent's output; the bonus token is the output at
-  the last accepted node. `SparkSpeculationPolicyResolveVerifierTree`
-  (`src/spark_speculation_policy.c`) is that function on the host and
-  `SparkSpeculationTreePlanResolve` is its plan-form twin; the stage adapter
-  calls the host rule where `StageServingVerifyKept` calls the chain rule
-  today, with the node table carried in the submission. A device kernel that
-  resolves on the GPU, as section 2.4 of the plan wants for one-graph rounds,
-  is a later optimisation, not a prerequisite.
+  the last accepted node. `SparkSpeculationTreeResolvePath`
+  (`src/spark_speculation_tree_frame.c`) is that function on the host; the
+  stage serving adapter calls it for a tree frame where
+  `StageServingVerifyKept` applies the chain rule, with the node table
+  carried in the submission. A device kernel that resolves on the GPU, for
+  one-graph rounds, is a later optimisation, not a prerequisite.
 - **Completion.** The lane's completion holds the accepted path's tokens
   followed by the bonus token and then `SPARK_MODEL_SERVING_NO_TOKEN`, so
   `SparkModelServingCompletionKeptRows` and the pipeline client are
@@ -212,10 +209,7 @@ both statements; the family gate corpora pin the tokens.
 ## 5. Composition in the batch engine
 
 Composition lives where the two sources already meet,
-`SparkModelBatchPlanDraft` and `SparkModelBatchExtendModelDraft`, not in the
-unused seam and policy engine. The policy engine's resolver is reused as the
-host twin; the seam stays out of the production path until the cleanup in
-the unified design decides its fate.
+`SparkModelBatchPlanDraft` and `SparkModelBatchPlanBranches`.
 
 1. Collect candidates: the lookup's ranked matches, the model's chain and,
    once draftd emits them, the model's alternates as a DFT3 tree.
@@ -241,9 +235,13 @@ survival is per depth bucket and class rather than per row index.
 The adapter capability bit `TREE_VERIFY`, next to `SPECULATIVE_VERIFY`,
 says that the model's verify frame honours per-row slots, the key mapping
 and a path-form `keep_rows`; it comes with the descriptor's
-`tree_slot_grain`, which the stage serving adapter checks against the
-runner's KV shard at open. An adapter without the bit receives only chain
-frames, as today. The stage runner refuses a tree frame on a model whose
+`tree_slot_grain`. A stage module states that grain among its serving facts
+(`SparkStageServingModel.tree_slot_grain`); the stage serving adapter derives
+the bit from it, copies it into the descriptor and refuses to open when the
+runner's grain differs (`SparkStageRunnerTreeSlotGrain`: the KV shard grain
+times the degree on the CUDA runner, `SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN` on
+the device runner). An adapter without the bit receives only chain frames,
+as today. The stage runner refuses a tree frame on a model whose
 geometry lacks `tree_verify` with `SPARK_STATUS_UNSUPPORTED`, so a
 misconfiguration fails loudly rather than verifying siblings against each
 other. `docs/INTERFACE_CONTRACTS.md` has the submission contract.
@@ -253,7 +251,7 @@ other. `docs/INTERFACE_CONTRACTS.md` has the submission contract.
 | Family | Verify | Tree |
 | --- | --- | --- |
 | Solar Open 2 (CUDA, TP16) | chain | tree: sharded GQA key mapping, KDA parent taps and branch snapshots, path keep with slot relocation; `TREE_VERIFY`, `tree_slot_grain` 16. |
-| Qwen3.8-27B (Metal) | chain in `tools/metal_stage_run.c` | tree: `attention.metal` key mapping, conv parent taps, delta snapshots, `SparkDeviceStageRunnerKeepPath` with `spark_kv_move_paged`; `--tree-branches` in the tool. |
+| Qwen3.8-27B, Qwen3.5-4B and 2B (Metal) | chain, served and in `tools/metal_stage_run.c` | tree, served and in the tool: `attention.metal` key mapping, conv parent taps, delta snapshots, `SparkDeviceStageRunnerKeepPath` with `spark_kv_move_paged`; the device serving runner passes a tree dispatch's parent rows and forwards the kept path; `TREE_VERIFY`, `tree_slot_grain` 1; `--tree-branches` in the tool. |
 | Ling 3.0 (CUDA) | chain | chain only: its latent attention has no key mapping; the stage refuses a tree step. |
 | Kimi K3, DeepSeek V4.1 Flash, GLM 5.3, A.X K2 | chain | chain only: MLA and DSA selection would need per-path key mapping. |
 | K-EXAONE 2.0, Gemma 4, MiMo (CUDA) | chain | the shared GQA kernels take the mapping; the stages lack `tree_verify`, the relocation and the capability until wired. |
@@ -298,6 +296,28 @@ failed gate.
   available alternate, so on the rewrite prompt, where chains already
   accept most drafts, trees cost rows without gain (155 against 182 tok/s);
   the engine adds a branch only when the frame cost model says it pays.
+  Metal serving carries tree frames for the three device-stage adapters:
+  the device serving runner hands a tree dispatch's parent rows to the
+  device runner, which takes the frame's anchor from its first row because
+  the KV binding, not the runner, owns positions in serving, and keeps the
+  accepted path. `tests/test_device_serving_runner.c` checks the forwarding
+  on the host. Served gate on M5U0 (2026-11-10, Qwen3.5-4B through
+  `sparkpipe_model_api` and `sparkpipe_model_residentd`, the six gate and
+  speculation prompts, 128 tokens): greedy tokens equal `metal_stage_run`'s
+  on all six (`tools/serving_greedy_check.py`), tokens served with drafts
+  equal the same requests served without them (a request for logprobs takes
+  no drafts) on all six, cold and from the prefix cache, and 8 of 94 verify
+  frames were trees with 1 to 11 branch rows; no branch row was accepted on
+  this run. The first served tree frame showed that the KV binding's
+  continuity check refused every tree row after the anchor; the check and
+  its test in `tests/test_stage_kv_binding.c` are fixed. A continuation that
+  resumes a prompt plus 64 reference tokens can still differ from the
+  uninterrupted reference at a near tie, with and without drafts alike (design
+  from the 1,099-token checkpoint: 0.009 nats at token 7; prose prefilled
+  cold: 0.02 nats at token 37), as the Metal serving receipt records for
+  prefill splits.
+  The Qwen3.8-27B served gate has not run: M5U0 was swapping under its live
+  deployments and a training job.
 - **P3, K3.** MLA ancestor keys and the KDA tree scan. Gate: the same path
   pin on K3 at TP16, and B1 and B2 tokens per second on the speculation
   receipts' workloads against the chain, in one hold. Serve only if the tree
@@ -322,6 +342,6 @@ failed gate.
   and does not depend on the vocabulary; restricting the head to candidate
   tokens saves a few percent at most and needs a full-vocabulary bonus row
   anyway.
-- Device-side resolution and one-graph rounds (plan section 2.4). Worth it
+- Device-side resolution and one-graph rounds. Worth it
   once a tree frame serves and the host round trip is measured on the step
   trace.

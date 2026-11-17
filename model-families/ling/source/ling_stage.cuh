@@ -6,13 +6,9 @@
 #include <cstring>
 
 #include "runtime/launch.h"
-#include "sparkpipe/spark_error_site.h"
-#include "sparkpipe/spark_named_pack.h"
-#include "sparkpipe/spark_named_pack_bind.h"
-#include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weight_codec.h"
-#include "sparkpipe/spark_weightd_cxx.h"
+#include "inference/runner/stage_model_cuda.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/attn_shard_prefill.cuh"
@@ -86,26 +82,14 @@ typedef struct LingLayer
 } LingLayer;
 
 template<class G>
-struct LingState
+struct LingState : CudaStagePackState
 {
-	const SparkStageRunnerServices *services;
-	SparkNamedPack pack;
-	uint32_t pack_open;
-	uint32_t tp_degree;
-	uint32_t tp_rank;
-	uint32_t max_rows;
-	uint32_t slots;
 	uint32_t ffn_rows;
 	uint32_t expert_first;
 	uint64_t partial_stride;
 	uint64_t kda_state_bytes;
 	uint64_t kda_window_bytes;
 	LingLayer layers[G::kLayers];
-	void *arena;
-	uint64_t arena_bytes;
-	void *lane_arena;
-	uint64_t lane_bytes;
-	LingState *lane_states[SPARK_STAGE_RUNNER_LANES];
 	uint16_t *normed;
 	uint16_t *partial;
 	uint16_t *qkv;
@@ -162,9 +146,7 @@ struct LingState
 	uint16_t *shared_out;
 	uint8_t *kda_state;
 	uint16_t *kda_window;
-	LmKvAccessError *kv_error;
 	LmKvShardView kv_views[LingShape<G>::kAttnLayers];
-	uint32_t kv_attached;
 };
 
 __global__ static void LingSplitRowsKernel(const uint16_t *fused, uint16_t *query, uint16_t *key, uint16_t *value, uint32_t width)
@@ -215,17 +197,44 @@ __global__ static void LingSiluClampPackedKernel(const uint16_t *gate, const uin
 }
 
 template<class G>
-struct LingModel
+struct LingModel : CudaStage<LingModel<G>>
 {
 	using S = LingShape<G>;
 	using State = LingState<G>;
 	using Layer = LingLayer;
+	using Schedule = LingSchedule<G, LingModel>;
+	using Kv = CudaStageKv<CudaStageKvViews<typename S::Kv, &State::kv_views, 0u, S::kAttnLayers>>;
+	using LaneShared = CudaStageFields<&State::kda_state, &State::kda_window, &State::kv_error>;
+
+	static constexpr bool kLanes = true;
+	static constexpr bool kKeepRows = G::kVerifyRows != 0u;
+	static constexpr uint32_t kTpDegree = G::kTpDegree;
+	static constexpr uint32_t kHidden = G::kHidden;
+	static constexpr uint32_t kVocab = G::kVocab;
+	static constexpr uint32_t kLayers = G::kLayers;
+	static constexpr float kEpsilon = G::kNormEpsilon;
+	static constexpr uint32_t kPackAlignment = LG_PACK_ALIGNMENT;
 
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
 		cudaStream_t stream;
 	};
+
+	static const char *Tag(void)
+	{
+		return G::Tag();
+	}
+
+	static const char *ReportTag(void)
+	{
+		return G::ReportTag();
+	}
+
+	static const char *WeightdModel(void)
+	{
+		return G::Name();
+	}
 
 	static uint32_t Blocks(uint64_t elements)
 	{
@@ -244,23 +253,6 @@ struct LingModel
 		uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
 	{
 		return Linear(weight, source, destination, (float *)0, rows, input_dimension, output_dimension, step, stream);
-	}
-
-	static SparkStatus Round(State *state, cudaStream_t stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *local, void *full)
-	{
-		return state->services->round(state->services->context, (void *)stream, operation, SPARK_STAGE_RUNNER_ROUND_ALL,
-			rows, row_elements, local, full);
-	}
-
-	static SparkStatus Launched(void)
-	{
-		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
-	}
-
-	static void RowState(const State *state, uint32_t layer, uint32_t phase)
-	{
-		if ( state->services->row_state != 0 )
-			state->services->row_state(state->services->context, layer, phase);
 	}
 
 	static uint16_t *ReplayQkv(State *state, const LingLayer *layer)
@@ -306,7 +298,7 @@ struct LingModel
 		if ( replay && cudaMemcpyAsync(ReplayQkv(state, layer), state->qkv, (uint64_t)rows * S::kKdaChannels * sizeof(uint16_t), cudaMemcpyDeviceToDevice,
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LmCausalConvLaunch<G::kConv,(G::kKdaConvRoundedSum ? LM_CONV_SWISH : LM_CONV_SWISH_ONCE),uint16_t>(window, step->recurrent_index, step->sequence_row_begin, (const uint32_t *)0,
 			step->tree != 0u ? ReplayQkv(state, layer) : state->qkv, layer->kda_conv, state->qkv, S::kKdaChannels, sequences, step->commit, step->sequence_row_indices,
 			rows, stream, step->tree != 0u ? step->parent_rows : (const uint32_t *)0);
@@ -328,14 +320,14 @@ struct LingModel
 				S::kKdaRankHeads, 1u, sequences, step->commit, step->sequence_row_indices, stream, step->tree != 0u ? step->state_loads : (const uint32_t *)0,
 				step->tree != 0u ? step->state_saves : (const uint32_t *)0, step->tree != 0u ? state->kda_snapshots : (float *)0) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		RowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if constexpr ( G::kKdaNormRoundOnce )
 			LM_LAUNCH((LmHeadRmsNormSigmoidGateOnceKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
 				state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
 		else
 			LM_LAUNCH((LmHeadRmsNormSigmoidGateKernel<LG_THREADS>), dim3(S::kKdaRankHeads,rows), LG_THREADS, 0, stream,
 				state->kda_mixed, state->kda_gate, layer->kda_norm, state->kda_mixed, rows, S::kKdaRankHeads, G::kKdaDim, G::kNormEpsilon);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->kda_out, state->kda_mixed, state->partial, rows, S::kKdaWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
@@ -368,13 +360,13 @@ struct LingModel
 			state->mla_kv, (const uint16_t *)0, layer->mla_kv_norm, (uint16_t *)0, state->mla_kv, G::kLatent, S::kSlot, G::kNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<LG_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), LG_THREADS, 0, stream,
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
-		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->mla_kv, step->sequence_of_row,
 			step->positions, rows, S::kSlot);
-		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		if ( Launched() != SPARK_STATUS_OK )
+		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kMlaRankHeads * S::kSlot, state->mla_query,
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kMlaRankHeads * S::kSlot, state->mla_query,
 			state->mla_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -385,7 +377,7 @@ struct LingModel
 					step->sequence_of_row, step->context_length, step->positions, (const uint32_t *)0, 0u, 0u, scale, state->attn_send, partial_stride,
 					rows, stream)) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
 			state->attn_received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -394,7 +386,7 @@ struct LingModel
 		LM_LAUNCH((LmPerHeadProjectSplitKernel<LG_THREADS,G::kLatent,G::kValueDim>), dim3(rows,S::kMlaRankHeads,G::kValueDim / LM_PER_HEAD_SPLIT_OUTPUTS),
 			LG_THREADS, 0, stream, state->mla_latent, layer->mla_uv, state->mla_value, S::kMlaRankHeads, rows);
 		LingHeadGateKernel<<<rows, LG_THREADS, 0, stream>>>(state->mla_value, state->mla_gate, S::kMlaRankHeads, G::kValueDim);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->mla_out, state->mla_value, state->partial, rows, S::kMlaRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
@@ -413,7 +405,7 @@ struct LingModel
 		if ( Linear(layer->gqa_qkv, state->normed, state->gqa_local, rows, G::kHidden, S::kGqaRankFused, step, stream) != LM_LAUNCH_OK ||
 			Linear(layer->gqa_gate, state->normed, state->gqa_gate, rows, G::kHidden, S::kGqaRankWidth, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kGqaRankFused, state->gqa_local, state->gqa_gathered);
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, S::kGqaRankFused, state->gqa_local, state->gqa_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		LmRankMajorRowsKernel<LG_THREADS><<<dim3(Blocks(S::kGqaFused), rows), LG_THREADS, 0, stream>>>(state->gqa_gathered, state->gqa_full, rows, S::kGqaRankFused,
@@ -422,17 +414,17 @@ struct LingModel
 			S::kGqaWidth);
 		LmSliceColumnsKernel<LG_THREADS><<<dim3(Blocks(S::kSlot), rows), LG_THREADS, 0, stream>>>(state->gqa_full, state->gqa_slot, S::kGqaFused, S::kGqaWidth,
 			S::kSlot);
-		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->gqa_slot, step->sequence_of_row,
 			step->tree != 0u ? step->slots : step->positions, rows, S::kSlot);
-		RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
-		if ( Launched() != SPARK_STATUS_OK ||
+		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kGqaKvHeads,G::kGqaHeadDim,G::kGqaHeadDim>(*view, state->gqa_query, G::kGqaHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kGqaHeadDim), state->attn_send, partial_stride, rows,
 				stream, (const uint32_t *)0, 0u, 1u, 0u, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
 				step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		status = Round(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
 			state->attn_received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -440,7 +432,7 @@ struct LingModel
 			stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmOutputGateKernel<LG_THREADS,true>), rows, LG_THREADS, 0, stream, state->gqa_merged, state->gqa_gate, S::kGqaRankWidth);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->gqa_out, state->gqa_merged, state->partial, rows, S::kGqaRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
@@ -469,7 +461,7 @@ struct LingModel
 			LM_LAUNCH((LmSiluRoundedMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true, INFINITY);
 		else
 			LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->gate_up, state->intermediate, state->ffn_rows, true, INFINITY);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->ffn_down, state->intermediate, state->partial, rows, state->ffn_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
@@ -504,7 +496,7 @@ struct LingModel
 		expert_routes.top_k = G::kTopK;
 		expert_routes.local_experts = G::kLocalExperts;
 		expert_routes.multiprocessors = step->multiprocessors;
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmLocalExpertsUp<LmBf16Format>(expert_routes, layer->moe_w1, LmScaleTensorNone(), normed, state->expert_gate, G::kHidden,
 				G::kMoeInter, stream, exact) != LM_LAUNCH_OK ||
 			LmLocalExpertsUp<LmBf16Format>(expert_routes, layer->moe_w3, LmScaleTensorNone(), normed, state->expert_up, G::kHidden,
@@ -512,7 +504,7 @@ struct LingModel
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LingSiluClampPackedKernel<G::kFfnSiluRounded,!G::kExpertWeightAfterDown><<<dim3(Blocks(G::kMoeInter), routes), LG_THREADS, 0, stream>>>(state->expert_gate,
 			state->expert_up, state->packed_weight, state->expert_act, G::kMoeInter, routed_limit > 0.0f ? routed_limit : INFINITY);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmLocalExpertsDown<LmBf16Format>(expert_routes, layer->moe_w2, LmScaleTensorNone(), state->expert_act, state->expert_out, G::kMoeInter,
 				G::kHidden, stream, exact) != LM_LAUNCH_OK ||
 			Linear(layer->shared_gate_up, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, step, stream) != LM_LAUNCH_OK )
@@ -523,7 +515,7 @@ struct LingModel
 		else
 			LM_LAUNCH((LmSiluMulLimitKernel<LG_THREADS>), rows, LG_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true,
 				shared_limit > 0.0f ? shared_limit : INFINITY);
-		if ( Launched() != SPARK_STATUS_OK ||
+		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( G::kExpertWeightAfterDown )
@@ -532,12 +524,7 @@ struct LingModel
 		else
 			LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), LG_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
 				state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
-		return Launched();
-	}
-
-	static const LingLayer &LayerOf(State *state, uint32_t index)
-	{
-		return state->layers[index];
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
@@ -568,15 +555,7 @@ struct LingModel
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)
 	{
-		return Round(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
-	}
-
-	static SparkStatus LayerDone(State *state, const Frame &frame, uint32_t index)
-	{
-		(void)frame;
-		if ( state->services->layer_done != 0 )
-			state->services->layer_done(state->services->context, index);
-		return SPARK_STATUS_OK;
+		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
 	}
 
 	static SparkStatus AddRows(State *state, const Frame &frame)
@@ -585,35 +564,6 @@ struct LingModel
 		LmAddRowsKernel<LG_THREADS><<<dim3(Blocks(G::kHidden), frame.step->rows), LG_THREADS, 0, frame.stream>>>(hidden, state->partial, hidden,
 			frame.step->rows, G::kHidden);
 		return SPARK_STATUS_OK;
-	}
-
-	static SparkStatus Check(State *state, const Frame &frame)
-	{
-		(void)state;
-		(void)frame;
-		return Launched();
-	}
-
-	static SparkStatus Step(void *model, const SparkStageRunnerStep *step, void *stream)
-	{
-		return LingSchedule<G, LingModel>::Step((State *)model, step, stream);
-	}
-
-	static SparkStatus StepBegin(void *model, const SparkStageRunnerStep *step, void *frame, void *queue)
-	{
-		return LingSchedule<G, LingModel>::Begin((State *)model, step, queue, (Frame *)frame);
-	}
-
-	static SparkStatus StepLayer(void *model, void *frame, uint32_t index, void *queue)
-	{
-		(void)queue;
-		return LingSchedule<G, LingModel>::Layer((State *)model, *(Frame *)frame, index);
-	}
-
-	static SparkStatus StepEnd(void *model, void *frame, SparkStatus status, void *queue)
-	{
-		(void)queue;
-		return LingSchedule<G, LingModel>::End((State *)model, *(Frame *)frame, status);
 	}
 
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
@@ -648,21 +598,21 @@ struct LingModel
 				const LingLayer *layer = &state->layers[index];
 				if ( index % G::kPeriod != G::kPhase )
 					continue;
-				RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+				CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 				LM_LAUNCH((LmKvShardPathMoveKernel<typename S::Kv,LG_THREADS>), G::kVerifyRows, LG_THREADS, 0, stream, state->kv_views[layer->kv_index],
 					step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kSlot);
-				RowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+				CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 			}
 		}
-		return Launched();
+		return CudaStageLaunched();
 	}
 
-	static SparkStatus Plan(State *state, uint64_t *bytes, uint8_t *base, uint32_t lane)
+	static uint64_t Plan(State *state, uint8_t *base, uint32_t lane)
 	{
 		const uint64_t rows = state->max_rows, slots = lane == 0u ? state->slots : 0u, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u;
 		const uint64_t degree = state->tp_degree, verify_rows = lane == 0u ? G::kVerifyRows : 0u;
 		const uint64_t width = rows * G::kHidden * sizeof(uint16_t);
-		struct { void **target; uint64_t bytes; } plan[] =
+		const CudaStageSlice plan[] =
 		{
 			{ (void **)&state->normed, width },
 			{ (void **)&state->partial, width },
@@ -722,79 +672,34 @@ struct LingModel
 			{ (void **)&state->kda_window, (uint64_t)S::kKdaLayers * slots * state->kda_window_bytes },
 			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
-		uint64_t cursor = 0u;
-		for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
-		{
-			cursor = (cursor + 255u) & ~255ull;
-			if ( base != 0 )
-				*plan[index].target = plan[index].bytes != 0u ? base + cursor : 0;
-			cursor += plan[index].bytes;
-		}
-		*bytes = cursor;
-		return SPARK_STATUS_OK;
+		return CudaStagePlace(plan, base);
 	}
 
-	static SparkStatus Size(State *state)
+	static SparkStatus Shape(State *state)
 	{
 		const uint64_t record_unit = G::kHidden * sizeof(uint16_t) / sizeof(float);
-		SparkStatus status;
 		state->kda_state_bytes = (uint64_t)S::kKdaRankHeads * G::kKdaDim * G::kKdaDim * sizeof(float);
 		state->kda_window_bytes = (uint64_t)S::kKdaChannels * G::kConv * sizeof(uint16_t);
 		state->partial_stride = ((uint64_t)state->max_rows * (S::kGqa ? LmGqaShardRecordFloats(G::kGqaHeads, G::kGqaHeadDim, state->tp_degree) :
 			S::kMlaRankHeads * S::kRecord) + record_unit - 1u) / record_unit * record_unit;
-		status = Plan(state, &state->arena_bytes, 0, 0u);
-		return status == SPARK_STATUS_OK ? Plan(state, &state->lane_bytes, 0, 1u) : status;
+		return SPARK_STATUS_OK;
 	}
 
-	static void Close(void *model)
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
 	{
-		State *state = (State *)model;
-		if ( state == 0 )
-			return;
-		if ( state->arena != 0 )
-			(void)cudaFree(state->arena);
-		if ( state->lane_arena != 0 )
-			(void)cudaFree(state->lane_arena);
-		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
-			free(state->lane_states[lane]);
-		if ( state->pack_open != 0u )
-			SparkNamedPackClose(&state->pack);
-		free(state);
+		return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u;
 	}
 
-	static SparkStatus Open(const SparkStageRunnerModelOpen *request, void **model, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
-		const SparkStageRunnerConfiguration *configuration = request->configuration;
-		State *state;
-		SparkStatus status;
-		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, experts = 0u, local = 0u, top_k = 0u, embed_rows = 0u;
-		if ( configuration->stage_count != 1u || configuration->tp_degree != G::kTpDegree || configuration->max_input_row_count == 0u ||
-			configuration->state_budget_bytes == 0u || configuration->linear_weight_codec != SPARK_WEIGHT_CODEC_BF16 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		state = (State *)calloc(1u, sizeof(*state));
-		if ( state == 0 )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		*model = state;
-		state->services = request->services;
-		state->tp_degree = configuration->tp_degree;
-		state->tp_rank = configuration->tp_rank;
-		state->max_rows = configuration->max_input_row_count;
-		state->slots = configuration->resident_sequence_capacity > configuration->max_active_sequence_count ?
-			configuration->resident_sequence_capacity : configuration->max_active_sequence_count;
-		status = SparkNamedPackOpen(configuration->rank_pack_path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, LG_PACK_ALIGNMENT, &state->pack);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		state->pack_open = 1u;
-		if ( SparkNamedPackConfigU32(&state->pack, "tp_degree", &degree) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "tp_rank", &rank) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "hidden", &hidden) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "layers", &layers) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "vocab_rows", &vocab_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "experts", &experts) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "local_experts", &local) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "expert_first", &state->expert_first) != SPARK_STATUS_OK ||
-			SparkNamedPackConfigU32(&state->pack, "top_k", &top_k) != SPARK_STATUS_OK )
+		uint32_t degree = 0u, rank = 0u, hidden = 0u, layers = 0u, vocab_rows = 0u, experts = 0u, local = 0u, top_k = 0u;
+		const CudaStagePackValue values[] =
+		{
+			{ "tp_degree", &degree }, { "tp_rank", &rank }, { "hidden", &hidden }, { "layers", &layers }, { "vocab_rows", &vocab_rows },
+			{ "ffn_rows", &state->ffn_rows }, { "experts", &experts }, { "local_experts", &local }, { "expert_first", &state->expert_first },
+			{ "top_k", &top_k }
+		};
+		if ( CudaStagePackValues(&state->pack, values) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( degree != configuration->tp_degree || rank != configuration->tp_rank || hidden != G::kHidden || layers != G::kLayers ||
 			vocab_rows * degree != G::kVocab || (G::kDenseLayers != 0u && (state->ffn_rows == 0u || state->ffn_rows % 64u != 0u)) || experts != G::kExperts ||
@@ -809,166 +714,92 @@ struct LingModel
 			fprintf(stderr, "%s: %u query heads over %u KV heads do not shard over %u ranks\n", G::Tag(), G::kGqaHeads, G::kGqaKvHeads, state->tp_degree);
 			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 		}
-		status = Size(state);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-		if ( state->arena_bytes + state->lane_bytes > configuration->state_budget_bytes )
-		{
-			fprintf(stderr, "%s: rank state %llu bytes (%llu for the second prefill lane) is over the %llu-byte budget\n", G::Tag(),
-				(unsigned long long)(state->arena_bytes + state->lane_bytes), (unsigned long long)state->lane_bytes,
-				(unsigned long long)configuration->state_budget_bytes);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		memset(geometry, 0, sizeof(*geometry));
-		geometry->hidden = G::kHidden;
-		geometry->vocab = G::kVocab;
-		geometry->total_layers = G::kLayers;
-		geometry->layer_count = G::kLayers;
-		geometry->rms_epsilon = G::kNormEpsilon;
-		geometry->pack_bytes = state->pack.file_bytes;
-		geometry->kv_layer_count = S::kAttnLayers;
-		geometry->kv_layer_page_bytes = S::Kv::kPageBytes;
-		geometry->kv_shard.degree = state->tp_degree;
-		geometry->kv_shard.rank = state->tp_rank;
-		geometry->kv_shard.grain = 1u;
-		geometry->recurrent_bytes = RecurrentBytes(state);
-		geometry->tree_verify = S::kGqa && G::kVerifyRows != 0u ? 1u : 0u;
-		geometry->head_norm_f32 = 1u;
-		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
-		if ( SparkNamedPackTensorRange(&state->pack, G::Tag(), "embed", "bf16", &geometry->embed_offset, &geometry->embed_bytes, &embed_rows) != SPARK_STATUS_OK ||
-			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head_norm", "f32", &geometry->head_norm_offset, &geometry->head_norm_bytes, 0) != SPARK_STATUS_OK ||
-			SparkNamedPackTensorRange(&state->pack, G::Tag(), "head", "bf16", &geometry->head_offset, &geometry->head_bytes, &geometry->head_rows) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
-		if ( embed_rows * state->tp_degree != G::kVocab || geometry->head_rows * state->tp_degree != G::kVocab ||
-			geometry->embed_bytes != (uint64_t)embed_rows * G::kHidden * sizeof(uint16_t) ||
-			geometry->head_bytes != (uint64_t)geometry->head_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
-		{
-			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the stage geometry\n", G::Tag(), embed_rows,
-				(unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes, (unsigned long long)geometry->head_norm_bytes);
-			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
-		}
-		geometry->embed_rows = embed_rows;
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ManifestCheck(void *model, const struct SparkWeightdManifest *manifest)
+	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
-		(void)model;
-		if ( manifest == 0 || manifest->range_count != 0u )
+		geometry->tree_verify = S::kGqa && G::kVerifyRows != 0u ? 1u : 0u;
+		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
+		if ( CudaStage<LingModel>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+		if ( geometry->embed_rows * state->tp_degree != G::kVocab || geometry->head_rows * state->tp_degree != G::kVocab ||
+			geometry->embed_bytes != (uint64_t)geometry->embed_rows * G::kHidden * sizeof(uint16_t) ||
+			geometry->head_bytes != (uint64_t)geometry->head_rows * G::kHidden * sizeof(uint16_t) || geometry->head_norm_bytes != (uint64_t)G::kHidden * sizeof(float) )
 		{
-			fprintf(stderr, "%s: the pack carries its experts as plain tensors, so the weightd manifest has no expert ranges\n", G::Tag());
-			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+			fprintf(stderr, "%s: pack embed %u rows %llu bytes, head %u rows %llu bytes, head norm %llu bytes do not match the stage geometry\n", G::Tag(),
+				geometry->embed_rows, (unsigned long long)geometry->embed_bytes, geometry->head_rows, (unsigned long long)geometry->head_bytes,
+				(unsigned long long)geometry->head_norm_bytes);
+			SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 		}
 		return SPARK_STATUS_OK;
 	}
 
 	template<class T>
-	static SparkStatus Bind(State *state, SparkWeightdLazyPack *lazy_pack, uint32_t index, const char *name, const char *kind, T **field,
-		uint64_t expected_bytes)
+	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes)
 	{
-		char key[SPARK_NAMED_PACK_MAX_NAME_BYTES];
-		const void *bound = 0;
-		snprintf(key, sizeof(key), "layers.%u.%s", index, name);
-		const SparkStatus status = SparkNamedPackBindSized(&state->pack, lazy_pack, G::Tag(), key, kind, expected_bytes, &bound);
-		*field = (T *)bound;
-		return status;
+		tensors->Add(name, kind, bytes, field);
 	}
 
-	static SparkStatus BindModel(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
+	static SparkStatus LayerTensors(State *state, uint32_t index, CudaStageTensors *tensors)
 	{
-		State *state = (State *)model;
-		(void)geometry;
-		for ( uint32_t index = 0u; index < G::kLayers; ++index )
+		LingLayer *layer = &state->layers[index];
+		Tensor(tensors, "input_norm", "f32", &layer->input_norm, (uint64_t)G::kHidden * sizeof(float));
+		Tensor(tensors, "post_norm", "f32", &layer->post_norm, (uint64_t)G::kHidden * sizeof(float));
+		if ( index % G::kPeriod == G::kPhase )
 		{
-			LingLayer *layer = &state->layers[index];
-			SparkStatus status = Bind(state, lazy_pack, index, "input_norm", "f32", &layer->input_norm, (uint64_t)G::kHidden * sizeof(float));
-			if ( status == SPARK_STATUS_OK )
-				status = Bind(state, lazy_pack, index, "post_norm", "f32", &layer->post_norm, (uint64_t)G::kHidden * sizeof(float));
-			if ( index % G::kPeriod == G::kPhase )
+			if constexpr ( S::kGqa )
 			{
-				if constexpr ( S::kGqa )
-				{
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_qkv", "bf16", &layer->gqa_qkv, (uint64_t)S::kGqaRankFused * G::kHidden * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_gate", "bf16", &layer->gqa_gate, (uint64_t)S::kGqaRankWidth * G::kHidden * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "gqa_out", "bf16", &layer->gqa_out, (uint64_t)G::kHidden * S::kGqaRankWidth * sizeof(uint16_t));
-				}
-				else
-				{
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_q", "bf16", &layer->mla_q, (uint64_t)S::kMlaRankHeads * S::kQkDim * G::kHidden * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_kv_a", "bf16", &layer->mla_kv_a, (uint64_t)S::kSlot * G::kHidden * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_kv_norm", "f32", &layer->mla_kv_norm, (uint64_t)G::kLatent * sizeof(float));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_uk", "bf16", &layer->mla_uk, (uint64_t)S::kMlaRankHeads * G::kLatent * G::kNope * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_uv", "bf16", &layer->mla_uv, (uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_gate", "bf16", &layer->mla_gate, (uint64_t)S::kMlaRankHeads * G::kHidden * sizeof(uint16_t));
-					if ( status == SPARK_STATUS_OK )
-						status = Bind(state, lazy_pack, index, "mla_out", "bf16", &layer->mla_out, (uint64_t)G::kHidden * S::kMlaRankHeads * G::kValueDim * sizeof(uint16_t));
-				}
+				Tensor(tensors, "gqa_qkv", "bf16", &layer->gqa_qkv, (uint64_t)S::kGqaRankFused * G::kHidden * sizeof(uint16_t));
+				Tensor(tensors, "gqa_gate", "bf16", &layer->gqa_gate, (uint64_t)S::kGqaRankWidth * G::kHidden * sizeof(uint16_t));
+				Tensor(tensors, "gqa_out", "bf16", &layer->gqa_out, (uint64_t)G::kHidden * S::kGqaRankWidth * sizeof(uint16_t));
 			}
 			else
 			{
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_qkv", "bf16", &layer->kda_qkv, (uint64_t)S::kKdaChannels * G::kHidden * sizeof(uint16_t));
-				if ( G::kKdaRank != 0u && status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_f_a", "bf16", &layer->kda_f_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_f", "bf16", &layer->kda_f, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
-				if ( G::kKdaRank != 0u && status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_g_a", "bf16", &layer->kda_g_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_g", "bf16", &layer->kda_g, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_beta", "bf16", &layer->kda_beta, (uint64_t)S::kKdaRankHeads * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_conv", "bf16", &layer->kda_conv, (uint64_t)S::kKdaChannels * G::kConv * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_a_log", "f32", &layer->kda_a_log, (uint64_t)S::kKdaRankHeads * sizeof(float));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_dt_bias", "f32", &layer->kda_dt_bias, (uint64_t)S::kKdaWidth * sizeof(float));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_norm", "bf16", &layer->kda_norm, (uint64_t)G::kKdaDim * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "kda_out", "bf16", &layer->kda_out, (uint64_t)G::kHidden * S::kKdaWidth * sizeof(uint16_t));
+				Tensor(tensors, "mla_q", "bf16", &layer->mla_q, (uint64_t)S::kMlaRankHeads * S::kQkDim * G::kHidden * sizeof(uint16_t));
+				Tensor(tensors, "mla_kv_a", "bf16", &layer->mla_kv_a, (uint64_t)S::kSlot * G::kHidden * sizeof(uint16_t));
+				Tensor(tensors, "mla_kv_norm", "f32", &layer->mla_kv_norm, (uint64_t)G::kLatent * sizeof(float));
+				Tensor(tensors, "mla_uk", "bf16", &layer->mla_uk, (uint64_t)S::kMlaRankHeads * G::kLatent * G::kNope * sizeof(uint16_t));
+				Tensor(tensors, "mla_uv", "bf16", &layer->mla_uv, (uint64_t)S::kMlaRankHeads * G::kValueDim * G::kLatent * sizeof(uint16_t));
+				Tensor(tensors, "mla_gate", "bf16", &layer->mla_gate, (uint64_t)S::kMlaRankHeads * G::kHidden * sizeof(uint16_t));
+				Tensor(tensors, "mla_out", "bf16", &layer->mla_out, (uint64_t)G::kHidden * S::kMlaRankHeads * G::kValueDim * sizeof(uint16_t));
 			}
-			if ( index < G::kDenseLayers )
-			{
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "ffn_gate_up", "bf16", &layer->ffn_gate_up, (uint64_t)2u * state->ffn_rows * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "ffn_down", "bf16", &layer->ffn_down, (uint64_t)G::kHidden * state->ffn_rows * sizeof(uint16_t));
-			}
-			else
-			{
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "router", "bf16", &layer->router, (uint64_t)G::kExperts * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "expert_bias", "f32", &layer->expert_bias, (uint64_t)G::kExperts * sizeof(float));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w1", "bf16", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w3", "bf16", &layer->moe_w3, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "moe_w2", "bf16", &layer->moe_w2, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "shared_gate_up", "bf16", &layer->shared_gate_up, (uint64_t)2u * G::kSharedRows * G::kHidden * sizeof(uint16_t));
-				if ( status == SPARK_STATUS_OK )
-					status = Bind(state, lazy_pack, index, "shared_down", "bf16", &layer->shared_down, (uint64_t)G::kSharedRows * G::kHidden * sizeof(uint16_t));
-			}
-			if ( status != SPARK_STATUS_OK )
-				return SPARK_STATUS_PARSE_ERROR;
 		}
-		return Allocate(state);
+		else
+		{
+			Tensor(tensors, "kda_qkv", "bf16", &layer->kda_qkv, (uint64_t)S::kKdaChannels * G::kHidden * sizeof(uint16_t));
+			if ( G::kKdaRank != 0u )
+				Tensor(tensors, "kda_f_a", "bf16", &layer->kda_f_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "kda_f", "bf16", &layer->kda_f, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
+			if ( G::kKdaRank != 0u )
+				Tensor(tensors, "kda_g_a", "bf16", &layer->kda_g_a, (uint64_t)G::kKdaRank * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "kda_g", "bf16", &layer->kda_g, (uint64_t)S::kKdaWidth * (G::kKdaRank != 0u ? G::kKdaRank : G::kHidden) * sizeof(uint16_t));
+			Tensor(tensors, "kda_beta", "bf16", &layer->kda_beta, (uint64_t)S::kKdaRankHeads * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "kda_conv", "bf16", &layer->kda_conv, (uint64_t)S::kKdaChannels * G::kConv * sizeof(uint16_t));
+			Tensor(tensors, "kda_a_log", "f32", &layer->kda_a_log, (uint64_t)S::kKdaRankHeads * sizeof(float));
+			Tensor(tensors, "kda_dt_bias", "f32", &layer->kda_dt_bias, (uint64_t)S::kKdaWidth * sizeof(float));
+			Tensor(tensors, "kda_norm", "bf16", &layer->kda_norm, (uint64_t)G::kKdaDim * sizeof(uint16_t));
+			Tensor(tensors, "kda_out", "bf16", &layer->kda_out, (uint64_t)G::kHidden * S::kKdaWidth * sizeof(uint16_t));
+		}
+		if ( index < G::kDenseLayers )
+		{
+			Tensor(tensors, "ffn_gate_up", "bf16", &layer->ffn_gate_up, (uint64_t)2u * state->ffn_rows * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "ffn_down", "bf16", &layer->ffn_down, (uint64_t)G::kHidden * state->ffn_rows * sizeof(uint16_t));
+		}
+		else
+		{
+			Tensor(tensors, "router", "bf16", &layer->router, (uint64_t)G::kExperts * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "expert_bias", "f32", &layer->expert_bias, (uint64_t)G::kExperts * sizeof(float));
+			Tensor(tensors, "moe_w1", "bf16", &layer->moe_w1, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "moe_w3", "bf16", &layer->moe_w3, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "moe_w2", "bf16", &layer->moe_w2, (uint64_t)G::kLocalExperts * G::kMoeInter * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "shared_gate_up", "bf16", &layer->shared_gate_up, (uint64_t)2u * G::kSharedRows * G::kHidden * sizeof(uint16_t));
+			Tensor(tensors, "shared_down", "bf16", &layer->shared_down, (uint64_t)G::kSharedRows * G::kHidden * sizeof(uint16_t));
+		}
+		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Allocate(State *state)
+	static SparkStatus Arrange(State *state)
 	{
 		uint32_t attention = 0u, kda = 0u;
 		for ( uint32_t index = 0u; index < G::kLayers; ++index )
@@ -978,158 +809,23 @@ struct LingModel
 			else
 				state->layers[index].recurrent_index = kda++;
 		}
-		if ( cudaMalloc(&state->arena, state->arena_bytes) != cudaSuccess )
-		{
-			state->arena = 0;
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		if ( cudaMemset(state->arena, 0, state->arena_bytes) != cudaSuccess || Plan(state, &state->arena_bytes, (uint8_t *)state->arena, 0u) != SPARK_STATUS_OK )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		if ( cudaMalloc(&state->lane_arena, state->lane_bytes) != cudaSuccess )
-		{
-			state->lane_arena = 0;
-			fprintf(stderr, "%s: the %llu-byte second lane state could not be allocated\n", G::Tag(), (unsigned long long)state->lane_bytes);
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		}
-		if ( cudaMemset(state->lane_arena, 0, state->lane_bytes) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		for ( uint32_t lane = 0u; lane < SPARK_STAGE_RUNNER_LANES; ++lane )
-			if ( (state->lane_states[lane] = (State *)calloc(1u, sizeof(State))) == 0 )
-				SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus Lane(void *model, uint32_t lane, const SparkStageRunnerStep *step, const SparkStageRunnerServices *services, void **lane_model)
+	static uint32_t RecurrentParts(const State *state, CudaStageRecurrent *parts)
 	{
-		State *state = (State *)model;
-		State *copy;
-		uint64_t bytes = 0u;
-		if ( lane >= SPARK_STAGE_RUNNER_LANES || step == 0 || services == 0 || lane_model == 0 || state->lane_states[lane] == 0 || state->lane_arena == 0 )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		if ( step->commit == 0u )
-			return SPARK_STATUS_UNSUPPORTED;
-		copy = state->lane_states[lane];
-		memcpy(copy, state, sizeof(*copy));
-		copy->services = services;
-		if ( lane != 0u )
+		parts[0] = { state->kda_state, state->kda_state_bytes, S::kKdaLayers };
+		parts[1] = { (uint8_t *)state->kda_window, state->kda_window_bytes, S::kKdaLayers };
+		return 2u;
+	}
+
+	static uint32_t ReportFields(const State *state, CudaStageReportField *fields)
+	{
+		const CudaStageReportField report[] =
 		{
-			if ( Plan(copy, &bytes, (uint8_t *)state->lane_arena, lane) != SPARK_STATUS_OK || bytes != state->lane_bytes )
-				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			copy->kda_state = state->kda_state;
-			copy->kda_window = state->kda_window;
-			copy->kv_error = state->kv_error;
-		}
-		*lane_model = copy;
-		return SPARK_STATUS_OK;
-	}
-
-	static SparkStatus AttachKv(void *model, const SparkStageRunnerKv *kv)
-	{
-		State *state = (State *)model;
-		if ( kv == 0 || kv->layer_count != S::kAttnLayers || kv->layer_page_bytes != S::Kv::kPageBytes || kv->sequence_count > state->slots )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t layer = 0u; layer < S::kAttnLayers; ++layer )
-			if ( LmKvShardViewInitialize<typename S::Kv>(&state->kv_views[layer], kv->pool + (uint64_t)layer * kv->layer_stride_bytes, kv->page_table,
-				kv->page_table_stride, kv->sequence_count, kv->pool_page_count, state->kv_error, kv->context_shard) != 0 )
-				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		state->kv_attached = 1u;
-		return SPARK_STATUS_OK;
-	}
-
-	static uint64_t RecurrentBytes(const State *state)
-	{
-		return (uint64_t)S::kKdaLayers * (state->kda_state_bytes + state->kda_window_bytes);
-	}
-
-	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
-	{
-		State *state = (State *)model;
-		uint8_t *pools[2] = { state->kda_state, (uint8_t *)state->kda_window };
-		const uint64_t widths[2] = { state->kda_state_bytes, state->kda_window_bytes };
-		uint8_t *packed = (uint8_t *)buffer;
-		cudaError_t error = cudaSuccess;
-		if ( slot >= state->slots || buffer == 0 || bytes != RecurrentBytes(state) )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t part = 0u; part < 2u && error == cudaSuccess; ++part )
-		{
-			uint8_t *pool = pools[part] + (uint64_t)slot * widths[part];
-			const size_t pitch = (size_t)(widths[part] * state->slots);
-			error = to_buffer != 0u ?
-				cudaMemcpy2DAsync(packed, (size_t)widths[part], pool, pitch, (size_t)widths[part], S::kKdaLayers, cudaMemcpyDefault, (cudaStream_t)stream) :
-				cudaMemcpy2DAsync(pool, pitch, packed, (size_t)widths[part], (size_t)widths[part], S::kKdaLayers, cudaMemcpyDefault, (cudaStream_t)stream);
-			packed += widths[part] * S::kKdaLayers;
-		}
-		if ( error == cudaSuccess && stream == 0 )
-			error = cudaStreamSynchronize(0);
-		return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
-	}
-
-	static SparkStatus ResetSlot(void *model, uint32_t slot, void *stream)
-	{
-		State *state = (State *)model;
-		uint8_t *pools[2] = { state->kda_state, (uint8_t *)state->kda_window };
-		const uint64_t widths[2] = { state->kda_state_bytes, state->kda_window_bytes };
-		cudaError_t error = cudaSuccess;
-		if ( slot >= state->slots )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		for ( uint32_t part = 0u; part < 2u && error == cudaSuccess; ++part )
-			error = cudaMemset2DAsync(pools[part] + (uint64_t)slot * widths[part], (size_t)(widths[part] * state->slots), 0, (size_t)widths[part],
-				S::kKdaLayers, (cudaStream_t)stream);
-		return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
-	}
-
-	static SparkStatus Sideband(void *model, uint32_t to_buffer, const void *hidden, void *buffer, uint64_t bytes, uint32_t rows, void *stream)
-	{
-		(void)model; (void)to_buffer; (void)hidden; (void)buffer; (void)bytes; (void)rows; (void)stream;
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	}
-
-	static const void *ProbeBuffers(void *model)
-	{
-		return model;
-	}
-
-	static void Report(void *model, uint32_t rank)
-	{
-		const State *state = (const State *)model;
-		fprintf(stderr, "%s rank=%u arena_bytes=%llu slots=%u rows=%u ffn_rows=%u expert_first=%u\n", G::ReportTag(), rank,
-			(unsigned long long)state->arena_bytes, state->slots, state->max_rows, state->ffn_rows, state->expert_first);
-	}
-
-	static const SparkStageRunnerModelInterface *Interface(void)
-	{
-		static const SparkStageRunnerModelInterface interface_table =
-		{
-			SPARK_STAGE_RUNNER_MODEL_ABI_VERSION,
-			G::Tag(),
-			G::Name(),
-			"official",
-			Open,
-			ManifestCheck,
-			BindModel,
-			Close,
-			Step,
-			Sideband,
-			AttachKv,
-			RecurrentCopy,
-			ResetSlot,
-			ProbeBuffers,
-			Report,
-			0,
-			Lane,
-			G::kVerifyRows != 0u ? KeepRows : 0,
-			0,
-			0,
-			0,
-			0,
-			StepBegin,
-			0,
-			StepLayer,
-			0,
-			StepEnd,
-			(uint32_t)sizeof(Frame),
-			0u
+			{ "arena_bytes", state->arena_bytes }, { "slots", state->slots }, { "rows", state->max_rows }, { "ffn_rows", state->ffn_rows },
+			{ "expert_first", state->expert_first }
 		};
-		return &interface_table;
+		return CudaStageReportOut(fields, report);
 	}
 };

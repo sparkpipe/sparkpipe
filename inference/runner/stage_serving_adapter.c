@@ -76,6 +76,9 @@ typedef struct SparkStageServingState
 	uint64_t verify_host_ns[STAGE_SERVING_VERIFY_BUCKETS][6];
 	uint64_t verify_host_rows[STAGE_SERVING_VERIFY_BUCKETS];
 	uint32_t verify_host_count[STAGE_SERVING_VERIFY_BUCKETS];
+	uint64_t publish_host_ns;
+	uint64_t publish_host_lanes;
+	uint32_t publish_host_count;
 	SparkDeviceBuffer positions_device;
 	SparkDeviceBuffer context_device;
 	SparkDeviceBuffer state_device;
@@ -1408,6 +1411,21 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	return SPARK_STATUS_OK;
 }
 
+static void StageServingPublishHost(SparkStageServingState *state, uint64_t elapsed_ns, uint32_t lanes)
+{
+	state->publish_host_ns += elapsed_ns;
+	state->publish_host_lanes += lanes;
+	if ( ++state->publish_host_count < 16u )
+		return;
+	fprintf(stderr, "STAGE-PUBLISH-HOST tag=%s rank=%u publish_frames=%u mean_lanes=%.1f publish_ms=%.2f ms_per_lane=%.2f\n",
+		state->model->module_tag, state->runner_config.tp_rank, state->publish_host_count,
+		(double)state->publish_host_lanes / state->publish_host_count, (double)state->publish_host_ns / state->publish_host_count / 1e6,
+		state->publish_host_lanes != 0u ? (double)state->publish_host_ns / state->publish_host_lanes / 1e6 : 0.0);
+	state->publish_host_ns = 0u;
+	state->publish_host_lanes = 0u;
+	state->publish_host_count = 0u;
+}
+
 static SparkStatus StageServingSubmitNonRow(SparkStageServingState *state,
 	const SparkModelServingSubmission *submission)
 {
@@ -1422,12 +1440,15 @@ static SparkStatus StageServingSubmitNonRow(SparkStageServingState *state,
 		return status;
 	if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
 	{
+		const uint64_t publish_started = SparkMonotonicNs();
 		frame.completion_function = StageServingPublishCompletion;
 		frame.completion_context = state;
 		state->publish_completed = 0u;
 		status = SparkStageKvBindingPublishFrame(&state->kv, &frame, state->lane_states);
 		if ( status == SPARK_STATUS_OK && (state->publish_completed == 0u || state->publish_completion.status != SPARK_STATUS_OK) )
 			status = state->publish_completed == 0u ? SPARK_STATUS_INTERNAL_ERROR : state->publish_completion.status;
+		if ( status == SPARK_STATUS_OK )
+			StageServingPublishHost(state, SparkMonotonicNs() - publish_started, submission->active_sequence_count);
 	}
 	else
 		status = SparkStageRunnerResetSlots(&state->runner, slots, submission->active_sequence_count);

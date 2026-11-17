@@ -1875,7 +1875,7 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
             volatile uint64_t *end_word = (volatile uint64_t *)
                 (band + ((uint64_t)peer_rank * slots_per_rank + parity) *
                     slot_bytes + slot_bytes - 8ull);
-            while (*end_word < tag)
+            while ((*end_word >> 32) != (tag >> 32) || *end_word < tag)
             {
                 if (*cancel != expected_cancel)
                 {

@@ -12,6 +12,6 @@ cd "$ROOT"
     -I. -Iinclude -Imodules/k3_resident_decode_stage/include \
     -Imodel-families/common/include -Imodel-families/k3/include \
     -Xcompiler -Wall,-Wextra,-fPIC -c \
-    modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu \
+    model-families/k3/source/k3_resident_decode_stage_cuda.cu \
     -o /tmp/k3_dispatch_gate.o
 echo "k3 dispatch sm_121a compile gate PASS"
