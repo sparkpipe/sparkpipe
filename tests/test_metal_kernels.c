@@ -7359,7 +7359,7 @@ static void TestIndexerAttentionExtra(uint32_t heads)
 	Shared(&window_pool,layer_bytes,"indexer extra window pool");
 	Shared(&extra_pool,layer_bytes,"indexer extra compressed pool");
 	Shared(&packed_pool,layer_bytes,"indexer extra packed pool");
-	Shared(&partial,SparkIndexerAttentionExtraScratchBytes(ROWS,heads,CONTEXT,TOPK),"indexer extra partial");
+	Shared(&partial,SparkIndexerAttentionExtraScratchBytes(ROWS,heads,CONTEXT,WINDOW,TOPK),"indexer extra partial");
 	FillBf16(wk,(uint64_t)ROWS * CONTEXT * DIM,1.0);
 	FillBf16(ck,(uint64_t)ROWS * COMPRESSED * DIM,1.0);
 	FillBf16(qv,(uint64_t)ROWS * heads * DIM,1.0);

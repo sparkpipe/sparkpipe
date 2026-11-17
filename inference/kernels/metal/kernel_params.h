@@ -303,6 +303,7 @@ typedef struct SparkAttentionParams
 	uint32_t tree;
 	uint32_t gather_keys;
 	uint32_t gather_ratio;
+	uint32_t window_partitions;
 } SparkAttentionParams;
 
 typedef struct SparkSiluMulParams

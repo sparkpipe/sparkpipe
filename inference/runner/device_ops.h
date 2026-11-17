@@ -396,7 +396,7 @@ SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue
 SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,
 	SparkTensor query, const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params,
 	const uint32_t *host_positions);
-uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t gather_keys);
+uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t window, uint32_t gather_keys);
 uint64_t SparkOpsAttentionGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t value_dimension, uint32_t gather_keys);
 uint64_t SparkOpsDeltaScratchBytes(uint32_t rows, uint32_t key_heads, uint32_t value_heads, uint32_t key_dimension);
 uint64_t SparkOpsChannelDeltaScratchBytes(uint32_t rows, uint32_t heads, uint32_t key_dimension);

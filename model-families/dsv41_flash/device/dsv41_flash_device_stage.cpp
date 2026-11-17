@@ -1028,7 +1028,7 @@ struct D41Device
 		for ( uint32_t row = 0u; row < rows; row++ )
 			if ( frame.t.host_positions[row] + 1u > longest )
 				longest = frame.t.host_positions[row] + 1u;
-		const uint64_t per_row = SparkIndexerAttentionExtraScratchBytes(1u, kHeads, longest, kDenseKeys);
+		const uint64_t per_row = SparkIndexerAttentionExtraScratchBytes(1u, kHeads, longest, base.window, kDenseKeys);
 		const uint64_t fit = per_row == 0u ? 0u : state->records.bytes / per_row;
 		if ( fit == 0u )
 			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
