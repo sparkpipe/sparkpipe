@@ -176,6 +176,8 @@ typedef enum SparkOpsKernel
 	SPARK_OPS_INDEXER_EXPAND_POOLS,
 	SPARK_OPS_INDEXER_POOL_KEYS,
 	SPARK_OPS_ATTENTION_DECODE_EXTRA_GATHER,
+	SPARK_OPS_INDEXER_BLOCK_MAX,
+	SPARK_OPS_INDEXER_CANDIDATE_MASK,
 	SPARK_OPS_KERNEL_COUNT
 } SparkOpsKernel;
 
@@ -385,6 +387,10 @@ SparkStatus SparkOpsIndexerExpandPools(SparkDeviceOps *ops, SparkDeviceQueue *qu
 SparkStatus SparkOpsIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
 	SparkTensor pooled, const SparkIndexerParams *params);
 SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor selected, const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerBlockMax(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor blocks,
+	const SparkIndexerParams *params);
+SparkStatus SparkOpsIndexerCandidateMask(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor candidates,
+	const SparkIndexerParams *params);
 SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, SparkTensor query, SparkTensor gate,
 	const SparkTensor *sinks, SparkTensor selected, SparkTensor partial, SparkTensor output, const SparkAttentionParams *params);
 SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,

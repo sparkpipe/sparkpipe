@@ -243,3 +243,44 @@ SparkStatus SparkIndexerAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	launch.gather_ratio = 1u;
 	return(SparkOpsAttentionExtraGather(ops,queue,paged,extra,query,sinks,selected,partial,output,&launch,host_positions));
 }
+
+uint32_t SparkIndexerBlockStride(uint32_t score_stride, uint32_t block_size)
+{
+	return(block_size != 0u ? SparkIndexerScoreStride((uint32_t)(((uint64_t)score_stride + block_size - 1u) / block_size)) : 0u);
+}
+
+SparkStatus SparkIndexerCandidateBlocks(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor blocks,
+	SparkTensor candidates, const SparkIndexerShape *shape, uint32_t rows, uint32_t score_stride, uint32_t block_size, uint32_t block_stride,
+	uint32_t candidate_blocks)
+{
+	SparkIndexerParams params;
+	SparkStatus status;
+	if ( shape == 0 || rows == 0u || score_stride == 0u || block_size == 0u || block_stride == 0u || candidate_blocks == 0u ||
+		candidate_blocks > SPARK_INDEXER_MAX_TOPK )
+		return(IndexerRefuse("candidate_blocks","a shape, rows, a score stride, a block size and stride and between 1 and 2048 candidate blocks"));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.score_stride = score_stride;
+	params.key_ratio = IndexerRatio(shape);
+	params.candidate_block = block_size;
+	params.block_stride = block_stride;
+	status = SparkOpsIndexerBlockMax(ops,queue,scores,row_positions,blocks,&params);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkIndexerTopk(ops,queue,blocks,candidates,rows,block_stride,candidate_blocks));
+}
+
+SparkStatus SparkIndexerApplyCandidates(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor candidates,
+	const SparkIndexerShape *shape, uint32_t rows, uint32_t score_stride, uint32_t block_size, uint32_t candidate_blocks)
+{
+	SparkIndexerParams params;
+	if ( shape == 0 || rows == 0u || score_stride == 0u || block_size == 0u || candidate_blocks == 0u || candidate_blocks > SPARK_INDEXER_MAX_TOPK )
+		return(IndexerRefuse("apply_candidates","a shape, rows, a score stride, a block size and between 1 and 2048 candidate blocks"));
+	memset(&params,0,sizeof(params));
+	params.rows = rows;
+	params.score_stride = score_stride;
+	params.key_ratio = IndexerRatio(shape);
+	params.candidate_block = block_size;
+	params.topk = candidate_blocks;
+	return(SparkOpsIndexerCandidateMask(ops,queue,scores,row_positions,candidates,&params));
+}

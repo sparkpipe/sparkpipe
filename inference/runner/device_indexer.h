@@ -92,6 +92,12 @@ SparkStatus SparkIndexerAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	const SparkAttentionParams *params, const uint32_t *host_positions);
 SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor window, const SparkOpsSequences *sequences, SparkTensor keys,
 	SparkTensor pooled, const SparkIndexerShape *shape, uint32_t rows);
+uint32_t SparkIndexerBlockStride(uint32_t score_stride, uint32_t block_size);
+SparkStatus SparkIndexerCandidateBlocks(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor blocks,
+	SparkTensor candidates, const SparkIndexerShape *shape, uint32_t rows, uint32_t score_stride, uint32_t block_size, uint32_t block_stride,
+	uint32_t candidate_blocks);
+SparkStatus SparkIndexerApplyCandidates(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor candidates,
+	const SparkIndexerShape *shape, uint32_t rows, uint32_t score_stride, uint32_t block_size, uint32_t candidate_blocks);
 
 #ifdef __cplusplus
 }

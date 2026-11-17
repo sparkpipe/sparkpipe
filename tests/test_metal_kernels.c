@@ -7481,6 +7481,85 @@ static void TestIndexerAttentionExtra(uint32_t heads)
 	SparkDeviceFree(&dense);
 }
 
+static void TestIndexerCandidates(void)
+{
+	enum { ROWS = 3u, BLOCK = 8u, KEEP = 4u };
+	static const uint32_t position_init[ROWS] = { 99u, 20u, 63u };
+	const uint32_t stride = SparkIndexerScoreStride(100u), blocks = SparkIndexerBlockStride(stride, BLOCK);
+	SparkIndexerShape shape;
+	SparkDeviceBuffer scores, positions, block_scores, candidates;
+	float *sv = (float *)Shared(&scores,(uint64_t)ROWS * stride * 4u,"indexer candidate scores");
+	uint32_t *pv = (uint32_t *)Shared(&positions,ROWS * 4u,"indexer candidate positions");
+	uint32_t *cv = (uint32_t *)Shared(&candidates,ROWS * KEEP * 4u,"indexer candidate list");
+	float *original = (float *)malloc((uint64_t)ROWS * stride * sizeof(float)), *expect = (float *)malloc((uint64_t)ROWS * stride * sizeof(float));
+	float *best = (float *)malloc((uint64_t)blocks * sizeof(float));
+	uint32_t expected_list[ROWS * KEEP], pass, row, i, b, other;
+	Check clean, corrupted;
+	Shared(&block_scores,(uint64_t)ROWS * blocks * 4u,"indexer candidate blocks");
+	memset(&shape,0,sizeof(shape));
+	shape.heads = 1u;
+	shape.head_dimension = 64u;
+	shape.key_ratio = 1u;
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		pv[row] = position_init[row];
+		for ( i = 0u; i < stride; i++ )
+			original[row * stride + i] = i <= position_init[row] ? (float)(floor(4.0 * Normal()) / 4.0) : -INFINITY;
+	}
+	for ( row = 0u; row < ROWS; row++ )
+	{
+		const uint32_t width = position_init[row] + 1u, count = (width + BLOCK - 1u) / BLOCK;
+		for ( b = 0u; b < blocks; b++ )
+		{
+			best[b] = -INFINITY;
+			for ( i = b * BLOCK; b < count && i < width && i < (b + 1u) * BLOCK; i++ )
+				best[b] = fmaxf(best[b],original[row * stride + i]);
+			if ( b + 1u == count )
+				best[b] = INFINITY;
+		}
+		IndexerExpectTopk(best,blocks,KEEP,expected_list + row * KEEP);
+		for ( i = 0u; i < stride; i++ )
+		{
+			uint32_t rank = 0u;
+			b = i / BLOCK;
+			for ( other = 0u; i < width && other < count; other++ )
+				if ( IndexerTopkKey(best[other]) > IndexerTopkKey(best[b]) || (IndexerTopkKey(best[other]) == IndexerTopkKey(best[b]) && other < b) )
+					rank++;
+			expect[row * stride + i] = i >= width || count <= KEEP || rank < KEEP ? original[row * stride + i] : -INFINITY;
+		}
+	}
+	for ( pass = 0u; pass < 2u; pass++ )
+	{
+		Check *check = pass == 0u ? &clean : &corrupted;
+		memset(check,0,sizeof(*check));
+		memcpy(sv,original,(uint64_t)ROWS * stride * sizeof(float));
+		if ( pass == 1u )
+			for ( b = 0u; b < 13u; b++ )
+				if ( expect[b * BLOCK] == -INFINITY )
+				{
+					sv[b * BLOCK] = 1.0e6f;
+					break;
+				}
+		if ( !Run(SparkIndexerCandidateBlocks(&ops,queue,Whole(&scores),Whole(&positions),Whole(&block_scores),Whole(&candidates),&shape,ROWS,stride,BLOCK,blocks,KEEP),
+			"indexer_candidate_blocks") ||
+			!Run(SparkIndexerApplyCandidates(&ops,queue,Whole(&scores),Whole(&positions),Whole(&candidates),&shape,ROWS,stride,BLOCK,KEEP),"indexer_apply_candidates") )
+			break;
+		for ( i = 0u; i < ROWS * KEEP; i++ )
+			Observe(check,(double)cv[i],(double)expected_list[i],0.0);
+		for ( i = 0u; i < ROWS * stride; i++ )
+			Observe(check,IndexerTopkKey(sv[i]) == IndexerTopkKey(expect[i]) ? 0.0 : 1.0,0.0,0.0);
+	}
+	Report("indexer_candidates","3 rows, blocks of 8, keep 4 of 13 / 3 / 8 blocks, ties",&clean,&corrupted,
+		"exact: CUDA's candidate mask (block maxima, the newest block kept, ties to the lower block) as the list and as -inf outside it; the control lifts one dropped block");
+	free(original);
+	free(expect);
+	free(best);
+	SparkDeviceFree(&scores);
+	SparkDeviceFree(&positions);
+	SparkDeviceFree(&block_scores);
+	SparkDeviceFree(&candidates);
+}
+
 int main(int argc, char **argv)
 {
 	if ( argc > 1 && (receipt = fopen(argv[1],"w")) == 0 )
@@ -7756,6 +7835,7 @@ int main(int argc, char **argv)
 	TestIndexerPoolKeys();
 	TestIndexerScorePooled();
 	TestIndexerAttentionExtra(16u);
+	TestIndexerCandidates();
 	TestPolyNorm(5u,1280u,0u,1u,1e6);
 	TestPolyNorm(4u,1000u,1u,1u,3.0);
 	TestPolyNorm(9u,1280u,1u,6u,1e6);

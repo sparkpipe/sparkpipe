@@ -58,12 +58,16 @@ struct D41Device
 	static constexpr uint32_t kIndexDim = SPARK_DSV41_FLASH_MODEL_INDEX_HEAD_DIMENSION;
 	static constexpr uint32_t kIndexWidth = kIndexHeads * kIndexDim;
 	static constexpr uint32_t kCandidateKeys = SPARK_DSV41_FLASH_MODEL_CANDIDATE_TOPK_BLOCKS * SPARK_DSV41_FLASH_MODEL_CANDIDATE_BLOCK_SIZE;
+	static constexpr uint32_t kCandidateSource = SPARK_DSV41_FLASH_MODEL_CANDIDATE_SOURCE_LAYER;
+	static constexpr uint32_t kCandidateBlock = SPARK_DSV41_FLASH_MODEL_CANDIDATE_BLOCK_SIZE;
+	static constexpr uint32_t kCandidateBlocks = SPARK_DSV41_FLASH_MODEL_CANDIDATE_TOPK_BLOCKS;
 	static constexpr float kEpsilon = SPARK_DSV41_FLASH_MODEL_RMS_NORM_EPSILON;
 
 	static_assert(TP != 0u && SPARK_DSV41_FLASH_MODEL_OUTPUT_GROUP_COUNT % TP == 0u, "a rank holds whole output groups");
 	static_assert(kSharedRows % SPARK_MXFP8_GROUP == 0u && kEngramKvLocal % SPARK_MXFP8_GROUP == 0u, "rank slices hold whole 32-wide scale groups");
 	static_assert(kIndexHeads <= SPARK_INDEXER_MAX_HEADS && kIndexDim <= SPARK_INDEXER_MAX_HEAD_DIM && kDenseKeys <= SPARK_INDEXER_MAX_TOPK,
 		"the indexer fits the shared indexer's heads, head width and top-k");
+	static_assert(kCandidateBlocks <= SPARK_INDEXER_MAX_TOPK && kCandidateBlock != 0u, "the candidate blocks fit the shared top-k");
 	static_assert(kIndexDim > kRope && kIndexDim % 32u == 0u, "an index head ropes its last 64 dimensions and rounds in 32-wide FP4 blocks");
 
 	struct Hyper
@@ -152,6 +156,8 @@ struct D41Device
 		SparkTensor index_weights;
 		SparkTensor index_scores;
 		SparkTensor selected;
+		SparkTensor candidate_blocks;
+		SparkTensor candidates;
 		SparkTensor store[2];
 		SparkTensor rope[2];
 		SparkTensor last[2];
@@ -271,7 +277,19 @@ struct D41Device
 
 	static uint32_t ScoreStride(const State *state)
 	{
-		return SparkIndexerScoreStride(state->stage.max_positions < kCandidateKeys ? state->stage.max_positions : kCandidateKeys);
+		return SparkIndexerScoreStride(state->stage.max_positions);
+	}
+
+	static uint64_t ScoreFloats(const State *state)
+	{
+		const uint32_t dense = state->stage.max_positions < kCandidateKeys ? state->stage.max_positions : kCandidateKeys;
+		return Max((uint64_t)state->stage.max_rows * SparkIndexerScoreStride(dense), (uint64_t)ScoreStride(state));
+	}
+
+	static uint64_t BlockFloats(const State *state)
+	{
+		return Max(ScoreFloats(state) / kCandidateBlock + (uint64_t)state->stage.max_rows * SPARK_INDEXER_SCORE_ALIGN,
+			(uint64_t)SparkIndexerBlockStride(ScoreStride(state), kCandidateBlock));
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -305,8 +323,10 @@ struct D41Device
 			{ rows * kIndexDim * 2u, &state->index_key },
 			{ rows * kIndexWidth * 2u, &state->index_query },
 			{ rows * kIndexHeads * sizeof(float), &state->index_weights },
-			{ SparkIndexerScoreBytes(state->stage.max_rows, ScoreStride(state)), &state->index_scores },
+			{ ScoreFloats(state) * sizeof(float), &state->index_scores },
 			{ SparkIndexerSelectedBytes(state->stage.max_rows, kDenseKeys), &state->selected },
+			{ BlockFloats(state) * sizeof(float), &state->candidate_blocks },
+			{ SparkIndexerSelectedBytes(state->stage.max_rows, kCandidateBlocks), &state->candidates },
 			{ table, &state->store[0] },
 			{ table, &state->store[1] },
 			{ table, &state->rope[0] },
@@ -749,13 +769,7 @@ struct D41Device
 		frame->queue = (SparkDeviceQueue *)queue;
 		SparkStatus status = SparkDeviceStageStepTables(&state->stage, step, &frame->t);
 		for ( uint32_t row = 0u; status == SPARK_STATUS_OK && row < frame->t.rows; row++ )
-		{
-			if ( frame->t.host_positions[row] >= kCandidateKeys )
-				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-					"the indexer's candidate blocks are not built: a row at position 16,384 or later sees more compressed keys than layer 20's 2,048 candidate blocks of 8 keep for the later index layers");
-			else
-				state->host_last[row] = (frame->t.host_positions[row] + 1u) / 2u - 1u;
-		}
+			state->host_last[row] = (frame->t.host_positions[row] + 1u) / 2u - 1u;
 		if ( status == SPARK_STATUS_OK && frame->t.token_ids.bytes == 0u )
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the engram hash needs the step's token ids");
 		if ( status != SPARK_STATUS_OK )
@@ -936,6 +950,56 @@ struct D41Device
 		return false;
 	}
 
+	static bool Candidates(const Frame &frame)
+	{
+		const uint32_t ratio = D41Ratio(kCandidateSource);
+		for ( uint32_t row = 0u; ratio != 0u && row < frame.t.rows; row++ )
+			if ( (frame.t.host_positions[row] + 1u) / ratio > kCandidateKeys )
+				return true;
+		return false;
+	}
+
+	static SparkStatus SelectRows(State *state, Frame &frame, uint32_t index, const SparkIndexerCache &cache, const SparkIndexerShape &shape)
+	{
+		const uint32_t ratio = D41Ratio(index), rows = frame.t.rows, candidates = Candidates(frame) && index >= kCandidateSource ? 1u : 0u;
+		uint32_t longest = 0u;
+		for ( uint32_t row = 0u; row < rows; row++ )
+			if ( (frame.t.host_positions[row] + 1u) / ratio > longest )
+				longest = (frame.t.host_positions[row] + 1u) / ratio;
+		const uint32_t stride = SparkIndexerScoreStride(longest), blocks = SparkIndexerBlockStride(stride, kCandidateBlock);
+		const uint64_t score_fit = stride == 0u ? 0u : state->index_scores.bytes / ((uint64_t)stride * sizeof(float));
+		const uint64_t block_fit = blocks == 0u ? 0u : state->candidate_blocks.bytes / ((uint64_t)blocks * sizeof(float));
+		const uint64_t fit = score_fit < block_fit ? score_fit : block_fit;
+		if ( fit == 0u )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED, "the index score buffer cannot hold one row's compressed keys");
+		SparkDeviceOps *ops = state->stage.ops;
+		SparkStatus status = SPARK_STATUS_OK;
+		for ( uint32_t first = 0u; status == SPARK_STATUS_OK && first < rows; )
+		{
+			const uint32_t count = (uint64_t)(rows - first) < fit ? rows - first : (uint32_t)fit;
+			const SparkTensor positions = SparkTensorSlice(frame.t.positions, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t));
+			const SparkTensor scores = SparkTensorSlice(state->index_scores, 0u, SparkIndexerScoreBytes(count, stride));
+			const SparkTensor chosen = SparkTensorSlice(state->candidates, SparkIndexerSelectedBytes(first, kCandidateBlocks),
+				SparkIndexerSelectedBytes(count, kCandidateBlocks));
+			status = SparkIndexerScore(ops, frame.queue, &cache,
+				SparkTensorSlice(state->index_query, (uint64_t)first * kIndexWidth * sizeof(uint16_t), (uint64_t)count * kIndexWidth * sizeof(uint16_t)),
+				SparkTensorSlice(state->index_weights, (uint64_t)first * kIndexHeads * sizeof(float), (uint64_t)count * kIndexHeads * sizeof(float)),
+				SparkTensorSlice(frame.t.sequence_of_row, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t)), positions, scores, &shape,
+				count, stride);
+			if ( status == SPARK_STATUS_OK && candidates != 0u && index == kCandidateSource )
+				status = SparkIndexerCandidateBlocks(ops, frame.queue, scores, positions,
+					SparkTensorSlice(state->candidate_blocks, 0u, (uint64_t)count * blocks * sizeof(float)), chosen, &shape, count, stride, kCandidateBlock, blocks,
+					kCandidateBlocks);
+			else if ( status == SPARK_STATUS_OK && candidates != 0u )
+				status = SparkIndexerApplyCandidates(ops, frame.queue, scores, positions, chosen, &shape, count, stride, kCandidateBlock, kCandidateBlocks);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkIndexerTopk(ops, frame.queue, scores, SparkTensorSlice(state->selected, SparkIndexerSelectedBytes(first, kDenseKeys),
+					SparkIndexerSelectedBytes(count, kDenseKeys)), count, stride, kDenseKeys);
+			first += count;
+		}
+		return status;
+	}
+
 	static SparkStatus Select(State *state, Frame &frame, uint32_t index)
 	{
 		const Layer &layer = state->layers[index];
@@ -951,8 +1015,7 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = IndexCache(state, D41CacheIndex(index), shape, &cache);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkIndexerSelect(state->stage.ops, frame.queue, &cache, state->index_query, state->index_weights, frame.t.sequence_of_row,
-				frame.t.positions, state->index_scores, state->selected, &shape, frame.t.rows, ScoreStride(state));
+			status = SelectRows(state, frame, index, cache, shape);
 		return status;
 	}
 
