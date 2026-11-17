@@ -1,0 +1,4 @@
+Skipping image OS validation for alexgshaw/sparql-university:20251031: docker inspect returned 1
+Running command: apt-get update && apt-get install -y curl nodejs npm
+Trial sparql-university__FcEVhjL failed: Agent setup timed out after 360.0 seconds
+Collecting main service artifacts

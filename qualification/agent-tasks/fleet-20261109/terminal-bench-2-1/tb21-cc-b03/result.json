@@ -1,0 +1,54 @@
+{
+    "id": "8816425d-3fd0-461a-8097-f2cdf2c1f7bf",
+    "started_at": "2026-11-09T19:07:45.038153",
+    "updated_at": "2026-11-09T20:15:56.007843",
+    "finished_at": "2026-11-09T20:15:56.007843",
+    "n_total_trials": 6,
+    "stats": {
+        "n_completed_trials": 6,
+        "n_errored_trials": 3,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "claude-code__deepseek-v4.1-flash__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 4,
+                "n_errors": 3,
+                "metrics": [
+                    {
+                        "mean": 0.5
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "train-fasttext__heYoKEk"
+                        ],
+                        "1.0": [
+                            "hf-model-inference__aLtsYyK",
+                            "db-wal-recovery__acTYyBj",
+                            "portfolio-optimization__h6rQz2C"
+                        ]
+                    }
+                },
+                "exception_stats": {
+                    "AgentSetupTimeoutError": [
+                        "regex-log__d6L2ybs"
+                    ],
+                    "AgentTimeoutError": [
+                        "train-fasttext__heYoKEk"
+                    ],
+                    "NonZeroAgentExitCodeError": [
+                        "qemu-startup__xPzcM8z"
+                    ]
+                }
+            }
+        },
+        "n_input_tokens": 2668110,
+        "n_cache_tokens": 2488477,
+        "n_output_tokens": 65219,
+        "cost_usd": 2.860589
+    }
+}

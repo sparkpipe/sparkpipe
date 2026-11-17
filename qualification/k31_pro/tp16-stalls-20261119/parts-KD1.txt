@@ -1,0 +1,22 @@
+KD1: the late rank minus the median of its peers in the same step, ms (median over late rank-steps; calm rank-steps for contrast)
+set    count       submit        graph  source_wait    peer_wait         copy      combine
+late     118          0.0          0.0         11.5       -964.8          3.0         36.3
+calm    1930         -0.0          0.0         -0.1          1.5         -0.0         -0.4
+KD1: 262,144-token request 100002, steps 3..131, scale 1.0006; lateness of each rank in the wave its node wrote a recurrent state (>1 MB file) and the wave after
+rank  states  late>300_same  late>300_next  late>100_same_or_next  median_ms_at_state  median_ms_other  waves>300_elsewhere
+   0      15              5              0                     12                 216                1                    6
+   1      15              1              0                      4                  14              -29                    0
+   2      15              4              0                     10                 212                2                    5
+   3      15              0              0                      0                  23               23                    0
+   4      15             10              1                     11                 649              -44                   13
+   5      16              1              0                      2                  -4              -12                    9
+   6      15              6              0                      6                   6               -0                   14
+   7      16              0              0                      0                  13               10                    0
+   8      16              0              0                      0                  26               14                    0
+   9      16              0              0                      0                  18               13                    0
+  10      16              3              1                      5                   6                2                   12
+  11      16              2              0                      2                   3                3                   11
+  12      16              0              0                      1                  -4              -15                    0
+  13      16              2              0                      3                 -18              -28                    0
+  14      16              0              0                      5                  55               30                    0
+  15      16              5              0                     10                 144              -26                    7

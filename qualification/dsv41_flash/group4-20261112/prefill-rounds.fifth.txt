@@ -1,0 +1,31 @@
+Fifth pass, adapter 3c28263d29447b64, trace of rank 0, two 16,384-row waves of a 65,536-token prompt (tools: the scratch readers of the third pass, rounds grouped by the stage before them)
+window: 2 waves of 2 anchor calls, 5549.9 ms a wave, 89950 kernels a wave
+kernel time 5315.2 ms a wave, between kernels 234.7 ms a wave
+mesh runs a wave 134: elapsed 1468.0 ms, kernel time 1257.6 ms (arrival 720.5, other 537.1), gaps inside runs 210.4 ms, pieces 38543, mesh kernels 87514
+a piece: 38.1 us elapsed, arrival 18.7 us, other kernels 13.9 us, gaps 5.5 us
+stage before / kernels in the run / runs a wave / ms a wave / waits a run / us a wait
+D41MoeSendKernelPKtPKf   39.5 runs    501.7 ms   411.9 waits   30.8 us | PieceKernel16Piece 14.2us x411 PieceWaitKernelPKhmmPV 11.8us x411
+LmStreamGemmKernelI13L   25.0 runs    348.1 ms   144.8 waits   96.2 us | ArrivalKernelPKhmmP23R 63.7us x144 DirectWideKernelPKhmmP 8.8us x144 RsagStageKernelPhmmPK2 10.6us x72 PublishWideKernelPhmmP 6.6us x72
+LmStreamGemmKernelI13L   15.5 runs    292.9 ms   616.9 waits   30.6 us | PieceWaitKernelPKhmmPV 13.8us x616 PieceKernel16Piece 12.0us x616
+D41FinalizeSliceKernel   39.5 runs    210.8 ms   173.4 waits   30.8 us | PieceWaitKernelPKhmmPV 14.3us x173 PieceKernel16Piece 11.6us x173
+LmNgramGatherFetchedE8    1.0 runs     45.0 ms   386.0 waits  116.7 us | ArrivalKernelPKhmmP23R 83.2us x386 DirectWideKernelPKhmmP 9.2us x384 RsagStageKernelPhmmPK2 10.7us x193 PublishWideKernelPhmmP 6.9us x192
+D41IndexPackKernelPKtS    8.0 runs     31.6 ms   114.4 waits   34.5 us | PieceWaitKernelPKhmmPV 17.7us x114 PieceKernel16Piece 12.1us x114
+LmNgramGatherFetchedE8    1.0 runs     23.4 ms   772.0 waits   30.3 us | PieceWaitKernelPKhmmPV 13.2us x772 PieceKernel16Piece 12.2us x772
+LmStageEmbeddingKernel    0.5 runs     14.0 ms   320.0 waits   87.4 us | ArrivalKernelPKhmmP23R 57.8us x320 DirectWideKernelPKhmmP 7.9us x320 RsagStageKernelPhmmPK2 9.9us x160 PublishWideKernelPhmmP 5.8us x160
+top kernels, ms a wave:
+  _Z15LmCellMmaKernelILj0ELj4EEv21LmSkinnyCellArguments17LmC    682.9      79.0 calls   8643.9 us
+  _Z18LmStreamGemmKernelI13LmBf16Block32Lj128ELj128ELj64ELj3    614.0     291.0 calls   2110.1 us
+  _Z34SparkTpMeshHardwarePieceWaitKernelPKhmmPV27SparkWeight    448.3   34370.0 calls     13.0 us
+  _Z30SparkTpMeshHardwarePieceKernel16SparkTpMeshPiece          445.4   34370.0 calls     13.0 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj12    404.6      48.0 calls   8429.1 us
+  _Z17LmTopkExactKernelILj256EEvPKfjjPj                         299.2      60.0 calls   4986.2 us
+  _Z32SparkTpMeshHardwareArrivalKernelPKhmmP23SparkTpMeshRou    272.3    4173.0 calls     65.2 us
+  _Z28LmHcPostF32SourceMajorKernelILj4EEvPKtPKfS3_Ptj           269.2      80.0 calls   3365.6 us
+  _Z29LmHcSinkhornPartialRowsKernelILj4ELj4EEvPKtPKfPfjj        255.2      79.0 calls   3230.9 us
+  _Z19D41RmsNormQdqKernelILj256EEvPKtS1_PKfS1_PtS4_jf           202.6     120.0 calls   1688.2 us
+  _Z26LmLatentShardPrefillKernelI12LmKvGeometryILj1280ELj128    192.8      18.0 calls  10711.3 us
+  _Z18LmStreamGemmKernelI12LmBf16FormatLj128ELj128ELj64ELj32    174.8     117.5 calls   1487.8 us
+  _Z24D41MergeWindowSinkKernelPKfS0_PKjjS0_Pt                   149.9      39.5 calls   3795.0 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj25    130.4       9.0 calls  14491.8 us
+  _Z16D41MoeSendKernelPKtPKfS0_Ptjjjjjmfjj                      117.0      40.0 calls   2924.6 us
+  _Z23D41ActAssembleQdqKernelPKtPtjjmjj                          81.5      40.0 calls   2037.6 us

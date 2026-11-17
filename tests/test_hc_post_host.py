@@ -45,7 +45,7 @@ int main(void)
 	threadIdx.x = 0; blockDim.x = 1; gridDim.y = 3;
 	for (blockIdx.y=0; blockIdx.y<gridDim.y; blockIdx.y++)
 		for (blockIdx.x=0; blockIdx.x<=rows; blockIdx.x++)
-			LmHcPostBf16Kernel(out,snapshot,post,comb,destination,rows,hc,width);
+			LmHcPostBf16Kernel<4u>(out,snapshot,post,comb,destination,rows,hc,width);
 	return(fwrite(destination,sizeof(uint16_t),rows*hc*width,stdout) == rows*hc*width ? 0 : 4);
 }
 '''.replace('HC_KERNEL', str(args.kernel.resolve()))

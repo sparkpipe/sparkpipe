@@ -693,7 +693,10 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 
 def main(argv: List[str]) -> int:
     if argv == ["agent"]:
-        return(agent_main())
+        status = agent_main()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(status)
     args = parse_args(argv)
     nodes = fleet_nodes()
     local = this_node(nodes)

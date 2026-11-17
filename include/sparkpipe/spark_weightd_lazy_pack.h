@@ -38,6 +38,9 @@ typedef struct SparkWeightdLazyPackOptions
 
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,const SparkWeightdLazyPackOptions *options,SparkWeightdLazyPack **out);
 SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack);
+SparkStatus SparkWeightdLazyPackUnmap(SparkWeightdLazyPack *pack);
+SparkStatus SparkWeightdLazyPackDetach(SparkWeightdLazyPack *pack,uint64_t timeout_nanoseconds);
+SparkStatus SparkWeightdLazyPackTakeMeshMapping(SparkWeightdLazyPack *pack,void **mapping,uint64_t *bytes);
 
 #ifdef __cplusplus
 }

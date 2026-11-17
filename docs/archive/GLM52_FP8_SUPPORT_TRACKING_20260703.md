@@ -18,7 +18,7 @@ The attached vLLM tree was used as implementation guidance. The most relevant pa
 7. **Persistent hidden transport on Spark2 fabric** — estimated 1.05x–1.2x when PP13 hidden handoff becomes a bottleneck. Execution callbacks exist; the actual fabric backend is still required.
 8. **Native/SM121-supported Q/KV/O projection tuning** — estimated 1.1x–1.4x over the current conservative WMMA path once Codex dev confirms the best supported SM121 formulation.
 9. **Adaptive partial-B64 decode bucket validation** — estimated 1.2x for active decode batches in the B17–B32 range if B64 remains faster on Spark2 partial-fill graphs.
-10. **Trace-tuned Centaur/bulk scheduling policy** — estimated workload-dependent; now that priority, prefix families, JIT prefetch, and DSpark hooks exist, the remaining gain is from measured policy tuning.
+10. **Trace-tuned interactive/bulk scheduling policy** — estimated workload-dependent; now that priority, prefix families, JIT prefetch, and DSpark hooks exist, the remaining gain is from measured policy tuning.
 
 ## CUDA code needed for proper FP8 support
 

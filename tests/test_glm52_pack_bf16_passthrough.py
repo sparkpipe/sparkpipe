@@ -107,7 +107,7 @@ def check_reader():
         # wrong source dtype must FAIL the pack (fp8 tensor in a bf16 build)
         fp8_reader = packer.Fp8SourceReader(root)
         assert fp8_reader.meta(name)[0] == "BF16"  # populate the lazy header cache
-        fp8_reader._headers[fp8_reader.weight_map[name]][name]["dtype"] = "F8_E4M3"
+        fp8_reader.headers[fp8_reader.weight_map[name]][name]["dtype"] = "F8_E4M3"
         try:
             fp8_reader.bf16_expert_payload(name, 0, 16, 0, 32)
             raise AssertionError("non-BF16 expert tensor accepted")

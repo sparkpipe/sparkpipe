@@ -1,0 +1,27 @@
+{
+    "job_name": "tb21-cc-b01",
+    "jobs_dir": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs",
+    "n_concurrent_trials": 3,
+    "agents": [
+        {
+            "name": "claude-code",
+            "model_name": "deepseek-v4.1-flash",
+            "kwargs": {
+                "version": "2.1.311",
+                "config": "/Users/cem/sparkpipe-agent-e2e/fleet-20261109/cc-deepseek.json",
+                "reasoning_effort": "max"
+            }
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench/terminal-bench-2-1",
+            "ref": "sha256:7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a",
+            "task_names": [
+                "terminal-bench/raman-fitting",
+                "terminal-bench/feal-linear-cryptanalysis",
+                "terminal-bench/multi-source-data-merger"
+            ]
+        }
+    ]
+}

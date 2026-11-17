@@ -92,6 +92,10 @@ async def scenario(failures):
                                                ("POST", "/force", {"model": "target"})):
                         async with session.request(method, base + path, json=body, headers=headers) as response:
                             check(response.status == 401, f"{method} {path} with {headers or 'no Authorization'} answers 401, not {response.status}")
+                for path, body in (("/activate", {"model": ["target"]}), ("/activate", {"model": {}}), ("/activate", {}), ("/activate", ["target"]),
+                                   ("/force", {"model": ["target"]}), ("/force", {"model": 7})):
+                    async with session.post(base + path, json=body, headers=good) as response:
+                        check(response.status == 400, f"POST {path} with {body} answers 400, not {response.status}")
                 check(swapper.wanted is None and swapper.task is None and swapper.history == [],
                       "refused requests never start a switch")
                 check(not pathlib.Path(state, "api-started-target").exists() and pathlib.Path(state, "api-started-old").exists(),

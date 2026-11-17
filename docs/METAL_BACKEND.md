@@ -19,9 +19,9 @@ library:
 | Call | Contract |
 | --- | --- |
 | `SparkDeviceLibraryLoad(&library, path, owner)` | loads a backend kernel library (a `.metallib` on Metal); a missing file is `NOT_FOUND` |
-| `SparkDeviceKernelCreate(&kernel, library, name)` | builds the named kernel; an absent name is `NOT_FOUND`, a kernel the device cannot build is `TARGET_MISMATCH` |
+| `SparkDeviceKernelCreate(&kernel, library, name)` | builds the named kernel; an absent name is `NOT_FOUND`, a kernel the device cannot build is `TARGET_MISMATCH`, a name over 64 bytes is `INVALID_ARGUMENT` naming its length |
 | `SparkDeviceKernelGetInfo(kernel, &info)` | the kernel's own thread limit, SIMD width and static group memory |
-| `SparkDeviceKernelLaunch(queue, kernel, &launch)` | enqueues one launch: group grid, threads per group, dynamic group memory, up to 4096 bytes of constants and up to 30 range bindings |
+| `SparkDeviceKernelLaunch(queue, kernel, &launch)` | enqueues one launch: group grid, threads per group, dynamic group memory, constants up to the backend's `max_constant_bytes` (4096 on Metal and host, 32,764 on nvrm, 0 on CUDA) and up to 30 range bindings |
 | `SparkDeviceKernelDestroy`, `SparkDeviceLibraryUnload` | `BUSY` while a queued launch uses the kernel, or while a library has live kernels |
 
 A binding is a buffer range, its byte count and its access (read, write or
@@ -42,11 +42,11 @@ buffers in binding order. The host and CUDA backends load no kernel libraries;
 
 ## The Metal queue
 
-A queue owns one `MTLCommandQueue`. Copies, fills, kernel launches and event
-waits are encoded into the queue's open command buffer on the calling thread;
-the buffer is committed when the host waits or queries, records an event,
-queues a host callback, or after 64 operations, so the GPU starts on a long
-step while the host is still encoding it.
+A queue owns one `MTLCommandQueue`. Copies, fills and kernel launches are
+encoded into the queue's open command buffer on the calling thread; the buffer
+is committed when the host waits or queries, records an event, queues a host
+callback, waits on an event that has not completed, or after 64 operations, so
+the GPU starts on a long step while the host is still encoding it.
 
 - Launches go into one serial compute encoder per command buffer, and copies
   and fills into blit encoders in the same buffer. Buffers use Metal's tracked
@@ -55,16 +55,38 @@ step while the host is still encoding it.
 - Command buffers hold unretained references; the device layer's stamps keep
   every bound buffer and kernel alive until the work that uses it completes.
 - A host callback runs on the queue's worker thread after everything before it
-  completes, and work queued after it waits on a per-queue shared event that
-  the worker signals when the callback returns, so the callback has the same
-  ordering as `cudaLaunchHostFunc`.
-- An event is an `MTLSharedEvent` signalled at the end of a committed command
-  buffer; another queue waits on it with `encodeWaitForEvent`, so cross-queue
-  order needs no host round trip. Event timestamps are the command buffer's
-  `GPUEndTime`.
+  completes, and the queue holds the command buffers queued after it on the
+  host until the callback returns, so the callback has the same ordering as
+  `cudaLaunchHostFunc`.
+- An event completes with the command buffer that records it. A queue that
+  waits on an event that has not completed holds its later command buffers on
+  the host, and the recording queue's worker commits them when the event
+  completes. Event timestamps are the command buffer's `GPUEndTime`.
+- The GPU never waits on an event or a callback. macOS aborts a command buffer
+  that waits on the GPU for about five seconds
+  (`kIOGPUCommandBufferCallbackErrorTimeout`: an M4 passes a 4 s wait and
+  aborts a 5 s one), and an aborted buffer faults the device. Cross-queue waits
+  used to be `encodeWaitForEvent` on an `MTLSharedEvent`: on 2026-11-17 the M5
+  Ultra's Qwen3.8-27B engine waited that way on its KV copy-on-write fence for
+  about 5 s, the step was aborted, and every request failed until the engine
+  restarted. `TestLongHold` holds one queue behind a callback and another
+  behind the first queue's event for 6 s.
 - A failed command buffer marks the queue and the device faulted; the next wait
   returns `IO_ERROR` with Metal's error text, and every later device call fails
-  (as on the other backends).
+  (as on the other backends). The serving adapter prints that text when a step,
+  keep or reset wait fails.
+- A faulted device cannot serve again in that process, so the serving
+  adapter's snapshot then reports its lane fatal
+  (`SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL`, as after a failed streamed
+  prefill). residentd reads the snapshot whenever it delivers a failed
+  completion, whether the adapter refused the submission or completed it with
+  an error. It sends that failure to the model API and exits, instead of
+  failing every later request (I11). On the fleet the node agent starts a
+  fresh engine on a later pass of its loop, and the API's requests wait for
+  the rank to return. On a Mac that nothing supervises, the API's `/health`
+  reports `degraded` with the rank missing until someone starts the engine
+  again. The same holds on CUDA, where an unclassified CUDA error (an
+  illegal address, say) is a device fault.
 
 Queues are not ordered with each other without an event: a copy on one queue
 followed by `SparkDeviceCopySync` on the device's synchronous queue needs a
@@ -110,7 +132,7 @@ tensor sizes before each launch.
 | `spark_silu_rounded_mul`, `spark_silu_rounded_clamp_mul`, `spark_route_combine_weighted` | the gated SiLU with the activation rounded first, `bf16(bf16(silu(g)) u)`, as `MimoSwigluKernel`, and with the serving limits, `bf16(min(bf16(silu(g)), L) clamp(u, -L, L))`, as CUDA's `LmSiluRoundedMulLimitKernel` (the Ling family); and the routes' outputs times their weights, `fma(bf16(out), w, total)` in route order and rounded once, as `MimoMoeCombineKernel` (`spark_route_combine_weighted_shared` adds the shared expert before the rounding, as `LmMoeLocalWeightedFinalizeKernel`; `spark_route_combine_weighted_shared_f32` reads FP32 outputs and shared expert and writes the FP32 sum unrounded, a TP rank's FP32 partial) |
 | `spark_gemv_nvfp4_routed` | each route's NVFP4 expert on its row (`SparkOpsLinearRoutedNvfp4`): E2M1 weights two per byte, low nibble first, with a UE4M3 scale per 16 inputs times the expert's FP32 global scale, in CUDA's skinny arithmetic (`LmSkinnyFormat<LmNvfp4>`) and lane layout: 32 lanes per output row (16 when the input has fewer than 1,024 elements, 8 below 512), each lane taking 32-element chunks in ascending order, each chunk two 16-element FMA chains joined as `fma(s_hi, hi, fma(s_lo, lo, acc))`, the lanes summed by CUDA's xor butterfly; bit-for-bit CUDA's decode result |
 | `spark_hyper_expand`, `spark_group_rmsnorm`, `spark_hyper_gate`, `spark_hyper_mix`, `spark_hyper_inject_weights`, `spark_hyper_inject`, `spark_hyper_key_gate`, `spark_hyper_add` | hyper-connection streams (Qwen 3.8 Flash), each CUDA kernel of `hyper_mix.cuh` with its per-element formula from `kernel_math.cuh` (`SparkMathHyperGate`, `SparkMathHyperMixGate` / `SparkMathHyperMixTerm`, `SparkMathHyperInjectWeight`, `SparkMathHyperInjected`, `SparkMathHyperKeyGate`, `SparkMathHyperAddend`): the residual copied into every stream, a per-stream RMS norm with an FP32 gain, the low-rank gate `bf16(v sigmoid(v))` of `v = bf16(x / 4)`, the stream mix `bf16(sum bf16(bf16(sigmoid(u)) n) / 4)` in stream order, the inject weights `bf16(2 bf16(sigmoid(bf16(bf16(n.w) / 4))))`, the injection `bf16(r + bf16(out w))`, the n-gram key gate and the n-gram residual add `bf16(r + bf16(g + c))` |
-| `spark_hc_mix{8,4}`, `spark_hc_post` | HY4's hyper-connections (CUDA's `HyHcPreKernel`, `HyHcPostKernel`): per row, the flattened streams dotted with each mix's coefficients and with themselves in FP32, `pre_s = sigmoid(m_s r scale0 + base_s) + eps` and, with eight mixes, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s}) + eps` (`r = SparkMathRmsScale` of the sum of squares), the branch input `bf16(sum_s pre_s x_s)` in stream order; four mixes collapse the streams before the head; the post update is `bf16(fma(post_s, out, x_s))`, one rounding |
+| `spark_hc_mix{8,4}`, `spark_hc_post` | HY4's hyper-connections (CUDA's `LmHcMix` and `LmHcPostKernel` in `hc.cuh`): per row, the flattened streams dotted with each mix's coefficients and with themselves in FP32, `pre_s = sigmoid(m_s r scale0 + base_s) + eps` and, with eight mixes, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s}) + eps` (`r = SparkMathRmsScale` of the sum of squares), the branch input `bf16(sum_s pre_s x_s)` in stream order; four mixes collapse the streams before the head; the post update is `bf16(fma(post_s, out, x_s))`, one rounding |
 | `spark_hc_site`, `spark_hc_post_comb`, `spark_stream_mean` | GLM 5.3 Flash's Sinkhorn hyper-connections (CUDA's `LmHcSiteKernel` with `Glm5NextHcPolicy`, `LmHcPostBf16Kernel`, `LmStreamMeanRowsKernel`): per row 24 mixes, `pre_s = sigmoid(m_s r scale0 + base_s) + eps`, `post_s = 2 sigmoid(m_{4+s} r scale1 + base_{4+s})`, and a 4x4 combination from the other 16, softmax per row from its maximum plus eps, then `iterations` Sinkhorn passes (from the second pass a row normalisation, then a column normalisation, each `+ eps`) with sequential sums; the branch input `bf16(sum_s pre_s x_s)`; the post update `bf16(bf16(bf16(P) out) + bf16(sum_s fma(bf16(C_st), x_s)))` per stream `t`; `spark_stream_mean` collapses the streams as `bf16(sum_s x_s / 4)` before the head |
 | `spark_sigmoid_gate_rows`, `spark_route_combine_shared` | the shared expert's gate, `bf16(v sigmoid(bf16 logit))` per row, as `QwenHybridSigmoidGateRowsKernel`; and the routes' outputs summed in FP32 in pick order with the shared expert's row added last, rounded once, as `LmMoeLocalFinalizeKernel` |
 | `spark_ngram_hash`, `spark_ngram_gather_fp8`, `spark_ngram_history` | the n-gram embedding's ids, rows and carried tokens, as `LmNgramHashKernel`, `LmNgramGatherScaledKernel` and `LmNgramHistoryKernel`: each row's current and previous tokens (from the step, else the sequence's history), blocked from the first end-of-text token on, hashed by an int64 rolling XOR of token times multiplier with C's remainder per head; `bf16(e4m3 x scale)` table rows; the last tokens kept on a committed step |
@@ -118,7 +140,7 @@ tensor sizes before each launch.
 | `spark_logprob_rows` | argmax (lowest index on ties), log-normaliser and a target's log-probability over FP32 logits |
 | `spark_block_qdq` | an activation's quantise-dequantise round trip in place or into another buffer, one block per thread, as DeepSeek V4.1 Flash's CUDA kernels do before every FP8 or FP4 consumer: FP8 per 32 values with the power-of-two scale `SparkMathFp8QdqScale` (`2^ceil(log2(amax / 448))` from the FP32 product's bits, amax floored at 1e-4), FP4 per 16 with an E4M3 scale `SparkMathFp4QdqScale` (`e4m3(amax / 6)`, amax floored at `6 * 2^-9`, the compressed keys), and FP4 per 32 with a power-of-two scale; each value `bf16(round(clamp(x / s)) s)` onto the E4M3 or E2M1 grid, ties to even (`SparkMathRoundE4m3`, `SparkMathRoundE2m1`) |
 | `spark_route_sqrt_softplus_topk` | `spark_route_sigmoid_topk` with the score `sqrt(softplus(z))` (`SparkMathSqrtSoftplus`, CUDA's `LM_TOPK_SCORE_SQRT_SOFTPLUS`), selected by `SparkRouteParams.score` |
-| `spark_hc_site_lagged`, `spark_hc_post_comb_f32`, `spark_hc_collapse` | DeepSeek V4.1 Flash's hyper-connections (CUDA's `D41HcSinkhornRowsKernel`, `D41HcPostRowsKernel`, `D41HcPreRowsKernel`): `spark_hc_site`'s mixes, but the branch input collapses the streams with the pre weights the previous site computed (a per-row FP32 buffer the kernel reads and then overwrites with its own); the post update in FP32 with one rounding, `bf16(fma(P_t, out, sum_s C_st x_s))`; the head input `bf16(sum_s pre_s x_s)` |
+| `spark_hc_site_lagged`, `spark_hc_post_comb_f32`, `spark_hc_collapse` | DeepSeek V4.1 Flash's hyper-connections (CUDA's `LmHcSinkhornMixes`, `LmHcPostF32SourceMajorKernel` and `LmHcCollapseKernel` in `hc.cuh`): `spark_hc_site`'s mixes, but the branch input collapses the streams with the pre weights the previous site computed (a per-row FP32 buffer the kernel reads and then overwrites with its own); the post update in FP32 with one rounding, `bf16(fma(P_t, out, sum_s C_st x_s))`; the head input `bf16(sum_s pre_s x_s)` |
 | `spark_stream_key_gate` | a value added to every stream through a signed square-root gate (DeepSeek's engram, CUDA's `SparkDsv41FlashEngramGateKernel`): per stream `d = (h . (q k) key) rsqrt(mean h^2 + e) rsqrt(mean key^2 + e) / sqrt(H)`, `g = sigmoid(copysign(sqrt(max(|d|, 1e-6)), d))` (`SparkMathSignedSqrtGate`), `h = bf16(h + g v)` |
 | `spark_kv_compress`, `spark_kv_compress_save`, `spark_compressed_positions` | the compressed-key pool's input: a row whose position closes a group of `ratio` (one or two) pools its FP32 projections softmax-gated over the group (`SparkMathSoftmaxPool2`, CUDA's `D41CompressorRowsKernel`), the group's earlier row taken from the step or from the sequence's carried FP32 state, which a committed step's last open row saves; and per row the store index (or `SPARK_KV_SKIP`), the group's first position for its rope and the last compressed key it sees |
 | `spark_kv_store_paged_skip`, `spark_attention_decode_extra_d512`, `spark_attention_combine_extra_d512` | the KV store that leaves a row whose position is `SPARK_KV_SKIP`; and 512-wide attention over two key ranges in one softmax: the window of the layer's own pages and a second paged range (`SparkOpsAttentionExtra`: the compressed keys up to each row's own last key), each decoded into its own partitions of one record buffer (`partition_base`), merged with the sinks by the combine (`extra_partitions`) |
@@ -242,7 +264,9 @@ device API:
   and the device runner, which implements it over `SparkDeviceStageRunner`.
   A dispatch runs as one or more runner steps: prefill and decode rows,
   decode chains (each step's sampled token feeds the next) and verify frames
-  (kept with `SparkStageRunnerKeepRows`). The serving adapter waits on the
+  (kept with `SparkStageRunnerKeepRows`); a tree verify frame passes its
+  parent rows to the device runner and keeps its accepted root path with
+  `SparkStageRunnerKeepPath`. The serving adapter waits on the
   runner's queue (`SparkStageRunnerQueue`) through the device API instead of
   on a CUDA stream; the CUDA runner adopts its execution stream as that queue
   (`SparkDeviceQueueAdopt`).
@@ -680,7 +704,9 @@ A tree frame (`docs/TREE_VERIFICATION_DESIGN.md`) is a verify step with
 `SparkDeviceStageRunnerBatch.parent_rows`: one sequence, rows at the
 anchor's position plus their depth, the trunk first and each branch's rows
 consecutively. The runner builds the layout
-(`SparkSpeculationTreeLayoutBuild`, grain 1) and writes six more shared
+(`SparkSpeculationTreeLayoutBuild`, `SPARK_DEVICE_RUNNER_TREE_SLOT_GRAIN`, 1)
+from the sequence's next position, which a runner on an external KV binding
+takes from the frame's first row, and writes six more shared
 tables: the storage slots, the fork positions and slot offsets that map a
 row's semantic keys to slots, the parents, and the delta-rule state loads
 and saves. `spark_kv_store_paged` stores at the slots;
@@ -1631,7 +1657,7 @@ and b floor's KL and +3.1 sigma: as close to the floor as Metal itself.
 
 Kimi K3 (93 layers of 7,168: 69 KDA layers, 24 rope-free latent attention
 layers, 896 MXFP4 experts) runs on `K3Schedule` through `K3Device`
-(`model-families/k3/device/`), geometry from `inference/llms/kimi_k3/config.h`.
+(`model-families/k3/device/`), geometry from `model-families/k3/source/config.h`.
 The schedule's CUDA-only paths (context-sharded attention, expert cells, lazy
 experts) sit behind `kShardedMla`, `kExpertCells` and `kLazyExperts`, which the
 CUDA backend sets and the Metal one does not. The residual stream is AttnRes:

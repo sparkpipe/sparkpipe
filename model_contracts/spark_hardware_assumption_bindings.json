@@ -77,7 +77,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -91,7 +91,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -109,7 +109,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -167,7 +167,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -185,7 +185,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -257,7 +257,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -307,7 +307,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -325,7 +325,7 @@
         },
         {
           "binding_mode": "generated_policy",
-          "path": "inference/llms/kimi_k3/layer.cuh"
+          "path": "model-families/k3/source/layer.cuh"
         }
       ],
       "fallback": "forbidden",
@@ -393,7 +393,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -411,7 +411,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -425,7 +425,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -439,7 +439,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         }
       ],
       "fallback": "forbidden",
@@ -453,7 +453,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         },
         {
           "binding_mode": "generated_policy",
@@ -471,7 +471,7 @@
       "consumers": [
         {
           "binding_mode": "generated_policy",
-          "path": "ring/transport/rdma.cu"
+          "path": "ring/transport/rdma.c"
         },
         {
           "binding_mode": "generated_policy",

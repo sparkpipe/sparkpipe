@@ -1,4 +1,4 @@
-"""Run the cluster exact top-k on an sm_121 device against the single-block selection, index for index."""
+"""Run the row launcher's exact top-k (cluster and wide kernels) on an sm_121 device against the single-block selection, index for index."""
 import os
 import pathlib
 import shutil

@@ -1,0 +1,2 @@
++100
+nvrm programs chain dependent launches through latches; plain launches keep their completion acquire (#2110).

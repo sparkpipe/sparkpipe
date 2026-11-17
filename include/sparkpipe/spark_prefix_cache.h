@@ -299,6 +299,13 @@ SparkStatus SparkPrefixCacheCommitPrompt(
     const uint32_t *token_ids,
     uint32_t token_count,
     SparkPrefixCacheLookup *lookup);
+SparkStatus SparkPrefixCacheCommitPromptAfter(
+    SparkPrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t committed_token_count,
+    uint32_t token_count,
+    SparkPrefixCacheLookup *lookup);
 
 SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
     SparkPrefixCache *cache,
@@ -381,10 +388,6 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     const uint32_t *token_ids,
     uint32_t matched_token_count);
 
-SparkStatus SparkPrefixCacheExpire(
-    SparkPrefixCache *cache,
-    uint64_t now_seconds,
-    uint32_t *expired_out);
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,

@@ -7,7 +7,7 @@
 
 #include "sparkpipe/spark_ck128.h"
 
-#include "spark_dsv41_flash_stagepack_format.h"
+#include "sparkpipe/spark_dsv41_flash_stagepack.h"
 
 #define CHECK(condition,message) \
 	do { \

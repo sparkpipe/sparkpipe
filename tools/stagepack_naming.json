@@ -14,7 +14,10 @@
   "lingfin",
   "dsv41flash",
   "mimo26pro",
-  "mimo26flash"
+  "mimo26flash",
+  "k31dspark",
+  "dsv41dspark",
+  "qwen27bdspine"
  ],
  "quants": [
   "bf16",
@@ -25,6 +28,7 @@
   "iq1m"
  ],
  "topologies": [
+  "tp1",
   "tp4",
   "tp8",
   "tp16",

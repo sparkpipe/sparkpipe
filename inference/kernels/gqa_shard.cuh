@@ -4,9 +4,11 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/gqa.cuh"
 #include "inference/kernels/kv_shard.cuh"
+#include "inference/kernels/shard_reduce.cuh"
 #include "runtime/launch.h"
 #include <math.h>
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_GQA_SHARD_MAX_GROUP 32u
 #define LM_GQA_SHARD_TILED_WARPS 8u
@@ -87,13 +89,8 @@ void LmGqaShardPartialKernel(
 	if ( row >= rows || warp >= group )
 		return;
 	sequence = sequence_of_row[row];
-	if ( !LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count )
-	{
-		LmKvReportRequiredAccessFailure(cache.pages,
-			!LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-			LM_KV_ACCESS_READ,row,sequence,0xffffffffu,0xffffffffu);
+	if ( !LmKvCheckSequence(cache.pages,row,sequence) )
 		return;
-	}
 	if ( (heads % KV_HEADS) != 0u || group > LM_GQA_SHARD_MAX_GROUP || ((uint64_t)heads * VALUE_DIM) % degree != 0u )
 	{
 		LmKvReportRequiredAccessFailure(cache.pages,LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY,LM_KV_ACCESS_READ,row,sequence,head,heads);
@@ -308,14 +305,8 @@ void LmGqaShardTiledKernel(
 		__syncthreads();
 		sequence = run[0];
 		run_end = run[1];
-		if ( !LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count )
-		{
-			if ( threadIdx.x == 0u )
-				LmKvReportRequiredAccessFailure(cache.pages,
-					!LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-					LM_KV_ACCESS_READ,cursor,sequence,0xffffffffu,0xffffffffu);
+		if ( !LmKvCheckSequence(cache.pages,cursor,sequence,0xffffffffu,threadIdx.x == 0u) )
 			return;
-		}
 		for (side = 0u; side < 2u; ++side)
 		{
 			uint32_t fork, start;
@@ -525,6 +516,8 @@ void LmGqaShardTiledKernel(
 	}
 }
 
+#define LM_GQA_SHARD_MERGE_SLOTS 64u
+
 template<uint32_t VALUE_DIM>
 __global__ __launch_bounds__(256, 1)
 void LmGqaShardMergeKernel(
@@ -537,47 +530,50 @@ void LmGqaShardMergeKernel(
 	uint32_t rows,
 	const float *__restrict__ sinks)
 {
+	__shared__ float scales[LM_GQA_SHARD_MERGE_SLOTS][SPARK_KV_SHARD_MAX_DEGREE];
+	__shared__ float denom_shared[LM_GQA_SHARD_MERGE_SLOTS];
 	const uint32_t row = blockIdx.x;
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,sources), slots = LmGqaShardHeadSlots(heads,VALUE_DIM,sources);
 	const uint32_t record = width + 2u * slots, origin = (rank * width) / VALUE_DIM;
-	uint32_t element, source, slot_index;
-	float global_max, source_max, scale, denominator, merged, sink = 0.0f;
-	const float *base;
-
-	if ( row >= rows )
+	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
+	if ( row >= rows || width == 0u )
 		return;
-	for (element = threadIdx.x; element < width; element += blockDim.x)
+	const uint32_t used_slots = (rank * width + width - 1u) / VALUE_DIM - origin + 1u;
+	const float *row_base = received + (uint64_t)row * record;
+	uint16_t *out_row = output_bf16 + (uint64_t)row * width;
+	for (uint32_t slot_base = 0u; slot_base < used_slots; slot_base += LM_GQA_SHARD_MERGE_SLOTS)
 	{
-		slot_index = (rank * width + element) / VALUE_DIM - origin;
-		global_max = -INFINITY;
-		for (source = 0u; source < sources; ++source)
+		const uint32_t slot_end = slot_base + LM_GQA_SHARD_MERGE_SLOTS < used_slots ? slot_base + LM_GQA_SHARD_MERGE_SLOTS : used_slots;
+		const uint32_t chunk_slots = slot_end - slot_base;
+		const uint32_t elem_begin = slot_base == 0u ? 0u : (origin + slot_base) * VALUE_DIM - rank * width;
+		const uint32_t elem_end = slot_end == used_slots ? width : (origin + slot_end) * VALUE_DIM - rank * width;
+		for (uint32_t local_slot = warp; local_slot < chunk_slots; local_slot += 8u)
 		{
-			source_max = received[(uint64_t)source * source_stride + (uint64_t)row * record + width + 2u * slot_index];
-			global_max = source_max > global_max ? source_max : global_max;
+			const uint32_t slot_index = slot_base + local_slot;
+			const float sink = sinks != 0 ? sinks[origin + slot_index] : -INFINITY;
+			float gm = -INFINITY;
+			float den = LmWarpMergeScales(row_base + width + 2u * slot_index, source_stride, sources, scales[local_slot], &gm, sink);
+			if ( lane == 0u )
+			{
+				if ( sinks != 0 )
+					den += __expf(sink - gm);
+				denom_shared[local_slot] = fmaxf(den,1.0e-20f);
+			}
 		}
-		if ( sinks != 0 )
-		{
-			sink = sinks[(rank * width + element) / VALUE_DIM];
-			global_max = sink > global_max ? sink : global_max;
-		}
-		denominator = 0.0f;
-		merged = 0.0f;
-		for (source = 0u; source < sources; ++source)
-		{
-			base = received + (uint64_t)source * source_stride + (uint64_t)row * record;
-			source_max = base[width + 2u * slot_index];
-			scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-			denominator = fmaf(base[width + 2u * slot_index + 1u],scale,denominator);
-			merged = fmaf(base[element],scale,merged);
-		}
-		if ( sinks != 0 )
-			denominator += __expf(sink - global_max);
-		output_bf16[(uint64_t)row * width + element] = LmFloatToBf16(merged / fmaxf(denominator,1.0e-20f));
+		__syncthreads();
+		LmWeightedSourcesMergeRangeBf16<VALUE_DIM, 256u>(
+			row_base, source_stride, sources, elem_begin, elem_end, out_row,
+			[&](uint32_t elem) { return (rank * width + elem) / VALUE_DIM - origin - slot_base; },
+			[&](uint32_t slot, uint32_t s) { return scales[slot][s]; },
+			[&](uint32_t slot) { return denom_shared[slot]; },
+			rank * width);
+		if ( slot_end < used_slots )
+			__syncthreads();
 	}
 }
 
 template<class Geometry, class Pages, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t VALUE_DIM>
-static inline cudaError_t LmGqaShardPartialLaunch(
+static inline SparkGpuError LmGqaShardPartialLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint32_t heads,
@@ -588,7 +584,7 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 	float *send,
 	uint64_t destination_stride,
 	uint32_t rows,
-	cudaStream_t stream,
+	SparkGpuStream stream,
 	const uint32_t *block_mask = 0,
 	uint32_t mask_words = 0u,
 	uint32_t block_tokens = 1u,
@@ -602,33 +598,33 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 		SparkKvShardValid(cache.shard,Geometry::kPageSlots) == 0u ||
 		destination_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,degree) ||
 		(block_mask != 0 && (mask_words == 0u || block_tokens == 0u)) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if constexpr ( LmGqaShardTiledFits<HEAD_DIM,VALUE_DIM>() )
 	{
 		constexpr uint32_t shared = LmGqaShardTiledSharedBytes<HEAD_DIM,VALUE_DIM>();
 		static bool granted = false;
 		if ( !granted )
 		{
-			const cudaError_t error = cudaFuncSetAttribute((const void *)LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>,
-				cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared);
-			if ( error != cudaSuccess )
+			const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>,
+				SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)shared);
+			if ( error != SPARK_GPU_SUCCESS )
 				return(error);
 			granted = true;
 		}
-		LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
-			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream>>>(
+		LM_LAUNCH((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
+			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream,
 			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 			fork_positions,slot_offsets);
-		return(cudaPeekAtLastError());
+		return(SparkGpuPeekAtLastError());
 	}
-	LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream>>>(
+	LM_LAUNCH((LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream,
 		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 		fork_positions,slot_offsets);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<uint32_t VALUE_DIM>
-static inline cudaError_t LmGqaShardMergeLaunch(
+static inline SparkGpuError LmGqaShardMergeLaunch(
 	const float *received,
 	uint64_t source_stride,
 	uint32_t sources,
@@ -636,13 +632,13 @@ static inline cudaError_t LmGqaShardMergeLaunch(
 	uint32_t rank,
 	uint16_t *output_bf16,
 	uint32_t rows,
-	cudaStream_t stream,
+	SparkGpuStream stream,
 	const float *sinks = 0)
 {
 	if ( rows == 0u || received == 0 || output_bf16 == 0 || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE ||
 		rank >= sources || ((uint64_t)heads * VALUE_DIM) % sources != 0u ||
 		source_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,sources) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmGqaShardMergeKernel<VALUE_DIM>),rows,256u,0,stream,received,source_stride,sources,heads,rank,output_bf16,rows,sinks);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

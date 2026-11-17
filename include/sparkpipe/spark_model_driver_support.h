@@ -119,12 +119,27 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
     return 1u;
 }
 
+static inline void SparkModelDriverStoreCacheProbe(
+    SparkModelDriverAdmissionDecision *decision,
+    const SparkModelDriverCacheProbe *probe)
+{
+    decision->cache_probe = *probe;
+}
+
+static inline void SparkModelDriverLoadCacheProbe(
+    const SparkModelDriverAdmissionDecision *decision,
+    SparkModelDriverCacheProbe *probe)
+{
+    *probe = decision->cache_probe;
+}
+
 static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
     const SparkModelDriverAdmissionRequest *request)
 {
     uint32_t index,releasing,publishing;
     if (request != 0 && request->descriptor_bytes >= sizeof(*request) &&
-        request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT)
+        (request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT ||
+         request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE))
     {
         if (request->program_id == 0u || request->cache_lanes == 0 || request->cache_lane_count == 0u ||
             request->active_slot_count != 0u || request->new_token_count != 0u || request->frame_flags != 0u)

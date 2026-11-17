@@ -5,6 +5,7 @@
 #include "inference/kernels/norm.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
@@ -345,9 +346,16 @@ void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byt
 	if ( warp == 1u && count != 0u )
 	{
 		float predicted = 0.0f;
-		#pragma unroll 16
-		for ( index = 0u; index < KEY_DIM; index++ )
-			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key_s[0][index]),forget_s[0][index],predicted);
+		#pragma unroll 4
+		for ( index = 0u; index < KEY_DIM; index += 4u )
+		{
+			const float4 key4 = *(const float4 *)&key_s[0][index];
+			const float4 forget4 = *(const float4 *)&forget_s[0][index];
+			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
+			predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
+		}
 		coefficient_s[lane] = beta_s[0] * (value_s[0][lane] - predicted);
 	}
 	__syncthreads();
@@ -771,15 +779,22 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 }
 
 template<uint32_t REDUCE_THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
-static inline cudaError_t LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, cudaStream_t stream)
+static inline SparkGpuError LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream)
 {
 	const uint32_t shared = (uint32_t)sizeof(LmDeltaRuleChunkShared<KEY_DIM,VALUE_DIM>);
-	cudaError_t error = cudaFuncSetAttribute(LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared);
-	if ( error != cudaSuccess || sequences == 0u || key_heads == 0u )
-		return(error != cudaSuccess ? error : cudaErrorInvalidValue);
-	LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State><<<dim3(sequences,key_heads,1u),LM_DELTA_CHUNK_THREADS,shared,stream>>>(state_pool,slot_bytes,state_index,
+	static bool granted = false;
+	if ( sequences == 0u || key_heads == 0u )
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
+	if ( !granted )
+	{
+		const SparkGpuError error = SparkGpuFuncSetAttribute(LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)shared);
+		if ( error != SPARK_GPU_SUCCESS )
+			return(error);
+		granted = true;
+	}
+	LM_LAUNCH((LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>),dim3(sequences,key_heads,1u),LM_DELTA_CHUNK_THREADS,shared,stream,state_pool,slot_bytes,state_index,
 		sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 #endif
 
@@ -789,7 +804,7 @@ static inline uint64_t LmDeltaRuleSnapshotBytes(uint32_t key_heads, uint32_t key
 }
 
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
-static inline cudaError_t LmDeltaRuleLaunch(uint32_t rows, uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, cudaStream_t stream, const uint32_t *state_loads = 0, const uint32_t *state_saves = 0, float *snapshots = 0)
+static inline SparkGpuError LmDeltaRuleLaunch(uint32_t rows, uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream, const uint32_t *state_loads = 0, const uint32_t *state_saves = 0, float *snapshots = 0)
 {
 #if defined(__CUDACC__)
 	if ( commit != 0u && sequence_row_count == 0 && rows >= sequences * LM_DELTA_CHUNK && state_loads == 0 )
@@ -799,7 +814,7 @@ static inline cudaError_t LmDeltaRuleLaunch(uint32_t rows, uint8_t *state_pool, 
 	LM_LAUNCH((LmDeltaRuleColumnKernel<THREADS,KEY_DIM,VALUE_DIM,State>), dim3(sequences,key_heads,VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
 		state_pool,slot_bytes,state_index,sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,forget_gate,write_gate,output_bf16,key_heads,
 		value_heads_per_key,sequences,commit,sequence_row_indices,state_loads,state_saves,snapshots);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 enum LmConvActivation
@@ -893,10 +908,10 @@ struct LmCausalConvStreams
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
+void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ parent_rows = 0)
 {
 	const uint32_t stream = blockIdx.z;
-	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices);
+	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices,parent_rows);
 }
 
 #define LM_CAUSAL_CONV_TILE_THREADS 256u
@@ -987,7 +1002,7 @@ void LmCausalConvStreamsTiledKernel(const __grid_constant__ LmCausalConvStreams<
 }
 
 template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight, uint32_t DILATION = 1u>
-static cudaError_t LmCausalConvLaunch(uint16_t *window, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *input_bf16, const Weight *weight, uint16_t *output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, cudaStream_t stream, const uint32_t *parent_rows = 0)
+static SparkGpuError LmCausalConvLaunch(uint16_t *window, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *input_bf16, const Weight *weight, uint16_t *output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, SparkGpuStream stream, const uint32_t *parent_rows = 0)
 {
 	if ( parent_rows != 0 || rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
 		LM_LAUNCH((LmCausalConvKernel<LM_CAUSAL_CONV_TILE_THREADS,KERNEL,ACTIVATION,Weight,DILATION>), dim3(sequences, (channels + LM_CAUSAL_CONV_TILE_THREADS - 1u) / LM_CAUSAL_CONV_TILE_THREADS),
@@ -997,20 +1012,20 @@ static cudaError_t LmCausalConvLaunch(uint16_t *window, const uint32_t *state_in
 		LM_LAUNCH((LmCausalConvTiledKernel<KERNEL,ACTIVATION,Weight,DILATION>), dim3(sequences, (channels + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS),
 		LM_CAUSAL_CONV_TILE_THREADS, 0, stream, window, state_index, sequence_row_begin, sequence_row_count, input_bf16, weight, output_bf16, channels, sequences,
 		commit, sequence_row_indices);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
-static cudaError_t LmCausalConvStreamsLaunch(const LmCausalConvStreams<Weight> &streams, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, cudaStream_t stream)
+static SparkGpuError LmCausalConvStreamsLaunch(const LmCausalConvStreams<Weight> &streams, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, SparkGpuStream stream, const uint32_t *parent_rows = 0)
 {
 	uint32_t widest = 0u;
 	for (uint32_t index = 0u; index < LM_CAUSAL_CONV_STREAMS; ++index)
 		widest = streams.channels[index] > widest ? streams.channels[index] : widest;
-	if ( rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
+	if ( parent_rows != 0 || rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
 		LM_LAUNCH((LmCausalConvStreamsKernel<LM_CAUSAL_CONV_TILE_THREADS,KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_THREADS - 1u) / LM_CAUSAL_CONV_TILE_THREADS, LM_CAUSAL_CONV_STREAMS),
-			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);
+			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices, parent_rows);
 	else
 		LM_LAUNCH((LmCausalConvStreamsTiledKernel<KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS, LM_CAUSAL_CONV_STREAMS),
 		LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }

@@ -5,62 +5,14 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kv_shard.cuh"
+#include "inference/kernels/shard_reduce.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_LATENT_SHARD_WARPS 8u
 #define LM_LATENT_SHARD_THREADS (LM_LATENT_SHARD_WARPS * 32u)
 #define LM_LATENT_SHARD_UNROLL 2u
 #define LM_LATENT_SHARD_LIST_CAPACITY 4096u
 #define LM_LATENT_SHARD_RECORD_FLOATS(latent) ((latent) + 2u)
-
-template<uint32_t PER_LANE>
-static __device__ __forceinline__ void LmLatentShardLoad(const uint16_t *__restrict__ source, float *values)
-{
-    uint32_t chunk, word, bits[4];
-    uint4 packed;
-    if (PER_LANE % 8u == 0u)
-    {
-        for (chunk = 0u; chunk < PER_LANE / 8u; ++chunk)
-        {
-            packed = ((const uint4 *)source)[chunk];
-            bits[0] = packed.x; bits[1] = packed.y; bits[2] = packed.z; bits[3] = packed.w;
-            for (word = 0u; word < 4u; ++word)
-            {
-                values[chunk * 8u + word * 2u] = __uint_as_float(bits[word] << 16u);
-                values[chunk * 8u + word * 2u + 1u] = __uint_as_float(bits[word] & 0xffff0000u);
-            }
-        }
-        return;
-    }
-    for (word = 0u; word < PER_LANE / 2u; ++word)
-    {
-        bits[0] = ((const uint32_t *)source)[word];
-        values[word * 2u] = __uint_as_float(bits[0] << 16u);
-        values[word * 2u + 1u] = __uint_as_float(bits[0] & 0xffff0000u);
-    }
-}
-
-template<uint32_t HEADS, uint32_t PER_LANE>
-static __device__ __forceinline__ void LmLatentShardStep(const float (*query)[PER_LANE], const float *value, float qk_scale, float *running_max, float *running_sum, float (*accumulator)[PER_LANE])
-{
-    uint32_t head, element, mask;
-    float score, previous, scaled_previous, scaled_current;
-    for (head = 0u; head < HEADS; ++head)
-    {
-        score = 0.0f;
-        for (element = 0u; element < PER_LANE; ++element)
-            score += query[head][element] * value[element];
-        for (mask = 16u; mask > 0u; mask >>= 1u)
-            score += __shfl_xor_sync(0xffffffffu, score, mask);
-        score *= qk_scale;
-        previous = running_max[head];
-        running_max[head] = fmaxf(previous, score);
-        scaled_previous = __expf(previous - running_max[head]);
-        scaled_current = __expf(score - running_max[head]);
-        running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
-        for (element = 0u; element < PER_LANE; ++element)
-            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (SparkMathAttentionValueWeight(scaled_current) * value[element]);
-    }
-}
 
 static __device__ __forceinline__ uint32_t LmLatentShardCompact(
     SparkKvShard shard,
@@ -71,26 +23,38 @@ static __device__ __forceinline__ uint32_t LmLatentShardCompact(
     uint32_t *list,
     uint32_t *scan)
 {
-    uint32_t base, offset, add, count = 0u, keep, position, index;
+    const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u, below = (1u << lane) - 1u;
+    uint32_t base, count = 0u, keep, position, index, mask, rank_in_warp, phase = 0u;
     for (base = 0u; base < selected_count; base += LM_LATENT_SHARD_THREADS)
     {
+        uint32_t *warp_scan = scan + phase * 16u;
         index = base + threadIdx.x;
         position = index < selected_count ? selected[index] : 0xffffffffu;
         keep = index < selected_count && (bounded == 0u || position <= bound) && SparkKvShardOwns(shard, position) != 0u ? 1u : 0u;
-        scan[threadIdx.x] = keep;
+        mask = __ballot_sync(0xffffffffu, keep != 0u);
+        rank_in_warp = (uint32_t)__popc(mask & below);
+        if (lane == 0u)
+            warp_scan[warp] = (uint32_t)__popc(mask);
         __syncthreads();
-        for (offset = 1u; offset < LM_LATENT_SHARD_THREADS; offset <<= 1u)
+        if (threadIdx.x == 0u)
         {
-            add = threadIdx.x >= offset ? scan[threadIdx.x - offset] : 0u;
-            __syncthreads();
-            scan[threadIdx.x] += add;
-            __syncthreads();
+            uint32_t running = 0u, w, here;
+            for (w = 0u; w < LM_LATENT_SHARD_WARPS; ++w)
+            {
+                here = warp_scan[w];
+                warp_scan[w] = running;
+                running += here;
+            }
+            warp_scan[LM_LATENT_SHARD_WARPS] = running;
         }
-        if (keep != 0u)
-            list[count + scan[threadIdx.x] - 1u] = position;
-        count += scan[LM_LATENT_SHARD_THREADS - 1u];
         __syncthreads();
+        if (keep != 0u)
+            list[count + warp_scan[warp] + rank_in_warp] = position;
+        count += warp_scan[LM_LATENT_SHARD_WARPS];
+        phase ^= 1u;
     }
+    if (selected_count != 0u)
+        __syncthreads();
     return count;
 }
 
@@ -175,15 +139,15 @@ void LmLatentShardSplitKernel(
     }
 }
 
-static inline cudaError_t LmLatentShardSplitLaunch(SparkKvShard shard, const uint32_t *selected_positions, uint32_t selected_count,
-    const uint32_t *row_position, uint32_t *split_positions, uint32_t *split_offsets, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmLatentShardSplitLaunch(SparkKvShard shard, const uint32_t *selected_positions, uint32_t selected_count,
+    const uint32_t *row_position, uint32_t *split_positions, uint32_t *split_offsets, uint32_t rows, SparkGpuStream stream)
 {
     if (rows == 0u || selected_positions == 0 || split_positions == 0 || split_offsets == 0 || shard.degree == 0u ||
         shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || selected_count > LM_LATENT_SHARD_LIST_CAPACITY)
-        return cudaErrorInvalidValue;
+        return SPARK_GPU_ERROR_INVALID_VALUE;
     LM_LAUNCH((LmLatentShardSplitKernel), rows, LM_LATENT_SHARD_THREADS, 0, stream, shard, selected_positions, selected_count, row_position, split_positions,
         split_offsets);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE, uint32_t HEADS>
@@ -205,29 +169,37 @@ void LmLatentShardPartialKernel(
     uint32_t record_heads,
     uint32_t record_copies,
     const uint32_t *__restrict__ split_positions,
-    const uint32_t *__restrict__ split_offsets)
+    const uint32_t *__restrict__ split_offsets,
+    const uint32_t *__restrict__ fork_positions = 0,
+    const uint32_t *__restrict__ slot_offsets = 0)
 {
     constexpr uint32_t WIDTH = LATENT + ROPE;
     constexpr uint32_t PER_LANE = WIDTH / 32u;
+    constexpr uint32_t MERGE_SLICE = (HEADS <= 2u && LATENT <= 512u) ? LATENT : (LATENT < 256u ? LATENT : 256u);
     static_assert(WIDTH % 64u == 0u, "each lane loads whole bf16 pairs");
     static_assert(Geometry::kSlotBytes >= WIDTH * 2u, "the slot holds the latent and its rope part");
-    __shared__ uint32_t local_list[LM_LATENT_SHARD_LIST_CAPACITY];
-    __shared__ uint32_t scan[LM_LATENT_SHARD_THREADS];
+    __shared__ union
+    {
+        struct
+        {
+            uint32_t list[LM_LATENT_SHARD_LIST_CAPACITY];
+            uint32_t scan[LM_LATENT_SHARD_THREADS];
+        } compact;
+        float warp_acc[LM_LATENT_SHARD_WARPS][HEADS][MERGE_SLICE];
+    } shared_buf;
     __shared__ float warp_max[LM_LATENT_SHARD_WARPS][HEADS];
     __shared__ float warp_sum[LM_LATENT_SHARD_WARPS][HEADS];
-    __shared__ float merged[HEADS][LATENT];
+    __shared__ float warp_scale[LM_LATENT_SHARD_WARPS][HEADS];
+    __shared__ float global_max_s[HEADS];
     const uint8_t *slot[LM_LATENT_SHARD_UNROLL];
     float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE], value[LM_LATENT_SHARD_UNROLL][PER_LANE];
-    float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS], scale;
+    float running_max[HEADS], running_sum[HEADS];
     uint32_t row = blockIdx.x, group = blockIdx.y, warp = threadIdx.x / 32u, lane = threadIdx.x % 32u;
     uint32_t sequence = sequence_of_row[row], head, global_head, index, element, dense, listed, count, step, unroll, failed, position, copy;
     uint64_t base;
 
-    if (!LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count)
-    {
-        LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
+    if (!LmKvCheckSequence(cache.pages, row, sequence))
         return;
-    }
     dense = context_length[sequence];
     if (row_position != 0 && row_position[row] == 0xffffffffu)
         dense = 0u;
@@ -248,17 +220,19 @@ void LmLatentShardPartialKernel(
     }
     else
         count = listed != 0u
-            ? LmLatentShardCompact(cache.shard, selected_positions + (uint64_t)row * selected_count, selected_count, row_position != 0 ? row_position[row] : 0u, row_position != 0 ? 1u : 0u, local_list, scan)
+            ? LmLatentShardCompact(cache.shard, selected_positions + (uint64_t)row * selected_count, selected_count, row_position != 0 ? row_position[row] : 0u, row_position != 0 ? 1u : 0u, shared_buf.compact.list, shared_buf.compact.scan)
             : SparkKvShardLocalKeys(cache.shard, dense);
     for (head = 0u; head < HEADS; ++head)
     {
         global_head = group * HEADS + head;
         running_max[head] = -INFINITY;
         running_sum[head] = 0.0f;
-        LmLatentShardLoad<PER_LANE>(query_bf16 + (uint64_t)(global_head / heads_per_rank) * query_rank_stride + ((uint64_t)row * heads_per_rank + global_head % heads_per_rank) * WIDTH + lane * PER_LANE, query[head]);
+        LmLatentVecLoad<PER_LANE>(query_bf16 + (uint64_t)(global_head / heads_per_rank) * query_rank_stride + ((uint64_t)row * heads_per_rank + global_head % heads_per_rank) * WIDTH + lane * PER_LANE, query[head]);
         for (element = 0u; element < PER_LANE; ++element)
             accumulator[head][element] = 0.0f;
     }
+    const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+    const uint32_t offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
     failed = 0u;
     for (step = warp; step < count && failed == 0u; step += LM_LATENT_SHARD_UNROLL * LM_LATENT_SHARD_WARPS)
     {
@@ -268,85 +242,98 @@ void LmLatentShardPartialKernel(
             slot[unroll] = 0;
             if (index >= count || failed != 0u)
                 continue;
-            position = split_list != 0 ? split_list[index] : listed != 0u ? local_list[index] : SparkKvShardLocalPosition(cache.shard, index);
+            position = split_list != 0 ? split_list[index] : listed != 0u ? shared_buf.compact.list[index] : SparkKvShardLocalPosition(cache.shard, index);
+            if (position >= fork)
+                position += offset;
             slot[unroll] = LmKvShardSlotRequired<Geometry>(cache, sequence, position, row, LM_KV_ACCESS_READ);
             failed = slot[unroll] == 0 ? 1u : 0u;
         }
         for (unroll = 0u; unroll < LM_LATENT_SHARD_UNROLL; ++unroll)
             if (slot[unroll] != 0)
-                LmLatentShardLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
+                LmLatentVecLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
         for (unroll = 0u; unroll < LM_LATENT_SHARD_UNROLL; ++unroll)
             if (slot[unroll] != 0)
-                LmLatentShardStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
+                LmLatentOnlineStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
     }
-    if (lane == 0u)
+    LmWarpScaleMax<LM_LATENT_SHARD_WARPS, HEADS>(running_max, running_sum, warp_max, warp_sum, warp_scale, global_max_s, warp, lane);
+    for (uint32_t slice = 0u; slice < LATENT; slice += MERGE_SLICE)
+    {
+        const uint32_t slice_end = slice + MERGE_SLICE < LATENT ? slice + MERGE_SLICE : LATENT;
+        const uint32_t slice_len = slice_end - slice;
         for (head = 0u; head < HEADS; ++head)
-        {
-            warp_max[warp][head] = running_max[head];
-            warp_sum[warp][head] = running_sum[head];
-        }
-    for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_SHARD_THREADS)
-        merged[index / LATENT][index % LATENT] = 0.0f;
-    __syncthreads();
-    for (head = 0u; head < HEADS; ++head)
-    {
-        global_max[head] = -INFINITY;
-        global_sum[head] = 0.0f;
-        for (index = 0u; index < LM_LATENT_SHARD_WARPS; ++index)
-            global_max[head] = fmaxf(global_max[head], warp_max[index][head]);
-        for (index = 0u; index < LM_LATENT_SHARD_WARPS; ++index)
-        {
-            scale = global_max[head] == -INFINITY || warp_max[index][head] == -INFINITY ? 0.0f : __expf(warp_max[index][head] - global_max[head]);
-            global_sum[head] = fmaf(warp_sum[index][head], scale, global_sum[head]);
-        }
-    }
-    for (index = 0u; index < LM_LATENT_SHARD_WARPS; ++index)
-    {
-        if (warp == index)
-            for (head = 0u; head < HEADS; ++head)
+            for (element = 0u; element < PER_LANE; ++element)
             {
-                scale = global_max[head] == -INFINITY || warp_max[index][head] == -INFINITY ? 0.0f : __expf(warp_max[index][head] - global_max[head]);
-                for (element = 0u; element < PER_LANE; ++element)
-                    if (lane * PER_LANE + element < LATENT)
-                        merged[head][lane * PER_LANE + element] += accumulator[head][element] * scale;
+                const uint32_t col = lane * PER_LANE + element;
+                if (col >= slice && col < slice_end)
+                    shared_buf.warp_acc[warp][head][col - slice] = accumulator[head][element];
             }
         __syncthreads();
-    }
-    for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_SHARD_THREADS)
-    {
-        head = index / LATENT;
-        element = index % LATENT;
-        global_head = group * HEADS + head;
-        for (copy = 0u; copy < record_copies; ++copy)
+        for (index = threadIdx.x; index < HEADS * slice_len; index += LM_LATENT_SHARD_THREADS)
         {
-            base = ((uint64_t)(global_head / record_heads) * record_copies + copy) * partial_rank_stride + ((uint64_t)row * record_heads + global_head % record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-            partials[base + 2u + element] = merged[head][element];
+            head = index / slice_len;
+            const uint32_t local_col = index % slice_len;
+            element = slice + local_col;
+            global_head = group * HEADS + head;
+            float total = 0.0f;
+            #pragma unroll
+            for (uint32_t w = 0u; w < LM_LATENT_SHARD_WARPS; ++w)
+                total += shared_buf.warp_acc[w][head][local_col] * warp_scale[w][head];
+            float gs = 0.0f;
             if (element == 0u)
+                for (uint32_t w = 0u; w < LM_LATENT_SHARD_WARPS; ++w)
+                    gs = fmaf(warp_sum[w][head], warp_scale[w][head], gs);
+            for (copy = 0u; copy < record_copies; ++copy)
             {
-                partials[base] = global_max[head];
-                partials[base + 1u] = global_sum[head];
+                base = ((uint64_t)(global_head / record_heads) * record_copies + copy) * partial_rank_stride + ((uint64_t)row * record_heads + global_head % record_heads) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+                partials[base + 2u + element] = total;
+                if (element == 0u)
+                {
+                    partials[base] = global_max_s[head];
+                    partials[base + 1u] = gs;
+                }
             }
         }
+        if (slice_end < LATENT)
+            __syncthreads();
     }
 }
 
-template<uint32_t LATENT, uint32_t ROPE, uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmLatentShardQueryPackKernel(const uint16_t *__restrict__ latent_bf16, const uint16_t *__restrict__ rope_bf16, uint32_t heads, uint16_t *__restrict__ query_bf16)
+static __global__ __launch_bounds__(LM_LATENT_SHARD_THREADS, 1)
+void LmQueryRopePackKernel(
+    const uint16_t *__restrict__ latent_bf16,
+    const uint16_t *__restrict__ q_bf16,
+    uint16_t *__restrict__ query_bf16,
+    uint32_t heads,
+    uint32_t latent_dim,
+    uint32_t nope_dim,
+    uint32_t rope_dim)
 {
-    uint32_t row = blockIdx.x, head = blockIdx.y, element;
-    uint64_t pair = (uint64_t)row * heads + head;
-    for (element = threadIdx.x; element < LATENT + ROPE; element += THREADS)
-        query_bf16[pair * (LATENT + ROPE) + element] = element < LATENT ? latent_bf16[pair * LATENT + element] : rope_bf16[pair * ROPE + element - LATENT];
+    const uint64_t pair = (uint64_t)blockIdx.x * heads + blockIdx.y;
+    const uint32_t total = latent_dim + rope_dim;
+    if (((latent_dim | nope_dim | rope_dim) & 7u) == 0u &&
+        ((((uintptr_t)latent_bf16 | (uintptr_t)q_bf16 | (uintptr_t)query_bf16) & 15u) == 0u))
+    {
+        const uint32_t latent_vecs = latent_dim >> 3u, total_vecs = total >> 3u;
+        const uint4 *lat4 = (const uint4 *)(latent_bf16 + pair * latent_dim);
+        const uint4 *rope4 = (const uint4 *)(q_bf16 + pair * (nope_dim + rope_dim) + nope_dim);
+        uint4 *out4 = (uint4 *)(query_bf16 + pair * total);
+        for (uint32_t v = threadIdx.x; v < total_vecs; v += blockDim.x)
+            out4[v] = v < latent_vecs ? lat4[v] : rope4[v - latent_vecs];
+        return;
+    }
+    for (uint32_t element = threadIdx.x; element < total; element += blockDim.x)
+        query_bf16[pair * total + element] = element < latent_dim
+            ? latent_bf16[pair * latent_dim + element]
+            : q_bf16[pair * (nope_dim + rope_dim) + nope_dim + element - latent_dim];
 }
 
 template<uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardQueryPackLaunch(const uint16_t *latent_bf16, const uint16_t *rope_bf16, uint32_t heads, uint32_t rows, uint16_t *query_bf16, cudaStream_t stream)
+static inline SparkGpuError LmLatentShardQueryPackLaunch(const uint16_t *latent_bf16, const uint16_t *rope_bf16, uint32_t heads, uint32_t rows, uint16_t *query_bf16, SparkGpuStream stream)
 {
     if (latent_bf16 == 0 || rope_bf16 == 0 || query_bf16 == 0 || heads == 0u || rows == 0u)
-        return cudaErrorInvalidValue;
-    LM_LAUNCH((LmLatentShardQueryPackKernel<LATENT, ROPE, LM_LATENT_SHARD_THREADS>), dim3(rows, heads), LM_LATENT_SHARD_THREADS, 0, stream, latent_bf16, rope_bf16, heads, query_bf16);
-    return cudaPeekAtLastError();
+        return SPARK_GPU_ERROR_INVALID_VALUE;
+    LM_LAUNCH((LmQueryRopePackKernel), dim3(rows, heads), LM_LATENT_SHARD_THREADS, 0, stream, latent_bf16, rope_bf16, query_bf16, heads, LATENT, 0u, ROPE);
+    return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t THREADS, uint32_t LATENT>
@@ -360,38 +347,24 @@ void LmLatentShardMergeKernel(
     const float *__restrict__ sinks)
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE];
-    __shared__ float denominator_shared;
-    uint32_t row = blockIdx.x, head = blockIdx.y, source, element;
-    uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-    float global_max, denominator, source_max, scale, merged;
-    if (threadIdx.x == 0u)
+    __shared__ float denom_shared;
+    const uint32_t row = blockIdx.x, head = blockIdx.y;
+    const uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+    if (threadIdx.x < 32u)
     {
-        global_max = -INFINITY;
-        for (source = 0u; source < sources; ++source)
+        float gm = -INFINITY;
+        float den = LmWarpMergeScales(partials + block_base, source_stride, sources, scales, &gm);
+        if (threadIdx.x == 0u)
         {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            global_max = source_max > global_max ? source_max : global_max;
+            if (sinks != 0)
+                den += gm == -INFINITY ? __expf(sinks[head]) : __expf(sinks[head] - gm);
+            denom_shared = fmaxf(den, 1.0e-20f);
         }
-        denominator = 0.0f;
-        for (source = 0u; source < sources; ++source)
-        {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-            scales[source] = scale;
-            denominator = fmaf(partials[(uint64_t)source * source_stride + block_base + 1u], scale, denominator);
-        }
-        if (sinks != 0)
-            denominator += global_max == -INFINITY ? __expf(sinks[head]) : __expf(sinks[head] - global_max);
-        denominator_shared = denominator;
     }
     __syncthreads();
-    for (element = threadIdx.x; element < LATENT; element += THREADS)
-    {
-        merged = 0.0f;
-        for (source = 0u; source < sources; ++source)
-            merged = fmaf(partials[(uint64_t)source * source_stride + block_base + 2u + element], scales[source], merged);
-        output_bf16[((uint64_t)row * heads_per_rank + head) * LATENT + element] = LmFloatToBf16(merged / fmaxf(denominator_shared, 1.0e-20f));
-    }
+    LmWeightedSourcesMergeBf16<LATENT, THREADS>(
+        partials + block_base + 2u, source_stride, sources, scales, denom_shared,
+        output_bf16 + ((uint64_t)row * heads_per_rank + head) * LATENT);
 }
 
 template<uint32_t THREADS, uint32_t LATENT>
@@ -405,39 +378,25 @@ void LmLatentShardFoldKernel(
     uint32_t first)
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE + 1u];
-    uint32_t row = blockIdx.x, head = blockIdx.y, source, element;
-    uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-    float global_max, denominator, source_max, scale, merged;
-    if (threadIdx.x == 0u)
+    const uint32_t row = blockIdx.x, head = blockIdx.y;
+    const uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
+    if (threadIdx.x < 32u)
     {
-        global_max = first != 0u ? -INFINITY : running[block_base];
-        for (source = 0u; source < sources; ++source)
+        const float run_max = first != 0u ? -INFINITY : running[block_base];
+        const float run_den = first != 0u ? 0.0f : running[block_base + 1u];
+        float gm = -INFINITY;
+        const float den = LmWarpMergeScales(
+            partials + block_base, source_stride, sources, scales, &gm, run_max, run_den, &scales[sources]);
+        if (threadIdx.x == 0u)
         {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            global_max = source_max > global_max ? source_max : global_max;
+            running[block_base] = gm;
+            running[block_base + 1u] = den;
         }
-        source_max = first != 0u ? -INFINITY : running[block_base];
-        scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-        scales[sources] = scale;
-        denominator = first != 0u ? 0.0f : running[block_base + 1u] * scale;
-        for (source = 0u; source < sources; ++source)
-        {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-            scales[source] = scale;
-            denominator = fmaf(partials[(uint64_t)source * source_stride + block_base + 1u], scale, denominator);
-        }
-        running[block_base] = global_max;
-        running[block_base + 1u] = denominator;
     }
     __syncthreads();
-    for (element = threadIdx.x; element < LATENT; element += THREADS)
-    {
-        merged = first != 0u ? 0.0f : running[block_base + 2u + element] * scales[sources];
-        for (source = 0u; source < sources; ++source)
-            merged = fmaf(partials[(uint64_t)source * source_stride + block_base + 2u + element], scales[source], merged);
-        running[block_base + 2u + element] = merged;
-    }
+    LmWeightedSourcesFoldF32<LATENT, THREADS>(
+        partials + block_base + 2u, source_stride, sources, scales, scales[sources], first,
+        running + block_base + 2u);
 }
 
 static inline uint32_t LmLatentShardHeadsPerBlock(uint32_t heads_per_rank)
@@ -446,7 +405,7 @@ static inline uint32_t LmLatentShardHeadsPerBlock(uint32_t heads_per_rank)
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardPartialHeadsLaunch(
+static inline SparkGpuError LmLatentShardPartialHeadsLaunch(
     Pages cache,
     const uint16_t *query_bf16,
     uint64_t query_rank_stride,
@@ -464,33 +423,36 @@ static inline cudaError_t LmLatentShardPartialHeadsLaunch(
     uint32_t record_heads,
     uint32_t record_copies,
     uint32_t rows,
-    cudaStream_t stream,
+    SparkGpuStream stream,
     const uint32_t *split_positions = 0,
     const uint32_t *split_offsets = 0,
-    uint32_t heads_per_block_limit = 4u)
+    uint32_t heads_per_block_limit = 4u,
+    const uint32_t *fork_positions = 0,
+    const uint32_t *slot_offsets = 0)
 {
     uint32_t per_block;
     if (rows == 0u || heads_per_rank == 0u || query_bf16 == 0 || partials == 0 ||
         record_heads == 0u || record_copies == 0u || total_heads % record_heads != 0u ||
+        (fork_positions == 0) != (slot_offsets == 0) ||
         SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u ||
         (selected_positions != 0 && selected_count > LM_LATENT_SHARD_LIST_CAPACITY) ||
         query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
         partial_rank_stride < (uint64_t)rows * record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
-        return cudaErrorInvalidValue;
+        return SPARK_GPU_ERROR_INVALID_VALUE;
     per_block = LmLatentShardHeadsPerBlock(heads_per_rank);
     while (per_block > heads_per_block_limit && per_block > 1u)
         per_block /= 2u;
     if (per_block == 4u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 4u>), dim3(rows, total_heads / 4u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     else if (per_block == 2u)
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 2u>), dim3(rows, total_heads / 2u), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
     else
-        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets);
-    return cudaPeekAtLastError();
+        LM_LAUNCH((LmLatentShardPartialKernel<Geometry, Pages, LATENT, ROPE, 1u>), dim3(rows, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, record_heads, record_copies, split_positions, split_offsets, fork_positions, slot_offsets);
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardPartialLaunch(
+static inline SparkGpuError LmLatentShardPartialLaunch(
     Pages cache,
     const uint16_t *query_bf16,
     uint64_t query_rank_stride,
@@ -505,13 +467,15 @@ static inline cudaError_t LmLatentShardPartialLaunch(
     float *partials,
     uint64_t partial_rank_stride,
     uint32_t rows,
-    cudaStream_t stream)
+    SparkGpuStream stream,
+    const uint32_t *fork_positions = 0,
+    const uint32_t *slot_offsets = 0)
 {
-    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u, rows, stream);
+    return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u, rows, stream, (const uint32_t *)0, (const uint32_t *)0, 4u, fork_positions, slot_offsets);
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardPartialOwnHeadsLaunch(
+static inline SparkGpuError LmLatentShardPartialOwnHeadsLaunch(
     Pages cache,
     const uint16_t *query_bf16,
     uint32_t heads_per_rank,
@@ -524,13 +488,13 @@ static inline cudaError_t LmLatentShardPartialOwnHeadsLaunch(
     float qk_scale,
     float *partials,
     uint32_t rows,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     return LmLatentShardPartialHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, (uint64_t)rows * heads_per_rank * (LATENT + ROPE), heads_per_rank, heads_per_rank, sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), heads_per_rank, 1u, rows, stream);
 }
 
 template<uint32_t LATENT>
-static inline cudaError_t LmLatentShardFoldLaunch(
+static inline SparkGpuError LmLatentShardFoldLaunch(
     const float *partials,
     uint64_t source_stride,
     uint32_t sources,
@@ -538,29 +502,29 @@ static inline cudaError_t LmLatentShardFoldLaunch(
     float *running,
     uint32_t rows,
     uint32_t first,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     if (rows == 0u || heads_per_rank == 0u || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE || partials == 0 || running == 0 ||
         source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
-        return cudaErrorInvalidValue;
+        return SPARK_GPU_ERROR_INVALID_VALUE;
     LM_LAUNCH((LmLatentShardFoldKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, running, first);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t LATENT>
-static inline cudaError_t LmLatentShardMergeLaunch(
+static inline SparkGpuError LmLatentShardMergeLaunch(
     const float *partials,
     uint64_t source_stride,
     uint32_t sources,
     uint32_t heads_per_rank,
     uint16_t *output_bf16,
     uint32_t rows,
-    cudaStream_t stream,
+    SparkGpuStream stream,
     const float *sinks = 0)
 {
     if (rows == 0u || heads_per_rank == 0u || sources == 0u || sources > SPARK_KV_SHARD_MAX_DEGREE || partials == 0 || output_bf16 == 0 ||
         source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT))
-        return cudaErrorInvalidValue;
+        return SPARK_GPU_ERROR_INVALID_VALUE;
     LM_LAUNCH((LmLatentShardMergeKernel<LM_LATENT_SHARD_THREADS, LATENT>), dim3(rows, heads_per_rank), LM_LATENT_SHARD_THREADS, 0, stream, partials, source_stride, sources, heads_per_rank, output_bf16, sinks);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }

@@ -53,7 +53,7 @@ specialization of hot math while sharing its dispatch and scheduling policy.
 | Collective orchestration and progress | `ring/transport/tp_device_collective.c` | Device combine/transfer/completion operations |
 | Slot and index-set ownership | `runtime/stage_module_claims.c` | Model stage work and final state publication |
 | Development hardware reservations | `tools/spark_queue.py` and its existing runners | Assigned-node configuration, immutable source/build receipts |
-| Production deployment | fleet-agent (`tools/fleet_node_agent.sh`) pulling release roots from the hub over HTTP :8802 ([`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md)) | A coherent release root per rank |
+| Production deployment | fleet-agent (`tools/fleet_node_agent.sh`) pulling release roots from the hub over HTTP :8802 ([`FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)) | A coherent release root per rank |
 
 Keep model geometry, state layout and math in model hooks. Keep device
 allocation, execution, copies and events in backend hooks. Shared policy

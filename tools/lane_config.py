@@ -8,7 +8,9 @@ tools/stage_lane.py and tools/stage_lane.sh; nothing on the fleet is edited
 by hand. audit renders every record and compares it with what the nodes and
 the hub hold, together with the hub files that have a repository source,
 the weightd KV reserve and ceiling every node runs, lane roots or API
-directories that no record names, and every symlink under the lane trees.
+directories that no record names, every symlink under the lane trees, and
+every file under a node's sparkdata that nothing uses or that a record names
+and the node lacks (tools/node_pack_prune.py).
 push writes one record's rendered files to the nodes and the hub, keeping
 each replaced file as <file>.prev-<UTC>; binaries, packs and KV stay as
 they are.
@@ -174,6 +176,21 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
                    "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
                    "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+    server = spec.get("server", "block_draftd")
+    if server not in ("block_draftd", "engine"):
+        raise SystemExit(f"{record_id}: draftd server is block_draftd or engine, not {server}")
+    if "server" in spec:
+        environment["DRAFTD_SERVER"] = server
+    engine = spec.get("engine")
+    if server == "engine" and engine is None:
+        raise SystemExit(f"{record_id}: an engine draftd server needs the record's draftd.engine root, lane and units")
+    if engine is not None:
+        if not isinstance(engine, dict) or not all(isinstance(engine.get(key), str) and engine[key] for key in ("root", "lane", "unit", "weightd_unit")):
+            raise SystemExit(f"{record_id}: draftd.engine names its root, lane, unit and weightd_unit, each a non-empty string")
+        if not engine["root"].startswith(INFERENCE_ROOTS) or ".." in engine["root"].split("/"):
+            raise SystemExit(f"{record_id}: draftd engine root {engine['root']} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)})")
+        environment.update({"DRAFTD_ENGINE_ROOT": engine["root"], "DRAFTD_ENGINE_LANE": engine["lane"], "DRAFTD_ENGINE_UNIT": engine["unit"],
+                            "DRAFTD_WEIGHTD_UNIT": engine["weightd_unit"]})
     names = spec.get("target_names")
     if names is not None:
         if not isinstance(names, dict) or set(names) != set(TARGET_NAMES) or not all(isinstance(value, str) and value for value in names.values()):
@@ -182,6 +199,10 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
             raise SystemExit(f"{record_id}: draftd target_names name tensors in the target shard, and the record has none")
         environment.update({f"DRAFTD_TARGET_{key.upper()}": names[key] for key in TARGET_NAMES})
     return spec["source"], environment
+
+
+def served_unit(environment: dict[str, str]) -> str:
+    return environment["DRAFTD_ENGINE_UNIT"] if environment.get("DRAFTD_SERVER") == "engine" else environment["DRAFTD_UNIT"]
 
 
 def draftd_flags(environment: dict[str, str]) -> list[str]:
@@ -208,7 +229,7 @@ def draftd_start(record_id: str) -> int:
 def node_files(record_id: str, directory: Path) -> dict[str, dict[str, Path]]:
     lane = record(record_id)
     result = {}
-    for host in stage_lane.HOSTS:
+    for host in stage_lane.lane_hosts(stage_lane.MODELS[lane["model"]], lane.get("first_node", 0)):
         root = lane["runtime_root"].format(host=host)
         files = {f"{root}/deployment.json": directory / "deployment.json",
                  f"{root}/config/adapter.json": directory / f"adapter.{host}.json"}
@@ -222,9 +243,9 @@ def hub_files(record_id: str, directory: Path) -> dict[str, Path]:
     return {f"{HUB_HOME}/{record(record_id)['model']}-kv-api/model_resident.json": directory / "model_resident.json"}
 
 
-def remote(host: str, script: str, request: dict) -> dict | list:
+def remote(host: str, script: str, request: dict, timeout: int = 120) -> dict | list:
     completed = subprocess.run([*SSH, host, "python3", "-c", shlex.quote(script)], input=json.dumps(request),
-                               capture_output=True, text=True, timeout=120)
+                               capture_output=True, text=True, timeout=timeout)
     if completed.returncode != 0:
         raise RuntimeError(f"{host}: {completed.stderr.strip()[-400:]}")
     return json.loads(completed.stdout)
@@ -297,7 +318,7 @@ def audit(selected: list[str], fleet: bool = True) -> int:
             drafters = {record_id: draftd_environment(record_id)[1] for record_id in selected if lanes[record_id].get("draftd")}
             scoped = {record_id for record_id in drafters if lanes[record_id]["draftd"].get("lifecycle") == "model"}
             hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix,
-                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values()),
+                                                         "units": sorted(served_unit(environment) for environment in drafters.values()),
                                                          "controller": CONTROLLER if scoped else None})
             for future in futures:
                 try:
@@ -327,11 +348,11 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 if scoped and isinstance(active, dict):
                     drift.append(f"UNREACHABLE the swap controller, so the model-scoped draft servers {sorted(scoped)} cannot be checked: {active['unreachable']}")
                 for record_id, environment in sorted(drafters.items()):
-                    unit = environment["DRAFTD_UNIT"]
+                    unit = served_unit(environment)
                     shown = live.get("units", {}).get(unit, "").replace("'", "")
-                    missing = [flag for flag in draftd_flags(environment) if flag not in shown]
+                    missing = [flag for flag in draftd_flags(environment) if flag not in shown] if environment.get("DRAFTD_SERVER", "block_draftd") == "block_draftd" else []
                     if record_id in scoped and active != record_id:
-                        if shown.startswith("active") and not isinstance(active, dict):
+                        if environment.get("DRAFTD_SERVER", "block_draftd") == "block_draftd" and shown.startswith("active") and not isinstance(active, dict):
                             drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} runs while {active} is the active model; its lifecycle is the model's")
                         continue
                     if not shown.startswith("active"):
@@ -343,6 +364,14 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                         drift.append(f"ORPHAN {HUB}:{api} is an API directory no record names")
             except (RuntimeError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
                 drift.append(f"UNREACHABLE {error}")
+    if fleet:
+        import node_pack_prune
+        for host, result in node_pack_prune.scan(stage_lane.HOSTS, node_pack_prune.keep_list()).items():
+            if "error" in result:
+                drift.append(f"UNREACHABLE {host}: unused-file scan: {result['error']}")
+                continue
+            drift += [f"MISSING {host}:/home/{host}/{path} is named by a lane record and absent" for path in result["missing"]]
+            drift += [f"UNUSED {entry['bytes']} {host}:/home/{host}/{entry['path']}" for entry in result["entries"]]
     for line in drift:
         print(line)
     print(f"lane audit: {len(selected)} records, {len(drift)} findings" + ("" if drift else "; the fleet and the hub match deployment/lanes.json"))
@@ -480,8 +509,8 @@ def main() -> int:
         return 0
     if lane["launcher"] != "stage_lane":
         raise SystemExit(f"{args.record} is not launched by tools/stage_lane.sh")
-    values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"],
-              "STAGE_MEMORY_MAX": lane["memory_max"]}
+    values = {"STAGE_MODEL": lane["model"], "STAGE_LANE": lane["lane"], "STAGE_FIRST_NODE": lane.get("first_node", 0),
+              "STAGE_WEIGHTD_SOCKET": lane["weightd_socket"], "STAGE_MEMORY_MAX": lane["memory_max"]}
     print("\n".join(f"{key}={shlex.quote(str(value))}" for key, value in values.items()))
     return 0
 

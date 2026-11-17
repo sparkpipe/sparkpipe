@@ -34,7 +34,7 @@ RD=$HUB_WORK/$R
 BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:?OLD_WD is the 16-hex weightd every node runs before this release}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
-MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
+MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-27b-fp8 qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
 python3 -c "import json,sys; sys.exit(sorted(sys.argv[2].split()) != sorted(json.load(open(sys.argv[1]))['lanes']))" "$KIT/../deployment/lanes.json" "$MODELS" || { echo "MODELS differ from the records in deployment/lanes.json: refusing to run" >&2; exit 1; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
@@ -65,7 +65,7 @@ residentds() { fan "pgrep -f '^[^ ]*bin/sparkpipe_model_[r]esidentd( |\$)' | wc 
 running_wd() { fan "sha256sum < /proc/\$(pgrep -o -f 'sparkdata/weightd/sparkpipe_[w]eightd')/exe | cut -c1-16; test -e /tmp/weightd-mesh/.ready && echo ready" | awk '{c[$2]++} END {for (k in c) printf "%s=%d ", k, c[k]}'; }
 wd_is() { local s; s=$(running_wd); echo "$s" | grep -q "$1=16" && echo "$s" | grep -q "ready=16"; }
 controller_restart() { hub "cd ~/sparkpipe-swap && systemctl --user stop sparkpipe-swap && systemctl --user reset-failed sparkpipe-swap 2>/dev/null; systemd-run --user --unit=sparkpipe-swap --working-directory=/home/spec/sparkpipe-swap /usr/bin/bash -c 'exec python3 model_swap.py --config model_swap.json --token-file $SWAP_TOKEN --host 127.0.0.1 --port 8440 >> swap.log 2>&1' > /dev/null && sleep 5 && echo controller restarted"; }
-swap_cmd() { hub "python3 -c \"import json,sys; d=json.load(open('/home/spec/sparkpipe-swap/model_swap.json')); print([m for m in d['models'] if m['id']=='$1'][0]['$2'])\""; }
+swap_cmd() { hub "python3 -c \"import json,os,sys; d=json.load(open(os.path.expanduser('~/sparkpipe-swap/model_swap.json'))); print([m for m in d['models'] if m['id']=='$1'][0]['$2'])\""; }
 
 capture() {
   local id=$1 tag=$2 port; port=$(field "$id" port)
@@ -73,9 +73,24 @@ capture() {
   case "$id" in
     glm-5.3) hub "cd $RD/tree && timeout 2400 python3 tools/glm53_full_golden.py capture --prompts qualification/glm53_full/golden/prompts.json --port $port --max-tokens 128 --logprobs 4 --label $R-$tag --out $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
     kimi-k3) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_k3_golden.py $port $RD/$id/golden-$tag.json > $RD/$id/golden-$tag.log 2>&1; echo golden rc=\$?" ;;
-    qwen3.8-27b|qwen3.8-flash|qwen3.8-max) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
+    qwen3.8-27b|qwen3.8-27b-fp8|qwen3.8-flash|qwen3.8-max) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/qwen38_27b/reference/reference3_fp8_numpy.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
     deepseek-v4.1-flash) hub "cd $RD/tree && timeout 1800 python3 $RD/kit/rollover_lp_capture.py qualification/dsv41_flash/reference_tokens.json $port $RD/$id/golden-$tag.json > /dev/null 2>&1; echo golden rc=\$?" ;;
   esac
+}
+api_restart() {
+  local id=$1 port health i up=0
+  port=$(field "$id" port); health=$(swap_cmd "$id" health)
+  [ -n "$health" ] || { echo "API-RESTART-FAILED $id: the controller config has no health address for it"; return 1; }
+  hub "$(swap_cmd "$id" api_stop)"
+  hub "$(swap_cmd "$id" api_start)" > /dev/null 2>&1
+  for i in $(seq 1 90); do
+    hub "curl -s -m 3 $health | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get(\"ranks\") and d.get(\"connected_ranks\") == d.get(\"ranks\") else 1)' 2>/dev/null" && { up=1; break; }
+    sleep 2
+  done
+  [ "$up" = 1 ] || { echo "API-RESTART-FAILED $id: its API did not reach every rank within 180 s of the restart"; return 1; }
+  hub "cd $RD && timeout 1800 python3 kit/release_capture.py $port $id/restart.json kit/prompt_source.c $HUB_WORK/logs/$(field "$id" api).log capital,story > $id/restart.log 2>&1; rc=\$?; echo capture $id restart rc=\$rc; exit \$rc" || { echo "API-RESTART-FAILED $id: the capture after the restart failed"; return 1; }
+  hub "cd $RD && python3 kit/release_compare.py $id/restart.json $id/new.json > $id/restart-compare.log 2>&1; rc=\$?; tail -3 $id/restart-compare.log; exit \$rc" || { echo "API-RESTART-FAILED $id: the restarted API's outputs differ from the capture taken before the restart"; return 1; }
+  echo "api restart $id: outputs equal"
 }
 compare() {
   local id=$1 a=$2 b=$3
@@ -91,7 +106,7 @@ case "$step" in
     [ "$(git -C "$KIT/.." rev-parse "HEAD^{tree}")" = "$(git -C "$KIT/.." rev-parse "$SHA^{tree}" 2>/dev/null)" ] || { echo "PRECHECK-FAILED the kit tree $KIT/.. is not release $SHA: lane records and the controller config come from it"; exit 1; }
     nodes_up || exit 9
     for f in sparkpipe_model_residentd weightd_warm libhidden_transport_spark_host_rdma_verbs.so runtime_libs/libsparkpipe_device_cuda.so sparkpipe_weightd sparkpipe_model_batch; do [ -s "$FW/$f" ] || { echo "MISSING $FW/$f"; exit 1; }; done
-    for id in $MODELS; do [ -s "$FW/$(field $id fwlib)" ] || { echo "MISSING $FW/$(field $id fwlib)"; exit 1; }; hub "test -s $APIB/$(field $id fwlib)" || { echo "MISSING hub $APIB/$(field $id fwlib)"; exit 1; }; done
+    for id in $MODELS; do [ -s "$FW/$(field $id fwlib)" ] || { echo "MISSING $FW/$(field $id fwlib)"; exit 1; }; hub "test -s $APIB/$(field $id fwlib)" || { echo "MISSING hub $APIB/$(field $id fwlib)"; exit 1; }; ls "$FW/$(field $id fwlib).kernels/"*.cubin > /dev/null 2>&1 || { echo "MISSING $FW/$(field $id fwlib).kernels"; exit 1; }; hub "ls $APIB/$(field $id fwlib).kernels/*.cubin > /dev/null 2>&1" || { echo "MISSING hub $APIB/$(field $id fwlib).kernels"; exit 1; }; done
     hub "test -x $APIB/sparkpipe_model_api && test -x $APIB/sparkpipe_tokenize_prompt && test -s $APIB/runtime_libs/libsparkpipe_device_cuda.so && cat ~/release/core/WEIGHTSD_BIN" | grep -q "$OLD_WD" || { echo "hub core weightd is not $OLD_WD"; exit 1; }
     echo "weightd running: $(running_wd)"
     python3 "$KIT/../tools/release_packs.py" $MODELS > "$STATE/packs" || { echo "PRECHECK-FAILED no pack list"; exit 1; }
@@ -114,11 +129,25 @@ case "$step" in
     for id in $MODELS; do stamp "old $id"; activate "$id" && capture "$id" old || echo "OLD-FAILED $id"; done
     restore_max ;;
   stage)
-    stamp "stage $FW on 16 nodes (~/rp-release-$SHA) and check hashes"
+    stamp "stage $FW on 16 nodes (~/rp-release-$SHA) through the hub and check hashes"
     (cd "$FW" && COPYFILE_DISABLE=1 tar cf "$STATE/fw.tar" .)
-    for r in $(seq 0 15); do (scp -q -o BatchMode=yes "$STATE/fw.tar" spark${HEX:$r:1}:rp-release-$SHA.tar && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
+    hub "mkdir -p $HUB_WORK/src" && scp -q -o BatchMode=yes "$STATE/fw.tar" rtx5090:$HUB_WORK/src/fw-$SHA.tar || { echo "STAGE-FAILED the copy to the hub"; exit 1; }
+    for r in $(seq 0 15); do (hub "scp -q -o BatchMode=yes $HUB_WORK/src/fw-$SHA.tar spark${HEX:$r:1}:rp-release-$SHA.tar" && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
+  roots)
+    stamp "lane roots: every record's root on all sixteen nodes"
+    for id in $MODELS; do
+      L=$(field $id lane)
+      missing=$(fan "test -d \$HOME/$L/root || echo missing" | grep -c ': missing$')
+      [ "$missing" = 0 ] && continue
+      [ -n "${PREV_TREE:-}" ] || { echo "ROOTS-FAILED $id: $L/root is missing on $missing nodes; set PREV_TREE to the running release's source tree to copy the root it names"; exit 1; }
+      P=$(cd "$PREV_TREE" && python3 tools/lane_config.py release-row "$id" 2>/dev/null | awk '{print $1}')
+      [ -n "$P" ] && [ "$P" != "$L" ] || { echo "ROOTS-FAILED $id: the release in $PREV_TREE names no other root for it"; exit 1; }
+      fan_all "root $id" "test -d \$HOME/$P/root && { test -d \$HOME/$L/root || { mkdir -p \$HOME/$L && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' '--exclude=/logs/*' \$HOME/$P/root/ \$HOME/$L/root/; }; }" || { echo "ROOTS-FAILED $id"; exit 1; }
+      echo "root $id: $P/root copied to $L/root on 16 nodes"
+    done ;;
   backup)
     hub_space || exit 1
+    for id in $MODELS; do fan_all "root $id" "test -d \$HOME/$(field $id lane)/root" > /dev/null || { echo "BACKUP-FAILED $id has no lane root at $(field $id lane)/root on every node: run the roots step first"; exit 1; }; done
     U=$(utc); stamp "backup root.prev-$U"
     for id in $MODELS; do
       L=$(field $id lane)
@@ -148,8 +177,8 @@ case "$step" in
     stamp "install release $SHA on every lane and hub API dir"
     for id in $MODELS; do
       L=$(field $id lane)
-      fan "cd \$HOME/$L/root && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && mkdir -p lib/runtime_libs && cp ~/rp-release-$SHA/runtime_libs/libsparkpipe_device_cuda.so lib/runtime_libs/ && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/runtime_libs/libsparkpipe_device_cuda.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' '" | awk '{$1=""; print}' | sort | uniq -c | one_variant "$id" || { echo "INSTALL-FAILED $id"; exit 1; }
-      hub "cd ~/$(field $id api) && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && mkdir -p runtime/lib/runtime_libs && install -m 755 $APIB/runtime_libs/libsparkpipe_device_cuda.so runtime/lib/runtime_libs/ && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')" || { echo "INSTALL-FAILED hub $id"; exit 1; }
+      fan "cd \$HOME/$L/root && ls ~/rp-release-$SHA/$(field $id fwlib).kernels/*.cubin > /dev/null && cp ~/rp-release-$SHA/sparkpipe_model_residentd ~/rp-release-$SHA/weightd_warm bin/ && { [ ! -e bin/sparkpipe_model_batch ] || cp ~/rp-release-$SHA/sparkpipe_model_batch bin/; } && cp ~/rp-release-$SHA/libhidden_transport_spark_host_rdma_verbs.so lib/hidden_transport.so && mkdir -p lib/runtime_libs && cp ~/rp-release-$SHA/runtime_libs/libsparkpipe_device_cuda.so lib/runtime_libs/ && cp ~/rp-release-$SHA/$(field $id fwlib) lib/$(field $id lib) && rm -rf lib/$(field $id lib).kernels && cp -R ~/rp-release-$SHA/$(field $id fwlib).kernels lib/$(field $id lib).kernels && sha256sum bin/sparkpipe_model_residentd bin/weightd_warm lib/hidden_transport.so lib/runtime_libs/libsparkpipe_device_cuda.so lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ' && (cd lib/$(field $id lib).kernels && find . -type f | sort | xargs sha256sum) | sha256sum | cut -c1-16" | awk '{$1=""; print}' | sort | uniq -c | one_variant "$id" || { echo "INSTALL-FAILED $id"; exit 1; }
+      hub "cd ~/$(field $id api) && ls $APIB/$(field $id fwlib).kernels/*.cubin > /dev/null && install -m 755 $APIB/sparkpipe_model_api $APIB/sparkpipe_tokenize_prompt bin/ && install -m 755 $APIB/$(field $id fwlib) runtime/lib/$(field $id lib) && rm -rf runtime/lib/$(field $id lib).kernels && cp -R $APIB/$(field $id fwlib).kernels runtime/lib/$(field $id lib).kernels && mkdir -p runtime/lib/runtime_libs && install -m 755 $APIB/runtime_libs/libsparkpipe_device_cuda.so runtime/lib/runtime_libs/ && rm -f runtime/prefix_index.spi && echo hub $id \$(sha256sum bin/sparkpipe_model_api runtime/lib/$(field $id lib) | cut -c1-16 | tr '\n' ' ')" || { echo "INSTALL-FAILED hub $id"; exit 1; }
     done
     fan "cp ~/rp-release-$SHA/weightd_warm \$HOME/sparkdata/swap/weightd_warm && sha256sum < \$HOME/sparkdata/swap/weightd_warm | cut -c1-16" | awk '{print $2}' | sort | uniq -c | one_variant "shared weightd_warm" || { echo "INSTALL-FAILED shared weightd_warm"; exit 1; } ;;
   records)
@@ -167,6 +196,7 @@ case "$step" in
       if ! activate "$id"; then echo "NEW-ACTIVATE-FAILED $id"; fan "grep -a -i -E 'error|fail|refus|abi' $(lane_latest_log "\$HOME/$(field $id lane)/root") | tail -2" | head -8; continue; fi
       capture "$id" new
       compare "$id" old new
+      api_restart "$id"
       hub "cd $RD/tree && timeout 3000 python3 tools/ui_smoke.py --endpoint http://127.0.0.1:4000 --models-endpoint http://127.0.0.1:8433 --model $id --reasoning both --out $RD/$id/ui-smoke.json > $RD/$id/smoke.log 2>&1; tail -2 $RD/$id/smoke.log | cut -c1-200"
       if [ -n "${COMPSEC:-}" ] || ! hub "cd $RD && python3 kit/release_compare.py $id/old.json $id/new.json > /dev/null 2>&1"; then
         eff=$(hub "cd $RD/tree && python3 tools/compsec_effort.py http://127.0.0.1:8433 $id") || { echo "COMPSEC-SKIPPED $id: no reasoning effort to run it with"; eff=""; }
@@ -177,6 +207,13 @@ case "$step" in
       fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
+  restart)
+    failed=0
+    for id in ${ONLY:-$MODELS}; do
+      stamp "restart $id"
+      api_restart "$id" || failed=1
+    done
+    [ "$failed" = 0 ] || exit 1 ;;
   rollback)
     U=$(backup_utc) || exit 1
     stamp "ROLLBACK to root.prev-$U and weightd $OLD_WD"
@@ -197,6 +234,6 @@ case "$step" in
     wd_is $OLD_WD || { echo "ROLLBACK-WEIGHTD-NOT-READY: weightd $OLD_WD is not ready on 16 nodes; the models were left down"; exit 1; }
     for id in ${ONLY:-$MODELS}; do activate "$id" && capture "$id" rolledback && compare "$id" old rolledback; done
     restore_max ;;
-  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|records|qualify|rollback"; exit 2 ;;
+  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|records|qualify|restart|rollback"; exit 2 ;;
 esac
 stamp "$step done ($(controller))"

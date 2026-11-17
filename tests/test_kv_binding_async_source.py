@@ -42,8 +42,8 @@ def scanned_files():
 def main():
     failures = []
     for path in RUNTIME_FILES + sorted((ROOT / "cache").glob("*.c")):
-        if re.search(r"\bcudaMemcpy\s*\(", path.read_text()):
-            failures.append(f"synchronous cudaMemcpy in {path.relative_to(ROOT)}")
+        if re.search(r"\b(?:cuda|SparkGpu)Memcpy\s*\(", path.read_text()):
+            failures.append(f"synchronous device copy in {path.relative_to(ROOT)}")
     for path in scanned_files():
         text = path.read_text(errors="replace")
         for pattern in REMOVED:

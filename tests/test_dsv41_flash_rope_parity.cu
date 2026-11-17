@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "modules/dsv41_flash_resident_decode_stage/source/spark_dsv41_flash_stage_kernels.cuh"
+#include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define HEADS 3u
 #define WIDTH (2u * D41K_ROPE_PAIRS)

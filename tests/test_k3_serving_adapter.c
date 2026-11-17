@@ -1,7 +1,8 @@
 #include "inference/runner/stage_serving_adapter.c"
 #include "modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c"
 
-#include "inference/llms/kimi_k3/generated_config.h"
+#include "model-families/k3/source/generated_config.h"
+#include "runtime/device/device_backend.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
 
 #define TEST_K3_DEPLOYMENT "modules/k3_resident_decode_stage/configs/model_resident_tp16.json"
@@ -27,8 +28,10 @@ static int32_t TestK3Descriptor(void)
 	failures += TestK3Check(SparkModelServingAdapterValidateInterface(adapter,
 		0u) == SPARK_STATUS_OK &&
 		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE) != 0u &&
-		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u,
-		"the common validator accepts the K3 adapter: it restores cached prefixes and serves publish frames (I23)");
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u &&
+		(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY) != 0u &&
+		descriptor->tree_slot_grain == SPARK_K3_SERVING_TP_DEGREE,
+		"the common validator accepts the K3 adapter: it restores cached prefixes, serves publish frames (I23) and advertises tree verify at TP16 slot grain");
 	failures += TestK3Check(descriptor->cache_block_token_count == SPARK_K3_KV_PAGE_SLOTS &&
 		descriptor->cache_block_token_count == K3_KV_PAGE_SLOTS,
 		"the cache block is one KV page of the kernel's slot count");
@@ -302,6 +305,45 @@ static SparkStatus TestK3ParseTaps(const char *text, SparkStageServingState *sta
 	return(status);
 }
 
+static SparkStatus TestK3ParseStreamed(const char *extra, SparkStageServingState *state)
+{
+	char text[512];
+	SparkJsonDocument doc;
+	SparkStatus status;
+	memset(&doc, 0, sizeof(doc));
+	memset(state, 0, sizeof(*state));
+	state->model = &K3StageServing;
+	(void)snprintf(text, sizeof(text), "{\"node_rows\":32768,\"dense_buffers\":3,\"expert_slots\":28,\"partner_pack\":\"/p.pack\",\"fabric_device\":\"f\","
+		"\"pair_device\":\"q\",\"gid_index\":3,\"pair_gid_index\":3,\"traffic_class\":106%s}", extra);
+	status = SparkJsonParseText(text, strlen(text), &doc);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingParseStreamed(state, &doc, SparkJsonGetRootToken(&doc));
+	SparkJsonDocumentDestroy(&doc);
+	free(state->streamed_partner_pack);
+	free(state->streamed_fabric_device);
+	free(state->streamed_pair_device);
+	return(status);
+}
+
+static int32_t TestK3StreamedIndexCodec(void)
+{
+	SparkStageServingState state;
+	int32_t failures = 0;
+	failures += TestK3Check(TestK3ParseStreamed("", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.index_fp8 == 0u &&
+		state.runner_config.streamed_prefill.node_rows == 32768u, "a streamed prefill without index_fp8 scores the index in BF16");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_fp8\":1", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.index_fp8 == 1u,
+		"index_fp8 1 asks for the publisher's FP8 index");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_fp8\":2", &state) == SPARK_STATUS_SCHEMA_ERROR, "index_fp8 is 0 or 1");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_bits\":8", &state) == SPARK_STATUS_SCHEMA_ERROR, "an unknown streamed prefill member is refused");
+	failures += TestK3Check(TestK3ParseStreamed("", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.expert_pool_cap_bytes == 0u,
+		"a streamed prefill without its own expert pool keeps the lane's one pool");
+	failures += TestK3Check(TestK3ParseStreamed(",\"expert_pool_cap_bytes\":8589934592", &state) == SPARK_STATUS_OK &&
+		state.runner_config.streamed_prefill.expert_pool_cap_bytes == 8589934592ull, "a streamed prefill names the expert pool the lane switches to for it");
+	failures += TestK3Check(TestK3ParseStreamed(",\"expert_pool_cap_bytes\":0", &state) == SPARK_STATUS_SCHEMA_ERROR,
+		"a zero streamed prefill expert pool is refused");
+	return(failures);
+}
+
 static int32_t TestK3VerifyPublishRefused(void)
 {
 	static const uint64_t positions[2] = { 40u, 41u };
@@ -524,6 +566,24 @@ static int32_t TestK3ResetAfterStreamedFailure(void)
 	return(failures);
 }
 
+static int32_t TestK3DeviceFaultIsLaneFatal(void)
+{
+	SparkStageServingState state;
+	SparkModelServingAdapterSnapshot snapshot;
+	int32_t failures = 0;
+	memset(&state, 0, sizeof(state));
+	state.model = &K3StageServing;
+	failures += TestK3Check(SparkDeviceFaulted() == 0u && StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) == 0u, "a lane on a healthy device is not lane-fatal");
+	(void)SparkDeviceRecordError(SPARK_STATUS_IO_ERROR, "queue_wait", "k3 test queue", 2, "injected device failure");
+	failures += TestK3Check(SparkDeviceFaulted() != 0u && SparkDeviceSynchronize(0u) == SPARK_STATUS_IO_ERROR,
+		"a backend's IO_ERROR faults the device, and every later device call fails");
+	failures += TestK3Check(StageServingSnapshot(&state, &snapshot) == SPARK_STATUS_OK &&
+		(snapshot.degraded_flags & SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL) != 0u,
+		"after a device fault the snapshot reports the lane fatal, so residentd exits after the failed route instead of failing every request");
+	return(failures);
+}
+
 int main(int argc, char **argv)
 {
 	int32_t failures = TestK3Check(SparkDeviceInitialize(0) == SPARK_STATUS_OK, "the device API opens");
@@ -533,12 +593,14 @@ int main(int argc, char **argv)
 	failures += TestK3Grouping();
 	failures += TestK3VerifyPublishRefused();
 	failures += TestK3ResetAfterStreamedFailure();
+	failures += TestK3StreamedIndexCodec();
 	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )
 		failures += TestK3Deployment(TEST_K3_DEPLOYMENT);
 	for (index = 1; index < argc; index++)
 		failures += TestK3Deployment(argv[index]);
+	failures += TestK3DeviceFaultIsLaneFatal();
 	printf("test_k3_serving_adapter: %d failures\n", (int)failures);
 	return(failures != 0 ? 1 : 0);
 }

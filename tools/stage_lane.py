@@ -4,7 +4,11 @@
 Any model that runs on the common stage runner and serving adapter deploys
 through this one renderer; a model is one MODELS entry (rank pack path,
 adapter library, program name, contract, chat template, tokenizer
-vocabulary, KV and recurrent bytes per rank). Rank r runs on spark<hex r>.
+vocabulary, KV and recurrent bytes per rank). An entry's "ranks" is the
+rank count its adapter is built for, 16 unless it says otherwise; a lane of
+fewer ranks runs on an aligned group of nodes (16: 0-f; 8: 0-7 or 8-f; 4:
+0-3, 4-7, 8-b or c-f; 2: a pair; 1: one node), named by its first node.
+Rank r runs on spark<hex of first node + r>.
 
 Ports for lane L: control 23000+16L+r and transport 64000+16L. The device
 collective runs on weightd mesh lane L with TP rank r on physical mesh rank
@@ -30,11 +34,13 @@ ROOT = Path(__file__).resolve().parents[1]
 INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
-CONTROL_HOST = "10.10.201.{rank}"
+GROUP_RANKS = (1, 2, 4, 8, 16)
+FABRIC = json.loads((ROOT / "tools/spark_fabric.json").read_text())
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
-MAX_ROWS = 4096
+MAX_ROWS = 16384
 MAX_SEQUENCES = 128
+MESH_LANES = 4
 DEFAULT_STATE_BUDGET_BYTES = 5 << 30
 KV_BLOCK_TOKENS = 64
 KV_BACKING_IN_FLIGHT_PAGES = 2
@@ -62,6 +68,32 @@ QWEN38_27B = {
     "recurrent_bytes": 48 * (3 * 128 * 128 * 4 + 640 * 4 * 2),
 }
 
+QWEN38_27B_FP8 = {
+    **QWEN38_27B,
+    "swap_id": "qwen3.8-27b-fp8",
+    "api_port": 8482,
+    "kv_label": "qwen38_27b_fp8_stage",
+    "node_memory_bytes": 15 << 30,
+    "pack": "sparkdata/qwen38_27b.fp8.tp16/packs/qwen38_27b.tp16.rank{rank:02d}.pack",
+    "adapter": "libqwen38_27b_tp16_serving_adapter.so",
+    "node_target": "cuda.sm121.qwen38_27b.stage_runner.linear_fp8.kv_bf16",
+}
+
+
+def qwen38_27b_fp8_group(ranks: int, api_port: int) -> dict:
+    return {
+        **QWEN38_27B_FP8,
+        "swap_id": f"qwen3.8-27b-fp8-tp{ranks}",
+        "ranks": ranks,
+        "api_port": api_port,
+        "kv_label": f"qwen38_27b_fp8_tp{ranks}_stage",
+        "node_memory_bytes": (13 << 30) + (32 << 30) // ranks,
+        "pack": f"sparkdata/qwen38_27b.fp8.tp{ranks}/packs/qwen38_27b.tp{ranks}.rank{{rank:02d}}.pack",
+        "adapter": f"libqwen38_27b_tp{ranks}_serving_adapter.so",
+        "kv_page_bytes": QWEN38_27B["kv_page_bytes"] * WORLD // ranks,
+        "recurrent_bytes": QWEN38_27B["recurrent_bytes"] * WORLD // ranks,
+    }
+
 DSV41_FLASH = {
     "swap_id": "deepseek-v4.1-flash",
     "api_port": 8463,
@@ -81,6 +113,33 @@ DSV41_FLASH = {
     "kv_page_bytes": (3 * 128 + 256) * 1280 // WORLD,
     "kv_block_tokens": 256,
     "recurrent_bytes": (40 * 8 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
+}
+
+DSV41_FLASH_TP4 = {
+    **DSV41_FLASH,
+    "swap_id": "deepseek-v4.1-flash-tp4",
+    "ranks": 4,
+    "api_port": 8487,
+    "kv_label": "dsv41_flash_tp4_stage",
+    "node_memory_bytes": 104 << 30,
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp4.xs/packs/rank{rank}.spstage",
+    "pack_siblings": ("engram.spengram", "engram.spengram.digest", "engram_tables.bin"),
+    "adapter": "libdsv41_flash_tp4_serving_adapter.so",
+    "kv_page_bytes": (3 * 128 + 256) * 1280,
+    "recurrent_bytes": (40 * 128 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
+}
+
+DSV41_FLASH_ROWS16 = {
+    **DSV41_FLASH,
+    "swap_id": "deepseek-v4.1-flash-rows16",
+    "api_port": 8488,
+    "kv_label": "dsv41_flash_rows16_stage",
+    "node_memory_bytes": 64 << 30,
+    "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16p/packs/rank{rank}.spstage",
+    "pack_siblings": DSV41_FLASH["pack_siblings"] + ("expert_placement.bin",),
+    "adapter": "libdsv41_flash_rows16_serving_adapter.so",
+    "kv_page_bytes": (3 * 128 + 256) * 1280,
+    "recurrent_bytes": (40 * 128 * 512 * 2 + 3 * 2 * 512 * 4 + 16 + 255) // 256 * 256,
 }
 
 QWEN38_MAX = {
@@ -411,10 +470,13 @@ K31_PRO = {
 }
 MODELS = {
     "dsv41_flash": DSV41_FLASH,
+    "dsv41_flash_tp4": DSV41_FLASH_TP4,
+    "dsv41_flash_rows16": DSV41_FLASH_ROWS16,
     "gemma4_26b": GEMMA4_26B,
     "gemma4_31b": GEMMA4_31B,
     "glm53_flash": GLM53_FLASH,
     "glm53_full": GLM53_FULL,
+    "glm53_full_ab": {**GLM53_FULL, "swap_id": "glm-5.3-ab", "api_port": 8497},
     "hy4": HY4,
     "k3": K3,
     "k31_pro": K31_PRO,
@@ -431,6 +493,11 @@ MODELS = {
     "qwen38_flash": QWEN38_FLASH,
     "qwen38_max": QWEN38_MAX,
     "qwen38_27b": QWEN38_27B,
+    "qwen38_27b_fp8": QWEN38_27B_FP8,
+    "qwen38_27b_fp8_tp8": qwen38_27b_fp8_group(8, 8483),
+    "qwen38_27b_fp8_tp4": qwen38_27b_fp8_group(4, 8484),
+    "qwen38_27b_fp8_tp2": qwen38_27b_fp8_group(2, 8485),
+    "qwen38_27b_fp8_tp1": qwen38_27b_fp8_group(1, 8486),
 }
 for model_name, model_fields in MODELS.items():
     if not model_fields.get("tokenizer_json", "/home/").startswith(INFERENCE_ROOTS):
@@ -453,12 +520,23 @@ def text_prompt_prefix(directory: Path) -> list[int]:
         raise SystemExit(f"raw text prompt prefix of {directory}: {error}")
 
 
-def rank_pack_path(model: dict, rank: int) -> str:
-    return f"/home/{HOSTS[rank]}/" + model["pack"].format(rank=rank)
+def lane_ranks(model: dict) -> int:
+    return model.get("ranks", WORLD)
 
 
-def rank_weight_files(model: dict, rank: int) -> list[str]:
-    pack = rank_pack_path(model, rank)
+def lane_hosts(model: dict, first: int) -> list[str]:
+    ranks = lane_ranks(model)
+    if ranks not in GROUP_RANKS or not isinstance(first, int) or first % ranks or not 0 <= first <= WORLD - ranks:
+        raise SystemExit(f"a {ranks}-rank lane runs on an aligned group of nodes; first node {first!r} is not a multiple of {ranks} within 0..{WORLD - ranks}")
+    return HOSTS[first:first + ranks]
+
+
+def rank_pack_path(model: dict, rank: int, first: int = 0) -> str:
+    return f"/home/{lane_hosts(model, first)[rank]}/" + model["pack"].format(rank=rank)
+
+
+def rank_weight_files(model: dict, rank: int, first: int = 0) -> list[str]:
+    pack = rank_pack_path(model, rank, first)
     return [pack, pack + ".experts", pack + ".sha256"] + [os.path.join(os.path.dirname(pack), name) for name in model.get("pack_siblings", ())]
 
 
@@ -474,11 +552,12 @@ def streamed_config(streamed: dict, rank: int) -> dict:
 
 
 def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
+    ranks = lane_ranks(model)
     return {
-        "stage_pack_path": rank_pack_path(model, rank),
-        "tp_degree": WORLD,
+        "stage_pack_path": rank_pack_path(model, rank, args.first_node),
+        "tp_degree": ranks,
         "tp_rank": rank,
-        "world_size": WORLD,
+        "world_size": ranks,
         "max_sequences": args.sequences,
         "max_rows": args.rows,
         **({"max_shared_rows": args.shared_rows} if args.shared_rows else {}),
@@ -490,19 +569,24 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
         **({"taps": args.taps} if args.taps else {}),
         **({"streamed_prefill": streamed_config(args.streamed_prefill, rank)} if args.streamed_prefill else {}),
         **({"expert_pool_cap_bytes": args.expert_pool_cap_bytes} if args.expert_pool_cap_bytes else {}),
-        "device_collective": {
+        **({"device_collective": {
             "wait_mode": "hardware",
             "connect_timeout_milli": 300000,
             "operation_timeout_milli": 30000,
             "mesh_lane": lane,
-            "mesh_ranks": list(range(WORLD)),
-        },
+            "mesh_ranks": list(range(args.first_node, args.first_node + ranks)),
+        }} if ranks > 1 else {}),
     }
+
+
+def fabric_address(node: int) -> str:
+    port = FABRIC["first_port"]
+    return f"{port['prefix']}.{port['address_base'] + node}"
 
 
 def deployment(model: dict, lane: int, args) -> dict:
     nodes = []
-    for rank, host in enumerate(HOSTS):
+    for rank, host in enumerate(lane_hosts(model, args.first_node)):
         root = args.runtime_root.format(host=host)
         nodes.append({
             "rank_index": rank,
@@ -515,7 +599,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "control_endpoint": {"kind": "tcp", "host": CONTROL_HOST.format(rank=rank), "port": 23000 + 16 * lane + rank},
+            "control_endpoint": {"kind": "tcp", "host": fabric_address(args.first_node + rank), "port": 23000 + 16 * lane + rank},
         })
     result = {
         "schema_version": 2,
@@ -630,7 +714,7 @@ def record_arguments(swap_id: str) -> argparse.Namespace:
     if record["context_tokens"] % block:
         raise SystemExit(f"lane record {swap_id}: context_tokens {record['context_tokens']} is not a whole number of {block}-token KV pages")
     return argparse.Namespace(
-        record=swap_id, model=record["model"], lane=record["lane"], runtime_root=record["runtime_root"],
+        record=swap_id, model=record["model"], lane=record["lane"], first_node=record.get("first_node", 0), runtime_root=record["runtime_root"],
         weightd_socket=record["weightd_socket"], sequences=record["sequences"], rows=record["rows"],
         shared_rows=record.get("shared_rows"), kv_pages=record["context_tokens"] // block,
         kv_physical_pages_cap=record.get("kv_physical_pages_cap"), kv_logical_pages=record["kv_logical_pages"],
@@ -658,8 +742,9 @@ def render(value: dict) -> str:
 
 
 def check_arguments(model: dict, args) -> None:
-    if not 0 <= args.lane <= 15:
-        raise SystemExit("lane must be within 0..15")
+    if not 0 <= args.lane < MESH_LANES:
+        raise SystemExit(f"lane must be within 0..{MESH_LANES - 1}")
+    lane_hosts(model, args.first_node)
     if not 1 <= args.sequences <= MAX_SEQUENCES or not args.sequences <= args.rows <= MAX_ROWS:
         raise SystemExit(f"sequences must be within 1..{MAX_SEQUENCES} and rows within sequences..{MAX_ROWS}")
     if args.shared_rows is not None and not 1 <= args.shared_rows < args.rows:
@@ -687,7 +772,7 @@ def write_lane(args, output_dir: Path) -> None:
     check_arguments(model, args)
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "deployment.json").write_text(render(deployment(model, args.lane, args)))
-    for rank, host in enumerate(HOSTS):
+    for rank, host in enumerate(lane_hosts(model, args.first_node)):
         (output_dir / f"adapter.{host}.json").write_text(render(adapter_config(model, args.lane, rank, args)))
     if args.record:
         (output_dir / "model_resident.json").write_text(render(hub_deployment(model, args.lane, args)))
@@ -701,6 +786,7 @@ def main() -> int:
                         help=f"render the production lane of this swap id from {LANES.relative_to(ROOT) if LANES.is_relative_to(ROOT) else LANES}; no other lane flag applies")
     parser.add_argument("--model", choices=sorted(MODELS))
     parser.add_argument("--lane", type=int)
+    parser.add_argument("--first-node", type=int, default=0, help="first node of the lane's group: 0 for 16 ranks, a multiple of the model's rank count otherwise")
     parser.add_argument("--runtime-root", help="per-node root, {host} is substituted")
     parser.add_argument("--weightd-socket")
     parser.add_argument("--output-dir", type=Path, required=True)

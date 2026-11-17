@@ -1,0 +1,32 @@
+Traceback (most recent call last):
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/trial/trial.py", line 606, in run
+    await self._prepare()
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/trial/trial.py", line 652, in _prepare
+    await self._setup_agent()
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/trial/trial.py", line 1885, in _setup_agent
+    await asyncio.wait_for(
+  File "/Users/cem/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/asyncio/tasks.py", line 520, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 1136, in setup
+    await self.install(environment)
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/claude_code.py", line 642, in install
+    await self.ensure_system_dependencies(
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 837, in ensure_system_dependencies
+    await self.exec_as_root(environment, command=command, env=env)
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 1068, in exec_as_root
+    return await self._exec(
+           ^^^^^^^^^^^^^^^^^
+  File "/private/tmp/claude-501/-Users-cem-sparkpipe--claude-worktrees-nice-elion-edff10/9a30ff9a-6d9f-4914-b3e3-457fef440e67/scratchpad/hb/lib/python3.12/site-packages/harbor/agents/installed/base.py", line 1048, in _exec
+    raise self._classify_exec_error(command, result)
+harbor.agents.installed.base.NonZeroAgentExitCodeError: Command failed (exit 100): apt-get update && apt-get install -y curl nodejs npm procps
+stdout: Hit:1 http://deb.debian.org/debian bullseye InRelease
+Get:2 http://deb.debian.org/debian-security bullseye-security InRelease [27.1 kB]
+Hit:3 http://deb.debian.org/debian bullseye-updates InRelease
+Get:4 http://deb.debian.org/debian-security bullseye ... [50426 chars truncated] ... deb.debian.org/debian-security/pool/updates/main/n/nodejs/nodejs_12.22.12%7edfsg-1%7edeb11u8_amd64.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/node-form-data/node-form-data_3.0.0-2%2bdeb11u1_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/node-tar/node-tar_6.0.5%2bds1%2b%7ecs11.3.9-1%2bdeb11u3_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/n/nodejs/nodejs-doc_12.22.12%7edfsg-1%7edeb11u8_all.deb  404  Not Found [IP: 146.75.50.132 80]
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+
+stderr: None

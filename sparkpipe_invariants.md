@@ -136,13 +136,15 @@ changes to common code. Track implementation evidence in
 - **I27 — Restored execution matches uninterrupted execution.** Prove hits,
   misses, eviction, movement, copy-on-write, slot changes and reset with real
   model state. Descriptor declarations and byte-copy tests alone are insufficient.
-- **Cached request state expires.** KV and recurrent state derived from
-  requests are deleted from every tier (device, host, weightd pool, snapshot
-  files) within 24 hours of their last use, whether or not their model is
-  running, and so are the hub draft servers' sequence contexts, the batch
-  engine's copy of a finished request's tokens and the API's prefix index
-  records. The limit is a constant; no flag, configuration or driver path
-  lengthens it, and a restart keeps each entry's age.
+- **Cached request state is kept while the fleet is held.** KV and recurrent
+  state derived from requests, in every tier (device, host, weightd pool,
+  snapshot files), the API's prefix index records, the hub draft servers'
+  sequence contexts and the serving layer's stores are never deleted because
+  of their age. They leave a tier only by that tier's capacity rule, by the
+  wipe mark of the working-state directive, or by the customer's deletion
+  request. No flag, configuration or driver path adds an age limit, and a
+  restart keeps each entry's last use. When the hold ends, working state is
+  deleted by restoring the fleet to the base image, outside the engine.
 
 ## 6. Experts, fleet access and deployment
 
@@ -179,7 +181,7 @@ changes to common code. Track implementation evidence in
   coherently there ([parallel driver debugging](docs/PARALLEL_DRIVER_DEBUG.md)),
   and never into the production root. The node agents sync only the roots
   named in their unit, so the hub is not a PR test path; it carries builds of
-  merged main ([fleet release runbook](docs/FLEET_RELEASE_RUNBOOK.md)).
+  merged main ([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)).
   Record source, artifact (for a hub release, the root `MANIFEST` sha256),
   configuration (including the serving environment) and pack hashes. Receipts
   identify the tested PR/commit and running binaries. Dirty trees,

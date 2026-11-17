@@ -1,0 +1,135 @@
+{
+    "id": "4fa2eba2-fd22-4b5d-b12b-b89b875fdb75",
+    "task_name": "terminal-bench/fix-git",
+    "trial_name": "fix-git__mFJ7mJz",
+    "trial_uri": "file:///Users/cem/sparkpipe-agent-e2e/tb21/jobs/stub-cx-tb21/fix-git__mFJ7mJz",
+    "task_id": {
+        "org": "terminal-bench",
+        "name": "fix-git",
+        "ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e"
+    },
+    "source": "terminal-bench/terminal-bench-2-1",
+    "task_checksum": "d3220d70bc668ec6f4034fab51e62873dff724a61f824d764fd201d6f5e7a88a",
+    "config": {
+        "task": {
+            "path": null,
+            "git_url": null,
+            "git_commit_id": null,
+            "name": "terminal-bench/fix-git",
+            "ref": "sha256:16948b980df9d96de616a205f5acca1c5d395de83ff4f8ffabcafacb93226f2e",
+            "overwrite": false,
+            "download_dir": null,
+            "source": "terminal-bench/terminal-bench-2-1"
+        },
+        "trial_name": "fix-git__mFJ7mJz",
+        "trials_dir": "/Users/cem/sparkpipe-agent-e2e/tb21/jobs/stub-cx-tb21",
+        "install_only": false,
+        "timeout_multiplier": 1.0,
+        "agent_timeout_multiplier": null,
+        "verifier_timeout_multiplier": null,
+        "agent_setup_timeout_multiplier": null,
+        "environment_build_timeout_multiplier": null,
+        "agent": {
+            "name": "codex",
+            "import_path": null,
+            "model_name": "stub-model",
+            "base_url": null,
+            "model_api_key_name": null,
+            "model_api_format": null,
+            "skip_model_parsing": false,
+            "n_concurrent": null,
+            "concurrency_group": null,
+            "skills": [],
+            "override_timeout_sec": null,
+            "override_setup_timeout_sec": null,
+            "max_timeout_sec": null,
+            "resume_trajectory": false,
+            "load_trajectory": null,
+            "extra_allowed_hosts": [],
+            "kwargs": {
+                "version": "0.166.0",
+                "config": "/Users/cem/sparkpipe-agent-e2e/tb21/codex-stub.toml"
+            },
+            "mcp_servers": []
+        },
+        "user_agent": null,
+        "environment": {
+            "type": "docker",
+            "import_path": null,
+            "force_build": false,
+            "delete": true,
+            "stream": false,
+            "cpu_enforcement_policy": "auto",
+            "memory_enforcement_policy": "auto",
+            "override_cpus": null,
+            "override_memory_mb": null,
+            "override_storage_mb": null,
+            "override_gpus": null,
+            "override_tpu": null,
+            "mounts": null,
+            "extra_docker_compose": [],
+            "kwargs": {},
+            "extra_allowed_hosts": []
+        },
+        "verifier": {
+            "override_timeout_sec": null,
+            "max_timeout_sec": null,
+            "disable": false
+        },
+        "artifacts": [],
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "job_id": "c6dd0d37-1ec0-4111-8039-8991204d03a5",
+        "source_trial": null
+    },
+    "agent_info": {
+        "name": "codex",
+        "version": "0.166.0",
+        "model_info": {
+            "name": "stub-model",
+            "provider": "openai"
+        }
+    },
+    "agent_result": {
+        "n_input_tokens": 11709,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 24,
+        "cost_usd": null,
+        "model_usage": {
+            "stub-model": {
+                "n_input_tokens": 11709,
+                "n_cache_tokens": 0,
+                "n_output_tokens": 24,
+                "cost_usd": null
+            }
+        },
+        "rollout_details": null,
+        "metadata": null
+    },
+    "verifier_result": {
+        "rewards": {
+            "reward": 0.0
+        }
+    },
+    "verifier_environment_mode": "shared",
+    "exception_info": null,
+    "started_at": "2026-11-05T04:46:22.421405Z",
+    "finished_at": "2026-11-05T04:49:26.571468Z",
+    "environment_setup": {
+        "started_at": "2026-11-05T04:46:22.450901Z",
+        "finished_at": "2026-11-05T04:46:23.356588Z"
+    },
+    "agent_setup": {
+        "started_at": "2026-11-05T04:46:23.356648Z",
+        "finished_at": "2026-11-05T04:48:52.354940Z"
+    },
+    "agent_execution": {
+        "started_at": "2026-11-05T04:48:52.356731Z",
+        "finished_at": "2026-11-05T04:49:03.934113Z"
+    },
+    "verifier": {
+        "started_at": "2026-11-05T04:49:04.142497Z",
+        "finished_at": "2026-11-05T04:49:15.547903Z"
+    },
+    "step_results": null
+}

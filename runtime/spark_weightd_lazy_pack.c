@@ -4,6 +4,8 @@
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_weightd_device.h"
+#include "sparkpipe/spark_clock.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -12,8 +14,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "sparkpipe/spark_gpu.h"
 
-SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
+SparkStatus SparkWeightdLazyPackUnmap(SparkWeightdLazyPack *pack)
 {
 	SparkStatus status;
 	if ( pack == 0 )
@@ -35,9 +38,49 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 		if ( pack->spine_allocation == 0 )
 			pack->spine = 0;
 	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackDetach(SparkWeightdLazyPack *pack,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdDetachResult result;
+	SparkStatus status;
+	if ( pack == 0 || pack->client == 0 || pack->attached.arena_generation == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkWeightdLazyPackUnmap(pack);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&result,0,sizeof(result));
+	status = SparkWeightdClientDetach(pack->client,pack->attached.arena_generation,&result,timeout_nanoseconds);
+	if ( status == SPARK_STATUS_OK && result.status != SPARK_STATUS_OK )
+		status = result.status;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	pack->attached.arena_generation = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackTakeMeshMapping(SparkWeightdLazyPack *pack,void **mapping,uint64_t *bytes)
+{
+	if ( pack == 0 || mapping == 0 || bytes == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*mapping = pack->attached.mesh_mapping;
+	*bytes = pack->attached.mesh_mapping != 0 ? pack->attached.mesh_send_buffer_bytes : 0u;
+	pack->attached.mesh_mapping = 0;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
+{
+	SparkStatus status;
+	if ( pack == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkWeightdLazyPackUnmap(pack);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( pack->spine_allocation != 0 )
 	{
-		if ( cudaFree(pack->spine_allocation) != cudaSuccess )
+		if ( SparkGpuFree(pack->spine_allocation) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		pack->spine_allocation = 0;
 		pack->spine = 0;
@@ -58,6 +101,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 {
 	uint64_t bytes = pack->manifest.spine_allocation_bytes;
 	const void *pool;
+	int lock_fd = -1;
 	SparkStatus status;
 	if ( bytes == 0u )
 		return(SPARK_STATUS_OK);
@@ -72,9 +116,19 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	}
 	if ( status != SPARK_STATUS_UNSUPPORTED )
 		SPARK_RETURN(status);
+	status = SparkWeightdNodeMemoryLock(SPARK_WEIGHTD_NODE_MEMORY_LOCK_PATH,&lock_fd);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH,bytes + 255u,"private weight spine",request->identity.model);
+	if ( status == SPARK_STATUS_OK && SparkGpuMalloc(&pack->spine_allocation,(size_t)(bytes + 255u)) != SPARK_GPU_SUCCESS )
+	{
+		pack->spine_allocation = 0;
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	SparkWeightdNodeMemoryUnlock(lock_fd);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
 	pack->spine_allocation_bytes = (bytes + 255u);
-	if ( cudaMalloc(&pack->spine_allocation,(size_t)pack->spine_allocation_bytes) != cudaSuccess )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
 	fprintf(stderr,"WD-SPINE-PRIVATE spans=%u bytes=%llu\n",pack->manifest.spine_count,(unsigned long long)pack->spine_allocation_bytes);
 	return(SparkWeightdSpineLoad(request->pack_path,fd,&pack->manifest,request->identity.arena_bytes,request->identity.pack_sha256,pack->spine,bytes));
@@ -151,6 +205,132 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	SPARK_RETURN(status);
 }
 
+#define LAZY_HELD_PIECE_BYTES (UINT64_C(1) << 30)
+
+static SparkStatus lazy_pack_unified(uint32_t *unified)
+{
+	const SparkDeviceProperties *properties;
+	const SparkStatus status = SparkWeightdDeviceOpen();
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	properties = SparkDeviceGetProperties();
+	if ( properties == 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	*unified = (properties->properties & SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY) != 0u ? 1u : 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus lazy_held_copy(SparkWeightdLazyPack *pack,SparkDeviceAddress held)
+{
+	uint64_t done,piece;
+	uint32_t index;
+	for ( index = 0u; index < pack->manifest.spine_count; index++ )
+	{
+		const SparkWeightdSpan *span = &pack->manifest.spine[index];
+		for ( done = 0u; done < span->bytes; done += piece )
+		{
+			piece = (span->bytes - done) < LAZY_HELD_PIECE_BYTES ? (span->bytes - done) : LAZY_HELD_PIECE_BYTES;
+			if ( SparkGpuMemcpy((uint8_t *)pack->spine + span->compact_offset + done,(const void *)(uintptr_t)(held + span->offset + done),(size_t)piece,
+				SPARK_GPU_COPY_DEVICE_TO_DEVICE) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus lazy_held_bind(SparkWeightdLazyPack *pack,const SparkWeightdHoldResult *held,uint64_t *copy_ns)
+{
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceAddress address = 0u;
+	uint32_t mapped = 0u;
+	SparkStatus status = SparkDeviceMemoryImport(&memory,held->fd,"weightd held pack");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAddressReserve(&address,held->allocation_bytes,"weightd held pack");
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkDeviceMemoryMap(address,held->allocation_bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ);
+		mapped = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
+	if ( status == SPARK_STATUS_OK && SparkGpuMalloc(&pack->spine_allocation,(size_t)(pack->manifest.spine_allocation_bytes + 255u)) != SPARK_GPU_SUCCESS )
+	{
+		pack->spine_allocation = 0;
+		fprintf(stderr,"weightd held pack refused: no %llu bytes of device memory for the spine\n",(unsigned long long)(pack->manifest.spine_allocation_bytes + 255u));
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		pack->spine_allocation_bytes = (pack->manifest.spine_allocation_bytes + 255u);
+		pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
+		*copy_ns = SparkMonotonicNs();
+		status = lazy_held_copy(pack,address);
+		*copy_ns = SparkMonotonicNs() - *copy_ns;
+	}
+	if ( mapped != 0u && SparkDeviceMemoryUnmap(address,held->allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( address != 0u && SparkDeviceAddressRelease(address,held->allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( memory != 0u && SparkDeviceMemoryRelease(memory) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	SPARK_RETURN(status);
+}
+
+static SparkStatus lazy_pack_held(SparkWeightdLazyPack *pack,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
+{
+	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
+	SparkWeightdHoldResult held;
+	const uint64_t bytes = request->identity.arena_bytes;
+	uint64_t started_ns,hold_ns,copy_ns = 0u;
+	SparkStatus status;
+	if ( pack->read_only != 0u )
+	{
+		fprintf(stderr,"weightd held pack refused: a read-only lazy pack shares weightd's resident arena, which a device without unified memory does not have\n");
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	status = SparkWeightdClientConnect(socket,&pack->client,0);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	(void)snprintf(path,sizeof(path),"%s.experts",request->pack_path);
+	status = SparkWeightdManifestLoad(path,bytes,&pack->manifest);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( pack->manifest.range_count != 0u )
+	{
+		fprintf(stderr,"weightd held pack refused: %s names %u expert ranges; on a device without unified memory a pack binds whole, as its spine\n",path,pack->manifest.range_count);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	if ( check != 0 )
+	{
+		status = check(&pack->manifest,context);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		SparkWeightdManifestDestroy(&pack->manifest);
+		memset(&pack->manifest,0,sizeof(pack->manifest));
+		status = SparkWeightdManifestLoad(path,bytes,&pack->manifest);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
+	started_ns = SparkMonotonicNs();
+	status = SparkWeightdClientHold(pack->client,&request->identity,request->pack_path,&held,timeout);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	hold_ns = SparkMonotonicNs() - started_ns;
+	if ( held.held_bytes != bytes || held.allocation_bytes < bytes )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = lazy_held_bind(pack,&held,&copy_ns);
+	(void)close(held.fd);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pack->attached.status = SPARK_STATUS_OK;
+	pack->attached.arena_generation = held.generation;
+	pack->attached.arena_bytes = bytes;
+	pack->attached.loaded_from_pack = held.first_hold;
+	pack->attached.pool_fd = -1;
+	fprintf(stderr,"WD-SPINE-HELD spans=%u bytes=%llu first_hold=%u held=%u hold_s=%.3f copy_s=%.3f\n",pack->manifest.spine_count,
+	    (unsigned long long)pack->manifest.spine_bytes,held.first_hold,held.held_count,(double)hold_ns / 1e9,(double)copy_ns / 1e9);
+	SPARK_RETURN(SparkWeightdWorkerCreate(&pack->worker));
+}
+
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,const SparkWeightdLazyPackOptions *options,SparkWeightdLazyPack **out)
 {
 	SparkWeightdLazyPack *pack;
@@ -159,6 +339,7 @@ SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazy
 	SparkStatus status;
 	struct stat info;
 	int32_t fd;
+	uint32_t unified = 1u;
 	uint8_t digest[SPARK_SHA256_DIGEST_BYTES];
 	char absolute[4096];
 	if ( out == 0 )
@@ -201,7 +382,11 @@ SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazy
 	}
 	pack->read_only = options->read_only;
 	memcpy(pack->pack_sha256,digest,sizeof(pack->pack_sha256));
-	status = lazy_pack_initialize(pack,fd,socket,request,options->expert_pool_cap_bytes,options->timeout_nanoseconds,options->manifest_check,options->manifest_check_context);
+	status = lazy_pack_unified(&unified);
+	if ( status == SPARK_STATUS_OK )
+		status = unified != 0u
+			? lazy_pack_initialize(pack,fd,socket,request,options->expert_pool_cap_bytes,options->timeout_nanoseconds,options->manifest_check,options->manifest_check_context)
+			: lazy_pack_held(pack,socket,request,options->timeout_nanoseconds,options->manifest_check,options->manifest_check_context);
 	if ( close(fd) != 0 && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK && SparkWeightdLazyPackDestroy(pack) == SPARK_STATUS_OK )

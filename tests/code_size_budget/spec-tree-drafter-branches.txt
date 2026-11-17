@@ -1,0 +1,2 @@
++192
+spec-tree/drafter-branches: add shared host helper include/sparkpipe/spark_draft_tree_pack.h to pack DFT3 trunk plus ranked runner-up branch nodes within SparkSpeculationTreeLayoutBuild invariants, extend single-pass GPU pick kernels in k31_dspark, dsv41_dspark, and qwen38_dspine drafter modules to emit runner-up tokens and softmax probabilities with zero extra launches or spills, and wire dspark_drafter/dspark_fast alternates through tools/block_draftd.py.

@@ -3,11 +3,15 @@
 #include <stdint.h>
 #include <string.h>
 #include <cuda_runtime.h>
+#include "sparkpipe/spark_gpu.h"
+
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+#error "inference/kernels/weight_prefetch.cuh: the bulk L2 prefetch (cp.async.bulk.prefetch.L2.global) needs sm_90 or newer; build for sm_120a or sm_121a"
+#endif
 
 #define LM_WEIGHT_PREFETCH_SPANS 8u
 #define LM_WEIGHT_PREFETCH_GROUPS 1024u
 #define LM_WEIGHT_PREFETCH_PIECE_BYTES 16384u
-#define LM_WEIGHT_PREFETCH_ISSUERS 8u
 #define LM_WEIGHT_PREFETCH_BUDGET_BYTES (12u << 20)
 
 typedef struct LmWeightPrefetchGroup
@@ -22,7 +26,7 @@ LmWeightPrefetchGroup;
 
 typedef struct LmWeightPrefetchPlan
 {
-	cudaStream_t stream;
+	SparkGpuStream stream;
 	LmWeightPrefetchGroup *host;
 	LmWeightPrefetchGroup *device;
 	uint32_t capacity;
@@ -39,7 +43,7 @@ inline LmWeightPrefetchPlan *&LmWeightPrefetchActive(void)
 	return(active);
 }
 
-static inline void LmWeightPrefetchArm(LmWeightPrefetchPlan *plan, cudaStream_t stream)
+static inline void LmWeightPrefetchArm(LmWeightPrefetchPlan *plan, SparkGpuStream stream)
 {
 	if ( plan == 0 || plan->host == 0 || plan->device == 0 || plan->capacity == 0u )
 		return;
@@ -52,17 +56,17 @@ static inline void LmWeightPrefetchArm(LmWeightPrefetchPlan *plan, cudaStream_t 
 	LmWeightPrefetchActive() = plan;
 }
 
-static inline cudaError_t LmWeightPrefetchDisarm(LmWeightPrefetchPlan *plan, uint32_t publish)
+static inline SparkGpuError LmWeightPrefetchDisarm(LmWeightPrefetchPlan *plan, uint32_t publish)
 {
 	if ( plan == 0 || LmWeightPrefetchActive() != plan )
-		return(cudaSuccess);
+		return(SPARK_GPU_SUCCESS);
 	LmWeightPrefetchActive() = 0;
 	if ( publish == 0u || plan->groups == 0u )
-		return(cudaSuccess);
-	return(cudaMemcpy(plan->device,plan->host,(size_t)plan->groups * sizeof(*plan->host),cudaMemcpyHostToDevice));
+		return(SPARK_GPU_SUCCESS);
+	return(SparkGpuMemcpy(plan->device,plan->host,(size_t)plan->groups * sizeof(*plan->host),SPARK_GPU_COPY_HOST_TO_DEVICE));
 }
 
-static inline LmWeightPrefetchGroup *LmWeightPrefetchSlot(cudaStream_t stream, uint32_t *resume)
+static inline LmWeightPrefetchGroup *LmWeightPrefetchSlot(SparkGpuStream stream, uint32_t *resume)
 {
 	LmWeightPrefetchPlan *plan = LmWeightPrefetchActive();
 	*resume = 0u;
@@ -85,7 +89,7 @@ static inline LmWeightPrefetchGroup *LmWeightPrefetchSlot(cudaStream_t stream, u
 	return(plan->device + plan->groups - 1u);
 }
 
-static inline void LmWeightPrefetchNote(cudaStream_t stream, const void *address, uint64_t bytes)
+static inline void LmWeightPrefetchNote(SparkGpuStream stream, const void *address, uint64_t bytes)
 {
 	LmWeightPrefetchPlan *plan = LmWeightPrefetchActive();
 	LmWeightPrefetchGroup *group;
@@ -134,7 +138,7 @@ static __device__ __forceinline__ void LmWeightPrefetchPiece(const LmWeightPrefe
 		return;
 	length -= (uint32_t)position;
 	length = length < LM_WEIGHT_PREFETCH_PIECE_BYTES ? length : LM_WEIGHT_PREFETCH_PIECE_BYTES;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH__)
 	asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" :: "l"(group->address[span] + position), "r"(length) : "memory");
 #endif
 }

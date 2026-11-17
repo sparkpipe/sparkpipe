@@ -85,7 +85,7 @@
       "production_required": true,
       "consumers": [
         "node/model_residentd.c",
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "hardware.gb10.cpu_gpu_contention",
@@ -105,7 +105,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu",
+        "ring/transport/rdma.c",
         "include/sparkpipe/spark_hidden_transport.h"
       ],
       "decision": {
@@ -124,7 +124,7 @@
       "probe": "cuda_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu",
+        "ring/transport/rdma.c",
         "include/sparkpipe/spark_model_driver.h"
       ],
       "decision": {
@@ -184,7 +184,7 @@
       "production_required": true,
       "consumers": [
         "include/sparkpipe/spark_model_driver.h",
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "hardware.gb10.completion",
@@ -205,7 +205,7 @@
       "production_required": true,
       "consumers": [
         "runtime/model_batch_engine.c",
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "hardware.gb10.concurrency",
@@ -286,7 +286,7 @@
       "consumers": [
         "runtime/gemm.cuh",
         "inference/kernels/gqa.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.resources",
@@ -346,7 +346,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/topk.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.moe",
@@ -367,7 +367,7 @@
       "production_required": true,
       "consumers": [
         "inference/kernels/linear_attn.cuh",
-        "inference/llms/kimi_k3/layer.cuh"
+        "model-families/k3/source/layer.cuh"
       ],
       "decision": {
         "policy_path": "kernels.kda",
@@ -454,7 +454,7 @@
       "probe": "transport_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu",
+        "ring/transport/rdma.c",
         "include/sparkpipe/spark_hidden_transport.h"
       ],
       "decision": {
@@ -477,7 +477,7 @@
       "probe": "transport_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "network.mr_cache",
@@ -498,7 +498,7 @@
       "probe": "transport_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "network.lanes",
@@ -518,7 +518,7 @@
       "probe": "transport_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu"
+        "ring/transport/rdma.c"
       ],
       "decision": {
         "policy_path": "network.cq",
@@ -538,7 +538,7 @@
       "probe": "transport_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu",
+        "ring/transport/rdma.c",
         "node/model_residentd.c"
       ],
       "decision": {
@@ -560,7 +560,7 @@
       "probe": "pmtu_characterize",
       "production_required": true,
       "consumers": [
-        "ring/transport/rdma.cu",
+        "ring/transport/rdma.c",
         "ring/transport/hidden_transport.c"
       ],
       "decision": {

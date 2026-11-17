@@ -21,6 +21,9 @@ WEIGHTD_KV_RESERVE_BYTES=8589934592
 WEIGHTD_LEGACY_NOTED=""
 WEIGHTD_UPDATE_NOTED=""
 HEARTBEAT_PERIOD=60
+COMPACT_HELPER="${SPARK_COMPACT_HELPER:-/usr/local/sbin/sparkpipe-compact}"
+COMPACT_STATE="${SPARK_COMPACT_STATE:-/run/sparkpipe-compact}"
+COMPACT_SECONDS="${SPARK_COMPACT_SECONDS:-900}"
 MANIFEST_VERIFY_PERIOD=600
 LAST_REPORT_AT=0
 RANK=""
@@ -372,16 +375,25 @@ root_json() {
 }
 
 report() {
-    local now load mem r states="" sep=',"roots":{'
+    local now load mem r states="" sep=',"roots":{' mesh_ports mesh_degraded
     now=$(date +%s)
+    read -r mesh_ports mesh_degraded <<< "$(mesh_ready_layout)"
+    if [ "$mesh_degraded" != "${MESH_DEGRADED_SEEN:-none}" ]; then
+        case "$mesh_degraded" in
+            none|0x0000) [ "${MESH_DEGRADED_SEEN:-none}" = none ] || [ "${MESH_DEGRADED_SEEN:-none}" = 0x0000 ] ||
+                echo "$(date +%T) mesh: no degraded link on ports $mesh_ports" ;;
+            *) echo "$(date +%T) mesh: DEGRADED links to ranks $mesh_degraded on ports $mesh_ports; WD-MESH-LAYOUT in ~/weightd.log names the missing port" >&2 ;;
+        esac
+        MESH_DEGRADED_SEEN=$mesh_degraded
+    fi
     load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
     mem=$(awk '/MemAvailable/ {printf "%d", int($2/1048576)}' /proc/meminfo 2>/dev/null)
     {
         printf '{"host":"%s","time":"%s","epoch":%d,"load":"%s","mem_avail_gb":%s,"headroom_gib":%s' \
             "$HOST" "$(date -Is)" "$now" "$load" "${mem:-0}" "$HEADROOM_GIB"
-        printf ',"weightd":"%s","agent":"%s","safe_mode":"%s"' \
+        printf ',"weightd":"%s","agent":"%s","safe_mode":"%s","mesh_ports":"%s","mesh_degraded":"%s"' \
             "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)" \
-            "$(sha16 "$0" 2>/dev/null)" "$(json_text "$SAFE_MODE")"
+            "$(sha16 "$0" 2>/dev/null)" "$(json_text "$SAFE_MODE")" "$(json_text "$mesh_ports")" "$(json_text "$mesh_degraded")"
         for r in $ROOT_LIST; do
             states="$states$r=$(root_state "$r");"
             printf '%s' "$sep"
@@ -476,7 +488,7 @@ unload_root() {
     return 1
 }
 
-declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT
+declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT DOCTOR_FLAPS DOCTOR_QUIET
 LAST_ANY_RESTART=0
 
 restart_ok() {
@@ -524,6 +536,62 @@ start_layout_root() {
     return 0
 }
 
+compact_watch() {
+    local rr="$1" seconds="$2" waited=0 seen=0
+    exec 8<"$COMPACT_STATE/window" || exit 1
+    flock -s 8 || exit 1
+    trap 'flock -u 8; exec 8<&-; sudo -n "$COMPACT_HELPER" restore' EXIT
+    if ! sudo -n "$COMPACT_HELPER" raise; then
+        : > "$rr/.compact-failed"
+        exit 1
+    fi
+    : > "$rr/.compact-raised"
+    echo "$(date +%T) compaction raised for $rr"
+    while [ "$waited" -lt "$seconds" ]; do
+        if grep -q 'model_residentd ready' "$rr/residentd.log" 2>/dev/null; then
+            echo "$(date +%T) residentd ready after ${waited}s; restoring"
+            exit 0
+        fi
+        if [ -n "$(match_pids sparkpipe_model_residentd "$rr")" ]; then
+            seen=1
+        elif [ "$seen" = 1 ] || [ "$waited" -ge 30 ]; then
+            echo "$(date +%T) residentd is not running after ${waited}s; restoring"
+            exit 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "$(date +%T) residentd not ready after ${seconds}s; restoring"
+}
+
+compact_open() {
+    local name="$1" rr="$2" i
+    [ -x "$COMPACT_HELPER" ] || return 0
+    rm -f "$rr/.compact-raised" "$rr/.compact-failed"
+    COMPACT_HELPER="$COMPACT_HELPER" COMPACT_STATE="$COMPACT_STATE" setsid bash -c \
+        "$(declare -f compact_watch match_pids); compact_watch \"\$@\"" compact-watch "$rr" "$COMPACT_SECONDS" \
+        > "$rr/compact.log" 2>&1 < /dev/null &
+    for i in $(seq 1 600); do
+        [ -f "$rr/.compact-raised" ] && return 0
+        [ -f "$rr/.compact-failed" ] && break
+        sleep 0.1
+    done
+    note_root "$name" failed-start "the compaction window did not open: $(tail -1 "$rr/compact.log" 2>/dev/null)"
+    return 1
+}
+
+compact_sweep() {
+    [ -x "$COMPACT_HELPER" ] && [ -f "$COMPACT_STATE/boot" ] || return 0
+    exec 7<"$COMPACT_STATE/window" || return 0
+    if flock -n -x 7; then
+        flock -u 7
+        exec 7<&-
+        sudo -n "$COMPACT_HELPER" restore
+    else
+        exec 7<&-
+    fi
+}
+
 start_root() {
     local name="$1" rr
     rr=$(root_path "$name")
@@ -543,6 +611,7 @@ start_root() {
         note_root "$name" failed-start "an expert pool cap is the stage config's expert_pool_cap_bytes; G5_EXPERT_POOL_BYTES and G5_EXPERT_POOL_CAP_BYTES are not read"
         return 1
     fi
+    compact_open "$name" "$rr" || return 1
     if [ "$RC_LAYOUT" = 1 ]; then
         start_layout_root "$name" "$rr" || return 1
     else
@@ -787,6 +856,8 @@ doctor_port() {
     state=$(ibv_devinfo -d "$dev" -i 1 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
     if [ "$state" = PORT_ACTIVE ]; then
         DOCTOR_SINCE[$dev]=""
+        DOCTOR_FLAPS[$dev]=0
+        DOCTOR_QUIET[$dev]=""
         return 0
     fi
     netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$dev" '$1==d {print $5; exit}')
@@ -805,8 +876,14 @@ doctor_port() {
     [ $(( now - DOCTOR_SINCE[$dev] )) -ge 60 ] || return 0
     [ $(( now - AGENT_STARTED )) -ge 300 ] || return 0
     [ "$now" -ge "${DOCTOR_NEXT[$dev]:-0}" ] || return 0
+    if [ "${DOCTOR_FLAPS[$dev]:-0}" -ge 3 ]; then
+        [ -n "${DOCTOR_QUIET[$dev]:-}" ] || echo "$(date +%T) doctor: $dev netdev=$netdev has had no carrier through 3 flaps; treating it as unplugged until it links" >&2
+        DOCTOR_QUIET[$dev]=1
+        return 0
+    fi
+    DOCTOR_FLAPS[$dev]=$(( ${DOCTOR_FLAPS[$dev]:-0} + 1 ))
     DOCTOR_NEXT[$dev]=$(( now + 300 ))
-    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev" >&2
+    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev (${DOCTOR_FLAPS[$dev]} of 3)" >&2
     sudo -n ip link set "$netdev" down 2>/dev/null
     sleep 2
     sudo -n ip link set "$netdev" up 2>/dev/null
@@ -839,7 +916,9 @@ janitor() {
 }
 
 mesh_address() {
-    local dev="$1" index="$2" gid hex ip netdev
+    local dev="$1" index="$2" gid hex ip netdev state
+    state=$(cat "/sys/class/infiniband/$dev/ports/1/state" 2>/dev/null)
+    [ "$state" = "4: ACTIVE" ] || { echo "$dev port 1 is ${state:-missing}, not ACTIVE" >&2; return 1; }
     gid=$(cat "/sys/class/infiniband/$dev/ports/1/gids/$index" 2>/dev/null)
     case "$gid" in
         0000:0000:0000:0000:0000:ffff:????:????) ;;
@@ -864,11 +943,24 @@ mesh_address() {
 }
 
 mesh_addresses() {
-    local switch pair
-    switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX") || return 1
-    [ -n "$MESH_PAIRED" ] || { echo "$switch"; return 0; }
-    pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX") || return 1
-    echo "$switch $pair"
+    local switch pair switch_reason="" pair_reason=""
+    switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX" 2>&1) || { switch_reason=$switch; switch=""; }
+    if [ -z "$MESH_PAIRED" ]; then
+        [ -n "$switch" ] || { echo "$switch_reason" >&2; return 1; }
+        echo "$switch"
+        return 0
+    fi
+    pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX" 2>&1) || { pair_reason=$pair; pair=""; }
+    [ -n "$switch$pair" ] || { echo "$switch_reason; $pair_reason" >&2; return 1; }
+    echo "${switch:--} ${pair:--}"
+}
+
+mesh_ready_layout() {
+    local line ports="" degraded=""
+    line=$(head -c 512 "${1:-/tmp/weightd-mesh/.ready}" 2>/dev/null)
+    case "$line" in *" ports="*) ports=${line##* ports=}; ports=${ports%% *} ;; esac
+    case "$line" in *" degraded="*) degraded=${line##* degraded=}; degraded=${degraded%%[!0-9a-fx]*} ;; esac
+    echo "${ports:-none} ${degraded:-none}"
 }
 
 ensure_weightd() {
@@ -940,7 +1032,11 @@ ensure_weightd() {
     }
     local mesh_netdev
     mesh_netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
-    mlnx_qos -i "$mesh_netdev" 2>/dev/null | grep -q 'Priority trust state: dscp' || {
+    command -v sparkpipe-dscp-trust > /dev/null || {
+        echo "weightd: sparkpipe-dscp-trust is not installed; the node baseline apply installs it; traffic class $MESH_TRAFFIC_CLASS needs DSCP trust on $MESH_INTERFACE; dependent startup blocked" >&2
+        return 1
+    }
+    sparkpipe-dscp-trust check "$mesh_netdev" > /dev/null 2>&1 || {
         echo "weightd: $MESH_INTERFACE (${mesh_netdev:-no netdev}) does not trust DSCP; traffic class $MESH_TRAFFIC_CLASS would be lossy; dependent startup blocked" >&2
         return 1
     }
@@ -1075,6 +1171,7 @@ while true; do
     self_update
     node_doctor
     janitor
+    compact_sweep
     if ! ensure_weightd; then
         report_if_changed
         sleep 1

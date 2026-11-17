@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import http.client
+import ipaddress
 import json
 import math
 import sys
@@ -9,20 +10,35 @@ import time
 import urllib.parse
 
 WINDOW_SECONDS = 600
-TEST_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
-TEST_MARKS = ("sandbox", "staging")
+TEST_HOSTS = frozenset({"localhost"})
+TEST_LABELS = frozenset({"sandbox", "staging"})
+SANDBOX_PREFIXES = ("/pay/sandbox/api/",)
 
 
 class Refused(Exception):
     pass
 
 
+def test_host(hostname):
+    if hostname in TEST_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return any(label in TEST_LABELS for label in hostname.lower().split("."))
+
+
+def sandbox_path(path):
+    segments = urllib.parse.unquote(path).split("/")
+    return path.startswith(SANDBOX_PREFIXES) and "." not in segments and ".." not in segments and "%" not in path
+
+
 def target(url):
     parts = urllib.parse.urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise Refused(f"{url} is not an http or https URL")
-    if parts.hostname not in TEST_HOSTS and not any(mark in url for mark in TEST_MARKS):
-        raise Refused(f"{url} is neither a loopback address nor a sandbox or staging gateway; the capacity check never runs against production")
+    if not (test_host(parts.hostname) or sandbox_path(parts.path)):
+        raise Refused(f"{url} is neither a loopback host, a host with a sandbox or staging label, nor a path under {SANDBOX_PREFIXES[0]}; the capacity check never runs against production")
     return parts
 
 

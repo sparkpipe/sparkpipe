@@ -274,6 +274,70 @@ static void SparkTestLazyKvLending(const SparkWeightdIdentity *first,const char 
     printf("weightd kv lending beside a premapped expert pool: the KV limit counts the arena's one allocation, and a lazy attach whose pool fits the ceiling less the reserve but not beside a lent KV pool waits while the pool is owned and releases it once detached\n");
 }
 
+static void SparkTestPoolSwitch(const SparkWeightdIdentity *identity,const char *path,const char *hex)
+{
+    static const char *const socket_path = "/tmp/spark_weightd_expert_switch.sock";
+    const uint64_t whole = SPARK_TEST_ARENA_BYTES + SPARK_TEST_CHUNK_BYTES;
+    SparkTestServerThread server;
+    pthread_t server_thread;
+    SparkWeightdHelloResult hello;
+    SparkWeightdLazyAttachResult slot,refused,arena,back;
+    SparkWeightdDetachResult detached;
+    SparkWeightdReclaimResult reclaimed;
+    SparkWeightdResidency residency;
+    SparkWeightdWorkingSetResult leased,released;
+    SparkWeightdExpertKey keys[SPARK_TEST_EXPERTS_PER_MODEL];
+    SparkWeightdClient *lane,*other;
+    uint32_t expert;
+
+    (void)unlink(socket_path);
+    SparkTestStartServer(&server,&server_thread,socket_path,SPARK_TEST_CEILING_BYTES,0ull);
+    assert(SparkWeightdClientConnect(socket_path,&lane,&hello) == SPARK_STATUS_OK && hello.status == SPARK_STATUS_OK);
+    assert(SparkWeightdClientConnect(socket_path,&other,&hello) == SPARK_STATUS_OK && hello.status == SPARK_STATUS_OK);
+    SparkTestLazyAttach(lane,identity,path,SPARK_TEST_POOL_BYTES,&slot);
+    assert(slot.status == SPARK_STATUS_OK && slot.refcount == 1u);
+    SparkTestLazyAttach(other,identity,path,whole,&refused);
+    assert(refused.status == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkWeightdClientReclaimPack(other,hex,&reclaimed,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(reclaimed.status == SPARK_STATUS_OK && reclaimed.reclaimed_arena_count == 0u && reclaimed.busy_arena_count == 1u);
+    keys[0].layer = 3u;
+    keys[0].expert = 1u;
+    assert(SparkWeightdClientAcquire(lane,slot.arena_generation,keys,1u,&leased,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && leased.status == SPARK_STATUS_OK);
+    assert(SparkWeightdClientDetach(lane,slot.arena_generation,&detached,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && detached.status == SPARK_STATUS_BUSY);
+    assert(SparkWeightdClientRelease(lane,slot.arena_generation,leased.lease_identifier,&released,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(SparkWeightdClientDetach(lane,slot.arena_generation,&detached,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(detached.status == SPARK_STATUS_OK && detached.refcount == 0u);
+    assert(SparkWeightdClientReclaimPack(other,hex,&reclaimed,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(reclaimed.status == SPARK_STATUS_OK && reclaimed.reclaimed_arena_count == 1u && reclaimed.busy_arena_count == 0u && reclaimed.arena_count == 0u);
+    SparkTestLazyAttach(lane,identity,path,whole,&arena);
+    assert(arena.status == SPARK_STATUS_OK && arena.arena_generation != slot.arena_generation && arena.refcount == 1u);
+    assert(SparkWeightdClientResidency(lane,arena.arena_generation,&residency,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(residency.fixed_pool != 0u && residency.group_count == SPARK_TEST_EXPERTS_PER_MODEL && residency.present_count < residency.group_count);
+    for (expert = 0u; expert < SPARK_TEST_EXPERTS_PER_MODEL; expert++)
+    {
+        keys[expert].layer = 3u;
+        keys[expert].expert = expert;
+    }
+    assert(SparkWeightdClientAcquire(other,arena.arena_generation,keys,SPARK_TEST_EXPERTS_PER_MODEL,&leased,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_NOT_FOUND ||
+        leased.status != SPARK_STATUS_OK);
+    SparkTestLazyAttach(other,identity,path,whole,&refused);
+    assert(refused.status == SPARK_STATUS_OK && refused.arena_generation == arena.arena_generation && refused.refcount == 2u);
+    assert(SparkWeightdClientAcquire(other,arena.arena_generation,keys,SPARK_TEST_EXPERTS_PER_MODEL,&leased,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && leased.status == SPARK_STATUS_OK);
+    assert(SparkWeightdClientRelease(other,arena.arena_generation,leased.lease_identifier,&released,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(SparkWeightdClientDetach(other,arena.arena_generation,&detached,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && detached.refcount == 1u);
+    assert(SparkWeightdClientResidency(lane,arena.arena_generation,&residency,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK);
+    assert(residency.fixed_pool != 0u && residency.present_count == residency.group_count);
+    assert(SparkWeightdClientDetach(lane,arena.arena_generation,&detached,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && detached.refcount == 0u);
+    assert(SparkWeightdClientReclaimPack(other,hex,&reclaimed,SPARK_TEST_TIMEOUT_NS) == SPARK_STATUS_OK && reclaimed.reclaimed_arena_count == 1u);
+    SparkTestLazyAttach(lane,identity,path,SPARK_TEST_POOL_BYTES,&back);
+    assert(back.status == SPARK_STATUS_OK && back.arena_generation != arena.arena_generation);
+    SparkWeightdClientClose(other);
+    SparkWeightdClientClose(lane);
+    SparkTestStopServer(&server,server_thread);
+    (void)unlink(socket_path);
+    printf("weightd pool switch: a live arena keeps its pool and its reclaim reports it busy; a lease makes detach busy; after detach the pack reclaim frees the cold arena, the whole arena attaches, a second attach warms every group present, and the slot pool attaches again\n");
+}
+
 int main(void)
 {
     static const char *const socket_path = "/tmp/spark_weightd_expert_test.sock";
@@ -382,6 +446,13 @@ int main(void)
     SparkWeightdClientClose(client);
     SparkTestStopServer(&server, server_thread);
     SparkTestLazyKvLending(&identity_b,"/tmp/spark_weightd_expert_b.bin",&identity_c,"/tmp/spark_weightd_expert_c.bin");
+    {
+        static char hex_d[SPARK_SHA256_HEX_BYTES];
+        SparkWeightdIdentity identity_d;
+        SparkTestWritePack("/tmp/spark_weightd_expert_d.bin", 61u, 3u, SPARK_TEST_EXPERTS_PER_MODEL, hex_d);
+        SparkTestMakeIdentity(&identity_d, "poc-model-d", hex_d, SPARK_TEST_ARENA_BYTES);
+        SparkTestPoolSwitch(&identity_d, "/tmp/spark_weightd_expert_d.bin", hex_d);
+    }
 
     printf("weightd v2 lazy-expert lease regression PASS\n");
     return 0;

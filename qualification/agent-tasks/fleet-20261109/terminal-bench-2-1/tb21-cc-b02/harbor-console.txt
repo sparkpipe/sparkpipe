@@ -1,0 +1,28 @@
+  6/6 Mean: 0.500 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 0:24:41 0:00:00
+terminal-bench/terminal-bench-2-1 • claude-code • deepseek-v4.1-flash
+┏━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━┓
+┃ Trials ┃ Exceptions ┃  Mean ┃
+┡━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━┩
+│      4 │          3 │ 0.500 │
+└────────┴────────────┴───────┘
+
+┏━━━━━━━━┳━━━━━━━┓
+┃ Reward ┃ Count ┃
+┡━━━━━━━━╇━━━━━━━┩
+│ 1.0    │     3 │
+│ 0.0    │     1 │
+└────────┴───────┘
+
+┏━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ Exception              ┃ Count ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
+│ AgentSetupTimeoutError │     2 │
+│ AgentTimeoutError      │     1 │
+└────────────────────────┴───────┘
+
+Job Info
+Total runtime: 24m 41s
+Results written to /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b02/result.json
+Inspect results by running `harbor view /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs`
+Share results by running `harbor upload /Users/cem/sparkpipe-agent-e2e/fleet-20261109/jobs/tb21-cc-b02`
+

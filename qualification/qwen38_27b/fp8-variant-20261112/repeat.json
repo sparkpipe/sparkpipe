@@ -1,0 +1,82 @@
+{
+ "arm": "runs/fp8.repeat.jsonl",
+ "arm_sha256": "34b242f35e6d3028c366fc1237a320f26d5b0c6b35613faa16ea21d22db75a80",
+ "format": "sparkpipe-ab-api-comparison-v1",
+ "level": 0.95,
+ "near_tie_nats": 0.001,
+ "overall": {
+  "accuracy_mcnemar_p": 1.0,
+  "accuracy_only_arm": 0,
+  "accuracy_only_reference": 0,
+  "arm_accuracy_pct": 64.74609375,
+  "dnll_rel_pct": {
+   "estimate": 0.0,
+   "lower": 0.0,
+   "upper": 0.0
+  },
+  "identical_lists": 1024,
+  "kl_lower_bound": {
+   "estimate": 0.0,
+   "lower": 0.0,
+   "upper": 0.0
+  },
+  "logprob_delta_max": 0.0,
+  "near_tie_positions": 2,
+  "positions": 1024,
+  "reference_accuracy_pct": 64.74609375,
+  "reference_nll": 1.049825931645363,
+  "stopped_by_arm_only": 0,
+  "stopped_by_both": 0,
+  "stopped_by_reference_only": 0,
+  "top1_agreement_pct": {
+   "estimate": 100.0,
+   "lower": 100.0,
+   "upper": 100.0
+  },
+  "truth_listed_by_arm_only": 0,
+  "truth_listed_by_both": 960,
+  "truth_listed_by_reference_only": 0,
+  "units": 16
+ },
+ "reference": "runs/fp8.first.jsonl",
+ "reference_sha256": "34b242f35e6d3028c366fc1237a320f26d5b0c6b35613faa16ea21d22db75a80",
+ "replicates": 10000,
+ "seed": 20260929,
+ "strata": {
+  "prose-recent": {
+   "accuracy_mcnemar_p": 1.0,
+   "accuracy_only_arm": 0,
+   "accuracy_only_reference": 0,
+   "arm_accuracy_pct": 64.74609375,
+   "dnll_rel_pct": {
+    "estimate": 0.0,
+    "lower": 0.0,
+    "upper": 0.0
+   },
+   "identical_lists": 1024,
+   "kl_lower_bound": {
+    "estimate": 0.0,
+    "lower": 0.0,
+    "upper": 0.0
+   },
+   "logprob_delta_max": 0.0,
+   "near_tie_positions": 2,
+   "positions": 1024,
+   "reference_accuracy_pct": 64.74609375,
+   "reference_nll": 1.049825931645363,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 100.0,
+    "lower": 100.0,
+    "upper": 100.0
+   },
+   "truth_listed_by_arm_only": 0,
+   "truth_listed_by_both": 960,
+   "truth_listed_by_reference_only": 0,
+   "units": 16
+  }
+ },
+ "unit": "document"
+}

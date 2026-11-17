@@ -72,6 +72,7 @@ typedef struct SparkModelResidentClientView
 	uint32_t max_sequence_positions;
 	uint32_t reserved0;
 	uint64_t client_generation;
+	uint64_t submission_id_floor;
 	uint64_t submitted_count;
 	uint64_t prepared_count;
 	uint64_t continued_count;
@@ -92,6 +93,15 @@ typedef struct SparkModelResidentStatusReport
 	uint32_t residentd_pid;
 	SparkModelServingAdapterSnapshot adapter_snapshot;
 } SparkModelResidentStatusReport;
+
+typedef struct SparkModelResidentCacheProbeReport
+{
+	uint64_t generation;
+	SparkModelServingCacheIdentity identity;
+	uint32_t token_count;
+	uint32_t status;
+	SparkModelServingCacheProbe probe;
+} SparkModelResidentCacheProbeReport;
 
 #define SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkModelResidentClientConfiguration))
@@ -114,6 +124,15 @@ SparkStatus SparkModelResidentClientCanQueueContinuation(
 SparkStatus SparkModelResidentClientContinue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
+	const SparkModelResidentClient *client,
+	uint64_t submission_id,
+	uint32_t message_bytes);
+SparkStatus SparkModelResidentClientQueueEncoded(
+	SparkModelResidentClient *client,
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes);
 SparkStatus SparkModelResidentClientCanQueueDecision(
 	const SparkModelResidentClient *client,
 	uint64_t submission_id,
@@ -129,6 +148,8 @@ SparkStatus SparkModelResidentClientProgress(
 	uint32_t maximum_message_count);
 uint64_t SparkModelResidentClientNextProgressNs(
 	const SparkModelResidentClient *client);
+uint32_t SparkModelResidentClientNeedsProgress(
+	const SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientGetPollDescriptor(
 	const SparkModelResidentClient *client,
 	SparkModelResidentClientPollDescriptor *descriptor);
@@ -138,6 +159,8 @@ SparkStatus SparkModelResidentClientGetView(
 SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report);
+SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkModelResidentClientGetCacheProbe(const SparkModelResidentClient *client,SparkModelResidentCacheProbeReport *report);
 
 #ifdef __cplusplus
 }

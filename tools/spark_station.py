@@ -51,7 +51,7 @@ def validate(station):
                 raise StationError(f"{name}: duplicate or invalid {field}")
             units.add(unit)
         lane = model["lane"]
-        if lane in lanes or not 0 <= lane < 16:
+        if lane in lanes or not 0 <= lane < 4:
             raise StationError(f"duplicate or invalid lane: {lane}")
         lanes.add(lane)
         if not model["nodes"] or len(set(model["nodes"])) != len(model["nodes"]):

@@ -1,0 +1,231 @@
+{
+ "checks": [
+  {
+   "check": "repeat",
+   "detail": "1024 of 1024 repeated positions return the same tokens and log-probs",
+   "identical_lists": 1024,
+   "logprob_delta_max": 0.0,
+   "passed": true,
+   "positions": 1024
+  }
+ ],
+ "format": "sparkpipe-variant-gate-v2",
+ "inputs": {
+  "corpus": "corpus.json",
+  "depth": "depth.json",
+  "repeat": "repeat.json",
+  "suites": [
+   "ds4-eval-92=bf16.ds4/summary.json,bf16.ds4/summary.reversed.json,bf16.ds4/summary.shuffled.json:fp8.ds4/summary.json,fp8.ds4/summary.reversed.json,fp8.ds4/summary.shuffled.json"
+  ]
+ },
+ "intact": true,
+ "measured": [
+  {
+   "detail": "the corpus token's NLL changes by +0.2827% [+0.1333, +0.4491] over the 12006 positions both list it at",
+   "dnll_rel_pct": {
+    "estimate": 0.28272674822544186,
+    "lower": 0.13328531752733658,
+    "upper": 0.449071615681532
+   },
+   "measure": "corpus NLL",
+   "positions": 12006
+  },
+  {
+   "arm_pct": 68.3828125,
+   "detail": "right at 68.562% of 12800 positions at the reference and 68.383% at the variant: 64 only the reference predicts, 41 only the variant (exact McNemar p 0.0313)",
+   "mcnemar_p": 0.03130178457554001,
+   "measure": "corpus next token",
+   "only_arm": 41,
+   "only_reference": 64,
+   "reference_pct": 68.5625
+  },
+  {
+   "detail": "the same best token at 98.12% [97.90, 98.32] of positions, KL lower bound 0.0027 [0.0021, 0.0038]",
+   "kl_lower_bound": {
+    "estimate": 0.002673345827010038,
+    "lower": 0.0021438055588002165,
+    "upper": 0.0038341568839031317
+   },
+   "measure": "corpus agreement",
+   "top1_agreement_pct": {
+    "estimate": 98.11615727350895,
+    "lower": 97.90494058786742,
+    "upper": 98.31848647945944
+   }
+  },
+  {
+   "detail": "the corpus token's NLL changes by -0.2912% [-1.0818, +0.4644] over the 2480 positions both list it at",
+   "dnll_rel_pct": {
+    "estimate": -0.29120201655770506,
+    "lower": -1.0817722176352618,
+    "upper": 0.4643757525889335
+   },
+   "measure": "depth NLL",
+   "positions": 2480
+  },
+  {
+   "arm_pct": 60.689890710382514,
+   "detail": "right at 61.407% of 2928 positions at the reference and 60.690% at the variant: 26 only the reference predicts, 5 only the variant (exact McNemar p 0.0002)",
+   "mcnemar_p": 0.00019219517707824707,
+   "measure": "depth next token",
+   "only_arm": 5,
+   "only_reference": 26,
+   "reference_pct": 61.40710382513661
+  },
+  {
+   "detail": "the same best token at 94.50% [93.34, 95.56] of positions, KL lower bound 0.0345 [0.0222, 0.0529]",
+   "kl_lower_bound": {
+    "estimate": 0.03450598966914067,
+    "lower": 0.022191088723775447,
+    "upper": 0.05290713986882155
+   },
+   "measure": "depth agreement",
+   "top1_agreement_pct": {
+    "estimate": 94.50136612021858,
+    "lower": 93.34016393442623,
+    "upper": 95.56010928961749
+   }
+  },
+  {
+   "arm_changing": 0,
+   "arm_passed": 74.0,
+   "arm_runs": [
+    74,
+    74,
+    74
+   ],
+   "cases": 92,
+   "change_cases": {
+    "estimate": -5.000000000000002,
+    "lower": -10.999999999999998,
+    "upper": 0.0
+   },
+   "detail": "79, 79, 79 of 92 at the reference and 74, 74, 74 at the variant, a change of -5.0 [-11.0, +0.0] cases a run: 8 the reference always answers and the variant never, 3 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
+   "measure": "suite ds4-eval-92",
+   "only_arm": 3,
+   "only_reference": 8,
+   "reference_changing": 0,
+   "reference_passed": 79.0,
+   "reference_runs": [
+    79,
+    79,
+    79
+   ]
+  },
+  {
+   "arm_changing": 0,
+   "arm_passed": 18.0,
+   "arm_runs": [
+    18,
+    18,
+    18
+   ],
+   "cases": 25,
+   "change_cases": {
+    "estimate": -5.000000000000002,
+    "lower": -10.0,
+    "upper": -1.9999999999999991
+   },
+   "detail": "23, 23, 23 of 25 at the reference and 18, 18, 18 at the variant, a change of -5.0 [-10.0, -2.0] cases a run: 5 the reference always answers and the variant never, 0 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
+   "measure": "suite ds4-eval-92, GPQA Diamond",
+   "only_arm": 0,
+   "only_reference": 5,
+   "reference_changing": 0,
+   "reference_passed": 23.0,
+   "reference_runs": [
+    23,
+    23,
+    23
+   ]
+  },
+  {
+   "arm_changing": 0,
+   "arm_passed": 22.0,
+   "arm_runs": [
+    22,
+    22,
+    22
+   ],
+   "cases": 25,
+   "change_cases": {
+    "estimate": 0.0,
+    "lower": 0.0,
+    "upper": 0.0
+   },
+   "detail": "22, 22, 22 of 25 at the reference and 22, 22, 22 at the variant, a change of +0.0 [+0.0, +0.0] cases a run: 0 the reference always answers and the variant never, 0 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
+   "measure": "suite ds4-eval-92, SuperGPQA",
+   "only_arm": 0,
+   "only_reference": 0,
+   "reference_changing": 0,
+   "reference_passed": 22.0,
+   "reference_runs": [
+    22,
+    22,
+    22
+   ]
+  },
+  {
+   "arm_changing": 0,
+   "arm_passed": 17.0,
+   "arm_runs": [
+    17,
+    17,
+    17
+   ],
+   "cases": 25,
+   "change_cases": {
+    "estimate": -0.9999999999999981,
+    "lower": -4.999999999999999,
+    "upper": 3.0
+   },
+   "detail": "18, 18, 18 of 25 at the reference and 17, 17, 17 at the variant, a change of -1.0 [-5.0, +3.0] cases a run: 3 the reference always answers and the variant never, 2 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
+   "measure": "suite ds4-eval-92, AIME2025",
+   "only_arm": 2,
+   "only_reference": 3,
+   "reference_changing": 0,
+   "reference_passed": 18.0,
+   "reference_runs": [
+    18,
+    18,
+    18
+   ]
+  },
+  {
+   "arm_changing": 0,
+   "arm_passed": 17.0,
+   "arm_runs": [
+    17,
+    17,
+    17
+   ],
+   "cases": 17,
+   "change_cases": {
+    "estimate": 1.0000000000000002,
+    "lower": 0.0,
+    "upper": 4.000000000000001
+   },
+   "detail": "16, 16, 16 of 17 at the reference and 17, 17, 17 at the variant, a change of +1.0 [+0.0, +4.0] cases a run: 0 the reference always answers and the variant never, 1 the reverse; 0 change between reference runs, 0 between variant runs",
+   "mcnemar_p": null,
+   "measure": "suite ds4-eval-92, COMPSEC",
+   "only_arm": 1,
+   "only_reference": 0,
+   "reference_changing": 0,
+   "reference_passed": 16.0,
+   "reference_runs": [
+    16,
+    16,
+    16
+   ]
+  }
+ ],
+ "method": {
+  "bound_level": 0.95,
+  "near_tie_nats": 0.001,
+  "replicates": 10000,
+  "seed": 20260929
+ }
+}

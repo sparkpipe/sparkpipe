@@ -37,7 +37,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "spec_offline"))
-from context_retention import EXPIRY_SWEEP_SECONDS, RETENTION_SECONDS, evict_contexts, expire_contexts
+from context_retention import evict_contexts
 from block_drafter import DraftGraph, open_drafter
 from dft3_tree import ROOT_PARENT, draft_nodes
 from latent_block_drafter import LatentBlockDrafter, LatentContext, LatentDraftGraph
@@ -61,7 +61,6 @@ class Context:
         self.values = [torch.zeros((d.kv_heads, window + d.block, d.head_dim), dtype=torch.bfloat16, device=d.device) for _ in d.layers]
         self.positions = np.full(window, -1, dtype=np.int64)
         self.tokens = np.zeros(window, dtype=np.uint32)
-        self.used = time.monotonic()
 
     def write(self, first, tokens, taps):
         skip = max(0, len(tokens) - self.window)
@@ -78,7 +77,6 @@ class Context:
         self.positions[self.positions >= first] = -1
         self.positions[slots] = positions
         self.tokens[slots] = tokens
-        self.used = time.monotonic()
 
     def held(self, positions):
         return self.positions[positions % self.window] == positions
@@ -117,7 +115,6 @@ class RingContext:
         self.window = drafter.window
         self.positions = np.full(self.window, -1, dtype=np.int64)
         self.tokens = np.zeros(self.window, dtype=np.uint32)
-        self.used = time.monotonic()
 
     def write(self, first, tokens, taps):
         stale = self.positions >= first
@@ -130,7 +127,6 @@ class RingContext:
         self.drafter.ingest(self.ring, positions.tolist(), taps)
         self.positions[positions % self.window] = positions
         self.tokens[positions % self.window] = tokens
-        self.used = time.monotonic()
 
     def held(self, positions):
         return self.positions[positions % self.window] == positions
@@ -285,24 +281,16 @@ class Server:
         self.contexts.move_to_end(sequence)
         return context
 
-    def expire(self, now):
-        return expire_contexts(self.contexts, now)
-
     def evict(self):
-        self.expire(time.monotonic())
         evict_contexts(self.contexts, self.args.context_bytes)
 
     def gpu_loop(self):
         pending = None
-        next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
         while True:
             item = None
-            if time.monotonic() >= next_sweep:
-                self.expire(time.monotonic())
-                next_sweep = time.monotonic() + EXPIRY_SWEEP_SECONDS
             try:
                 if pending is None:
-                    item = self.work.get(timeout=max(0.0, next_sweep - time.monotonic()))
+                    item = self.work.get()
                 else:
                     item = self.work.get(timeout=max(0.0, pending[2] - time.monotonic()))
             except queue.Empty:
@@ -408,9 +396,12 @@ class Server:
             print(f"TOKEN-MISMATCH sequence {sequence} position {position}", flush=True)
             return None
         started = time.monotonic()
+        alternates = alternate_scores = None
         if self.dspark:
-            drafts, confidence = self.drafter.draft(context.ring, int(anchor), position, dspark_rule(self.drafter, sampling))
-            drafts, confidence = drafts[:min(depth, self.max_drafts)], confidence[:min(depth, self.max_drafts)]
+            drafts, confidence, alternates, alternate_scores = self.drafter.draft(context.ring, int(anchor), position, dspark_rule(self.drafter, sampling),
+                                                                                  return_alternates=True)
+            count = min(depth, self.max_drafts)
+            drafts, confidence, alternates, alternate_scores = drafts[:count], confidence[:count], alternates[:count], alternate_scores[:count]
         else:
             start, block_at, valid = context.span(positions)
             drafts, confidence = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(depth, self.drafter.block), sampling)
@@ -419,7 +410,7 @@ class Server:
         self.timing["context"] += position
         self.stats["drafted"] += 1
         self.stats["draft_us"] += elapsed
-        return drafts, confidence, elapsed, None, None
+        return drafts, confidence, elapsed, alternates, alternate_scores
 
     def serve(self, connection):
         while True:

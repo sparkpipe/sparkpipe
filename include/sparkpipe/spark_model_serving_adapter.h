@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 39u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 40u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
@@ -430,6 +430,21 @@ typedef SparkStatus (*SparkModelServingAdapterCacheHintFunction)(
 	const SparkModelServingCacheIdentity *identity,
 	uint32_t token_count);
 
+typedef struct SparkModelServingCacheProbe
+{
+	uint32_t held_token_count;
+	uint32_t resident_token_count;
+	uint32_t saved_token_count;
+	uint32_t state_token_count;
+	uint32_t read_token_count;
+} SparkModelServingCacheProbe;
+
+typedef SparkStatus (*SparkModelServingAdapterCacheProbeFunction)(
+	void *adapter_state,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count,
+	SparkModelServingCacheProbe *probe);
+
 typedef struct SparkModelServingAdapterInterface
 {
 	uint32_t abi_version;
@@ -446,6 +461,7 @@ typedef struct SparkModelServingAdapterInterface
 	SparkModelServingAdapterSnapshotFunction snapshot;
 	SparkModelServingAdapterResetFunction reset;
 	SparkModelServingAdapterCacheHintFunction cache_hint;
+	SparkModelServingAdapterCacheProbeFunction cache_probe;
 } SparkModelServingAdapterInterface;
 
 typedef const SparkModelServingAdapterInterface *
@@ -528,6 +544,18 @@ SparkStatus SparkModelServingAdapterValidateStageCompletion(
 	uint32_t tokens_per_sequence,
 	const SparkModelDriverResidencyToken *expected_residency,
 	const SparkModelServingCompletion *completion);
+SparkStatus SparkModelServingAdapterValidateStageCompletionPrevalidated(
+	const SparkModelServingAdapterDescriptor *descriptor,
+	uint32_t stage_index,
+	uint32_t work_kind,
+	uint32_t active_sequence_count,
+	uint32_t tokens_per_sequence,
+	const SparkModelDriverResidencyToken *expected_residency,
+	const SparkModelServingCompletion *completion);
+void SparkModelServingCompletionReset(SparkModelServingCompletion *completion);
+void SparkModelServingCompletionCopy(
+	SparkModelServingCompletion *destination,
+	const SparkModelServingCompletion *source);
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
 	const char *shared_object_path,
 	uint32_t required_capability_flags,

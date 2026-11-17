@@ -227,8 +227,7 @@ maintained in [`PERFORMANCE_STATUS.md`](../../PERFORMANCE_STATUS.md).
 
 ## Mac Studio deployment class
 
-SparkPipe is designed to add Apple Mac Studios with M5 Ultra and 256 GB, from
-one to eight, on their own or alongside a Spark fabric. The execution planner
+SparkPipe is designed to add Apple Mac Studios, from one to eight, on their own or alongside a Spark fabric. The execution planner
 applies the same model-aware sharding, residency, scheduling, and evidence
 contracts, using a Mac Studio hardware profile, the Metal backend, and a
 Thunderbolt 5 link class.

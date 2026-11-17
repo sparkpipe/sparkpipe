@@ -51,7 +51,7 @@ the serving event ring to the client session.
 initialises the scheduler with
 `DEFAULT_FLAGS & ~CROSS_SEQUENCE_PREFIX_REUSE`: the radix cache exists,
 NVMe JIT modes are contract-checked at resident hello, and then the one
-property that pays for an API serving centaur - many requests sharing a
+property that pays for an API serving agents - many requests sharing a
 system prompt, prefill skipped for all but the first - is switched off.
 Presumably a distributed-KV-directory correctness caution. DO NOT flip
 blind: the verification is a hardware-week test (two requests, shared

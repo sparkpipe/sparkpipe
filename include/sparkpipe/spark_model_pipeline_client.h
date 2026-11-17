@@ -102,6 +102,8 @@ uint32_t SparkModelPipelineClientAllRanksReady(
 	const SparkModelPipelineClient *pipeline);
 uint64_t SparkModelPipelineClientSessionFingerprint(
 	const SparkModelPipelineClient *pipeline);
+uint64_t SparkModelPipelineClientSubmissionFloor(
+	const SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientRecover(
 	SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientProgress(
@@ -121,6 +123,8 @@ const SparkModelServingAdapterDescriptor *SparkModelPipelineClientGetAdapterDesc
 	const SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientRequestStatus(SparkModelPipelineClient *pipeline);
 SparkStatus SparkModelPipelineClientCacheHint(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkModelPipelineClientCacheProbe(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkModelPipelineClientGetRankCacheProbe(const SparkModelPipelineClient *pipeline,uint32_t rank_index,SparkModelResidentCacheProbeReport *report);
 SparkStatus SparkModelPipelineClientGetRankStatus(
 	const SparkModelPipelineClient *pipeline,
 	uint32_t rank_index,

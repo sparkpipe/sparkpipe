@@ -62,14 +62,14 @@ def main() -> int:
             if record.payload_type == module.PAYLOAD_PACKED_WEIGHT
         ]
         assert len(expert_records) == 12
-        assert all(record.codec == module.CODECS[codec][0] for record in expert_records)
+        assert all(record.weight_codec == module.CODECS[codec][0] for record in expert_records)
         assert all(record.scale_encoding == module.CODECS[codec][3]
                    for record in expert_records)
         assert all(record.payload_offset % module.ALIGNMENT == 0 for record in records)
         assert all(record.scale_offset % module.ALIGNMENT == 0 for record in expert_records)
         assert file_bytes > max(record.scale_offset + record.scale_bytes
                                 for record in expert_records)
-        assert all(record.codec == module.CODEC_BF16
+        assert all(record.weight_codec == module.CODEC_BF16
                    for record in records if record.payload_type == module.PAYLOAD_BF16)
 
         header = module.pack_header(

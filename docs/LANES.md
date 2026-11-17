@@ -10,7 +10,7 @@ whether the fleet still matches.
 | Field | Meaning |
 |---|---|
 | `launcher` | `stage_lane` (started by the `lane.sh` that `tools/stage_lane.sh` renders) or `k3_lane` (started by the swap entry's own commands) |
-| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes |
+| `model` | the `tools/stage_lane.py` MODELS entry: packs, adapter, contract, KV page bytes. A precision variant (`qwen3.8-27b-fp8`) is its own entry and record on its model's mesh lane ([VARIANT_GATE.md](VARIANT_GATE.md)) |
 | `lane` | weightd mesh lane; ports and the collective identifier follow from it |
 | `runtime_root`, `weightd_socket` | per-node root (`{host}` is substituted) and weightd socket |
 | `sequences`, `rows`, `shared_rows` | resident sequences, rows per wave, rows of the shared prefill half |
@@ -86,7 +86,13 @@ and its engram shard whole, so its pack directory holds a zero-range
 `.experts` manifest for the pack and for the shard, and the shard, its digest
 and the engram hash tables under the names the engine opens:
 `engram.spengram`, `engram.spengram.digest`, `engram.spengram.experts` and
-`engram_tables.bin`.
+`engram_tables.bin`. A group of four (`dsv41_flash_tp4`) cannot hold the
+203 GB of engram tables in memory beside its packs, so its engine reads the
+table rows a step needs from `engram.spengram` on disk (direct reads behind
+a row cache) and loads only the shard's scales and small tensors; its pack
+directory holds the pack with a zero-range `.experts` manifest, the shard
+cut for four ranks (`tools/dsv41_flash_engram_shard.py --ranks 4`, which
+writes no manifest for it), its digest and `engram_tables.bin`.
 
 The lane root holds only small real files: binaries, the rendered
 configuration, `lane.sh`, `packs/pack.sha256` (the one digest
@@ -109,6 +115,58 @@ weight file, `<host> <record> <role> <path>`, with role `pack`, `experts`,
 `digest`, `sibling`, or `named` for any other `sparkdata` path a rendered node
 file names. It reads nothing on the fleet: pruning and audits work from these
 names and never follow a link.
+
+## Unused files on the nodes
+
+A node keeps under `~/sparkdata` only what something uses:
+
+- the files the lane records name for that host, as `tools/lane_pack_files.py`
+  prints them (packs, their `.experts` and `.sha256`, pack siblings such as
+  the DeepSeek V4.1 engram files, and any other `sparkdata` path a rendered
+  config names, a partner pack for instance);
+- their companions: the same name with `.experts`, `.sha256`, `.verified`,
+  `.receipt.json`, `.ck128` or `.digest`;
+- the files the swap controller's commands name;
+- whatever a live config on the node names (`deployment.json`,
+  `config/*.json` and `lane.sh` in a lane root; `model_resident.json`,
+  `config/*.json` and the env files of a fleet agent root); a named directory
+  keeps its whole tree, and a file that only a live config names is reported,
+  because its record does not name it;
+- the entries of `deployment/sparkdata_keep.json`, each with a reason and the
+  date it was kept: staged packs that no lane serves yet and the
+  infrastructure directories (`core`, `weightd`, `swap`, `working-state`);
+- every FP8 build: a path with `fp8` in any of its names under `sparkdata`
+  (an FP8 or MXFP8 pack, an FP8 checkpoint). FP8 packs and checkpoints are
+  kept when disk is freed, so a new one needs no keep entry;
+- the fleet agent's roots: a directory with a release `MANIFEST`, or one
+  `~/.fleet_agent_roots` or the `fleet-agent` unit names. The release channel
+  owns them.
+
+```bash
+python3 tools/node_pack_prune.py
+python3 tools/node_pack_prune.py --host spark3
+python3 tools/node_pack_prune.py --delete
+```
+
+`tools/node_pack_prune.py` sends one scan to every node. The node walks its
+`sparkdata` without following a link and lists every other file, link and
+directory: `UNUSED <host> <bytes> <path>` (a directory whose whole tree is
+unused is one line), then `TOTAL <host>` with the unused bytes and the kept
+bytes by reason. It also prints `MISSING` for a file a record names that the
+node lacks, `LINKED` for one that is a symlink and `LIVE` for a file that
+only a live config names. The default is a dry run.
+
+`--delete` is the owner's command. Each node deletes its unused entries
+itself, after checking each one again: an entry that a running process holds
+open (a file descriptor, a mapping, a working directory or an executable in
+`/proc`, or `lsof` where there is no `/proc`) or that holds anything modified
+in the last hour is refused. The node walks the entry's tree again just
+before deleting it, so a file written into it after the scan stops the
+delete. A node that lacks any file a record names deletes nothing, since its
+layout is then not the one the records describe.
+Every refusal is a `REFUSED <host> <path>: <reason>` line and makes the
+command exit 1. A full `lane_config.py audit` reports each unused entry as
+`UNUSED <bytes> <host>:<path>` and each absent named file as `MISSING`.
 
 ## Commands
 
@@ -134,7 +192,10 @@ an operator's shell exports reaches a production `lane.sh`.
 - the weightd ceiling and KV reserve in every node's `weightd.log`;
 - lane roots and API directories that no record names;
 - every symlink under `~/stage-lanes` and `~/k3-lanes` (one `LINK` line
-  each; an audit of named records scans their lane roots).
+  each; an audit of named records scans their lane roots);
+- on a full audit, every unused entry under each node's `sparkdata`
+  (`UNUSED <bytes> <host>:<path>`) and every file a record names that the
+  node lacks (`MISSING`), as `tools/node_pack_prune.py` finds them.
 
 It prints one line per finding and exits non-zero when there is any.
 
@@ -172,6 +233,14 @@ its KV cache, KV snapshots and links, so it refuses, before touching any node,
 while the lane's unit is active, starting or stopping on any rank: stop the
 lane first. Run `lane_config.py audit` before a setup to see what it will
 replace.
+
+A stopped lane keeps its KV pool and its pack's cold arena in each node's
+weightd, so that a restart finds them: 1.6 to 3.2 GiB a node for the
+four-rank DeepSeek V4.1 Flash lane, which the nodes' other lanes cannot use
+meanwhile. The swap controller releases them for the models it knows. For an
+experiment lane, `stage_lane.sh reclaim` after the last `stage_lane.sh stop`
+runs every rank's `lane.sh reclaim` (the pack by its digest, the KV pool by
+its label) and names the hosts that refuse.
 
 ## Changing a lane
 

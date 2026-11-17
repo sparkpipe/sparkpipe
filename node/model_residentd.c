@@ -17,6 +17,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,8 +35,6 @@
 #endif
 #include <unistd.h>
 
-#include <cuda_runtime_api.h>
-
 #include "runtime/model_continuation_lease.h"
 #include "runtime/model_resident_socket.h"
 #include "spark_filesystem.h"
@@ -45,6 +44,7 @@
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
 #include "weightd_spawn.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define SPARK_MODEL_RESIDENTD_TRANSPORT_POLL_CAPACITY 32u
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
@@ -223,10 +223,12 @@ typedef struct SparkModelResidentdSequenceSlot
 	uint64_t request_generation;
 	uint64_t sequence_id;
 	SparkModelContinuationLease lease;
+	SparkModelServingLane lane;
 } SparkModelResidentdSequenceSlot;
 
 typedef struct SparkModelResidentdRuntime
 {
+	uint64_t submission_id_floor;
 	SparkModelServingAdapterDynamicLibrary adapter_library;
 	void *adapter_state;
 	SparkHiddenTransportDynamicLibrary transport_library;
@@ -242,6 +244,8 @@ typedef struct SparkModelResidentdRuntime
 	SparkModelResidentdRoute *routes;
 	SparkModelResidentdSlot *slots;
 	SparkModelResidentdSequenceSlot *sequence_slots;
+	SparkModelServingLane *continued_lanes;
+	uint8_t *expanded_message;
 	uint8_t *route_messages;
 	uint32_t route_capacity;
 	uint64_t last_stuck_scan_ns;
@@ -259,8 +263,8 @@ typedef struct SparkModelResidentdRuntime
 	uint64_t adapter_op_count;
 	uint32_t adapter_op_max_per_pass;
 	SparkModelResidentdMemoryMode memory_mode;
-	cudaStream_t execution_stream;
-	cudaStream_t transport_stream;
+	SparkGpuStream execution_stream;
+	SparkGpuStream transport_stream;
 	int32_t listen_fd;
 	int32_t candidate_fd;
 	uint32_t candidate_input_bytes;
@@ -349,7 +353,9 @@ static SparkStatus SparkModelResidentdParseLaunch(
 		else
 			status = SPARK_STATUS_INVALID_ARGUMENT;
 	}
-	return(status == SPARK_STATUS_OK && launch->deployment_path != 0 && launch->rank_index != SPARK_MODEL_RESIDENTD_UNSET_UINT32 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	if ( status != SPARK_STATUS_OK || launch->deployment_path == 0 || launch->rank_index == SPARK_MODEL_RESIDENTD_UNSET_UINT32 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelResidentdBuildConfiguration(
@@ -466,7 +472,8 @@ static SparkStatus SparkModelResidentdValidateKvPartition(
 	}
 	if ( configuration->kv_snapshot_directory != 0 && configuration->kv_ledger_path[0] == '\0' )
 	{
-		fprintf(stderr,"model_residentd: no home directory for uid %u holds the node KV ledger %s\n",(unsigned)geteuid(),SPARK_KV_LEDGER_NAME);
+		fprintf(stderr,"model_residentd: no node KV root holds the ledger %s: %s must be the full path of an existing folder, and without it uid %u needs a home directory\n",
+			SPARK_KV_LEDGER_NAME,SPARK_KV_NODE_ROOT_VARIABLE,(unsigned)geteuid());
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	if ( configuration->kv_snapshot_directory != 0 && statvfs(configuration->kv_partition,&space) != 0 )
@@ -671,23 +678,25 @@ static SparkStatus SparkModelResidentdAllocateBoundary(
 	SparkModelResidentdMemoryMode memory_mode,
 	uint64_t bytes)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	if ( boundary == 0 || bytes == 0u || bytes > SIZE_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(boundary,0,sizeof(*boundary));
 	boundary->bytes = bytes;
 	if ( memory_mode == SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST )
 	{
-		error = cudaHostAlloc(&boundary->allocation,(size_t)bytes,cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&boundary->cuda_address,boundary->allocation,0u);
+		error = SparkGpuHostAlloc(&boundary->allocation,(size_t)bytes,SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED);
+		if ( error == SPARK_GPU_SUCCESS )
+			error = SparkGpuHostGetDevicePointer(&boundary->cuda_address,boundary->allocation,0u);
 	}
 	else
 	{
-		error = cudaMalloc(&boundary->allocation,(size_t)bytes);
+		error = SparkGpuMalloc(&boundary->allocation,(size_t)bytes);
 		boundary->cuda_address = boundary->allocation;
 	}
-	return(error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( error != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkModelResidentdFreeBoundary(
@@ -697,9 +706,9 @@ static void SparkModelResidentdFreeBoundary(
 	if ( boundary == 0 )
 		return;
 	if ( boundary->allocation != 0 && memory_mode == SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST )
-		(void)cudaFreeHost(boundary->allocation);
+		(void)SparkGpuFreeHost(boundary->allocation);
 	else if ( boundary->allocation != 0 )
-		(void)cudaFree(boundary->allocation);
+		(void)SparkGpuFree(boundary->allocation);
 	memset(boundary,0,sizeof(*boundary));
 }
 
@@ -708,24 +717,24 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	SparkModelResidentdMemoryMode memory_mode)
 {
 	SparkStatus status;
-	cudaError_t error;
+	SparkGpuError error;
 	uint32_t index;
 	int least_priority = 0,greatest_priority = 0;
 	runtime->memory_mode = memory_mode;
-	error = cudaDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
-	if ( error == cudaSuccess )
-		error = cudaStreamCreateWithPriority(&runtime->execution_stream,cudaStreamNonBlocking,greatest_priority);
-	if ( error != cudaSuccess )
+	error = SparkGpuDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuStreamCreateWithPriority(&runtime->execution_stream,SPARK_GPU_STREAM_NON_BLOCKING,greatest_priority);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=execution rank=%u stage=%u cuda_error=%d detail=%s\n",
-			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	error = cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking);
-	if ( error != cudaSuccess )
+	error = SparkGpuStreamCreateWithFlags(&runtime->transport_stream,SPARK_GPU_STREAM_NON_BLOCKING);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=transport rank=%u stage=%u cuda_error=%d detail=%s\n",
-			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	status = SPARK_STATUS_OK;
@@ -752,8 +761,7 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	size_t bytes;
 	SparkStatus status;
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
-	status = SparkModelResidentIpcCalculateSubmitBytes(runtime->runtime_limits.max_active_sequence_count,runtime->runtime_limits.max_input_row_count,runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_CACHE_BLOCK_IDENTITY_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,
-		runtime->runtime_limits.max_input_row_count < SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT ? runtime->runtime_limits.max_input_row_count : SPARK_MODEL_SERVING_ADAPTER_MAX_TREE_ROW_COUNT,&submit_bytes);
+	status = SparkModelResidentIpcCalculateSubmitCapacity(&runtime->runtime_limits,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
 	if ( status != SPARK_STATUS_OK )
@@ -779,7 +787,10 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	bytes = (size_t)runtime->client.output_capacity * runtime->client.output_message_capacity;
 	runtime->client.output_storage = (uint8_t *)malloc(bytes);
 	runtime->client.input = (uint8_t *)malloc(runtime->client.input_capacity);
-	if ( runtime->routes == 0 || runtime->slots == 0 || runtime->sequence_slots == 0 || runtime->route_messages == 0 || runtime->client.output == 0 || runtime->client.output_storage == 0 || runtime->client.input == 0 )
+	runtime->continued_lanes = (SparkModelServingLane *)calloc(runtime->runtime_limits.max_active_sequence_count,sizeof(runtime->continued_lanes[0]));
+	runtime->expanded_message = (uint8_t *)malloc(runtime->route_message_capacity);
+	if ( runtime->routes == 0 || runtime->slots == 0 || runtime->sequence_slots == 0 || runtime->route_messages == 0 || runtime->client.output == 0 || runtime->client.output_storage == 0 || runtime->client.input == 0 ||
+		runtime->continued_lanes == 0 || runtime->expanded_message == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for (index=0u; index<runtime->route_capacity; index++)
 		runtime->slots[index].message = runtime->route_messages + ((size_t)index * runtime->route_message_capacity);
@@ -835,7 +846,9 @@ static SparkStatus SparkModelResidentdValidatePersistentSlot(
 			return(SPARK_STATUS_OK);
 		if ( slot->bound == 0u )
 			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-		return(SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+		if ( SparkModelResidentdSequenceSlotMatches(slot,lane) == 0u )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_OK);
 	}
 	if ( slot->bound == 0u || SparkModelResidentdSequenceSlotMatches(slot,lane) != 0u )
 		return(SPARK_STATUS_OK);
@@ -870,11 +883,11 @@ static SparkStatus SparkModelResidentdClaimResidentSlotsLocked(
 	{
 		slot = route->submission.lanes[lane].resident_sequence_slot;
 		if ( slot >= runtime->runtime_limits.resident_sequence_capacity )
-			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( runtime->sequence_slots[slot].active_owner != 0u )
 		{
 			SparkModelResidentdReportSlotOwner(runtime,route,slot);
-			return(SPARK_STATUS_BUSY);
+			SPARK_FAIL(SPARK_STATUS_BUSY);
 		}
 		status = SparkModelResidentdValidatePersistentSlot(runtime,route,lane);
 		if ( status != SPARK_STATUS_OK )
@@ -981,9 +994,12 @@ static SparkStatus SparkModelResidentdCompleteContinuationLease(
 				SPARK_RETURN(status);
 		}
 	}
-	return(SparkModelContinuationLeaseEstablish(&slot->lease,
+	status = SparkModelContinuationLeaseEstablish(&slot->lease,
 		runtime->client.generation,route->submission.control_generation,
-		next_sequence_position,lane->step_generation));
+		next_sequence_position,lane->step_generation);
+	if ( status == SPARK_STATUS_OK )
+		slot->lane = *lane;
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkModelResidentdCompleteResidentSlotsLocked(
@@ -1237,6 +1253,8 @@ static SparkStatus SparkModelResidentdQueueCompletionLocked(
 	{
 		fprintf(stderr,"ROUTE-SLOTS-UNSETTLED id=%llu kind=%u status=%s — releasing the route's claims and failing its completion\n",(unsigned long long)route->submission_id,route->submission.work_kind,SparkStatusToString(status));
 		SparkModelResidentdDropClaimsLocked(runtime,route);
+		memset(route->completion.token_ids,0,(size_t)(route->completion.token_count < SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT ?
+			route->completion.token_count : SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(route->completion.token_ids[0]));
 		route->completion.status = (uint32_t)status;
 		route->completion.completion_flags = 0u;
 		route->completion.accepted_token_count = 0u;
@@ -1261,16 +1279,16 @@ static SparkStatus SparkModelResidentdValidateRouteCompletion(const SparkModelRe
 	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_RESIDENCY;
 	status = SparkModelServingAdapterValidateCompletionResidency(descriptor,&route->submission.residency,completion);
 	if ( status != SPARK_STATUS_OK )
-		return(status);
+		SPARK_RETURN(status);
 	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_IDENTITY;
 	if ( route->request_id != completion->request_id || route->sequence_id != completion->sequence_id || route->sequence_position != completion->sequence_position || route->submission.control_generation != completion->control_generation || route->submission.transaction_id != completion->transaction_id || route->submission.dispatch_generation != completion->dispatch_generation || route->submission.request_generation != completion->request_generation || route->submission.step_generation != completion->step_generation )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_ACCEPTED_TOKENS;
 	if ( completion->accepted_token_count > route->submission.new_token_count + descriptor->max_speculative_token_count )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	*failure_reason = SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS;
 	if ( completion->status != SPARK_STATUS_OK )
-		return((SparkStatus)completion->status);
+		SPARK_RETURN((SparkStatus)completion->status);
 	*failure_reason = 0u;
 	return(SPARK_STATUS_OK);
 }
@@ -1278,7 +1296,7 @@ static SparkStatus SparkModelResidentdValidateRouteCompletion(const SparkModelRe
 static void SparkModelResidentdAcceptCompletionLocked(SparkModelResidentdRuntime *runtime,SparkModelResidentdRoute *route,const SparkModelServingCompletion *completion)
 {
 	uint64_t completed_time_ns;
-	route->completion = *completion;
+	SparkModelServingCompletionCopy(&route->completion,completion);
 	route->driver_completed = 1u;
 	completed_time_ns = SparkMonotonicNs();
 	route->completed_time_ns = completed_time_ns;
@@ -1312,7 +1330,7 @@ static void SparkModelResidentdCompletion(void *completion_context,const SparkMo
 		SparkModelResidentdAcceptCompletionLocked(runtime,route,completion);
 	else if ( failure_reason == SPARK_MODEL_RESIDENTD_FAILURE_COMPLETION_STATUS )
 	{
-		route->completion = *completion;
+		SparkModelServingCompletionCopy(&route->completion,completion);
 		route->completion.accepted_token_count = 0u;
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION;
 	}
@@ -1717,10 +1735,10 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 			if ( quiesce_status == SPARK_STATUS_OK )
 				break;
 			if ( quiesce_status != SPARK_STATUS_BUSY && quiesce_status != SPARK_STATUS_PENDING )
-				return(quiesce_status);
+				SPARK_RETURN(quiesce_status);
 			progress_status = runtime->adapter_library.adapter_interface.progress(runtime->adapter_state,SPARK_MODEL_RESIDENTD_PROGRESS_STEPS);
 			if ( progress_status != SPARK_STATUS_OK && progress_status != SPARK_STATUS_BUSY && progress_status != SPARK_STATUS_PENDING )
-				return(progress_status);
+				SPARK_RETURN(progress_status);
 			(void)nanosleep(&sleep_time,0);
 			now = SparkMonotonicNs();
 			if ( now == 0u )
@@ -1729,9 +1747,9 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 				SPARK_FAIL(SPARK_STATUS_BUSY);
 		}
 	}
-	if ( runtime->execution_stream != 0 && cudaStreamSynchronize(runtime->execution_stream) != cudaSuccess )
+	if ( runtime->execution_stream != 0 && SparkGpuStreamSynchronize(runtime->execution_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( runtime->transport_stream != 0 && cudaStreamSynchronize(runtime->transport_stream) != cudaSuccess )
+	if ( runtime->transport_stream != 0 && SparkGpuStreamSynchronize(runtime->transport_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -1773,9 +1791,9 @@ static void SparkModelResidentdDestroy(
 			SparkModelResidentdFreeBoundary(&runtime->slots[index].output,runtime->memory_mode);
 		}
 	if ( runtime->execution_stream != 0 )
-		(void)cudaStreamDestroy(runtime->execution_stream);
+		(void)SparkGpuStreamDestroy(runtime->execution_stream);
 	if ( runtime->transport_stream != 0 )
-		(void)cudaStreamDestroy(runtime->transport_stream);
+		(void)SparkGpuStreamDestroy(runtime->transport_stream);
 	if ( runtime->wake_read_fd >= 0 )
 		close(runtime->wake_read_fd);
 	if ( runtime->wake_write_fd >= 0 )
@@ -1783,6 +1801,8 @@ static void SparkModelResidentdDestroy(
 	free(runtime->client.input);
 	free(runtime->client.output_storage);
 	free(runtime->client.output);
+	free(runtime->expanded_message);
+	free(runtime->continued_lanes);
 	free(runtime->route_messages);
 	free(runtime->sequence_slots);
 	free(runtime->slots);
@@ -1829,7 +1849,8 @@ static SparkModelResidentdRoute *SparkModelResidentdReserveRoute(
 		route = &runtime->routes[index];
 		if ( route->active == 0u )
 		{
-			memset(route,0,sizeof(*route));
+			memset(route,0,offsetof(SparkModelResidentdRoute,completion));
+			SparkModelServingCompletionReset(&route->completion);
 			route->active = 1u;
 			route->active_since_ns = SparkMonotonicNs();
 			if ( runtime->frame_flush_ns != 0u && route->active_since_ns >= runtime->frame_flush_ns )
@@ -1890,42 +1911,53 @@ static void *SparkModelResidentdSidebandAddress(
 	return((uint8_t *)boundary->cuda_address + primary_capacity);
 }
 
+static const void *SparkModelResidentdRebase(const void *pointer,const void *from,void *to)
+{
+	return(pointer != 0 ? (const void *)((uint8_t *)to + ((const uint8_t *)pointer - (const uint8_t *)from)) : 0);
+}
+
+static void SparkModelResidentdRebaseSubmission(SparkModelServingSubmission *submission,const void *from,void *to)
+{
+	submission->lanes = (const SparkModelServingLane *)SparkModelResidentdRebase(submission->lanes,from,to);
+	submission->token_ids = (const uint32_t *)SparkModelResidentdRebase(submission->token_ids,from,to);
+	submission->row_lane_indices = (const uint32_t *)SparkModelResidentdRebase(submission->row_lane_indices,from,to);
+	submission->row_positions = (const uint64_t *)SparkModelResidentdRebase(submission->row_positions,from,to);
+	submission->row_sequence_ids = (const uint64_t *)SparkModelResidentdRebase(submission->row_sequence_ids,from,to);
+	submission->row_parent_rows = (const uint32_t *)SparkModelResidentdRebase(submission->row_parent_rows,from,to);
+	submission->row_slots = (const uint32_t *)SparkModelResidentdRebase(submission->row_slots,from,to);
+	submission->model_extension = SparkModelResidentdRebase(submission->model_extension,from,to);
+	submission->cache_block_identities = (const SparkModelServingCacheIdentity *)SparkModelResidentdRebase(submission->cache_block_identities,from,to);
+}
+
 static SparkStatus SparkModelResidentdBindRoute(
 	SparkModelResidentdRuntime *runtime,
 	SparkModelResidentdRoute *route,
 	const void *message,
 	uint32_t message_bytes,
+	const SparkModelServingSubmission *submission,
 	uint32_t decision_required)
 {
 	SparkModelResidentdSlot *slot;
 	uint64_t hidden_bytes,input_sideband_bytes,output_sideband_bytes;
 	void *input_sideband_address,*output_sideband_address;
 	SparkStatus status;
-	if ( runtime == 0 || route == 0 || message == 0 || message_bytes > runtime->route_message_capacity || route->slot_index >= runtime->route_capacity )
+	if ( runtime == 0 || route == 0 || message == 0 || submission == 0 || message_bytes > runtime->route_message_capacity || route->slot_index >= runtime->route_capacity )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	slot = &runtime->slots[route->slot_index];
 	memcpy(slot->message,message,message_bytes);
 	route->message_bytes = message_bytes;
-	status = SparkModelResidentIpcDecodeSubmission(slot->message,message_bytes,&route->submission);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(runtime->adapter_library.adapter_interface.descriptor,&runtime->runtime_limits,&route->submission);
-	hidden_bytes = status == SPARK_STATUS_OK &&
-		((runtime->rank_plan.flags &
-		 SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ||
-		 (runtime->adapter_library.adapter_interface.descriptor->capability_flags &
-		  SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u) ?
-		(uint64_t)route->submission.row_count *
-		runtime->rank_plan.boundary_bytes_per_sequence : 0u;
-	input_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
-	output_sideband_bytes = status == SPARK_STATUS_OK && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
-	if ( status == SPARK_STATUS_OK && (hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes) )
-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
-	if ( status == SPARK_STATUS_OK )
-	{
-		pthread_mutex_lock(&runtime->mutex);
-		status = SparkModelResidentdClaimResidentSlotsLocked(runtime,route);
-		pthread_mutex_unlock(&runtime->mutex);
-	}
+	route->submission = *submission;
+	SparkModelResidentdRebaseSubmission(&route->submission,message,slot->message);
+	hidden_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_PARALLEL_FANOUT) == 0u ||
+		(runtime->adapter_library.adapter_interface.descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HYBRID_TP_PP) != 0u ?
+		(uint64_t)route->submission.row_count * runtime->rank_plan.boundary_bytes_per_sequence : 0u;
+	input_sideband_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.input_sideband_bytes_per_sequence : 0u;
+	output_sideband_bytes = (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u ? (uint64_t)route->submission.row_count * runtime->rank_plan.output_sideband_bytes_per_sequence : 0u;
+	if ( hidden_bytes + input_sideband_bytes > runtime->rank_plan.input_max_packet_bytes || hidden_bytes + output_sideband_bytes > runtime->rank_plan.output_max_packet_bytes )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdClaimResidentSlotsLocked(runtime,route);
+	pthread_mutex_unlock(&runtime->mutex);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( SparkModelServingWorkKindUsesRows(route->submission.work_kind) != 0u && (runtime->rank_plan.flags & SPARK_PIPELINE_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u )
@@ -1971,6 +2003,7 @@ static SparkStatus SparkModelResidentdFinishHello(SparkModelResidentdRuntime *ru
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pthread_mutex_lock(&runtime->mutex);
+	ack.submission_id_floor = runtime->submission_id_floor;
 	status = SparkModelResidentdQueueRawLocked(runtime,&ack,sizeof(ack));
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -2030,13 +2063,13 @@ static SparkStatus SparkModelResidentdAdoptCandidate(
 		if ( status == SPARK_STATUS_OK && SparkIoSend(fd,&ack,sizeof(ack)) != sizeof(ack) )
 			fprintf(stderr,"model_residentd client_rejection_reply_failed rank=%u\n",runtime->rank_plan.rank_index);
 		close(fd);
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
 	SparkModelResidentdCloseClient(runtime);
 	if ( atomic_load(&runtime->failed_status) != SPARK_STATUS_OK )
 	{
 		close(fd);
-		return((SparkStatus)atomic_load(&runtime->failed_status));
+		SPARK_RETURN((SparkStatus)atomic_load(&runtime->failed_status));
 	}
 	if ( runtime->client.session_epoch != 0u )
 	{
@@ -2170,6 +2203,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	SparkModelResidentdRoute *route;
 	SparkStatus cleanup_status,queue_status,resolution_status,status;
 	uint32_t cache_prepared,decoded;
+	uint64_t decoded_ns;
 	wire = (const SparkModelResidentIpcSubmit *)message;
 #ifdef DEBUG
 	fprintf(stderr,"SUBMIT-ARRIVED id=%llu bytes=%u\n",
@@ -2177,6 +2211,7 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 		(unsigned)message_bytes);
 #endif
 	status = SparkModelResidentIpcDecodeSubmission(message,message_bytes,&submission);
+	decoded_ns = SparkMonotonicNs();
 	decoded = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && (runtime->client.hello_complete == 0u ||
 		runtime->client.pending_client_reset != 0u) )
@@ -2203,7 +2238,9 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,1u);
+		if ( submission.deadline_time_ns != 0u )
+			submission.deadline_time_ns += SparkMonotonicNs() - decoded_ns;
+		status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,&submission,1u);
 		if ( status == SPARK_STATUS_OK )
 			route->prepared_cache = cache_prepared;
 	}
@@ -2244,7 +2281,11 @@ static SparkStatus SparkModelResidentdProcessSubmission(
 	if ( queue_status == SPARK_STATUS_OK && route != 0 && route->active != 0u && route->state == SPARK_MODEL_RESIDENTD_ROUTE_FAILED )
 		route->failure_delivered = 1u;
 	if ( queue_status == SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+	{
 		runtime->client.last_submission_id = submission.submission_id;
+		if ( submission.submission_id > runtime->submission_id_floor )
+			runtime->submission_id_floor = submission.submission_id;
+	}
 	pthread_mutex_unlock(&runtime->mutex);
 	if ( queue_status != SPARK_STATUS_OK && route != 0 && status == SPARK_STATUS_OK )
 	{
@@ -2348,12 +2389,14 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 		SPARK_RETURN(status);
 	if ( route == 0 )
 		SPARK_FAIL(SPARK_STATUS_BUSY);
-	status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,0u);
+	status = SparkModelResidentdBindRoute(runtime,route,message,message_bytes,&submission,0u);
 	pthread_mutex_lock(&runtime->mutex);
 	if ( status == SPARK_STATUS_OK )
 	{
 		route->state = SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING;
 		runtime->client.last_submission_id = submission.submission_id;
+		if ( submission.submission_id > runtime->submission_id_floor )
+			runtime->submission_id_floor = submission.submission_id;
 	}
 	else
 	{
@@ -2363,6 +2406,62 @@ static SparkStatus SparkModelResidentdProcessContinuation(
 	}
 	pthread_mutex_unlock(&runtime->mutex);
 	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkModelResidentdProcessTokenContinuation(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcContinueToken *tokens;
+	const SparkModelResidentdSequenceSlot *slot;
+	uint32_t expanded_bytes,lane,token_count;
+	SparkStatus status;
+	status = SparkModelResidentIpcTokenContinuationTokens(message,message_bytes,&tokens,&token_count);
+	if ( status == SPARK_STATUS_OK && token_count > runtime->runtime_limits.max_active_sequence_count )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	for (lane=0u; status == SPARK_STATUS_OK && lane<token_count; lane++)
+	{
+		if ( tokens[lane].resident_sequence_slot >= runtime->runtime_limits.resident_sequence_capacity )
+		{
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+			break;
+		}
+		slot = &runtime->sequence_slots[tokens[lane].resident_sequence_slot];
+		if ( slot->bound == 0u || SparkModelContinuationLeaseIsActive(&slot->lease) == 0u )
+		{
+			fprintf(stderr,"model_residentd token continuation refused: slot %u holds no leased lane\n",(unsigned)tokens[lane].resident_sequence_slot);
+			status = SPARK_STATUS_SCHEMA_ERROR;
+			break;
+		}
+		runtime->continued_lanes[lane] = slot->lane;
+	}
+	pthread_mutex_unlock(&runtime->mutex);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkModelResidentIpcExpandTokenContinuation(message,message_bytes,runtime->continued_lanes,
+			runtime->expanded_message,runtime->route_message_capacity,&expanded_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	return(SparkModelResidentdProcessContinuation(runtime,runtime->expanded_message,expanded_bytes));
+}
+
+static SparkStatus SparkModelResidentdProcessSpans(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
+	uint32_t expanded_bytes;
+	SparkStatus status;
+	status = SparkModelResidentIpcExpandSpans(message,message_bytes,runtime->expanded_message,runtime->route_message_capacity,&expanded_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_SPANS )
+		return(SparkModelResidentdProcessContinuation(runtime,runtime->expanded_message,expanded_bytes));
+	return(SparkModelResidentdProcessSubmission(runtime,runtime->expanded_message,expanded_bytes));
 }
 
 static SparkStatus SparkModelResidentdProcessDecision(
@@ -2487,6 +2586,32 @@ static SparkStatus SparkModelResidentdProcessCacheHint(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelResidentdProcessCacheProbe(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheProbe *request = (const SparkModelResidentIpcCacheProbe *)message;
+	SparkModelResidentIpcCacheProbeReport report;
+	SparkModelServingCacheProbe probe;
+	SparkStatus status,probe_status;
+	status = SparkModelResidentIpcValidateCacheProbe(message,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&probe,0,sizeof(probe));
+	probe_status = runtime->adapter_state != 0 && runtime->adapter_library.adapter_interface.cache_probe != 0 ?
+		runtime->adapter_library.adapter_interface.cache_probe(runtime->adapter_state,&request->identity,request->token_count,&probe) : SPARK_STATUS_UNSUPPORTED;
+	if ( probe_status != SPARK_STATUS_OK )
+		memset(&probe,0,sizeof(probe));
+	status = SparkModelResidentIpcInitializeCacheProbeReport(&report,request,probe_status,runtime->rank_plan.rank_index,&probe);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdQueueRawLocked(runtime,&report,sizeof(report));
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkModelResidentdProcessMessage(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -2509,13 +2634,19 @@ static SparkStatus SparkModelResidentdProcessMessage(
 	}
 	if ( runtime->client.hello_complete == 0u || header->message_id <= runtime->client.last_message_id )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
-		header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+	if ( SparkModelResidentIpcIsSubmissionKind(header->kind) != 0u )
 	{
 		status = SparkModelResidentIpcValidateHeader(header,message_bytes,header->kind,SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
-		if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
+		if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS )
+			status = SparkModelResidentdProcessTokenContinuation(runtime,message,
+				message_bytes);
+		else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE_SPANS ||
+			header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_SPANS )
+			status = SparkModelResidentdProcessSpans(runtime,message,
+				message_bytes);
+		else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE )
 			status = SparkModelResidentdProcessContinuation(runtime,message,
 				message_bytes);
 		else
@@ -2528,6 +2659,8 @@ static SparkStatus SparkModelResidentdProcessMessage(
 		status = SparkModelResidentdProcessStatusRequest(runtime,message,message_bytes);
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT )
 		status = SparkModelResidentdProcessCacheHint(runtime,message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE )
+		status = SparkModelResidentdProcessCacheProbe(runtime,message,message_bytes);
 	else
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )
@@ -2554,8 +2687,10 @@ static SparkStatus SparkModelResidentdReadClient(
 			SparkModelResidentdDetachClient(runtime);
 			return(SPARK_STATUS_OK);
 		}
+		if ( bytes_read < 0 && errno != EAGAIN && errno != EWOULDBLOCK )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( bytes_read < 0 )
-			return(errno == EAGAIN || errno == EWOULDBLOCK ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
+			return(SPARK_STATUS_OK);
 		runtime->client.input_bytes += (uint32_t)bytes_read;
 		runtime->client.last_activity_ns = SparkMonotonicNs();
 		if ( runtime->client.input_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES && runtime->client.target_bytes == SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES )
@@ -2569,9 +2704,7 @@ static SparkStatus SparkModelResidentdReadClient(
 		{
 			header = (SparkModelResidentIpcHeader *)runtime->client.input;
 			status = SparkModelResidentdProcessMessage(runtime,runtime->client.input,runtime->client.target_bytes);
-			if ( status == SPARK_STATUS_OK &&
-				(header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE ||
-				 header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE) )
+			if ( status == SPARK_STATUS_OK && SparkModelResidentIpcIsSubmissionKind(header->kind) != 0u )
 				*submission_processed_out = 1u;
 			runtime->client.input_bytes = 0u;
 			runtime->client.target_bytes = SPARK_MODEL_RESIDENT_IPC_HEADER_BYTES;
@@ -2613,7 +2746,9 @@ static SparkStatus SparkModelResidentdWriteClient(SparkModelResidentdRuntime *ru
 		if ( bytes_written <= 0 )
 		{
 			pthread_mutex_unlock(&runtime->mutex);
-			return(bytes_written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
+			if ( bytes_written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) )
+				return(SPARK_STATUS_OK);
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		}
 		output->sent_bytes += (uint32_t)bytes_written;
 #ifdef DEBUG
@@ -2740,7 +2875,7 @@ static SparkStatus SparkModelResidentdApplyTransportCompletionLocked(
 			matched,state);
 		if ( deadline_status != SPARK_STATUS_OK &&
 			deadline_status != SPARK_STATUS_CAPACITY_EXCEEDED )
-			return(deadline_status);
+			SPARK_RETURN(deadline_status);
 	}
 	if ( matched->deadline_expired != 0u )
 	{
@@ -3021,7 +3156,7 @@ static SparkStatus SparkModelResidentdProgressRoute(
 	SparkModelResidentdAdapterBudget *budget)
 {
 	SparkStatus status;
-	uint32_t state,step,submitted;
+	uint32_t state,step,submitted,failed;
 	for (step=0u; step<4u; step++)
 	{
 		pthread_mutex_lock(&runtime->mutex);
@@ -3090,13 +3225,16 @@ static SparkStatus SparkModelResidentdProgressRoute(
 				if ( cancel_status != SPARK_STATUS_OK )
 					SPARK_RETURN(cancel_status);
 			}
-			return(status == SPARK_STATUS_CAPACITY_EXCEEDED ? SPARK_STATUS_OK :
-				status);
+			if ( status != SPARK_STATUS_CAPACITY_EXCEEDED )
+				SPARK_RETURN(status);
+			return(SPARK_STATUS_OK);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_INPUT )
 		{
 			status = SparkModelResidentdPostTransport(runtime,route,1u);
-			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
+			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
+				SPARK_RETURN(status);
+			return(SPARK_STATUS_OK);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_ADAPTER )
 		{
@@ -3160,10 +3298,20 @@ static SparkStatus SparkModelResidentdProgressRoute(
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_OUTPUT )
 		{
 			status = SparkModelResidentdPostTransport(runtime,route,0u);
-			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
+			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY )
+				SPARK_RETURN(status);
+			return(SPARK_STATUS_OK);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION )
-			return(SparkModelResidentdFinishRoute(runtime,route));
+		{
+			pthread_mutex_lock(&runtime->mutex);
+			failed = route->active != 0u && route->completion.status != (uint32_t)SPARK_STATUS_OK ? 1u : 0u;
+			pthread_mutex_unlock(&runtime->mutex);
+			status = SparkModelResidentdFinishRoute(runtime,route);
+			if ( status == SPARK_STATUS_OK && failed != 0u )
+				status = SparkModelResidentdCheckLaneFatal(runtime);
+			SPARK_RETURN(status);
+		}
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -3500,7 +3648,9 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 			SparkModelResidentdDrainWake(runtime);
 	}
 	failed_status = atomic_load(&runtime->failed_status);
-	return(failed_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK ? (SparkStatus)failed_status : status);
+	if ( failed_status != SPARK_STATUS_OK || status != SPARK_STATUS_OK )
+		(void)SparkModelResidentdWriteClient(runtime);
+	SPARK_RETURN(failed_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK ? (SparkStatus)failed_status : status);
 }
 
 int main(int argument_count,char **arguments)

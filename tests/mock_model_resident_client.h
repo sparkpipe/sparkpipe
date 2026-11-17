@@ -17,6 +17,7 @@ enum
 	MOCK_CALL_CAN_ABORT,
 	MOCK_CALL_STATUS_REQUEST,
 	MOCK_CALL_CACHE_HINT,
+	MOCK_CALL_CACHE_PROBE,
 	MOCK_CALL_COUNT
 };
 
@@ -36,6 +37,10 @@ uint32_t MockResidentClientPendingCount(uint32_t stage_index);
 uint32_t MockResidentClientOwnsSubmission(uint32_t stage_index, uint64_t submission_id);
 SparkModelResidentClient *MockResidentClientByRank(uint32_t stage_index);
 uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind);
+void MockResidentClientSetCacheProbe(uint32_t rank,const SparkModelServingCacheProbe *answer,uint32_t silent);
+void MockResidentClientSetCacheProbeStatus(uint32_t rank,SparkStatus status);
+uint32_t MockResidentClientTokenContinuations(uint32_t stage_index);
+uint32_t MockResidentClientSpanSubmissions(uint32_t stage_index);
 uint32_t MockResidentClientReleaseSubmissions(uint32_t stage_index);
 uint64_t MockResidentClientGeneration(uint32_t stage_index);
 uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *lane);
@@ -55,15 +60,19 @@ void MockResidentClientDisconnect(uint32_t stage_index);
 void MockResidentClientDeliverStatus(uint32_t stage_index, const SparkModelServingAdapterSnapshot *snapshot);
 void MockResidentClientKill(uint32_t stage_index);
 void MockResidentClientRevive(uint32_t stage_index);
+void MockResidentClientReviveAfter(uint32_t stage_index, uint32_t failed_attempts);
 void MockResidentClientSetAutoTokens(uint32_t count);
 void MockResidentClientSetLogprobs(uint32_t stride, uint32_t corrupt);
 void MockResidentClientSetMaxSequencePositions(uint32_t stage_index, uint32_t positions);
+void MockResidentClientSetSubmissionFloor(uint32_t stage_index, uint64_t floor);
+uint64_t MockResidentClientTakeLowestSubmissionId(void);
 uint32_t MockResidentClientTakeMaxDecodeLanes(void);
 uint32_t MockResidentClientTakeMaxTokensPerSequence(void);
 void MockResidentClientSetTokenStart(uint32_t first_token_id);
 void MockResidentClientSetScript(const uint32_t *tokens,uint32_t count);
 void MockResidentClientSetStepDelay(uint32_t microseconds);
 void MockResidentClientSetPrefillDelay(uint32_t microseconds);
+void MockResidentClientSetSerial(uint32_t serial);
 void MockResidentClientSetVerifyRowCost(uint32_t sevenths);
 void MockResidentClientTakeVerifyStats(uint32_t *submissions,uint32_t *rows);
 uint32_t MockResidentClientVerifyFrame(uint32_t index,uint32_t *position,uint32_t *rows);

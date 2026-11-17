@@ -1,0 +1,2 @@
++2493
+Qwen3.8-27B DSpine drafter module for the 5090: the context window, tensor-core split attention, the 16-row forward and heads in modules/qwen38_dspine_draft_stage, with its block probe and the block and window replay compares that gate it against the publisher reference.

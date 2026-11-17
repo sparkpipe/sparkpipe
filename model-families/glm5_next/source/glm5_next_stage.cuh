@@ -20,6 +20,7 @@
 #include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
@@ -28,17 +29,16 @@
 #include "inference/kernels/topk_exact.cuh"
 #include "inference/kernels/topk_warp.cuh"
 #include "inference/kernels/weight_codec.cuh"
-#include "sparkpipe/spark_error_site.h"
+#include "inference/runner/stage_model_cuda.cuh"
 #include "sparkpipe/spark_expert_planes.h"
 #include "sparkpipe/spark_glm5_next_index_cp.h"
 #include "sparkpipe/spark_glm5_next_kv_shard.h"
 #include "sparkpipe/spark_glm5_next_family.h"
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_glm5_next_stagepack.h"
-#include "sparkpipe/spark_stage_runner_model.h"
 #include "sparkpipe/spark_tp_device_collective.h"
-#include "sparkpipe/spark_weightd_cxx.h"
 #include "sparkpipe/spark_weightd_manifest.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define G5N_HIDDEN SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
 #define G5N_LAYERS SPARK_GLM5_NEXT_MODEL_LAYER_COUNT
@@ -268,7 +268,7 @@ struct Glm5NextLayerBuffers
 };
 
 static int32_t Glm5NextSkinny(const Glm5NextLayerBuffers *b, const void *weight, const uint16_t *activation, uint16_t *output_bf16, float *output_f32,
-	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
 {
 	LmSkinnyArguments args;
 	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
@@ -287,7 +287,7 @@ static int32_t Glm5NextSkinny(const Glm5NextLayerBuffers *b, const void *weight,
 }
 
 static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation,
-	uint32_t rows, uint32_t input_dimension, cudaStream_t stream)
+	uint32_t rows, uint32_t input_dimension, SparkGpuStream stream)
 {
 	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
 		return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
@@ -295,18 +295,27 @@ static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinny
 }
 
 static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows,
-	uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	LmGemmArguments gemm;
 	int32_t status;
 	if ( activation == 0 || weight == 0 || output == 0 || b->dense_row_offset == 0 || b->dense_tile_prefix == 0 || rows == 0u ||
 		input_dimension == 0u || output_dimension == 0u || multiprocessors == 0u )
-		return LM_LAUNCH_ERR_SHAPE;
-	status = Glm5NextSkinny(b, weight, activation, output, (float *)0, rows, input_dimension, output_dimension, stream);
-	if ( status != LM_LAUNCH_ERR_SHAPE || b->row_invariant != 0u )
+		LM_LAUNCH_REFUSE("glm5 linear: %u rows of a %u x %u projection came with a missing operand, dense tile table or multiprocessor count\n", rows,
+			output_dimension, input_dimension);
+	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+	{
+		status = Glm5NextSkinny(b, weight, activation, output, (float *)0, rows, input_dimension, output_dimension, stream);
+		if ( status != LM_LAUNCH_ERR_SHAPE )
+			return status;
+		LM_LAUNCH_REFUSE("glm5 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves run on "
+			"it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
+			LM_SKINNY_ROWS_WIDE);
+	}
+	status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, (float *)0, rows, input_dimension, output_dimension,
+		output_dimension, 0u, multiprocessors, stream);
+	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status;
-	if ( rows <= LM_SKINNY_ROWS_WIDE )
-		LmSlowPath("glm5 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
@@ -320,22 +329,53 @@ static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *act
 
 static int32_t Glm5NextLaunched(void)
 {
-	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	if ( !(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return LM_LAUNCH_OK;
+}
+
+template<uint32_t DIM, uint32_t KPOOL>
+static __device__ __forceinline__ float Glm5NextPoolKeyElement(const uint16_t *const *slots, const float *__restrict__ compress_ape_f32, uint32_t index)
+{
+	float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], weights[KPOOL], key = 0.0f;
+	uint16_t slot_key[KPOOL];
+	uint32_t slot_in_pool;
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		const uint16_t *slot = slots[slot_in_pool];
+		slot_key[slot_in_pool] = slot[index];
+		logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
+		maximum = fmaxf(maximum, logits[slot_in_pool]);
+	}
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		if ( logits[slot_in_pool] != -INFINITY )
+		{
+			weights[slot_in_pool] = __expf(logits[slot_in_pool] - maximum);
+			sum += weights[slot_in_pool];
+		}
+		else
+			weights[slot_in_pool] = 0.0f;
+	}
+	const float denom = fmaxf(sum, 1.0e-20f);
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		const float mix = weights[slot_in_pool] / denom;
+		if ( mix != 0.0f )
+			key += mix * LmBf16ToFloat(slot_key[slot_in_pool]);
+	}
+	return key;
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1) void Glm5NextIndexPackKernel(const uint16_t *__restrict__ key_bf16,
 	const uint16_t *__restrict__ gate_bf16, uint16_t *__restrict__ packed_bf16, uint32_t dimension)
 {
-	const uint32_t row = blockIdx.x;
-	const uint64_t base = (uint64_t)row * (2u * dimension + 1u);
-	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
-	{
-		packed_bf16[base + index] = key_bf16[(uint64_t)row * dimension + index];
-		packed_bf16[base + dimension + index] = gate_bf16[(uint64_t)row * dimension + index];
-	}
+	uint16_t *packed_row = packed_bf16 + (uint64_t)blockIdx.x * (2u * dimension + 1u);
+	LmCopySliceBf16<THREADS>(key_bf16 + (uint64_t)blockIdx.x * dimension, packed_row, dimension);
+	LmCopySliceBf16<THREADS>(gate_bf16 + (uint64_t)blockIdx.x * dimension, packed_row + dimension, dimension);
 	if ( threadIdx.x == 0u )
-		packed_bf16[base + 2u * dimension] = 0x3F80u;
+		packed_row[2u * dimension] = 0x3F80u;
 }
 
 template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>
@@ -362,30 +402,14 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 	}
 	for ( index = threadIdx.x; index < DIM; index += THREADS )
 	{
-		float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
+		const uint16_t *slots[KPOOL];
 		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
 		{
-			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-			if ( slot == 0 )
+			slots[slot_in_pool] = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+			if ( slots[slot_in_pool] == 0 )
 				return;
-			logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
-			maximum = fmaxf(maximum, logits[slot_in_pool]);
 		}
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-			if ( logits[slot_in_pool] != -INFINITY )
-				sum += __expf(logits[slot_in_pool] - maximum);
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-			mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-		{
-			if ( mix[slot_in_pool] == 0.0f )
-				continue;
-			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-			if ( slot == 0 )
-				return;
-			key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
-		}
-		pool_key[index] = key;
+		pool_key[index] = Glm5NextPoolKeyElement<DIM, KPOOL>(slots, compress_ape_f32, index);
 	}
 	__syncthreads();
 	float total = 0.0f;
@@ -418,6 +442,7 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 	static_assert(HEADS % (THREADS / LM_WARP_LANES) == 0u, "every warp scores the same number of heads");
 	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
 	__shared__ float pool_key[POOLS][DIM];
+	__shared__ const uint16_t *pool_slots[POOLS][KPOOL];
 	__shared__ uint32_t pool_ready[POOLS];
 	__shared__ float contribution[POOLS][HEADS];
 	const uint32_t first_local = blockIdx.x * POOLS, first_row = blockIdx.y * ROWS, warp = threadIdx.x / LM_WARP_LANES;
@@ -432,48 +457,30 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 			for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
 			{
 				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
-				pool_ready[local] = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+				uint32_t ready = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+				if ( ready != 0u )
+				{
+					const uint32_t first = pool * KPOOL;
+					for ( uint32_t slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+					{
+						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+						pool_slots[local][slot_in_pool] = slot;
+						if ( slot == 0 )
+						{
+							ready = 0u;
+							break;
+						}
+					}
+				}
+				pool_ready[local] = ready;
 			}
 			__syncthreads();
 			for ( uint32_t item = threadIdx.x; item < POOLS * DIM; item += THREADS )
 			{
-				const uint32_t local = item / DIM, index = item % DIM, first = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree) * KPOOL;
-				float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
-				uint32_t slot_in_pool, failed = 0u;
+				const uint32_t local = item / DIM, index = item % DIM;
 				if ( pool_ready[local] == 0u )
 					continue;
-				for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
-				{
-					const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-					if ( slot == 0 )
-					{
-						failed = 1u;
-						break;
-					}
-					logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
-					maximum = fmaxf(maximum, logits[slot_in_pool]);
-				}
-				if ( failed == 0u )
-				{
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-						if ( logits[slot_in_pool] != -INFINITY )
-							sum += __expf(logits[slot_in_pool] - maximum);
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-						mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
-					{
-						if ( mix[slot_in_pool] == 0.0f )
-							continue;
-						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-						if ( slot == 0 )
-							failed = 1u;
-						else
-							key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
-					}
-				}
-				if ( failed != 0u )
-					pool_ready[local] = 0u;
-				pool_key[local][index] = key;
+				pool_key[local][index] = Glm5NextPoolKeyElement<DIM, KPOOL>(pool_slots[local], compress_ape_f32, index);
 			}
 			__syncthreads();
 			cached = sequence;
@@ -572,49 +579,6 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolExpandKernel(const uin
 	}
 }
 
-template<uint32_t THREADS, uint32_t LOW_RANK>
-__global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitDecayGateKernel(const uint16_t *__restrict__ fused_bf16,
-	uint16_t *__restrict__ decay_latent_bf16, uint16_t *__restrict__ gate_latent_bf16, uint32_t rows)
-{
-	const uint32_t row = blockIdx.x;
-	if ( row >= rows )
-		return;
-	for ( uint32_t index = threadIdx.x; index < LOW_RANK; index += THREADS )
-	{
-		decay_latent_bf16[(uint64_t)row * LOW_RANK + index] = fused_bf16[(uint64_t)row * 2u * LOW_RANK + index];
-		gate_latent_bf16[(uint64_t)row * LOW_RANK + index] = fused_bf16[(uint64_t)row * 2u * LOW_RANK + LOW_RANK + index];
-	}
-}
-
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitQkvbKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16,
-	uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim,
-	uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
-{
-	const uint32_t row = blockIdx.x;
-	const uint64_t fused = (uint64_t)row * fused_rows, dense = (uint64_t)row * qk_dim;
-	uint32_t index;
-	if ( row >= rows )
-		return;
-	for ( index = threadIdx.x; index < qk_dim; index += THREADS )
-		query_bf16[dense + index] = qkvb_bf16[fused + index];
-	for ( index = threadIdx.x; index < qk_dim; index += THREADS )
-		key_bf16[dense + index] = qkvb_bf16[fused + qk_dim + index];
-	for ( index = threadIdx.x; index < v_dim; index += THREADS )
-		value_bf16[(uint64_t)row * v_dim + index] = qkvb_bf16[fused + 2u * qk_dim + index];
-	for ( index = threadIdx.x; index < heads; index += THREADS )
-		beta_bf16[(uint64_t)row * heads + index] = qkvb_bf16[fused + 2u * qk_dim + v_dim + index];
-}
-
-__global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
-{
-	if ( threadIdx.x == 0u )
-	{
-		offsets[0] = 0u;
-		offsets[1] = rows;
-	}
-}
-
 struct Glm5NextHcPolicy
 {
 	static constexpr float kNormEpsilon = G5N_EPS;
@@ -652,25 +616,25 @@ struct Glm5NextHcPolicy
 	}
 };
 
-static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, const void *base, const void *scale, uint32_t rows, cudaStream_t stream)
+static int32_t Glm5NextHcSite(const Glm5NextLayerBuffers *b, const void *fn, const void *base, const void *scale, uint32_t rows, SparkGpuStream stream)
 {
 	if ( fn == 0 || base == 0 || scale == 0 || ((uintptr_t)fn % 16u) != 0u )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( LmHcSite<G5N_HIDDEN, Glm5NextHcPolicy>((const uint16_t *)b->hidden_bf16, (const float *)fn, (const float *)scale, (const float *)base,
-			b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32, b->hc_collapsed_bf16, b->hc_snapshot_bf16, rows, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+			b->hc_mixes_f32, b->hc_pre_f32, b->hc_post_f32, b->hc_comb_f32, b->hc_collapsed_bf16, b->hc_snapshot_bf16, rows, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return LM_LAUNCH_OK;
 }
 
-static int32_t Glm5NextHcPost(const Glm5NextLayerBuffers *b, uint32_t rows, cudaStream_t stream)
+static int32_t Glm5NextHcPost(const Glm5NextLayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
-	LM_LAUNCH((LmHcPostBf16Kernel), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
+	LM_LAUNCH((LmHcPostBf16Kernel<G5N_HC>), dim3(rows, G5N_HIDDEN / G5N_THREADS), G5N_THREADS, 0, stream, b->attention_out_bf16, b->hc_snapshot_bf16,
 		b->hc_post_f32, b->hc_comb_f32, b->hidden_bf16, rows, G5N_HC, G5N_HIDDEN);
 	return Glm5NextLaunched();
 }
 
 static int32_t Glm5NextKdaRecur(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sequences, const uint32_t *kept, uint32_t commit,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	const uint32_t heads = b->kda_heads, rank_qk = heads * G5N_KDA_KEY, rank_v = heads * G5N_KDA_VALUE;
@@ -690,14 +654,14 @@ static int32_t Glm5NextKdaRecur(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	conv.channels[0] = conv.channels[1] = rank_qk;
 	conv.channels[2] = rank_v;
 	if ( LmCausalConvStreamsLaunch<G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>(conv, b->kda_state_index, b->sequence_row_begin, kept, sequences, commit,
-		b->sequence_row_indices, rows, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+		b->sequence_row_indices, rows, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	if constexpr ( LM_WARP_LANES == 32u )
 	{
 		if ( LmDeltaRuleLaunch<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>(rows, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index,
 				b->sequence_row_begin, kept, b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u,
-				sequences, commit, b->sequence_row_indices, stream) != cudaSuccess )
-			return LM_LAUNCH_ERR_LAUNCH;
+				sequences, commit, b->sequence_row_indices, stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	else
 		LM_LAUNCH((LmDeltaRuleKernel<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float, G5N_KDA_DELTA_COLUMNS>),
@@ -707,7 +671,7 @@ static int32_t Glm5NextKdaRecur(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	return Glm5NextLaunched();
 }
 
-static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t sms, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	const uint32_t heads = b->kda_heads, rank_qk = heads * G5N_KDA_KEY, rank_v = heads * G5N_KDA_VALUE;
@@ -716,29 +680,32 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	if ( b->kda_state_pool == 0 || b->kda_state_slot_bytes != rank_qk * G5N_KDA_VALUE * sizeof(float) || w->kda_qkv_beta == 0 ||
 		w->kda_decay_gate_down == 0 || w->kda_decay_up == 0 || w->kda_gate_up == 0 || w->kda_q_conv == 0 || w->kda_k_conv == 0 ||
 		w->kda_v_conv == 0 || w->kda_decay_bias == 0 || w->kda_head_log_scale == 0 || w->kda_out_norm == 0 || w->kda_out == 0 )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
+	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
 	{
 		const LmSkinnyDenseTarget targets[2] = {
 			{w->kda_qkv_beta, b->fused_qkvb_bf16, 0, fused, fused, 0u, LmScaleTensorNone()},
 			{w->kda_decay_gate_down, b->fused_decay_gate_bf16, 0, 2u * G5N_KDA_LOW_RANK, 2u * G5N_KDA_LOW_RANK, 0u, LmScaleTensorNone()}};
 		status = Glm5NextSkinnyMulti(b, targets, 2u, b->normed_bf16, rows, G5N_HIDDEN, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			LM_LAUNCH_REFUSE("glm5 kda: the fused qkv-beta and decay-gate launch refused %u rows (%u + %u outputs over %u inputs); waves of up to %u "
+				"rows and row-invariant waves run on it, so both weights and the normed rows need 16-byte alignment\n", rows, fused,
+				2u * G5N_KDA_LOW_RANK, G5N_HIDDEN, LM_SKINNY_ROWS_WIDE);
 	}
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+	else
 	{
-		if ( rows <= LM_SKINNY_ROWS_WIDE )
-			LmSlowPath("glm5 kda: the skinny pair refused a small wave", rows, G5N_HIDDEN, fused);
 		status = Glm5NextLinear(b, b->normed_bf16, w->kda_qkv_beta, b->fused_qkvb_bf16, rows, G5N_HIDDEN, fused, sms, stream);
 		if ( status == LM_LAUNCH_OK )
 			status = Glm5NextLinear(b, b->normed_bf16, w->kda_decay_gate_down, b->fused_decay_gate_bf16, rows, G5N_HIDDEN, 2u * G5N_KDA_LOW_RANK, sms, stream);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((Glm5NextSplitQkvbKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_qkvb_bf16, b->kda_q_input, b->kda_k_input,
+	LM_LAUNCH((LmSplitQkvbKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_qkvb_bf16, b->kda_q_input, b->kda_k_input,
 		b->kda_v_input, b->kda_beta_logit, rows, rank_qk, rank_v, heads, fused);
-	LM_LAUNCH((Glm5NextSplitDecayGateKernel<G5N_THREADS, G5N_KDA_LOW_RANK>), rows, G5N_THREADS, 0, stream, b->fused_decay_gate_bf16,
-		b->kda_decay_latent_bf16, b->kda_gate_latent_bf16, rows);
+	LM_LAUNCH((LmSplit2RowsKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_decay_gate_bf16,
+		b->kda_decay_latent_bf16, b->kda_gate_latent_bf16, rows, G5N_KDA_LOW_RANK);
 	status = Glm5NextLinear(b, b->kda_decay_latent_bf16, w->kda_decay_up, b->kda_decay_logit_bf16, rows, G5N_KDA_LOW_RANK, rank_qk, sms, stream);
 	if ( status == LM_LAUNCH_OK )
 		status = Glm5NextLinear(b, b->kda_gate_latent_bf16, w->kda_gate_up, b->kda_gate_bf16, rows, G5N_KDA_LOW_RANK, rank_v, sms, stream);
@@ -757,7 +724,7 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	return Glm5NextLinear(b, b->kv_slot_bf16, w->kda_out, b->attention_out_bf16, rows, rank_v, G5N_HIDDEN, sms, stream);
 }
 
-static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, uint32_t projected, cudaStream_t stream)
+static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, uint32_t projected, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	const uint32_t degree = b->index_owner_degree, pools = SparkGlm5NextIndexCpPools(context);
@@ -766,7 +733,7 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	if ( w->index_q == 0 || w->index_k == 0 || w->index_head == 0 || w->index_norm_weight == 0 || w->index_norm_bias == 0 ||
 		w->index_compress_gate == 0 || w->index_compress_ape == 0 || degree < 2u || b->index_owner_rank >= degree ||
 		degree != b->index_cache.shard.degree || b->index_owner_rank != b->index_cache.shard.rank )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	status = Glm5NextLinear(b, b->q_compressed_bf16, w->index_q, b->index_query_bf16, rows, G5N_QA, G5N_INDEX_QUERY, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -815,7 +782,7 @@ static uint32_t Glm5NextIndexCandidates(uint32_t rows, uint32_t local_stride)
 	return rows >= G5N_POOL_ROWS_MIN && local_stride > 2u * Glm5NextIndexKeep() ? 1u : 0u;
 }
 
-static int32_t Glm5NextIndexCandidatePack(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, cudaStream_t stream)
+static int32_t Glm5NextIndexCandidatePack(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, SparkGpuStream stream)
 {
 	const uint32_t degree = b->index_owner_degree, local_stride = SparkGlm5NextIndexCpLocalStride(SparkGlm5NextIndexCpPools(context), degree);
 	SparkKvShard shard;
@@ -826,21 +793,23 @@ static int32_t Glm5NextIndexCandidatePack(const Glm5NextLayerBuffers *b, uint32_
 	shard.grain = 1u;
 	LmTopkExactRowsLaunch<G5N_THREADS>(b->index_local_scores, rows, local_stride, Glm5NextIndexKeep(), b->selected_pools, stream);
 	if ( LmIndexShardCandidatePackLaunch<G5N_THREADS>(shard, b->index_local_scores, local_stride, b->selected_pools, Glm5NextIndexKeep(), rows,
-		(uint2 *)b->selection_scores, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+		(uint2 *)b->selection_scores, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return Glm5NextLaunched();
 }
 
-static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	uint32_t projected;
 	int32_t status;
 	if ( w->attn_norm == 0 || w->q_a == 0 || w->q_a_norm == 0 || w->q_b == 0 || w->kv_a == 0 || w->kv_a_norm == 0 || b->kv_b_key == 0 ||
 		b->kv_b_value == 0 || w->attn_output == 0 )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
+	projected = rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u ? 1u : 0u;
+	if ( projected != 0u )
 	{
 		const LmSkinnyDenseTarget targets[4] = {
 			{w->q_a, b->q_compressed_bf16, 0, G5N_QA, G5N_QA, 0u, LmScaleTensorNone()},
@@ -848,11 +817,12 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 			{w->index_compress_gate, b->index_gate_bf16, 0, G5N_INDEX_DIM, G5N_INDEX_DIM, 0u, LmScaleTensorNone()},
 			{w->index_head, b->index_head_weight_bf16, 0, G5N_INDEX_HEADS, G5N_INDEX_HEADS, 0u, LmScaleTensorNone()}};
 		status = Glm5NextSkinnyMulti(b, targets, 4u, b->normed_bf16, rows, G5N_HIDDEN, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			LM_LAUNCH_REFUSE("glm5 mla: the fused q_a and index launch refused %u rows (%u + %u + %u + %u outputs over %u inputs); waves of up to %u "
+				"rows and row-invariant waves run on it, so the four weights and the normed rows need 16-byte alignment\n", rows, G5N_QA, G5N_INDEX_DIM,
+				G5N_INDEX_DIM, G5N_INDEX_HEADS, G5N_HIDDEN, LM_SKINNY_ROWS_WIDE);
 	}
-	projected = status == LM_LAUNCH_OK ? 1u : 0u;
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u && rows <= LM_SKINNY_ROWS_WIDE )
-		LmSlowPath("glm5 mla: the skinny group refused a small wave", rows, G5N_HIDDEN, G5N_QA);
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
+	else
 		status = Glm5NextLinear(b, b->normed_bf16, w->q_a, b->q_compressed_bf16, rows, G5N_HIDDEN, G5N_QA, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -869,7 +839,7 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 	return status == LM_LAUNCH_OK ? Glm5NextIndexCandidatePack(b, rows, context, stream) : status;
 }
 
-static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, cudaStream_t stream)
+static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, SparkGpuStream stream)
 {
 	const uint32_t degree = b->index_owner_degree, pools = SparkGlm5NextIndexCpPools(context);
 	const uint32_t local_stride = SparkGlm5NextIndexCpLocalStride(pools, degree);
@@ -877,8 +847,8 @@ static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows,
 	{
 		const uint64_t peer_stride = (uint64_t)SparkGlm5NextIndexCpGatherSequences(rows, 2u * Glm5NextIndexKeep()) * SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS / 2u;
 		if ( LmIndexShardCandidateScatterLaunch<G5N_THREADS>((const uint2 *)b->index_gathered_scores, peer_stride, degree, Glm5NextIndexKeep(), rows, pools,
-			b->selection_scores, stream) != cudaSuccess )
-			return LM_LAUNCH_ERR_LAUNCH;
+			b->selection_scores, stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	else
 		LM_LAUNCH((Glm5NextPoolPermuteKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_gathered_scores, b->selection_scores, pools,
@@ -889,7 +859,7 @@ static int32_t Glm5NextIndexSelect(const Glm5NextLayerBuffers *b, uint32_t rows,
 	return Glm5NextLaunched();
 }
 
-static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	int32_t status = Glm5NextIndexSelect(b, rows, context, stream);
@@ -897,36 +867,36 @@ static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t row
 		status = Glm5NextLinear(b, b->q_compressed_bf16, w->q_b, b->q_bf16, rows, G5N_QA, b->q_b_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
-		b->attn_heads, rows, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+	if ( LmPerHeadProjectChainLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
+		b->attn_heads, rows, stream, b->row_invariant) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return Glm5NextLaunched();
 }
 
-static int32_t Glm5NextAttentionPartial(const Glm5NextLayerBuffers *b, uint32_t rows, cudaStream_t stream)
+static int32_t Glm5NextAttentionPartial(const Glm5NextLayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
-	return LmLatentShardAttendLaunch<Glm5NextKv, LmKvShardView, G5N_LATENT, 0u>(b->cache, b->shard_query_gathered_bf16, b->shard_query_stride,
-		b->attn_heads, b->sequence_of_row, b->context_length, b->positions, b->selected_positions, G5N_INDEX_WIDTH, G5N_SELECTED, G5N_QK_SCALE,
-		b->shard_partials_f32, b->shard_partial_stride, rows, stream) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	if ( !(LmLatentShardAttendLaunch<Glm5NextKv, LmKvShardView, G5N_LATENT, 0u>(b->cache, b->shard_query_gathered_bf16, b->shard_query_stride, b->attn_heads, b->sequence_of_row, b->context_length, b->positions, b->selected_positions, G5N_INDEX_WIDTH, G5N_SELECTED, G5N_QK_SCALE, b->shard_partials_f32, b->shard_partial_stride, rows, stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return LM_LAUNCH_OK;
 }
 
-static int32_t Glm5NextAttentionMerge(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextAttentionMerge(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	if ( LmLatentShardMergeLaunch<G5N_LATENT>(b->shard_partials_received_f32, b->shard_partial_stride, b->cache.shard.degree, b->attn_heads,
-		b->attention_latent_bf16, rows, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
-	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_LATENT, G5N_VALUE>(b->attention_latent_bf16, (const uint16_t *)b->kv_b_value,
-		b->attention_value_bf16, b->attn_heads, rows, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+		b->attention_latent_bf16, rows, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	if ( LmPerHeadProjectChainLaunch<G5N_THREADS, G5N_LATENT, G5N_VALUE>(b->attention_latent_bf16, (const uint16_t *)b->kv_b_value,
+		b->attention_value_bf16, b->attn_heads, rows, stream, b->row_invariant) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return Glm5NextLinear(b, b->attention_value_bf16, b->w->attn_output, b->attention_out_bf16, rows, b->attn_output_columns, G5N_HIDDEN, sms, stream);
 }
 
-static int32_t Glm5NextDenseMlp(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextDenseMlp(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	int32_t status;
 	if ( w->post_attn_norm == 0 || w->dense_gate_up == 0 || w->dense_down == 0 )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->post_attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 	status = Glm5NextLinear(b, b->normed_bf16, w->dense_gate_up, b->gate_up_bf16, rows, G5N_HIDDEN, b->dense_gate_up_rows, sms, stream);
@@ -937,31 +907,44 @@ static int32_t Glm5NextDenseMlp(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	return Glm5NextLinear(b, b->intermediate_bf16, w->dense_down, b->attention_out_bf16, rows, b->dense_intermediate, G5N_HIDDEN, sms, stream);
 }
 
-static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	const Glm5NextLayerWeights *w = b->w;
 	const uint32_t packed_rows = rows * G5N_TOP_K;
 	LmGemmArguments gemm;
 	int32_t status;
 	if ( w->post_attn_norm == 0 || w->router == 0 || w->router_correction == 0 || w->shared_gate_up == 0 || w->shared_down == 0 )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->post_attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
-	status = Glm5NextSkinny(b, w->router, b->normed_bf16, 0, b->router_logits, rows, G5N_HIDDEN, G5N_EXPERTS, stream);
-	memset(&gemm, 0, sizeof(gemm));
-	gemm.scale_a = LmScaleTensorNone();
-	gemm.scale_b = LmScaleTensorNone();
-	gemm.group_row_offset = b->dense_row_offset;
-	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_f32 = b->router_logits;
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
-		status = LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, w->router, rows, rows,
-			1u, 1u, G5N_HIDDEN, G5N_EXPERTS, sms, false, stream);
+	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
+	{
+		status = Glm5NextSkinny(b, w->router, b->normed_bf16, 0, b->router_logits, rows, G5N_HIDDEN, G5N_EXPERTS, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			LM_LAUNCH_REFUSE("glm5 router: the skinny kernel refused %u rows of the %u x %u router; waves of up to %u rows and row-invariant waves "
+				"run on it, so the router weight and the normed rows need 16-byte alignment\n", rows, G5N_EXPERTS, G5N_HIDDEN, LM_SKINNY_ROWS_WIDE);
+	}
+	else
+	{
+		status = LmStreamGemmDense<LmBf16Format>(w->router, LmScaleTensorNone(), b->normed_bf16, (uint16_t *)0, b->router_logits, rows,
+			G5N_HIDDEN, G5N_EXPERTS, G5N_EXPERTS, 0u, sms, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+		{
+			memset(&gemm, 0, sizeof(gemm));
+			gemm.scale_a = LmScaleTensorNone();
+			gemm.scale_b = LmScaleTensorNone();
+			gemm.group_row_offset = b->dense_row_offset;
+			gemm.group_tile_prefix = b->dense_tile_prefix;
+			gemm.output_f32 = b->router_logits;
+			status = LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, w->router, rows, rows,
+				1u, 1u, G5N_HIDDEN, G5N_EXPERTS, sms, false, stream);
+		}
+	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( LmTopkRouteLaunch<G5N_THREADS, G5N_TOP_K, true, LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, G5N_EXPERTS, b->route_expert,
-		b->route_weight, w->router_correction, 0, G5N_ROUTED_SCALE, b->route_fault, stream) != cudaSuccess )
-		return LM_LAUNCH_ERR_LAUNCH;
+		b->route_weight, w->router_correction, 0, G5N_ROUTED_SCALE, b->route_fault, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	status = LmRouteBuild<G5N_THREADS, G5N_EXPERTS>(b->route_expert, rows, packed_rows, G5N_TOP_K, b->group_row_offset, b->route_packed_row,
 		b->route_source_token, b->expert_w1_rows, G5N_HIDDEN, G5N_TILE_N, b->group_tile_prefix_w1, b->group_tile_prefix_w2, stream);
 	if ( status != LM_LAUNCH_OK )
@@ -969,44 +952,59 @@ static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	return Glm5NextLaunched();
 }
 
+template<class Format>
+static uint32_t Glm5NextStreamExperts(const Glm5NextLayerBuffers *b, uint32_t rows)
+{
+	if constexpr ( LmStreamWeight<Format>::kSupported )
+		return rows >= G5N_STREAM_EXPERT_ROWS && b->row_invariant == 0u ? 1u : 0u;
+	else
+		return 0u;
+}
+
+#define G5N_EXPERTS_REFUSE(kernel, weight, rows, pairs, output_dimension, input_dimension) \
+	LM_LAUNCH_REFUSE("glm5 experts: the %s refused %s for %u rows (%u routed pairs over %u experts, %u x %u); waves of %u rows or more that are " \
+		"not row-invariant run on the grouped stream GEMM and all others on the skinny kernels, so the expert weights need 16-byte alignment, an " \
+		"input that is a multiple of the codec's elements and scales that cover every expert\n", kernel, weight, rows, pairs, G5N_EXPERTS, \
+		output_dimension, input_dimension, G5N_STREAM_EXPERT_ROWS)
+
 template<uint32_t ExpertCodec>
-static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	using ExpertFormat = typename LmWeightCodec<ExpertCodec>::Format;
+	static_assert((G5N_STREAM_EXPERT_ROWS - 1u) * G5N_TOP_K <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * G5N_EXPERTS,
+		"every wave below the stream threshold fits the grouped skinny expert kernel, whose mean rows per expert are bounded");
 	static_assert(ExpertFormat::kScaleGroup == 0u || (G5N_HIDDEN % ExpertFormat::kScaleGroup == 0u && G5N_EXPERT_INTER % ExpertFormat::kScaleGroup == 0u),
 		"routed expert dimensions hold whole codec scale groups");
+	static_assert(G5N_HIDDEN % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
 	const uint32_t packed_rows = rows * G5N_TOP_K;
-	const dim3 grid((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, rows);
+	const uint32_t pairwise = rows == 1u ? 1u : 0u;
 	LmGemmArguments gemm;
 	int32_t status;
 	if ( b->expert_w1_weight == 0 || b->expert_w2_weight == 0 ||
 		(LmWeightCodec<ExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE && (b->expert_w1_scale == 0 || b->expert_w2_scale == 0)) )
-		return LM_LAUNCH_ERR_SHAPE;
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w1_scale, G5N_EXPERTS, b->expert_w1_rows, G5N_HIDDEN);
-	status = LM_LAUNCH_ERR_SHAPE;
-	if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
-		if ( rows >= G5N_STREAM_EXPERT_ROWS && b->row_invariant == 0u )
-			status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
-				b->route_source_token, G5N_EXPERTS, packed_rows, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
-	if ( status == LM_LAUNCH_ERR_SHAPE )
-		status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
-			b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
-	if ( status == LM_LAUNCH_ERR_SHAPE )
-		status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
-			b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
-	gemm.prefix_built = 1u;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix_w1;
-	gemm.source_row_map = b->route_source_token;
-	gemm.source_row_count = rows;
-	gemm.output_bf16 = b->gate_up_bf16;
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
-		LmSlowPath("glm5 experts: the skinny kernels refused w1", packed_rows, G5N_HIDDEN, b->expert_w1_rows);
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
-		status = LmGemmWeightOnlyIndirectLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, b->expert_w1_weight,
-			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
+	if ( Glm5NextStreamExperts<ExpertFormat>(b, rows) != 0u )
+	{
+		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+			b->route_source_token, G5N_EXPERTS, packed_rows, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			G5N_EXPERTS_REFUSE("grouped stream GEMM", "w1", rows, packed_rows, b->expert_w1_rows, G5N_HIDDEN);
+	}
+	else
+	{
+		if ( pairwise != 0u )
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
+				b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
+		else
+			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+				b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream, b->row_invariant);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w1", rows, packed_rows, b->expert_w1_rows,
+				G5N_HIDDEN);
+	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	LM_LAUNCH((LmClampedUpGateKernel<G5N_THREADS>), packed_rows, G5N_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16,
@@ -1014,30 +1012,27 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w2_scale, G5N_EXPERTS, G5N_HIDDEN, b->expert_intermediate);
-	status = LM_LAUNCH_ERR_SHAPE;
-	if constexpr ( LmStreamWeight<ExpertFormat>::kSupported )
-		if ( rows >= G5N_STREAM_EXPERT_ROWS && b->row_invariant == 0u )
-			status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
-				b->group_row_offset, 0, G5N_EXPERTS, packed_rows, b->expert_intermediate, G5N_HIDDEN, sms, stream);
-	if ( status == LM_LAUNCH_ERR_SHAPE )
-		status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
-			b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
-	if ( status == LM_LAUNCH_ERR_SHAPE )
-		status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
-			b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
-	gemm.prefix_built = 1u;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix_w2;
-	gemm.output_bf16 = b->expert_out_bf16;
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
-		LmSlowPath("glm5 experts: the skinny kernels refused w2", packed_rows, b->expert_intermediate, G5N_HIDDEN);
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->row_invariant == 0u )
-		status = LmGemmWeightOnlyLaunch<ExpertFormat, G5N_TILE_N, G5N_STAGES, G5N_WARPS>(&gemm, b->intermediate_bf16, b->expert_w2_weight,
-			packed_rows, rows, G5N_TOP_K, G5N_EXPERTS, b->expert_intermediate, G5N_HIDDEN, sms, true, stream);
+	if ( Glm5NextStreamExperts<ExpertFormat>(b, rows) != 0u )
+	{
+		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
+			b->group_row_offset, 0, G5N_EXPERTS, packed_rows, b->expert_intermediate, G5N_HIDDEN, sms, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			G5N_EXPERTS_REFUSE("grouped stream GEMM", "w2", rows, packed_rows, G5N_HIDDEN, b->expert_intermediate);
+	}
+	else
+	{
+		if ( pairwise != 0u )
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
+				b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
+		else
+			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
+				b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream, b->row_invariant);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w2", rows, packed_rows, G5N_HIDDEN,
+				b->expert_intermediate);
+	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmMoeFinalizeKernel<G5N_THREADS>), grid, G5N_THREADS, 0, stream, b->expert_out_bf16, b->route_packed_row, b->route_weight,
-		b->attention_out_bf16, rows, G5N_TOP_K, G5N_HIDDEN);
 	status = Glm5NextLinear(b, b->normed_bf16, b->w->shared_gate_up, b->gate_up_bf16, rows, G5N_HIDDEN, b->shared_gate_up_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -1046,8 +1041,9 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	status = Glm5NextLinear(b, b->intermediate_bf16, b->w->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, G5N_HIDDEN, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmAddRowsKernel<G5N_THREADS>), grid, G5N_THREADS, 0, stream, b->attention_out_bf16, b->shared_out_bf16, b->attention_out_bf16,
-		rows, G5N_HIDDEN);
+	LM_LAUNCH((LmMoeFinalizeAddKernel<G5N_THREADS>), dim3((G5N_HIDDEN / LM_MOE_FINALIZE_ADD_ELEMENTS + G5N_THREADS - 1u) / G5N_THREADS, rows),
+		G5N_THREADS, 0, stream, b->expert_out_bf16, b->route_packed_row, b->route_weight, b->shared_out_bf16, b->attention_out_bf16, rows, G5N_TOP_K,
+		G5N_HIDDEN);
 	return Glm5NextLaunched();
 }
 

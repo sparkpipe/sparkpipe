@@ -20,9 +20,11 @@ Usage:
   python3 tools/hy4_fp8_stagepack.py --checkpoint DIR --rank 7 \
       --output-directory DIR
 """
+
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -30,18 +32,13 @@ import struct
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spark_pack_codecs import dtype_bytes  # noqa: E402
+from spark_pack_common import read_safetensors_header, sha256_file, window_chunks, write_sha256_sidecar  # noqa: E402
+
 CHUNK_BYTES = 512 * 1024
 TP = 16
 VOCAB = 120832
-
-# suffix -> split_dim on the weight tensor. dim0 = HF output rows, dim1 =
-# input columns. None = replicate. Scale companions: the four head-split
-# attention projections carry their FULL checkpoint scale plane on every
-# rank (scale-row-offset contract, docs/AGENT_LANE_BRIEFS/
-# hy4-fp8-scale-contract.md: REPLICATED_ROWS for q_b/kv_b/wq_b,
-# REPLICATED_GROUPS for o_proj); every other scale plane follows its
-# weight (ALIGNED), which for the current inventory means replicated
-# with a replicated weight or dim0-split with a dim0-split expert plane.
 SPLIT_RULES = [
     ("model.embed_tokens.weight", 0),
     ("lm_head.weight", 0),
@@ -61,19 +58,13 @@ SCALE_REPLICATED = (
     ".self_attn.o_proj.weight_scale",
     ".self_attn.indexer.wq_b.weight_scale",
 )
+SCHEMA = "hy4-fp8-tp16-v1"
 
 
 def split_rule(name: str):
-    """Returns (split_dim or None, is_base_weight). The four contract
-    scale planes replicate whole; other `_scale` companions inherit the
-    base weight's split dim."""
     if name.endswith(SCALE_REPLICATED):
         return (None, False)
-    base = name
-    if base.endswith(SCALE_SUFFIX):
-        base = base[: -len("_scale")]
-    elif base.endswith("_scale"):
-        base = base[: -len("_scale")]
+    base = name[:-len("_scale")] if name.endswith("_scale") else name
     for suffix, dim in SPLIT_RULES:
         if base.endswith(suffix) or base == suffix:
             return (dim, base == name)
@@ -81,322 +72,218 @@ def split_rule(name: str):
 
 
 def load_headers(checkpoint: Path, weight_map: dict):
-    headers = {}
-    data_starts = {}
+    headers, data_starts = {}, {}
     for shard in sorted(set(weight_map.values())):
-        with open(checkpoint / shard, "rb") as f:
-            (n,) = struct.unpack("<Q", f.read(8))
-            headers[shard] = json.loads(f.read(n))
-            data_starts[shard] = 8 + n
+        headers[shard], data_starts[shard], _ = read_safetensors_header(checkpoint / shard)
     return headers, data_starts
 
 
-def plan_tensors(checkpoint: Path, weight_map: dict, headers: dict,
-                 data_starts: dict):
-    dtsize = {"F8_E4M3": 1, "BF16": 2, "F32": 4, "U8": 1}
+def plan_tensors(checkpoint: Path, weight_map: dict, headers: dict, data_starts: dict):
     entries = []
     for name, shard in weight_map.items():
         meta = headers[shard][name]
         dims = list(meta["shape"])
-        dim, is_weight = split_rule(name)
-        esize = dtsize[meta["dtype"]]
+        dim, _ = split_rule(name)
+        esize = dtype_bytes(meta["dtype"])
         row_bytes = esize * (dims[1] if len(dims) > 1 else 1)
         if len(dims) >= 3:
             row_bytes = esize * dims[-1]
-            for d in dims[1:-1]:
-                row_bytes *= d
-        entry = {
-            "name": name, "dtype": meta["dtype"], "dims": dims,
-            "shard": shard, "esize": esize,
-            "data_start": data_starts[shard],
-            "start": headers[shard][name]["data_offsets"][0],
-            "end": headers[shard][name]["data_offsets"][1],
-            "row_bytes": row_bytes if len(dims) > 1 else esize * dims[0],
-            "split": dim,
-        }
-        entries.append(entry)
+            for extent in dims[1:-1]:
+                row_bytes *= extent
+        entries.append({"name": name, "dtype": meta["dtype"], "dims": dims, "shard": shard, "esize": esize,
+                        "data_start": data_starts[shard], "start": meta["data_offsets"][0],
+                        "end": meta["data_offsets"][1], "row_bytes": row_bytes if len(dims) > 1 else esize * dims[0],
+                        "split": dim})
     entries.sort(key=lambda e: (e["shard"], e["start"]))
     return entries
 
 
 def rank_view(entry: dict, rank: int):
-    """Returns (out_dims, copy plan) for this rank: contiguous = (start,
-    end) byte range within the tensor; gather = list of (src_off, nbytes)
-    per outer row; replicate = full copy."""
     dims = entry["dims"]
     dim = entry["split"]
     if dim is None:
         return (list(dims), ("full", 0, 0))
     total = dims[dim]
     if total % TP:
-        raise SystemExit(f"{entry['name']}: dim{dim} {total} not divisible "
-                         f"by {TP}")
+        raise SystemExit(f"{entry['name']}: dim{dim} {total} not divisible by {TP}")
     chunk = total // TP
     lo, hi = rank * chunk, (rank + 1) * chunk
     esize = entry["esize"]
     if dim == 0:
-        out = [chunk] + dims[1:]
         inner = entry["row_bytes"] if len(dims) > 1 else esize
-        return (out, ("range", lo * inner, hi * inner))
-    inner = dims[-1] * esize
-    group = dims[1:-1]
+        return ([chunk] + dims[1:], ("range", lo * inner, hi * inner))
     rows = dims[0]
-    for g in group:
-        rows *= g
+    for extent in dims[1:-1]:
+        rows *= extent
     out = list(dims)
     out[dim] = chunk
-    c0, c1 = lo * esize, hi * esize
-    return (out, ("gather", rows, (c0, c1)))
+    return (out, ("gather", rows, (lo * esize, hi * esize)))
 
 
-def stream_copy(src, dst_fd, nbytes, offset, chunk_hash=None):
-    src.seek(offset)
-    done = 0
-    while done < nbytes:
-        step = min(CHUNK_BYTES, nbytes - done)
-        buf = src.read(step)
-        if len(buf) != step:
-            raise SystemExit("short source read")
-        os.write(dst_fd, buf)
-        if chunk_hash is not None:
-            chunk_hash.update(buf)
-        try:
-            os.posix_fadvise(src.fileno(), offset + done, step,
-                             os.POSIX_FADV_DONTNEED)
-        except OSError:
-            pass
-        done += step
+def drop_cache(fd: int, offset: int, length: int) -> None:
+    try:
+        os.posix_fadvise(fd, offset, length, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError):
+        pass
 
 
 def output_flush(fd, start, end):
     try:
         if hasattr(os, "sync_file_range"):
-            os.sync_file_range(fd, start, end - start,
-                               os.SYNC_FILE_RANGE_WRITE)
+            os.sync_file_range(fd, start, end - start, os.SYNC_FILE_RANGE_WRITE)
         os.posix_fadvise(fd, start, end - start, os.POSIX_FADV_DONTNEED)
-    except OSError:
+    except (AttributeError, OSError):
         pass
+
+
+def tensor_chunks(source, entry: dict, spec, nbytes: int):
+    base = entry["data_start"] + entry["start"]
+    read_at = lambda offset, length: os.pread(source.fileno(), length, offset)
+    if spec[0] == "gather":
+        rows, (c0, c1) = spec[1], spec[2]
+        yield from window_chunks(read_at, base, entry["row_bytes"], 0, rows, c0, c1 - c0, entry["row_bytes"],
+                                 f"{entry['name']}")
+        drop_cache(source.fileno(), base, rows * entry["row_bytes"])
+        return
+    offset = base + (spec[1] if spec[0] == "range" else 0)
+    done = 0
+    while done < nbytes:
+        step = min(CHUNK_BYTES, nbytes - done)
+        chunk = os.pread(source.fileno(), step, offset + done)
+        if len(chunk) != step:
+            raise SystemExit("short source read")
+        yield chunk
+        drop_cache(source.fileno(), offset + done, step)
+        done += step
+
+
+def rank_manifest(entries, rank: int, checkpoint: Path, name: str, digest: str) -> dict:
+    tensors = []
+    for entry in entries:
+        _, spec = rank_view(entry, rank)
+        slice_ = "replicate" if spec[0] == "full" else {"dim": entry["split"],
+                                                         "start": rank * (entry["dims"][entry["split"]] // TP),
+                                                         "kind": spec[0]}
+        tensors.append({"name": entry["name"], "dtype": entry["dtype"], "dims": entry["dims"], "slice": slice_})
+    return {"schema": SCHEMA, "rank": rank, "ranks": TP, "source_checkpoint": str(checkpoint), "file": name,
+            "file_sha256": digest, "tensors": tensors}
+
+
+def rank_file(out_dir: Path, rank: int) -> Path:
+    return out_dir / f"model-fp8-tp16-rank-{rank:02d}.safetensors"
+
+
+def write_manifest(out_dir: Path, entries, rank: int, checkpoint: Path, path: Path, digest: str) -> None:
+    write_sha256_sidecar(path, digest)
+    (out_dir / f"manifest-rank-{rank:02d}.json").write_text(
+        json.dumps(rank_manifest(entries, rank, checkpoint, path.name, digest), indent=1))
+
+
+def verify_write(fd: int, checkpoint: Path, entry: dict, spec, offset: int, nbytes: int) -> None:
+    got = os.pread(fd, nbytes, offset)
+    with open(checkpoint / entry["shard"], "rb") as source:
+        want = b"".join(bytes(chunk) for chunk in tensor_chunks(source, entry, spec, nbytes))
+    if got != want:
+        first_diff = next((index for index in range(nbytes) if got[index] != want[index]), -1)
+        window_start = max(0, offset - (1 << 20))
+        at = os.pread(fd, nbytes + (1 << 21), window_start).find(want[:64])
+        shift = window_start + at - offset if at >= 0 else -1
+        raise SystemExit(f"VERIFY-WRITE MISMATCH {entry['name']} off={offset} nbytes={nbytes} first_diff={first_diff} "
+                         f"shift={shift} src={entry['shard']} start={entry['start']}")
+    print(f"  vw ok {entry['name']}", flush=True)
 
 
 def build_rank(entries, rank: int, checkpoint: Path, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     plan = []
-    header = {"__metadata__": {
-        "format": "hy4-fp8-tp16-v1", "tp_degree": str(TP),
-        "tp_rank": str(rank)}}
+    header = {"__metadata__": {"format": SCHEMA, "tp_degree": str(TP), "tp_rank": str(rank)}}
     cursor = 0
-    for e in entries:
-        out_dims, spec = rank_view(e, rank)
-        nbytes = e["esize"]
-        for d in out_dims:
-            nbytes *= d
-        if cursor % 8:
-            cursor += 8 - cursor % 8
-        header[e["name"]] = {"dtype": e["dtype"], "shape": out_dims,
-                             "data_offsets": [cursor, cursor + nbytes]}
-        plan.append((e, spec, cursor, nbytes))
+    for entry in entries:
+        out_dims, spec = rank_view(entry, rank)
+        nbytes = entry["esize"]
+        for extent in out_dims:
+            nbytes *= extent
+        cursor += (-cursor) % 8
+        header[entry["name"]] = {"dtype": entry["dtype"], "shape": out_dims, "data_offsets": [cursor, cursor + nbytes]}
+        plan.append((entry, spec, cursor, nbytes))
         cursor += nbytes
     blob = json.dumps(header, separators=(",", ":")).encode()
-    path = out_dir / f"model-fp8-tp16-rank-{rank:02d}.safetensors"
+    path = rank_file(out_dir, rank)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
-    os.write(fd, struct.pack("<Q", len(blob)))
-    os.write(fd, blob)
-    digest = hashlib.sha256()
-    digest.update(struct.pack("<Q", len(blob)))
-    digest.update(blob)
-    src = {}
-    pbase = 8 + len(blob)
-    for (e, spec, off, nbytes) in plan:
-        shard = e["shard"]
-        if shard not in src:
-            src[shard] = open(checkpoint / shard, "rb")
-        before = os.lseek(fd, 0, os.SEEK_CUR)
-        target = pbase + off
-        if target > before:
-            os.write(fd, bytes(target - before))
-        base = e["data_start"]
-        if spec[0] == "full":
-            stream_copy(src[shard], fd, nbytes, base + e["start"], digest)
-        elif spec[0] == "range":
-            stream_copy(src[shard], fd, nbytes,
-                        base + e["start"] + spec[1], digest)
-        else:
-            rows, (c0, c1) = spec[1], spec[2]
-            row_bytes = e["row_bytes"]
-            for r in range(rows):
-                src[shard].seek(base + e["start"] + r * row_bytes)
-                got = src[shard].read(row_bytes)
-                if len(got) != row_bytes:
-                    raise SystemExit(f"short read {e['name']} row {r}")
-                os.write(fd, got[c0:c1])
-                digest.update(got[c0:c1])
-            try:
-                os.posix_fadvise(src[shard].fileno(),
-                                 base + e["start"], rows * row_bytes,
-                                 os.POSIX_FADV_DONTNEED)
-            except OSError:
-                pass
-        output_flush(fd, before, os.lseek(fd, 0, os.SEEK_CUR) - before)
-        os.lseek(fd, 0, os.SEEK_END)
-        if os.environ.get("HY4_PACK_VERIFY_WRITE"):
-            got = os.pread(fd, nbytes, pbase + off)
-            f2 = open(checkpoint / e["shard"], "rb")
-            b2 = e["data_start"] + e["start"]
-            if spec[0] == "range":
-                b2 += spec[1]
-            if spec[0] == "gather":
-                rows, (c0, c1) = spec[1], spec[2]
-                row_bytes = e["row_bytes"]
-                pieces = []
-                for r in range(rows):
-                    f2.seek(b2 + r * row_bytes)
-                    pieces.append(f2.read(row_bytes)[c0:c1])
-                want = b"".join(pieces)
-            else:
-                f2.seek(b2)
-                want = f2.read(nbytes)
-            f2.close()
-            if got != want:
-                dif = next((i for i in range(nbytes)
-                            if got[i] != want[i]), -1)
-                shift = -1
-                window = os.pread(fd, nbytes + (1 << 21),
-                                  max(0, pbase + off - (1 << 20)))
-                at = window.find(want[:64])
-                if at >= 0:
-                    shift = (max(0, pbase + off - (1 << 20)) + at
-                             - (pbase + off))
-                raise SystemExit(
-                    f"VERIFY-WRITE MISMATCH {e['name']} off={off} "
-                    f"nbytes={nbytes} first_diff={dif} shift={shift} "
-                    f"src={e['shard']} start={e['start']}")
-            print(f"  vw ok {e['name']}", flush=True)
-    for s in src.values():
-        s.close()
-    os.close(fd)
-    file_digest = hashlib.sha256()
-    with open(path, "rb") as rf:
-        for chunk in iter(lambda: rf.read(1 << 22), b""):
-            file_digest.update(chunk)
-    hexd = file_digest.hexdigest()
-    (out_dir / (path.name + ".sha256")).write_text(
-        f"{hexd}  {path.name}\n")
-    manifest = {
-        "schema": "hy4-fp8-tp16-v1",
-        "rank": rank,
-        "ranks": TP,
-        "source_checkpoint": str(checkpoint),
-        "file": path.name,
-        "file_sha256": hexd,
-        "tensors": [
-            {"name": e["name"], "dtype": e["dtype"], "dims": e["dims"],
-             "slice": ("replicate" if spec[0] == "full" else
-                       {"dim": e["split"], "start": rank *
-                        (e["dims"][e["split"]] // TP), "kind": spec[0]})}
-            for (e, spec, off, nbytes) in plan],
-    }
-    (out_dir / f"manifest-rank-{rank:02d}.json").write_text(
-        json.dumps(manifest, indent=1))
-    return {"tensor_count": len(plan), "bytes": cursor + 8 + len(blob),
-            "sha256": hexd}
+    os.write(fd, struct.pack("<Q", len(blob)) + blob)
+    payload_base = 8 + len(blob)
+    sources = {}
+    try:
+        for entry, spec, offset, nbytes in plan:
+            if entry["shard"] not in sources:
+                sources[entry["shard"]] = open(checkpoint / entry["shard"], "rb")
+            before = os.lseek(fd, 0, os.SEEK_CUR)
+            if payload_base + offset > before:
+                os.write(fd, bytes(payload_base + offset - before))
+            for chunk in tensor_chunks(sources[entry["shard"]], entry, spec, nbytes):
+                os.write(fd, chunk)
+            output_flush(fd, before, os.lseek(fd, 0, os.SEEK_CUR) - before)
+            os.lseek(fd, 0, os.SEEK_END)
+            if os.environ.get("HY4_PACK_VERIFY_WRITE"):
+                verify_write(fd, checkpoint, entry, spec, payload_base + offset, nbytes)
+    finally:
+        for source in sources.values():
+            source.close()
+        os.close(fd)
+    digest = sha256_file(path)
+    write_manifest(out_dir, entries, rank, checkpoint, path, digest)
+    return {"tensor_count": len(plan), "bytes": cursor + payload_base, "sha256": digest}
+
+
+def dry_run(entries, headers, weight_map) -> int:
+    acts, bytes_by = collections.Counter(), collections.Counter()
+    for entry in entries:
+        out_dims, spec = rank_view(entry, 0)
+        nbytes = entry["esize"]
+        for extent in out_dims:
+            nbytes *= extent
+        acts[spec[0]] += 1
+        bytes_by[spec[0]] += nbytes
+    total_source = sum(entry["end"] - entry["start"] for entry in entries)
+    print(f"tensors {len(entries)}; source bytes {total_source/1e9:.1f}G")
+    for kind in acts:
+        print(f"  {kind:7s}: {acts[kind]:5d} tensors, {bytes_by[kind]/1e9:.1f}G per rank")
+    replicated = [entry["name"] for entry in entries if entry["split"] is None]
+    print(f"replicated tensor count: {len(replicated)}")
+    sizes = {name: headers[weight_map[name]][name]["data_offsets"][1] - headers[weight_map[name]][name]["data_offsets"][0]
+             for name in replicated}
+    for name in sorted(replicated, key=lambda name: -sizes[name])[:8]:
+        meta = headers[weight_map[name]][name]
+        print(f"  rep {name} {meta['dtype']} {meta['shape']}")
+    return 0
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--checkpoint", type=Path, required=True)
-    ap.add_argument("--output-directory", type=Path)
-    ap.add_argument("--rank", type=int)
-    ap.add_argument("--manifest-only", action="store_true",
-                    help="regenerate the rank manifest + sha sidecar from "
-                         "the existing pack file without re-copying data")
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args(argv)
-
-    index = json.load(open(args.checkpoint / "model.safetensors.index.json"))
-    weight_map = index["weight_map"]
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--rank", type=int)
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="regenerate the rank manifest + sha sidecar from the existing pack file without "
+                             "re-copying data")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+    weight_map = json.load(open(args.checkpoint / "model.safetensors.index.json"))["weight_map"]
     headers, data_starts = load_headers(args.checkpoint, weight_map)
     entries = plan_tensors(args.checkpoint, weight_map, headers, data_starts)
-
     if args.dry_run:
-        import collections
-        acts = collections.Counter()
-        bytes_by = collections.Counter()
-        replicated_gb = 0.0
-        for e in entries:
-            out_dims, spec = rank_view(e, 0)
-            nb = e["esize"]
-            for d in out_dims:
-                nb *= d
-            kind = spec[0]
-            acts[kind] += 1
-            bytes_by[kind] += nb
-            if kind == "full":
-                replicated_gb += e["end"] - e["start"]
-        total_src = sum(e["end"] - e["start"] for e in entries)
-        print(f"tensors {len(entries)}; source bytes {total_src/1e9:.1f}G")
-        for kind in acts:
-            print(f"  {kind:7s}: {acts[kind]:5d} tensors, "
-                  f"{bytes_by[kind]/1e9:.1f}G per rank")
-        rep_names = [e["name"] for e in entries if e["split"] is None]
-        print(f"replicated tensor count: {len(rep_names)}")
-        big = sorted(rep_names, key=lambda n: -(headers[weight_map[n]][n]
-                                                ["data_offsets"][1] -
-                                                headers[weight_map[n]][n]
-                                                ["data_offsets"][0]))[:8]
-        for n in big:
-            v = headers[weight_map[n]][n]
-            print(f"  rep {n} {v['dtype']} {v['shape']}")
-        return 0
-
+        return dry_run(entries, headers, weight_map)
     if args.rank is None:
-        ap.error("--rank required without --dry-run")
+        parser.error("--rank required without --dry-run")
     if args.manifest_only:
-        out_dir = args.output_directory
-        path = out_dir / f"model-fp8-tp16-rank-{args.rank:02d}.safetensors"
-        file_digest = hashlib.sha256()
-        with open(path, "rb") as rf:
-            for chunk in iter(lambda: rf.read(1 << 22), b""):
-                file_digest.update(chunk)
-        hexd = file_digest.hexdigest()
-        (out_dir / (path.name + ".sha256")).write_text(
-            f"{hexd}  {path.name}\n")
-        plan = []
-        for e in entries:
-            out_dims, sp = rank_view(e, args.rank)
-            plan.append((e, sp, 0, 0))
-        manifest_tensors = []
-        for (e, spec, off, nbytes) in plan:
-            if spec[0] == "full":
-                sl = "replicate"
-            else:
-                if e["split"] is None:
-                    raise SystemExit(
-                        f"manifest: {e['name']} non-full with split None "
-                        f"({spec[0]})")
-                sl = {"dim": e["split"],
-                      "start": args.rank * (e["dims"][e["split"]] // TP),
-                      "kind": spec[0]}
-            manifest_tensors.append({"name": e["name"],
-                                     "dtype": e["dtype"],
-                                     "dims": e["dims"], "slice": sl})
-        manifest = {
-            "schema": "hy4-fp8-tp16-v1",
-            "rank": args.rank,
-            "ranks": TP,
-            "source_checkpoint": str(args.checkpoint),
-            "file": path.name,
-            "file_sha256": hexd,
-            "tensors": manifest_tensors,
-        }
-        (out_dir / f"manifest-rank-{args.rank:02d}.json").write_text(
-            json.dumps(manifest, indent=1))
-        print(f"rank{args.rank:02d} manifest+sha regenerated "
-              f"({hexd[:16]})", flush=True)
+        path = rank_file(args.output_directory, args.rank)
+        digest = sha256_file(path)
+        write_manifest(args.output_directory, entries, args.rank, args.checkpoint, path, digest)
+        print(f"rank{args.rank:02d} manifest+sha regenerated ({digest[:16]})", flush=True)
         return 0
-    result = build_rank(entries, args.rank, args.checkpoint,
-                        args.output_directory)
-    print(f"rank{args.rank:02d} ok tensors={result['tensor_count']} "
-          f"bytes={result['bytes']} sha={result['sha256'][:16]}", flush=True)
+    result = build_rank(entries, args.rank, args.checkpoint, args.output_directory)
+    print(f"rank{args.rank:02d} ok tensors={result['tensor_count']} bytes={result['bytes']} "
+          f"sha={result['sha256'][:16]}", flush=True)
     return 0
 
 

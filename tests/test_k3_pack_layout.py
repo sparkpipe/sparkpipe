@@ -400,7 +400,7 @@ def verify_pack(label, src, out):
     for i, ((gv,), (pv,)) in enumerate(zip(gamma, proj)):
         gf = struct.unpack("<f", struct.pack("<I", gv << 16))[0]
         pf = struct.unpack("<f", struct.pack("<I", pv << 16))[0]
-        want = k3_pack.f32_list_to_bf16_raw([k3_pack.f32_round(gf * pf)])
+        want = k3_pack.floats_to_bf16_bytes([k3_pack.f32_round(gf * pf)])
         mismatches += fused[2 * i:2 * i + 2] != want
     expect(mismatches == 0, "gamma fold is not the f32-exact product")
 

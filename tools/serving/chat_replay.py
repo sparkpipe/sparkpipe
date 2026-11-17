@@ -325,19 +325,19 @@ class ReplayStore:
         store.bytes += size - (old[0] if old else 0)
         self.evict()
 
-    def response_body(self, scope, response_id):
+    def response_body(self, scope, member, response_id):
         store = self.store(scope)
         if store is None:
             return None
-        row = store.db.execute("SELECT body FROM responses WHERE id = ? AND body IS NOT NULL", (response_id,)).fetchone()
+        row = store.db.execute("SELECT body FROM responses WHERE id = ? AND member = ? AND body IS NOT NULL", (response_id, member_key(member))).fetchone()
         if row is None:
             return None
         store.touch("responses", "id", response_id, time.time())
         return json.loads(row[0])
 
-    def delete_response(self, scope, response_id):
+    def delete_response(self, scope, member, response_id):
         store = self.store(scope)
-        return store is not None and store.drop_rows("responses", "id = ?", (response_id,)) > 0
+        return store is not None and store.drop_rows("responses", "id = ? AND member = ?", (response_id, member_key(member))) > 0
 
     def response_messages(self, scope, member, response_id):
         store = self.store(scope)

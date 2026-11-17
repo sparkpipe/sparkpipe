@@ -5,7 +5,7 @@
 #include <string.h>
 #include <vector>
 
-#include "inference/llms/kimi_k3/streamed.cuh"
+#include "model-families/k3/source/streamed.cuh"
 
 #define MOE_SHARDS 16u
 #define MOE_ROWS 256u
@@ -99,6 +99,7 @@ static void MoeBuffers(K3LayerBuffers *b,uint32_t rank)
 	b->attnres_partial_bf16 = MoeAlloc<uint16_t>((uint64_t)MOE_ROWS * K3_HIDDEN);
 	uint32_t *dense_offsets = MoeAlloc<uint32_t>(2u),offsets[2] = {0u,MOE_ROWS};
 	MOE_CUDA(cudaMemcpy(dense_offsets,offsets,sizeof(offsets),cudaMemcpyHostToDevice));
+	MOE_CUDA(cudaDeviceSynchronize());
 	b->dense_row_offset = dense_offsets;
 	b->dense_tile_prefix = MoeAlloc<uint32_t>(2u);
 	b->tp_sharded = 1u;

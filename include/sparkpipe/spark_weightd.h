@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 14u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 17u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -95,12 +95,15 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD 61u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD_RESULT 62u
 
-#define SPARK_WEIGHTD_MESH_MAX_LANES 16u
+#include "sparkpipe/spark_weightd_mesh_lanes.h"
+#define SPARK_WEIGHTD_MESH_STATUS_LANES 16u
 #define SPARK_WEIGHTD_MESH_HOST_PAGE_BYTES (64u * 1024u)
 #define SPARK_WEIGHTD_MESH_MAX_BATCH_ROWS 4096u
 #define SPARK_WEIGHTD_MESH_ROW_BYTES_MAX (16u * 1024u * 2u)
-#define SPARK_WEIGHTD_MESH_SLOT_ROWS 8u
+#define SPARK_WEIGHTD_MESH_SLOT_ROWS 32u
 #define SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES 64u
 #define SPARK_WEIGHTD_MESH_SLOT_BYTES \
     (SPARK_WEIGHTD_MESH_SLOT_ROWS * SPARK_WEIGHTD_MESH_ROW_BYTES_MAX + SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES)
@@ -115,7 +118,8 @@ static inline uint32_t SparkWeightdMeshSecondRailPeers(uint32_t local_rank, uint
             peers |= 1u << (rank < local_rank ? rank : rank - 1u);
     return peers;
 }
-#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 2u
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 4u
+#define SPARK_WEIGHTD_MESH_PIPELINE_DEPTH (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
 #define SPARK_WEIGHTD_MESH_BANDS (2u * SPARK_WEIGHTD_MESH_MAX_LANES)
@@ -205,7 +209,7 @@ typedef struct SparkWeightdMeshWaitRequest
     ((half) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER ? (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u : \
      (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u)
 #define SPARK_WEIGHTD_MESH_SEQUENCE_HALF(sequence) \
-    (SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER + (uint32_t)((((sequence) - 1u) >> 1u) & 1u))
+    (SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER + (uint32_t)((((sequence) - 1u) / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK) & 1u))
 #define SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET \
     (SPARK_WEIGHTD_MESH_WAIT_OFFSET + \
      (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES)
@@ -329,7 +333,7 @@ _Static_assert(sizeof(SparkWeightdMeshWaitRequest) == SPARK_WEIGHTD_MESH_WAIT_EN
 _Static_assert(sizeof(SparkWeightdMeshRoute) == sizeof(uint64_t),"mesh route is one doorbell word");
 _Static_assert(SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - SPARK_WEIGHTD_MESH_SLOT_TRAILER_BYTES &&
     SPARK_WEIGHTD_MESH_STAGING_SLOT_BYTES < (UINT64_C(1) << 24u),"a peer route fills at most one receive slot payload");
-_Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(128) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
+_Static_assert(SPARK_WEIGHTD_MESH_STAGING_BYTES <= UINT64_C(512) * 1024u * 1024u,"per-peer staging stays inside its node memory budget");
 _Static_assert(SPARK_WEIGHTD_MESH_WAIT_OFFSET % SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES == 0u &&
     SPARK_WEIGHTD_MESH_WAIT_OFFSET - SPARK_WEIGHTD_MESH_DOORBELL_OFFSET +
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES <=
@@ -351,6 +355,8 @@ _Static_assert(SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET - SPARK_WEIGHTD_MESH_DOORB
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES <=
     SPARK_WEIGHTD_MESH_DOORBELL_BYTES && SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET % 8u == 0u,
     "alternate doorbell cells fit the doorbell page");
+_Static_assert((SPARK_WEIGHTD_MESH_SLOTS_PER_RANK & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)) == 0u &&
+    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK >= 4u,"a rank's slot ring is a power of two deep enough for three pipelined pieces in flight");
 _Static_assert(SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES % 16u == 0u &&
     2u * SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u,
     "half-slot payloads end below both half tails");
@@ -390,6 +396,7 @@ _Static_assert(SPARK_WEIGHTD_EXPORT_BATCH_MAX <= 253u,
 #define SPARK_WEIGHTD_KV_POOL_LABEL_BYTES 64u
 #define SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX (256ull * 1024ull * 1024ull)
 #define SPARK_WEIGHTD_MEMINFO_PATH "/proc/meminfo"
+#define SPARK_WEIGHTD_NODE_MEMORY_LOCK_PATH "/tmp/sparkpipe-node-memory.lock"
 #define SPARK_WEIGHTD_KV_EARLYOOM_PERCENT 2u
 #define SPARK_WEIGHTD_KV_RUNTIME_HEADROOM_BYTES (5ull << 29)
 
@@ -763,6 +770,7 @@ typedef struct SparkWeightdIpcMeshBroadcastResult
 #define SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS 1u
 #define SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS 2u
 #define SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK 4u
+#define SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED 8u
 #define SPARK_WEIGHTD_MESH_LANE_CONFIGURED 1u
 #define SPARK_WEIGHTD_MESH_LANE_OWNED 2u
 #define SPARK_WEIGHTD_MESH_LANE_QUARANTINED 4u
@@ -836,7 +844,7 @@ typedef struct SparkWeightdIpcMeshStatusResult
     uint64_t ready_since_mono_ns;
     uint64_t counters[SPARK_WEIGHTD_MESH_STATUS_COUNTERS];
     SparkWeightdMeshPeerStatus peers[SPARK_WEIGHTD_MESH_RANKS];
-    SparkWeightdMeshLaneStatus lanes[SPARK_WEIGHTD_MESH_MAX_LANES];
+    SparkWeightdMeshLaneStatus lanes[SPARK_WEIGHTD_MESH_STATUS_LANES];
     uint8_t reserved_tail[2104];
 } SparkWeightdIpcMeshStatusResult;
 
@@ -845,6 +853,7 @@ _Static_assert(sizeof(SparkWeightdIpcMeshStatus) == 32u &&
     sizeof(SparkWeightdMeshPeerStatus) == 64u &&
     sizeof(SparkWeightdMeshLaneStatus) == 48u &&
     sizeof(SparkWeightdIpcMeshStatusResult) == 4096u &&
+    SPARK_WEIGHTD_MESH_MAX_LANES <= SPARK_WEIGHTD_MESH_STATUS_LANES &&
     sizeof(SparkWeightdIpcMeshStatusResult) <= SPARK_WEIGHTD_IPC_MESSAGE_BYTES_MAX,"mesh status frame sizes are fixed for layout 1");
 _Static_assert(offsetof(SparkWeightdIpcMeshStatusResult,status) == 24u &&
     offsetof(SparkWeightdIpcMeshStatusResult,layout) == 28u &&
@@ -1045,6 +1054,32 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
     sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 14");
 #endif
 
+#define SPARK_WEIGHTD_HELD_PACK_COUNT_MAX 8u
+
+typedef struct SparkWeightdIpcHold
+{
+    SparkWeightdIpcHeader header;
+    SparkWeightdIdentity identity;
+    char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+} SparkWeightdIpcHold;
+
+typedef struct SparkWeightdIpcHoldResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t held_bytes;
+    uint64_t allocation_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t status;
+    uint32_t first_hold;
+    uint32_t held_count;
+    uint32_t fd_staged;
+} SparkWeightdIpcHoldResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcHold) == 1344u && sizeof(SparkWeightdIpcHoldResult) == 72u,"hold frames are fixed for ABI 17");
+#endif
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -1062,6 +1097,8 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazyResult))
 #define SPARK_WEIGHTD_IPC_ENSURE_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsure))
 #define SPARK_WEIGHTD_IPC_ENSURE_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsureResult))
+#define SPARK_WEIGHTD_IPC_HOLD_BYTES ((uint32_t)sizeof(SparkWeightdIpcHold))
+#define SPARK_WEIGHTD_IPC_HOLD_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcHoldResult))
 
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity);
 
@@ -1433,6 +1470,9 @@ SparkStatus SparkWeightdClientKvSharedAttach(SparkWeightdClient *client,
 uint64_t SparkWeightdServerKvCommittedBytes(const SparkWeightdServer *server);
 SparkStatus SparkWeightdMemInfoRead(const char *path,uint64_t *total_bytes,uint64_t *available_bytes);
 uint64_t SparkWeightdKvMemoryMargin(uint64_t total_bytes);
+SparkStatus SparkWeightdNodeMemoryAdmit(const char *meminfo_path,uint64_t bytes,const char *what,const char *model);
+SparkStatus SparkWeightdNodeMemoryLock(const char *lock_path,int *lock_fd);
+void SparkWeightdNodeMemoryUnlock(int lock_fd);
 uint64_t SparkWeightdServerKvMarginBytes(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerKvPoolCount(const SparkWeightdServer *server);
 uint32_t SparkWeightdServerExpireKv(SparkWeightdServer *server,uint64_t now_ns);
@@ -1460,6 +1500,24 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
 SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
     const SparkWeightdLazyAttachRequest *request,
     SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdHoldResult
+{
+    SparkStatus status;
+    uint64_t held_bytes;
+    uint64_t allocation_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t first_hold;
+    uint32_t held_count;
+    int fd;
+} SparkWeightdHoldResult;
+
+SparkStatus SparkWeightdClientHold(SparkWeightdClient *client,
+    const SparkWeightdIdentity *identity,
+    const char *pack_path,
+    SparkWeightdHoldResult *result,
     uint64_t timeout_nanoseconds);
 
 

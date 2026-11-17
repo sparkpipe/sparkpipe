@@ -1,0 +1,89 @@
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+k31_stage kv pool weightd generation=7 reattached=0 attach_ms=123 chunks=200/880 minimum_chunks=200 chunk_bytes=14680064 pages=16425/95325 kv_committed=2936012800 kv_reserve=8589934592 private_kv_bytes=0
+k31_stage kv capacity pages=16425/95325 tokens=6100800 margin_bytes=5297619188 event=attach resident_tokens=1051200 chunks=200/880
+k31_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+ERRSITE cache/kv_page_store.c:1152 status=3 count=1
+ERRSITE cache/kv_page_store.c:1152 status=3 count=2
+ERRSITE cache/kv_page_store.c:1152 status=3 count=3
+ERRSITE cache/kv_page_store.c:1152 status=3 count=4
+ERRSITE cache/kv_page_store.c:1152 status=3 count=5
+ERRSITE cache/kv_page_store.c:1152 status=3 count=6
+ERRSITE cache/kv_page_store.c:1152 status=3 count=7
+ERRSITE cache/kv_page_store.c:1152 status=3 count=8
+k31_stage kv pool growth held at chunks=200 of 880
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+STAGE-WEIGHTS pass pool rendezvous 1 waited 0.9 s
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.266 1:0.297 2:1.43 3:0.832 4:0.926 5:1.66 6:5.31 7:2.97 15:1.05 23:151 31:0.652 39:0.422 47:40.2 55:11.8 63:2.56 71:42.2 79:5.88 87:3.14 92:18.5
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 62.9 s, KDA attention 74.5 s, MLP and experts 72.2 s, between layers 0.3 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 15 13.8 s, fastest rank 0 13.6 s; helpers attended 527676 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/2 rows 31360 x 16 keys to 501760 status=0 at 210.7 s; streamer waited 95.0 s for the GPU to release buffers, compute waited 0.2 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 8.3 s in dense broadcasts and 106.9 s in expert steps, 22.3 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 1 step ms ready/posted/done/gap: 0:0.2/65.0/87.1/83.4 1:0.0/0.0/83.2/0.0 2:20.8/79.9/122.1/0.0 3:17.0/63.2/95.2/0.0 4:26.3/65.2/102.2/0.0 5:16.5/52.1/75.9/0.0 6:29.6/63.6/86.0/0.0 7:11.8/45.1/66.8/0.0 8:25.8/58.2/73.6/0.0 9:7.4/39.2/53.7/0.0 10:17.9/49.5/75.8/0.0 11:7.7/39.2/55.3/0.0 12:0.4/30.0/40.8/995.9 13:10.8/40.4/51.2/0.0 14:11.7/41.2/52.5/0.0 15:0.1/29.9/
+sparkpipe_k3: streamed prefill pass 1 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.266 1:0.279 2:0.844 3:0.766 4:0.926 5:1.77 6:2.38 7:3.11 15:1.05 23:151 31:0.656 39:0.471 47:15.5 55:13.3 63:2.58 71:29.9 79:4.91 87:3.62 92:1.56e+03
+sparkpipe_k3: streamed prefill pass 2 GPU: MLA attention 122.2 s, KDA attention 74.6 s, MLP and experts 72.6 s, between layers 0.3 s
+sparkpipe_k3: streamed prefill pass 2 attention per node: slowest rank 0 13.9 s, fastest rank 4 13.8 s; helpers attended 160014 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000353 status=0 at 480.5 s; streamer waited 148.8 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 7.3 s in dense broadcasts and 107.7 s in expert steps, 21.2 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 2 step ms ready/posted/done/gap: 0:1.7/70.8/94.3/118.6 1:0.0/0.0/74.8/0.0 2:26.3/86.7/129.2/0.0 3:19.3/65.0/95.4/0.0 4:26.5/64.0/99.0/0.0 5:19.7/53.8/73.3/0.0 6:32.4/66.2/88.7/0.0 7:13.3/46.5/65.2/0.0 8:23.4/56.2/70.5/0.0 9:8.1/40.5/53.4/0.0 10:19.8/50.9/74.0/0.0 11:12.4/43.8/58.3/0.0 12:0.0/29.9/40.9/1617.8 13:11.7/41.5/52.4/0.0 14:17.3/47.0/58.2/0.0 15:0.5/30.
+sparkpipe_k3: streamed prefill sequence 1000490 positions 0..1000353 in 2 passes status=0 480.5 s; exchanges with a block late or wrong at first check 0, settled after waiting 0
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+STAGE-WEIGHTS whole arena in 19.8 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.6, warm 14.9, bind 0.0
+STAGE-WEIGHTS whole arena rendezvous 2 waited 3.5 s
+k31_stage kv pool growth released at chunks=200 of 880
+ERRSITE cache/kv_page_store.c:880 status=15 count=1
+ERRSITE cache/kv_page_store.c:880 status=15 count=2
+k31_stage kv pool grew chunks=200->400 of 880 pages=16425->38229 of 95325 wanted_chunks=0 kv_committed=5872025600 kv_reserve=8589934592
+k31_stage kv capacity pages=38229/95325 tokens=6100800 margin_bytes=5297619188 event=grew resident_tokens=2446656 chunks=400/880
+k31_stage kv pool grew chunks=400->687 of 880 pages=38229->69178 of 95325 wanted_chunks=113 kv_committed=10085203968 kv_reserve=8589934592
+k31_stage kv capacity pages=69178/95325 tokens=6100800 margin_bytes=5297619188 event=grew resident_tokens=4427392 chunks=687/880
+k31_stage kv pool growth held at chunks=687 of 880
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+STAGE-WEIGHTS pass pool in 4.0 s: sync 0.0, leases 0.0, unmap 0.9, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+STAGE-WEIGHTS pass pool rendezvous 3 waited 0.6 s
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.262 1:0.266 2:1.43 3:0.832 4:0.953 5:1.62 6:5.31 7:2.97 15:1.01 23:152 31:0.652 39:0.441 47:40.2 55:11.4 63:2.58 71:32.8 79:5.88 87:3.19 92:1.32e+03
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 63.6 s, KDA attention 77.3 s, MLP and experts 76.4 s, between layers 0.4 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 15 13.8 s, fastest rank 0 13.6 s; helpers attended 163032 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/2 rows 31360 x 16 keys to 501760 status=0 at 218.5 s; streamer waited 99.1 s for the GPU to release buffers, compute waited 0.2 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 8.8 s in dense broadcasts and 110.0 s in expert steps, 22.7 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 1 step ms ready/posted/done/gap: 0:2.4/69.3/92.6/88.8 1:0.0/0.0/85.9/0.0 2:14.9/75.0/117.2/0.0 3:16.5/61.8/94.7/0.0 4:31.3/70.0/106.5/0.0 5:23.9/58.9/81.0/0.0 6:27.7/63.6/85.3/0.0 7:14.6/48.9/69.8/0.0 8:23.3/56.8/71.7/0.0 9:9.4/42.1/56.5/0.0 10:18.6/50.0/72.0/0.0 11:10.7/41.8/57.1/0.0 12:1.1/30.9/42.9/1040.6 13:1.8/31.6/42.7/0.0 14:32.7/62.5/74.1/0.0 15:1.5/31.5
+sparkpipe_k3: streamed prefill pass 1 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.273 1:0.324 2:0.848 3:0.738 4:1 5:1.95 6:2.23 7:3.25 15:1.25 23:154 31:0.629 39:0.471 47:18.2 55:13.9 63:2.12 71:35.5 79:5.69 87:3.55 92:1.56e+03
+sparkpipe_k3: streamed prefill pass 2 GPU: MLA attention 120.6 s, KDA attention 78.4 s, MLP and experts 75.2 s, between layers 0.4 s
+sparkpipe_k3: streamed prefill pass 2 attention per node: slowest rank 0 13.9 s, fastest rank 3 13.8 s; helpers attended 223452 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000448 status=0 at 493.0 s; streamer waited 147.9 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 8.4 s in dense broadcasts and 112.2 s in expert steps, 21.1 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 2 step ms ready/posted/done/gap: 0:3.2/71.8/95.6/131.6 1:0.0/0.0/88.0/0.0 2:15.5/78.3/128.6/0.0 3:14.2/62.6/97.6/0.0 4:24.9/61.5/94.6/0.0 5:21.1/55.6/78.3/0.0 6:29.3/65.4/90.5/0.0 7:12.0/46.5/68.9/0.0 8:24.3/56.2/70.5/0.0 9:5.8/37.4/51.7/0.0 10:23.3/55.3/79.6/0.0 11:10.5/41.9/55.6/0.0 12:2.6/32.4/44.9/1608.1 13:0.7/30.8/41.9/0.0 14:45.7/75.5/87.6/0.0 15:1.5/31.5
+sparkpipe_k3: streamed prefill sequence 1001060 positions 0..1000448 in 2 passes status=0 493.0 s; exchanges with a block late or wrong at first check 0, settled after waiting 0
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+STAGE-WEIGHTS whole arena in 20.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.0, warm 14.9, bind 0.0
+STAGE-WEIGHTS whole arena rendezvous 4 waited 4.3 s
+k31_stage kv pool growth released at chunks=687 of 880
+ERRSITE cache/kv_page_store.c:880 status=15 count=3
+ERRSITE cache/kv_page_store.c:880 status=15 count=4
+k31_stage kv pool growth held at chunks=687 of 880
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+STAGE-WEIGHTS pass pool rendezvous 5 waited 1.3 s
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.285 1:0.219 2:1.43 3:0.832 4:0.793 5:1.73 6:5.31 7:2.97 15:0.992 23:151 31:0.574 39:0.406 47:40.2 55:10.1 63:2.56 71:39.2 79:5.88 87:2.97 92:28.6
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 64.4 s, KDA attention 80.1 s, MLP and experts 73.1 s, between layers 0.6 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 15 14.2 s, fastest rank 0 13.9 s; helpers attended 621744 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/2 rows 31360 x 16 keys to 501760 status=0 at 219.1 s; streamer waited 89.6 s for the GPU to release buffers, compute waited 0.2 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 11.0 s in dense broadcasts and 117.8 s in expert steps, 21.9 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 1 step ms ready/posted/done/gap: 0:1.7/66.8/88.9/113.4 1:0.0/0.0/89.0/0.0 2:33.5/101.4/133.2/0.0 3:24.6/75.6/100.5/0.0 4:46.5/84.4/110.1/0.0 5:21.0/56.3/79.4/0.0 6:30.6/63.3/82.4/0.0 7:19.5/51.5/71.8/0.0 8:20.8/53.0/67.7/0.0 9:10.5/42.0/55.3/0.0 10:18.1/49.4/75.0/0.0 11:11.5/43.0/59.5/0.0 12:9.1/39.0/49.9/937.6 13:50.1/80.3/92.5/0.0 14:29.2/60.0/75.8/0.0 15:0.6/
+sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.3 s; streamer waited 5.8 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 5.4 s in expert steps, 0.7 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 2 step ms ready/posted/done/gap: 0:8.4/85.9/112.0/1027.8 1:0.0/0.0/69.4/0.0 2:43.1/121.0/159.4/0.0 3:57.6/111.9/174.2/0.0 4:25.7/59.7/86.0/0.0 5:27.3/62.7/98.9/0.0 6:0.5/43.4/71.8/0.0 7:18.8/59.1/90.5/0.0 8:15.7/46.2/66.2/0.0 9:27.8/57.9/75.2/0.0 10:30.2/61.3/84.1/0.0 11:7.7/37.9/61.8/0.0 12:0.5/30.4/41.9/402.1 13:43.7/73.4/90.2/0.0 14:14.3/53.2/69.1/0.0 15:0.0/
+ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 350.7 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+k31_stage kv pool growth released at chunks=687 of 880
+sparkpipe_stage_runner: streamed prefill of 1000023 tokens for sequence 1001752 failed status=9; the request fails, no wave fallback
+ERRSITE cache/kv_page_cache.c:4057 status=9 count=1
+ERRSITE runtime/stage_kv_binding.c:2729 status=9 count=1
+k31_stage adapter: the wave after deferred prefill tokens failed status=9; their published blocks hold no KV, so this lane refuses work until it restarts with its KV wiped
+k31_stage reset refused: a streamed prefill failed and left published blocks without KV; a reset cannot clear them, so the lane exits and must restart with its KV wiped
+ERRSITE inference/runner/stage_serving_adapter.c:2053 status=17 count=1
+ERRSITE node/model_residentd.c:3383 status=17 count=1
+ERRSITE node/model_residentd.c:3403 status=17 count=1
+ERRSITE runtime/stage_kv_binding.c:3326 status=15 count=1
+ERRSITE runtime/stage_kv_binding.c:3368 status=15 count=1
+k31_stage kv snapshot store close saved_entries=0 unsaved_entries=44809 ineligible_entries=0 used_bytes=0 files=0 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_bytes=0 status=busy
+k31_stage kv pool sealed generation=7 resident_pages=44809 entries=44809 window=0 private=0 nonresident=0 orphaned=0 due_dropped=0

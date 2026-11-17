@@ -115,8 +115,13 @@ for rank in $(seq 0 15); do
     code=$?
     if [ "$code" = 0 ]; then pass "$host" mesh "$(echo "$out" | head -1 | cut -c1-160)"; else fail "$host" mesh "sparkpipe_mesh_status exit $code: $(echo "$out" | head -2 | tr '\n' ' ' | cut -c1-200)"; fi
   else
-    ready=$($SSH "$host" 'test -e /tmp/weightd-mesh/.ready && echo marker=yes || echo marker=no; grep -a WD-MESH-STATS ~/weightd.log 2>/dev/null | tail -1 | grep -o " ready=[01]" | tr -d " "' | tr '\n' ' ')
-    case "$ready" in "marker=yes ready=1 ") pass "$host" mesh ".ready present, last WD-MESH-STATS ready=1 (no sparkpipe_mesh_status on this node)" ;; *) fail "$host" mesh "readiness '$ready' (no sparkpipe_mesh_status on this node)" ;; esac
+    ready=$($SSH "$host" 'if test -e /tmp/weightd-mesh/.ready; then echo marker=yes; grep -o " ports=[^ ]* degraded=0x[0-9a-f]*" /tmp/weightd-mesh/.ready | tr -d " " | sed "s/degraded=/ degraded=/"; else echo marker=no; fi; grep -a WD-MESH-STATS ~/weightd.log 2>/dev/null | tail -1 | grep -o " ready=[01]" | tr -d " "' | tr '\n' ' ')
+    layout=${ready#marker=yes }; layout=${layout%ready=1 }; layout=${layout% }
+    case "$ready" in
+      "marker=yes ready=1 "|"marker=yes ports="*" degraded=0x0000 ready=1 ") pass "$host" mesh ".ready present${layout:+ ($layout)}, last WD-MESH-STATS ready=1 (no sparkpipe_mesh_status on this node)" ;;
+      "marker=yes ports="*" degraded="*" ready=1 ") fail "$host" mesh "degraded links ($layout): those ranks share one port because one end lacks a port the other has up; WD-MESH-LAYOUT in ~/weightd.log names it" ;;
+      *) fail "$host" mesh "readiness '$ready' (no sparkpipe_mesh_status on this node)" ;;
+    esac
   fi
 done
 

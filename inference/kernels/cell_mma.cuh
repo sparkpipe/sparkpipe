@@ -3,6 +3,7 @@
 #include "inference/kernels/formats/mxfp8.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/mma.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_CELL_MMA_CELLS 2u
 #define LM_CELL_MMA_FRAGS (LM_CELL_MMA_CELLS * 2u)
@@ -36,10 +37,18 @@ typedef struct LmCellMmaSegments
 {
 	const uint8_t *weight[LM_CELL_MMA_MAX_SEGMENTS];
 	uint64_t group_bytes;
+	uint64_t upper_offset;
 	uint32_t tiles;
 	uint32_t column_cells;
+	uint32_t split;
 }
 LmCellMmaSegments;
+
+static __host__ __device__ __forceinline__ uint64_t LmCellMmaGroupOffset(const LmCellMmaSegments &segments, uint32_t group)
+{
+	return(segments.split != 0u && group >= segments.split ? segments.upper_offset + (uint64_t)(group - segments.split) * segments.group_bytes :
+		(uint64_t)group * segments.group_bytes);
+}
 
 typedef struct LmCellMmaStride
 {
@@ -143,6 +152,24 @@ static __device__ __forceinline__ uint32_t LmCellMmaPackExact(float low, float h
 	return(packed);
 }
 
+static __device__ __forceinline__ uint32_t LmCellMmaE2m1Bf16Fused(uint32_t word, uint32_t byte, uint32_t scale_bf16x2)
+{
+	uint32_t widened, bits, out;
+	asm("{\n\t.reg .b8 narrow;\n\tcvt.u8.u32 narrow, %1;\n\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "r"(word >> (8u * byte)));
+	bits = ((widened >> 3u) & 0x0fff0fffu) | (widened & 0x80008000u);
+	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
+	return(out);
+}
+
+static __device__ __forceinline__ uint32_t LmCellMmaE4m3Bf16Fused(uint32_t word, uint32_t selector, uint32_t scale_bf16x2)
+{
+	uint32_t placed = __byte_perm(word, 0u, selector), bits, out;
+	bits = ((placed >> 4u) & 0x07f007f0u) | (placed & 0x80008000u);
+	asm("mul.rn.bf16x2 %0, %1, %2;\n" : "=r"(out) : "r"(bits), "r"(scale_bf16x2));
+	return(out);
+}
+
 static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *tile, uint32_t lane, uint32_t g, uint32_t words[LM_CELL_MMA_FRAGS], uint32_t scales[LM_CELL_MMA_FRAGS])
 {
 	#pragma unroll
@@ -205,33 +232,86 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 			#pragma unroll
 			for ( f = 0u; f < LM_CELL_MMA_FRAGS; f++ )
 			{
-				float scale;
 				if constexpr ( SCALES == 0u )
-					scale = LmUe8m0ToFloat((uint8_t)scale_bits[f]);
+				{
+					const uint32_t code = scale_bits[f] & 255u;
+					if ( code >= 2u && code <= 142u )
+					{
+						const uint32_t s16 = (code + 112u) << 7u;
+						const uint32_t s2 = s16 | (s16 << 16u);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+							b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
+					}
+					else
+					{
+						const float scale = LmUe8m0ToFloat((uint8_t)code);
+						#pragma unroll
+						for ( j = 0u; j < 4u; j++ )
+						{
+							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
+						}
+					}
+				}
 				else
 				{
 					const uint32_t neuron = threadIdx.x / LM_WARP_LANES * LM_WARP_LANES + (f / 2u) * LM_SKINNY_CELL_NEURONS + (f % 2u) * 8u + g;
 					const uint32_t word = scales[slot * LM_CELL_MMA_THREADS + neuron];
 					const uint32_t code = (word >> (((t * SCALES + (SCALES == 2u ? c / 2u : 0u)) & 3u) * 8u)) & 255u;
-					scale = SCALES == 1u ? LmUe8m0ToFloat((uint8_t)code) : LmUe4m3ToFloat((uint8_t)code) * global;
 					if constexpr ( BITS == 8u )
 					{
 						const uint32_t *codes = (const uint32_t *)(weights + slot * TILE_BYTES + neuron * LM_CELL_MMA_WIDE_ROW_BYTES + c * 8u);
+						if ( code >= 16u && code <= 134u )
+						{
+							const uint32_t s16 = (code + 120u) << 7u;
+							const uint32_t s2 = s16 | (s16 << 16u);
+							b[f][0] = LmCellMmaE4m3Bf16Fused(codes[0],0x1404u,s2);
+							b[f][1] = LmCellMmaE4m3Bf16Fused(codes[0],0x3424u,s2);
+							b[f][2] = LmCellMmaE4m3Bf16Fused(codes[1],0x1404u,s2);
+							b[f][3] = LmCellMmaE4m3Bf16Fused(codes[1],0x3424u,s2);
+						}
+						else
+						{
+							const float scale = LmUe8m0ToFloat((uint8_t)code);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+							{
+								const uint32_t bytes = (j < 2u ? codes[0] : codes[1]) >> ((j % 2u) * 16u);
+								b[f][j] = LmCellMmaPackExact(LmE4m3ToFloat((uint8_t)bytes) * scale,LmE4m3ToFloat((uint8_t)(bytes >> 8u)) * scale);
+							}
+						}
+					}
+					else if constexpr ( SCALES == 1u )
+					{
+						if ( code >= 2u && code <= 142u )
+						{
+							const uint32_t s16 = (code + 112u) << 7u;
+							const uint32_t s2 = s16 | (s16 << 16u);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+								b[f][j] = LmCellMmaE2m1Bf16Fused(current[f],j,s2);
+						}
+						else
+						{
+							const float scale = LmUe8m0ToFloat((uint8_t)code);
+							#pragma unroll
+							for ( j = 0u; j < 4u; j++ )
+							{
+								const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+								b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
+							}
+						}
+					}
+					else
+					{
+						const float scale = LmUe4m3ToFloat((uint8_t)code) * global;
 						#pragma unroll
 						for ( j = 0u; j < 4u; j++ )
 						{
-							const uint32_t bytes = (j < 2u ? codes[0] : codes[1]) >> ((j % 2u) * 16u);
-							b[f][j] = LmCellMmaPackExact(LmE4m3ToFloat((uint8_t)bytes) * scale,LmE4m3ToFloat((uint8_t)(bytes >> 8u)) * scale);
+							const float2 pair = LmSkinnyE2m1Pair(current[f],j);
+							b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
 						}
-					}
-				}
-				if constexpr ( BITS == 4u )
-				{
-					#pragma unroll
-					for ( j = 0u; j < 4u; j++ )
-					{
-						const float2 pair = LmSkinnyE2m1Pair(current[f],j);
-						b[f][j] = LmCellMmaPackExact(pair.x * scale,pair.y * scale);
 					}
 				}
 			}
@@ -293,7 +373,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	const uint32_t segment_cells = segments.column_cells != 0u ? segments.column_cells : args.cells;
 	const uint32_t column_segment = block_first / segment_cells;
 	const uint64_t tile_stride = (uint64_t)segment_cells * LM_CELL_MMA_CELL_BYTES;
-	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
+	const uint64_t cells_offset = LmCellMmaGroupOffset(segments, group) + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
 	uint32_t first, end, last;
 	float global = 1.0f;
 	LmDependentWait();
@@ -350,7 +430,7 @@ static int32_t LmCellMmaLaunchSegments(LmSkinnyCellArguments &args, LmCellMmaSeg
 }
 
 template<uint32_t SCALES, uint32_t BITS>
-static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, const LmCellMmaStride &stride, cudaStream_t stream)
+static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, const LmCellMmaStride &stride, SparkGpuStream stream)
 {
 	uint64_t blocks, slots;
 	args.group_bytes = segments.group_bytes;
@@ -358,10 +438,10 @@ static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegme
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
 	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
 	LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, SparkGpuStream stream)
 {
 	LmSkinnyCellArguments args;
 	LmCellMmaSegments segments;
@@ -375,7 +455,7 @@ static int32_t LmCellMmaExpertsSegmented(const void *const *weight, uint32_t seg
 	return(LmCellMmaLaunchKernel<0u,4u>(args,segments,stride,stream));
 }
 
-static int32_t LmCellMmaExpertsColumns(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+static int32_t LmCellMmaExpertsColumns(const void *const *weight, uint32_t segment_count, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, SparkGpuStream stream)
 {
 	LmSkinnyCellArguments args;
 	LmCellMmaSegments segments;
@@ -390,13 +470,13 @@ static int32_t LmCellMmaExpertsColumns(const void *const *weight, uint32_t segme
 	return(LmCellMmaLaunchKernel<0u,4u>(args,segments,stride,stream));
 }
 
-static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, SparkGpuStream stream)
 {
 	return(LmCellMmaExpertsSegmented(&weight,1u,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,activation_packed,input_dimension,output_dimension,tile_k,stream));
 }
 
 template<class Format>
-static int32_t LmCellMmaStridedExperts(const void *weight, const LmScaleTensor &scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+static int32_t LmCellMmaStridedExperts(const void *weight, const LmScaleTensor &scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
 {
 	if constexpr ( LmCellMmaFormat<Format>::kScales == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);

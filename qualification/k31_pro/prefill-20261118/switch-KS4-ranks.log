@@ -1,0 +1,96 @@
+spark0 STAGE-WEIGHTS pass pool in 3.8 s: detach 0.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark0 STAGE-WEIGHTS whole arena in 20.2 s: detach 0.1, reclaim 0.2, attach 5.1, warm 14.9, bind 0.0
+spark0 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark0 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark0 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark0 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark1 STAGE-WEIGHTS pass pool in 3.8 s: detach 0.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark1 STAGE-WEIGHTS whole arena in 20.4 s: detach 0.1, reclaim 0.1, attach 5.0, warm 15.1, bind 0.0
+spark1 STAGE-WEIGHTS pass pool in 4.9 s: detach 1.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark1 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark1 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark1 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark2 STAGE-WEIGHTS pass pool in 3.7 s: detach 0.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark2 STAGE-WEIGHTS whole arena in 19.9 s: detach 0.1, reclaim 0.2, attach 4.6, warm 15.0, bind 0.0
+spark2 STAGE-WEIGHTS pass pool in 4.0 s: detach 0.9, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark2 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark2 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark2 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark3 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark3 STAGE-WEIGHTS whole arena in 20.0 s: detach 0.1, reclaim 0.2, attach 4.6, warm 15.0, bind 0.0
+spark3 STAGE-WEIGHTS pass pool in 4.3 s: detach 1.2, reclaim 1.1, attach 2.1, warm 0.0, bind 0.0
+spark3 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark3 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark3 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark4 STAGE-WEIGHTS pass pool in 4.6 s: detach 0.7, reclaim 1.0, attach 2.9, warm 0.0, bind 0.0
+spark4 STAGE-WEIGHTS whole arena in 23.0 s: detach 0.1, reclaim 0.1, attach 5.8, warm 16.8, bind 0.0
+spark4 STAGE-WEIGHTS pass pool in 6.6 s: detach 2.7, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark4 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark4 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark4 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark5 STAGE-WEIGHTS pass pool in 3.8 s: detach 0.7, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark5 STAGE-WEIGHTS whole arena in 19.9 s: detach 0.1, reclaim 0.2, attach 4.6, warm 15.0, bind 0.0
+spark5 STAGE-WEIGHTS pass pool in 4.4 s: detach 1.2, reclaim 1.1, attach 2.1, warm 0.0, bind 0.0
+spark5 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark5 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark5 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark6 STAGE-WEIGHTS pass pool in 4.6 s: detach 0.7, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark6 STAGE-WEIGHTS whole arena in 22.7 s: detach 0.1, reclaim 0.1, attach 5.4, warm 17.0, bind 0.0
+spark6 STAGE-WEIGHTS pass pool in 4.9 s: detach 0.8, reclaim 1.2, attach 2.9, warm 0.0, bind 0.0
+spark6 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark6 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark6 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark7 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark7 STAGE-WEIGHTS whole arena in 20.1 s: detach 0.1, reclaim 0.1, attach 4.7, warm 15.2, bind 0.0
+spark7 STAGE-WEIGHTS pass pool in 5.0 s: detach 1.8, reclaim 1.1, attach 2.2, warm 0.0, bind 0.0
+spark7 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark7 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark7 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark8 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark8 STAGE-WEIGHTS whole arena in 20.2 s: detach 0.1, reclaim 0.1, attach 4.7, warm 15.2, bind 0.0
+spark8 STAGE-WEIGHTS pass pool in 4.0 s: detach 0.8, reclaim 1.1, attach 2.2, warm 0.0, bind 0.0
+spark8 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark8 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark8 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+spark9 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark9 STAGE-WEIGHTS whole arena in 20.8 s: detach 0.1, reclaim 0.2, attach 5.2, warm 15.3, bind 0.0
+spark9 STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.1, attach 2.0, warm 0.0, bind 0.0
+spark9 ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+spark9 sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+spark9 sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparka STAGE-WEIGHTS pass pool in 4.7 s: detach 0.7, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparka STAGE-WEIGHTS whole arena in 22.8 s: detach 0.1, reclaim 0.2, attach 5.5, warm 17.0, bind 0.0
+sparka STAGE-WEIGHTS pass pool in 8.4 s: detach 4.5, reclaim 0.9, attach 3.0, warm 0.0, bind 0.0
+sparka ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+sparka sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+sparka sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparkb STAGE-WEIGHTS pass pool in 4.6 s: detach 0.7, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+sparkb STAGE-WEIGHTS whole arena in 23.3 s: detach 0.1, reclaim 0.1, attach 5.8, warm 17.1, bind 0.0
+sparkb STAGE-WEIGHTS pass pool in 5.4 s: detach 1.5, reclaim 0.9, attach 3.0, warm 0.0, bind 0.0
+sparkb ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+sparkb sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+sparkb sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparkc STAGE-WEIGHTS pass pool in 4.7 s: detach 0.7, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkc STAGE-WEIGHTS whole arena in 22.8 s: detach 0.1, reclaim 0.1, attach 5.5, warm 17.0, bind 0.0
+sparkc STAGE-WEIGHTS pass pool in 5.7 s: detach 1.7, reclaim 1.0, attach 2.9, warm 0.0, bind 0.0
+sparkc ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+sparkc sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+sparkc sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparkd STAGE-WEIGHTS pass pool in 4.9 s: detach 0.7, reclaim 1.0, attach 3.1, warm 0.0, bind 0.0
+sparkd STAGE-WEIGHTS whole arena in 22.9 s: detach 0.1, reclaim 0.2, attach 5.6, warm 17.0, bind 0.0
+sparkd STAGE-WEIGHTS pass pool in 8.2 s: detach 4.1, reclaim 1.1, attach 3.0, warm 0.0, bind 0.0
+sparkd ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+sparkd sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+sparkd sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparke STAGE-WEIGHTS pass pool in 4.7 s: detach 0.7, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparke STAGE-WEIGHTS whole arena in 22.8 s: detach 0.1, reclaim 0.2, attach 5.5, warm 16.9, bind 0.0
+sparke STAGE-WEIGHTS pass pool in 10.0 s: detach 6.0, reclaim 1.1, attach 3.0, warm 0.0, bind 0.0
+sparke ERRSITE ring/transport/weight_stream.c:167 status=4 count=1
+sparke sparkpipe_k3: the streamed weight stream did not open status=4 (fabric rocep1s0f1, pair roceP2p1s0f0)
+sparke sparkpipe_stage_runner: streamed prefill of 998467 tokens for sequence 1000751 failed status=4; the request fails, no wave fallback
+sparkf STAGE-WEIGHTS pass pool in 4.7 s: detach 0.7, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkf STAGE-WEIGHTS whole arena in 22.9 s: detach 0.1, reclaim 0.1, attach 5.7, warm 17.0, bind 0.0
+sparkf STAGE-WEIGHTS pass pool in 44.1 s: detach 40.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkf sparkpipe_k3: streamed exchange op=0 rows=1: the block from rank 0 does not match its sender's checksum after 2 s
+sparkf ERRSITE ./inference/runner/pass_prefill.cuh:558 status=9 count=1
+sparkf sparkpipe_k3: the streamed weight stream did not open status=9 (fabric rocep1s0f1, pair roceP2p1s0f0)

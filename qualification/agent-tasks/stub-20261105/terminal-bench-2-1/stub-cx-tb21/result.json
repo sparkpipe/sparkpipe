@@ -1,0 +1,39 @@
+{
+    "id": "c6dd0d37-1ec0-4111-8039-8991204d03a5",
+    "started_at": "2026-11-05T13:46:22.363793",
+    "updated_at": "2026-11-05T13:49:26.575435",
+    "finished_at": "2026-11-05T13:49:26.575435",
+    "n_total_trials": 1,
+    "stats": {
+        "n_completed_trials": 1,
+        "n_errored_trials": 0,
+        "n_running_trials": 0,
+        "n_pending_trials": 0,
+        "n_cancelled_trials": 0,
+        "n_retries": 0,
+        "evals": {
+            "codex__stub-model__terminal-bench/terminal-bench-2-1": {
+                "n_trials": 1,
+                "n_errors": 0,
+                "metrics": [
+                    {
+                        "mean": 0.0
+                    }
+                ],
+                "pass_at_k": {},
+                "reward_stats": {
+                    "reward": {
+                        "0.0": [
+                            "fix-git__mFJ7mJz"
+                        ]
+                    }
+                },
+                "exception_stats": {}
+            }
+        },
+        "n_input_tokens": 11709,
+        "n_cache_tokens": 0,
+        "n_output_tokens": 24,
+        "cost_usd": null
+    }
+}

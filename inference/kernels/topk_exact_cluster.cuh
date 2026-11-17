@@ -3,6 +3,7 @@
 #include "inference/kernels/dependent_launch.cuh"
 #include "runtime/launch.h"
 #include <cooperative_groups.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_TOPK_EXACT_CLUSTER_BLOCKS 8u
 #define LM_TOPK_EXACT_CLUSTER_THREADS 512u
@@ -137,11 +138,14 @@ static inline uint32_t LmTopkExactClusterFits(uint32_t rows, uint32_t n, uint32_
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmTopkExactRowsLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t *out_indices, cudaStream_t stream)
+static inline SparkGpuError LmTopkExactRowsLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t *out_indices, SparkGpuStream stream)
 {
 	if ( LmTopkExactClusterFits(rows,n,k) != 0u )
 		return(LmLaunchClusterKernel((LmTopkExactClusterKernel<LM_TOPK_EXACT_CLUSTER_THREADS,LM_TOPK_EXACT_CLUSTER_BLOCKS>),
 			dim3(rows * LM_TOPK_EXACT_CLUSTER_BLOCKS),dim3(LM_TOPK_EXACT_CLUSTER_THREADS),0,stream,LM_TOPK_EXACT_CLUSTER_BLOCKS,0u,scores,n,k,out_indices));
-	LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
-	return(cudaPeekAtLastError());
+	if ( n > LM_TOPK_EXACT_CACHED_ROW && n > k && k <= LM_TOPK_WIDE_MAX_K )
+		LM_LAUNCH((LmTopkExactWideKernel),rows,LM_TOPK_WIDE_THREADS,0,stream,scores,n,k,out_indices);
+	else
+		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
+	return(SparkGpuPeekAtLastError());
 }

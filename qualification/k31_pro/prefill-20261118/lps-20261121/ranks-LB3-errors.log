@@ -1,0 +1,72 @@
+spark0 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark0 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.3 s; streamer waited 5.8 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 5.4 s in ex
+spark0 weight_stream: rank 0 rotation step 12 (block of rank 12) stalled: sent 118 + 118 done 118/118 + 118/118 got 118/118 + 46/118 ready 0x10 + 0x20
+spark0 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark0 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark0 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 350.7 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark1 weight_stream: rank 1 fabric completion failed: transport retry counter exceeded (vendor 0x81)
+spark1 ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+spark1 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark1 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark1 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark1 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.4 s; streamer waited 6.0 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 8.9 s in ex
+spark1 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 323.4 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark2 weight_stream: rank 2 pair completion failed: transport retry counter exceeded (vendor 0x81)
+spark2 ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+spark2 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark2 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark2 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark2 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.7 s; streamer waited 5.9 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 9.0 s in ex
+spark2 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 323.7 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark3 weight_stream: rank 3 fabric completion failed: transport retry counter exceeded (vendor 0x81)
+spark3 ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+spark3 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark3 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark3 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark3 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.2 s; streamer waited 6.0 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 8.9 s in ex
+spark3 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 323.2 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark4 weight_stream: rank 4 pair completion failed: transport retry counter exceeded (vendor 0x81)
+spark4 ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+spark4 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark4 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark4 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark4 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.4 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 9.1 s in ex
+spark4 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 323.4 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark5 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark5 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.3 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.6 s in dense broadcasts and 5.5 s in ex
+spark5 weight_stream: rank 5 rotation step 13 (block of rank 1) stalled: sent 118 + 0 done 0/118 + 118/118 got 0/118 + 0/118 ready 0x0 + 0x100
+spark5 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark5 sparkpipe_k3: streamed prefill expert step 13 failed at layer 4 status=4
+spark5 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 350.8 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark6 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark6 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.6 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.6 s in dense broadcasts and 5.4 s in ex
+spark6 weight_stream: rank 6 rotation step 12 (block of rank 2) stalled: sent 118 + 0 done 118/118 + 0/118 got 118/118 + 118/118 ready 0x400 + 0x0
+spark6 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark6 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark6 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 350.9 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark7 weight_stream: rank 7 pair completion failed: transport retry counter exceeded (vendor 0x81)
+spark7 ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+spark7 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark7 sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+spark7 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark7 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 324.4 s; streamer waited 5.8 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.6 s in dense broadcasts and 9.0 s in ex
+spark7 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 324.4 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+spark8 sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+spark8 sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 324.2 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.7 s in dense broadcasts and 5.5 s in ex
+spark8 weight_stream: rank 8 rotation step 13 (block of rank 5) stalled: sent 118 + 0 done 118/118 + 0/118 got 0/118 + 118/118 ready 0x1000 + 0x0
+spark8 ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+spark8 sparkpipe_k3: streamed prefill expert step 13 failed at layer 4 status=4
+spark8 sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 351.6 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+sparkc weight_stream: rank 12 pair completion failed: transport retry counter exceeded (vendor 0x81)
+sparkc ERRSITE ring/transport/weight_stream.c:364 status=4 count=1
+sparkc ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+sparkc sparkpipe_k3: streamed prefill expert step 13 failed at layer 4 status=4
+sparkc sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+sparkc sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.0 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.5 s in dense broadcasts and 9.4 s in ex
+sparkc sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 323.0 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+sparke sparkpipe_k3: streamed prefill attention failed at layer 4 launch=0 collective=9
+sparke sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000023 status=9 at 323.5 s; streamer waited 5.7 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 0.6 s in dense broadcasts and 5.5 s in ex
+sparke weight_stream: rank 14 rotation step 12 (block of rank 10) stalled: sent 118 + 118 done 118/118 + 118/118 got 118/118 + 0/118 ready 0x4 + 0x8
+sparke ERRSITE ring/transport/pack_window.c:116 status=4 count=1
+sparke sparkpipe_k3: streamed prefill expert step 12 failed at layer 4 status=4
+sparke sparkpipe_k3: streamed prefill sequence 1001752 positions 0..1000023 in 2 passes status=9 350.8 s; exchanges with a block late or wrong at first check 1, settled after waiting 0

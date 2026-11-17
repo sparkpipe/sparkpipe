@@ -2,6 +2,7 @@
 
 #include "inference/kernels/attn.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_ROPE_HEADS_THREADS 256u
 #define LM_LATENT_WARP_MIN_SPAN 32u
@@ -150,17 +151,17 @@ void LmLatentWarpSplitKernel(
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT, uint32_t HEADS>
-static inline cudaError_t LmLatentWarpSplitShape(const uint16_t *query_latent_bf16, const uint16_t *query_rope_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmLatentWarpSplitShape(const uint16_t *query_latent_bf16, const uint16_t *query_rope_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, SparkGpuStream stream)
 {
 	LM_LAUNCH((LmLatentWarpSplitKernel<Geometry, HEADS, LATENT, ROPE, ROW_INVARIANT>), dim3(rows, partitions), LM_LATENT_WARP_THREADS, 0, stream, query_latent_bf16, query_rope_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, split_partials, row_position);
-	if (cudaPeekAtLastError() != cudaSuccess)
-		return cudaPeekAtLastError();
+	if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS)
+		return SparkGpuPeekAtLastError();
 	LM_LAUNCH_DEPENDENT((LmLatentAttentionDecodeSplitCombineKernel<LM_ROPE_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_ROPE_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
-static inline cudaError_t LmLatentRopeHeadsSplitLaunch(
+static inline SparkGpuError LmLatentRopeHeadsSplitLaunch(
 	const uint16_t *query_latent_bf16,
 	const uint16_t *query_rope_bf16,
 	LmKvView cache,
@@ -178,7 +179,7 @@ static inline cudaError_t LmLatentRopeHeadsSplitLaunch(
 	float *split_partials,
 	uint32_t split_partial_blocks,
 	uint32_t multiprocessor_count,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	uint32_t blocks = rows * heads, bound = selected_positions != 0 ? selected_count : position_bound, partitions;
 	partitions = bound == 0u ? 1u : (bound + LM_LATENT_WARP_MIN_SPAN - 1u) / LM_LATENT_WARP_MIN_SPAN;

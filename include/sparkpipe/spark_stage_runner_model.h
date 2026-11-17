@@ -11,13 +11,13 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 7u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 8u
 #define SPARK_STAGE_RUNNER_NO_ROW 0xffffffffu
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
 #define SPARK_STAGE_RUNNER_ROUND_FINISH 2u
 #define SPARK_STAGE_RUNNER_LANES 2u
-#define SPARK_STAGE_RUNNER_GRAPH_ROWS 16u
+#define SPARK_STAGE_RUNNER_GRAPH_ROWS 32u
 #define SPARK_STAGE_RUNNER_ROW_STATE_READ 0u
 #define SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN 1u
 
@@ -106,6 +106,7 @@ typedef struct SparkStageRunnerModelGeometry
 	SparkKvShard kv_shard;
 	uint64_t recurrent_bytes;
 	uint32_t tree_verify;
+	uint32_t tree_slot_grain;
 	uint32_t experts;
 	uint32_t top_k;
 	uint32_t lease_tensor_base;
@@ -114,6 +115,9 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t embed_alias_first;
 	uint32_t embed_alias_count;
 	uint32_t embed_alias_row;
+	uint32_t embed_gather;
+	uint32_t graph_ignores_gather;
+	uint32_t input_width;
 } SparkStageRunnerModelGeometry;
 
 typedef struct SparkStageRunnerDeviceWeights
@@ -174,6 +178,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*end)(void *model, void *frame, SparkStatus status, void *queue);
 	uint32_t frame_bytes;
 	uint32_t chunk_rows;
+	SparkStatus (*rebind)(void *model, struct SparkWeightdLazyPack *lazy_pack);
 };
 
 #ifdef __cplusplus

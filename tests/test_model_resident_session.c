@@ -1,32 +1,32 @@
 #include <assert.h>
 #include <stdint.h>
 #include <string.h>
-#include <cuda_runtime_api.h>
+#include "sparkpipe/spark_gpu.h"
 
 static uint32_t TestStreamCalls;
 static uint32_t TestStreamFailure;
-static cudaError_t TestCreateStream(cudaStream_t *stream,unsigned int flags)
+static SparkGpuError TestCreateStream(SparkGpuStream *stream,unsigned int flags)
 {
 	TestStreamCalls++;
 	if ( TestStreamCalls == TestStreamFailure )
-		return(cudaErrorMemoryAllocation);
-	return(cudaStreamCreateWithFlags(stream,flags));
+		return(SPARK_GPU_ERROR_MEMORY_ALLOCATION);
+	return(SparkGpuStreamCreateWithFlags(stream,flags));
 }
 
-static cudaError_t TestCreatePriorityStream(cudaStream_t *stream,unsigned int flags,int priority)
+static SparkGpuError TestCreatePriorityStream(SparkGpuStream *stream,unsigned int flags,int priority)
 {
 	TestStreamCalls++;
 	if ( TestStreamCalls == TestStreamFailure )
-		return(cudaErrorMemoryAllocation);
-	return(cudaStreamCreateWithPriority(stream,flags,priority));
+		return(SPARK_GPU_ERROR_MEMORY_ALLOCATION);
+	return(SparkGpuStreamCreateWithPriority(stream,flags,priority));
 }
 
 #define main SparkModelResidentdProgramMain
-#define cudaStreamCreateWithFlags TestCreateStream
-#define cudaStreamCreateWithPriority TestCreatePriorityStream
+#define SparkGpuStreamCreateWithFlags TestCreateStream
+#define SparkGpuStreamCreateWithPriority TestCreatePriorityStream
 #include "../node/model_residentd.c"
-#undef cudaStreamCreateWithPriority
-#undef cudaStreamCreateWithFlags
+#undef SparkGpuStreamCreateWithPriority
+#undef SparkGpuStreamCreateWithFlags
 #undef main
 
 typedef struct TestSession
@@ -165,6 +165,29 @@ static void TestPartialReplyIsNotReplayed(void)
 	TestReadHello(&test,peer);
 	assert(test.runtime.client.last_message_id == 1u);
 	close(old[1]);
+	close(peer);
+	SparkModelResidentdCloseClient(&test.runtime);
+	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
+}
+
+static void TestHelloReportsSubmissionFloor(void)
+{
+	TestSession test;
+	SparkModelResidentIpcHelloAck ack;
+	int peer;
+	TestInitialize(&test);
+	test.runtime.client.last_submission_id = 1000737u;
+	test.runtime.submission_id_floor = 1000737u;
+	SparkModelResidentdCloseClient(&test.runtime);
+	assert(test.runtime.client.last_submission_id == 0u);
+	assert(test.runtime.submission_id_floor == 1000737u);
+	peer = TestAdopt(&test);
+	assert(SparkModelResidentdProgressReset(&test.runtime) == SPARK_STATUS_OK);
+	assert(SparkModelResidentdWriteClient(&test.runtime) == SPARK_STATUS_OK);
+	assert(read(peer,&ack,sizeof(ack)) == sizeof(ack));
+	assert(SparkModelResidentIpcValidateHelloAck(&ack,sizeof(ack),1u,0u,0u,
+		101u,&test.descriptor,&test.runtime.runtime_limits) == SPARK_STATUS_OK);
+	assert(ack.status == SPARK_STATUS_OK && ack.submission_id_floor == 1000737u);
 	close(peer);
 	SparkModelResidentdCloseClient(&test.runtime);
 	assert(pthread_mutex_destroy(&test.runtime.mutex) == 0);
@@ -334,7 +357,7 @@ static void TestCudaStartupFailureNamesStream(void)
 		assert(TestStreamCalls == failing);
 		assert(runtime.transport_stream == 0);
 		if ( runtime.execution_stream != 0 )
-			assert(cudaStreamDestroy(runtime.execution_stream) == cudaSuccess);
+			assert(SparkGpuStreamDestroy(runtime.execution_stream) == SPARK_GPU_SUCCESS);
 	}
 	TestStreamFailure = 0u;
 }
@@ -378,6 +401,7 @@ int main(void)
 {
 	TestCudaStartupFailureNamesStream();
 	TestCompetingClientPreservesOwner();
+	TestHelloReportsSubmissionFloor();
 	TestPartialReplyIsNotReplayed();
 	TestResetWaitsForOwnedRoute();
 	TestFailedRouteSettlesRanSlots();

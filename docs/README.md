@@ -62,6 +62,11 @@ current authority.
   model families, and the rule for sharing it.
 - [`KERNEL_PLAYBOOK.md`](KERNEL_PLAYBOOK.md): shared-kernel techniques and
   contract template.
+- [`DECODE_REPLAY.md`](DECODE_REPLAY.md): one rank's DeepSeek V4.1 Flash
+  decode step on one GPU, for measuring kernel work on it without the fleet.
+- [`FUSED_KERNELS.md`](FUSED_KERNELS.md): the fused kernel generator, its
+  plans and op catalogue, the bit-exact test it writes, and the fused
+  hyper-connection block of the DeepSeek V4.1 Flash decode step.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV
@@ -70,6 +75,9 @@ current authority.
   consolidation plan.
 - [`T1_REFERENCE_COMPARE.md`](T1_REFERENCE_COMPARE.md): T1 reference-decoder
   comparison contract.
+- [`VARIANT_GATE.md`](VARIANT_GATE.md): how a precision variant is measured
+  against the full-precision lane, what is published and the one thing a
+  variant is refused for.
 - [`SERVING_FUZZ_COVERAGE.md`](SERVING_FUZZ_COVERAGE.md): serving coverage
   map and runtime contract.
 - [`LITELLM_FRONTEND.md`](LITELLM_FRONTEND.md): the LiteLLM door.
@@ -90,50 +98,52 @@ current authority.
 - [`K3_VS_GB10_VLLM.md`](K3_VS_GB10_VLLM.md): K3 against the gb10-vllm
   stack, lever by lever, with SparkPipe's numbers from
   [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
+- [`K3_PREFILL_PLAN.md`](K3_PREFILL_PLAN.md): Kimi K3.1 Pro 1M-token
+  prefill: the measured split, the cost model and the levers ranked by
+  minutes saved.
 
 ## Speculation
 
 - [`SPECULATION_UNIFIED_DESIGN.md`](SPECULATION_UNIFIED_DESIGN.md):
-  speculation seam, source mask, draft bridge, per-family state and
-  direction.
-- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): rtx5090 host
-  (fleet hub, model APIs, draft farm, drafter store).
-- [`SPECULATION_PLAN.md`](SPECULATION_PLAN.md): speculation architecture,
-  drafters per model, and the PR sequence.
+  speculation as built: the batch engine's draft planning, lookup and draft
+  model sources, the frame cost model, the draft bridge, control, the
+  guarantee and direction.
+- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub's
+  drafters and draft farm.
 - [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
   frames over the production path: node table, slot and position split,
   ancestor attention, path-form `keep_rows`, composition, phases and gates.
 
 ## Operations and development
 
+- Site operations are in the private
+  [datacenter](https://github.com/sparkpipe/datacenter) repository: the fleet
+  release runbook (`operations/FLEET_RELEASE_RUNBOOK.md`, the release and
+  operations procedure), incident recovery, new-node bring-up, management
+  route failover, the hub host and the fabric (`network/FLEET_FABRIC.md`).
 - [`TOOL_REFERENCE.md`](TOOL_REFERENCE.md): purpose, usage and exit codes
   of the standalone C and CUDA tools (hy4 host references and GPU tests,
   mesh registration repros, NVFP4 smokes).
-- [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
-  production fleet guide (hub, fleet-agent, releases, the hub serving
-  stack, bootstrap, triage). This is the release and operations procedure.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract
   and PR evidence.
 - [`DEVCYCLE.md`](DEVCYCLE.md): queue builds and the shared development
   cycle.
-- [`INCIDENT_RECOVERY_PLAYBOOK.md`](INCIDENT_RECOVERY_PLAYBOOK.md): Spark boot
-  and OOM recovery (PXE, then the brickproof controller).
 - [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
   each item exists, and the procedure for replacing or adding a node.
+- [`HOSTED_DEPENDENCY_AUDIT.md`](HOSTED_DEPENDENCY_AUDIT.md): the release
+  gate that fails a hosted release root, node image or running node carrying
+  NVIDIA user-space libraries, tools or packages.
+- [`HOSTED_NODE_IMAGE.md`](HOSTED_NODE_IMAGE.md): the rented nodes' image,
+  its pins, GB10 settings, GPU device nodes and the baseline it carries.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
   experiments).
-- [`SPARK_MANAGEMENT_FAILOVER.md`](SPARK_MANAGEMENT_FAILOVER.md): management
-  SSH route selection.
 - [`TP_CUPTI_TRACE.md`](TP_CUPTI_TRACE.md): isolated per-rank CUPTI timing
   trace.
 - [`SERVING_RELEASE_RECOVERY_20260924.md`](SERVING_RELEASE_RECOVERY_20260924.md):
   reproducing the `shared-serving-20260922` release (dated record; its
   replay needs an operator maintenance window).
-- [`operations/managed-driver-station.md`](operations/managed-driver-station.md):
-  the 2026-09-24 managed driver station layout (dated record; the fleet now
-  serves GLM 5.3 Flash under fleet-agent, see the runbook).
 
 ## Changing status
 
@@ -144,6 +154,10 @@ current authority.
 - [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
   the mega-PR against the product: what an engineer saves after it, what the
   site promises that is not built, and what to do first.
+- [`PREFILL_ANTICIPATION.md`](PREFILL_ANTICIPATION.md): audit of the context
+  packs, the anticipator and the cache controls; where prefill time goes in
+  agent sessions; and the proposed design and build order for keeping and
+  anticipating exact prefixes.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
   milestone's exit criterion. It now includes M10 (speculation at B1-B64)
   and M11 (drivers in parallel).

@@ -425,3 +425,395 @@ their rounding points, for the tencent/Qwen3.8-27B-DSpine-b16 checkpoint.
 No upstream code is copied.
 Copyright (C) 2026 Tencent. All rights reserved.
 Licensed under the Apache License, Version 2.0 (LICENSE-APACHE-2.0).
+
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/alloc/alloc_channel.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/cc_drv.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0000.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0000_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0005.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0005_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl003e.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0040.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0070.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0071.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0080.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl0080_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl2080.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl2080_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl50a0.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl9010.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl9010_callback.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl9067.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cl90f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/cla06c.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clc361.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clc56f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clc661.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clc761.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clc96f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/class/clca6f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/cpuopsys.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0000/ctrl0000base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0000/ctrl0000client.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0000/ctrl0000gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0000/ctrl0000system.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0000/ctrl0000unix.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl003e.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0041.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0073/ctrl0073base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0073/ctrl0073system.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080bsp.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080fifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080gr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl0080/ctrl0080msenc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080ce.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080event.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080fb.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080fifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080gr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080internal.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080mc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080nvlink_common.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080rc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl2080/ctrl2080tmr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl30f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl906f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrl90f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrla06c.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrla06f/ctrla06fbase.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrla06f/ctrla06fgpfifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrlc36f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/ctrl/ctrlxxxx.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/mmu_fmt_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv-ioctl-numbers.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv-ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv-unix-nvos-params-wrappers.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvCpuUuid.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_escape.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_uvm_user_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_vgpu_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvcfg_sdk.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nverror.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvgputypes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvimpshared.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvlimits.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvmisc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvos.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvstatus.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvstatuscodes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvtypes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/rs_access.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/uvm_ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/uvm_linux_ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/uvm_types.h
+Upstream: https://github.com/NVIDIA/open-gpu-kernel-modules
+Commit: c8e699821c23e4335bf23330a54a23d15cfb95e9
+License: MIT
+
+The files under runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/
+are headers of open-gpu-kernel-modules
+(https://github.com/NVIDIA/open-gpu-kernel-modules, release 580.178.04, commit
+c8e699821c23e4335bf23330a54a23d15cfb95e9), generated by tools/nvrm_headers.py.
+Each keeps its path relative to its include root (src/common/sdk/nvidia/inc,
+src/nvidia/arch/nvalloc/unix/include, kernel-open/common/inc,
+kernel-open/nvidia-uvm). Changes: the source comments are removed, and a
+default a build could override is fixed at its upstream value. They are
+distributed under the following license:
+
+Copyright (c) 1993-2006 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2025, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001, Nvidia Corporation. All rights reserved.
+Copyright (c) 2001-2001 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2001, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2001-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2001-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2002-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+Copyright (c) 2003-2023 NVIDIA CORPORATION & AFFILIATES
+Copyright (c) 2004-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2004-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2004-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2005-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2007-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2007-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2008-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2009-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2009-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2013 NVidia Corporation
+Copyright (c) 2013-2025 NVidia Corporation
+Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2015-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2016-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2017-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2018-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/alloc/alloc_channel.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/cc_drv.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0000.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0000_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0005.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0005_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl003e.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0040.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0070.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0071.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0080.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl0080_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl2080.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl2080_notification.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl50a0.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl9010.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl9010_callback.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl9067.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cl90f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/cla06c.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clc361.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clc56f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clc661.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clc761.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clc96f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/class/clca6f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/cpuopsys.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0000/ctrl0000base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0000/ctrl0000client.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0000/ctrl0000gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0000/ctrl0000system.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0000/ctrl0000unix.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl003e.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0041.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0073/ctrl0073base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0073/ctrl0073system.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080bsp.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080fifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080gr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl0080/ctrl0080msenc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080ce.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080event.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080fb.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080fifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080gpu.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080gr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080internal.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080mc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080nvlink_common.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080rc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl2080/ctrl2080tmr.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl30f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl906f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrl90f1.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrla06c.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrla06f/ctrla06fbase.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrla06f/ctrla06fgpfifo.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrlc36f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ctrl/ctrlxxxx.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/mmu_fmt_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv-ioctl-numa.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv-ioctl-numbers.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv-ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv-unix-nvos-params-wrappers.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvCpuUuid.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_escape.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_uvm_user_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_vgpu_types.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvcfg_sdk.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nverror.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvgputypes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvimpshared.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvlimits.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvmisc.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvos.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvstatus.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvstatuscodes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvtypes.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/rs_access.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/uvm_ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/uvm_linux_ioctl.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/uvm_types.h
+Upstream: https://github.com/NVIDIA/open-gpu-kernel-modules
+Commit: 722ae84526a09ed672fbe75448e2909834ba4cce
+License: MIT
+
+The files under runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/ are
+headers of open-gpu-kernel-modules
+(https://github.com/NVIDIA/open-gpu-kernel-modules, release 595.84, commit
+722ae84526a09ed672fbe75448e2909834ba4cce), generated by tools/nvrm_headers.py.
+Each keeps its path relative to its include root (src/common/sdk/nvidia/inc,
+src/nvidia/arch/nvalloc/unix/include, kernel-open/common/inc,
+kernel-open/nvidia-uvm). Changes: the source comments are removed, and a
+default a build could override is fixed at its upstream value. They are
+distributed under the following license:
+
+Copyright (c) 1993-2006 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2026, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 1999-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2001 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2001, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2001-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2001-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2001-2025, Nvidia Corporation. All rights reserved.
+Copyright (c) 2002-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2003-2022 NVIDIA CORPORATION & AFFILIATES
+Copyright (c) 2003-2023 NVIDIA CORPORATION & AFFILIATES
+Copyright (c) 2004-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2004-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2004-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2005-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2005-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2006-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2007-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2007-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2008-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2009-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2009-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2010-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2011 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2013 NVidia Corporation
+Copyright (c) 2013-2025 NVidia Corporation
+Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2015-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2016-2018 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2017 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2017-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2018-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2019-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2020-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2021-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
+Copyright (c) 2022-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+Files: runtime/device/nvrm/vendor/open-gpu-doc/classes/compute/clcec0.h
+Files: runtime/device/nvrm/vendor/open-gpu-doc/classes/compute/clcec0qmd.h
+Files: runtime/device/nvrm/vendor/open-gpu-doc/classes/dma-copy/clcab5.h
+Upstream: https://github.com/NVIDIA/open-gpu-doc
+Commit: 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
+License: MIT
+
+The files under runtime/device/nvrm/vendor/open-gpu-doc/ are headers of
+open-gpu-doc (https://github.com/NVIDIA/open-gpu-doc, commit
+9fdf5c4062007929d9f4e6cbad9c9771fe61b880), generated by tools/nvrm_headers.py.
+Each keeps its path relative to its include root (the repository root).
+Changes: the source comments are removed, and a default a build could override
+is fixed at its upstream value. They are distributed under the following
+license:
+
+Copyright (c) 1993-2004 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+

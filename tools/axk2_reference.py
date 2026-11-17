@@ -173,7 +173,7 @@ class Reference:
         r = self.rope_dim
         query = np.concatenate([self.rope_half(query[..., :r], cos[:, None, :], sin[:, None, :]), query[..., r:]], axis=-1)
         key = np.concatenate([self.rope_half(key[..., :r], cos, sin), key[..., r:]], axis=-1)
-        weights = bf16(matmul(normed, self.weight(p + "indexer.weights_proj.weight").T)) * np.float32(self.index_heads ** -0.5)
+        weights = matmul(normed, self.weight(p + "indexer.weights_proj.weight").T) * np.float32(self.index_heads ** -0.5)
         selected = []
         for row in range(rows):
             visible = positions <= positions[row]

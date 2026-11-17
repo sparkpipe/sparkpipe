@@ -27,35 +27,35 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 #undef __CUDACC__
 
 #include "tests/host_cuda/lm_host_skinny_recorder.cuh"
-#include "inference/llms/kimi_k3/layer.cuh"
+#include "model-families/k3/source/layer.cuh"
 
 #define TP_DEGREE 4u
 #define RANK_HEADS (K3_KDA_HEADS / TP_DEGREE)
 #define STEPS 3u
 #define RANK_CONV (RANK_HEADS * K3_KDA_KEY_DIM * K3_KDA_CONV_KERNEL)
 
-static uint16_t hidden[K3_HIDDEN], normed[K3_HIDDEN];
-static uint16_t norm_weight[K3_HIDDEN], weight_token[K3_HIDDEN];
-static uint16_t fused_qkvb[K3_KDA_QKVB_FUSED_ROWS];
-static uint16_t latent[K3_KDA_KEY_DIM];
-static uint16_t gate[K3_KDA_V_DIM];
-static uint16_t query[K3_KDA_QK_DIM], key[K3_KDA_QK_DIM], value[K3_KDA_V_DIM];
-static uint16_t beta_logit[K3_KDA_HEADS];
-static uint16_t decay_logit[K3_KDA_QK_DIM];
-static uint16_t attention_out[K3_KDA_V_DIM];
-static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
-static float out_norm_weight[K3_KDA_VALUE_DIM];
-static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
-static float retention[K3_KDA_QK_DIM], write_gate[K3_KDA_HEADS];
-static uint16_t q_window[K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
-static uint16_t k_window[K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
-static uint16_t v_window[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
-static uint8_t state_pool[K3_KDA_STATE_SLOT_BYTES];
-static uint32_t state_index[1], dense_offsets[2], dense_tiles[2];
+alignas(16) static uint16_t hidden[K3_HIDDEN], normed[K3_HIDDEN];
+alignas(16) static uint16_t norm_weight[K3_HIDDEN], weight_token[K3_HIDDEN];
+alignas(16) static uint16_t fused_qkvb[K3_KDA_QKVB_FUSED_ROWS];
+alignas(16) static uint16_t latent[K3_KDA_KEY_DIM];
+alignas(16) static uint16_t gate[K3_KDA_V_DIM];
+alignas(16) static uint16_t query[K3_KDA_QK_DIM], key[K3_KDA_QK_DIM], value[K3_KDA_V_DIM];
+alignas(16) static uint16_t beta_logit[K3_KDA_HEADS];
+alignas(16) static uint16_t decay_logit[K3_KDA_QK_DIM];
+alignas(16) static uint16_t attention_out[K3_KDA_V_DIM];
+alignas(16) static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static float out_norm_weight[K3_KDA_VALUE_DIM];
+alignas(16) static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
+alignas(16) static float retention[K3_KDA_QK_DIM], write_gate[K3_KDA_HEADS];
+alignas(16) static uint16_t q_window[K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t k_window[K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t v_window[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint8_t state_pool[K3_KDA_STATE_SLOT_BYTES];
+alignas(16) static uint32_t state_index[1], dense_offsets[2], dense_tiles[2];
 
-static float full_retention[K3_KDA_QK_DIM];
-static uint16_t full_out[K3_KDA_V_DIM];
-static uint8_t full_state[K3_KDA_STATE_SLOT_BYTES];
+alignas(16) static float full_retention[K3_KDA_QK_DIM];
+alignas(16) static uint16_t full_out[K3_KDA_V_DIM];
+alignas(16) static uint8_t full_state[K3_KDA_STATE_SLOT_BYTES];
 
 static void Bind(K3LayerBuffers *b, uint32_t sharded, uint32_t rank)
 {

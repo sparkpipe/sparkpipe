@@ -1,0 +1,2 @@
++40
+Ling stage kernel modernization remaining after deduplicating glm52_stage.cuh (and dsv41_flash, glm5_next, k3) onto shared vec/norm/project/route primitives (reduced from +210 after deleting 543 net non-test lines across DRY PR 3b).

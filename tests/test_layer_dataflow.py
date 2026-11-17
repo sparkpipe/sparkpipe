@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LAYERS = sorted((ROOT / "inference" / "llms").glob("*/layer.cuh"))
+LAYERS = sorted((ROOT / "model-families").glob("*/source/layer.cuh"))
 
 
 def functions(text):
@@ -51,7 +51,7 @@ def main():
     failures = 0
     checked = 0
     for path in LAYERS:
-        model = path.parent.name
+        model = path.parent.parent.name
         text = re.sub(r"//[^\n]*", "", path.read_text())
         for name, body in functions(text).items():
             # every destination a GEMM writes, in order, with what follows it

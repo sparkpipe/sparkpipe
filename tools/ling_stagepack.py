@@ -27,44 +27,37 @@ model-families/ling/name_map.json:
 The census must close: every tensor in model.safetensors.index.json is
 either packed, omitted MTP, or the run FAILS.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
-import struct
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from spark_pack_common import PackFailure, sha256_bytes, tp_shard_range  # noqa: E402
+from spark_pack_codecs import (CODEC_ABI_VERSION, CODEC_BF16, CODEC_FP8, FP8_BLOCK, PAYLOAD_BF16,  # noqa: E402,F401
+                               PAYLOAD_F32, PAYLOAD_PACKED_WEIGHT, SCALE_F32, fp8_block_scale_rows)
+from spark_pack_common import GLOBAL_LAYER, PackFailure, fsync_directory, sha256_bytes  # noqa: E402,F401
+from spark_pack_plan import MappedCheckpoint, PlanBuilder, PlanItem, to_bytes  # noqa: E402,F401
+from spark_pack_wire import (CODEC_ENTRY_BYTES, CODEC_HEADER_BYTES, EXPERT_RANGE_BYTES_MAX,  # noqa: E402,F401
+                             PAYLOAD_ALIGNMENT, Entry, SlabDigestSink, append_journal, ck128, codec_directory_offset,
+                             codec_header, emit_region, expert_manifest_bytes, place_entries, trusted_journal_prefix,
+                             truncated_revision, write_prefix)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 MAGIC = 0x33474E4C
 FORMAT_VERSION = 1
-HEADER_BYTES = 264
-ENTRY_BYTES = 64
-ALIGNMENT = 256
-CODEC_ABI_VERSION = 1
-GLOBAL_LAYER = 0xFFFFFFFF
-
-PAYLOAD_BF16 = 1
-PAYLOAD_F32 = 2
-PAYLOAD_U32 = 3
-PAYLOAD_PACKED_WEIGHT = 4
-
-CODEC_NONE = 0
-CODEC_BF16 = 1
-CODEC_FP8 = 5
-SCALE_NONE = 0
-SCALE_F32 = 1
-FP8_BLOCK = 128
+HEADER_BYTES = CODEC_HEADER_BYTES
+ENTRY_BYTES = CODEC_ENTRY_BYTES
+ALIGNMENT = PAYLOAD_ALIGNMENT
 
 K_EMBEDDING, K_FINAL_NORM, K_LM_HEAD = 0, 1, 2
 K_ATTN_NORM, K_Q, K_KV_A, K_KV_A_NORM = 3, 4, 5, 6
@@ -95,856 +88,215 @@ VOCAB = 157184
 FIRST_ROUTED = 2
 CONTRACT = REPO_ROOT / "model_contracts" / "ling_authoritative.json"
 NAME_MAP = REPO_ROOT / "model-families" / "ling" / "name_map.json"
+SPINE_DTYPES = ("BF16", "F32", "F8_E4M3")
+VECTOR_DTYPES = ("F32", "BF16")
 
 
-def f32_to_bf16_u16(f32: np.ndarray) -> np.ndarray:
-    f32 = np.ascontiguousarray(f32, dtype=np.float32)
-    bits = f32.view(np.uint32)
-    rounded = ((bits + np.uint32(0x7FFF) + ((bits >> np.uint32(16)) & np.uint32(1)))
-               >> np.uint32(16)).astype(np.uint16)
-    return rounded
-
-
-def fp8_e4m3_lut() -> np.ndarray:
-    codes = np.arange(256, dtype=np.uint32)
-    sign = (codes >> 7) & 1
-    exp = (codes >> 3) & 0xF
-    man = codes & 0x7
-    value = np.where(
-        exp == 0,
-        man.astype(np.float32) * np.float32(2.0 ** -9),
-        (np.float32(1.0) + man.astype(np.float32) / np.float32(8.0))
-        * np.power(np.float32(2.0), (exp.astype(np.int32) - 7).astype(np.float32)),
-    ).astype(np.float32)
-    value[(exp == 15) & (man == 7)] = np.float32("nan")
-    return np.where(sign == 1, -value, value).astype(np.float32)
-
-
-FP8_LUT = fp8_e4m3_lut()
-
-
-class SourceReader:
-    """Header-only safetensors reader; payloads are memmaps and each
-    tensor is materialized at most once per rank pass (small LRU)."""
+class SourceReader(MappedCheckpoint):
+    spine_dtypes = SPINE_DTYPES
 
     def __init__(self, model_dir: Path, cache_byte_cap: int = 512 * 1024 ** 2):
-        index_path = model_dir / "model.safetensors.index.json"
-        if not index_path.is_file():
-            raise PackFailure(f"missing safetensors index: {index_path}")
-        self.model_dir = model_dir
-        self.weight_map: Dict[str, str] = json.loads(index_path.read_text())["weight_map"]
-        config_path = model_dir / "config.json"
-        self.config: Dict[str, Any] = (json.loads(config_path.read_text())
-                                       if config_path.is_file() else {})
-        self._mmaps: Dict[str, np.ndarray] = {}
-        self._headers: Dict[str, Tuple[dict, int]] = {}
-        self._cache: Dict[str, np.ndarray] = {}
-        self._cache_bytes = 0
-        self._cache_byte_cap = cache_byte_cap
-
-    def _header(self, shard: str) -> Tuple[dict, int]:
-        if shard not in self._headers:
-            path = self.model_dir / shard
-            with path.open("rb") as file:
-                header_bytes = struct.unpack("<Q", file.read(8))[0]
-                header = json.loads(file.read(header_bytes))
-            self._headers[shard] = (header, 8 + header_bytes)
-        return self._headers[shard]
-
-    def _mmap(self, shard: str) -> np.ndarray:
-        if shard not in self._mmaps:
-            path = self.model_dir / shard
-            size = path.stat().st_size
-            self._mmaps[shard] = np.memmap(path, dtype=np.uint8, mode="r", shape=(size,))
-        return self._mmaps[shard]
-
-    def meta(self, name: str) -> Tuple[str, Tuple[int, ...]]:
-        shard = self.weight_map.get(name)
-        if shard is None:
-            raise PackFailure(f"missing tensor in index: {name}")
-        header, _ = self._header(shard)
-        entry = header.get(name)
-        if entry is None:
-            raise PackFailure(f"tensor {name} not in shard {shard}")
-        return entry["dtype"], tuple(entry["shape"])
-
-    def raw(self, name: str) -> np.ndarray:
-        shard = self.weight_map.get(name)
-        if shard is None:
-            raise PackFailure(f"missing tensor in index: {name}")
-        header, data_start = self._header(shard)
-        entry = header.get(name)
-        if entry is None:
-            raise PackFailure(f"tensor {name} vanished from shard {shard}")
-        begin, end = entry["data_offsets"]
-        view = self._mmap(shard)[data_start + begin:data_start + end]
-        if view.shape[0] != end - begin:
-            raise PackFailure(f"short payload for {name}")
-        return view
-
-    def matrix2d(self, name: str) -> np.ndarray:
-        """[rows, cols] uint16 view of a BF16 checkpoint matrix (conv1d's
-        [dim, 1, kernel] squeezes to [dim, kernel]). F8_E4M3 spines
-        dequantize through their [rows/128, cols/128] F32
-        weight_scale_inv plane (W = code x scale_inv, modelopt fp8
-        scheme) with one round-to-nearest-even bf16 rounding - the
-        defined value of the fp8 release, never a requantization."""
-        dtype, shape, = self.meta(name)
-        if len(shape) == 3 and shape[1] == 1:
-            shape = (shape[0], shape[2])
-        if len(shape) == 1:
-            shape = (1, shape[0])
-        if len(shape) != 2:
-            raise PackFailure(f"{name}: expected 2-D, got {shape}")
-        rows, cols = shape
-        if dtype == "BF16":
-            matrix = self.raw(name).view(np.uint16).reshape(rows, cols)
-        elif dtype == "F32":
-            u32 = self.raw(name).view(np.uint32).reshape(rows, cols)
-            rounding = (u32 >> np.uint32(16)) & np.uint32(1)
-            return ((u32 + np.uint32(0x7FFF) + rounding)
-                    >> np.uint32(16)).astype(np.uint16)
-        elif dtype == "F8_E4M3":
-            scale_name = name + "_scale_inv"
-            _dt, scale_shape = self.meta(scale_name)
-            expected = ((rows + 127) // 128, (cols + 127) // 128)
-            if tuple(scale_shape) != expected:
-                raise PackFailure(f"{scale_name}: shape {tuple(scale_shape)}, "
-                                  f"expected {expected}")
-            codes = self.raw(name).reshape(rows, cols)
-            scale = self.raw(scale_name).view(np.float32).reshape(scale_shape)
-            expanded = np.repeat(scale, 128, axis=0)[:rows]
-            expanded = np.repeat(expanded, 128, axis=1)[:, :cols]
-            matrix = f32_to_bf16_u16(FP8_LUT[codes] * expanded)
-            del expanded
-        else:
-            raise PackFailure(f"{name}: unsupported spine dtype {dtype}")
-        if name not in self._cache:
-            self._cache[name] = matrix
-            self._cache_bytes += matrix.nbytes
-            while self._cache_bytes > self._cache_byte_cap and len(self._cache) > 1:
-                victim = next(iter(self._cache))
-                self._cache_bytes -= self._cache[victim].nbytes
-                del self._cache[victim]
-        return matrix
-
-    def vector_f32(self, name: str) -> np.ndarray:
-        """Exact f32 vector: F32 verbatim, BF16 upcast (bit-exact)."""
-        dtype, _ = self.meta(name)
-        if dtype == "F32":
-            return self.raw(name).view(np.float32).reshape(-1).copy()
-        if dtype == "BF16":
-            return (self.raw(name).view(np.uint16).astype(np.uint32)
-                    << np.uint32(16)).view(np.float32).astype(np.float32)
-        raise PackFailure(f"{name}: f32 upcast from {dtype} unsupported")
-
-    def close(self) -> None:
-        self._mmaps.clear()
-        self._cache.clear()
+        super().__init__(model_dir, cache_byte_cap, config_required=False)
 
 
-def to_bytes(t: np.ndarray) -> bytes:
-    return np.ascontiguousarray(t).tobytes()
-
-
-MASK64 = (1 << 64) - 1
-
-
-def _rotl64(x: int, r: int) -> int:
-    return ((x << r) | (x >> (64 - r))) & MASK64
-
-
-def _fmix64(k: int) -> int:
-    k ^= k >> 33
-    k = (k * 0xff51afd7ed558ccd) & MASK64
-    k ^= k >> 33
-    k = (k * 0xc4ceb9fe1a85ec53) & MASK64
-    k ^= k >> 33
-    return k
-
-
-def ck128(data: bytes) -> bytes:
-    """Bit-exact port of src/spark_ck128.c (MurmurHash3 x64 128, seed 0)."""
-    c1 = 0x87c37b91114253d5
-    c2 = 0x4cf5ad432745937f
-    h1 = h2 = 0
-    whole = len(data) // 16
-    for block in range(whole):
-        k1, k2 = struct.unpack_from("<QQ", data, block * 16)
-        k1 = (k1 * c1) & MASK64
-        k1 = _rotl64(k1, 31)
-        k1 = (k1 * c2) & MASK64
-        h1 ^= k1
-        h1 = _rotl64(h1, 27)
-        h1 = (h1 + h2) & MASK64
-        h1 = (h1 * 5 + 0x52dce729) & MASK64
-        k2 = (k2 * c2) & MASK64
-        k2 = _rotl64(k2, 33)
-        k2 = (k2 * c1) & MASK64
-        h2 ^= k2
-        h2 = _rotl64(h2, 31)
-        h2 = (h2 + h1) & MASK64
-        h2 = (h2 * 5 + 0x38495ab5) & MASK64
-    tail = data[whole * 16:]
-    k1 = k2 = 0
-    if len(tail) > 8:
-        k2 = struct.unpack("<Q", tail[8:].ljust(8, b"\0"))[0]
-        k2 = (k2 * c2) & MASK64
-        k2 = _rotl64(k2, 33)
-        k2 = (k2 * c1) & MASK64
-        h2 ^= k2
-    k1 = struct.unpack("<Q", tail[:8].ljust(8, b"\0"))[0] if tail else 0
-    k1 = (k1 * c1) & MASK64
-    k1 = _rotl64(k1, 31)
-    k1 = (k1 * c2) & MASK64
-    h1 ^= k1
-    total = (len(data) & MASK64)
-    h1 ^= total
-    h2 ^= total
-    h1 = (h1 + h2) & MASK64
-    h2 = (h2 + h1) & MASK64
-    h1 = _fmix64(h1)
-    h2 = _fmix64(h2)
-    h1 = (h1 + h2) & MASK64
-    h2 = (h2 + h1) & MASK64
-    return struct.pack("<QQ", h1, h2)
-
-
-EXPERT_MANIFEST_MAGIC = 0x58504557
-EXPERT_MANIFEST_VERSION = 2
-EXPERT_RANGE_BYTES_MAX = 64 * 1024 * 1024
-
-
-class Entry:
-    def __init__(self, kind: int, layer: int, payload_type: int, weight_codec: int,
-                 scale_encoding: int, group_count: int, rows: int, columns: int):
-        self.kind = kind
-        self.layer = layer
-        self.payload_type = payload_type
-        self.weight_codec = weight_codec
-        self.scale_encoding = scale_encoding
-        self.group_count = group_count
-        self.rows = rows
-        self.columns = columns
-        self.payload_offset = 0
-        self.payload_bytes = 0
-        self.scale_offset = 0
-        self.scale_bytes = 0
-
-
-class PlanItem:
-    def __init__(self, entry: Entry, produce_payload: Callable[[], Iterator[bytes]],
-                 produce_scale: Optional[Callable[[], Iterator[bytes]]] = None):
-        self.entry = entry
-        self.produce_payload = produce_payload
-        self.produce_scale = produce_scale
-        self.expert_digests: Optional[List[bytes]] = None
-        self.expert_scale_digests: Optional[List[bytes]] = None
-
-
-class Packer:
-    def __init__(self, source: SourceReader, tp_degree: int, tp_rank: int,
-                 expert_codec: int):
-        self.s = source
-        self.tp_degree = tp_degree
-        self.tp_rank = tp_rank
+class Packer(PlanBuilder):
+    def __init__(self, source: SourceReader, tp_degree: int, tp_rank: int, expert_codec: int):
+        super().__init__(source, tp_degree, tp_rank)
         self.expert_codec = expert_codec
-        self.plan: List[PlanItem] = []
         self.packed_names: List[str] = []
 
-    def _slice_rows(self, dimension: int) -> Tuple[int, int]:
-        return tp_shard_range(dimension, self.tp_degree, self.tp_rank)
-
-    def _track(self, *names: str) -> None:
+    def track(self, *names: str) -> None:
         self.packed_names.extend(names)
 
-    def add_replicated_bf16(self, kind: int, layer: int, name: str,
-                            rows: int, columns: int):
-        dtype, shape = self.s.meta(name)
-        if len(shape) == 3 and shape[1] == 1:
-            shape = (shape[0], shape[2])
-        if len(shape) == 1:
-            shape = (1, shape[0])
-        if tuple(shape) != (rows, columns):
-            raise PackFailure(f"{name}: shape {tuple(shape)}, expected {(rows, columns)}")
-        if dtype not in ("BF16", "F32", "F8_E4M3"):
-            raise PackFailure(f"{name}: spine dtype {dtype}")
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows, columns)
-        entry.payload_bytes = rows * columns * 2
-        source = self.s
-        self._track(name)
+    def add_replicated_bf16(self, kind: int, layer: int, name: str, rows: int, columns: int) -> PlanItem:
+        return self.add_bf16(kind, layer, name, "", dtypes=SPINE_DTYPES, shape=(rows, columns))
 
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.matrix2d(name))
+    def add_rows_sharded_bf16(self, kind: int, layer: int, name: str, rows: int, columns: int) -> PlanItem:
+        return self.add_bf16(kind, layer, name, "rows", dtypes=SPINE_DTYPES, shape=(rows, columns))
 
-        self.plan.append(PlanItem(entry, produce))
+    def add_cols_sharded_bf16(self, kind: int, layer: int, name: str, rows: int, columns: int) -> PlanItem:
+        return self.add_bf16(kind, layer, name, "cols", dtypes=SPINE_DTYPES, shape=(rows, columns))
 
-    def add_rows_sharded_bf16(self, kind: int, layer: int, name: str,
-                              rows: int, columns: int):
-        dtype, shape = self.s.meta(name)
-        if len(shape) == 3 and shape[1] == 1:
-            shape = (shape[0], shape[2])
-        if tuple(shape) != (rows, columns):
-            raise PackFailure(f"{name}: shape {tuple(shape)}, expected {(rows, columns)}")
-        if dtype not in ("BF16", "F32", "F8_E4M3"):
-            raise PackFailure(f"{name}: spine dtype {dtype}")
-        start, count = self._slice_rows(rows)
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, count, columns)
-        entry.payload_bytes = count * columns * 2
-        source, off = self.s, start
-        self._track(name)
+    def add_vector_f32(self, kind: int, layer: int, name: str, total: int, shard: bool) -> PlanItem:
+        dtype, shape, _ = self.source.meta(name)
+        if dtype not in VECTOR_DTYPES or tuple(shape) not in ((total,),) + (() if shard else ((1, total),)):
+            raise PackFailure(f"{name}: expected F32[{total}] (or exact BF16), got {dtype} {tuple(shape)}")
+        return self.add_f32_vector(kind, layer, name, shard=shard)
 
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.matrix2d(name)[off:off + count, :])
+    def add_fused_sections(self, kind: int, layer: int, sections, out_columns: int) -> PlanItem:
+        return self.add_fused_rows(kind, layer, [name for name, _ in sections], [width for _, width in sections],
+                                   out_columns, shard=True)
 
-        self.plan.append(PlanItem(entry, produce))
+    def add_conv(self, kind: int, layer: int, name: str, channels: int) -> PlanItem:
+        return self.add_bf16(kind, layer, name, "rows", dtypes=SPINE_DTYPES, shape=(channels, KDA_CONV))
 
-    def add_cols_sharded_bf16(self, kind: int, layer: int, name: str,
-                              rows: int, columns: int):
-        dtype, shape = self.s.meta(name)
-        if tuple(shape) != (rows, columns):
-            raise PackFailure(f"{name}: shape {tuple(shape)}, expected {(rows, columns)}")
-        if dtype not in ("BF16", "F32", "F8_E4M3"):
-            raise PackFailure(f"{name}: spine dtype {dtype}")
-        start, count = self._slice_rows(columns)
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1, rows, count)
-        entry.payload_bytes = rows * count * 2
-        source, off = self.s, start
-        self._track(name)
-
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.matrix2d(name)[:, off:off + count])
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_rows_sharded_f32(self, kind: int, layer: int, name: str, total: int):
-        dtype, shape = self.s.meta(name)
-        if dtype not in ("F32", "BF16") or (len(shape) != 1 or shape[0] != total):
-            raise PackFailure(f"{name}: expected F32[{total}] (or exact BF16), "
-                              f"got {dtype} {tuple(shape)}")
-        start, count = self._slice_rows(total)
-        entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, 1, count)
-        entry.payload_bytes = count * 4
-        source, off = self.s, start
-        self._track(name)
-
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.vector_f32(name)[off:off + count])
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_replicated_f32(self, kind: int, layer: int, name: str, total: int):
-        dtype, shape = self.s.meta(name)
-        if dtype not in ("F32", "BF16") or (len(shape) != 1 and tuple(shape) != (1, total)) or \
-                (len(shape) == 1 and shape[0] != total):
-            raise PackFailure(f"{name}: expected F32[{total}] (or exact BF16), "
-                              f"got {dtype} {tuple(shape)}")
-        entry = Entry(kind, layer, PAYLOAD_F32, CODEC_NONE, SCALE_NONE, 1, 1, total)
-        entry.payload_bytes = total * 4
-        source = self.s
-        self._track(name)
-
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.vector_f32(name))
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_fused_sections(self, kind: int, layer: int,
-                           sections: List[Tuple[str, int]], out_columns: int):
-        """Fuse whole tensors as row sections (q|k|v|beta), sharding each
-        section by its own rows. A contiguous slice of the concatenation
-        would cross section boundaries and hand every rank past the first
-        rows of the WRONG projection."""
-        total = sum(width for _, width in sections)
-        slices = [self._slice_rows(width) for _, width in sections]
-        rows_out = sum(count for _, count in slices)
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1,
-                      rows_out, out_columns)
-        entry.payload_bytes = rows_out * out_columns * 2
-        source = self.s
-        names = [name for name, _ in sections]
-        self._track(*names)
-
-        def produce() -> Iterator[bytes]:
-            parts = []
-            for name, (start, count) in zip(names, slices):
-                matrix = source.matrix2d(name)
-                if matrix.shape[0] != 0:
-                    parts.append(matrix[start:start + count, :])
-            fused = np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-            blob = to_bytes(fused)
-            if len(blob) != entry.payload_bytes:
-                raise PackFailure(f"fused {names}: {len(blob)} bytes, planned {entry.payload_bytes}")
-            yield blob
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_up_gate_fused(self, kind: int, layer: int, up_name: str,
-                          gate_name: str, rows_per_section: int, columns: int,
-                          shard: bool):
-        up_slice = self._slice_rows(rows_per_section) if shard else (0, rows_per_section)
-        gate_slice = self._slice_rows(rows_per_section) if shard else (0, rows_per_section)
-        rows_out = up_slice[1] + gate_slice[1]
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1,
-                      rows_out, columns)
-        entry.payload_bytes = rows_out * columns * 2
-        source = self.s
-        self._track(up_name, gate_name)
-
-        def produce() -> Iterator[bytes]:
-            up = source.matrix2d(up_name)[up_slice[0]:up_slice[0] + up_slice[1], :]
-            gate = source.matrix2d(gate_name)[gate_slice[0]:gate_slice[0] + gate_slice[1], :]
-            fused = np.concatenate((up, gate), axis=0)
-            blob = to_bytes(fused)
-            if len(blob) != entry.payload_bytes:
-                raise PackFailure(f"{up_name}|{gate_name}: {len(blob)} bytes, planned {entry.payload_bytes}")
-            yield blob
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_kv_b(self, layer: int, name: str):
-        dtype, shape = self.s.meta(name)
-        full_rows = MLA_HEADS * (NOPE + VDIM)
-        if dtype != "BF16" or tuple(shape) != (full_rows, LATENT):
-            raise PackFailure(f"{name}: expected BF16 {(full_rows, LATENT)}, got {dtype} {tuple(shape)}")
-        key_entry = Entry(K_KV_B_KEY_T, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE,
-                          MLA_HEADS, LATENT, NOPE)
-        value_entry = Entry(K_KV_B_VALUE, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE,
-                            MLA_HEADS, VDIM, LATENT)
-        key_entry.payload_bytes = MLA_HEADS * LATENT * NOPE * 2
-        value_entry.payload_bytes = MLA_HEADS * VDIM * LATENT * 2
-        source = self.s
-        self._track(name)
-
-        def produce_key() -> Iterator[bytes]:
-            matrix = source.matrix2d(name).reshape(MLA_HEADS, NOPE + VDIM, LATENT)
-            key = np.ascontiguousarray(matrix[:, :NOPE, :].transpose(0, 2, 1))
-            blob = to_bytes(key)
-            if len(blob) != key_entry.payload_bytes:
-                raise PackFailure(f"{name}: key transpose size")
-            yield blob
-
-        def produce_value() -> Iterator[bytes]:
-            matrix = source.matrix2d(name).reshape(MLA_HEADS, NOPE + VDIM, LATENT)
-            blob = to_bytes(np.ascontiguousarray(matrix[:, NOPE:, :]))
-            if len(blob) != value_entry.payload_bytes:
-                raise PackFailure(f"{name}: value size")
-            yield blob
-
-        self.plan.append(PlanItem(key_entry, produce_key))
-        self.plan.append(PlanItem(value_entry, produce_value))
-
-    def add_conv(self, kind: int, layer: int, name: str, channels: int):
-        dtype, shape = self.s.meta(name)
-        if len(shape) == 3 and shape[1] == 1:
-            shape = (shape[0], shape[2])
-        if dtype not in ("BF16", "F32", "F8_E4M3") or len(shape) != 2 or \
-                tuple(shape) != (channels, KDA_CONV):
-            raise PackFailure(f"{name}: conv layout {dtype} {tuple(shape)}, expected "
-                              f"[{channels}, {KDA_CONV}] (or [channels, 1, kernel])")
-        start, count = self._slice_rows(channels)
-        entry = Entry(kind, layer, PAYLOAD_BF16, CODEC_BF16, SCALE_NONE, 1,
-                      count, KDA_CONV)
-        entry.payload_bytes = count * KDA_CONV * 2
-        source, off = self.s, start
-        self._track(name)
-
-        def produce() -> Iterator[bytes]:
-            yield to_bytes(source.matrix2d(name)[off:off + count, :])
-
-        self.plan.append(PlanItem(entry, produce))
-
-    def add_experts(self, layer: int, prefix: str):
+    def add_experts(self, layer: int, prefix: str) -> None:
         if self.expert_codec not in (CODEC_BF16, CODEC_FP8):
-            raise PackFailure("only the bf16 and fp8 expert arms are wired; "
-                              "other codecs need their own receipt set")
-        inter0, inter_count = self._slice_rows(EXPERT_INTER)
-        w1_rows = 2 * inter_count
-        is_fp8 = self.expert_codec == CODEC_FP8
-        payload_type = PAYLOAD_PACKED_WEIGHT
-        weight_codec = self.expert_codec
-        scale_encoding = SCALE_F32 if is_fp8 else SCALE_NONE
-        w1 = Entry(K_EXPERT_UP_GATE, layer, payload_type, weight_codec,
-                   scale_encoding, EXPERTS, w1_rows, HIDDEN)
-        w1.payload_bytes = EXPERTS * w1_rows * HIDDEN * (1 if is_fp8 else 2)
-        w2 = Entry(K_EXPERT_DOWN, layer, payload_type, weight_codec,
-                   scale_encoding, EXPERTS, HIDDEN, inter_count)
-        w2.payload_bytes = EXPERTS * HIDDEN * inter_count * (1 if is_fp8 else 2)
-        if is_fp8:
-            w1_blocks = (HIDDEN + FP8_BLOCK - 1) // FP8_BLOCK
-            w1.scale_bytes = EXPERTS * w1_rows * w1_blocks * 4
-            w2_blocks = (inter_count + FP8_BLOCK - 1) // FP8_BLOCK
-            w2.scale_bytes = EXPERTS * HIDDEN * w2_blocks * 4
-        source = self.s
+            raise PackFailure("only the bf16 and fp8 expert arms are wired; other codecs need their own receipt set")
+        start, width = self.slice_range(EXPERT_INTER)
+        up_gate = [[f"{prefix}.{expert}.up_proj.weight", f"{prefix}.{expert}.gate_proj.weight"]
+                   for expert in range(EXPERTS)]
+        down = [[f"{prefix}.{expert}.down_proj.weight"] for expert in range(EXPERTS)]
+        for (up, gate), (down_name,) in zip(up_gate, down):
+            self.track(up, gate, down_name)
+        w1 = self.add_routed_experts(K_EXPERT_UP_GATE, layer, up_gate, EXPERT_INTER, HIDDEN, (start, start + width),
+                                     (0, HIDDEN), self.expert_codec, check_shapes=True)
+        w2 = self.add_routed_experts(K_EXPERT_DOWN, layer, down, HIDDEN, EXPERT_INTER, (0, HIDDEN),
+                                     (start, start + width), self.expert_codec, check_shapes=True)
+        if self.expert_codec != CODEC_FP8:
+            return
+        source = self.source
+        w1_blocks = (HIDDEN + FP8_BLOCK - 1) // FP8_BLOCK
+        w2_blocks = (width + FP8_BLOCK - 1) // FP8_BLOCK
 
-        for expert in range(EXPERTS):
-            self._track(f"{prefix}.{expert}.up_proj.weight",
-                        f"{prefix}.{expert}.gate_proj.weight",
-                        f"{prefix}.{expert}.down_proj.weight")
-
-        def expert_payload(name: str, rows: int, columns: int) -> np.ndarray:
-            dtype, shape = source.meta(name)
-            if is_fp8:
-                if dtype != "F8_E4M3" or tuple(shape) != (rows, columns):
-                    raise PackFailure(f"{name}: expected F8_E4M3 {(rows, columns)}, "
-                                      f"got {dtype} {tuple(shape)}")
-                return source.raw(name).reshape(rows, columns)
-            if dtype != "BF16" or tuple(shape) != (rows, columns):
-                raise PackFailure(f"{name}: expected BF16 {(rows, columns)}, "
-                                  f"got {dtype} {tuple(shape)}")
-            return source.matrix2d(name)
-
-        def expert_scale_rows(name: str, global_rows: range, blocks: int) -> np.ndarray:
-            """Per-output-row scale rows gathered from the per-128-block
-            weight_scale_inv plane: payload row r carries block row
-            (global row r)//128 across all column blocks."""
+        def plane(name: str, blocks: Optional[int]) -> np.ndarray:
             scale_name = name + "_scale_inv"
-            _dt, scale_shape = source.meta(scale_name)
-            plane = source.raw(scale_name).view(np.float32).reshape(scale_shape)
-            if plane.shape[1] != blocks:
-                raise PackFailure(f"{scale_name}: {plane.shape[1]} column blocks, "
-                                  f"expected {blocks}")
-            picked = plane[[g // FP8_BLOCK for g in global_rows], :]
-            if picked.shape[0] != global_rows.stop - global_rows.start:
-                raise PackFailure(f"{scale_name}: gather produced {picked.shape}")
-            return picked
+            grid = source.raw(scale_name).view(np.float32).reshape(source.meta(scale_name)[1])
+            if blocks is not None and grid.shape[1] != blocks:
+                raise PackFailure(f"{scale_name}: {grid.shape[1]} column blocks, expected {blocks}")
+            return grid
 
-        def produce_w1() -> Iterator[bytes]:
-            for expert in range(EXPERTS):
-                up = expert_payload(f"{prefix}.{expert}.up_proj.weight",
-                                    EXPERT_INTER, HIDDEN)
-                gate = expert_payload(f"{prefix}.{expert}.gate_proj.weight",
-                                      EXPERT_INTER, HIDDEN)
-                fused = np.concatenate(
-                    (up[inter0:inter0 + inter_count, :],
-                     gate[inter0:inter0 + inter_count, :]), axis=0)
-                yield to_bytes(fused)
+        def produce_w1_scale():
+            for group in up_gate:
+                yield to_bytes(np.concatenate([fp8_block_scale_rows(plane(name, w1_blocks), start, width, 0, w1_blocks)
+                                               for name in group], axis=0))
 
-        def produce_w1_scale() -> Iterator[bytes]:
-            blocks = (HIDDEN + FP8_BLOCK - 1) // FP8_BLOCK
-            up_rows = range(inter0, inter0 + inter_count)
-            gate_rows = range(inter0, inter0 + inter_count)
-            for expert in range(EXPERTS):
-                up = expert_scale_rows(f"{prefix}.{expert}.up_proj.weight",
-                                       up_rows, blocks)
-                gate = expert_scale_rows(f"{prefix}.{expert}.gate_proj.weight",
-                                         gate_rows, blocks)
-                plane = np.concatenate((up, gate), axis=0)
-                if plane.shape != (w1_rows, blocks):
-                    raise PackFailure(f"{prefix}.{expert}: w1 scale plane "
-                                      f"{plane.shape}, expected {(w1_rows, blocks)}")
-                yield to_bytes(plane)
+        def produce_w2_scale():
+            for (name,) in down:
+                yield to_bytes(fp8_block_scale_rows(plane(name, None), 0, HIDDEN, start // FP8_BLOCK, w2_blocks))
 
-        def produce_w2() -> Iterator[bytes]:
-            for expert in range(EXPERTS):
-                down = expert_payload(f"{prefix}.{expert}.down_proj.weight",
-                                      HIDDEN, EXPERT_INTER)
-                yield to_bytes(down[:, inter0:inter0 + inter_count])
-
-        def produce_w2_scale() -> Iterator[bytes]:
-            blocks = (inter_count + FP8_BLOCK - 1) // FP8_BLOCK
-            rows = range(HIDDEN)
-            for expert in range(EXPERTS):
-                scale_name = f"{prefix}.{expert}.down_proj.weight_scale_inv"
-                _dt, scale_shape = source.meta(scale_name)
-                plane = source.raw(scale_name).view(np.float32).reshape(scale_shape)
-                out = np.empty((HIDDEN, blocks), dtype=np.float32)
-                col_blocks = [((inter0 + b * FP8_BLOCK) // FP8_BLOCK)
-                              for b in range(blocks)]
-                for b in range(blocks):
-                    out[:, b] = plane[[r // FP8_BLOCK for r in rows], col_blocks[b]]
-                yield to_bytes(out)
-
-        if is_fp8:
-            self.plan.append(PlanItem(w1, produce_w1, produce_w1_scale))
-            self.plan.append(PlanItem(w2, produce_w2, produce_w2_scale))
-        else:
-            self.plan.append(PlanItem(w1, produce_w1))
-            self.plan.append(PlanItem(w2, produce_w2))
+        w1.produce_scale, w1.entry.scale_bytes = produce_w1_scale, EXPERTS * 2 * width * w1_blocks * 4
+        w2.produce_scale, w2.entry.scale_bytes = produce_w2_scale, EXPERTS * HIDDEN * w2_blocks * 4
 
     def build(self, source_revision: str) -> None:
-        s = self.s
-        quant = s.config.get("quantization_config")
-        if quant is not None:
-            if self.expert_codec != CODEC_FP8 or quant.get("quant_method") != "fp8":
-                raise PackFailure("source carries quantization_config; the bf16 arm "
-                                  "requires the official BF16 release")
-        torch_dtype = s.config.get("torch_dtype")
+        quant = self.source.config.get("quantization_config")
+        if quant is not None and (self.expert_codec != CODEC_FP8 or quant.get("quant_method") != "fp8"):
+            raise PackFailure("source carries quantization_config; the bf16 arm requires the official BF16 release")
+        torch_dtype = self.source.config.get("torch_dtype")
         if torch_dtype is not None and str(torch_dtype) not in ("bfloat16", "torch.bfloat16"):
             raise PackFailure(f"torch_dtype {torch_dtype} contradicts the bf16 arm")
         p = "model.layers"
         for layer in range(LAYERS):
             a = f"{p}.{layer}.attention."
             m = f"{p}.{layer}.mlp."
-            is_mla = (layer + 1) % 6 == 0
-            is_dense = layer < FIRST_ROUTED
             self.add_replicated_bf16(K_ATTN_NORM, layer, f"{p}.{layer}.input_layernorm.weight", 1, HIDDEN)
             self.add_replicated_bf16(K_POST_ATTN_NORM, layer, f"{p}.{layer}.post_attention_layernorm.weight", 1, HIDDEN)
-            if is_mla:
+            if (layer + 1) % 6 == 0:
                 self.add_rows_sharded_bf16(K_Q, layer, f"{a}q_proj.weight", Q_ROWS, HIDDEN)
                 self.add_replicated_bf16(K_KV_A, layer, f"{a}kv_a_proj_with_mqa.weight", KV_ROW, HIDDEN)
                 self.add_replicated_bf16(K_KV_A_NORM, layer, f"{a}kv_a_layernorm.weight", 1, LATENT)
-                self.add_kv_b(layer, f"{a}kv_b_proj.weight")
+                self.add_kv_b(K_KV_B_KEY_T, K_KV_B_VALUE, layer, f"{a}kv_b_proj.weight", MLA_HEADS, NOPE, VDIM,
+                              LATENT, dtypes=("BF16",))
                 self.add_rows_sharded_bf16(K_ATTN_GATE, layer, f"{a}g_proj.weight", MLA_HEADS, HIDDEN)
                 self.add_cols_sharded_bf16(K_ATTN_OUTPUT, layer, f"{a}dense.weight", HIDDEN, MLA_HEADS * VDIM)
             else:
-                self.add_fused_sections(K_KDA_QKV_BETA, layer, [
-                    (f"{a}q_proj.weight", KDA_QK),
-                    (f"{a}k_proj.weight", KDA_QK),
-                    (f"{a}v_proj.weight", KDA_QK),
-                    (f"{a}b_proj.weight", KDA_HEADS),
-                ], HIDDEN)
+                self.add_fused_sections(K_KDA_QKV_BETA, layer, [(f"{a}q_proj.weight", KDA_QK),
+                                                                (f"{a}k_proj.weight", KDA_QK),
+                                                                (f"{a}v_proj.weight", KDA_QK),
+                                                                (f"{a}b_proj.weight", KDA_HEADS)], HIDDEN)
                 self.add_conv(K_KDA_Q_CONV, layer, f"{a}q_conv1d.weight", KDA_QK)
                 self.add_conv(K_KDA_K_CONV, layer, f"{a}k_conv1d.weight", KDA_QK)
                 self.add_conv(K_KDA_V_CONV, layer, f"{a}v_conv1d.weight", KDA_V)
                 self.add_rows_sharded_bf16(K_KDA_DECAY_PROJ, layer, f"{a}f_proj.weight", KDA_QK, HIDDEN)
                 self.add_rows_sharded_bf16(K_KDA_GATE_PROJ, layer, f"{a}g_proj.weight", KDA_V, HIDDEN)
-                self.add_rows_sharded_f32(K_KDA_DECAY_BIAS, layer, f"{a}dt_bias", KDA_QK)
-                self.add_rows_sharded_f32(K_KDA_HEAD_LOG_SCALE, layer, f"{a}A_log", KDA_HEADS)
-                self.add_replicated_f32(K_KDA_OUT_NORM, layer, f"{a}o_norm.weight", KDA_KEY)
+                self.add_vector_f32(K_KDA_DECAY_BIAS, layer, f"{a}dt_bias", KDA_QK, shard=True)
+                self.add_vector_f32(K_KDA_HEAD_LOG_SCALE, layer, f"{a}A_log", KDA_HEADS, shard=True)
+                self.add_vector_f32(K_KDA_OUT_NORM, layer, f"{a}o_norm.weight", KDA_KEY, shard=False)
                 self.add_cols_sharded_bf16(K_KDA_OUT, layer, f"{a}o_proj.weight", HIDDEN, KDA_V)
-            if is_dense:
-                self.add_up_gate_fused(K_DENSE_GATE_UP, layer,
-                                       f"{m}up_proj.weight", f"{m}gate_proj.weight",
-                                       DENSE_INTER, HIDDEN, shard=True)
-                self.add_cols_sharded_bf16(K_DENSE_DOWN, layer, f"{m}down_proj.weight",
-                                           HIDDEN, DENSE_INTER)
+            if layer < FIRST_ROUTED:
+                self.add_fused_rows(K_DENSE_GATE_UP, layer, [f"{m}up_proj.weight", f"{m}gate_proj.weight"],
+                                    [DENSE_INTER, DENSE_INTER], HIDDEN, shard=True)
+                self.add_cols_sharded_bf16(K_DENSE_DOWN, layer, f"{m}down_proj.weight", HIDDEN, DENSE_INTER)
             else:
                 self.add_replicated_bf16(K_ROUTER, layer, f"{m}gate.weight", EXPERTS, HIDDEN)
-                self.add_replicated_f32(K_ROUTER_CORRECTION, layer,
-                                        f"{m}gate.expert_bias", EXPERTS)
+                self.add_vector_f32(K_ROUTER_CORRECTION, layer, f"{m}gate.expert_bias", EXPERTS, shard=False)
                 self.add_experts(layer, f"{m}experts")
-                self.add_up_gate_fused(K_SHARED_GATE_UP, layer,
-                                       f"{m}shared_experts.up_proj.weight",
-                                       f"{m}shared_experts.gate_proj.weight",
-                                       EXPERT_INTER, HIDDEN, shard=True)
-                self.add_cols_sharded_bf16(K_SHARED_DOWN, layer,
-                                           f"{m}shared_experts.down_proj.weight",
-                                           HIDDEN, EXPERT_INTER)
-        self.add_rows_sharded_bf16(K_EMBEDDING, GLOBAL_LAYER,
-                                   "model.word_embeddings.weight", VOCAB, HIDDEN)
+                self.add_fused_rows(K_SHARED_GATE_UP, layer, [f"{m}shared_experts.up_proj.weight",
+                                                              f"{m}shared_experts.gate_proj.weight"],
+                                    [EXPERT_INTER, EXPERT_INTER], HIDDEN, shard=True)
+                self.add_cols_sharded_bf16(K_SHARED_DOWN, layer, f"{m}shared_experts.down_proj.weight", HIDDEN,
+                                           EXPERT_INTER)
+        self.add_rows_sharded_bf16(K_EMBEDDING, GLOBAL_LAYER, "model.word_embeddings.weight", VOCAB, HIDDEN)
         self.add_replicated_bf16(K_FINAL_NORM, GLOBAL_LAYER, "model.norm.weight", 1, HIDDEN)
         self.add_rows_sharded_bf16(K_LM_HEAD, GLOBAL_LAYER, "lm_head.weight", VOCAB, HIDDEN)
         self.source_revision = source_revision
 
 
-def serialize_entry(entry: Entry) -> bytes:
-    return struct.pack(
-        "<IIIIIII IQQQQ",
-        entry.kind, entry.layer, entry.payload_type, entry.weight_codec,
-        entry.scale_encoding, entry.group_count, entry.rows, entry.columns,
-        entry.payload_offset, entry.payload_bytes,
-        entry.scale_offset, entry.scale_bytes,
-    )
+def assemble_header(plan: List[PlanItem], tp_degree: int, tp_rank: int, expert_codec: int, directory_offset: int,
+                    file_bytes: int, revision: str, contract_sha: bytes) -> bytes:
+    fields = (MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, CODEC_ABI_VERSION, 0, len(plan), 1, 0, 0, LAYERS,
+              LAYERS, HIDDEN, VOCAB, EXPERTS, CODEC_BF16, expert_codec, CODEC_BF16, tp_degree, tp_rank)
+    return codec_header(fields, directory_offset, file_bytes, truncated_revision(revision), [contract_sha])
 
 
-def assemble_header(plan: List[PlanItem], tp_degree: int, tp_rank: int,
-                    expert_codec: int, directory_offset: int, file_bytes: int,
-                    revision: str, contract_sha: bytes) -> bytes:
-    fields = [
-        MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, CODEC_ABI_VERSION,
-        0, len(plan), 1, 0, 0, LAYERS, LAYERS,
-        HIDDEN, VOCAB, EXPERTS,
-        CODEC_BF16, expert_codec, CODEC_BF16,
-        tp_degree, tp_rank,
-    ]
-    fixed = struct.pack("<20I", *fields)
-    tail = struct.pack("<QQ", directory_offset, file_bytes)
-    revision_bytes = revision.encode()[:64].ljust(65, b"\0")
-    header = fixed + tail + revision_bytes + contract_sha + bytes(32) + bytes(32)
-    if len(header) % 8:
-        header += b"\0" * (8 - len(header) % 8)
-    if len(header) != HEADER_BYTES:
-        raise PackFailure(f"header assembled {len(header)} bytes, expected {HEADER_BYTES}")
-    return header
+def expert_entry(item: PlanItem) -> bool:
+    return item.entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN)
 
 
-class SlabDigestSink:
-    """ck128 per fixed-size slab while the payload streams to disk."""
-
-    def __init__(self, slab_bytes: int):
-        self.slab_bytes = slab_bytes
-        self.buffer = b""
-        self.digests: List[bytes] = []
-
-    def feed(self, chunk: bytes) -> None:
-        while chunk:
-            take = min(self.slab_bytes - len(self.buffer), len(chunk))
-            self.buffer += chunk[:take]
-            chunk = chunk[take:]
-            if len(self.buffer) == self.slab_bytes:
-                self.digests.append(ck128(self.buffer))
-                self.buffer = b""
-
-
-def emit_region(out, offset: int, expected: int, chunks: Iterator[bytes],
-                sink: Optional[SlabDigestSink] = None) -> None:
-    out.seek(offset)
-    written = 0
-    for chunk in chunks:
-        if len(chunk) > expected - written:
-            raise PackFailure(f"region at {offset}: producer exceeds {expected} bytes")
-        out.write(chunk)
-        if sink is not None:
-            sink.feed(chunk)
-        written += len(chunk)
-    if written != expected:
-        raise PackFailure(f"region at {offset}: producer wrote {written}, expected {expected}")
-
-
-def plan_region(item: PlanItem) -> Tuple[int, int]:
-    entry = item.entry
-    if entry.scale_bytes:
-        return entry.payload_offset, entry.scale_offset + entry.scale_bytes
-    return entry.payload_offset, entry.payload_offset + entry.payload_bytes
-
-
-def write_regions(out, packer: Packer, skip: int,
-                  journal: Optional[Any]) -> None:
+def write_regions(out, packer, skip: int, journal: Optional[Any]) -> None:
     for index, item in enumerate(packer.plan):
-        entry = item.entry
         if index < skip:
             continue
-        sink = None
-        if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
-            sink = SlabDigestSink(entry.payload_bytes // EXPERTS)
-        emit_region(out, item.entry.payload_offset, item.entry.payload_bytes,
-                    item.produce_payload(), sink)
-        if sink is not None:
-            if len(sink.digests) != EXPERTS:
-                raise PackFailure(f"{entry.kind}: slab digests "
-                                  f"{len(sink.digests)} != {EXPERTS}")
-            item.expert_digests = sink.digests
+        entry = item.entry
+        payload_sink = SlabDigestSink(entry.payload_bytes // EXPERTS) if expert_entry(item) else None
+        scale_sink = SlabDigestSink(entry.scale_bytes // EXPERTS) if expert_entry(item) and entry.scale_bytes else None
+        emit_region(out, entry.payload_offset, entry.payload_bytes, item.produce_payload(), payload_sink)
+        if payload_sink is not None:
+            if len(payload_sink.digests) != EXPERTS:
+                raise PackFailure(f"{entry.kind}: slab digests {len(payload_sink.digests)} != {EXPERTS}")
+            item.expert_digests = payload_sink.digests
         if entry.scale_bytes:
             if item.produce_scale is None:
                 raise PackFailure(f"{entry.kind}: scale segment has no producer")
-            scale_sink = None
-            if entry.kind in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
-                scale_sink = SlabDigestSink(entry.scale_bytes // EXPERTS)
-            emit_region(out, entry.scale_offset, entry.scale_bytes,
-                        item.produce_scale(), scale_sink)
+            emit_region(out, entry.scale_offset, entry.scale_bytes, item.produce_scale(), scale_sink)
             if scale_sink is not None:
                 if len(scale_sink.digests) != EXPERTS:
-                    raise PackFailure(f"{entry.kind}: scale slab digests "
-                                      f"{len(scale_sink.digests)} != {EXPERTS}")
+                    raise PackFailure(f"{entry.kind}: scale slab digests {len(scale_sink.digests)} != {EXPERTS}")
                 item.expert_scale_digests = scale_sink.digests
         if journal is not None:
-            out.flush()
-            begin, end = plan_region(item)
-            out.seek(begin)
-            digest = ck128(out.read(end - begin))
-            journal.write(json.dumps({
-                "index": index, "kind": entry.kind,
-                "begin": begin, "end": end, "ck128": digest.hex(),
-                "payload_bytes": entry.payload_bytes,
-                "scale_bytes": entry.scale_bytes,
-            }) + "\n")
-            journal.flush()
-            os.fsync(journal.fileno())
+            append_journal(journal, out, index, item)
 
 
-def load_resume_prefix(journal_file: Path, partial: Path,
-                       packer: Packer) -> int:
-    records = []
-    for line in journal_file.read_text().splitlines():
-        try:
-            records.append(json.loads(line))
-        except ValueError:
-            break
-    trusted = 0
-    for index, record in enumerate(records):
-        if record.get("index") != index:
-            break
-        item = packer.plan[index]
-        begin, end = plan_region(item)
-        if (record.get("kind") != item.entry.kind or record.get("begin") != begin
-                or record.get("end") != end
-                or record.get("payload_bytes") != item.entry.payload_bytes
-                or record.get("scale_bytes") != item.entry.scale_bytes):
-            raise PackFailure("resume journal disagrees with the plan; remove "
-                              f"the stale {journal_file.name} and partial")
-        if not partial.exists() or partial.stat().st_size < end:
-            break
-        with partial.open("rb") as handle:
-            handle.seek(begin)
-            if ck128(handle.read(end - begin)).hex() != record.get("ck128"):
-                break
-        trusted += 1
-    if trusted != len(records):
-        keep = "".join(json.dumps(record) + "\n" for record in records[:trusted])
-        journal_file.write_text(keep)
-    return trusted
-
-
-def emit(packer: Packer, path: Path, revision: str, contract_sha: bytes,
-         resume: bool = False) -> int:
+def emit(packer, path: Path, revision: str, contract_sha: bytes, resume: bool = False) -> int:
     if path.exists():
-        raise PackFailure(f"output already exists; the two-pass proof requires a "
-                          f"fresh artifact path: {path}")
-    directory_offset = (HEADER_BYTES + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
-    cursor = directory_offset + len(packer.plan) * ENTRY_BYTES
-    for item in packer.plan:
-        e = item.entry
-        e.payload_offset = (cursor + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
-        cursor = e.payload_offset + e.payload_bytes
-        if e.scale_bytes:
-            e.scale_offset = (cursor + ALIGNMENT - 1) & ~(ALIGNMENT - 1)
-            cursor = e.scale_offset + e.scale_bytes
-    file_bytes = cursor
-    header = assemble_header(packer.plan, packer.tp_degree, packer.tp_rank,
-                             packer.expert_codec, directory_offset, file_bytes,
-                             revision, contract_sha)
+        raise PackFailure(f"output already exists; the two-pass proof requires a fresh artifact path: {path}")
+    directory_offset = codec_directory_offset()
+    entries = [item.entry for item in packer.plan]
+    file_bytes = place_entries(entries, directory_offset + len(entries) * ENTRY_BYTES)
+    header = assemble_header(packer.plan, packer.tp_degree, packer.tp_rank, packer.expert_codec, directory_offset,
+                             file_bytes, revision, contract_sha)
     if resume:
         partial = path.parent / (path.name + ".partial")
         journal_file = path.parent / (path.name + ".journal.jsonl")
-        done = (load_resume_prefix(journal_file, partial, packer)
-                if journal_file.exists() else 0)
+        done = trusted_journal_prefix(journal_file, partial, packer.plan) if journal_file.exists() else 0
         with partial.open("r+b" if partial.exists() else "w+b") as out:
-            out.write(header)
-            out.seek(directory_offset)
-            for item in packer.plan:
-                out.write(serialize_entry(item.entry))
-            journal = journal_file.open("a", encoding="utf-8")
-            try:
+            write_prefix(out, header, directory_offset, entries)
+            with journal_file.open("a", encoding="utf-8") as journal:
                 write_regions(out, packer, done, journal)
                 out.flush()
                 os.fsync(out.fileno())
-            finally:
-                journal.close()
         os.link(partial, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        fsync_directory(path.parent)
         partial.unlink()
         journal_file.unlink()
         return file_bytes
-    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial",
-                                     dir=path.parent)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + ".", suffix=".partial", dir=path.parent)
     os.close(fd)
     try:
         with Path(temporary).open("wb") as out:
-            out.write(header)
-            out.seek(directory_offset)
-            for item in packer.plan:
-                out.write(serialize_entry(item.entry))
+            write_prefix(out, header, directory_offset, entries)
             write_regions(out, packer, 0, None)
             out.flush()
             os.fsync(out.fileno())
         os.link(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        fsync_directory(path.parent)
     finally:
         os.unlink(temporary)
     return file_bytes
 
 
-def census_check(weight_map: Dict[str, str], packed: List[str],
-                 mtp_names: List[str], source: Optional[SourceReader] = None) -> Dict[str, Any]:
+def census_check(weight_map: Dict[str, str], packed: List[str], mtp_names: List[str],
+                 source: Optional[SourceReader] = None) -> Dict[str, Any]:
     packed_set = set(packed)
     duplicated = len(packed) - len(packed_set)
     if source is not None:
@@ -955,67 +307,42 @@ def census_check(weight_map: Dict[str, str], packed: List[str],
     unexplained = sorted(known - packed_set - set(mtp_names))
     missing = sorted(packed_set - known)
     if unexplained or missing or duplicated:
-        raise PackFailure(
-            f"census does not close: {len(unexplained)} unexplained "
-            f"(e.g. {unexplained[:5]}), {len(missing)} missing-from-index "
-            f"(e.g. {missing[:5]}), {duplicated} double-packed")
-    return {
-        "checkpoint_tensors": len(known),
-        "packed": len(packed_set),
-        "omitted_mtp": len(mtp_names),
-    }
+        raise PackFailure(f"census does not close: {len(unexplained)} unexplained (e.g. {unexplained[:5]}), "
+                          f"{len(missing)} missing-from-index (e.g. {missing[:5]}), {duplicated} double-packed")
+    return {"checkpoint_tensors": len(known), "packed": len(packed_set), "omitted_mtp": len(mtp_names)}
 
 
 def write_expert_manifest(pack_path: Path, plan: List[PlanItem]) -> int:
-    """Emit <pack>.experts: the weightd lazy-expert manifest v2.
-
-    16-byte header (magic 0x58504557, version 2, range count, reserved 0)
-    then one 48-byte record per expert plane: layer, expert, kind
-    (tensor kind * 2 + plane, plane 0 = payload and plane 1 = scale, the
-    glm52 fp8 convention - the bf16 arm has no scale planes), reserved 0,
-    offset, bytes, ck128 digest. Ranges are emitted in offset order;
-    SparkWeightdManifestLoad re-sorts and re-checks overlap anyway."""
     ranges = []
     for item in plan:
-        entry = item.entry
-        if entry.kind not in (K_EXPERT_UP_GATE, K_EXPERT_DOWN):
+        if not expert_entry(item):
             continue
-        per = entry.payload_bytes // EXPERTS
-        if per == 0 or per > EXPERT_RANGE_BYTES_MAX:
-            raise PackFailure(f"{entry.kind}: per-expert slab {per} bytes "
-                              f"outside the weightd manifest contract")
-        for expert in range(EXPERTS):
-            ranges.append((entry.payload_offset + expert * per, per,
-                           entry.layer, expert, entry.kind * 2,
-                           item, expert, "payload"))
-        if entry.scale_bytes:
-            per_scale = entry.scale_bytes // EXPERTS
-            if per_scale == 0 or per_scale > EXPERT_RANGE_BYTES_MAX:
-                raise PackFailure(f"{entry.kind}: per-expert scale slab "
-                                  f"{per_scale} bytes outside the contract")
+        entry = item.entry
+        for plane, offset, total, digests in (("payload", entry.payload_offset, entry.payload_bytes,
+                                               item.expert_digests),
+                                              ("scale", entry.scale_offset, entry.scale_bytes,
+                                               item.expert_scale_digests)):
+            if plane == "scale" and not total:
+                continue
+            per = total // EXPERTS
+            if per == 0 or per > EXPERT_RANGE_BYTES_MAX:
+                raise PackFailure(f"{entry.kind}: per-expert {plane} slab {per} bytes outside the weightd "
+                                  f"manifest contract")
             for expert in range(EXPERTS):
-                ranges.append((entry.scale_offset + expert * per_scale, per_scale,
-                               entry.layer, expert, entry.kind * 2 + 1,
-                               item, expert, "scale"))
-    ranges.sort()
+                ranges.append((offset + expert * per, per, entry.layer, expert,
+                               entry.kind * 2 + (plane == "scale"), digests, expert))
+    ranges.sort(key=lambda record: record[:5])
+    records = []
     with pack_path.open("rb") as pack:
-        records = bytearray()
-        for offset, length, layer, expert, kind, item, expert_index, plane in ranges:
-            if plane == "payload" and getattr(item, "expert_digests", None) is not None:
-                digest = item.expert_digests[expert_index]
-            elif plane == "scale" and getattr(item, "expert_scale_digests", None) is not None:
-                digest = item.expert_scale_digests[expert_index]
+        for offset, length, layer, expert, kind, digests, index in ranges:
+            if digests is not None:
+                digest = digests[index]
             else:
                 pack.seek(offset)
                 digest = ck128(pack.read(length))
-            records += struct.pack("<IIIIQQ", layer, expert, kind, 0,
-                                   offset, length) + digest
-    sidecar = pack_path.parent / (pack_path.name + ".experts")
-    with sidecar.open("wb") as out:
-        out.write(struct.pack("<IIII", EXPERT_MANIFEST_MAGIC,
-                              EXPERT_MANIFEST_VERSION, len(ranges), 0))
-        out.write(records)
-    return len(ranges)
+            records.append((layer, expert, kind, offset, length, digest))
+    (pack_path.parent / (pack_path.name + ".experts")).write_bytes(expert_manifest_bytes(records, len(records)))
+    return len(records)
 
 
 def mtp_tensor_names(weight_map: Dict[str, str]) -> List[str]:
@@ -1028,72 +355,56 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--tp-degree", type=int, default=16)
     parser.add_argument("--tp-rank", type=int, default=0)
-    parser.add_argument("--tp-all", type=int, default=0,
-                        help="emit all N rank packs in one process")
+    parser.add_argument("--tp-all", type=int, default=0, help="emit all N rank packs in one process")
     parser.add_argument("--expert-codec", default="bf16", choices=["bf16", "fp8"])
     parser.add_argument("--model", default="ling", choices=["ling", "lingfin"])
     parser.add_argument("--dry-plan", action="store_true")
     parser.add_argument("--resume", action="store_true",
-                        help="continue an interrupted emit from the .partial "
-                             "+ .journal.jsonl sidecars in the output dir")
+                        help="continue an interrupted emit from the .partial + .journal.jsonl sidecars in the "
+                             "output dir")
     args = parser.parse_args()
 
     family_dir = REPO_ROOT / "model-families" / "ling"
-    name_map = json.loads((NAME_MAP if args.model == "ling" else
-                           family_dir / f"name_map_{args.model}.json").read_text())
-    source_revision = name_map["source_revision"]
-    expected_census = name_map["checkpoint_census"]["tensor_count"]
-    contract_file = (CONTRACT if args.model == "ling" else
-                     REPO_ROOT / "model_contracts" / f"{args.model}_authoritative.json")
-    contract_sha = (sha256_bytes(contract_file.read_bytes())
-                    if contract_file.is_file() else bytes(32))
-    codec_ids = {"bf16": CODEC_BF16, "fp8": CODEC_FP8}
-    expert_codec = codec_ids[args.expert_codec]
+    name_map_path = NAME_MAP if args.model == "ling" else family_dir / f"name_map_{args.model}.json"
+    contract_file = CONTRACT if args.model == "ling" else REPO_ROOT / "model_contracts" / f"{args.model}_authoritative.json"
+    contract_sha = sha256_bytes(contract_file.read_bytes()) if contract_file.is_file() else bytes(32)
+    expert_codec = {"bf16": CODEC_BF16, "fp8": CODEC_FP8}[args.expert_codec]
     if expert_codec == CODEC_FP8:
         name_map_path = family_dir / "name_map_fp8.json"
         if not name_map_path.is_file():
-            raise PackFailure(f"the fp8 arm requires {name_map_path} "
-                              f"(the fp8 release's census pin)")
-        name_map = json.loads(name_map_path.read_text())
-        source_revision = name_map["source_revision"]
-        expected_census = name_map["checkpoint_census"]["tensor_count"]
+            raise PackFailure(f"the fp8 arm requires {name_map_path} (the fp8 release's census pin)")
+    name_map = json.loads(name_map_path.read_text())
+    source_revision = name_map["source_revision"]
+    expected_census = name_map["checkpoint_census"]["tensor_count"]
 
     source = SourceReader(Path(args.source))
     if len(source.weight_map) != expected_census:
-        raise PackFailure(f"index census {len(source.weight_map)} != pinned "
-                          f"{expected_census}; re-pin name_map against this revision")
+        raise PackFailure(f"index census {len(source.weight_map)} != pinned {expected_census}; re-pin name_map "
+                          f"against this revision")
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     receipts = out_dir / "receipts"
     receipts.mkdir(exist_ok=True)
-    ranks = range(args.tp_all) if args.tp_all else [args.tp_rank]
     mtp_names = mtp_tensor_names(source.weight_map)
-    for rank in ranks:
-        packer = Packer(source, args.tp_all or args.tp_degree, rank, expert_codec)
+    tp = args.tp_all or args.tp_degree
+    for rank in range(args.tp_all) if args.tp_all else [args.tp_rank]:
+        packer = Packer(source, tp, rank, expert_codec)
         packer.build(source_revision)
         census = census_check(source.weight_map, packer.packed_names, mtp_names,
                               source if expert_codec == CODEC_FP8 else None)
         if args.dry_plan:
-            print(f"rank {rank}: {len(packer.plan)} pack tensors planned, "
-                  f"census {census}")
+            print(f"rank {rank}: {len(packer.plan)} pack tensors planned, census {census}")
             continue
-        tp = args.tp_all or args.tp_degree
         arm = f"{args.model}.{args.expert_codec}.tp{tp}"
         path = out_dir / f"{arm}.rank{rank:x}.sp"
-        file_bytes = emit(packer, path, source_revision, contract_sha,
-                          args.resume)
+        file_bytes = emit(packer, path, source_revision, contract_sha, args.resume)
         digest = hashlib.sha256()
         with path.open("rb") as file:
             for block in iter(lambda: file.read(8 * 1024 * 1024), b""):
                 digest.update(block)
-        (out_dir / f"{path.name}.sha256").write_text(
-            f"{digest.hexdigest()}  {path.name}\n")
-        spine_bytes = sum(item.entry.payload_bytes for item in packer.plan
-                          if item.entry.kind not in (K_EXPERT_UP_GATE,
-                                                     K_EXPERT_DOWN))
-        expert_bytes = sum(item.entry.payload_bytes for item in packer.plan
-                           if item.entry.kind in (K_EXPERT_UP_GATE,
-                                                  K_EXPERT_DOWN))
+        (out_dir / f"{path.name}.sha256").write_text(f"{digest.hexdigest()}  {path.name}\n")
+        spine_bytes = sum(item.entry.payload_bytes for item in packer.plan if not expert_entry(item))
+        expert_bytes = sum(item.entry.payload_bytes for item in packer.plan if expert_entry(item))
         manifest_ranges = write_expert_manifest(path, packer.plan)
         receipt = {
             "pack": path.name,
@@ -1101,7 +412,7 @@ def main() -> int:
             "sha256": digest.hexdigest(),
             "file_bytes": file_bytes,
             "tensors": len(packer.plan),
-            "tp_degree": args.tp_all or args.tp_degree,
+            "tp_degree": tp,
             "tp_rank": rank,
             "source": str(args.source),
             "source_revision": source_revision,
@@ -1110,17 +421,14 @@ def main() -> int:
             "resident_bytes": {
                 "spine": spine_bytes,
                 "expert_payload": expert_bytes,
-                "note": "spine is always-resident; expert_payload is the "
-                        "weightd lazy tier's working set per node",
+                "note": "spine is always-resident; expert_payload is the weightd lazy tier's working set per node",
             },
             "expert_manifest_ranges": manifest_ranges,
         }
         (receipts / f"rank{rank}.json").write_text(json.dumps(receipt, indent=1) + "\n")
-        print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes, "
-              f"sha256 {receipt['sha256'][:16]}... (tp{receipt['tp_degree']} "
-              f"rank {rank}, census {census['checkpoint_tensors']} = "
-              f"{census['packed']} packed + {census['omitted_mtp']} mtp, "
-              f"spine {spine_bytes} + expert {expert_bytes} bytes, "
+        print(f"{path.name}: {len(packer.plan)} tensors, {file_bytes} bytes, sha256 {receipt['sha256'][:16]}... "
+              f"(tp{tp} rank {rank}, census {census['checkpoint_tensors']} = {census['packed']} packed + "
+              f"{census['omitted_mtp']} mtp, spine {spine_bytes} + expert {expert_bytes} bytes, "
               f"{manifest_ranges} manifest ranges)")
     source.close()
     return 0

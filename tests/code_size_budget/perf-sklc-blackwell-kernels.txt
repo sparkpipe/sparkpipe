@@ -1,0 +1,2 @@
++3918
+Standalone Blackwell sm_121a/sm_120a SKL compiler (tools/sklc/*) and six SKL kernel suites (inference/kernels/skl/*) plus Phase 1 Blackwell CUDA kernel optimizations merged in PR #2129.

@@ -1,0 +1,2 @@
++391
+Device-layer tensor-map encoding: the nvrm backend builds TMA descriptors itself, so the hosted stack needs no CUDA driver.

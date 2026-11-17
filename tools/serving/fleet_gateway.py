@@ -3,6 +3,7 @@ import asyncio
 import grp
 import hmac
 import json
+import math
 import os
 import re
 import shlex
@@ -31,7 +32,7 @@ SECRET_PATTERNS = (
 )
 NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 CHAT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{7,127}$")
-SAFE_PROPERTY = re.compile(r"^[A-Za-z0-9=_%./{} -]+$")
+SAFE_PROPERTY = re.compile(r"^[A-Za-z0-9=_%./{}~@ -]+$")
 ROOT = re.compile(r"(\$HOME/[^\s;&|]+/root)(?:/|\s|$)")
 
 
@@ -43,6 +44,25 @@ def read_token(path):
     if len(token) < 32:
         raise SystemExit(f"fleet_gateway: the token in {path} must be at least 32 characters")
     return token
+
+
+def seconds_of(value, default, ceiling):
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(value)
+    number = float(value)
+    if not math.isfinite(number) or number < 1:
+        raise ValueError(value)
+    return min(number, ceiling)
+
+
+async def json_object(request):
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return body if isinstance(body, dict) else None
 
 
 def redact(text):
@@ -125,7 +145,7 @@ class Gateway:
         return self.grants.get(chat_id)
 
     def sandbox_argv(self, host, command, timeout):
-        seconds = str(int(timeout) + 5)
+        seconds = str(math.ceil(timeout) + 5)
         if host == self.hub:
             home, group = str(Path.home()), grp.getgrgid(os.getgid()).gr_name
             props = [prop.replace("{home}", home).replace("{group}", group).replace("{timeout}", seconds) for prop in self.sandbox_properties]
@@ -139,7 +159,7 @@ class Gateway:
     def plain_argv(self, host, command, timeout):
         if host == self.hub:
             return ["bash", "-lc", command]
-        return self.ssh + [host, f"exec timeout -k 5 {int(timeout)} bash -lc {shlex.quote(command)}"]
+        return self.ssh + [host, f"exec timeout -k 5 {math.ceil(timeout)} bash -lc {shlex.quote(command)}"]
 
     async def execute(self, argv, timeout):
         started = time.time()
@@ -218,10 +238,9 @@ class Gateway:
         return web.json_response({"name": name, "text": clip(redact("\n".join(tail)), self.max_output)})
 
     async def grant(self, request):
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response({"error": "the body must be JSON"}, status=400)
+        body = await json_object(request)
+        if body is None:
+            return web.json_response({"error": "the body must be a JSON object"}, status=400)
         chat_id = body.get("chat_id")
         approved_by = body.get("approved_by")
         if not isinstance(chat_id, str) or not CHAT_ID.match(chat_id):
@@ -252,10 +271,9 @@ class Gateway:
         return web.json_response({"chat_id": chat_id, "revoked": removed})
 
     async def run(self, request):
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response({"error": "the body must be JSON"}, status=400)
+        body = await json_object(request)
+        if body is None:
+            return web.json_response({"error": "the body must be a JSON object"}, status=400)
         host = body.get("host")
         command = body.get("command")
         mode = body.get("as", "spec")
@@ -278,9 +296,9 @@ class Gateway:
         else:
             return web.json_response({"error": "as must be sandbox or spec"}, status=400)
         try:
-            timeout = min(float(body.get("timeout") or self.default_timeout), self.max_timeout)
+            timeout = seconds_of(body.get("timeout"), self.default_timeout, self.max_timeout)
         except (TypeError, ValueError):
-            return web.json_response({"error": "timeout must be a number of seconds"}, status=400)
+            return web.json_response({"error": "timeout must be a finite number of seconds, at least 1"}, status=400)
         rules = self.refuse + (self.refuse_on_nodes if host != self.hub else [])
         for pattern, reason in rules:
             if pattern.search(command):

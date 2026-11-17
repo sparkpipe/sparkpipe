@@ -1,0 +1,5 @@
+18:17:16 None swapping stopping qwen3.8-max None
+18:17:32 None swapping releasing KV pool qwen38_27b_stage None
+18:17:47 None swapping starting hub services None
+18:18:02 None swapping waiting for ranks None
+18:18:17 deepseek-v4.1-flash idle None None

@@ -1,0 +1,71 @@
+Second pass, adapter e4906b24561220bf, trace of rank 0, three full waves of a 32,768-token prompt
+window: 3 waves of 2 anchor calls, 1408.5 ms a wave, 46909 kernels a wave
+kernel time 1248.4 ms a wave, between kernels 160.1 ms a wave
+mesh runs a wave 69: elapsed 449.6 ms, kernel time 350.4 ms (arrival 172.0, other 178.4), gaps inside runs 99.2 ms, pieces 10045, mesh kernels 45820
+a piece: 44.8 us elapsed, arrival 17.1 us, other kernels 17.8 us, gaps 9.9 us
+runs by pieces (up to): [(1, 1), (128, 24), (256, 41), (512, 2)]
+  runs of 1-1 pieces: 1 a wave, 0.1 ms a wave, 117.7 us a piece (arrival 108.8, other 113.7, gaps -104.8)
+  runs of 65-128 pieces: 24 a wave, 108.8 ms a wave, 56.3 us a piece (arrival 30.0, other 17.3, gaps 9.0)
+  runs of 129-100000 pieces: 43 a wave, 340.7 ms a wave, 42.0 us a piece (arrival 14.0, other 17.9, gaps 10.1)
+top kernels, ms a wave:
+  _Z15LmCellMmaKernelILj0ELj4EEv21LmSkinnyCellArguments17LmC    235.8      40.0 calls   5894.5 us
+  _Z32SparkTpMeshHardwareArrivalKernelPKhmmP23SparkTpMeshRou    172.0   10044.7 calls     17.1 us
+  _Z18LmStreamGemmKernelI13LmBf16Block32Lj128ELj128ELj64ELj3    155.8     165.0 calls    944.2 us
+  _Z35SparkTpMeshHardwareDirectHalfKernelPKhmmP23SparkTpMesh     63.8    8170.0 calls      7.8 us
+  _Z29LmHcSinkhornPartialRowsKernelILj4ELj4EEvPKtPKfPfjj         63.6      40.0 calls   1589.5 us
+  _Z28LmHcPostF32SourceMajorKernelILj4EEvPKtPKfS3_Ptj            62.9      40.0 calls   1572.3 us
+  _Z26LmLatentShardPrefillKernelI12LmKvGeometryILj1280ELj128     50.5      18.0 calls   2807.8 us
+  _Z19D41RmsNormQdqKernelILj256EEvPKtS1_PKfS1_PtS4_jf            47.8      60.0 calls    796.0 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj12     45.7      12.0 calls   3811.3 us
+  _Z18LmStreamGemmKernelI12LmBf16FormatLj128ELj128ELj64ELj32     40.1      67.0 calls    598.8 us
+  _Z29SparkTpMeshScatterStageKernelPhmmPK23SparkTpMeshRoundC     36.7    5575.0 calls      6.6 us
+  _Z24D41MergeWindowSinkKernelPKfS0_PKjjS0_Pt                    35.6      20.0 calls   1780.2 us
+  _Z36SparkTpMeshHardwarePublishWideKernelPhmmPVmP23SparkTpM     29.2    4397.7 calls      6.6 us
+  _Z16D41MoeSendKernelPKtPKfS0_Ptjjjjmfjj                        23.7      20.0 calls   1184.8 us
+  _Z36SparkTpMeshHardwarePublishGateKernelPV27SparkWeightdMe     19.9    9972.7 calls      2.0 us
+  _Z23D41ActAssembleQdqKernelPKtPtjjmjj                          18.2      20.0 calls    909.0 us
+stage before the run                   runs    run ms first wait  over median   pieces  median us
+D41MoeSendKernelPKtPKfS0_Ptjjjjmfj     20.0      6.96      0.183        0.740      192        2.7
+LmStreamGemmKernelI13LmBf16Block32     22.0      6.29      0.283        0.995      181        3.5
+LmNgramGatherFetchedE8m0KernelPKlP      2.0     50.49     44.243       44.712      178       11.0
+D41FinalizeSliceKernelPKtS0_PKjS2_     20.0      2.86      0.238        0.561       80        3.2
+LmStageEmbeddingKernelILj256EEvPKt      1.0      7.25      0.738        1.106       80       49.5
+D41IndexPackKernelPKtS0_Ptjjj           3.0      2.21      0.197        0.357       65        2.8
+LmStageMaxlocPackKernelPKfPKjPmj        1.0      0.12      0.109        0.000        1      108.8
+a wave: runs 449.6 ms, first-piece waits 104.6 ms, all arrival time above each run's median 139.5 ms
+
+Third pass, adapter 23de7e9fac51fc04, trace of rank 0, three full waves of a 32,768-token prompt
+window: 3 waves of 2 anchor calls, 1293.5 ms a wave, 46909 kernels a wave
+kernel time 1182.7 ms a wave, between kernels 110.9 ms a wave
+mesh runs a wave 69: elapsed 381.0 ms, kernel time 279.2 ms (arrival 96.1, other 183.1), gaps inside runs 101.9 ms, pieces 10045, mesh kernels 45820
+a piece: 37.9 us elapsed, arrival 9.6 us, other kernels 18.2 us, gaps 10.1 us
+runs by pieces (up to): [(1, 1), (128, 24), (256, 41), (512, 2)]
+  runs of 1-1 pieces: 1 a wave, 0.3 ms a wave, 344.9 us a piece (arrival 336.9, other 341.1, gaps -333.2)
+  runs of 65-128 pieces: 24 a wave, 79.9 ms a wave, 41.3 us a piece (arrival 14.9, other 17.3, gaps 9.1)
+  runs of 129-100000 pieces: 43 a wave, 300.8 ms a wave, 37.1 us a piece (arrival 8.2, other 18.4, gaps 10.4)
+top kernels, ms a wave:
+  _Z15LmCellMmaKernelILj0ELj4EEv21LmSkinnyCellArguments17LmC    238.3      40.0 calls   5957.8 us
+  _Z18LmStreamGemmKernelI13LmBf16Block32Lj128ELj128ELj64ELj3    155.5     165.0 calls    942.6 us
+  _Z32SparkTpMeshHardwareArrivalKernelPKhmmP23SparkTpMeshRou     96.1   10044.7 calls      9.6 us
+  _Z35SparkTpMeshHardwareDirectHalfKernelPKhmmP23SparkTpMesh     65.1    8170.0 calls      8.0 us
+  _Z28LmHcPostF32SourceMajorKernelILj4EEvPKtPKfS3_Ptj            64.0      40.0 calls   1600.2 us
+  _Z29LmHcSinkhornPartialRowsKernelILj4ELj4EEvPKtPKfPfjj         63.5      40.0 calls   1588.1 us
+  _Z26LmLatentShardPrefillKernelI12LmKvGeometryILj1280ELj128     50.7      18.0 calls   2817.0 us
+  _Z19D41RmsNormQdqKernelILj256EEvPKtS1_PKfS1_PtS4_jf            48.1      60.0 calls    801.9 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj12     45.9      12.0 calls   3822.9 us
+  _Z18LmStreamGemmKernelI12LmBf16FormatLj128ELj128ELj64ELj32     39.6      67.0 calls    591.2 us
+  _Z29SparkTpMeshScatterStageKernelPhmmPK23SparkTpMeshRoundC     37.0    5575.0 calls      6.6 us
+  _Z24D41MergeWindowSinkKernelPKfS0_PKjjS0_Pt                    35.2      20.0 calls   1760.6 us
+  _Z36SparkTpMeshHardwarePublishWideKernelPhmmPVmP23SparkTpM     30.2    4397.7 calls      6.9 us
+  _Z16D41MoeSendKernelPKtPKfS0_Ptjjjjmfjj                        23.8      20.0 calls   1190.4 us
+  _Z36SparkTpMeshHardwarePublishGateKernelPV27SparkWeightdMe     20.9    9972.7 calls      2.1 us
+  _Z23D41ActAssembleQdqKernelPKtPtjjmjj                          18.4      20.0 calls    920.5 us
+stage before the run                   runs    run ms first wait  over median   pieces  median us
+D41MoeSendKernelPKtPKfS0_Ptjjjjmfj     20.0      7.30      0.124        0.873      192        2.9
+LmStreamGemmKernelI13LmBf16Block32     22.0      6.45      0.264        1.033      181        3.4
+D41FinalizeSliceKernelPKtS0_PKjS2_     20.0      2.89      0.238        0.577       80        3.2
+LmNgramGatherFetchedE8m0KernelPKlP      2.0     10.45      3.858        4.391      178       12.0
+LmStageEmbeddingKernelILj256EEvPKt      1.0      7.16      0.391        0.780       80       57.6
+D41IndexPackKernelPKtS0_Ptjjj           3.0      2.34      0.356        0.445       65        2.7
+LmStageMaxlocPackKernelPKfPKjPmj        1.0      0.34      0.337        0.000        1      336.9
+a wave: runs 381.0 ms, first-piece waits 22.6 ms, all arrival time above each run's median 62.6 ms

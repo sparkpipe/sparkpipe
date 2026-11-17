@@ -139,10 +139,10 @@ static void SparkKvSnapshotPurgeUnlink(SparkKvSnapshotPurgeTally *tally,const ch
 	tally->freed_bytes += (uint64_t)info->st_size;
 }
 
-static void SparkKvSnapshotPurgeExpired(void *context,const char *path,const char *name,const struct stat *info)
+static void SparkKvSnapshotPurgeTemporary(void *context,const char *path,const char *name,const struct stat *info)
 {
 	SparkKvSnapshotPurgeTally *tally = (SparkKvSnapshotPurgeTally *)context;
-	if ( SparkKvSnapshotPurgeIsTemporary(name) == 0u && (uint64_t)info->st_mtime + SPARK_KV_RETENTION_SECONDS > tally->now_seconds )
+	if ( SparkKvSnapshotPurgeIsTemporary(name) == 0u )
 		SparkKvSnapshotPurgeKeep(tally,info);
 	else
 		SparkKvSnapshotPurgeUnlink(tally,path,info);
@@ -216,7 +216,7 @@ SparkStatus SparkKvSnapshotPurgeOldest(SparkKvLedger *ledger,const char *directo
 	return(status);
 }
 
-SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *directory,SparkKvSnapshotPurgeResult *result)
 {
 	SparkKvSnapshotPurgeTally tally;
 	SparkStatus status;
@@ -233,9 +233,8 @@ SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *dire
 		SPARK_RETURN(status);
 	memset(&tally,0,sizeof(tally));
 	tally.result = result;
-	tally.now_seconds = now_seconds;
 	tally.oldest_seconds = SPARK_KV_LEDGER_NO_OLDEST;
-	status = SparkKvSnapshotPurgeVisit(directory,SparkKvSnapshotPurgeExpired,&tally);
+	status = SparkKvSnapshotPurgeVisit(directory,SparkKvSnapshotPurgeTemporary,&tally);
 	if ( status == SPARK_STATUS_OK )
 	{
 		result->stores++;
@@ -247,7 +246,7 @@ SparkStatus SparkKvSnapshotPurgeDirectory(SparkKvLedger *ledger,const char *dire
 	SPARK_RETURN(status);
 }
 
-static SparkStatus SparkKvSnapshotPurgeWalk(SparkKvLedger *ledger,const char *directory,dev_t device,uint32_t depth,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+static SparkStatus SparkKvSnapshotPurgeWalk(SparkKvLedger *ledger,const char *directory,dev_t device,uint32_t depth,SparkKvSnapshotPurgeResult *result)
 {
 	char path[SPARK_KV_SNAPSHOT_PATH_BYTES];
 	struct dirent *item;
@@ -256,7 +255,7 @@ static SparkStatus SparkKvSnapshotPurgeWalk(SparkKvLedger *ledger,const char *di
 	SparkStatus status = SPARK_STATUS_OK;
 	DIR *listing;
 	if ( (size_t)snprintf(path,sizeof(path),"%s/%s",directory,SPARK_KV_SNAPSHOT_LOCK_NAME) < sizeof(path) && lstat(path,&info) == 0 )
-		SPARK_RETURN(SparkKvSnapshotPurgeDirectory(ledger,directory,now_seconds,result));
+		SPARK_RETURN(SparkKvSnapshotPurgeDirectory(ledger,directory,result));
 	listing = opendir(directory);
 	if ( listing == 0 )
 		return(errno == EACCES || errno == ENOENT ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR);
@@ -274,16 +273,16 @@ static SparkStatus SparkKvSnapshotPurgeWalk(SparkKvLedger *ledger,const char *di
 			continue;
 		if ( lstat(path,&info) != 0 || !S_ISDIR(info.st_mode) || info.st_dev != device )
 			continue;
-		if ( SparkKvSnapshotPurgeWalk(ledger,path,device,depth + 1u,now_seconds,result) != SPARK_STATUS_OK )
+		if ( SparkKvSnapshotPurgeWalk(ledger,path,device,depth + 1u,result) != SPARK_STATUS_OK )
 			status = SPARK_STATUS_IO_ERROR;
 	}
 	(void)closedir(listing);
-	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(ledger,directory,now_seconds,result) != SPARK_STATUS_OK )
+	if ( holds_cache != 0u && SparkKvSnapshotPurgeDirectory(ledger,directory,result) != SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	SPARK_RETURN(status);
 }
 
-SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,SparkKvSnapshotPurgeResult *result)
 {
 	struct stat info;
 	if ( ledger == 0 || root == 0 || root[0] != '/' || result == 0 )
@@ -292,5 +291,5 @@ SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint
 	if ( lstat(root,&info) != 0 || !S_ISDIR(info.st_mode) )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	SparkKvLedgerForgetMissing(ledger);
-	SPARK_RETURN(SparkKvSnapshotPurgeWalk(ledger,root,info.st_dev,0u,now_seconds,result));
+	SPARK_RETURN(SparkKvSnapshotPurgeWalk(ledger,root,info.st_dev,0u,result));
 }

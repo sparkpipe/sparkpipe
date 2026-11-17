@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <pthread.h>
+#include <stddef.h>
 #include "sparkpipe/spark_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include "runtime/device/device_backend.h"
@@ -40,6 +43,8 @@ typedef struct CudaQueue
 	uint64_t completed;
 	uint8_t *bounce;
 	uint32_t adopted;
+	uint32_t capturing;
+	pthread_mutex_t gate;
 } CudaQueue;
 
 typedef struct CudaCallback
@@ -51,11 +56,151 @@ typedef struct CudaCallback
 	const uint8_t *copy_source;
 	uint64_t bytes;
 	uint8_t value;
+	uint32_t retained;
 } CudaCallback;
 
+typedef struct CudaDriver
+{
+	CUresult (*context_current)(CUcontext *context);
+	CUresult (*context_set)(CUcontext context);
+	CUresult (*granularity)(size_t *granularity, const CUmemAllocationProp *properties, CUmemAllocationGranularity_flags option);
+	CUresult (*create)(CUmemGenericAllocationHandle *handle, size_t bytes, const CUmemAllocationProp *properties, unsigned long long flags);
+	CUresult (*release)(CUmemGenericAllocationHandle handle);
+	CUresult (*export_fd)(void *shareable, CUmemGenericAllocationHandle handle, CUmemAllocationHandleType type, unsigned long long flags);
+	CUresult (*import_fd)(CUmemGenericAllocationHandle *handle, void *shareable, CUmemAllocationHandleType type);
+	CUresult (*reserve)(CUdeviceptr *address, size_t bytes, size_t alignment, CUdeviceptr hint, unsigned long long flags);
+	CUresult (*address_free)(CUdeviceptr address, size_t bytes);
+	CUresult (*map)(CUdeviceptr address, size_t bytes, size_t offset, CUmemGenericAllocationHandle handle, unsigned long long flags);
+	CUresult (*set_access)(CUdeviceptr address, size_t bytes, const CUmemAccessDesc *access, size_t count);
+	CUresult (*unmap)(CUdeviceptr address, size_t bytes);
+	CUresult (*tensor_map_encode)(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address, const cuuint64_t *dimension,
+		const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride, CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle,
+		CUtensorMapL2promotion promotion, CUtensorMapFloatOOBfill fill);
+	CUresult (*device_get)(CUdevice *device, int ordinal);
+	CUresult (*device_attribute)(int *value, CUdevice_attribute attribute, CUdevice device);
+} CudaDriver;
+
+static const struct
+{
+	const char *symbol;
+	size_t offset;
+} cuda_driver_symbols[] = {
+	{"cuCtxGetCurrent",offsetof(CudaDriver,context_current)},
+	{"cuCtxSetCurrent",offsetof(CudaDriver,context_set)},
+	{"cuMemGetAllocationGranularity",offsetof(CudaDriver,granularity)},
+	{"cuMemCreate",offsetof(CudaDriver,create)},
+	{"cuMemRelease",offsetof(CudaDriver,release)},
+	{"cuMemExportToShareableHandle",offsetof(CudaDriver,export_fd)},
+	{"cuMemImportFromShareableHandle",offsetof(CudaDriver,import_fd)},
+	{"cuMemAddressReserve",offsetof(CudaDriver,reserve)},
+	{"cuMemAddressFree",offsetof(CudaDriver,address_free)},
+	{"cuMemMap",offsetof(CudaDriver,map)},
+	{"cuMemSetAccess",offsetof(CudaDriver,set_access)},
+	{"cuMemUnmap",offsetof(CudaDriver,unmap)},
+	{"cuTensorMapEncodeTiled",offsetof(CudaDriver,tensor_map_encode)},
+	{"cuDeviceGet",offsetof(CudaDriver,device_get)},
+	{"cuDeviceGetAttribute",offsetof(CudaDriver,device_attribute)},
+};
+
+#define CUDA_HOST_HANDLES_MAX 256u
+
+static CudaDriver cuda_driver;
+static CUcontext cuda_instance;
 static int cuda_ordinal;
 static int cuda_pageable_access;
+static int cuda_host_numa;
+static int cuda_host_share;
+static pthread_mutex_t cuda_host_handles_gate = PTHREAD_MUTEX_INITIALIZER;
+static CUmemGenericAllocationHandle cuda_host_handles[CUDA_HOST_HANDLES_MAX];
+static uint32_t cuda_host_handle_count;
 static uint64_t cuda_page_bytes;
+
+typedef struct CudaSpan
+{
+	uint64_t base;
+	uint64_t bytes;
+	uint32_t writable;
+} CudaSpan;
+
+typedef struct CudaSpans
+{
+	CudaSpan *items;
+	uint32_t count;
+	uint32_t capacity;
+} CudaSpans;
+
+static pthread_mutex_t cuda_spans_gate = PTHREAD_MUTEX_INITIALIZER;
+static CudaSpans cuda_reservations;
+static CudaSpans cuda_mappings;
+
+static uint32_t CudaSpanAdd(CudaSpans *spans, uint64_t base, uint64_t bytes, uint32_t writable)
+{
+	uint32_t added = 1u;
+	pthread_mutex_lock(&cuda_spans_gate);
+	if ( spans->count == spans->capacity )
+	{
+		const uint32_t capacity = spans->capacity != 0u ? spans->capacity * 2u : 16u;
+		CudaSpan *grown = (CudaSpan *)realloc(spans->items,(size_t)capacity * sizeof(*grown));
+		if ( grown == 0 )
+			added = 0u;
+		else
+		{
+			spans->items = grown;
+			spans->capacity = capacity;
+		}
+	}
+	if ( added != 0u )
+	{
+		spans->items[spans->count].base = base;
+		spans->items[spans->count].bytes = bytes;
+		spans->items[spans->count].writable = writable;
+		spans->count++;
+	}
+	pthread_mutex_unlock(&cuda_spans_gate);
+	return(added);
+}
+
+static void CudaSpanRemove(CudaSpans *spans, uint64_t base, uint64_t bytes)
+{
+	uint32_t index = 0u;
+	pthread_mutex_lock(&cuda_spans_gate);
+	while ( index < spans->count )
+		if ( spans->items[index].base >= base && spans->items[index].base - base < bytes )
+			spans->items[index] = spans->items[--spans->count];
+		else
+			index++;
+	pthread_mutex_unlock(&cuda_spans_gate);
+}
+
+static uint32_t CudaSpanned(const CudaSpans *spans, uint64_t base, uint64_t bytes, uint32_t write)
+{
+	uint64_t reached = base;
+	uint32_t index,moved = 1u;
+	pthread_mutex_lock(&cuda_spans_gate);
+	while ( reached < base + bytes && moved != 0u )
+	{
+		moved = 0u;
+		for (index=0u; index<spans->count && moved == 0u; index++)
+			if ( spans->items[index].base <= reached && reached - spans->items[index].base < spans->items[index].bytes &&
+				(write == 0u || spans->items[index].writable != 0u) )
+			{
+				reached = spans->items[index].base + spans->items[index].bytes;
+				moved = 1u;
+			}
+	}
+	pthread_mutex_unlock(&cuda_spans_gate);
+	return(bytes != 0u && reached >= base + bytes ? 1u : 0u);
+}
+
+static uint32_t CudaSpanOverlaps(const CudaSpans *spans, uint64_t base, uint64_t bytes)
+{
+	uint32_t index,overlaps = 0u;
+	pthread_mutex_lock(&cuda_spans_gate);
+	for (index=0u; index<spans->count && overlaps == 0u; index++)
+		overlaps = base < spans->items[index].base + spans->items[index].bytes && spans->items[index].base < base + bytes ? 1u : 0u;
+	pthread_mutex_unlock(&cuda_spans_gate);
+	return(overlaps);
+}
 
 static SparkStatus CudaStatus(cudaError_t error, const char *operation, const char *owner)
 {
@@ -82,6 +227,58 @@ static SparkStatus CudaStatus(cudaError_t error, const char *operation, const ch
 	return(SparkDeviceRecordError(status,operation,owner,(int32_t)error,cudaGetErrorString(error)));
 }
 
+static SparkStatus CudaDriverStatus(CUresult result, const char *operation, const char *owner, const char *call)
+{
+	char text[96];
+	SparkStatus status;
+	if ( result == CUDA_SUCCESS )
+		return(SPARK_STATUS_OK);
+	if ( result == CUDA_ERROR_OUT_OF_MEMORY )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	else if ( result == CUDA_ERROR_INVALID_VALUE || result == CUDA_ERROR_INVALID_HANDLE || result == CUDA_ERROR_ALREADY_MAPPED ||
+		result == CUDA_ERROR_NOT_MAPPED )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	else if ( result == CUDA_ERROR_NOT_SUPPORTED || result == CUDA_ERROR_NOT_PERMITTED )
+		status = SPARK_STATUS_UNSUPPORTED;
+	else if ( result == CUDA_ERROR_INVALID_DEVICE || result == CUDA_ERROR_INVALID_CONTEXT )
+		status = SPARK_STATUS_TARGET_MISMATCH;
+	else
+		status = SPARK_STATUS_IO_ERROR;
+	snprintf(text,sizeof(text),"%s returned %d",call,(int)result);
+	return(SparkDeviceRecordError(status,operation,owner,(int32_t)result,text));
+}
+
+static SparkStatus CudaDriverLoad(void)
+{
+	char text[96];
+	size_t index;
+	for (index=0u; index<sizeof(cuda_driver_symbols) / sizeof(cuda_driver_symbols[0]); index++)
+	{
+		void *function = 0;
+		enum cudaDriverEntryPointQueryResult found = cudaDriverEntryPointSymbolNotFound;
+		const cudaError_t error = cudaGetDriverEntryPointByVersion(cuda_driver_symbols[index].symbol,&function,CUDART_VERSION,cudaEnableDefault,&found);
+		if ( error != cudaSuccess || found != cudaDriverEntryPointSuccess || function == 0 )
+		{
+			(void)cudaGetLastError();
+			snprintf(text,sizeof(text),"the CUDA driver has no %s",cuda_driver_symbols[index].symbol);
+			return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"initialize","",(int32_t)error,text));
+		}
+		memcpy((uint8_t *)&cuda_driver + cuda_driver_symbols[index].offset,&function,sizeof(function));
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus CudaInstanceLoad(void)
+{
+	SparkStatus status = CudaDriverLoad();
+	cuda_instance = 0;
+	if ( status == SPARK_STATUS_OK )
+		status = CudaDriverStatus(cuda_driver.context_current(&cuda_instance),"initialize","","cuCtxGetCurrent");
+	if ( status == SPARK_STATUS_OK && cuda_instance == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"initialize","",0,"the device has no current context after selecting it");
+	return(status);
+}
+
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties)
 {
 	struct cudaDeviceProp device;
@@ -97,11 +294,25 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	status = CudaStatus(cudaSetDevice(cuda_ordinal),"initialize","");
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStatus(cudaGetDeviceProperties(&device,cuda_ordinal),"initialize","");
+	if ( status == SPARK_STATUS_OK )
+		status = CudaInstanceLoad();
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	(void)cudaDeviceGetAttribute(&managed,cudaDevAttrManagedMemory,cuda_ordinal);
 	(void)cudaDeviceGetAttribute(&pageable,cudaDevAttrPageableMemoryAccess,cuda_ordinal);
 	cuda_pageable_access = pageable;
+	{
+		CUdevice handle = 0;
+		int host_numa = -1, host_share = 0;
+		cuda_host_share = 0;
+		if ( cuda_driver.device_get(&handle,cuda_ordinal) == CUDA_SUCCESS &&
+			cuda_driver.device_attribute(&host_share,CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED,handle) == CUDA_SUCCESS &&
+			cuda_driver.device_attribute(&host_numa,CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID,handle) == CUDA_SUCCESS )
+		{
+			cuda_host_numa = host_numa < 0 ? 0 : host_numa;
+			cuda_host_share = host_share != 0 ? 1 : 0;
+		}
+	}
 	snprintf(properties->backend,sizeof(properties->backend),"%s","cuda");
 	snprintf(properties->target,sizeof(properties->target),"cuda.sm%d%d",device.major,device.minor);
 	memcpy(properties->name,device.name,sizeof(properties->name) - 1u);
@@ -111,7 +322,10 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->simd_width = (uint32_t)device.warpSize;
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes : (uint64_t)device.totalGlobalMem;
 	properties->max_buffer_bytes = (uint64_t)device.totalGlobalMem;
-	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | (device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
+	properties->max_constant_bytes = 0u;
+	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_PROGRAMS |
+		(device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u) | (device.major >= 9 ? SPARK_DEVICE_PROPERTY_TENSOR_MAPS : 0u) |
+		(cuda_host_share != 0 ? SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE : 0u);
 	(void)managed;
 	(void)pageable;
 	return(SPARK_STATUS_OK);
@@ -120,6 +334,245 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 SparkStatus SparkDeviceBackendShutdown(void)
 {
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance)
+{
+	CUcontext context = 0;
+	SparkStatus status = CudaDriverStatus(cuda_driver.context_current(&context),"thread_instance","","cuCtxGetCurrent");
+	if ( status == SPARK_STATUS_OK && context == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"thread_instance","",0,"the calling thread is bound to no device instance");
+	if ( status == SPARK_STATUS_OK && context != cuda_instance )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"thread_instance","",0,"the calling thread is bound to a context outside the device layer");
+	if ( status == SPARK_STATUS_OK )
+		*instance = (SparkDeviceInstance)(uintptr_t)context;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance)
+{
+	if ( instance != (SparkDeviceInstance)(uintptr_t)cuda_instance )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"not the instance this device layer returned"));
+	return(CudaDriverStatus(cuda_driver.context_set(cuda_instance),"thread_bind","","cuCtxSetCurrent"));
+}
+
+static void CudaMemoryProperties(CUmemAllocationProp *properties)
+{
+	memset(properties,0,sizeof(*properties));
+	properties->type = CU_MEM_ALLOCATION_TYPE_PINNED;
+	properties->location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	properties->location.id = cuda_ordinal;
+	properties->requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+}
+
+static CUmemGenericAllocationHandle CudaHandle(SparkDeviceMemoryHandle memory)
+{
+	return((CUmemGenericAllocationHandle)(uintptr_t)memory);
+}
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	CUmemAllocationProp properties;
+	size_t value = 0u;
+	SparkStatus status;
+	CudaMemoryProperties(&properties);
+	status = CudaDriverStatus(cuda_driver.granularity(&value,&properties,granularity == SPARK_DEVICE_GRANULARITY_RECOMMENDED ?
+		CU_MEM_ALLOC_GRANULARITY_RECOMMENDED : CU_MEM_ALLOC_GRANULARITY_MINIMUM),"memory_granularity","","cuMemGetAllocationGranularity");
+	if ( status == SPARK_STATUS_OK )
+		*bytes = (uint64_t)value;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	CUmemAllocationProp properties;
+	CUmemGenericAllocationHandle handle = 0;
+	SparkStatus status;
+	CudaMemoryProperties(&properties);
+	status = CudaDriverStatus(cuda_driver.create(&handle,(size_t)bytes,&properties,0ull),"memory_create",owner,"cuMemCreate");
+	if ( status == SPARK_STATUS_OK && handle == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_create",owner,0,"cuMemCreate returned no handle");
+	if ( status == SPARK_STATUS_OK )
+		*memory = (SparkDeviceMemoryHandle)(uintptr_t)handle;
+	return(status);
+}
+
+static uint32_t CudaHostHandleFind(CUmemGenericAllocationHandle handle)
+{
+	uint32_t index;
+	for ( index = 0u; index < cuda_host_handle_count; index++ )
+		if ( cuda_host_handles[index] == handle )
+			return(index);
+	return(CUDA_HOST_HANDLES_MAX);
+}
+
+static uint32_t CudaHostHandleKnown(CUmemGenericAllocationHandle handle)
+{
+	uint32_t known;
+	pthread_mutex_lock(&cuda_host_handles_gate);
+	known = CudaHostHandleFind(handle) != CUDA_HOST_HANDLES_MAX ? 1u : 0u;
+	pthread_mutex_unlock(&cuda_host_handles_gate);
+	return(known);
+}
+
+static SparkStatus CudaHostHandleAdd(CUmemGenericAllocationHandle handle, const char *operation, const char *owner)
+{
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	uint32_t added = 0u;
+	pthread_mutex_lock(&cuda_host_handles_gate);
+	if ( cuda_host_handle_count < CUDA_HOST_HANDLES_MAX )
+	{
+		cuda_host_handles[cuda_host_handle_count++] = handle;
+		added = 1u;
+	}
+	pthread_mutex_unlock(&cuda_host_handles_gate);
+	if ( added != 0u )
+		return(SPARK_STATUS_OK);
+	snprintf(text,sizeof(text),"the cuda backend tracks at most %u live host memory handles",CUDA_HOST_HANDLES_MAX);
+	return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,operation,owner,0,text));
+}
+
+static void CudaHostHandleDrop(CUmemGenericAllocationHandle handle)
+{
+	uint32_t index;
+	pthread_mutex_lock(&cuda_host_handles_gate);
+	index = CudaHostHandleFind(handle);
+	if ( index != CUDA_HOST_HANDLES_MAX )
+		cuda_host_handles[index] = cuda_host_handles[--cuda_host_handle_count];
+	pthread_mutex_unlock(&cuda_host_handles_gate);
+}
+
+SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	CUmemAllocationProp properties;
+	CUmemGenericAllocationHandle handle = 0;
+	size_t granularity = 0u;
+	SparkStatus status;
+	memset(&properties,0,sizeof(properties));
+	properties.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+	properties.location.type = CU_MEM_LOCATION_TYPE_HOST_NUMA;
+	properties.location.id = cuda_host_numa;
+	properties.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+	status = CudaDriverStatus(cuda_driver.granularity(&granularity,&properties,CU_MEM_ALLOC_GRANULARITY_MINIMUM),"memory_create_host",owner,
+		"cuMemGetAllocationGranularity");
+	if ( status == SPARK_STATUS_OK && (granularity == 0u || bytes % granularity != 0u) )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create_host",owner,0,"host memory is created in whole granules");
+	if ( status == SPARK_STATUS_OK )
+		status = CudaDriverStatus(cuda_driver.create(&handle,(size_t)bytes,&properties,0ull),"memory_create_host",owner,"cuMemCreate");
+	if ( status == SPARK_STATUS_OK && handle == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_create_host",owner,0,"cuMemCreate returned no handle");
+	if ( status == SPARK_STATUS_OK )
+		status = CudaHostHandleAdd(handle,"memory_create_host",owner);
+	if ( status == SPARK_STATUS_OK )
+		*memory = (SparkDeviceMemoryHandle)(uintptr_t)handle;
+	else if ( handle != 0 )
+		(void)cuda_driver.release(handle);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	const SparkStatus status = CudaDriverStatus(cuda_driver.release(CudaHandle(memory)),"memory_release","","cuMemRelease");
+	if ( status == SPARK_STATUS_OK )
+		CudaHostHandleDrop(CudaHandle(memory));
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	int exported = -1;
+	SparkStatus status = CudaDriverStatus(cuda_driver.export_fd(&exported,CudaHandle(memory),CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0ull),
+		"memory_export","","cuMemExportToShareableHandle");
+	if ( status == SPARK_STATUS_OK && exported < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_export","",0,"cuMemExportToShareableHandle returned no file descriptor");
+	if ( status == SPARK_STATUS_OK )
+		*fd = exported;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	CUmemGenericAllocationHandle handle = 0;
+	SparkStatus status = CudaDriverStatus(cuda_driver.import_fd(&handle,(void *)(intptr_t)fd,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR),
+		"memory_import",owner,"cuMemImportFromShareableHandle");
+	if ( status == SPARK_STATUS_OK && handle == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_import",owner,0,"cuMemImportFromShareableHandle returned no handle");
+	if ( status == SPARK_STATUS_OK )
+		*memory = (SparkDeviceMemoryHandle)(uintptr_t)handle;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	CUdeviceptr base = 0ull;
+	SparkStatus status = CudaDriverStatus(cuda_driver.reserve(&base,(size_t)bytes,0u,0ull,0ull),"address_reserve",owner,"cuMemAddressReserve");
+	if ( status == SPARK_STATUS_OK && base == 0ull )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"address_reserve",owner,0,"cuMemAddressReserve returned no address");
+	if ( status == SPARK_STATUS_OK && CudaSpanAdd(&cuda_reservations,(uint64_t)base,bytes,0u) == 0u )
+	{
+		(void)cuda_driver.address_free(base,(size_t)bytes);
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"address_reserve",owner,ENOMEM,"out of host memory for the reservation record");
+	}
+	if ( status == SPARK_STATUS_OK )
+		*address = (SparkDeviceAddress)base;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	const SparkStatus status = CudaDriverStatus(cuda_driver.address_free((CUdeviceptr)address,(size_t)bytes),"address_release","","cuMemAddressFree");
+	if ( status == SPARK_STATUS_OK )
+		CudaSpanRemove(&cuda_reservations,address,bytes);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	CUmemAccessDesc descriptors[2];
+	size_t count = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( (access & (SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE)) != 0u && CudaHostHandleKnown(CudaHandle(memory)) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"host access maps only host memory"));
+	status = CudaDriverStatus(cuda_driver.map((CUdeviceptr)address,(size_t)bytes,(size_t)offset,CudaHandle(memory),0ull),"memory_map","","cuMemMap");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(descriptors,0,sizeof(descriptors));
+	if ( (access & SPARK_DEVICE_ACCESS_DEVICE_READ) != 0u )
+	{
+		descriptors[count].location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+		descriptors[count].location.id = cuda_ordinal;
+		descriptors[count++].flags = (access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? CU_MEM_ACCESS_FLAGS_PROT_READWRITE : CU_MEM_ACCESS_FLAGS_PROT_READ;
+	}
+	if ( (access & SPARK_DEVICE_ACCESS_HOST_READ) != 0u )
+	{
+		descriptors[count].location.type = CU_MEM_LOCATION_TYPE_HOST_NUMA;
+		descriptors[count].location.id = cuda_host_numa;
+		descriptors[count++].flags = (access & SPARK_DEVICE_ACCESS_HOST_WRITE) != 0u ? CU_MEM_ACCESS_FLAGS_PROT_READWRITE : CU_MEM_ACCESS_FLAGS_PROT_READ;
+	}
+	status = CudaDriverStatus(cuda_driver.set_access((CUdeviceptr)address,(size_t)bytes,descriptors,count),"memory_map","","cuMemSetAccess");
+	if ( status == SPARK_STATUS_OK && CudaSpanAdd(&cuda_mappings,address,bytes,(access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? 1u : 0u) == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_map","",ENOMEM,"out of host memory for the mapping record");
+	if ( status != SPARK_STATUS_OK )
+		(void)cuda_driver.unmap((CUdeviceptr)address,(size_t)bytes);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	const SparkStatus status = CudaDriverStatus(cuda_driver.unmap((CUdeviceptr)address,(size_t)bytes),"memory_unmap","","cuMemUnmap");
+	if ( status == SPARK_STATUS_OK )
+		CudaSpanRemove(&cuda_mappings,address,bytes);
+	return(status);
+}
+
+uint32_t SparkDeviceBackendAddressMapped(SparkDeviceAddress address, uint64_t bytes, uint32_t write)
+{
+	return(CudaSpanned(&cuda_mappings,address,bytes,write));
+}
+
+uint32_t SparkDeviceBackendAddressOwned(SparkDeviceAddress address, uint64_t bytes)
+{
+	return(CudaSpanOverlaps(&cuda_reservations,address,bytes));
 }
 
 static CudaAllocation *CudaNew(SparkDeviceAllocation *allocation, CudaMemoryKind kind, const char *operation)
@@ -333,6 +786,15 @@ static void *CudaPointer(const SparkDeviceAllocation *allocation, uint64_t offse
 static SparkStatus CudaCopyByCallback(SparkDeviceQueue *queue, uint8_t *destination, const uint8_t *source, uint64_t bytes);
 static SparkStatus CudaBounce(SparkDeviceQueue *queue, const char *operation);
 
+SparkStatus SparkDeviceBackendCopyMapped(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_at,
+	const SparkDeviceAllocation *source, uint64_t source_at, uint64_t bytes)
+{
+	CudaQueue *cuda = (CudaQueue *)queue->backend;
+	void *to = destination != 0 ? CudaPointer(destination,destination_at,1u) : (void *)(uintptr_t)destination_at;
+	const void *from = source != 0 ? CudaPointer(source,source_at,1u) : (const void *)(uintptr_t)source_at;
+	return(CudaStatus(cudaMemcpyAsync(to,from,(size_t)bytes,cudaMemcpyDeviceToDevice,cuda->stream),"copy_addresses",queue->owner));
+}
+
 SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection direction,
 	const SparkDeviceAllocation *destination, uint64_t destination_offset,
 	const SparkDeviceAllocation *source, uint64_t source_offset, uint64_t bytes)
@@ -363,7 +825,11 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 	if ( (direction == SPARK_DEVICE_HOST_TO_DEVICE && source_pageable != 0u) || (direction == SPARK_DEVICE_DEVICE_TO_HOST && destination_pageable != 0u) )
 	{
 		uint64_t done;
-		SparkStatus status = CudaBounce(queue,"copy");
+		SparkStatus status;
+		if ( queue->recording != 0 )
+			return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"copy",queue->owner,0,
+				"a program cannot stage pageable memory through its queue's bounce buffer; record copies of pinned or registered memory"));
+		status = CudaBounce(queue,"copy");
 		for ( done = 0u; status == SPARK_STATUS_OK && done < bytes; done += CUDA_BOUNCE_BYTES )
 		{
 			uint64_t chunk = bytes - done < CUDA_BOUNCE_BYTES ? bytes - done : CUDA_BOUNCE_BYTES;
@@ -397,18 +863,29 @@ static void CUDART_CB CudaCallbackTrampoline(void *argument)
 		memset(callback->fill,callback->value,(size_t)callback->bytes);
 	else
 		callback->function(callback->context);
-	free(callback);
+	if ( callback->retained == 0u )
+		free(callback);
 }
+
+static SparkStatus CudaProgramRetain(SparkDeviceProgram *program, CudaCallback *callback);
 
 static SparkStatus CudaEnqueueCallback(SparkDeviceQueue *queue, CudaCallback *callback, const char *operation)
 {
-	SparkStatus status;
+	SparkStatus status = SPARK_STATUS_OK;
 	CudaCallback *copy = (CudaCallback *)malloc(sizeof(*copy));
 	if ( copy == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,operation,queue->owner,ENOMEM,"out of host memory"));
 	*copy = *callback;
-	status = CudaStatus(cudaLaunchHostFunc(CudaStream(queue),CudaCallbackTrampoline,copy),operation,queue->owner);
+	copy->retained = queue->recording != 0 ? 1u : 0u;
+	if ( copy->retained != 0u )
+		status = CudaProgramRetain(queue->recording,copy);
 	if ( status != SPARK_STATUS_OK )
+	{
+		free(copy);
+		return(status);
+	}
+	status = CudaStatus(cudaLaunchHostFunc(CudaStream(queue),CudaCallbackTrampoline,copy),operation,queue->owner);
+	if ( status != SPARK_STATUS_OK && copy->retained == 0u )
 		free(copy);
 	return(status);
 }
@@ -475,6 +952,7 @@ SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_adopt",queue->owner,ENOMEM,"out of host memory"));
 	cuda->stream = (cudaStream_t)native;
 	cuda->adopted = 1u;
+	pthread_mutex_init(&cuda->gate,0);
 	queue->backend = cuda;
 	return(SPARK_STATUS_OK);
 }
@@ -487,6 +965,8 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	(void)cudaStreamSynchronize(cuda->stream);
 	if ( cuda->adopted == 0u )
 		(void)cudaStreamDestroy(cuda->stream);
+	else
+		pthread_mutex_destroy(&cuda->gate);
 	if ( cuda->bounce != 0 )
 		(void)cudaFreeHost(cuda->bounce);
 	free(cuda);
@@ -517,6 +997,32 @@ static cudaError_t CudaStreamQueryHandle(void *handle)
 	return(cudaStreamQuery((cudaStream_t)handle));
 }
 
+static cudaError_t CudaAdoptedQuery(CudaQueue *cuda)
+{
+	cudaError_t error;
+	pthread_mutex_lock(&cuda->gate);
+	error = cuda->capturing != 0u ? cudaErrorNotReady : cudaStreamQuery(cuda->stream);
+	pthread_mutex_unlock(&cuda->gate);
+	return(error);
+}
+
+static cudaError_t CudaAdoptedQueryHandle(void *handle)
+{
+	return(CudaAdoptedQuery((CudaQueue *)handle));
+}
+
+static cudaError_t CudaAdoptedSettleHandle(void *handle)
+{
+	for ( ;; )
+	{
+		struct timespec pause = {0, 50000};
+		const cudaError_t error = CudaAdoptedQuery((CudaQueue *)handle);
+		if ( error != cudaErrorNotReady )
+			return(error);
+		nanosleep(&pause,0);
+	}
+}
+
 static cudaError_t CudaStreamSynchronizeHandle(void *handle)
 {
 	return(cudaStreamSynchronize((cudaStream_t)handle));
@@ -538,7 +1044,9 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 	SparkStatus status;
 	if ( cuda->adopted == 0u && __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE) >= sequence )
 		return(SPARK_STATUS_OK);
-	status = CudaPoll(CudaStreamQueryHandle,(void *)cuda->stream,CudaStreamSynchronizeHandle,timeout_ns,"queue_wait",queue->owner);
+	status = cuda->adopted != 0u ?
+		CudaPoll(CudaAdoptedQueryHandle,(void *)cuda,CudaAdoptedSettleHandle,timeout_ns,"queue_wait",queue->owner) :
+		CudaPoll(CudaStreamQueryHandle,(void *)cuda->stream,CudaStreamSynchronizeHandle,timeout_ns,"queue_wait",queue->owner);
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint64_t known = __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE);
@@ -549,9 +1057,22 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 	return(status);
 }
 
+SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
+{
+	CudaQueue *cuda = (CudaQueue *)queue->backend;
+	if ( cuda->adopted == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_capture",queue->owner,0,"only the owner of an adopted stream records it into a graph"));
+	pthread_mutex_lock(&cuda->gate);
+	cuda->capturing = capturing;
+	pthread_mutex_unlock(&cuda->gate);
+	return(SPARK_STATUS_OK);
+}
+
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)
 {
 	CudaQueue *cuda = (CudaQueue *)queue->backend;
+	if ( cuda->adopted != 0u )
+		return(__atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE));
 	if ( cudaStreamQuery(cuda->stream) == cudaSuccess )
 	{
 		uint64_t known = __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE);
@@ -582,12 +1103,15 @@ void SparkDeviceBackendEventDestroy(SparkDeviceEvent *event)
 
 SparkStatus SparkDeviceBackendEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *queue)
 {
+	if ( queue->recording != 0 )
+		return(CudaStatus(cudaEventRecordWithFlags((cudaEvent_t)event->backend,CudaStream(queue),cudaEventRecordExternal),"event_record",queue->owner));
 	return(CudaStatus(cudaEventRecord((cudaEvent_t)event->backend,CudaStream(queue)),"event_record",queue->owner));
 }
 
 SparkStatus SparkDeviceBackendQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent *event)
 {
-	return(CudaStatus(cudaStreamWaitEvent(CudaStream(queue),(cudaEvent_t)event->backend,0u),"queue_wait_event",queue->owner));
+	const unsigned int flags = queue->recording != 0 ? cudaEventWaitExternal : 0u;
+	return(CudaStatus(cudaStreamWaitEvent(CudaStream(queue),(cudaEvent_t)event->backend,flags),"queue_wait_event",queue->owner));
 }
 
 SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeout_ns)
@@ -625,6 +1149,14 @@ void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
 	library->backend = 0;
 }
 
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	(void)library;
+	(void)name;
+	(void)short_name;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",0,0,"the CUDA backend takes kernel names of at most 64 bytes"));
+}
+
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
 {
 	(void)kernel;
@@ -643,4 +1175,352 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	(void)launch;
 	(void)allocations;
 	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"the CUDA backend launches no device kernels"));
+}
+
+#define CUDA_PROGRAM_MAX_ARGUMENTS 256u
+
+typedef struct CudaPatchedNode
+{
+	cudaGraphNode_t node;
+	struct cudaKernelNodeParams base;
+	struct cudaKernelNodeParams params;
+	void *arguments[CUDA_PROGRAM_MAX_ARGUMENTS];
+	uint64_t values[CUDA_PROGRAM_MAX_ARGUMENTS];
+	uint32_t count;
+	uint32_t applied;
+} CudaPatchedNode;
+
+typedef struct CudaProgram
+{
+	cudaStream_t stream;
+	cudaGraph_t graph;
+	cudaGraphExec_t exec;
+	CudaPatchedNode **nodes;
+	uint32_t node_count;
+	CudaCallback **callbacks;
+	uint32_t callback_count;
+	uint64_t *last;
+	uint32_t ran;
+} CudaProgram;
+
+static SparkStatus CudaProgramRetain(SparkDeviceProgram *program, CudaCallback *callback)
+{
+	CudaProgram *cuda = (CudaProgram *)program->backend;
+	CudaCallback **grown = (CudaCallback **)realloc(cuda->callbacks,((size_t)cuda->callback_count + 1u) * sizeof(*grown));
+	if ( grown == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_record",program->name,ENOMEM,"out of host memory for a recorded callback"));
+	cuda->callbacks = grown;
+	cuda->callbacks[cuda->callback_count++] = callback;
+	return(SPARK_STATUS_OK);
+}
+
+uint32_t SparkDeviceBackendProgramNative(void)
+{
+	return(1u);
+}
+
+SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
+{
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",queue->owner,0,"the CUDA backend runs programs as graphs, never by replay"));
+}
+
+SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	CudaProgram *cuda = (CudaProgram *)calloc(1u,sizeof(*cuda));
+	SparkStatus status;
+	if ( cuda == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_record",program->name,0,"out of host memory for the program"));
+	cuda->stream = CudaStream(queue);
+	status = CudaStatus(cudaStreamBeginCapture(cuda->stream,cudaStreamCaptureModeThreadLocal),"program_record",program->name);
+	if ( status != SPARK_STATUS_OK )
+	{
+		free(cuda);
+		return(status);
+	}
+	program->backend = cuda;
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t CudaArgumentCount(const void *function)
+{
+	uint32_t count = 0u;
+	size_t offset = 0u,bytes = 0u;
+	while ( count < CUDA_PROGRAM_MAX_ARGUMENTS && cudaFuncGetParamInfo(function,count,&offset,&bytes) == cudaSuccess )
+		count++;
+	(void)cudaGetLastError();
+	return(count);
+}
+
+static SparkStatus CudaPatchedNodeOf(CudaProgram *cuda, cudaGraphNode_t node, CudaPatchedNode **out, const char *owner)
+{
+	CudaPatchedNode *patched,**grown;
+	uint32_t index;
+	SparkStatus status;
+	for ( index = 0u; index < cuda->node_count; index++ )
+		if ( cuda->nodes[index]->node == node )
+		{
+			*out = cuda->nodes[index];
+			return(SPARK_STATUS_OK);
+		}
+	patched = (CudaPatchedNode *)calloc(1u,sizeof(*patched));
+	grown = (CudaPatchedNode **)realloc(cuda->nodes,((size_t)cuda->node_count + 1u) * sizeof(*grown));
+	if ( patched == 0 || grown == 0 )
+	{
+		free(patched);
+		if ( grown != 0 )
+			cuda->nodes = grown;
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_patch",owner,0,"out of host memory for the patch table"));
+	}
+	cuda->nodes = grown;
+	patched->node = node;
+	status = CudaStatus(cudaGraphKernelNodeGetParams(node,&patched->base),"program_patch",owner);
+	if ( status == SPARK_STATUS_OK && (patched->base.kernelParams == 0 || patched->base.extra != 0) )
+		status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_patch",owner,0,"a patched kernel passes its arguments as a parameter array");
+	if ( status == SPARK_STATUS_OK && (patched->count = CudaArgumentCount(patched->base.func)) == CUDA_PROGRAM_MAX_ARGUMENTS )
+		status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_patch",owner,0,"a patched kernel takes more than 255 arguments");
+	if ( status != SPARK_STATUS_OK )
+	{
+		free(patched);
+		return(status);
+	}
+	memcpy(patched->arguments,patched->base.kernelParams,(size_t)patched->count * sizeof(void *));
+	patched->params = patched->base;
+	patched->params.kernelParams = patched->arguments;
+	cuda->nodes[cuda->node_count++] = patched;
+	*out = patched;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus CudaPlaceArgument(CudaPatchedNode *patched, SparkDevicePlace *place, const char *owner)
+{
+	size_t offset = 0u,bytes = 0u;
+	uint32_t index;
+	if ( place->target == SPARK_DEVICE_PROGRAM_TARGET_ARGUMENT )
+		index = place->argument;
+	else
+		for ( index = 0u; index < patched->count; index++ )
+			if ( cudaFuncGetParamInfo(patched->base.func,index,&offset,&bytes) == cudaSuccess && offset == place->offset )
+				break;
+	(void)cudaGetLastError();
+	if ( index >= patched->count || cudaFuncGetParamInfo(patched->base.func,index,&offset,&bytes) != cudaSuccess ||
+		(bytes != 1u && bytes != 2u && bytes != 4u && bytes != 8u) ||
+		(place->target == SPARK_DEVICE_PROGRAM_TARGET_CONSTANT && (offset != place->offset || bytes != place->bytes)) )
+	{
+		(void)cudaGetLastError();
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"program_patch",owner,0,
+			"the patched place is not one whole 1, 2, 4 or 8-byte parameter of the captured kernel"));
+	}
+	place->argument = index;
+	place->offset = (uint32_t)offset;
+	place->bytes = (uint32_t)bytes;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)
+{
+	CudaProgram *cuda = (CudaProgram *)program->backend;
+	enum cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+	const cudaGraphNode_t *last = 0;
+	size_t count = 0u;
+	enum cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
+	CudaPatchedNode *patched = 0;
+	SparkStatus status;
+	(void)queue;
+	status = CudaStatus(cudaStreamGetCaptureInfo(cuda->stream,&capture,0,0,&last,0,&count),"program_patch",program->name);
+	if ( status == SPARK_STATUS_OK && (capture != cudaStreamCaptureStatusActive || count != 1u ||
+		cudaGraphNodeGetType(last[0],&type) != cudaSuccess || type != cudaGraphNodeTypeKernel) )
+	{
+		(void)cudaGetLastError();
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"program_patch",program->name,0,
+			"a patch follows the kernel launch it changes, and the stream's last captured node is no kernel");
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = CudaPatchedNodeOf(cuda,last[0],&patched,program->name);
+	if ( status == SPARK_STATUS_OK && (place->target == SPARK_DEVICE_PROGRAM_TARGET_ARGUMENT || place->target == SPARK_DEVICE_PROGRAM_TARGET_CONSTANT) )
+		status = CudaPlaceArgument(patched,place,program->name);
+	else if ( status == SPARK_STATUS_OK )
+	{
+		place->offset = 0u;
+		place->bytes = 4u;
+	}
+	if ( status == SPARK_STATUS_OK )
+		place->backend = patched;
+	return(status);
+}
+
+static uint64_t CudaProgramDigest(const CudaProgram *cuda, const SparkDeviceProgram *program, uint32_t *kernels, uint32_t *graph_nodes)
+{
+	uint64_t digest = SparkDeviceProgramDigest(program);
+	cudaGraphNode_t *nodes = 0;
+	size_t count = 0u,index;
+	*kernels = 0u;
+	*graph_nodes = 0u;
+	if ( cudaGraphGetNodes(cuda->graph,0,&count) != cudaSuccess || count == 0u || (nodes = (cudaGraphNode_t *)calloc(count,sizeof(*nodes))) == 0 ||
+		cudaGraphGetNodes(cuda->graph,nodes,&count) != cudaSuccess )
+	{
+		(void)cudaGetLastError();
+		free(nodes);
+		return(digest);
+	}
+	*graph_nodes = (uint32_t)count;
+	for ( index = 0u; index < count; index++ )
+	{
+		enum cudaGraphNodeType type = cudaGraphNodeTypeEmpty;
+		struct cudaKernelNodeParams params;
+		const char *name = 0;
+		if ( cudaGraphNodeGetType(nodes[index],&type) != cudaSuccess )
+			continue;
+		digest = (digest ^ (uint64_t)type) * 1099511628211ull;
+		if ( type != cudaGraphNodeTypeKernel || cudaGraphKernelNodeGetParams(nodes[index],&params) != cudaSuccess )
+			continue;
+		(*kernels)++;
+		if ( cudaFuncGetName(&name,params.func) == cudaSuccess && name != 0 )
+			for ( ; *name != '\0'; name++ )
+				digest = (digest ^ (uint8_t)*name) * 1099511628211ull;
+		digest = (digest ^ ((uint64_t)params.gridDim.x << 32 | params.gridDim.y)) * 1099511628211ull;
+		digest = (digest ^ ((uint64_t)params.gridDim.z << 32 | params.blockDim.x)) * 1099511628211ull;
+		digest = (digest ^ ((uint64_t)params.blockDim.y << 32 | params.blockDim.z)) * 1099511628211ull;
+		digest = (digest ^ params.sharedMemBytes) * 1099511628211ull;
+	}
+	(void)cudaGetLastError();
+	free(nodes);
+	return(digest);
+}
+
+SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	CudaProgram *cuda = (CudaProgram *)program->backend;
+	SparkStatus status;
+	(void)queue;
+	status = CudaStatus(cudaStreamEndCapture(cuda->stream,&cuda->graph),"program_finish",program->name);
+	if ( status == SPARK_STATUS_OK && program->broken == 0u )
+		status = CudaStatus(cudaGraphInstantiate(&cuda->exec,cuda->graph,0ull),"program_finish",program->name);
+	if ( status == SPARK_STATUS_OK && program->broken == 0u )
+		status = CudaStatus(cudaGraphUpload(cuda->exec,cuda->stream),"program_finish",program->name);
+	if ( status == SPARK_STATUS_OK && program->place_count != 0u && (cuda->last = (uint64_t *)calloc(program->place_count,sizeof(uint64_t))) == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",program->name,0,"out of host memory for the patch table");
+	if ( status == SPARK_STATUS_OK && program->broken == 0u )
+		program->digest = CudaProgramDigest(cuda,program,&program->kernels,&program->native_nodes);
+	return(status);
+}
+
+static void CudaPatchNode(CudaPatchedNode *patched, const SparkDevicePlace *place, uint64_t value)
+{
+	if ( place->target == SPARK_DEVICE_PROGRAM_TARGET_GRID_X )
+		patched->params.gridDim.x = (unsigned int)value;
+	else if ( place->target == SPARK_DEVICE_PROGRAM_TARGET_GRID_Y )
+		patched->params.gridDim.y = (unsigned int)value;
+	else if ( place->target == SPARK_DEVICE_PROGRAM_TARGET_GRID_Z )
+		patched->params.gridDim.z = (unsigned int)value;
+	else
+	{
+		patched->values[place->argument] = 0u;
+		memcpy(&patched->values[place->argument],&value,place->bytes);
+		patched->arguments[place->argument] = &patched->values[place->argument];
+	}
+	patched->applied = 0u;
+}
+
+SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values)
+{
+	CudaProgram *cuda = (CudaProgram *)program->backend;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	for ( index = 0u; index < program->place_count; index++ )
+		if ( cuda->ran == 0u || cuda->last[index] != values[index] )
+		{
+			CudaPatchNode((CudaPatchedNode *)program->places[index].backend,&program->places[index],values[index]);
+			cuda->last[index] = values[index];
+		}
+	for ( index = 0u; status == SPARK_STATUS_OK && index < cuda->node_count; index++ )
+		if ( cuda->nodes[index]->applied == 0u )
+		{
+			status = CudaStatus(cudaGraphExecKernelNodeSetParams(cuda->exec,cuda->nodes[index]->node,&cuda->nodes[index]->params),"program_run",program->name);
+			cuda->nodes[index]->applied = status == SPARK_STATUS_OK ? 1u : 0u;
+		}
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStatus(cudaGraphLaunch(cuda->exec,CudaStream(queue)),"program_run",program->name);
+	if ( status == SPARK_STATUS_OK )
+		cuda->ran = 1u;
+	return(status);
+}
+
+uint32_t SparkDeviceBackendProgramLowersCopies(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
+}
+
+void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
+{
+	CudaProgram *cuda = (CudaProgram *)program->backend;
+	uint32_t index;
+	if ( cuda == 0 )
+		return;
+	if ( cuda->exec != 0 )
+		(void)cudaGraphExecDestroy(cuda->exec);
+	if ( cuda->graph != 0 )
+		(void)cudaGraphDestroy(cuda->graph);
+	for ( index = 0u; index < cuda->node_count; index++ )
+		free(cuda->nodes[index]);
+	for ( index = 0u; index < cuda->callback_count; index++ )
+		free(cuda->callbacks[index]);
+	free(cuda->nodes);
+	free(cuda->callbacks);
+	free(cuda->last);
+	free(cuda);
+	program->backend = 0;
+}
+
+uint32_t SparkDeviceBackendTensorMapOnDevice(void)
+{
+	return(0u);
+}
+
+_Static_assert(sizeof(CUtensorMap) == sizeof(SparkDeviceTensorMap),"a CUDA tensor map is the device layer's 128-byte map");
+
+static CUtensorMapSwizzle CudaTensorMapSwizzle(uint32_t swizzle_bytes)
+{
+	if ( swizzle_bytes == 128u )
+		return(CU_TENSOR_MAP_SWIZZLE_128B);
+	if ( swizzle_bytes == 64u )
+		return(CU_TENSOR_MAP_SWIZZLE_64B);
+	if ( swizzle_bytes == 32u )
+		return(CU_TENSOR_MAP_SWIZZLE_32B);
+	return(CU_TENSOR_MAP_SWIZZLE_NONE);
+}
+
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	uint32_t index,axis;
+	for ( index = 0u; index < count; index++ )
+	{
+		const SparkDeviceTensorMapRequest *request = &requests[index];
+		cuuint64_t dimension[SPARK_DEVICE_TENSOR_MAP_RANK_MAX],stride[SPARK_DEVICE_TENSOR_MAP_RANK_MAX - 1u];
+		cuuint32_t box[SPARK_DEVICE_TENSOR_MAP_RANK_MAX],element_stride[SPARK_DEVICE_TENSOR_MAP_RANK_MAX];
+		CUtensorMap map;
+		SparkStatus status;
+		for ( axis = 0u; axis < SPARK_DEVICE_TENSOR_MAP_RANK_MAX; axis++ )
+		{
+			dimension[axis] = request->dimension[axis];
+			box[axis] = request->box[axis];
+			element_stride[axis] = request->element_stride[axis];
+			if ( axis + 1u < SPARK_DEVICE_TENSOR_MAP_RANK_MAX )
+				stride[axis] = request->stride_bytes[axis];
+		}
+		memset(&map,0,sizeof(map));
+		status = CudaDriverStatus(cuda_driver.tensor_map_encode(&map,CU_TENSOR_MAP_DATA_TYPE_UINT8,request->rank,(void *)(uintptr_t)request->address,dimension,
+			stride,box,element_stride,CU_TENSOR_MAP_INTERLEAVE_NONE,CudaTensorMapSwizzle(request->swizzle_bytes),CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+			CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),"tensor_map",owner,"cuTensorMapEncodeTiled");
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		memcpy(&maps[index],&map,sizeof(maps[index]));
+	}
+	return(SPARK_STATUS_OK);
 }

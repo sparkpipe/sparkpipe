@@ -1,0 +1,306 @@
+{
+ "label": "dsv41-cc-tb21",
+ "harness": "claude-code",
+ "model": "deepseek-v4.1-flash",
+ "benchmark": "terminal-bench-2.1",
+ "planned": 21,
+ "dataset_tasks": 89,
+ "complete": false,
+ "trials": 21,
+ "resolved": 10.0,
+ "pass_rate": 0.4762,
+ "agent_ran_tasks": 16,
+ "pass_rate_agent_ran": 0.625,
+ "agent_not_started": 5,
+ "empty_patches": 0,
+ "evaluation_errors": 11,
+ "infrastructure_failures": 5,
+ "agent_timeouts": 3,
+ "exceptions": {
+  "UnknownApiError": 3,
+  "AgentSetupTimeoutError": 4,
+  "AgentTimeoutError": 3,
+  "NonZeroAgentExitCodeError": 1
+ },
+ "api_errors": {
+  "API Error: 400 deepseek-v4.1-flash does not take images": 3
+ },
+ "tokens": {
+  "n_input_tokens": 16969983,
+  "n_cache_tokens": 15918749,
+  "n_output_tokens": 518737
+ },
+ "agent_seconds_median": 900,
+ "passed_tasks": [
+  "terminal-bench/bn-fit-modify",
+  "terminal-bench/circuit-fibsqrt",
+  "terminal-bench/crack-7z-hash",
+  "terminal-bench/db-wal-recovery",
+  "terminal-bench/feal-linear-cryptanalysis",
+  "terminal-bench/hf-model-inference",
+  "terminal-bench/mteb-leaderboard",
+  "terminal-bench/multi-source-data-merger",
+  "terminal-bench/portfolio-optimization",
+  "terminal-bench/vulnerable-secret"
+ ],
+ "tasks": {
+  "terminal-bench/adaptive-rejection-sampler": [
+   {
+    "trial": "adaptive-rejection-sampler__DVQgGNH",
+    "reward": null,
+    "exception": "AgentSetupTimeoutError",
+    "api_error": null,
+    "agent_ran": false,
+    "agent_started": null,
+    "agent_finished": null,
+    "agent_seconds": null
+   }
+  ],
+  "terminal-bench/bn-fit-modify": [
+   {
+    "trial": "bn-fit-modify__quhgKww",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:47:54.620009Z",
+    "agent_finished": "2026-11-09T10:02:56.799875Z",
+    "agent_seconds": 902
+   }
+  ],
+  "terminal-bench/circuit-fibsqrt": [
+   {
+    "trial": "circuit-fibsqrt__wZSDcwP",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T11:19:36.143415Z",
+    "agent_finished": "2026-11-09T12:10:43.083197Z",
+    "agent_seconds": 3067
+   }
+  ],
+  "terminal-bench/crack-7z-hash": [
+   {
+    "trial": "crack-7z-hash__kXzUmMD",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:48:56.214713Z",
+    "agent_finished": "2026-11-09T10:07:02.102757Z",
+    "agent_seconds": 1086
+   }
+  ],
+  "terminal-bench/db-wal-recovery": [
+   {
+    "trial": "db-wal-recovery__acTYyBj",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T10:13:48.461756Z",
+    "agent_finished": "2026-11-09T10:17:08.078009Z",
+    "agent_seconds": 200
+   }
+  ],
+  "terminal-bench/extract-elf": [
+   {
+    "trial": "extract-elf__Uwn8UjV",
+    "reward": 0.0,
+    "exception": "AgentTimeoutError",
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:44:41.402556Z",
+    "agent_finished": "2026-11-09T09:59:41.643440Z",
+    "agent_seconds": 900
+   }
+  ],
+  "terminal-bench/feal-linear-cryptanalysis": [
+   {
+    "trial": "feal-linear-cryptanalysis__fFR4SqD",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:23:40.776476Z",
+    "agent_finished": "2026-11-09T09:42:14.951966Z",
+    "agent_seconds": 1114
+   }
+  ],
+  "terminal-bench/hf-model-inference": [
+   {
+    "trial": "hf-model-inference__aLtsYyK",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T10:11:04.608875Z",
+    "agent_finished": "2026-11-09T10:14:57.156225Z",
+    "agent_seconds": 233
+   }
+  ],
+  "terminal-bench/install-windows-3.11": [
+   {
+    "trial": "install-windows-3.11__pqDPVzx",
+    "reward": 0.0,
+    "exception": "UnknownApiError",
+    "api_error": "API Error: 400 deepseek-v4.1-flash does not take images",
+    "agent_ran": true,
+    "agent_started": "2026-11-09T11:23:09.857168Z",
+    "agent_finished": "2026-11-09T11:29:14.487121Z",
+    "agent_seconds": 365
+   }
+  ],
+  "terminal-bench/merge-diff-arc-agi-task": [
+   {
+    "trial": "merge-diff-arc-agi-task__u2fNNzs",
+    "reward": null,
+    "exception": "AgentSetupTimeoutError",
+    "api_error": null,
+    "agent_ran": false,
+    "agent_started": null,
+    "agent_finished": null,
+    "agent_seconds": null
+   }
+  ],
+  "terminal-bench/mteb-leaderboard": [
+   {
+    "trial": "mteb-leaderboard__q6BUy9D",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T11:18:17.444549Z",
+    "agent_finished": "2026-11-09T11:41:18.255708Z",
+    "agent_seconds": 1381
+   }
+  ],
+  "terminal-bench/multi-source-data-merger": [
+   {
+    "trial": "multi-source-data-merger__6RTaEMf",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:24:32.208966Z",
+    "agent_finished": "2026-11-09T09:29:22.095467Z",
+    "agent_seconds": 290
+   }
+  ],
+  "terminal-bench/portfolio-optimization": [
+   {
+    "trial": "portfolio-optimization__h6rQz2C",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T10:13:12.153755Z",
+    "agent_finished": "2026-11-09T10:25:10.576828Z",
+    "agent_seconds": 718
+   }
+  ],
+  "terminal-bench/qemu-startup": [
+   {
+    "trial": "qemu-startup__xPzcM8z",
+    "reward": null,
+    "exception": "NonZeroAgentExitCodeError",
+    "api_error": null,
+    "agent_ran": false,
+    "agent_started": null,
+    "agent_finished": null,
+    "agent_seconds": null
+   }
+  ],
+  "terminal-bench/raman-fitting": [
+   {
+    "trial": "raman-fitting__opJRBd3",
+    "reward": 0.0,
+    "exception": "UnknownApiError",
+    "api_error": "API Error: 400 deepseek-v4.1-flash does not take images",
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:24:10.727160Z",
+    "agent_finished": "2026-11-09T09:28:30.938186Z",
+    "agent_seconds": 260
+   }
+  ],
+  "terminal-bench/regex-chess": [
+   {
+    "trial": "regex-chess__T47SzzD",
+    "reward": 0.0,
+    "exception": "AgentTimeoutError",
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T11:19:50.987645Z",
+    "agent_finished": "2026-11-09T12:19:51.240788Z",
+    "agent_seconds": 3601
+   }
+  ],
+  "terminal-bench/regex-log": [
+   {
+    "trial": "regex-log__d6L2ybs",
+    "reward": null,
+    "exception": "AgentSetupTimeoutError",
+    "api_error": null,
+    "agent_ran": false,
+    "agent_started": null,
+    "agent_finished": null,
+    "agent_seconds": null
+   }
+  ],
+  "terminal-bench/sam-cell-seg": [
+   {
+    "trial": "sam-cell-seg__LaCMqqB",
+    "reward": 0.0,
+    "exception": "UnknownApiError",
+    "api_error": "API Error: 400 deepseek-v4.1-flash does not take images",
+    "agent_ran": true,
+    "agent_started": "2026-11-09T11:19:17.448687Z",
+    "agent_finished": "2026-11-09T11:30:35.268963Z",
+    "agent_seconds": 678
+   }
+  ],
+  "terminal-bench/sparql-university": [
+   {
+    "trial": "sparql-university__FcEVhjL",
+    "reward": null,
+    "exception": "AgentSetupTimeoutError",
+    "api_error": null,
+    "agent_ran": false,
+    "agent_started": null,
+    "agent_finished": null,
+    "agent_seconds": null
+   }
+  ],
+  "terminal-bench/train-fasttext": [
+   {
+    "trial": "train-fasttext__heYoKEk",
+    "reward": 0.0,
+    "exception": "AgentTimeoutError",
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T10:14:37.818322Z",
+    "agent_finished": "2026-11-09T11:14:38.096720Z",
+    "agent_seconds": 3601
+   }
+  ],
+  "terminal-bench/vulnerable-secret": [
+   {
+    "trial": "vulnerable-secret__GWMMruv",
+    "reward": 1.0,
+    "exception": null,
+    "api_error": null,
+    "agent_ran": true,
+    "agent_started": "2026-11-09T09:48:31.420189Z",
+    "agent_finished": "2026-11-09T09:51:40.957692Z",
+    "agent_seconds": 189
+   }
+  ]
+ },
+ "jobs": [
+  "tb21-cc-b01",
+  "tb21-cc-b02",
+  "tb21-cc-b03",
+  "tb21-cc-b04"
+ ]
+}

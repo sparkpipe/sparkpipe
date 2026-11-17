@@ -7,6 +7,7 @@
 #include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ uint32_t LmRouteSourceRow(const uint32_t *__restrict__ route_source_token, uint32_t packed_row)
 {
@@ -92,43 +93,73 @@ static __device__ __forceinline__ void LmRouteBuildPrefix(uint32_t *count, uint3
 }
 
 template<uint32_t THREADS, uint32_t EXPERTS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
+	constexpr uint32_t LANES = THREADS < LM_WARP_LANES ? THREADS : LM_WARP_LANES, WARPS = THREADS / LANES;
+	static_assert(THREADS % LANES == 0u, "whole warps rank the routes of a chunk");
 	__shared__ uint32_t count[EXPERTS];
+	__shared__ uint8_t warp_count[WARPS][EXPERTS];
 	__shared__ uint32_t staged[LM_ROUTE_STAGED_MAX];
 	const uint32_t *source = routes <= LM_ROUTE_STAGED_MAX ? staged : route_expert;
-	uint32_t index,expert,packed;
-	LmDependentRelease();
+	const uint32_t lane = threadIdx.x % LANES,warp = threadIdx.x / LANES;
+	uint32_t index,expert,packed,earlier,same;
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
+	for (index = threadIdx.x; index < WARPS * EXPERTS; index += THREADS)
+		warp_count[index / EXPERTS][index % EXPERTS] = 0u;
 	for (index = threadIdx.x; index < routes && index < LM_ROUTE_STAGED_MAX; index += THREADS)
 		staged[index] = route_expert[index];
 	__syncthreads();
-	for (index = threadIdx.x; index < routes; index += THREADS)
-		atomicAdd(&count[source[index]],1u);
+	for (index = threadIdx.x - lane; index < routes; index += THREADS)
+	{
+		expert = index + lane < routes ? source[index + lane] : EXPERTS;
+		same = __match_any_sync(0xffffffffu,expert);
+		if ( expert < EXPERTS && lane == (uint32_t)(__ffs((int)same) - 1) )
+			atomicAdd(&count[expert],(uint32_t)__popc(same));
+	}
 	__syncthreads();
 	LmRouteBuildPrefix<THREADS,EXPERTS>(count,group_row_offset,tile_m,neuron_tiles_up,tile_prefix_up,neuron_tiles_down,tile_prefix_down);
 	__syncthreads();
+	uint32_t ahead = threadIdx.x < routes ? source[threadIdx.x] : EXPERTS;
 	for (index = 0u; index < routes; index += THREADS)
 	{
 		const uint32_t route = index + threadIdx.x;
-		const uint32_t chunk = routes - index < THREADS ? routes - index : THREADS;
-		expert = route < routes ? source[route] : EXPERTS;
-		packed = 0u;
-		for (uint32_t earlier = 0u; earlier < threadIdx.x && earlier < chunk; earlier++)
-			packed += source[index + earlier] == expert ? 1u : 0u;
+		expert = ahead;
+		ahead = route + THREADS < routes ? source[route + THREADS] : EXPERTS;
+		same = __match_any_sync(0xffffffffu,expert);
+		if ( expert < EXPERTS && lane == (uint32_t)(__ffs((int)same) - 1) )
+			warp_count[warp][expert] = (uint8_t)__popc(same);
+		__syncthreads();
 		if ( route < routes )
 		{
-			packed += count[expert];
+			packed = count[expert] + (uint32_t)__popc(same & ((1u << lane) - 1u));
+			for (earlier = 0u; earlier < warp; earlier++)
+				packed += warp_count[earlier][expert];
 			route_packed_row[route] = packed;
 			route_source_token[packed] = route / top_k;
 		}
 		__syncthreads();
-		if ( route < routes )
-			atomicAdd(&count[expert],1u);
+		for (expert = threadIdx.x; expert < EXPERTS; expert += THREADS)
+		{
+			packed = 0u;
+			for (earlier = 0u; earlier < WARPS; earlier++)
+			{
+				packed += warp_count[earlier][expert];
+				warp_count[earlier][expert] = 0u;
+			}
+			count[expert] += packed;
+		}
 		__syncthreads();
 	}
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+{
+	LmDependentRelease();
+	LmRouteBuildBlock<THREADS,EXPERTS>(route_expert,routes,top_k,group_row_offset,route_packed_row,route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
+		neuron_tiles_down,tile_prefix_down);
 }
 
 
@@ -147,7 +178,7 @@ static int32_t LmRouteBuild(
 	uint32_t tile_n_down,
 	uint32_t *tile_prefix_up,
 	uint32_t *tile_prefix_down,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	uint32_t expected_packed_rows;
 	uint32_t tile_m;
@@ -171,7 +202,7 @@ static int32_t LmRouteBuild(
 		route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
 		route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
 		neuron_tiles_down,tile_prefix_down);
-	return(cudaPeekAtLastError() == cudaSuccess
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH);
 }
@@ -190,10 +221,19 @@ static int32_t LmRouteBuild(
 	uint32_t tile_n,
 	uint32_t *tile_prefix_up,
 	uint32_t *tile_prefix_down,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmRouteBuild<THREADS,EXPERTS>(route_expert,rows,packed_rows,top_k,
 		group_row_offset,route_packed_row,route_source_token,
 		output_dimension_up,output_dimension_down,tile_n,tile_n,
 		tile_prefix_up,tile_prefix_down,stream));
+}
+
+static __global__ void LmDenseRowOffsetsKernel(uint32_t *__restrict__ offsets, uint32_t rows)
+{
+	if ( threadIdx.x == 0u )
+	{
+		offsets[0] = 0u;
+		offsets[1] = rows;
+	}
 }

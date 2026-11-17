@@ -334,7 +334,7 @@ struct VfRig
 
 	uint32_t KvClean(void) const
 	{
-		return M::Check(state) == SPARK_STATUS_OK ? 1u : 0u;
+		return M::CheckErrors(state) == SPARK_STATUS_OK ? 1u : 0u;
 	}
 };
 

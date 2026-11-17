@@ -1,0 +1,150 @@
+{
+ "arm": "runs/tp4f.corpus.jsonl",
+ "arm_sha256": "3ca04f8ca886fdc4c9ec29019f3138312e645f91fcf90618050d108e4b670ddd",
+ "format": "sparkpipe-ab-api-comparison-v1",
+ "level": 0.95,
+ "near_tie_nats": 0.001,
+ "overall": {
+  "accuracy_mcnemar_p": 0.47312965989112854,
+  "accuracy_only_arm": 18,
+  "accuracy_only_reference": 13,
+  "arm_accuracy_pct": 79.4034090909091,
+  "dnll_rel_pct": {
+   "estimate": -1.878952837456874,
+   "lower": -2.695508410533713,
+   "upper": -1.0727939768420502
+  },
+  "identical_lists": 0,
+  "kl_lower_bound": {
+   "estimate": 0.009104587024540488,
+   "lower": 0.007883417728834006,
+   "upper": 0.010392453187734135
+  },
+  "logprob_delta_max": 7.786058499999999,
+  "near_tie_positions": 0,
+  "positions": 2112,
+  "reference_accuracy_pct": 79.16666666666667,
+  "reference_nll": 0.6349762963333487,
+  "stopped_by_arm_only": 0,
+  "stopped_by_both": 0,
+  "stopped_by_reference_only": 0,
+  "top1_agreement_pct": {
+   "estimate": 96.68560606060606,
+   "lower": 95.9280303030303,
+   "upper": 97.39583333333334
+  },
+  "truth_listed_by_arm_only": 5,
+  "truth_listed_by_both": 2040,
+  "truth_listed_by_reference_only": 7,
+  "units": 66
+ },
+ "reference": "runs/tp4.corpus.jsonl",
+ "reference_sha256": "57deda063373b1041fa45a827c036c3b34f90fae3bba34329cc76e35d360e503",
+ "replicates": 10000,
+ "seed": 20260929,
+ "strata": {
+  "code": {
+   "accuracy_mcnemar_p": 1.0,
+   "accuracy_only_arm": 7,
+   "accuracy_only_reference": 8,
+   "arm_accuracy_pct": 86.953125,
+   "dnll_rel_pct": {
+    "estimate": -3.2474062058746727,
+    "lower": -4.726922924134817,
+    "upper": -1.6027887948278832
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.0060903484804770355,
+    "lower": 0.004918498758804467,
+    "upper": 0.007633807327723546
+   },
+   "logprob_delta_max": 7.786058499999999,
+   "near_tie_positions": 0,
+   "positions": 1280,
+   "reference_accuracy_pct": 87.03125,
+   "reference_nll": 0.398942050188445,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 97.734375,
+    "lower": 96.953125,
+    "upper": 98.359375
+   },
+   "truth_listed_by_arm_only": 3,
+   "truth_listed_by_both": 1250,
+   "truth_listed_by_reference_only": 5,
+   "units": 40
+  },
+  "prose-old": {
+   "accuracy_mcnemar_p": 1.0,
+   "accuracy_only_arm": 2,
+   "accuracy_only_reference": 1,
+   "arm_accuracy_pct": 70.83333333333333,
+   "dnll_rel_pct": {
+    "estimate": -0.7485026602788619,
+    "lower": -1.6303169399442263,
+    "upper": 0.06438989004733306
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.016234918540533123,
+    "lower": 0.011110202620185331,
+    "upper": 0.02135963446088092
+   },
+   "logprob_delta_max": 3.506881719999999,
+   "near_tie_positions": 0,
+   "positions": 96,
+   "reference_accuracy_pct": 69.79166666666667,
+   "reference_nll": 1.0073529547274847,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 92.70833333333334,
+    "lower": 88.54166666666666,
+    "upper": 100.0
+   },
+   "truth_listed_by_arm_only": 0,
+   "truth_listed_by_both": 91,
+   "truth_listed_by_reference_only": 0,
+   "units": 3
+  },
+  "prose-recent": {
+   "accuracy_mcnemar_p": 0.266845703125,
+   "accuracy_only_arm": 9,
+   "accuracy_only_reference": 4,
+   "arm_accuracy_pct": 67.3913043478261,
+   "dnll_rel_pct": {
+    "estimate": -1.0579804340632226,
+    "lower": -2.0275716699821498,
+    "upper": -0.05383904082983912
+   },
+   "identical_lists": 0,
+   "kl_lower_bound": {
+    "estimate": 0.013416697772999623,
+    "lower": 0.012026305244151037,
+    "upper": 0.014920976504959832
+   },
+   "logprob_delta_max": 4.4171142,
+   "near_tie_positions": 0,
+   "positions": 736,
+   "reference_accuracy_pct": 66.71195652173913,
+   "reference_nll": 1.008590790993239,
+   "stopped_by_arm_only": 0,
+   "stopped_by_both": 0,
+   "stopped_by_reference_only": 0,
+   "top1_agreement_pct": {
+    "estimate": 95.38043478260869,
+    "lower": 94.02173913043478,
+    "upper": 96.60326086956522
+   },
+   "truth_listed_by_arm_only": 2,
+   "truth_listed_by_both": 699,
+   "truth_listed_by_reference_only": 2,
+   "units": 23
+  }
+ },
+ "unit": "document"
+}

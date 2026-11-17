@@ -39,7 +39,7 @@ struct LmHostRecorderFormat
 	}
 };
 #include "tests/host_cuda/lm_host_skinny_recorder.cuh"
-#include "inference/llms/kimi_k3/slice.cuh"
+#include "model-families/k3/source/slice.cuh"
 
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)
@@ -48,48 +48,49 @@ struct LmHostRecorderFormat
 #define SLICE_MLA 3u
 #define KV_POOL_BYTES (ROWS * K3GlobalKv::kPageBytes)
 
-static uint16_t hidden[ROWS * K3_HIDDEN], normed[ROWS * K3_HIDDEN];
-static uint16_t attention_out[ROWS * K3_MLA_LATENT_OUT_DIM];
-static uint16_t shared_out[ROWS * K3_HIDDEN];
-static uint16_t query[ROWS * K3_MLA_Q_DIM], key[ROWS * K3_KDA_QK_DIM];
-static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
-static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
-static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
-static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
-static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
-static uint16_t aux_slab[2u * ROWS * K3_HIDDEN];
-static uint16_t aux_reference[ROWS * K3_HIDDEN];
-static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
-static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
-static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
-static uint16_t bank[K3_ATTNRES_MAX_SOURCES * ROWS * K3_HIDDEN];
-static uint16_t partial[ROWS * K3_HIDDEN];
-static uint16_t beta_logit[ROWS * K3_KDA_HEADS];
-static float write_gate[ROWS * K3_KDA_HEADS];
-static float retention[ROWS * K3_KDA_HEADS * K3_KDA_KEY_DIM];
-static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
-static float layer_router_bias[SLICE_LAYERS][K3_EXPERTS];
-static float route_weight[ROUTES];
-static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES], route_fault;
-static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
-static uint32_t group_tiles_down[K3_EXPERTS + 1u];
-static uint32_t dense_offsets[2], dense_tiles[2];
-static uint16_t ones_weight[K3_HIDDEN];
-static float ones_f32[K3_KDA_VALUE_DIM];
-static uint16_t attn_query_weight[K3_HIDDEN], mlp_query_weight[K3_HIDDEN];
-static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
-static uint16_t head_project_weight[K3_MLA_HEADS * K3_V_HEAD_DIM * K3_KV_LORA_RANK];
-static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
-static uint8_t kda_state[SLICE_KDA * ROWS * K3_KDA_STATE_SLOT_BYTES];
-static uint16_t q_window[SLICE_KDA * ROWS * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
-static uint16_t k_window[SLICE_KDA * ROWS * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
-static uint16_t v_window[SLICE_KDA * ROWS * K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
-static uint8_t kv_pool[SLICE_MLA][KV_POOL_BYTES];
-static uint32_t page_table[SLICE_MLA][ROWS];
+alignas(16) static uint16_t hidden[ROWS * K3_HIDDEN], normed[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t attention_out[ROWS * K3_MLA_LATENT_OUT_DIM];
+alignas(16) static uint16_t shared_out[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t query[ROWS * K3_MLA_Q_DIM], key[ROWS * K3_KDA_QK_DIM];
+alignas(16) static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
+alignas(16) static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
+alignas(16) static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
+alignas(16) static uint16_t fused_qkvb[ROWS * K3_KDA_QKVB_FUSED_ROWS];
+alignas(16) static uint16_t qkvb_weight[K3_HIDDEN], decay_gate_weight[K3_HIDDEN];
+alignas(16) static uint16_t aux_slab[2u * ROWS * K3_HIDDEN];
+alignas(16) static uint16_t aux_reference[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
+alignas(16) static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
+alignas(16) static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
+alignas(16) static uint16_t bank[K3_ATTNRES_MAX_SOURCES * ROWS * K3_HIDDEN];
+alignas(16) static uint16_t partial[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t beta_logit[ROWS * K3_KDA_HEADS];
+alignas(16) static float write_gate[ROWS * K3_KDA_HEADS];
+alignas(16) static float retention[ROWS * K3_KDA_HEADS * K3_KDA_KEY_DIM];
+alignas(16) static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
+alignas(16) static float layer_router_bias[SLICE_LAYERS][K3_EXPERTS];
+alignas(16) static float route_weight[ROUTES];
+alignas(16) static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES], route_fault;
+alignas(16) static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
+alignas(16) static uint32_t group_tiles_down[K3_EXPERTS + 1u];
+alignas(16) static uint32_t dense_offsets[2], dense_tiles[2];
+alignas(16) static uint16_t ones_weight[K3_HIDDEN];
+alignas(16) static uint16_t projection_weight[8];
+alignas(16) static float ones_f32[K3_KDA_VALUE_DIM];
+alignas(16) static uint16_t attn_query_weight[K3_HIDDEN], mlp_query_weight[K3_HIDDEN];
+alignas(16) static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t head_project_weight[K3_MLA_HEADS * K3_V_HEAD_DIM * K3_KV_LORA_RANK];
+alignas(16) static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
+alignas(16) static uint8_t kda_state[SLICE_KDA * ROWS * K3_KDA_STATE_SLOT_BYTES];
+alignas(16) static uint16_t q_window[SLICE_KDA * ROWS * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t k_window[SLICE_KDA * ROWS * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t v_window[SLICE_KDA * ROWS * K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static uint8_t kv_pool[SLICE_MLA][KV_POOL_BYTES];
+alignas(16) static uint32_t page_table[SLICE_MLA][ROWS];
 static LmKvView cache_views[SLICE_MLA];
 static LmKvAccessError cache_errors[SLICE_MLA];
-static uint32_t state_index[ROWS], sequence_of_row[ROWS];
-static uint32_t positions[ROWS], context_length[ROWS];
+alignas(16) static uint32_t state_index[ROWS], sequence_of_row[ROWS];
+alignas(16) static uint32_t positions[ROWS], context_length[ROWS];
 
 static uint32_t seed = 24680u;
 static float NextRandom(void)
@@ -193,6 +194,13 @@ int main(void)
 		w->mla_kv_b_value_weight = head_project_weight;
 		w->attnres_attn_weight = attn_query_weight;
 		w->attnres_mlp_weight = mlp_query_weight;
+		w->kda_decay_up_weight = projection_weight; w->kda_out_weight = projection_weight;
+		w->mla_q_down_weight = projection_weight; w->mla_q_up_weight = projection_weight;
+		w->mla_kv_a_weight = projection_weight; w->mla_gate_weight = projection_weight;
+		w->mla_out_weight = projection_weight; w->router_weight = projection_weight;
+		w->routed_down_weight = projection_weight; w->routed_up_weight = projection_weight;
+		w->shared_w1_weight = projection_weight; w->shared_w2_weight = projection_weight;
+		w->dense_gate_up_weight = projection_weight; w->dense_down_weight = projection_weight;
 	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;

@@ -6,6 +6,7 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/rows_tile.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 struct LmQkvLayout
 {
@@ -18,23 +19,63 @@ struct LmQkvLayout
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale)
+void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale, bool key_is_value = false)
 {
-	uint32_t row = blockIdx.x,index;
-	uint32_t total = layout.query_dimension + layout.key_dimension + layout.value_dimension;
-	uint64_t base = (uint64_t)row * total;
+	const uint32_t row = blockIdx.x;
 	if ( row >= rows )
 		return;
-	for (index = threadIdx.x; index < layout.query_dimension; index += THREADS)
-		query_bf16[((uint64_t)row * layout.query_dimension) + index] = fused_bf16[base + index];
-	for (index = threadIdx.x; index < layout.key_dimension; index += THREADS)
-		key_bf16[((uint64_t)row * layout.key_dimension) + index] =
-			fused_bf16[base + layout.query_dimension + index];
-	for (index = threadIdx.x; index < layout.value_dimension; index += THREADS)
-		value_bf16[((uint64_t)row * layout.value_dimension) + index] =
-			LmFloatToBf16(LmBf16ToFloat(
-				fused_bf16[base + layout.query_dimension + layout.key_dimension + index])
-				* value_scale);
+	const uint32_t total = layout.query_dimension + layout.key_dimension + (key_is_value ? 0u : layout.value_dimension);
+	const uint16_t *src = fused_bf16 + (uint64_t)row * total;
+	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * layout.query_dimension, layout.query_dimension);
+	LmCopySliceBf16<THREADS>(src + layout.query_dimension, key_bf16 + (uint64_t)row * layout.key_dimension, layout.key_dimension);
+	const uint16_t *vsrc = src + layout.query_dimension + (key_is_value ? 0u : layout.key_dimension);
+	uint16_t *vdst = value_bf16 + (uint64_t)row * layout.value_dimension;
+	if ( value_scale == 1.0f )
+	{
+		LmCopySliceBf16<THREADS>(vsrc, vdst, layout.value_dimension);
+		return;
+	}
+	if ( ((layout.value_dimension & 7u) == 0u) && LmIsAligned16(vsrc) && LmIsAligned16(vdst) )
+	{
+		for (uint32_t index = threadIdx.x * 8u; index < layout.value_dimension; index += THREADS * 8u)
+		{
+			float out_f[8];
+			LmLoadBf16x8AsFloat(*(const uint4 *)(vsrc + index), out_f);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] *= value_scale;
+			*(uint4 *)(vdst + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
+	for (uint32_t index = threadIdx.x; index < layout.value_dimension; index += THREADS)
+		vdst[index] = LmFloatToBf16(LmBf16ToFloat(vsrc[index]) * value_scale);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplit2RowsKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *__restrict__ first_bf16, uint16_t *__restrict__ second_bf16, uint32_t rows, uint32_t first_width, uint32_t second_width = 0u)
+{
+	const uint32_t row = blockIdx.x, w2 = second_width != 0u ? second_width : first_width;
+	if ( row >= rows )
+		return;
+	const uint16_t *src = fused_bf16 + (uint64_t)row * (first_width + w2);
+	LmCopySliceBf16<THREADS>(src, first_bf16 + (uint64_t)row * first_width, first_width);
+	LmCopySliceBf16<THREADS>(src + first_width, second_bf16 + (uint64_t)row * w2, w2);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplitQkvbKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
+{
+	const uint32_t row = blockIdx.x;
+	if ( row >= rows )
+		return;
+	const uint16_t *src = qkvb_bf16 + (uint64_t)row * fused_rows;
+	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
 }
 
 template<uint32_t THREADS>
@@ -46,6 +87,21 @@ void LmSplitQueryGateKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *_
 	uint64_t half_base = (uint64_t)row * heads * head_dimension;
 	if ( row >= rows )
 		return;
+	if ( ((head_dimension & 7u) == 0u) && LmIsAligned16(fused_bf16) && LmIsAligned16(query_bf16) && LmIsAligned16(gate_bf16) )
+	{
+		const uint32_t head_vecs = head_dimension >> 3u;
+		const uint32_t total_vecs = heads * head_vecs;
+		for (uint32_t v = threadIdx.x; v < total_vecs; v += THREADS)
+		{
+			head = v / head_vecs;
+			element = (v % head_vecs) << 3u;
+			*(uint4 *)(query_bf16 + half_base + ((uint64_t)v << 3u)) =
+				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + element);
+			*(uint4 *)(gate_bf16 + half_base + ((uint64_t)v << 3u)) =
+				*(const uint4 *)(fused_bf16 + fused_base + ((uint64_t)head * 2u * head_dimension) + head_dimension + element);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < heads * head_dimension; index += THREADS)
 	{
 		head = index / head_dimension;
@@ -174,14 +230,14 @@ void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const u
 }
 
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
-static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream)
 {
 	constexpr uint32_t few = THREADS / LM_ROWS_TILE_N, many = 4u * few;
 	if ( rows <= few )
 		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, few>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, 1u), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 	else
 		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, many>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, (rows + many - 1u) / many), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<

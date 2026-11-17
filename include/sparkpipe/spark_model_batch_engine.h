@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 16u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 17u
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
@@ -19,6 +19,7 @@ extern "C" {
 #define SPARK_MODEL_BATCH_PRIORITY_BACKGROUND 0u
 #define SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE 2u
 #define SPARK_MODEL_BATCH_ENGINE_INTERACTIVE_RESERVE_SEQUENCES 2u
+#define SPARK_MODEL_BATCH_ENGINE_MAX_POLL_DESCRIPTORS (SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT + 1u)
 
 #define SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED 1u
 #define SPARK_MODEL_BATCH_EVENT_TOKEN 2u
@@ -58,6 +59,9 @@ typedef struct SparkModelBatchEvent
 	SparkModelBatchRequestHandle request_handle;
 	uint32_t stale_prefix_recompute_count;
 	uint64_t first_dispatch_ns;
+	uint64_t restore_wait_ns;
+	uint64_t background_wait_ns;
+	uint32_t matched_prompt_token_count;
 	uint32_t logprob_count;
 	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];
 } SparkModelBatchEvent;
@@ -166,6 +170,27 @@ typedef struct SparkModelBatchEngineView
 	SparkModelPipelineClientView pipeline;
 } SparkModelBatchEngineView;
 
+typedef struct SparkModelBatchCacheState
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t prompt_token_count;
+	uint32_t matched_token_count;
+	uint32_t resume_token_count;
+	uint32_t probed_token_count;
+	uint32_t rank_count;
+	uint32_t reported_rank_count;
+	uint32_t failed_rank_count;
+	uint32_t held_token_count;
+	uint32_t resident_token_count;
+	uint32_t saved_token_count;
+	uint32_t state_token_count;
+	uint32_t read_token_count;
+	uint32_t cache_block_token_count;
+	uint32_t cache_checkpoint_token_count;
+	SparkModelServingCacheIdentity identity;
+} SparkModelBatchCacheState;
+
 #define SPARK_MODEL_BATCH_ENGINE_DEFAULT_INFLIGHT_BUDGET_NS UINT64_C(900000000000)
 #define SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS UINT64_C(1000000000)
 #define SPARK_MODEL_BATCH_ENGINE_STREAMED_INFLIGHT_NS_PER_TOKEN UINT64_C(10000000)
@@ -209,6 +234,17 @@ SparkStatus SparkModelBatchEngineGetPollDescriptors(
 SparkStatus SparkModelBatchEngineGetView(
 	const SparkModelBatchEngine *engine,
 	SparkModelBatchEngineView *view);
+SparkStatus SparkModelBatchEngineCacheStateBegin(
+	SparkModelBatchEngine *engine,
+	const uint32_t *prompt_token_ids,
+	uint32_t token_count,
+	const SparkModelServingCacheIdentity *identity,
+	SparkModelBatchCacheState *state);
+SparkStatus SparkModelBatchEngineCacheStatePoll(
+	SparkModelBatchEngine *engine,
+	SparkModelBatchCacheState *state);
+void SparkModelBatchEngineCacheStateEnd(
+	SparkModelBatchEngine *engine);
 SparkStatus SparkModelBatchEngineGetRankStatus(
 	const SparkModelBatchEngine *engine,
 	uint32_t rank_index,

@@ -34,32 +34,19 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-_TOOLS_DIR = str(Path(__file__).resolve().parent)
-if _TOOLS_DIR not in sys.path:
-    sys.path.insert(0, _TOOLS_DIR)
-from spark_pack_common import (  # noqa: E402
-    PackFailure,
-    SafetensorsSource,
-    align_up,
-    sha256_file,
-    write_receipt,
-)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from spark_pack_codecs import (WEIGHT_BF16, WEIGHT_F32, WEIGHT_FP8_E4M3_F32B128,  # noqa: E402,F401
+                               WEIGHT_MXFP4_E2M1_E8M0G32)
+from spark_pack_common import (GLOBAL_LAYER, PackFailure, SafetensorsSource, replaced_output,  # noqa: E402
+                               sha256_file, stream_range, window_chunks, write_receipt, write_sha256_sidecar)
+from spark_pack_wire import STAGEPACK_ENTRY, STAGEPACK_HEADER, region_offsets  # noqa: E402
 
-MAGIC = 0x5036324D  # 'M26P' little endian
+MAGIC = 0x5036324D
 FORMAT_VERSION = 2
-HEADER_BYTES = 120
-ENTRY_BYTES = 56
-PAYLOAD_ALIGNMENT = 256
-GLOBAL_LAYER = 0xFFFFFFFF
-
-WEIGHT_BF16 = 0
-WEIGHT_F32 = 1
-WEIGHT_FP8_E4M3_F32B128 = 4
-WEIGHT_MXFP4_E2M1_E8M0G32 = 9  # mirrors SPARK_STAGEPACK_FORMAT_WEIGHT_MXFP4_E2M1_E8M0G32
-
-HEADER_STRUCT = struct.Struct("<26I2Q")
-ENTRY_STRUCT = struct.Struct("<6I4Q")
-assert HEADER_STRUCT.size == HEADER_BYTES and ENTRY_STRUCT.size == ENTRY_BYTES
+HEADER_STRUCT = STAGEPACK_HEADER
+ENTRY_STRUCT = STAGEPACK_ENTRY
+HEADER_BYTES = HEADER_STRUCT.size
+ENTRY_BYTES = ENTRY_STRUCT.size
 
 FP8_BLOCK = 128
 MXFP4_GROUP = 32
@@ -67,15 +54,11 @@ BF16_BYTES = 2
 F32_BYTES = 4
 CHUNK_BYTES = 512 * 1024
 
-# span modes: how one contiguous output plane is produced from the checkpoint
-SPAN_DENSE = "dense"        # row window of a [rows, cols] tensor, all columns
-SPAN_RECT = "rect"          # row/col window of a [rows, cols] tensor
-SPAN_SCALE_ROWS = "scale"   # row window (optionally col window) of a grid
-SPAN_MX = "mx"              # one expert's packed payload or its scale plane
+SPAN_DENSE = "dense"
+SPAN_RECT = "rect"
+SPAN_SCALE_ROWS = "scale"
+SPAN_MX = "mx"
 
-# kinds 0..5 mirror the shared SparkStagePackCommonTensorKind; the
-# family-local kinds start at 22 (the qwen4_flash convention) so they never
-# collide with the shared GDN/attention block or another family's extension.
 (KIND_EMBEDDING, KIND_FINAL_NORM, KIND_LM_HEAD, KIND_ATTENTION_NORM,
  KIND_MLP_NORM, KIND_MOE_GATE) = range(6)
 KIND_SINK_BIAS = 22
@@ -89,7 +72,7 @@ KIND_O_PROJ = 27
 @dataclass
 class Span:
     mode: str
-    name: str            # payload tensor name (SPAN_MX: the expert's weight)
+    name: str
     dtype: str
     row0: int = 0
     rows: int = 0
@@ -171,8 +154,6 @@ def quant_bytes(rows: int, columns: int, weight_format: int) -> tuple:
 
 
 def block_window(row0: int, rows: int) -> tuple:
-    """Scale-grid row window for a payload row window; fails closed unless
-    the payload window lands on fp8 block boundaries."""
     if row0 % FP8_BLOCK or rows % FP8_BLOCK:
         raise PackFailure(
             f"rows [{row0}, +{rows}) do not land on {FP8_BLOCK}-row blocks")
@@ -180,8 +161,6 @@ def block_window(row0: int, rows: int) -> tuple:
 
 
 def fused_scale_name(fused_weight_name: str) -> str:
-    """The fused qkv scale tensor is named off the module
-    (qkv_proj.weight_scale_inv), not off the weight tensor."""
     if not fused_weight_name.endswith(".weight"):
         raise PackFailure(f"not a weight tensor name: {fused_weight_name}")
     return fused_weight_name[:-len(".weight")] + ".weight_scale_inv"
@@ -228,7 +207,6 @@ def check_source(arm: str, source: SafetensorsSource) -> dict:
         raise PackFailure("source quantization_config.fmt is not e4m3")
     ignored = quant.get("ignored_layers") or []
     for layer in range(g["layers"]):
-        # the release lists module paths without the .weight suffix
         module = f"model.layers.{layer}.self_attn.o_proj"
         if module not in ignored:
             raise PackFailure(f"{module} is not on the fp8 ignore list; the "
@@ -290,10 +268,6 @@ def check_shapes(arm: str, source: SafetensorsSource) -> None:
 
 def build_plan(arm: str, config: dict, tp_degree: int, tp_rank: int,
                layer_window=None) -> list:
-    """Directory records for one rank. layer_window (first, count) restricts
-    the per-layer records to a contiguous window - globals always included -
-    so fleet emission fans out per stage-slice under the queue TTL while the
-    staging files stay content-addressed and merge by union."""
     g = arm_geometry(arm)
     for name, dimension in (("heads", g["heads"]), ("vocab", g["vocab"]),
                             ("experts", g["experts"]),
@@ -414,8 +388,6 @@ def element_bytes(dtype: str) -> int:
 
 
 class SourceReader:
-    """Streams byte ranges out of the checkpoint; shard handles stay open."""
-
     def __init__(self, source: SafetensorsSource) -> None:
         self.source = source
         self.files: dict = {}
@@ -431,40 +403,22 @@ class SourceReader:
         shard, meta, base = self.source.resolve(name)
         return self._file(shard), base, meta
 
+    def copy_window(self, file, base: int, row_bytes: int, row0: int, rows: int, left: int, width: int, label: str,
+                    out) -> None:
+        for chunk in window_chunks(lambda offset, length: os.pread(file.fileno(), length, offset), base, row_bytes,
+                                   row0, rows, left, width, CHUNK_BYTES, f"{label}: window"):
+            out.write(chunk)
+
     def copy_dense(self, span: Span, out) -> None:
         file, base, _ = self._resolve_base(span.name)
         row_bytes = span.full_columns * element_bytes(span.dtype)
-        file.seek(base + span.row0 * row_bytes)
-        remaining = span.rows * row_bytes
-        while remaining > 0:
-            step = min(remaining, CHUNK_BYTES)
-            chunk = file.read(step)
-            if len(chunk) != step:
-                raise PackFailure(f"{span.name}: short dense read")
-            out.write(chunk)
-            remaining -= step
-
-    def copy_window(self, file, base: int, row_bytes: int, row0: int, rows: int,
-                    left: int, width: int, label: str, out) -> None:
-        step_rows = max(1, CHUNK_BYTES // row_bytes)
-        row = 0
-        while row < rows:
-            block = min(step_rows, rows - row)
-            file.seek(base + (row0 + row) * row_bytes)
-            data = file.read(block * row_bytes)
-            if len(data) != block * row_bytes:
-                raise PackFailure(f"{label}: short window read")
-            view = memoryview(data)
-            for index in range(block):
-                start = index * row_bytes + left
-                out.write(view[start:start + width])
-            row += block
+        self.copy_window(file, base, row_bytes, span.row0, span.rows, 0, row_bytes, span.name, out)
 
     def copy_rect(self, span: Span, out) -> None:
         file, base, _ = self._resolve_base(span.name)
         element = element_bytes(span.dtype)
-        self.copy_window(file, base, span.full_columns * element, span.row0, span.rows,
-                         span.col_base * element, span.columns * element, span.name, out)
+        self.copy_window(file, base, span.full_columns * element, span.row0, span.rows, span.col_base * element,
+                         span.columns * element, span.name, out)
 
     def copy_scale(self, span: Span, out) -> None:
         if span.scale_name not in self.source.weight_map:
@@ -472,22 +426,19 @@ class SourceReader:
         file, base, meta = self._resolve_base(span.scale_name)
         grid_columns = meta["shape"][1]
         columns = span.scale_columns or grid_columns
-        element = element_bytes("F32")
         if span.scale_col_base + columns > grid_columns:
             raise PackFailure(f"{span.scale_name}: scale window exceeds the grid")
+        element = element_bytes("F32")
         self.copy_window(file, base, grid_columns * element, span.scale_row0, span.scale_rows,
                          span.scale_col_base * element, columns * element, span.scale_name, out)
 
     def produce(self, span: Span, record: Record, out, payload: bool) -> None:
         if span.mode == SPAN_MX:
             if payload:
-                packed = Span(SPAN_DENSE, span.name, "U8", 0, span.rows,
-                              span.full_columns // 2)
-                self.copy_dense(packed, out)
+                self.copy_dense(Span(SPAN_DENSE, span.name, "U8", 0, span.rows, span.full_columns // 2), out)
             else:
-                scale_span = Span(SPAN_DENSE, span.scale_name, "U8", 0, span.rows,
-                                  span.full_columns // MXFP4_GROUP)
-                self.copy_dense(scale_span, out)
+                self.copy_dense(Span(SPAN_DENSE, span.scale_name, "U8", 0, span.rows,
+                                     span.full_columns // MXFP4_GROUP), out)
             return
         if payload:
             if span.mode == SPAN_DENSE:
@@ -501,16 +452,7 @@ class SourceReader:
             self.copy_scale(span, out)
             return
         if record.scale_bytes:
-            raise PackFailure(f"record {record.name} has scale bytes but span "
-                              f"{span.name} names no scale tensor")
-
-
-def _fsync_path(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+            raise PackFailure(f"record {record.name} has scale bytes but span {span.name} names no scale tensor")
 
 
 def stage_name(record: Record, plane: str) -> str:
@@ -519,7 +461,6 @@ def stage_name(record: Record, plane: str) -> str:
 
 
 def emit_record(reader: SourceReader, record: Record, stage_dir: Path) -> int:
-    """Stage one record's payload/scale files; resume skips exact-size files."""
     staged = 0
     payload_path = stage_dir / stage_name(record, "payload")
     scale_path = stage_dir / stage_name(record, "scale")
@@ -543,12 +484,6 @@ def emit_record(reader: SourceReader, record: Record, stage_dir: Path) -> int:
 
 def header_fields(arm: str, records: list, directory_offset: int,
                   file_bytes: int, tp_degree: int, tp_rank: int):
-    """All 26 u32 slots carry SparkStagePackHeaderCommon semantics (the
-    module's layout proof asserts field-for-field offset equality); the mimo
-    hybrid pattern is irregular so attention_period and the gdn block are
-    zero and the layer kinds bind via the family geometry tables. TP identity
-    is environment-driven and receipt-pinned (the qwen4_flash convention),
-    not a pack header field."""
     g = arm_geometry(arm)
     return (
         MAGIC, FORMAT_VERSION, HEADER_BYTES, ENTRY_BYTES, len(records),
@@ -564,18 +499,8 @@ def header_fields(arm: str, records: list, directory_offset: int,
 
 
 def plan_layout(records: list) -> tuple:
-    """256-aligned (payload, scale) offsets per record plus total file bytes."""
-    layout = []
-    cursor = HEADER_BYTES + ENTRY_BYTES * len(records)
-    for record in records:
-        payload_offset = align_up(cursor, PAYLOAD_ALIGNMENT)
-        cursor = payload_offset + record.payload_bytes
-        scale_offset = 0
-        if record.scale_bytes:
-            scale_offset = cursor
-            cursor += record.scale_bytes
-        layout.append((payload_offset, scale_offset))
-    return layout, cursor
+    return region_offsets(((record.payload_bytes, record.scale_bytes) for record in records),
+                          HEADER_BYTES + ENTRY_BYTES * len(records), align_scales=False)
 
 
 def parse_window(text):
@@ -589,10 +514,6 @@ def parse_window(text):
 
 
 def preflight(source: SafetensorsSource, stage_dir: Path) -> dict:
-    """Emission pre-flight: measure the metadata plane (one stat per source
-    shard - a stalled MDS band shows up here as a slow walk, not as a silent
-    crawl mid-emission) and pin the carving tool's own bytes against the
-    archive ledger so the carve is provenance-clean."""
     import time as _time
     shards = sorted(set(source.weight_map.values()))
     t0 = _time.perf_counter()
@@ -625,10 +546,6 @@ def preflight(source: SafetensorsSource, stage_dir: Path) -> dict:
 
 def emit_file_major(source: SafetensorsSource, records: list, stage_dir: Path,
                     reader: SourceReader) -> int:
-    """Default emission shape: every span grouped by its SOURCE SHARD, one
-    open per shard, spans in file-offset order, bytes appended to the
-    content-addressed staging files. 16 sequential streams replace ~2900
-    per-tensor MDS lookups per rank (the file-major ruling)."""
     from collections import defaultdict
     by_shard = defaultdict(list)
     for record in records:
@@ -641,7 +558,7 @@ def emit_file_major(source: SafetensorsSource, records: list, stage_dir: Path,
                     by_shard[shard].append((record, span, plane))
     done = 0
     outs = {}
-    plane_state = {}  # path -> "skip" | "write"; decided once per plane
+    plane_state = {}
     try:
         for shard in sorted(by_shard):
             items = by_shard[shard]
@@ -652,11 +569,9 @@ def emit_file_major(source: SafetensorsSource, records: list, stage_dir: Path,
                 state = plane_state.get(path)
                 if state is None:
                     if path.exists() and path.stat().st_size == want:
-                        plane_state[path] = "skip"  # complete planes resume
+                        plane_state[path] = "skip"
                         state = "skip"
                     else:
-                        # a PARTIAL plane cannot be resumed across emission
-                        # layouts (span order differs); discard and rewrite
                         if path.exists():
                             path.unlink()
                         plane_state[path] = "write"
@@ -674,7 +589,6 @@ def emit_file_major(source: SafetensorsSource, records: list, stage_dir: Path,
             out.flush()
             os.fsync(out.fileno())
             out.close()
-    # any record that staged nothing in this pass (already complete) counts too
     return done
 
 
@@ -726,53 +640,26 @@ def do_assemble(args) -> int:
     directory_offset = HEADER_BYTES
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = out_path.with_name(out_path.name + ".partial")
-    with open(partial, "wb") as out:
-        out.write(HEADER_STRUCT.pack(*header_fields(
-            args.arm, records, directory_offset, file_bytes, args.tp, args.rank)))
+    with replaced_output(out_path, out_path.with_name(out_path.name + ".partial")) as out:
+        out.write(HEADER_STRUCT.pack(*header_fields(args.arm, records, directory_offset, file_bytes, args.tp,
+                                                    args.rank)))
         for record, (payload_offset, scale_offset) in zip(records, layout):
-            layer = 0xFFFFFFFF if record.layer == GLOBAL_LAYER else record.layer
-            out.write(ENTRY_STRUCT.pack(record.kind, layer, record.weight_format,
-                                        record.rows, record.columns, 0,
-                                        payload_offset, record.payload_bytes,
-                                        scale_offset, record.scale_bytes))
-        for index, (record, (payload_offset, scale_offset)) in enumerate(
-                zip(records, layout)):
-            payload_path = stage_dir / stage_name(record, "payload")
-            if not payload_path.exists() or \
-                    payload_path.stat().st_size != record.payload_bytes:
-                raise PackFailure(f"staged payload missing/wrong size: {payload_path}")
-            out.seek(payload_offset)
-            with open(payload_path, "rb") as f:
-                remaining = record.payload_bytes
-                while remaining > 0:
-                    chunk = f.read(min(remaining, CHUNK_BYTES))
-                    if not chunk:
-                        raise PackFailure(f"short staged payload {payload_path}")
-                    out.write(chunk)
-                    remaining -= len(chunk)
-            if record.scale_bytes:
-                scale_path = stage_dir / stage_name(record, "scale")
-                if not scale_path.exists() or \
-                        scale_path.stat().st_size != record.scale_bytes:
-                    raise PackFailure(f"staged scale missing/wrong size: {scale_path}")
-                out.seek(scale_offset)
-                with open(scale_path, "rb") as f:
-                    remaining = record.scale_bytes
-                    while remaining > 0:
-                        chunk = f.read(min(remaining, CHUNK_BYTES))
-                        if not chunk:
-                            raise PackFailure(f"short staged scale {scale_path}")
-                        out.write(chunk)
-                        remaining -= len(chunk)
+            out.write(ENTRY_STRUCT.pack(record.kind, record.layer, record.weight_format, record.rows, record.columns,
+                                        0, payload_offset, record.payload_bytes, scale_offset, record.scale_bytes))
+        for record, (payload_offset, scale_offset) in zip(records, layout):
+            for plane, offset, size in (("payload", payload_offset, record.payload_bytes),
+                                        ("scale", scale_offset, record.scale_bytes)):
+                if plane == "scale" and not size:
+                    continue
+                staged = stage_dir / stage_name(record, plane)
+                if not staged.exists() or staged.stat().st_size != size:
+                    raise PackFailure(f"staged {plane} missing/wrong size: {staged}")
+                out.seek(offset)
+                with open(staged, "rb") as file:
+                    stream_range(file, 0, size, out, CHUNK_BYTES, f"staged {plane} {staged}")
         if out.tell() != file_bytes:
             raise PackFailure(f"assembled {out.tell()} bytes, planned {file_bytes}")
-        out.flush()
-        os.fsync(out.fileno())
-    os.replace(partial, out_path)
-    digest = sha256_file(out_path)
-    sha_path = out_path.with_name(out_path.name + ".sha256")
-    sha_path.write_text(f"{digest}  {out_path.name}\n", encoding="utf-8")
+    digest = write_sha256_sidecar(out_path)
     receipt = {
         "arm": args.arm,
         "topology": f"tp{args.tp}",
@@ -945,8 +832,6 @@ def do_repair_windows(args) -> int:
 
 
 class _CompareSink:
-    """Streaming verifier sink: every produced chunk is compared in place
-    against the pack file's current position (no plane is ever buffered)."""
 
     def __init__(self, pack, label: str) -> None:
         self.pack = pack
