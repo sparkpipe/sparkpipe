@@ -163,7 +163,9 @@ static const char *const ops_kernel_names[SPARK_OPS_KERNEL_COUNT] =
 	"spark_indexer_score_pooled",
 	"spark_indexer_expand_pools",
 	"spark_indexer_pool_keys",
-	"spark_attention_decode_extra_gather_d512"
+	"spark_attention_decode_extra_gather_d512",
+	"spark_indexer_block_max",
+	"spark_indexer_candidate_mask"
 };
 
 static SparkStatus OpsRefuse(const char *operation, const char *reason)
@@ -1402,6 +1404,47 @@ SparkStatus SparkOpsIndexerTopk(SparkDeviceOps *ops, SparkDeviceQueue *queue, Sp
 	bindings[0] = OpsBind(scores,SPARK_DEVICE_BIND_READ);
 	bindings[1] = OpsBind(selected,SPARK_DEVICE_BIND_WRITE);
 	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_TOPK,params->rows,1u,1u,SPARK_INDEXER_TOPK_THREADS,params,sizeof(*params),bindings,2u));
+}
+
+SparkStatus SparkOpsIndexerBlockMax(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor blocks,
+	const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status;
+	if ( params->rows == 0u || params->score_stride == 0u || params->key_ratio == 0u || params->candidate_block == 0u ||
+		(uint64_t)params->block_stride * params->candidate_block < params->score_stride )
+		return(OpsRefuse("indexer_block_max","rows, a score stride, a key ratio and a block stride whose blocks cover every score"));
+	status = OpsNeed("indexer_block_max","scores",scores,(uint64_t)params->rows * params->score_stride * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_block_max","row_positions",row_positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_block_max","blocks",blocks,(uint64_t)params->rows * params->block_stride * sizeof(float));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(scores,SPARK_DEVICE_BIND_READ);
+	bindings[1] = OpsBind(row_positions,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(blocks,SPARK_DEVICE_BIND_WRITE);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_BLOCK_MAX,params->rows,1u,1u,256u,params,sizeof(*params),bindings,3u));
+}
+
+SparkStatus SparkOpsIndexerCandidateMask(SparkDeviceOps *ops, SparkDeviceQueue *queue, SparkTensor scores, SparkTensor row_positions, SparkTensor candidates,
+	const SparkIndexerParams *params)
+{
+	SparkDeviceBinding bindings[3];
+	SparkStatus status;
+	if ( params->rows == 0u || params->score_stride == 0u || params->key_ratio == 0u || params->candidate_block == 0u || params->topk == 0u )
+		return(OpsRefuse("indexer_candidate_mask","rows, a score stride, a key ratio, a block size and a candidate count"));
+	status = OpsNeed("indexer_candidate_mask","scores",scores,(uint64_t)params->rows * params->score_stride * sizeof(float));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_candidate_mask","row_positions",row_positions,(uint64_t)params->rows * sizeof(uint32_t));
+	if ( status == SPARK_STATUS_OK )
+		status = OpsNeed("indexer_candidate_mask","candidates",candidates,(uint64_t)params->rows * params->topk * sizeof(uint32_t));
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	bindings[0] = OpsBind(scores,SPARK_DEVICE_BIND_READ | SPARK_DEVICE_BIND_WRITE);
+	bindings[1] = OpsBind(row_positions,SPARK_DEVICE_BIND_READ);
+	bindings[2] = OpsBind(candidates,SPARK_DEVICE_BIND_READ);
+	return(OpsLaunch(ops,queue,SPARK_OPS_INDEXER_CANDIDATE_MASK,params->rows,1u,1u,256u,params,sizeof(*params),bindings,3u));
 }
 
 uint64_t SparkOpsAttentionGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t value_dimension, uint32_t gather_keys)

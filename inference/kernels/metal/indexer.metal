@@ -398,3 +398,53 @@ kernel void spark_indexer_pool_keys(constant SparkIndexerParams &p [[buffer(0)]]
 			SparkMathFloatToBf16(carried[combined]);
 	}
 }
+
+kernel void spark_indexer_block_max(constant SparkIndexerParams &p [[buffer(0)]], device const float *scores [[buffer(1)]],
+	device const uint *row_positions [[buffer(2)]], device float *blocks [[buffer(3)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]])
+{
+	if ( row >= p.rows )
+		return;
+	const uint size = max(p.candidate_block, 1u), width = min(SparkIndexerVisible(p, row_positions[row]), p.score_stride);
+	const uint count = (width + size - 1u) / size;
+	device const float *row_scores = scores + (ulong)row * p.score_stride;
+	device float *out = blocks + (ulong)row * p.block_stride;
+	for ( uint block = tid; block < p.block_stride; block += threads )
+	{
+		float best = -INFINITY;
+		if ( block < count )
+		{
+			for ( uint element = block * size; element < width && element < (block + 1u) * size; element++ )
+				best = fmax(best, row_scores[element]);
+			if ( block == count - 1u )
+				best = INFINITY;
+		}
+		out[block] = best;
+	}
+}
+
+kernel void spark_indexer_candidate_mask(constant SparkIndexerParams &p [[buffer(0)]], device float *scores [[buffer(1)]],
+	device const uint *row_positions [[buffer(2)]], device const uint *candidates [[buffer(3)]], uint row [[threadgroup_position_in_grid]],
+	uint tid [[thread_index_in_threadgroup]], uint threads [[threads_per_threadgroup]])
+{
+	if ( row >= p.rows )
+		return;
+	const uint size = max(p.candidate_block, 1u), width = min(SparkIndexerVisible(p, row_positions[row]), p.score_stride);
+	device const uint *list = candidates + (ulong)row * p.topk;
+	device float *row_scores = scores + (ulong)row * p.score_stride;
+	for ( uint element = tid; element < width; element += threads )
+	{
+		const uint block = element / size;
+		uint low = 0u, high = p.topk;
+		while ( low < high )
+		{
+			const uint middle = (low + high) / 2u;
+			if ( list[middle] < block )
+				low = middle + 1u;
+			else
+				high = middle;
+		}
+		if ( low >= p.topk || list[low] != block )
+			row_scores[element] = -INFINITY;
+	}
+}

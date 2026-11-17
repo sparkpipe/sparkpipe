@@ -1596,7 +1596,7 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   by 1/sqrt(32 x 128); the publisher rounds them to BF16 first, which the
   shared selection's FP32 weights do not yet do) and keeps the top 512
   compressed keys of the owner
-  cache with `SparkIndexerSelect`; the layers up to the next index source
+  cache with `SparkIndexerScore` and `SparkIndexerTopk`; the layers up to the next index source
   reuse the selection, as the publisher's shared `topk_idxs` does. A step
   whose rows all see at most 512 compressed keys at a layer attends every
   key exactly as before.
@@ -1607,10 +1607,19 @@ A step with a row whose layer sees more than 512 compressed keys (position
 of the cache's layer in one softmax with the sinks, with the head weights
 as FP32 (`weight_f32`). Its partitions cover each row's positions up to its
 own, so the stage runs it in row blocks that fit the attention records and
-refuses a row whose partitions alone do not fit. A row at position 16,384 or later is refused in
-`Begin`: from there layer 20's 2,048 candidate blocks of 8 mask the later
-index layers' scores, and the candidate blocks are not built. The gate
-prompts are therefore 496 tokens.
+refuses a row whose partitions alone do not fit. The index scores run in
+row blocks that fit the score buffer (its size for 16,384 compressed keys a
+row), each block scored at the frame's longest compressed width. From a row
+past 16,384 compressed keys, layer 20 picks its candidate blocks as CUDA's
+`SparkDsv41FlashCandidateMaskKernel` does: each block of 8 scores is scored
+by its maximum, the block holding the row's newest key always counts as
+largest, and the 2,048 largest blocks stay, ties to the lower block
+(`SparkIndexerCandidateBlocks`: `spark_indexer_block_max` into the exact
+top-k). Layer 20 selects from its own unmasked scores; index layers 24 to
+36 set every score outside the candidate blocks to -inf
+(`SparkIndexerApplyCandidates`, `spark_indexer_candidate_mask`) before their
+top 512. Below that width every block is a candidate and both steps are
+skipped. The gate prompts are 496 tokens.
 
 `tools/dsv41_flash_tp16_pack.py --tp-degree 8` writes the rank packs (about
 38 GB each: the official FP8 bytes with the 32 x 32 UE8M0 block scales
