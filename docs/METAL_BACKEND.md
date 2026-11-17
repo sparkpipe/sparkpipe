@@ -1444,7 +1444,8 @@ every rank holds all 288 experts split by intermediate width. After each
 all-reduce `spark_hc_post_comb` updates the streams, and `spark_stream_mean`
 and the final BF16 norm feed the prenormed head. Each latent layer binds
 its indexer (`index_q`, `index_k`, `index_gate`, `index_head`, `index_norm`,
-`index_norm_bias`, `index_ape`) and every step stores the layer-normed index
+`index_norm_bias` (the LayerNorm widened exactly to f32, as the store kernel
+reads it), `index_ape`) and every step stores the layer-normed index
 keys with their compression gates (`SparkIndexerStoreGatedKeys`) in the
 stage's second KV region, one index layer per latent layer, as HY4 and
 GLM 5.3 Full do. A step whose rows all see at most 2,048 keys attends
