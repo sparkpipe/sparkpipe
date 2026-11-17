@@ -9,7 +9,7 @@ fleet sections (§1.5, §1.8, §1.9, the fleet bullets of §2.1, §3.3) describe
 `tools/fleet_swap.sh` and the COORDINATION.md tier and ring-window rules. Those
 are obsolete, so the sections were removed; `git show
 9b283b6:docs/SCHEDULER_SUBSYSTEM_BOUNDARY.md` has the full text. Fleet
-operations are in the [fleet release runbook](../FLEET_RELEASE_RUNBOOK.md).
+operations are in the [fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 Owner: SCHEDULER subsystem agent · Workspace: `.agents/scheduler` (clone of `unified`)
 Scope: cross-model scheduling machinery. This document inventories what scheduling

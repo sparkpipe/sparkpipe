@@ -103,7 +103,7 @@ collectives get graph-captured with everything else, TP16's launch
 overhead disappears and the bandwidth term (~2 µs/reduce) becomes noise.
 
 **Measured since (2026-09-28).** With CUDA-graph chains and hardware waits
-(the fleet drop-in in [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md)),
+(the fleet drop-in in [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)),
 GLM 5.3 Flash TP16 runs 36 tok/s at B1, 23-24.5 ms/token against a 7.99 ms
 roofline. Collective latency is the dominant cost (lead-dev facts): an
 isolated 8 KiB 16-rank all-reduce through the weightd mesh measures 167 µs
@@ -200,7 +200,7 @@ byte per parameter.
 
 GB10 memory is LPDDR5X at 273 GB/s, the figure
 [GLM5_NEXT_ROOFLINE.md](GLM5_NEXT_ROOFLINE.md) uses; 242-247.5 GB/s was
-measured on the fleet (09-15 record, archived `FLEET_RUNBOOK.md`). The compute
+measured on the fleet (09-15 record, archived `datacenter:operations/archive/FLEET_RUNBOOK.md`). The compute
 rate is not established here. The 08-28 version assumed 50 TFLOPS at FP8
 without a source, and EXO rates a Spark at about 100 FP16 TFLOPS
 ([HARDWARE_TOPOLOGY.md](HARDWARE_TOPOLOGY.md#mac-studio-pool)). The two

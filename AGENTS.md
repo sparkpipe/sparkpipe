@@ -34,10 +34,15 @@
   hub or any node and picks the fastest path; see
   [`docs/FLEET_COPY.md`](docs/FLEET_COPY.md).
 - Fleet host roles (the hub, the build host, the Sparks), releases and
-  operations are in [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
-  Read it before touching a fleet host. Deploy only by publishing a release
+  operations are in the private `sparkpipe/datacenter` repository, in
+  [`operations/FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md);
+  `datacenter:<path>` in any document means that repository. Read the
+  runbook before touching a fleet host. Deploy only by publishing a release
   root; never kill and reload daemons by hand, and never kill anything on
   the hub.
+- Site material (addresses, hosts, routes, switch ports, the facility and
+  the printed enclosure) belongs in the datacenter repository, not here. Its
+  rules and its GitHub token wrapper are in its own `AGENTS.md`.
 - Never write the shared Git configuration (`git config user.name` and the
   like): every worktree shares `.git/config`, so one session's change stamps
   every other session's commits. Set an identity for one command with

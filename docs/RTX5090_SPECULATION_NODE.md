@@ -1,68 +1,12 @@
-# Hub: model APIs, draft farm
+# Hub: drafters and draft farm
 
-The hub (`rtx5090`, x86_64) is the fleet hub and the model API host,
-and holds the draft farm and drafter store. It is not a Spark: it has no
-rank and is not part of the TP collectives. State below was surveyed
-read-only on 2026-09-28 about 09:00 UTC unless another source is named.
-Hub operations (publishing roots, heartbeats) are governed by
-[FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md); speculation design by
+The hub (`rtx5090`, x86_64) hosts the model APIs, the draft farm and the
+drafter store. It is not a Spark: it has no rank and takes no part in the TP
+collectives. Its rules, roles and network are in the datacenter repository
+(`datacenter:operations/HUB.md`); hub operations (publishing roots,
+heartbeats) follow the fleet release runbook
+(`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`); speculation design is in
 [SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md).
-
-## Rules
-
-- SparkPipe owns only its units (`fleet-release`, `sparkpipe-swap`,
-  `sparkpipe-chat`, `sparkpipe-litellm`, `spark-dma-guard-listen`,
-  `sparkpipe-draftd` and the transient `kv-<model>-api` units) and paths (`~/release`,
-  `~/release-staging`, `~/current`, `~/<model>-kv-api`, `~/sparkpipe-chat`,
-  `~/sparkpipe-swap`, `/srv/workspace/sparkpipe`, `~/draft_service`,
-  `/srv/workspace/drafters`). Never kill or restart anything else: the host runs
-  unrelated jobs (FLEET_RELEASE_RUNBOOK.md §1, and AGENTS.md).
-- Review the output of `tools/rtx5090_spec_node.py plan` against the live
-  host before installing any of it (see [Tooling](#tooling)).
-- Do not run `tools/hardware/rtx5090_qualify.cu` on a busy host: it
-  allocates nearly all free GPU memory (rtx5090_qualify.cu:47-49), then runs a 60 s cuBLAS GEMM stress (:139). Rerun only with an idle GPU and
-  the operator's sign-off.
-
-## Roles
-
-| Role | What runs | Source |
-| --- | --- | --- |
-| Fleet hub | user unit `fleet-release.service` (`python3 ~/fleet_release_serve.py`) serves `~/release/<root>/` on `:8802`; nodes write `~/current/<host>.json` heartbeats | FLEET_RELEASE_RUNBOOK.md §1; `systemctl --user`, `ss -ltn` |
-| Model APIs | the swap controller `sparkpipe-swap` (127.0.0.1:8440) runs one model's engine API at a time, as the transient unit `kv-<model>-api` from `~/<model>-kv-api`; the chat layer `sparkpipe-chat` (`127.0.0.1:8433`) and LiteLLM `sparkpipe-litellm` (`:4000`) front it | `deployment/hub/model_swap.json`, [LITELLM_FRONTEND.md](LITELLM_FRONTEND.md), FLEET_RELEASE_RUNBOOK.md §6 |
-| Draft farm | `~/draft_service` (not in this repo): `farm_server.py`, DFT3 protocol in `draft_protocol.py`, measurements in its `README.md`; not running | `ls`, `pgrep` |
-| Drafter store | LV `ubuntu--vg-drafters` (700 GiB ext4) mounted at `/srv/workspace` by fstab: `drafters/`, `.qualification/`, `.staging/` | `lsblk`, `findmnt`, `/etc/fstab` |
-| Other tenants | Ceph MDS and MGR, an NFS server, chess work (`stockfish`) | `ps` |
-
-The API binary must be an x86_64 build of the engines' source commit: the
-release root ships an aarch64 API that cannot run here, so every release
-needs an x86 API build step (lead-dev facts, 2026-09-28).
-`scripts/release_build.sh` does it on the hub in
-`/srv/workspace/sparkpipe/api-build-<sha>`.
-
-`/srv/drafters`, the path the 09-03 setup used, is now an empty directory on
-the root filesystem; the drafter LV moved to `/srv/workspace`.
-
-## Network
-
-| Link | Addresses | Observed |
-| --- | --- | --- |
-| Fleet /30 (10 GbE) | rtx5090 `eno1` 10.10.250.2/30, sparkf `enP7s7` 10.10.250.1 | MTU 9000, 10000 Mb/s on both ends; sparkf connection name `ds4-speculation-link` |
-| Fleet route, hub side | `10.10.100.0/24 via 10.10.250.1 dev eno1 proto static` | `ip route` on rtx5090 |
-| Fleet route, Spark side | 10.10.250.0/30 via sparkf 10.10.100.25, from `sparkpipe-hub-route.service` | active on spark0; lead-dev facts |
-| Site LAN, management | `eno2` 192.168.50.4 (default route, metric 100), Wi-Fi 192.168.50.68 (metric 300), Tailscale 100.123.97.61 | `ip -4 -br addr`, `ip route` |
-
-sparkf NATs the /30 to the fleet (lead-dev facts; sparkf's nftables ruleset
-held 3 masquerade rules). The `rtx5090` host alias resolves to 192.168.50.4 on spark0
-and to 10.10.250.2 on sparkf. The fleet agents do not use this link: they
-fetch releases from `http://100.123.97.61:8802` and copy heartbeats and mesh
-records to `spec@100.123.97.61`, both over Tailscale
-(`tools/fleet_node_agent.sh`, `RELEASE_HTTP` and `HUB`;
-FLEET_RELEASE_RUNBOOK.md §1). Only traffic addressed to 10.10.250.2 takes the
-/30.
-
-Measured round trip (lead-dev, 2026-09-28): busy-polled 64 B UDP between
-sparkf and rtx5090 is 22.6 us p50 / 25.2 us p99; forwarded from other Sparks
-it is about 300 us p50.
 
 ## K3 block drafter (production since 2026-10-17)
 
@@ -263,7 +207,7 @@ endpoint, API unit and heartbeats. Two parts still predate the host:
   client exists.
 
 `deployment/rtx5090_speculation/spark_ssh_failover.example.json` is used by
-[SPARK_MANAGEMENT_FAILOVER.md](SPARK_MANAGEMENT_FAILOVER.md) and is not
+[SPARK_MANAGEMENT_FAILOVER.md](https://github.com/sparkpipe/datacenter/blob/main/operations/SPARK_MANAGEMENT_FAILOVER.md) and is not
 affected.
 
 ## draftd drafters (2026-09-29)

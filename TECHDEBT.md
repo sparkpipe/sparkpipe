@@ -30,7 +30,7 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 ## Dual-rail topology contract
 
 - The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
-  `cisco0` on port 0, [FLEET_FABRIC.md](docs/FLEET_FABRIC.md)); there are no
+  `cisco0` on port 0, [FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)); there are no
   direct pair links. Replace the legacy ring/single-switch/dual-switch topology
   modes with one schema for two all-to-all rails, and generate the four-,
   eight-, and sixteen-Spark profiles and the pinned interface, address and
@@ -1661,13 +1661,13 @@ Of the fleet-hours product in `README.md`, the tree has the terms (`site/terms/`
 
 ## Fleet and queue tooling
 
-Found while verifying [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md)
+Found while verifying [`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)
 and the multidev docs on 2026-09-28. Line numbers are in
 `tools/fleet_node_agent.sh` unless another file is named.
 
 - `sparkpipe-hub-route.service` stays
-  a runtime step, but only `docs/FLEET_RELEASE_RUNBOOK.md` (section 1)
-  describes it: `docs/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
+  a runtime step, but only `datacenter:operations/FLEET_RELEASE_RUNBOOK.md` (section 1)
+  describes it: `datacenter:operations/INCIDENT_RECOVERY_PLAYBOOK.md` does not list it and
   `tools/fleet_post_reboot.sh` does not check the route.
 - `tools/devcycle/lane_assignments.json` and `lane_budget_calc.py` still
   assume 8 developer lanes; the mesh has 4, and the lane records use 0 to 2.

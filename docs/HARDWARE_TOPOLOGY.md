@@ -13,7 +13,7 @@ Each Spark contributes:
 - one 100 Gb/s port on the CRS804 switched all-to-all fabric (rail 1);
 - one 100 Gb/s port on the `cisco0` switched all-to-all fabric (rail 2). The
   direct `rank XOR 1` links are gone since 2026-11-06; rail 2 still reaches
-  the partner, now through the switch ([FLEET_FABRIC.md](FLEET_FABRIC.md));
+  the partner, now through the switch ([FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md));
 - 128 GB unified memory;
 - one 4 TB internal NVMe; and
 - at least one 4 TB external NVMe.
@@ -93,7 +93,7 @@ The busy-polled 64 B UDP round trip is 22.6 µs p50 and 25.2 µs p99 from
 sparkf, and about 300 µs p50 from the other Sparks through sparkf (lead-dev
 measurement, 2026-09-28). Treat this link as its own link class: a design that
 puts the host in every decode step budgets these round trips. Operations on
-the host are in [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
+the host are in [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 ## Mac Studio pool
 

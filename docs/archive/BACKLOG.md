@@ -17,7 +17,7 @@ first (negative code), then level buys ranked by value-per-line.
    lever is a smart-plug power-cycle on ONE host (spark8) as a lottery
    ticket, plus the permanent fastboot fix on first login. Owner: you
    (trigger the plug) + sysadmin agent (landing). See
-   docs/INCIDENT_RECOVERY_PLAYBOOK.md.
+   datacenter:operations/INCIDENT_RECOVERY_PLAYBOOK.md.
 
 ## Top picks (highest value-per-line, cross-agent consensus)
 
