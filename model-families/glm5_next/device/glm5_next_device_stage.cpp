@@ -303,9 +303,9 @@ struct Glm5NextDevice
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_head", kIndexHeads, kHidden, &indexer->head);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm", "bf16", kIndexDim * 2u, &indexer->norm);
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm", "f32", kIndexDim * sizeof(float), &indexer->norm);
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm_bias", "bf16", kIndexDim * 2u, &indexer->norm_bias);
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_norm_bias", "f32", kIndexDim * sizeof(float), &indexer->norm_bias);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_ape", "f32", (uint64_t)kPool * kIndexDim * sizeof(float),
 				&indexer->ape);

@@ -25,7 +25,8 @@ Rank r holds, bf16 unless noted (H hidden, R = 1/TP of a sharded dimension):
                        1536]; mla_uk [heads, 512, 256]; mla_uv [heads, 256,
                        512]; mla_out [H, heads*256]
   MLA indexer          index_q [32*128, 1536], index_k [128, H],
-                       index_norm, index_norm_bias [128], index_head [32, H],
+                       index_norm, index_norm_bias f32 [128] (widened exactly),
+                       index_head [32, H],
                        index_gate [128, H], index_ape f32 [4, 128]
                        (replicated: wq_b, wk, k_norm, weights_proj,
                        index_kpool_compress_gate, index_kpool_compress_ape)
@@ -122,8 +123,8 @@ def pack_kda(source, packs, a, name):
 def pack_indexer(source, packs, i, name):
     packs.replicated(name + "index_q", source.spine_bf16(f"{i}wq_b.weight"), "bf16")
     packs.replicated(name + "index_k", source.spine_bf16(f"{i}wk.weight"), "bf16")
-    packs.replicated(name + "index_norm", source.spine_bf16(f"{i}k_norm.weight").reshape(-1), "bf16")
-    packs.replicated(name + "index_norm_bias", source.spine_bf16(f"{i}k_norm.bias").reshape(-1), "bf16")
+    packs.replicated(name + "index_norm", f32_vector(source, f"{i}k_norm.weight"), "f32")
+    packs.replicated(name + "index_norm_bias", f32_vector(source, f"{i}k_norm.bias"), "f32")
     packs.replicated(name + "index_head", source.spine_bf16(f"{i}weights_proj.weight"), "bf16")
     packs.replicated(name + "index_gate", source.spine_bf16(f"{i}index_kpool_compress_gate"), "bf16")
     packs.replicated(name + "index_ape", source.spine_f32(f"{i}index_kpool_compress_ape"), "f32")
