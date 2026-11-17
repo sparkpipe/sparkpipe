@@ -18,7 +18,7 @@ reason below. Two more were deleted instead of archived (end of this file).
 - COORDINATION.md — the six-session era (2026-08-16): fleet_swap.sh, ring
   windows and port blocks are all obsolete, and its Qwen directive was
   corrupted by the rename in 33c69b6. The root COORDINATION.md is now a
-  pointer to FLEET_RELEASE_RUNBOOK.md.
+  pointer to datacenter:operations/FLEET_RELEASE_RUNBOOK.md.
 
 ## Completed programs (their outcomes are in the tree and PERFORMANCE_STATUS.md)
 - CLEANUP_PROGRAM.md, CODEBASE_CLEANUP_PLAN.md, DRY_CONSOLIDATION_PLAN.md,
@@ -142,11 +142,11 @@ reason below. Two more were deleted instead of archived (end of this file).
   by README and TECHDEBT §Hardware independence and INFERENCE_OS_DESIGN.md.
 
 ## Operational history (incidents, runbooks and handoffs superseded by the
- active INCIDENT_RECOVERY_PLAYBOOK.md and FLEET_RELEASE_RUNBOOK.md)
+ active datacenter:operations/INCIDENT_RECOVERY_PLAYBOOK.md and datacenter:operations/FLEET_RELEASE_RUNBOOK.md)
 - GLM52_B12X_* (2), GLM52_SM121_*, QWEN38_B16_INCIDENT, TP1_RUNBOOK,
   plus everything already in docs/archive predating this index.
-- FLEET_RELEASE.md, FLEET_RUNBOOK.md (2026-09-28) — folded into
-  FLEET_RELEASE_RUNBOOK.md; their hub=sparkf, MESH_LEASE and coredev/mgr2
+- datacenter:operations/archive/FLEET_RELEASE.md, datacenter:operations/archive/FLEET_RUNBOOK.md (2026-09-28) — folded into
+  datacenter:operations/FLEET_RELEASE_RUNBOOK.md; their hub=sparkf, MESH_LEASE and coredev/mgr2
   rules are obsolete.
 - DEPLOY_PROTOCOL_MAP.md (2026-09-28) — the 09-14 as-deployed snapshot.
 - DEPLOY_ROLLOUT.md (2026-09-28) — the coredev/mgr2 rollout; do not run it.
@@ -165,7 +165,7 @@ reason below. Two more were deleted instead of archived (end of this file).
   status; fleet-agent is production now. Its still-required items are in
   TECHDEBT.md.
 - TP16_TAKEOVER_STATUS.md (2026-09-28) — the 2026-09-15 takeover handoff;
-  its ops notes must not be followed; see FLEET_RELEASE_RUNBOOK.md.
+  its ops notes must not be followed; see datacenter:operations/FLEET_RELEASE_RUNBOOK.md.
 - SPARKDEV_HANDOFF_GLM53FLASH.md (2026-09-28) — the PR #1027 handoff; its
   procedures must not be followed.
 - HILLCLIMB_20260920.md (2026-09-28) — the allreduce session log of 09-20 to
@@ -198,7 +198,7 @@ reason below. Two more were deleted instead of archived (end of this file).
   docs/operations/managed-driver-station.md: the 2026-09-24 station layout.
   Its lane table names a MiniMax driver that is gone and lanes, ports and
   a workstation station registry that deployment/lanes.json and
-  FLEET_RELEASE_RUNBOOK.md replace. Do not follow it.
+  datacenter:operations/FLEET_RELEASE_RUNBOOK.md replace. Do not follow it.
 
 ## Deleted, not archived (2026-09-28)
 - STATUS.md (root) — README.md's Documentation section now does its job.

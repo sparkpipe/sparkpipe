@@ -179,7 +179,7 @@ changes to common code. Track implementation evidence in
   coherently there ([parallel driver debugging](docs/PARALLEL_DRIVER_DEBUG.md)),
   and never into the production root. The node agents sync only the roots
   named in their unit, so the hub is not a PR test path; it carries builds of
-  merged main ([fleet release runbook](docs/FLEET_RELEASE_RUNBOOK.md)).
+  merged main ([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md)).
   Record source, artifact (for a hub release, the root `MANIFEST` sha256),
   configuration (including the serving environment) and pack hashes. Receipts
   identify the tested PR/commit and running binaries. Dirty trees,

@@ -1,7 +1,7 @@
 # Superseded Boot-Unblock Proposal
 
 Owner: SYSADMIN. Status: SUPERSEDED by the fleet brickproof policy in
-`docs/INCIDENT_RECOVERY_PLAYBOOK.md`.
+`datacenter:operations/INCIDENT_RECOVERY_PLAYBOOK.md`.
 
 This document preserves the original incident diagnosis. Its proposed Ceph and
 fabric timeout drop-ins must not be deployed. The landed policy instead launches

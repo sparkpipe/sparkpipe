@@ -37,7 +37,7 @@ stop residents, write a hub release or trigger fleet updates. Branch arguments
 from the legacy publishing workflow are rejected. `tools_local/` is ignored by
 Git (`.gitignore:22`) and is not part of the repository. Production releases
 do not promote these archives: `scripts/release_build.sh` builds from source
-([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#4-releasing-firmware-and-the-api)).
+([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#4-releasing-firmware-and-the-api)).
 
 Run the resulting deployment inside admitted queue jobs. Reserve the same lane
 and physical rank map on every participating daemon, unique ports and bounded

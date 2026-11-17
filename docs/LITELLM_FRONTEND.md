@@ -1272,7 +1272,7 @@ Routing table (`model_api` HTTP ports, not residentd control ports):
 | `glm-5.3` and `*` | the chat layer on the hub, `http://127.0.0.1:8433/v1` (LiteLLM runs there too) | smoke receipts above, 2026-10-02 |
 
 Qwen 3.8 27B has no route: all 16 Sparks run the `glm53flash.fp8.tp16` root
-(`docs/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).
+(`datacenter:operations/FLEET_RELEASE_RUNBOOK.md` §2.1, COMPSEC-17 receipt).
 
 ## Start / stop
 
