@@ -1037,6 +1037,13 @@ static SparkStatus OpsAttentionPrefill(SparkDeviceOps *ops, SparkDeviceQueue *qu
 	return(status);
 }
 
+static uint32_t OpsAttentionWindowPartitions(uint32_t longest, uint32_t window)
+{
+	const uint32_t all = (longest + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS;
+	const uint32_t spanned = (uint32_t)(((uint64_t)window + 2u * SPARK_ATTENTION_DECODE_PARTITION_KEYS - 2u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS);
+	return(window != 0u && spanned < all ? spanned : all);
+}
+
 uint64_t SparkOpsAttentionScratchBytes(uint32_t rows, uint32_t heads, uint32_t head_dimension, uint32_t positions)
 {
 	const uint64_t decode = (uint64_t)rows * ((positions + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS);
@@ -1078,7 +1085,9 @@ SparkStatus SparkOpsAttention(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	launch.partition_keys = decode != 0u ? SPARK_ATTENTION_DECODE_PARTITION_KEYS :
 		OpsAttentionFillsDevice(ops,params,host_sequence_of_row) != 0u ? (longest + SPARK_ATTENTION_BLOCK_KEYS - 1u) / SPARK_ATTENTION_BLOCK_KEYS * SPARK_ATTENTION_BLOCK_KEYS :
 		SPARK_ATTENTION_PREFILL_PARTITION_KEYS;
-	launch.partitions = (longest + launch.partition_keys - 1u) / launch.partition_keys;
+	launch.window_partitions = decode != 0u && params->window != 0u ? 1u : 0u;
+	launch.partitions = launch.window_partitions != 0u ? OpsAttentionWindowPartitions(longest,params->window) :
+		(longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.row_offset = 0u;
 	status = OpsNeed("attention","partial",partial,(uint64_t)params->rows * params->heads * launch.partitions * (OpsAttentionValueDimension(params) + 2u) * sizeof(float));
 	if ( status == SPARK_STATUS_OK )
@@ -1148,7 +1157,8 @@ SparkStatus SparkOpsAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue,
 	if ( paged->tree != 0u || extra->tree != 0u )
 		return(OpsRefuse("attention_extra","tree frames take the single-range attention path"));
 	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
-	primary = (longest + launch.partition_keys - 1u) / launch.partition_keys;
+	launch.window_partitions = params->window != 0u ? 1u : 0u;
+	primary = OpsAttentionWindowPartitions(longest,params->window);
 	launch.extra_partitions = (extra_longest + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.partitions = primary + launch.extra_partitions;
 	launch.partition_base = 0u;
@@ -1472,6 +1482,7 @@ SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue
 	launch.row_offset = 0u;
 	launch.partition_base = 0u;
 	launch.extra_partitions = 0u;
+	launch.window_partitions = 0u;
 	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
 	launch.partitions = (params->gather_keys + launch.partition_keys - 1u) / launch.partition_keys;
 	status = OpsNeed("attention_gather","partial",partial,SparkOpsAttentionGatherScratchBytes(params->rows,params->heads,OpsAttentionValueDimension(params),params->gather_keys));
@@ -1512,9 +1523,9 @@ SparkStatus SparkOpsAttentionGather(SparkDeviceOps *ops, SparkDeviceQueue *queue
 		sizeof(launch),bindings,5u));
 }
 
-uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t gather_keys)
+uint64_t SparkOpsAttentionExtraGatherScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t window, uint32_t gather_keys)
 {
-	const uint64_t partitions = (positions + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS +
+	const uint64_t partitions = OpsAttentionWindowPartitions(positions,window) +
 		(gather_keys + SPARK_ATTENTION_DECODE_PARTITION_KEYS - 1u) / SPARK_ATTENTION_DECODE_PARTITION_KEYS;
 	return((uint64_t)rows * heads * partitions * (SPARK_OPS_ATTENTION_WIDE_HEAD_DIM + 2u) * sizeof(float));
 }
@@ -1544,14 +1555,15 @@ SparkStatus SparkOpsAttentionExtraGather(SparkDeviceOps *ops, SparkDeviceQueue *
 	if ( (uint64_t)longest > (uint64_t)params->pages_per_sequence * params->page_slots )
 		return(OpsRefuse("attention_extra_gather","every row's window keys must lie inside its sequence's pages"));
 	launch.partition_keys = SPARK_ATTENTION_DECODE_PARTITION_KEYS;
-	primary = (longest + launch.partition_keys - 1u) / launch.partition_keys;
+	launch.window_partitions = params->window != 0u ? 1u : 0u;
+	primary = OpsAttentionWindowPartitions(longest,params->window);
 	launch.extra_partitions = (params->gather_keys + launch.partition_keys - 1u) / launch.partition_keys;
 	launch.partitions = primary + launch.extra_partitions;
 	launch.partition_base = 0u;
 	launch.row_offset = 0u;
 	launch.tree = 0u;
 	launch.gather_ratio = 1u;
-	status = OpsNeed("attention_extra_gather","partial",partial,SparkOpsAttentionExtraGatherScratchBytes(params->rows,params->heads,longest,params->gather_keys));
+	status = OpsNeed("attention_extra_gather","partial",partial,SparkOpsAttentionExtraGatherScratchBytes(params->rows,params->heads,longest,params->window,params->gather_keys));
 	if ( status == SPARK_STATUS_OK )
 		status = OpsNeed("attention_extra_gather","query",query,OpsRowsBytes(params->rows,params->query_stride,params->heads * params->head_dimension,2u));
 	if ( status == SPARK_STATUS_OK )

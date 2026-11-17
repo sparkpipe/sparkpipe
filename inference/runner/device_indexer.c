@@ -226,9 +226,9 @@ SparkStatus SparkIndexerPoolKeys(SparkDeviceOps *ops, SparkDeviceQueue *queue, S
 	return(SparkOpsIndexerPoolKeys(ops,queue,window,sequences,keys,pooled,&params));
 }
 
-uint64_t SparkIndexerAttentionExtraScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t topk)
+uint64_t SparkIndexerAttentionExtraScratchBytes(uint32_t rows, uint32_t heads, uint32_t positions, uint32_t window, uint32_t topk)
 {
-	return(SparkOpsAttentionExtraGatherScratchBytes(rows,heads,positions,topk));
+	return(SparkOpsAttentionExtraGatherScratchBytes(rows,heads,positions,window,topk));
 }
 
 SparkStatus SparkIndexerAttentionExtra(SparkDeviceOps *ops, SparkDeviceQueue *queue, const SparkOpsPaged *paged, const SparkOpsPaged *extra,

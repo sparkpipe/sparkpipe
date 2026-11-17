@@ -135,8 +135,9 @@ kernel void spark_attention_decode(constant SparkAttentionParams &p [[buffer(0)]
 	const uint kv_head = (p.first_head + head) / p.group, sequence = sequence_of_row[row], length = positions[row] + 1u;
 	const uint visible = GATHER ? length / max(p.gather_ratio, 1u) : length;
 	const uint lowest = GATHER && p.gather_ratio > 1u ? 0u : SparkAttentionFirstKey(p, positions[row]);
-	const uint begin = GATHER ? part * p.partition_keys : max(part * p.partition_keys, lowest);
-	const uint end = GATHER ? min(p.gather_keys, part * p.partition_keys + p.partition_keys) : min(length, part * p.partition_keys + p.partition_keys);
+	const uint key_part = !GATHER && p.window_partitions != 0u ? part + lowest / p.partition_keys : part;
+	const uint begin = GATHER ? part * p.partition_keys : max(key_part * p.partition_keys, lowest);
+	const uint end = GATHER ? min(p.gather_keys, part * p.partition_keys + p.partition_keys) : min(length, key_part * p.partition_keys + p.partition_keys);
 	float q[LANE], acc[VLANE];
 	float local_max = -INFINITY, local_sum = 0.0f;
 	SparkLoadLane<LANE>(query + (ulong)row * p.query_stride + head * D + lane * LANE, q);
@@ -220,7 +221,8 @@ kernel void spark_attention_combine(constant SparkAttentionParams &p [[buffer(0)
 	const uint threads = group_size.x;
 	const uint head = group.x, row = group.y, length = positions[row] + 1u;
 	const uint primary = EXTRA ? p.partitions - p.extra_partitions : p.partitions;
-	const uint used = GATHER ? p.partitions : min(primary, (length + p.partition_keys - 1u) / p.partition_keys);
+	const uint first_part = !GATHER && p.window_partitions != 0u ? SparkAttentionFirstKey(p, positions[row]) / p.partition_keys : 0u;
+	const uint used = GATHER ? p.partitions : min(primary, (length + p.partition_keys - 1u) / p.partition_keys - first_part);
 	const uint extra_used = EXTRA ? min(p.extra_partitions, (extra_positions[row] + 1u + p.partition_keys - 1u) / p.partition_keys) : 0u;
 	device const float *records = partial + ((ulong)row * p.heads + head) * p.partitions * (D + 2u);
 	float total_max = -INFINITY;
