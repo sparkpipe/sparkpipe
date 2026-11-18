@@ -1230,6 +1230,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the shared expert on a side stream during the MoE rounds (2026-11-18, below) | 13,613, 181% | 21,610, 255% | 23,612, 281% |
 | and attention two head groups a pass (2026-11-18, below) | 13,649, 181% | 21,600, 255% | 24,202, 288% |
 | and backup expert copies taking rows off the busiest expert rank (2026-11-18, below) | 14,411, 192% | 23,372, 276% | 25,990, 309% |
+| and a leaner expert loop with the same bits (2026-11-18, below) | 14,370, 191% | 23,773, 281% | 26,343, 313% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1548,3 +1549,40 @@ backup's load stays under the new busiest load, takes the padded pair to 418
 rows on the dump; at about 14 us a padded row a layer that is worth about
 0.6%, under the run-to-run spread, so it is not in the code yet.
 
+A leaner expert loop (2026-11-18). The block-scaled expert kernel
+(`LmCellMxKernel`) issued 506 instructions for each 32 MMAs of a warp's 32-K
+tile: besides the 128 FP32 adds the publisher's arithmetic needs (each
+32-block an MMA from zero, added in FP32), it recomputed the tile's address
+with a run-time division by the segment's tile count, rebuilt shared-memory
+addresses from the shared window each tile, shifted and masked each row
+chunk's scale byte out of its word, and spent about 16 instructions
+expanding each word of FP4 weights. The loop now runs the four pipeline
+stages unrolled, so each stage's slot and each MMA's scale byte are
+constants (the instruction picks the byte from the word, loaded once per
+four tiles), walks the weight cells by a tile stride from one pointer,
+keeps 32-bit shared addresses, and expands a word of FP4 weights with two
+shifts and masks and two byte permutes. 1,432 instructions per 128 MMAs,
+11.2 an MMA against 15.8. The MMAs and the order of the FP32 adds are the
+same, so `tests/cuda/cell_mx_cuda.cu` still finds the publisher's FP4 GEMM
+bits in every output, with and without split copies.
+
+Measured alone on one Spark with routes in the order the route build gives
+them: w13 of an even rank (6,144 routes over 24 experts) 2.66 to 2.52 ms, w2
+1.34 to 1.21 ms; a rank with a hot expert (8,000 routes, 2,400 on one
+expert) 3.73 to 3.20 ms and 1.81 to 1.54 ms. Steps of a few routes an
+expert are bound by reading the weights and do not change.
+
+Two things tried and dropped on the way: passing the scale byte to the MMA
+as a register (the compiler moved it into a uniform register around every
+MMA and spilled), and staging activation rows interleaved four bytes at a
+time so one 128-bit load gives the MMA's operand quad (it removed the
+register moves but the four-byte copies cost more than they saved). A
+register-only probe puts the exact pattern's ceiling at 182 TFLOPS
+(chained accumulators 211); L2 delivers about 1.8 TB/s and DRAM 230 GB/s on
+a Spark, so neither the expert kernel (~0.7 TB/s from L2) nor the dense
+MXFP8 GEMM (~0.9 TB/s) is bandwidth-bound.
+
+Three interleaved runs: 14,370 / 23,773 / 26,343 tok/s against 14,112 /
+23,060 / 26,005 for the backup-copy build in the same session (its figures
+above are an earlier session's); scores identical at 56 deep and 30 fresh
+positions.
