@@ -242,17 +242,20 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 			rows_in.first[source + 1u] = rows_in.first[source] + counts[(size_t)source * RANKS + rank];
 		const uint32_t received_rows = rows_in.first[RANKS], spaces = received_rows != 0u ? received_rows : 1u;
 		uint8_t *received_d = Device(received);
-		uint16_t *xq_d = 0, *packed_d = 0, *final_d = 0;
+		uint8_t *codes_d = 0, *scales_d = 0;
+		uint16_t *packed_d = 0, *final_d = 0;
 		uint32_t *route_d = 0, *packed_row_d = 0;
 		float *weight_d = 0;
-		CUDA(cudaMalloc(&xq_d, (size_t)spaces * HIDDEN * sizeof(uint16_t)));
+		CUDA(cudaMalloc(&codes_d, (size_t)spaces * HIDDEN));
+		CUDA(cudaMalloc(&scales_d, (size_t)spaces * (HIDDEN / 32u)));
 		CUDA(cudaMalloc(&route_d, (size_t)spaces * TOPK * sizeof(uint32_t)));
 		CUDA(cudaMalloc(&weight_d, (size_t)spaces * TOPK * sizeof(float)));
 		if ( received_rows != 0u )
-			D41ExchangeUnpackKernel<RANKS><<<dim3((HIDDEN / 8u + 255u) / 256u, received_rows), 256u>>>(received_d, rows_in, capacity, HIDDEN, TOPK,
-				RECORD_BYTES, xq_d, route_d, weight_d);
+			D41ExchangeUnpackKernel<RANKS><<<dim3((HIDDEN / 16u + 255u) / 256u, received_rows), 256u>>>(received_d, rows_in, capacity, HIDDEN, TOPK,
+				RECORD_BYTES, codes_d, scales_d, route_d, weight_d);
 		CUDA(cudaGetLastError());
-		const std::vector<uint16_t> xq = Host(xq_d, (size_t)received_rows * HIDDEN);
+		const std::vector<uint8_t> unpacked_codes = Host(codes_d, (size_t)received_rows * HIDDEN);
+		const std::vector<uint8_t> unpacked_scales = Host(scales_d, (size_t)received_rows * (HIDDEN / 32u));
 		const std::vector<uint32_t> route = Host(route_d, (size_t)received_rows * TOPK);
 		const std::vector<float> weight = Host(weight_d, (size_t)received_rows * TOPK);
 		uint32_t *global_d = 0;
@@ -287,14 +290,10 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 					REQUIRE(route[q * TOPK + k] == experts[source][(size_t)row * TOPK + k]);
 					REQUIRE(weight[q * TOPK + k] == weights[source][(size_t)row * TOPK + k]);
 				}
-				for ( uint32_t element = 0u; element < HIDDEN; element += 97u )
-				{
-					const uint8_t code = codes[source][(size_t)row * HIDDEN + element], sign = code >> 7u;
-					const uint32_t exponent = (code >> 3u) & 15u, mantissa = code & 7u;
-					const float value = (exponent == 0u ? ldexpf((float)mantissa, -9) : ldexpf(1.0f + (float)mantissa / 8.0f, (int)exponent - 7)) *
-						(sign != 0u ? -1.0f : 1.0f) * ldexpf(1.0f, (int)scales[source][(size_t)row * (HIDDEN / 32u) + element / 32u] - 127);
-					REQUIRE(xq[q * HIDDEN + element] == ToBf16(value));
-				}
+				for ( uint32_t element = 0u; element < HIDDEN; ++element )
+					REQUIRE(unpacked_codes[q * HIDDEN + element] == codes[source][(size_t)row * HIDDEN + element]);
+				for ( uint32_t block = 0u; block < HIDDEN / 32u; ++block )
+					REQUIRE(unpacked_scales[q * (HIDDEN / 32u) + block] == scales[source][(size_t)row * (HIDDEN / 32u) + block]);
 			}
 		REQUIRE(seen == received_rows);
 		std::vector<uint16_t> packed((size_t)spaces * TOPK * HIDDEN);
@@ -332,7 +331,7 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 					finalized_wrong += partial[rank][padded * HIDDEN + element] != expected ? 1u : 0u;
 				}
 			}
-		cudaFree(received_d); cudaFree(xq_d); cudaFree(route_d); cudaFree(weight_d); cudaFree(packed_d); cudaFree(packed_row_d); cudaFree(final_d);
+		cudaFree(received_d); cudaFree(codes_d); cudaFree(scales_d); cudaFree(route_d); cudaFree(weight_d); cudaFree(packed_d); cudaFree(packed_row_d); cudaFree(final_d);
 	}
 	std::vector<std::vector<uint16_t>> summed(RANKS);
 	for ( uint32_t target = 0u; target < RANKS; ++target )

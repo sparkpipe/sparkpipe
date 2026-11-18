@@ -829,8 +829,8 @@ static __device__ __forceinline__ uint4 D41RoundBf16x8(const float *total)
 
 template <uint32_t RANKS>
 static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
-	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_expert,
-	float *__restrict__ route_weight)
+	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ codes, uint8_t *__restrict__ scales,
+	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
 {
 	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
 	const uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x, scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
@@ -840,15 +840,10 @@ static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ recei
 		route_expert[(uint64_t)row * top_k + vector] = ((const uint32_t *)(record + hidden + scale_bytes))[vector];
 		route_weight[(uint64_t)row * top_k + vector] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[vector];
 	}
-	if ( vector * 8u >= hidden )
-		return;
-	const uint2 codes = ((const uint2 *)record)[vector];
-	const float scale = __uint_as_float((uint32_t)record[hidden + vector * 8u / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u);
-	const uint32_t words[2] = { codes.x, codes.y };
-	float values[8];
-	for ( uint32_t i = 0u; i < 8u; ++i )
-		values[i] = LmE4m3ToFloat((uint8_t)(words[i >> 2u] >> (8u * (i & 3u)))) * scale;
-	((uint4 *)(xq + (uint64_t)row * hidden))[vector] = D41RoundBf16x8(values);
+	if ( vector * 16u < hidden )
+		((uint4 *)(codes + (uint64_t)row * hidden))[vector] = ((const uint4 *)record)[vector];
+	if ( vector < scale_bytes )
+		scales[(uint64_t)row * scale_bytes + vector] = record[hidden + vector];
 }
 
 template <uint32_t RANKS>

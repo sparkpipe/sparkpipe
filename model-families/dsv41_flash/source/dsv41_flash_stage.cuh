@@ -1735,7 +1735,10 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-	if ( D41Experts(layer->e_w13_cells, state->xq, gate_up, state, select_rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream) !=
+	if ( (exchanged != 0u ?
+		LmCellMxExperts(layer->e_w13_cells, (const uint8_t *)state->xq, (const uint8_t *)state->xq + (uint64_t)rows * D41_HIDDEN, gate_up,
+			state->group_row_offset, state->route_source_token, D41_LOCAL_EXPERTS, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) :
+		D41Experts(layer->e_w13_cells, state->xq, gate_up, state, select_rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream)) !=
 		LM_LAUNCH_OK ||
 		(D41_ROWS ? shared_rows != 0u && D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq + (uint64_t)shared_first * D41_HIDDEN, state->shared_gate,
 			state->shared_up, shared_rows, D41_HIDDEN, state->shared_width, state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK :
@@ -1999,9 +2002,9 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->exchange_live != 0u )
-		D41ExchangeUnpackKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 8u), state->exchange_live), D41_THREADS, 0, stream>>>(
-			(const uint8_t *)state->moe_received, state->exchange_received, capacity, D41_HIDDEN, D41_TOPK, record_bytes, state->xq, state->route_expert,
-			state->route_weight);
+		D41ExchangeUnpackKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 16u), state->exchange_live), D41_THREADS, 0, stream>>>(
+			(const uint8_t *)state->moe_received, state->exchange_received, capacity, D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)state->xq,
+			(uint8_t *)state->xq + (uint64_t)state->exchange_live * D41_HIDDEN, state->route_expert, state->route_weight);
 	if ( routed != 0u &&
 		(D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->own_x, state->shared_gate, state->shared_up, routed, D41_HIDDEN, state->shared_width,
 			state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK) )

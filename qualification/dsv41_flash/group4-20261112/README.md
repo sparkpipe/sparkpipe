@@ -1225,6 +1225,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and rows re-shuffled to MoE owners by row index (2026-11-18, below) | 12,513, 166% | 19,363, 229% | 21,151, 252% |
 | and the embedding gathered once, looked up locally (2026-11-18, below) | 12,784, 170% | 20,122, 238% | 21,817, 260% |
 | and index scores with each block's key slots found once (2026-11-18, below) | 12,906, 172% | 20,163, 238% | 22,150, 263% |
+| and expert gate and up projections on the publisher's FP4 arithmetic (2026-11-18, below) | 13,377, 178% | 21,090, 249% | 23,308, 277% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1409,3 +1410,28 @@ sequences in a block); offline 1.4 to 1.6 times faster (1,024 rows by 65,536
 keys: 21.9 to 13.4 ms, 25 to 41 TFLOPS). Scores identical at 56 deep and 30
 fresh positions; three interleaved runs each: 12,906 / 20,163 / 22,150 tok/s
 against 12,738 / 19,747 / 21,708 for the previous build in the same session.
+
+Expert gate and up projections on the publisher's FP4 arithmetic
+(2026-11-18). The publisher's `fp4_gemm` (its `inference/kernel.py`) casts
+the FP4 weights to FP8, multiplies each 32-wide K block of FP8 activations in
+one tensor-core MMA from zero, scales the block's result by the activation
+and weight E8M0 scales and adds it into an FP32 total. The down projection
+has done the same on the block-scaled `kind::mxf8f6f4` instruction since 14
+November; the gate and up projections (w13) still widened the codes to BF16
+and chained one BF16 MMA accumulator across K, which rounds differently in
+about 0.05% of outputs. `tests/test_cell_mx_cuda.py` now emulates the
+publisher's GEMM on the device (a plain E4M3 MMA from zero per block, then
+both scales and the add in FP32) and requires the block-scaled kernel's bits:
+0 of 1,029,888 outputs differ, against 475 for the BF16 kernel. The expert
+rank now keeps the exchange's codes and scales as they arrive (5,280 bytes a
+row where the BF16 copy took 10,240) and runs w13 on the block-scaled
+kernel, as w2 already did; steps that do not exchange (decode and short
+steps) are unchanged. Scores move by design, by rounding-level amounts
+carried through 43 layers and the expert routing: at the 56 deep positions
+the truth token's logprob moves 0.038 on average (mean truth NLL 0.3796 to
+0.3808), at the 30 fresh ones 0.088 (0.745 to 0.817, a few positions each
+way); the top token changes at 4 and 3 near-tied positions, and the largest
+moves are in tokens below logprob -9. These scores (runs zn18d1, zn18f1) are
+the reference for later exact changes. Three interleaved runs each: 13,377 /
+21,090 / 23,308 tok/s against 12,790 / 20,000 / 22,154 for the previous
+build; the 40,000-token answer unchanged.

@@ -52,10 +52,55 @@ static uint64_t CellByte(uint32_t neuron, uint32_t k)
 	return half * 128u + (g * 4u + c) * 4u + (k % 8u) / 2u;
 }
 
+static uint8_t E4m3Code(double value)
+{
+	for ( uint32_t code = 0u; code < 256u; code++ )
+		if ( (code & 0x7fu) != 0x7fu && E4m3(code) == value && (value != 0.0 || code == (std::signbit(value) ? 0x80u : 0u)) )
+			return (uint8_t)code;
+	return 0x7fu;
+}
+
+static __global__ void PublisherFp4GemmKernel(const uint8_t *codes, const uint8_t *code_scales, const uint8_t *weight_codes, const uint8_t *weight_scales,
+	const uint32_t *offset, const uint32_t *source, uint32_t input, uint32_t output, uint16_t *out)
+{
+	const uint32_t group = blockIdx.z, lane = threadIdx.x, g = lane / 4u, t = lane % 4u, blocks = input / 32u;
+	const uint32_t first = offset[group] + blockIdx.y * 16u, end = offset[group + 1u], column = blockIdx.x * 8u;
+	float total[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+	if ( first >= end )
+		return;
+	for ( uint32_t block = 0u; block < blocks; block++ )
+	{
+		uint32_t a[4], b[2];
+		float part[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+		for ( uint32_t r = 0u; r < 4u; r++ )
+		{
+			const uint32_t row = first + g + 8u * (r & 1u), k = block * 32u + t * 4u + 16u * (r >> 1u);
+			a[r] = row < end ? *(const uint32_t *)(codes + (uint64_t)(source != 0 ? source[row] : row) * input + k) : 0u;
+		}
+		for ( uint32_t r = 0u; r < 2u; r++ )
+			b[r] = *(const uint32_t *)(weight_codes + ((uint64_t)group * output + column + g) * input + block * 32u + t * 4u + 16u * r);
+		LmMmaE4m3(part, a, b);
+		for ( uint32_t e = 0u; e < 4u; e++ )
+		{
+			const uint32_t row = first + g + 8u * (e >> 1u), neuron = column + t * 2u + (e & 1u);
+			const float scale_a = row < end ? __uint_as_float((uint32_t)code_scales[(uint64_t)(source != 0 ? source[row] : row) * blocks + block] << 23u) : 0.0f;
+			const float scale_b = __uint_as_float((uint32_t)weight_scales[((uint64_t)group * output + neuron) * blocks + block] << 23u);
+			total[e] += part[e] * scale_a * scale_b;
+		}
+	}
+	for ( uint32_t e = 0u; e < 4u; e++ )
+	{
+		const uint32_t row = first + g + 8u * (e >> 1u), neuron = column + t * 2u + (e & 1u);
+		if ( row < end )
+			out[(uint64_t)row * output + neuron] = LmFloatToBf16(total[e]);
+	}
+}
+
 static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t input, uint32_t output, uint32_t packed_input)
 {
 	const uint32_t tiles = input / 32u, cells = output / 16u, packed = tokens * per_token;
-	std::vector<uint8_t> weight((uint64_t)groups * tiles * cells * 272u);
+	std::vector<uint8_t> weight((uint64_t)groups * tiles * cells * 272u), weight_codes((uint64_t)groups * output * input),
+		weight_scales((uint64_t)groups * output * tiles);
 	std::vector<double> dense((uint64_t)groups * output * input);
 	for ( uint32_t group = 0u; group < groups; group++ )
 		for ( uint32_t t = 0u; t < tiles; t++ )
@@ -66,10 +111,12 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 				{
 					const uint32_t scale = 122u + Next() % 9u;
 					base[256u + neuron] = (uint8_t)scale;
+					weight_scales[((uint64_t)group * output + cell * 16u + neuron) * tiles + t] = (uint8_t)scale;
 					for ( uint32_t k = 0u; k < 32u; k++ )
 					{
 						const uint32_t nibble = Next() & 15u;
 						base[CellByte(neuron, k)] |= (uint8_t)(nibble << ((k & 1u) * 4u));
+						weight_codes[((uint64_t)group * output + cell * 16u + neuron) * input + t * 32u + k] = E4m3Code(E2m1(nibble));
 						dense[((uint64_t)group * output + cell * 16u + neuron) * input + t * 32u + k] = E2m1(nibble) * std::ldexp(1.0, (int)scale - 127);
 					}
 				}
@@ -109,8 +156,8 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 		}
 		offset[group + 1u] = at;
 	}
-	uint8_t *d_weight, *d_codes, *d_scales;
-	uint16_t *d_wide, *d_mx, *d_bf;
+	uint8_t *d_weight, *d_codes, *d_scales, *d_weight_codes, *d_weight_scales;
+	uint16_t *d_wide, *d_mx, *d_bf, *d_publisher;
 	uint32_t *d_offset, *d_source;
 	cudaMalloc(&d_weight, weight.size());
 	cudaMalloc(&d_codes, codes.size());
@@ -118,6 +165,11 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaMalloc(&d_wide, wide.size() * 2u);
 	cudaMalloc(&d_mx, (uint64_t)packed * output * 2u);
 	cudaMalloc(&d_bf, (uint64_t)packed * output * 2u);
+	cudaMalloc(&d_publisher, (uint64_t)packed * output * 2u);
+	cudaMalloc(&d_weight_codes, weight_codes.size());
+	cudaMalloc(&d_weight_scales, weight_scales.size());
+	cudaMemcpy(d_weight_codes, weight_codes.data(), weight_codes.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_weight_scales, weight_scales.data(), weight_scales.size(), cudaMemcpyHostToDevice);
 	cudaMalloc(&d_offset, offset.size() * 4u);
 	cudaMalloc(&d_source, source.size() * 4u);
 	cudaMemcpy(d_weight, weight.data(), weight.size(), cudaMemcpyHostToDevice);
@@ -130,15 +182,27 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 		packed_input, input, output, 0);
 	const int32_t bf = LmCellMmaExperts(d_weight, d_wide, d_bf, d_offset, packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input,
 		input, output, LM_SKINNY_CELL_TILE_K, 0);
+	uint32_t longest = 0u;
+	for ( uint32_t group = 0u; group < groups; group++ )
+		longest = offset[group + 1u] - offset[group] > longest ? offset[group + 1u] - offset[group] : longest;
+	PublisherFp4GemmKernel<<<dim3(output / 8u, (longest + 15u) / 16u, groups), 32u>>>(d_codes, d_scales, d_weight_codes, d_weight_scales, d_offset,
+		packed_input != 0u ? (const uint32_t *)0 : d_source, input, output, d_publisher);
 	const cudaError_t error = cudaDeviceSynchronize();
 	if ( mx != LM_LAUNCH_OK || bf != LM_LAUNCH_OK || error != cudaSuccess )
 	{
 		printf("FAIL launch mx=%d bf16=%d cuda=%s\n", mx, bf, cudaGetErrorString(error));
 		return 1;
 	}
-	std::vector<uint16_t> out_mx((uint64_t)packed * output), out_bf((uint64_t)packed * output);
+	std::vector<uint16_t> out_mx((uint64_t)packed * output), out_bf((uint64_t)packed * output), out_publisher((uint64_t)packed * output);
 	cudaMemcpy(out_mx.data(), d_mx, out_mx.size() * 2u, cudaMemcpyDeviceToHost);
 	cudaMemcpy(out_bf.data(), d_bf, out_bf.size() * 2u, cudaMemcpyDeviceToHost);
+	cudaMemcpy(out_publisher.data(), d_publisher, out_publisher.size() * 2u, cudaMemcpyDeviceToHost);
+	uint64_t mx_differ = 0u, bf_differ = 0u;
+	for ( uint64_t index = 0u; index < out_publisher.size(); index++ )
+	{
+		mx_differ += out_mx[index] != out_publisher[index] ? 1u : 0u;
+		bf_differ += out_bf[index] != out_publisher[index] ? 1u : 0u;
+	}
 	double worst_mx = 0.0, worst_bf = 0.0;
 	uint64_t same = 0u;
 	for ( uint32_t row = 0u; row < packed; row++ )
@@ -162,17 +226,22 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 			same += out_mx[(uint64_t)row * output + neuron] == out_bf[(uint64_t)row * output + neuron] ? 1u : 0u;
 		}
 	}
-	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%\n",
-		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size());
+	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%; "
+		"against the publisher's fp4 GEMM (each 32-block an fp8 MMA from zero, scaled, added in FP32) mx differs in %llu, bf16 in %llu of %llu\n",
+		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size(),
+		(unsigned long long)mx_differ, (unsigned long long)bf_differ, (unsigned long long)out_publisher.size());
 	cudaFree(d_weight);
 	cudaFree(d_codes);
 	cudaFree(d_scales);
 	cudaFree(d_wide);
 	cudaFree(d_mx);
 	cudaFree(d_bf);
+	cudaFree(d_publisher);
+	cudaFree(d_weight_codes);
+	cudaFree(d_weight_scales);
 	cudaFree(d_offset);
 	cudaFree(d_source);
-	return worst_mx <= 1.0 && worst_bf <= 1.0 ? 0 : 1;
+	return worst_mx <= 1.0 && worst_bf <= 1.0 && mx_differ == 0u ? 0 : 1;
 }
 
 int main(void)
@@ -187,6 +256,6 @@ int main(void)
 		printf("FAIL cell_mx_cuda: %d of 4 cases\n", failures);
 		return 1;
 	}
-	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel and the BF16 expert kernel stay within one BF16 ulp of fp64 on gathered and packed rows\n");
+	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel gives the publisher's fp4 GEMM bits, and both expert kernels stay within one BF16 ulp of fp64 on gathered and packed rows\n");
 	return 0;
 }

@@ -7,8 +7,9 @@ owner named by the row's index modulo the ranks, so that every MoE owner holds r
 whole step; each owner's per-pair counts (MoE owner by expert rank) must add up to what the MoE
 owners count themselves. Each MoE owner numbers its rows for every rank that holds one of their six
 experts, in row order. A packed row must arrive at each such rank exactly once, with its MXFP8
-codes decoded to the same BF16 values, its expert ids and its weights; a rank unpacks only real
-rows, packed source by source with no padding between them. Its finalize must sum each received
+codes and scales unchanged (the expert rank multiplies them on the block-scaled kernel), its expert
+ids and its weights; a rank unpacks only real rows, packed source by source with no padding between
+them. Its finalize must sum each received
 row's local expert outputs in route order in FP32, round once to BF16 and write the result to the
 row's place in the padded return layout. The MoE owner must sum the ranks' partials in rank order
 in FP32 and round once to BF16 as the reduce-scatter it replaces does, and the row's owner must add
