@@ -1485,3 +1485,13 @@ one and two sequences, 17 to 1,024 rows). Three interleaved runs: 13,649 /
 21,600 / 24,202 tok/s against 13,614 / 21,450 / 23,768 for the previous
 build; the gain is at long contexts, where every row reads its 512 selected
 keys. Scores identical at 56 deep and 30 fresh positions.
+
+Whole caches skip the shard arithmetic (2026-11-18). In rows mode every rank
+holds the whole compressed cache (shard degree one), but each slot lookup
+still ran the shard arithmetic: the owner check, the local position and the
+slot in a page divide by the run-time grain and degree, and the page stride
+is a 64-bit division. With degree one, `LmKvShardSlotRequired` now takes the
+plain page lookup and `SparkKvShardLocalPosition` returns its argument; both
+give the same address and run the same page-table checks. No measurable
+change in the lane (13,682 / 21,435 / 24,143 tok/s with it, three runs);
+scores identical.
