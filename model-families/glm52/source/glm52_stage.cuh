@@ -236,7 +236,7 @@ typedef struct GlmBuffers
 	uint16_t *query_rope_bf16;
 	uint16_t *index_query_bf16;
 	uint16_t *index_key_bf16;
-	uint16_t *index_head_weight_bf16;
+	float *index_head_weight;
 	uint16_t *kv_slot_bf16;
 	uint16_t *attention_latent_bf16;
 	uint16_t *attention_value_bf16;
@@ -489,16 +489,27 @@ static int32_t GlmSkinny(const void *weight, LmScaleTensor scale, const uint16_t
 	return LmSkinnyLaunchRows<Format>(&args, input_dimension / LmSkinnyFormat<Format>::kElements, stream);
 }
 
+static int32_t GlmLinearBf16Into(const uint16_t *activation, const void *weight, uint16_t *output_bf16, float *output_f32, uint32_t rows,
+	uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors,
+	uint32_t row_exact, SparkGpuStream stream)
+{
+	if ( activation == 0 || weight == 0 || (output_bf16 == 0) == (output_f32 == 0) || rows == 0u || input_dimension == 0u || output_dimension == 0u ||
+		multiprocessors == 0u )
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
+		return GlmSkinny<LmBf16Format>(weight, LmScaleTensorNone(), activation, output_bf16, output_f32, rows, input_dimension, output_dimension,
+			output_row_stride, output_column_offset, stream);
+	return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output_bf16, output_f32, rows, input_dimension, output_dimension,
+		output_row_stride, output_column_offset, multiprocessors, stream);
+}
+
 static int32_t GlmLinearBf16(const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows, uint32_t input_dimension,
 	uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset, uint32_t multiprocessors, uint32_t row_exact, SparkGpuStream stream)
 {
-	if ( activation == 0 || weight == 0 || output == 0 || rows == 0u || input_dimension == 0u || output_dimension == 0u || multiprocessors == 0u )
+	if ( output == 0 )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
-	if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
-		return GlmSkinny<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, 0, rows, input_dimension, output_dimension, output_row_stride,
-			output_column_offset, stream);
-	return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, 0, rows, input_dimension, output_dimension,
-		output_row_stride, output_column_offset, multiprocessors, stream);
+	return GlmLinearBf16Into(activation, weight, output, 0, rows, input_dimension, output_dimension, output_row_stride, output_column_offset,
+		multiprocessors, row_exact, stream);
 }
 
 template<class S>
@@ -565,7 +576,8 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 {
 	int32_t status = GlmLinear<S>(b->q_compressed_bf16, b->weights->index_q, b->index_query_bf16, rows, S::kQueryA, S::kIndexQuery, S::kIndexQuery, 0u, sms, b->row_exact, stream);
 	if ( status == LM_LAUNCH_OK )
-		status = GlmLinearBf16(b->normed_bf16, b->weights->index_head, b->index_head_weight_bf16, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms, b->row_exact, stream);
+		status = GlmLinearBf16Into(b->normed_bf16, b->weights->index_head, 0, b->index_head_weight, rows, S::kHidden, S::kIndexHeads, S::kIndexHeads, 0u, sms,
+			b->row_exact, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if constexpr ( S::kRopeTable )
@@ -592,7 +604,7 @@ static int32_t GlmIndexerScore(const GlmBuffers *b, LmKvShardView pages, uint32_
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
 		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
-				b->index_head_weight_bf16 + (uint64_t)first * S::kIndexHeads, pages, b->sequence_of_row + first, b->context_length,
+				b->index_head_weight + (uint64_t)first * S::kIndexHeads, pages, b->sequence_of_row + first, b->context_length,
 				b->row_positions != 0 ? b->row_positions + first : 0, count, score_stride, S::kIndexScale / sqrtf((float)S::kIndexHeads),
 				b->selection_scores, stream) != SPARK_GPU_SUCCESS ||
 			LmTopkExactLaunch<GLM_THREADS>(b->selection_scores, count, score_stride, keep, LM_TOPK_EXACT_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS,
@@ -613,7 +625,7 @@ static int32_t GlmIndexerScoreSelect(const GlmBuffers *b, uint32_t rows, uint32_
 	{
 		const uint32_t count = rows - first < chunk_rows ? rows - first : chunk_rows;
 		if ( LmWeightedSparseScoreLaunch<GlmIndexKv<S>,S::kIndexHeads,S::kIndexDim,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * S::kIndexQuery,
-				b->index_head_weight_bf16 + (uint64_t)first * S::kIndexHeads, b->index_shard, b->sequence_of_row + first, b->context_length,
+				b->index_head_weight + (uint64_t)first * S::kIndexHeads, b->index_shard, b->sequence_of_row + first, b->context_length,
 				b->row_positions + first, count, score_stride, S::kIndexScale / sqrtf((float)S::kIndexHeads), b->selection_scores, stream) != SPARK_GPU_SUCCESS ||
 			LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard, b->selection_scores, score_stride, b->sequence_of_row + first, b->context_length,
 				b->row_positions + first, keep, S::kSelected, count, candidates + (uint64_t)first * keep, b->index_error, stream) != SPARK_GPU_SUCCESS )
@@ -1051,7 +1063,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		uint16_t *query_rope;
 		uint16_t *index_query;
 		uint16_t *index_key;
-		uint16_t *index_head;
+		float *index_head;
 		uint16_t *kv_slot;
 		uint16_t *attention_latent;
 		uint16_t *attention_value;
@@ -1232,7 +1244,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			{ (void **)&state->query_rope, rows * heads * S::kRope * sizeof(uint16_t) },
 			{ (void **)&state->index_query, rows * S::kIndexQuery * sizeof(uint16_t) },
 			{ (void **)&state->index_key, rows * S::kIndexDim * sizeof(uint16_t) },
-			{ (void **)&state->index_head, rows * S::kIndexHeads * sizeof(uint16_t) },
+			{ (void **)&state->index_head, rows * S::kIndexHeads * sizeof(float) },
 			{ (void **)&state->kv_slot, rows * S::kSlot * sizeof(uint16_t) },
 			{ (void **)&state->attention_latent, rows * heads * S::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->attention_value, rows * heads * S::kValue * sizeof(uint16_t) },
@@ -1830,7 +1842,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		b->query_rope_bf16 = state->query_rope;
 		b->index_query_bf16 = state->index_query;
 		b->index_key_bf16 = state->index_key;
-		b->index_head_weight_bf16 = state->index_head;
+		b->index_head_weight = state->index_head;
 		b->kv_slot_bf16 = state->kv_slot;
 		b->attention_latent_bf16 = state->attention_latent;
 		b->attention_value_bf16 = state->attention_value;
