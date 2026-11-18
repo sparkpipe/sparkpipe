@@ -650,14 +650,14 @@ struct D41Device
 		return SparkDeviceLinearWeight(&state->stage, frame.queue, x, x_stride, &w, y, y_stride, frame.t.rows, input, output);
 	}
 
-	static SparkStatus LinearF32(State *state, const Frame &frame, SparkTensor x, SparkTensor w, SparkTensor y, uint32_t output)
+	static SparkStatus LinearF32(State *state, const Frame &frame, SparkTensor x, SparkTensor w, SparkTensor y, uint32_t output, uint32_t output_f32 = 1u)
 	{
 		SparkGemvParams params;
 		memset(&params, 0, sizeof(params));
 		params.rows = frame.t.rows;
 		params.input_dimension = params.input_stride = kHidden;
 		params.output_dimension = params.output_stride = output;
-		params.output_f32 = 1u;
+		params.output_f32 = output_f32;
 		params.projection = state->stage.shape->projection;
 		params.row_exact = state->stage.step_exact;
 		return SparkOpsLinear(state->stage.ops, frame.queue, x, w, y, &params);
@@ -903,12 +903,13 @@ struct D41Device
 		shape.head_dimension = kIndexDim;
 		shape.key_norm = SPARK_INDEXER_NORM_NONE;
 		shape.key_norm_epsilon = kEpsilon;
-		shape.score_scale = 1.0f / sqrtf((float)kIndexWidth);
+		shape.score_scale = 1.0f;
 		shape.topk = kDenseKeys;
 		shape.key_ratio = ratio;
 		shape.query_stride = kIndexWidth;
 		shape.weight_stride = kIndexHeads;
-		shape.weight_f32 = 1u;
+		shape.heads_in_order = 1u;
+		shape.round_bf16 = 1u;
 		shape.key_stride = kIndexDim;
 		return shape;
 	}
@@ -983,7 +984,7 @@ struct D41Device
 				SparkIndexerSelectedBytes(count, kCandidateBlocks));
 			status = SparkIndexerScore(ops, frame.queue, &cache,
 				SparkTensorSlice(state->index_query, (uint64_t)first * kIndexWidth * sizeof(uint16_t), (uint64_t)count * kIndexWidth * sizeof(uint16_t)),
-				SparkTensorSlice(state->index_weights, (uint64_t)first * kIndexHeads * sizeof(float), (uint64_t)count * kIndexHeads * sizeof(float)),
+				SparkTensorSlice(state->index_weights, (uint64_t)first * kIndexHeads * sizeof(uint16_t), (uint64_t)count * kIndexHeads * sizeof(uint16_t)),
 				SparkTensorSlice(frame.t.sequence_of_row, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t)), positions, scores, &shape,
 				count, stride);
 			if ( status == SPARK_STATUS_OK && candidates != 0u && index == kCandidateSource )
@@ -1011,7 +1012,10 @@ struct D41Device
 		if ( status == SPARK_STATUS_OK )
 			status = Qdq(state, frame, state->index_query, state->index_query, kIndexWidth, SPARK_QDQ_FP4_POW2);
 		if ( status == SPARK_STATUS_OK )
-			status = LinearF32(state, frame, state->normed, layer.idx_weights, state->index_weights, kIndexHeads);
+			status = LinearF32(state, frame, state->normed, layer.idx_weights, state->index_weights, kIndexHeads, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkOpsScaleRows(state->stage.ops, frame.queue, state->index_weights, (uint64_t)frame.t.rows * kIndexHeads,
+				(float)(pow((double)kIndexDim, -0.5) * pow((double)kIndexHeads, -0.5)));
 		if ( status == SPARK_STATUS_OK )
 			status = IndexCache(state, D41CacheIndex(index), shape, &cache);
 		if ( status == SPARK_STATUS_OK )

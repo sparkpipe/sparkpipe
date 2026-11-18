@@ -51,6 +51,7 @@ static void IndexerParams(const SparkIndexerShape *shape, const SparkIndexerCach
 	params->weight_stride = shape->weight_shared != 0u ? 0u : shape->weight_stride != 0u ? shape->weight_stride : shape->heads;
 	params->weight_f32 = shape->weight_f32 != 0u ? 1u : 0u;
 	params->heads_in_order = shape->heads_in_order != 0u ? 1u : 0u;
+	params->round_bf16 = shape->round_bf16 != 0u ? 1u : 0u;
 	params->key_stride = shape->key_stride != 0u ? shape->key_stride : shape->head_dimension;
 	params->score_stride = score_stride;
 	params->weight_scale = shape->weight_scale;
@@ -167,8 +168,9 @@ SparkStatus SparkIndexerScore(SparkDeviceOps *ops, SparkDeviceQueue *queue, cons
 	uint32_t rows, uint32_t score_stride)
 {
 	SparkIndexerParams params;
-	if ( IndexerShapeKnown(shape) == 0u || IndexerCacheKnown(cache) == 0u || rows == 0u || score_stride == 0u )
-		return(IndexerRefuse("score","a known index shape, a configured cache, rows and a score stride"));
+	if ( IndexerShapeKnown(shape) == 0u || IndexerCacheKnown(cache) == 0u || rows == 0u || score_stride == 0u ||
+		(shape->round_bf16 != 0u && (shape->heads_in_order == 0u || shape->weight_scale != 0.0f)) )
+		return(IndexerRefuse("score","a known index shape, a configured cache, rows, a score stride and BF16 rounding only on the in-order head sum"));
 	IndexerParams(shape,cache,rows,score_stride,0u,&params);
 	return(SparkOpsIndexerScore(ops,queue,query,head_weight,cache->pool,cache->page_table,sequence_of_row,row_positions,scores,&params));
 }

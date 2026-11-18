@@ -40,6 +40,7 @@ typedef struct SparkIndexerShape
 	uint32_t weight_f32;
 	uint32_t weight_shared;
 	uint32_t heads_in_order;
+	uint32_t round_bf16;
 } SparkIndexerShape;
 
 typedef struct SparkIndexerCache

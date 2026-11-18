@@ -513,7 +513,7 @@ typedef struct SparkIndexerParams
 	uint32_t heads_in_order;
 	uint32_t candidate_block;
 	uint32_t block_stride;
-	uint32_t pad;
+	uint32_t round_bf16;
 	float inverse_frequency[SPARK_KERNEL_ROPE_PAIRS];
 } SparkIndexerParams;
 

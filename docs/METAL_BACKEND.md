@@ -1614,9 +1614,12 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   14, 20, 24, 28, 32, 36) with a row that sees more than 512 compressed keys
   projects the index query (`idx_q_b`, all 32 index heads on every rank, on
   the FP8 query latent; rope at the row's position; the same FP4 rounding)
-  and the head weights (`idx_weights` on the normed input in FP32, scaled
-  by 1/sqrt(32 x 128); the publisher rounds them to BF16 first, which the
-  shared selection's FP32 weights do not yet do) and keeps the top 512
+  and the head weights as the publisher's `Indexer.forward` forms them,
+  `bf16(bf16(idx_weights x) (128^-0.5 32^-0.5))` (a BF16 projection, then
+  `SparkOpsScaleRows`), scores every compressed key as its
+  `(einsum(q, k).relu() * weights).sum(heads)` on BF16 tensors does: each
+  head's dot rounded to BF16, each weighted term rounded, the FP32 sum over
+  heads in order rounded (`heads_in_order` with `round_bf16`), and keeps the top 512
   compressed keys of the owner
   cache with `SparkIndexerScore` and `SparkIndexerTopk`; the layers up to the next index source
   reuse the selection, as the publisher's shared `topk_idxs` does. A step
@@ -1626,8 +1629,7 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
 A step with a row whose layer sees more than 512 compressed keys (position
 512 on the ratio-1 layers, 1,025 on the ratio-2 ones) attends through
 `SparkIndexerAttentionExtra`: the layer's window keys and the selected keys
-of the cache's layer in one softmax with the sinks, with the head weights
-as FP32 (`weight_f32`). The window part launches only the partitions that
+of the cache's layer in one softmax with the sinks. The window part launches only the partitions that
 hold the row's window keys (`window_partitions`), at most two of 128 keys
 however long the row, so the records hold every row; the stage still runs it
 in row blocks that fit them. Layers 0 and 1 attend their window through
