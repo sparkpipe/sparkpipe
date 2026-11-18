@@ -1,0 +1,4 @@
+{"label": "KP1", "kind": "prefill", "offset": 15031, "tokens": 4096, "wall_s": 15.322, "tok_s": 267.3, "cached": 0, "utc": "2026-11-18T10:41:46Z"}
+{"label": "KP1", "kind": "prefill", "offset": 0, "tokens": 262144, "wall_s": 656.842, "tok_s": 399.1, "cached": 0, "utc": "2026-11-18T10:52:43Z"}
+{"label": "KP2", "kind": "prefill", "offset": 15031, "tokens": 4096, "wall_s": 11.618, "tok_s": 352.5, "cached": 0, "utc": "2026-11-18T10:54:41Z"}
+{"label": "KP2", "kind": "prefill", "offset": 170000, "tokens": 262144, "wall_s": 592.147, "tok_s": 442.7, "cached": 0, "utc": "2026-11-18T11:04:33Z"}
