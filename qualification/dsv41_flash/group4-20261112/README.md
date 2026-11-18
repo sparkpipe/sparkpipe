@@ -1659,3 +1659,45 @@ Three interleaved runs: 15,189 / 24,317 / 27,367 tok/s against 14,635 /
 identical at 56 deep and 30 fresh positions. The lane's first prompt pays
 the fill once (an 8K warm-up prefill at about 2,500 tok/s instead of 5,600).
 
+
+Two prefill lanes on two collective bands, measured and not kept
+(2026-11-18). The step's rows were split into two lanes, the second lane's
+rounds went to band 1 of the same mesh lane on its own stream (no turn
+taking), each layer started lane 1 once lane 0 had written its cache rows,
+and each lane had its own planning buffers and shared-expert stream. Three
+interleaved pairs: 13,744 / 23,744 / 26,822 tok/s against 15,054 / 24,730 /
+27,584 for the same build without lanes (-8.7 / -4.0 / -2.8%), scores
+identical at 56 deep and 30 fresh positions. A traced 131K prompt on rank 0
+shows why: the overlap hid 1.04 of 1.84 s of round waits (654 ms left
+exposed against 1,024 without lanes), but the compute union grew from 3.19 to
+3.84 s, because each lane reads every expert's and every projection's
+weights again (about 60 ms a 16K step) and the kernels of the two lanes slow
+each other. Layers 20-39 run only on the final rows, all in lane 1, so the
+tail never overlaps. The patch is kept outside the tree; lanes would pay
+only if both lanes shared one expert pass a layer.
+
+Where a 16K step of the current build goes (rank 0, a 131K prompt, 599 ms a
+step): round waits not under compute 128 ms, experts 111, projections 84,
+attention 55, round copies 50, mHC 36, index scores growing from 3 to 39 ms
+with the context. The MoE return round's first piece waits a median 1.1 ms
+for the slowest rank's experts; every later piece takes the wire time of its
+7.7 MB (about 340 us), so past that wait the rounds run at wire speed and the
+copies hide under the wire. An 8K prompt is one prefill step (483 ms on rank
+0: layers 0-19 299 ms, the tail 184 ms) plus a one-row step for the prompt's
+last token, because the batch engine checkpoints the state at N - 1 tokens.
+The tail, layers 20-39 on the last 2,541 rows, costs 184-213 ms a prompt
+(38% of an 8K prompt, 16% of 32K, 4% of 131K); about 30 ms of it is waiting
+for the rank that holds a hot expert, since layers 20-39 have no backup
+copies.
+
+Tried on one Spark and not kept, all bit-identical: the expert kernel's A
+operand by ldmatrix with the B nibbles regrouped (1,052 instead of 1,478
+instructions per 128 MMAs, no faster: 2.557 -> 2.547 ms), eight route slots
+for every expert call (only a very hot tail expert gains, -8% on w13, +5% on
+w2), and 64-wide K stages (w13 -8.5%, w2 +4.6%, tails +2-4%). Modelled on the
+route dump and not built: experts placed by co-selection (a row touches 4.0
+instead of 5.2 ranks, but the busiest rank rises 1-1.6 ms a layer and the
+modelled MoE cost goes from 36.1 to 36.9 ms over four layers), and the
+publisher's single FP32 sum with every route free to move (busiest rank 6.2
+-> 6.0 ms, but per-route returns and unbalanced pairs raise the modelled
+layer from 10.0 to 11.6 ms).
