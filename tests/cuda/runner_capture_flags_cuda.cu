@@ -64,13 +64,33 @@ static int GraphIdentityRules(void)
 	return 0;
 }
 
+static int GraphSlotRules(void)
+{
+	static uint8_t seen[STAGE_RUNNER_GRAPH_SLOTS];
+	memset(seen, 0, sizeof(seen));
+	for ( uint32_t key = 1u; key <= STAGE_RUNNER_GRAPH_KEYS; ++key )
+		for ( uint32_t rows = 1u; rows <= STAGE_RUNNER_GRAPH_ROWS; ++rows )
+			for ( uint32_t sampled = 0u; sampled < 2u; ++sampled )
+				for ( uint32_t last_rows = 0u; last_rows < 2u; ++last_rows )
+				{
+					const uint32_t slot = StageRunnerGraphSlot(key, rows, sampled, last_rows);
+					if ( slot >= STAGE_RUNNER_GRAPH_SLOTS || seen[slot] != 0u )
+					{
+						printf("FAIL graph key %u rows %u sampled %u last rows %u has no slot of its own (%u)\n", key, rows, sampled, last_rows, slot);
+						return 1;
+					}
+					seen[slot] = 1u;
+				}
+	return 0;
+}
+
 int main(void)
 {
 	SparkStageRunnerState *state = new SparkStageRunnerState;
 	SparkStageRunner runner;
 	SparkStageRunnerStep in;
 	int status = 0;
-	if ( GraphIdentityRules() != 0 )
+	if ( GraphIdentityRules() != 0 || GraphSlotRules() != 0 )
 		return 1;
 	memset(state, 0, sizeof(*state));
 	memset(&runner, 0, sizeof(runner));
@@ -89,6 +109,6 @@ int main(void)
 		return 1;
 	}
 	delete state;
-	printf("PASS runner_capture_flags_cuda: graph replay follows the gather rule and a decode graph that cannot be captured aborts the rank\n");
+	printf("PASS runner_capture_flags_cuda: graph replay follows the gather rule, a prompt's last step and a decode step keep separate graphs, and a decode graph that cannot be captured aborts the rank\n");
 	return 0;
 }

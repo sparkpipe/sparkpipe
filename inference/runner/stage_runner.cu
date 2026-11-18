@@ -28,7 +28,7 @@
 #define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
 #define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
 #define STAGE_RUNNER_GRAPH_KEYS 2u
-#define STAGE_RUNNER_GRAPH_SLOTS (2u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
+#define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
@@ -2193,9 +2193,9 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 	return status;
 }
 
-static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled)
+static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled, uint32_t last_rows)
 {
-	return ((sampled != 0u ? STAGE_RUNNER_GRAPH_KEYS : 0u) + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
+	return (((last_rows != 0u ? 2u : 0u) + (sampled != 0u ? 1u : 0u)) * STAGE_RUNNER_GRAPH_KEYS + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
 }
 
 static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
@@ -2279,7 +2279,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint64_t started = SparkMonotonicNs();
-	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state));
+	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state), in->last_rows_only);
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
@@ -2443,7 +2443,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	if ( in->graph_key != 0u && in->graph_key <= STAGE_RUNNER_GRAPH_KEYS && dispatch != 0 &&
 		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
 	{
-		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state));
+		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
 		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
 		if ( state->graph_exec[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
 			state->graph_token_out[slot] != dispatch->output_token_ids || state->graph_score_out[slot] != dispatch->output_scores ||
