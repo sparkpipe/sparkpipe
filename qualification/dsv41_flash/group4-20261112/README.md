@@ -1242,6 +1242,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the side-stream shared expert yielding SMs, graph slots per kind (2026-11-18, below) | 15,600, 207% | 25,313, 299% | 28,458, 339% |
 | and the owned tail re-split at each indexer layer (2026-11-18, below) | 16,797, 223% | 26,154, 309% | 28,590, 340% |
 | and the staged mHC Sinkhorn partials (2026-11-18, below) | 17,129, 228% | 26,594, 314% | 29,448, 350% |
+| and the spread one-row step's window fold in clusters (2026-11-18, below, level) | 16,857, 224% | 26,931, 318% | 29,115, 346% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1869,3 +1870,24 @@ instead of 0.47, 0.19 at 512 instead of 0.26, and the same 0.08 at 160.
 Three interleaved runs each: 17,129 / 26,594 / 29,448 tok/s against 16,413 /
 26,025 / 28,565, the same generated answer, and scores identical at 56 deep
 and 30 fresh positions.
+
+The one-row window fold runs as an eight-block cluster (2026-11-18). A
+one-row step (a prompt's last token, and every decode step) folds each
+head's 128-key window into its attention record in
+`D41WindowFoldWholeKernel`, which ran one block a head through the keys in
+sequence: 63-76 us a layer, about 3 ms of a 30 ms step, on four blocks
+once the heads are spread over the ranks. In a spread step each head now
+runs as a cluster of eight blocks (`D41WindowFoldClusterKernel`): each block scores sixteen of the keys with the same
+per-key reduction, the blocks read each other's scores from distributed
+shared memory, and each folds its own 64 elements of the latent in key
+order, so every record is the same bits (`tests/test_dsv41_window_fold.cu`,
+whole-window cases from early positions to ring keys, against the
+key-by-key fold). On one Spark the fold of one row and four heads takes 30
+us instead of 63; with all 64 heads of a row the cluster form is slower (218
+us against 69, 3.4 ms against 0.49 for sixteen rows), so steps that are not
+spread keep the one-block-a-head kernel. Three
+interleaved runs each: 16,857 / 26,931 / 29,115 tok/s against 16,993 /
+26,576 / 29,415, level within the gate's spread (a prompt has one one-row
+step), while the gate's decode request (a 200-token prompt and 16 tokens)
+took 2.04 s against 2.08; scores identical at 56 deep and 30 fresh
+positions. Kept because it is exact and shortens every decode step.
