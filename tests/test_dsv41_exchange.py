@@ -4,9 +4,11 @@
 Builds build/test_dsv41_exchange and runs it on an sm_121 device, sixteen ranks simulated on one
 GPU. Each rank numbers its routed rows for every rank that holds one of their six experts, in row
 order; the counts it reports must match. A packed row must arrive at each such rank exactly once,
-with its MXFP8 codes decoded to the same BF16 values, its expert ids and its weights, and padding
-rows up to the shared capacity must carry no routes. The owner must sum the ranks' partials in
-rank order in FP32, round once to BF16 as the reduce-scatter it replaces does, add the shared
+with its MXFP8 codes decoded to the same BF16 values, its expert ids and its weights; a rank
+unpacks only real rows, packed source by source with no padding between them. Its finalize must
+sum each received row's local expert outputs in route order in FP32, round once to BF16 and write
+the result to the row's place in the padded return layout. The owner must sum the ranks' partials
+in rank order in FP32, round once to BF16 as the reduce-scatter it replaces does, add the shared
 expert's BF16 output as the publisher's MoE adds its shared expert, and write zero for rows past
 its live count. Cases cover uneven routing with two hot ranks, a partial last rank and no rows.
 The engram exchange numbers every looked-up engram row by the rank that holds it and the rank

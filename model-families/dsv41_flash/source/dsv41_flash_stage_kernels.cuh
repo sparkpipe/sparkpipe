@@ -791,45 +791,111 @@ static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, 
 	}
 }
 
-static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ received, const uint32_t *__restrict__ counts, uint32_t ranks,
-	uint32_t rank, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint16_t *__restrict__ xq,
-	uint32_t *__restrict__ route_expert, float *__restrict__ route_weight)
+template <uint32_t RANKS>
+struct D41ReceivedRows
 {
-	const uint32_t row = blockIdx.y, source = row / capacity, index = row - source * capacity, element = blockIdx.x * blockDim.x + threadIdx.x;
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK, live = index < counts[(uint64_t)source * ranks + rank] ? 1u : 0u;
-	const uint8_t *record = received + (uint64_t)row * record_bytes;
-	if ( element < top_k )
+	uint32_t first[RANKS + 1u];
+};
+
+template <uint32_t RANKS>
+static __device__ __forceinline__ uint32_t D41ReceivedSource(const D41ReceivedRows<RANKS> &received, uint32_t row)
+{
+	uint32_t source = 0u;
+	while ( source + 1u < RANKS && received.first[source + 1u] <= row )
+		++source;
+	return source;
+}
+
+static __device__ __forceinline__ uint32_t D41PackBf16(float low, float high)
+{
+	return (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+}
+
+static __device__ __forceinline__ void D41AddBf16x8(float *total, uint4 value)
+{
+	const uint32_t words[4] = { value.x, value.y, value.z, value.w };
+	for ( uint32_t i = 0u; i < 4u; ++i )
 	{
-		route_expert[(uint64_t)row * top_k + element] = live != 0u ? ((const uint32_t *)(record + hidden + scale_bytes))[element] : UINT32_MAX;
-		route_weight[(uint64_t)row * top_k + element] =
-			live != 0u ? ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[element] : 0.0f;
+		total[2u * i] += LmBf16ToFloat((uint16_t)(words[i] & 0xffffu));
+		total[2u * i + 1u] += LmBf16ToFloat((uint16_t)(words[i] >> 16u));
 	}
-	if ( live == 0u || element >= hidden )
+}
+
+static __device__ __forceinline__ uint4 D41RoundBf16x8(const float *total)
+{
+	return make_uint4(D41PackBf16(total[0], total[1]), D41PackBf16(total[2], total[3]), D41PackBf16(total[4], total[5]),
+		D41PackBf16(total[6], total[7]));
+}
+
+template <uint32_t RANKS>
+static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
+	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_expert,
+	float *__restrict__ route_weight)
+{
+	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
+	const uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x, scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
+	const uint8_t *record = received_bytes + ((uint64_t)source * capacity + index) * record_bytes;
+	if ( vector < top_k )
+	{
+		route_expert[(uint64_t)row * top_k + vector] = ((const uint32_t *)(record + hidden + scale_bytes))[vector];
+		route_weight[(uint64_t)row * top_k + vector] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[vector];
+	}
+	if ( vector * 8u >= hidden )
 		return;
-	const uint32_t exponent = record[hidden + element / SPARK_DSV41_FLASH_FP8_BLOCK];
-	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(record[element]) * __uint_as_float(exponent << 23u));
+	const uint2 codes = ((const uint2 *)record)[vector];
+	const float scale = __uint_as_float((uint32_t)record[hidden + vector * 8u / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u);
+	const uint32_t words[2] = { codes.x, codes.y };
+	float values[8];
+	for ( uint32_t i = 0u; i < 8u; ++i )
+		values[i] = LmE4m3ToFloat((uint8_t)(words[i >> 2u] >> (8u * (i & 3u)))) * scale;
+	((uint4 *)(xq + (uint64_t)row * hidden))[vector] = D41RoundBf16x8(values);
+}
+
+template <uint32_t RANKS>
+static __global__ void D41ExchangeFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts,
+	uint32_t width, uint16_t *__restrict__ output)
+{
+	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
+	uint4 *out = (uint4 *)(output + ((uint64_t)source * capacity + index) * width);
+	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < width; vector += gridDim.x * blockDim.x )
+	{
+		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+		for ( uint32_t k = 0u; k < top_k; ++k )
+		{
+			const uint32_t route = row * top_k + k;
+			if ( route_expert[route] < local_experts )
+				D41AddBf16x8(total, ((const uint4 *)(packed + (uint64_t)route_packed_row[route] * width))[vector]);
+		}
+		out[vector] = D41RoundBf16x8(total);
+	}
 }
 
 static __global__ void D41ExchangeCombineKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ slot,
 	const uint16_t *__restrict__ shared, uint32_t ranks, uint32_t capacity, uint32_t live, uint32_t hidden, uint16_t *__restrict__ output)
 {
 	const uint32_t row = blockIdx.y;
-	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < hidden; element += gridDim.x * blockDim.x )
+	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < hidden; vector += gridDim.x * blockDim.x )
 	{
-		float total = 0.0f;
+		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 		if ( row >= live )
 		{
-			output[(uint64_t)row * hidden + element] = 0u;
+			((uint4 *)(output + (uint64_t)row * hidden))[vector] = make_uint4(0u, 0u, 0u, 0u);
 			continue;
 		}
 		for ( uint32_t rank = 0u; rank < ranks; ++rank )
 		{
 			const uint32_t at = slot[(uint64_t)row * ranks + rank];
 			if ( at != UINT32_MAX )
-				total += LmBf16ToFloat(landing[((uint64_t)rank * capacity + at) * hidden + element]);
+				D41AddBf16x8(total, ((const uint4 *)(landing + ((uint64_t)rank * capacity + at) * hidden))[vector]);
 		}
-		output[(uint64_t)row * hidden + element] =
-			LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(total)) + LmBf16ToFloat(shared[(uint64_t)row * hidden + element]));
+		const uint4 moe = D41RoundBf16x8(total), extra = ((const uint4 *)(shared + (uint64_t)row * hidden))[vector];
+		const uint32_t moe_words[4] = { moe.x, moe.y, moe.z, moe.w }, extra_words[4] = { extra.x, extra.y, extra.z, extra.w };
+		uint32_t sum[4];
+		for ( uint32_t i = 0u; i < 4u; ++i )
+			sum[i] = D41PackBf16(LmBf16ToFloat((uint16_t)(moe_words[i] & 0xffffu)) + LmBf16ToFloat((uint16_t)(extra_words[i] & 0xffffu)),
+				LmBf16ToFloat((uint16_t)(moe_words[i] >> 16u)) + LmBf16ToFloat((uint16_t)(extra_words[i] >> 16u)));
+		((uint4 *)(output + (uint64_t)row * hidden))[vector] = make_uint4(sum[0], sum[1], sum[2], sum[3]);
 	}
 }
 

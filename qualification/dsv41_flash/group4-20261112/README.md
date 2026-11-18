@@ -1221,6 +1221,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the pipelined rounds' closing marker (2026-11-18, below) | 9,382, 125% | 16,414, 194% | 19,115, 227% |
 | and the tail owned like the rest (2026-11-18) | 11,591, 154% | 17,704, 209% | 19,723, 235% |
 | the marker build in two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
+| and compact exchange rows, four piece-copy blocks an SM (2026-11-18, below) | 11,999, 159% | 18,621, 220% | 20,466, 243% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1270,3 +1271,44 @@ chunk. A stream per lane means two collectives in flight per engine, which
 the rule in force since October forbids
 (`docs/CX7_DMA_INVESTIGATION_2026-10.md`, section 15); lifting it is the
 owner's decision.
+
+Compact exchange rows and wider piece copies (2026-11-18). A CUPTI trace of
+the owned-tail build (rank 0, 32,768-token prompt) put a non-final
+16,384-row step at 741 ms: 290 ms of round kernels with no compute under
+them (MoE return all-to-all 145, MoE send 68, the counts gather 32), experts
+156, dense projections 85 and MoE glue 83. Two exact changes:
+
+- The exchange pads every pair to the busiest pair. An expert rank unpacked,
+  routed and finalized 16 x capacity rows, often three times its real rows.
+  Unpack now writes only real rows, packed source by source; route build,
+  experts and finalize see only those, and finalize writes each row to its
+  place in the padded return. Finalize, unpack and the owner's combine move
+  eight BF16 values a thread. Same sums in the same order.
+- The pipelined piece kernel copied 15 MiB a step with one 128-thread block
+  an SM; it now runs four (`SPARK_TP_MESH_PIECE_RESIDENCY`).
+
+All 11 probe modes and the exchange test pass, and scores are identical at
+56 deep and 30 fresh positions. Same session, the owned-tail build first:
+11,733 / 15,788 / 19,194 tok/s; compact rows alone 12,068 / 18,260 /
+20,303; both 12,116 / 18,623 / 20,555 and 11,882 / 18,619 / 20,376 (the
+table row is the mean of the two).
+
+Why the gain is small: routes dumped from all sixteen ranks for the 8K, 32K
+and 131K prompts show the hottest expert of a layer used by 35% of a step's
+rows on average and by up to 71%. Two costs follow from it.
+
+1. Pair sizes. Each owner's 1,024 contiguous rows lean on a few ranks'
+   experts: the busiest pair averages 821 rows against an average pair of
+   336, and a padded all-to-all moves the busiest pair's size to every peer.
+   Rows interleaved by 16 over the MoE owners bring the busiest pair to 523
+   rows, 35% fewer pieces; that needs no pack change (next).
+2. Expert compute. The busiest rank's experts take about 239 ms a step
+   against 160 ms on average (rank 0's measured 156 ms fits 1.3 us a
+   route-row), and the others wait at the next round. Fixed copies of hot
+   experts do not fix it, because the hot experts change with the document:
+   the corpus's top 16 cut the busiest pair only from 821 to 656 rows, and
+   even the step's own top 8 on every rank leave the busiest rank at 1.36
+   times the average. Two copies of every expert, the copy chosen per step,
+   bring it to the average; that is exact only if owners rebuild each home
+   rank's partial from per-route outputs, and it needs the second copies
+   loaded.
