@@ -2209,14 +2209,14 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 		rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
 }
 
-static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
+static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, uint32_t ignores_gather, SparkStageRunnerStep *identity)
 {
 	memcpy(identity, in, sizeof(*identity));
 	identity->host_positions = 0;
 	identity->host_sequence_of_row = 0;
 	identity->host_slots = 0;
 	identity->host_parent_rows = 0;
-	if ( in->graph_key == 2u )
+	if ( in->graph_key == 2u || ignores_gather != 0u )
 	{
 		identity->gather_context = 0u;
 		identity->gather_sequence = 0u;
@@ -2320,7 +2320,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		abort();
 	}
 	state->graph_exec[slot] = exec;
-	StageRunnerGraphIdentity(in, &state->graph_input[slot]);
+	StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &state->graph_input[slot]);
 	state->graph_token_out[slot] = state->step_dispatch->output_token_ids;
 	state->graph_score_out[slot] = state->step_dispatch->output_scores;
 	state->graph_distribution_count[slot] = state->step_dispatch->distribution_count;
@@ -2444,7 +2444,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
 	{
 		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state));
-		StageRunnerGraphIdentity(in, &identity);
+		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
 		if ( state->graph_exec[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
 			state->graph_token_out[slot] != dispatch->output_token_ids || state->graph_score_out[slot] != dispatch->output_scores ||
 			state->graph_distribution_count[slot] != dispatch->distribution_count) )
