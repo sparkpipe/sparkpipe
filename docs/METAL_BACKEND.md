@@ -1485,7 +1485,10 @@ latent cache's page table (`SparkDeviceStageShape.index_layers`, one layer
 per indexer, `SparkDeviceStageIndexCache`). When a row of the step sees
 more than 2,048 keys the indexer layer also projects 32 index heads of 128
 from the normed query LoRA (`index_q`), ropes them the same way, weights
-each head by `index_head` (BF16, rounded) and `SparkIndexerSelect` scores
+each head by `index_head` in FP32 (`weight_f32`: the BF16 projection's
+FP32 sum, not rounded, as the publisher's `GlmMoeDsaIndexer` and
+`AXK2Indexer` in transformers keep `weights_proj` in FP32 and score in FP32)
+and `SparkIndexerSelect` scores
 `sum_h w_h relu(q_h . k)` times `128^-0.5 32^-0.5` and keeps the top 2,048
 positions, 16 rows at a time. Both run in the selection callback of
 `SparkDeviceLatentAttentionSelected`, after the latent slot is stored and
