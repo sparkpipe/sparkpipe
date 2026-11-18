@@ -36,10 +36,18 @@ typedef struct LmCellMmaSegments
 {
 	const uint8_t *weight[LM_CELL_MMA_MAX_SEGMENTS];
 	uint64_t group_bytes;
+	uint64_t upper_offset;
 	uint32_t tiles;
 	uint32_t column_cells;
+	uint32_t split;
 }
 LmCellMmaSegments;
+
+static __host__ __device__ __forceinline__ uint64_t LmCellMmaGroupOffset(const LmCellMmaSegments &segments, uint32_t group)
+{
+	return(segments.split != 0u && group >= segments.split ? segments.upper_offset + (uint64_t)(group - segments.split) * segments.group_bytes :
+		(uint64_t)group * segments.group_bytes);
+}
 
 typedef struct LmCellMmaStride
 {
@@ -293,7 +301,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	const uint32_t segment_cells = segments.column_cells != 0u ? segments.column_cells : args.cells;
 	const uint32_t column_segment = block_first / segment_cells;
 	const uint64_t tile_stride = (uint64_t)segment_cells * LM_CELL_MMA_CELL_BYTES;
-	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
+	const uint64_t cells_offset = LmCellMmaGroupOffset(segments, group) + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
 	uint32_t first, end, last;
 	float global = 1.0f;
 	LmDependentWait();
@@ -393,6 +401,24 @@ static int32_t LmCellMmaExpertsColumns(const void *const *weight, uint32_t segme
 static int32_t LmCellMmaExperts(const void *weight, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
 {
 	return(LmCellMmaExpertsSegmented(&weight,1u,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,activation_packed,input_dimension,output_dimension,tile_k,stream));
+}
+
+static int32_t LmCellMmaExpertsSplit(const void *weight, const void *upper, uint32_t split, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k, cudaStream_t stream)
+{
+	LmSkinnyCellArguments args;
+	LmCellMmaSegments segments;
+	const LmCellMmaStride stride = {};
+	int32_t status = LmCellMmaLaunchSegments(args,segments,&weight,1u,activation,output_bf16,group_row_offset,route_source_token,groups,packed_rows,activation_packed,
+		input_dimension,output_dimension,tile_k);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	if ( upper != 0 && (LmSkinnyAligned(upper) == 0u || split == 0u || split >= groups) )
+		return(LM_LAUNCH_ERR_SHAPE);
+	segments.tiles = args.k_tiles;
+	segments.group_bytes = (uint64_t)segments.tiles * args.cells * LM_CELL_MMA_CELL_BYTES;
+	segments.split = upper != 0 ? split : 0u;
+	segments.upper_offset = upper != 0 ? (uint64_t)((uintptr_t)upper - (uintptr_t)weight) : 0u;
+	return(LmCellMmaLaunchKernel<0u,4u>(args,segments,stride,stream));
 }
 
 template<class Format>

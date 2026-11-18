@@ -130,15 +130,31 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 		packed_input, input, output, 0);
 	const int32_t bf = LmCellMmaExperts(d_weight, d_wide, d_bf, d_offset, packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input,
 		input, output, LM_SKINNY_CELL_TILE_K, 0);
+	const uint32_t split = groups / 2u;
+	const uint64_t lower_bytes = weight.size() / groups * split;
+	uint8_t *d_upper = 0;
+	uint16_t *d_split_mx = 0, *d_split_bf = 0;
+	cudaMalloc(&d_upper, weight.size() - lower_bytes + 4096u);
+	cudaMalloc(&d_split_mx, (uint64_t)packed * output * 2u);
+	cudaMalloc(&d_split_bf, (uint64_t)packed * output * 2u);
+	cudaMemcpy(d_upper, weight.data() + lower_bytes, weight.size() - lower_bytes, cudaMemcpyHostToDevice);
+	const int32_t split_mx = LmCellMxExpertsSplit(d_weight, d_upper, split, d_codes, d_scales, d_split_mx, d_offset,
+		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, 0);
+	const int32_t split_bf = LmCellMmaExpertsSplit(d_weight, d_upper, split, d_wide, d_split_bf, d_offset, packed_input != 0u ? (const uint32_t *)0 : d_source,
+		groups, packed, packed_input, input, output, LM_SKINNY_CELL_TILE_K, 0);
 	const cudaError_t error = cudaDeviceSynchronize();
-	if ( mx != LM_LAUNCH_OK || bf != LM_LAUNCH_OK || error != cudaSuccess )
+	if ( mx != LM_LAUNCH_OK || bf != LM_LAUNCH_OK || split_mx != LM_LAUNCH_OK || split_bf != LM_LAUNCH_OK || error != cudaSuccess )
 	{
-		printf("FAIL launch mx=%d bf16=%d cuda=%s\n", mx, bf, cudaGetErrorString(error));
+		printf("FAIL launch mx=%d bf16=%d split mx=%d split bf16=%d cuda=%s\n", mx, bf, split_mx, split_bf, cudaGetErrorString(error));
 		return 1;
 	}
 	std::vector<uint16_t> out_mx((uint64_t)packed * output), out_bf((uint64_t)packed * output);
+	std::vector<uint16_t> out_split_mx((uint64_t)packed * output), out_split_bf((uint64_t)packed * output);
 	cudaMemcpy(out_mx.data(), d_mx, out_mx.size() * 2u, cudaMemcpyDeviceToHost);
 	cudaMemcpy(out_bf.data(), d_bf, out_bf.size() * 2u, cudaMemcpyDeviceToHost);
+	cudaMemcpy(out_split_mx.data(), d_split_mx, out_split_mx.size() * 2u, cudaMemcpyDeviceToHost);
+	cudaMemcpy(out_split_bf.data(), d_split_bf, out_split_bf.size() * 2u, cudaMemcpyDeviceToHost);
+	const uint32_t split_same = out_split_mx == out_mx && out_split_bf == out_bf ? 1u : 0u;
 	double worst_mx = 0.0, worst_bf = 0.0;
 	uint64_t same = 0u;
 	for ( uint32_t row = 0u; row < packed; row++ )
@@ -162,8 +178,12 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 			same += out_mx[(uint64_t)row * output + neuron] == out_bf[(uint64_t)row * output + neuron] ? 1u : 0u;
 		}
 	}
-	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%\n",
-		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size());
+	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%, "
+		"cells split at group %u %s\n", packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf,
+		100.0 * (double)same / (double)out_mx.size(), split, split_same != 0u ? "give the same bits" : "DIFFER");
+	cudaFree(d_upper);
+	cudaFree(d_split_mx);
+	cudaFree(d_split_bf);
 	cudaFree(d_weight);
 	cudaFree(d_codes);
 	cudaFree(d_scales);
@@ -172,7 +192,7 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaFree(d_bf);
 	cudaFree(d_offset);
 	cudaFree(d_source);
-	return worst_mx <= 1.0 && worst_bf <= 1.0 ? 0 : 1;
+	return worst_mx <= 1.0 && worst_bf <= 1.0 && split_same != 0u ? 0 : 1;
 }
 
 int main(void)
@@ -187,6 +207,7 @@ int main(void)
 		printf("FAIL cell_mx_cuda: %d of 4 cases\n", failures);
 		return 1;
 	}
-	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel and the BF16 expert kernel stay within one BF16 ulp of fp64 on gathered and packed rows\n");
+	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel and the BF16 expert kernel stay within one BF16 ulp of fp64 on gathered and packed rows, "
+		"and give the same bits when the upper half of the groups' cells sits in a separate allocation\n");
 	return 0;
 }

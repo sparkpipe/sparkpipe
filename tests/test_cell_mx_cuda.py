@@ -1,4 +1,4 @@
-"""Run the fp8-by-fp4 block-scaled expert kernel and the BF16 expert kernel on MXFP4 cells against an fp64 reference, with gathered and packed rows, on an sm_121 device."""
+"""Run the fp8-by-fp4 block-scaled expert kernel and the BF16 expert kernel on MXFP4 cells against an fp64 reference, with gathered and packed rows, on an sm_121 device; with the upper half of the groups' cells in a separate allocation, both must give the same bits."""
 import os
 import pathlib
 import shutil

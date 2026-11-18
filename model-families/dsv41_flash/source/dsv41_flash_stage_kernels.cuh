@@ -708,52 +708,6 @@ static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, 
 	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(block[(uint64_t)index * hidden + element]) * __uint_as_float(exponent << 23u));
 }
 
-template <uint32_t RANKS>
-static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t top_k, const uint8_t *__restrict__ owner,
-	uint32_t *__restrict__ slot, uint32_t *__restrict__ count)
-{
-	__shared__ uint32_t totals[32][RANKS];
-	__shared__ uint32_t base[RANKS];
-	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u;
-	if ( threadIdx.x < RANKS )
-		base[threadIdx.x] = 0u;
-	__syncthreads();
-	for ( uint32_t chunk = 0u; chunk < rows; chunk += blockDim.x )
-	{
-		const uint32_t row = chunk + threadIdx.x;
-		uint32_t mask = 0u, before[RANKS];
-		if ( row < rows )
-			for ( uint32_t k = 0u; k < top_k; ++k )
-				mask |= 1u << owner[route_expert[(uint64_t)row * top_k + k]];
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-		{
-			const uint32_t vote = __ballot_sync(0xffffffffu, (mask >> rank) & 1u);
-			before[rank] = __popc(vote & ((1u << lane) - 1u));
-			if ( lane == 0u )
-				totals[warp][rank] = __popc(vote);
-		}
-		__syncthreads();
-		if ( threadIdx.x < RANKS )
-		{
-			uint32_t running = base[threadIdx.x];
-			for ( uint32_t w = 0u; w < warps; ++w )
-			{
-				const uint32_t here = totals[w][threadIdx.x];
-				totals[w][threadIdx.x] = running;
-				running += here;
-			}
-			base[threadIdx.x] = running;
-		}
-		__syncthreads();
-		if ( row < rows )
-			for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-				slot[(uint64_t)row * RANKS + rank] = ((mask >> rank) & 1u) != 0u ? totals[warp][rank] + before[rank] : UINT32_MAX;
-		__syncthreads();
-	}
-	if ( threadIdx.x < RANKS )
-		count[threadIdx.x] = base[threadIdx.x];
-}
-
 static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
 	uint32_t routes, const uint8_t *__restrict__ owner, const uint8_t *__restrict__ slot, uint32_t rank, uint32_t local_experts, uint32_t experts)
 {
@@ -768,26 +722,6 @@ static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, 
 	{
 		route_expert[route] = local_experts;
 		route_weight[route] = 0.0f;
-	}
-}
-
-static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint32_t *__restrict__ slot, uint32_t ranks,
-	uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ send)
-{
-	const uint32_t row = blockIdx.x, rank = blockIdx.y, at = slot[(uint64_t)row * ranks + rank];
-	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	if ( at == UINT32_MAX )
-		return;
-	uint8_t *record = send + ((uint64_t)rank * capacity + at) * record_bytes;
-	for ( uint32_t i = threadIdx.x; i < hidden / 16u; i += blockDim.x )
-		((uint4 *)record)[i] = ((const uint4 *)(codes + (uint64_t)row * hidden))[i];
-	for ( uint32_t i = threadIdx.x; i < scale_bytes; i += blockDim.x )
-		record[hidden + i] = scales[(uint64_t)row * scale_bytes + i];
-	for ( uint32_t k = threadIdx.x; k < top_k; k += blockDim.x )
-	{
-		((uint32_t *)(record + hidden + scale_bytes))[k] = route_expert[(uint64_t)row * top_k + k];
-		((float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[k] = route_weight[(uint64_t)row * top_k + k];
 	}
 }
 
@@ -828,30 +762,6 @@ static __device__ __forceinline__ uint4 D41RoundBf16x8(const float *total)
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
-	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_expert,
-	float *__restrict__ route_weight)
-{
-	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
-	const uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x, scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
-	const uint8_t *record = received_bytes + ((uint64_t)source * capacity + index) * record_bytes;
-	if ( vector < top_k )
-	{
-		route_expert[(uint64_t)row * top_k + vector] = ((const uint32_t *)(record + hidden + scale_bytes))[vector];
-		route_weight[(uint64_t)row * top_k + vector] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[vector];
-	}
-	if ( vector * 8u >= hidden )
-		return;
-	const uint2 codes = ((const uint2 *)record)[vector];
-	const float scale = __uint_as_float((uint32_t)record[hidden + vector * 8u / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u);
-	const uint32_t words[2] = { codes.x, codes.y };
-	float values[8];
-	for ( uint32_t i = 0u; i < 8u; ++i )
-		values[i] = LmE4m3ToFloat((uint8_t)(words[i >> 2u] >> (8u * (i & 3u)))) * scale;
-	((uint4 *)(xq + (uint64_t)row * hidden))[vector] = D41RoundBf16x8(values);
-}
-
-template <uint32_t RANKS>
 static __global__ void D41ExchangeFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
 	const uint32_t *__restrict__ route_expert, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts,
 	uint32_t width, uint16_t *__restrict__ output)
@@ -884,26 +794,22 @@ static __host__ __device__ __forceinline__ uint32_t D41ShuffleCount(uint32_t sou
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ShuffleCountsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t first, uint32_t top_k,
-	const uint8_t *__restrict__ owner, uint32_t *__restrict__ counts)
+static __global__ void D41RouteCountsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t first, uint32_t top_k, uint32_t experts,
+	uint16_t *__restrict__ counts)
 {
-	__shared__ uint32_t totals[RANKS * RANKS];
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
+	extern __shared__ uint32_t totals[];
+	for ( uint32_t i = threadIdx.x; i < RANKS * experts; i += blockDim.x )
 		totals[i] = 0u;
 	__syncthreads();
 	for ( uint32_t row = threadIdx.x; row < rows; row += blockDim.x )
 	{
-		uint32_t mask = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-			mask |= 1u << owner[route_expert[(uint64_t)row * top_k + k]];
 		const uint32_t target = (first + row) % RANKS;
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-			if ( ((mask >> rank) & 1u) != 0u )
-				atomicAdd(&totals[target * RANKS + rank], 1u);
+		for ( uint32_t k = 0u; k < top_k; ++k )
+			atomicAdd(&totals[target * experts + route_expert[(uint64_t)row * top_k + k]], 1u);
 	}
 	__syncthreads();
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
-		counts[i] = totals[i];
+	for ( uint32_t i = threadIdx.x; i < RANKS * experts; i += blockDim.x )
+		counts[i] = (uint16_t)totals[i];
 }
 
 static __global__ void D41ShufflePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
@@ -945,19 +851,139 @@ static __global__ void D41ShuffleUnpackKernel(const uint8_t *__restrict__ receiv
 }
 
 template <uint32_t RANKS>
-static __global__ void D41ShuffleSumKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ slot,
-	D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
+static __global__ void D41RouteSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t top_k, const uint8_t *__restrict__ choice,
+	uint32_t *__restrict__ route_slot, uint32_t *__restrict__ count)
+{
+	__shared__ uint32_t totals[32][RANKS];
+	__shared__ uint32_t base[RANKS];
+	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u;
+	if ( threadIdx.x < RANKS )
+		base[threadIdx.x] = 0u;
+	__syncthreads();
+	for ( uint32_t chunk = 0u; chunk < rows; chunk += blockDim.x )
+	{
+		const uint32_t row = chunk + threadIdx.x;
+		uint32_t target[8], before[RANKS];
+		for ( uint32_t k = 0u; k < 8u; ++k )
+			target[k] = row < rows && k < top_k ? choice[route_expert[(uint64_t)row * top_k + k]] : RANKS;
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		{
+			uint32_t here = 0u;
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				here += target[k] == rank ? 1u : 0u;
+			uint32_t running = here;
+			for ( uint32_t offset = 1u; offset < 32u; offset <<= 1u )
+			{
+				const uint32_t other = __shfl_up_sync(0xffffffffu, running, offset);
+				running += lane >= offset ? other : 0u;
+			}
+			before[rank] = running - here;
+			if ( lane == 31u )
+				totals[warp][rank] = running;
+		}
+		__syncthreads();
+		if ( threadIdx.x < RANKS )
+		{
+			uint32_t running = base[threadIdx.x];
+			for ( uint32_t w = 0u; w < warps; ++w )
+			{
+				const uint32_t here = totals[w][threadIdx.x];
+				totals[w][threadIdx.x] = running;
+				running += here;
+			}
+			base[threadIdx.x] = running;
+		}
+		__syncthreads();
+		for ( uint32_t k = 0u; k < 8u; ++k )
+		{
+			if ( row >= rows || k >= top_k )
+				continue;
+			uint32_t slot = 0u;
+			for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+				slot += target[k] == rank ? totals[warp][rank] + before[rank] : 0u;
+			for ( uint32_t j = 0u; j < k; ++j )
+				slot += target[j] == target[k] ? 1u : 0u;
+			route_slot[(uint64_t)row * top_k + k] = slot;
+		}
+		__syncthreads();
+	}
+	if ( threadIdx.x < RANKS )
+		count[threadIdx.x] = base[threadIdx.x];
+}
+
+static __global__ void D41RoutePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint32_t *__restrict__ route_slot,
+	const uint8_t *__restrict__ choice, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ send)
+{
+	const uint32_t route = blockIdx.x, row = route / top_k, expert = route_expert[route];
+	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
+	uint8_t *record = send + ((uint64_t)choice[expert] * capacity + route_slot[route]) * record_bytes;
+	for ( uint32_t i = threadIdx.x; i < hidden / 16u; i += blockDim.x )
+		((uint4 *)record)[i] = ((const uint4 *)(codes + (uint64_t)row * hidden))[i];
+	for ( uint32_t i = threadIdx.x; i < scale_bytes; i += blockDim.x )
+		record[hidden + i] = scales[(uint64_t)row * scale_bytes + i];
+	if ( threadIdx.x == 0u )
+	{
+		*(uint32_t *)(record + hidden + scale_bytes) = expert;
+		*(float *)(record + hidden + scale_bytes + sizeof(uint32_t)) = route_weight[route];
+	}
+}
+
+template <uint32_t RANKS>
+static __global__ void D41RouteUnpackKernel(const uint8_t *__restrict__ received_bytes, D41ReceivedRows<RANKS> received, uint32_t capacity,
+	uint32_t hidden, uint64_t record_bytes, const uint8_t *__restrict__ group, uint16_t *__restrict__ xq, uint32_t *__restrict__ route_group,
+	uint32_t *__restrict__ route_global, float *__restrict__ route_weight)
 {
 	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
+	const uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x, scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
+	const uint8_t *record = received_bytes + ((uint64_t)source * capacity + index) * record_bytes;
+	if ( vector == 0u )
+	{
+		const uint32_t expert = *(const uint32_t *)(record + hidden + scale_bytes);
+		route_global[row] = expert;
+		route_group[row] = group[expert];
+		route_weight[row] = *(const float *)(record + hidden + scale_bytes + sizeof(uint32_t));
+	}
+	if ( vector * 8u >= hidden )
+		return;
+	const uint2 codes = ((const uint2 *)record)[vector];
+	const float scale = __uint_as_float((uint32_t)record[hidden + vector * 8u / SPARK_DSV41_FLASH_FP8_BLOCK] << 23u);
+	const uint32_t words[2] = { codes.x, codes.y };
+	float values[8];
+	for ( uint32_t i = 0u; i < 8u; ++i )
+		values[i] = LmE4m3ToFloat((uint8_t)(words[i >> 2u] >> (8u * (i & 3u)))) * scale;
+	((uint4 *)(xq + (uint64_t)row * hidden))[vector] = D41RoundBf16x8(values);
+}
+
+template <uint32_t RANKS>
+static __global__ void D41RouteSumKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ route_expert, uint32_t top_k,
+	const uint32_t *__restrict__ route_slot, const uint8_t *__restrict__ choice, const uint8_t *__restrict__ owner, D41ReceivedRows<RANKS> received,
+	uint32_t capacity, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
+{
+	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
+	uint32_t home[8], at[8];
+	for ( uint32_t k = 0u; k < 8u; ++k )
+	{
+		const uint32_t expert = k < top_k ? route_expert[(uint64_t)row * top_k + k] : 0u;
+		home[k] = k < top_k ? owner[expert] : RANKS;
+		at[k] = k < top_k ? choice[expert] * capacity + route_slot[(uint64_t)row * top_k + k] : 0u;
+	}
 	uint4 *out = (uint4 *)(output + ((uint64_t)source * shuffle + index) * hidden);
 	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < hidden; vector += gridDim.x * blockDim.x )
 	{
 		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
 		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 		{
-			const uint32_t at = slot[(uint64_t)row * RANKS + rank];
-			if ( at != UINT32_MAX )
-				D41AddBf16x8(total, ((const uint4 *)(landing + ((uint64_t)rank * capacity + at) * hidden))[vector]);
+			float part[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+			uint32_t any = 0u;
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				if ( home[k] == rank )
+				{
+					D41AddBf16x8(part, ((const uint4 *)(landing + (uint64_t)at[k] * hidden))[vector]);
+					any = 1u;
+				}
+			if ( any != 0u )
+				D41AddBf16x8(total, D41RoundBf16x8(part));
 		}
 		out[vector] = D41RoundBf16x8(total);
 	}

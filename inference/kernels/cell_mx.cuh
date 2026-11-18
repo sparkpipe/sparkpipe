@@ -162,7 +162,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMxKernel(con
 	const uint32_t segment_cells = segments.column_cells != 0u ? segments.column_cells : args.cells;
 	const uint32_t column_segment = block_first / segment_cells;
 	const uint64_t tile_stride = (uint64_t)segment_cells * LM_CELL_MMA_CELL_BYTES;
-	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
+	const uint64_t cells_offset = LmCellMmaGroupOffset(segments, group) + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
 	uint32_t first, end, last;
 	LmDependentWait();
 	if ( group >= args.groups )
@@ -183,7 +183,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMxKernel(con
 	}
 }
 
-static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const uint8_t *code_scales, uint16_t *output_bf16, const uint32_t *group_row_offset,
+static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint32_t split, const uint8_t *codes, const uint8_t *code_scales, uint16_t *output_bf16, const uint32_t *group_row_offset,
 	const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension,
 	uint32_t output_dimension, cudaStream_t stream)
 {
@@ -198,8 +198,12 @@ static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const u
 		packed_rows, activation_packed, input_dimension, output_dimension, LM_SKINNY_CELL_TILE_K);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( upper != 0 && (LmSkinnyAligned(upper) == 0u || split == 0u || split >= groups) )
+		return(LM_LAUNCH_ERR_SHAPE);
 	segments.tiles = args.k_tiles;
 	segments.group_bytes = (uint64_t)args.k_tiles * args.cells * LM_CELL_MMA_CELL_BYTES;
+	segments.split = upper != 0 ? split : 0u;
+	segments.upper_offset = upper != 0 ? (uint64_t)((uintptr_t)upper - (uintptr_t)weight) : 0u;
 	args.group_bytes = segments.group_bytes;
 	mx.codes = codes;
 	mx.scales = code_scales;
@@ -208,4 +212,12 @@ static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const u
 	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
 	LM_LAUNCH_DEPENDENT((LmCellMxKernel), (uint32_t)blocks, LM_CELL_MMA_THREADS, 0u, stream, args, segments, mx);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const uint8_t *code_scales, uint16_t *output_bf16, const uint32_t *group_row_offset,
+	const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension,
+	uint32_t output_dimension, cudaStream_t stream)
+{
+	return(LmCellMxExpertsSplit(weight, 0, 0u, codes, code_scales, output_bf16, group_row_offset, route_source_token, groups, packed_rows, activation_packed,
+		input_dimension, output_dimension, stream));
 }
