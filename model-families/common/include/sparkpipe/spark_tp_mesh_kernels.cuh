@@ -26,6 +26,7 @@ __attribute__((used)) static const char SparkTpMeshKernelsBuildMarkerHost[] =
 #define SPARK_TP_MESH_THREADS 256u
 #define SPARK_TP_MESH_COPY_BLOCKS 192u
 #define SPARK_TP_MESH_DIRECT_THREADS 128u
+#define SPARK_TP_MESH_PIECE_RESIDENCY 4u
 #define SPARK_TP_MESH_DEPENDENT_ELEMENTS 65536u
 #define SPARK_TP_MESH_SMALL_MESSAGE_ELEMENTS 131072u
 #define SPARK_TP_MESH_EARLY_ELEMENTS 16384u
@@ -112,6 +113,14 @@ static inline uint32_t SparkTpMeshDirectBlocks(uint64_t elements,uint32_t peers)
 {
 	uint64_t needed = (elements + SPARK_TP_MESH_DIRECT_THREADS - 1u) / SPARK_TP_MESH_DIRECT_THREADS;
 	uint64_t limit = SparkTpMeshMultiprocessors() / (peers != 0u ? peers : 1u);
+	limit = limit != 0u ? limit : 1u;
+	return((uint32_t)(needed == 0u ? 1u : needed < limit ? needed : limit));
+}
+
+static inline uint32_t SparkTpMeshPieceBlocks(uint64_t elements,uint32_t peers)
+{
+	uint64_t needed = (elements / 8u + SPARK_TP_MESH_DIRECT_THREADS - 1u) / SPARK_TP_MESH_DIRECT_THREADS;
+	uint64_t limit = SPARK_TP_MESH_PIECE_RESIDENCY * SparkTpMeshMultiprocessors() / (peers != 0u ? peers : 1u);
 	limit = limit != 0u ? limit : 1u;
 	return((uint32_t)(needed == 0u ? 1u : needed < limit ? needed : limit));
 }
@@ -1795,7 +1804,7 @@ static __global__ void SparkTpMeshHardwarePieceWaitKernel(
     }
 }
 
-static __global__ __launch_bounds__(SPARK_TP_MESH_DIRECT_THREADS,4) void SparkTpMeshHardwarePieceKernel(SparkTpMeshPiece piece)
+static __global__ __launch_bounds__(SPARK_TP_MESH_DIRECT_THREADS,SPARK_TP_MESH_PIECE_RESIDENCY) void SparkTpMeshHardwarePieceKernel(SparkTpMeshPiece piece)
 {
     __shared__ uint32_t final;
     SparkTpMeshRoundControl *control = piece.control;
@@ -2260,7 +2269,7 @@ static cudaError_t SparkTpMeshHardwarePipelineRound(cudaStream_t stream,uint8_t 
 {
     const uint64_t width = SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES / sizeof(uint16_t);
     const uint64_t chunks = SparkTpMeshPipelineChunks(elements,SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES);
-    const dim3 grid(SparkTpMeshDirectBlocks(width,degree),degree);
+    const dim3 grid(SparkTpMeshPieceBlocks(width,degree),degree);
     SparkWeightdMeshRoute route = {0};
     SparkTpMeshPiece piece = {0};
     uint64_t launch;
