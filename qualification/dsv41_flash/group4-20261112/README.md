@@ -1234,6 +1234,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the plan's second pass shrinking the padded pair (2026-11-18, below) | 14,861, 198% | 23,733, 280% | 26,559, 316% |
 | and the owner's eight o_a groups in one launch (2026-11-18, below) | 14,805, 197% | 24,030, 284% | 26,975, 321% |
 | and a second backup copy of each expert (2026-11-18, below) | 15,189, 202% | 24,317, 287% | 27,367, 326% |
+| and index scores from keys staged in shared memory (2026-11-18, below) | 15,064, 200% | 24,677, 291% | 28,019, 333% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1701,3 +1702,23 @@ modelled MoE cost goes from 36.1 to 36.9 ms over four layers), and the
 publisher's single FP32 sum with every route free to move (busiest rank 6.2
 -> 6.0 ms, but per-route returns and unbalanced pairs raise the modelled
 layer from 10.0 to 11.6 ms).
+
+Index scores from keys staged in shared memory (2026-11-18). Each of the
+block-slot scorer's eight row warps loaded every key of its eight-key tiles
+with 4-byte loads that each touched eight key slots, so the scorer ran at 42
+TFLOPS (1,024 rows by 32,768 keys in 6.53 ms on one Spark). When a block's
+rows share one sequence the block now copies its keys 32 at a time into
+padded shared rows (272 bytes, three stages, 16-byte copies through the slot
+table it already builds) and each warp takes its key fragments by ldmatrix,
+two k steps an instruction; the earlier whole-block staging (69.6 KB, no
+copies in flight) was slower, this one keeps two stages in flight in 26 KB.
+The MMAs, their order and the epilogue (now `LmIndexScoreStore`, shared by
+every path) are unchanged, and a block spanning two sequences keeps the
+per-warp lookups. `tests/cuda/index_score_slots_cuda.cu` still finds every
+score of its nine cases equal to the per-row scorer. One Spark: 6.53 to
+3.97 ms at 32,768 keys, 1.65 to 1.02 at 8,192, 1.04 to 0.64 for 160 rows
+(69 TFLOPS). The scores grow with the context (3 ms in the first 16K step of
+a 131K prompt, 39 ms in the eighth), so the gain grows with prompt length.
+Three interleaved runs each: 15,064 / 24,677 / 28,019 tok/s against 14,827 /
+24,574 / 27,508 for the backup-copy build in the same session; scores
+identical at 56 deep and 30 fresh positions.
