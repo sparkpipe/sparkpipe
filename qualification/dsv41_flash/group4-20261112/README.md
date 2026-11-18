@@ -1226,6 +1226,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the embedding gathered once, looked up locally (2026-11-18, below) | 12,784, 170% | 20,122, 238% | 21,817, 260% |
 | and index scores with each block's key slots found once (2026-11-18, below) | 12,906, 172% | 20,163, 238% | 22,150, 263% |
 | and expert gate and up projections on the publisher's FP4 arithmetic (2026-11-18, below) | 13,377, 178% | 21,090, 249% | 23,308, 277% |
+| and the route build ranked by warp matches (2026-11-18, below) | 13,383, 178% | 21,187, 250% | 23,496, 279% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1435,3 +1436,17 @@ moves are in tokens below logprob -9. These scores (runs zn18d1, zn18f1) are
 the reference for later exact changes. Three interleaved runs each: 13,377 /
 21,090 / 23,308 tok/s against 12,790 / 20,000 / 22,154 for the previous
 build; the 40,000-token answer unchanged.
+
+Route build ranked by warp matches (2026-11-18). `LmRouteBuild` runs as one
+block of 256 threads, chunk by chunk in route order. Each thread used to
+count the earlier routes of its chunk with the same expert one at a time (up
+to 255 reads a route); a warp now ranks its 32 routes with one
+`__match_any_sync`, adds the counts of the chunk's earlier warps from a
+small table, and loads the next chunk's experts while it places the current
+one. The packed order (by expert, then route order) is the same, which
+`tests/test_route_build_scan.cu` checks route by route, now also on
+26,652-row steps; 159,912 routes take 503 us instead of 1,604. An expert
+rank of a full 16K step builds about 53,000 routes a layer, about 530 us
+before. Three interleaved runs: 13,383 / 21,187 / 23,496 tok/s against
+13,127 / 21,222 / 23,318 for the previous build (0.2% lower at 32K, within
+the run-to-run spread); scores identical at 56 deep and 30 fresh positions.
