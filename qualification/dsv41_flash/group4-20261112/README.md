@@ -1231,6 +1231,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and attention two head groups a pass (2026-11-18, below) | 13,649, 181% | 21,600, 255% | 24,202, 288% |
 | and backup expert copies taking rows off the busiest expert rank (2026-11-18, below) | 14,411, 192% | 23,372, 276% | 25,990, 309% |
 | and a leaner expert loop with the same bits (2026-11-18, below) | 14,370, 191% | 23,773, 281% | 26,343, 313% |
+| and the plan's second pass shrinking the padded pair (2026-11-18, below) | 14,861, 198% | 23,733, 280% | 26,559, 316% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1586,3 +1587,25 @@ Three interleaved runs: 14,370 / 23,773 / 26,343 tok/s against 14,112 /
 23,060 / 26,005 for the backup-copy build in the same session (its figures
 above are an earlier session's); scores identical at 56 deep and 30 fresh
 positions.
+
+The plan's second pass shrinks the padded pair (2026-11-18). The dispatch
+and return all-to-alls pad every pair of ranks to the busiest pair; a padded
+row is 16 x (5,328 + 10,240) bytes a layer for every rank, about 10 us of
+wire at the ~25 GB/s a Spark sends, while a route of expert work on the
+busiest rank costs about 0.6 us. After the load balancing, the plan now
+takes single rows off the largest pair (MoE owner, rank) to the backup rank
+of one of that rank's experts, as long as the row's only route into the rank
+is that expert, the backup's pair stays below the largest, and the backup's
+load stays within two expert weight reads (186 route units) of the busiest
+load the first pass left. On the route dump the padded pair goes from 433
+(first pass only) to 394 rows; a slack of 0, 500 or 1,000 route units gave
+418, 386 and 382 rows at a higher busiest load, and two weight reads had the
+lowest modelled cost (0.6 us a route of the busiest load plus 10 us a padded
+row). `tests/test_dsv41_exchange.cu` runs the plan with the pass in every
+case (a full 16K step with uniform routing pads to 352 rows instead of 376).
+
+Three interleaved runs: 14,861 / 23,733 / 26,559 tok/s against 14,451 /
+23,433 / 26,140 for the expert-loop build in the same session; scores
+identical at 56 deep and 30 fresh positions. This replaces the note above
+that the second pass was not in the code.
+

@@ -712,6 +712,7 @@ static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, 
 #define D41K_BACKUP_FLAG 0x80000000u
 #define D41K_BACKUP_EXPERT_ROUTES 93u
 #define D41K_BACKUP_ROUNDS 64u
+#define D41K_BACKUP_PAIR_SLACK (2u * D41K_BACKUP_EXPERT_ROUTES)
 #define D41K_SLOT_WARPS 32u
 
 template <uint32_t RANKS, uint32_t EXPERTS>
@@ -864,6 +865,40 @@ static inline uint32_t D41BackupPlan(const D41ExchangeTotals<RANKS, EXPERTS> *to
 			pair[target * RANKS + owner[expert]] -= quota[target * EXPERTS + expert];
 			pair[target * RANKS + backup[expert]] += quota[target * EXPERTS + expert];
 		}
+	}
+	uint64_t ceiling = 0u;
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		ceiling = load[rank] > ceiling ? load[rank] : ceiling;
+	ceiling += D41K_BACKUP_PAIR_SLACK;
+	for ( ;; )
+	{
+		uint32_t top = 0u, from = 0u, to = 0u, best = EXPERTS;
+		for ( uint32_t index = 0u; index < RANKS * RANKS; ++index )
+			if ( pair[index] > top )
+			{
+				top = pair[index];
+				from = index / RANKS;
+				to = index % RANKS;
+			}
+		for ( uint32_t place = 0u; place < LOCAL; ++place )
+		{
+			const uint32_t expert = expert_at[to * LOCAL + place];
+			if ( expert >= EXPERTS || backup[expert] >= RANKS || backup[expert] == owner[expert] ||
+				quota[from * EXPERTS + expert] >= totals->sole[from * EXPERTS + expert] || pair[from * RANKS + backup[expert]] + 1u >= top ||
+				load[backup[expert]] + 1u + (paid[expert] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES) > ceiling )
+				continue;
+			if ( best == EXPERTS || pair[from * RANKS + backup[expert]] < pair[from * RANKS + backup[best]] )
+				best = expert;
+		}
+		if ( best == EXPERTS )
+			break;
+		quota[from * EXPERTS + best]++;
+		pair[from * RANKS + to]--;
+		pair[from * RANKS + backup[best]]++;
+		load[to] -= 1u;
+		load[backup[best]] += 1u + (paid[best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES);
+		paid[best] = 1u;
+		any = 1u;
 	}
 	for ( uint32_t index = 0u; index < RANKS * RANKS && any != 0u; ++index )
 		if ( pair[index] > limit )
