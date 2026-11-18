@@ -133,6 +133,7 @@ struct Glm52Device
 		indexer->key_ratio = 1u;
 		indexer->query_stride = kIndexQuery;
 		indexer->weight_stride = kIndexHeads;
+		indexer->weight_f32 = 1u;
 		indexer->key_stride = kIndexDim;
 		state->index_layers = 0u;
 		for ( uint32_t layer = 0u; layer < kLayers; layer++ )
@@ -228,7 +229,7 @@ struct Glm52Device
 			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
 			{ rows * kIndexQuery * 2u, &state->index_query },
 			{ rows * kIndexDim * 2u, &state->index_key },
-			{ rows * kIndexHeads * 2u, &state->index_weight },
+			{ rows * kIndexHeads * sizeof(float), &state->index_weight },
 			{ SparkIndexerScoreBytes(state->index_rows, state->score_stride), &state->index_scores },
 			{ SparkIndexerSelectedBytes(state->stage.max_rows, kDenseKeys), &state->selected },
 			{ Max(2u * ffn, Max((uint64_t)kQueryLora, Max(Max(heads * kQueryHead, (uint64_t)kIndexQuery), Max((uint64_t)kSlot, hidden)))) *
@@ -403,11 +404,20 @@ struct Glm52Device
 		const SparkIndexerCache cache = SparkDeviceStageIndexCache(&state->stage, state->index_ordinal[layer]);
 		const uint32_t rows = frame.t.rows;
 		SparkHeadRopeParams rope = state->index_query_rope;
+		SparkGemvParams head;
 		SparkStatus status = SparkDeviceLinearWeight(&state->stage, frame.queue, query_input, query_input_stride, &weights.index_query, state->index_query,
 			kIndexQuery, rows, kQueryLora, kIndexQuery);
+		memset(&head, 0, sizeof(head));
+		head.rows = rows;
+		head.input_dimension = head.input_stride = kHidden;
+		head.output_dimension = head.output_stride = kIndexHeads;
+		head.output_f32 = 1u;
+		head.projection = state->stage.shape->projection;
+		head.row_exact = state->stage.step_exact;
+		if ( status == SPARK_STATUS_OK && weights.index_head.scale.bytes != 0u )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the index head projection must be BF16 to give FP32 head weights");
 		if ( status == SPARK_STATUS_OK )
-			status = SparkDeviceLinearWeight(&state->stage, frame.queue, state->normed, kHidden, &weights.index_head, state->index_weight, kIndexHeads, rows,
-				kHidden, kIndexHeads);
+			status = SparkOpsLinear(state->stage.ops, frame.queue, state->normed, weights.index_head.values, state->index_weight, &head);
 		rope.rows = rows;
 		if ( status == SPARK_STATUS_OK )
 			status = SparkOpsHeadRmsNormRope(state->stage.ops, frame.queue, state->index_query, state->index_query, frame.t.positions, state->index_query,
@@ -417,7 +427,7 @@ struct Glm52Device
 			const uint32_t count = rows - first < state->index_rows ? rows - first : state->index_rows;
 			status = SparkIndexerSelect(state->stage.ops, frame.queue, &cache,
 				SparkTensorSlice(state->index_query, (uint64_t)first * kIndexQuery * 2u, (uint64_t)count * kIndexQuery * 2u),
-				SparkTensorSlice(state->index_weight, (uint64_t)first * kIndexHeads * 2u, (uint64_t)count * kIndexHeads * 2u),
+				SparkTensorSlice(state->index_weight, (uint64_t)first * kIndexHeads * sizeof(float), (uint64_t)count * kIndexHeads * sizeof(float)),
 				SparkTensorSlice(frame.t.sequence_of_row, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t)),
 				SparkTensorSlice(frame.t.positions, (uint64_t)first * sizeof(uint32_t), (uint64_t)count * sizeof(uint32_t)), state->index_scores,
 				SparkTensorSlice(state->selected, SparkIndexerSelectedBytes(first, kDenseKeys), SparkIndexerSelectedBytes(count, kDenseKeys)),
