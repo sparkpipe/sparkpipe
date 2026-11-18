@@ -394,6 +394,87 @@ static uint32_t WindowCase(uint32_t rows, uint32_t own, uint32_t edge)
 	return wrong != 0u ? 1u : 0u;
 }
 
+static uint32_t TailCase(uint32_t rows, uint32_t first)
+{
+	const uint32_t width = 64u, vectors = width / 8u, own = (rows + 127u) / 128u * 8u, tail_rows = rows - first;
+	const uint32_t tail_own = (tail_rows + 127u) / 128u * 8u;
+	std::vector<uint16_t> full((size_t)rows * width);
+	std::vector<uint32_t> weights((size_t)rows * D41K_HC);
+	for ( uint16_t &value : full )
+		value = (uint16_t)Next();
+	for ( uint32_t &value : weights )
+		value = Next();
+	uint32_t capacity = 0u, low;
+	for ( uint32_t source = 0u; source < RANKS; ++source )
+		for ( uint32_t target = 0u; target < RANKS; ++target )
+		{
+			const uint32_t count = D41TailSpan(source, target, rows, first, own, tail_own, &low);
+			capacity = count > capacity ? count : capacity;
+		}
+	std::vector<std::vector<uint4>> sent(RANKS), sent_pre(RANKS);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint16_t> streams((size_t)rows * width, 0xeeeeu);
+		std::vector<uint32_t> pre((size_t)rows * D41K_HC, 0xeeeeeeeeu);
+		const uint32_t from = rank * own < rows ? rank * own : rows, to = (rank + 1u) * own < rows ? (rank + 1u) * own : rows;
+		for ( uint32_t row = from; row < to; ++row )
+		{
+			memcpy(&streams[(size_t)row * width], &full[(size_t)row * width], width * sizeof(uint16_t));
+			memcpy(&pre[(size_t)row * D41K_HC], &weights[(size_t)row * D41K_HC], D41K_HC * sizeof(uint32_t));
+		}
+		uint16_t *streams_d = Device(streams);
+		uint32_t *pre_d = Device(pre);
+		uint4 *send_d = 0, *send_pre_d = 0;
+		CUDA(cudaMalloc(&send_d, (size_t)RANKS * capacity * vectors * sizeof(uint4)));
+		CUDA(cudaMalloc(&send_pre_d, (size_t)RANKS * capacity * sizeof(uint4)));
+		CUDA(cudaMemset(send_d, 0xcd, (size_t)RANKS * capacity * vectors * sizeof(uint4)));
+		CUDA(cudaMemset(send_pre_d, 0xcd, (size_t)RANKS * capacity * sizeof(uint4)));
+		D41TailPackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(streams_d, (const float *)pre_d, rank, rows, first, own, tail_own, capacity, width, send_d,
+			send_pre_d);
+		CUDA(cudaGetLastError());
+		sent[rank] = Host(send_d, (size_t)RANKS * capacity * vectors);
+		sent_pre[rank] = Host(send_pre_d, (size_t)RANKS * capacity);
+		cudaFree(streams_d);
+		cudaFree(pre_d);
+		cudaFree(send_d);
+		cudaFree(send_pre_d);
+	}
+	uint64_t wrong = 0u;
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint4> received((size_t)RANKS * capacity * vectors), received_pre((size_t)RANKS * capacity);
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+		{
+			memcpy(&received[(size_t)source * capacity * vectors], &sent[source][(size_t)rank * capacity * vectors], (size_t)capacity * vectors * sizeof(uint4));
+			memcpy(&received_pre[(size_t)source * capacity], &sent_pre[source][(size_t)rank * capacity], (size_t)capacity * sizeof(uint4));
+		}
+		uint4 *received_d = Device(received), *received_pre_d = Device(received_pre);
+		uint16_t *streams_d = 0;
+		uint32_t *pre_d = 0;
+		CUDA(cudaMalloc(&streams_d, (size_t)RANKS * tail_own * width * sizeof(uint16_t)));
+		CUDA(cudaMalloc(&pre_d, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
+		CUDA(cudaMemset(streams_d, 0xab, (size_t)RANKS * tail_own * width * sizeof(uint16_t)));
+		CUDA(cudaMemset(pre_d, 0xab, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
+		D41TailUnpackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(received_d, received_pre_d, rank, rows, first, own, tail_own, capacity, width, streams_d,
+			(float *)pre_d);
+		CUDA(cudaGetLastError());
+		const std::vector<uint16_t> streams = Host(streams_d, (size_t)RANKS * tail_own * width);
+		const std::vector<uint32_t> pre = Host(pre_d, (size_t)RANKS * tail_own * D41K_HC);
+		const uint32_t from = rank * tail_own < tail_rows ? rank * tail_own : tail_rows;
+		const uint32_t to = (rank + 1u) * tail_own < tail_rows ? (rank + 1u) * tail_own : tail_rows;
+		for ( uint32_t row = from; row < to; ++row )
+			wrong += memcmp(&streams[(size_t)row * width], &full[(size_t)(first + row) * width], width * sizeof(uint16_t)) != 0 ||
+				memcmp(&pre[(size_t)row * D41K_HC], &weights[(size_t)(first + row) * D41K_HC], D41K_HC * sizeof(uint32_t)) != 0 ? 1u : 0u;
+		cudaFree(received_d);
+		cudaFree(received_pre_d);
+		cudaFree(streams_d);
+		cudaFree(pre_d);
+	}
+	printf("tail rows %u first %u own %u tail own %u capacity %u: %llu tail rows differ from the owners' rows\n", rows, first, own, tail_own, capacity,
+		(unsigned long long)wrong);
+	return wrong != 0u || capacity > tail_own ? 1u : 0u;
+}
+
 int main(void)
 {
 	uint32_t failures = 0u;
@@ -412,6 +493,12 @@ int main(void)
 	failures += WindowCase(8191u, 512u, 256u);
 	failures += WindowCase(2049u, 136u, 136u);
 	failures += WindowCase(2048u, 128u, 128u);
+	failures += TailCase(16384u, 16384u - 2541u);
+	failures += TailCase(16383u, 16383u - 2541u);
+	failures += TailCase(8192u, 8192u - 2541u);
+	failures += TailCase(7000u, 7000u - 2541u);
+	failures += TailCase(2600u, 59u);
+	failures += TailCase(4096u, 4096u - 300u);
 	if ( failures != 0u )
 	{
 		fprintf(stderr, "FAIL dsv41 exchange: %u cases differ\n", failures);
@@ -421,6 +508,7 @@ int main(void)
 		"experts and weights; padding rows carry no routes; the owner sums the ranks' partials in rank order and adds the shared expert as the "
 		"publisher does; rows past the live count are zero; every engram row a rank holds reaches the owner of the token row that looks it up, "
 		"once, and decodes to the BF16 the holder's own lookup gives, ids no rank holds and padding rows give zero; each rank's own rows, the window "
-		"before them and the step's last window assemble from the ranks' edge rows as the full gather gives them\n");
+		"before them and the step's last window assemble from the ranks' edge rows as the full gather gives them; every tail row's streams and stream "
+		"weights reach the rank that owns it in the tail's own split, from the rank that owned it in the step, once\n");
 	return 0;
 }

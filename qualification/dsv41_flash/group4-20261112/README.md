@@ -1177,8 +1177,23 @@ rounds: overlapping them with compute, and cutting the gathers below.
    Attention builds its queries in a buffer of their own, so the owned rows'
    normalized hidden stays in place for the indexer; steps whose rows are not
    owned (the tail, short prefills) still read the full rows.
-5. The tail's MoE repeats routing and the shared expert on every rank and
-   all-reduces the tail rows.
+5. Done: the tail is owned like the rest. In the final chunk layer 20
+   compresses its keys from the owned rows, as the chunks before it do, and
+   the tail's rows (the last 2,541) move once, by two all-to-alls (the four
+   streams, then the stream weights), from the ranks that owned them in the
+   step to a split of their own, 160 rows a rank. Layers 20 to 39 then take
+   the rows-owned path: each rank computes its rows, and the MoE exchange
+   carries them to their experts' ranks. The tail before ran routing, the
+   shared expert and the stream mixing for every tail row on every rank,
+   summed the MoE by an all-reduce or, from layer 25 on, by an all-gather of
+   every rank's partial for every tail row (about 1.8 GB a rank a final
+   chunk), and gathered every row's four streams at layer 20 (480 MB a rank).
+   It also added the shared expert inside one rank's partial before the
+   ranks' sum; the exchange rounds the routed sum first and adds the shared
+   expert after it, as the rest of the step and the publisher do. So the
+   scores move (all 56 deep positions) and now equal, bit for bit, a build
+   with no tail at all, every layer on every row: 56 of 56 deep positions and
+   30 of 30 fresh 7,000-token prompts.
 6. The mesh rounds still run with nothing else on the GPU; splitting a step
    into two halves on two streams would hide them behind compute. Built and
    exact, not faster while both halves share one collective stream: see
@@ -1204,7 +1219,8 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | experts placed by routed load (above) | 8,878, 118% | 15,316, 181% | 18,125, 216% |
 | and the engram exchange, owned key projections and window keys | 9,637, 128% | 16,202, 191% | 19,360, 230% |
 | and the pipelined rounds' closing marker (2026-11-18, below) | 9,382, 125% | 16,414, 194% | 19,115, 227% |
-| two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
+| and the tail owned like the rest (2026-11-18) | 11,591, 154% | 17,704, 209% | 19,723, 235% |
+| the marker build in two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from

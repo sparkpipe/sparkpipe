@@ -17,6 +17,9 @@ not split evenly over the ranks.
 Window keys gather only each rank's last rows: a rank's own rows, the 127 rows before them and
 the step's last 128 rows must assemble to the values the full gather of every row gives, for full
 steps, steps with padding rows and the smallest owned blocks.
+The tail is split over the ranks again: every tail row's four streams and stream weights must reach
+the rank that owns it in the tail's own split, from the rank that owned it in the step, for full and
+odd steps, a short step whose tail starts near its first row, and a tail shorter than a full reach.
 """
 
 import subprocess
