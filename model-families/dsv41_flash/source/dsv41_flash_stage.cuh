@@ -137,6 +137,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_ACT_BLOCKS 4096u
 #define D41_Q_CODE_ELEMENTS ((D41_QLORA + D41_QLORA / D41_FP8_BLOCK) / 2u)
 #define D41_SKINNY_EXPERT_ROWS 16u
+#define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
 #define D41_OWNER_OUTPUT_ELEMENTS ((D41_WO_A_ROWS + D41_WO_A_ROWS / D41_FP8_BLOCK) / 2u)
@@ -1420,20 +1421,21 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 	}
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	for ( uint32_t part = 0u; part < parts; ++part )
+	static_assert(D41_HEADS % (D41_ATTEND_TILES * D41A_QUERIES) == 0u, "the heads split into whole passes of query tiles");
+	for ( uint32_t part = 0u; part < parts; part += D41_ATTEND_TILES )
 	{
 		const uint16_t *query = state->q_local + (uint64_t)part * own * part_width;
 		uint8_t *part_out = codes + (uint64_t)part * part_bytes;
 		const float *sink = layer->sink + part * D41A_QUERIES;
 		if ( (cache < 3u ?
-			D41AttendLaunch<D41Ratio2Kv,D41_HEAD_DIM>(state->latent_views[cache], attended, query, step->sequence_of_row + first, length, bound + first,
-				state->own_selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane + first,
+			D41AttendLaunch<D41Ratio2Kv,D41_HEAD_DIM,D41_ATTEND_TILES>(state->latent_views[cache], attended, query, step->sequence_of_row + first, length,
+				bound + first, state->own_selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane + first,
 				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, sink, qk_scale, (uint16_t *)0, frequency, D41_HEAD_DIM - D41_ROPE,
-				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream) :
-			D41AttendLaunch<D41Ratio1Kv,D41_HEAD_DIM>(state->latent_views[cache], attended, query, step->sequence_of_row + first, length, bound + first,
-				state->own_selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane + first,
+				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream, (uint64_t)own * part_width, 0u, part_bytes) :
+			D41AttendLaunch<D41Ratio1Kv,D41_HEAD_DIM,D41_ATTEND_TILES>(state->latent_views[cache], attended, query, step->sequence_of_row + first, length,
+				bound + first, state->own_selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane + first,
 				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, sink, qk_scale, (uint16_t *)0, frequency, D41_HEAD_DIM - D41_ROPE,
-				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream)) != cudaSuccess )
+				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream, (uint64_t)own * part_width, 0u, part_bytes)) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,

@@ -17,17 +17,17 @@
 #define D41A_PLANNER D41A_WARPS
 #define D41A_ISSUER (D41A_WARPS + 1u)
 
-template<uint32_t DIM>
+template<uint32_t DIM, uint32_t QTILES>
 static __host__ __device__ constexpr uint32_t D41AttendFixedBytes(void)
 {
-	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) + 2u * D41A_QUERIES * D41A_SCORE_STRIDE * 4u + D41A_QUERIES * D41A_WEIGHT_STRIDE * 2u +
-		4u * D41A_QUERIES * 4u + (5u + 2u * D41A_PLANS) * 8u + D41A_PLANS * D41A_PLAN_WORDS * 4u;
+	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) + 2u * QTILES * D41A_QUERIES * D41A_SCORE_STRIDE * 4u +
+		QTILES * D41A_QUERIES * D41A_WEIGHT_STRIDE * 2u + 4u * QTILES * D41A_QUERIES * 4u + (5u + 2u * D41A_PLANS) * 8u + D41A_PLANS * D41A_PLAN_WORDS * 4u;
 }
 
-template<uint32_t DIM>
+template<uint32_t DIM, uint32_t QTILES>
 static __host__ __device__ inline uint64_t D41AttendSharedBytes(uint32_t listed)
 {
-	return D41AttendFixedBytes<DIM>() + ((uint64_t)listed + 2u * (D41A_THREADS / 32u)) * sizeof(uint32_t);
+	return D41AttendFixedBytes<DIM, QTILES>() + ((uint64_t)listed + 2u * (D41A_THREADS / 32u)) * sizeof(uint32_t);
 }
 
 static __device__ __forceinline__ void D41AttendBarrier(void)
@@ -35,12 +35,13 @@ static __device__ __forceinline__ void D41AttendBarrier(void)
 	asm volatile("bar.sync 1, %0;\n" :: "n"(D41A_CONSUMERS) : "memory");
 }
 
-template<class Geometry, uint32_t DIM>
+template<class Geometry, uint32_t DIM, uint32_t QTILES>
 __global__ __launch_bounds__(D41A_THREADS, 1)
 void D41AttendKernel(
 	LmKvShardView cache,
 	uint32_t compressed,
 	const uint16_t *__restrict__ query,
+	uint64_t query_part_stride,
 	const uint32_t *__restrict__ sequence_of_row,
 	const uint32_t *__restrict__ length,
 	const uint32_t *__restrict__ bound,
@@ -58,10 +59,12 @@ void D41AttendKernel(
 	const float *__restrict__ sink,
 	float qk_scale,
 	uint16_t *__restrict__ output,
+	uint64_t output_part_stride,
 	const float *__restrict__ frequency,
 	uint32_t rope_offset,
 	uint32_t group_heads,
 	uint8_t *__restrict__ codes,
+	uint64_t codes_part_stride,
 	uint32_t rows,
 	uint32_t live,
 	uint32_t row_base)
@@ -70,6 +73,7 @@ void D41AttendKernel(
 	constexpr uint32_t PITCH = ROW_BYTES + LM_LATENT_SHARD_ROW_PAD;
 	constexpr uint32_t CHUNKS = DIM / 8u;
 	constexpr uint32_t QUERIES = D41A_QUERIES;
+	constexpr uint32_t QT = QTILES * QUERIES;
 	constexpr uint32_t TILE = D41A_TILE;
 	constexpr uint32_t HALF_STEPS = DIM / 32u;
 	constexpr uint32_t WARP_COLUMNS = DIM / D41A_WARPS;
@@ -79,16 +83,17 @@ void D41AttendKernel(
 	static_assert(WARP_COLUMNS % 16u == 0u, "each warp owns whole 16-column value slices");
 	static_assert(PITCH % 128u == 16u, "a padded row starts four banks after the row before it");
 	static_assert(Geometry::kSlotBytes >= ROW_BYTES, "the slot holds the latent");
-	static_assert(D41AttendFixedBytes<DIM>() + 4096u <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
+	static_assert(QTILES == 1u || QTILES == 2u, "a warp's keys split evenly over the query tiles");
+	static_assert(D41AttendFixedBytes<DIM, QTILES>() + 4096u <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
 	extern __shared__ __align__(128) uint8_t d41a_shared[];
 	uint8_t *keys = d41a_shared;
 	float *score_parts = (float *)(keys + 2u * TILE * PITCH);
-	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QUERIES * D41A_SCORE_STRIDE);
-	float *running_max = (float *)(weight_high + QUERIES * D41A_WEIGHT_STRIDE);
-	float *running_sum = running_max + QUERIES;
-	float *rescale = running_sum + QUERIES;
-	float *denominator = rescale + QUERIES;
-	uint64_t *full = (uint64_t *)(denominator + QUERIES);
+	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QT * D41A_SCORE_STRIDE);
+	float *running_max = (float *)(weight_high + QT * D41A_WEIGHT_STRIDE);
+	float *running_sum = running_max + QT;
+	float *rescale = running_sum + QT;
+	float *denominator = rescale + QT;
+	uint64_t *full = (uint64_t *)(denominator + QT);
 	uint64_t *empty = full + 2u;
 	uint64_t *planned = empty + 2u;
 	uint64_t *read = planned + PLANS;
@@ -98,7 +103,7 @@ void D41AttendKernel(
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
 	const uint32_t matrix = lane >> 3u, within = lane & 7u;
 	const uint32_t key_base = (uint32_t)__cvta_generic_to_shared(keys);
-	const uint32_t qk_half = warp & 1u, key_group = warp >> 1u;
+	const uint32_t qk_half = warp & 1u, query_tile = (warp >> 1u) % QTILES, key_group = (warp >> 1u) / QTILES;
 	const uint32_t own = threadIdx.x / 16u, part = threadIdx.x % 16u;
 	uint32_t block, ordinal, used, first_compacted = 0u;
 
@@ -260,12 +265,13 @@ void D41AttendKernel(
 		return;
 	}
 	uint32_t query_frag[HALF_STEPS][4];
-	float accumulator[COLUMN_FRAGS][4];
+	float accumulator[QTILES][COLUMN_FRAGS][4];
+	const uint16_t *tile_query = query + query_tile * query_part_stride;
 	auto fetch = [&](uint32_t row)
 	{
 		const uint32_t low = lane >> 2u, high = low + 8u;
-		const uint32_t *low_query = (const uint32_t *)(query + ((uint64_t)row * QUERIES + low) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
-		const uint32_t *high_query = (const uint32_t *)(query + ((uint64_t)row * QUERIES + high) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
+		const uint32_t *low_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + low) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
+		const uint32_t *high_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + high) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
 #pragma unroll
 		for (uint32_t step = 0u; step < HALF_STEPS; step++)
 		{
@@ -296,23 +302,28 @@ void D41AttendKernel(
 		if (valid == 0u && threadIdx.x == 0u)
 			LmKvReportRequiredAccessFailure(cache.pages, !LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW :
 				LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence_of_row[row], 0xffffffffu, 0xffffffffu);
-		if (threadIdx.x < QUERIES)
+		if (threadIdx.x < QT)
 		{
 			running_max[threadIdx.x] = -INFINITY;
 			running_sum[threadIdx.x] = 0.0f;
 		}
 #pragma unroll
-		for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
-			accumulator[frag][0] = accumulator[frag][1] = accumulator[frag][2] = accumulator[frag][3] = 0.0f;
+		for (uint32_t qt = 0u; qt < QTILES; qt++)
+#pragma unroll
+			for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+				accumulator[qt][frag][0] = accumulator[qt][frag][1] = accumulator[qt][frag][2] = accumulator[qt][frag][3] = 0.0f;
 		for (uint32_t tile = 0u; tile < tiles; tile++, used++)
 		{
 			const uint32_t buffer = used & 1u;
 			const uint32_t tile_base = key_base + buffer * TILE * PITCH;
 			LmMbarrierWait(&full[buffer], (used >> 1u) & 1u);
+#pragma unroll
+			for (uint32_t key_tile = 0u; key_tile < QTILES; key_tile++)
 			{
 				float score[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 				uint32_t b[4], first[2], second[2];
-				const uint32_t b_row = key_group * 8u + within;
+				const uint32_t key_first = (key_group * QTILES + key_tile) * 8u;
+				const uint32_t b_row = key_first + within;
 #pragma unroll
 				for (uint32_t pair = 0u; pair < HALF_STEPS / 2u; pair++)
 				{
@@ -325,20 +336,23 @@ void D41AttendKernel(
 				}
 #pragma unroll
 				for (uint32_t index = 0u; index < 4u; index++)
-					score_parts[(qk_half * QUERIES + (lane >> 2u) + (index >> 1u) * 8u) * D41A_SCORE_STRIDE + key_group * 8u + (lane & 3u) * 2u + (index & 1u)] =
-						score[index];
+					score_parts[(qk_half * QT + query_tile * QUERIES + (lane >> 2u) + (index >> 1u) * 8u) * D41A_SCORE_STRIDE + key_first + (lane & 3u) * 2u +
+						(index & 1u)] = score[index];
 			}
 			if (tile + 1u == tiles && following < live)
 				fetch(following);
 			D41AttendBarrier();
+#pragma unroll
+			for (uint32_t qt = 0u; qt < QTILES; qt++)
 			{
+				const uint32_t mine = qt * QUERIES + own;
 				float value[2], weight[2], peak, previous_max, next_max, scale, total;
 #pragma unroll
 				for (uint32_t index = 0u; index < 2u; index++)
 				{
 					const uint32_t key = part + index * 16u;
 					uint32_t keep;
-					value[index] = (score_parts[own * D41A_SCORE_STRIDE + key] + score_parts[(QUERIES + own) * D41A_SCORE_STRIDE + key]) * qk_scale;
+					value[index] = (score_parts[mine * D41A_SCORE_STRIDE + key] + score_parts[(QT + mine) * D41A_SCORE_STRIDE + key]) * qk_scale;
 					if (tile < D41A_WINDOW_TILES)
 						keep = tile * TILE + key >= window_from ? 1u : 0u;
 					else
@@ -352,14 +366,14 @@ void D41AttendKernel(
 #pragma unroll
 				for (uint32_t shift = 8u; shift > 0u; shift >>= 1u)
 					peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, shift));
-				previous_max = running_max[own];
+				previous_max = running_max[mine];
 				next_max = fmaxf(previous_max, peak);
 				scale = previous_max == -INFINITY ? 0.0f : __expf(previous_max - next_max);
 #pragma unroll
 				for (uint32_t index = 0u; index < 2u; index++)
 				{
 					weight[index] = next_max == -INFINITY || value[index] == -INFINITY ? 0.0f : __expf(value[index] - next_max);
-					weight_high[own * D41A_WEIGHT_STRIDE + part + index * 16u] = LmFloatToBf16(weight[index]);
+					weight_high[mine * D41A_WEIGHT_STRIDE + part + index * 16u] = LmFloatToBf16(weight[index]);
 				}
 				total = weight[0] + weight[1];
 #pragma unroll
@@ -368,28 +382,34 @@ void D41AttendKernel(
 				__syncwarp();
 				if (part == 0u)
 				{
-					running_sum[own] = running_sum[own] * scale + total;
-					running_max[own] = next_max;
-					rescale[own] = scale;
+					running_sum[mine] = running_sum[mine] * scale + total;
+					running_max[mine] = next_max;
+					rescale[mine] = scale;
 				}
 			}
 			D41AttendBarrier();
 			{
-				const float low_scale = rescale[lane >> 2u], high_scale = rescale[(lane >> 2u) + 8u];
-				uint32_t a_high[4], b[4], first[2], second[2];
+				uint32_t a_high[QTILES][4], b[4], first[2], second[2];
 #pragma unroll
-				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+				for (uint32_t qt = 0u; qt < QTILES; qt++)
 				{
-					accumulator[frag][0] *= low_scale;
-					accumulator[frag][1] *= low_scale;
-					accumulator[frag][2] *= high_scale;
-					accumulator[frag][3] *= high_scale;
+					const float low_scale = rescale[qt * QUERIES + (lane >> 2u)], high_scale = rescale[qt * QUERIES + (lane >> 2u) + 8u];
+#pragma unroll
+					for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
+					{
+						accumulator[qt][frag][0] *= low_scale;
+						accumulator[qt][frag][1] *= low_scale;
+						accumulator[qt][frag][2] *= high_scale;
+						accumulator[qt][frag][3] *= high_scale;
+					}
 				}
 #pragma unroll
 				for (uint32_t step = 0u; step < TILE / 16u; step++)
 				{
 					const uint32_t a_row = (matrix & 1u) * 8u + within, a_column = step * 16u + (matrix >> 1u) * 8u;
-					LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + a_row * D41A_WEIGHT_STRIDE + a_column), a_high);
+#pragma unroll
+					for (uint32_t qt = 0u; qt < QTILES; qt++)
+						LmPrefillLoadX4((uint32_t)__cvta_generic_to_shared(weight_high + (qt * QUERIES + a_row) * D41A_WEIGHT_STRIDE + a_column), a_high[qt]);
 #pragma unroll
 					for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag += 2u)
 					{
@@ -398,8 +418,12 @@ void D41AttendKernel(
 						LmPrefillLoadX4Trans(tile_base + b_row * PITCH + b_chunk * 16u, b);
 						first[0] = b[0]; first[1] = b[1];
 						second[0] = b[2]; second[1] = b[3];
-						LmMmaBf16(accumulator[frag], a_high, first);
-						LmMmaBf16(accumulator[frag + 1u], a_high, second);
+#pragma unroll
+						for (uint32_t qt = 0u; qt < QTILES; qt++)
+						{
+							LmMmaBf16(accumulator[qt][frag], a_high[qt], first);
+							LmMmaBf16(accumulator[qt][frag + 1u], a_high[qt], second);
+						}
 					}
 				}
 			}
@@ -409,7 +433,7 @@ void D41AttendKernel(
 		}
 		if (tiles == 0u && following < live)
 			fetch(following);
-		if (threadIdx.x < QUERIES)
+		if (threadIdx.x < QT)
 		{
 			const float maximum = running_max[threadIdx.x], top = fmaxf(-1.0e30f, maximum);
 			const float kept = maximum == -INFINITY ? 0.0f : __expf(maximum - top);
@@ -418,20 +442,21 @@ void D41AttendKernel(
 		}
 		D41AttendBarrier();
 #pragma unroll
-		for (uint32_t index = 0u; index < 4u; index += 2u)
+		for (uint32_t step = 0u; step < 2u * QTILES; step++)
 		{
+			const uint32_t qt = step / 2u, index = (step % 2u) * 2u;
 			const uint32_t q = (lane >> 2u) + (index >> 1u) * 8u;
-			const float kept = rescale[q], divisor = denominator[q];
+			const float kept = rescale[qt * QUERIES + q], divisor = denominator[qt * QUERIES + q];
 			uint16_t value[COLUMN_FRAGS][2];
 #pragma unroll
 			for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
 			{
-				value[frag][0] = LmFloatToBf16(fmaf(accumulator[frag][index], kept, 0.0f) / divisor);
-				value[frag][1] = LmFloatToBf16(fmaf(accumulator[frag][index + 1u], kept, 0.0f) / divisor);
+				value[frag][0] = LmFloatToBf16(fmaf(accumulator[qt][frag][index], kept, 0.0f) / divisor);
+				value[frag][1] = LmFloatToBf16(fmaf(accumulator[qt][frag][index + 1u], kept, 0.0f) / divisor);
 			}
 			if (codes == 0)
 			{
-				uint16_t *target = output + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
+				uint16_t *target = output + qt * output_part_stride + ((uint64_t)row * QUERIES + q) * DIM + warp * WARP_COLUMNS + (lane & 3u) * 2u;
 #pragma unroll
 				for (uint32_t frag = 0u; frag < COLUMN_FRAGS; frag++)
 					*(uint32_t *)(target + frag * 8u) = (uint32_t)value[frag][0] | ((uint32_t)value[frag][1] << 16u);
@@ -454,8 +479,9 @@ void D41AttendKernel(
 			{
 				const uint32_t group = q / group_heads, width = group_heads * DIM;
 				const uint32_t base = (q % group_heads) * DIM + warp * WARP_COLUMNS;
-				uint8_t *group_codes = codes + ((uint64_t)group * rows + row) * width;
-				uint8_t *group_scales = codes + (uint64_t)(QUERIES / group_heads) * rows * width + ((uint64_t)group * rows + row) * (width / 32u);
+				uint8_t *part_codes = codes + qt * codes_part_stride;
+				uint8_t *group_codes = part_codes + ((uint64_t)group * rows + row) * width;
+				uint8_t *group_scales = part_codes + (uint64_t)(QUERIES / group_heads) * rows * width + ((uint64_t)group * rows + row) * (width / 32u);
 #pragma unroll
 				for (uint32_t block = 0u; block < COLUMN_FRAGS / 4u; block++)
 				{
@@ -482,18 +508,20 @@ void D41AttendKernel(
 	}
 }
 
-template<class Geometry, uint32_t DIM>
+template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u>
 static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
 	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
-	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, cudaStream_t stream)
+	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, cudaStream_t stream,
+	uint64_t query_part_stride = 0u, uint64_t output_part_stride = 0u, uint64_t codes_part_stride = 0u)
 {
-	const uint64_t shared = D41AttendSharedBytes<DIM>(compressed != 0u && selected != 0 ? topk : 0u);
+	const uint64_t shared = D41AttendSharedBytes<DIM, QTILES>(compressed != 0u && selected != 0 ? topk : 0u);
 	static bool granted = false;
 	if (live == 0u)
 		return cudaSuccess;
-	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) ||
+	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) || (QTILES > 1u && query_part_stride == 0u) ||
+		(QTILES > 1u && (output != 0 ? output_part_stride : codes_part_stride) == 0u) ||
 		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
 		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
 		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
@@ -501,7 +529,7 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 		return cudaErrorInvalidValue;
 	if (!granted)
 	{
-		const cudaError_t error = cudaFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+		const cudaError_t error = cudaFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
 			(int)LM_PREFILL_ATTN_SHARED_LIMIT);
 		if (error != cudaSuccess)
 			return error;
@@ -509,8 +537,8 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 	}
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
 	const uint32_t grid = live < resident ? live : resident;
-	D41AttendKernel<Geometry, DIM><<<grid, D41A_THREADS, shared, stream>>>(cache, compressed, query, sequence_of_row, length, bound, selected, topk, wave_kv,
-		ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink, qk_scale, output, frequency,
-		rope_offset, group_heads, codes, rows, live, row_base);
+	D41AttendKernel<Geometry, DIM, QTILES><<<grid, D41A_THREADS, shared, stream>>>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
+		selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink,
+		qk_scale, output, output_part_stride, frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base);
 	return cudaPeekAtLastError();
 }

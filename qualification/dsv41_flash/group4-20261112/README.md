@@ -1228,6 +1228,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and expert gate and up projections on the publisher's FP4 arithmetic (2026-11-18, below) | 13,377, 178% | 21,090, 249% | 23,308, 277% |
 | and the route build ranked by warp matches (2026-11-18, below) | 13,383, 178% | 21,187, 250% | 23,496, 279% |
 | and the shared expert on a side stream during the MoE rounds (2026-11-18, below) | 13,613, 181% | 21,610, 255% | 23,612, 281% |
+| and attention two head groups a pass (2026-11-18, below) | 13,649, 181% | 21,600, 255% | 24,202, 288% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1464,3 +1465,23 @@ time. Same kernels on the same inputs, so the same bits. Three interleaved
 runs: 13,613 / 21,610 / 23,612 tok/s against 13,383 / 21,187 / 23,496 for
 the route build and 13,127 / 21,222 / 23,318 for the build before it; scores
 identical at 56 deep and 30 fresh positions.
+
+Attention two head groups a pass (2026-11-18). Each owner ran the attention
+kernel four times a layer, once for each group of 16 of its 64 heads, and
+each pass re-read every row's selected and window keys (about 640 keys of 1
+KB a row): the kernel moves 32 KB of keys a tile and spends about 2 us a
+tile, so it was bound by the key reads, not the multiplies. Prefetching keys
+two tiles ahead into L2 from the issuing warp made it slower (12,942 /
+19,629 / 23,030 tok/s against 13,074 / 21,039 / 23,684 in one pair), because
+that warp's own per-key slot lookups are on the path. The kernel now takes
+two head groups a pass (`D41_ATTEND_TILES`): each consumer warp keeps one
+16-head query tile over half the width, as before, and takes two 8-key
+column tiles of the scores instead of one; the softmax runs its 16-lane
+trees once a head group; each value block loaded for the second product
+serves both groups. Every head's MMA chains and reduction trees are the ones
+the one-group kernel runs, so `tests/test_dsv41_window_fold.py` compares two
+groups a pass with one group a launch bit for bit (outputs and MXFP8 codes,
+one and two sequences, 17 to 1,024 rows). Three interleaved runs: 13,649 /
+21,600 / 24,202 tok/s against 13,614 / 21,450 / 23,768 for the previous
+build; the gain is at long contexts, where every row reads its 512 selected
+keys. Scores identical at 56 deep and 30 fresh positions.
