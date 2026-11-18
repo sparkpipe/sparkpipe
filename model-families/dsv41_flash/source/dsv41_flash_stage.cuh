@@ -3156,6 +3156,7 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 		geometry->embed_offset = embed->payload_offset;
 		geometry->embed_bytes = embed->payload_bytes;
 		geometry->embed_rows = embed->rows;
+		geometry->embed_gather = D41_ROWS ? 1u : 0u;
 		geometry->head_norm_offset = norm->payload_offset;
 		geometry->head_norm_bytes = norm->payload_bytes;
 		geometry->head_offset = head->payload_offset;

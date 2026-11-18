@@ -1223,6 +1223,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | the marker build in two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
 | and compact exchange rows, four piece-copy blocks an SM (2026-11-18, below) | 11,999, 159% | 18,621, 220% | 20,466, 243% |
 | and rows re-shuffled to MoE owners by row index (2026-11-18, below) | 12,513, 166% | 19,363, 229% | 21,151, 252% |
+| and the embedding gathered once, looked up locally (2026-11-18, below) | 12,784, 170% | 20,122, 238% | 21,817, 260% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1365,3 +1366,26 @@ Balancing whole experts instead: 12,258 and 12,021 / 19,644 and 19,486 /
 21,769 and 21,790 tok/s against 12,513 / 19,363 / 21,151 for the re-shuffle
 build: +3% at 131K, -3% at 8K, for 9 GB a rank. Kept out; the code is on
 branch `topology/dsv41-second-copies` (4e4c6be2d).
+
+Embedding gathered once (2026-11-18). Each step began with the runner's
+vocab-sharded embedding: every rank looked up the rows its shard holds and an
+all-reduce summed 16,384 x 5,120 BF16 values, about 315 MB each way a rank,
+20 ms a 16K step and one round in every decode step. In rows mode a rank
+only ever reads its own rows. The model now asks the runner to gather the
+shards once (`embed_gather`, stage runner model ABI 8; an all-gather of
+1.3 GB a rank before the first step, outside any graph capture) and every
+step looks rows up locally. The all-reduce summed one value with fifteen
+zeros from +0 in FP32, so the local lookup writes +0 for -0 and nothing else
+changes: scores identical at 56 deep and 30 fresh positions, the same 40K
+answer. Three interleaved runs each: 12,784 / 20,122 / 21,817 tok/s against
+12,697 / 19,287 / 21,258 for the previous build; a lane's first request pays
+the gather once (about 0.3 s).
+
+A trace of ranks 0 and 15 on the 131K prompt (both ranks' clocks agree within
+a few ms) puts the rest of the waiting in three places: the MoE return round
+waits for the busiest expert rank (70 to 120 ms a chunk), rank 0 waits 20 to
+30 ms a chunk at the counts gather for later rows' heavier attention and
+index scoring, and the final chunk's 2,541-row tail costs about 250 ms (index
+scoring over the whole context 48 ms, weight-read-bound experts 42 ms,
+rounds 100 ms). The index-score kernel runs at about 10 TFLOPS: each warp
+re-reads every key from global memory for its own row.
