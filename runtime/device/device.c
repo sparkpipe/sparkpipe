@@ -794,6 +794,19 @@ SparkStatus SparkDeviceQueueQuery(SparkDeviceQueue *queue)
 	return(SparkDeviceQueueWait(queue,0u));
 }
 
+SparkStatus SparkDeviceQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
+{
+	SparkStatus status;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("queue_capture",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceQueueValid(queue,"queue_capture");
+	pthread_mutex_unlock(&device_mutex);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	return(SparkDeviceBackendQueueCapture(queue,capturing != 0u ? 1u : 0u));
+}
+
 SparkStatus SparkDeviceQueueDestroy(SparkDeviceQueue *queue)
 {
 	SparkStatus status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);

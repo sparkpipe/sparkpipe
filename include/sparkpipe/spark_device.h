@@ -146,6 +146,7 @@ SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner);
 SparkStatus SparkDeviceQueueAdopt(SparkDeviceQueue **queue, void *native, const char *owner);
 SparkStatus SparkDeviceQueueDestroy(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceQueueQuery(SparkDeviceQueue *queue);
+SparkStatus SparkDeviceQueueCapture(SparkDeviceQueue *queue, uint32_t capturing);
 SparkStatus SparkDeviceQueueWait(SparkDeviceQueue *queue, uint64_t timeout_ns);
 SparkStatus SparkDeviceQueueHostCallback(SparkDeviceQueue *queue, SparkDeviceHostFunction function, void *context);
 

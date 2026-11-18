@@ -677,6 +677,8 @@ int main(void)
 	if ( properties != 0 )
 		memcpy(backend,properties->backend,sizeof(backend));
 	CHECK(SparkDeviceQueueCreate(&queue,"contract") == SPARK_STATUS_OK,"create a queue");
+	CHECK(SparkDeviceQueueCapture(queue,1u) == SPARK_STATUS_UNSUPPORTED && SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,
+		"a queue the device API created is never marked as recorded into a graph, and stays answerable");
 	TestSpaces();
 	TestAdopt();
 	TestCopies(queue);

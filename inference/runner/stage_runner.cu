@@ -2255,6 +2255,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	size_t nodes = 0u;
 	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, slot);
 	SparkStatus status = prefetch != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK && state->queue != 0 )
+		status = SparkDeviceQueueCapture(state->queue, 1u);
 	if ( status == SPARK_STATUS_OK )
 	{
 		LmWeightPrefetchArm(prefetch, stream);
@@ -2264,6 +2266,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 			status = StageRunnerStepBody(state, runner, in, 0u, stream);
 			error = cudaStreamEndCapture(stream, &graph);
 		}
+		if ( state->queue != 0 )
+			(void)SparkDeviceQueueCapture(state->queue, 0u);
 		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK && error == cudaSuccess ? 1u : 0u) != cudaSuccess && error == cudaSuccess )
 			error = cudaErrorMemoryAllocation;
 	}
