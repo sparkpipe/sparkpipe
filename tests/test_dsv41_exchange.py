@@ -4,17 +4,25 @@
 Builds build/test_dsv41_exchange and runs it on an sm_121 device, sixteen ranks simulated on one
 GPU. Each owner first moves its owned rows' MXFP8 codes, scales, experts and weights to the MoE
 owner named by the row's index modulo the ranks, so that every MoE owner holds rows spread over the
-whole step; each owner's per-pair counts (MoE owner by expert rank) must add up to what the MoE
-owners count themselves. Each MoE owner numbers its rows for every rank that holds one of their six
-experts, in row order. A packed row must arrive at each such rank exactly once, with its MXFP8
-codes and scales unchanged (the expert rank multiplies them on the block-scaled kernel), its expert
-ids and its weights; a rank unpacks only real rows, packed source by source with no padding between
-them. Its finalize must sum each received
-row's local expert outputs in route order in FP32, round once to BF16 and write the result to the
-row's place in the padded return layout. The MoE owner must sum the ranks' partials in rank order
-in FP32 and round once to BF16 as the reduce-scatter it replaces does, and the row's owner must add
-the shared expert's BF16 output as the publisher's MoE adds its shared expert and write zero for
-rows past its live count. Cases cover uneven routing with two hot ranks, a partial last rank and no rows.
+whole step; each owner's counts (rows by MoE owner and expert rank, routes by expert, and rows whose
+only route into an expert's rank is that expert, by MoE owner and expert) must match the routes,
+and their sums over the owners must add up. A row's group on an expert rank (its routes into that
+rank) is one record. Each MoE owner may send up to a planned number of rows whose only route into a
+rank is one expert, the first such rows in row order, to the rank that holds that expert's backup
+copy instead; the plan is the one the stage makes from the summed counts, or random numbers of rows
+up to every such row. Each MoE owner numbers its records for every rank in row order and rank of
+the group; every group must reach its rank or the backup rank exactly once, as the planned counts
+say, with its MXFP8 codes and scales unchanged (the expert rank multiplies them on the block-scaled
+kernel), its expert ids and its weights; a backup record carries only the flagged expert, and a
+rank localizes home experts to its own slots and flagged experts to its backup slots; a rank
+unpacks only real records, packed source by source with no padding between them. Its finalize must
+sum each record's local expert outputs in route order in FP32, round once to BF16 and write the
+result to the record's place in the padded return layout. The MoE owner must sum the groups'
+partials in rank order in FP32 and round once to BF16 as the reduce-scatter it replaces does, and
+the row's owner must add the shared expert's BF16 output as the publisher's MoE adds its shared
+expert and write zero for rows past its live count. Expert outputs depend only on the token and the
+expert, so the result must equal the same sums computed without backups, bit for bit, wherever a
+group was computed. Cases cover uneven routing with two hot ranks, a partial last rank and no rows.
 The engram exchange numbers every looked-up engram row by the rank that holds it and the rank
 that owns its token row; each holder packs its rows' FP8 codes and scales, and each owner must
 decode them to the BF16 values the holder's own lookup gives, with zero for ids no rank holds

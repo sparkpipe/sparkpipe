@@ -197,11 +197,29 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaMemcpy(out_mx.data(), d_mx, out_mx.size() * 2u, cudaMemcpyDeviceToHost);
 	cudaMemcpy(out_bf.data(), d_bf, out_bf.size() * 2u, cudaMemcpyDeviceToHost);
 	cudaMemcpy(out_publisher.data(), d_publisher, out_publisher.size() * 2u, cudaMemcpyDeviceToHost);
-	uint64_t mx_differ = 0u, bf_differ = 0u;
+	const uint32_t split = groups / 2u;
+	const uint64_t group_bytes = (uint64_t)(input / 32u) * (output / 16u) * 272u;
+	uint8_t *d_upper = 0;
+	cudaMalloc(&d_upper, (groups - split) * group_bytes);
+	cudaMemcpy(d_upper, d_weight + split * group_bytes, (groups - split) * group_bytes, cudaMemcpyDeviceToDevice);
+	cudaMemset(d_weight + split * group_bytes, 0x5a, (groups - split) * group_bytes);
+	cudaMemset(d_mx, 0, out_mx.size() * 2u);
+	const int32_t split_launch = LmCellMxExpertsSplit(d_weight, d_upper, split, d_codes, d_scales, d_mx, d_offset,
+		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, 0);
+	std::vector<uint16_t> out_split((uint64_t)packed * output);
+	if ( split_launch != LM_LAUNCH_OK || cudaDeviceSynchronize() != cudaSuccess )
+	{
+		printf("FAIL split launch %d\n", split_launch);
+		return 1;
+	}
+	cudaMemcpy(out_split.data(), d_mx, out_split.size() * 2u, cudaMemcpyDeviceToHost);
+	cudaFree(d_upper);
+	uint64_t mx_differ = 0u, bf_differ = 0u, split_differ = 0u;
 	for ( uint64_t index = 0u; index < out_publisher.size(); index++ )
 	{
 		mx_differ += out_mx[index] != out_publisher[index] ? 1u : 0u;
 		bf_differ += out_bf[index] != out_publisher[index] ? 1u : 0u;
+		split_differ += out_split[index] != out_publisher[index] ? 1u : 0u;
 	}
 	double worst_mx = 0.0, worst_bf = 0.0;
 	uint64_t same = 0u;
@@ -227,9 +245,10 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 		}
 	}
 	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%; "
-		"against the publisher's fp4 GEMM (each 32-block an fp8 MMA from zero, scaled, added in FP32) mx differs in %llu, bf16 in %llu of %llu\n",
+		"against the publisher's fp4 GEMM (each 32-block an fp8 MMA from zero, scaled, added in FP32) mx differs in %llu, bf16 in %llu of %llu; "
+		"with groups from %u on read from a separate copy, %llu differ\n",
 		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size(),
-		(unsigned long long)mx_differ, (unsigned long long)bf_differ, (unsigned long long)out_publisher.size());
+		(unsigned long long)mx_differ, (unsigned long long)bf_differ, (unsigned long long)out_publisher.size(), split, (unsigned long long)split_differ);
 	cudaFree(d_weight);
 	cudaFree(d_codes);
 	cudaFree(d_scales);
@@ -241,7 +260,7 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaFree(d_weight_scales);
 	cudaFree(d_offset);
 	cudaFree(d_source);
-	return worst_mx <= 1.0 && worst_bf <= 1.0 && mx_differ == 0u ? 0 : 1;
+	return worst_mx <= 1.0 && worst_bf <= 1.0 && mx_differ == 0u && split_differ == 0u ? 0 : 1;
 }
 
 int main(void)
@@ -256,6 +275,6 @@ int main(void)
 		printf("FAIL cell_mx_cuda: %d of 4 cases\n", failures);
 		return 1;
 	}
-	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel gives the publisher's fp4 GEMM bits, and both expert kernels stay within one BF16 ulp of fp64 on gathered and packed rows\n");
+	printf("PASS cell_mx_cuda: the fp8 by fp4 block-scaled expert kernel gives the publisher's fp4 GEMM bits, and both expert kernels stay within one BF16 ulp of fp64 on gathered and packed rows, and gives the same bits when the groups past a split are read from a separate copy\n");
 	return 0;
 }

@@ -1229,6 +1229,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the route build ranked by warp matches (2026-11-18, below) | 13,383, 178% | 21,187, 250% | 23,496, 279% |
 | and the shared expert on a side stream during the MoE rounds (2026-11-18, below) | 13,613, 181% | 21,610, 255% | 23,612, 281% |
 | and attention two head groups a pass (2026-11-18, below) | 13,649, 181% | 21,600, 255% | 24,202, 288% |
+| and backup expert copies taking rows off the busiest expert rank (2026-11-18, below) | 14,411, 192% | 23,372, 276% | 25,990, 309% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1495,3 +1496,55 @@ plain page lookup and `SparkKvShardLocalPosition` returns its argument; both
 give the same address and run the same page-table checks. No measurable
 change in the lane (13,682 / 21,435 / 24,143 tok/s with it, three runs);
 scores identical.
+
+Backup expert copies take rows off the busiest expert rank (2026-11-18). A
+16K step's routed load is far from even: the hottest expert of a layer can
+serve a third of the step's rows, so in the route dump the busiest rank's
+experts ran about 8.0 ms a layer against 5.9 on average, every MoE owner
+waited for it in the return round, and the dispatch and return rounds are
+padded to the busiest pair of ranks (523 rows a pair against 336 on
+average). Each expert of layers 0-19 now has one backup copy on rank (home +
+1 + slot mod 15) mod 16, 24 experts a rank, 9.0 GB; the copies cross the
+mesh once, from the home ranks' packed cells, on the first step that
+exchanges (about 0.6 s, inside the lane's warm-up prefill).
+
+A MoE owner may now send a row whose only route into a rank is one expert to
+the rank holding that expert's backup copy instead. Dispatch and return
+records are one per row and rank of the row's experts; a backup record
+carries the row's codes and scales and only the flagged expert (the other
+routes name no expert), the backup rank multiplies it with the copy's cells
+on the same kernel (`LmCellMxExpertsSplit` reads groups past the split from
+the copies), and its finalize rounds the one expert output to BF16 exactly
+as the home rank's finalize would. The MoE owner still adds the ranks'
+partials in rank order, reading each from whichever rank computed it, so the
+sums are the same bits wherever a row went.
+
+Every rank plans the moves from the same numbers. The counts round now
+carries, besides the rows each owner sends each pair of ranks, the routes of
+every expert and, for each MoE owner and expert, the rows whose only route
+into the expert's rank is that expert (7,936 bytes a rank); the ranks sum
+them on the device, and the host reads them once an event says the copy has
+landed, without waiting for the re-shuffle round. The plan
+(`D41BackupPlan`) balances a load model of 93 route units for an active
+expert (one weight read, about 66 us, against about 0.71 us a route) plus
+its routes: up to 64 times it takes the busiest rank and moves half the gap
+to the backup rank of that rank's expert whose backup is least loaded,
+split over the MoE owners in proportion to their candidate rows. Each MoE
+owner sends the first such rows in row order up to its quota, and the plan's
+pair counts size both rounds. On the route dump the plan takes the busiest
+rank from 8.0 to 6.4 ms a layer and the padded pair from 523 to 433 rows.
+
+`tests/test_dsv41_exchange.cu` runs every case with no backups, with the
+plan and with random quotas up to every candidate row (up to 70,188
+offloaded routes in a case); expert outputs there depend only on the token
+and the expert, and the MoE owner's sums equal the sums computed without
+backups at every element. Three interleaved runs: 14,411 / 23,372 / 25,990
+tok/s against 13,664 / 21,866 / 24,158 for the previous build (+5.5%, +6.9%,
++7.6%); scores identical at 56 deep and 30 fresh positions, and the
+40,000-token answer unchanged.
+
+A second pass of the plan, moving single rows off the largest pair while the
+backup's load stays under the new busiest load, takes the padded pair to 418
+rows on the dump; at about 14 us a padded row a layer that is worth about
+0.6%, under the run-to-run spread, so it is not in the code yet.
+

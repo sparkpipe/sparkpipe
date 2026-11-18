@@ -36,10 +36,18 @@ typedef struct LmCellMmaSegments
 {
 	const uint8_t *weight[LM_CELL_MMA_MAX_SEGMENTS];
 	uint64_t group_bytes;
+	uint64_t upper_offset;
 	uint32_t tiles;
 	uint32_t column_cells;
+	uint32_t split;
 }
 LmCellMmaSegments;
+
+static __host__ __device__ __forceinline__ uint64_t LmCellMmaGroupOffset(const LmCellMmaSegments &segments, uint32_t group)
+{
+	return(segments.split != 0u && group >= segments.split ? segments.upper_offset + (uint64_t)(group - segments.split) * segments.group_bytes :
+		(uint64_t)group * segments.group_bytes);
+}
 
 typedef struct LmCellMmaStride
 {
@@ -293,7 +301,7 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	const uint32_t segment_cells = segments.column_cells != 0u ? segments.column_cells : args.cells;
 	const uint32_t column_segment = block_first / segment_cells;
 	const uint64_t tile_stride = (uint64_t)segment_cells * LM_CELL_MMA_CELL_BYTES;
-	const uint64_t cells_offset = (uint64_t)group * segments.group_bytes + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
+	const uint64_t cells_offset = LmCellMmaGroupOffset(segments, group) + (uint64_t)(block_first - column_segment * segment_cells) * LM_CELL_MMA_CELL_BYTES;
 	uint32_t first, end, last;
 	float global = 1.0f;
 	LmDependentWait();

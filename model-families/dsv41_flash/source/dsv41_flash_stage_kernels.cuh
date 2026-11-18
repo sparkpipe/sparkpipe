@@ -3,6 +3,7 @@
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kv.cuh"
@@ -708,85 +709,335 @@ static __global__ void D41FfnUnpackKernel(const uint8_t *__restrict__ received, 
 	xq[(uint64_t)row * hidden + element] = LmFloatToBf16(LmE4m3ToFloat(block[(uint64_t)index * hidden + element]) * __uint_as_float(exponent << 23u));
 }
 
-template <uint32_t RANKS>
-static __global__ void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t top_k, const uint8_t *__restrict__ owner,
+#define D41K_BACKUP_FLAG 0x80000000u
+#define D41K_BACKUP_EXPERT_ROUTES 93u
+#define D41K_BACKUP_ROUNDS 64u
+#define D41K_SLOT_WARPS 32u
+
+template <uint32_t RANKS, uint32_t EXPERTS>
+struct D41ExchangeCounts
+{
+	uint32_t pair[RANKS * RANKS];
+	uint16_t routes[EXPERTS];
+	uint8_t sole[RANKS * EXPERTS];
+};
+
+template <uint32_t RANKS, uint32_t EXPERTS>
+struct D41ExchangeTotals
+{
+	uint32_t pair[RANKS * RANKS];
+	uint32_t routes[EXPERTS];
+	uint16_t sole[RANKS * EXPERTS];
+};
+
+template <uint32_t RANKS, uint32_t EXPERTS>
+static __global__ void D41ExchangeCountsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t first, uint32_t top_k,
+	const uint8_t *__restrict__ owner, uint32_t backups, D41ExchangeCounts<RANKS, EXPERTS> *__restrict__ counts)
+{
+	__shared__ uint32_t pair[RANKS * RANKS], routes[EXPERTS], sole[RANKS * EXPERTS];
+	for ( uint32_t i = threadIdx.x; i < RANKS * EXPERTS; i += blockDim.x )
+		sole[i] = 0u;
+	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += blockDim.x )
+		routes[i] = 0u;
+	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
+		pair[i] = 0u;
+	__syncthreads();
+	for ( uint32_t row = threadIdx.x; row < rows; row += blockDim.x )
+	{
+		const uint32_t target = (first + row) % RANKS;
+		uint32_t mask = 0u, twice = 0u;
+		for ( uint32_t k = 0u; k < top_k; ++k )
+		{
+			const uint32_t home = 1u << owner[route_expert[(uint64_t)row * top_k + k]];
+			twice |= mask & home;
+			mask |= home;
+		}
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+			if ( ((mask >> rank) & 1u) != 0u )
+				atomicAdd(&pair[target * RANKS + rank], 1u);
+		for ( uint32_t k = 0u; k < top_k && backups != 0u; ++k )
+		{
+			const uint32_t expert = route_expert[(uint64_t)row * top_k + k];
+			atomicAdd(&routes[expert], 1u);
+			if ( ((twice >> owner[expert]) & 1u) == 0u )
+				atomicAdd(&sole[target * EXPERTS + expert], 1u);
+		}
+	}
+	__syncthreads();
+	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
+		counts->pair[i] = pair[i];
+	for ( uint32_t i = threadIdx.x; i < EXPERTS && backups != 0u; i += blockDim.x )
+		counts->routes[i] = (uint16_t)routes[i];
+	for ( uint32_t i = threadIdx.x; i < RANKS * EXPERTS && backups != 0u; i += blockDim.x )
+		counts->sole[i] = (uint8_t)sole[i];
+}
+
+template <uint32_t RANKS, uint32_t EXPERTS>
+static __global__ void D41ExchangeTotalsKernel(const uint8_t *__restrict__ gathered, uint64_t stride, uint32_t backups,
+	D41ExchangeTotals<RANKS, EXPERTS> *__restrict__ totals)
+{
+	const uint32_t items = RANKS * RANKS + (backups != 0u ? EXPERTS + RANKS * EXPERTS : 0u);
+	for ( uint32_t item = blockIdx.x * blockDim.x + threadIdx.x; item < items; item += gridDim.x * blockDim.x )
+	{
+		uint32_t total = 0u;
+		for ( uint32_t sender = 0u; sender < RANKS; ++sender )
+		{
+			const D41ExchangeCounts<RANKS, EXPERTS> *counts = (const D41ExchangeCounts<RANKS, EXPERTS> *)(gathered + sender * stride);
+			total += item < RANKS * RANKS ? counts->pair[item] : item < RANKS * RANKS + EXPERTS ? (uint32_t)counts->routes[item - RANKS * RANKS] :
+				(uint32_t)counts->sole[item - RANKS * RANKS - EXPERTS];
+		}
+		if ( item < RANKS * RANKS )
+			totals->pair[item] = total;
+		else if ( item < RANKS * RANKS + EXPERTS )
+			totals->routes[item - RANKS * RANKS] = total;
+		else
+			totals->sole[item - RANKS * RANKS - EXPERTS] = (uint16_t)total;
+	}
+}
+
+template <uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL>
+static inline uint32_t D41BackupPlan(const D41ExchangeTotals<RANKS, EXPERTS> *totals, const uint8_t *owner, const uint8_t *backup,
+	const uint16_t *expert_at, uint32_t limit, uint16_t *quota, uint32_t *pair)
+{
+	uint64_t load[RANKS] = {0};
+	uint32_t avail[EXPERTS], moved[EXPERTS], sole[EXPERTS], any = 0u;
+	uint8_t paid[EXPERTS];
+	memcpy(pair, totals->pair, sizeof(totals->pair));
+	memset(quota, 0, (size_t)RANKS * EXPERTS * sizeof(uint16_t));
+	for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
+	{
+		uint32_t total = 0u;
+		for ( uint32_t target = 0u; target < RANKS; ++target )
+			total += totals->sole[target * EXPERTS + expert];
+		sole[expert] = total;
+		avail[expert] = backup[expert] < RANKS && backup[expert] != owner[expert] ? total : 0u;
+		moved[expert] = 0u;
+		paid[expert] = 0u;
+		if ( totals->routes[expert] != 0u )
+			load[owner[expert]] += D41K_BACKUP_EXPERT_ROUTES + totals->routes[expert];
+	}
+	for ( uint32_t round = 0u; round < D41K_BACKUP_ROUNDS; ++round )
+	{
+		uint32_t busiest = 0u, best = EXPERTS;
+		for ( uint32_t rank = 1u; rank < RANKS; ++rank )
+			busiest = load[rank] > load[busiest] ? rank : busiest;
+		for ( uint32_t place = 0u; place < LOCAL; ++place )
+		{
+			const uint32_t expert = expert_at[busiest * LOCAL + place];
+			if ( expert < EXPERTS && avail[expert] != 0u && (best == EXPERTS || load[backup[expert]] < load[backup[best]] ||
+				(load[backup[expert]] == load[backup[best]] && avail[expert] > avail[best])) )
+				best = expert;
+		}
+		if ( best == EXPERTS )
+			break;
+		const uint64_t extra = paid[best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES, other = load[backup[best]] + extra;
+		const uint64_t half = load[busiest] > other ? (load[busiest] - other) / 2u : 0u;
+		const uint32_t take = half < avail[best] ? (uint32_t)half : avail[best];
+		if ( take == 0u )
+			break;
+		load[busiest] -= take;
+		load[backup[best]] += take + extra;
+		paid[best] = 1u;
+		avail[best] -= take;
+		moved[best] += take;
+		any = 1u;
+	}
+	for ( uint32_t expert = 0u; expert < EXPERTS && any != 0u; ++expert )
+	{
+		uint32_t given = 0u;
+		if ( moved[expert] == 0u )
+			continue;
+		for ( uint32_t target = 0u; target < RANKS; ++target )
+		{
+			const uint32_t share = (uint32_t)((uint64_t)moved[expert] * totals->sole[target * EXPERTS + expert] / sole[expert]);
+			quota[target * EXPERTS + expert] = (uint16_t)share;
+			given += share;
+		}
+		for ( uint32_t target = 0u; given < moved[expert]; target = (target + 1u) % RANKS )
+			if ( quota[target * EXPERTS + expert] < totals->sole[target * EXPERTS + expert] )
+			{
+				quota[target * EXPERTS + expert]++;
+				given++;
+			}
+		for ( uint32_t target = 0u; target < RANKS; ++target )
+		{
+			pair[target * RANKS + owner[expert]] -= quota[target * EXPERTS + expert];
+			pair[target * RANKS + backup[expert]] += quota[target * EXPERTS + expert];
+		}
+	}
+	for ( uint32_t index = 0u; index < RANKS * RANKS && any != 0u; ++index )
+		if ( pair[index] > limit )
+		{
+			memcpy(pair, totals->pair, sizeof(totals->pair));
+			memset(quota, 0, (size_t)RANKS * EXPERTS * sizeof(uint16_t));
+			return 0u;
+		}
+	return any;
+}
+
+template <uint32_t RANKS, uint32_t EXPERTS, uint32_t TOPK>
+static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows,
+	const uint8_t *__restrict__ owner, const uint8_t *__restrict__ backup, const uint16_t *__restrict__ quota, uint32_t capacity,
 	uint32_t *__restrict__ slot, uint32_t *__restrict__ count)
 {
-	__shared__ uint32_t totals[32][RANKS];
-	__shared__ uint32_t base[RANKS];
-	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u;
+	constexpr uint32_t WORDS = (RANKS + 3u) / 4u;
+	static_assert(RANKS <= 16u && TOPK * 32u < 256u, "a row names its rank in four bits and a warp's records to a rank fit eight");
+	__shared__ uint16_t sole_rank[D41K_SLOT_WARPS][EXPERTS];
+	__shared__ uint16_t sole_base[EXPERTS];
+	__shared__ uint32_t target_rank[D41K_SLOT_WARPS][RANKS];
+	__shared__ uint32_t target_base[RANKS];
+	const uint32_t lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u;
+	for ( uint32_t i = threadIdx.x; i < EXPERTS; i += blockDim.x )
+		sole_base[i] = 0u;
 	if ( threadIdx.x < RANKS )
-		base[threadIdx.x] = 0u;
-	__syncthreads();
+		target_base[threadIdx.x] = 0u;
 	for ( uint32_t chunk = 0u; chunk < rows; chunk += blockDim.x )
 	{
 		const uint32_t row = chunk + threadIdx.x;
-		uint32_t mask = 0u, before[RANKS];
-		if ( row < rows )
-			for ( uint32_t k = 0u; k < top_k; ++k )
-				mask |= 1u << owner[route_expert[(uint64_t)row * top_k + k]];
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+		uint32_t expert[TOPK], candidate[TOPK], before[TOPK], peers[TOPK], counter[WORDS], inclusive[WORDS], mask = 0u, twice = 0u;
+		uint64_t target = 0u;
+		for ( uint32_t i = threadIdx.x; i < D41K_SLOT_WARPS * EXPERTS; i += blockDim.x )
+			sole_rank[i / EXPERTS][i % EXPERTS] = 0u;
+		for ( uint32_t k = 0u; k < TOPK; ++k )
 		{
-			const uint32_t vote = __ballot_sync(0xffffffffu, (mask >> rank) & 1u);
-			before[rank] = __popc(vote & ((1u << lane) - 1u));
-			if ( lane == 0u )
-				totals[warp][rank] = __popc(vote);
+			expert[k] = row < rows ? route_expert[(uint64_t)row * TOPK + k] : EXPERTS;
+			const uint32_t home = expert[k] < EXPERTS ? 1u << owner[expert[k]] : 0u;
+			twice |= mask & home;
+			mask |= home;
 		}
+		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+			target |= (uint64_t)rank << (4u * rank);
+		for ( uint32_t k = 0u; k < TOPK; ++k )
+		{
+			candidate[k] = quota != 0 && expert[k] < EXPERTS && ((twice >> owner[expert[k]]) & 1u) == 0u && quota[expert[k]] != 0u ? expert[k] : EXPERTS;
+			before[k] = peers[k] = 0u;
+		}
+		for ( uint32_t source = 0u; source < 32u && quota != 0; ++source )
+			for ( uint32_t j = 0u; j < TOPK; ++j )
+			{
+				const uint32_t other = __shfl_sync(0xffffffffu, candidate[j], source);
+				for ( uint32_t k = 0u; k < TOPK; ++k )
+					if ( candidate[k] != EXPERTS && other == candidate[k] )
+					{
+						before[k] += source < lane ? 1u : 0u;
+						peers[k] += 1u;
+					}
+			}
+		__syncthreads();
+		for ( uint32_t k = 0u; k < TOPK; ++k )
+			if ( candidate[k] != EXPERTS && before[k] == 0u )
+				sole_rank[warp][candidate[k]] = (uint16_t)peers[k];
+		__syncthreads();
+		for ( uint32_t e = threadIdx.x; e < EXPERTS && quota != 0; e += blockDim.x )
+		{
+			uint32_t running = sole_base[e];
+			for ( uint32_t w = 0u; w < D41K_SLOT_WARPS; ++w )
+			{
+				const uint32_t here = sole_rank[w][e];
+				sole_rank[w][e] = (uint16_t)running;
+				running += here;
+			}
+			sole_base[e] = (uint16_t)running;
+		}
+		__syncthreads();
+		for ( uint32_t k = 0u; k < TOPK; ++k )
+			if ( candidate[k] != EXPERTS && (uint32_t)sole_rank[warp][candidate[k]] + before[k] < quota[candidate[k]] )
+			{
+				const uint32_t home = owner[candidate[k]];
+				target = (target & ~(0xfull << (4u * home))) | ((uint64_t)backup[candidate[k]] << (4u * home));
+			}
+		for ( uint32_t w = 0u; w < WORDS; ++w )
+			counter[w] = 0u;
+		for ( uint32_t home = 0u; home < RANKS; ++home )
+			if ( ((mask >> home) & 1u) != 0u )
+			{
+				const uint32_t to = (uint32_t)(target >> (4u * home)) & 0xfu;
+				counter[to / 4u] += 1u << (8u * (to % 4u));
+			}
+		for ( uint32_t w = 0u; w < WORDS; ++w )
+		{
+			inclusive[w] = counter[w];
+			for ( uint32_t step = 1u; step < 32u; step <<= 1u )
+			{
+				const uint32_t add = __shfl_up_sync(0xffffffffu, inclusive[w], step);
+				inclusive[w] += lane >= step ? add : 0u;
+			}
+		}
+		if ( lane == 31u )
+			for ( uint32_t to = 0u; to < RANKS; ++to )
+				target_rank[warp][to] = (inclusive[to / 4u] >> (8u * (to % 4u))) & 0xffu;
 		__syncthreads();
 		if ( threadIdx.x < RANKS )
 		{
-			uint32_t running = base[threadIdx.x];
-			for ( uint32_t w = 0u; w < warps; ++w )
+			uint32_t running = target_base[threadIdx.x];
+			for ( uint32_t w = 0u; w < D41K_SLOT_WARPS; ++w )
 			{
-				const uint32_t here = totals[w][threadIdx.x];
-				totals[w][threadIdx.x] = running;
+				const uint32_t here = target_rank[w][threadIdx.x];
+				target_rank[w][threadIdx.x] = running;
 				running += here;
 			}
-			base[threadIdx.x] = running;
+			target_base[threadIdx.x] = running;
 		}
 		__syncthreads();
 		if ( row < rows )
-			for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-				slot[(uint64_t)row * RANKS + rank] = ((mask >> rank) & 1u) != 0u ? totals[warp][rank] + before[rank] : UINT32_MAX;
+		{
+			uint32_t used[WORDS];
+			for ( uint32_t w = 0u; w < WORDS; ++w )
+				used[w] = inclusive[w] - counter[w];
+			for ( uint32_t home = 0u; home < RANKS; ++home )
+			{
+				uint32_t at = UINT32_MAX;
+				if ( ((mask >> home) & 1u) != 0u )
+				{
+					const uint32_t to = (uint32_t)(target >> (4u * home)) & 0xfu;
+					at = to * capacity + target_rank[warp][to] + ((used[to / 4u] >> (8u * (to % 4u))) & 0xffu);
+					used[to / 4u] += 1u << (8u * (to % 4u));
+				}
+				slot[(uint64_t)row * RANKS + home] = at;
+			}
+		}
 		__syncthreads();
 	}
 	if ( threadIdx.x < RANKS )
-		count[threadIdx.x] = base[threadIdx.x];
+		count[threadIdx.x] = target_base[threadIdx.x];
 }
 
 static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
-	uint32_t routes, const uint8_t *__restrict__ owner, const uint8_t *__restrict__ slot, uint32_t rank, uint32_t local_experts, uint32_t experts)
+	uint32_t routes, const uint8_t *__restrict__ group, uint32_t local_experts, uint32_t groups, uint32_t experts)
 {
 	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( route >= routes )
 		return;
-	const uint32_t expert = route_expert[route];
+	const uint32_t value = route_expert[route], expert = value & ~D41K_BACKUP_FLAG;
+	const uint32_t local = expert < experts ? group[expert] : groups;
 	route_global[route] = expert;
-	if ( expert < experts && owner[expert] == rank )
-		route_expert[route] = slot[expert];
+	if ( (value & D41K_BACKUP_FLAG) != 0u ? local >= local_experts && local < groups : local < local_experts )
+		route_expert[route] = local;
 	else
 	{
-		route_expert[route] = local_experts;
+		route_expert[route] = groups;
 		route_weight[route] = 0.0f;
 	}
 }
 
 static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
-	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint32_t *__restrict__ slot, uint32_t ranks,
-	uint32_t capacity, uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ send)
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, const uint32_t *__restrict__ slot, const uint8_t *__restrict__ owner,
+	uint32_t ranks, uint32_t capacity, uint32_t hidden, uint32_t top_k, uint32_t experts, uint64_t record_bytes, uint8_t *__restrict__ send)
 {
-	const uint32_t row = blockIdx.x, rank = blockIdx.y, at = slot[(uint64_t)row * ranks + rank];
+	const uint32_t row = blockIdx.x, home = blockIdx.y, at = slot[(uint64_t)row * ranks + home];
 	const uint32_t scale_bytes = hidden / SPARK_DSV41_FLASH_FP8_BLOCK;
 	if ( at == UINT32_MAX )
 		return;
-	uint8_t *record = send + ((uint64_t)rank * capacity + at) * record_bytes;
+	const uint32_t backup = at / capacity != home ? 1u : 0u;
+	uint8_t *record = send + (uint64_t)at * record_bytes;
 	for ( uint32_t i = threadIdx.x; i < hidden / 16u; i += blockDim.x )
 		((uint4 *)record)[i] = ((const uint4 *)(codes + (uint64_t)row * hidden))[i];
 	for ( uint32_t i = threadIdx.x; i < scale_bytes; i += blockDim.x )
 		record[hidden + i] = scales[(uint64_t)row * scale_bytes + i];
 	for ( uint32_t k = threadIdx.x; k < top_k; k += blockDim.x )
 	{
-		((uint32_t *)(record + hidden + scale_bytes))[k] = route_expert[(uint64_t)row * top_k + k];
+		const uint32_t expert = route_expert[(uint64_t)row * top_k + k];
+		((uint32_t *)(record + hidden + scale_bytes))[k] = backup == 0u ? expert : owner[expert] == home ? expert | D41K_BACKUP_FLAG : experts;
 		((float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[k] = route_weight[(uint64_t)row * top_k + k];
 	}
 }
@@ -878,29 +1129,6 @@ static __host__ __device__ __forceinline__ uint32_t D41ShuffleCount(uint32_t sou
 	return live > offset ? (live - offset - 1u) / ranks + 1u : 0u;
 }
 
-template <uint32_t RANKS>
-static __global__ void D41ShuffleCountsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows, uint32_t first, uint32_t top_k,
-	const uint8_t *__restrict__ owner, uint32_t *__restrict__ counts)
-{
-	__shared__ uint32_t totals[RANKS * RANKS];
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
-		totals[i] = 0u;
-	__syncthreads();
-	for ( uint32_t row = threadIdx.x; row < rows; row += blockDim.x )
-	{
-		uint32_t mask = 0u;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-			mask |= 1u << owner[route_expert[(uint64_t)row * top_k + k]];
-		const uint32_t target = (first + row) % RANKS;
-		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
-			if ( ((mask >> rank) & 1u) != 0u )
-				atomicAdd(&totals[target * RANKS + rank], 1u);
-	}
-	__syncthreads();
-	for ( uint32_t i = threadIdx.x; i < RANKS * RANKS; i += blockDim.x )
-		counts[i] = totals[i];
-}
-
 static __global__ void D41ShufflePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
 	const uint32_t *__restrict__ route_expert, const float *__restrict__ route_weight, uint32_t first, uint32_t ranks, uint32_t capacity,
 	uint32_t hidden, uint32_t top_k, uint64_t record_bytes, uint8_t *__restrict__ send)
@@ -941,7 +1169,7 @@ static __global__ void D41ShuffleUnpackKernel(const uint8_t *__restrict__ receiv
 
 template <uint32_t RANKS>
 static __global__ void D41ShuffleSumKernel(const uint16_t *__restrict__ landing, const uint32_t *__restrict__ slot,
-	D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
+	D41ReceivedRows<RANKS> received, uint32_t shuffle, uint32_t hidden, uint16_t *__restrict__ output)
 {
 	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
 	uint4 *out = (uint4 *)(output + ((uint64_t)source * shuffle + index) * hidden);
@@ -952,7 +1180,7 @@ static __global__ void D41ShuffleSumKernel(const uint16_t *__restrict__ landing,
 		{
 			const uint32_t at = slot[(uint64_t)row * RANKS + rank];
 			if ( at != UINT32_MAX )
-				D41AddBf16x8(total, ((const uint4 *)(landing + ((uint64_t)rank * capacity + at) * hidden))[vector]);
+				D41AddBf16x8(total, ((const uint4 *)(landing + (uint64_t)at * hidden))[vector]);
 		}
 		out[vector] = D41RoundBf16x8(total);
 	}
