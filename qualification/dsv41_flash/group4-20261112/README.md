@@ -1222,6 +1222,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the tail owned like the rest (2026-11-18) | 11,591, 154% | 17,704, 209% | 19,723, 235% |
 | the marker build in two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
 | and compact exchange rows, four piece-copy blocks an SM (2026-11-18, below) | 11,999, 159% | 18,621, 220% | 20,466, 243% |
+| and rows re-shuffled to MoE owners by row index (2026-11-18, below) | 12,513, 166% | 19,363, 229% | 21,151, 252% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1312,3 +1313,33 @@ rows on average and by up to 71%. Two costs follow from it.
    bring it to the average; that is exact only if owners rebuild each home
    rank's partial from per-route outputs, and it needs the second copies
    loaded.
+
+Rows re-shuffled to MoE owners (2026-11-18). Each owner now sends its owned
+rows' FP8 codes, scales, experts and weights to the MoE owner named by the
+row's index modulo 16 (a uniform all-to-all, 64 rows a pair on a 16,384-row
+step). The MoE owner runs the exchange for rows spread over the whole step,
+sums the ranks' partials in rank order, rounds once and returns the result;
+the row's owner adds the shared expert. The per-pair counts the capacity
+needs travel in one all-gather before the re-shuffle (each owner counts, for
+every MoE owner and expert rank, the rows it will contribute), so the host
+reads them while the re-shuffle runs. Same sums, same roundings, same order.
+Two extra rounds a layer (about 20 ms a step) against a busiest pair of 523
+rows instead of 821. Exchange test (owner to MoE owner to expert rank and
+back, nine cases) passes; scores identical at 56 deep and 30 fresh
+positions. Eight runs: 12,338-12,691 / 19,068-19,578 / 21,036-21,257 tok/s;
+the previous build 12,000-12,114 / 18,405-18,654 / 20,479-20,584 in three
+runs the same session.
+
+A trace of the first chunk shows where the rest goes: the MoE return round
+fell from 259 to 224 ms a step and the send from 72 to 52 ms, but 175 ms of
+the return is waiting for the busiest expert rank. Next: two copies of every
+expert, the copy chosen per step for balance, and per-route returns so that
+each MoE owner rebuilds every home rank's partial exactly (simulated: busiest
+rank's experts 239 to 176 ms a step, 332 to 285 piece steps).
+
+Seen four times in about 45 runs today, on every build: one rank's first
+decode graph capture after a prefill fails (`cuda=901`, the capture was
+already invalid at the step's first collective, right after the embedding),
+and the other ranks time out. Not reproduced in eight runs with the driver's
+error log on (`CUDA_LOG_FILE=stderr`); a thread-local capture that loads
+kernels lazily while other streams copy captures fine in isolation.
