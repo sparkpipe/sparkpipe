@@ -1337,9 +1337,31 @@ expert, the copy chosen per step for balance, and per-route returns so that
 each MoE owner rebuilds every home rank's partial exactly (simulated: busiest
 rank's experts 239 to 176 ms a step, 332 to 285 piece steps).
 
-Seen four times in about 45 runs today, on every build: one rank's first
-decode graph capture after a prefill fails (`cuda=901`, the capture was
-already invalid at the step's first collective, right after the embedding),
-and the other ranks time out. Not reproduced in eight runs with the driver's
-error log on (`CUDA_LOG_FILE=stderr`); a thread-local capture that loads
-kernels lazily while other streams copy captures fine in isolation.
+Seen five times in about 50 runs today, on every build: one rank's first
+decode graph capture after a prefill fails (`cuda=901`) and the other ranks
+time out. With the driver's error log on (`CUDA_LOG_FILE=stderr`) a failing
+rank showed the cause: another thread's `cuStreamQuery` on the stream being
+captured returned 900 (`CUDA_ERROR_STREAM_CAPTURE_UNSUPPORTED`), and the
+runner's next launch found the capture invalidated. The runner hands its
+stream to the device API as an adopted queue; when a KV worker stamps or
+copies into a buffer that queue has stamped, the device API asks whether the
+adopted queue's work is done, which queries the runner's stream. The runner
+now marks its adopted queue for the length of a capture
+(`SparkDeviceQueueCapture`); while marked, the device API reads the queue as
+busy without touching its stream, and waits poll instead of synchronizing.
+`tests/test_device_capture_cuda.py` reproduces the invalidation with a raw
+query from another thread and shows queries, timed waits and stamped fills
+against a marked queue leave the capture whole.
+
+Second expert copies (2026-11-18, not on). Each expert also held on a
+second rank (9 GB a rank for layers 0-19, filled over the mesh at the first
+long prefill), the copy chosen per step, routes sent and returned one by one
+so that each MoE owner rebuilds every home rank's partial in route order
+(exact: 56 deep and 30 fresh positions identical; the exchange test picks
+copies at random). Balancing each MoE owner's routes per expert spread every
+expert over both copies, so each rank read about twice the expert weights
+and lost what balance gained (rank 0's experts 160 to 186 ms a step).
+Balancing whole experts instead: 12,258 and 12,021 / 19,644 and 19,486 /
+21,769 and 21,790 tok/s against 12,513 / 19,363 / 21,151 for the re-shuffle
+build: +3% at 131K, -3% at 8K, for 9 GB a rank. Kept out; the code is on
+branch `topology/dsv41-second-copies` (4e4c6be2d).
