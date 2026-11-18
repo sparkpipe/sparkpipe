@@ -1453,13 +1453,22 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 	}
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, ring_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, step->commit, (const uint32_t *)0);
-	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
 	{
-		const uint8_t *part_out = codes + (uint64_t)(group / 2u) * part_bytes;
-		const uint64_t sub = group % 2u;
-		if ( LmMxGemmDense(part_out + sub * own * D41_GROUP_WIDTH, part_out + part_codes + sub * own * (D41_GROUP_WIDTH / D41_FP8_BLOCK),
-			layer->o_a[group].weight, layer->o_a[group].scale, state->wo_a_out, own, D41_GROUP_WIDTH, D41_GROUP_ROWS, D41_WO_A_ROWS, group * D41_GROUP_ROWS,
-			sms, stream) != LM_LAUNCH_OK )
+		const uint8_t *group_codes[D41_LOCAL_GROUPS], *group_scales[D41_LOCAL_GROUPS], *group_weights[D41_LOCAL_GROUPS], *group_weight_scales[D41_LOCAL_GROUPS];
+		uint32_t group_columns[D41_LOCAL_GROUPS];
+		static_assert(D41_LOCAL_GROUPS <= LM_MX_MAX_GROUPS, "one launch multiplies every output group");
+		for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
+		{
+			const uint8_t *part_out = codes + (uint64_t)(group / 2u) * part_bytes;
+			const uint64_t sub = group % 2u;
+			group_codes[group] = part_out + sub * own * D41_GROUP_WIDTH;
+			group_scales[group] = part_out + part_codes + sub * own * (D41_GROUP_WIDTH / D41_FP8_BLOCK);
+			group_weights[group] = layer->o_a[group].weight;
+			group_weight_scales[group] = layer->o_a[group].scale;
+			group_columns[group] = group * D41_GROUP_ROWS;
+		}
+		if ( LmMxGemmGrouped(group_codes, group_scales, group_weights, group_weight_scales, group_columns, D41_LOCAL_GROUPS, state->wo_a_out, own,
+			D41_GROUP_WIDTH, D41_GROUP_ROWS, D41_WO_A_ROWS, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	if ( LmMxQuantize(state->wo_a_out, state->mx.codes, state->mx.scales, (uint64_t)own * D41_WO_A_ROWS, stream) != LM_LAUNCH_OK ||

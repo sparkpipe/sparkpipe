@@ -1232,6 +1232,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and backup expert copies taking rows off the busiest expert rank (2026-11-18, below) | 14,411, 192% | 23,372, 276% | 25,990, 309% |
 | and a leaner expert loop with the same bits (2026-11-18, below) | 14,370, 191% | 23,773, 281% | 26,343, 313% |
 | and the plan's second pass shrinking the padded pair (2026-11-18, below) | 14,861, 198% | 23,733, 280% | 26,559, 316% |
+| and the owner's eight o_a groups in one launch (2026-11-18, below) | 14,805, 197% | 24,030, 284% | 26,975, 321% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1608,4 +1609,24 @@ Three interleaved runs: 14,861 / 23,733 / 26,559 tok/s against 14,451 /
 23,433 / 26,140 for the expert-loop build in the same session; scores
 identical at 56 deep and 30 fresh positions. This replaces the note above
 that the second pass was not in the code.
+
+The owner's eight o_a groups in one launch (2026-11-18). Each owner
+multiplied its 1,024 rows by the eight o_a groups as eight MXFP8 GEMMs of
+64 tiles each (4,096 to 1,024, 128 x 128 tiles), so each launch ran one full
+wave on the 48 SMs and a second wave a third full. `LmMxGemmGrouped` runs up
+to eight same-shape GEMMs in one persistent grid: a tile's group gives its
+activation, weight and scale pointers and its output column offset, and
+every output element is the same sum in the same order, so
+`tests/cuda/mx_gemm_cuda.cu` compares a grouped launch with one launch a
+group bit for bit (eight groups of 1,024 x 4,096 x 1,024, three groups of
+300 rows, one group).
+
+Three interleaved runs: 14,805 / 24,030 / 26,975 tok/s against 14,554 /
+23,935 / 26,717 for the capacity-pass build in the same session; scores
+identical at 56 deep and 30 fresh positions. On one Spark the 4,096-to-1,024
+groups ran 0.109 ms each as eight launches. Two other things measured for
+the dense MXFP8 GEMM and not taken: stages 64 wide in K (four or five
+stages, or 128 x 256 tiles in three) were all slower than the 128 x 128 x
+128 three-stage tile (65 to 87 TFLOPS against 107 on the owner shapes), and
+the best existing tile per shape would save 2% of the dense time.
 

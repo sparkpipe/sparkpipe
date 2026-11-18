@@ -246,6 +246,58 @@ static void ProbeGemm(uint32_t rows, uint32_t input, uint32_t output, uint32_t s
 		failed == probe_failures ? "PASS" : "FAIL",rows,input,output,worst,(unsigned long long)differ);
 }
 
+static void ProbeGrouped(uint32_t rows, uint32_t input, uint32_t output, uint32_t count, uint32_t seed, cudaStream_t stream)
+{
+	const uint64_t a_count = (uint64_t)rows * input,w_count = (uint64_t)output * input,stride = (uint64_t)output * count,out_count = (uint64_t)rows * stride;
+	std::vector<uint8_t> bytes((a_count + w_count) * count),scales((a_count + w_count) / 32u * count);
+	std::vector<uint16_t> grouped(out_count),single(out_count);
+	const uint8_t *activation[LM_MX_MAX_GROUPS],*activation_scale[LM_MX_MAX_GROUPS],*weight[LM_MX_MAX_GROUPS],*weight_scale[LM_MX_MAX_GROUPS];
+	uint32_t columns[LM_MX_MAX_GROUPS],member,failed = probe_failures;
+	uint8_t *device_bytes,*device_scales;
+	uint16_t *device_out;
+	uint64_t index,differ = 0u;
+	for (index=0u; index<bytes.size(); index++)
+	{
+		uint8_t code = (uint8_t)ProbeHash(index * 7u + seed);
+		bytes[index] = (code & 0x7fu) == 0x7fu ? (uint8_t)(code ^ 1u) : code;
+	}
+	for (index=0u; index<scales.size(); index++)
+		scales[index] = (uint8_t)(116u + ProbeHash(index + seed * 13u) % 9u);
+	PROBE_CUDA(cudaMalloc(&device_bytes,bytes.size()));
+	PROBE_CUDA(cudaMalloc(&device_scales,scales.size()));
+	PROBE_CUDA(cudaMalloc(&device_out,out_count * 2u));
+	PROBE_CUDA(cudaMemcpy(device_bytes,bytes.data(),bytes.size(),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaMemcpy(device_scales,scales.data(),scales.size(),cudaMemcpyHostToDevice));
+	for (member=0u; member<count; member++)
+	{
+		activation[member] = device_bytes + member * (a_count + w_count);
+		weight[member] = activation[member] + a_count;
+		activation_scale[member] = device_scales + member * (a_count + w_count) / 32u;
+		weight_scale[member] = activation_scale[member] + a_count / 32u;
+		columns[member] = member * output;
+	}
+	PROBE_CUDA(cudaMemsetAsync(device_out,0xff,out_count * 2u,stream));
+	PROBE_OK(LmMxGemmGrouped(activation,activation_scale,weight,weight_scale,columns,count,device_out,rows,input,output,(uint32_t)stride,probe_multiprocessors,
+		stream));
+	PROBE_CUDA(cudaStreamSynchronize(stream));
+	PROBE_CUDA(cudaMemcpy(grouped.data(),device_out,out_count * 2u,cudaMemcpyDeviceToHost));
+	PROBE_CUDA(cudaMemsetAsync(device_out,0xff,out_count * 2u,stream));
+	for (member=0u; member<count; member++)
+		PROBE_OK(LmMxGemmDense(activation[member],activation_scale[member],weight[member],weight_scale[member],device_out,rows,input,output,(uint32_t)stride,
+			columns[member],probe_multiprocessors,stream));
+	PROBE_CUDA(cudaStreamSynchronize(stream));
+	PROBE_CUDA(cudaMemcpy(single.data(),device_out,out_count * 2u,cudaMemcpyDeviceToHost));
+	for (index=0u; index<out_count; index++)
+		differ += grouped[index] != single[index] ? 1u : 0u;
+	if ( differ != 0u )
+		probe_failures++;
+	PROBE_CUDA(cudaFree(device_bytes));
+	PROBE_CUDA(cudaFree(device_scales));
+	PROBE_CUDA(cudaFree(device_out));
+	printf("%s grouped mx gemm %u groups rows%u K%u N%u: %llu outputs differ from one launch a group\n",failed == probe_failures ? "PASS" : "FAIL",count,rows,
+		input,output,(unsigned long long)differ);
+}
+
 int main(void)
 {
 	static const uint32_t shape[][3] = {
@@ -262,12 +314,15 @@ int main(void)
 	ProbeQuantize(4128u,3u,0u,stream);
 	for (index=0u; index<sizeof(shape) / sizeof(shape[0]); index++)
 		ProbeGemm(shape[index][0],shape[index][1],shape[index][2],index + 1u,stream);
+	ProbeGrouped(1024u,4096u,1024u,8u,31u,stream);
+	ProbeGrouped(300u,512u,256u,3u,32u,stream);
+	ProbeGrouped(64u,256u,128u,1u,33u,stream);
 	PROBE_CUDA(cudaStreamDestroy(stream));
 	if ( probe_failures != 0 )
 	{
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS mx gemm: the quantizer applies the fp8 qdq rounding and keeps values already on the fp8 grid; the native MXFP8 GEMM stays within %.1f bf16 ulp of the fp64 reference and is bit-identical across tile shapes\n",PROBE_ULP_LIMIT);
+	printf("PASS mx gemm: the quantizer applies the fp8 qdq rounding and keeps values already on the fp8 grid; the native MXFP8 GEMM stays within %.1f bf16 ulp of the fp64 reference and is bit-identical across tile shapes, and a launch of several same-shape groups gives each group the bits of its own launch\n",PROBE_ULP_LIMIT);
 	return 0;
 }
