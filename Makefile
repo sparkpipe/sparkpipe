@@ -612,6 +612,7 @@ PYTHON_TESTS := \
 	tests/test_weight_stream_loopback.py \
 	tests/test_pack_window_loopback.py \
 	tests/test_index_shard_cuda.py \
+	tests/test_index_score_slots_cuda.py \
 	tests/test_latent_rope_heads_cuda.py \
 	tests/test_latent_attention_kernel_cuda.py \
 	tests/test_project_chain_cuda.py \

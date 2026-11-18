@@ -1224,6 +1224,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and compact exchange rows, four piece-copy blocks an SM (2026-11-18, below) | 11,999, 159% | 18,621, 220% | 20,466, 243% |
 | and rows re-shuffled to MoE owners by row index (2026-11-18, below) | 12,513, 166% | 19,363, 229% | 21,151, 252% |
 | and the embedding gathered once, looked up locally (2026-11-18, below) | 12,784, 170% | 20,122, 238% | 21,817, 260% |
+| and index scores with each block's key slots found once (2026-11-18, below) | 12,906, 172% | 20,163, 238% | 22,150, 263% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1387,5 +1388,24 @@ waits for the busiest expert rank (70 to 120 ms a chunk), rank 0 waits 20 to
 30 ms a chunk at the counts gather for later rows' heavier attention and
 index scoring, and the final chunk's 2,541-row tail costs about 250 ms (index
 scoring over the whole context 48 ms, weight-read-bound experts 42 ms,
-rounds 100 ms). The index-score kernel runs at about 10 TFLOPS: each warp
-re-reads every key from global memory for its own row.
+rounds 100 ms). The index-score kernel ran at 20 to 30 TFLOPS on the long
+calls (about 277 ms of rank 0's 131K prompt), and it spent most of that
+finding keys rather than multiplying them (next).
+
+Index scores with each block's key slots found once (2026-11-18). Every lane
+of every warp mapped its key's position to a cache slot on every eight-key
+tile: the shard arithmetic's runtime divisions (one of them 64-bit) and a
+page-table read, repeated by the 32 lanes and eight row warps that share each
+key. Staging a block's 256 keys in shared memory first (69.6 KB, so one block
+an SM, and no loads in flight while it filled) was exact but 1 to 3% slower
+in the lane. The scorer for blocks of eight rows now has one thread find
+each of the block's 256 slots into a 2 KB table the eight row warps share
+(the per-lane lookup stays for a block whose rows span two sequences), and
+each warp loads the next tile's keys while it multiplies the current one.
+Same MMAs in the same order, same epilogue:
+`tests/test_index_score_slots_cuda.py` compares every score bit for bit with
+the per-row scorer (nine cases, page and shard views, 1,280-byte slots, two
+sequences in a block); offline 1.4 to 1.6 times faster (1,024 rows by 65,536
+keys: 21.9 to 13.4 ms, 25 to 41 TFLOPS). Scores identical at 56 deep and 30
+fresh positions; three interleaved runs each: 12,906 / 20,163 / 22,150 tok/s
+against 12,738 / 19,747 / 21,708 for the previous build in the same session.
