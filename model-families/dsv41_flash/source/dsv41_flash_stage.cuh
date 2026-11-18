@@ -1753,17 +1753,23 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	D41FinalizeMapKernel<D41_TP><<<(rows + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_packed_row, state->exchange_received,
 		state->exchange_rows, D41_TOPK, groups, rows, LM_CELL_MX_MAPPED, state->route_output_row);
+	D41RecordPlaceKernel<D41_TP><<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_source_token, routes, state->exchange_received,
+		state->exchange_rows);
+	LmCellMxCodes received = LmCellMxPacked((const uint8_t *)state->moe_received, (const uint8_t *)state->moe_received + D41_HIDDEN, D41_HIDDEN);
+	received.code_stride = (uint64_t)D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t);
+	received.scale_stride = received.code_stride;
+	LmCellMxCodes down = LmCellMxPacked(codes, codes + (uint64_t)routes * D41_MOE_INTER, D41_MOE_INTER);
+	down.output_rows = state->route_output_row;
+	down.mapped_output = state->moe_final;
 	if ( D41Launched() != SPARK_STATUS_OK ||
 		LmCellMxExpertsSplit(layer->e_w13_cells, held != 0u ? layer->e_w13_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u,
-		(const uint8_t *)state->xq, (const uint8_t *)state->xq + (uint64_t)rows * D41_HIDDEN, gate_up, state->group_row_offset, state->route_source_token,
-		groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, (const uint32_t *)0, (uint16_t *)0, stream) != LM_LAUNCH_OK )
+		received, gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
 		state->packed_weight, state->group_row_offset, groups, codes, (uint16_t *)0, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( D41Launched() != SPARK_STATUS_OK ||
-		LmCellMxExpertsSplit(layer->e_w2_cells, held != 0u ? layer->e_w2_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u, codes,
-			codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset, (const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER,
-			D41_HIDDEN, state->route_output_row, state->moe_final, stream) != LM_LAUNCH_OK )
+		LmCellMxExpertsSplit(layer->e_w2_cells, held != 0u ? layer->e_w2_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u, down,
+			state->expert_slice, state->group_row_offset, (const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExchangeFinalizeKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream>>>(state->expert_slice,
 		state->route_packed_row, state->route_expert, state->exchange_received, state->exchange_rows, D41_TOPK, groups, D41_HIDDEN, 1u, state->moe_final);
@@ -2138,9 +2144,8 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->exchange_live != 0u )
-		D41ExchangeUnpackKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 16u), state->exchange_live), D41_THREADS, 0, stream>>>(
-			(const uint8_t *)state->moe_received, state->exchange_received, capacity, D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)state->xq,
-			(uint8_t *)state->xq + (uint64_t)state->exchange_live * D41_HIDDEN, state->route_expert, state->route_weight);
+		D41ExchangeUnpackKernel<D41_TP><<<dim3(1u, state->exchange_live), 32u, 0, stream>>>((const uint8_t *)state->moe_received, state->exchange_received,
+			capacity, D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)0, (uint8_t *)0, state->route_expert, state->route_weight);
 	return D41Launched();
 }
 

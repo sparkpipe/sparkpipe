@@ -466,6 +466,22 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		packed_row_d = Device(packed_row);
 		CUDA(cudaMalloc(&final_d, (size_t)RANKS * capacity * HIDDEN * sizeof(uint16_t)));
 		CUDA(cudaMemset(final_d, 0, (size_t)RANKS * capacity * HIDDEN * sizeof(uint16_t)));
+		std::vector<uint32_t> places(received_rows + 1u);
+		for ( uint32_t q = 0u; q <= received_rows; ++q )
+			places[q] = q < received_rows ? received_rows - 1u - q : received_rows + 7u;
+		uint32_t *places_d = Device(places);
+		D41RecordPlaceKernel<RANKS><<<(received_rows + 1u + 255u) / 256u, 256u>>>(places_d, received_rows + 1u, rows_in, capacity);
+		CUDA(cudaGetLastError());
+		const std::vector<uint32_t> placed = Host(places_d, (size_t)received_rows + 1u);
+		cudaFree(places_d);
+		for ( uint32_t q = 0u; q <= received_rows; ++q )
+		{
+			const uint32_t row = places[q];
+			uint32_t source = 0u;
+			while ( source < RANKS && row >= rows_in.first[source + 1u] )
+				source++;
+			REQUIRE(placed[q] == (row < received_rows ? source * capacity + row - rows_in.first[source] : row));
+		}
 		std::vector<uint32_t> output_row((size_t)spaces * TOPK, UINT32_MAX);
 		uint32_t *output_row_d = Device(output_row);
 		if ( received_rows != 0u )

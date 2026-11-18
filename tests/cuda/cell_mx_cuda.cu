@@ -213,8 +213,25 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaMalloc(&d_mapped, out_mx.size() * 2u);
 	cudaMemcpy(d_rows_map, rows_map.data(), (uint64_t)packed * 4u, cudaMemcpyHostToDevice);
 	cudaMemset(d_mapped, 0, out_mx.size() * 2u);
-	const int32_t split_launch = LmCellMxExpertsSplit(d_weight, d_upper, split, d_codes, d_scales, d_mx, d_offset,
-		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, d_rows_map, d_mapped, 0);
+	const uint64_t code_stride = (uint64_t)input + 48u, scale_stride = (uint64_t)tiles + 8u;
+	std::vector<uint8_t> strided_codes((uint64_t)rows * code_stride, 0x77u), strided_scales((uint64_t)rows * scale_stride, 0x33u);
+	for ( uint32_t row = 0u; row < rows; row++ )
+	{
+		memcpy(strided_codes.data() + (uint64_t)row * code_stride, codes.data() + (uint64_t)row * input, input);
+		memcpy(strided_scales.data() + (uint64_t)row * scale_stride, scales.data() + (uint64_t)row * tiles, tiles);
+	}
+	uint8_t *d_strided_codes = 0, *d_strided_scales = 0;
+	cudaMalloc(&d_strided_codes, strided_codes.size());
+	cudaMalloc(&d_strided_scales, strided_scales.size());
+	cudaMemcpy(d_strided_codes, strided_codes.data(), strided_codes.size(), cudaMemcpyHostToDevice);
+	cudaMemcpy(d_strided_scales, strided_scales.data(), strided_scales.size(), cudaMemcpyHostToDevice);
+	LmCellMxCodes strided = LmCellMxPacked(d_strided_codes, d_strided_scales, input);
+	strided.code_stride = code_stride;
+	strided.scale_stride = scale_stride;
+	strided.output_rows = d_rows_map;
+	strided.mapped_output = d_mapped;
+	const int32_t split_launch = LmCellMxExpertsSplit(d_weight, d_upper, split, strided, d_mx, d_offset,
+		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, 0);
 	std::vector<uint16_t> out_split((uint64_t)packed * output), out_mapped((uint64_t)packed * output);
 	if ( split_launch != LM_LAUNCH_OK || cudaDeviceSynchronize() != cudaSuccess )
 	{
@@ -229,6 +246,8 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaFree(d_upper);
 	cudaFree(d_rows_map);
 	cudaFree(d_mapped);
+	cudaFree(d_strided_codes);
+	cudaFree(d_strided_scales);
 	uint64_t mx_differ = 0u, bf_differ = 0u, split_differ = 0u;
 	for ( uint64_t index = 0u; index < out_publisher.size(); index++ )
 	{
@@ -261,7 +280,7 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	}
 	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%; "
 		"against the publisher's fp4 GEMM (each 32-block an fp8 MMA from zero, scaled, added in FP32) mx differs in %llu, bf16 in %llu of %llu; "
-		"with groups from %u on read from a separate copy and every third row mapped to a second buffer, %llu differ\n",
+		"with groups from %u on read from a separate copy, codes and scales read at a row stride and every third row mapped to a second buffer, %llu differ\n",
 		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size(),
 		(unsigned long long)mx_differ, (unsigned long long)bf_differ, (unsigned long long)out_publisher.size(), split, (unsigned long long)split_differ);
 	cudaFree(d_weight);

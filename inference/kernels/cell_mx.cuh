@@ -17,6 +17,8 @@ typedef struct LmCellMxCodes
 {
 	const uint8_t *codes;
 	const uint8_t *scales;
+	uint64_t code_stride;
+	uint64_t scale_stride;
 	const uint32_t *output_rows;
 	uint16_t *mapped_output;
 }
@@ -63,14 +65,13 @@ static __device__ __forceinline__ void LmCellMxRows(const LmSkinnyCellArguments 
 	const uint32_t block_cells = args.cells - block_first < LM_CELL_MMA_BLOCK_CELLS ? args.cells - block_first : LM_CELL_MMA_BLOCK_CELLS;
 	const uint32_t weight_vectors = block_cells * LM_CELL_MMA_CELL_VECTORS;
 	const uint32_t warp_offset = (threadIdx.x / LM_WARP_LANES) * LM_CELL_MMA_CELLS * LM_CELL_MMA_CELL_BYTES;
-	const uint32_t scale_pitch = args.input_dimension / LM_SKINNY_CELL_TILE_K;
 	const uint32_t stage_s = (uint32_t)__cvta_generic_to_shared(stage), weights_s = (uint32_t)__cvta_generic_to_shared(weights);
 	const uint32_t scales_s = (uint32_t)__cvta_generic_to_shared(scale_buffer);
 	const uint32_t w_first = threadIdx.x, w_second = threadIdx.x + LM_CELL_MMA_THREADS;
 	float acc[CHUNKS][LM_CELL_MMA_FRAGS][4];
 	const uint8_t *source[COPIES];
 	const uint8_t *scale_source = threadIdx.x < CHUNKS * 16u && first + threadIdx.x < end ?
-		mx.scales + (uint64_t)(args.activation_packed != 0u ? first + threadIdx.x : args.route_source_token[first + threadIdx.x]) * scale_pitch :
+		mx.scales + (uint64_t)(args.activation_packed != 0u ? first + threadIdx.x : args.route_source_token[first + threadIdx.x]) * mx.scale_stride :
 		(const uint8_t *)0;
 	uint32_t m, h, f;
 	#pragma unroll
@@ -85,7 +86,7 @@ static __device__ __forceinline__ void LmCellMxRows(const LmSkinnyCellArguments 
 	{
 		const uint32_t local = row + m * LM_CELL_MX_ROW_STEP, packed = first + local;
 		source[m] = packed < end && local < CHUNKS * 16u ?
-			mx.codes + (uint64_t)(args.activation_packed != 0u ? packed : args.route_source_token[packed]) * args.input_dimension + vector * 16u :
+			mx.codes + (uint64_t)(args.activation_packed != 0u ? packed : args.route_source_token[packed]) * mx.code_stride + vector * 16u :
 			(const uint8_t *)0;
 	}
 	auto produce = [&](uint32_t tile, uint32_t slot)
@@ -229,18 +230,30 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMxKernel(con
 	}
 }
 
-static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint32_t split, const uint8_t *codes, const uint8_t *code_scales, uint16_t *output_bf16, const uint32_t *group_row_offset,
-	const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension,
-	uint32_t output_dimension, const uint32_t *output_rows, uint16_t *mapped_output, cudaStream_t stream)
+static LmCellMxCodes LmCellMxPacked(const uint8_t *codes, const uint8_t *code_scales, uint32_t input_dimension)
+{
+	LmCellMxCodes mx;
+	mx.codes = codes;
+	mx.scales = code_scales;
+	mx.code_stride = input_dimension;
+	mx.scale_stride = input_dimension / LM_SKINNY_CELL_TILE_K;
+	mx.output_rows = 0;
+	mx.mapped_output = 0;
+	return(mx);
+}
+
+static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint32_t split, const LmCellMxCodes &mx, uint16_t *output_bf16,
+	const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed,
+	uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
 {
 	LmSkinnyCellArguments args;
 	LmCellMmaSegments segments;
-	LmCellMxCodes mx;
 	uint64_t blocks, slots;
-	if ( codes == 0 || code_scales == 0 || ((uintptr_t)codes % 16u) != 0u || ((uintptr_t)code_scales % 4u) != 0u ||
-		(input_dimension % 128u) != 0u )
+	if ( mx.codes == 0 || mx.scales == 0 || ((uintptr_t)mx.codes % 16u) != 0u || ((uintptr_t)mx.scales % 4u) != 0u || (input_dimension % 128u) != 0u ||
+		mx.code_stride < input_dimension || mx.code_stride % 16u != 0u || mx.scale_stride < input_dimension / LM_SKINNY_CELL_TILE_K || mx.scale_stride % 4u != 0u ||
+		(mx.output_rows != 0 && mx.mapped_output == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
-	int32_t status = LmCellMmaLaunchSegments(args, segments, &weight, 1u, (const uint16_t *)codes, output_bf16, group_row_offset, route_source_token, groups,
+	int32_t status = LmCellMmaLaunchSegments(args, segments, &weight, 1u, (const uint16_t *)mx.codes, output_bf16, group_row_offset, route_source_token, groups,
 		packed_rows, activation_packed, input_dimension, output_dimension, LM_SKINNY_CELL_TILE_K);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -251,12 +264,6 @@ static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint3
 	segments.split = upper != 0 ? split : 0u;
 	segments.upper_offset = upper != 0 ? (uint64_t)((uintptr_t)upper - (uintptr_t)weight) : 0u;
 	args.group_bytes = segments.group_bytes;
-	mx.codes = codes;
-	mx.scales = code_scales;
-	mx.output_rows = output_rows;
-	mx.mapped_output = mapped_output;
-	if ( output_rows != 0 && mapped_output == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
 	slots = ((uint64_t)args.packed_rows + (uint64_t)args.groups * LM_CELL_MMA_ROWS - 1u) / ((uint64_t)args.groups * LM_CELL_MMA_ROWS);
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
 	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
@@ -268,6 +275,6 @@ static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const u
 	const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension,
 	uint32_t output_dimension, cudaStream_t stream)
 {
-	return(LmCellMxExpertsSplit(weight, 0, 0u, codes, code_scales, output_bf16, group_row_offset, route_source_token, groups, packed_rows, activation_packed,
-		input_dimension, output_dimension, 0, 0, stream));
+	return(LmCellMxExpertsSplit(weight, 0, 0u, LmCellMxPacked(codes, code_scales, input_dimension), output_bf16, group_row_offset, route_source_token,
+		groups, packed_rows, activation_packed, input_dimension, output_dimension, stream));
 }

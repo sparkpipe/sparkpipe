@@ -1165,10 +1165,23 @@ static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ recei
 		route_expert[(uint64_t)row * top_k + vector] = ((const uint32_t *)(record + hidden + scale_bytes))[vector];
 		route_weight[(uint64_t)row * top_k + vector] = ((const float *)(record + hidden + scale_bytes + top_k * sizeof(uint32_t)))[vector];
 	}
-	if ( vector * 16u < hidden )
+	if ( codes != 0 && vector * 16u < hidden )
 		((uint4 *)(codes + (uint64_t)row * hidden))[vector] = ((const uint4 *)record)[vector];
-	if ( vector < scale_bytes )
+	if ( scales != 0 && vector < scale_bytes )
 		scales[(uint64_t)row * scale_bytes + vector] = record[hidden + vector];
+}
+
+template <uint32_t RANKS>
+static __global__ void D41RecordPlaceKernel(uint32_t *__restrict__ source_token, uint32_t count, D41ReceivedRows<RANKS> received, uint32_t capacity)
+{
+	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( index >= count )
+		return;
+	const uint32_t row = source_token[index];
+	if ( row >= received.first[RANKS] )
+		return;
+	const uint32_t source = D41ReceivedSource<RANKS>(received, row);
+	source_token[index] = source * capacity + row - received.first[source];
 }
 
 template <uint32_t RANKS>
