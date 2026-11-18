@@ -374,9 +374,9 @@ static int32_t LmMxGemmLaunchTile(const LmMxGemmArguments *args, uint32_t multip
 	return(LmMxGemmLaunchGroups<TILE_M,TILE_N,WARPS_M>(args,&groups,multiprocessors,stream));
 }
 
-static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
+static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
 	uint16_t *output_bf16, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset,
-	uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t multiprocessors, uint32_t grid_limit, cudaStream_t stream)
 {
 	LmMxGemmArguments args;
 	uint64_t neuron_tiles;
@@ -395,12 +395,22 @@ static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activatio
 	status = LmMxGemmValidate(&args,multiprocessors);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( grid_limit == 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
 	neuron_tiles = (output_dimension + 127u) / 128u;
 	if ( (uint64_t)((rows + 127u) / 128u) * neuron_tiles >= 2u * (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchTile<128u,128u,2u>(&args,multiprocessors,stream));
+		return(LmMxGemmLaunchTile<128u,128u,2u>(&args,grid_limit,stream));
 	if ( (uint64_t)((rows + 63u) / 64u) * neuron_tiles >= (uint64_t)multiprocessors )
-		return(LmMxGemmLaunchTile<64u,128u,2u>(&args,multiprocessors,stream));
-	return(LmMxGemmLaunchTile<32u,128u,2u>(&args,multiprocessors,stream));
+		return(LmMxGemmLaunchTile<64u,128u,2u>(&args,grid_limit,stream));
+	return(LmMxGemmLaunchTile<32u,128u,2u>(&args,grid_limit,stream));
+}
+
+static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
+	uint16_t *output_bf16, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset,
+	uint32_t multiprocessors, cudaStream_t stream)
+{
+	return(LmMxGemmDenseGrid(activation,activation_scale,weight,weight_scale,output_bf16,rows,input_dimension,output_dimension,output_row_stride,
+		output_column_offset,multiprocessors,multiprocessors,stream));
 }
 
 static int32_t LmMxGemmGrouped(const uint8_t *const *activation, const uint8_t *const *activation_scale, const uint8_t *const *weight,

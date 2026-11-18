@@ -226,10 +226,10 @@ static void ProbeGemm(uint32_t rows, uint32_t input, uint32_t output, uint32_t s
 	args.input_dimension = input;
 	args.output_dimension = output;
 	args.output_row_stride = output;
-	for (variant=0u; variant<sizeof(launches) / sizeof(launches[0]); variant++)
+	for (variant=0u; variant<2u * (uint32_t)(sizeof(launches) / sizeof(launches[0])); variant++)
 	{
 		PROBE_CUDA(cudaMemsetAsync(device_out,0xff,out_count * 2u,stream));
-		PROBE_OK(launches[variant](&args,probe_multiprocessors,stream));
+		PROBE_OK(launches[variant / 2u](&args,variant % 2u == 0u ? probe_multiprocessors : UINT32_MAX,stream));
 		PROBE_CUDA(cudaStreamSynchronize(stream));
 		PROBE_CUDA(cudaMemcpy(other.data(),device_out,out_count * 2u,cudaMemcpyDeviceToHost));
 		for (index=0u; index<out_count; index++)
@@ -242,7 +242,7 @@ static void ProbeGemm(uint32_t rows, uint32_t input, uint32_t output, uint32_t s
 	PROBE_CUDA(cudaFree(device_w));
 	PROBE_CUDA(cudaFree(device_w_scale));
 	PROBE_CUDA(cudaFree(device_out));
-	printf("%s mx gemm rows%u K%u N%u: max %.2f bf16 ulp (plus fp32 accumulation allowance) vs the fp64 reference; %llu outputs differ across tile shapes\n",
+	printf("%s mx gemm rows%u K%u N%u: max %.2f bf16 ulp (plus fp32 accumulation allowance) vs the fp64 reference; %llu outputs differ across tile shapes and grids\n",
 		failed == probe_failures ? "PASS" : "FAIL",rows,input,output,worst,(unsigned long long)differ);
 }
 
@@ -323,6 +323,6 @@ int main(void)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS mx gemm: the quantizer applies the fp8 qdq rounding and keeps values already on the fp8 grid; the native MXFP8 GEMM stays within %.1f bf16 ulp of the fp64 reference and is bit-identical across tile shapes, and a launch of several same-shape groups gives each group the bits of its own launch\n",PROBE_ULP_LIMIT);
+	printf("PASS mx gemm: the quantizer applies the fp8 qdq rounding and keeps values already on the fp8 grid; the native MXFP8 GEMM stays within %.1f bf16 ulp of the fp64 reference and is bit-identical across tile shapes and between one tile a block and persistent blocks, and a launch of several same-shape groups gives each group the bits of its own launch\n",PROBE_ULP_LIMIT);
 	return 0;
 }

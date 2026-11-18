@@ -1,4 +1,4 @@
-"""Run the native MXFP8 GEMM and its activation quantizer against an fp64 reference and the fp8 qdq rounding, across tile shapes, and as one launch of several same-shape groups against one launch a group, on an sm_121 device."""
+"""Run the native MXFP8 GEMM and its activation quantizer against an fp64 reference and the fp8 qdq rounding, across tile shapes and between persistent blocks and one tile a block, and as one launch of several same-shape groups against one launch a group, on an sm_121 device."""
 import os
 import pathlib
 import shutil

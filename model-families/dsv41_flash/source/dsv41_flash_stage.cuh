@@ -222,6 +222,7 @@ typedef struct D41Fp8Linear
 typedef struct D41Mx
 {
 	uint8_t *codes, *scales;
+	uint32_t grid;
 } D41Mx;
 
 typedef struct D41Layer
@@ -428,8 +429,8 @@ static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimens
 static int32_t D41LinearMx(const D41Fp8Linear *linear, const D41Mx *mx, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 	uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
 {
-	return LmMxGemmDense(mx->codes, mx->scales, linear->weight, linear->scale, destination, rows, input_dimension, output_dimension, 0u, 0u,
-		multiprocessors, stream);
+	return LmMxGemmDenseGrid(mx->codes, mx->scales, linear->weight, linear->scale, destination, rows, input_dimension, output_dimension, 0u, 0u,
+		multiprocessors, mx->grid != 0u ? mx->grid : multiprocessors, stream);
 }
 
 static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
@@ -2166,7 +2167,9 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	uint8_t *codes = (uint8_t *)state->attn_merged, *scales = codes + (uint64_t)own * D41_HIDDEN;
 	uint8_t *moe_codes = codes, *moe_scales = codes + (uint64_t)D41_TP * shuffle * D41_HIDDEN;
 	uint32_t pair[D41_TP * D41_TP], capacity = 0u, offload = 0u;
+	D41Mx side = state->mx;
 	SparkStatus status = held != 0u && ((state->backup_filled >> index) & 1u) == 0u ? D41FillBackups(state, layer, stream) : SPARK_STATUS_OK;
+	side.grid = UINT32_MAX;
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( routed != 0u &&
@@ -2179,13 +2182,13 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u &&
 		(D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->own_x, state->shared_gate, state->shared_up, routed, D41_HIDDEN, state->shared_width,
-			state->shared_width, sms, state->row_invariant, &state->mx, state->shared_stream) != LM_LAUNCH_OK) )
+			state->shared_width, sms, state->row_invariant, &side, state->shared_stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u )
 		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), routed), D41_THREADS, 0, state->shared_stream>>>(state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	if ( (routed != 0u && D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, routed, state->shared_width, D41_HIDDEN, sms,
-		state->row_invariant, &state->mx, state->shared_stream) != LM_LAUNCH_OK) || cudaEventRecord(state->shared_join, state->shared_stream) != cudaSuccess )
+		state->row_invariant, &side, state->shared_stream) != LM_LAUNCH_OK) || cudaEventRecord(state->shared_join, state->shared_stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExchangeCountsKernel<D41_TP,D41_EXPERTS><<<1u, 1024u, 0, stream>>>(state->route_expert, routed, first, D41_TOPK, owner, held, state->exchange_count);
 	status = D41Launched();
