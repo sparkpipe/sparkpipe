@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cooperative_groups.h>
 #include <cuda_bf16.h>
 #include <math.h>
 #include <stdint.h>
@@ -325,6 +326,10 @@ static __device__ __forceinline__ const uint16_t *D41WindowKey(const uint16_t *_
 	return at >= wave_first ? wave_kv + (uint64_t)lane_rows[at - wave_first] * D41K_LATENT : slot_ring + (uint64_t)(at % window) * D41K_LATENT;
 }
 
+#define D41K_WINDOW_PARTS 8u
+#define D41K_WINDOW_PART_KEYS (D41K_WINDOW_KEYS / D41K_WINDOW_PARTS)
+#define D41K_WINDOW_PART_SLICE (D41K_LATENT / D41K_WINDOW_PARTS)
+
 static __global__ void D41WindowFoldWholeKernel(float *__restrict__ records, uint32_t heads, const uint16_t *__restrict__ query,
 	const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions,
 	const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin,
@@ -425,6 +430,104 @@ static __global__ void D41WindowFoldWholeKernel(float *__restrict__ records, uin
 	{
 		record[0] = folded[0];
 		record[1] = folded[1];
+	}
+}
+
+static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds__(D41K_THREADS) D41WindowFoldClusterKernel(float *__restrict__ records,
+	uint32_t heads, const uint16_t *__restrict__ query, const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ ring,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot,
+	uint64_t ring_slot_stride, uint32_t window, float qk_scale)
+{
+	static_assert(D41K_WINDOW_KEYS % D41K_WINDOW_PARTS == 0u && D41K_LATENT % D41K_WINDOW_PARTS == 0u && D41K_WINDOW_PART_SLICE <= D41K_THREADS &&
+		D41K_WINDOW_KEYS <= D41K_THREADS, "each part scores a whole run of keys and folds a whole slice of the latent");
+	__shared__ float warp_sums[D41K_WINDOW_PART_KEYS][D41K_THREADS / 32u];
+	__shared__ float part_scores[D41K_WINDOW_PART_KEYS];
+	__shared__ float scores[D41K_WINDOW_KEYS];
+	__shared__ float keep[D41K_WINDOW_KEYS];
+	__shared__ float added[D41K_WINDOW_KEYS];
+	__shared__ float folded[2];
+	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
+	const uint32_t part = blockIdx.x, head = blockIdx.y, row = blockIdx.z, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	const uint32_t position = positions[row], lane = row_lane[row];
+	const uint32_t wave_first = position - row_ordinal[row];
+	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
+	const uint32_t first = position + 1u > window ? position + 1u - window : 0u, count = position + 1u - first;
+	const uint32_t key_first = part * D41K_WINDOW_PART_KEYS;
+	const uint32_t key_count = count > key_first ? (count - key_first < D41K_WINDOW_PART_KEYS ? count - key_first : D41K_WINDOW_PART_KEYS) : 0u;
+	const uint16_t *q = query + ((uint64_t)row * heads + head) * D41K_LATENT;
+	const uint16_t *slot_ring = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride;
+	float *record = records + ((uint64_t)row * heads + head) * D41K_RECORD;
+	const float carried_max = record[0], carried_sum = record[1];
+	float query_value[D41K_LATENT / D41K_THREADS];
+	uint16_t value[D41K_WINDOW_PART_KEYS][D41K_LATENT / D41K_THREADS];
+	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+		query_value[e] = LmBf16ToFloat(q[threadIdx.x + e * D41K_THREADS]);
+	for ( uint32_t j = 0u; j < key_count; ++j )
+	{
+		const uint16_t *k = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + key_first + j);
+		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+			value[j][e] = k[threadIdx.x + e * D41K_THREADS];
+	}
+	for ( uint32_t j = 0u; j < key_count; ++j )
+	{
+		float partial = 0.0f;
+		for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
+			partial += query_value[e] * LmBf16ToFloat(value[j][e]);
+		for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
+			partial += __shfl_down_sync(0xffffffffu, partial, offset);
+		if ( lane_index == 0u )
+			warp_sums[j][warp] = partial;
+	}
+	__syncthreads();
+	if ( threadIdx.x < key_count )
+	{
+		float total = 0.0f;
+		for ( uint32_t w = 0u; w < D41K_THREADS / 32u; ++w )
+			total += warp_sums[threadIdx.x][w];
+		part_scores[threadIdx.x] = total * qk_scale;
+	}
+	cluster.sync();
+	if ( threadIdx.x < count )
+		scores[threadIdx.x] = cluster.map_shared_rank(part_scores, threadIdx.x / D41K_WINDOW_PART_KEYS)[threadIdx.x % D41K_WINDOW_PART_KEYS];
+	cluster.sync();
+	if ( threadIdx.x < count )
+	{
+		float before = carried_max;
+		for ( uint32_t j = 0u; j < threadIdx.x; ++j )
+			before = fmaxf(before, scores[j]);
+		const float top = fmaxf(before, scores[threadIdx.x]);
+		keep[threadIdx.x] = before == -INFINITY ? 0.0f : __expf(before - top);
+		added[threadIdx.x] = __expf(scores[threadIdx.x] - top);
+		if ( threadIdx.x + 1u == count )
+			folded[0] = top;
+	}
+	__syncthreads();
+	if ( part == 0u && threadIdx.x == 0u )
+	{
+		float running_sum = carried_sum;
+		for ( uint32_t j = 0u; j < count; ++j )
+			running_sum = running_sum * keep[j] + added[j];
+		record[0] = count == 0u ? carried_max : folded[0];
+		record[1] = running_sum;
+	}
+	if ( threadIdx.x < D41K_WINDOW_PART_SLICE )
+	{
+		const uint32_t e = part * D41K_WINDOW_PART_SLICE + threadIdx.x;
+		float accumulator = record[2u + e];
+		for ( uint32_t base = 0u; base < count; base += D41K_WINDOW_BATCH )
+		{
+			const uint32_t batch = count - base < D41K_WINDOW_BATCH ? count - base : D41K_WINDOW_BATCH;
+			uint16_t slice[D41K_WINDOW_BATCH];
+			for ( uint32_t j = 0u; j < batch; ++j )
+				slice[j] = D41WindowKey(wave_kv, slot_ring, lane_rows, wave_first, window, first + base + j)[e];
+			for ( uint32_t j = 0u; j < batch; ++j )
+			{
+				const float kept = keep[base + j], weight = SparkMathAttentionValueWeight(added[base + j]);
+				accumulator = accumulator * kept + weight * LmBf16ToFloat(slice[j]);
+			}
+		}
+		record[2u + e] = accumulator;
 	}
 }
 

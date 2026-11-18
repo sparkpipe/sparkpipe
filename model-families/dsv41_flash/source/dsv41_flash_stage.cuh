@@ -1276,7 +1276,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	}
 	else
 		D41InitRecords(state->records_received, stride, 1u, heads, 1u, stream);
-	D41WindowFoldWholeKernel<<<dim3(1u, heads), D41K_THREADS, 0, stream>>>(state->records_received, heads, state->q_local, state->window_kv, ring,
+	D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, heads, 1u), D41K_THREADS, 0, stream>>>(state->records_received, heads, state->q_local, state->window_kv, ring,
 		step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	D41WindowRingStoreKernel<<<1u, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,

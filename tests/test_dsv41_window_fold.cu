@@ -156,6 +156,9 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	if ( c.whole == 1u )
 		D41WindowFoldWholeKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d, lanes_d,
 			ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
+	else if ( c.whole == 3u )
+		D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, c.heads, c.rows), D41K_THREADS>>>(candidate_d, c.heads, query_d, wave_d, ring_d, positions_d,
+			lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, WINDOW, scale);
 	else
 		D41WindowFoldKernel<<<dim3(c.rows, c.heads), D41K_THREADS>>>(candidate_d, destination_stride, c.heads_per_destination, query_d,
 			query_rank_stride, wave_d, ring_d, positions_d, lanes_d, ordinals_d, begin_d, indices_d, slot_d, c.ring_stride, ring_rows, WINDOW, degree,
@@ -171,7 +174,7 @@ static uint32_t RunCase(const Case &c, uint32_t perturb)
 	cudaFree(query_d); cudaFree(wave_d); cudaFree(ring_d); cudaFree(positions_d); cudaFree(lanes_d); cudaFree(ordinals_d);
 	cudaFree(begin_d); cudaFree(indices_d); cudaFree(slot_d); cudaFree(reference_d); cudaFree(candidate_d);
 	printf("case rows %u heads %u record_heads %u copies %u rank %u first %u%s%s: %llu of %llu floats differ\n", c.rows, c.heads, c.record_heads,
-		c.record_copies, c.rank, c.first_position, c.whole == 1u ? " (whole window, one pass)" : c.whole == 2u ? " (whole window, chunks)" : "",
+		c.record_copies, c.rank, c.first_position, c.whole == 1u ? " (whole window, one pass)" : c.whole == 2u ? " (whole window, chunks)" : c.whole == 3u ? " (whole window, cluster)" : "",
 		perturb != 0u ? " (perturbed keys)" : "",
 		(unsigned long long)differing, (unsigned long long)record_floats);
 	return differing != 0u ? 1u : 0u;
@@ -402,11 +405,17 @@ int main(void)
 		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 2u},
 		{1024u, 16u, 16u, 16u, 1u, 0u, 33000u, 0u, 2u},
 		{17u, 8u, 8u, 8u, 1u, 0u, 123457u, WINDOW * LATENT, 2u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 9999u, WINDOW * LATENT, 3u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
+		{1u, 4u, 4u, 4u, 1u, 0u, 5u, WINDOW * LATENT, 3u},
+		{6u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
+		{2u, 8u, 8u, 8u, 1u, 0u, 0u, WINDOW * LATENT, 3u},
+		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 3u},
 	};
 	uint32_t failures = 0u;
 	for ( const Case &c : cases )
 		failures += RunCase(c, 0u);
-	const uint32_t sensitive = RunCase(cases[1], 1u) != 0u && RunCase(cases[8], 1u) != 0u ? 1u : 0u;
+	const uint32_t sensitive = RunCase(cases[1], 1u) != 0u && RunCase(cases[8], 1u) != 0u && RunCase(cases[18], 1u) != 0u ? 1u : 0u;
 	const Wave waves[] = {
 		{1u, {17u, 0u}, {0u, 0u}, 16u},
 		{1u, {128u, 0u}, {5u, 0u}, 16u},
@@ -425,6 +434,6 @@ int main(void)
 			failures, sensitive != 0u ? "detected" : "not detected", unset, waves_off, wave_sensitive != 0u ? "detected" : "not detected", coded_mismatch);
 		return 1;
 	}
-	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte, also over fewer live rows with the rest untouched, and two query tiles a pass give one tile a launch's outputs and codes bit for bit; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
+	printf("PASS dsv41 window fold: batched scores fold every case to the same bits as the sequential fold, with the window cut sixteen ways and whole on one rank, one block a head or eight clustered blocks a head; the fused attention of a wave gives the sequential fold's attention output to within the weights' BF16 rounding for one and two sequences, shuffled rows, early positions and ring keys, and its MXFP8 output is the inverse rope and quantization of that output byte for byte, also over fewer live rows with the rest untouched, and two query tiles a pass give one tile a launch's outputs and codes bit for bit; record initialization sets every record of 2048- and 4100-row waves at TP16 to -inf/0 and leaves padding alone\n");
 	return 0;
 }
