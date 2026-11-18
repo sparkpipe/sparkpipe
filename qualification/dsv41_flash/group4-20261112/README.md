@@ -1180,8 +1180,9 @@ rounds: overlapping them with compute, and cutting the gathers below.
 5. The tail's MoE repeats routing and the shared expert on every rank and
    all-reduces the tail rows.
 6. The mesh rounds still run with nothing else on the GPU; splitting a step
-   into two halves on two streams would hide them behind compute. Built, not
-   on: see below.
+   into two halves on two streams would hide them behind compute. Built and
+   exact, not faster while both halves share one collective stream: see
+   below.
 7. Done: the engram exchange. Each rank holds a sixteenth of each engram
    table by row range. Instead of reduce-scattering a [rows x 6,144] BF16
    buffer that is zero except the rows the rank holds (201 MB a table on a
@@ -1202,6 +1203,8 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | --- | ---: | ---: | ---: |
 | experts placed by routed load (above) | 8,878, 118% | 15,316, 181% | 18,125, 216% |
 | and the engram exchange, owned key projections and window keys | 9,637, 128% | 16,202, 191% | 19,360, 230% |
+| and the pipelined rounds' closing marker (2026-11-18, below) | 9,382, 125% | 16,414, 194% | 19,115, 227% |
+| two lanes on one collective stream (not on) | 9,275, 123% | 16,130, 191% | 19,158, 228% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1211,20 +1214,43 @@ answers. A first version had the indexer read the owned rows' hidden even on
 steps whose rows are not owned; the same check caught it (KL 0.0019, all 56
 positions moved), and a single-variable bisect over builds placed it.
 
-Two lanes, built and measured, not on. The runner splits a step of 4,096 rows
+Two lanes, built and exact, not on. The runner splits a step of 4,096 rows
 or more into halves on two streams, with their rounds in one fixed order on
 every rank. DSV4.1 needed the second lane's arena sized and planned, the
 per-slot state (window ring, compressor state, n-gram history), the verify
 buffers and the constant layer-0 stream mix shared with the first lane (an
 arena of its own held zeros for that mix, which gave the second half's rows a
 zero layer-0 attention input: KL 0.040 at deep positions while the 40,000-token
-answer still matched), and a row-state fence each layer. With the mix shared,
-two runs of the same lane build still score deep positions differently (8 of
-56 identical, KL 0.004) where one lane repeats bit for bit, and lane runs time
-out on every rank now and then with a peer two phases behind, which points at
-ranks disagreeing on a round's size. A trace of the lane build shows the cost
-the design leaves: both lanes' rounds share one collective stream, so a lane's
-ready round waits behind the other lane's, 224 to 332 ms a 16,384-row step
-with nothing else on the GPU, and the final chunk's 20-layer tail runs on one
-lane alone (about 350 ms). A collective stream per lane and a tail split over
-both lanes would take 200 to 260 ms a step and 150 to 250 ms a final chunk.
+answer still matched), and a row-state fence each layer.
+
+With all that, two runs of the lane build still scored 2 to 5 of 30 fresh
+7,000-token prompts differently from one lane, different prompts each run,
+and timed out now and then. Every rank hashed its own rows after each block
+and then each stage of the MoE; across runs the first difference was always
+in the second lane's FFN, in the rows an owner received back from the
+combine all-to-all, while every sender's expert output was the same bits,
+and per peer and per 64-row chunk it was always the second-to-last chunk of
+the four-chunk pipelined round. The fifth pass's pipelined round publishes
+its last chunk before it reads the second-to-last one, so a fast rank can end
+the round while a slow rank still has two chunks to read, and the fast
+rank's next whole-slot round (here the other lane's dispatch all-to-all,
+about 1 MB a peer) lands on one of them. On one lane the compute between
+rounds hides it; with two lanes the other lane's round follows at once and
+its kernels slow the reader. Each rank now publishes an 8-byte marker after
+its last read and waits for every peer's marker before the round returns
+(e223b2b25); the model test and a new probe mode, `--pipeline-boundary`,
+reproduce the overwrite without the marker and pass with it. The lane build
+then matched one lane bit for bit on 90 of 90 fresh prompts in three runs and
+at all 56 deep positions, with no timeouts. The marker costs one small round
+trip a pipelined round; one lane measured 9,382, 16,414 and 19,115 tok/s
+after it against 9,637, 16,202 and 19,360 before (single runs).
+
+Two lanes are no faster: both lanes' rounds share one collective stream, so a
+lane's ready round waits behind the other lane's, 224 to 332 ms a 16,384-row
+step with nothing else on the GPU, and the final chunk's 20-layer tail runs on
+one lane alone (about 350 ms). A collective stream per lane and a tail split
+over both lanes would take 200 to 260 ms a step and 150 to 250 ms a final
+chunk. A stream per lane means two collectives in flight per engine, which
+the rule in force since October forbids
+(`docs/CX7_DMA_INVESTIGATION_2026-10.md`, section 15); lifting it is the
+owner's decision.
