@@ -840,9 +840,10 @@ as recorded debt for models too large for a group.
   serves through the binding's two stores: the per-engine spill page store
   (`cache/kv_page_store.c`, digest-checked, quota reserved at open) and the
   persistent snapshot store (`cache/kv_snapshot.c`). A parked prefix page
-  whose entry is not yet saved queues its snapshot save when the arena parks
-  it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
-  reads the spill copy. Still left: the spill store is an `O_TMPFILE` file, so
+  whose entry a request has read and that is not yet saved queues its
+  snapshot save when the arena parks it (`SparkStageKvBindingPark`,
+  `SparkKvPageCacheSaveParked`), and the save reads the spill copy; an unread
+  prefix page is dropped instead of parked. Still left: the spill store is an `O_TMPFILE` file, so
   pages of running sequences cannot be reused after a restart.
   The NVMe tier, the topology switch and the external provider client are
   deleted. Close the rest by making the spill store write the snapshot format,
@@ -903,21 +904,23 @@ as recorded debt for models too large for a group.
   equals the leftovers, and the resent prompt restores with tokens identical
   to an uninterrupted run.
 - Eviction now prefers entries the snapshot store already holds (or cannot
-  hold), and queues a save for the older unsaved entries it passes over
-  (`SparkKvPageCacheSelectVictim`, `cache/kv_page_cache.c`), so a saved prefix
-  evicted from the device and logical pools restores from the snapshot store.
-  When no safe entry is in the scan window the oldest unsaved entry is still
-  discarded (counted as `evicted_unsaved` in the store close line) rather than
-  stalling admission on the save thread. Close it on the fleet with a run at
-  2x device pages where `evicted_unsaved` stays zero and an evicted prompt
-  restores with `cached_tokens` covering it and tokens equal to an
+  hold, or that no request has read), and queues a save for the older read,
+  unsaved entries it passes over (`SparkKvPageCacheSelectVictim`,
+  `cache/kv_page_cache.c`), so a saved prefix evicted from the device and
+  logical pools restores from the snapshot store. When no safe entry is in the
+  scan window the oldest read, unsaved entry is still discarded (counted as
+  `evicted_unsaved` in the store close line) rather than stalling admission on
+  the save thread. Close it on the fleet with a run at 2x device pages where
+  `evicted_unsaved` stays zero and an evicted prompt that a second request
+  read restores with `cached_tokens` covering it and tokens equal to an
   uninterrupted run.
 - Spilled prefixes on the common binding reach the snapshot store: a parked
-  page of an unsaved prefix entry queues its save from the spill copy, and
-  released sequences already queue theirs. Every driver now serves through the
-  binding (`inference/runner/stage_serving_adapter.c`). Not yet fleet-proven:
-  close it with a prompt spilled before a kill -9 of residentd that hits after
-  the restart with tokens equal to an uninterrupted run.
+  page of a read, unsaved prefix entry queues its save from the spill copy,
+  and a release queues the read part of its chain. Every driver now serves
+  through the binding (`inference/runner/stage_serving_adapter.c`). Not yet
+  fleet-proven: close it with a prompt that a second request read, spilled
+  before a kill -9 of residentd, that hits after the restart with tokens equal
+  to an uninterrupted run.
 - KV eviction follows request priority and deadline.
   - Prefix-cache entries rank by the highest priority of the requests that
     published or reused them, then by whether the snapshot store holds
@@ -948,13 +951,32 @@ as recorded debt for models too large for a group.
   it with a one-Spark run on a small backing quota where new requests wait
   and complete as running ones finish, and no running request fails.
 - KV NVMe writes are metered, not limited. Every engine on the common binding
-  counts every spill, recurrent-state and snapshot write and raises one
+  counts every spill and snapshot write to disk and raises one
   `KV-WRITE-ALERT` per hour above 20 GiB/hour
-  (`include/sparkpipe/spark_kv_write_meter.h`). The alert shows in
+  (`include/sparkpipe/spark_kv_write_meter.h`). Until 2026-11-18 the meter
+  also counted each recurrent state copied into the in-memory state store,
+  so its totals on models with recurrent layers overstated disk writes; a
+  memory-backed page store is no longer metered. The alert shows in
   `kv_store_report` and as `kv_write_alert_rank` on `/health`, but nothing
   forwards it beyond the API's `/health` yet. Close it with a Spark run that
   writes past the threshold and shows the alert line, the report fields and
   the health rank.
+- KV disk writes follow reads (2026-11-18,
+  [`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#disk-writes-follow-reads)).
+  A serving engine used to save every published prefix and its newest
+  recurrent state, and to spill every prefix page the device pushed out,
+  whether or not any request would read it again. Two single-node
+  Qwen3.8-27B engines under batches of distinct long prompts wrote their KV
+  disks at 3.7 and 1.1 GB a minute and had restored no page from their
+  snapshot stores. Now a prefix reaches disk only once another request has
+  read it; an unread prefix is dropped, with a fingerprint so that its first
+  return is saved; engine close still saves everything. Host tests cover it
+  (`tests/test_kv_snapshot.c`, `tests/test_kv_cache.c`,
+  `tests/test_stage_kv_binding.c`). Not yet measured on a running engine:
+  close it with a before-and-after run of the same load on one host that
+  shows the disk write rate, `save_pages`, `spill_write_bytes`,
+  `unread_discards` and `unread_returns`, and a multi-turn conversation whose
+  turns keep `cached_tokens` covering the previous turn.
 - Recurrent state is checkpointed sparsely (`cache_checkpoint_token_count` in
   the adapter descriptor; K3 every 16384 tokens, GLM Flash every 4096). The
   engine publishes every block as KV but keeps state only at stride multiples,
