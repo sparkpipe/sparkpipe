@@ -1241,6 +1241,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the one-row step spread over the ranks (2026-11-18, below) | 15,759, 209% | 25,366, 300% | 28,482, 339% |
 | and the side-stream shared expert yielding SMs, graph slots per kind (2026-11-18, below) | 15,600, 207% | 25,313, 299% | 28,458, 339% |
 | and the owned tail re-split at each indexer layer (2026-11-18, below) | 16,797, 223% | 26,154, 309% | 28,590, 340% |
+| and the staged mHC Sinkhorn partials (2026-11-18, below) | 17,129, 228% | 26,594, 314% | 29,448, 350% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1852,3 +1853,19 @@ Only a request's first chunk prepares and commits; later chunks continue on
 their lease. Each chunk is about 400 KB a rank (24 bytes a row: token, lane,
 position, sequence), copied into each rank's queue and sent sixteen times;
 one sequence's prefill rows could travel as their tokens alone, about 64 KB.
+
+The mHC Sinkhorn partials stage their inputs (2026-11-18). The row-blocked
+partials kernel kept its 200 accumulators (25 mix tasks for eight rows) on
+the stack, an 800-byte frame a thread, and read the mixer's FP32 weights
+from memory for every element. `LmHcSinkhornPartialStagedKernel` copies
+each 256-element step of the mixer weights and the block's rows into shared
+memory three steps ahead and splits the 25 tasks over two 256-thread
+groups, so the accumulators stay in registers (128, no spills); thread `t`
+of each group still sums elements `t`, `t + 256`, ... in order and the
+warps reduce as before, so every partial is the same bits
+(`tests/test_dsv41_hc_mix.cu`, at the model's width and at a width whose
+last step is partial). On one Spark a call takes 0.29 ms at 1,024 rows
+instead of 0.47, 0.19 at 512 instead of 0.26, and the same 0.08 at 160.
+Three interleaved runs each: 17,129 / 26,594 / 29,448 tok/s against 16,413 /
+26,025 / 28,565, the same generated answer, and scores identical at 56 deep
+and 30 fresh positions.
