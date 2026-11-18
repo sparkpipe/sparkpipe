@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include <algorithm>
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
 
 #define RANKS 16u
@@ -57,7 +58,8 @@ template <typename T> static std::vector<T> Host(const T *device, size_t count)
 	return host;
 }
 
-#define HELD (2u * LOCAL)
+#define COPIES 2u
+#define HELD ((1u + COPIES) * LOCAL)
 
 static std::vector<uint16_t> expert_table;
 
@@ -75,7 +77,7 @@ static uint16_t ExpertOut(uint32_t token, uint32_t expert, uint32_t element)
 
 static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffled, uint32_t mode)
 {
-	std::vector<uint8_t> owner(EXPERTS), place(EXPERTS), backup(EXPERTS), slot_of(EXPERTS, (uint8_t)LOCAL);
+	std::vector<uint8_t> owner(EXPERTS), place(EXPERTS), backup(COPIES * EXPERTS);
 	std::vector<uint16_t> expert_at(RANKS * LOCAL);
 	std::vector<std::vector<uint8_t>> group(RANKS, std::vector<uint8_t>(EXPERTS, (uint8_t)HELD));
 	for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
@@ -84,20 +86,23 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		owner[expert] = (uint8_t)(at / LOCAL);
 		place[expert] = (uint8_t)(at % LOCAL);
 		backup[expert] = (uint8_t)((owner[expert] + 1u + place[expert] % (RANKS - 1u)) % RANKS);
+		backup[EXPERTS + expert] = (uint8_t)((owner[expert] + RANKS / 2u + place[expert] % (RANKS / 2u)) % RANKS);
 		expert_at[owner[expert] * LOCAL + place[expert]] = (uint16_t)expert;
 	}
 	{
-		uint32_t placed[RANKS] = {0};
-		for ( uint32_t home = 0u; home < RANKS; ++home )
-			for ( uint32_t index = 0u; index < LOCAL; ++index )
-			{
-				const uint32_t expert = expert_at[home * LOCAL + index];
-				REQUIRE(placed[backup[expert]] < LOCAL);
-				slot_of[expert] = (uint8_t)placed[backup[expert]]++;
-			}
+		uint32_t placed[COPIES][RANKS] = {{0}};
+		for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+			for ( uint32_t home = 0u; home < RANKS; ++home )
+				for ( uint32_t index = 0u; index < LOCAL; ++index )
+				{
+					const uint32_t expert = expert_at[home * LOCAL + index], holder = backup[copy * EXPERTS + expert];
+					REQUIRE(holder != home && placed[copy][holder] < LOCAL && (copy == 0u || holder != backup[expert]));
+					group[holder][expert] = (uint8_t)(LOCAL + copy * LOCAL + placed[copy][holder]++);
+				}
 		for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 			for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
-				group[rank][expert] = owner[expert] == rank ? place[expert] : backup[expert] == rank ? (uint8_t)(LOCAL + slot_of[expert]) : (uint8_t)HELD;
+				if ( owner[expert] == rank )
+					group[rank][expert] = place[expert];
 	}
 	uint8_t *owner_d = Device(owner), *backup_d = Device(backup);
 	const uint32_t shuffle = (own + RANKS - 1u) / RANKS;
@@ -252,12 +257,12 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		REQUIRE(seen == count);
 		cudaFree(received_d); cudaFree(codes_d); cudaFree(scales_d); cudaFree(experts_d); cudaFree(weights_d);
 	}
-	std::vector<uint16_t> quota((size_t)RANKS * EXPERTS, 0u);
+	std::vector<uint16_t> quota((size_t)COPIES * RANKS * EXPERTS, 0u);
 	std::vector<uint32_t> counts(RANKS * RANKS);
 	uint32_t offload = 0u, limit = RANKS * shuffle;
 	if ( mode == 1u )
 	{
-		offload = D41BackupPlan<RANKS, EXPERTS, LOCAL>(&totals, owner.data(), backup.data(), expert_at.data(), limit, quota.data(), counts.data());
+		offload = D41BackupPlan<RANKS, EXPERTS, LOCAL, COPIES>(&totals, owner.data(), backup.data(), expert_at.data(), limit, quota.data(), counts.data());
 		for ( uint32_t index = 0u; index < RANKS * RANKS && offload != 0u; ++index )
 			REQUIRE(counts[index] <= limit);
 	}
@@ -267,18 +272,26 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		for ( uint32_t target = 0u; target < RANKS && mode == 2u; ++target )
 			for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
 			{
-				const uint32_t take = Next() % 3u == 0u ? totals.sole[target * EXPERTS + expert] : Next() % (totals.sole[target * EXPERTS + expert] + 1u);
-				quota[(size_t)target * EXPERTS + expert] = (uint16_t)take;
-				counts[target * RANKS + owner[expert]] -= take;
-				counts[target * RANKS + backup[expert]] += take;
-				offload |= take != 0u ? 1u : 0u;
+				uint32_t left = totals.sole[target * EXPERTS + expert];
+				for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+				{
+					const uint32_t take = Next() % 3u == 0u ? left : Next() % (left + 1u);
+					quota[((size_t)copy * RANKS + target) * EXPERTS + expert] = (uint16_t)take;
+					counts[target * RANKS + owner[expert]] -= take;
+					counts[target * RANKS + backup[copy * EXPERTS + expert]] += take;
+					offload |= take != 0u ? 1u : 0u;
+					left -= take;
+				}
 			}
 	}
 	uint64_t offloaded = 0u;
 	for ( uint32_t index = 0u; index < RANKS * EXPERTS; ++index )
 	{
-		REQUIRE(quota[index] <= totals.sole[index]);
-		offloaded += quota[index];
+		uint32_t planned = 0u;
+		for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+			planned += quota[(size_t)copy * RANKS * EXPERTS + index];
+		REQUIRE(planned <= totals.sole[index]);
+		offloaded += planned;
 	}
 	uint32_t capacity = 0u;
 	for ( uint32_t value : counts )
@@ -290,10 +303,14 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 	{
 		const uint32_t routed = moe_rows[source], spaces = routed != 0u ? routed : 1u;
 		uint32_t *experts_d = Device(experts[source].empty() ? std::vector<uint32_t>(TOPK, 0u) : experts[source]), *count_d = 0;
-		uint16_t *quota_d = Device(std::vector<uint16_t>(quota.begin() + (size_t)source * EXPERTS, quota.begin() + (size_t)(source + 1u) * EXPERTS));
+		std::vector<uint16_t> own_quota((size_t)COPIES * EXPERTS);
+		for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+			std::copy(quota.begin() + ((size_t)copy * RANKS + source) * EXPERTS, quota.begin() + ((size_t)copy * RANKS + source + 1u) * EXPERTS,
+				own_quota.begin() + (size_t)copy * EXPERTS);
+		uint16_t *quota_d = Device(own_quota);
 		CUDA(cudaMalloc(&slot_d[source], (size_t)spaces * RANKS * sizeof(uint32_t)));
 		CUDA(cudaMalloc(&count_d, RANKS * sizeof(uint32_t)));
-		D41ExchangeSlotsKernel<RANKS, EXPERTS, TOPK><<<1u, D41K_SLOT_WARPS * 32u>>>(experts_d, routed, owner_d, backup_d, offload != 0u ? quota_d : 0,
+		D41ExchangeSlotsKernel<RANKS, EXPERTS, TOPK, COPIES><<<1u, D41K_SLOT_WARPS * 32u>>>(experts_d, routed, owner_d, backup_d, offload != 0u ? quota_d : 0,
 			capacity, slot_d[source], count_d);
 		CUDA(cudaGetLastError());
 		slots[source] = Host(slot_d[source], (size_t)routed * RANKS);
@@ -314,8 +331,18 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 			for ( uint32_t k = 0u; k < TOPK; ++k )
 			{
 				const uint32_t expert = experts[source][(size_t)row * TOPK + k];
-				if ( ((twice >> owner[expert]) & 1u) == 0u && offload != 0u && taken[expert]++ < quota[(size_t)source * EXPERTS + expert] )
-					target[owner[expert]] = backup[expert];
+				if ( ((twice >> owner[expert]) & 1u) == 0u && offload != 0u )
+				{
+					const uint32_t rank_in_expert = taken[expert]++;
+					uint32_t bound = 0u;
+					for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+					{
+						const uint32_t start = bound;
+						bound += quota[((size_t)copy * RANKS + source) * EXPERTS + expert];
+						if ( rank_in_expert >= start && rank_in_expert < bound )
+							target[owner[expert]] = backup[copy * EXPERTS + expert];
+					}
+				}
 			}
 			for ( uint32_t home = 0u; home < RANKS; ++home )
 			{
@@ -418,7 +445,8 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 				REQUIRE(weight[index] == weights[source][(size_t)row * TOPK + k]);
 				REQUIRE(global[index] == (home == rank || owner[expert] == home ? expert : EXPERTS));
 				REQUIRE(local[index] == (mine != 0u ? group[rank][expert] : HELD));
-				REQUIRE(mine == 0u || (home == rank ? local[index] < LOCAL : local[index] >= LOCAL && local[index] < HELD && backup[expert] == rank));
+				REQUIRE(mine == 0u || (home == rank ? local[index] < LOCAL : local[index] >= LOCAL && local[index] < HELD &&
+					backup[((local[index] - LOCAL) / LOCAL) * EXPERTS + expert] == rank));
 				REQUIRE(kept[index] == (mine != 0u ? weight[index] : 0.0f));
 			}
 		}
@@ -791,7 +819,7 @@ int main(void)
 	}
 	printf("PASS dsv41 exchange: every owned row reaches the MoE owner its row index names, modulo the ranks, once, with its codes, scales, experts "
 		"and weights, and the owners' counts add up to the MoE owners' own; every MoE row's group of routes into a rank reaches that rank, or the "
-		"rank holding the backup copy of the group's only expert as planned, once, by contiguous or placed experts, in row order, and is localized "
+		"rank holding one of the two backup copies of the group's only expert as planned, once, by contiguous or placed experts, in row order, and is localized "
 		"to the rank's own or backup slots, with its codes, scales, experts and weights, unpacked source by source with no padding rows; each "
 		"rank's finalize sums a record's local expert outputs in route order and writes it to the record's place in the padded return; the MoE "
 		"owner sums the groups' partials in rank order and rounds once, and the row's owner adds the shared expert as the publisher does, the "

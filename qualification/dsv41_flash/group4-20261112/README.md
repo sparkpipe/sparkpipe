@@ -1233,6 +1233,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and a leaner expert loop with the same bits (2026-11-18, below) | 14,370, 191% | 23,773, 281% | 26,343, 313% |
 | and the plan's second pass shrinking the padded pair (2026-11-18, below) | 14,861, 198% | 23,733, 280% | 26,559, 316% |
 | and the owner's eight o_a groups in one launch (2026-11-18, below) | 14,805, 197% | 24,030, 284% | 26,975, 321% |
+| and a second backup copy of each expert (2026-11-18, below) | 15,189, 202% | 24,317, 287% | 27,367, 326% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1629,4 +1630,32 @@ the dense MXFP8 GEMM and not taken: stages 64 wide in K (four or five
 stages, or 128 x 256 tiles in three) were all slower than the 128 x 128 x
 128 three-stage tile (65 to 87 TFLOPS against 107 on the owner shapes), and
 the best existing tile per shape would save 2% of the dense time.
+
+A second backup copy of each expert (2026-11-18). With one copy, all of a
+hot expert's single-route rows that leave its rank go to the same backup
+rank, which caps how far the plan can even out both the busiest rank's
+experts and the busiest pair. Each expert of layers 0-19 now has a second
+copy on rank (home + 8 + slot mod 8) mod 16: every rank holds 24 second
+copies (three experts from each of eight home ranks) and never the first
+copy of the same expert, so a rank holds 72 expert groups (its own 24, then
+the two sets of copies, 18 GB of copies a rank in all; a lane run had at
+least 36.7 GiB free on spark0 before). The copies cross the mesh in four
+rounds a layer on the first exchanged step, half a rank's slots at a time
+so no pair carries more than two experts a round.
+
+The plan now chooses, for each move, the expert and the copy whose rank is
+least loaded, splits each copy's rows over the MoE owners by the rows each
+still has, and the capacity pass may take a row to either copy. A MoE owner
+sends an expert's first quota of single-route rows in row order to the
+first copy and the next quota to the second. On the route dump the
+modelled MoE cost of a layer drops from 9.49 to 9.05 ms (busiest rank's
+experts 5.54 to 5.28 ms, padded pair 395 to 378 rows).
+`tests/test_dsv41_exchange.cu` places both copies and runs planned and
+random quotas for each copy (up to 93K offloaded routes in a case); the
+sums equal the sums without backups at every element.
+
+Three interleaved runs: 15,189 / 24,317 / 27,367 tok/s against 14,635 /
+24,088 / 27,009 for the grouped-o_a build in the same session; scores
+identical at 56 deep and 30 fresh positions. The lane's first prompt pays
+the fill once (an 8K warm-up prefill at about 2,500 tok/s instead of 5,600).
 

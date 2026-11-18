@@ -8,9 +8,9 @@ whole step; each owner's counts (rows by MoE owner and expert rank, routes by ex
 only route into an expert's rank is that expert, by MoE owner and expert) must match the routes,
 and their sums over the owners must add up. A row's group on an expert rank (its routes into that
 rank) is one record. Each MoE owner may send up to a planned number of rows whose only route into a
-rank is one expert, the first such rows in row order, to the rank that holds that expert's backup
-copy instead; the plan is the one the stage makes from the summed counts, or random numbers of rows
-up to every such row. Each MoE owner numbers its records for every rank in row order and rank of
+rank is one expert, the first such rows in row order, to the rank that holds that expert's first
+backup copy and the next ones to the rank holding its second copy instead; the plan is the one the
+stage makes from the summed counts, or random numbers of rows for each copy up to every such row. Each MoE owner numbers its records for every rank in row order and rank of
 the group; every group must reach its rank or the backup rank exactly once, as the planned counts
 say, with its MXFP8 codes and scales unchanged (the expert rank multiplies them on the block-scaled
 kernel), its expert ids and its weights; a backup record carries only the flagged expert, and a

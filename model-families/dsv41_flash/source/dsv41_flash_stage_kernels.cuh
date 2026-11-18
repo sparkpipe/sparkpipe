@@ -796,83 +796,102 @@ static __global__ void D41ExchangeTotalsKernel(const uint8_t *__restrict__ gathe
 	}
 }
 
-template <uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL>
+template <uint32_t RANKS, uint32_t EXPERTS, uint32_t LOCAL, uint32_t COPIES>
 static inline uint32_t D41BackupPlan(const D41ExchangeTotals<RANKS, EXPERTS> *totals, const uint8_t *owner, const uint8_t *backup,
 	const uint16_t *expert_at, uint32_t limit, uint16_t *quota, uint32_t *pair)
 {
 	uint64_t load[RANKS] = {0};
-	uint32_t avail[EXPERTS], moved[EXPERTS], sole[EXPERTS], any = 0u;
-	uint8_t paid[EXPERTS];
+	uint32_t avail[EXPERTS], left[RANKS * EXPERTS], moved[COPIES][EXPERTS], any = 0u;
+	uint8_t paid[COPIES][EXPERTS];
 	memcpy(pair, totals->pair, sizeof(totals->pair));
-	memset(quota, 0, (size_t)RANKS * EXPERTS * sizeof(uint16_t));
+	memset(quota, 0, (size_t)COPIES * RANKS * EXPERTS * sizeof(uint16_t));
+	memset(moved, 0, sizeof(moved));
+	memset(paid, 0, sizeof(paid));
 	for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
 	{
-		uint32_t total = 0u;
+		uint32_t total = 0u, usable = 0u;
 		for ( uint32_t target = 0u; target < RANKS; ++target )
+		{
 			total += totals->sole[target * EXPERTS + expert];
-		sole[expert] = total;
-		avail[expert] = backup[expert] < RANKS && backup[expert] != owner[expert] ? total : 0u;
-		moved[expert] = 0u;
-		paid[expert] = 0u;
+			left[target * EXPERTS + expert] = totals->sole[target * EXPERTS + expert];
+		}
+		for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+			usable |= backup[copy * EXPERTS + expert] < RANKS && backup[copy * EXPERTS + expert] != owner[expert] ? 1u : 0u;
+		avail[expert] = usable != 0u ? total : 0u;
 		if ( totals->routes[expert] != 0u )
 			load[owner[expert]] += D41K_BACKUP_EXPERT_ROUTES + totals->routes[expert];
 	}
-	for ( uint32_t round = 0u; round < D41K_BACKUP_ROUNDS; ++round )
+	for ( uint32_t round = 0u; round < D41K_BACKUP_ROUNDS * COPIES; ++round )
 	{
-		uint32_t busiest = 0u, best = EXPERTS;
+		uint32_t busiest = 0u, best = EXPERTS, best_copy = 0u;
 		for ( uint32_t rank = 1u; rank < RANKS; ++rank )
 			busiest = load[rank] > load[busiest] ? rank : busiest;
 		for ( uint32_t place = 0u; place < LOCAL; ++place )
 		{
 			const uint32_t expert = expert_at[busiest * LOCAL + place];
-			if ( expert < EXPERTS && avail[expert] != 0u && (best == EXPERTS || load[backup[expert]] < load[backup[best]] ||
-				(load[backup[expert]] == load[backup[best]] && avail[expert] > avail[best])) )
-				best = expert;
+			for ( uint32_t copy = 0u; copy < COPIES && expert < EXPERTS && avail[expert] != 0u; ++copy )
+			{
+				const uint32_t target = backup[copy * EXPERTS + expert];
+				if ( target >= RANKS || target == owner[expert] )
+					continue;
+				if ( best == EXPERTS || load[target] < load[backup[best_copy * EXPERTS + best]] ||
+					(load[target] == load[backup[best_copy * EXPERTS + best]] && avail[expert] > avail[best]) )
+				{
+					best = expert;
+					best_copy = copy;
+				}
+			}
 		}
 		if ( best == EXPERTS )
 			break;
-		const uint64_t extra = paid[best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES, other = load[backup[best]] + extra;
+		const uint32_t target = backup[best_copy * EXPERTS + best];
+		const uint64_t extra = paid[best_copy][best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES, other = load[target] + extra;
 		const uint64_t half = load[busiest] > other ? (load[busiest] - other) / 2u : 0u;
 		const uint32_t take = half < avail[best] ? (uint32_t)half : avail[best];
 		if ( take == 0u )
 			break;
 		load[busiest] -= take;
-		load[backup[best]] += take + extra;
-		paid[best] = 1u;
+		load[target] += take + extra;
+		paid[best_copy][best] = 1u;
 		avail[best] -= take;
-		moved[best] += take;
+		moved[best_copy][best] += take;
 		any = 1u;
 	}
-	for ( uint32_t expert = 0u; expert < EXPERTS && any != 0u; ++expert )
-	{
-		uint32_t given = 0u;
-		if ( moved[expert] == 0u )
-			continue;
-		for ( uint32_t target = 0u; target < RANKS; ++target )
+	for ( uint32_t copy = 0u; copy < COPIES && any != 0u; ++copy )
+		for ( uint32_t expert = 0u; expert < EXPERTS; ++expert )
 		{
-			const uint32_t share = (uint32_t)((uint64_t)moved[expert] * totals->sole[target * EXPERTS + expert] / sole[expert]);
-			quota[target * EXPERTS + expert] = (uint16_t)share;
-			given += share;
-		}
-		for ( uint32_t target = 0u; given < moved[expert]; target = (target + 1u) % RANKS )
-			if ( quota[target * EXPERTS + expert] < totals->sole[target * EXPERTS + expert] )
+			uint32_t given = 0u, remaining = 0u;
+			uint16_t *share = quota + (uint64_t)copy * RANKS * EXPERTS;
+			if ( moved[copy][expert] == 0u )
+				continue;
+			for ( uint32_t target = 0u; target < RANKS; ++target )
+				remaining += left[target * EXPERTS + expert];
+			for ( uint32_t target = 0u; target < RANKS; ++target )
 			{
-				quota[target * EXPERTS + expert]++;
-				given++;
+				const uint32_t part = (uint32_t)((uint64_t)moved[copy][expert] * left[target * EXPERTS + expert] / remaining);
+				share[target * EXPERTS + expert] = (uint16_t)part;
+				given += part;
 			}
-		for ( uint32_t target = 0u; target < RANKS; ++target )
-		{
-			pair[target * RANKS + owner[expert]] -= quota[target * EXPERTS + expert];
-			pair[target * RANKS + backup[expert]] += quota[target * EXPERTS + expert];
+			for ( uint32_t target = 0u; given < moved[copy][expert]; target = (target + 1u) % RANKS )
+				if ( share[target * EXPERTS + expert] < left[target * EXPERTS + expert] )
+				{
+					share[target * EXPERTS + expert]++;
+					given++;
+				}
+			for ( uint32_t target = 0u; target < RANKS; ++target )
+			{
+				left[target * EXPERTS + expert] -= share[target * EXPERTS + expert];
+				pair[target * RANKS + owner[expert]] -= share[target * EXPERTS + expert];
+				pair[target * RANKS + backup[copy * EXPERTS + expert]] += share[target * EXPERTS + expert];
+			}
 		}
-	}
 	uint64_t ceiling = 0u;
 	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 		ceiling = load[rank] > ceiling ? load[rank] : ceiling;
 	ceiling += D41K_BACKUP_PAIR_SLACK;
 	for ( ;; )
 	{
-		uint32_t top = 0u, from = 0u, to = 0u, best = EXPERTS;
+		uint32_t top = 0u, from = 0u, to = 0u, best = EXPERTS, best_copy = 0u;
 		for ( uint32_t index = 0u; index < RANKS * RANKS; ++index )
 			if ( pair[index] > top )
 			{
@@ -883,34 +902,44 @@ static inline uint32_t D41BackupPlan(const D41ExchangeTotals<RANKS, EXPERTS> *to
 		for ( uint32_t place = 0u; place < LOCAL; ++place )
 		{
 			const uint32_t expert = expert_at[to * LOCAL + place];
-			if ( expert >= EXPERTS || backup[expert] >= RANKS || backup[expert] == owner[expert] ||
-				quota[from * EXPERTS + expert] >= totals->sole[from * EXPERTS + expert] || pair[from * RANKS + backup[expert]] + 1u >= top ||
-				load[backup[expert]] + 1u + (paid[expert] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES) > ceiling )
+			if ( expert >= EXPERTS || left[from * EXPERTS + expert] == 0u )
 				continue;
-			if ( best == EXPERTS || pair[from * RANKS + backup[expert]] < pair[from * RANKS + backup[best]] )
-				best = expert;
+			for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+			{
+				const uint32_t target = backup[copy * EXPERTS + expert];
+				if ( target >= RANKS || target == owner[expert] || pair[from * RANKS + target] + 1u >= top ||
+					load[target] + 1u + (paid[copy][expert] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES) > ceiling )
+					continue;
+				if ( best == EXPERTS || pair[from * RANKS + target] < pair[from * RANKS + backup[best_copy * EXPERTS + best]] )
+				{
+					best = expert;
+					best_copy = copy;
+				}
+			}
 		}
 		if ( best == EXPERTS )
 			break;
-		quota[from * EXPERTS + best]++;
+		const uint32_t target = backup[best_copy * EXPERTS + best];
+		quota[((uint64_t)best_copy * RANKS + from) * EXPERTS + best]++;
+		left[from * EXPERTS + best]--;
 		pair[from * RANKS + to]--;
-		pair[from * RANKS + backup[best]]++;
+		pair[from * RANKS + target]++;
 		load[to] -= 1u;
-		load[backup[best]] += 1u + (paid[best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES);
-		paid[best] = 1u;
+		load[target] += 1u + (paid[best_copy][best] != 0u ? 0u : D41K_BACKUP_EXPERT_ROUTES);
+		paid[best_copy][best] = 1u;
 		any = 1u;
 	}
 	for ( uint32_t index = 0u; index < RANKS * RANKS && any != 0u; ++index )
 		if ( pair[index] > limit )
 		{
 			memcpy(pair, totals->pair, sizeof(totals->pair));
-			memset(quota, 0, (size_t)RANKS * EXPERTS * sizeof(uint16_t));
+			memset(quota, 0, (size_t)COPIES * RANKS * EXPERTS * sizeof(uint16_t));
 			return 0u;
 		}
 	return any;
 }
 
-template <uint32_t RANKS, uint32_t EXPERTS, uint32_t TOPK>
+template <uint32_t RANKS, uint32_t EXPERTS, uint32_t TOPK, uint32_t COPIES>
 static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlotsKernel(const uint32_t *__restrict__ route_expert, uint32_t rows,
 	const uint8_t *__restrict__ owner, const uint8_t *__restrict__ backup, const uint16_t *__restrict__ quota, uint32_t capacity,
 	uint32_t *__restrict__ slot, uint32_t *__restrict__ count)
@@ -944,7 +973,10 @@ static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlots
 			target |= (uint64_t)rank << (4u * rank);
 		for ( uint32_t k = 0u; k < TOPK; ++k )
 		{
-			candidate[k] = quota != 0 && expert[k] < EXPERTS && ((twice >> owner[expert[k]]) & 1u) == 0u && quota[expert[k]] != 0u ? expert[k] : EXPERTS;
+			uint32_t planned = 0u;
+			for ( uint32_t copy = 0u; copy < COPIES && quota != 0 && expert[k] < EXPERTS; ++copy )
+				planned += quota[copy * EXPERTS + expert[k]];
+			candidate[k] = planned != 0u && ((twice >> owner[expert[k]]) & 1u) == 0u ? expert[k] : EXPERTS;
 			before[k] = peers[k] = 0u;
 		}
 		for ( uint32_t source = 0u; source < 32u && quota != 0; ++source )
@@ -976,10 +1008,17 @@ static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlots
 		}
 		__syncthreads();
 		for ( uint32_t k = 0u; k < TOPK; ++k )
-			if ( candidate[k] != EXPERTS && (uint32_t)sole_rank[warp][candidate[k]] + before[k] < quota[candidate[k]] )
+			if ( candidate[k] != EXPERTS )
 			{
-				const uint32_t home = owner[candidate[k]];
-				target = (target & ~(0xfull << (4u * home))) | ((uint64_t)backup[candidate[k]] << (4u * home));
+				const uint32_t place = (uint32_t)sole_rank[warp][candidate[k]] + before[k], home = owner[candidate[k]];
+				uint32_t bound = 0u;
+				for ( uint32_t copy = 0u; copy < COPIES; ++copy )
+				{
+					const uint32_t start = bound;
+					bound += quota[copy * EXPERTS + candidate[k]];
+					if ( place >= start && place < bound )
+						target = (target & ~(0xfull << (4u * home))) | ((uint64_t)backup[copy * EXPERTS + candidate[k]] << (4u * home));
+				}
 			}
 		for ( uint32_t w = 0u; w < WORDS; ++w )
 			counter[w] = 0u;
