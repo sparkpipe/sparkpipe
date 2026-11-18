@@ -903,10 +903,10 @@ static __global__ void SparkDsv41FlashIndexScoreKernel(const uint16_t *query_bf1
 			dot += LmBf16ToFloat(query_bf16[(uint64_t)head * head_dimension + element]) * LmBf16ToFloat(keys_bf16[(uint64_t)key * head_dimension + element]);
 		for (offset = 16u; offset != 0u; offset >>= 1u)
 			dot += __shfl_xor_sync(0xffffffffu,dot,offset);
-		total += fmaxf(dot,0.0f) * LmBf16ToFloat(head_weights_bf16[head]);
+		total += LmBf16ToFloat(LmFloatToBf16(fmaxf(LmBf16ToFloat(LmFloatToBf16(dot)),0.0f) * LmBf16ToFloat(head_weights_bf16[head])));
 	}
 	if ( lane == 0u )
-		scores_f32[key] = total;
+		scores_f32[key] = LmBf16ToFloat(LmFloatToBf16(total));
 }
 
 static inline cudaError_t SparkDsv41FlashLaunchIndexScore(cudaStream_t stream, const uint16_t *query_bf16, const uint16_t *keys_bf16, const uint16_t *head_weights_bf16, float *scores_f32, uint32_t key_count, uint32_t head_count, uint32_t head_dimension)
