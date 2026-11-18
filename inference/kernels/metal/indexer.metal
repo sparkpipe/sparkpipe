@@ -150,9 +150,18 @@ kernel void spark_indexer_score(constant SparkIndexerParams &p [[buffer(0)]], de
 			else if ( p.heads_in_order != 0u )
 			{
 				float total = 0.0f;
-				for ( uint h = 0u; h < p.heads; h++ )
-					total += shared_weight[h] * shared_relu[simd][h];
-				score = total * p.score_scale;
+				if ( p.round_bf16 != 0u )
+				{
+					for ( uint h = 0u; h < p.heads; h++ )
+						total += SparkMathRoundBf16(shared_weight[h] * SparkMathRoundBf16(shared_relu[simd][h]));
+					score = SparkMathRoundBf16(total * p.score_scale);
+				}
+				else
+				{
+					for ( uint h = 0u; h < p.heads; h++ )
+						total += shared_weight[h] * shared_relu[simd][h];
+					score = total * p.score_scale;
+				}
 			}
 			else
 			{

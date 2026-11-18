@@ -6692,7 +6692,7 @@ static void TestIndexerScore(uint32_t heads, uint32_t mode)
 {
 	enum { DIM = 128u, CONTEXT = 600u, SEQUENCES = 2u, ROWS = 4u, SLOTS = 64u };
 	static const uint32_t sequence_init[ROWS] = { 0u, 0u, 1u, 1u }, position_init[ROWS] = { 599u, 300u, 63u, 0u };
-	static const char *const modes[3] = { "bf16 weights", "f32 weights", "shared f32 weights in head order" };
+	static const char *const modes[4] = { "bf16 weights", "f32 weights", "shared f32 weights in head order", "bf16 weights in head order, BF16 terms" };
 	const uint32_t pages = (CONTEXT + SLOTS - 1u) / SLOTS, pool_pages = SEQUENCES * pages, stride = SparkIndexerScoreStride(CONTEXT);
 	const float scale = 0.08838834764831845f;
 	SparkIndexerShape shape;
@@ -6722,7 +6722,7 @@ static void TestIndexerScore(uint32_t heads, uint32_t mode)
 		for ( h = 0u; h < heads; h++ )
 		{
 			const float w = (float)(0.125 * Normal());
-			if ( mode == 0u )
+			if ( mode == 0u || mode == 3u )
 			{
 				wb[row * heads + h] = ToBf16(w);
 				weight[row * heads + h] = Bf16(wb[row * heads + h]);
@@ -6736,11 +6736,12 @@ static void TestIndexerScore(uint32_t heads, uint32_t mode)
 	memset(&shape,0,sizeof(shape));
 	shape.heads = heads;
 	shape.head_dimension = DIM;
-	shape.score_scale = scale;
+	shape.score_scale = mode == 3u ? 1.0f : scale;
 	shape.topk = 512u;
-	shape.weight_f32 = mode != 0u ? 1u : 0u;
+	shape.weight_f32 = mode == 1u || mode == 2u ? 1u : 0u;
 	shape.weight_shared = mode == 2u ? 1u : 0u;
-	shape.heads_in_order = mode == 2u ? 1u : 0u;
+	shape.heads_in_order = mode >= 2u ? 1u : 0u;
+	shape.round_bf16 = mode == 3u ? 1u : 0u;
 	memset(&cache,0,sizeof(cache));
 	cache.pool = Whole(&pool);
 	cache.page_table = Whole(&table);
@@ -6765,8 +6766,9 @@ static void TestIndexerScore(uint32_t heads, uint32_t mode)
 				total += weight[row * heads + h] * fmax(dot,0.0);
 				magnitude += fabs(weight[row * heads + h]) * size;
 			}
-			expect[row * CONTEXT + p] = total * scale;
-			bound[row * CONTEXT + p] = Gamma(DIM + heads + 2.0) * magnitude * scale;
+			expect[row * CONTEXT + p] = mode == 3u ? total : total * scale;
+			bound[row * CONTEXT + p] = mode == 3u ? (2.0 * UNIT_BF16 + Gamma(DIM + heads + 2.0)) * magnitude + UNIT_BF16 * fabs(total) :
+				Gamma(DIM + heads + 2.0) * magnitude * scale;
 		}
 	for ( pass = 0u; pass < 2u; pass++ )
 	{
@@ -6784,7 +6786,13 @@ static void TestIndexerScore(uint32_t heads, uint32_t mode)
 			{
 				const float got = sv[(uint64_t)row * stride + p];
 				if ( p <= position_init[row] )
+				{
+					uint32_t bits;
+					memcpy(&bits,&got,4);
 					Observe(check,got,expect[row * CONTEXT + p],bound[row * CONTEXT + p]);
+					if ( mode == 3u )
+						Observe(check,(bits & 0xffffu) != 0u ? 1.0 : 0.0,0.0,0.0);
+				}
 				else
 					Observe(check,isinf(got) && got < 0.0f ? 0.0 : 1.0,0.0,0.0);
 			}
@@ -7826,6 +7834,7 @@ int main(int argc, char **argv)
 	TestIndexerScore(64u,0u);
 	TestIndexerScore(64u,1u);
 	TestIndexerScore(4u,2u);
+	TestIndexerScore(32u,3u);
 	TestIndexerAttention(8u,2u,128u);
 	TestIndexerAttention(16u,1u,512u);
 	TestIndexerStoreKeys(SPARK_INDEXER_NORM_LAYER,0u,64u);
