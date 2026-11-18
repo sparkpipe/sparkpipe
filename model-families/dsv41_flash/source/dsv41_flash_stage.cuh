@@ -622,7 +622,9 @@ static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
 	float *pre, float *post, float *comb, uint32_t rows, cudaStream_t stream)
 {
-	LmHcSinkhornMixes<D41K_HC>(streams, fn, scale, base, state->mixes, pre, post, comb, rows, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS, D41_HC_EPS, stream);
+	if ( LmHcSinkhornMixes<D41K_HC>(streams, fn, scale, base, state->mixes, pre, post, comb, rows, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS, D41_HC_EPS,
+		stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 

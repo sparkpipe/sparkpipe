@@ -799,8 +799,13 @@ any two would change a served model's bits.
     streams with the new pre weights and snapshots them for the post update.
   - `LmHcSinkhornMixes<STREAMS>` (DeepSeek V4.1 Flash): eight per-warp
     partial dot products a row, from `LmHcSinkhornPartialKernel` below 32
-    rows or `LmHcSinkhornPartialRowsKernel` (four rows a block) from 32 on.
-    The two give the same bits (`tests/test_dsv41_hc_mix.cu`).
+    rows or `LmHcSinkhornPartialStagedKernel` from 32 on (four rows a block,
+    eight from 512). The staged kernel copies each 256-element step of the
+    mixer weights and the block's rows into shared memory three steps ahead
+    and splits the 25 tasks over two thread groups, so its accumulators stay
+    in registers; thread `t` of a group still sums elements `t`, `t + 256`,
+    ... in order and the warps reduce as before. The two give the same bits
+    (`tests/test_dsv41_hc_mix.cu`).
     `LmHcSinkhornKernel` then sums the partials in warp order and writes
     `pre = 1 / (1 + exp(-u)) + eps`, `post = 2 / (1 + exp(-u))` and a
     source-major combination: a softmax over each row from its maximum plus
