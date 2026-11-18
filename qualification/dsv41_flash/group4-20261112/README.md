@@ -1235,6 +1235,12 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and the owner's eight o_a groups in one launch (2026-11-18, below) | 14,805, 197% | 24,030, 284% | 26,975, 321% |
 | and a second backup copy of each expert (2026-11-18, below) | 15,189, 202% | 24,317, 287% | 27,367, 326% |
 | and index scores from keys staged in shared memory (2026-11-18, below) | 15,064, 200% | 24,677, 291% | 28,019, 333% |
+| and single-route records skipping the finalize, eight-row mHC partials (2026-11-18, below, level) | 14,920, 198% | 24,690, 292% | 28,001, 333% |
+| and the gate and up experts reading the landing records (2026-11-18, below, level) | 14,920, 198% | 24,871, 294% | 28,012, 333% |
+| and one decode graph for every prompt length (2026-11-18, below) | 15,074, 200% | 24,799, 293% | 28,317, 337% |
+| and the one-row step spread over the ranks (2026-11-18, below) | 15,759, 209% | 25,366, 300% | 28,482, 339% |
+| and the side-stream shared expert yielding SMs, graph slots per kind (2026-11-18, below) | 15,600, 207% | 25,313, 299% | 28,458, 339% |
+| and the owned tail re-split at each indexer layer (2026-11-18, below) | 16,797, 223% | 26,154, 309% | 28,590, 340% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1722,3 +1728,127 @@ a 131K prompt, 39 ms in the eighth), so the gain grows with prompt length.
 Three interleaved runs each: 15,064 / 24,677 / 28,019 tok/s against 14,827 /
 24,574 / 27,508 for the backup-copy build in the same session; scores
 identical at 56 deep and 30 fresh positions.
+
+Records with one local route skip the finalize, and the mHC partials take
+eight rows a block (2026-11-18). A dispatch record whose row routes to a
+single expert of the receiving rank needs no sum, so the down multiply now
+writes that record's BF16 output straight into its slot of the return buffer
+(`LmCellMxCodes.output_rows`, a mapped row) and the finalize sums only the
+records with two or more local routes, in the same route order. The
+Sinkhorn partials re-read the mixer's FP32 weights for every block, so above
+512 rows a block now takes eight rows instead of four.
+`tests/cuda/cell_mx_cuda.cu` checks mapped rows and strided codes against
+the publisher's bits, `tests/test_dsv41_exchange.cu` the finalize beside
+mapped single-route records, and `tests/test_dsv41_hc_mix.cu` the eight-row
+partials. Three interleaved runs each: 14,920 / 24,690 / 28,001 tok/s
+against 14,908 / 24,461 / 28,036; scores identical at 56 deep and 30 fresh
+positions. Level within the gate's spread; kept because it is exact and does
+less work.
+
+The gate and up experts read their codes from the landing records
+(2026-11-18). The dispatch unpack copied each landed record's FP8 codes and
+scales into a packed buffer before the w13 multiply; the multiply now
+gathers them from the records (a code stride and a scale stride per record)
+and the unpack writes only routes and weights. Three interleaved runs each:
+14,920 / 24,871 / 28,012 against 14,885 / 24,783 / 28,080; identical scores.
+Level, kept for the same reason.
+
+The mHC mixes on a side stream beside the MoE rounds, measured and not kept
+(2026-11-18): every L2-bound kernel ran slower beside the rounds' copies,
+14,348 / 23,823 / 26,905 against 15,047 / 24,722 / 27,908, identical scores.
+
+One decode graph for every prompt length (2026-11-18). A prompt's last token
+reaches the stage as a one-row prefill step that carries the prompt's length
+in `gather_context`, and the runner's graph identity compared that field, so
+each prompt whose length differed from the previous one recaptured and
+re-instantiated the 3,000-node one-row graph before its last token (6 to 15
+ms of host time with every GPU idle), and the first decode step after it
+recaptured again. DSV4.1 never reads the field, so its geometry now sets
+`graph_ignores_gather` and the runner leaves both gather fields out of the
+identity; `tests/test_graph_ignores_gather.py` fails if a family that sets
+the flag reads either field. In a gate run the graphs captured fall from
+five to three (the lane's first prompt, and the last prompt step and first
+decode step of the request that asks for log-probabilities, which has its
+own slot), and the last step of a 32K and a 131K prompt costs 56.3 and 58.0
+ms of wall time instead of 70.4 and 69.3. Three interleaved runs each: 15,074 / 24,799 / 28,317 tok/s
+against 14,956 / 25,024 / 28,292; the saving is inside the gate's spread at
+the whole-prompt level. A prompt's last step and a decode step also differ
+in `last_rows_only`, so a request that went on to decode recaptured at its
+last prompt token and again at its first decode step whatever the gather
+fields said; the runner's graph slots now key on that flag too, so each kind
+keeps its own graph.
+
+A one-row step spread over the ranks (2026-11-18). With every attention
+weight on every rank, a one-row step (a prompt's last token, and every
+decode step) ran all 64 heads and read q_b, o_a and o_b in full on all
+sixteen ranks, 6.7 GB of dense FP8 weights a step, and rank 0 alone ran the
+shared expert while the others waited for it at the MoE gather: 54 ms a
+step, about a tenth of an 8K prompt. Each rank now computes the query and
+attention of its own four heads, half of its head group's o_a rows and a
+sixteenth of o_b's, from the same weights, inputs and kernels (the one-row
+multiply's lane count and neurons per group depend only on K, so every
+output is the same sum), and three all-gathers (merged heads, o_a, o_b)
+rebuild the vectors every rank needs. q_a, kv_a, the indexer and the
+selection stay whole on every rank. The last step of an 8K, 32K and 131K prompt takes 32.7, 35.2 and 36.2 ms on the
+ranks instead of 53.4, 55.2 and 56.8, and a decode step 34.2 ms instead of
+54.1 (decode on the sixteen ranks from about 18.5 to 29 tokens a second).
+Three interleaved runs each: 15,759 / 25,366 / 28,482 tok/s against 14,994 /
+25,094 / 28,120, the same generated answer, and scores identical at 56 deep
+and 30 fresh positions, which score the last step's own logits. Spreading the shared
+expert of a one-row step the same way (a sixteenth of its rows a rank, two
+all-gathers, rank 0 adding the whole output where it did before) was exact
+but level, 15,474 / 25,180 / 28,323 against 15,429 / 24,934 / 28,171 with
+the same decode time: once rank 0 no longer waits on its heads, the ranks
+holding the token's routed experts set the pace, so it is not kept.
+
+The side-stream shared expert yields SMs at every tile (2026-11-18). The
+shared expert's three MXFP8 multiplies run on a side stream beside the MoE
+counts and shuffle rounds, and their persistent grid held every SM until a
+whole multiply was done. The round's wait and copy kernels on the main
+stream, which already has the higher priority, could not start until then:
+on every rank of a traced 131K step the counts round's wait kernel started
+about 220 us after its publish and the round took 460-810 us for 8 KB.
+`LmMxGemmDenseGrid` keeps the dense multiply's tile choice but takes its own
+grid limit, and the side stream now runs one tile a block, so the main
+stream gets an SM at each tile boundary; `tests/cuda/mx_gemm_cuda.cu`
+compares every tile shape between persistent blocks and one tile a block.
+The runner also keys its graph slots on `last_rows_only`, so a request's
+last prompt step and its decode steps keep separate graphs instead of
+recapturing each other's. Three interleaved runs each: 15,600 / 25,313 /
+28,458 tok/s against 15,474 / 25,203 / 28,313; scores identical at 56 deep
+and 30 fresh positions. Within the gate's spread at the whole-prompt level.
+
+The owned tail re-splits as it shrinks (2026-11-18). Layers 20-39 run only on
+the prompt's last 2,541 rows, and each later layer needs 127 fewer of them,
+but once those rows were split sixteen ways at layer 20 every later layer
+kept 160 rows a rank: contiguous blocks cannot simply drop rows, since the
+low ranks would idle while the high ranks keep full blocks. At each indexer
+layer (24, 28, 32, 36), where every row's sparse selection is recomputed
+anyway, the remaining rows are now split sixteen ways again by the first
+split's pack, all-to-all and unpack, starting from the previous split, so a
+rank's rows go 160, 128, 96, 64, 32. Each row's candidate-block mask moves
+with it: only the row's owner at layer 20 computes it, and a long prompt's
+later indexer layers apply it, so the first build, which moved only the
+streams, changed 48 of the 56 deep scores of prompts from 18K tokens up (the
+argmax stayed the same) while the 6K prompts and the 30 fresh positions
+stayed identical. A mask row at the lane's context capacity is wider than
+a collective row may be (the hidden width), so the second build's mask
+all-to-all was refused at the first re-split of a 32K prompt; the masks now
+travel as whole hidden-wide parts of a padded record, as the streams travel
+as their four streams. `tests/test_dsv41_exchange.cu` re-splits rows and
+padded masks from an owned layout at each step and checks every row and
+mask lands with its new owner once. Three interleaved runs each: 16,797 /
+26,154 / 28,590 tok/s against 15,755 / 25,604 / 28,284, the same generated
+answer, and scores identical at 56 deep and 30 fresh positions.
+
+Where the hub API's time between steps goes (2026-11-18, measured, nothing
+changed). Outside the ranks' own step time a prompt spends 13.5 ms at 8K
+(2.6%), 20 ms at 32K and 76 ms at 131K (1.7%). An instrumented API build
+timed each step: between a chunk's last completion and the next chunk's
+dispatch the engine itself takes 0.4-0.5 ms, building the submission
+0.2-0.3 ms, but handing a 16,384-row chunk to the sixteen ranks takes
+3.8-9.2 ms (a one-row step 0.1-0.2 ms, a request's first chunk 1.5 ms).
+Only a request's first chunk prepares and commits; later chunks continue on
+their lease. Each chunk is about 400 KB a rank (24 bytes a row: token, lane,
+position, sequence), copied into each rank's queue and sent sixteen times;
+one sequence's prefill rows could travel as their tokens alone, about 64 KB.
