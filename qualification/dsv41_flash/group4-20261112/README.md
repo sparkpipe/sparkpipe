@@ -1227,6 +1227,7 @@ rounds: overlapping them with compute, and cutting the gathers below.
 | and index scores with each block's key slots found once (2026-11-18, below) | 12,906, 172% | 20,163, 238% | 22,150, 263% |
 | and expert gate and up projections on the publisher's FP4 arithmetic (2026-11-18, below) | 13,377, 178% | 21,090, 249% | 23,308, 277% |
 | and the route build ranked by warp matches (2026-11-18, below) | 13,383, 178% | 21,187, 250% | 23,496, 279% |
+| and the shared expert on a side stream during the MoE rounds (2026-11-18, below) | 13,613, 181% | 21,610, 255% | 23,612, 281% |
 
 All four changes give the same bits: teacher-forced scores at 56 positions
 deep in a joined corpus (prefills of 6,000 to 12,000 tokens that resume from
@@ -1450,3 +1451,16 @@ rank of a full 16K step builds about 53,000 routes a layer, about 530 us
 before. Three interleaved runs: 13,383 / 21,187 / 23,496 tok/s against
 13,127 / 21,222 / 23,318 for the previous build (0.2% lower at 32K, within
 the run-to-run spread); scores identical at 56 deep and 30 fresh positions.
+
+Shared expert on a side stream (2026-11-18). Each owner's shared expert
+(gate and up projections, SwiGLU and down projection, about 0.8 ms a layer
+for 1,024 rows) ran on the step's stream between the dispatch round and the
+routed experts, so the busiest expert rank started its experts that much
+later. It now runs on a second stream, forked once the owner's rows are
+quantized and joined just before the owner adds it to the MoE sum, so it
+overlaps the counts, re-shuffle and dispatch rounds, which mostly wait on
+the network. It is compute only: one collective is still in flight at a
+time. Same kernels on the same inputs, so the same bits. Three interleaved
+runs: 13,613 / 21,610 / 23,612 tok/s against 13,383 / 21,187 / 23,496 for
+the route build and 13,127 / 21,222 / 23,318 for the build before it; scores
+identical at 56 deep and 30 fresh positions.

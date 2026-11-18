@@ -279,6 +279,8 @@ struct D41ModelState : CudaStageState
 	uint16_t *own_x, *own_out, *own_q, *window_edges, *streams_whole;
 	float *own_c;
 	uint32_t *own_selected, *exchange_slot, *exchange_count, *exchange_counts, *exchange_counts_host;
+	cudaStream_t shared_stream;
+	cudaEvent_t shared_fork, shared_join;
 	uint32_t exchange_rows, exchange_live, shuffle_rows, moe_rows;
 	D41ReceivedRows<D41_TP> exchange_received, shuffle_received;
 	uint8_t *expert_owner, *expert_slot;
@@ -1698,6 +1700,8 @@ static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunne
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( cudaStreamWaitEvent(stream, state->shared_join, 0u) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ShuffleFinishKernel<<<dim3(D41Blocks(D41_HIDDEN / 8u), own), D41_THREADS, 0, stream>>>(state->moe_received, state->shared_out, live, first,
 		D41_TP, state->shuffle_rows, D41_HIDDEN, state->own_out);
 	return D41Launched();
@@ -1940,7 +1944,18 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(routed, state->router_logits, D41_EXPERTS, state->route_expert,
 			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( LmMxQuantize(state->own_x, codes, scales, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK )
+	if ( LmMxQuantize(state->own_x, codes, scales, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK ||
+		cudaEventRecord(state->shared_fork, stream) != cudaSuccess || cudaStreamWaitEvent(state->shared_stream, state->shared_fork, 0u) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( routed != 0u &&
+		(D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->own_x, state->shared_gate, state->shared_up, routed, D41_HIDDEN, state->shared_width,
+			state->shared_width, sms, state->row_invariant, &state->mx, state->shared_stream) != LM_LAUNCH_OK) )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( routed != 0u )
+		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), routed), D41_THREADS, 0, state->shared_stream>>>(state->shared_gate, state->shared_up,
+			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
+	if ( (routed != 0u && D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, routed, state->shared_width, D41_HIDDEN, sms,
+		state->row_invariant, &state->mx, state->shared_stream) != LM_LAUNCH_OK) || cudaEventRecord(state->shared_join, state->shared_stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ShuffleCountsKernel<D41_TP><<<1u, 1024u, 0, stream>>>(state->route_expert, routed, first, D41_TOPK, owner, state->exchange_count);
 	status = D41Launched();
@@ -2005,16 +2020,6 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 		D41ExchangeUnpackKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 16u), state->exchange_live), D41_THREADS, 0, stream>>>(
 			(const uint8_t *)state->moe_received, state->exchange_received, capacity, D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)state->xq,
 			(uint8_t *)state->xq + (uint64_t)state->exchange_live * D41_HIDDEN, state->route_expert, state->route_weight);
-	if ( routed != 0u &&
-		(D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->own_x, state->shared_gate, state->shared_up, routed, D41_HIDDEN, state->shared_width,
-			state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK) )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( routed != 0u )
-		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), routed), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
-			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
-	if ( routed != 0u && D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, routed, state->shared_width, D41_HIDDEN, sms,
-		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 
@@ -3009,6 +3014,12 @@ inline void D41Cuda::Release(D41ModelState *state)
 		(void)cudaFreeHost(state->host_error);
 	if ( state->exchange_counts_host != 0 )
 		(void)cudaFreeHost(state->exchange_counts_host);
+	if ( state->shared_join != 0 )
+		(void)cudaEventDestroy(state->shared_join);
+	if ( state->shared_fork != 0 )
+		(void)cudaEventDestroy(state->shared_fork);
+	if ( state->shared_stream != 0 )
+		(void)cudaStreamDestroy(state->shared_stream);
 	if ( state->expert_owner != 0 )
 		(void)cudaFree(state->expert_owner);
 	if ( state->fp8_side != 0 )
@@ -3602,6 +3613,10 @@ inline SparkStatus D41Cuda::Bind(void *model, SparkWeightdLazyPack *lazy_pack, S
 		state->exchange_counts_host = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
+	if ( D41_ROWS && (cudaStreamCreateWithFlags(&state->shared_stream, cudaStreamNonBlocking) != cudaSuccess ||
+		cudaEventCreateWithFlags(&state->shared_fork, cudaEventDisableTiming) != cudaSuccess ||
+		cudaEventCreateWithFlags(&state->shared_join, cudaEventDisableTiming) != cudaSuccess) )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( cudaHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( cudaDeviceSynchronize() != cudaSuccess )
