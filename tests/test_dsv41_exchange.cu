@@ -466,10 +466,40 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 		packed_row_d = Device(packed_row);
 		CUDA(cudaMalloc(&final_d, (size_t)RANKS * capacity * HIDDEN * sizeof(uint16_t)));
 		CUDA(cudaMemset(final_d, 0, (size_t)RANKS * capacity * HIDDEN * sizeof(uint16_t)));
+		std::vector<uint32_t> output_row((size_t)spaces * TOPK, UINT32_MAX);
+		uint32_t *output_row_d = Device(output_row);
+		if ( received_rows != 0u )
+			D41FinalizeMapKernel<RANKS><<<(received_rows + 255u) / 256u, 256u>>>(route_d, packed_row_d, rows_in, capacity, TOPK, HELD, received_rows, 0x80000000u,
+				output_row_d);
+		CUDA(cudaGetLastError());
+		output_row = Host(output_row_d, (size_t)spaces * TOPK);
+		std::vector<uint16_t> written((size_t)RANKS * capacity * HIDDEN, 0u);
+		for ( uint32_t q = 0u; q < received_rows; ++q )
+		{
+			uint32_t local_routes = 0u;
+			for ( uint32_t k = 0u; k < TOPK; ++k )
+				local_routes += local[(size_t)q * TOPK + k] < HELD ? 1u : 0u;
+			for ( uint32_t k = 0u; k < TOPK; ++k )
+			{
+				const size_t index = (size_t)q * TOPK + k;
+				if ( local[index] >= HELD )
+					continue;
+				const uint32_t to = output_row[packed_row[index]];
+				uint32_t source = 0u;
+				while ( q >= rows_in.first[source + 1u] )
+					source++;
+				const uint32_t record = source * capacity + q - rows_in.first[source];
+				REQUIRE(local_routes == 1u ? to == (0x80000000u | record) : to == packed_row[index]);
+				if ( local_routes == 1u )
+					memcpy(written.data() + (size_t)record * HIDDEN, packed.data() + (size_t)packed_row[index] * HIDDEN, HIDDEN * sizeof(uint16_t));
+			}
+		}
+		CUDA(cudaMemcpy(final_d, written.data(), written.size() * sizeof(uint16_t), cudaMemcpyHostToDevice));
 		if ( received_rows != 0u )
 			D41ExchangeFinalizeKernel<RANKS><<<dim3((HIDDEN / 8u + 255u) / 256u, received_rows), 256u>>>(packed_d, packed_row_d, route_d, rows_in, capacity,
-				TOPK, HELD, HIDDEN, final_d);
+				TOPK, HELD, HIDDEN, 1u, final_d);
 		CUDA(cudaGetLastError());
+		cudaFree(output_row_d);
 		partial[rank] = Host(final_d, (size_t)RANKS * capacity * HIDDEN);
 		for ( uint32_t source = 0u; source < RANKS; ++source )
 			for ( uint32_t index = 0u; index < capacity; ++index )
@@ -483,10 +513,15 @@ static uint32_t Case(uint32_t own, uint32_t rows, uint32_t hot, uint32_t shuffle
 					{
 						const size_t q = (size_t)rows_in.first[source] + index;
 						float total = 0.0f;
+						uint32_t local_routes = 0u, only = 0u;
 						for ( uint32_t k = 0u; k < TOPK; ++k )
 							if ( local[q * TOPK + k] < HELD )
+							{
 								total += FromBf16(packed[(size_t)packed_row[q * TOPK + k] * HIDDEN + element]);
-						expected = ToBf16(total);
+								local_routes++;
+								only = packed_row[q * TOPK + k];
+							}
+						expected = local_routes == 1u ? packed[(size_t)only * HIDDEN + element] : ToBf16(total);
 					}
 					finalized_wrong += partial[rank][padded * HIDDEN + element] != expected ? 1u : 0u;
 				}
@@ -821,7 +856,7 @@ int main(void)
 		"and weights, and the owners' counts add up to the MoE owners' own; every MoE row's group of routes into a rank reaches that rank, or the "
 		"rank holding one of the two backup copies of the group's only expert as planned, once, by contiguous or placed experts, in row order, and is localized "
 		"to the rank's own or backup slots, with its codes, scales, experts and weights, unpacked source by source with no padding rows; each "
-		"rank's finalize sums a record's local expert outputs in route order and writes it to the record's place in the padded return; the MoE "
+		"rank's record with one local route gets that output written straight to its place in the padded return and the finalize sums the other records' local expert outputs in route order into theirs; the MoE "
 		"owner sums the groups' partials in rank order and rounds once, and the row's owner adds the shared expert as the publisher does, the "
 		"same bits with planned, random or no backups; rows past the live count are zero; every engram row a rank holds reaches the owner of the token row that looks it up, "
 		"once, and decodes to the BF16 the holder's own lookup gives, ids no rank holds and padding rows give zero; each rank's own rows, the window "

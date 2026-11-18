@@ -1174,10 +1174,18 @@ static __global__ void D41ExchangeUnpackKernel(const uint8_t *__restrict__ recei
 template <uint32_t RANKS>
 static __global__ void D41ExchangeFinalizeKernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
 	const uint32_t *__restrict__ route_expert, D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts,
-	uint32_t width, uint16_t *__restrict__ output)
+	uint32_t width, uint32_t skip_single, uint16_t *__restrict__ output)
 {
 	const uint32_t row = blockIdx.y, source = D41ReceivedSource<RANKS>(received, row), index = row - received.first[source];
 	uint4 *out = (uint4 *)(output + ((uint64_t)source * capacity + index) * width);
+	if ( skip_single != 0u )
+	{
+		uint32_t local = 0u;
+		for ( uint32_t k = 0u; k < top_k; ++k )
+			local += route_expert[row * top_k + k] < local_experts ? 1u : 0u;
+		if ( local == 1u )
+			return;
+	}
 	for ( uint32_t vector = blockIdx.x * blockDim.x + threadIdx.x; vector * 8u < width; vector += gridDim.x * blockDim.x )
 	{
 		float total[8] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1189,6 +1197,32 @@ static __global__ void D41ExchangeFinalizeKernel(const uint16_t *__restrict__ pa
 		}
 		out[vector] = D41RoundBf16x8(total);
 	}
+}
+
+template <uint32_t RANKS>
+static __global__ void D41FinalizeMapKernel(const uint32_t *__restrict__ route_expert, const uint32_t *__restrict__ route_packed_row,
+	D41ReceivedRows<RANKS> received, uint32_t capacity, uint32_t top_k, uint32_t local_experts, uint32_t rows, uint32_t mapped,
+	uint32_t *__restrict__ output_row)
+{
+	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t local = 0u, only = 0u;
+	if ( row >= rows )
+		return;
+	for ( uint32_t k = 0u; k < top_k; ++k )
+		if ( route_expert[row * top_k + k] < local_experts )
+		{
+			local++;
+			only = row * top_k + k;
+		}
+	if ( local == 1u )
+	{
+		const uint32_t source = D41ReceivedSource<RANKS>(received, row);
+		output_row[route_packed_row[only]] = mapped | (source * capacity + row - received.first[source]);
+		return;
+	}
+	for ( uint32_t k = 0u; k < top_k; ++k )
+		if ( route_expert[row * top_k + k] < local_experts )
+			output_row[route_packed_row[row * top_k + k]] = route_packed_row[row * top_k + k];
 }
 
 static __host__ __device__ __forceinline__ uint32_t D41ShuffleLive(uint32_t source, uint32_t rows, uint32_t own)

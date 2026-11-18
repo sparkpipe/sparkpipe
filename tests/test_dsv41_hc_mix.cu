@@ -54,8 +54,12 @@ static uint32_t RunCase(uint32_t rows, uint32_t perturb)
 		const uint16_t bumped = (uint16_t)(streams[(size_t)(rows - 1u) * FLAT + 777u] ^ 0x0040u);
 		CUDA(cudaMemcpy(streams_d + (size_t)(rows - 1u) * FLAT + 777u, &bumped, sizeof(bumped), cudaMemcpyHostToDevice));
 	}
-	LmHcSinkhornPartialRowsKernel<D41K_HC,LM_HC_SINKHORN_ROWS><<<(rows + LM_HC_SINKHORN_ROWS - 1u) / LM_HC_SINKHORN_ROWS, LM_HC_SINKHORN_THREADS>>>(streams_d,
-		fn_d, candidate_d, WIDTH, rows);
+	if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
+		LmHcSinkhornPartialRowsKernel<D41K_HC,LM_HC_SINKHORN_WIDE_ROWS><<<(rows + LM_HC_SINKHORN_WIDE_ROWS - 1u) / LM_HC_SINKHORN_WIDE_ROWS,
+			LM_HC_SINKHORN_THREADS>>>(streams_d, fn_d, candidate_d, WIDTH, rows);
+	else
+		LmHcSinkhornPartialRowsKernel<D41K_HC,LM_HC_SINKHORN_ROWS><<<(rows + LM_HC_SINKHORN_ROWS - 1u) / LM_HC_SINKHORN_ROWS, LM_HC_SINKHORN_THREADS>>>(streams_d,
+			fn_d, candidate_d, WIDTH, rows);
 	CUDA(cudaGetLastError());
 	CUDA(cudaDeviceSynchronize());
 	std::vector<float> reference(partial_floats), candidate(partial_floats);
@@ -71,7 +75,7 @@ static uint32_t RunCase(uint32_t rows, uint32_t perturb)
 
 int main(void)
 {
-	const uint32_t cases[] = {1u, 3u, 32u, 37u, 1024u};
+	const uint32_t cases[] = {1u, 3u, 32u, 37u, 515u, 1024u};
 	uint32_t failures = 0u;
 	for ( uint32_t rows : cases )
 		failures += RunCase(rows, 0u);

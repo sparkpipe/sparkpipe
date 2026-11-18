@@ -288,7 +288,7 @@ struct D41ModelState : CudaStageState
 	uint16_t *streams, *x, *xq, *q_latent, *qrq, *q_local, *q_gathered, *kv, *window_kv;
 	uint16_t *own_x, *own_out, *own_q, *window_edges, *streams_whole;
 	float *own_c;
-	uint32_t *own_selected, *exchange_slot, *exchange_slot_count, *exchange_counts_host;
+	uint32_t *own_selected, *exchange_slot, *exchange_slot_count, *exchange_counts_host, *route_output_row;
 	D41Counts *exchange_count, *exchange_counts;
 	D41Totals *exchange_totals, *exchange_totals_host;
 	uint16_t *exchange_quota, *exchange_quota_host, *expert_at_host;
@@ -1751,19 +1751,22 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 			state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-	if ( LmCellMxExpertsSplit(layer->e_w13_cells, held != 0u ? layer->e_w13_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u,
+	D41FinalizeMapKernel<D41_TP><<<(rows + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_packed_row, state->exchange_received,
+		state->exchange_rows, D41_TOPK, groups, rows, LM_CELL_MX_MAPPED, state->route_output_row);
+	if ( D41Launched() != SPARK_STATUS_OK ||
+		LmCellMxExpertsSplit(layer->e_w13_cells, held != 0u ? layer->e_w13_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u,
 		(const uint8_t *)state->xq, (const uint8_t *)state->xq + (uint64_t)rows * D41_HIDDEN, gate_up, state->group_row_offset, state->route_source_token,
-		groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) != LM_LAUNCH_OK )
+		groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, (const uint32_t *)0, (uint16_t *)0, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
 		state->packed_weight, state->group_row_offset, groups, codes, (uint16_t *)0, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( D41Launched() != SPARK_STATUS_OK ||
 		LmCellMxExpertsSplit(layer->e_w2_cells, held != 0u ? layer->e_w2_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u, codes,
 			codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset, (const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER,
-			D41_HIDDEN, stream) != LM_LAUNCH_OK )
+			D41_HIDDEN, state->route_output_row, state->moe_final, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExchangeFinalizeKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream>>>(state->expert_slice,
-		state->route_packed_row, state->route_expert, state->exchange_received, state->exchange_rows, D41_TOPK, groups, D41_HIDDEN, state->moe_final);
+		state->route_packed_row, state->route_expert, state->exchange_received, state->exchange_rows, D41_TOPK, groups, D41_HIDDEN, 1u, state->moe_final);
 	const SparkStatus status = D41Launched();
 	return status != SPARK_STATUS_OK ? status : D41ExchangeReturn(state, step, stream);
 }
@@ -2852,6 +2855,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->own_selected, D41_OWN_ROWS_MIN <= r ? r / D41_TP * D41_INDEX_TOPK * 4u : 0u },
 		{ (void **)&state->exchange_slot, D41_ROWS && D41_OWN_ROWS_MIN <= r ? r * 4u : 0u },
 		{ (void **)&state->exchange_slot_count, D41_ROWS ? D41_TP * 4u : 0u },
+		{ (void **)&state->route_output_row, D41_ROWS && D41_OWN_ROWS_MIN <= r ? routes * 4u : 0u },
 		{ (void **)&state->exchange_count, D41_ROWS ? sizeof(D41Counts) : 0u },
 		{ (void **)&state->exchange_counts, D41_ROWS ? D41_TP * sizeof(D41Counts) : 0u },
 		{ (void **)&state->exchange_totals, D41_ROWS ? sizeof(D41Totals) : 0u },

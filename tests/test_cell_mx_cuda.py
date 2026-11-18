@@ -1,4 +1,4 @@
-"""Run the fp8-by-fp4 block-scaled expert kernel and the BF16 expert kernel on MXFP4 cells against an fp64 reference, with gathered and packed rows, on an sm_121 device; the block-scaled kernel must also give the publisher's fp4 GEMM bits (each 32-wide K block an FP8 MMA from zero, scaled by both E8M0 scales and added in FP32), and the same bits when the groups from a split on are read from a separate copy while the original cells of those groups are overwritten."""
+"""Run the fp8-by-fp4 block-scaled expert kernel and the BF16 expert kernel on MXFP4 cells against an fp64 reference, with gathered and packed rows, on an sm_121 device; the block-scaled kernel must also give the publisher's fp4 GEMM bits (each 32-wide K block an FP8 MMA from zero, scaled by both E8M0 scales and added in FP32), and the same bits when the groups from a split on are read from a separate copy while the original cells of those groups are overwritten, with every third row written through an output row map into a second buffer."""
 import os
 import pathlib
 import shutil

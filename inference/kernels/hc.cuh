@@ -17,6 +17,8 @@
 #define LM_HC_SINKHORN_UNROLL 16u
 #define LM_HC_SINKHORN_ROWS 4u
 #define LM_HC_SINKHORN_ROWS_FROM 32u
+#define LM_HC_SINKHORN_WIDE_ROWS 8u
+#define LM_HC_SINKHORN_WIDE_FROM 512u
 
 template<uint32_t STREAMS>
 __global__ void LmHcExpandFlatKernel(const uint16_t *hidden, uint16_t *streams, uint32_t width)
@@ -334,7 +336,10 @@ template<uint32_t STREAMS>
 static void LmHcSinkhornMixes(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *partials, float *pre, float *post,
 	float *comb, uint32_t rows, uint32_t width, float rms_epsilon, uint32_t iterations, float epsilon, cudaStream_t stream)
 {
-	if ( rows >= LM_HC_SINKHORN_ROWS_FROM )
+	if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
+		LM_LAUNCH((LmHcSinkhornPartialRowsKernel<STREAMS,LM_HC_SINKHORN_WIDE_ROWS>), (rows + LM_HC_SINKHORN_WIDE_ROWS - 1u) / LM_HC_SINKHORN_WIDE_ROWS,
+			LM_HC_SINKHORN_THREADS, 0, stream, streams, fn, partials, width, rows);
+	else if ( rows >= LM_HC_SINKHORN_ROWS_FROM )
 		LM_LAUNCH((LmHcSinkhornPartialRowsKernel<STREAMS,LM_HC_SINKHORN_ROWS>), (rows + LM_HC_SINKHORN_ROWS - 1u) / LM_HC_SINKHORN_ROWS, LM_HC_SINKHORN_THREADS,
 			0, stream, streams, fn, partials, width, rows);
 	else

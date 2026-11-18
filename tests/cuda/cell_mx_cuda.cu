@@ -204,16 +204,31 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	cudaMemcpy(d_upper, d_weight + split * group_bytes, (groups - split) * group_bytes, cudaMemcpyDeviceToDevice);
 	cudaMemset(d_weight + split * group_bytes, 0x5a, (groups - split) * group_bytes);
 	cudaMemset(d_mx, 0, out_mx.size() * 2u);
+	std::vector<uint32_t> rows_map(packed);
+	for ( uint32_t row = 0u; row < packed; row++ )
+		rows_map[row] = row % 3u == 0u ? (LM_CELL_MX_MAPPED | (packed - 1u - row)) : row;
+	uint32_t *d_rows_map = 0;
+	uint16_t *d_mapped = 0;
+	cudaMalloc(&d_rows_map, (uint64_t)packed * 4u);
+	cudaMalloc(&d_mapped, out_mx.size() * 2u);
+	cudaMemcpy(d_rows_map, rows_map.data(), (uint64_t)packed * 4u, cudaMemcpyHostToDevice);
+	cudaMemset(d_mapped, 0, out_mx.size() * 2u);
 	const int32_t split_launch = LmCellMxExpertsSplit(d_weight, d_upper, split, d_codes, d_scales, d_mx, d_offset,
-		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, 0);
-	std::vector<uint16_t> out_split((uint64_t)packed * output);
+		packed_input != 0u ? (const uint32_t *)0 : d_source, groups, packed, packed_input, input, output, d_rows_map, d_mapped, 0);
+	std::vector<uint16_t> out_split((uint64_t)packed * output), out_mapped((uint64_t)packed * output);
 	if ( split_launch != LM_LAUNCH_OK || cudaDeviceSynchronize() != cudaSuccess )
 	{
 		printf("FAIL split launch %d\n", split_launch);
 		return 1;
 	}
 	cudaMemcpy(out_split.data(), d_mx, out_split.size() * 2u, cudaMemcpyDeviceToHost);
+	cudaMemcpy(out_mapped.data(), d_mapped, out_mapped.size() * 2u, cudaMemcpyDeviceToHost);
+	for ( uint32_t row = 0u; row < packed; row++ )
+		if ( (rows_map[row] & LM_CELL_MX_MAPPED) != 0u )
+			memcpy(out_split.data() + (uint64_t)row * output, out_mapped.data() + (uint64_t)(rows_map[row] & ~LM_CELL_MX_MAPPED) * output, (size_t)output * 2u);
 	cudaFree(d_upper);
+	cudaFree(d_rows_map);
+	cudaFree(d_mapped);
 	uint64_t mx_differ = 0u, bf_differ = 0u, split_differ = 0u;
 	for ( uint64_t index = 0u; index < out_publisher.size(); index++ )
 	{
@@ -246,7 +261,7 @@ static int Run(uint32_t groups, uint32_t tokens, uint32_t per_token, uint32_t in
 	}
 	printf("%s groups %u rows %u input %u output %u: worst error mx %.3f bf16 %.3f (units of one BF16 ulp plus magnitude x 2^-18), same bits %.4f%%; "
 		"against the publisher's fp4 GEMM (each 32-block an fp8 MMA from zero, scaled, added in FP32) mx differs in %llu, bf16 in %llu of %llu; "
-		"with groups from %u on read from a separate copy, %llu differ\n",
+		"with groups from %u on read from a separate copy and every third row mapped to a second buffer, %llu differ\n",
 		packed_input != 0u ? "packed" : "gathered", groups, packed, input, output, worst_mx, worst_bf, 100.0 * (double)same / (double)out_mx.size(),
 		(unsigned long long)mx_differ, (unsigned long long)bf_differ, (unsigned long long)out_publisher.size(), split, (unsigned long long)split_differ);
 	cudaFree(d_weight);
