@@ -753,9 +753,9 @@ static uint32_t WindowCase(uint32_t rows, uint32_t own, uint32_t edge)
 	return wrong != 0u ? 1u : 0u;
 }
 
-static uint32_t TailCase(uint32_t rows, uint32_t first)
+static uint32_t TailCase(uint32_t rows, uint32_t source_first, uint32_t first)
 {
-	const uint32_t width = 64u, vectors = width / 8u, own = (rows + 127u) / 128u * 8u, tail_rows = rows - first;
+	const uint32_t width = 64u, vectors = width / 8u, source_rows = rows - source_first, own = (source_rows + 127u) / 128u * 8u, tail_rows = rows - first;
 	const uint32_t tail_own = (tail_rows + 127u) / 128u * 8u;
 	std::vector<uint16_t> full((size_t)rows * width);
 	std::vector<uint32_t> weights((size_t)rows * D41K_HC);
@@ -767,19 +767,19 @@ static uint32_t TailCase(uint32_t rows, uint32_t first)
 	for ( uint32_t source = 0u; source < RANKS; ++source )
 		for ( uint32_t target = 0u; target < RANKS; ++target )
 		{
-			const uint32_t count = D41TailSpan(source, target, rows, first, own, tail_own, &low);
+			const uint32_t count = D41TailSpan(source, target, rows, source_first, own, first, tail_own, &low);
 			capacity = count > capacity ? count : capacity;
 		}
 	std::vector<std::vector<uint4>> sent(RANKS), sent_pre(RANKS);
 	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
 	{
-		std::vector<uint16_t> streams((size_t)rows * width, 0xeeeeu);
-		std::vector<uint32_t> pre((size_t)rows * D41K_HC, 0xeeeeeeeeu);
-		const uint32_t from = rank * own < rows ? rank * own : rows, to = (rank + 1u) * own < rows ? (rank + 1u) * own : rows;
+		std::vector<uint16_t> streams((size_t)source_rows * width, 0xeeeeu);
+		std::vector<uint32_t> pre((size_t)source_rows * D41K_HC, 0xeeeeeeeeu);
+		const uint32_t from = rank * own < source_rows ? rank * own : source_rows, to = (rank + 1u) * own < source_rows ? (rank + 1u) * own : source_rows;
 		for ( uint32_t row = from; row < to; ++row )
 		{
-			memcpy(&streams[(size_t)row * width], &full[(size_t)row * width], width * sizeof(uint16_t));
-			memcpy(&pre[(size_t)row * D41K_HC], &weights[(size_t)row * D41K_HC], D41K_HC * sizeof(uint32_t));
+			memcpy(&streams[(size_t)row * width], &full[(size_t)(source_first + row) * width], width * sizeof(uint16_t));
+			memcpy(&pre[(size_t)row * D41K_HC], &weights[(size_t)(source_first + row) * D41K_HC], D41K_HC * sizeof(uint32_t));
 		}
 		uint16_t *streams_d = Device(streams);
 		uint32_t *pre_d = Device(pre);
@@ -788,8 +788,8 @@ static uint32_t TailCase(uint32_t rows, uint32_t first)
 		CUDA(cudaMalloc(&send_pre_d, (size_t)RANKS * capacity * sizeof(uint4)));
 		CUDA(cudaMemset(send_d, 0xcd, (size_t)RANKS * capacity * vectors * sizeof(uint4)));
 		CUDA(cudaMemset(send_pre_d, 0xcd, (size_t)RANKS * capacity * sizeof(uint4)));
-		D41TailPackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(streams_d, (const float *)pre_d, rank, rows, first, own, tail_own, capacity, width, send_d,
-			send_pre_d);
+		D41TailPackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(streams_d, (const float *)pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
+			send_d, send_pre_d);
 		CUDA(cudaGetLastError());
 		sent[rank] = Host(send_d, (size_t)RANKS * capacity * vectors);
 		sent_pre[rank] = Host(send_pre_d, (size_t)RANKS * capacity);
@@ -814,8 +814,8 @@ static uint32_t TailCase(uint32_t rows, uint32_t first)
 		CUDA(cudaMalloc(&pre_d, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
 		CUDA(cudaMemset(streams_d, 0xab, (size_t)RANKS * tail_own * width * sizeof(uint16_t)));
 		CUDA(cudaMemset(pre_d, 0xab, (size_t)RANKS * tail_own * D41K_HC * sizeof(uint32_t)));
-		D41TailUnpackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(received_d, received_pre_d, rank, rows, first, own, tail_own, capacity, width, streams_d,
-			(float *)pre_d);
+		D41TailUnpackKernel<<<dim3(2u, capacity, RANKS), 64u>>>(received_d, received_pre_d, rank, rows, source_first, own, first, tail_own, capacity, width,
+			streams_d, (float *)pre_d);
 		CUDA(cudaGetLastError());
 		const std::vector<uint16_t> streams = Host(streams_d, (size_t)RANKS * tail_own * width);
 		const std::vector<uint32_t> pre = Host(pre_d, (size_t)RANKS * tail_own * D41K_HC);
@@ -829,8 +829,49 @@ static uint32_t TailCase(uint32_t rows, uint32_t first)
 		cudaFree(streams_d);
 		cudaFree(pre_d);
 	}
-	printf("tail rows %u first %u own %u tail own %u capacity %u: %llu tail rows differ from the owners' rows\n", rows, first, own, tail_own, capacity,
-		(unsigned long long)wrong);
+	const uint32_t mask_vectors = 4u, record_vectors = 6u;
+	std::vector<uint4> masks((size_t)rows * mask_vectors);
+	for ( uint4 &value : masks )
+		value = make_uint4(Next(), Next(), Next(), Next());
+	std::vector<std::vector<uint4>> mask_sent(RANKS);
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint4> held((size_t)rows * mask_vectors, make_uint4(0xdeadu, 0xdeadu, 0xdeadu, 0xdeadu));
+		const uint32_t from = source_first + (rank * own < source_rows ? rank * own : source_rows);
+		const uint32_t to = source_first + ((rank + 1u) * own < source_rows ? (rank + 1u) * own : source_rows);
+		for ( uint32_t row = from; row < to; ++row )
+			memcpy(&held[(size_t)row * mask_vectors], &masks[(size_t)row * mask_vectors], mask_vectors * sizeof(uint4));
+		uint4 *held_d = Device(held), *send_d = 0;
+		CUDA(cudaMalloc(&send_d, (size_t)RANKS * capacity * record_vectors * sizeof(uint4)));
+		CUDA(cudaMemset(send_d, 0xcd, (size_t)RANKS * capacity * record_vectors * sizeof(uint4)));
+		D41TailRowsPackKernel<<<dim3(1u, capacity, RANKS), 64u>>>(held_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
+			capacity, send_d);
+		CUDA(cudaGetLastError());
+		mask_sent[rank] = Host(send_d, (size_t)RANKS * capacity * record_vectors);
+		cudaFree(held_d);
+		cudaFree(send_d);
+	}
+	for ( uint32_t rank = 0u; rank < RANKS; ++rank )
+	{
+		std::vector<uint4> received((size_t)RANKS * capacity * record_vectors);
+		for ( uint32_t source = 0u; source < RANKS; ++source )
+			memcpy(&received[(size_t)source * capacity * record_vectors], &mask_sent[source][(size_t)rank * capacity * record_vectors],
+				(size_t)capacity * record_vectors * sizeof(uint4));
+		std::vector<uint4> held((size_t)rows * mask_vectors, make_uint4(0xbeefu, 0xbeefu, 0xbeefu, 0xbeefu));
+		uint4 *received_d = Device(received), *held_d = Device(held);
+		D41TailRowsUnpackKernel<<<dim3(1u, capacity, RANKS), 64u>>>(received_d, mask_vectors, record_vectors, rank, rows, source_first, own, first, tail_own,
+			capacity, held_d);
+		CUDA(cudaGetLastError());
+		held = Host(held_d, (size_t)rows * mask_vectors);
+		const uint32_t from = first + (rank * tail_own < tail_rows ? rank * tail_own : tail_rows);
+		const uint32_t to = first + ((rank + 1u) * tail_own < tail_rows ? (rank + 1u) * tail_own : tail_rows);
+		for ( uint32_t row = from; row < to; ++row )
+			wrong += memcmp(&held[(size_t)row * mask_vectors], &masks[(size_t)row * mask_vectors], mask_vectors * sizeof(uint4)) != 0 ? 1u : 0u;
+		cudaFree(received_d);
+		cudaFree(held_d);
+	}
+	printf("tail rows %u from %u (own %u) to %u (own %u) capacity %u: %llu tail rows or row masks differ from the owners' rows\n", rows, source_first, own, first,
+		tail_own, capacity, (unsigned long long)wrong);
 	return wrong != 0u || capacity > tail_own ? 1u : 0u;
 }
 
@@ -857,12 +898,18 @@ int main(void)
 	failures += WindowCase(8191u, 512u, 256u);
 	failures += WindowCase(2049u, 136u, 136u);
 	failures += WindowCase(2048u, 128u, 128u);
-	failures += TailCase(16384u, 16384u - 2541u);
-	failures += TailCase(16383u, 16383u - 2541u);
-	failures += TailCase(8192u, 8192u - 2541u);
-	failures += TailCase(7000u, 7000u - 2541u);
-	failures += TailCase(2600u, 59u);
-	failures += TailCase(4096u, 4096u - 300u);
+	failures += TailCase(16384u, 0u, 16384u - 2541u);
+	failures += TailCase(16383u, 0u, 16383u - 2541u);
+	failures += TailCase(8192u, 0u, 8192u - 2541u);
+	failures += TailCase(7000u, 0u, 7000u - 2541u);
+	failures += TailCase(2600u, 0u, 59u);
+	failures += TailCase(4096u, 0u, 4096u - 300u);
+	for ( uint32_t step = 0u; step < 4u; ++step )
+	{
+		failures += TailCase(8191u, 8191u - 2541u + step * 508u, 8191u - 2541u + (step + 1u) * 508u);
+		failures += TailCase(16383u, 16383u - 2541u + step * 508u, 16383u - 2541u + (step + 1u) * 508u);
+	}
+	failures += TailCase(2600u, 59u, 59u + 508u);
 	if ( failures != 0u )
 	{
 		fprintf(stderr, "FAIL dsv41 exchange: %u cases differ\n", failures);
@@ -877,6 +924,7 @@ int main(void)
 		"same bits with planned, random or no backups; rows past the live count are zero; every engram row a rank holds reaches the owner of the token row that looks it up, "
 		"once, and decodes to the BF16 the holder's own lookup gives, ids no rank holds and padding rows give zero; each rank's own rows, the window "
 		"before them and the step's last window assemble from the ranks' edge rows as the full gather gives them; every tail row's streams and stream "
-		"weights reach the rank that owns it in the tail's own split, from the rank that owned it in the step, once\n");
+		"weights, and its candidate-block mask, reach the rank that owns it in the tail's own split, from the rank that owned it in the step or in the "
+		"tail's previous split, once\n");
 	return 0;
 }

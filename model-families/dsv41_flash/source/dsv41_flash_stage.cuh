@@ -2637,7 +2637,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		for ( uint32_t source = 0u; source < D41_TP; ++source )
 			for ( uint32_t target = 0u; target < D41_TP; ++target )
 			{
-				const uint32_t count = D41TailSpan(source, target, rows, first, own, tail_own, &low);
+				const uint32_t count = D41TailSpan(source, target, rows, 0u, own, first, tail_own, &low);
 				capacity = count > capacity ? count : capacity;
 			}
 		if ( capacity == 0u )
@@ -2649,8 +2649,8 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		uint16_t *send_pre = state->moe_send + (uint64_t)D41_TP * capacity * width, *received_pre = state->moe_received + (uint64_t)D41_TP * capacity * width;
-		D41TailPackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>(state->streams, state->pre_head, state->tp_rank, rows, first, own, tail_own,
-			capacity, width, (uint4 *)state->moe_send, (uint4 *)send_pre);
+		D41TailPackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>(state->streams, state->pre_head, state->tp_rank, rows, 0u, own, first,
+			tail_own, capacity, width, (uint4 *)state->moe_send, (uint4 *)send_pre);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity * D41K_HC, D41_HIDDEN, state->moe_send,
@@ -2660,7 +2660,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		D41TailUnpackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>((const uint4 *)state->moe_received, (const uint4 *)received_pre,
-			state->tp_rank, rows, first, own, tail_own, capacity, width, state->streams_whole, state->pre_whole);
+			state->tp_rank, rows, 0u, own, first, tail_own, capacity, width, state->streams_whole, state->pre_whole);
 		if ( pad != 0u && (cudaMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
 			cudaSuccess || cudaMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
 			cudaSuccess) )
@@ -2680,11 +2680,72 @@ struct D41Cuda : CudaStage<D41Cuda>
 		return status;
 	}
 
+	static SparkStatus ReownTail(D41ModelState *state, Frame &frame, uint32_t first)
+	{
+		const SparkStageRunnerStep *step = frame.step;
+		const uint32_t rows = step->rows, own = state->own_rows, source_first = frame.shifted, tail_rows = rows - first, tail_own = D41TailOwn(tail_rows);
+		const uint32_t width = D41K_HC * D41_HIDDEN, pad = tail_own * D41_TP - tail_rows;
+		uint32_t capacity = 0u, low;
+		SparkStatus status;
+		for ( uint32_t source = 0u; source < D41_TP; ++source )
+			for ( uint32_t target = 0u; target < D41_TP; ++target )
+			{
+				const uint32_t count = D41TailSpan(source, target, rows, source_first, own, first, tail_own, &low);
+				capacity = count > capacity ? count : capacity;
+			}
+		if ( capacity == 0u )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		uint16_t *send_pre = state->moe_send + (uint64_t)D41_TP * capacity * width, *received_pre = state->moe_received + (uint64_t)D41_TP * capacity * width;
+		D41TailPackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>(state->streams, state->pre_head, state->tp_rank, rows, source_first, own,
+			first, tail_own, capacity, width, (uint4 *)state->moe_send, (uint4 *)send_pre);
+		status = D41Launched();
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity * D41K_HC, D41_HIDDEN, state->moe_send,
+				state->moe_received);
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity, 8u, send_pre, received_pre);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		D41TailUnpackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>((const uint4 *)state->moe_received, (const uint4 *)received_pre,
+			state->tp_rank, rows, source_first, own, first, tail_own, capacity, width, state->streams_whole, state->pre_whole);
+		if ( pad != 0u && (cudaMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
+			cudaSuccess || cudaMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
+			cudaSuccess) )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		if ( state->step_blocks != 0u && state->block_mask != 0 )
+		{
+			const uint32_t part_bytes = D41_HIDDEN * (uint32_t)sizeof(uint16_t), parts = (state->local_block_stride + part_bytes - 1u) / part_bytes;
+			const uint32_t mask_vectors = state->local_block_stride / 16u, record_vectors = parts * part_bytes / 16u;
+			uint4 *mask_rows = (uint4 *)(state->block_mask - (uint64_t)source_first * state->local_block_stride);
+			D41TailRowsPackKernel<<<dim3(1u, capacity, D41_TP), 128u, 0, frame.stream>>>(mask_rows, mask_vectors, record_vectors, state->tp_rank, rows,
+				source_first, own, first, tail_own, capacity, (uint4 *)state->moe_send);
+			status = D41Launched();
+			if ( status == SPARK_STATUS_OK )
+				status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity * parts, D41_HIDDEN, state->moe_send,
+					state->moe_received);
+			if ( status != SPARK_STATUS_OK )
+				return status;
+			D41TailRowsUnpackKernel<<<dim3(1u, capacity, D41_TP), 128u, 0, frame.stream>>>((const uint4 *)state->moe_received, mask_vectors, record_vectors,
+				state->tp_rank, rows, source_first, own, first, tail_own, capacity, mask_rows);
+		}
+		state->selected += (uint64_t)(first - source_first) * D41_INDEX_TOPK;
+		if ( state->block_mask != 0 )
+			state->block_mask += (uint64_t)(first - source_first) * state->local_block_stride;
+		state->own_rows = tail_own;
+		state->own_first = state->tp_rank * tail_own;
+		state->own_pad = pad;
+		frame.shifted = first;
+		status = D41TailStep(state, step, first, &frame.tail, frame.stream);
+		frame.current = &frame.tail;
+		return status;
+	}
+
 	static SparkStatus LayerRows(D41ModelState *state, Frame &frame, uint32_t index)
 	{
 		const uint32_t first = D41TailFirstRow(state, index, frame.step->rows);
 		if ( state->tail_owned != 0u )
-			return SPARK_STATUS_OK;
+			return D41IndexSource(index) && index > D41_CANDIDATE_SOURCE && first > frame.shifted && D41TailOwn(frame.step->rows - first) < state->own_rows ?
+				ReownTail(state, frame, first) : SPARK_STATUS_OK;
 		if ( D41TailOwnable(state, frame.step, index, first) != 0u )
 			return OwnTail(state, frame, index, first);
 		const uint32_t handoff = state->tail_target != 0u && index == D41_CANDIDATE_SOURCE && first == frame.step->rows && state->own_rows != 0u ? 1u : 0u;

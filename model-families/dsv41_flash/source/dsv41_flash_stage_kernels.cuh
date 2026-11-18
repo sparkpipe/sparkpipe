@@ -1342,27 +1342,29 @@ static __global__ void D41WindowAssembleKernel(const uint16_t *__restrict__ own_
 
 static_assert(D41K_HC * sizeof(float) == sizeof(uint4), "a row's four stream weights travel as one 16-byte vector after its streams");
 
-static __host__ __device__ inline uint32_t D41TailSpan(uint32_t source, uint32_t target, uint32_t rows, uint32_t first, uint32_t own, uint32_t tail_own,
-	uint32_t *low)
+static __host__ __device__ inline uint32_t D41TailSpan(uint32_t source, uint32_t target, uint32_t rows, uint32_t source_first, uint32_t own,
+	uint32_t first, uint32_t tail_own, uint32_t *low)
 {
-	const uint32_t tail_rows = rows - first;
-	const uint32_t source_end = (source + 1u) * own < rows ? (source + 1u) * own : rows;
+	const uint32_t tail_rows = rows - first, source_rows = rows - source_first;
+	const uint32_t source_begin = source_first + (source * own < source_rows ? source * own : source_rows);
+	const uint32_t source_end = source_first + ((source + 1u) * own < source_rows ? (source + 1u) * own : source_rows);
 	const uint32_t target_begin = first + (target * tail_own < tail_rows ? target * tail_own : tail_rows);
 	const uint32_t target_end = first + ((target + 1u) * tail_own < tail_rows ? (target + 1u) * tail_own : tail_rows);
-	const uint32_t begin = source * own > target_begin ? source * own : target_begin;
+	const uint32_t begin = source_begin > target_begin ? source_begin : target_begin;
 	const uint32_t end = source_end < target_end ? source_end : target_end;
 	*low = begin;
 	return end > begin ? end - begin : 0u;
 }
 
 static __global__ void D41TailPackKernel(const uint16_t *__restrict__ streams, const float *__restrict__ pre, uint32_t rank, uint32_t rows,
-	uint32_t first, uint32_t own, uint32_t tail_own, uint32_t capacity, uint32_t width, uint4 *__restrict__ send, uint4 *__restrict__ send_pre)
+	uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint4 *__restrict__ send,
+	uint4 *__restrict__ send_pre)
 {
 	const uint32_t target = blockIdx.z, slot = blockIdx.y, vectors = width / 8u;
 	uint32_t low;
-	if ( slot >= D41TailSpan(rank, target, rows, first, own, tail_own, &low) )
+	if ( slot >= D41TailSpan(rank, target, rows, source_first, own, first, tail_own, &low) )
 		return;
-	const uint64_t row = (uint64_t)low + slot, record = (uint64_t)target * capacity + slot;
+	const uint64_t row = (uint64_t)low + slot - source_first, record = (uint64_t)target * capacity + slot;
 	const uint4 *source = (const uint4 *)(streams + row * width);
 	uint4 *target_streams = send + record * vectors;
 	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < vectors; i += gridDim.x * blockDim.x )
@@ -1372,11 +1374,12 @@ static __global__ void D41TailPackKernel(const uint16_t *__restrict__ streams, c
 }
 
 static __global__ void D41TailUnpackKernel(const uint4 *__restrict__ received, const uint4 *__restrict__ received_pre, uint32_t rank, uint32_t rows,
-	uint32_t first, uint32_t own, uint32_t tail_own, uint32_t capacity, uint32_t width, uint16_t *__restrict__ streams, float *__restrict__ pre)
+	uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint32_t width, uint16_t *__restrict__ streams,
+	float *__restrict__ pre)
 {
 	const uint32_t source = blockIdx.z, slot = blockIdx.y, vectors = width / 8u;
 	uint32_t low;
-	if ( slot >= D41TailSpan(source, rank, rows, first, own, tail_own, &low) )
+	if ( slot >= D41TailSpan(source, rank, rows, source_first, own, first, tail_own, &low) )
 		return;
 	const uint64_t row = (uint64_t)low + slot - first, record = (uint64_t)source * capacity + slot;
 	const uint4 *source_streams = received + record * vectors;
@@ -1385,6 +1388,32 @@ static __global__ void D41TailUnpackKernel(const uint4 *__restrict__ received, c
 		target[i] = source_streams[i];
 	if ( blockIdx.x == 0u && threadIdx.x == 0u )
 		*(uint4 *)(pre + row * D41K_HC) = received_pre[record];
+}
+
+static __global__ void D41TailRowsPackKernel(const uint4 *__restrict__ rows_data, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank,
+	uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *__restrict__ send)
+{
+	const uint32_t target = blockIdx.z, slot = blockIdx.y;
+	uint32_t low;
+	if ( slot >= D41TailSpan(rank, target, rows, source_first, own, first, tail_own, &low) )
+		return;
+	const uint4 *source = rows_data + (uint64_t)(low + slot) * row_vectors;
+	uint4 *record = send + ((uint64_t)target * capacity + slot) * record_vectors;
+	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < row_vectors; i += gridDim.x * blockDim.x )
+		record[i] = source[i];
+}
+
+static __global__ void D41TailRowsUnpackKernel(const uint4 *__restrict__ received, uint32_t row_vectors, uint32_t record_vectors, uint32_t rank,
+	uint32_t rows, uint32_t source_first, uint32_t own, uint32_t first, uint32_t tail_own, uint32_t capacity, uint4 *__restrict__ rows_data)
+{
+	const uint32_t source = blockIdx.z, slot = blockIdx.y;
+	uint32_t low;
+	if ( slot >= D41TailSpan(source, rank, rows, source_first, own, first, tail_own, &low) )
+		return;
+	const uint4 *record = received + ((uint64_t)source * capacity + slot) * record_vectors;
+	uint4 *target = rows_data + (uint64_t)(low + slot) * row_vectors;
+	for ( uint32_t i = blockIdx.x * blockDim.x + threadIdx.x; i < row_vectors; i += gridDim.x * blockDim.x )
+		target[i] = record[i];
 }
 
 #define D41K_ENGRAM_DIM 256u
