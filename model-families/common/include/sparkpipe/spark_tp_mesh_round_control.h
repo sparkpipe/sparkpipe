@@ -143,6 +143,13 @@ static inline uint64_t SparkTpMeshPipelineLate(uint64_t round,uint64_t rounds)
     return rounds >= 3u && round + 2u <= rounds - 2u ? round + 2u : round + 2u == rounds ? rounds - 1u : SPARK_TP_MESH_PIPELINE_NONE;
 }
 
+#define SPARK_TP_MESH_PIPELINE_MARKER_BYTES 8u
+
+static inline uint64_t SparkTpMeshPipelineTaken(uint64_t launch)
+{
+    return launch == 1u ? 0u : launch >= 3u ? launch - 2u : SPARK_TP_MESH_PIPELINE_NONE;
+}
+
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS_WIDE 10240u
 #define SPARK_TP_MESH_RSAG_WIDE_DEGREE 16u

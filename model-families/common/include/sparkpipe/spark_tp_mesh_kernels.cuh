@@ -2283,7 +2283,7 @@ static cudaError_t SparkTpMeshHardwarePipelineRound(cudaStream_t stream,uint8_t 
     piece.degree = degree;
     for ( launch = 0u; launch < chunks + 2u; launch++ )
     {
-        const uint64_t taken = launch == 1u ? 0u : launch >= 3u ? launch - 2u : SPARK_TP_MESH_PIPELINE_NONE;
+        const uint64_t taken = SparkTpMeshPipelineTaken(launch);
         piece.publish = launch < chunks ? publish : 0u;
         piece.combine = taken != SPARK_TP_MESH_PIPELINE_NONE ? combine : 0u;
         if ( piece.publish != 0u )
@@ -2311,7 +2311,14 @@ static cudaError_t SparkTpMeshHardwarePipelineRound(cudaStream_t stream,uint8_t 
         if ( cudaPeekAtLastError() != cudaSuccess )
             return cudaPeekAtLastError();
     }
-    return cudaSuccess;
+    route.fields.slice_bytes = 0u;
+    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_FULL;
+    SparkTpMeshHardwarePublishKernel<<<1,SPARK_TP_MESH_THREADS,0u,stream>>>(band,slot_bytes,slots_per_rank,entry,control,rank,local,
+        SPARK_TP_MESH_PIPELINE_MARKER_BYTES,0u,SPARK_TP_MESH_PIPELINE_MARKER_BYTES,route.word,1u,1u,request,
+        SPARK_TP_MESH_PUBLISH_SHIP | SPARK_TP_MESH_PUBLISH_GUARD | SPARK_TP_MESH_PUBLISH_HALF,route.fields.peer_mask,timeout_ns);
+    if ( cudaPeekAtLastError() != cudaSuccess )
+        return cudaPeekAtLastError();
+    return SparkTpMeshHardwareArrivalView(stream,band,slot_bytes,slots_per_rank,control,rank,degree,timeout_ns,SPARK_TP_MESH_VIEW_HALF);
 }
 
 static cudaError_t SparkTpMeshHardwarePairFirstPublish(cudaStream_t stream,uint8_t *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile uint64_t *entry,SparkWeightdMeshWaitRequest *request,SparkTpMeshRoundControl *control,uint32_t rank,uint32_t degree,const uint8_t *local,uint8_t *staging,uint64_t segment,uint64_t round,uint64_t chunks,uint64_t timeout_ns)
