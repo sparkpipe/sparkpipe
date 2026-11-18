@@ -1197,6 +1197,114 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 	return D41Launched();
 }
 
+#define D41_SPREAD_HEADS (D41_HEADS / D41_TP)
+#define D41_SPREAD (D41_ROWS && D41_HEADS % D41_TP == 0u && (D41_HEADS / D41_OGROUPS) % D41_SPREAD_HEADS == 0u && D41_WO_A_ROWS % D41_TP == 0u && \
+	D41_HIDDEN % D41_TP == 0u)
+
+static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerStep *step)
+{
+	return D41_SPREAD && step->rows == 1u && step->commit != 0u && state->own_rows == 0u && state->dump == 0 && state->tap_slab == 0 ? 1u : 0u;
+}
+
+static D41Fp8Linear D41RowsOf(const D41Fp8Linear *linear, uint32_t first_row, uint32_t input_dimension)
+{
+	D41Fp8Linear part;
+	part.weight = linear->weight + (uint64_t)first_row * input_dimension;
+	part.scale = linear->scale + (uint64_t)first_row * (input_dimension / D41_FP8_BLOCK);
+	part.wide = (const uint16_t *)0;
+	return part;
+}
+
+static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
+	cudaStream_t stream)
+{
+	const uint32_t sms = step->multiprocessors, ratio = D41Ratio(index), cache = D41CacheIndex(index);
+	const uint32_t heads = D41_SPREAD_HEADS, head_first = state->tp_rank * heads, width = heads * D41_HEAD_DIM;
+	const uint32_t group_heads = D41_HEADS / D41_OGROUPS, group = head_first / group_heads;
+	const uint32_t o_a_rows = D41_WO_A_ROWS / D41_TP, o_b_rows = D41_HIDDEN / D41_TP;
+	const uint32_t o_a_first = (head_first % group_heads) / heads * o_a_rows;
+	const float *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
+	const uint32_t *bound = ratio == 2u ? state->bound_ratio2 : state->bound_ratio1;
+	const uint32_t *length = ratio == 2u ? state->length_ratio2 : state->length_ratio1;
+	const uint32_t indexed = ratio > 0u && D41IndexSource(index) ? 1u : 0u;
+	const uint64_t stride = D41DestinationStride(1u, heads);
+	const float qk_scale = 1.0f / sqrtf((float)D41_HEAD_DIM);
+	uint16_t *ring = (uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM;
+	uint16_t *packed = state->q_local + (uint64_t)D41_LOCAL_HEADS * D41_HEAD_DIM;
+	uint16_t *group_input = state->group_input + (uint64_t)group * group_heads * D41_HEAD_DIM;
+	const D41Fp8Linear q_part = D41RowsOf(&layer->q_b, head_first * D41_HEAD_DIM, D41_QLORA);
+	const D41Fp8Linear o_a_part = D41RowsOf(&layer->o_a[group], o_a_first, D41_GROUP_WIDTH);
+	const D41Fp8Linear o_b_part = D41RowsOf(&layer->o_b, state->tp_rank * o_b_rows, D41_WO_A_ROWS);
+	SparkStatus status;
+	static_assert(!D41_SPREAD || D41_LOCAL_HEADS == D41_HEADS, "a spread row starts from every head's weights on every rank");
+	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, 1u, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms,
+		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, 1u, D41_QLORA, stream);
+	D41KvNormRopeQdqKernel<D41_THREADS><<<1u, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	if ( (indexed != 0u ? D41LinearPair(&q_part, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, 1u, D41_QLORA, width,
+		D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
+		D41Linear(&q_part, state->qrq, state->q_local, 1u, D41_QLORA, width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	D41Rope(state->q_local, 1u, heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
+		status = D41Compress(state, layer, index, step, stream);
+	if ( status == SPARK_STATUS_OK && indexed != 0u )
+		status = D41IndexQuery(state, layer, index, step, packed, stream);
+	if ( status == SPARK_STATUS_OK && indexed != 0u )
+		status = cudaMemcpyAsync(state->q_gathered, packed, (uint64_t)D41_INDEX_PACK * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) == cudaSuccess ?
+			SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK && indexed != 0u )
+		status = cache < 3u ? D41SelectWhole<D41Ratio2Kv>(state, index, step, bound, length, stream) :
+			D41SelectWhole<D41Ratio1Kv>(state, index, step, bound, length, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( ratio > 0u )
+	{
+		if ( (cache < 3u ? LmLatentShardAttendHeadsLaunch<D41Ratio2Kv,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_local,
+				(uint64_t)width, heads, heads, step->sequence_of_row, length, bound, state->selected, D41_INDEX_TOPK, D41_INDEX_TOPK, qk_scale,
+				state->records_received, stride, heads, 1u, 1u, stream) :
+			LmLatentShardAttendHeadsLaunch<D41Ratio1Kv,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_local,
+				(uint64_t)width, heads, heads, step->sequence_of_row, length, bound, state->selected, D41_INDEX_TOPK, D41_INDEX_TOPK, qk_scale,
+				state->records_received, stride, heads, 1u, 1u, stream)) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	else
+		D41InitRecords(state->records_received, stride, 1u, heads, 1u, stream);
+	D41WindowFoldWholeKernel<<<dim3(1u, heads), D41K_THREADS, 0, stream>>>(state->records_received, heads, state->q_local, state->window_kv, ring,
+		step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
+		state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
+	D41WindowRingStoreKernel<<<1u, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, 1u,
+		step->commit, (const uint32_t *)0);
+	D41MergeSinkKernel<<<dim3(1u, heads), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, heads, layer->sink + head_first,
+		state->attn_merged);
+	D41Rope(state->attn_merged, 1u, heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, width, state->attn_merged, state->group_input);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( D41QdqLinear(&o_a_part, group_input, state->wo_a_group, 1u, D41_GROUP_WIDTH, o_a_rows, sms, state->row_invariant, &state->mx, stream) !=
+		LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, o_a_rows, state->wo_a_group, state->wo_a_out);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	if ( D41QdqLinear(&o_b_part, state->wo_a_out, state->wo_a_group, 1u, D41_WO_A_ROWS, o_b_rows, sms, state->row_invariant, &state->mx, stream) !=
+		LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	status = D41Launched();
+	if ( status == SPARK_STATUS_OK )
+		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, o_b_rows, state->wo_a_group, state->partial);
+	state->owner_reduced = 1u;
+	return status;
+}
+
 static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
 	cudaStream_t stream)
 {
@@ -1526,6 +1634,8 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		if ( D41_ROWS && state->own_rows == 0u && step->commit != 0u && state->dump == 0 && state->tap_slab == 0 &&
 			D41MxReady(&state->mx, split, D41_QLORA, state->row_invariant) != 0u )
 			return D41AttentionSplit(state, layer, index, step, split, stream);
+		if ( D41SpreadRow(state, step) != 0u )
+			return D41AttentionSpread(state, layer, index, step, stream);
 		return D41RowsAttention(state) != 0u ? D41AttentionRows(state, layer, index, step, stream) : D41AttentionWhole(state, layer, index, step, stream);
 	}
 	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms, state->row_invariant,
