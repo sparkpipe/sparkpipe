@@ -2533,7 +2533,7 @@ extern "C" cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,
     if ( band == 0 || entry == 0 || gate == 0 || round_control == 0 || local == 0 ||
          output == 0 || scratch == 0 || elements == 0u || rounds == 0u || logical_rows == 0u ||
          degree < 2u || degree > 16u || rank >= degree || operation > SPARK_TP_MESH_OPERATION_REDUCE_SCATTER ||
-         slot_bytes <= 16u || slots_per_rank != 2u || timeout_ns == 0u ||
+         slot_bytes <= 16u || slots_per_rank != SPARK_WEIGHTD_MESH_SLOTS_PER_RANK || timeout_ns == 0u ||
          (operation == 0u && (elements % degree != 0u || local == output)) ||
          (operation == SPARK_TP_MESH_OPERATION_ALL_TO_ALL && (local == output || slice_routes == 0u)) ||
          (operation == SPARK_TP_MESH_OPERATION_REDUCE_SCATTER && (local == output || (slice_routes & SPARK_TP_MESH_ROUTES_PEER) == 0u ||

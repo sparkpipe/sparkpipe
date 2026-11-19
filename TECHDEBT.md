@@ -1677,7 +1677,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   it: GLM 5.3's rank holds 9.75 GiB of GPU memory when idle and about 3 GiB
   more under its first long prompt, which left 0.8 GiB above `earlyoom`'s 2%
   before 2026-11-13 and nothing once the mesh region grew (IPC ABI 15). The
-  mesh is back to its old size (ABI 16); the sizing is still a guess. A rank
+  mesh went back to its old size under ABI 16 and is 256 MiB larger from ABI
+  17 (four slots a rank), so about 0.55 GiB remains; the sizing is still a guess. A rank
   should tell weightd its state budget, or touch it before the KV pool
   attaches.
 - Every mesh band is pinned at daemon start. Registering a lane's bands when
