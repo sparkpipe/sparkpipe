@@ -177,6 +177,10 @@ by more than the BF16 peak allows.
   mesh lane have their own weightd connections and the KDA states live in
   the lane's state pool, so none of them moves; the runner keeps the first
   attach's mesh mapping, which the device collective registered once.
+- Measured (run KS2, a 100,869-token needle): the switch to the pass pool
+  took 3.9 s (detach 0.7, reclaim 1.0, attach with the private spine 2.2),
+  the switch back 19.6 s (attach 4.7, warm 14.6), and the lane answered the
+  pass key correctly, 142.9 s end to end.
 - Releasing only the expert chunks of one whole-arena attach would keep every
   pointer, but weightd maps a whole arena as one allocation and CUDA frees
   no part of one, so that needs a daemon change and a weightd release; the
@@ -210,8 +214,8 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
 
 1. Done: the exact index steps and the value projection (runs KQ4-KQ10,
    764.9 -> 473.4 s) and the FP8 index as an option.
-2. The serving hand-off (section 4), so a long prompt is answered and the
-   needle and the logits can compare the FP8 index with BF16.
+2. The serving hand-off (section 4): built and answering (run KS2); the
+   needle and the logits compare the FP8 index with BF16 next.
 3. Exact levers by size: the stream GEMM toward the BF16 peak, the
    collectives (with a decision on the weight stream's class or port), the
    select folded into the score kernel, the SiTU and MoE finalize passes

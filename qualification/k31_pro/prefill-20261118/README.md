@@ -46,6 +46,25 @@ devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
 | KQ11 | the fixed adapter (sha16 `de4e0fbc5d2b0f50`), BF16 | the KQ3 needle | two passes, 475.3 s |
 | KQ12 | as KQ11 with `index_fp8` 1 (`index FP8 keys and queries (ue8m0 scales)` in the log) | the KQ3 needle | two passes, 438.9 s |
 
+## Mode-switch runs, 2026-11-19
+
+Branch `perf/k31-pass-mode-switch` (stacked on #1950): the lane starts with
+the whole arena warmed (`weightd_warm --shared 93 896` after ready, as the
+TP16 runs), each rank's `streamed_prefill` names `expert_pool_cap_bytes`
+8 GiB and the lane config carries no top-level cap, so the runner switches
+to the slot pool for each streamed prefill and back to the whole arena
+after it. Adapter sha16 `8aaef0a6b450b0a7` (release `a242ef38e` with the
+#1950 exact levers and the switch). Hub script `switchrun.sh` (the passrun
+steps plus the warm; it waits for the answer).
+
+| Run | Prompt | Result |
+| --- | --- | --- |
+| KS1 | none | did not start: one rank's config copy failed (sparkcp), the script now retries |
+| KS2 | pass-key needle, 4,200 filler units (100,869 tokens) | pass pool switch 3.9 s, prefill 110.4 s (one pass), whole arena 19.6 s (warm 14.6), answer `60669` correct, 142.9 s end to end |
+
+- `switch-KS2-rank0.log`: rank 0's pool, spine, switch, pass and graph
+  capture lines; `needle-KS2.json`: the client's result.
+
 After each prefill the one-row decode step of the last token stopped rank 0
 (`decode step key=1 rows=1 before every expert group is resident`), so the
 needle has no answer; the prefill times come from rank 0's log.

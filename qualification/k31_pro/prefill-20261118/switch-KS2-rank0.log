@@ -1,0 +1,20 @@
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+WD-SPINE-SHARED spans=93 bytes=10209307008 private=0
+STAGE-RESIDENT every expert group is present in a fixed pool: per-layer expert leases are off
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+WD-SPINE-PRIVATE spans=93 bytes=10209307263
+STAGE-WEIGHTS pass pool in 3.9 s: detach 0.7, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill reads the own shard's experts from the own pack on local NVMe
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.157 0:0.208 1:0.227 2:1.43 3:0.832 4:0.699 5:1.13 6:5.31 7:2.97 15:0.906 23:155 31:0.527 39:0.406 47:40.2 55:8.25 63:2.56 71:40.2 79:5.88 87:3.2 92:19
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 8.3 s, KDA attention 16.2 s, MLP and experts 84.1 s, between layers 0.3 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 6 3.4 s, fastest rank 0 3.3 s; helpers attended 752412 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/1 rows 6400 x 16 keys to 100867 status=0 at 110.4 s; streamer waited 0.0 s for the GPU to release buffers, compute waited 7.5 s for dense and 77.4 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 7.9 s in dense broadcasts and 100.9 s in expert steps, 24.5 s of them reading the packs
+sparkpipe_k3: streamed prefill sequence 1000051 positions 0..100867 in 1 passes status=0 110.4 s; exchanges with a block late or wrong at first check 0, settled after waiting 0
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+WD-SPINE-SHARED spans=93 bytes=10209307008 private=0
+STAGE-RESIDENT every expert group is present in a fixed pool: per-layer expert leases are off
+STAGE-WEIGHTS whole arena in 19.6 s: detach 0.1, reclaim 0.1, attach 4.7, warm 14.6, bind 0.0
+STAGE-GRAPH-CAPTURE key=1 rows=1 nodes=5578 capture_ms=46.4 prefetch_groups=419 prefetch_mib=3292.1 prefetch_dropped=0
+STAGE-GRAPH-CAPTURE key=1 rows=1 nodes=5578 capture_ms=13.3 prefetch_groups=419 prefetch_mib=3292.1 prefetch_dropped=0
+STAGE-GRAPH-CAPTURE key=1 rows=1 nodes=5578 capture_ms=13.5 prefetch_groups=419 prefetch_mib=3292.1 prefetch_dropped=0
