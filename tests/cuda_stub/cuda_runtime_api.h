@@ -304,6 +304,7 @@ unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream);
 void spark_stub_cuda_event_pending(uint32_t pending);
 void spark_stub_cuda_event_record_failure(uint32_t failure);
 extern uint32_t cuda_stub_stream_sync_calls;
+extern uint32_t cuda_stub_stream_query_calls;
 void spark_stub_cuda_fail_alloc_call(uint32_t one_based_call_index);
 void spark_stub_cuda_fail_host_map_call(uint32_t one_based_call_index);
 uint32_t spark_stub_cuda_outstanding_allocs(void);
