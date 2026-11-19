@@ -6,7 +6,7 @@
 >   predates the graph path merge (`93f1892`), expert pinning for graphs
 >   (`78c2c21`), the multi-row prefill fix (#1212, `32c0ba7`) and every later
 >   fix, and the hand-written MANIFEST bypasses the release channel. Publish
->   from merged main with [FLEET_RELEASE_RUNBOOK.md](../FLEET_RELEASE_RUNBOOK.md).
+>   from merged main with [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 > - §2 and §7.1 describe the graph path as opt-in with a default. There is no
 >   default: the module fails with `INVALID_ARGUMENT` unless
 >   `SPARK_GLM5_NEXT_GRAPH_PATH` is `0` or `1` (`5c4873b`), and graphs need

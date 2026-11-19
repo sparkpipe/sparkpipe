@@ -511,6 +511,7 @@ PYTHON_TESTS := \
 	tests/test_kv_failure_host.py \
 	tests/test_frame_error_host.py \
 	tests/test_weight_prefetch_host.py \
+	tests/test_hf_fetch_resume_paths.py \
 	tests/test_kernel_frame_error_source.py \
 	tests/test_ue8m0_encoder_oracle.py \
 	tests/test_kernel_algorithms.py \
@@ -629,6 +630,7 @@ PYTHON_TESTS := \
 	tests/test_k3_tp_context_cuda.py \
 	tests/test_k3_index_exchange_cuda.py \
 	tests/test_runner_capture_flags_cuda.py \
+	tests/test_device_adopted_capture_cuda.py \
 	tests/test_stage_runner_sum_rule_cuda.py \
 	tests/test_runner_verify_step_cuda.py \
 	tests/test_glm_attach_kv_cuda.py \
@@ -1675,6 +1677,8 @@ build/test_steploop_admission: tests/test_steploop_admission.c tests/fixtures/mo
 build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/device_adopted_capture_cuda: tests/cuda/device_adopted_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude tests/cuda/device_adopted_capture_cuda.cu $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -o $@
 build/runner_capture_flags_cuda: tests/cuda/runner_capture_flags_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_capture_flags_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 build/runner_verify_step_cuda: tests/cuda/runner_verify_step_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build

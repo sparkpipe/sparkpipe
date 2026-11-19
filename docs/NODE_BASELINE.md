@@ -28,7 +28,7 @@ it on one node, reboot that node, and audit it before the others.
 Nodes from `spark10` up belong to later fleets and are staged. The same tool
 gives them the network-independent part of this policy, with no Ceph, fabric,
 hub or management-network items
-([NODE_BRINGUP.md, step 7](NODE_BRINGUP.md#7-hand-off-to-the-baseline)).
+([NODE_BRINGUP.md, step 7](https://github.com/sparkpipe/datacenter/blob/main/operations/NODE_BRINGUP.md#7-hand-off-to-the-baseline)).
 
 ## What the baseline holds
 
@@ -38,11 +38,12 @@ hub or management-network items
 | Factory boot units masked: rbdmap, nvmf-autoconnect, open-iscsi, iscsid, srp_daemon, srptools, cloud-init (4), pollinate, nvidia-spark-run-apt-upgrade-once, systemd-networkd-wait-online | apply (`OPTIONAL_BOOT_UNITS`) | Boot work the fleet does not use. srp_daemon is an RDMA consumer on every port. Apply refuses while remote storage is configured. |
 | Fabric ports unmanaged by NetworkManager | `ds4-switched-fabric-apply --network-manager` (`90-ds4-switched-fabric-unmanaged.conf`) | NetworkManager reads `conf.d` in name order and the last `unmanaged-devices` wins. A leftover `ds4-200g-unmanaged.conf` sorted last and left `enp1s0f0np0`/`enp1s0f1np1` managed, which flushes their manual addresses on carrier changes. The step moves the legacy override files to `/var/backups/ds4-fleet`. |
 | `95-ds4-uplink-no-assume.conf` (`keep-configuration=no` on `enP7s7`) | same step | The initramfs turns the kernel `ip=` argument into `/run/netplan/enP7s7.yaml`. When carrier is already up as NetworkManager starts, it adopts that profile (gateway 10.20.0.1, no internet) instead of `ds4-uplink-wired`. The fleet-agent then cannot reach the hub. The FE nodes lose this race on every boot. Older nodes win it only on carrier timing. On sparkf the rule activates `ds4-speculation-link` (priority 300), as today. |
-| `ds4-switched-fabric` and `ds4-rail2-fabric` scripts and timers | apply (assets) | The boot runs bring each rail's port up with 1024-entry rings, MTU 9000 and its fabric address. Rail 2 also takes its lossless QoS and turns the idle PCIe function of port 0 down ([FLEET_FABRIC.md](FLEET_FABRIC.md)). The direct-pair units are retired since 2026-11-06. |
+| `ds4-switched-fabric` and `ds4-rail2-fabric` scripts and timers | apply (assets) | The boot runs bring each rail's port up with 1024-entry rings, MTU 9000 and its fabric address. Rail 2 also takes its lossless QoS and turns the idle PCIe function of port 0 down ([FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)). The direct-pair units are retired since 2026-11-06. |
 | `sparkpipe-hub-route.service` | apply (`LINKED_RANK_ASSET_SOURCES`, ranks 0-14) | Route to the hub through sparkf. Rank 15 is the hub gateway and has no unit. |
 | DMA guard installed and armed | apply (`spark-dma-guard install --notify 192.168.50.4:5514`) | sysrq-b on the first CX-7 uncorrectable error or SMMU failure line. Audit requires `event=start mode=armed` in the current boot. The 7.0 kernel prints the same formats; a dry-run injection on spark7 on 2026-10-20 matched both the AER and the CMD_SYNC lines. |
 | Hardware watchdog, recovery sysctls | apply (`/etc/systemd/system.conf.d/90-ds4-recovery.conf`, sysctl files), audited | `RuntimeWatchdogSec=10min`, `RebootWatchdogSec=5min`; `kernel.panic=60`, soft-lockup and hung-task panics, `vm.swappiness=10`. Without the watchdog the SBSA watchdog stays off and a hard hang never reboots. |
-| Emergency SSH on 2222, recovery key in root and Dropbear, GRUB recovery `ip=`, IPv4 PXE first | apply | The out-of-band and PXE rescue paths ([INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md)). The emergency sshd admits `root` and the `sparkemerg` account. The owner creates that account. The controller probes the port on the node name, then on `sparkN.local`. |
+| SSH password and keyboard-interactive login off (`/etc/ssh/sshd_config.d/90-spark-hardening.conf`) | apply, audited (`sshd -T`) | Key login only, on the main sshd as on the emergency one. Apply refuses unless the node account holds at least two login keys besides the fleet recovery key, which root holds. With that key, the fleet has three independent ways in, such as the workstation, the owner's laptop and the recovery key. It then checks the whole configuration with `sshd -t` and reloads sshd. The audit fails on `sshd-passwordauthentication`, `sshd-kbdinteractiveauthentication` or `sshd-user-keys`. The file sorts after any `50-cloud-init.conf`, and sshd keeps the first value it reads, so the audit's `sshd -T` check is what proves the setting. |
+| Emergency SSH on 2222, recovery key in root and Dropbear, GRUB recovery `ip=`, IPv4 PXE first | apply | The out-of-band and PXE rescue paths ([INCIDENT_RECOVERY_PLAYBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/INCIDENT_RECOVERY_PLAYBOOK.md)). The emergency sshd admits `root` and the `sparkemerg` account. The owner creates that account. The controller probes the port on the node name, then on `sparkN.local`. |
 | Host firewall unit, RoCE QoS unit and script | apply (assets) | The firewall ruleset is private; apply refuses without it and the audit requires the unit enabled and active. fleet-agent refuses to start weightd unless `sparkpipe-roce-qos` is active (DSCP trust, PFC priority 3). |
 | earlyoom `-m 2 -s 100 -r 5 --avoid sshd\|systemd\|init`, `user-1000.slice` limits, sysctls, `sch_fq_codel` | apply | Owner setting since 2026-11-02 (`-m 3` from 2026-10-07 killed K3 cold starts that end with 1.3-1.8 GB available; `-m 7` killed K3 twice). |
 | Ceph: cephadm daemons run; host package units masked; `/var/log/ceph/<fsid>` owned 167:167; mon/mgr/osd units enabled; enabled units (enablement links) without a daemon directory disabled; start-after-ssh drop-ins | apply (`install_ceph_policy`, assets) | cephadm will not start a daemon without its log directory. A copied state tree once enabled a `crash` unit with no daemon. Stopped MDS or crash daemons may stay disabled. A directory without a cluster target or daemons (a leftover cluster) is ignored. The drop-ins order the cluster after ssh with 180-second timeouts, so Ceph can never block ssh. |
@@ -70,7 +71,7 @@ The repository is public. These files stay in the private coordination store
 ## Replacing or adding a node
 
 A node still on its factory image goes through
-[NODE_BRINGUP.md](NODE_BRINGUP.md) first: first contact, keys and sudo,
+[NODE_BRINGUP.md](https://github.com/sparkpipe/datacenter/blob/main/operations/NODE_BRINGUP.md) first: first contact, keys and sudo,
 headless, and the first upgrade. It then continues here at step 2.
 
 1. **Owner:** rack and cable the node exactly like its predecessor (port 0 to
@@ -94,7 +95,7 @@ headless, and the first upgrade. It then continues here at step 2.
    coordination store, and the owner's secrets. Apply refuses to run without
    `/etc/spark-firewall.nft`. Apply creates the node layout roots.
 5. **Fleet agent:** install the fleet agent and weightd as in
-   [FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#7-bootstrap-and-fleet_syncsh).
+   [FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#7-bootstrap-and-fleet_syncsh).
    Apply enables linger for the node user so its user units start at boot.
 6. **Baseline:** run `apply` on the node alone, reboot, then run `audit` and
    `tools/fleet_post_reboot.sh sparkN`. Both must pass before the node serves.

@@ -8,7 +8,7 @@
 > stale: `SPARK_GLM5_NEXT_GRAPH_PATH` has no default (unset fails module init;
 > the fleet sets 1 through `G5_GRAPH_PATH`), and the mesh now has 2 slots per
 > rank in a 268,500,992-byte slot area (`include/sparkpipe/spark_weightd.h`).
-> Fleet operations: [`FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
+> Fleet operations: [`FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 > GLM status: [`GLM5_NEXT_ROOFLINE.md`](../GLM5_NEXT_ROOFLINE.md).
 
 Branch: `lane/glm53-takeover` (all pushed). Fleet: serving mechanically end-to-end on TP16.
@@ -94,7 +94,7 @@ Bisect plan (next session, first thing):
 > weightd runs from a path other than `~/sparkdata/weightd`. A weightd started
 > by hand therefore blocks the agent and runs outside its cgroup. Never start
 > weightd by hand on a fleet node. weightd updates go through the hub's
-> `core/WEIGHTSD_BIN` announce (`FLEET_RELEASE_RUNBOOK.md` §5.2); `core/`
+> `core/WEIGHTSD_BIN` announce (`datacenter:operations/FLEET_RELEASE_RUNBOOK.md` §5.2); `core/`
 > is sha-verified from its MANIFEST, so copying into `core/bin` by hand is
 > wrong. The agent has no `UPDATE` sentinel. The hub serving `~/release/<root>/`
 > is rtx5090; sparkf's `~/release` is a staging copy. The API runs on rtx5090

@@ -634,7 +634,7 @@ evidence rules.
 heartbeats and serves the model API. In the reference fleet it is an x86
 host, so the API is built for x86 separately from the aarch64 Spark
 binaries. Host roles and the release procedure are in
-[`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md).
+[`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 ## Models
 
@@ -805,7 +805,7 @@ Each document is the authority for one thing:
 - [`TECHDEBT.md`](TECHDEBT.md): unfinished work against this description;
 - [`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md): measurements, kept
   separate from projections;
-- [`docs/FLEET_RELEASE_RUNBOOK.md`](docs/FLEET_RELEASE_RUNBOOK.md): host
+- [`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md): host
   roles, releases and fleet operations;
 - [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md): every environment variable a
   process reads; the serving path reads only residentd's own handoff;

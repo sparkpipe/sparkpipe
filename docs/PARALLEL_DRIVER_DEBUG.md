@@ -2,7 +2,7 @@
 
 Lanes, their records and the test lanes beside production are in
 [LANES.md](LANES.md); fleet roles and releases are in
-[FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md).
+[FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 This is the shared workflow for every driver lane. Family code owns geometry,
 tensor descriptions and model math. Reuse the stage module claims for ownership,
@@ -116,7 +116,7 @@ forward-cell pass cannot establish TP16 collective correctness. For a measured
 fleet run, list all sixteen hosts and use --resources exclusive. An exclusive
 job does not stop the fleet agent's production serving, which runs outside the
 queue. Stopping `fleet-agent` takes GLM serving down on every node it touches
-([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
+([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
 so a measured window needs the operator's approval as a planned outage; then
 meet every condition of the quickstart's performance-evidence rule.
 
@@ -207,7 +207,7 @@ throughput.
 This section covers development and PR builds. Release builds do not use
 it: `scripts/release_build.sh` builds a source archive with `make` on the
 build host and on the hub
-([FLEET_RELEASE_RUNBOOK.md](FLEET_RELEASE_RUNBOOK.md#41-build)).
+([FLEET_RELEASE_RUNBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#41-build)).
 
 Run `tools/glm5_next_build_release.sh` with no arguments through a GPU-owned
 queue job in the clean checkout returned by `spark_queue.py sync`. Use

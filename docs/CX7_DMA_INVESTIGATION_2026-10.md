@@ -554,7 +554,7 @@ Caveats:
 
 `tools/devcycle/spark_dma_guard.py`: commits 751b4419b (2026-10-02 18:14Z)
 and d45211a7a (19:15Z), PR #1428 (merged 21:26Z). The procedure is in
-[INCIDENT_RECOVERY_PLAYBOOK.md](INCIDENT_RECOVERY_PLAYBOOK.md#dma-guard).
+[INCIDENT_RECOVERY_PLAYBOOK.md](https://github.com/sparkpipe/datacenter/blob/main/operations/INCIDENT_RECOVERY_PLAYBOOK.md#dma-guard).
 
 ### 7.1 Design
 

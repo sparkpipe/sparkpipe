@@ -1161,6 +1161,18 @@ static void StageRunnerMemoryMark(SparkStageRunnerState *state, const char *phas
 	state->memory_mark_available = available;
 }
 
+static SparkStatus StageRunnerStartupMark(SparkStageRunnerState *state, const char *phase)
+{
+	char what[96];
+	SparkStatus status;
+	StageRunnerMemoryMark(state, phase, 0u);
+	snprintf(what, sizeof(what), "rank %u startup after %s", state->tp_rank, phase);
+	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH, 0u, what, state->model_interface->weightd_model);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerAdoptQueue(SparkStageRunnerState *state)
 {
 	SparkStatus status = SparkDeviceInitialize(0);
@@ -1226,10 +1238,11 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	request.configuration = configuration;
 	request.services = &state->services;
 	request.stream = configuration->execution_stream;
-	StageRunnerMemoryMark(state, "begin", 0u);
-	status = model->open(&request, &state->model, &state->geometry);
+	status = StageRunnerStartupMark(state, "begin");
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "model_open", 0u);
+		status = model->open(&request, &state->model, &state->geometry);
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerStartupMark(state, "model_open");
 	if ( status == SPARK_STATUS_OK && (state->geometry.hidden == 0u || state->geometry.vocab == 0u ||
 		state->geometry.total_layers == 0u || state->geometry.hidden % 8u != 0u) )
 		status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -1246,7 +1259,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerAttachWeights(state, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "weights_attached", 0u);
+		status = StageRunnerStartupMark(state, "weights_attached");
 	if ( status == SPARK_STATUS_OK )
 	{
 		status = model->bind(state->model, state->lazy_pack, &state->geometry);
@@ -1254,7 +1267,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 			fprintf(stderr, "sparkpipe_stage_runner: %s weight bind failed status=%d\n", model->tag, (int)status);
 	}
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "model_bound", 0u);
+		status = StageRunnerStartupMark(state, "model_bound");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLeases(state);
 	if ( status == SPARK_STATUS_OK )
@@ -1303,15 +1316,15 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateCollective(state, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "collective", 0u);
+		status = StageRunnerStartupMark(state, "collective");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateHead(state, runner);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "head", 0u);
+		status = StageRunnerStartupMark(state, "head");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateBuffers(state, runner, configuration);
 	if ( status == SPARK_STATUS_OK )
-		StageRunnerMemoryMark(state, "buffers", 0u);
+		status = StageRunnerStartupMark(state, "buffers");
 	if ( status == SPARK_STATUS_OK )
 		status = StageRunnerCreateLanes(state);
 	if ( status == SPARK_STATUS_OK )

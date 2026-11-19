@@ -53,10 +53,10 @@ Restore and track the shared services when the window ends.
 
 The production GLM service does not run under the queue. Its weightd and
 engines live in each node's `fleet-agent` cgroup
-([fleet release runbook](FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
+([fleet release runbook](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#21-unit-drop-in-and-cgroup)),
 so stopping the tracked shared daemons does not free those nodes. A private
 weightd on a node whose agent runs also freezes that agent
-([weightd ownership](FLEET_RELEASE_RUNBOOK.md#3-weightd-ownership)). The window
+([weightd ownership](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md#3-weightd-ownership)). The window
 therefore starts with `systemctl --user stop fleet-agent` on all sixteen nodes,
 which takes GLM serving down. When the window ends, run
 `systemctl --user start fleet-agent` on each node and wait for the cold start;

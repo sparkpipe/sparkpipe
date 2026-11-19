@@ -8,7 +8,7 @@
   {
    "path": "weightd",
    "since": "2026-11-02",
-   "reason": "the node's installed weightd binary and its state (docs/FLEET_RELEASE_RUNBOOK.md)"
+   "reason": "the node's installed weightd binary and its state (datacenter:operations/FLEET_RELEASE_RUNBOOK.md)"
   },
   {
    "path": "swap",

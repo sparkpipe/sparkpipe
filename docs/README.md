@@ -100,37 +100,32 @@ current authority.
   speculation as built: the batch engine's draft planning, lookup and draft
   model sources, the frame cost model, the draft bridge, control, the
   guarantee and direction.
-- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub
-  (release hub, model APIs, draft farm, drafter store).
+- [`RTX5090_SPECULATION_NODE.md`](RTX5090_SPECULATION_NODE.md): the hub's
+  drafters and draft farm.
 - [`TREE_VERIFICATION_DESIGN.md`](TREE_VERIFICATION_DESIGN.md): tree verify
   frames over the production path: node table, slot and position split,
   ancestor attention, path-form `keep_rows`, composition, phases and gates.
 
 ## Operations and development
 
+- Site operations are in the private
+  [datacenter](https://github.com/sparkpipe/datacenter) repository: the fleet
+  release runbook (`operations/FLEET_RELEASE_RUNBOOK.md`, the release and
+  operations procedure), incident recovery, new-node bring-up, management
+  route failover, the hub host and the fabric (`network/FLEET_FABRIC.md`).
 - [`TOOL_REFERENCE.md`](TOOL_REFERENCE.md): purpose, usage and exit codes
   of the standalone C and CUDA tools (hy4 host references and GPU tests,
   mesh registration repros, NVFP4 smokes).
-- [`FLEET_RELEASE_RUNBOOK.md`](FLEET_RELEASE_RUNBOOK.md): the single
-  production fleet guide (hub, fleet-agent, releases, the hub serving
-  stack, bootstrap, triage). This is the release and operations procedure.
 - [`PARALLEL_DRIVER_DEBUG.md`](PARALLEL_DRIVER_DEBUG.md): queue v2 contract
   and PR evidence.
 - [`DEVCYCLE.md`](DEVCYCLE.md): queue builds and the shared development
   cycle.
-- [`INCIDENT_RECOVERY_PLAYBOOK.md`](INCIDENT_RECOVERY_PLAYBOOK.md): Spark boot
-  and OOM recovery (PXE, then the brickproof controller).
 - [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
   each item exists, and the procedure for replacing or adding a node.
-- [`NODE_BRINGUP.md`](NODE_BRINGUP.md): a new node from its factory image to
-  the baseline: first contact over rail 2, keys and sudo, headless, the first
-  upgrade, the burn-in, and what went wrong on spark10.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
   experiments).
-- [`SPARK_MANAGEMENT_FAILOVER.md`](SPARK_MANAGEMENT_FAILOVER.md): management
-  SSH route selection.
 - [`TP_CUPTI_TRACE.md`](TP_CUPTI_TRACE.md): isolated per-rank CUPTI timing
   trace.
 - [`SERVING_RELEASE_RECOVERY_20260924.md`](SERVING_RELEASE_RECOVERY_20260924.md):

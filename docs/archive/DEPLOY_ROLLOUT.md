@@ -4,7 +4,7 @@
 > installs from `~/sparkpipe-build` (`publish_core.sh:4`), and a weightsd system
 > unit cannot hold weightd's loopback latch port 61900 next to the fleet-agent
 > weightd (`node/weightd.c:72`, `node/weightd.c:343-362`). The current procedure is
-> [`../FLEET_RELEASE_RUNBOOK.md`](../FLEET_RELEASE_RUNBOOK.md).
+> [`../FLEET_RELEASE_RUNBOOK.md`](https://github.com/sparkpipe/datacenter/blob/main/operations/FLEET_RELEASE_RUNBOOK.md).
 
 This document describes the historical global fleet publisher. For concurrent
 development use [the current development cycle](../DEVCYCLE.md).

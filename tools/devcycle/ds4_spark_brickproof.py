@@ -171,6 +171,9 @@ SYSTEMD_RECOVERY = """[Manager]
 RuntimeWatchdogSec=10min
 RebootWatchdogSec=5min
 """
+SSHD_HARDENING = "PasswordAuthentication no\nKbdInteractiveAuthentication no\n"
+SSHD_HARDENING_PATH = Path("/etc/ssh/sshd_config.d/90-spark-hardening.conf")
+SSHD_MIN_USER_KEYS = 2
 EMERGENCY_SSH_CONFIG = """Port 2222
 Protocol 2
 ListenAddress 0.0.0.0
@@ -578,6 +581,35 @@ def install_sshd_config() -> None:
             os.unlink(temp_name)
 
 
+def user_key_count(text: str,fleet_key: str) -> int:
+    return(len(canonical_authorized_keys(text,fleet_key).splitlines()) - 1)
+
+
+def sshd_password_failures(effective: str) -> list[str]:
+    values = dict(line.split(None,1) for line in effective.splitlines() if len(line.split(None,1)) == 2)
+    return([f"sshd-{name}:{values.get(name,'missing')}" for name in ("passwordauthentication","kbdinteractiveauthentication") if values.get(name) != "no"])
+
+
+def node_user_keys(node_id: str,home_root: Path = Path("/home")) -> str:
+    return(read_optional(home_root / node_id / ".ssh" / "authorized_keys"))
+
+
+def install_sshd_hardening(node_id: str,fleet_key: str,home_root: Path = Path("/home")) -> bool:
+    keys = user_key_count(node_user_keys(node_id,home_root),fleet_key)
+    if keys < SSHD_MIN_USER_KEYS:
+        raise BrickproofError(f"refusing to turn off SSH password login: {node_id} has {keys} login keys besides the fleet recovery key, needs {SSHD_MIN_USER_KEYS}")
+    changed = atomic_write(SSHD_HARDENING_PATH,SSHD_HARDENING,0o644)
+    try:
+        run(["/usr/sbin/sshd","-t"])
+    except BrickproofError:
+        if changed:
+            SSHD_HARDENING_PATH.unlink(missing_ok=True)
+        raise
+    if changed:
+        run(["systemctl","try-reload-or-restart","ssh.service"])
+    return(changed)
+
+
 def install_recovery_keys(public_key: str) -> bool:
     changed = False
     root_keys = Path("/root/.ssh/authorized_keys")
@@ -930,6 +962,7 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
         if legacy_timeout.exists():
             legacy_timeout.unlink()
     keys_changed = install_recovery_keys(str(payload["fleet_public_key"]))
+    sshd_hardening_changed = install_sshd_hardening(node_id,str(payload["fleet_public_key"]))
     grub_changed = install_grub_policy(payload["recovery_network"])
     efi_boot_order_changed = False if staged else install_efi_boot_order()
     rebuild_initramfs()
@@ -939,7 +972,7 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     enable_policy_services(rank,node_id)
     run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
-    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"memory_current_before":memory_current,"profile":"staged" if staged else "fleet","source_commit":payload["source_commit"]})
+    return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"sshd_hardening_changed":sshd_hardening_changed,"memory_current_before":memory_current,"profile":"staged" if staged else "fleet","source_commit":payload["source_commit"]})
 
 
 def read_optional(path: Path) -> str:
@@ -1180,6 +1213,10 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
     observations["earlyoom_process"] = command(["pgrep","-af","earlyoom"],check=False)
     if not str(observations["earlyoom_process"]).endswith(EARLYOOM_ARGS):
         failures.append("earlyoom-runtime-args")
+    failures.extend(sshd_password_failures(command(["/usr/sbin/sshd","-T"],check=False)))
+    observations["sshd_user_keys"] = user_key_count(node_user_keys(node_id),public_key)
+    if observations["sshd_user_keys"] < SSHD_MIN_USER_KEYS:
+        failures.append(f"sshd-user-keys:{observations['sshd_user_keys']}")
     for unit in ("earlyoom.service","ssh-emergency.service"):
         state = service_value(unit,"ActiveState")
         observations[f"{unit}.active"] = state
