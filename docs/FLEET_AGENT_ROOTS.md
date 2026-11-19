@@ -98,8 +98,9 @@ pages, parking the rest) and shrinks (`kv pool shrank`). Each engine logs
 `kv pool weightd` line; size the reserve to at least the sum of the minimums
 for the engines a node runs, and to the sum of the totals for them to run
 unshared. Without a reserve those engines refuse to load. KV writes to NVMe
-are never limited or refused: each engine counts every spill, recurrent-state
-and snapshot write (`kv write meter` line at load), `kv_store_report` shows
+are never limited or refused: each engine counts every spill and snapshot
+write to disk (`kv write meter` line at load; recurrent states kept in memory
+are not disk writes and are not counted), `kv_store_report` shows
 `write_bytes`, `write_bytes_this_hour`, `write_bytes_previous_hour`,
 `write_alerts` and `write_alerting`, and an engine that writes more than
 20 GiB within an hour (about 0.5 TB/day, a quarter of a 4 TB Spark drive's
