@@ -843,7 +843,7 @@ static void TestCopierContract(void)
 	SparkModelDriverAdmissionRequest request;
 	SparkModelDriverAdmissionDecision decision;
 	atomic_uint slot_states[TEST_SLOTS],lane_states[TEST_LANES];
-	uint32_t residents[4],pages[3],index,syncs;
+	uint32_t residents[4],pages[3],index,syncs,queries;
 	SparkDeviceBuffer device;
 	SparkDeviceQueue *queue;
 	cudaStream_t stream;
@@ -868,7 +868,7 @@ static void TestCopierContract(void)
 		assert(SparkKvCacheArenaPinResidentBlock(&arena,pages[index]) == SPARK_STATUS_OK);
 	}
 	assert(SparkKvCacheArenaPinResidentBlock(&arena,pages[0]) == SPARK_STATUS_OK);
-	assert(cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess && SparkDeviceQueueAdopt(&queue,stream,"kvtest copier") == SPARK_STATUS_OK);
+	assert(SparkDeviceQueueCreate(&queue,"kvtest copier") == SPARK_STATUS_OK);
 	memset(&copy,0,sizeof(copy));
 	copy.module_tag = "kvtest";
 	copy.queue = queue;
@@ -898,7 +898,7 @@ static void TestCopierContract(void)
 	assert(blocks[pages[0]].residency_reference_count == 1u && blocks[pages[2]].residency_reference_count == 1u);
 	assert(SparkKvDeviceCopierDrain(&copier) == SPARK_STATUS_OK);
 	SparkKvDeviceCopierDestroy(&copier);
-	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && cudaStreamDestroy(stream) == cudaSuccess && SparkDeviceFree(&device) == SPARK_STATUS_OK);
+	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && SparkDeviceFree(&device) == SPARK_STATUS_OK);
 	Open();
 	SparkStageModuleAtomicStateArrayInitialize(slot_states,TEST_SLOTS);
 	SparkStageModuleAtomicStateArrayInitialize(lane_states,TEST_LANES);
@@ -913,8 +913,9 @@ static void TestCopierContract(void)
 		assert(SparkDeviceFill(BINDING.copy_queue,table,0xffu,sizeof(uint32_t)) == SPARK_STATUS_OK);
 	}
 	syncs = cuda_stub_stream_sync_calls;
+	queries = cuda_stub_stream_query_calls;
 	assert(SparkStageKvBindingAdmitReset(&BINDING,&request,&decision,slot_states,lane_states,queue) == SPARK_STATUS_OK);
-	assert(decision.accepted == 1u && cuda_stub_stream_sync_calls == syncs + 2u);
+	assert(decision.accepted == 1u && cuda_stub_stream_sync_calls == syncs + 1u && cuda_stub_stream_query_calls == queries + 1u);
 	assert(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && cudaStreamDestroy(stream) == cudaSuccess);
 	Close();
 	printf("T20 copier contract: ok\n");
