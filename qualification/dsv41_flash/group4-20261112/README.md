@@ -1891,3 +1891,14 @@ interleaved runs each: 16,857 / 26,931 / 29,115 tok/s against 16,993 /
 step), while the gate's decode request (a 200-token prompt and 16 tokens)
 took 2.04 s against 2.08; scores identical at 56 deep and 30 fresh
 positions. Kept because it is exact and shortens every decode step.
+
+The module drops the 16,384-token cache stride (2026-11-19). Every
+16,384-token wave ended at a cache point and ran layers 20 to 39 on its
+last rows so that the recurrent state could be saved there: 17,284 /
+23,990 / 23,314 tok/s at 8,192 / 32,768 / 131,072 tokens on the sixteen
+ranks, against 16,955 / 26,741 / 29,382 with no stride (the engine every
+figure here since the cache-stride table has used). The stride is now
+1,048,576 tokens, past any lane's context. A request still resumes where an
+earlier prompt or reply ended and at the cache points a request declares;
+it no longer resumes at a 16,384-token mark inside a prompt it shares only
+in part.
