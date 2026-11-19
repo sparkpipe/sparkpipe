@@ -35,6 +35,8 @@
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
 #define STAGE_RUNNER_ROUND_MARKS 512u
+#define STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI 120000u
+#define STAGE_RUNNER_SWITCH_TOKEN_WORDS 16u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
 
@@ -260,6 +262,8 @@ typedef struct SparkStageRunnerState
 	uint64_t pass_pool_cap_bytes;
 	void *mesh_mapping;
 	uint64_t mesh_mapping_bytes;
+	uint64_t switch_count;
+	uint64_t *switch_tokens;
 	uint32_t *group_offset_host;
 	uint32_t tp_rank;
 	uint32_t tp_degree;
@@ -2602,7 +2606,7 @@ static SparkStatus StageRunnerReclaimPack(SparkStageRunnerState *state)
 		SparkWeightdClientClose(client);
 	if ( status == SPARK_STATUS_OK && result.status != SPARK_STATUS_OK )
 		status = result.status;
-	if ( status == SPARK_STATUS_OK && (result.busy_arena_count != 0u || result.reclaimed_arena_count == 0u) )
+	if ( status == SPARK_STATUS_OK && result.busy_arena_count != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: weightd reclaimed %u arenas of the lane's pack and %u stay busy; a pool switch needs the lane's own arena cold\n",
 			result.reclaimed_arena_count, result.busy_arena_count);
@@ -2658,19 +2662,69 @@ static SparkStatus StageRunnerWarmPack(SparkStageRunnerState *state)
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus StageRunnerSwitchRendezvous(SparkStageRunnerState *state, const char *mode)
+{
+	const uint64_t began = SparkMonotonicNs();
+	const uint64_t row_bytes = STAGE_RUNNER_SWITCH_TOKEN_WORDS * sizeof(uint64_t);
+	uint64_t token[STAGE_RUNNER_SWITCH_TOKEN_WORDS], gathered[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE * STAGE_RUNNER_SWITCH_TOKEN_WORDS];
+	uint32_t previous = 0u, restored = 0u, rank, late = UINT32_MAX;
+	SparkStatus status;
+	if ( state->device_collective_created == 0 || state->tp_degree <= 1u )
+		return SPARK_STATUS_OK;
+	if ( state->tp_degree > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( state->switch_tokens == 0 && cudaMalloc((void **)&state->switch_tokens, (size_t)(row_bytes * (1u + state->tp_degree))) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(token, 0, sizeof(token));
+	token[0] = ++state->switch_count;
+	token[1] = state->tp_rank;
+	if ( cudaMemcpy(state->switch_tokens, token, (size_t)row_bytes, cudaMemcpyHostToDevice) != cudaSuccess ||
+		cudaMemset(state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS, 0, (size_t)(row_bytes * state->tp_degree)) != cudaSuccess )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = SparkTpDeviceCollectiveSetOperationTimeout(&state->device_collective, STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI, &previous);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	status = StageRunnerMeshRound(state, 0u, state->stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u,
+		(uint32_t)(row_bytes / sizeof(uint16_t)), state->switch_tokens, state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS);
+	if ( status == SPARK_STATUS_OK && (cudaStreamSynchronize(state->stream) != cudaSuccess ||
+		cudaMemcpy(gathered, state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS, (size_t)(row_bytes * state->tp_degree), cudaMemcpyDeviceToHost) != cudaSuccess) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( SparkTpDeviceCollectiveSetOperationTimeout(&state->device_collective, previous, &restored) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	for (rank = 0u; rank < state->tp_degree && late == UINT32_MAX; rank++)
+		if ( gathered[rank * STAGE_RUNNER_SWITCH_TOKEN_WORDS] != token[0] || gathered[rank * STAGE_RUNNER_SWITCH_TOKEN_WORDS + 1u] != rank )
+			late = rank;
+	if ( late != UINT32_MAX )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: rank %u did not reach weight switch %llu within %u s, so the ranks cannot start their next collective work together\n",
+			late, (unsigned long long)token[0], STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI / 1000u);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	fprintf(stderr, "STAGE-WEIGHTS %s rendezvous %llu waited %.1f s\n", mode, (unsigned long long)token[0], (double)(SparkMonotonicNs() - began) / 1e9);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerSwitchWeights(SparkStageRunnerState *state, const SparkStageRunner *runner, uint64_t cap)
 {
 	const uint64_t began = SparkMonotonicNs();
-	uint64_t detached, reclaimed, attached, warmed;
+	uint64_t synced, dropped = 0u, unmapped = 0u, released = 0u, detached, reclaimed, attached, warmed;
 	SparkStatus status;
 	if ( state->lazy_pack == 0 || cudaStreamSynchronize(state->stream) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	synced = SparkMonotonicNs();
 	StageRunnerGraphDrop(state);
 	status = StageRunnerDropLeases(state);
 	if ( status == SPARK_STATUS_OK && state->mesh_mapping == 0 )
 		status = SparkWeightdLazyPackTakeMeshMapping(state->lazy_pack, &state->mesh_mapping, &state->mesh_mapping_bytes);
+	dropped = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackUnmap(state->lazy_pack);
+	unmapped = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdLazyPackDetach(state->lazy_pack, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	released = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK )
 		status = SparkWeightdLazyPackDestroy(state->lazy_pack);
 	if ( status != SPARK_STATUS_OK )
@@ -2704,11 +2758,12 @@ static SparkStatus StageRunnerSwitchWeights(SparkStageRunnerState *state, const 
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
-	fprintf(stderr, "STAGE-WEIGHTS %s in %.1f s: detach %.1f, reclaim %.1f, attach %.1f, warm %.1f, bind %.1f\n",
-		cap != 0u ? "pass pool" : "whole arena", (double)(SparkMonotonicNs() - began) / 1e9, (double)(detached - began) / 1e9,
-		(double)(reclaimed - detached) / 1e9, (double)(attached - reclaimed) / 1e9, (double)(warmed - attached) / 1e9,
-		(double)(SparkMonotonicNs() - warmed) / 1e9);
-	return SPARK_STATUS_OK;
+	fprintf(stderr, "STAGE-WEIGHTS %s in %.1f s: sync %.1f, leases %.1f, unmap %.1f, detach %.1f, destroy %.1f, reclaim %.1f, attach %.1f, warm %.1f, bind %.1f\n",
+		cap != 0u ? "pass pool" : "whole arena", (double)(SparkMonotonicNs() - began) / 1e9, (double)(synced - began) / 1e9,
+		(double)(dropped - synced) / 1e9, (double)(unmapped - dropped) / 1e9, (double)(released - unmapped) / 1e9,
+		(double)(detached - released) / 1e9, (double)(reclaimed - detached) / 1e9, (double)(attached - reclaimed) / 1e9,
+		(double)(warmed - attached) / 1e9, (double)(SparkMonotonicNs() - warmed) / 1e9);
+	return StageRunnerSwitchRendezvous(state, cap != 0u ? "pass pool" : "whole arena");
 }
 
 static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
@@ -3437,6 +3492,8 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	}
 	if ( state->mesh_mapping != 0 && munmap(state->mesh_mapping, (size_t)state->mesh_mapping_bytes) == 0 )
 		state->mesh_mapping = 0;
+	if ( state->switch_tokens != 0 && cudaFree(state->switch_tokens) == cudaSuccess )
+		state->switch_tokens = 0;
 	if ( state->model != 0 )
 		state->model_interface->close(state->model);
 	state->model = 0;

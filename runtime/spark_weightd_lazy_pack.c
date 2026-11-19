@@ -13,9 +13,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static SparkStatus lazy_pack_unmap(SparkWeightdLazyPack *pack)
+SparkStatus SparkWeightdLazyPackUnmap(SparkWeightdLazyPack *pack)
 {
 	SparkStatus status;
+	if ( pack == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	pack->ready = 0u;
 	if ( pack->worker != 0 )
 	{
@@ -42,7 +44,7 @@ SparkStatus SparkWeightdLazyPackDetach(SparkWeightdLazyPack *pack,uint64_t timeo
 	SparkStatus status;
 	if ( pack == 0 || pack->client == 0 || pack->attached.arena_generation == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = lazy_pack_unmap(pack);
+	status = SparkWeightdLazyPackUnmap(pack);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	memset(&result,0,sizeof(result));
@@ -70,7 +72,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	SparkStatus status;
 	if ( pack == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	status = lazy_pack_unmap(pack);
+	status = SparkWeightdLazyPackUnmap(pack);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pack->spine_allocation != 0 )
