@@ -67,6 +67,7 @@ typedef struct SparkStageRunnerStreamedPrefillConfig
 	uint32_t traffic_class;
 	uint32_t dense_buffers;
 	uint32_t expert_slots;
+	uint32_t index_fp8;
 	const char *partner_pack_path;
 	const char *fabric_device;
 	const char *pair_device;

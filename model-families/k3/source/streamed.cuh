@@ -612,6 +612,11 @@ struct K3StreamedMlaExchange
 	uint16_t *index_heads_local;
 	uint16_t *index_heads;
 	uint16_t *index_query;
+	uint8_t *index_keys_fp8;
+	float *index_key_scales;
+	uint8_t *index_query_fp8;
+	float *index_weights;
+	uint32_t index_fp8;
 	float *index_scores;
 	uint64_t index_score_floats;
 	uint2 *index_send;
@@ -688,7 +693,7 @@ static uint32_t K3StreamedMlaIndexReady(const K3StreamedMlaExchange *x, uint32_t
 		x->index_send != 0 && x->index_bitmaps != 0 && x->index_selected_local != 0 && x->index_error != 0 && x->index_context != 0 && x->index_chunk != 0u &&
 		x->key_pages != 0 && x->zero_rows != 0 && x->sparse_query != 0 && x->sparse_partials != 0 && x->sparse_latent != 0 && x->sparse_slice != 0 && x->sparse_rows != 0u &&
 		x->index_store.shard.degree == x->nodes && x->index_store.shard.rank == x->node && LmKvViewIsConfigured(x->index_store.pages) != 0u && rows != 0u &&
-		rows % x->nodes == 0u ? 1u : 0u);
+		rows % x->nodes == 0u && (x->index_fp8 == 0u || (x->index_keys_fp8 != 0 && x->index_key_scales != 0 && x->index_query_fp8 != 0 && x->index_weights != 0)) ? 1u : 0u);
 }
 
 template<class Format>
@@ -724,23 +729,41 @@ static int32_t K3StreamedMlaIndexSelect(K3LayerBuffers *b, const K3StreamedMlaEx
 	const SparkKvShard whole = {1u, 0u, 1u};
 	const LmIndexScorePackedView packed = {x->index_store.pages, whole, x->index_full};
 	int32_t status = K3StreamedMlaIndexReady(x, rows) != 0u ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE;
+	const LmIndexScoreFp8Keys fp8_keys = {x->index_store.pages, x->index_keys_fp8, x->index_key_scales};
+	const float fp8_weight_scale = (float)(1.0 / sqrt((double)K3_INDEX_DIM * (double)K3_INDEX_HEADS));
 	if ( status == LM_LAUNCH_OK && ((uint64_t)chunk * key_count > x->index_score_floats || keep == 0u || key_count > x->key_capacity) )
 		status = LM_LAUNCH_ERR_SHAPE;
+	if ( status == LM_LAUNCH_OK && x->index_fp8 != 0u &&
+		LmIndexKeysFp8Launch<K3_INDEX_DIM>((const uint16_t *)x->index_full,key_count,x->index_keys_fp8,x->index_key_scales,stream) != cudaSuccess )
+		status = LM_LAUNCH_ERR_LAUNCH;
 	for (uint32_t owner = 0u; owner < x->nodes && status == LM_LAUNCH_OK; owner++)
 		for (uint32_t done = 0u; done < share && status == LM_LAUNCH_OK; done += chunk)
 		{
 			const uint32_t count = share - done < chunk ? share - done : chunk;
 			const uint64_t row = (uint64_t)K3StreamedOwnedRow(x,rows,owner) + done;
+			cudaError_t scored;
 			status = K3Project<LmBf16Format>(b,x->q_latents + row * K3_Q_LORA_RANK,b->mla_index_query_weight,0,x->index_query,count,K3_Q_LORA_RANK,K3_INDEX_QUERY,
 				multiprocessors,stream);
-			if ( status == LM_LAUNCH_OK && (LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmIndexScorePackedView>(x->index_query,
-					x->index_heads + row * K3_INDEX_HEADS,packed,x->store_sequence_of_row + row,x->index_context,x->pass_positions + row,count,key_count,
-					K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),x->index_scores,stream) != cudaSuccess ||
+			if ( status != LM_LAUNCH_OK )
+				break;
+			if ( x->index_fp8 != 0u )
+			{
+				scored = LmIndexQueryFp8Launch<K3_INDEX_HEADS,K3_INDEX_DIM>(x->index_query,x->index_heads + row * K3_INDEX_HEADS,count,fp8_weight_scale,
+					x->index_query_fp8,x->index_weights,stream);
+				if ( scored == cudaSuccess )
+					scored = LmWeightedSparseScoreFp8Launch<K3_INDEX_HEADS,K3_INDEX_DIM>(x->index_query_fp8,x->index_weights,fp8_keys,x->store_sequence_of_row + row,
+						x->index_context,x->pass_positions + row,count,key_count,x->index_scores,stream);
+			}
+			else
+				scored = LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmIndexScorePackedView>(x->index_query,x->index_heads + row * K3_INDEX_HEADS,
+					packed,x->store_sequence_of_row + row,x->index_context,x->pass_positions + row,count,key_count,K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),
+					x->index_scores,stream);
+			if ( scored != cudaSuccess ||
 				LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(whole,x->index_scores,key_count,x->store_sequence_of_row + row,x->index_context,
 					x->pass_positions + row,keep,K3_INDEX_TOPK,count,x->index_send,x->index_error,stream) != cudaSuccess ||
 				LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(x->index_send,(uint64_t)count * keep,whole,keep,x->store_sequence_of_row + row,x->index_context,
 					x->pass_positions + row,K3_INDEX_TOPK,K3_INDEX_TOPK,count,x->index_bitmap_words,x->index_bitmaps,
-					x->index_selected_local + ((uint64_t)owner * share + done) * K3_INDEX_TOPK,x->index_error,stream) != cudaSuccess) )
+					x->index_selected_local + ((uint64_t)owner * share + done) * K3_INDEX_TOPK,x->index_error,stream) != cudaSuccess )
 				status = LM_LAUNCH_ERR_LAUNCH;
 		}
 	return(status);

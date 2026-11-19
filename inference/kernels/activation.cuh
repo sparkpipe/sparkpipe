@@ -13,9 +13,9 @@ static __device__ __forceinline__ float LmActivationWarpMax(float value)
 	return(value);
 }
 
-static __device__ __forceinline__ float LmActivationFp8Scale(float amax)
+static __device__ __forceinline__ float LmActivationFp8Scale(float amax, float floor = 1e-4f)
 {
-	return(exp2f(ceilf(log2f(fmaxf(amax,1e-4f) / LM_E4M3_MAX))));
+	return(exp2f(ceilf(log2f(fmaxf(amax,floor) / LM_E4M3_MAX))));
 }
 
 template<uint32_t ACTIVATION_CODEC>

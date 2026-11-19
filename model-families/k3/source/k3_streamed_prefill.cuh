@@ -45,6 +45,7 @@ struct K3Streamed
 	uint32_t *key_pages;
 	uint8_t *mla_keys;
 	uint8_t *index_keys;
+	uint8_t *index_fp8;
 	float *index_scores;
 
 	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream);
@@ -64,6 +65,7 @@ static void K3StreamedDestroy(K3Streamed *s)
 	cudaFree(s->mla_keys);
 	cudaFree(s->key_pages);
 	cudaFree(s->index_keys);
+	cudaFree(s->index_fp8);
 	cudaFree(s->index_scores);
 	LmPassDestroy(&s->pass);
 	delete s;
@@ -205,6 +207,11 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 		s->mla.index_heads_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_HEADS);
 		s->mla.index_heads = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_HEADS);
 		s->mla.index_query = LmPassAlloc<uint16_t>(p, chunk * K3_INDEX_QUERY);
+		if ( s->mla.index_fp8 != 0u )
+		{
+			s->mla.index_query_fp8 = LmPassAlloc<uint8_t>(p, chunk * K3_INDEX_QUERY);
+			s->mla.index_weights = LmPassAlloc<float>(p, chunk * K3_INDEX_HEADS);
+		}
 		s->mla.index_send = LmPassAlloc<uint2>(p, chunk * K3_INDEX_TOPK);
 		s->mla.index_bitmaps = LmPassAlloc<uint32_t>(p, chunk * 2u * words);
 		s->mla.index_bitmap_words = (uint32_t)words;
@@ -273,6 +280,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	memset(s, 0, sizeof(*s));
 	s->dispatch = dispatch;
 	s->module = module;
+	s->mla.index_fp8 = config->index_fp8 != 0u && dispatch->indexed != 0u ? 1u : 0u;
 	for (s->moe_members = K3_STREAMED_SHARDS; s->moe_members > 1u && 2u * s->moe_members > config->expert_slots; s->moe_members /= 2u)
 	{
 	}
@@ -340,9 +348,10 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		K3StreamedDestroy(s);
 		return status;
 	}
-	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu, expert down projections of %u shards at once, partner=%s\n",
+	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu, expert down projections of %u shards at once, index %s, partner=%s\n",
 		s->pass.node_rows, (unsigned long long)s->pass.region_bytes, s->pass.config.dense_buffers, (unsigned long long)s->pass.window.config.dense_capacity, K3_STREAMED_SHARDS,
-		s->pass.config.expert_slots, (unsigned long long)s->pass.window.config.expert_capacity, (unsigned long long)s->pass.engine_bytes, s->moe_members, config->partner_pack_path);
+		s->pass.config.expert_slots, (unsigned long long)s->pass.window.config.expert_capacity, (unsigned long long)s->pass.engine_bytes, s->moe_members,
+		s->mla.index_fp8 != 0u ? "FP8 keys and queries (ue8m0 scales)" : "BF16", config->partner_pack_path);
 	*out = s;
 	return SPARK_STATUS_OK;
 }
@@ -384,22 +393,34 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	{
 		const uint64_t pages = (keys + K3GlobalKv::kPageSlots - 1u) / K3GlobalKv::kPageSlots;
 		const uint64_t score_floats = (uint64_t)s->mla.index_chunk * keys;
+		const uint64_t fp8_values = s->mla.index_fp8 != 0u ? (keys * K3_INDEX_DIM + 255u) & ~(uint64_t)255u : 0u;
+		const uint64_t fp8_bytes = s->mla.index_fp8 != 0u ? fp8_values + keys * sizeof(float) : 0u;
 		cudaFree(s->key_pages);
 		cudaFree(s->index_keys);
+		cudaFree(s->index_fp8);
 		cudaFree(s->index_scores);
 		s->key_pages = 0;
 		s->index_keys = 0;
+		s->index_fp8 = 0;
 		s->index_scores = 0;
 		s->mla.index_full = 0;
+		s->mla.index_keys_fp8 = 0;
+		s->mla.index_key_scales = 0;
 		s->mla.index_scores = 0;
 		s->mla.index_score_floats = 0u;
 		if ( cudaMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&s->index_keys, (size_t)(keys * K3IndexKv::kSlotBytes)) != cudaSuccess ||
+			(fp8_bytes != 0u && cudaMalloc((void **)&s->index_fp8, (size_t)fp8_bytes) != cudaSuccess) ||
 			cudaMalloc((void **)&s->index_scores, (size_t)(score_floats * sizeof(float))) != cudaSuccess )
 		{
 			fprintf(stderr, "sparkpipe_k3: streamed prefill index buffers for %llu keys (%llu bytes) do not fit\n", (unsigned long long)keys,
-				(unsigned long long)(keys * K3IndexKv::kSlotBytes + score_floats * sizeof(float)));
+				(unsigned long long)(keys * K3IndexKv::kSlotBytes + fp8_bytes + score_floats * sizeof(float)));
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		}
+		if ( fp8_bytes != 0u )
+		{
+			s->mla.index_keys_fp8 = s->index_fp8;
+			s->mla.index_key_scales = (float *)(s->index_fp8 + fp8_values);
 		}
 		s->mla.index_full = s->index_keys;
 		s->mla.index_scores = s->index_scores;
