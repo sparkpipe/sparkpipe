@@ -1750,6 +1750,8 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 		if ( binding->page_cache.snapshot->save_cancelled_count != before )
 			fprintf(stderr,"KV-SNAPSHOT pending saves cancelled count=%llu\n",(unsigned long long)(binding->page_cache.snapshot->save_cancelled_count - before));
 	}
+	if ( binding->module_tag != 0 && binding->mutex_initialized != 0u )
+		SparkStageKvBindingLogCounters(binding);
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 	{
 		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
@@ -1804,8 +1806,6 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->restore_job.links);
 	free(binding->restore_job.state);
 	SparkStageKvBindingRelease(&binding->restore_page);
-	if ( binding->module_tag != 0 && binding->mutex_initialized != 0u )
-		SparkStageKvBindingLogCounters(binding);
 	SparkStageKvBindingFreeCompletions(binding);
 	SparkStageKvBindingRelease(&binding->physical_page_buffer);
 	SparkStageKvBindingRelease(&binding->staging);

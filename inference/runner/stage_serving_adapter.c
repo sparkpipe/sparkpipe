@@ -1140,6 +1140,17 @@ static void StageServingBufferPlan(SparkStageServingState *state, SparkStageServ
 	memcpy(plan, plans, sizeof(plans));
 }
 
+static SparkStatus StageServingDeviceWait(const SparkStageServingState *state, SparkDeviceQueue *queue, const char *site)
+{
+	const SparkDeviceError *error;
+	if ( SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK )
+		return SPARK_STATUS_OK;
+	error = SparkDeviceLastError();
+	fprintf(stderr, "%s adapter: %s device wait failed: %s %s code=%d: %s\n", state->model->module_tag, site, error->operation, error->owner,
+		(int)error->backend_code, error->text);
+	return SPARK_STATUS_IO_ERROR;
+}
+
 static SparkStatus StageServingAllocate(SparkStageServingState *state)
 {
 	SparkStageServingBuffer plan[STAGE_SERVING_BUFFERS];
@@ -1880,8 +1891,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, queue, rows, steps);
 	marks[3] = SparkMonotonicNs();
-	if ( status == SPARK_STATUS_OK && SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingDeviceWait(state, queue, "step");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = SparkMonotonicNs();
@@ -1894,8 +1905,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		else
 			status = state->tree_frame != 0u ? SparkStageRunnerKeepPath(&state->runner, state->path_rows, state->path_begin, kept, active) :
 				SparkStageRunnerKeepRows(&state->runner, kept, active);
-		if ( status == SPARK_STATUS_OK && SparkDeviceQueueWait(queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK )
-			status = SPARK_STATUS_IO_ERROR;
+		if ( status == SPARK_STATUS_OK )
+			status = StageServingDeviceWait(state, queue, "keep");
 		if ( status == SPARK_STATUS_OK )
 			status = SparkStageRunnerCheck(&state->runner);
 		keep_ns = SparkMonotonicNs() - keep_started;
@@ -2036,8 +2047,8 @@ static SparkStatus StageServingReset(void *adapter_state, uint64_t control_gener
 	status = SparkStageModuleIndexSetClaim(state->lane_states, SPARK_STAGE_SERVING_MAX_LANES, slots, count);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( SparkDeviceQueueWait(SparkStageRunnerQueue(&state->runner), SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK ||
-		(state->kv.copy_queue != 0 && SparkDeviceQueueWait(state->kv.copy_queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK) )
+	if ( StageServingDeviceWait(state, SparkStageRunnerQueue(&state->runner), "reset") != SPARK_STATUS_OK ||
+		(state->kv.copy_queue != 0 && StageServingDeviceWait(state, state->kv.copy_queue, "reset copy") != SPARK_STATUS_OK) )
 	{
 		fprintf(stderr, "%s reset: execution stream failed; lanes stay claimed\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);

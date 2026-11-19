@@ -60,7 +60,7 @@ static void SleepCallback(void *context)
 
 static void PauseMs(long milliseconds)
 {
-	struct timespec pause = {0, milliseconds * 1000000L};
+	struct timespec pause = {milliseconds / 1000L, milliseconds % 1000L * 1000000L};
 	nanosleep(&pause,0);
 }
 
@@ -318,6 +318,41 @@ static void TestEventLifetime(void)
 	CHECK(SparkDeviceQueueWait(slow,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"the earlier record completes");
 	CHECK(SparkDeviceEventDestroy(event) == SPARK_STATUS_OK,"destroy once both records have completed");
 	CHECK(SparkDeviceQueueDestroy(slow) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(fast) == SPARK_STATUS_OK,"destroy the queues");
+}
+
+static void TestLongHold(void)
+{
+	enum { BYTES = 4096, HOLD_MS = 6000 };
+	SparkDeviceQueue *producer = 0, *consumer = 0;
+	SparkDeviceEvent *ready = 0;
+	SparkDeviceBuffer device, result;
+	Gate gate;
+	uint32_t index;
+	int filled = 1;
+	CHECK(SparkDeviceQueueCreate(&producer,"long hold producer") == SPARK_STATUS_OK && SparkDeviceQueueCreate(&consumer,"long hold consumer") == SPARK_STATUS_OK,
+		"create two queues");
+	CHECK(SparkDeviceEventCreate(&ready) == SPARK_STATUS_OK,"create an event");
+	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,BYTES,"long hold device") == SPARK_STATUS_OK,"allocate the shared target");
+	CHECK(SparkDeviceAllocate(&result,SPARK_DEVICE_SPACE_HOST_PAGEABLE,BYTES,"long hold result") == SPARK_STATUS_OK,"allocate the result");
+	GateInit(&gate);
+	CHECK(SparkDeviceQueueHostCallback(producer,GateWaitCallback,&gate) == SPARK_STATUS_OK,"block the producer");
+	CHECK(SparkDeviceFill(producer,At(&device,0u),0x5au,BYTES) == SPARK_STATUS_OK,"fill behind the block");
+	CHECK(SparkDeviceEventRecord(ready,producer) == SPARK_STATUS_OK,"record behind the block");
+	CHECK(SparkDeviceQueueWaitEvent(consumer,ready) == SPARK_STATUS_OK,"wait on the event from the other queue");
+	CHECK(SparkDeviceCopy(consumer,At(&result,0u),At(&device,0u),BYTES) == SPARK_STATUS_OK,"copy after the wait");
+	CHECK(SparkDeviceQueueQuery(consumer) == SPARK_STATUS_PENDING,"the waiting queue reports pending work");
+	PauseMs(HOLD_MS);
+	CHECK(SparkDeviceQueueQuery(producer) == SPARK_STATUS_PENDING,"work behind a host callback is still pending after a hold longer than a GPU watchdog");
+	GateOpen(&gate);
+	CHECK(SparkDeviceQueueWait(consumer,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"a queue that waited on an event for longer than a GPU watchdog completes");
+	CHECK(SparkDeviceQueueWait(producer,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"work held behind a host callback for longer than a GPU watchdog completes");
+	for ( index = 0u; index < BYTES; index++ )
+		if ( ((uint8_t *)result.host)[index] != 0x5au )
+			filled = 0;
+	CHECK(filled,"the waiting queue sees the producer's fill");
+	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&result) == SPARK_STATUS_OK,"free the long hold buffers");
+	CHECK(SparkDeviceEventDestroy(ready) == SPARK_STATUS_OK,"destroy the event");
+	CHECK(SparkDeviceQueueDestroy(producer) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(consumer) == SPARK_STATUS_OK,"destroy the queues");
 }
 
 static void TestRecordedEventDestroy(SparkDeviceQueue *queue)
@@ -684,6 +719,7 @@ int main(void)
 	TestOrdering();
 	TestBusy(queue);
 	TestEventLifetime();
+	TestLongHold();
 	TestRecordedEventDestroy(queue);
 	TestTiming(queue);
 	TestResolve();
