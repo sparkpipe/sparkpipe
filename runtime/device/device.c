@@ -184,6 +184,9 @@ static int32_t DeviceStampsSlot(const SparkDeviceStamp *stamps, uint64_t queue_i
 		if ( stamps[index].queue_id == queue_id )
 			return((int32_t)index);
 	for ( index = 0u; index < SPARK_DEVICE_STAMPS; index++ )
+		if ( stamps[index].queue_id == 0u )
+			return((int32_t)index);
+	for ( index = 0u; index < SPARK_DEVICE_STAMPS; index++ )
 		if ( DeviceStampDone(&stamps[index]) != 0u )
 			return((int32_t)index);
 	return(-1);

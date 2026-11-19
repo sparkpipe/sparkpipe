@@ -552,6 +552,8 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)
 {
 	CudaQueue *cuda = (CudaQueue *)queue->backend;
+	if ( cuda->adopted != 0u )
+		return(__atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE));
 	if ( cudaStreamQuery(cuda->stream) == cudaSuccess )
 	{
 		uint64_t known = __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE);
