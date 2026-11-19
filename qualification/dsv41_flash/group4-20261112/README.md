@@ -1940,3 +1940,13 @@ The engine of these runs has no cache stride. With the module's 16,384
 the same ranks run 17,284 / 23,990 / 23,314 tok/s at 8,192 / 32,768 /
 131,072 tokens, because every 16,384-token wave then runs the upper layers
 on its last rows to save a resume point there; that choice is open.
+The module drops the 16,384-token cache stride (2026-11-19). Every
+16,384-token wave ended at a cache point and ran layers 20 to 39 on its
+last rows so that the recurrent state could be saved there: 17,284 /
+23,990 / 23,314 tok/s at 8,192 / 32,768 / 131,072 tokens on the sixteen
+ranks, against 16,955 / 26,741 / 29,382 with no stride (the engine every
+figure here since the cache-stride table has used). The stride is now
+1,048,576 tokens, past any lane's context. A request still resumes where an
+earlier prompt or reply ended and at the cache points a request declares;
+it no longer resumes at a 16,384-token mark inside a prompt it shares only
+in part.
