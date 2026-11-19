@@ -14,6 +14,8 @@ native kernels, lean kernel loops, both ports on the wire) to it models
 | Item | Value | Source |
 | --- | ---: | --- |
 | K3.1 1M (998,468 tokens), pass engine | 764.9 s: MLA 461.4, KDA 157.5, MoE 143.5 | run KQ3 |
+| The same with the staged index kernel | 687.0 s: MLA 393.7, KDA 147.8, MoE 143.7; rank 0's per-layer hidden absmax identical to KQ3 | run KQ4 |
+| Plus row-owned index and attention, 96-head attend | 595.3 s: MLA 303.3, KDA 146.1, MoE 144.1; absmax identical to KQ3 | run KQ6 |
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |

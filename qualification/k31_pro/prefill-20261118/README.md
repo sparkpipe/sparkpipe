@@ -38,12 +38,17 @@ devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
 | KQ2 | CUPTI, MemoryMax 80G | 262,144 tokens at corpus offset 170,000 | one pass, 156.9 s |
 | KQ3 | no tracer, MemoryMax 80G | pass-key needle, 41,600 filler units, key at the middle (998,469 prompt positions) | two passes, 764.9 s |
 
+| KQ4 | no tracer, MemoryMax 80G, the K3.1 adapter rebuilt from `a242ef38e` with the staged index kernel (sha16 `fcea2a673f2e30a9`) on every rank, the release adapter put back after | the KQ3 needle | two passes, 687.0 s |
+| KQ6 | as KQ4, adapter rebuilt from `a242ef38e` with the staged index kernel, the row-owned index and attention and the 96-head attend (sha16 `81a48b5bf34460f6`) | the KQ3 needle | two passes, 595.3 s |
+
 After each prefill the one-row decode step of the last token stopped rank 0
 (`decode step key=1 rows=1 before every expert group is resident`), so the
 needle has no answer; the prefill times come from rank 0's log.
 
-- `pass-KQ2-rank0.log`, `pass-KQ3-rank0.log`: rank 0's pool, engine, per-pass
-  and sequence lines.
+- `pass-KQ2-rank0.log`, `pass-KQ3-rank0.log`, `pass-KQ4-rank0.log`,
+  `pass-KQ6-rank0.log`: rank 0's pool, engine, per-pass and sequence lines,
+  and for KQ3, KQ4 and KQ6 the per-layer hidden absmax of each pass
+  (identical across the three).
 - `pass-KQ2-rank0-kernels.tsv`: rank 0's GPU seconds and launches by kernel
   over the KQ2 trace, the 40 largest.
 
