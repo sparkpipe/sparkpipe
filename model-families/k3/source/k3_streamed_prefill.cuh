@@ -44,6 +44,8 @@ struct K3Streamed
 	uint32_t *index_context_device;
 	uint32_t *key_pages;
 	uint8_t *mla_keys;
+	uint8_t *index_keys;
+	float *index_scores;
 
 	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream);
 	SparkStatus PassBegin(LmPass *p, const LmPassStep *step, cudaStream_t stream);
@@ -61,6 +63,8 @@ static void K3StreamedDestroy(K3Streamed *s)
 		return;
 	cudaFree(s->mla_keys);
 	cudaFree(s->key_pages);
+	cudaFree(s->index_keys);
+	cudaFree(s->index_scores);
 	LmPassDestroy(&s->pass);
 	delete s;
 }
@@ -196,21 +200,15 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	if ( s->dispatch->indexed != 0u )
 	{
 		const uint64_t chunk = rows < K3_STREAMED_INDEX_CHUNK_ROWS ? rows : K3_STREAMED_INDEX_CHUNK_ROWS;
-		const uint64_t stride = SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
+		const uint64_t words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
 		s->mla.index_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_DIM);
-		s->mla.index_keys = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_DIM);
-		s->mla.index_packed = LmPassAlloc<uint8_t>(p, stride * K3IndexKv::kSlotBytes);
 		s->mla.index_heads_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_HEADS);
 		s->mla.index_heads = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_HEADS);
 		s->mla.index_query = LmPassAlloc<uint16_t>(p, chunk * K3_INDEX_QUERY);
-		s->mla.index_scores = LmPassAlloc<float>(p, chunk * stride);
-		s->mla.index_score_floats = chunk * stride;
-		s->mla.index_send = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
-		s->mla.index_received = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
+		s->mla.index_send = LmPassAlloc<uint2>(p, chunk * K3_INDEX_TOPK);
 		s->mla.index_bitmaps = LmPassAlloc<uint32_t>(p, chunk * 2u * words);
 		s->mla.index_bitmap_words = (uint32_t)words;
 		s->mla.index_selected_local = LmPassAlloc<uint32_t>(p, rows * K3_INDEX_TOPK);
-		s->mla.index_selected = LmPassAlloc<uint32_t>(p, pass * K3_INDEX_TOPK);
 		s->mla.index_error = (LmFrameError *)LmPassAlloc<uint8_t>(p, sizeof(LmFrameError));
 		s->mla.index_context = s->index_context_device = LmPassAlloc<uint32_t>(p, s->dispatch->sequences);
 		s->mla.index_chunk = (uint32_t)chunk;
@@ -384,13 +382,27 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	if ( s->dispatch->indexed != 0u )
 	{
 		const uint64_t pages = (keys + K3GlobalKv::kPageSlots - 1u) / K3GlobalKv::kPageSlots;
+		const uint64_t score_floats = (uint64_t)s->mla.index_chunk * keys;
 		cudaFree(s->key_pages);
+		cudaFree(s->index_keys);
+		cudaFree(s->index_scores);
 		s->key_pages = 0;
-		if ( cudaMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != cudaSuccess )
+		s->index_keys = 0;
+		s->index_scores = 0;
+		s->mla.index_full = 0;
+		s->mla.index_scores = 0;
+		s->mla.index_score_floats = 0u;
+		if ( cudaMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&s->index_keys, (size_t)(keys * K3IndexKv::kSlotBytes)) != cudaSuccess ||
+			cudaMalloc((void **)&s->index_scores, (size_t)(score_floats * sizeof(float))) != cudaSuccess )
 		{
-			s->key_pages = 0;
+			fprintf(stderr, "sparkpipe_k3: streamed prefill index buffers for %llu keys (%llu bytes) do not fit\n", (unsigned long long)keys,
+				(unsigned long long)(keys * K3IndexKv::kSlotBytes + score_floats * sizeof(float)));
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
+		s->mla.index_full = s->index_keys;
+		s->mla.index_scores = s->index_scores;
+		s->mla.index_score_floats = score_floats;
 		LM_LAUNCH((K3StreamedIdentityPagesKernel), (uint32_t)((pages + 255u) / 256u), 256u, 0, 0, s->key_pages, (uint32_t)pages);
 		if ( cudaDeviceSynchronize() != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
