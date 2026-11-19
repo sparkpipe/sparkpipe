@@ -80,6 +80,14 @@ work and every exchange grow with the pass, and the index with the context.
 | 3 | Experts as MXFP8 activations x MXFP4 weights on block-scaled MMA, the BF16 parts at GEMM speed | native MX multiplies | 143.5 s | 75-90 s | 0.9-1.1 min |
 | 4 | The weight stream on both 100G ports: about 64 s a pass instead of 128 | both device paths | hidden today | hidden | needed for 1-3 |
 
+The index kernel, measured on an idle Spark with
+`tests/test_index_score_tiles_cuda.py` (bit-for-bit against its one-tile form):
+24.8 TFLOPS for a 128-row chunk over 65,536 keys, 15.9 over 262,144 keys,
+22.7 for a 2,048-row wave over 16,384 paged keys. Each 8-row block reads every
+key itself, so a 128-row chunk reads its keys 16 times from DRAM; giving each
+warp four key tiles at once keeps the bits but ran 0.63-1.16x and was dropped.
+The tile kernel stages each key tile once in shared memory for 32-64 rows.
+
 Levers 1-3 bring the GPU time of a 1M prompt to about 210-250 s, about 105-125
 s a pass, under today's 128 s weight stream: without lever 4 two passes
 floor at about 256 s. With it, 1M lands at about 225-260 s. Bits: lever 1 is

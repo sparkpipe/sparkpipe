@@ -621,6 +621,7 @@ PYTHON_TESTS := \
 	tests/test_rms_norm_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
+	tests/test_index_score_tiles_cuda.py \
 	tests/test_moe_finalize_add_cuda.py \
 	tests/test_mesh_copy_down_cuda.py \
 	tests/test_k3_tp_context_cuda.py \
