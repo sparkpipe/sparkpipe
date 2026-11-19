@@ -539,12 +539,18 @@ static cudaError_t CudaAdoptedQueryHandle(void *handle)
 
 static cudaError_t CudaAdoptedSettleHandle(void *handle)
 {
+	CudaQueue *cuda = (CudaQueue *)handle;
 	for ( ;; )
 	{
 		struct timespec pause = {0, 50000};
-		const cudaError_t error = CudaAdoptedQuery((CudaQueue *)handle);
-		if ( error != cudaErrorNotReady )
+		pthread_mutex_lock(&cuda->gate);
+		if ( cuda->capturing == 0u )
+		{
+			const cudaError_t error = cudaStreamSynchronize(cuda->stream);
+			pthread_mutex_unlock(&cuda->gate);
 			return(error);
+		}
+		pthread_mutex_unlock(&cuda->gate);
 		nanosleep(&pause,0);
 	}
 }
