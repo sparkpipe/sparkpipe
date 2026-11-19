@@ -91,7 +91,10 @@ OPTIONAL_BOOT_UNITS = (
     "rbdmap.service","nvmf-autoconnect.service","open-iscsi.service","iscsid.service","srp_daemon.service","srptools.service",
     "cloud-init.service","cloud-init-local.service","cloud-config.service","cloud-final.service","pollinate.service",
     "nvidia-spark-run-apt-upgrade-once.service","systemd-networkd-wait-online.service","plymouth-quit-wait.service",
+    "nvidia-spark-mlnx-firmware-manager.service",
 )
+VENDOR_UPDATE_SERVICE = "dgx-dashboard-admin.service"
+VENDOR_UPDATE_GUARD = f"/etc/systemd/system/{VENDOR_UPDATE_SERVICE}.d/sparkpipe-off.conf"
 FABRIC_INTERFACES = ("enp1s0f0np0","enp1s0f1np1","enP2p1s0f0np0","enP2p1s0f1np1")
 UPLINK_PROFILE = "ds4-uplink-wired"
 UPLINK_GATEWAY = "192.168.50.1"
@@ -124,6 +127,7 @@ ASSET_SOURCES.update({
     "/etc/systemd/system/sparkpipe-fsck-health.timer": ("tools/devcycle/fleet/sparkpipe-fsck-health.timer",0o644),
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf": ("tools/devcycle/fleet/spark-firewall-timeout.conf",0o644),
     "/etc/systemd/system/spark-firewall.service": ("tools/devcycle/fleet/spark-firewall.service",0o644),
+    VENDOR_UPDATE_GUARD: ("tools/devcycle/fleet/dgx-dashboard-admin-off.conf",0o644),
     DMA_GUARD_RUNTIME: ("tools/devcycle/spark_dma_guard.py",0o755),
     "/usr/local/sbin/spark-osd-guard": ("tools/devcycle/fleet/spark_osd_guard.sh",0o755),
     "/etc/systemd/system/spark-osd-guard@.service": ("tools/devcycle/fleet/spark-osd-guard@.service",0o644),
@@ -146,6 +150,7 @@ STAGED_ASSET_DESTINATIONS = (
     "/etc/systemd/system/sparkpipe-fsck-health.timer",
     "/etc/systemd/system/spark-firewall.service.d/10-ds4-timeout.conf",
     "/etc/systemd/system/spark-firewall.service",
+    VENDOR_UPDATE_GUARD,
     DMA_GUARD_RUNTIME,
     *(f"/etc/systemd/system/{unit}.d/10-boot-timeout.conf" for unit in BOOT_TIMEOUT_SOURCES),
 )
@@ -926,6 +931,10 @@ def decouple_optional_boot_work() -> None:
     atomic_write(Path("/etc/cloud/cloud-init.disabled"),"commissioned by ds4_spark_brickproof\n",0o644)
 
 
+def stop_vendor_update_service() -> None:
+    run(["systemctl","disable","--now",VENDOR_UPDATE_SERVICE],check=False)
+
+
 def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     if os.geteuid() != 0:
         raise BrickproofError("remote apply must run as root")
@@ -970,6 +979,7 @@ def remote_apply(payload: dict[str,object]) -> dict[str,object]:
     ceph_changes = [] if staged else install_ceph_policy()
     snap_units_retired = retire_stale_snap_units() + reset_vanished_failed_units()
     enable_policy_services(rank,node_id)
+    stop_vendor_update_service()
     run([DMA_GUARD_RUNTIME,"install","--notify",HUB_NOTIFY],timeout=120)
     run(["systemctl","start","logrotate.service"])
     return({"ceph_changes":ceph_changes,"layout_created":layout_created,"snap_units_retired":snap_units_retired,"time_sync_restarted":time_sync_restarted,"efi_boot_order_changed":efi_boot_order_changed,"grub_changed":grub_changed,"identity_changed":identity_changed,"keys_changed":keys_changed,"sshd_hardening_changed":sshd_hardening_changed,"memory_current_before":memory_current,"profile":"staged" if staged else "fleet","source_commit":payload["source_commit"]})
@@ -1262,6 +1272,12 @@ def remote_audit(payload: dict[str,object]) -> dict[str,object]:
         observations[f"{unit}.enabled"] = state
         if state != "masked":
             failures.append(f"optional-boot-unit:{unit}={state}")
+    vendor_state = is_enabled(VENDOR_UPDATE_SERVICE)
+    vendor_active = command(["systemctl","is-active",VENDOR_UPDATE_SERVICE],check=False)
+    observations[f"{VENDOR_UPDATE_SERVICE}.enabled"] = vendor_state
+    observations[f"{VENDOR_UPDATE_SERVICE}.active"] = vendor_active
+    if vendor_state not in ("disabled","not-found") or vendor_active == "active":
+        failures.append(f"vendor-update-service:{vendor_state}/{vendor_active}")
     for unit in fabric_units:
         before = service_value(unit,"Before")
         timeout = service_value(unit,"TimeoutStartUSec")
