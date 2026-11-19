@@ -2289,6 +2289,7 @@ SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(
     uint64_t ring;
     uint64_t want;
     uint64_t pads;
+    uint64_t pad;
     if ( collective == 0 || collective->implementation == 0 )
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     implementation = collective->implementation;
@@ -2325,13 +2326,10 @@ SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(
     want = (uint64_t)implementation->capture_parity;
     pads = (want + (uint64_t)SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - ring) &
         (uint64_t)(SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u);
-    if ( pads > 1ull )
-        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-    if ( pads == 0ull )
-        return(SPARK_STATUS_OK);
-    if ( SparkTpMeshLaunchersRegistered->seq_pad(stream,implementation->seq_cell) != 0 )
-        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-    implementation->cell_mirror = cell + 1ull;
+    for ( pad = 0ull; pad < pads; pad++ )
+        if ( SparkTpMeshLaunchersRegistered->seq_pad(stream,implementation->seq_cell) != 0 )
+            SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    implementation->cell_mirror = cell + pads;
     return(SPARK_STATUS_OK);
 }
 

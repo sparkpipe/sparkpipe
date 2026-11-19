@@ -222,11 +222,11 @@ deviation from I36 ([TECHDEBT.md](../TECHDEBT.md#mesh-collectives)).
 
 The region layout is in `include/sparkpipe/spark_weightd.h`. It has 4 lanes
 (`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-3) with two bands each (GLM uses one for its
-main and one for its HC collective), 16 ranks per band and two slots per rank.
+main and one for its HC collective), 16 ranks per band and four slots per rank.
 A slot holds 32 rows of 32 KiB plus a 64-byte trailer, 1,048,640 bytes, and its
 last 8 bytes are the tail tag the receiver matches. The slot for band `b`, peer
-`p` and ring `r = (tag - 1) mod 2` is `b*32 + p*2 + r`. The slot area is
-8 bands x 32 slots x 1,048,640 bytes = 268,451,840 bytes (arithmetic, 256 MiB).
+`p` and ring `r = (tag - 1) mod 4` is `b*64 + p*4 + r`. The slot area is
+8 bands x 64 slots x 1,048,640 bytes = 536,903,680 bytes (arithmetic, 512 MiB).
 A 128 KiB area follows it with the doorbells, shipped cells and one
 128-byte hardware wait request per rank and band.
 
@@ -263,6 +263,35 @@ staging, the footprint ABI 14 had, with the 1 MiB slots kept. A node only ever
 runs one or two lanes at a time; the 16 lane numbers served as names for the
 records. The geometry differs from ABI 15's, so the record magic moved to
 `MESH0009` and the same rule holds: every node of a fleet in one window.
+
+**Slot ring depth (IPC ABI 17, record magic `MESH0010`).** A rank has four
+slots a band, eight half positions, where ABI 16 had two. A pipelined round
+may then publish three pieces before its first arrival and keep three in
+flight (`SPARK_WEIGHTD_MESH_PIPELINE_DEPTH`): a rank publishes piece `k` after
+it has read piece `k - 3` from every peer. A peer that has published piece
+`k - 3` has read piece `k - 6`, so the half position piece `k` reuses, that of
+piece `k - 8`, is free on every rank. A whole-slot round shares its slot with
+the sequence four later; inside a pipelined round that is piece 3 after a
+whole-slot round that ended just before piece 0, and piece 3 goes out only
+after piece 0 has arrived from every peer, which a peer publishes only after
+reading that round. With two slots the shared slot was two sequences later, so
+a round had to read piece 0 from every peer before it published piece 1, and
+the wire stood idle for one combine kernel at the start of every round.
+
+- Measured before the change (DeepSeek V4.1 Flash, 16 ranks, trace `zt18e`,
+  rank 0): 573 pipelined rounds, 5,078 pieces of 7.7 MB a rank. A piece took a
+  median 347 us on the wire, of which the fused publish-and-combine kernel ran
+  210 us. Rounds of 4, 5 and 6 pieces ran 501, 410 and 360 us a piece; rounds
+  of 8 or more, 345-351. The intervals above the median add to 126 ms, about
+  one combine kernel a round.
+- `tests/test_tp_mesh_pipeline_boundaries.c` models sixteen ranks with one as
+  slow as possible: three pieces in flight never overwrite unread data next to
+  whole-slot and pair-first rounds, and four do.
+- Memory: the region is 537,034,752 bytes, 256 MiB more pinned memory on every
+  node than under ABI 16; staging is unchanged at 128 MiB.
+- Compatibility: the slot index differs from ABI 16's, so the record magic
+  moved to `MESH0010`: roll every node of a fleet in one window and rebuild
+  every lane against it.
 
 `tp_mesh_hardware_probe` puts up to sixteen ranks on one GPU and gives each
 rank a band of one region, so the probe and its fixture daemon build with
@@ -462,7 +491,8 @@ manifests, receipts and the pack bytes are the same under both ABIs.
 
 **Unchanged from ABI 8:**
 - the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes until
-  ABI 15, 1,073,938,432 under ABI 15, 268,582,912 from ABI 16);
+  ABI 15, 1,073,938,432 under ABI 15, 268,582,912 under ABI 16, 537,034,752
+  from ABI 17);
 - the slot geometry (until ABI 15), doorbells, shipped cells and wait requests;
 - the rendezvous record;
 - the FULL, SCATTER and GATHER routes.
@@ -510,9 +540,10 @@ overlap the other chunk on the wire.
     `SLOT_BYTES - 8`, which is also the whole-slot tail.
   - A whole-slot payload ends at `SLOT_BYTES - 16`, so it never touches either
     half tail.
-  - A half chunk with sequence `s` uses ring `(s - 1) mod 2` and half
-    `1 + ((s - 1) >> 1) mod 2` (`SPARK_WEIGHTD_MESH_SEQUENCE_HALF`). Four
-    consecutive chunks therefore take four distinct positions.
+  - A half chunk with sequence `s` uses ring `(s - 1) mod 4` and half
+    `1 + ((s - 1) / 4) mod 2` (`SPARK_WEIGHTD_MESH_SEQUENCE_HALF`). Eight
+    consecutive chunks therefore take eight distinct positions, and a
+    whole-slot round shares its slot with the sequences four and eight later.
 - Route: `half` (bits 58-59 of the route word) is 1 for the lower half and 2
   for the upper half. A half route is a FULL route with `slice_bytes` 0 and at
   most 524,288 bytes; weightd sends the payload from and to the half's offset

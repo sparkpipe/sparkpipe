@@ -876,8 +876,8 @@ static void FuzzGraphPath(void)
             CHECK(FuzzSumOk(rank,i),"graph-path output includes every current contribution");
         }
 	}
-	CHECK( cuda_stub_mesh_seq_pad_calls - pad_calls <= 1u,
-	    "pre-launch used at most one pad" );
+	CHECK( cuda_stub_mesh_seq_pad_calls - pad_calls < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+	    "pre-launch pads fewer sequences than a rank's slot ring holds" );
 	progress = SparkTpDeviceCollectiveGraphProgress(&g_ranks[0].collective,0);
 	CHECK( progress != 0ull, "graph progress nonzero after capture-path rounds" );
 	CHECK( SparkTpDeviceCollectiveGraphError(&g_ranks[0].collective) == 0ull,
