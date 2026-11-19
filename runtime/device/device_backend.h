@@ -101,6 +101,7 @@ SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native);
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequence, uint64_t timeout_ns);
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue);
+SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t capturing);
 SparkStatus SparkDeviceBackendQueueHostCallback(SparkDeviceQueue *queue, SparkDeviceHostFunction function, void *context);
 
 SparkStatus SparkDeviceBackendEventCreate(SparkDeviceEvent *event);

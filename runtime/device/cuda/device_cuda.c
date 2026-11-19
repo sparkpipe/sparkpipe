@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <pthread.h>
 #include "sparkpipe/spark_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,8 @@ typedef struct CudaQueue
 	uint64_t completed;
 	uint8_t *bounce;
 	uint32_t adopted;
+	uint32_t capturing;
+	pthread_mutex_t gate;
 } CudaQueue;
 
 typedef struct CudaCallback
@@ -475,6 +478,7 @@ SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_adopt",queue->owner,ENOMEM,"out of host memory"));
 	cuda->stream = (cudaStream_t)native;
 	cuda->adopted = 1u;
+	pthread_mutex_init(&cuda->gate,0);
 	queue->backend = cuda;
 	return(SPARK_STATUS_OK);
 }
@@ -487,6 +491,8 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	(void)cudaStreamSynchronize(cuda->stream);
 	if ( cuda->adopted == 0u )
 		(void)cudaStreamDestroy(cuda->stream);
+	else
+		pthread_mutex_destroy(&cuda->gate);
 	if ( cuda->bounce != 0 )
 		(void)cudaFreeHost(cuda->bounce);
 	free(cuda);
@@ -517,6 +523,32 @@ static cudaError_t CudaStreamQueryHandle(void *handle)
 	return(cudaStreamQuery((cudaStream_t)handle));
 }
 
+static cudaError_t CudaAdoptedQuery(CudaQueue *cuda)
+{
+	cudaError_t error;
+	pthread_mutex_lock(&cuda->gate);
+	error = cuda->capturing != 0u ? cudaErrorNotReady : cudaStreamQuery(cuda->stream);
+	pthread_mutex_unlock(&cuda->gate);
+	return(error);
+}
+
+static cudaError_t CudaAdoptedQueryHandle(void *handle)
+{
+	return(CudaAdoptedQuery((CudaQueue *)handle));
+}
+
+static cudaError_t CudaAdoptedSettleHandle(void *handle)
+{
+	for ( ;; )
+	{
+		struct timespec pause = {0, 50000};
+		const cudaError_t error = CudaAdoptedQuery((CudaQueue *)handle);
+		if ( error != cudaErrorNotReady )
+			return(error);
+		nanosleep(&pause,0);
+	}
+}
+
 static cudaError_t CudaStreamSynchronizeHandle(void *handle)
 {
 	return(cudaStreamSynchronize((cudaStream_t)handle));
@@ -538,7 +570,9 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 	SparkStatus status;
 	if ( cuda->adopted == 0u && __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE) >= sequence )
 		return(SPARK_STATUS_OK);
-	status = CudaPoll(CudaStreamQueryHandle,(void *)cuda->stream,CudaStreamSynchronizeHandle,timeout_ns,"queue_wait",queue->owner);
+	status = cuda->adopted != 0u ?
+		CudaPoll(CudaAdoptedQueryHandle,(void *)cuda,CudaAdoptedSettleHandle,timeout_ns,"queue_wait",queue->owner) :
+		CudaPoll(CudaStreamQueryHandle,(void *)cuda->stream,CudaStreamSynchronizeHandle,timeout_ns,"queue_wait",queue->owner);
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint64_t known = __atomic_load_n(&cuda->completed,__ATOMIC_ACQUIRE);
@@ -547,6 +581,17 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 		}
 	}
 	return(status);
+}
+
+SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
+{
+	CudaQueue *cuda = (CudaQueue *)queue->backend;
+	if ( cuda->adopted == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_capture",queue->owner,0,"only the owner of an adopted stream records it into a graph"));
+	pthread_mutex_lock(&cuda->gate);
+	cuda->capturing = capturing;
+	pthread_mutex_unlock(&cuda->gate);
+	return(SPARK_STATUS_OK);
 }
 
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)

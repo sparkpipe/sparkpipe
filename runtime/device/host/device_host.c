@@ -431,6 +431,12 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 	return(status);
 }
 
+SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
+{
+	(void)capturing;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_capture",queue->owner,0,"the host backend records no queue into a graph"));
+}
+
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)
 {
 	HostQueue *host = (HostQueue *)queue->backend;
