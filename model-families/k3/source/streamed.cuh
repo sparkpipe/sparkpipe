@@ -825,9 +825,9 @@ static int32_t K3StreamedMlaSparse(K3LayerBuffers *b, const K3LayerWeights *shar
 					status = LM_LAUNCH_ERR_LAUNCH;
 					break;
 				}
-				LM_LAUNCH((LmPerHeadProjectSplitKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(count,HEADS,K3_V_HEAD_DIM / LM_PER_HEAD_SPLIT_OUTPUTS),
-					K3_LAYER_THREADS, 0, stream, x->sparse_slice,(const uint16_t *)b->mla_kv_b_value_weight,
-					x->value_send + (((uint64_t)owner * shard_count + shard) * share + done) * value_elements,HEADS,count);
+				if ( LmPerHeadProjectRowsLaunch<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>(x->sparse_slice,(const uint16_t *)b->mla_kv_b_value_weight,
+						x->value_send + (((uint64_t)owner * shard_count + shard) * share + done) * value_elements,HEADS,count,stream) != cudaSuccess )
+					status = LM_LAUNCH_ERR_LAUNCH;
 			}
 		}
 	return(status);
