@@ -23,6 +23,7 @@
 #define SPARK_STAGE_KV_MAX_REGIONS 2u
 #define SPARK_STAGE_KV_SNAPSHOT_QUEUE_PAGES 64u
 #define SPARK_STAGE_KV_DESTROY_SAVE_TIMEOUT_NS 20000000000ull
+#define SPARK_STAGE_KV_UNREAD_LIMIT (UINT64_C(1) << 21)
 
 #define SPARK_STAGE_KV_LOCK_SITE_ADMIT 0u
 #define SPARK_STAGE_KV_LOCK_SITE_RESET 1u
@@ -344,6 +345,7 @@ struct SparkStageKvBinding
 	SparkDeviceBuffer snapshot_page;
 	uint32_t *snapshot_pending;
 	SparkKvPageCacheSaveOrder *save_order;
+	SparkKvPageCacheUnread *unread;
 	SparkStageKvRecurrent recurrent;
 	SparkKvPageStore state_store;
 	uint8_t *state_staging;

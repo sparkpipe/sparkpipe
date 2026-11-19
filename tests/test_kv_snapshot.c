@@ -608,6 +608,18 @@ static void SnapPrefill(SnapFixture *fixture,uint8_t pages[3][SNAP_PAGE_BYTES],u
 	SnapPublishChain(fixture,ends,3u,pages,states);
 }
 
+static void SnapRead(SnapFixture *fixture,uint64_t sequence,uint32_t slot,uint8_t identity_seed,uint32_t tokens)
+{
+	SparkModelDriverCacheLane lane;
+	uint32_t page;
+	SnapLane(&lane,sequence,slot,tokens,tokens);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = tokens;
+	SnapIdentity(&lane.prefix_identity,identity_seed);
+	CHECK(SparkKvPageCacheBeginLane(&fixture->cache,&lane,&page) == SPARK_STATUS_OK);
+	CHECK(SparkKvPageCacheReleaseLane(&fixture->cache,slot,sequence) == SPARK_STATUS_OK);
+}
+
 static uint32_t SnapEntryCount(const SnapFixture *fixture)
 {
 	uint32_t index,count = 0u;
@@ -770,6 +782,7 @@ static void SnapTestReleaseSavesAndPrepareRestores(const char *directory)
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x66u) == 0);
 	SnapPrefill(&source,pages,states);
+	SnapRead(&source,20u,3u,30u,9u);
 	memset(owners,0,sizeof(owners));
 	memset(&transactions,0,sizeof(transactions));
 	transactions.cache = &source.cache;
@@ -906,6 +919,9 @@ static void SnapReleaseThree(SnapFixture *fixture,SparkKvLaneTransactions *trans
 {
 	SparkModelDriverCacheLane lanes[3];
 	SparkModelDriverAdmissionRequest request;
+	SnapRead(fixture,20u,3u,30u,9u);
+	SnapRead(fixture,21u,3u,90u,4u);
+	SnapRead(fixture,22u,3u,91u,4u);
 	SnapTransactionsInit(transactions,owners,&fixture->cache,logical,physical);
 	SnapLane(&lanes[0],1u,0u,9u,9u);
 	SnapLane(&lanes[1],2u,1u,4u,4u);
@@ -913,7 +929,7 @@ static void SnapReleaseThree(SnapFixture *fixture,SparkKvLaneTransactions *trans
 	lanes[0].flags = lanes[1].flags = lanes[2].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
 	SnapReleaseRequest(&request,lanes,3u,1u);
 	CHECK(SparkKvLaneTransactionsAdmit(transactions,&request) == SPARK_STATUS_OK);
-	CHECK(fixture->cache.live_sequence_count == 0u && fixture->snapshot.save_skipped_count == 2u);
+	CHECK(fixture->cache.live_sequence_count == 0u && fixture->snapshot.save_mark_count == 1u && fixture->snapshot.save_skipped_count == 4u);
 }
 
 static void SnapTestEvictionDemotes(const char *directory)
@@ -980,6 +996,10 @@ static void SnapTestEvictionPrefersLowPriority(const char *directory)
 	source.cache.admission_priority = 1u;
 	SnapPublishOne(&source,3u,2u,91u,0x4du);
 	source.cache.admission_priority = 0u;
+	source.snapshot.pending_capacity = 0u;
+	SnapRead(&source,20u,3u,90u,4u);
+	SnapRead(&source,21u,3u,91u,4u);
+	source.snapshot.pending_capacity = 4u;
 	CHECK(SparkKvPageCacheReleaseLane(&source.cache,1u,2u) == SPARK_STATUS_OK && SparkKvPageCacheReleaseLane(&source.cache,2u,3u) == SPARK_STATUS_OK);
 	CHECK(SparkKvPageCacheEvictUnused(&source.cache) == SPARK_STATUS_OK && SnapIdentityValid(&source,90u) != 0u && SnapIdentityValid(&source,91u) == 0u);
 	CHECK(source.snapshot.evicted_unsaved_count == 1u && source.snapshot.demote_queued_count == 1u);
@@ -1003,6 +1023,7 @@ static void SnapTestPendingSaveYieldsToEviction(const char *directory)
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
 	CHECK(SnapFixtureOpen(&source,&store,0x6bu) == 0);
 	SnapPrefill(&source,pages,states);
+	SnapRead(&source,20u,3u,30u,9u);
 	SnapTransactionsInit(&transactions,owners,&source.cache,logical,physical);
 	SnapLane(&lane,1u,0u,9u,9u);
 	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
@@ -1090,6 +1111,8 @@ static void SnapTestQueueFullSkips(const char *directory)
 	source.snapshot.pending_capacity = 1u;
 	SnapPrefill(&source,pages,states);
 	SnapPublishSecond(&source);
+	SnapRead(&source,20u,3u,30u,9u);
+	SnapRead(&source,21u,3u,90u,4u);
 	SnapTransactionsInit(&transactions,owners,&source.cache,logical,physical);
 	SnapLane(&lanes[0],1u,0u,9u,9u);
 	SnapLane(&lanes[1],2u,1u,4u,4u);
@@ -1097,7 +1120,7 @@ static void SnapTestQueueFullSkips(const char *directory)
 	SnapReleaseRequest(&request,lanes,2u,1u);
 	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK);
 	CHECK(source.cache.live_sequence_count == 0u && SparkKvPageCacheSavePending(&source.cache) == 1u);
-	CHECK(source.snapshot.save_skipped_count == 1u && source.snapshot.save_mark_count == 1u && source.snapshot.full_logged == 1u);
+	CHECK(source.snapshot.save_skipped_count == 2u && source.snapshot.save_mark_count == 1u && source.snapshot.full_logged == 1u);
 	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && source.snapshot.save_count == 1u);
 	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 4u);
 	SnapFixtureClose(&source);
@@ -1119,6 +1142,7 @@ static void SnapTestResetKeepsPublishedSaves(const char *directory)
 	CHECK(SnapFixtureOpen(&source,&store,0x68u) == 0);
 	SnapPrefill(&source,pages,states);
 	SnapPublishSecond(&source);
+	SnapRead(&source,20u,3u,30u,9u);
 	SnapTransactionsInit(&transactions,owners,&source.cache,logical,physical);
 	SnapLane(&lanes[0],1u,0u,9u,9u);
 	lanes[0].flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
@@ -1217,12 +1241,17 @@ static void SnapTestReadOutcomes(const char *directory)
 	SparkKvSnapshotStoreClose(&store);
 }
 
-static uint32_t SnapStateFileHeld(SparkKvSnapshotStore *store,uint8_t identity_seed,uint32_t tokens)
+static uint32_t SnapStateHeldIn(SparkKvSnapshotStore *store,uint8_t layout,uint8_t identity_seed,uint32_t tokens)
 {
 	SparkKvSnapshotKey key;
-	SnapLinkKey(&key,0x48u,identity_seed,tokens);
+	SnapLinkKey(&key,layout,identity_seed,tokens);
 	key.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
 	return(SparkKvSnapshotContains(store,&key));
+}
+
+static uint32_t SnapStateFileHeld(SparkKvSnapshotStore *store,uint8_t identity_seed,uint32_t tokens)
+{
+	return(SnapStateHeldIn(store,0x48u,identity_seed,tokens));
 }
 
 static uint32_t SnapEntryAt(const SnapFixture *fixture,uint32_t tokens)
@@ -1287,6 +1316,7 @@ static void SnapTestStatesSpillBeforeDemotion(const char *directory)
 	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
 	CHECK(store.write_count == 5u && SnapStateFileHeld(&store,40u,16u) == 1u);
 	CHECK(SnapStateFileHeld(&store,10u,4u) == 0u && SnapStateFileHeld(&store,20u,8u) == 0u && SnapStateFileHeld(&store,30u,12u) == 0u);
+	SnapRead(&source,20u,3u,40u,16u);
 	SparkKvPageCacheSpillStates(&source.cache);
 	CHECK(source.cache.state_spill_queued_count == 3u && SparkKvPageCacheSavePending(&source.cache) == 3u);
 	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
@@ -1311,6 +1341,87 @@ static void SnapTestStatesSpillBeforeDemotion(const char *directory)
 	SnapFixtureClose(&source);
 	SparkKvSnapshotStoreClose(&store);
 	printf("kv snapshot: a state off the anchor stride stays in memory while its pages save, the anchor saves at once, a store near its capacity spills its oldest records, demotion takes saved records first and keeps them restorable, and only with nothing saved left does it drop an unsaved record, counted\n");
+}
+
+static void SnapReleaseOne(SnapFixture *fixture,uint64_t sequence,uint32_t slot,uint32_t position,uint64_t id)
+{
+	SparkKvLaneTransaction owners[4];
+	SparkKvLaneTransactions transactions;
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverAdmissionRequest request;
+	uint32_t logical[16],physical[16];
+	SnapTransactionsInit(&transactions,owners,&fixture->cache,logical,physical);
+	SnapLane(&lane,sequence,slot,position,position);
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_RELEASE;
+	SnapReleaseRequest(&request,&lane,1u,id);
+	CHECK(SparkKvLaneTransactionsAdmit(&transactions,&request) == SPARK_STATUS_OK);
+}
+
+static uint32_t SnapAllReused(const SnapFixture *fixture)
+{
+	uint32_t index,count = 0u;
+	for (index=0u; index<SNAP_PAGES; index++)
+		if ( (fixture->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			count += (fixture->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_REUSED) == 0u ? 1u : 0u;
+	return(count == 0u ? 1u : 0u);
+}
+
+static void SnapTestUnreadPrefixesWriteNothing(const char *directory)
+{
+	static SnapFixture source;
+	static SparkKvPageCacheUnread fingerprints[64];
+	SparkKvSnapshotStore store;
+	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
+	uint32_t unsaved,ineligible,expired;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x4au) == 0);
+	CHECK(SparkKvPageCacheAttachUnread(&source.cache,fingerprints,63u) == SPARK_STATUS_INVALID_ARGUMENT);
+	CHECK(SparkKvPageCacheAttachUnread(&source.cache,fingerprints,64u) == SPARK_STATUS_OK);
+	SnapPrefill(&source,pages,states);
+	SnapReleaseOne(&source,1u,0u,9u,1u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 0u && source.snapshot.save_mark_count == 0u && source.cache.checkpoint_persist_count == 0u);
+	CHECK(SparkKvPageCacheCountUnsaved(&source.cache,&unsaved,&ineligible) == SPARK_STATUS_OK && unsaved == 3u && ineligible == 0u);
+	CHECK(SnapEvictAll(&source) == 3u && SnapEntryCount(&source) == 0u);
+	CHECK(SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 0u && source.stores[0].write_count == 0u);
+	CHECK(source.cache.unread_discard_count == 3u && source.snapshot.evicted_unsaved_count == 0u && source.cache.unread_return_count == 0u);
+	CHECK(SparkKvPageCacheExpire(&source.cache,(uint64_t)time(0) + SPARK_KV_RETENTION_SECONDS - 120u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	CHECK(SparkKvPageCacheExpire(&source.cache,(uint64_t)time(0) + SPARK_KV_RETENTION_SECONDS + 1u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	SnapPrefill(&source,pages,states);
+	CHECK(source.cache.unread_return_count == 0u && SnapAllReused(&source) == 0u);
+	SnapReleaseOne(&source,1u,0u,9u,2u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 0u && SnapEvictAll(&source) == 3u && source.cache.unread_discard_count == 6u);
+	SnapPrefill(&source,pages,states);
+	CHECK(source.cache.unread_return_count == 3u && SnapEntryCount(&source) == 3u && SnapAllReused(&source) != 0u);
+	SnapReleaseOne(&source,1u,0u,9u,3u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 1u && source.snapshot.save_mark_count == 1u);
+	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 4u);
+	CHECK(SnapStateHeldIn(&store,0x4au,30u,9u) == 1u && SnapStateHeldIn(&store,0x4au,20u,8u) == 0u);
+	CHECK(SnapEvictAll(&source) == 3u && source.cache.unread_discard_count == 6u);
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a prefix no later request has read is neither saved at release nor kept under pressure but dropped with a fingerprint that expires 24 hours after the prefix's last use; when the same prefix is computed again within that time it counts as read and its release saves it\n");
+}
+
+static void SnapTestReadQueuesItsSave(const char *directory)
+{
+	static SnapFixture source;
+	SparkKvSnapshotStore store;
+	uint8_t pages[3][SNAP_PAGE_BYTES],states[3][SNAP_STATE_BYTES];
+	uint32_t unsaved,ineligible;
+	CHECK(SparkKvSnapshotStoreOpen(&store,directory,SnapQuota(1u << 24u),1u << 20u) == SPARK_STATUS_OK);
+	CHECK(SnapFixtureOpen(&source,&store,0x4bu) == 0);
+	SnapPrefill(&source,pages,states);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 0u);
+	SnapRead(&source,20u,3u,20u,8u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 1u && source.snapshot.save_mark_count == 1u);
+	CHECK(SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 3u);
+	CHECK(SnapStateHeldIn(&store,0x4bu,20u,8u) == 1u && SnapStateHeldIn(&store,0x4bu,10u,4u) == 0u && SnapStateHeldIn(&store,0x4bu,30u,9u) == 0u);
+	CHECK(SparkKvPageCacheCountUnsaved(&source.cache,&unsaved,&ineligible) == SPARK_STATUS_OK && unsaved == 1u);
+	SnapReleaseOne(&source,1u,0u,9u,3u);
+	CHECK(SparkKvPageCacheSavePending(&source.cache) == 0u && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK && store.write_count == 3u);
+	SnapFixtureClose(&source);
+	SparkKvSnapshotStoreClose(&store);
+	printf("kv snapshot: a request that resumes from a prefix queues that prefix and its state for saving at once, and the unread tail past it is not saved, not even at release\n");
 }
 
 static void SnapTestMarkAllOrder(const char *directory)
@@ -1817,6 +1928,8 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestMarkAllOrder(directory);
+	SnapTestUnreadPrefixesWriteNothing(directory);
+	SnapTestReadQueuesItsSave(directory);
 	SnapTestSpareRetention(directory);
 	SnapTestStatesSpillBeforeDemotion(directory);
 	SnapRemoveAll(directory);

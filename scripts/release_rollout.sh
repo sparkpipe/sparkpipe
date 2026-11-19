@@ -129,11 +129,25 @@ case "$step" in
     for id in $MODELS; do stamp "old $id"; activate "$id" && capture "$id" old || echo "OLD-FAILED $id"; done
     restore_max ;;
   stage)
-    stamp "stage $FW on 16 nodes (~/rp-release-$SHA) and check hashes"
+    stamp "stage $FW on 16 nodes (~/rp-release-$SHA) through the hub and check hashes"
     (cd "$FW" && COPYFILE_DISABLE=1 tar cf "$STATE/fw.tar" .)
-    for r in $(seq 0 15); do (scp -q -o BatchMode=yes "$STATE/fw.tar" spark${HEX:$r:1}:rp-release-$SHA.tar && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
+    hub "mkdir -p $HUB_WORK/src" && scp -q -o BatchMode=yes "$STATE/fw.tar" rtx5090:$HUB_WORK/src/fw-$SHA.tar || { echo "STAGE-FAILED the copy to the hub"; exit 1; }
+    for r in $(seq 0 15); do (hub "scp -q -o BatchMode=yes $HUB_WORK/src/fw-$SHA.tar spark${HEX:$r:1}:rp-release-$SHA.tar" && node $r "rm -rf ~/rp-release-$SHA && mkdir ~/rp-release-$SHA && tar -C ~/rp-release-$SHA -xf ~/rp-release-$SHA.tar 2>/dev/null && rm ~/rp-release-$SHA.tar && cd ~/rp-release-$SHA && sha256sum --quiet -c SHA256SUMS && echo verified" | sed "s/^/spark${HEX:$r:1}: /") & done | awk '{print $NF}' | sort | uniq -c | one_variant stage || { echo "STAGE-FAILED"; exit 1; } ;;
+  roots)
+    stamp "lane roots: every record's root on all sixteen nodes"
+    for id in $MODELS; do
+      L=$(field $id lane)
+      missing=$(fan "test -d \$HOME/$L/root || echo missing" | grep -c ': missing$')
+      [ "$missing" = 0 ] && continue
+      [ -n "${PREV_TREE:-}" ] || { echo "ROOTS-FAILED $id: $L/root is missing on $missing nodes; set PREV_TREE to the running release's source tree to copy the root it names"; exit 1; }
+      P=$(cd "$PREV_TREE" && python3 tools/lane_config.py release-row "$id" 2>/dev/null | awk '{print $1}')
+      [ -n "$P" ] && [ "$P" != "$L" ] || { echo "ROOTS-FAILED $id: the release in $PREV_TREE names no other root for it"; exit 1; }
+      fan_all "root $id" "test -d \$HOME/$P/root && { test -d \$HOME/$L/root || { mkdir -p \$HOME/$L && rsync -a '--exclude=/kvsnapshot/*' '--exclude=/kvcache/*' '--exclude=/logs/*' \$HOME/$P/root/ \$HOME/$L/root/; }; }" || { echo "ROOTS-FAILED $id"; exit 1; }
+      echo "root $id: $P/root copied to $L/root on 16 nodes"
+    done ;;
   backup)
     hub_space || exit 1
+    for id in $MODELS; do fan_all "root $id" "test -d \$HOME/$(field $id lane)/root" > /dev/null || { echo "BACKUP-FAILED $id has no lane root at $(field $id lane)/root on every node: run the roots step first"; exit 1; }; done
     U=$(utc); stamp "backup root.prev-$U"
     for id in $MODELS; do
       L=$(field $id lane)
