@@ -869,7 +869,7 @@ SparkStatus SparkKvPageStoreWriteback(
 			SPARK_KV_PAGE_STORE_PAGE_RESERVED;
 		store->backing_page_count++;
 	}
-	if ( store->write_meter != 0 )
+	if ( store->write_meter != 0 && (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) == 0u )
 	{
 		struct timespec now;
 		(void)clock_gettime(CLOCK_MONOTONIC,&now);

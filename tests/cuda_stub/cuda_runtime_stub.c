@@ -394,10 +394,12 @@ cudaError_t cudaStreamDestroy(cudaStream_t stream)
 }
 
 cudaError_t cuda_stub_stream_query_result;
+uint32_t cuda_stub_stream_query_calls;
 
 cudaError_t cudaStreamQuery(cudaStream_t stream)
 {
     (void)stream;
+    __atomic_add_fetch(&cuda_stub_stream_query_calls, 1u, __ATOMIC_RELAXED);
     return cuda_stub_stream_query_result;
 }
 

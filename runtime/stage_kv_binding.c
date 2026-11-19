@@ -1481,8 +1481,32 @@ static void SparkStageKvBindingAttachWriteMeter(SparkStageKvBinding *binding)
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 		binding->state_store.write_meter = &binding->write_meter;
 	binding->page_cache.write_meter = &binding->write_meter;
-	fprintf(stderr,"%s kv write meter: every spill, state and snapshot write is counted; KV-WRITE-ALERT above %llu bytes in an hour\n",binding->module_tag,
+	fprintf(stderr,"%s kv write meter: every spill and snapshot write to disk is counted, recurrent states kept in memory are not; KV-WRITE-ALERT above %llu bytes in an hour\n",binding->module_tag,
 		(unsigned long long)SPARK_KV_WRITE_ALERT_BYTES_PER_WINDOW);
+}
+
+static SparkStatus SparkStageKvBindingAttachUnread(SparkStageKvBinding *binding)
+{
+	uint64_t pages = 0u,capacity = 1u;
+	SparkStatus status;
+	if ( binding->ledger.file != 0 && binding->page_bytes != 0u )
+		pages = binding->ledger.file->quota_bytes / binding->page_bytes;
+	if ( pages > SPARK_STAGE_KV_UNREAD_LIMIT )
+		pages = SPARK_STAGE_KV_UNREAD_LIMIT;
+	if ( pages < binding->logical_page_count )
+		pages = binding->logical_page_count;
+	while ( capacity < pages )
+		capacity <<= 1u;
+	binding->unread = (SparkKvPageCacheUnread *)calloc((size_t)capacity,sizeof(*binding->unread));
+	if ( binding->unread == 0 )
+	{
+		fprintf(stderr,"%s kv binding refused: cannot allocate %llu unread prefix fingerprints\n",binding->module_tag,(unsigned long long)capacity);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	status = SparkKvPageCacheAttachUnread(&binding->page_cache,binding->unread,(uint32_t)capacity);
+	if ( status == SPARK_STATUS_OK )
+		fprintf(stderr,"%s kv binding unread prefixes: a page is written to disk once a later request has read it; %llu fingerprints of dropped pages\n",binding->module_tag,(unsigned long long)capacity);
+	SPARK_RETURN(status);
 }
 
 static SparkStatus SparkStageKvBindingRefuse(const SparkStageKvConfiguration *configuration)
@@ -1652,6 +1676,8 @@ SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const Spa
 		status = SparkStageKvBindingAttachStates(binding,configuration);
 	if ( status == SPARK_STATUS_OK )
 		SparkStageKvBindingAttachWriteMeter(binding);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageKvBindingAttachUnread(binding);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	if ( pthread_mutex_init(&binding->mutex,0) != 0 )
@@ -1685,14 +1711,15 @@ static void SparkStageKvBindingLogCounters(const SparkStageKvBinding *binding)
 		(unsigned long long)counters->completion_count,(double)counters->entry_max_ns / 1000.0,
 		counters->completion_count != 0u ? (double)counters->completion_queue_total_ns / (double)counters->completion_count / 1000.0 : 0.0,
 		(double)counters->completion_queue_max_ns / 1000.0,(unsigned long long)binding->copier.copy_count);
-	fprintf(stderr,"%s kv binding arena evicted=%llu park_failures=%llu park_backing_full=%llu park_stalls=%llu store_writes=%llu store_reads=%llu backing_pages=%u backing_reclaims=%llu backing_full=%llu backing_full_queued=%llu degraded=%u degraded_entries=%llu degraded_discards=%llu park_stall_queued=%llu\n",binding->module_tag,
+	fprintf(stderr,"%s kv binding arena evicted=%llu park_failures=%llu park_backing_full=%llu park_stalls=%llu store_writes=%llu store_reads=%llu backing_pages=%u backing_reclaims=%llu backing_full=%llu backing_full_queued=%llu degraded=%u degraded_entries=%llu degraded_discards=%llu park_stall_queued=%llu unread_discards=%llu unread_returns=%llu\n",binding->module_tag,
 		(unsigned long long)binding->arena.resident_evicted_block_count,(unsigned long long)binding->arena.park_failure_count,
 		(unsigned long long)binding->arena.park_backing_full_count,(unsigned long long)binding->arena.park_stall_count,
 		(unsigned long long)binding->page_store.write_count,(unsigned long long)binding->page_store.read_count,
 		binding->page_store.backing_page_count,(unsigned long long)binding->page_cache.backing_reclaim_count,
 		(unsigned long long)binding->page_cache.backing_full_count,(unsigned long long)binding->page_cache.backing_full_queued_count,
 		binding->arena.park_degraded,(unsigned long long)binding->arena.park_degraded_count,(unsigned long long)binding->page_cache.degraded_discard_count,
-		(unsigned long long)binding->page_cache.park_stall_queued_count);
+		(unsigned long long)binding->page_cache.park_stall_queued_count,(unsigned long long)binding->page_cache.unread_discard_count,
+		(unsigned long long)binding->page_cache.unread_return_count);
 	if ( binding->shared_page_count != 0u )
 		fprintf(stderr,"%s kv binding shared window pages=%u allocated=%llu published=%llu imports=%llu imported_pages=%llu import_misses=%llu shared_blocks=%u\n",binding->module_tag,
 			binding->shared_page_count,(unsigned long long)binding->page_cache.shared_allocated_count,(unsigned long long)binding->page_cache.shared_published_count,
@@ -1800,6 +1827,7 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	free(binding->lane_staged_generations);
 	free(binding->lane_staged_sequences);
 	free(binding->save_order);
+	free(binding->unread);
 	SparkStageKvBindingRelease(&binding->snapshot_page);
 	free(binding->restore_job.links);
 	free(binding->restore_job.state);

@@ -230,10 +230,16 @@ is recorded in the code itself:
   adopted queue only when a caller waits on or queries that queue. When it
   picks a stamp slot or checks whether a buffer, event or kernel is busy, it
   reads the completion that the owner's own waits recorded. A queue takes a
-  free stamp slot before it reuses another queue's settled one.
-  `tests/test_device_adopted_capture_cuda.py` checks both rules.
-  `SparkDeviceSynchronize` still waits on every queue, adopted ones included,
-  so only a thread that knows no capture is running may call it.
+  free stamp slot before it reuses another queue's settled one. For the
+  length of each capture the runner marks its queue
+  (`SparkDeviceQueueCapture`). Any thread's wait on a marked queue, including
+  `SparkDeviceSynchronize`, polls without touching the stream until the mark
+  clears, then waits as usual. The KV pool thread's shrink therefore drains
+  the device after a capture instead of breaking it. Its unmapping, and the
+  grow's mapping, leave a capture intact.
+  `tests/test_device_adopted_capture_cuda.py` and
+  `tests/test_device_capture_cuda.py` check these rules. Queues the device
+  API created refuse the mark: only an adopted stream is ever captured.
 - **Record new kinds.** A new allocation kind, or a new CUDA API category in
   a module, goes into TECHDEBT §Hardware independence. That keeps the
   device-layer inventory complete.
