@@ -1,4 +1,4 @@
-"""Run release_rollout.sh stage, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, a rollback never activates models on an old weightd that is not ready, and the restart check fails unless the restarted API reaches every rank and answers as before."""
+"""Run release_rollout.sh stage, roots, backup, install and rollback against a fake 16-node fleet: every node must verify and install one identical set of files, a renumbered record's root is copied from the running release's root, hub backups go to the workspace volume and refuse when it is short of space, an incomplete backup refuses before any change, a rollback never activates models on an old weightd that is not ready, and the restart check fails unless the restarted API reaches every rank and answers as before."""
 import hashlib
 import json
 import os
@@ -372,6 +372,42 @@ exit 0
     return body
 
 
+def roots(work, fleet, state, model_lanes, extra, old_wd):
+    lane, previous = model_lanes[0][0], model_lanes[0][0].rsplit("/", 1)[0] + "/lane1"
+    record = "qwen3.8-max"
+    prev = work / "prev"
+    shutil.copytree(ROOT / "tools", prev / "tools", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(ROOT / "deployment", prev / "deployment")
+    records = json.loads((prev / "deployment" / "lanes.json").read_text())
+    entry = records["lanes"][record]
+    entry["lane"] = 1
+    entry["runtime_root"] = entry["runtime_root"].replace(lane.rsplit("/", 1)[1] + "/root", "lane1/root")
+    (prev / "deployment" / "lanes.json").write_text(json.dumps(records, indent=1) + "\n")
+    for index in range(16):
+        home = fleet / f"spark{HEX[index]}"
+        shutil.rmtree(home / lane / "root")
+        old = home / previous / "root"
+        for name, text in (("bin/residentd", "previous"), ("kvsnapshot/page", "kv"), ("kvcache/block", "kv"), ("logs/residentd-1.log", "log")):
+            (old / name).parent.mkdir(parents=True, exist_ok=True)
+            (old / name).write_text(text)
+    result = run("roots", fleet, work, old_wd, state)
+    check(result.returncode != 0 and f"ROOTS-FAILED {record}" in result.stdout, "roots without PREV_TREE must name the record whose root is missing", result)
+    check(not any((fleet / f"spark{HEX[index]}" / lane / "root").exists() for index in range(16)), "roots without PREV_TREE created a root", result)
+    result = run("backup", fleet, work, old_wd, state)
+    check(result.returncode != 0 and "run the roots step first" in result.stdout, "backup must refuse a record whose root is missing", result)
+    check(not any((fleet / f"spark{HEX[index]}" / lane / f"root.prev-{STAMP}" / "bin" / "residentd").read_text() != "old" for index in range(16)),
+          "backup changed a backup before refusing", result)
+    result = run("roots", fleet, work, old_wd, state, PREV_TREE=str(prev))
+    check(result.returncode == 0, "roots with PREV_TREE failed", result)
+    for index in range(16):
+        home = fleet / f"spark{HEX[index]}"
+        new = home / lane / "root"
+        check((new / "bin" / "residentd").read_text() == "previous", f"spark{HEX[index]} root was not copied from the previous root", result)
+        check(all((new / name).is_dir() and not any((new / name).iterdir()) for name in ("kvsnapshot", "kvcache", "logs")),
+              f"spark{HEX[index]} root kept KV files or logs", result)
+        check((home / previous / "root" / "kvsnapshot" / "page").read_text() == "kv", f"spark{HEX[index]} previous root changed", result)
+
+
 fleet_case("stage verifies all 16 nodes", stage(""))
 fleet_case("backup puts the hub API backups on the workspace volume, not in the home", backup(104857600))
 fleet_case("backup refuses before any change when the hub workspace is short of space", backup(1048576))
@@ -383,6 +419,7 @@ fleet_case("records frees each lane's current pack on all 16 nodes, then writes 
 fleet_case("records stops before any push when one node's weightd holds the lane's current pack", records("spark9"))
 fleet_case("install refuses while a residentd runs", install("", "./bin/sparkpipe_model_residentd --deployment deployment.json --rank-index 6"))
 fleet_case("stage fails when one node is not staged", stage("spark9"))
+fleet_case("roots copies a renumbered record's root from the running release without KV files or logs, and backup refuses until it exists", roots)
 fleet_case("rollback refuses without a backup stamp", refusal(lambda fleet, state, lanes: (state / "utc").unlink()))
 fleet_case("rollback refuses when one node misses one lane backup",
            refusal(lambda fleet, state, lanes: shutil.rmtree(fleet / "spark7" / lanes[3][0] / f"root.prev-{STAMP}")))
@@ -395,4 +432,4 @@ fleet_case("restart stops and starts a serving API, waits for every rank, and co
 fleet_case("restart fails without capturing when the API does not reach every rank", restart(15, 0))
 fleet_case("restart fails when the outputs after the restart differ", restart(16, 1))
 fleet_case("restart fails when the capture after the restart fails", restart(16, 0, 3))
-print("PASS test_release_rollout: stage needs all 16 nodes verified; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready; restart stops and starts a serving API with the controller's commands, waits until its health shows every rank, captures two prompts and compares them with the capture before it, and fails on an API that does not come back, a failed capture or different outputs")
+print("PASS test_release_rollout: stage copies the release to the hub once and needs all 16 nodes verified; roots copies a renumbered record\'s root from the running release without KV files or logs and backup refuses until every root exists; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready; restart stops and starts a serving API with the controller's commands, waits until its health shows every rank, captures two prompts and compares them with the capture before it, and fails on an API that does not come back, a failed capture or different outputs")

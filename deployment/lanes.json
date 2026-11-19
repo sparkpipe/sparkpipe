@@ -104,7 +104,8 @@
     "window": 4096,
     "context_bytes": 17179869184,
     "restart": "on-failure",
-    "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log"
+    "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log",
+    "lifecycle": "model"
    },
    "taps": {
     "entries": "o75,o79,o83,o87,o91,final",
