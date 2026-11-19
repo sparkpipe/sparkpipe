@@ -190,6 +190,13 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	}
 }
 
+static __device__ __forceinline__ void LmIndexScoreFillRow(float *__restrict__ scores, uint32_t row, uint32_t first, uint32_t last, uint32_t score_stride)
+{
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
+	for (uint32_t key = first + lane; key < last && key < score_stride; key += LM_WARP_LANES)
+		scores[(uint64_t)row * score_stride + key] = -INFINITY;
+}
+
 template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ head_weight_bf16, LmIndexScorePackedView index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
@@ -262,6 +269,11 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 			if ( row_position != 0 && row_position[row] + 1u < bound )
 				bound = row_position[row] + 1u;
 			bound = LmIndexScoreKeys(index_view, bound);
+			if ( bound <= key_first )
+			{
+				LmIndexScoreFillRow(scores,row,key_first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
+				continue;
+			}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 				for (step = 0u; step < STEPS; step++)
 				{
@@ -287,6 +299,11 @@ void LmWeightedSparseScoreStagedKernel(const uint16_t *__restrict__ index_query_
 			float low,high;
 			if ( first >= score_stride )
 				break;
+			if ( valid != 0u && first >= bound )
+			{
+				LmIndexScoreFillRow(scores,row,first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
+				break;
+			}
 			if ( valid != 0u && first < bound )
 			{
 				const uint8_t *slot = mine < bound ? staged + (tile * LM_INDEX_SCORE_TILE_POSITIONS + group) * PITCH : 0;
@@ -469,6 +486,11 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 			bound = context_length[sequence];
 			if ( row_position != 0 && row_position[row] + 1u < bound )
 				bound = row_position[row] + 1u;
+			if ( bound <= key_first )
+			{
+				LmIndexScoreFillRow(scores,row,key_first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
+				continue;
+			}
 			for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 				for (step = 0u; step < STEPS; step++)
 				{
@@ -494,6 +516,11 @@ void LmWeightedSparseScoreFp8Kernel(const uint8_t *__restrict__ query_fp8, const
 			float low,high;
 			if ( first >= score_stride )
 				break;
+			if ( valid != 0u && first >= bound )
+			{
+				LmIndexScoreFillRow(scores,row,first,key_first + LM_INDEX_SCORE_STAGED_KEYS,score_stride);
+				break;
+			}
 			if ( valid != 0u && first < bound )
 			{
 				const uint8_t *slot = mine < bound ? staged + (tile * LM_INDEX_SCORE_TILE_POSITIONS + group) * PITCH : 0;
