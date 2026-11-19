@@ -5,10 +5,10 @@ on the 16 Sparks. The pass engine (`k3_streamed_prefill.cuh`,
 `streamed.cuh`, `inference/runner/pass_prefill.cuh`) is the fast path: each
 node owns its rows and streams the other ranks' weights. Measured on
 2026-11-19 it prefilled K3.1 at 1M in 764.9 s from the release, 529.8 s
-with this branch's exact changes. Applying the DeepSeek V4.1
-Flash 16-rank ideas (#1931: rows owned, the publisher's MX arithmetic in
-native kernels, lean kernel loops, both ports on the wire) to it models
-1M at about 225-260 s.
+with this branch's exact changes. The DeepSeek V4.1 Flash 16-rank ideas
+(#1931: rows owned, the publisher's MX arithmetic in native kernels, lean
+kernel loops, both ports on the wire) and the levers measured since model 1M
+at about 380-400 s on 16 Sparks with the publisher's arithmetic.
 
 ## Where it stands (2026-11-19)
 
@@ -21,7 +21,7 @@ native kernels, lean kernel loops, both ports on the wire) to it models
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |
-| K3.1 1M with the levers of section 3 | about 225-260 s | model |
+| K3.1 1M with levers 1-6 of section 3 | about 380-400 s | model |
 
 Build: release `a242ef38e` (K3.1 adapter sha16 `e430d1f72200b6f7`) with the
 capture fix device library of #1945 (sha16 `8b69d85be11a1a29`), weightd
@@ -65,33 +65,63 @@ Weights never held a pass back: each 1M pass streamed them in about 128 s
 (7-8 s of dense broadcasts, 120 s of expert steps, 20 s of that reading the
 packs) while the streamer waited 195 s and 300 s for the GPU.
 
-Where the 256K pass spends its GPU time (rank 0 CUPTI trace, seconds):
-stream GEMMs 29.2, mesh collective kernels about 41 (most of them the MLA
-exchanges: query and key gathers, 16 x 2,048 index candidates a row, the
-selected indices of every row, the values), experts 23.1, sparse attend 15.5
-(10.9 TFLOPS) plus 4.5 of value projection, index score 14.5 (29 TFLOPS,
-BF16), index query projections 3.9 in 46,048 launches, index select 2.6, KDA
-scan 7.4. The MLA layers attend head-parallel: every node scores and attends
-all of the pass's rows for its 6 heads and its 1/16 of the keys, so the index
-work and every exchange grow with the pass, and the index with the context.
+Where rank 0's GPU time goes at 1M with the sampled select (run KQ8: rank 0
+under CUPTI, 529.4 s, the same as KQ7 untraced). Every kernel of the pass runs
+on one stream and the GPU is busy for 99.4% of the prefill, so there are no
+idle gaps to close; kernel time is the lever.
 
-## 3. Levers on the pass engine, ranked by minutes saved at 1M
+| Work | Rank 0 GPU s |
+| --- | ---: |
+| Index score: BF16 tile kernel 118.0, plus the 32-row tail chunk of each owner's share on the one-row kernel 22.6 | 140.6 |
+| Stream GEMMs (BF16 projections, shared experts, the dense MLP) | 114.8 |
+| Routed experts (`LmCellMmaKernel`, MXFP4 weights x BF16) | 83.9 |
+| Mesh collectives (arrival waits 34.9, transfers 26.7, the rest 2.9) | 64.5 |
+| KDA scan (`LmDeltaRuleChunkKernel` 28.2) and its small kernels | 42.0 |
+| Index select (sampled 19.4, merge 2.7) | 22.1 |
+| Value projection (`LmPerHeadProjectSplitKernel`) | 18.6 |
+| SiTU, MoE finalize, routing | 18.2 |
+| Sparse attend and merge | 16.3 |
+| AttnRes | 9.3 |
+| Norms, adds, gates and the rest | about 15 |
 
-| # | Lever | DSV4.1 idea | 1M now | After | Saves |
-| --- | --- | --- | ---: | ---: | ---: |
-| 1 | Indexed MLA with rows owned: each node scores its own rows against replicated index keys (0.27 GB a layer at 1M), picks the top 2,048 inside the scoring kernel, and attends its own rows with all 96 heads sharing each row's 2,048 keys; the candidate, selected-index and value exchanges go away. The index kernel at tensor-core speed, then FP8 keys and queries as the publisher's engine | rows owned with attention; replicated indexer, own-row scoring, radix top-k; fused attention; lean kernels | 461 s | 80-100 s | 6.0-6.4 min |
-| 2 | KDA: one chunked tensor-core scan instead of three token-serial passes, projections at GEMM speed | lean kernels | 157.5 s | 55-60 s | 1.6 min |
-| 3 | Experts as MXFP8 activations x MXFP4 weights on block-scaled MMA, the BF16 parts at GEMM speed | native MX multiplies | 143.5 s | 75-90 s | 0.9-1.1 min |
-| 4 | The weight stream on both 100G ports: about 64 s a pass instead of 128 | both device paths | hidden today | hidden | needed for 1-3 |
+The rows add to 544.5 s; dependent launches let neighbouring kernels overlap.
 
-Lever 1's exact steps are in (runs KQ4, KQ6, KQ7). The index kernel,
+GB10's MMA peak, measured with `mma.sync` loops free of dependencies at
+2.44 GHz with FP32 accumulation: 123.6 TFLOPS BF16, 247 TFLOPS FP8 (E4M3).
+Against it the index score kernel ran 55 TFLOPS on chunks of mixed lengths
+(69% on full rows; its epilogue, key staging and per-row query loads each
+cost 12-17%, and blocks past the causal bound still did that work), the
+stream GEMMs 72-80 TFLOPS at the pass's shapes (58-65%), and the FP8 index
+116 TFLOPS.
+
+The collectives: the first exchange of each KDA layer, the convolution tails
+(18 KB a node), waits 62.7 ms on average, the drift between nodes from the MoE
+before it, whose time depends on each node's routing; the 15 later ones in
+the layer wait about 4 ms. The weight stream runs on the same port
+(`rocep1s0f1`) and traffic class (106, PFC priority 3) as weightd's mesh
+rounds, so a small round can queue behind bulk writes.
+
+## 3. Levers on the pass engine, ranked by what they save at 1M
+
+| # | Lever | Bits | Rank 0 now (KQ8) | Saves at 1M | Status |
+| --- | --- | --- | ---: | ---: | --- |
+| 1 | Index score: the 32-row tails on the tile kernel; rows and tiles past the causal bound write -inf without loading queries | kept | 140.6 s | about 45 s | built, run KQ9 |
+| 2 | Value projection on the row-tile kernel, the same FMA order per output | kept | 18.6 s | about 13 s | built, run KQ9 |
+| 3 | FP8 index keys and queries as the publisher's engine (`streamed_prefill.index_fp8`) | the publisher's | about 95 s after 1 | about 40 s | built, run KQ10; an option until compared |
+| 4 | Stream GEMM toward 85% of the BF16 peak, the same k order | kept | 114.8 s | 25-30 s | next |
+| 5 | Collectives: the weight stream on its own priority class or port; fewer rounds in the KDA shard loop | kept | 64.5 s | 20-40 s | the class or port is a switch QoS decision |
+| 6 | Chunked KDA scan, as vLLM runs it | the publisher's engine | 28.2 s | about 20 s | |
+| 7 | MXFP8 activations for the routed experts (the README's QAT; the checkpoint's serving config leaves activations unquantized) | lower than the publisher's serving config | 83.9 s | 30-40 s | your call after a comparison |
+| 8 | Both 100G ports for the weight stream: about 64 s a pass instead of 128 | kept | hidden | needed once a pass computes in under 128 s | |
+
+The exact index steps so far (runs KQ4, KQ6, KQ7). The index kernel,
 measured on a Spark with `tests/test_index_score_tiles_cuda.py` (bit for bit
 against its one-tile form): the one-tile form scored a 128-row chunk over 1M
 keys at 17.6 TFLOPS because each 8-row block read every key itself; the tile
 kernel stages each key tile once in shared memory for 64 rows and runs at
-54.9 TFLOPS (51.3 at 65,536 keys, 53.6 at 262,144), near the BF16 MMA rate,
-so only the FP8 index can halve it now. Giving each warp four key tiles at
-once kept the bits but ran 0.63-1.16x and was dropped.
+54.9 TFLOPS (51.3 at 65,536 keys, 53.6 at 262,144) and 68 TFLOPS with lever
+1. Giving each warp four key tiles at once kept the bits but ran 0.63-1.16x
+and was dropped.
 
 The local top 2,048 read each row's FP32 scores four or five times (radix
 passes, then an emission scan): 13.06 ms for 128 rows over 1M keys. The
@@ -105,12 +135,14 @@ radix select. 128 rows: 2.87 ms at 1M keys (187 GB/s), 0.76 ms at 262,144,
 0.07 ms at 32,768; `tests/test_index_select_sampled_cuda.py` checks every row
 against the radix select, ties and a sharded rank included.
 
-Levers 1-3 bring the GPU time of a 1M prompt to about 210-250 s, about 105-125
-s a pass, under today's 128 s weight stream: without lever 4 two passes
-floor at about 256 s. With it, 1M lands at about 225-260 s. Bits: lever 1 is
-exact through its BF16 steps (same scores, same selection, the attention sum
-order aside); the FP8 index, the chunked KDA scan and the MX experts move
-bits and each needs a measured quality comparison before it is on.
+What the levers reach: 1-6 bring a 1M prompt to about 380-400 s and 7 to
+about 350 s on 16 Sparks. The BF16 GEMMs alone need about 70 s at the MMA
+peak, and two passes cannot go under about 256 s while the weight stream
+takes 128 s a pass. Three to four minutes on one 16-Spark fleet would need
+precision below the publisher's in the dense GEMMs; with the publisher's
+arithmetic it is in reach on 32 Sparks, where a 1M prompt fits one pass.
+The earlier model of 225-260 s assumed the KDA and expert GEMMs could drop
+by more than the BF16 peak allows.
 
 ## 4. Serving through the pass engine
 

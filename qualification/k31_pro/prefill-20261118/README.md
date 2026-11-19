@@ -40,6 +40,7 @@ devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
 | KQ4 | no tracer, MemoryMax 80G, the K3.1 adapter rebuilt from `a242ef38e` with the staged index kernel (sha16 `fcea2a673f2e30a9`) on every rank, the release adapter put back after | the KQ3 needle | two passes, 687.0 s |
 | KQ6 | as KQ4, adapter rebuilt from `a242ef38e` with the staged index kernel, the row-owned index and attention and the 96-head attend (sha16 `81a48b5bf34460f6`) | the KQ3 needle | two passes, 595.3 s |
 | KQ7 | as KQ6 plus the sampled top-2,048 select (sha16 `ebb1911c453b4907`) | the KQ3 needle | two passes, 529.8 s |
+| KQ8 | as KQ7, rank 0 under CUPTI | the KQ3 needle | two passes, 529.4 s |
 
 After each prefill the one-row decode step of the last token stopped rank 0
 (`decode step key=1 rows=1 before every expert group is resident`), so the
@@ -51,6 +52,13 @@ needle has no answer; the prefill times come from rank 0's log.
   hidden absmax of each pass (identical across the four).
 - `pass-KQ2-rank0-kernels.tsv`: rank 0's GPU seconds and launches by kernel
   over the KQ2 trace, the 40 largest.
+- `pass-KQ8-rank0.log`, `pass-KQ8-rank0-kernels.txt`: rank 0's lines and its
+  GPU seconds and launches by kernel over the KQ8 trace (`pass_trace.py`,
+  run on the hub: the prefill window, GPU busy and idle time, the gaps, the
+  45 largest kernels).
+- `pass-KQ8-rank0-mesh.txt`: the mesh kernels by the compute kernel before
+  them (`mesh_attr.py`) and the convolution-tail waits by shard
+  (`tail_waits.py`).
 
 ## Files
 
