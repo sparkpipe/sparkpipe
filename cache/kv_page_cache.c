@@ -3923,7 +3923,7 @@ static SparkStatus SparkKvLaneTransactionsPrepareLanes(SparkKvLaneTransactions *
 		lane = &request->cache_lanes[index];
 		owner = &transactions->lanes[lane->resident_sequence_slot];
 		offset = ((uint64_t)lane->resident_sequence_slot * transactions->page_capacity);
-		if ( lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u || (lane->block_identity_count != 0u && lane->block_identities == 0) )
+		if ( lane->block_identity_count > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES || (lane->block_identity_count != 0u && lane->block_identities == 0) )
 		{
 			status = SPARK_STATUS_INVALID_ARGUMENT;
 			break;

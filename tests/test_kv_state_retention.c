@@ -481,7 +481,26 @@ static void TestFoldedPublishOnBlockEdges(void)
 	assert(copy.copies == 1u && fixture->cache.folded_duplicate_count == 1u && fixture->cache.sequences[2].mutable_page_count == 0u &&
 		fixture->cache.sequences[2].next_token_position == 2u * RETAIN_BLOCK_TOKENS);
 	assert(SparkKvPageCacheReleaseLane(&fixture->cache,2u,72u) == SPARK_STATUS_OK);
-	printf("folded publish on block edges: a checkpoint that ends a block is that block's entry with its state and the next token stays in the open page; a prompt that ends a block keeps the whole block for itself and gives the checkpoint a copied page that holds the state, and a repeat copies nothing: ok\n");
+	{
+		SparkModelDriverCacheIdentity wide[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES];
+		const uint32_t tokens = SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES * RETAIN_BLOCK_TOKENS;
+		for (entry=0u; entry<SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES; entry++)
+			RetainIdentity(&wide[entry],23u,(entry + 1u) * RETAIN_BLOCK_TOKENS);
+		FoldLane(&lane,73u,3u,23u,tokens,wide);
+		lane.block_identities = wide;
+		lane.block_identity_count = SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES;
+		(void)RetainBegin(fixture,&lane);
+		assert(fixture->cache.sequences[3].mutable_page_count == SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES);
+		page = fixture->cache.sequences[3].mutable_following_pages[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 2u];
+		assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+		assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+		assert(copy.copies == 2u && fixture->cache.folded_publish_count == 3u && fixture->cache.sequences[3].mutable_page_count == 0u &&
+			fixture->entries[fixture->cache.sequences[3].terminal_entry_index].token_count == tokens);
+		RetainIdentity(&identity,23u,tokens - 1u);
+		assert(SparkKvPageCachePrefixReady(&fixture->cache,&identity,tokens - 1u) == 1u);
+		assert(SparkKvPageCacheReleaseLane(&fixture->cache,3u,73u) == SPARK_STATUS_OK);
+	}
+	printf("folded publish on block edges: a checkpoint that ends a block is that block's entry with its state and the next token stays in the open page; a prompt that ends a block keeps the whole block for itself and gives the checkpoint a copied page that holds the state, a repeat copies nothing, and a wave of the most pages a lane may span folds the same way: ok\n");
 	RetainClose(fixture);
 	free(fixture);
 }
