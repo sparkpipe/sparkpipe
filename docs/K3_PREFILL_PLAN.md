@@ -4,7 +4,8 @@ The goal is a cold 1,048,576-token Kimi K3.1 Pro prompt in about 3 minutes
 on the 16 Sparks. The pass engine (`k3_streamed_prefill.cuh`,
 `streamed.cuh`, `inference/runner/pass_prefill.cuh`) is the fast path: each
 node owns its rows and streams the other ranks' weights. Measured on
-2026-11-19 it prefills K3.1 at 1M in 764.9 s. Applying the DeepSeek V4.1
+2026-11-19 it prefilled K3.1 at 1M in 764.9 s from the release, 529.8 s
+with this branch's exact changes. Applying the DeepSeek V4.1
 Flash 16-rank ideas (#1931: rows owned, the publisher's MX arithmetic in
 native kernels, lean kernel loops, both ports on the wire) to it models
 1M at about 225-260 s.
@@ -16,6 +17,7 @@ native kernels, lean kernel loops, both ports on the wire) to it models
 | K3.1 1M (998,468 tokens), pass engine | 764.9 s: MLA 461.4, KDA 157.5, MoE 143.5 | run KQ3 |
 | The same with the staged index kernel | 687.0 s: MLA 393.7, KDA 147.8, MoE 143.7; rank 0's per-layer hidden absmax identical to KQ3 | run KQ4 |
 | Plus row-owned index and attention, 96-head attend | 595.3 s: MLA 303.3, KDA 146.1, MoE 144.1; absmax identical to KQ3 | run KQ6 |
+| Plus the sampled top-2,048 select | 529.8 s: MLA 239.5, KDA 145.1, MoE 143.7; absmax identical to KQ3 | run KQ7 |
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |
@@ -82,13 +84,26 @@ work and every exchange grow with the pass, and the index with the context.
 | 3 | Experts as MXFP8 activations x MXFP4 weights on block-scaled MMA, the BF16 parts at GEMM speed | native MX multiplies | 143.5 s | 75-90 s | 0.9-1.1 min |
 | 4 | The weight stream on both 100G ports: about 64 s a pass instead of 128 | both device paths | hidden today | hidden | needed for 1-3 |
 
-The index kernel, measured on an idle Spark with
-`tests/test_index_score_tiles_cuda.py` (bit-for-bit against its one-tile form):
-24.8 TFLOPS for a 128-row chunk over 65,536 keys, 15.9 over 262,144 keys,
-22.7 for a 2,048-row wave over 16,384 paged keys. Each 8-row block reads every
-key itself, so a 128-row chunk reads its keys 16 times from DRAM; giving each
-warp four key tiles at once keeps the bits but ran 0.63-1.16x and was dropped.
-The tile kernel stages each key tile once in shared memory for 32-64 rows.
+Lever 1's exact steps are in (runs KQ4, KQ6, KQ7). The index kernel,
+measured on a Spark with `tests/test_index_score_tiles_cuda.py` (bit for bit
+against its one-tile form): the one-tile form scored a 128-row chunk over 1M
+keys at 17.6 TFLOPS because each 8-row block read every key itself; the tile
+kernel stages each key tile once in shared memory for 64 rows and runs at
+54.9 TFLOPS (51.3 at 65,536 keys, 53.6 at 262,144), near the BF16 MMA rate,
+so only the FP8 index can halve it now. Giving each warp four key tiles at
+once kept the bits but ran 0.63-1.16x and was dropped.
+
+The local top 2,048 read each row's FP32 scores four or five times (radix
+passes, then an emission scan): 13.06 ms for 128 rows over 1M keys. The
+sampled select (`inference/kernels/index_select.cuh`) reads a strided sample
+of the row, then the row once, keeping every score at or above a sampled key
+in shared memory with a fine histogram beside it; an exact radix select over
+that list keeps the same candidates (ties to the earlier position). When the
+list overflows, a second read keeps the histogram bucket that holds the
+threshold; when that overflows or the sample was wrong, the row takes the
+radix select. 128 rows: 2.87 ms at 1M keys (187 GB/s), 0.76 ms at 262,144,
+0.07 ms at 32,768; `tests/test_index_select_sampled_cuda.py` checks every row
+against the radix select, ties and a sharded rank included.
 
 Levers 1-3 bring the GPU time of a 1M prompt to about 210-250 s, about 105-125
 s a pass, under today's 128 s weight stream: without lever 4 two passes
