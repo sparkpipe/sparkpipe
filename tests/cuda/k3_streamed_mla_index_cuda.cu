@@ -226,9 +226,10 @@ static void MiSetup(MiNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 	x->zero_rows = x->pass_sequence_of_row;
 	x->key_error = error;
 	x->sparse_rows = MI_SPARSE_ROWS;
-	x->sparse_query = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_MLA_KV_A_DIM);
-	x->sparse_partials = MiAlloc<float>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
-	x->sparse_latent = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_KV_LORA_RANK);
+	x->sparse_query = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * K3_MLA_KV_A_DIM);
+	x->sparse_partials = MiAlloc<float>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
+	x->sparse_latent = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * K3_KV_LORA_RANK);
+	x->sparse_slice = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_MLA_KV_A_DIM);
 	MI_CUDA(cudaStreamCreate(&n->stream));
 }
 

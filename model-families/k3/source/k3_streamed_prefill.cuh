@@ -215,9 +215,10 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 		s->mla.zero_rows = LmPassAlloc<uint32_t>(p, pass);
 		s->mla.key_error = (LmKvAccessError *)LmPassAlloc<uint8_t>(p, sizeof(LmKvAccessError));
 		s->mla.sparse_rows = (uint32_t)(pass < K3_STREAMED_SPARSE_ROWS ? pass : K3_STREAMED_SPARSE_ROWS);
-		s->mla.sparse_query = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_MLA_KV_A_DIM);
-		s->mla.sparse_partials = LmPassAlloc<float>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
-		s->mla.sparse_latent = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_KV_LORA_RANK);
+		s->mla.sparse_query = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * K3_MLA_KV_A_DIM);
+		s->mla.sparse_partials = LmPassAlloc<float>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
+		s->mla.sparse_latent = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * K3_KV_LORA_RANK);
+		s->mla.sparse_slice = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_MLA_KV_A_DIM);
 	}
 	if ( p->allocation_count == LM_PASS_MAX_ALLOCATIONS || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 || s->mla.help_values == 0 )
 	{
