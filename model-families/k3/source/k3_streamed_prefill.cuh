@@ -47,6 +47,7 @@ struct K3Streamed
 	uint8_t *index_keys;
 	uint8_t *index_fp8;
 	float *index_scores;
+	uint32_t index_codec_fp8;
 
 	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream);
 	SparkStatus PassBegin(LmPass *p, const LmPassStep *step, cudaStream_t stream);
@@ -176,6 +177,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	state_memory = LmPassAlloc<uint8_t>(p, (uint64_t)K3_KDA_LAYER_COUNT * K3_STREAMED_SHARDS * slot_floats * sizeof(float));
 	window_memory = LmPassAlloc<uint16_t>(p, (uint64_t)K3_KDA_LAYER_COUNT * K3_STREAMED_SHARDS * (2u * heads * K3_KDA_KEY_DIM + heads * K3_KDA_VALUE_DIM) * K3_KDA_CONV_KERNEL);
 	memset(&s->mla, 0, sizeof(s->mla));
+	s->mla.index_fp8 = s->index_codec_fp8;
 	s->mla.node = p->rank;
 	s->mla.nodes = K3_STREAMED_SHARDS;
 	s->mla.q_latents = LmPassAlloc<uint16_t>(p, pass * K3_Q_LORA_RANK);
@@ -280,7 +282,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	memset(s, 0, sizeof(*s));
 	s->dispatch = dispatch;
 	s->module = module;
-	s->mla.index_fp8 = config->index_fp8 != 0u && dispatch->indexed != 0u ? 1u : 0u;
+	s->index_codec_fp8 = config->index_fp8 != 0u && dispatch->indexed != 0u ? 1u : 0u;
 	for (s->moe_members = K3_STREAMED_SHARDS; s->moe_members > 1u && 2u * s->moe_members > config->expert_slots; s->moe_members /= 2u)
 	{
 	}

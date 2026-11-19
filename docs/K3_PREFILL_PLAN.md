@@ -4,7 +4,7 @@ The goal is a cold 1,048,576-token Kimi K3.1 Pro prompt in about 3 minutes
 on the 16 Sparks. The pass engine (`k3_streamed_prefill.cuh`,
 `streamed.cuh`, `inference/runner/pass_prefill.cuh`) is the fast path: each
 node owns its rows and streams the other ranks' weights. Measured on
-2026-11-19 it prefilled K3.1 at 1M in 764.9 s from the release, 529.8 s
+2026-11-19 it prefilled K3.1 at 1M in 764.9 s from the release, 473.4 s
 with this branch's exact changes. The DeepSeek V4.1 Flash 16-rank ideas
 (#1931: rows owned, the publisher's MX arithmetic in native kernels, lean
 kernel loops, both ports on the wire) and the levers measured since model 1M
@@ -18,6 +18,7 @@ at about 380-400 s on 16 Sparks with the publisher's arithmetic.
 | The same with the staged index kernel | 687.0 s: MLA 393.7, KDA 147.8, MoE 143.7; rank 0's per-layer hidden absmax identical to KQ3 | run KQ4 |
 | Plus row-owned index and attention, 96-head attend | 595.3 s: MLA 303.3, KDA 146.1, MoE 144.1; absmax identical to KQ3 | run KQ6 |
 | Plus the sampled top-2,048 select | 529.8 s: MLA 239.5, KDA 145.1, MoE 143.7; absmax identical to KQ3 | run KQ7 |
+| Plus the tail chunks on the tile kernel, the causal-bound skip, the row-tile value projection | 473.4 s: MLA 184.9, KDA 142.8, MoE 143.9; absmax identical to KQ3 | run KQ10 |
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |
@@ -105,9 +106,9 @@ rounds, so a small round can queue behind bulk writes.
 
 | # | Lever | Bits | Rank 0 now (KQ8) | Saves at 1M | Status |
 | --- | --- | --- | ---: | ---: | --- |
-| 1 | Index score: the 32-row tails on the tile kernel; rows and tiles past the causal bound write -inf without loading queries | kept | 140.6 s | about 45 s | built, run KQ9 |
-| 2 | Value projection on the row-tile kernel, the same FMA order per output | kept | 18.6 s | about 13 s | built, run KQ9 |
-| 3 | FP8 index keys and queries as the publisher's engine (`streamed_prefill.index_fp8`) | the publisher's | about 95 s after 1 | about 40 s | built, run KQ10; an option until compared |
+| 1 | Index score: the 32-row tails on the tile kernel; rows and tiles past the causal bound write -inf without loading queries | kept | 140.6 s | 1 and 2 together: 56.4 s | done, run KQ10 |
+| 2 | Value projection on the row-tile kernel, the same FMA order per output | kept | 18.6 s | (with 1) | done, run KQ10 |
+| 3 | FP8 index keys and queries as the publisher's engine (`streamed_prefill.index_fp8`) | the publisher's | about 95 s after 1 | about 40 s | built; an option until compared |
 | 4 | Stream GEMM toward 85% of the BF16 peak, the same k order | kept | 114.8 s | 25-30 s | next |
 | 5 | Collectives: the weight stream on its own priority class or port; fewer rounds in the KDA shard loop | kept | 64.5 s | 20-40 s | the class or port is a switch QoS decision |
 | 6 | Chunked KDA scan, as vLLM runs it | the publisher's engine | 28.2 s | about 20 s | |
@@ -188,8 +189,8 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
 
 ## 6. Order of work
 
-1. Done: the exact index steps (runs KQ4-KQ9) and the FP8 index as an option
-   (run KQ10).
+1. Done: the exact index steps and the value projection (runs KQ4-KQ10,
+   764.9 -> 473.4 s) and the FP8 index as an option.
 2. The serving hand-off (section 4), so a long prompt is answered and the
    needle and the logits can compare the FP8 index with BF16.
 3. Exact levers by size: the stream GEMM toward the BF16 peak, the

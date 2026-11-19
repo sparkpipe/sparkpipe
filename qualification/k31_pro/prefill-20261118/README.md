@@ -41,15 +41,18 @@ devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
 | KQ6 | as KQ4, adapter rebuilt from `a242ef38e` with the staged index kernel, the row-owned index and attention and the 96-head attend (sha16 `81a48b5bf34460f6`) | the KQ3 needle | two passes, 595.3 s |
 | KQ7 | as KQ6 plus the sampled top-2,048 select (sha16 `ebb1911c453b4907`) | the KQ3 needle | two passes, 529.8 s |
 | KQ8 | as KQ7, rank 0 under CUPTI | the KQ3 needle | two passes, 529.4 s |
+| KQ9 | as KQ7 plus the tail chunks on the tile kernel, the causal-bound skip, the row-tile value projection and the FP8 option (sha16 `5743fbd4e597bf1d`), BF16 | the KQ3 needle | did not start: the adapter required `streamed_prefill.index_fp8`, and rank 3 stopped at configuration |
+| KQ10 | the KQ9 adapter with `index_fp8` 1 in every rank's config | the KQ3 needle | two passes, 473.4 s, but the engine cleared the flag when it set up its buffers and scored in BF16 (`index BF16` in the log), so this is the BF16 run of the KQ9 build |
 
 After each prefill the one-row decode step of the last token stopped rank 0
 (`decode step key=1 rows=1 before every expert group is resident`), so the
 needle has no answer; the prefill times come from rank 0's log.
 
 - `pass-KQ2-rank0.log`, `pass-KQ3-rank0.log`, `pass-KQ4-rank0.log`,
-  `pass-KQ6-rank0.log`, `pass-KQ7-rank0.log`: rank 0's pool, engine,
-  per-pass and sequence lines, and for KQ3, KQ4, KQ6 and KQ7 the per-layer
-  hidden absmax of each pass (identical across the four).
+  `pass-KQ6-rank0.log`, `pass-KQ7-rank0.log`, `pass-KQ10-rank0.log`: rank
+  0's pool, engine, per-pass and sequence lines, and for KQ3, KQ4, KQ6, KQ7
+  and KQ10 the per-layer hidden absmax of each pass (identical across the
+  five).
 - `pass-KQ2-rank0-kernels.tsv`: rank 0's GPU seconds and launches by kernel
   over the KQ2 trace, the 40 largest.
 - `pass-KQ8-rank0.log`, `pass-KQ8-rank0-kernels.txt`: rank 0's lines and its

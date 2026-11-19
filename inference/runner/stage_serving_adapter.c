@@ -289,7 +289,7 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 		StageServingU32Member(state, doc, object, "streamed_prefill", "traffic_class", &streamed->traffic_class) != SPARK_STATUS_OK ||
 		StageServingU32Member(state, doc, object, "streamed_prefill", "dense_buffers", &streamed->dense_buffers) != SPARK_STATUS_OK ||
 		StageServingU32Member(state, doc, object, "streamed_prefill", "expert_slots", &streamed->expert_slots) != SPARK_STATUS_OK ||
-		StageServingU32Member(state, doc, object, "streamed_prefill", "index_fp8", &streamed->index_fp8) != SPARK_STATUS_OK )
+		StageServingOptionalU32Member(state, doc, object, "streamed_prefill", "index_fp8", 0u, &streamed->index_fp8) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	streamed->partner_pack_path = state->streamed_partner_pack;
 	streamed->fabric_device = state->streamed_fabric_device;
