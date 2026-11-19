@@ -1891,3 +1891,52 @@ interleaved runs each: 16,857 / 26,931 / 29,115 tok/s against 16,993 /
 step), while the gate's decode request (a 200-token prompt and 16 tokens)
 took 2.04 s against 2.08; scores identical at 56 deep and 30 fresh
 positions. Kept because it is exact and shortens every decode step.
+
+The prompt's last token runs in the last wave (2026-11-19). The engine
+used to stop a prompt's last wave one token before its end, publish the
+cache checkpoint there, and run the last token as a one-row step: about 33
+ms of step and up to 9 ms of gap on an 8,192-token prompt. The last wave
+now runs through the last token and publishes the checkpoint one token
+before the end from inside it (`docs/INTERFACE_CONTRACTS.md`, "Folded
+prompt checkpoint"); the rank saves the two pieces of DSV4.1's state that
+differ there, the ratio-2 compressors' pending row and the n-gram history.
+A prompt whose last token or the one before it ends a 256-token page keeps
+the one-row step, so 8,192, 32,768 and 131,072 tokens do not fold; the
+runs below use 8,100, 32,100 and 131,000.
+
+Both arms run the same rank build and an engine with no cache stride, as
+every figure since the cache-stride table; only the fold capability
+differs:
+
+| Arm | 8,100 tokens | 32,100 tokens | 131,000 tokens |
+| --- | ---: | ---: | ---: |
+| one-row last step | 16,740 tok/s | 26,397 | 28,716 |
+| folded | 17,790 | 27,097 | 29,242 |
+| one-row last step | 16,926 | 26,541 | 29,405 |
+| folded | 17,801 | 27,003 | 29,764 |
+| one-row last step | 16,803 | 26,530 | 29,341 |
+| folded | 17,967 | 27,100 | 29,732 |
+| mean, one-row | 16,823 | 26,489 | 29,154 |
+| mean, folded | 17,853 | 27,067 | 29,579 |
+
+That is +6.1%, +2.2% and +1.5%, and 237%, 320% and 352% of the four-Spark
+reference. At 8,192 / 32,768 / 131,072 tokens the two arms are level
+(16,887 / 26,607 / 29,133 against 16,639 / 26,333 / 29,426), and every run
+answers the 40,000-token prompt with `b79b025295d2819f`.
+
+The checkpoint is exact. With the capability off the build scores the deep
+and fresh probes as `zn18d1` and `zn18f1` bit for bit (56 and 30
+positions). Seven prompts sent twice in one session, the second time each
+resuming at the checkpoint the first folded, score bit for bit as the same
+prompts on the one-row engine. The first output token is computed in the
+wave instead of a one-row step, as the publisher's forward pass does, so
+its log-probs move: the seven prompts have the same best token and differ
+by at most 0.75 in a log-prob; on the deep probes, whose 16-token
+extensions now run as 17-row waves past the 16-row kernel switch, the best
+token is the same at 56 of 56 and 29 of 30 positions and a log-prob moves
+by at most 3.3.
+
+The engine of these runs has no cache stride. With the module's 16,384
+the same ranks run 17,284 / 23,990 / 23,314 tok/s at 8,192 / 32,768 /
+131,072 tokens, because every 16,384-token wave then runs the upper layers
+on its last rows to save a resume point there; that choice is open.
