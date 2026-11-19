@@ -284,6 +284,8 @@ int main(void)
 	static const ProbeShape shapes[] = {
 		{"pass chunk, packed keys", 128u, 65536u, 0u},
 		{"pass chunk, packed keys, long", 128u, 262144u, 0u},
+		{"pass chunk, packed keys, 1M", 128u, 1048576u, 0u},
+		{"pass chunk, uneven rows", 100u, 70001u, 0u},
 		{"wave, paged keys", 2048u, 16384u, 1u},
 		{"few rows, ragged keys", 40u, 5003u, 0u},
 		{"few rows, paged ragged keys", 7u, 777u, 1u},
