@@ -1,0 +1,1 @@
+{"logprobs": null, "text": ".\n\n**`sparkpipe_mesh_status`.** `make build/sparkpipe_mesh_status` builds it from\n`tools/mesh_status.c` and the weightd sources. It connects, sends HELLO and\nMESH_STATUS, and prints one line per peer and lane. It never writes a record,\n`.ready"}

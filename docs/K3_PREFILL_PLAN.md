@@ -20,6 +20,7 @@ at about 380-400 s on 16 Sparks with the publisher's arithmetic.
 | Plus the sampled top-2,048 select | 529.8 s: MLA 239.5, KDA 145.1, MoE 143.7; absmax identical to KQ3 | run KQ7 |
 | Plus the tail chunks on the tile kernel, the causal-bound skip, the row-tile value projection | 473.4 s: MLA 184.9, KDA 142.8, MoE 143.9; absmax identical to KQ3 | run KQ10 (KQ11 475.3 s, identical) |
 | The same with the FP8 index (`index_fp8` 1) | 438.9 s: MLA 148.0, KDA 145.2, MoE 143.8; absmax moves up to 1.9% in pass 1 and up to 15.1% in pass 2 | run KQ12 |
+| K3.1 1M needle answered by the same lane (mode switch, section 4) | BF16: prefill 477.1-480.6 s, the key correct, 528.6-529.0 s end to end; FP8 index: 440.7-446.4 s, correct, 485.6-489.1 s | runs KS3, KS6; KS5, KS7 |
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |
@@ -158,7 +159,7 @@ by more than the BF16 peak allows.
 
 ## 4. Serving through the pass engine
 
-- The decode step after a pass aborts today: the pass lane caps the expert
+- On a pass lane the decode step after a pass aborts: the lane caps the expert
   pool at 8 GiB to make room for its window and engine, and the runner
   refuses a decode step until every expert group is resident
   (`StageRunnerStep` in `inference/runner/stage_runner.cu`). The KV the pass
@@ -177,10 +178,28 @@ by more than the BF16 peak allows.
   mesh lane have their own weightd connections and the KDA states live in
   the lane's state pool, so none of them moves; the runner keeps the first
   attach's mesh mapping, which the device collective registered once.
-- Measured (run KS2, a 100,869-token needle): the switch to the pass pool
-  took 3.9 s (detach 0.7, reclaim 1.0, attach with the private spine 2.2),
-  the switch back 19.6 s (attach 4.7, warm 14.6), and the lane answered the
-  pass key correctly, 142.9 s end to end.
+- Measured: the switch to the pass pool takes 3.7-4.3 s on rank 0 (unmap
+  0.7, reclaim 1.0, attach with the private spine 2.1), the switch back
+  about 20 s (attach 5, warm 15) and 27 s after a 1M prefill (attach 12).
+  KS2 answered a 100,869-token needle in 142.9 s end to end. The 1M needle
+  (998,469 tokens) was answered correctly in all four 1M runs: BF16 prefill
+  477.1 and 480.6 s, 528.6 and 529.0 s end to end (KS3, KS6); FP8 index
+  446.4 and 440.7 s, 489.1 and 485.6 s (KS5, KS7). The switch leaves the
+  prefill's bits unchanged (rank 0's absmax identical to the pass-lane runs
+  KQ11 and KQ12).
+- The ranks must enter the pass together. A long prompt makes the KV pool
+  grow just as the lane detaches, and weightd answers every client on one
+  thread, so on some ranks the DETACH round trip waits behind the grow (0 to
+  10 s in KS5, 40 s on one rank in KS4). In KS4 the other ranks entered the
+  pass's first exchange and ran out the device collective's 30 s round
+  budget, and the needle failed. After each switch the runner now gathers a
+  switch token from every rank in one round with a 120 s budget
+  (`SparkTpDeviceCollectiveSetOperationTimeout` for that round) and checks
+  that every rank reached the same switch; every other round keeps the
+  lane's budget. In KS6 the 1M switch took 3.7 to 10.8 s across ranks and
+  the others waited up to 7.1 s at the rendezvous. Growing the KV pool after
+  the reclaim, or a weightd that does not hold its other clients behind a
+  grow, would take those seconds off a 1M request.
 - Releasing only the expert chunks of one whole-arena attach would keep every
   pointer, but weightd maps a whole arena as one allocation and CUDA frees
   no part of one, so that needs a daemon change and a weightd release; the
@@ -191,6 +210,14 @@ by more than the BF16 peak allows.
   seconds), with no switch on either side.
 - The hand-off is also what lets a needle be answered after a pass, the
   check the FP8 index and every other change of bits needs before it is on.
+- The FP8 index against BF16 (KS6 against KS7, the same lane and adapter):
+  the 1M needle is correct in both; the 1M prefill takes 35 s (7%) less, the
+  400K 4% less and the 131K none. A 400K corpus answer keeps its first 36 of
+  64 greedy tokens: over those the chosen token's logprob moves 0.026 on
+  average and at most 0.097, and token 36, a near tie under BF16 (margin
+  0.062), swaps. A 131K answer keeps 26 of 32 (logprob moves 0.076 on
+  average, at most 0.30; a 0.055 near tie swaps). BF16 stays the default
+  until you decide.
 - Where the pass engine wins: a pass streams about 1.3 TB of expert weights
   a node, 128 s today, whatever the prompt. Waves take about 128 s for 64K
   tokens, so the threshold is about 64K now and about 32K after lever 4. On
@@ -214,8 +241,9 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
 
 1. Done: the exact index steps and the value projection (runs KQ4-KQ10,
    764.9 -> 473.4 s) and the FP8 index as an option.
-2. The serving hand-off (section 4): built and answering (run KS2); the
-   needle and the logits compare the FP8 index with BF16 next.
+2. Done: the serving hand-off (section 4), the 1M needle answered by the
+   same lane in BF16 and with the FP8 index, and the comparison; the FP8
+   index waits for your decision.
 3. Exact levers by size: the stream GEMM toward the BF16 peak, the
    collectives (with a decision on the weight stream's class or port), the
    select folded into the score kernel, the SiTU and MoE finalize passes

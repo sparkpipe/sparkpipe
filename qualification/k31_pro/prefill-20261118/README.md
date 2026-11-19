@@ -46,25 +46,6 @@ devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
 | KQ11 | the fixed adapter (sha16 `de4e0fbc5d2b0f50`), BF16 | the KQ3 needle | two passes, 475.3 s |
 | KQ12 | as KQ11 with `index_fp8` 1 (`index FP8 keys and queries (ue8m0 scales)` in the log) | the KQ3 needle | two passes, 438.9 s |
 
-## Mode-switch runs, 2026-11-19
-
-Branch `perf/k31-pass-mode-switch` (stacked on #1950): the lane starts with
-the whole arena warmed (`weightd_warm --shared 93 896` after ready, as the
-TP16 runs), each rank's `streamed_prefill` names `expert_pool_cap_bytes`
-8 GiB and the lane config carries no top-level cap, so the runner switches
-to the slot pool for each streamed prefill and back to the whole arena
-after it. Adapter sha16 `8aaef0a6b450b0a7` (release `a242ef38e` with the
-#1950 exact levers and the switch). Hub script `switchrun.sh` (the passrun
-steps plus the warm; it waits for the answer).
-
-| Run | Prompt | Result |
-| --- | --- | --- |
-| KS1 | none | did not start: one rank's config copy failed (sparkcp), the script now retries |
-| KS2 | pass-key needle, 4,200 filler units (100,869 tokens) | pass pool switch 3.9 s, prefill 110.4 s (one pass), whole arena 19.6 s (warm 14.6), answer `60669` correct, 142.9 s end to end |
-
-- `switch-KS2-rank0.log`: rank 0's pool, spine, switch, pass and graph
-  capture lines; `needle-KS2.json`: the client's result.
-
 After each prefill the one-row decode step of the last token stopped rank 0
 (`decode step key=1 rows=1 before every expert group is resident`), so the
 needle has no answer; the prefill times come from rank 0's log.
@@ -88,6 +69,72 @@ needle has no answer; the prefill times come from rank 0's log.
 - `pass-KQ8-rank0-mesh.txt`: the mesh kernels by the compute kernel before
   them (`mesh_attr.py`) and the convolution-tail waits by shard
   (`tail_waits.py`).
+
+
+## Mode-switch runs, 2026-11-19
+
+Branch `perf/k31-pass-mode-switch` (stacked on #1950): the lane starts with
+the whole arena warmed (`weightd_warm --shared 93 896` after ready, as the
+TP16 runs), each rank's `streamed_prefill` names `expert_pool_cap_bytes`
+8 GiB and the lane config carries no top-level cap, so the runner switches
+to the slot pool for each streamed prefill and back to the whole arena
+after it. Release `a242ef38e` with the #1950 exact levers and the switch:
+adapter sha16 `8aaef0a6b450b0a7` for KS2-KS4, `d504b7f8f02d1520` for KS5
+(the switch log split into sync, leases, unmap, the DETACH round trip and
+destroy; a reclaim that finds the arena already freed is not an error), and
+`e7136e23dd83a0a6` for KS6 and KS7 (plus the rendezvous after each switch).
+Hub script `switchrun.sh` (the passrun steps plus the warm; it waits for the
+answer). Corpus prompts go through `/v1/completions` with `temperature` 0,
+`logprobs` 5 and speculation off; the needle through the chat API.
+
+| Run | Index | Round budget | Prompts | Prefill, rank 0 | Result |
+| --- | --- | --- | --- | --- | --- |
+| KS1 | BF16 | 30 s | none | | did not start: one rank's config copy failed (sparkcp), the script now retries |
+| KS2 | BF16 | 30 s | pass-key needle, 4,200 filler units (100,869 tokens) | 110.4 s, one pass | pass pool switch 3.9 s, whole arena 19.6 s (warm 14.6), answer `60669` correct, 142.9 s end to end |
+| KS3 | BF16 | 30 s | 400,000 corpus tokens at offset 0, 64 generated; then the KQ3 needle (998,469 tokens) | 166.7 s; 477.1 s, two passes, absmax identical to KQ11 | 400K answered; needle `44560` correct, 528.6 s end to end; the 1M switch 13.3 s on rank 0 (detach 10.1 s), back 27.9 s |
+| KS4 | FP8 | 30 s | as KS3 | 163.2 s; none | 400K answered; the needle failed: sparkf's switch took 44.1 s (detach 40.0 s), the other ranks entered the pass's first exchange and ran out the 30 s round budget, their weight streams opened against an empty endpoint table (`weight_stream.c:167`) and sparkf's exchange found rank 0's block stale (HTTP 500) |
+| KS5 | FP8 | 120 s in every rank's config | as KS3 | 162.2 s; 446.4 s, absmax identical to KQ12 | 400K answer identical to KS4; needle `44560` correct, 489.1 s; the 1M switch 3.9 to 14.4 s across ranks, the DETACH round trip 0.0 to 10.3 s of it |
+| KS6 | BF16 | 30 s, the rendezvous | 400,000 at offset 0 (64 generated), 131,072 at offset 300,000 (32 generated), the KQ3 needle | 168.9 s; 108.8 s; 480.6 s, absmax identical to KQ11 | 400K answer identical to KS3; needle `44560` correct, 529.0 s; the 1M switch 3.7 to 10.8 s across ranks (sparkf's DETACH 5.8 s), the others waited up to 7.1 s at the rendezvous |
+| KS7 | FP8 | 30 s, the rendezvous | as KS6 | 160.8 s; 109.7 s; 440.7 s, absmax identical to KQ12 | 400K answer identical to KS4; needle `44560` correct, 485.6 s; the 1M switch 3.8 to 5.3 s, rendezvous waits up to 1.5 s |
+
+The KV pool grows for a long prompt just as the lane detaches, and weightd
+answers every client on one thread, so the DETACH round trip waits behind
+the grow on some ranks (KS3-KS6). From KS6 the runner gathers a switch token
+from every rank after each switch in one round with a 120 s budget; every
+other round keeps the lane's 30 s.
+
+The FP8 index against BF16 (KS6 against KS7, the same adapter and lane):
+
+- Needle: `44560` correct in all four 1M runs (KS3 and KS6 BF16, KS5 and KS7
+  FP8).
+- Prefill: 1M 440.7-446.4 s against 477.1-480.6 s (35 s, 7% less), 400K
+  160.8-163.2 s against 166.7-168.9 s, 131K 109.7 s against 108.8 s.
+- Logprobs (`logprobs-KS6-vs-KS7.txt`, `logprob_compare.py`): the 400K
+  answer keeps the first 36 of 64 tokens; over those the chosen token's
+  logprob moves 0.026 on average and at most 0.097 (its probability at most
+  0.06), and the top 5 agree in order at 14 positions. Token 36 was a near
+  tie under BF16 (-1.828 against -1.890) that FP8 swaps. The 131K answer
+  keeps 26 of 32 tokens; the logprob moves 0.076 on average and at most
+  0.30, and token 26 is again a near tie (margin 0.055) that swaps.
+- Hidden absmax at 1M: as KQ12, up to 15.1% at the last layer of pass 2.
+- BF16 runs repeat to the bit (KS3 and KS6), FP8 runs too (KS4, KS5, KS7).
+
+Files:
+
+- `switch-KS2-rank0.log` to `switch-KS7-rank0.log`: rank 0's pool, spine,
+  switch, pass and sequence lines and the per-layer hidden absmax.
+- `switch-KS4-ranks.log` to `switch-KS7-ranks.log`: every rank's switch and
+  rendezvous lines; KS4's add each rank's first errors. In KS2-KS4 the
+  `detach` of a switch line covers sync through destroy; from KS5 the line
+  splits it.
+- `results-KS3.txt` to `results-KS7.txt`, `needle-KS2.json`: the client's
+  lines. `answer-KS3-corpus400k.json` (BF16) and `answer-KS4-corpus400k.json`
+  (FP8): the 400K answers; `answer-KS6-corpus131k.json`,
+  `answer-KS7-corpus131k.json`: the 131K answers.
+- `lp-KS6-*.json`, `lp-KS7-*.json`: the generated tokens and, for each, the
+  chosen token's logprob and the top 5. The API returns them as
+  `token_logprobs` beside `tokens`; the probe kept only `choices[0].logprobs`
+  (null) before KS6 and writes these files from KS6.
 
 ## Files
 
