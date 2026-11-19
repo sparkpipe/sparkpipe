@@ -22,6 +22,31 @@ Receipts for [docs/K3_PREFILL_PLAN.md](../../../docs/K3_PREFILL_PLAN.md).
 | KP1 | CUPTI activity trace (`tools/tp_cupti_trace_build.py` library), `TRACE_EXIT` present, 2,808,577 kernel and copy records | 4,096 at offset 15,031, then 262,144 at offset 0 | 656.8 s, 399.1 tok/s |
 | KP2 | no tracer | 4,096 at offset 15,031, then 262,144 at offset 170,000 | 592.1 s, 442.7 tok/s |
 
+## Pass engine runs, 2026-11-19
+
+The same lane, firmware and hold rules, with each rank's adapter config
+extended for the pass engine and restored afterwards: `streamed_prefill`
+with `node_rows` 32,768, `dense_buffers` 3, `expert_slots` 28, the rank ^ 1
+partner pack from `sparkdata/k31_pro.cells.tp16/partner/`, the fabric and pair
+devices, GID 3 and traffic class 106 of the 2026-11-07 K3.1 record, and
+`expert_pool_cap_bytes` 8 GiB. The API's `streamed_prefill_min_tokens` was
+65,536. No expert warm.
+
+| Run | Rank 0 | Prompt | Result |
+| --- | --- | --- | --- |
+| KQ1 | CUPTI, residentd MemoryMax 16G | none | rank 0 OOM-killed by its unit while the engine was created |
+| KQ2 | CUPTI, MemoryMax 80G | 262,144 tokens at corpus offset 170,000 | one pass, 156.9 s |
+| KQ3 | no tracer, MemoryMax 80G | pass-key needle, 41,600 filler units, key at the middle (998,469 prompt positions) | two passes, 764.9 s |
+
+After each prefill the one-row decode step of the last token stopped rank 0
+(`decode step key=1 rows=1 before every expert group is resident`), so the
+needle has no answer; the prefill times come from rank 0's log.
+
+- `pass-KQ2-rank0.log`, `pass-KQ3-rank0.log`: rank 0's pool, engine, per-pass
+  and sequence lines.
+- `pass-KQ2-rank0-kernels.tsv`: rank 0's GPU seconds and launches by kernel
+  over the KQ2 trace, the 40 largest.
+
 ## Files
 
 - `probes.jsonl`: the client's result for every prompt.

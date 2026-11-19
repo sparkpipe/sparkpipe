@@ -1,0 +1,41 @@
+seconds	launches	kernel
+29.190	10030	LmStreamGemmKernel<LmBf16Format, 128u, 128u, 64u, 32u>
+23.534	31654	SparkTpMeshHardwareArrivalKernel
+23.107	360	LmCellMmaKernel<0u, 4u>
+15.529	5632	LmLatentShardPrefillKernel<LmKvGeometry<1152u, 64u, true>, LmKvShardView, 512u, 64u, 1u>
+14.541	46048	LmWeightedSparseScoreKernel<LmKvGeometry<256u, 64u, true>, LmIndexScorePackedView, 32u, 128u, 8u>
+14.420	7823	SparkTpMeshHardwareDirectKernel
+7.396	3312	LmDeltaRuleChunkKernel<256u, 128u, 128u, float>
+4.492	5632	LmPerHeadProjectSplitKernel<256u, 512u, 128u, 512u, 0u>
+3.902	46048	LmStreamGemmKernel<LmBf16Format, 64u, 128u, 64u, 32u>
+2.981	28385	memcpy_DtoD
+2.563	46048	LmIndexSelectLocalKernel<512u>
+2.501	286	LmSituMulKernel<256u>
+2.077	21416	SparkTpMeshHardwareDirectHalfKernel
+1.931	15591	LmPassSumKernel
+1.872	180	LmMoeFinalizeKernel<256u>
+1.453	182	LmAttnResMixKernel<256u, 9u>
+1.426	8662	memcpy_HtoD
+1.127	182	LmAttnResScoreKernel<256u>
+1.065	12566	SparkTpMeshScatterStageKernel
+0.922	264	LmAddRowsKernel<256u>
+0.910	1104	K3SplitFusedProjectionsKernel<256u>
+0.900	3312	LmCausalConvTiledKernel<4u, 1u, float, 1u>
+0.851	2208	LmL2NormalisePerHeadKernel<256u, 128u>
+0.799	40848	K3StreamedStateComposeKernel
+0.575	319	LmFusedResidualRmsNormKernel<256u, unsigned short, true>
+0.499	1456	LmOutputGateKernel<256u, false>
+0.494	196	LmTpAccumulateBf16Kernel
+0.434	1104	LmFusedResidualRmsNormKernel<256u, float, false>
+0.428	1104	LmBoundedDecayKernel<256u, 128u>
+0.368	5632	LmLatentShardMergeKernel<256u, 512u>
+0.281	90	LmRouteBuildKernel<256u, 896u>
+0.281	2877	LmIndexSelectMergeKernel<512u>
+0.277	10089	memcpy_DtoH
+0.225	92	LmPassHealthKernel
+0.174	2392	SparkTpMeshHardwareDirectWideKernel
+0.159	91	LmTpF32ToBf16Kernel
+0.092	10048	SparkTpMeshHardwarePublishWideKernel
+0.076	21606	SparkTpMeshHardwarePublishKernel
+0.063	22614	SparkTpMeshHardwarePublishGateKernel
+0.040	17	LmCopyRowsKernel<256u>
