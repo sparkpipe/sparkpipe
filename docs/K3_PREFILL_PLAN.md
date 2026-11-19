@@ -164,15 +164,23 @@ by more than the BF16 peak allows.
   (`StageRunnerStep` in `inference/runner/stage_runner.cu`). The KV the pass
   wrote (latent and index keys, about 2.1 GB a rank at 1M) sits in weightd's
   KV pool, and the KDA state (about 27 MB a rank) in the lane's state pool.
-- The plan: one lane that changes mode around a long prompt. After the
-  streamed prefill each rank frees the pass window and engine (67 GB a node),
-  detaches its capped pack, has weightd reclaim that arena, attaches the
-  pack whole (weightd maps and warms the whole arena, about 22 s from the
-  page cache), captures its decode graphs and answers; before the next long
-  prompt it reverses the steps. The KV and the states never move, so nothing
-  is copied, and a long prompt pays about 25-30 s for the switch. weightd
-  refuses a second attach to an arena with a different pool, which is why
-  the reclaim sits between the two attaches.
+- The mode switch, one lane: a lane whose `streamed_prefill` names
+  `expert_pool_cap_bytes` starts with the whole arena resident and changes
+  its weights around each streamed prefill. Before the pass the runner drops
+  its decode graphs and leases, detaches the pack, has weightd reclaim the
+  cold arena (`RECLAIM_PACK`), attaches it again with the pass cap (an 8 GiB
+  slot pool and a private spine) and re-points the embedding, head and model
+  weights (`rebind`); the model then builds its pass engine for the prefill
+  and frees it after. Back the same way: detach, reclaim, attach whole, warm
+  every expert group (acquire and release, as `weightd_warm --shared`),
+  re-point, and the next decode captures new graphs. The KV pool and the
+  mesh lane have their own weightd connections and the KDA states live in
+  the lane's state pool, so none of them moves; the runner keeps the first
+  attach's mesh mapping, which the device collective registered once.
+- Releasing only the expert chunks of one whole-arena attach would keep every
+  pointer, but weightd maps a whole arena as one allocation and CUDA frees
+  no part of one, so that needs a daemon change and a weightd release; the
+  switch above runs on the deployed weightd.
 - With a second fleet the same split is prefill and decode on different
   nodes: the prefill fleet runs the pass lane and the decode fleet copies
   the sequence's KV and state over the fabric (about 34 GB at 1M, a few

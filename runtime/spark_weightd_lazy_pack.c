@@ -13,11 +13,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
+static SparkStatus lazy_pack_unmap(SparkWeightdLazyPack *pack)
 {
 	SparkStatus status;
-	if ( pack == 0 )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	pack->ready = 0u;
 	if ( pack->worker != 0 )
 	{
@@ -35,6 +33,46 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 		if ( pack->spine_allocation == 0 )
 			pack->spine = 0;
 	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackDetach(SparkWeightdLazyPack *pack,uint64_t timeout_nanoseconds)
+{
+	SparkWeightdDetachResult result;
+	SparkStatus status;
+	if ( pack == 0 || pack->client == 0 || pack->attached.arena_generation == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = lazy_pack_unmap(pack);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&result,0,sizeof(result));
+	status = SparkWeightdClientDetach(pack->client,pack->attached.arena_generation,&result,timeout_nanoseconds);
+	if ( status == SPARK_STATUS_OK && result.status != SPARK_STATUS_OK )
+		status = result.status;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	pack->attached.arena_generation = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackTakeMeshMapping(SparkWeightdLazyPack *pack,void **mapping,uint64_t *bytes)
+{
+	if ( pack == 0 || mapping == 0 || bytes == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*mapping = pack->attached.mesh_mapping;
+	*bytes = pack->attached.mesh_mapping != 0 ? pack->attached.mesh_send_buffer_bytes : 0u;
+	pack->attached.mesh_mapping = 0;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
+{
+	SparkStatus status;
+	if ( pack == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = lazy_pack_unmap(pack);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
 	if ( pack->spine_allocation != 0 )
 	{
 		if ( cudaFree(pack->spine_allocation) != cudaSuccess )
