@@ -228,11 +228,21 @@ by more than the BF16 peak allows.
 
 Measured on 2026-11-18 (runs KP1 traced, KP2 untraced): a 256K cold prompt
 in 592.1 s; a calm 2,048-row wave takes 3.94 s + 1.36 ms per 1K of context,
-and 49% of waves stall by +1.0 s waiting on peers (late rank not identified,
-no weightd transport errors). In a calm wave at 226K rank 0 computes 2.3 s
+and 49% of waves stall by +1.0 s waiting on peers. The late ranks (runs
+KD1-KD3,
+[`qualification/k31_pro/tp16-stalls-20261119/`](../qualification/k31_pro/tp16-stalls-20261119/README.md)):
+the stalls follow the 16,384-token KV checkpoint, where the release writes
+the chain the checkpoint closes to each rank's snapshot store in one burst
+(256 KV pages and the recurrent state, 257 files within half a second), and
+the ranks that arrive late there are Gigabyte boards; the Lenovo, MSI and
+Dell nodes never are. No GPU throttling, host stall or memory pressure goes
+with them. With PR #1949 applied (KD3) the same pages leave about 32 a wave
+instead, no wave stalls, and the 256K prompt takes 520.1 s against 611.3 s
+for the release the same morning. In a calm wave at 226K rank 0 computes 2.3 s
 and spends 1.8 s in collectives; experts run at 19.5 TFLOPS, the index score
 at 29.7, the sparse attend at 13.3, the projections at 41, and AttnRes and
-the other row-wise passes take 0.68 s on every rank. Its levers: the stalls,
+the other row-wise passes take 0.68 s on every rank. Its levers: the
+checkpoint stalls (#1949, measured),
 row-wise work owned per rank, the MLA key gather (#1943), whole experts per
 rank, and the 224-wide routed up-projection that takes the slow GEMM path
 (61 ms a calm wave).
@@ -251,4 +261,5 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
 4. The chunked KDA scan with its comparison; MXFP8 expert activations only
    on your call after a comparison.
 5. Both ports for the weight stream once a pass computes in under 128 s.
-6. The TP16 stalls, for the prompts below the threshold.
+6. The TP16 checkpoint stalls, for the prompts below the threshold: PR #1949
+   removes them (run KD3, 611.3 -> 520.1 s at 256K) and lands with that PR.
