@@ -41,7 +41,7 @@
 #define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
 #define STAGE_SERVING_VERIFY_BUCKETS 4u
 #define STAGE_SERVING_PROGRAM_ID 1u
-#define STAGE_SERVING_BUFFERS 28u
+#define STAGE_SERVING_BUFFERS 30u
 
 typedef struct SparkStageServingState
 {
@@ -87,6 +87,8 @@ typedef struct SparkStageServingState
 	SparkDeviceBuffer seqslot_host;
 	SparkDeviceBuffer target_host;
 	SparkDeviceBuffer seqslot_device;
+	SparkDeviceBuffer fold_host;
+	SparkDeviceBuffer fold_device;
 	SparkDeviceBuffer order_host;
 	SparkDeviceBuffer order_device;
 	SparkDeviceBuffer slots_host;
@@ -922,10 +924,12 @@ static SparkStatus StageServingRecurrentCopy(void *context, uint32_t direction,
 {
 	SparkStageServingState *state = (SparkStageServingState *)context;
 	if ( state == 0 || (queue != 0 && queue != SparkStageRunnerQueue(&state->runner)) ||
-		(direction != SPARK_STAGE_KV_RECURRENT_TO_BUFFER && direction != SPARK_STAGE_KV_RECURRENT_FROM_BUFFER) )
+		(direction != SPARK_STAGE_KV_RECURRENT_TO_BUFFER && direction != SPARK_STAGE_KV_RECURRENT_FROM_BUFFER &&
+		 direction != SPARK_STAGE_KV_RECURRENT_TO_BUFFER_FOLDED) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return SparkStageRunnerRecurrentCopy(&state->runner,
-		direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER ? 1u : 0u,
+		direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER_FOLDED ? SPARK_STAGE_RUNNER_RECURRENT_TO_BUFFER_FOLDED :
+			(direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER ? SPARK_STAGE_RUNNER_RECURRENT_TO_BUFFER : 0u),
 		slot, buffer, bytes, queue);
 }
 
@@ -1136,6 +1140,8 @@ static void StageServingBufferPlan(SparkStageServingState *state, SparkStageServ
 		{ &state->output_tokens, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->tokens_host, SPARK_DEVICE_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
+		{ &state->fold_host, SPARK_DEVICE_SPACE_HOST_PINNED, rows * sizeof(uint32_t) },
+		{ &state->fold_device, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 	};
 	memcpy(plan, plans, sizeof(plans));
 }
@@ -1334,6 +1340,7 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	uint32_t *order = StageServingWords(&state->order_host);
 	uint32_t *slots = StageServingWords(&state->seqslot_host);
 	uint32_t *target = StageServingWords(&state->target_host);
+	uint32_t *fold = StageServingWords(&state->fold_host);
 	uint32_t cursor[SPARK_STAGE_SERVING_MAX_LANES];
 	uint32_t capacity = state->runner_config.max_active_sequence_count;
 	uint32_t lanes = submission->lanes != 0 ? submission->active_sequence_count : rows;
@@ -1349,6 +1356,10 @@ static SparkStatus StageServingGroupRows(SparkStageServingState *state,
 	{
 		slots[lane] = submission->lanes != 0 ? submission->lanes[lane].resident_sequence_slot : lane;
 		target[lane] = submission->lanes != 0 ? submission->lanes[lane].state_target_token_count : 0u;
+		fold[lane] = submission->lanes != 0 && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL &&
+			(submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u &&
+			submission->lanes[lane].cache_publish_token_count + 1u == submission->lanes[lane].context_token_count &&
+			submission->lanes[lane].state_target_token_count == submission->lanes[lane].cache_publish_token_count ? 1u : 0u;
 		if ( slots[lane] >= capacity )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		for ( i = 0u; i < lane; ++i )
@@ -1612,6 +1623,7 @@ static SparkStatus StageServingCopyInputs(SparkStageServingState *state, SparkDe
 		{ &state->runs_device, &state->runs_host, lane_bytes + sizeof(uint32_t) },
 		{ &state->seqslot_device, &state->seqslot_host, lane_bytes },
 		{ &state->order_device, &state->order_host, row_bytes },
+		{ &state->fold_device, &state->fold_host, lane_bytes },
 	};
 	const struct { SparkDeviceBuffer *device; SparkDeviceBuffer *host; } tree_inputs[] =
 	{
@@ -1677,6 +1689,9 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	dispatch->host_positions = StageServingWords(&state->positions_host);
 	dispatch->host_sequence_of_row = StageServingWords(&state->state_host);
 	dispatch->host_state_target = StageServingWords(&state->target_host);
+	dispatch->fold_lanes = (const uint32_t *)StageServingAddress(&state->fold_device);
+	dispatch->host_fold_lanes = StageServingWords(&state->fold_host);
+	dispatch->host_lane_slots = StageServingWords(&state->seqslot_host);
 	if ( state->tree_frame != 0u )
 	{
 		dispatch->tree = 1u;
@@ -2100,7 +2115,8 @@ static void StageServingDescribe(const SparkStageServingModel *model, SparkModel
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
 		(model->speculative_tokens != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION : 0u) |
 		(model->verify_rows != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY : 0u) |
-		(model->tree_slot_grain != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY : 0u);
+		(model->tree_slot_grain != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY : 0u) |
+		(model->prompt_fold != 0u && model->cache_checkpoint_token_count != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD : 0u);
 	descriptor->stage_count = model->tp_degree;
 	descriptor->layer_count = model->layer_count;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;

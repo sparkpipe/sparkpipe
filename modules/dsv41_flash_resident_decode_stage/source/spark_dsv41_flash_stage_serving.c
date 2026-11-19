@@ -78,6 +78,7 @@ static const SparkStageServingModel Dsv41FlashStageServing =
 	.cache_checkpoint_token_count = SPARK_DSV41_FLASH_TP16_CHECKPOINT_TOKENS,
 	.kv_layout = Dsv41FlashServingKvLayout,
 	.collective_sequences = Dsv41FlashServingCollectiveSequences,
+	.prompt_fold = 1u,
 };
 
 const SparkModelServingAdapterInterface *SparkModelServingAdapterGetInterface(void)

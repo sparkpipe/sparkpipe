@@ -489,6 +489,16 @@ struct CudaStage
 	}
 
 	template<class S>
+	static SparkStatus RecurrentFold(S *state, uint32_t slot, void *buffer, void *stream)
+	{
+		(void)state;
+		(void)slot;
+		(void)buffer;
+		(void)stream;
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+
+	template<class S>
 	static uint64_t RecurrentBytes(const S *state)
 	{
 		CudaStageRecurrent parts[CUDA_STAGE_MAX_RECURRENT];
@@ -779,10 +789,12 @@ struct CudaStage
 	static SparkStatus RecurrentCopy(void *model, uint32_t to_buffer, uint32_t slot, void *buffer, uint64_t bytes, void *stream)
 	{
 		using State = typename F::State;
-		const State *state = (const State *)model;
+		State *state = (State *)model;
 		CudaStageRecurrent parts[CUDA_STAGE_MAX_RECURRENT];
 		const uint32_t count = F::RecurrentParts(state, parts);
-		return CudaStageRecurrentCopy(F::Tag(), parts, count, state->slots, to_buffer, slot, buffer, bytes, stream);
+		const SparkStatus status = CudaStageRecurrentCopy(F::Tag(), parts, count, state->slots, to_buffer, slot, buffer, bytes, stream);
+		return status == SPARK_STATUS_OK && to_buffer == SPARK_STAGE_RUNNER_RECURRENT_TO_BUFFER_FOLDED ?
+			F::RecurrentFold(state, slot, buffer, stream) : status;
 	}
 
 	static SparkStatus ResetSlot(void *model, uint32_t slot, void *stream)

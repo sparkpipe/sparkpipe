@@ -1752,13 +1752,14 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 	{
-		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu folded=%llu folded_duplicates=%llu\n",binding->module_tag,
 			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
 			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_spill_queued_count,
 			(unsigned long long)binding->page_cache.checkpoint_persist_count,
 			(unsigned long long)binding->page_cache.state_dropped_unsaved_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
 			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
-			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
+			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops),
+			(unsigned long long)binding->page_cache.folded_publish_count,(unsigned long long)binding->page_cache.folded_duplicate_count);
 		SparkKvPageStoreDestroy(&binding->state_store);
 	}
 	if ( binding->page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
@@ -2531,13 +2532,23 @@ static void SparkStageKvPersistCheckpoints(SparkStageKvBinding *binding,const ui
 			SparkKvPageCachePersistCheckpoint(&binding->page_cache,slots[index]);
 }
 
+static uint32_t SparkStageKvLaneFolds(const SparkModelDriverCacheLane *lane)
+{
+	return((lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED)) ==
+		(SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED) ? 1u : 0u);
+}
+
 static SparkStatus SparkStageKvBindingCopyLanes(SparkStageKvBinding *binding,uint32_t direction,const uint32_t *slots,uint32_t count,SparkDeviceQueue *queue)
 {
-	uint32_t index;
+	uint32_t index,lane_direction;
 	SparkStatus status = SPARK_STATUS_OK;
 	for (index=0u; index<count && status==SPARK_STATUS_OK; index++)
-		status = binding->recurrent.copy(binding->recurrent.context,direction,slots[index],
+	{
+		lane_direction = direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER && SparkStageKvLaneFolds(&binding->lanes[slots[index]].lane) != 0u ?
+			SPARK_STAGE_KV_RECURRENT_TO_BUFFER_FOLDED : direction;
+		status = binding->recurrent.copy(binding->recurrent.context,lane_direction,slots[index],
 			(void *)(uintptr_t)(binding->lane_state.device + SparkStageKvLaneStateOffset(binding,slots[index])),binding->recurrent.lane_bytes,queue);
+	}
 	SPARK_RETURN(status);
 }
 

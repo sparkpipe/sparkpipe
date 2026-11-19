@@ -160,6 +160,47 @@ static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, con
 	}
 }
 
+static __global__ void D41CompressorFoldKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ pieces,
+	const uint32_t *__restrict__ fold_lanes, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ sequence_row_begin,
+	const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot, uint32_t sequences, uint32_t ratio,
+	uint32_t piece_stride_floats, uint32_t width)
+{
+	const uint32_t lane = blockIdx.x;
+	if ( lane >= sequences || fold_lanes[lane] == 0u )
+		return;
+	const uint32_t begin = sequence_row_begin[lane], end = sequence_row_begin[lane + 1u];
+	if ( end < begin + 2u )
+		return;
+	const uint32_t row = sequence_row_indices[end - 2u];
+	if ( (positions[row] + 1u) % ratio == 0u )
+		return;
+	float *piece = pieces + (uint64_t)recurrent_slot[lane] * piece_stride_floats;
+	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
+	{
+		piece[c] = kv[(uint64_t)row * width + c];
+		piece[width + c] = score[(uint64_t)row * width + c];
+	}
+}
+
+static __global__ void D41HistoryFoldKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ recurrent_slot,
+	const int32_t *__restrict__ history, uint32_t history_stride, int32_t *__restrict__ folded, uint32_t folded_stride,
+	const uint32_t *__restrict__ fold_lanes, uint32_t sequences, uint32_t orders)
+{
+	const uint32_t sequence = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( sequence >= sequences || fold_lanes[sequence] == 0u )
+		return;
+	const uint32_t begin = sequence_row_begin[sequence], count = sequence_row_begin[sequence + 1u] - begin;
+	if ( count < 2u )
+		return;
+	const uint32_t into_wave = count - 2u;
+	const uint32_t *lane_rows = sequence_row_indices + begin;
+	const int32_t *carried = history + (uint64_t)recurrent_slot[sequence] * history_stride;
+	int32_t *slot = folded + (uint64_t)recurrent_slot[sequence] * folded_stride;
+	for ( uint32_t shift = 0u; shift < orders; ++shift )
+		slot[shift] = shift <= into_wave ? LmNgramToken(token_map, token_ids[lane_rows[into_wave - shift]]) : carried[shift - into_wave - 1u];
+}
+
 static __global__ void D41CompressedEmitPositionKernel(const uint32_t *__restrict__ positions, uint32_t *__restrict__ bound_position,
 	uint32_t rows, uint32_t ratio)
 {

@@ -269,11 +269,158 @@ static void TestRekeyOntoStatelessEntry(void)
 	free(fixture);
 }
 
+typedef struct FoldCopy
+{
+	SparkKvCacheArena *arena;
+	uint32_t copies;
+}
+FoldCopy;
+
+static SparkStatus FoldCopyPage(void *context,uint32_t source,uint32_t destination)
+{
+	FoldCopy *copy = (FoldCopy *)context;
+	SparkKvCacheBlockView from,to;
+	if ( SparkKvCacheArenaResolveBlock(copy->arena,source,&from) != SPARK_STATUS_OK || SparkKvCacheArenaResolveBlock(copy->arena,destination,&to) != SPARK_STATUS_OK )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	memcpy((void *)to.key_device_address,(const void *)from.key_device_address,RETAIN_PAGE_BYTES);
+	assert(SparkKvCacheArenaUnpinResidentBlock(copy->arena,source) == SPARK_STATUS_OK && SparkKvCacheArenaUnpinResidentBlock(copy->arena,destination) == SPARK_STATUS_OK);
+	copy->copies++;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus FoldCopyRetire(void *context,uint32_t require_all)
+{
+	(void)context;
+	(void)require_all;
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t FoldCopyPins(void *context,uint32_t page)
+{
+	(void)context;
+	(void)page;
+	return(0u);
+}
+
+static SparkStatus FoldCopyDeferFree(void *context,uint32_t page)
+{
+	(void)context;
+	(void)page;
+	return(SPARK_STATUS_NOT_FOUND);
+}
+
+static void FoldLane(SparkModelDriverCacheLane *lane,uint64_t sequence_id,uint32_t slot,uint32_t chain,uint32_t prompt,SparkModelDriverCacheIdentity *blocks)
+{
+	memset(lane,0,sizeof(*lane));
+	lane->sequence_id = sequence_id;
+	lane->request_generation = 1u;
+	lane->step_generation = 1u;
+	lane->resident_sequence_slot = slot;
+	lane->sequence_position = 0u;
+	lane->context_token_count = prompt;
+	lane->publish_token_count = prompt - 1u;
+	lane->flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED;
+	RetainIdentity(&lane->publish_identity,chain,prompt - 1u);
+	RetainIdentity(&blocks[0],chain,RETAIN_BLOCK_TOKENS);
+	lane->block_identity_count = (prompt - 2u) / RETAIN_BLOCK_TOKENS;
+	lane->block_identities = blocks;
+}
+
+static void FoldDecodeLane(SparkModelDriverCacheLane *lane,uint64_t sequence_id,uint32_t slot,uint32_t position)
+{
+	memset(lane,0,sizeof(*lane));
+	lane->sequence_id = sequence_id;
+	lane->request_generation = 1u;
+	lane->step_generation = 2u;
+	lane->resident_sequence_slot = slot;
+	lane->sequence_position = position;
+	lane->context_token_count = position + 1u;
+}
+
+static uint8_t *FoldTokenBytes(RetainFixture *fixture,uint32_t page,uint32_t position)
+{
+	return(fixture->device + (uint64_t)page * RETAIN_PAGE_BYTES + (uint64_t)(position % RETAIN_BLOCK_TOKENS) * (RETAIN_PAGE_BYTES / RETAIN_BLOCK_TOKENS));
+}
+
+static void TestFoldedPublish(void)
+{
+	RetainFixture *fixture = calloc(1u,sizeof(*fixture));
+	FoldCopy copy = {0};
+	SparkKvPageCacheDeviceCopy hook = {FoldCopyPage,FoldCopyRetire,FoldCopyPins,FoldCopyDeferFree,&copy};
+	SparkModelDriverCacheIdentity blocks[2],identity;
+	SparkModelDriverCacheLane lane,next;
+	const uint32_t prompt = 7u,unit = RETAIN_PAGE_BYTES / RETAIN_BLOCK_TOKENS;
+	uint32_t page,clone,terminal;
+	assert(fixture != 0);
+	RetainOpen(fixture,8u,RETAIN_PAGES * RETAIN_BLOCK_TOKENS);
+	copy.arena = &fixture->arena;
+	assert(SparkKvPageCacheAttachDeviceCopy(&fixture->cache,&hook) == SPARK_STATUS_OK);
+	FoldLane(&lane,60u,0u,9u,prompt,blocks);
+	(void)RetainBegin(fixture,&lane);
+	page = fixture->cache.sequences[0].mutable_following_pages[0];
+	memset(FoldTokenBytes(fixture,page,prompt - 1u),0x6a,unit);
+	assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	terminal = fixture->cache.sequences[0].terminal_entry_index;
+	assert(fixture->cache.folded_publish_count == 1u && fixture->cache.folded_duplicate_count == 0u);
+	assert(fixture->cache.sequences[0].folded_token_count == 1u && fixture->cache.sequences[0].next_token_position == prompt &&
+		fixture->cache.sequences[0].mutable_page_count == 0u);
+	assert(fixture->entries[terminal].token_count == prompt - 1u && fixture->entries[terminal].logical_page_index == page);
+	RetainIdentity(&identity,9u,prompt - 1u);
+	assert(SparkKvPageCachePrefixReady(&fixture->cache,&identity,prompt - 1u) == 1u);
+	FoldDecodeLane(&next,60u,0u,prompt);
+	clone = RetainBegin(fixture,&next);
+	assert(clone != page && copy.copies == 1u && fixture->cache.sequences[0].folded_token_count == 0u);
+	assert(memcmp(FoldTokenBytes(fixture,clone,prompt - 1u),FoldTokenBytes(fixture,page,prompt - 1u),unit) == 0 && FoldTokenBytes(fixture,clone,prompt - 1u)[0] == 0x6a);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&next) == SPARK_STATUS_OK && fixture->cache.sequences[0].next_token_position == prompt + 1u);
+	memset(&next,0,sizeof(next));
+	next.sequence_id = 61u;
+	next.request_generation = 1u;
+	next.step_generation = 1u;
+	next.resident_sequence_slot = 1u;
+	next.sequence_position = prompt - 1u;
+	next.context_token_count = prompt;
+	next.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	next.prefix_token_count = prompt - 1u;
+	next.prefix_identity = identity;
+	clone = RetainBegin(fixture,&next);
+	assert(clone != page && copy.copies == 2u && fixture->cache.sequences[1].folded_token_count == 0u);
+	memset(FoldTokenBytes(fixture,clone,prompt - 1u),0x5b,unit);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&next) == SPARK_STATUS_OK && FoldTokenBytes(fixture,page,prompt - 1u)[0] == 0x6a);
+	FoldLane(&lane,62u,2u,9u,prompt,blocks);
+	(void)RetainBegin(fixture,&lane);
+	page = fixture->cache.sequences[2].mutable_following_pages[0];
+	memset(FoldTokenBytes(fixture,page,prompt - 1u),0x7c,unit);
+	assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture->cache.folded_duplicate_count == 1u && fixture->cache.sequences[2].mutable_page_count == 1u &&
+		fixture->cache.sequences[2].mutable_logical_page_index == page && fixture->cache.sequences[2].folded_token_count == 0u);
+	assert(SparkKvPageStoreValidateRecord(&fixture->stores[1],page,fixture->blocks[page].generation) == SPARK_STATUS_NOT_FOUND);
+	FoldDecodeLane(&next,62u,2u,prompt);
+	assert(RetainBegin(fixture,&next) == page && copy.copies == 2u && FoldTokenBytes(fixture,page,prompt - 1u)[0] == 0x7c);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&next) == SPARK_STATUS_OK);
+	FoldLane(&lane,63u,3u,10u,prompt,blocks);
+	lane.flags &= ~SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED;
+	(void)RetainBegin(fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_UNSUPPORTED);
+	assert(SparkKvPageCacheReleaseLane(&fixture->cache,3u,63u) == SPARK_STATUS_OK);
+	FoldLane(&lane,64u,3u,11u,prompt + 2u,blocks);
+	RetainIdentity(&blocks[1],11u,2u * RETAIN_BLOCK_TOKENS);
+	lane.block_identity_count = 2u;
+	(void)RetainBegin(fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_UNSUPPORTED);
+	assert(SparkKvPageCacheReleaseLane(&fixture->cache,3u,64u) == SPARK_STATUS_OK);
+	printf("folded publish: a step that ends one token past its checkpoint publishes the checkpoint with its state, the next step copies the page with that token, a resume at the checkpoint gets its own copy, a repeat keeps its page and drops its record, and a fold without the flag or on a block boundary is refused: ok\n");
+	RetainClose(fixture);
+	free(fixture);
+}
+
 int main(void)
 {
 	TestChainRetention();
 	TestPressureOrder();
 	TestRekeyOntoStatelessEntry();
+	TestFoldedPublish();
 	printf("PASS kv state retention\n");
 	return(0);
 }

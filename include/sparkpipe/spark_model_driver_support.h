@@ -88,6 +88,11 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
          (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u) ||
         ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED) != 0u &&
          (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) == 0u) ||
+        ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED) != 0u &&
+         ((lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY |
+            SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS)) != SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH ||
+          lane->publish_token_count + 1u != lane->context_token_count ||
+          lane->sequence_position + 2u > lane->context_token_count)) ||
         (lane->flags & ~SPARK_MODEL_DRIVER_CACHE_LANE_KNOWN_FLAGS) != 0u)
         return 0u;
     prefix_present = SparkModelDriverCacheIdentityIsPresent(

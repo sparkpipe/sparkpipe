@@ -480,6 +480,15 @@ static void TestSubmissionValidation(void)
 		submission.cache_block_identity_count = 0u;
 		assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	}
+	lane.cache_publish_token_count = lane.state_target_token_count = 64u;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.capability_flags |= SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD;
+	lane.flags |= SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	descriptor.capability_flags &= ~SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD;
+	lane.flags &= ~SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN;
+	lane.cache_publish_token_count = 65u;
+	lane.state_target_token_count = 0u;
 	lane.cache_prefix_token_count = 65u;
 	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
 	lane.cache_prefix_token_count = 63u;

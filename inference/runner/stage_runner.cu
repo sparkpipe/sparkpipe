@@ -2229,6 +2229,8 @@ static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, uint32_t ig
 	identity->host_sequence_of_row = 0;
 	identity->host_slots = 0;
 	identity->host_parent_rows = 0;
+	identity->host_fold_lanes = 0;
+	identity->host_lane_slots = 0;
 	if ( in->graph_key == 2u || ignores_gather != 0u )
 	{
 		identity->gather_context = 0u;
@@ -2644,6 +2646,9 @@ static void StageRunnerModelStep(const SparkStageRunnerState *state, const Spark
 	in->state_saves = dispatch->state_saves;
 	in->host_slots = dispatch->tree != 0u ? dispatch->host_slots : dispatch->host_positions;
 	in->host_parent_rows = dispatch->host_parent_rows;
+	in->fold_lanes = dispatch->fold_lanes;
+	in->host_fold_lanes = dispatch->host_fold_lanes;
+	in->host_lane_slots = dispatch->host_lane_slots;
 	in->graph_key = state->model_interface->graph_key != 0 ? state->model_interface->graph_key(state->model, in) : 1u;
 }
 
