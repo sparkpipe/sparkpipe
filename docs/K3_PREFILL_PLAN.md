@@ -18,7 +18,8 @@ at about 380-400 s on 16 Sparks with the publisher's arithmetic.
 | The same with the staged index kernel | 687.0 s: MLA 393.7, KDA 147.8, MoE 143.7; rank 0's per-layer hidden absmax identical to KQ3 | run KQ4 |
 | Plus row-owned index and attention, 96-head attend | 595.3 s: MLA 303.3, KDA 146.1, MoE 144.1; absmax identical to KQ3 | run KQ6 |
 | Plus the sampled top-2,048 select | 529.8 s: MLA 239.5, KDA 145.1, MoE 143.7; absmax identical to KQ3 | run KQ7 |
-| Plus the tail chunks on the tile kernel, the causal-bound skip, the row-tile value projection | 473.4 s: MLA 184.9, KDA 142.8, MoE 143.9; absmax identical to KQ3 | run KQ10 |
+| Plus the tail chunks on the tile kernel, the causal-bound skip, the row-tile value projection | 473.4 s: MLA 184.9, KDA 142.8, MoE 143.9; absmax identical to KQ3 | run KQ10 (KQ11 475.3 s, identical) |
+| The same with the FP8 index (`index_fp8` 1) | 438.9 s: MLA 148.0, KDA 145.2, MoE 143.8; absmax moves up to 1.9% in pass 1 and up to 15.1% in pass 2 | run KQ12 |
 | K3.1 256K, pass engine | 156.9 s, one pass | run KQ2 |
 | K3.1 256K, 2,048-row TP16 waves | 592.1 s | run KP2 |
 | K3 1M (990,881 tokens), pass engine, dense MLA | 971.6 s | [PERFORMANCE_STATUS.md](../PERFORMANCE_STATUS.md), 2026-10-31 |
@@ -87,6 +88,14 @@ idle gaps to close; kernel time is the lever.
 
 The rows add to 544.5 s; dependent launches let neighbouring kernels overlap.
 
+The FP8 index (run KQ12) takes the MLA layers from 185.3 to 148.0 s and the
+1M prompt to 438.9 s. It is the publisher's engine's arithmetic but changes
+our bits: rank 0's per-layer hidden absmax moves at most 1.9% in pass 1 and
+up to 15.1% at the last layer in pass 2, where rows attend up to 1M keys.
+The absmax is the largest value over 31,232 rows, so one sensitive row can
+move it; whether the answers move needs decode after the pass (section 4),
+so BF16 stays the default.
+
 GB10's MMA peak, measured with `mma.sync` loops free of dependencies at
 2.44 GHz with FP32 accumulation: 123.6 TFLOPS BF16, 247 TFLOPS FP8 (E4M3).
 Against it the index score kernel ran 55 TFLOPS on chunks of mixed lengths
@@ -108,7 +117,7 @@ rounds, so a small round can queue behind bulk writes.
 | --- | --- | --- | ---: | ---: | --- |
 | 1 | Index score: the 32-row tails on the tile kernel; rows and tiles past the causal bound write -inf without loading queries | kept | 140.6 s | 1 and 2 together: 56.4 s | done, run KQ10 |
 | 2 | Value projection on the row-tile kernel, the same FMA order per output | kept | 18.6 s | (with 1) | done, run KQ10 |
-| 3 | FP8 index keys and queries as the publisher's engine (`streamed_prefill.index_fp8`) | the publisher's | about 95 s after 1 | about 40 s | built; an option until compared |
+| 3 | FP8 index keys and queries as the publisher's engine (`streamed_prefill.index_fp8`) | the publisher's | about 95 s after 1 | 36.4 s (KQ12) | an option until the needle and logits compare it |
 | 4 | Stream GEMM toward 85% of the BF16 peak, the same k order | kept | 114.8 s | 25-30 s | next |
 | 5 | Collectives: the weight stream on its own priority class or port; fewer rounds in the KDA shard loop | kept | 64.5 s | 20-40 s | the class or port is a switch QoS decision |
 | 6 | Chunked KDA scan, as vLLM runs it | the publisher's engine | 28.2 s | about 20 s | |
