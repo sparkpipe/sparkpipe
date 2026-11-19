@@ -1936,10 +1936,8 @@ extensions now run as 17-row waves past the 16-row kernel switch, the best
 token is the same at 56 of 56 and 29 of 30 positions and a log-prob moves
 by at most 3.3.
 
-The engine of these runs has no cache stride. With the module's 16,384
-the same ranks run 17,284 / 23,990 / 23,314 tok/s at 8,192 / 32,768 /
-131,072 tokens, because every 16,384-token wave then runs the upper layers
-on its last rows to save a resume point there; that choice is open.
+The engine of these runs has no cache stride, as the module now has (next
+section).
 The module drops the 16,384-token cache stride (2026-11-19). Every
 16,384-token wave ended at a cache point and ran layers 20 to 39 on its
 last rows so that the recurrent state could be saved there: 17,284 /
