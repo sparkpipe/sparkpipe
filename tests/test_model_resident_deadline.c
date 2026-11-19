@@ -283,6 +283,26 @@ static void TestLaneFatalAdapterStopsTheRank(uint32_t flags,SparkStatus expected
 	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
 }
 
+static void TestFailedCompletionChecksLaneFatal(uint32_t flags,SparkStatus expected)
+{
+	TestCompletionFixture fixture;
+	SparkModelServingCompletion delivered = {0};
+	TestCompletionInitialize(&fixture,SPARK_STATUS_IO_ERROR);
+	TestSnapshotFlags = flags;
+	fixture.runtime.adapter_state = &fixture;
+	fixture.runtime.adapter_library.adapter_interface.snapshot = TestFlaggedSnapshot;
+	fixture.route.resident_slots_claimed = 1u;
+	fixture.sequence_slot.active_owner = fixture.route.slot_index + 1u;
+	SparkModelResidentdCompletion(&fixture.runtime,&fixture.completion);
+	assert(fixture.route.state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION && fixture.route.completion.status == (uint32_t)SPARK_STATUS_IO_ERROR);
+	assert(SparkModelResidentdProgressRoute(&fixture.runtime,&fixture.route,0) == expected);
+	assert(fixture.runtime.client.output_count == 1u);
+	assert(SparkModelResidentIpcDecodeCompletion(fixture.output.message,fixture.output.message_bytes,&delivered) == SPARK_STATUS_OK);
+	assert(delivered.status == (uint32_t)SPARK_STATUS_IO_ERROR && delivered.submission_id == 1234u);
+	assert(atomic_load(&fixture.runtime.failed_status) == (uint32_t)expected);
+	assert(pthread_mutex_destroy(&fixture.runtime.mutex) == 0);
+}
+
 static void TestStrayCompletionLeavesRoute(void)
 {
 	TestCompletionFixture fixture;
@@ -592,6 +612,8 @@ int main(void)
 	TestRejectedCompletionFailsRouteWithItsStatus(SPARK_STATUS_OK,1u,SPARK_STATUS_SCHEMA_ERROR);
 	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH,SPARK_STATUS_OK);
 	TestLaneFatalAdapterStopsTheRank(SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL,SPARK_STATUS_INTERNAL_ERROR);
+	TestFailedCompletionChecksLaneFatal(SPARK_MODEL_DRIVER_DEGRADED_EAGER_PATH,SPARK_STATUS_OK);
+	TestFailedCompletionChecksLaneFatal(SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL,SPARK_STATUS_INTERNAL_ERROR);
 	TestStrayCompletionLeavesRoute();
 	TestPersistentSlotRequiresRelease();
 	TestStuckRoutesRepeatWithFifoPosition();

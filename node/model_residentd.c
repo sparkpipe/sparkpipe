@@ -3103,7 +3103,7 @@ static SparkStatus SparkModelResidentdProgressRoute(
 	SparkModelResidentdAdapterBudget *budget)
 {
 	SparkStatus status;
-	uint32_t state,step,submitted;
+	uint32_t state,step,submitted,failed;
 	for (step=0u; step<4u; step++)
 	{
 		pthread_mutex_lock(&runtime->mutex);
@@ -3245,7 +3245,15 @@ static SparkStatus SparkModelResidentdProgressRoute(
 			return(status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY ? SPARK_STATUS_OK : status);
 		}
 		if ( state == SPARK_MODEL_RESIDENTD_ROUTE_READY_COMPLETION )
-			return(SparkModelResidentdFinishRoute(runtime,route));
+		{
+			pthread_mutex_lock(&runtime->mutex);
+			failed = route->active != 0u && route->completion.status != (uint32_t)SPARK_STATUS_OK ? 1u : 0u;
+			pthread_mutex_unlock(&runtime->mutex);
+			status = SparkModelResidentdFinishRoute(runtime,route);
+			if ( status == SPARK_STATUS_OK && failed != 0u )
+				status = SparkModelResidentdCheckLaneFatal(runtime);
+			return(status);
+		}
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -3582,6 +3590,8 @@ static SparkStatus SparkModelResidentdRun(SparkModelResidentdRuntime *runtime)
 			SparkModelResidentdDrainWake(runtime);
 	}
 	failed_status = atomic_load(&runtime->failed_status);
+	if ( failed_status != SPARK_STATUS_OK || status != SPARK_STATUS_OK )
+		(void)SparkModelResidentdWriteClient(runtime);
 	return(failed_status != SPARK_STATUS_OK && status == SPARK_STATUS_OK ? (SparkStatus)failed_status : status);
 }
 
