@@ -112,6 +112,8 @@ rounds, so a small round can queue behind bulk writes.
 | 4 | Stream GEMM toward 85% of the BF16 peak, the same k order | kept | 114.8 s | 25-30 s | next |
 | 5 | Collectives: the weight stream on its own priority class or port; fewer rounds in the KDA shard loop | kept | 64.5 s | 20-40 s | the class or port is a switch QoS decision |
 | 6 | Chunked KDA scan, as vLLM runs it | the publisher's engine | 28.2 s | about 20 s | |
+| 6a | The select's read folded into scoring: a sampled threshold before the score kernel, which then keeps only the scores above it | kept | 22.1 s | about 15 s | |
+| 6b | SiTU into the expert up-projection's epilogue and the MoE finalize into the down-projection, over about 9 GB of expert intermediates a layer | kept, if the finalize keeps its sum order | 17.0 s | about 12 s | |
 | 7 | MXFP8 activations for the routed experts (the README's QAT; the checkpoint's serving config leaves activations unquantized) | lower than the publisher's serving config | 83.9 s | 30-40 s | your call after a comparison |
 | 8 | Both 100G ports for the weight stream: about 64 s a pass instead of 128 | kept | hidden | needed once a pass computes in under 128 s | |
 
