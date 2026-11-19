@@ -2677,8 +2677,7 @@ static uint32_t SparkModelBatchFoldsPrompt(
 	const SparkModelBatchRequestState *request)
 {
 	uint32_t prompt = SparkModelBatchPromptCheckpoint(engine,request);
-	return((engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD) != 0u && prompt != 0u &&
-		prompt % engine->cache_block_token_count != 0u && request->prompt_token_count % engine->cache_block_token_count != 0u ? 1u : 0u);
+	return((engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD) != 0u && prompt != 0u ? 1u : 0u);
 }
 
 static uint32_t SparkModelBatchFoldStep(
@@ -3375,6 +3374,17 @@ static void SparkModelBatchInitializeLane(
 			(work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED : 0u);
 	lane->cache_publish_token_count = publish_token_count;
 	SparkModelBatchFinalizeIdentity(&publish_context,&lane->cache_publish_identity);
+	if ( fold != 0u && publish_token_count % engine->cache_block_token_count == 0u )
+	{
+		engine->scratch_block_identities[engine->scratch_block_identity_count++] = lane->cache_publish_identity;
+		lane->cache_block_identity_count++;
+	}
+	if ( fold != 0u && context_token_count % engine->cache_block_token_count == 0u )
+	{
+		SparkModelBatchDigestTokens(&publish_context,&tokens[publish_token_count],1u);
+		SparkModelBatchFinalizeIdentity(&publish_context,&engine->scratch_block_identities[engine->scratch_block_identity_count++]);
+		lane->cache_block_identity_count++;
+	}
 }
 
 static void SparkModelBatchBuildPrefillRows(

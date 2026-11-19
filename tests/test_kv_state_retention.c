@@ -404,13 +404,84 @@ static void TestFoldedPublish(void)
 	(void)RetainBegin(fixture,&lane);
 	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_UNSUPPORTED);
 	assert(SparkKvPageCacheReleaseLane(&fixture->cache,3u,63u) == SPARK_STATUS_OK);
-	FoldLane(&lane,64u,3u,11u,prompt + 2u,blocks);
-	RetainIdentity(&blocks[1],11u,2u * RETAIN_BLOCK_TOKENS);
+	printf("folded publish: a step that ends one token past its checkpoint publishes the checkpoint with its state, the next step copies the page with that token, a resume at the checkpoint gets its own copy, a repeat keeps its page and drops its record, and a fold without the flag is refused: ok\n");
+	RetainClose(fixture);
+	free(fixture);
+}
+
+static void TestFoldedPublishOnBlockEdges(void)
+{
+	RetainFixture *fixture = calloc(1u,sizeof(*fixture));
+	FoldCopy copy = {0};
+	SparkKvPageCacheDeviceCopy hook = {FoldCopyPage,FoldCopyRetire,FoldCopyPins,FoldCopyDeferFree,&copy};
+	SparkModelDriverCacheIdentity blocks[3],identity,whole;
+	SparkModelDriverCacheLane lane,next;
+	const uint32_t unit = RETAIN_PAGE_BYTES / RETAIN_BLOCK_TOKENS;
+	uint32_t first,last,page,terminal,entry;
+	assert(fixture != 0);
+	RetainOpen(fixture,8u,RETAIN_PAGES * RETAIN_BLOCK_TOKENS);
+	copy.arena = &fixture->arena;
+	assert(SparkKvPageCacheAttachDeviceCopy(&fixture->cache,&hook) == SPARK_STATUS_OK);
+	FoldLane(&lane,70u,0u,21u,2u * RETAIN_BLOCK_TOKENS + 1u,blocks);
+	RetainIdentity(&blocks[1],21u,2u * RETAIN_BLOCK_TOKENS);
 	lane.block_identity_count = 2u;
 	(void)RetainBegin(fixture,&lane);
-	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_UNSUPPORTED);
-	assert(SparkKvPageCacheReleaseLane(&fixture->cache,3u,64u) == SPARK_STATUS_OK);
-	printf("folded publish: a step that ends one token past its checkpoint publishes the checkpoint with its state, the next step copies the page with that token, a resume at the checkpoint gets its own copy, a repeat keeps its page and drops its record, and a fold without the flag or on a block boundary is refused: ok\n");
+	page = fixture->cache.sequences[0].mutable_following_pages[0];
+	last = fixture->cache.sequences[0].mutable_following_pages[1];
+	memset(FoldTokenBytes(fixture,last,2u * RETAIN_BLOCK_TOKENS),0x3d,unit);
+	assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture->cache.folded_publish_count == 1u && copy.copies == 0u);
+	assert(fixture->cache.sequences[0].mutable_page_count == 1u && fixture->cache.sequences[0].mutable_logical_page_index == last &&
+		fixture->cache.sequences[0].mutable_first_token_index == 2u * RETAIN_BLOCK_TOKENS && fixture->cache.sequences[0].folded_token_count == 0u &&
+		fixture->cache.sequences[0].next_token_position == 2u * RETAIN_BLOCK_TOKENS + 1u);
+	RetainIdentity(&identity,21u,2u * RETAIN_BLOCK_TOKENS);
+	assert(SparkKvPageCachePrefixReady(&fixture->cache,&identity,2u * RETAIN_BLOCK_TOKENS) == 1u);
+	FoldDecodeLane(&next,70u,0u,2u * RETAIN_BLOCK_TOKENS + 1u);
+	assert(RetainBegin(fixture,&next) == last && copy.copies == 0u && FoldTokenBytes(fixture,last,2u * RETAIN_BLOCK_TOKENS)[0] == 0x3d);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&next) == SPARK_STATUS_OK);
+	FoldLane(&lane,71u,1u,22u,2u * RETAIN_BLOCK_TOKENS,blocks);
+	RetainIdentity(&blocks[1],22u,2u * RETAIN_BLOCK_TOKENS);
+	lane.block_identity_count = 2u;
+	(void)RetainBegin(fixture,&lane);
+	first = fixture->cache.sequences[1].mutable_logical_page_index;
+	page = fixture->cache.sequences[1].mutable_following_pages[0];
+	memset(FoldTokenBytes(fixture,page,2u * RETAIN_BLOCK_TOKENS - 2u),0x4e,unit);
+	memset(FoldTokenBytes(fixture,page,2u * RETAIN_BLOCK_TOKENS - 1u),0x5f,unit);
+	assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture->cache.folded_publish_count == 2u && copy.copies == 1u);
+	terminal = fixture->cache.sequences[1].terminal_entry_index;
+	assert(fixture->cache.sequences[1].mutable_page_count == 0u && fixture->cache.sequences[1].next_token_position == 2u * RETAIN_BLOCK_TOKENS &&
+		fixture->entries[terminal].token_count == 2u * RETAIN_BLOCK_TOKENS && fixture->entries[terminal].logical_page_index == page &&
+		fixture->entries[fixture->entries[terminal].parent_entry_index].logical_page_index == first);
+	RetainIdentity(&identity,22u,2u * RETAIN_BLOCK_TOKENS - 1u);
+	RetainIdentity(&whole,22u,2u * RETAIN_BLOCK_TOKENS);
+	assert(SparkKvPageCachePrefixReady(&fixture->cache,&identity,2u * RETAIN_BLOCK_TOKENS - 1u) == 1u);
+	assert(SparkKvPageCachePrefixReady(&fixture->cache,&whole,2u * RETAIN_BLOCK_TOKENS) == 0u);
+	for (entry=0u; entry<RETAIN_PAGES; entry++)
+		if ( fixture->entries[entry].flags != 0u && fixture->entries[entry].token_count == 2u * RETAIN_BLOCK_TOKENS - 1u &&
+			memcmp(&fixture->entries[entry].identity,&identity,sizeof(identity)) == 0 )
+			break;
+	assert(entry < RETAIN_PAGES && fixture->entries[entry].logical_page_index != page &&
+		fixture->entries[entry].parent_entry_index == fixture->entries[terminal].parent_entry_index &&
+		memcmp(FoldTokenBytes(fixture,fixture->entries[entry].logical_page_index,2u * RETAIN_BLOCK_TOKENS - 2u),FoldTokenBytes(fixture,page,2u * RETAIN_BLOCK_TOKENS - 2u),unit) == 0);
+	assert(SparkKvPageStoreValidateRecord(&fixture->stores[1],page,fixture->blocks[page].generation) == SPARK_STATUS_NOT_FOUND);
+	FoldDecodeLane(&next,71u,1u,2u * RETAIN_BLOCK_TOKENS);
+	(void)RetainBegin(fixture,&next);
+	assert(copy.copies == 1u && fixture->cache.sequences[1].mutable_first_token_index == 2u * RETAIN_BLOCK_TOKENS);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&next) == SPARK_STATUS_OK);
+	FoldLane(&lane,72u,2u,22u,2u * RETAIN_BLOCK_TOKENS,blocks);
+	RetainIdentity(&blocks[1],22u,2u * RETAIN_BLOCK_TOKENS);
+	lane.block_identity_count = 2u;
+	(void)RetainBegin(fixture,&lane);
+	page = fixture->cache.sequences[2].mutable_following_pages[0];
+	assert(RetainWriteRecord(fixture,page) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	assert(copy.copies == 1u && fixture->cache.folded_duplicate_count == 1u && fixture->cache.sequences[2].mutable_page_count == 0u &&
+		fixture->cache.sequences[2].next_token_position == 2u * RETAIN_BLOCK_TOKENS);
+	assert(SparkKvPageCacheReleaseLane(&fixture->cache,2u,72u) == SPARK_STATUS_OK);
+	printf("folded publish on block edges: a checkpoint that ends a block is that block's entry with its state and the next token stays in the open page; a prompt that ends a block keeps the whole block for itself and gives the checkpoint a copied page that holds the state, and a repeat copies nothing: ok\n");
 	RetainClose(fixture);
 	free(fixture);
 }
@@ -421,6 +492,7 @@ int main(void)
 	TestPressureOrder();
 	TestRekeyOntoStatelessEntry();
 	TestFoldedPublish();
+	TestFoldedPublishOnBlockEdges();
 	printf("PASS kv state retention\n");
 	return(0);
 }

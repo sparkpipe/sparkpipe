@@ -332,7 +332,8 @@ static uint32_t SparkModelServingAdapterLaneBlockIdentities(
 		return(lane->context_token_count / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count));
 	if ( (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u )
 		return(0u);
-	return((lane->context_token_count - 1u) / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count));
+	return((lane->context_token_count - 1u) / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count) +
+		(lane->cache_publish_token_count + 1u == lane->context_token_count && lane->context_token_count % cache_block_token_count == 0u ? 1u : 0u));
 }
 
 static SparkStatus SparkModelServingAdapterValidateRows(
@@ -390,8 +391,6 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 			 submission->lanes[lane].cache_publish_token_count + 1u != submission->lanes[lane].context_token_count ||
 			 submission->lanes[lane].sequence_position + 2u > submission->lanes[lane].context_token_count ||
 			 submission->lanes[lane].state_target_token_count != submission->lanes[lane].cache_publish_token_count ||
-			 submission->lanes[lane].cache_publish_token_count % cache_block_token_count == 0u ||
-			 submission->lanes[lane].context_token_count % cache_block_token_count == 0u ||
 			 (submission->lanes[lane].flags & (SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS)) != SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH &&

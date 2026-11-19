@@ -1164,6 +1164,24 @@ static uint32_t SparkKvPageCacheSpanBlocks(const SparkKvPageCache *cache,const S
 	return((lane->context_token_count - 1u) / block - (uint32_t)lane->sequence_position / block + 1u);
 }
 
+#define SPARK_KV_PAGE_CACHE_FOLD_NONE 0u
+#define SPARK_KV_PAGE_CACHE_FOLD_INSIDE 1u
+#define SPARK_KV_PAGE_CACHE_FOLD_CHECKPOINT_EDGE 2u
+#define SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE 3u
+
+static uint32_t SparkKvPageCacheFoldKind(
+	const SparkKvPageCache *cache,
+	const SparkModelDriverCacheLane *lane)
+{
+	const uint32_t block = cache->kv_cache_arena->block_token_count;
+	if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED) == 0u || lane->publish_token_count == 0u ||
+		lane->publish_token_count + 1u != lane->context_token_count || lane->sequence_position + 2u > lane->context_token_count )
+		return(SPARK_KV_PAGE_CACHE_FOLD_NONE);
+	if ( lane->publish_token_count % block == 0u )
+		return(SPARK_KV_PAGE_CACHE_FOLD_CHECKPOINT_EDGE);
+	return(lane->context_token_count % block == 0u ? SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE : SPARK_KV_PAGE_CACHE_FOLD_INSIDE);
+}
+
 static SparkStatus SparkKvPageCacheAppendMutablePage(
 	const SparkKvPageCache *cache,
 	const SparkKvPageCacheSequence *sequence,
@@ -1711,7 +1729,8 @@ static SparkStatus SparkKvPageCacheBeginLaneInternal(
 	if ( blocks > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES || held > blocks ||
 		((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u ?
 		 lane->block_identity_count != lane->context_token_count / cache->kv_cache_arena->block_token_count - (uint32_t)lane->sequence_position / cache->kv_cache_arena->block_token_count :
-		 (lane->block_identity_count != 0u && lane->block_identity_count + 1u != blocks)) )
+		 (lane->block_identity_count != 0u && lane->block_identity_count + 1u != blocks +
+			(SparkKvPageCacheFoldKind(cache,lane) == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE ? 1u : 0u))) )
 		status = blocks > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_INVALID_ARGUMENT;
 	else if ( blocks > 1u && held < blocks )
 		status = SparkKvPageCacheSpanRoom(cache,sequence,blocks - held);
@@ -2002,12 +2021,104 @@ static uint32_t SparkKvPageCacheFoldable(
 	const SparkModelDriverCacheLane *lane)
 {
 	const uint32_t block = cache->kv_cache_arena->block_token_count;
-	return((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED) != 0u &&
-		lane->publish_token_count != 0u && lane->publish_token_count + 1u == lane->context_token_count &&
-		lane->sequence_position + 2u <= lane->context_token_count &&
-		lane->publish_token_count % block != 0u && lane->context_token_count % block != 0u &&
+	return(SparkKvPageCacheFoldKind(cache,lane) == SPARK_KV_PAGE_CACHE_FOLD_INSIDE &&
 		sequence->mutable_page_count == 1u && sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK &&
 		sequence->mutable_first_token_index == (lane->publish_token_count - 1u) / block * block ? 1u : 0u);
+}
+
+static SparkStatus SparkKvPageCacheFoldCopy(
+	SparkKvPageCache *cache,
+	SparkKvPageCacheSequence *sequence,
+	uint32_t *copy_page_out)
+{
+	const uint32_t last = sequence->mutable_page_count - 1u;
+	uint32_t pages[2],physical,pinned = 0u,copy_page = SPARK_KV_CACHE_NO_BLOCK;
+	SparkStatus status;
+	*copy_page_out = SPARK_KV_CACHE_NO_BLOCK;
+	if ( cache->device_copy.copy_page == 0 || sequence->mutable_page_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	pages[0] = SparkKvPageCacheMutablePage(sequence,last);
+	status = SparkKvPageCacheAcquireLogicalPage(cache,&copy_page);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaRetainBlock(cache->kv_cache_arena,copy_page);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageCacheMarkPageResident(cache,copy_page);
+	pages[1] = copy_page;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvPageCacheEnsureResidentPages(cache,pages,2u);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,pages,1u,&physical);
+	if ( status == SPARK_STATUS_OK )
+	{
+		pinned = 1u;
+		status = SparkKvCacheArenaPinResidentTable(cache->kv_cache_arena,pages + 1u,1u,&physical);
+	}
+	if ( status == SPARK_STATUS_OK )
+		pinned = 2u;
+	if ( status == SPARK_STATUS_OK && cache->state_store != 0 )
+	{
+		status = SparkKvPageStoreRekey(cache->state_store,pages[0],cache->kv_cache_arena->blocks[pages[0]].generation,
+			copy_page,cache->kv_cache_arena->blocks[copy_page].generation);
+		if ( status == SPARK_STATUS_NOT_FOUND )
+			status = SPARK_STATUS_OK;
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = cache->device_copy.copy_page(cache->device_copy.context,pages[0],pages[1]);
+	if ( status == SPARK_STATUS_OK )
+	{
+		*copy_page_out = copy_page;
+		return(SPARK_STATUS_OK);
+	}
+	if ( pinned != 0u )
+		(void)SparkKvCacheArenaUnpinResidentTable(cache->kv_cache_arena,pages,pinned);
+	if ( copy_page != SPARK_KV_CACHE_NO_BLOCK && copy_page < cache->kv_cache_arena->logical_block_count )
+	{
+		if ( cache->kv_cache_arena->blocks[copy_page].reference_count != 0u )
+			(void)SparkKvCacheArenaReleaseBlockReference(cache->kv_cache_arena,copy_page);
+		(void)SparkKvCacheArenaFreeBlock(cache->kv_cache_arena,copy_page);
+	}
+	SPARK_RETURN(status);
+}
+
+static SparkStatus SparkKvPageCachePublishCopiedEntry(
+	SparkKvPageCache *cache,
+	uint32_t parent,
+	uint32_t logical_page_index,
+	const SparkModelDriverCacheLane *lane)
+{
+	SparkKvPageCacheEntry *entry;
+	uint32_t bucket,entry_index;
+	SparkStatus status;
+	status = SparkKvPageCacheAcquireEntry(cache,&entry_index);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( cache->entry_indices_by_logical_page[logical_page_index] != SPARK_KV_PAGE_CACHE_NO_INDEX )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	entry = &cache->entries[entry_index];
+	entry->flags = SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID | ((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != 0u && cache->state_store != 0 ?
+		SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS : 0u);
+	entry->token_count = lane->publish_token_count;
+	entry->page_count = (lane->publish_token_count - 1u) / cache->kv_cache_arena->block_token_count + 1u;
+	entry->parent_entry_index = parent;
+	entry->logical_page_index = logical_page_index;
+	entry->reference_count = 1u;
+	entry->priority = cache->admission_priority;
+	entry->identity = lane->publish_identity;
+	cache->entry_indices_by_logical_page[logical_page_index] = entry_index;
+	cache->epoch++;
+	entry->last_used_epoch = cache->epoch;
+	entry->used_seconds = SparkKvPageCacheWallSeconds();
+	bucket = SparkKvPageCacheBucket(cache,&entry->identity,entry->token_count);
+	entry->hash_next = cache->hash_bucket_heads[bucket];
+	cache->hash_bucket_heads[bucket] = entry_index;
+	if ( parent != SPARK_KV_PAGE_CACHE_NO_INDEX )
+		SparkKvPageCacheReference(cache,parent);
+	SparkKvPageCacheDereference(cache,entry_index);
+	cache->published_page_count++;
+	SparkKvPageCachePublishShared(cache,entry_index);
+	if ( cache->state_store != 0 && (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) == 0u )
+		SPARK_RETURN(SparkKvPageCacheRetainStates(cache,entry_index));
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkKvPageCachePublishFolded(
@@ -2152,6 +2263,7 @@ SparkStatus SparkKvPageCacheCompleteLane(
 	const SparkModelDriverCacheLane *lane)
 {
 	SparkKvPageCacheSequence *sequence;
+	uint32_t fold,copy_page = SPARK_KV_CACHE_NO_BLOCK;
 	SparkStatus status;
 	if ( SparkKvPageCacheIsValid(cache) == 0u ||
 		SparkModelDriverCacheLaneIsValid(lane) == 0u ||
@@ -2165,21 +2277,66 @@ SparkStatus SparkKvPageCacheCompleteLane(
 	if ( lane->context_token_count != lane->sequence_position &&
 		sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	fold = (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u ? SparkKvPageCacheFoldKind(cache,lane) : SPARK_KV_PAGE_CACHE_FOLD_NONE;
+	if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u && lane->publish_token_count != lane->context_token_count &&
+		(fold == SPARK_KV_PAGE_CACHE_FOLD_NONE || lane->context_token_count == lane->sequence_position) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( fold == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE &&
+		(sequence->mutable_page_count == 0u || sequence->mutable_block_identity_count != sequence->mutable_page_count ||
+		 sequence->mutable_first_token_index + sequence->mutable_page_count * cache->kv_cache_arena->block_token_count != lane->context_token_count) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( lane->context_token_count != lane->sequence_position )
 	{
 		status = SparkKvPageCacheMarkMutableWritten(cache,sequence);
+		if ( status == SPARK_STATUS_OK && fold == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE &&
+			SparkKvPageCacheFindEntry(cache,&lane->publish_identity,lane->publish_token_count,0u) == SPARK_KV_PAGE_CACHE_NO_INDEX )
+		{
+			status = SparkKvPageCacheFoldCopy(cache,sequence,&copy_page);
+			if ( status == SPARK_STATUS_UNSUPPORTED )
+				status = SPARK_STATUS_OK;
+		}
+		if ( status == SPARK_STATUS_OK && fold == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE && copy_page == SPARK_KV_CACHE_NO_BLOCK && cache->state_store != 0 )
+		{
+			const uint32_t last = SparkKvPageCacheMutablePage(sequence,sequence->mutable_page_count - 1u);
+			status = SparkKvPageStoreInvalidate(cache->state_store,last,cache->kv_cache_arena->blocks[last].generation);
+			if ( status == SPARK_STATUS_NOT_FOUND )
+				status = SPARK_STATUS_OK;
+		}
 		if ( status == SPARK_STATUS_OK )
-			status = SparkKvPageCacheSealMutable(cache,sequence,sequence->mutable_page_count - 1u);
+			status = SparkKvPageCacheSealMutable(cache,sequence,fold == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE ?
+				sequence->mutable_page_count : sequence->mutable_page_count - 1u);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}
 	if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) != 0u )
 	{
-		if ( lane->publish_token_count != lane->context_token_count && SparkKvPageCacheFoldable(cache,sequence,lane) == 0u )
+		if ( fold == SPARK_KV_PAGE_CACHE_FOLD_INSIDE && SparkKvPageCacheFoldable(cache,sequence,lane) == 0u )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-		status = lane->publish_token_count != lane->context_token_count ?
-			SparkKvPageCachePublishFolded(cache,sequence,lane) :
-			SparkKvPageCachePublishMutable(cache,sequence,lane);
+		if ( fold == SPARK_KV_PAGE_CACHE_FOLD_INSIDE )
+			status = SparkKvPageCachePublishFolded(cache,sequence,lane);
+		else if ( fold == SPARK_KV_PAGE_CACHE_FOLD_CHECKPOINT_EDGE )
+		{
+			status = sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == lane->publish_token_count &&
+				sequence->terminal_entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX &&
+				cache->entries[sequence->terminal_entry_index].token_count == lane->publish_token_count ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+			if ( status == SPARK_STATUS_OK )
+				cache->folded_publish_count++;
+		}
+		else if ( fold == SPARK_KV_PAGE_CACHE_FOLD_CONTEXT_EDGE )
+		{
+			status = SPARK_STATUS_OK;
+			if ( copy_page != SPARK_KV_CACHE_NO_BLOCK )
+				status = SparkKvPageCachePublishCopiedEntry(cache,cache->entries[sequence->terminal_entry_index].parent_entry_index,copy_page,lane);
+			if ( status == SPARK_STATUS_OK )
+			{
+				if ( copy_page != SPARK_KV_CACHE_NO_BLOCK )
+					cache->folded_publish_count++;
+				else
+					cache->folded_duplicate_count++;
+			}
+		}
+		else
+			status = SparkKvPageCachePublishMutable(cache,sequence,lane);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_RETURN(status);
 	}

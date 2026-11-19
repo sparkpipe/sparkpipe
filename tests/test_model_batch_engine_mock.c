@@ -2772,7 +2772,7 @@ static void TestScenarioPromptFold(const SparkModelResidentDeployment *deploymen
 {
 	static const uint32_t expected_spans[3] = {8u,4u,6u},expected_ends[3] = {8u,12u,17u},expected_stateful[3] = {0u,1u,1u};
 	static const uint32_t expected_targets[3] = {12u,12u,17u};
-	static const uint32_t aligned_end_spans[4] = {8u,4u,7u,1u},aligned_before_spans[4] = {8u,4u,4u,1u};
+	static const uint32_t aligned_end_spans[3] = {8u,4u,8u},aligned_before_spans[3] = {8u,4u,5u};
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelServingLane lane = {0};
@@ -2810,13 +2810,30 @@ static void TestScenarioPromptFold(const SparkModelResidentDeployment *deploymen
 	TestSubmitPrompt(engine,3u,1692u,1u,ends_at_block,20u);
 	TestDriveUntilTerminal(engine,&state,3u,800u);
 	count = TestPrefillSpans(3u,20u,spans,8u);
-	CHECK(count == 4u && memcmp(spans,aligned_end_spans,sizeof(aligned_end_spans)) == 0,"prompt fold: a prompt that ends on a block boundary keeps the one-row last wave");
+	CHECK(count == 3u && memcmp(spans,aligned_end_spans,sizeof(aligned_end_spans)) == 0,"prompt fold: a prompt that ends on a block boundary folds its last token too");
+	count = TestPrefillPublishes(3u,20u,ends,stateful,8u);
+	CHECK(count == 3u && ends[2] == 19u && stateful[2] != 0u,"prompt fold: a prompt that ends on a block boundary publishes its checkpoint one token before the end");
+	for (index=0u, folded = 0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+		folded += lane.request_id == 3u && lane.context_token_count == 20u && lane.cache_publish_token_count == 19u && lane.cache_block_identity_count == 2u ? 1u : 0u;
+	CHECK(folded == 1u,"prompt fold: the lane also names the full block that ends the prompt");
 	TestSubmitPrompt(engine,4u,1693u,1u,before_block,17u);
 	TestDriveUntilTerminal(engine,&state,4u,800u);
 	count = TestPrefillSpans(4u,17u,spans,8u);
-	CHECK(count == 4u && memcmp(spans,aligned_before_spans,sizeof(aligned_before_spans)) == 0,"prompt fold: a prompt whose checkpoint lands on a block boundary keeps the one-row last wave");
+	CHECK(count == 3u && memcmp(spans,aligned_before_spans,sizeof(aligned_before_spans)) == 0,"prompt fold: a prompt whose checkpoint lands on a block boundary folds its last token too");
+	count = TestPrefillPublishes(4u,17u,ends,stateful,8u);
+	CHECK(count == 3u && ends[2] == 16u && stateful[2] != 0u,"prompt fold: a checkpoint on a block boundary is published as that block, with state");
+	TestSubmitPrompt(engine,5u,1694u,1u,ends_at_block,20u);
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 19u && lane.sequence_position == 19u,
+		"prompt fold: a repeat of a block-aligned prompt resumes one token before its end");
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	TestSubmitPrompt(engine,6u,1695u,1u,before_block,17u);
+	CHECK(TestWaitFirstRequestLane(engine,6u,&lane) != 0u && lane.cache_prefix_token_count == 16u && lane.sequence_position == 16u,
+		"prompt fold: a repeat whose checkpoint is block-aligned resumes there");
+	TestDriveUntilTerminal(engine,&state,6u,800u);
 	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u &&
-		state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u,"prompt fold: every request completes");
+		state.error_events[5] == 0u && state.error_events[6] == 0u &&
+		state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u &&
+		state.completed_events[5] == 1u && state.completed_events[6] == 1u,"prompt fold: every request completes");
 	SparkModelBatchEngineDestroy(engine);
 }
 

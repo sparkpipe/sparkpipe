@@ -2144,6 +2144,17 @@ static uint32_t SparkStageKvTerminalMutablePage(const SparkKvPageCacheSequence *
 	return(sequence->mutable_page_count <= 1u ? sequence->mutable_logical_page_index : sequence->mutable_following_pages[sequence->mutable_page_count - 2u]);
 }
 
+static uint32_t SparkStageKvPublishPage(const SparkStageKvBinding *binding,const SparkKvPageCacheSequence *sequence,const SparkModelDriverCacheLane *lane)
+{
+	uint32_t index;
+	if ( sequence->mutable_page_count == 0u || lane->publish_token_count == 0u || lane->publish_token_count - 1u < sequence->mutable_first_token_index )
+		return(SparkStageKvTerminalMutablePage(sequence));
+	index = (lane->publish_token_count - 1u) / binding->block_token_count - sequence->mutable_first_token_index / binding->block_token_count;
+	if ( index >= sequence->mutable_page_count )
+		return(SparkStageKvTerminalMutablePage(sequence));
+	return(index == 0u ? sequence->mutable_logical_page_index : sequence->mutable_following_pages[index - 1u]);
+}
+
 static void SparkStageKvClearSlotStates(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t count,uint8_t mask)
 {
 	uint32_t index;
@@ -2366,7 +2377,7 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 		}
 		if ( SparkStageKvLaneKeepsState(owner->lane.flags) == 0u )
 			continue;
-		page = SparkStageKvTerminalMutablePage(&binding->page_cache.sequences[slot]);
+		page = SparkStageKvPublishPage(binding,&binding->page_cache.sequences[slot],&owner->lane);
 		if ( page >= binding->logical_page_count )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		jobs[count++] = (SparkStageKvStateJob){.slot=slot,.page=page,.generation=binding->blocks[page].generation};
