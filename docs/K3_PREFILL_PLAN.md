@@ -149,12 +149,24 @@ by more than the BF16 peak allows.
 - The decode step after a pass aborts today: the pass lane caps the expert
   pool at 8 GiB to make room for its window and engine, and the runner
   refuses a decode step until every expert group is resident
-  (`StageRunnerStep` in `inference/runner/stage_runner.cu`). So the pass
-  lane prefills and a full-pool lane decodes. The hand-off copies the
-  sequence's KV (latent and index keys, about 2.1 GB a rank at 1M) and its
-  KDA state (about 27 MB a rank), under a second on the 100G fabric. The
-  other way is one lane that frees its pass buffers after the prefill and
-  warms the full pool again (about 90 GB a node from the page cache or NVMe).
+  (`StageRunnerStep` in `inference/runner/stage_runner.cu`). The KV the pass
+  wrote (latent and index keys, about 2.1 GB a rank at 1M) sits in weightd's
+  KV pool, and the KDA state (about 27 MB a rank) in the lane's state pool.
+- The plan: one lane that changes mode around a long prompt. After the
+  streamed prefill each rank frees the pass window and engine (67 GB a node),
+  detaches its capped pack, has weightd reclaim that arena, attaches the
+  pack whole (weightd maps and warms the whole arena, about 22 s from the
+  page cache), captures its decode graphs and answers; before the next long
+  prompt it reverses the steps. The KV and the states never move, so nothing
+  is copied, and a long prompt pays about 25-30 s for the switch. weightd
+  refuses a second attach to an arena with a different pool, which is why
+  the reclaim sits between the two attaches.
+- With a second fleet the same split is prefill and decode on different
+  nodes: the prefill fleet runs the pass lane and the decode fleet copies
+  the sequence's KV and state over the fabric (about 34 GB at 1M, a few
+  seconds), with no switch on either side.
+- The hand-off is also what lets a needle be answered after a pass, the
+  check the FP8 index and every other change of bits needs before it is on.
 - Where the pass engine wins: a pass streams about 1.3 TB of expert weights
   a node, 128 s today, whatever the prompt. Waves take about 128 s for 64K
   tokens, so the threshold is about 64K now and about 32K after lever 4. On
@@ -176,12 +188,15 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
 
 ## 6. Order of work
 
-1. Lever 1 on the pass engine: the exact BF16 index tile kernel and the fused
-   top 2,048 first (bit-for-bit tests against `LmWeightedSparseScoreKernel`
-   and the current selection), then rows-owned scoring and attention in
-   `K3StreamedMlaNode`, measured on a 256K and a 1M prompt.
-2. The serving hand-off (section 4), so prompts above the threshold take the
-   pass engine.
-3. Levers 2, 3 and 4, each measured, each change of bits with its
-   comparison; the FP8 index after its comparison.
-4. The TP16 stalls, for the prompts below the threshold.
+1. Done: the exact index steps (runs KQ4-KQ9) and the FP8 index as an option
+   (run KQ10).
+2. The serving hand-off (section 4), so a long prompt is answered and the
+   needle and the logits can compare the FP8 index with BF16.
+3. Exact levers by size: the stream GEMM toward the BF16 peak, the
+   collectives (with a decision on the weight stream's class or port), the
+   select folded into the score kernel, the SiTU and MoE finalize passes
+   folded into the expert kernels.
+4. The chunked KDA scan with its comparison; MXFP8 expert activations only
+   on your call after a comparison.
+5. Both ports for the weight stream once a pass computes in under 128 s.
+6. The TP16 stalls, for the prompts below the threshold.
