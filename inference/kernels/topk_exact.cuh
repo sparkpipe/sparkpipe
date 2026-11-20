@@ -238,7 +238,7 @@ static __device__ __forceinline__ void LmTopkWideSort(T *values, uint32_t padded
 		}
 }
 
-__global__ __launch_bounds__(LM_TOPK_WIDE_THREADS)
+static __global__ __launch_bounds__(LM_TOPK_WIDE_THREADS)
 void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
 {
 	__shared__ uint32_t histogram[LM_TOPK_WIDE_BUCKETS];
