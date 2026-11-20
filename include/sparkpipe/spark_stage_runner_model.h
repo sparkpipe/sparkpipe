@@ -74,9 +74,6 @@ typedef struct SparkStageRunnerStep
 	const uint32_t *state_saves;
 	const uint32_t *host_slots;
 	const uint32_t *host_parent_rows;
-	const uint32_t *fold_lanes;
-	const uint32_t *host_fold_lanes;
-	const uint32_t *host_lane_slots;
 } SparkStageRunnerStep;
 
 typedef struct SparkStageRunnerModelGeometry

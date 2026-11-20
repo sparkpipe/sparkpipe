@@ -1779,14 +1779,13 @@ void SparkStageKvBindingDestroy(SparkStageKvBinding *binding)
 	}
 	if ( binding->state_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
 	{
-		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu folded=%llu folded_duplicates=%llu\n",binding->module_tag,
+		fprintf(stderr,"%s kv binding states records=%u slots=%u superseded=%llu pressure_demoted=%llu spill_queued=%llu checkpoint_persists=%llu dropped_unsaved=%llu rekeyed=%llu pinned_skips=%llu dedup_lost=%llu promoted=%llu staged_drops=%llu\n",binding->module_tag,
 			binding->state_store.backing_page_count,binding->state_slot_count,(unsigned long long)binding->page_cache.state_superseded_count,
 			(unsigned long long)binding->page_cache.state_pressure_demoted_count,(unsigned long long)binding->page_cache.state_spill_queued_count,
 			(unsigned long long)binding->page_cache.checkpoint_persist_count,
 			(unsigned long long)binding->page_cache.state_dropped_unsaved_count,(unsigned long long)binding->page_cache.state_rekeyed_count,
 			(unsigned long long)binding->page_cache.state_pinned_skip_count,(unsigned long long)binding->page_cache.stateful_dedup_lost_count,
-			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops),
-			(unsigned long long)binding->page_cache.folded_publish_count,(unsigned long long)binding->page_cache.folded_duplicate_count);
+			(unsigned long long)binding->page_cache.state_promoted_count,(unsigned long long)atomic_load(&binding->recurrent_staged_drops));
 		SparkKvPageStoreDestroy(&binding->state_store);
 	}
 	if ( binding->page_store.abi_version == SPARK_KV_PAGE_STORE_ABI_VERSION )
@@ -2172,17 +2171,6 @@ static uint32_t SparkStageKvTerminalMutablePage(const SparkKvPageCacheSequence *
 	return(sequence->mutable_page_count <= 1u ? sequence->mutable_logical_page_index : sequence->mutable_following_pages[sequence->mutable_page_count - 2u]);
 }
 
-static uint32_t SparkStageKvPublishPage(const SparkStageKvBinding *binding,const SparkKvPageCacheSequence *sequence,const SparkModelDriverCacheLane *lane)
-{
-	uint32_t index;
-	if ( sequence->mutable_page_count == 0u || lane->publish_token_count == 0u || lane->publish_token_count - 1u < sequence->mutable_first_token_index )
-		return(SparkStageKvTerminalMutablePage(sequence));
-	index = (lane->publish_token_count - 1u) / binding->block_token_count - sequence->mutable_first_token_index / binding->block_token_count;
-	if ( index >= sequence->mutable_page_count )
-		return(SparkStageKvTerminalMutablePage(sequence));
-	return(index == 0u ? sequence->mutable_logical_page_index : sequence->mutable_following_pages[index - 1u]);
-}
-
 static void SparkStageKvClearSlotStates(SparkStageKvBinding *binding,const uint32_t *slots,uint32_t count,uint8_t mask)
 {
 	uint32_t index;
@@ -2405,7 +2393,7 @@ static SparkStatus SparkStageKvCollectWrites(SparkStageKvBinding *binding,const 
 		}
 		if ( SparkStageKvLaneKeepsState(owner->lane.flags) == 0u )
 			continue;
-		page = SparkStageKvPublishPage(binding,&binding->page_cache.sequences[slot],&owner->lane);
+		page = SparkStageKvTerminalMutablePage(&binding->page_cache.sequences[slot]);
 		if ( page >= binding->logical_page_count )
 			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 		jobs[count++] = (SparkStageKvStateJob){.slot=slot,.page=page,.generation=binding->blocks[page].generation};
@@ -2571,23 +2559,13 @@ static void SparkStageKvPersistCheckpoints(SparkStageKvBinding *binding,const ui
 			SparkKvPageCachePersistCheckpoint(&binding->page_cache,slots[index]);
 }
 
-static uint32_t SparkStageKvLaneFolds(const SparkModelDriverCacheLane *lane)
-{
-	return((lane->flags & (SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED)) ==
-		(SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_FOLDED) ? 1u : 0u);
-}
-
 static SparkStatus SparkStageKvBindingCopyLanes(SparkStageKvBinding *binding,uint32_t direction,const uint32_t *slots,uint32_t count,SparkDeviceQueue *queue)
 {
-	uint32_t index,lane_direction;
+	uint32_t index;
 	SparkStatus status = SPARK_STATUS_OK;
 	for (index=0u; index<count && status==SPARK_STATUS_OK; index++)
-	{
-		lane_direction = direction == SPARK_STAGE_KV_RECURRENT_TO_BUFFER && SparkStageKvLaneFolds(&binding->lanes[slots[index]].lane) != 0u ?
-			SPARK_STAGE_KV_RECURRENT_TO_BUFFER_FOLDED : direction;
-		status = binding->recurrent.copy(binding->recurrent.context,lane_direction,slots[index],
+		status = binding->recurrent.copy(binding->recurrent.context,direction,slots[index],
 			(void *)(uintptr_t)(binding->lane_state.device + SparkStageKvLaneStateOffset(binding,slots[index])),binding->recurrent.lane_bytes,queue);
-	}
 	SPARK_RETURN(status);
 }
 
