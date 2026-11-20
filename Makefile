@@ -1879,8 +1879,8 @@ build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 build/libdsv41_flash_kernels.so: tests/dsv41_flash_kernel_lib.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Xcompiler -fPIC -shared $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP libdsv41_flash_kernels (no nvcc on this host)"; fi
 
-build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
+build/test_dsv41_flash_layer: tests/test_dsv41_flash_layer.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh tests/cuda/dsv41_flash_hc_reference.cuh inference/kernels/dtype.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_layer (no nvcc on this host)"; fi
 
 build/test_dsv41_flash_kernels: tests/test_dsv41_flash_kernels.cu model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh inference/kernels/topk_exact.cuh inference/kernels/index_shard.cuh include/sparkpipe/spark_kv_shard.h $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_kernels (no nvcc on this host)"; fi

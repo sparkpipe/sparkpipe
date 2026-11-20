@@ -193,7 +193,8 @@ static uint64_t Run(void)
 			D41ActAssembleQdqKernel<<<D41ItemGrid(INTER / THREADS, routes), THREADS>>>(received, act, SLICE, INTER, stride, routes, CODES);
 			REQUIRE(Experts(slice_down[rank], act, slice_out, offsets, source, EXPERTS, rows, routes, 1u, INTER, HIDDEN_SLICE) == LM_LAUNCH_OK);
 			D41FinalizeSliceKernel<<<dim3((HIDDEN_SLICE + THREADS - 1u) / THREADS, rows), THREADS>>>(slice_out, received, global, packed_row,
-				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * ROUTE_ELEMENTS);
+				final_slices + (uint64_t)rank * rows * HIDDEN_SLICE, TOPK, LOCAL, DEGREE, HIDDEN_SLICE, stride, (uint64_t)routes * ROUTE_ELEMENTS,
+				(const uint16_t *)0);
 		}
 		D41SliceGatherKernel<<<dim3(HIDDEN / THREADS, rows), THREADS>>>(final_slices, candidate, rows, HIDDEN_SLICE, DEGREE);
 		CUDA(cudaDeviceSynchronize());
