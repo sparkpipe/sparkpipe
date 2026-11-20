@@ -2672,25 +2672,6 @@ static uint32_t SparkModelBatchPromptCheckpoint(
 	return(request->prompt_token_count - 1u);
 }
 
-static uint32_t SparkModelBatchFoldsPrompt(
-	const SparkModelBatchEngine *engine,
-	const SparkModelBatchRequestState *request)
-{
-	uint32_t prompt = SparkModelBatchPromptCheckpoint(engine,request);
-	return((engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PROMPT_FOLD) != 0u && prompt != 0u ? 1u : 0u);
-}
-
-static uint32_t SparkModelBatchFoldStep(
-	const SparkModelBatchEngine *engine,
-	const SparkModelBatchRequestState *request,
-	uint64_t sequence_position,
-	uint32_t context_token_count,
-	uint32_t work_kind)
-{
-	return(work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && context_token_count == request->prompt_token_count &&
-		sequence_position + 2u <= (uint64_t)context_token_count && SparkModelBatchFoldsPrompt(engine,request) != 0u ? 1u : 0u);
-}
-
 static uint32_t SparkModelBatchNextCachePoint(const SparkModelBatchRequestState *request,uint32_t after)
 {
 	for (uint32_t point=0u; point<request->cache_point_count; point++)
@@ -2743,7 +2724,7 @@ static uint32_t SparkModelBatchPrefillSpan(
 		uint32_t computed = request->computed_prompt_token_count,checkpoint = engine->adapter_descriptor->cache_checkpoint_token_count;
 		uint32_t prompt_checkpoint = SparkModelBatchPromptCheckpoint(engine,request),next = (computed / checkpoint + 1u) * checkpoint;
 		uint32_t declared = SparkModelBatchNextCachePoint(request,computed);
-		if ( prompt_checkpoint > computed && prompt_checkpoint < computed + span && SparkModelBatchFoldsPrompt(engine,request) == 0u )
+		if ( prompt_checkpoint > computed && prompt_checkpoint < computed + span )
 			span = prompt_checkpoint - computed;
 		if ( declared != 0u && declared < computed + span )
 			span = declared - computed;
@@ -3317,7 +3298,7 @@ static void SparkModelBatchInitializeLane(
 {
 	SparkModelBatchRequestState *request;
 	SparkSha256Context publish_context;
-	uint32_t publish_token_count,digested,boundary,fold;
+	uint32_t publish_token_count,digested,boundary;
 	uint32_t *tokens;
 	request = &engine->requests[request_slot];
 	memset(lane,0,sizeof(*lane));
@@ -3328,8 +3309,7 @@ static void SparkModelBatchInitializeLane(
 	lane->sequence_position = sequence_position;
 	lane->resident_sequence_slot = request->resident_sequence_slot;
 	lane->context_token_count = context_token_count;
-	fold = SparkModelBatchFoldStep(engine,request,sequence_position,context_token_count,work_kind);
-	lane->state_target_token_count = fold != 0u ? context_token_count - 1u : SparkModelBatchStateTarget(engine,request,context_token_count,work_kind);
+	lane->state_target_token_count = SparkModelBatchStateTarget(engine,request,context_token_count,work_kind);
 	lane->input_token_id = input_token_id;
 	lane->flags = flags;
 	lane->cache_block_identity_first = engine->scratch_block_identity_count;
@@ -3353,7 +3333,7 @@ static void SparkModelBatchInitializeLane(
 			context_token_count == SparkModelBatchPromptCheckpoint(engine,request) || context_token_count == request->defer_end)) &&
 		!(work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && request->generated_token_count + 1u == request->output_token_budget) )
 		return;
-	publish_token_count = fold != 0u ? context_token_count - 1u : context_token_count;
+	publish_token_count = context_token_count;
 	if ( publish_token_count <= request->cache_published_token_count )
 		return;
 	publish_context = request->cache_published_digest_context;
@@ -3374,17 +3354,6 @@ static void SparkModelBatchInitializeLane(
 			(work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL ? SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED : 0u);
 	lane->cache_publish_token_count = publish_token_count;
 	SparkModelBatchFinalizeIdentity(&publish_context,&lane->cache_publish_identity);
-	if ( fold != 0u && publish_token_count % engine->cache_block_token_count == 0u )
-	{
-		engine->scratch_block_identities[engine->scratch_block_identity_count++] = lane->cache_publish_identity;
-		lane->cache_block_identity_count++;
-	}
-	if ( fold != 0u && context_token_count % engine->cache_block_token_count == 0u )
-	{
-		SparkModelBatchDigestTokens(&publish_context,&tokens[publish_token_count],1u);
-		SparkModelBatchFinalizeIdentity(&publish_context,&engine->scratch_block_identities[engine->scratch_block_identity_count++]);
-		lane->cache_block_identity_count++;
-	}
 }
 
 static void SparkModelBatchBuildPrefillRows(
