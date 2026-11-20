@@ -1998,6 +1998,33 @@ earlier prompt or reply ended and at the cache points a request declares;
 it no longer resumes at a 16,384-token mark inside a prompt it shares only
 in part.
 
+### Three pieces in flight, on the fleet (2026-11-20)
+
+Release c2b714343 put the four-slot ring on the fleet (weightd
+351c25b8d10b3326, IPC ABI 17). This module's fused round keeps three pieces
+in flight (`SPARK_WEIGHTD_MESH_PIPELINE_DEPTH`): a rank publishes piece k
+once it has read piece k-3 from its peers. The two-slot ring made it wait
+for piece k-1.
+
+The comparison used one tree: main c2b714343 with the prompt fold and the
+multi-row spread. Both arms used the same hub engine (no cache stride). The
+only difference was the rank adapter's depth. Each arm ran three times,
+alternating, and the table shows the mean, in tok/s:
+
+| | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| one piece in flight | 17,629 | 25,529 | 27,451 |
+| three pieces in flight | 18,294 | 27,795 | 30,005 |
+| gain | +3.8% | +8.9% | +9.3% |
+
+The answer hash was the same in all six runs. The gain is about four times
+the trace's estimate. That estimate counted only the combine kernel each
+round idled. A deeper ring also lets a rank fall up to three pieces behind
+without stalling its peers, which plausibly absorbs part of each node's
+50 Hz L2 windows; this run did not measure that part on its own. The arm
+with one piece in flight ran about 6% under this receipt's ABI-16 fold
+figures at 32K and 131K (27,067 / 29,579), and the cause is not known yet.
+
 Decode on the sixteen ranks (2026-11-19). One stream of 96-token prompts
 generating 256 tokens takes 25.2 to 25.7 ms a token (about 39 tok/s; the
 four-Spark reference reports 31.79 ms). A trace of ranks 0 and 8
