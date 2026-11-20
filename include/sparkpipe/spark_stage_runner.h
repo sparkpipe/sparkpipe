@@ -10,9 +10,6 @@
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 
-#define SPARK_STAGE_RUNNER_RECURRENT_TO_BUFFER 1u
-#define SPARK_STAGE_RUNNER_RECURRENT_TO_BUFFER_FOLDED 2u
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -155,9 +152,6 @@ typedef struct SparkStageRunnerDispatch
 	const uint32_t *state_saves;
 	const uint32_t *host_slots;
 	const uint32_t *host_parent_rows;
-	const uint32_t *fold_lanes;
-	const uint32_t *host_fold_lanes;
-	const uint32_t *host_lane_slots;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv

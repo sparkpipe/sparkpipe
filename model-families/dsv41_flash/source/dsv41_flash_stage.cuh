@@ -355,8 +355,8 @@ struct D41ModelState : CudaStageState
 	uint32_t select_rows;
 	uint16_t *wo_a_group;
 	uint32_t shared_first, shared_width, moe_whole;
-	uint8_t *recurrent, *fold_pieces;
-	uint64_t ring_bytes, compressor_bytes, history_bytes, recurrent_bytes, fold_piece_bytes;
+	uint8_t *recurrent;
+	uint64_t ring_bytes, compressor_bytes, history_bytes, recurrent_bytes;
 	LmKvAccessError *host_error;
 	LmKvShardView latent_views[4], index_views[4];
 	FILE *dump;
@@ -725,11 +725,6 @@ static SparkStatus D41EngramAheadBegin(D41ModelState *state, const SparkStageRun
 
 static void D41NgramHistory(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
 {
-	if ( step->fold_lanes != 0 && step->commit != 0u )
-		D41HistoryFoldKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
-			step->sequence_row_indices, step->recurrent_index, (const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes),
-			(uint32_t)(state->recurrent_bytes / sizeof(int32_t)), (int32_t *)(state->fold_pieces + state->compressor_bytes),
-			(uint32_t)(state->fold_piece_bytes / sizeof(int32_t)), step->fold_lanes, step->sequences, D41_ENGRAM_ORDERS);
 	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
@@ -900,10 +895,6 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 	D41CompressorRowsKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, state->c_latent, state->emit_row,
 		compressor_state, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 		step->recurrent_index, ratio, state_stride, D41_HEAD_DIM);
-	if ( ratio > 1u && step->fold_lanes != 0 && step->commit != 0u )
-		D41CompressorFoldKernel<<<step->sequences, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score,
-			(float *)state->fold_pieces + (uint64_t)cache * 2u * D41_HEAD_DIM, step->fold_lanes, step->positions, step->sequence_row_begin,
-			step->sequence_row_indices, step->recurrent_index, step->sequences, ratio, (uint32_t)(state->fold_piece_bytes / sizeof(float)), D41_HEAD_DIM);
 	if ( ratio > 1u && step->commit == 0u )
 	{
 		if ( rows > D41_VERIFY_ROWS || cache >= D41_PAIR_CACHES )
@@ -2367,11 +2358,10 @@ static SparkStatus D41StepReach(D41ModelState *state, const SparkStageRunnerStep
 	state->step_ratio2_stride = state->step_ratio2_stride > D41_INDEX_TOPK ? state->step_ratio2_stride : D41_INDEX_TOPK;
 	state->step_ratio2_stride = state->step_ratio2_stride < state->step_score_stride ? state->step_ratio2_stride : state->step_score_stride;
 	state->step_blocks = state->candidate_blocks != 0u && reach > D41_CANDIDATE_ROWS ? 1u : 0u;
-	const uint32_t folded = step->host_fold_lanes != 0 && step->host_fold_lanes[0] != 0u ? 1u : 0u;
 	if ( uncaptured != 0u && contiguous != 0u && step->sequences == 1u && step->rows > D41_TAIL_MIN_ROWS && step->last_rows_only != 0u &&
-		step->every_row_hidden == 0u && step->host_state_target != 0 && step->host_state_target[0] + folded >= reach )
+		step->every_row_hidden == 0u && step->host_state_target != 0 && step->host_state_target[0] >= reach )
 	{
-		state->tail_target = step->host_state_target[0] + folded;
+		state->tail_target = step->host_state_target[0];
 		state->tail_first_position = step->host_positions[0];
 	}
 	if ( !D41_WHOLE && step->host_positions != 0 && step->sequences == 1u && step->rows > SPARK_STAGE_RUNNER_GRAPH_ROWS &&
@@ -2500,23 +2490,6 @@ struct D41Cuda : CudaStage<D41Cuda>
 	{
 		parts[0] = { state->recurrent, state->recurrent_bytes, 1u };
 		return 1u;
-	}
-
-	static SparkStatus RecurrentFold(D41ModelState *state, uint32_t slot, void *buffer, void *stream)
-	{
-		cudaError_t error;
-		if ( slot >= state->slots || state->fold_pieces == 0 || buffer == 0 )
-			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		error = cudaMemcpyAsync((uint8_t *)buffer + state->ring_bytes, state->fold_pieces + (uint64_t)slot * state->fold_piece_bytes,
-			state->compressor_bytes + state->history_bytes, cudaMemcpyDefault, (cudaStream_t)stream);
-		if ( error == cudaSuccess && stream == 0 )
-			error = cudaStreamSynchronize(0);
-		if ( error != cudaSuccess )
-		{
-			fprintf(stderr, "sparkpipe_dsv41_flash: folded recurrent copy failed slot=%u cuda=%s\n", slot, cudaGetErrorString(error));
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
-		return SPARK_STATUS_OK;
 	}
 
 	static uint32_t ReportFields(const D41ModelState *state, CudaStageReportField *fields)
@@ -3136,7 +3109,6 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->engram_kv, r * D41_ENGRAM_KV_ROWS * 2u }, { (void **)&state->engram_kv_local, r * D41_ENGRAM_KV_LOCAL * 2u },
 		{ (void **)&state->engram_kv_gathered, r * D41_ENGRAM_KV_ROWS * 2u },
 		{ (void **)&state->recurrent, s * state->recurrent_bytes },
-		{ (void **)&state->fold_pieces, s * state->fold_piece_bytes },
 	};
 	return CudaStagePlace(plan, base);
 }
@@ -3546,7 +3518,6 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 	state->compressor_bytes = 3u * 2u * D41_HEAD_DIM * sizeof(float);
 	state->history_bytes = 4u * sizeof(int32_t);
 	state->recurrent_bytes = (state->ring_bytes + state->compressor_bytes + state->history_bytes + 255u) & ~255ull;
-	state->fold_piece_bytes = (state->compressor_bytes + state->history_bytes + 255u) & ~255ull;
 	state->arena_bytes = Plan(state, 0, 0u);
 	if ( state->arena_bytes > configuration->state_budget_bytes )
 	{

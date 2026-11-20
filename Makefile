@@ -686,7 +686,6 @@ PYTHON_TESTS := \
 	tests/test_dsv41_flash_landing.py \
 	tests/test_dsv41_window_fold.py \
 	tests/test_dsv41_exchange.py \
-	tests/test_dsv41_fold_capture.py \
 	tests/test_dsv41_hc_mix.py \
 	tests/test_skinny_rows.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
@@ -881,16 +880,13 @@ TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE := \
     build/test_modules/libmodel_serving_adapter_speculative_long_verify_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE := \
     build/test_modules/libmodel_serving_adapter_recurrent_checkpoints_module.$(SHARED_LIBRARY_EXT)
-TEST_MODEL_SERVING_PROMPT_FOLD_MODULE := \
-    build/test_modules/libmodel_serving_adapter_prompt_fold_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
     $(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE) \
-    $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE) \
-    $(TEST_MODEL_SERVING_PROMPT_FOLD_MODULE)
+    $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)
 TEST_MODEL_RESIDENT_TRANSPORT_MODULE := \
     build/test_modules/libmodel_resident_transport_module.$(SHARED_LIBRARY_EXT)
 HOST_TURN_BENCH_ADAPTER_MODULE := \
@@ -1362,9 +1358,6 @@ $(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE): tests/fixtures/model_servi
 $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(TEST_MODEL_SERVING_PROMPT_FOLD_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_PROMPT_FOLD $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -1646,10 +1639,10 @@ build/test_model_pipeline_client: tests/test_model_pipeline_client.c tests/fixtu
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_BATCH_PATH=\"build/sparkpipe_model_batch\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_pipeline_client.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_batch_engine_mock: tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_SERVING_PROMPT_FOLD_PATH=\"$(TEST_MODEL_SERVING_PROMPT_FOLD_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_batch_engine_mock.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_model_batch_engine_mock_debug: tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_SERVING_PROMPT_FOLD_PATH=\"$(TEST_MODEL_SERVING_PROMPT_FOLD_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) -DDEBUG tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_PATH=\"$(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_INLINE_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_DEFERRED_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_PATH=\"$(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE)\" -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_PATH=\"$(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) -DDEBUG tests/test_model_batch_engine_mock.c runtime/model_batch_engine.c tests/mock_model_resident_client.c tests/fixtures/model_resident_deployment_fixture.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tp_chain_graph: tests/test_tp_chain_graph.c include/sparkpipe/spark_tp_chain_graph.h | build
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_chain_graph.c $(LDFLAGS) -o $@
@@ -1899,8 +1892,6 @@ build/test_dsv41_flash_landing: tests/test_dsv41_flash_landing.cu model-families
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_landing (no nvcc on this host)"; fi
 build/test_dsv41_window_fold: tests/test_dsv41_window_fold.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_attend.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_window_fold (no nvcc on this host)"; fi
-build/test_dsv41_fold_capture: tests/test_dsv41_fold_capture.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_fold_capture (no nvcc on this host)"; fi
 build/test_dsv41_exchange: tests/test_dsv41_exchange.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_exchange (no nvcc on this host)"; fi
 build/test_dsv41_hc_mix: tests/test_dsv41_hc_mix.cu inference/kernels/hc.cuh model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build

@@ -1985,8 +1985,28 @@ snapshots of both engines compared byte for byte:
   one-row steps seal a block that a later prompt recomputes.
 - Folded runs repeat bit for bit across lanes (two more lanes, `fm19`).
 
-The engine of these runs has no cache stride, as the module now has (next
-section).
+The fold is removed (2026-11-20). The release capture (`vs20`, on the
+sixteen ranks) sends each prompt several times: the first request runs
+cold, and later ones resume at the checkpoint and compute the prompt's last
+token as a one-row step. Folded, the cold request computes that token in
+the wave, whose kernels round differently, and the greedy tokens of
+`long_2k` differ from the second token on and those of `long_8k` from the
+sixth. The capture's one-step requests extend a prompt one token at a
+time, so each of them ends in such a step, and its chain, speculation and
+batch comparisons would fail on every long DSV4.1 prompt. Cold and cached
+requests agree only when the last prompt token runs through the one-row
+step's kernels. A fold that keeps those kernels saves only the engine's
+turnaround between the last wave and the one-row step. The one-row arm's
+API logs above (`ff19b`, `fk19b`) put it at 1.7, 2.3 and 5.7 ms at 8K, 32K
+and 131K tokens: 0.6, 1.5 and 4.7 ms from the wave's result to the next
+dispatch, and 0.8 to 1.1 ms of transfer around the step. That is at most
+0.4% of a prompt, so the fold and its checkpoint paths are removed and a
+prompt's last token runs as a one-row step again. Prefill figures below
+that ran folded builds, the mesh-depth arms of 2026-11-20 among them,
+include the fold's gain.
+
+The engine of the fold runs has no cache stride, as the module now has
+(next section).
 The module drops the 16,384-token cache stride (2026-11-19). Every
 16,384-token wave ended at a cache point and ran layers 20 to 39 on its
 last rows so that the recurrent state could be saved there: 17,284 /
