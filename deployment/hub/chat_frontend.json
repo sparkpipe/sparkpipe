@@ -306,20 +306,24 @@
     "enable_thinking": true
    },
    "template_kwargs": [
-    "enable_thinking"
+    "enable_thinking",
+    "reasoning_effort"
    ],
    "reasoning_effort": {
     "minimal": {
      "enable_thinking": false
     },
     "low": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "low"
     },
     "medium": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "medium"
     },
     "high": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "xhigh"
     }
    },
    "reasoning": {
@@ -364,20 +368,24 @@
     "enable_thinking": true
    },
    "template_kwargs": [
-    "enable_thinking"
+    "enable_thinking",
+    "reasoning_effort"
    ],
    "reasoning_effort": {
     "minimal": {
      "enable_thinking": false
     },
     "low": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "low"
     },
     "medium": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "medium"
     },
     "high": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "xhigh"
     }
    },
    "reasoning": {
@@ -486,11 +494,19 @@
     "<|endoftext|>"
    ],
    "template_defaults": {},
-   "template_kwargs": [],
+   "template_kwargs": [
+    "reasoning_effort"
+   ],
    "reasoning_effort": {
-    "low": {},
-    "medium": {},
-    "high": {}
+    "low": {
+     "reasoning_effort": "low"
+    },
+    "medium": {
+     "reasoning_effort": "medium"
+    },
+    "high": {
+     "reasoning_effort": "xhigh"
+    }
    },
    "reasoning": {
     "start": "<think>",
@@ -534,20 +550,24 @@
     "enable_thinking": true
    },
    "template_kwargs": [
-    "enable_thinking"
+    "enable_thinking",
+    "reasoning_effort"
    ],
    "reasoning_effort": {
     "minimal": {
      "enable_thinking": false
     },
     "low": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "low"
     },
     "medium": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "medium"
     },
     "high": {
-     "enable_thinking": true
+     "enable_thinking": true,
+     "reasoning_effort": "xhigh"
     }
    },
    "reasoning": {
