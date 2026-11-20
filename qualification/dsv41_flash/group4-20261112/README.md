@@ -2005,6 +2005,32 @@ prompt's last token runs as a one-row step again. Prefill figures below
 that ran folded builds, the mesh-depth arms of 2026-11-20 among them,
 include the fold's gain.
 
+Checked on the fleet (`ex20`, the stack head at 76e941a8a without the fold
+against the folded build of `vs20`, same ranks and release). The capture
+(`ex20x1`) gives chain and speculating tokens equal to the one-step tokens
+on all seven prompts, `long_2k` and `long_8k` included. The batched tokens
+of `capital` and `arith` differ from token 1 and token 14, the
+batch-composition effect release c2b714343 records. Against the folded
+capture the one-step tokens match on the four short prompts, `long_2k` and
+`long_8k` differ from token 2 and token 6, and `copy` keeps its tokens with
+log-probs up to 1.97 apart. Prefill, three alternating runs each, every run
+answering the 40,000-token prompt with `b79b025295d2819f`:
+
+| Arm | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| one-row last step | 16,998 tok/s | 26,957 | 29,725 |
+| folded | 18,186 | 27,939 | 30,328 |
+| one-row last step | 17,385 | 26,524 | 29,778 |
+| folded | 17,998 | 27,774 | 30,066 |
+| one-row last step | 17,448 | 27,084 | 29,867 |
+| folded | 18,774 | 27,774 | 30,307 |
+| mean, one-row | 17,277 | 26,855 | 29,790 |
+| mean, folded | 18,319 | 27,829 | 30,234 |
+
+On this build the fold was worth 6.0%, 3.6% and 1.5%: a prompt's one-row
+last step takes 30.6 ms of service on the ranks. Without the fold the lane
+runs at 230%, 317% and 354% of the four-Spark reference.
+
 The engine of the fold runs has no cache stride, as the module now has
 (next section).
 The module drops the 16,384-token cache stride (2026-11-19). Every
