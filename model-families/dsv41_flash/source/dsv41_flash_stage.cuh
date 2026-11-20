@@ -1235,9 +1235,20 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 static_assert(!D41_SPREAD || (D41_SPREAD_ROWS * D41_SPREAD_HEADS <= D41_LOCAL_HEADS && D41_SPREAD_ROWS <= D41_OWN_ROWS_MIN),
 	"a spread step's queries end before the index pack in q_local, and its gathered rows fit moe_gathered");
 
+static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, cudaStream_t stream)
+{
+	if ( step->commit != 0u )
+		return SPARK_STATUS_OK;
+	if ( step->rows > D41_VERIFY_ROWS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return cudaMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
+		(uint64_t)step->rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) == cudaSuccess ? SPARK_STATUS_OK :
+		SPARK_STATUS_INTERNAL_ERROR;
+}
+
 static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerStep *step)
 {
-	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && step->commit != 0u && state->own_rows == 0u && state->dump == 0 &&
+	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && state->own_rows == 0u && state->dump == 0 &&
 		state->tap_slab == 0 ? 1u : 0u;
 }
 
@@ -1328,6 +1339,9 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, heads, rows), D41K_THREADS, 0, stream>>>(state->records_received, heads, state->q_local, state->window_kv, ring,
 		step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
+	status = D41VerifyWindow(state, index, step, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
@@ -1473,13 +1487,9 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( step->commit == 0u )
-	{
-		if ( rows > D41_VERIFY_ROWS )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		cudaMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
-			(uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
-	}
+	status = D41VerifyWindow(state, index, step, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
@@ -1753,13 +1763,9 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( step->commit == 0u )
-	{
-		if ( rows > D41_VERIFY_ROWS )
-			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		cudaMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
-			(uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
-	}
+	status = D41VerifyWindow(state, index, step, stream);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
 		state->tp_rank, rows, step->commit, (const uint32_t *)0);
