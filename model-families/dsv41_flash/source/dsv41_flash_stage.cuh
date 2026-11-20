@@ -137,6 +137,7 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_ACT_BLOCKS 4096u
 #define D41_Q_CODE_ELEMENTS ((D41_QLORA + D41_QLORA / D41_FP8_BLOCK) / 2u)
 #define D41_SKINNY_EXPERT_ROWS 16u
+#define D41_SHARED_SPLIT_ROWS LM_SKINNY_ROWS_WIDE
 #define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
@@ -203,6 +204,7 @@ static_assert(D41_ENGRAM_HEAD_DIM == D41K_ENGRAM_DIM && D41K_ENGRAM_RECORD_BYTES
 static_assert(D41_ENGRAM_KV_ROWS % (D41_TP * D41_FP8_BLOCK) == 0u, "the engram key/value rows split into whole fp8 blocks per rank");
 static_assert(D41_ENGRAM_KV_ROWS == SPARK_DSV41_FLASH_ENGRAM_KV_ROWS && D41_ENGRAM_EMBED == SPARK_DSV41_FLASH_ENGRAM_EMBED_COLUMNS &&
 	D41_ENGRAM_HEAD_DIM == SPARK_DSV41_FLASH_MODEL_ENGRAM_HEAD_DIMENSION && D41K_HC == SPARK_DSV41_FLASH_MODEL_HC_MULT, "the stage reads the engram shard the format check accepts");
+static_assert(!D41_ROWS || D41_MOE_INTER / D41_SHARED_GRANULE >= D41_TP, "every rank takes at least one granule of the shared expert");
 static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D41_FP8_BLOCK == 0u,
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
 static_assert(D41K_HC == LM_HC_SITE_STREAMS, "the stream expansion writes every hyper-connection stream");
@@ -236,6 +238,7 @@ typedef struct D41Layer
 	const uint8_t *e_w13, *e_w13_scale, *e_w2, *e_w2_scale;
 	const uint8_t *e_w13_cells, *e_w2_cells, *e_w13_backup, *e_w2_backup;
 	D41Fp8Linear sh_w1, sh_w2, sh_w3, sh_w2_part[D41_SHARED_ROUTED != 0u ? D41_TP : 1u];
+	D41Fp8Linear sh_w1_split, sh_w3_split, sh_w2_split;
 } D41Layer;
 
 struct D41ModelState;
@@ -537,6 +540,21 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 static void D41Fp8Qdq(uint16_t *data, uint64_t elements, cudaStream_t stream)
 {
 	(void)SparkDsv41FlashLaunchFp8Qdq(stream, data, elements);
+}
+
+static int32_t D41LinearF32(const D41Fp8Linear *linear, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
+	uint32_t output_dimension, uint32_t row_invariant, cudaStream_t stream)
+{
+	LmSkinnyArguments args;
+	memset(&args, 0, sizeof(args));
+	args.weight = linear->weight;
+	args.activation = source;
+	args.output_f32 = destination;
+	args.scale = LmScaleTensorBlockUe8m0(linear->scale, 1u, output_dimension, input_dimension, 1u, LM_MXFP8_GROUP);
+	args.rows = rows;
+	args.input_dimension = input_dimension;
+	args.output_dimension = output_dimension;
+	return LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 }
 
 static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t elements, cudaStream_t stream)
@@ -1796,10 +1814,13 @@ static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint
 
 static void D41SharedSlice(uint32_t rank, uint32_t *first, uint32_t *width)
 {
-	const uint32_t parts = D41_ROWS ? 1u : D41_TP, part = D41_ROWS ? 0u : rank;
-	const uint32_t blocks = D41_MOE_INTER / D41_SHARED_GRANULE, base = blocks / parts, extra = blocks % parts;
-	*first = (part * base + (part < extra ? part : extra)) * D41_SHARED_GRANULE;
-	*width = (base + (part < extra ? 1u : 0u)) * D41_SHARED_GRANULE;
+	D41SharedPart(D41_ROWS ? 0u : rank, D41_ROWS ? 1u : D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE, first, width);
+}
+
+static uint32_t D41SharedSplitStep(const D41ModelState *state, uint32_t rows)
+{
+	const uint32_t room = state->max_rows < D41_OWN_ROWS_MIN ? state->max_rows : D41_OWN_ROWS_MIN;
+	return D41_ROWS && state->own_rows == 0u && (rows <= D41_SHARED_SPLIT_ROWS || state->row_invariant != 0u) && 2u * rows <= room ? 1u : 0u;
 }
 
 static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, cudaStream_t stream)
@@ -1927,12 +1948,16 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		return D41MoeExchanged(state, layer, step, stream);
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
 	const uint32_t mx_down = state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
+	const uint32_t split = D41SharedSplitStep(state, rows);
 	const uint32_t shared_block = D41_ROWS ? (rows + D41_TP - 1u) / D41_TP : rows, shared_first = D41_ROWS ? state->tp_rank * shared_block : 0u;
-	const uint32_t shared_rows = shared_first < rows ? (rows - shared_first < shared_block ? rows - shared_first : shared_block) : 0u;
+	const uint32_t shared_rows = split == 0u && shared_first < rows ? (rows - shared_first < shared_block ? rows - shared_first : shared_block) : 0u;
+	uint32_t split_first = 0u, split_width = 0u;
 	uint16_t *gate_up = state->expert_slice;
 	uint8_t *codes = (uint8_t *)state->expert_act;
 	SparkStatus status;
-	if ( D41_ROWS && cudaMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
+	if ( split != 0u )
+		D41SharedPart(state->tp_rank, D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE, &split_first, &split_width);
+	if ( D41_ROWS && split == 0u && cudaMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->own_rows == 0u &&
 		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
@@ -1952,19 +1977,31 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	if ( D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream) !=
 		LM_LAUNCH_OK ||
-		(D41_ROWS ? shared_rows != 0u && D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq + (uint64_t)shared_first * D41_HIDDEN, state->shared_gate,
+		(split != 0u ? D41LinearPair(&layer->sh_w1_split, &layer->sh_w3_split, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN,
+			split_width, split_width, sms, state->row_invariant, (const D41Mx *)0, stream) != LM_LAUNCH_OK :
+		D41_ROWS ? shared_rows != 0u && D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->xq + (uint64_t)shared_first * D41_HIDDEN, state->shared_gate,
 			state->shared_up, shared_rows, D41_HIDDEN, state->shared_width, state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK :
 			D41SharedUp(state, layer, rows, sms, stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
 		state->packed_weight,
 		state->group_row_offset, D41_LOCAL_EXPERTS, codes, mx_down != 0u ? (uint16_t *)0 : state->expert_act, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
-	if ( shared_rows != 0u )
+	if ( split != 0u )
+		D41SwigluRowsKernel<<<dim3(D41Blocks(split_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up, state->shared_act,
+			split_width, D41_SWIGLU_LIMIT);
+	else if ( shared_rows != 0u )
 		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), shared_rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( split != 0u )
+	{
+		D41Fp8Qdq(state->shared_act, (uint64_t)rows * split_width, stream);
+		if ( D41LinearF32(&layer->sh_w2_split, state->shared_act, (float *)state->shared_out, rows, split_width, D41_HIDDEN, state->row_invariant,
+			stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	if ( (shared_rows != 0u && D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out + (uint64_t)shared_first * D41_HIDDEN, shared_rows,
 		state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK) ||
 		(mx_down != 0u ?
@@ -1973,6 +2010,20 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, D41_LOCAL_EXPERTS,
 			stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( split != 0u )
+	{
+		float *partial = (float *)state->moe_final;
+		D41MoeFinalizeF32Kernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->route_packed_row,
+			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
+		status = D41Launched();
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, 2u * D41_HIDDEN, partial, state->moe_gathered);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		D41SumSourcesF32Kernel<<<D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream>>>(
+			(const float *)state->moe_gathered, state->partial, (uint64_t)rows * D41_HIDDEN, D41_TP);
+		return D41Launched();
+	}
 	LmMoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->route_packed_row,
 		state->route_expert, state->shared_out, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 	status = D41Launched();
@@ -3663,6 +3714,15 @@ static SparkStatus D41Fp8Slice(D41ModelState *state, SparkWeightdLazyPack *pack,
 	return D41Fp8SliceAt(state, entry, payload, scale, row_first, rows, column_first, columns, 1u, cursor, out);
 }
 
+static SparkStatus D41Fp8Narrow(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint32_t row_first,
+	uint32_t rows, uint32_t column_first, uint32_t columns, uint64_t *cursor, D41Fp8Linear *out)
+{
+	const void *payload = 0, *scale = 0;
+	if ( entry == 0 || D41SliceEntry(pack, entry, 0u, &payload) != SPARK_STATUS_OK || D41SliceEntry(pack, entry, 1u, &scale) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	return D41Fp8SliceAt(state, entry, payload, scale, row_first, rows, column_first, columns, 0u, cursor, out);
+}
+
 static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, const D41PackEntry *entry, uint64_t *cursor, D41Fp8Linear *out)
 {
 	if ( entry == 0 )
@@ -3683,6 +3743,12 @@ static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, cons
 #define D41_FP8(kind, layer, field) \
 	do { if ( D41Fp8(state, lazy_pack, D41_ENTRY(kind, layer), &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " is not a 32x32-block fp8 tensor\n", layer); return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
+#define D41_FP8_NARROW(kind, layer, field, first_row, row_count, first_column, column_count) \
+	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
+		if ( found == 0 || D41Fp8Narrow(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
+			column_count == 0u ? found->columns : column_count, &cursor, &(field)) != SPARK_STATUS_OK ) { \
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " has no 32x32-block fp8 split for this rank\n", layer); \
+			return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
 #define D41_FP8_SLICE(kind, layer, field, first_row, row_count, first_column, column_count) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
 		if ( found == 0 || D41Fp8Slice(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
@@ -3738,6 +3804,14 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		else
 			D41_FP8_SLICE(SHARED_W2, index, layer->sh_w2, 0u, 0u, state->shared_first, state->shared_width);
 		D41_FP8_SLICE(SHARED_W3, index, layer->sh_w3, state->shared_first, state->shared_width, 0u, 0u);
+		if ( D41_ROWS )
+		{
+			uint32_t split_first, split_width;
+			D41SharedPart(state->tp_rank, D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE, &split_first, &split_width);
+			D41_FP8_NARROW(SHARED_W1, index, layer->sh_w1_split, split_first, split_width, 0u, 0u);
+			D41_FP8_NARROW(SHARED_W3, index, layer->sh_w3_split, split_first, split_width, 0u, 0u);
+			D41_FP8_NARROW(SHARED_W2, index, layer->sh_w2_split, 0u, 0u, split_first, split_width);
+		}
 		if ( D41KvSource(index) )
 		{
 			D41_PAYLOAD(COMPRESSOR_WKV, index, layer->c_wkv);
