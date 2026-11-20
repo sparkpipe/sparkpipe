@@ -39,7 +39,6 @@ typedef struct SparkStageServingModel
 	uint32_t cache_checkpoint_token_count;
 	void (*kv_layout)(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv);
 	uint32_t (*collective_sequences)(uint32_t rows, uint32_t tp_degree);
-	uint32_t prompt_fold;
 } SparkStageServingModel;
 
 const SparkModelServingAdapterInterface *SparkStageServingAdapterInterface(const SparkStageServingModel *model);

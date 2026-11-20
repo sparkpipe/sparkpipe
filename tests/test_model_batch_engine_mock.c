@@ -2768,75 +2768,6 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 	SparkModelBatchEngineDestroy(engine);
 }
 
-static void TestScenarioPromptFold(const SparkModelResidentDeployment *deployment,const char *runtime_root)
-{
-	static const uint32_t expected_spans[3] = {8u,4u,6u},expected_ends[3] = {8u,12u,17u},expected_stateful[3] = {0u,1u,1u};
-	static const uint32_t expected_targets[3] = {12u,12u,17u};
-	static const uint32_t aligned_end_spans[3] = {8u,4u,8u},aligned_before_spans[3] = {8u,4u,5u};
-	TestBatchState state = {0};
-	SparkModelBatchEngine *engine;
-	SparkModelServingLane lane = {0};
-	uint32_t prompt[18],ends_at_block[20],before_block[17],spans[8],ends[8],stateful[8],targets[8],count,index,decode_exact,folded = 0u;
-	for (index=0u; index<18u; index++)
-		prompt[index] = 1300u + index;
-	for (index=0u; index<20u; index++)
-		ends_at_block[index] = 1400u + index;
-	for (index=0u; index<17u; index++)
-		before_block[index] = 1500u + index;
-	MockResidentClientReset();
-	engine = TestConnectRows(deployment,&state,runtime_root,10u);
-	if ( engine == 0 )
-		return;
-	MockResidentClientSetAutoTokens(1u);
-	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
-	TestSubmitPrompt(engine,1u,1690u,4u,prompt,18u);
-	TestDriveUntilTerminal(engine,&state,1u,800u);
-	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && state.token_events[1] == 4u,"prompt fold: a folded prompt completes and decodes");
-	count = TestPrefillSpans(1u,18u,spans,8u);
-	CHECK(count == 3u && memcmp(spans,expected_spans,sizeof(expected_spans)) == 0,"prompt fold: the last wave runs through the prompt's last token instead of stopping one token before it");
-	count = TestPrefillPublishes(1u,18u,ends,stateful,8u);
-	CHECK(count == 3u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,
-		"prompt fold: the last wave publishes the checkpoint one token before the prompt end, with state, and nothing at the end");
-	count = TestRowTargets(1u,18u,targets,8u,&decode_exact);
-	CHECK(count == 3u && memcmp(targets,expected_targets,sizeof(expected_targets)) == 0 && decode_exact != 0u,"prompt fold: the folded lane names the checkpoint, not its context, as its state target");
-	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
-		folded += lane.request_id == 1u && lane.context_token_count == 18u && lane.sequence_position == 12u &&
-			lane.cache_publish_token_count == 17u && (lane.flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) != 0u ? 1u : 0u;
-	CHECK(folded == 1u,"prompt fold: the folded lane samples the first output token");
-	TestSubmitPrompt(engine,2u,1691u,1u,prompt,18u);
-	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.cache_prefix_token_count == 17u && lane.sequence_position == 17u && lane.context_token_count == 18u,
-		"prompt fold: a repeated prompt resumes at the folded checkpoint and runs only the last token");
-	TestDriveUntilTerminal(engine,&state,2u,800u);
-	TestSubmitPrompt(engine,3u,1692u,1u,ends_at_block,20u);
-	TestDriveUntilTerminal(engine,&state,3u,800u);
-	count = TestPrefillSpans(3u,20u,spans,8u);
-	CHECK(count == 3u && memcmp(spans,aligned_end_spans,sizeof(aligned_end_spans)) == 0,"prompt fold: a prompt that ends on a block boundary folds its last token too");
-	count = TestPrefillPublishes(3u,20u,ends,stateful,8u);
-	CHECK(count == 3u && ends[2] == 19u && stateful[2] != 0u,"prompt fold: a prompt that ends on a block boundary publishes its checkpoint one token before the end");
-	for (index=0u, folded = 0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
-		folded += lane.request_id == 3u && lane.context_token_count == 20u && lane.cache_publish_token_count == 19u && lane.cache_block_identity_count == 2u ? 1u : 0u;
-	CHECK(folded == 1u,"prompt fold: the lane also names the full block that ends the prompt");
-	TestSubmitPrompt(engine,4u,1693u,1u,before_block,17u);
-	TestDriveUntilTerminal(engine,&state,4u,800u);
-	count = TestPrefillSpans(4u,17u,spans,8u);
-	CHECK(count == 3u && memcmp(spans,aligned_before_spans,sizeof(aligned_before_spans)) == 0,"prompt fold: a prompt whose checkpoint lands on a block boundary folds its last token too");
-	count = TestPrefillPublishes(4u,17u,ends,stateful,8u);
-	CHECK(count == 3u && ends[2] == 16u && stateful[2] != 0u,"prompt fold: a checkpoint on a block boundary is published as that block, with state");
-	TestSubmitPrompt(engine,5u,1694u,1u,ends_at_block,20u);
-	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.cache_prefix_token_count == 19u && lane.sequence_position == 19u,
-		"prompt fold: a repeat of a block-aligned prompt resumes one token before its end");
-	TestDriveUntilTerminal(engine,&state,5u,800u);
-	TestSubmitPrompt(engine,6u,1695u,1u,before_block,17u);
-	CHECK(TestWaitFirstRequestLane(engine,6u,&lane) != 0u && lane.cache_prefix_token_count == 16u && lane.sequence_position == 16u,
-		"prompt fold: a repeat whose checkpoint is block-aligned resumes there");
-	TestDriveUntilTerminal(engine,&state,6u,800u);
-	CHECK(state.error_events[1] == 0u && state.error_events[2] == 0u && state.error_events[3] == 0u && state.error_events[4] == 0u &&
-		state.error_events[5] == 0u && state.error_events[6] == 0u &&
-		state.completed_events[2] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u &&
-		state.completed_events[5] == 1u && state.completed_events[6] == 1u,"prompt fold: every request completes");
-	SparkModelBatchEngineDestroy(engine);
-}
-
 static void TestScenarioRecurrentStreamedCheckpoint(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_ends[2] = {17u,18u},expected_stateful[2] = {1u,0u};
@@ -3093,10 +3024,6 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);
 	TestScenarioResumeSuperseded(&deployment,runtime_root);
-	SparkModelResidentDeploymentReset(&deployment);
-	(void)unlink(path);
-	TestLoadVariantDeployment(runtime_root,"prompt-fold",TEST_MODEL_SERVING_PROMPT_FOLD_PATH,path,sizeof(path),&deployment);
-	TestScenarioPromptFold(&deployment,runtime_root);
 	SparkModelResidentDeploymentReset(&deployment);
 	(void)unlink(path);
 	TestLoadVariantDeployment(runtime_root,"multi-block-prefill",TEST_MODEL_SERVING_ADAPTER_PATH,path,sizeof(path),&deployment);

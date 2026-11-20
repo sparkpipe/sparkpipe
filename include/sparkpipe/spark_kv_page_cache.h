@@ -67,9 +67,7 @@ typedef struct SparkKvPageCacheSequence
 	uint32_t mutable_page_count;
 	uint32_t mutable_following_pages[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 	uint32_t mutable_block_identity_count;
-	SparkModelDriverCacheIdentity mutable_block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES];
-	uint32_t folded_token_count;
-	uint32_t reserved0;
+	SparkModelDriverCacheIdentity mutable_block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 }
 SparkKvPageCacheSequence;
 
@@ -257,8 +255,6 @@ typedef struct SparkKvPageCache
 	uint64_t published_page_count;
 	uint64_t deduplicated_page_count;
 	uint64_t stateful_dedup_lost_count;
-	uint64_t folded_publish_count;
-	uint64_t folded_duplicate_count;
 	uint64_t state_demoted_count;
 	uint64_t state_promoted_count;
 	uint32_t state_anchor_token_count;
@@ -426,7 +422,7 @@ typedef struct SparkKvLaneTransaction
 	uint32_t phase;
 	uint32_t page_count;
 	uint32_t mutation_flags;
-	SparkModelDriverCacheIdentity block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES];
+	SparkModelDriverCacheIdentity block_identities[SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES - 1u];
 } SparkKvLaneTransaction;
 
 typedef struct SparkKvLaneTransactions
