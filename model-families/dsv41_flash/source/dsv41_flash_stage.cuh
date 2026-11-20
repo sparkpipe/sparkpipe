@@ -2017,7 +2017,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
-			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, 2u * D41_HIDDEN, partial, state->moe_gathered);
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 2u * rows, D41_HIDDEN, partial, state->moe_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		D41SumSourcesF32Kernel<<<D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream>>>(
