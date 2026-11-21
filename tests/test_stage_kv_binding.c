@@ -1421,6 +1421,43 @@ static SparkModelDriverCacheProbe ProbePrefix(uint32_t token_count,uint8_t ident
 	return(probe);
 }
 
+static void RemoveSavedPages(uint32_t token_count,uint8_t seed)
+{
+	SparkModelDriverCacheIdentity identity;
+	SparkKvSnapshotKey key;
+	memset(&key,0,sizeof(key));
+	Identity(&identity,seed);
+	memcpy(key.layout_sha256,BINDING.page_cache.snapshot->layout_sha256,sizeof(key.layout_sha256));
+	memcpy(key.identity_sha256,identity.sha256,sizeof(key.identity_sha256));
+	key.token_count = token_count;
+	key.file_kind = SPARK_KV_SNAPSHOT_FILE_PAGES;
+	assert(SparkKvSnapshotRemove(BINDING.page_cache.snapshot->store,&key) == SPARK_STATUS_OK);
+}
+
+static void TestProbeNeverOverstates(void)
+{
+	SparkModelDriverCacheProbe probe;
+	uint8_t pages[2][TEST_PAGE_BYTES];
+	Open();
+	PublishTwoPageChain(pages);
+	Unload();
+	TestKvServerFinish();
+	TestKvServerStart(64ull << 20);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	probe = ProbePrefix(8u,0x71u);
+	assert(probe.held_token_count == 0u && probe.saved_token_count == 8u && probe.state_token_count == 8u);
+	probe = ProbePrefix(4u,0x70u);
+	assert(probe.held_token_count == 0u && probe.saved_token_count == 4u);
+	RemoveSavedPages(4u,0x70u);
+	probe = ProbePrefix(8u,0x71u);
+	assert(probe.held_token_count == 0u && probe.resident_token_count == 0u && probe.saved_token_count == 0u && probe.state_token_count == 0u);
+	probe = ProbePrefix(4u,0x70u);
+	assert(probe.saved_token_count == 0u && probe.state_token_count == 0u);
+	assert(BINDING.restore_jobs == 0u);
+	Close();
+	printf("cache probe: a saved leaf whose root page the store no longer has reads as not saved and without a resume point\n");
+}
+
 static void TestRestoreHintStartsEarly(void)
 {
 	SparkModelDriverCacheProbe probe;
@@ -1461,9 +1498,12 @@ static void TestRestoreHintStartsEarly(void)
 	probe = ProbePrefix(8u,0x71u);
 	assert(probe.held_token_count == 8u && probe.resident_token_count == 8u && probe.saved_token_count == 8u && probe.state_token_count == 8u &&
 		probe.read_token_count == 8u);
+	RemoveSavedPages(4u,0x70u);
+	probe = ProbePrefix(8u,0x71u);
+	assert(probe.held_token_count == 8u && probe.resident_token_count == 8u && probe.saved_token_count == 0u && probe.state_token_count == 8u);
 	Close();
 	printf("restore hint: a hinted prefix restores before its prepare, which is admitted without waiting; a resident prefix queues nothing\n");
-	printf("cache probe: a prefix saved on disk and not yet restored reads as saved and not held, an unknown one as nothing, a restored one as held, resident and saved, and a probe starts no restore\n");
+	printf("cache probe: a prefix saved on disk and not yet restored reads as saved and not held, an unknown one as nothing, a restored one as held, resident and saved until the store loses a page of it, and a probe starts no restore\n");
 }
 
 static void ExpectForeignLayout(const SparkStageKvConfiguration *configuration,uint8_t pages[2][TEST_PAGE_BYTES])
@@ -2086,6 +2126,7 @@ static void RunScenarios(void)
 		TestAdoptedPagesKeepTheirAge();
 	}
 	TestRestoreHintStartsEarly();
+	TestProbeNeverOverstates();
 	TestWriteMeterCountsAndAlerts();
 	TestParkedPrefixSaves();
 	TestSnapshotLayoutSeparation();

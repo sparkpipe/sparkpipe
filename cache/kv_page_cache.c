@@ -3296,6 +3296,32 @@ uint32_t SparkKvPageCachePrefixReady(const SparkKvPageCache *cache,const SparkMo
 	return(existing != SPARK_KV_PAGE_CACHE_NO_INDEX && ((cache->entries[existing].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) == 0u || cache->state_store == 0) ? 1u : 0u);
 }
 
+static void SparkKvPageCacheProbeStore(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count,SparkModelDriverCacheProbe *probe)
+{
+	SparkKvSnapshotKey key,parent,state_key;
+	uint32_t depth,state = 0u;
+	SparkKvPageCacheSnapshotKey(cache,identity,token_count,SPARK_KV_SNAPSHOT_FILE_PAGES,&key);
+	for (depth=0u; depth<cache->snapshot->page_capacity; depth++)
+	{
+		if ( SparkKvSnapshotParent(cache->snapshot->store,&key,&parent) != SPARK_STATUS_OK )
+			return;
+		if ( state == 0u )
+		{
+			state_key = key;
+			state_key.file_kind = SPARK_KV_SNAPSHOT_FILE_STATE;
+			if ( cache->state_store == 0 || SparkKvSnapshotStored(cache->snapshot->store,&state_key) != 0u )
+				state = key.token_count;
+		}
+		if ( parent.token_count == 0u )
+		{
+			probe->saved_token_count = token_count;
+			probe->state_token_count = state;
+			return;
+		}
+		key = parent;
+	}
+}
+
 void SparkKvPageCacheProbePrefix(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count,SparkModelDriverCacheProbe *probe)
 {
 	const SparkKvPageCacheEntry *entry;
@@ -3304,15 +3330,8 @@ void SparkKvPageCacheProbePrefix(const SparkKvPageCache *cache,const SparkModelD
 	memset(probe,0,sizeof(*probe));
 	if ( index == SPARK_KV_PAGE_CACHE_NO_INDEX )
 	{
-		if ( cache->snapshot == 0 )
-			return;
-		SparkKvPageCacheSnapshotKey(cache,identity,token_count,SPARK_KV_SNAPSHOT_FILE_PAGES,&key);
-		if ( SparkKvSnapshotContains(cache->snapshot->store,&key) == 0u )
-			return;
-		probe->saved_token_count = token_count;
-		SparkKvPageCacheSnapshotKey(cache,identity,token_count,SPARK_KV_SNAPSHOT_FILE_STATE,&key);
-		if ( cache->state_store == 0 || SparkKvSnapshotContains(cache->snapshot->store,&key) != 0u )
-			probe->state_token_count = token_count;
+		if ( cache->snapshot != 0 )
+			SparkKvPageCacheProbeStore(cache,identity,token_count,probe);
 		return;
 	}
 	probe->held_token_count = token_count;
@@ -3328,7 +3347,9 @@ void SparkKvPageCacheProbePrefix(const SparkKvPageCache *cache,const SparkModelD
 			(cache->kv_cache_arena->blocks[entry->logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u &&
 			cache->kv_cache_arena->blocks[entry->logical_page_index].resident_slot_index != SPARK_KV_CACHE_NO_RESIDENT_SLOT )
 			probe->resident_token_count += tokens;
-		if ( (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u )
+		if ( cache->snapshot != 0 && (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) != 0u )
+			SparkKvPageCacheEntryKey(cache,index,SPARK_KV_SNAPSHOT_FILE_PAGES,&key);
+		if ( cache->snapshot == 0 || (entry->flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_SAVED) == 0u || SparkKvSnapshotStored(cache->snapshot->store,&key) == 0u )
 			saved = 0u;
 		else if ( saved == 0u )
 			saved = entry->token_count;

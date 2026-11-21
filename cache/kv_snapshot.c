@@ -1506,6 +1506,19 @@ uint32_t SparkKvSnapshotContains(SparkKvSnapshotStore *store,const SparkKvSnapsh
 	return(found);
 }
 
+uint32_t SparkKvSnapshotStored(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
+{
+	SparkKvSnapshotRuntime *runtime;
+	uint32_t found;
+	if ( SparkKvSnapshotStoreIsValid(store) == 0u || key == 0 )
+		return(0u);
+	runtime = SparkKvSnapshotRuntimeOf(store);
+	pthread_mutex_lock(&runtime->mutex);
+	found = SparkKvSnapshotIndexFind(runtime,key) != SPARK_KV_SNAPSHOT_NO_ENTRY ? 1u : 0u;
+	pthread_mutex_unlock(&runtime->mutex);
+	return(found);
+}
+
 SparkStatus SparkKvSnapshotRemove(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key)
 {
 	SparkKvSnapshotRuntime *runtime;

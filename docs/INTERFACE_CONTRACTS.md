@@ -136,14 +136,21 @@ restore.
 - `held_token_count`: the token count when the cache has an entry for the
   prefix, else 0.
 - `resident_token_count`: tokens of the chain whose pages are on the device.
-- `saved_token_count`: for a held prefix, the deepest entry that is saved
-  together with every entry before it. For a prefix the cache does not hold,
-  the token count when the snapshot store has its last page file or is
-  writing it; a chain is written root first and evicted leaf first, so that
-  file implies the rest.
+- `saved_token_count`: tokens of the prefix, from token 0, whose page files
+  the snapshot store has now. Every count is checked against the store's
+  index (`SparkKvSnapshotStored`, `SparkKvSnapshotParent`), never taken from
+  a flag or inferred: the store cuts its oldest file first, whatever chain it
+  belongs to, so a leaf can outlive its root. For a held prefix it is the
+  deepest entry that is saved and stored together with every entry before
+  it. For a prefix the cache does not hold it is the token count when the
+  store's index leads from the prefix's last page file through every parent
+  to the first, and 0 when any link is missing. A file still being written
+  does not count.
 - `state_token_count`: the deepest entry on the chain that still has its
   state, which is where a request for this prefix can resume. Without a
-  state store every entry is such a point.
+  state store every entry is such a point. For a prefix the cache does not
+  hold it is the deepest page of a whole stored chain whose state file the
+  store has, and 0 when the chain is broken.
 - `read_token_count`: the deepest entry on the chain that a later request
   has read, 0 when none has. Under the rule that a prefix is written only
   after something reads it, this is the part the rank saves by itself; the
@@ -154,16 +161,10 @@ restore.
 The probe reaches a rank as an admission with
 `SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE` and one prefix lane, the
 shape of a cache hint. The decision is accepted, takes no dispatch slot, and
-carries the five counts in the estimate fields, which a probe has no other
-use for: `endpoint_cost` (held), `residency_match_score` (resident),
-`host_staging_bytes` (saved), `device_memcpy_bytes` (state) and
-`estimated_service_time_ns` (read). The dispatch generation and the two
-dispatch cookies stay zero: `SparkModelDriverAdmissionDecisionIsValid`
-refuses a decision that sets one of them without a dispatch slot, and
-`SparkModelDriverEvaluateAdmission` returns that refusal as
-`SPARK_STATUS_ABI_MISMATCH`. `SparkModelDriverStoreCacheProbe` and
-`SparkModelDriverLoadCacheProbe` are the only code that reads or writes the
-fields that way. The adapter's `cache_probe` runs it, the rank daemon answers
+carries the five counts in its own member, `cache_probe`
+(`SparkModelDriverCacheProbe`, model-driver ABI 21); no other field of the
+decision changes its meaning for a probe. `SparkModelDriverStoreCacheProbe`
+and `SparkModelDriverLoadCacheProbe` write and read it. The adapter's `cache_probe` runs it, the rank daemon answers
 a `CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
 least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
 `...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
