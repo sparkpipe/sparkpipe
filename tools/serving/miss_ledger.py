@@ -6,7 +6,6 @@ FAMILY_CAPACITY = 4096
 SIGNATURE_CAPACITY = 8
 BOOT_CAPACITY = 16
 OPENING_BLOCKS = ("tools", "attribution", "system", "project_context")
-OPENING_FLOOR_TOKENS = 256
 FIRST_OPENING = "first_opening"
 OPENING_CHANGED = "opening_changed"
 RESTORED = "restored"
@@ -16,7 +15,8 @@ HISTORY_CHANGED = "history_changed"
 PACK_PROFILE = "pack_profile"
 MODEL_NOT_RESIDENT = "model_not_resident"
 RESUME_POINT = "resume_point"
-CAUSES = (FIRST_OPENING, OPENING_CHANGED, RESTORED, LOST, COMPACTION, HISTORY_CHANGED, PACK_PROFILE, MODEL_NOT_RESIDENT, RESUME_POINT)
+UNATTRIBUTED = "unattributed"
+CAUSES = (FIRST_OPENING, OPENING_CHANGED, RESTORED, LOST, COMPACTION, HISTORY_CHANGED, PACK_PROFILE, MODEL_NOT_RESIDENT, RESUME_POINT, UNATTRIBUTED)
 LOST_REASONS = ("wiped", "release", "swap", "restart", "evicted")
 COMPACTION_CLASS = "compaction"
 TEMPLATE_BLOCK = "template"
@@ -130,10 +130,11 @@ class Ledger:
         miss = max(0, prompt - resumed - tail) if tail is not None else None
         opening_tokens = max(0, prompt - carried - tail) if first_request else 0
         cause, block, position, lost = None, None, None, None
+        beyond = miss if miss is not None else max(0, prompt - resumed)
         if facts.get("model_wait_ms"):
             cause = MODEL_NOT_RESIDENT
         elif compacted:
-            cause, position = (COMPACTION, seen) if miss is not None and miss > slack else (None, None)
+            cause, position = (COMPACTION, seen) if beyond > slack else (None, None)
         elif session is not None and not extends and miss > slack:
             cause, position = HISTORY_CHANGED, seen
             block = REPLY_BLOCK if seen >= session["prompt"] // block_tokens * block_tokens else HISTORY_BLOCK
@@ -143,10 +144,12 @@ class Ledger:
             cause, lost = LOST, self.lost_reason(model_id, carried_at, engine["boot"], engine["artifact"], facts.get("wiped"))
         elif facts.get("pack_profile_new") and miss is not None and miss > slack:
             cause = PACK_PROFILE
-        elif opening_tokens >= OPENING_FLOOR_TOKENS:
+        elif opening_tokens > block_tokens:
             cause, block = self.opening_cause(self.family(facts), opening)
         elif recomputed is not None and recomputed > block_tokens:
             cause = RESUME_POINT
+        elif beyond > slack:
+            cause = UNATTRIBUTED
         return {"cause": cause, "cause_block": block, "cause_position": position, "lost_reason": lost, "matched_tokens": matched, "resumed_tokens": resumed,
                 "recomputed_tokens": recomputed, "tail_tokens": tail, "miss_tokens": miss, "opening_tokens": opening_tokens, "lost_tokens": lost_tokens,
                 "seen_tokens": seen, "seen_of": seen_of, "seen_age_s": round(now - seen_at) if seen_at is not None and seen else None,

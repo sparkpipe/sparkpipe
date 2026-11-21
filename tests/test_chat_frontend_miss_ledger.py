@@ -118,7 +118,18 @@ def unit(check):
     entry = older.entry(facts(prompt_tokens=46900, seen_tokens=46464, seen_of=46500, seen_at=NOW, cached_tokens=0, resume_tokens=16384, now=NOW + 5))
     check(entry["cause"] == "lost" and entry["lost_reason"] is None, f"and a larger gap is lost, with no reason it cannot know: {entry}")
     loose = miss_ledger.Ledger().entry(facts(session=None, opening=opening(first_request=False), prompt_tokens=9000, seen_tokens=6400, seen_of=6500, seen_at=NOW, engine=engine(6400, 6400)))
-    check(loose["cause"] is None and loose["tail_tokens"] is None and loose["miss_tokens"] is None, f"without a session id a follow-up's own tail is unknown, so nothing is blamed: {loose}")
+    check(loose["cause"] == "unattributed" and loose["tail_tokens"] is None and loose["miss_tokens"] is None and loose["lost_tokens"] == 0,
+          f"without a session id a follow-up's own tail cannot be told from the rest of its prefill, so all of it is unattributed: {loose}")
+    quiet = miss_ledger.Ledger().entry(facts(session=None, opening=opening(first_request=False), prompt_tokens=6440, seen_tokens=6400, seen_of=6500, seen_at=NOW, engine=engine(6400, 6400)))
+    check(quiet["cause"] is None, f"and a prefill of no more than a block needs no cause: {quiet}")
+    restarted = miss_ledger.Ledger().entry(facts(opening=opening(first_request=False), prompt_tokens=46900, seen_tokens=0, seen_of=0, seen_at=None, engine=engine(0, 0)))
+    check(restarted["cause"] == "unattributed" and restarted["tail_tokens"] is None and restarted["resumed_tokens"] == 0 and restarted["session_turn"] == 1,
+          f"a follow-up the ledger has never seen, as after a restart of the chat layer, has a cause for the whole prompt it prefilled: {restarted}")
+    covered = [miss_ledger.Ledger().entry(facts(opening=opening(first_request=first), session=session, prompt_tokens=30000, seen_tokens=seen, seen_of=seen, seen_at=NOW if seen else None,
+                                                 engine=engine(matched, resumed)))
+               for first in (True, False) for session in (None, ("own", "s7", "a1", "main")) for seen in (0, 12800) for matched, resumed in ((0, 0), (12800, 12800), (12800, 4096))]
+    check(all(entry["cause"] is not None for entry in covered if 30000 - entry["resumed_tokens"] - (entry["tail_tokens"] or 0) > 64) and len(covered) == 24,
+          f"every request that prefilled more than a block beyond the tail the ledger knows has a cause: {[(entry['cause'], entry['tail_tokens'], entry['resumed_tokens']) for entry in covered if entry['cause'] is None]}")
     check(set(entry) == set(first_fields()) and all(not isinstance(value, (list, dict)) for value in entry.values()), "a ledger entry is a flat set of counts, times and names")
 
 
