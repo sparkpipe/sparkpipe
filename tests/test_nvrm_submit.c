@@ -9,6 +9,8 @@
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_rm.h"
 #include "nvstatus.h"
+#include "ctrl/ctrl0000/ctrl0000gpu.h"
+#include "nvmisc.h"
 
 #define MW(range) range
 #include "classes/compute/clcec0qmd.h"
@@ -431,8 +433,19 @@ static void TestStatus(void)
 	CHECK(SparkNvrmRmStatus(NV_ERR_INVALID_OBJECT_HANDLE,"status","test") == SPARK_STATUS_INVALID_ARGUMENT,"a bad handle is an invalid argument");
 }
 
+static void TestIntegrated(void)
+{
+	const uint32_t soc = DRF_DEF(0000_CTRL_GPU,_ID_INFO,_SOC,_TRUE);
+	const uint32_t igpu = DRF_DEF(0000_CTRL_GPU,_ID_INFO,_SOC_TYPE,_IGPU);
+	const uint32_t ats = DRF_DEF(0000_CTRL_GPU,_ID_INFO,_ATS_ENABLED,_TRUE);
+	CHECK(SparkNvrmGpuIntegrated(soc) == 1u && SparkNvrmGpuIntegrated(soc | igpu | ats) == 1u,"a GPU the module calls an SoC is integrated");
+	CHECK(SparkNvrmGpuIntegrated(0u) == 0u && SparkNvrmGpuIntegrated(ats) == 0u && SparkNvrmGpuIntegrated(igpu) == 0u,
+		"a GPU the module does not call an SoC is not, whatever its other identity flags");
+}
+
 int main(void)
 {
+	TestIntegrated();
 	TestPush();
 	TestSubmit();
 	TestReclaim();

@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
+#include "nvmisc.h"
 #include "nv-ioctl.h"
 #include "nv_escape.h"
 #include "nvos.h"
@@ -87,6 +88,11 @@ static SparkStatus GpuSelectCard(SparkNvrmGpu *gpu, uint32_t ordinal, const char
 	return(SPARK_STATUS_OK);
 }
 
+uint32_t SparkNvrmGpuIntegrated(uint32_t gpu_flags)
+{
+	return(DRF_VAL(0000_CTRL_GPU,_ID_INFO,_SOC,gpu_flags) == NV0000_CTRL_GPU_ID_INFO_SOC_TRUE ? 1u : 0u);
+}
+
 static SparkStatus GpuIdentify(SparkNvrmGpu *gpu, const char *owner)
 {
 	NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS identity;
@@ -97,6 +103,7 @@ static SparkStatus GpuIdentify(SparkNvrmGpu *gpu, const char *owner)
 	identity.gpuId = gpu->gpu_id;
 	GPU_TRY(SparkNvrmRmControl(&gpu->rm,gpu->rm.client,NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2,&identity,(uint32_t)sizeof(identity),owner));
 	gpu->instance = identity.deviceInstance;
+	gpu->integrated = SparkNvrmGpuIntegrated(identity.gpuFlags);
 	memset(&device,0,sizeof(device));
 	device.deviceId = gpu->instance;
 	device.hClientShare = gpu->rm.client;

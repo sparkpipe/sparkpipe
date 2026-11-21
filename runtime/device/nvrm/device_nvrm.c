@@ -114,8 +114,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_group_threads = NVRM_GROUP_THREADS;
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
-	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES |
-		SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS;
+	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
+		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
 }
 

@@ -97,6 +97,7 @@ typedef struct SparkNvrmGpu
 	uint32_t minor;
 	uint32_t gpu_id;
 	uint32_t instance;
+	uint32_t integrated;
 	uint32_t device;
 	uint32_t subdevice;
 	uint32_t virtual_memory;
@@ -138,6 +139,7 @@ typedef struct SparkNvrmGpu
 	uint64_t local_window;
 } SparkNvrmGpu;
 
+uint32_t SparkNvrmGpuIntegrated(uint32_t gpu_flags);
 SparkStatus SparkNvrmGpuOpen(SparkNvrmGpu *gpu, uint32_t ordinal, SparkNvrmMemoryKind control_kind, const char *owner);
 SparkStatus SparkNvrmAddressOpen(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes, const char *owner);
 void SparkNvrmAddressClose(SparkNvrmGpu *gpu);

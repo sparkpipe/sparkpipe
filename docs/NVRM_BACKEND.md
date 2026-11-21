@@ -385,8 +385,15 @@ branch loads the fixture cubin,
 checks the reported layout, refuses bindings and a wrong-sized block, and
 reads back a launch. It also creates, launches and destroys a kernel with
 a 2000-byte name, launches a 4104-byte and a 32,764-byte parameter block
-and reads every word back, and refuses a block 4 bytes over the limit. The backend adopts no foreign memory or queue, and
-a queue it owns is never captured into a graph.
+and reads every word back, and refuses a block 4 bytes over the limit.
+`SPARK_DEVICE_PROPERTY_SHARED_ADDRESS` is always set. The backend sets
+`SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY` only when the module reports the GPU as
+an SoC: bit `NV0000_CTRL_GPU_ID_INFO_SOC` of the identity's `gpuFlags`,
+from `NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2`. GB10 reports it. A discrete GPU
+does not, so on one the backend makes no claim of host-coherent memory,
+as the CUDA backend does from its integrated flag. The backend adopts no
+foreign memory or queue, and a queue it owns is never captured into a
+graph.
 
 Every channel registers with unified memory before anything is
 submitted on it, and the backend never schedules a single channel: the
