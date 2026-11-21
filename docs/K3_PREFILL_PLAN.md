@@ -250,6 +250,21 @@ by more than the BF16 peak allows.
   tokens, so the threshold is about 64K now and about 32K after lever 4. On
   2026-11-07 a 33K prompt took 282 s through 2,048-row passes against about
   66 s in waves.
+- Open: reuse across turns. The exact-reuse rule (draft #1972, TECHDEBT
+  "Exact reuse") says a request's tokens must not depend on what the cache
+  held, and streamed arithmetic is not wave arithmetic. Today the batch
+  engine streams whatever follows the cached prefix
+  (`SparkModelBatchDecideDefer`): the span starts where the cache ended,
+  ends at the prompt's checkpoint rather than at the request's cuts, and
+  splits into passes from its own start, and the blocks it writes are
+  published for later requests. Under the rule a prompt that streams is
+  computed whole every time instead: it resumes from nothing and nothing
+  resumes from it, so on a lane that streams every follow-up turn of a long
+  session pays the full pass again (about 480 s at 1M in BF16). Reuse needs
+  the streamed span to end at the request's cuts and its passes to split at
+  fixed positions, so that a resumed request computes what a cold one does.
+  No lane in `deployment/lanes.json` streams today, so nothing breaks yet;
+  this has to be settled before one does.
 
 ## 5. The TP16 wave path, below the threshold
 
