@@ -107,11 +107,11 @@ static SparkStatus GpuIdentify(SparkNvrmGpu *gpu, const char *owner)
 	NV0000_CTRL_GPU_GET_ID_INFO_V2_PARAMS identity;
 	NV0080_ALLOC_PARAMETERS device;
 	NV2080_ALLOC_PARAMETERS subdevice;
+	GPU_TRY(SparkNvrmRmOpenDevice(&gpu->rm,gpu->minor,&gpu->device_fd,owner));
 	memset(&identity,0,sizeof(identity));
 	identity.gpuId = gpu->gpu_id;
 	GPU_TRY(SparkNvrmRmControl(&gpu->rm,gpu->rm.client,NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2,&identity,(uint32_t)sizeof(identity),owner));
 	gpu->instance = identity.deviceInstance;
-	GPU_TRY(SparkNvrmRmOpenDevice(&gpu->rm,gpu->minor,&gpu->device_fd,owner));
 	memset(&device,0,sizeof(device));
 	device.deviceId = gpu->instance;
 	device.hClientShare = gpu->rm.client;

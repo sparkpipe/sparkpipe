@@ -161,8 +161,11 @@ module's device files:
    `SPARK_STATUS_TARGET_MISMATCH`, naming the loaded version and the one
    the backend is built for.
 2. **Device.** Allocate a root client and pick the GPU from the module's
-   card list. Open and register `/dev/nvidia<minor>`, then allocate the
-   device and subdevice.
+   card list. Open and register `/dev/nvidia<minor>` before asking for the
+   GPU's identity: the first open of a GPU's device file initializes it,
+   and until then the module knows no GPU by that id (on a host without a
+   persistence daemon nothing else has opened it). Then allocate the device
+   and subdevice.
 3. **Classes.** Require the Blackwell compute B, GPFIFO A, copy B and Hopper
    usermode classes from the device's class list, and read the GPC, TPC,
    SM and warp counts and the SM version.
