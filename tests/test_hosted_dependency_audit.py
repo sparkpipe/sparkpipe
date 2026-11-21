@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,17 @@ def compile_program(output, source, libraries=(), flags=()):
     subprocess.run(command, check=True)
     source_path.unlink()
     return output
+
+
+def device_image(payload=b""):
+    strings = b"\0.text.spark_fixture_kernel\0.nv.info\0spark_fixture_kernel\0" + payload
+    header_size, program_size, programs = 64, 56, 2
+    data_offset = header_size + program_size * programs
+    header = struct.pack("<4sBBBBB7sHHIQQQIHHHHHH", b"\x7fELF", 2, 1, 1, 0x33, 7, bytes(7), 2, 190, 1, 0,
+                         header_size, 0, 0x790579, header_size, program_size, programs, 64, 0, 0)
+    phdr = struct.pack("<IIQQQQQQ", 6, 4, header_size, 0, 0, program_size * programs, program_size * programs, 8)
+    load = struct.pack("<IIQQQQQQ", 1, 5, data_offset, 0, 0, len(strings), len(strings), 8)
+    return header + phdr + load + strings
 
 
 def dpkg_status(packages, states=None):
@@ -258,6 +270,21 @@ class ReleaseRootTest(unittest.TestCase):
         code, document = run_audit("root", str(root))
         self.assertEqual(code, 1)
         self.assertEqual({(kind, path) for kind, path, detail in kinds(document)}, {("unparsed", "bin/engine")})
+
+    def test_device_code_images_beside_a_module_pass_and_are_still_scanned(self):
+        root = self.root("clean")
+        write(root / "bin" / "sparkpipe_model_api", "#!/bin/sh\nexit 0\n", 0o755)
+        kernels = root / "bin" / "sparkpipe_model_api.kernels"
+        write(kernels / "spark_fixture.sm_121a.cubin", device_image())
+        write(kernels / "spark_fixture.sm_121a.manifest", "nvcc 13.0.88\nflags -O3 -gencode arch=compute_121a,code=sm_121a -cubin\nkernel spark_fixture_kernel\n")
+        with open(kernels / "spark_fixture.sm_121a.cubin", "rb") as image:
+            self.assertEqual(MODULE.elf_dynamic(image), ([], "", []))
+        code, document = run_audit("root", str(root))
+        self.assertEqual((code, document["findings"]), (0, []))
+        write(kernels / "spark_fixture.sm_121a.cubin", device_image(b"libcuda.so.1\0"))
+        code, document = run_audit("root", str(root))
+        self.assertEqual(code, 1)
+        self.assertEqual(kinds(document), {("library-string", "bin/sparkpipe_model_api.kernels/spark_fixture.sm_121a.cubin", "libcuda.so.1")})
 
     def test_unparseable_elf_header_fails(self):
         root = self.root("dirty")
