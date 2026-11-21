@@ -1840,6 +1840,16 @@ def structure_cuts(replay, total, opening=()):
     return sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
 
 
+def request_positions(value, name, total):
+    if value is None:
+        return []
+    if (not isinstance(value, list) or len(value) > ENGINE_MAX_CUTS or
+            any(isinstance(position, bool) or not isinstance(position, int) or not 0 < position < total for position in value) or
+            any(later <= earlier for earlier, later in zip(value, value[1:]))):
+        raise RequestError(400, "invalid_request", f"{name} must be an array of at most {ENGINE_MAX_CUTS} rising token counts inside the prompt")
+    return list(value)
+
+
 def opening_cuts(model, messages, tools, kwargs, pack, ids):
     found = model.opening(messages, tools, kwargs, pack)
     if found is None:
@@ -1903,8 +1913,9 @@ class MemoryHost:
         return {"tokens": self.frontend.memory_count(self.model(request), request["text"])}
 
     async def complete(self, request):
-        return {"text": await self.frontend.memory_complete(self.model(request), request["ids"], request["max_tokens"], request["reasoning_open"], request["kind"],
-                                                            request["trace"])}
+        ids = request["ids"]
+        return {"text": await self.frontend.memory_complete(self.model(request), ids, request["max_tokens"], request["reasoning_open"], request["kind"], request["trace"],
+                                                            request_positions(request.get("cuts"), "cuts", len(ids)), request_positions(request.get("keep"), "keep", len(ids)))}
 
 
 def utc_stamp(moment):
@@ -3230,8 +3241,12 @@ class Frontend:
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None, cuts=(), keep=()):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
+        if cuts:
+            body["cuts"] = list(cuts)
+        if keep:
+            body["keep"] = list(keep)
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []

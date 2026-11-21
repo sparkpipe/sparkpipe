@@ -118,6 +118,21 @@ frontend.gated_events = capture
 background = asyncio.run(frontend.memory_complete(fork, [1, 3, 6, 7], 4))
 check(captured and all(name not in captured[-1] for name in ("cache_points", "cuts", "keep")),
       f"a background completion that shares a prefix names no cut either: {sorted(captured[-1]) if captured else None}")
+host = chat_frontend.MemoryHost(frontend)
+frontend.models = {"fake": fork}
+request = {"model": {"id": "fake"}, "ids": [1, 3, 6, 7, 8], "max_tokens": 4, "reasoning_open": False, "kind": "background", "trace": None}
+asyncio.run(host.complete(dict(request, cuts=[2, 4], keep=[2])))
+check(captured[-1].get("cuts") == [2, 4] and captured[-1].get("keep") == [2],
+      f"a host completion that names where its shared view ends passes the cuts and the kept cut to the engine: {captured[-1].get('cuts')} {captured[-1].get('keep')}")
+asyncio.run(host.complete(request))
+check(all(name not in captured[-1] for name in ("cuts", "keep")), "the fields are optional: a host completion without them names none")
+for wrong in ({"cuts": [4, 2]}, {"cuts": [0]}, {"cuts": [5]}, {"keep": [2, 2]}, {"cuts": "2"}, {"cuts": [True]}, {"keep": [1.5]}):
+    try:
+        asyncio.run(host.complete(dict(request, **wrong)))
+        refused = None
+    except chat_frontend.RequestError as error:
+        refused = (error.status, error.code)
+    check(refused == (400, "invalid_request"), f"cuts and keep must be rising token counts inside the prompt, as on the engine API: {wrong} gave {refused}")
 
 for failure in failures:
     print("FAIL test_chat_frontend_prefix_ledger: " + failure)
