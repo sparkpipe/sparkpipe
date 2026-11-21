@@ -83,7 +83,7 @@ static int Load(Light *light, const char *path)
 		printf("FAIL %s holds no SparkNvrmFirstLight kernel\n",path);
 		return(1);
 	}
-	if ( SparkNvrmMemoryAllocate(&light->gpu,LIGHT_BLOCKS * LIGHT_THREADS * 4u,SPARK_NVRM_MEMORY_HOST,&light->output,"output") != SPARK_STATUS_OK ||
+	if ( SparkNvrmMemoryAllocate(&light->gpu,LIGHT_BLOCKS * LIGHT_THREADS * sizeof(uint32_t),SPARK_NVRM_MEMORY_HOST,&light->output,"output") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&light->gpu,SparkNvrmLaunchSlotBytes(light->kernel),SPARK_NVRM_MEMORY_HOST,&light->launch,"launch") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&light->gpu,SPARK_NVRM_PAGE_BYTES,SPARK_NVRM_MEMORY_HOST,&light->semaphore,"semaphore") != SPARK_STATUS_OK )
 		return(Failed("allocate launch memory"));
@@ -95,13 +95,13 @@ static int Launch(Light *light, uint32_t value, uint64_t round, uint64_t *nanose
 	SparkNvrmChannel *channel = &light->gpu.compute;
 	volatile uint64_t *semaphores = (volatile uint64_t *)(void *)light->semaphore.cpu;
 	SparkNvrmLaunchRequest request;
-	uint8_t arguments[12];
+	uint8_t arguments[sizeof(uint64_t) + sizeof(uint32_t)];
 	uint32_t index;
 	const uint64_t first = channel->push_used,output = light->output.address;
 	uint64_t start;
-	memcpy(arguments,&output,8u);
-	memcpy(arguments + 8u,&value,4u);
-	memset(light->output.cpu,0xee,(size_t)(LIGHT_BLOCKS * LIGHT_THREADS * 4u));
+	memcpy(arguments,&output,sizeof(output));
+	memcpy(arguments + sizeof(output),&value,sizeof(value));
+	memset(light->output.cpu,0xee,(size_t)LIGHT_BLOCKS * LIGHT_THREADS * sizeof(uint32_t));
 	memset(&request,0,sizeof(request));
 	request.kernel = light->kernel;
 	request.grid[0] = LIGHT_BLOCKS;

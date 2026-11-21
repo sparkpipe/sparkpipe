@@ -8,6 +8,8 @@
 
 #define BANDWIDTH_BLOCKS_PER_SM 4u
 #define BANDWIDTH_ROUNDS_MAX 256u
+#define BANDWIDTH_SINK_BYTES 4096u
+#define BANDWIDTH_ELEMENT_BYTES sizeof(uint4)
 
 static int Check(cudaError_t error, const char *step)
 {
@@ -70,11 +72,11 @@ int main(int argc, char **argv)
 	}
 	if ( rounds == 0u || rounds > BANDWIDTH_ROUNDS_MAX || bytes == 0u )
 		return(2);
-	const uint64_t count = bytes / 16u;
+	const uint64_t count = bytes / BANDWIDTH_ELEMENT_BYTES;
 	if ( Check(cudaDeviceGetAttribute(&sms,cudaDevAttrMultiProcessorCount,0),"read the SM count") != 0 ||
 		Check(cudaMalloc((void **)&source,bytes),"cudaMalloc the source") != 0 ||
 		Check(cudaMalloc((void **)&destination,bytes),"cudaMalloc the destination") != 0 ||
-		Check(cudaMalloc((void **)&sink,4096u),"cudaMalloc the sink") != 0 )
+		Check(cudaMalloc((void **)&sink,BANDWIDTH_SINK_BYTES),"cudaMalloc the sink") != 0 )
 		return(1);
 	const uint32_t blocks = (uint32_t)sms * BANDWIDTH_BLOCKS_PER_SM;
 	printf("cuda memory bandwidth: %d SMs, %u blocks of %u threads\npath cudaMalloc, %llu MiB per buffer\n",sms,blocks,SPARK_NVRM_FIXTURE_STREAM_THREADS,

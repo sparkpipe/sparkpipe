@@ -61,7 +61,7 @@ static uint64_t ChannelRound(uint64_t value, uint64_t unit)
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner)
 {
 	uint32_t *at;
-	const uint64_t bytes = 4u * ((uint64_t)count + 1u);
+	const uint64_t bytes = sizeof(uint32_t) * ((uint64_t)count + 1u);
 	if ( count == 0u || count > CHANNEL_METHOD_COUNT_MAX || (method & 3u) != 0u || subchannel > 7u )
 	{
 		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"submit",owner,0,"a method needs 1 to 8191 words, a word-aligned address and a subchannel below 8");
@@ -75,7 +75,7 @@ SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32
 	at = (uint32_t *)(void *)(channel->push.cpu + channel->push_used);
 	at[0] = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_DMA_SEC_OP,NVC56F_DMA_SEC_OP_INC_METHOD) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_COUNT,count) |
 		SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_SUBCHANNEL,subchannel) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_ADDRESS,method >> 2));
-	memcpy(at + 1,values,(size_t)count * 4u);
+	memcpy(at + 1,values,(size_t)count * sizeof(*values));
 	channel->push_used += bytes;
 	return(SPARK_STATUS_OK);
 }
@@ -83,8 +83,8 @@ SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t first_byte, const char *owner)
 {
 	volatile uint64_t *ring = (volatile uint64_t *)(void *)channel->control.cpu;
-	volatile uint32_t *put = (volatile uint32_t *)(void *)(channel->control.cpu + (uint64_t)channel->entries * 8u + offsetof(Nvc96fControl,GPPut));
-	const uint64_t words = (channel->push_used - first_byte) / 4u;
+	volatile uint32_t *put = (volatile uint32_t *)(void *)(channel->control.cpu + (uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE + offsetof(Nvc96fControl,GPPut));
+	const uint64_t words = (channel->push_used - first_byte) / sizeof(uint32_t);
 	const uint64_t address = channel->push.address + first_byte;
 	if ( words == 0u || first_byte > channel->push_used || address >> 40 != 0u )
 	{
@@ -162,7 +162,7 @@ static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, 
 	made.gpFifoEntries = channel->entries;
 	made.hContextShare = gpu->context_share;
 	made.hUserdMemory[0] = channel->control.handle;
-	made.userdOffset[0] = (uint64_t)channel->entries * 8u;
+	made.userdOffset[0] = (uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE;
 	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->channel_group,gpu->gpfifo_class,&made,(uint32_t)sizeof(made),&channel->handle,owner));
 	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,channel->handle,gpu->compute_class,0,0u,&channel->engine,owner));
 	memset(&token,0,sizeof(token));
@@ -229,7 +229,7 @@ SparkStatus SparkNvrmChannelOpen(SparkNvrmGpu *gpu, SparkNvrmMemoryKind control_
 	share.flags = NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_ASYNC;
 	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->channel_group,FERMI_CONTEXT_SHARE_A,&share,(uint32_t)sizeof(share),&gpu->context_share,owner));
 	channel->entries = SPARK_NVRM_CHANNEL_ENTRIES;
-	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,(uint64_t)channel->entries * 8u + CHANNEL_USERD_BYTES,control_kind,&channel->control,owner));
+	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,(uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE + CHANNEL_USERD_BYTES,control_kind,&channel->control,owner));
 	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,CHANNEL_NOTIFIER_BYTES,SPARK_NVRM_MEMORY_SYSTEM_UNCACHED,&channel->notifier,owner));
 	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,SPARK_NVRM_PUSH_BYTES,SPARK_NVRM_MEMORY_HOST,&channel->push,owner));
 	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,CHANNEL_FENCE_BYTES,SPARK_NVRM_MEMORY_HOST,&channel->fence,owner));

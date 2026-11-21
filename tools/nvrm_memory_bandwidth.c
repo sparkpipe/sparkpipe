@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,12 @@
 #define BANDWIDTH_TIMEOUT_NS 30000000000ull
 #define BANDWIDTH_SAMPLES 4096u
 #define BANDWIDTH_ROUNDS_MAX 256u
+#define BANDWIDTH_ELEMENT_BYTES (4u * sizeof(uint32_t))
+
+typedef struct ReadArguments { uint64_t source; uint64_t count; uint64_t sink; } ReadArguments;
+typedef struct CopyArguments { uint64_t source; uint64_t destination; uint64_t count; } CopyArguments;
+typedef struct FillArguments { uint64_t destination; uint64_t count; uint32_t value; } FillArguments;
+#define FILL_ARGUMENT_BYTES ((uint32_t)(offsetof(FillArguments,value) + sizeof(uint32_t)))
 
 typedef struct Bench
 {
@@ -110,10 +117,12 @@ static int Measure(Bench *bench, const char *label, const SparkNvrmCubinKernel *
 static int MeasurePath(Bench *bench, SparkNvrmMemoryKind kind, const char *name, uint64_t bytes, uint32_t rounds)
 {
 	SparkNvrmMemory source,destination;
-	uint8_t arguments[24];
-	const uint64_t count = bytes / 16u;
+	const uint64_t count = bytes / BANDWIDTH_ELEMENT_BYTES;
 	const uint32_t value = 0x13572468u;
-	uint64_t nanoseconds = 0u,address;
+	FillArguments fill;
+	ReadArguments read;
+	CopyArguments copy;
+	uint64_t nanoseconds = 0u;
 	uint32_t index;
 	int result;
 	printf("path %s, %llu MiB per buffer\n",name,(unsigned long long)(bytes >> 20));
@@ -125,26 +134,28 @@ static int MeasurePath(Bench *bench, SparkNvrmMemoryKind kind, const char *name,
 		return(Failed("allocate the destination"));
 	}
 	printf("  pages %u bytes, source at %#llx\n",source.page_bytes,(unsigned long long)source.address);
-	memcpy(arguments,&source.address,8u);
-	memcpy(arguments + 8u,&count,8u);
-	memcpy(arguments + 16u,&value,4u);
-	result = Run(bench,bench->fill,arguments,20u,&nanoseconds);
+	memset(&fill,0,sizeof(fill));
+	fill.destination = source.address;
+	fill.count = count;
+	fill.value = value;
+	read.source = source.address;
+	read.count = count;
+	read.sink = bench->sink.address;
+	copy.source = source.address;
+	copy.destination = destination.address;
+	copy.count = count;
+	result = Run(bench,bench->fill,&fill,FILL_ARGUMENT_BYTES,&nanoseconds);
 	if ( result == 0 )
-	{
-		address = bench->sink.address;
-		memcpy(arguments + 16u,&address,8u);
-		result = Measure(bench,"read",bench->read,arguments,24u,bytes,rounds);
-	}
+		result = Measure(bench,"read",bench->read,&read,(uint32_t)sizeof(read),bytes,rounds);
 	if ( result == 0 )
-	{
-		memcpy(arguments + 8u,&destination.address,8u);
-		memcpy(arguments + 16u,&count,8u);
-		result = Measure(bench,"copy",bench->copy,arguments,24u,2u * bytes,rounds);
-	}
+		result = Measure(bench,"copy",bench->copy,&copy,(uint32_t)sizeof(copy),2u * bytes,rounds);
 	for (index = 0u; result == 0 && index < BANDWIDTH_SAMPLES; index++)
 	{
 		const uint64_t at = ((uint64_t)index * 2654435761u) % count;
-		if ( memcmp(source.cpu + at * 16u,destination.cpu + at * 16u,16u) != 0 || ((const uint32_t *)(void *)source.cpu)[at * 4u] != value )
+		const uint8_t *from = source.cpu + at * BANDWIDTH_ELEMENT_BYTES,*to = destination.cpu + at * BANDWIDTH_ELEMENT_BYTES;
+		uint32_t first;
+		memcpy(&first,from,sizeof(first));
+		if ( memcmp(from,to,BANDWIDTH_ELEMENT_BYTES) != 0 || first != value )
 		{
 			printf("FAIL the copy differs from its source at element %llu\n",(unsigned long long)at);
 			result = 1;
