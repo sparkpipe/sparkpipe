@@ -66,6 +66,9 @@ class FakeModel(chat_frontend.Model):
     def render(self, messages, tools, kwargs):
         return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
+    def opening(self, messages, tools, kwargs, pack=None):
+        return None
+
 
 frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)
 model = FakeModel()
@@ -79,8 +82,9 @@ check(second["trace"]["seen_tokens"] == 3 and second["trace"]["seen_of"] == 5, "
 check(all(name not in plan["engine_body"] for plan in (first, second) for name in ("cache_points", "cuts", "keep")),
       "a first prompt and a prompt an earlier request carried whole name no cut: what the ledger has seen never reaches the engine")
 check(not hasattr(chat_frontend, "cache_points") and chat_frontend.structure_cuts(None, 9) == [] and
-      chat_frontend.structure_cuts({"cuts": [12, 4, 4, 0, 9, 7]}, 9) == [4, 7],
-      "cuts come from the turns the prompt replays: rising, distinct, inside the prompt")
+      chat_frontend.structure_cuts({"cuts": [12, 4, 4, 0, 9, 7]}, 9) == [4, 7] and chat_frontend.structure_cuts({"cuts": [7]}, 9, [3, 9]) == [3, 7] and
+      chat_frontend.structure_cuts(None, 9, [3]) == [3],
+      "cuts come from the prompt's opening and the turns it replays: rising, distinct, inside the prompt")
 
 
 class ForkModel(FakeModel):

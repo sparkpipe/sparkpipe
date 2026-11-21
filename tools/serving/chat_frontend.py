@@ -1031,6 +1031,7 @@ class Model:
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.stop_strings = list(spec["stop_tokens"])
         self.openings = OrderedDict()
+        self.opening_cache = OrderedDict()
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
         sequences = spec.get("sequences")
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
@@ -1073,6 +1074,47 @@ class Model:
                 return prefix + list(special), len(prefix)
             prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
         raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
+
+    def opening(self, messages, tools, kwargs, pack=None):
+        leading = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            leading.append({key: value for key, value in message.items() if key != chat_shapes.HANDLES})
+        key = hashlib.sha256(chat_replay.canonical([leading, tools or [], kwargs, pack[0] if pack else None]).encode()).digest()
+        if key in self.opening_cache:
+            self.opening_cache.move_to_end(key)
+            return self.opening_cache[key]
+        try:
+            found = self.opening_probe(leading, tools, kwargs, pack)
+        except RequestError:
+            found = None
+        self.opening_cache[key] = found
+        while len(self.opening_cache) > GENERATION_CACHE:
+            self.opening_cache.popitem(last=False)
+        return found
+
+    def opening_probe(self, leading, tools, kwargs, pack):
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        pattern = control_pattern(self.vocabulary)
+        text, pieces = self.renderer.pieces(leading + [{"role": "user", "content": GENERATION_PROBE}], tools, context)
+        marks = []
+        if pack is not None:
+            pieces = context_packs.splice(text, pieces, pack[1])
+            offset = 0
+            for piece, special in pieces:
+                offset += len(piece)
+                if not isinstance(special, bool):
+                    marks.append(offset)
+        probe = text.find(GENERATION_PROBE)
+        end = max((match.start() for start, stop, special in template_spans(pieces) if special and start < probe
+                   for match in pattern.finditer(text, start, min(stop, probe))), default=0) if pattern is not None else 0
+        marks = [mark for mark in marks if mark <= end] + [end]
+        if end <= 0:
+            return None
+        ids = encode_span(self, pieces, 0, end)
+        return ids, sorted({len(encode_span(self, pieces, 0, mark)) for mark in marks[:-1]} | {len(ids)})
 
     def generation_prompt(self, tools, kwargs):
         key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
@@ -1793,9 +1835,27 @@ class PrefixLedger:
             self.blocks.popitem(last=False)
 
 
-def structure_cuts(replay, total):
-    cuts = sorted({cut for cut in (replay or {}).get("cuts", ()) if 0 < cut < total})
+def structure_cuts(replay, total, opening=()):
+    cuts = sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
     return cuts[-ENGINE_MAX_CUTS:]
+
+
+def opening_cuts(model, messages, tools, kwargs, pack, ids):
+    found = model.opening(messages, tools, kwargs, pack)
+    if found is None:
+        return []
+    opening, ends = found
+    return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and ids[:end] == opening[:end]]
+
+
+def name_cuts(engine, replay, opening):
+    cuts = structure_cuts(replay, len(engine["prompt_token_ids"]), opening)
+    keep = [cut for cut in opening if cut in cuts]
+    if cuts:
+        engine["cuts"] = cuts
+    if keep:
+        engine["keep"] = keep
+    return cuts
 
 
 def commit_flag(body):
@@ -2785,9 +2845,7 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        cuts = structure_cuts(replay, len(engine["prompt_token_ids"]))
-        if cuts:
-            engine["cuts"] = cuts
+        cuts = name_cuts(engine, replay, opening_cuts(model, messages, tools, kwargs, pack, engine["prompt_token_ids"]))
         trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
@@ -3470,9 +3528,7 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        cuts = structure_cuts(replay, len(ids))
-        if cuts:
-            plan["engine_body"]["cuts"] = cuts
+        name_cuts(plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids))
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)

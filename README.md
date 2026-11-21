@@ -264,10 +264,13 @@ cache held (`docs/EXACTNESS_GATE.md`).
   next turn resumes where it ends. Both forms compute the reply in the same
   wave, so the tokens are the same. The setting is off for every model until
   gate GX has measured both.
-- The chat layer names the cuts: one token before each replayed reply began
-  and where it ends. `max_tokens: 0` on the Messages shape, or `commit_only`
-  on the Chat Completions and Responses shapes, is a commit; the answer is
-  one `cache.commit` object.
+- The chat layer names the cuts: where the prompt's opening ends (the
+  system turns and the tools), where a context pack ends, one token before
+  each replayed reply began and where it ends. It asks for state at the
+  first two, so another conversation with the same opening, or a request on
+  the same pack, resumes there. `max_tokens: 0` on the Messages shape, or
+  `commit_only` on the Chat Completions and Responses shapes, is a commit;
+  the answer is one `cache.commit` object.
 
 **Interactive first.** Every request is interactive or background. The
 class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)

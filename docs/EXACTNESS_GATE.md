@@ -17,8 +17,9 @@ them from the request and from nothing else.
 - **Cuts.** A wave ends at the next of: the row budget (whole blocks), a
   checkpoint anchor, a cut the request names, one token before the prompt's
   end, and the prompt's end. A request names its cuts in `cuts`: token
-  counts where its structure ends a wave. The chat layer names one token
-  before each replayed reply began and where it ends.
+  counts where its structure ends a wave. The chat layer names where the
+  prompt's opening ends, where a context pack ends, one token before each
+  replayed reply began and where it ends.
 - **Resume.** A request resumes only at a wave end of its own cold run, and
   only where every wave up to there is the same as in the run that left the
   state. The prefix index stores a tag of the waves with each resume point,

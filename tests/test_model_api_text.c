@@ -1385,7 +1385,36 @@ static void TestApiCommitAndCuts(TestApiStack *stack)
 	assert(TestApiResponseStatus(response) == 200);
 	body = TestApiResponseJsonBody(response);
 	assert(!TestApiBodyContains(body,"\"cached_tokens\":13"));
-	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; waves that end at cuts where no state is kept leave a chain the same request resumes one token before its end, and the same tokens without those cuts do not resume there; cuts and keep must be rising token counts)\n");
+	{
+		char session[768],expected[64];
+		uint32_t reply[4],count,index;
+		size_t length;
+		length = TestApiWriteTokens(session,sizeof(session),first - 1000u,14u);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":2}",session);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		count = TestApiScanTokenArray(body,reply,4u);
+		assert(count >= 1u && count <= 2u && TestApiBodyContains(body,"\"cached_tokens\":0"));
+		for (index=0u; index<count; index++)
+			length += (size_t)snprintf(session + length,sizeof(session) - length,",%u",reply[index]);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true,\"cuts\":[13]}",session);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		(void)snprintf(expected,sizeof(expected),"\"published_tokens\":%u",14u + count);
+		assert(TestApiBodyContains(body,"\"finish_reason\":\"commit\"") && TestApiBodyContains(body,"\"cached_tokens\":13") && TestApiBodyContains(body,expected));
+		for (index=0u; index<4u; index++)
+			length += (size_t)snprintf(session + length,sizeof(session) - length,",%u",first - 1000u + 20u + index);
+		assert(length < sizeof(session));
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[13,%u]}",session,14u + count);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		(void)snprintf(expected,sizeof(expected),"\"cached_tokens\":%u",14u + count);
+		assert(TestApiBodyContains(body,expected));
+	}
+	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; waves that end at cuts where no state is kept leave a chain the same request resumes one token before its end, and the same tokens without those cuts do not resume there; a reply committed with its prompt, naming one token before the prompt's end, resumes there, and the next turn resumes where the reply ends; cuts and keep must be rising token counts)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)

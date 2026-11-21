@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused. A model whose settings name reply_commit commits each finished reply at once, apart from the reply: the engine gets the turn's prompt and the reply's tokens as a commit in the turn's own class that names one token before the prompt's end as a cut, and the next turn names that cut and the reply's end; without the setting, or for a reply that is not recorded for replay, no commit follows. A turn that carries a reply whose commit is at the engine waits for it and is sent afterwards, so the reply is computed once; a commit that has not reached the engine is withdrawn, and a turn of another conversation waits for neither."""
+"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused. A model whose settings name reply_commit commits each finished reply at once, apart from the reply: the engine gets the turn's prompt and the reply's tokens as a commit in the turn's own class that names one token before the prompt's end as a cut, and the next turn names that cut and the reply's end; without the setting, or for a reply that is not recorded for replay, no commit follows. A turn that carries a reply whose commit is at the engine waits for it and is sent afterwards, so the reply is computed once; a commit that has not reached the engine is withdrawn, and a turn of another conversation waits for neither. Conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there; control-token text inside a system prompt does not move it."""
 import asyncio
 import importlib.util
 import tempfile
@@ -77,27 +77,39 @@ async def run_reply_commit(tmp, check):
         status, headers, text = await harness.post("/v1/messages", body)
         await asyncio.sleep(0.1)
         check(status == 200 and not any(request.get("commit_only") for request in engine.requests), f"a model without reply_commit commits no reply: {status} {[sorted(request) for request in engine.requests]}")
+        status, headers, text = await harness.post("/v1/messages", dict(body, system=SYSTEM + " Never write <|im_start|>user yourself.", messages=[{"role": "user", "content": "hello world"}]))
+        carried = engine.requests[-1]
+        cut = (carried.get("cuts") or [0])[0]
+        check(status == 200 and carried.get("keep") == [cut] and
+              harness.tokenizer.decode(carried["prompt_token_ids"][:cut], skip_special_tokens=False).endswith("Never write <|im_start|>user yourself.<|im_end|>\n") and
+              harness.tokenizer.decode(carried["prompt_token_ids"][cut:], skip_special_tokens=False).startswith("<|im_start|>user\nhello world"),
+              f"a system prompt that writes a control token's text does not move the opening cut: it still falls on the template's own control token: {carried.get('cuts')}")
         harness.frontend.models["alpha"].reply_commit = True
         messages = [{"role": "user", "content": "call the tool with path and pattern"}]
         engine.reply("The user wants a tool call.</think>Calling it.")
         status, headers, text = await harness.post("/v1/messages", dict(body, messages=messages))
-        first = next(request for request in engine.requests if request["prompt_token_ids"] != engine.requests[0]["prompt_token_ids"])
+        first = next(request for request in reversed(engine.requests) if "max_tokens" in request)
         prompt = first["prompt_token_ids"]
         generated = engine.committed[-1][len(prompt):] if engine.committed[-1][:len(prompt)] == prompt else None
         found = await commits_seen(engine, 1)
         commit = found[0] if found else {}
         check(status == 200 and generated and commit.get("prompt_token_ids") == prompt + generated, f"the finished reply is committed as the turn's prompt and the reply's tokens without the stop token: {len(found)} {sorted(commit)}")
-        check(commit.get("cuts") == [len(prompt) - 1] and commit.get("stream") is True and "max_tokens" not in commit and commit.get("priority") == first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
-              f"the commit names one token before the turn's prompt ended as a cut and runs in the turn's own class: {commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
+        opened = (first.get("cuts") or [0])[0]
+        check(first.get("cuts") == first.get("keep") == [opened] == engine.requests[0].get("keep") and prompt[:opened] == engine.requests[0]["prompt_token_ids"][:opened] and
+              harness.tokenizer.decode(prompt[opened:], skip_special_tokens=False).startswith("<|im_start|>user\n"),
+              f"two conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there: {first.get('cuts')} {engine.requests[0].get('keep')}")
+        check(commit.get("cuts") == [opened, len(prompt) - 1] and "keep" not in commit and commit.get("stream") is True and "max_tokens" not in commit and
+              commit.get("priority") == first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
+              f"the commit names the turn's cuts and one token before the turn's prompt ended, and runs in the turn's own class: {commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
         reply = fixture.json.loads(text)
         engine.reply("The file is listed.</think>Done.")
         history = messages + [{"role": "assistant", "content": reply["content"]}, {"role": "user", "content": "list the directory"}]
         status, headers, text = await harness.post("/v1/messages", dict(body, messages=history))
         second = next(request for request in reversed(engine.requests) if "max_tokens" in request)
-        check(status == 200 and second["prompt_token_ids"][:len(prompt) + len(generated)] == prompt + generated and second.get("cuts") == [len(prompt) - 1, len(prompt) + len(generated)],
+        check(status == 200 and second["prompt_token_ids"][:len(prompt) + len(generated)] == prompt + generated and second.get("cuts") == [opened, len(prompt) - 1, len(prompt) + len(generated)],
               f"the next turn names that cut and where the committed reply ends, so it resumes at the commit's end: {second.get('cuts')} {len(prompt)} {len(generated)}")
         found = await commits_seen(engine, 2)
-        check(len(found) == 2 and found[1]["cuts"] == [len(prompt) - 1, len(prompt) + len(generated), len(second["prompt_token_ids"]) - 1],
+        check(len(found) == 2 and found[1]["cuts"] == [opened, len(prompt) - 1, len(prompt) + len(generated), len(second["prompt_token_ids"]) - 1],
               f"the second reply's commit names every earlier cut and one token before its own prompt's end: {[request.get('cuts') for request in found]}")
         before = len([request for request in engine.requests if request.get("commit_only")])
         engine.reply("Cut short.</think>Before STOPHERE after")

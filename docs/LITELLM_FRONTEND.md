@@ -599,8 +599,24 @@ engine's cache up to the end of the previous reply. A forced tool choice
 stores its opening marker with the generated tokens.
 
 Cuts and commits (`docs/EXACTNESS_GATE.md`). The chat layer names the
-engine's `cuts` for the replies a prompt replays: one token before each
-replayed reply began and where it ends. `max_tokens: 0` on Messages, or
+engine's `cuts` from the prompt's structure:
+
+- where the opening ends: the leading system turns and the tools, up to the
+  control token that starts the first message. The chat layer finds it by
+  rendering the opening with a probe message, and names it only when the
+  prompt's tokens begin with the opening's tokens and it is at least one
+  cache block long;
+- where a context pack ends, which is where the pack's warm-up commit ended;
+- one token before each replayed reply began, and where the reply ends.
+
+It lists the first two in `keep`, so the engine keeps state there. Another
+conversation with the same system prompt and tools, or another request on
+the pack, then resumes at that cut instead of at the last checkpoint anchor
+before it. Cuts inside the opening (between system blocks, or between the
+system prompt and the tools) are not named, and a client's `cache_control`
+marks are still read and ignored (`TECHDEBT.md`, Exact reuse).
+
+`max_tokens: 0` on Messages, or
 `commit_only: true` on Chat Completions and Responses, is a commit. The
 prompt is planned as for any request, the engine computes it to its end and
 keeps the state there, and the answer is one `cache.commit` object (`model`,
@@ -830,13 +846,16 @@ it gets 404 for a name that exists elsewhere.
   version, then warms it in the background class (the priority
   `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
   as a commit (`commit_only`) whose prompt is the template's prefix and the
-  pack (`warm_prefix`). It warms
+  pack (`warm_prefix`). A request on the pack names the commit's end as a
+  cut, so it resumes exactly there. It warms
   once for each of the last four tool sets and template settings requests
-  used on the pack, or once with none. The engine's prefix cache reuses every
-  token before the first changed file; `last_refresh` reports that file, its
+  used on the pack, or once with none. A refreshed version's commit resumes
+  at the last wave end before the first changed file where the earlier
+  commit left state: a checkpoint anchor on a model with recurrent state, a
+  row-budget wave end on one without. `last_refresh` reports that file, its
   token offset (`changed_at`) and, per warm-up, the prompt and cached tokens
-  and `resume_from`, the model's `resume_tokens` boundary (default 64) before
-  the change. The alias moves to the new version only when every warm-up is
+  (what the engine reused) and `resume_from`, an estimate: the model's
+  `resume_tokens` boundary (default 64) before the change. The alias moves to the new version only when every warm-up is
   done, and a `pack.warm` line is logged. A refresh that arrives during one
   runs once more after it.
 - **Sessions.** The first request of a session pins the current warm

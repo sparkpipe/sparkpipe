@@ -1129,14 +1129,33 @@ as recorded debt for models too large for a group.
     none, so that request resumes at the last anchor or row-grid wave end it
     shares with the session. Derive the reply boundaries from the rendered
     prompt where the template puts a control token on the boundary.
-  - The opening has no cuts of its own yet: system blocks, the tool block and
-    the project context are rendered as one text and joined before
+  - The chat layer names one cut for the opening, where the system turns
+    and the tools end, and one where a context pack ends, and asks for state
+    at both. Inside the opening it names none: system blocks, the tool block
+    and the project context are rendered as one text and joined before
     tokenizing (`tools/serving/chat_shapes.py`), so a block boundary is not a
-    token boundary. A client's `cache_control` marks are read and ignored;
-    they should become `keep` at the cut where their block ends. Both need
-    the blocks tokenized apart, which changes the tokens at each join against
+    token boundary. Two conversations that share only the first system block
+    resume at the last checkpoint anchor inside it. A client's
+    `cache_control` marks are read and ignored; a mark inside the opening
+    should become a cut with `keep` where its block ends. That needs the
+    blocks tokenized apart, which changes the tokens at each join against
     the publisher's whole-text tokenization, or a boundary placed on a
-    control token.
+    control token. A mark on a message needs nothing: state is always kept
+    one token before the prompt's end, and a cut there that later turns did
+    not name would break their resume.
+  - The opening cut costs each request one render of the opening and a
+    digest of its system prompt and tools (cached by that digest). Not
+    measured.
+  - A pack's `resume_from` is an estimate from the model's `resume_tokens`
+    (64 for every model in `deployment/hub/chat_frontend.json`). A refreshed
+    pack resumes at a checkpoint anchor or a row-budget wave end, so the
+    estimate overstates. Set `resume_tokens` per model to the spacing of its
+    kept wave ends, or report the engine's cached tokens alone.
+  - The chat tests' engine stand-in (`tests/chat_harness_fixture.py`) reports
+    cached tokens by the longest prefix shared with any earlier prompt or
+    reply. The real engine resumes only at wave ends. Make the stand-in
+    follow the rules, as the gate's does (`tests/test_gx_gate.py`), so the
+    chat tests' cached counts are the engine's.
   - A lane with a streamed prefill computes every prompt that streams whole
     and shares none of it, so on such a lane a follow-up turn of a long
     prompt pays the whole prefill again. Reuse there needs the streamed
