@@ -88,6 +88,7 @@ class Engine:
         self.early_usage = True
         self.cache_all = False
         self.ignores_commit = False
+        self.commit_fails = False
         self.usage = []
         self.points = set()
         self.resumes = []
@@ -114,14 +115,14 @@ class Engine:
         strides = list(range(STRIDE, len(prompt), STRIDE))
         ends = sorted(set([cut for cut in body.get("cuts", []) if cut < len(prompt)] + strides + [final]))
         kept = set(strides) | set(body.get("keep", [])) | {final}
-        found = 0
+        found, left = 0, []
         for end in ends:
             key = (hashlib.sha256(json.dumps(prompt[:end]).encode()).hexdigest(), tuple(cut for cut in ends if cut <= end))
             if end < len(prompt) and key in self.points:
                 found = end
             if end in kept:
-                self.points.add(key)
-        return found
+                left.append(key)
+        return found, left
 
     def resumed(self, request):
         return next(self.resumes[index] for index, sent in enumerate(self.requests) if sent is request)
@@ -130,7 +131,10 @@ class Engine:
         body = await request.json()
         self.requests.append(body)
         prompt = body["prompt_token_ids"]
-        self.resumes.append(self.resume(prompt, body))
+        found, left = self.resume(prompt, body)
+        self.resumes.append(found)
+        if body.get("commit_only") is not True:
+            self.points.update(left)
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
@@ -143,6 +147,13 @@ class Engine:
             await response.prepare(request)
             if self.commit_hold is not None:
                 await self.commit_hold.wait()
+            if request.transport is None or request.transport.is_closing():
+                return response
+            if self.commit_fails:
+                await response.write(("data: " + json.dumps({"error": {"message": "the ranks refused the commit", "code": "engine_error"}}) + "\n\n").encode())
+                await response.write_eof()
+                return response
+            self.points.update(left)
             event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
                      "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
                                "published_tokens": len(prompt)}}

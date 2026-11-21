@@ -674,12 +674,20 @@ through the sequence gate and under the account that made the turn. The next
 turn then resumes where the reply ends, instead of computing the reply again
 while the user waits. A turn of the same account and member that arrives
 while its reply's commit is at the engine waits for it, so the reply is
-computed once; a commit that has not reached the engine is withdrawn and the
-turn computes the reply itself. A commit never wakes an engine that is down.
-Each one logs a `reply_commit` line with its prompt and cached tokens,
-seconds and outcome (`done`, `withdrawn`, `refused` or the engine's error
-code). The setting is off for every model until gate GX has measured both
-forms.
+computed once. The wait is bounded by the commit's own work: at most twice
+the time its tokens take at the model's measured prefill rate, and at least
+one second, counted from when the commit reached the engine. With no
+measured rate for a prompt of that size the turn does not wait. A commit
+that is still running when the wait ends, or that has not reached the
+engine, is withdrawn; one that fails is ignored. In each case the turn
+computes the reply itself, exactly as on a model without the setting, so a
+commit can never fail a turn or hold it. A commit never wakes an engine
+that is down. Each one logs a `reply_commit` line with its prompt and
+cached tokens, seconds and outcome (`done`, `withdrawn`, `refused` or the
+engine's error code). The setting is off for every model, and no model
+turns it on before gate GX and the turn floor have run both forms on that
+model; `tests/test_chat_frontend_commit.py` checks the served
+configuration.
 
 Working state and deletion (§3.2, Agreement 6.2). The store is a directory
 (`replay.directory`, mode 700 whoever created it) with one SQLite file per

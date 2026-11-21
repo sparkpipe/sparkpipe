@@ -94,6 +94,8 @@ PRIORITY_HEADER = "X-SparkPipe-Priority"
 PRIORITY_METADATA = "x-sparkpipe-priority"
 PRIORITY_CLASSES = ("interactive", "background")
 CANCEL_WAIT_SECONDS = 5.0
+REPLY_COMMIT_PATIENCE = 2.0
+REPLY_COMMIT_FLOOR_SECONDS = 1.0
 REQUEST_ID = re.compile(r"r_[0-9a-f]{24}")
 REQUEST_PATH = re.compile(r"/v1/requests/" + REQUEST_ID.pattern)
 FLEET_HEADER = "X-SparkPipe-Fleet"
@@ -466,8 +468,8 @@ async def heartbeat(events, interval):
 
 
 class ReplyCommit:
-    def __init__(self, model, gate, ids):
-        self.model, self.gate, self.ids, self.sent, self.task = model, gate, ids, False, None
+    def __init__(self, model, gate, ids, work=0):
+        self.model, self.gate, self.ids, self.work, self.sent, self.task = model, gate, ids, work, None, None
 
 
 class LiveRequest:
@@ -2550,7 +2552,7 @@ class Frontend:
             return
         plan["reply_committed"] = True
         cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
-        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens)
+        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens, len(tokens) + len(plan.get("forced_ids", [])) + 1)
         if len(cuts) > ENGINE_MAX_CUTS:
             return
         pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0],
@@ -2565,7 +2567,7 @@ class Frontend:
         try:
             await model.sequences.acquire(priority, None, scope, member)
             try:
-                pending.sent = True
+                pending.sent = time.monotonic()
                 body = {"prompt_token_ids": pending.ids, "stream": True, "commit_only": True, "priority": priority}
                 if cuts:
                     body["cuts"] = cuts
@@ -2599,10 +2601,23 @@ class Frontend:
         gate = plan.get("gate", (OWN_SCOPE, None))
         for pending in [pending for pending in self.reply_commits
                         if (pending.model, pending.gate) == (model.id, gate) and len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids]:
-            if pending.sent:
-                await asyncio.wait({pending.task})
-            else:
+            patience = self.reply_patience(model, pending)
+            if patience > 0:
+                await asyncio.wait({pending.task}, timeout=patience)
+            if not pending.task.done():
                 pending.task.cancel()
+                await asyncio.wait({pending.task}, timeout=CANCEL_WAIT_SECONDS)
+
+    def reply_patience(self, model, pending):
+        if pending.sent is None or self.replay is None:
+            return 0.0
+        try:
+            rate = self.replay.prefill_rate(model.id, len(pending.ids))
+        except chat_replay.STORE_ERRORS:
+            rate = None
+        if rate is None:
+            return 0.0
+        return max(0.0, pending.sent + max(REPLY_COMMIT_FLOOR_SECONDS, REPLY_COMMIT_PATIENCE * rate * pending.work / 1000) - time.monotonic())
 
     async def entered(self, model, plan, scope, member):
         if getattr(model, "reply_commit", False):
