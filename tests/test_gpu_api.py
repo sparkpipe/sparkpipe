@@ -53,14 +53,7 @@ EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 PENDING = {
     "node/model_residentd.c": 29,
     "ring/transport/tp_device_collective.c": 98,
-    "runtime/gemm.cuh": 27,
     "runtime/launch.h": 20,
-    "runtime/spark_weightd.c": 34,
-    "runtime/spark_weightd_attach.c": 2,
-    "runtime/spark_weightd_kv_pool.c": 6,
-    "runtime/spark_weightd_lazy_pack.c": 4,
-    "runtime/spark_weightd_map.c": 17,
-    "runtime/spark_weightd_spine.c": 3,
 }
 
 
