@@ -44,10 +44,11 @@ sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, HOME=os.p
 FAKE_SCP = r'''#!/usr/bin/env python3
 import os, shutil, sys
 fake = os.environ["FAKE_FLEET"]
-args = [a for a in sys.argv[1:] if a != "-q"]
+args = [a for a in sys.argv[1:] if not a.startswith("-")]
 target = args[-1].split(":", 1)[1].replace("/home/", fake + "/home/")
 for source in args[:-1]:
-    shutil.copy(source, os.path.join(target, os.path.basename(source)) if target.endswith("/") else target)
+    destination = os.path.join(target, os.path.basename(source)) if target.endswith("/") else target
+    shutil.copytree(source, destination) if os.path.isdir(source) else shutil.copy(source, destination)
 '''
 FAKE_REMOTE = r'''#!/usr/bin/env python3
 import os, subprocess, sys
@@ -124,6 +125,10 @@ class DirectPacks(unittest.TestCase):
             (firmware / name).write_text(name)
         (firmware / "runtime_libs").mkdir()
         (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("device")
+        kernels = firmware / (stage_lane.MODELS["dsv41_flash"]["adapter"] + ".kernels")
+        kernels.mkdir()
+        (kernels / "stage_runner.cubin").write_text("cubin")
+        (kernels / "stage_runner.manifest").write_text("manifest")
         environment = {"PATH": f"{binary}:{os.environ['PATH']}", "HOME": str(fake), "TMPDIR": scratch, "FAKE_FLEET": str(fake)}
         return fake, firmware, environment
 
