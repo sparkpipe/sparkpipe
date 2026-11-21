@@ -9,6 +9,7 @@
 #include "inference/runner/pass_prefill.cuh"
 #include "model-families/k3/source/streamed.cuh"
 #include "k3_weight_binds.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define K3_STREAMED_SHARDS LM_PASS_RANKS
 #define K3_STREAMED_HEADS (K3_MLA_HEADS / K3_STREAMED_SHARDS)
@@ -45,22 +46,22 @@ struct K3Streamed
 	uint32_t *key_pages;
 	uint8_t *mla_keys;
 
-	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream);
-	SparkStatus PassBegin(LmPass *p, const LmPassStep *step, cudaStream_t stream);
+	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, SparkGpuStream stream);
+	SparkStatus PassBegin(LmPass *p, const LmPassStep *step, SparkGpuStream stream);
 	uint64_t HelpCapacity(void) const { return mla.help_capacity; }
 	void HelpChanged(LmPass *p) { mla.help = p->balance.help_active != 0u ? p->balance.help : 0; }
 	uint16_t *Hidden(void) const { return b.hidden_bf16; }
-	SparkStatus Layer(LmPass *p, uint32_t layer, uint64_t dense_item, uint64_t *expert_item, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream);
+	SparkStatus Layer(LmPass *p, uint32_t layer, uint64_t dense_item, uint64_t *expert_item, uint32_t rows, uint32_t multiprocessors, SparkGpuStream stream);
 	void PassReport(LmPass *p, uint32_t pass);
-	SparkStatus End(LmPass *p, const SparkStageRunnerStreamedPrefill *request, cudaStream_t stream);
+	SparkStatus End(LmPass *p, const SparkStageRunnerStreamedPrefill *request, SparkGpuStream stream);
 };
 
 static void K3StreamedDestroy(K3Streamed *s)
 {
 	if ( s == 0 )
 		return;
-	cudaFree(s->mla_keys);
-	cudaFree(s->key_pages);
+	SparkGpuFree(s->mla_keys);
+	SparkGpuFree(s->key_pages);
 	LmPassDestroy(&s->pass);
 	delete s;
 }
@@ -241,7 +242,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	chunk_host = p->host_staging;
 	for (chunk = 0u; chunk < K3_STREAMED_CHUNKS; chunk++)
 		chunk_host[chunk] = chunk;
-	if ( cudaMemcpy((void *)s->kda.chunk_slots, chunk_host, K3_STREAMED_CHUNKS * sizeof(uint32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMemcpy((void *)s->kda.chunk_slots, chunk_host, K3_STREAMED_CHUNKS * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -362,10 +363,10 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	const uint64_t latent = keys * K3GlobalKv::kSlotBytes, expanded = block * K3StreamedHeadKv<K3_STREAMED_HEADS,K3GlobalKv>::kSlotBytes;
 	if ( keys <= s->key_capacity )
 		return SPARK_STATUS_OK;
-	cudaFree(s->mla_keys);
+	SparkGpuFree(s->mla_keys);
 	s->mla_keys = 0;
 	s->key_capacity = 0u;
-	if ( cudaMalloc((void **)&s->mla_keys, (size_t)(latent + expanded + older + 768u)) != cudaSuccess )
+	if ( SparkGpuMalloc((void **)&s->mla_keys, (size_t)(latent + expanded + older + 768u)) != SPARK_GPU_SUCCESS )
 	{
 		s->mla_keys = 0;
 		fprintf(stderr, "sparkpipe_k3: streamed prefill key buffers for %llu keys (%llu bytes) do not fit\n", (unsigned long long)keys,
@@ -384,15 +385,15 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	if ( s->dispatch->indexed != 0u )
 	{
 		const uint64_t pages = (keys + K3GlobalKv::kPageSlots - 1u) / K3GlobalKv::kPageSlots;
-		cudaFree(s->key_pages);
+		SparkGpuFree(s->key_pages);
 		s->key_pages = 0;
-		if ( cudaMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != cudaSuccess )
+		if ( SparkGpuMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 		{
 			s->key_pages = 0;
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		LM_LAUNCH((K3StreamedIdentityPagesKernel), (uint32_t)((pages + 255u) / 256u), 256u, 0, 0, s->key_pages, (uint32_t)pages);
-		if ( cudaDeviceSynchronize() != cudaSuccess )
+		if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		s->mla.key_pages = s->key_pages;
 	}
@@ -412,7 +413,7 @@ static SparkStatus K3StreamedShard(K3Streamed *s, uint32_t layer, uint32_t shard
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus K3Streamed::Layer(LmPass *p, uint32_t layer, uint64_t dense_item, uint64_t *expert_item, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+SparkStatus K3Streamed::Layer(LmPass *p, uint32_t layer, uint64_t dense_item, uint64_t *expert_item, uint32_t rows, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	const uint32_t kind = K3_LAYER_KIND(layer), kda_index = layer - layer / 4u;
 	uint8_t *rank_base[K3_STREAMED_SHARDS];
@@ -437,12 +438,12 @@ SparkStatus K3Streamed::Layer(LmPass *p, uint32_t layer, uint64_t dense_item, ui
 			mla.index_store.shard = dispatch->buffers_host->kv_shard;
 		}
 	}
-	if ( cudaEventRecord(p->marks[layer][0], stream) != cudaSuccess )
+	if ( SparkGpuEventRecord(p->marks[layer][0], stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = LmPassCheck(p, K3StreamedLayerAttention<LmMxfp4,K3GlobalKv,K3_STREAMED_HEADS>(&b, shards,
 		kind == LM_LAYER_RECURRENT ? &states[(uint64_t)kda_index * K3_STREAMED_SHARDS] : 0, K3_STREAMED_SHARDS, &kda, kind != LM_LAYER_RECURRENT ? &mla : 0,
 		&join, layer, partial, hidden_accumulator, rows, multiprocessors, stream), "attention", layer);
-	if ( status != SPARK_STATUS_OK || cudaEventRecord(p->marks[layer][1], stream) != cudaSuccess )
+	if ( status != SPARK_STATUS_OK || SparkGpuEventRecord(p->marks[layer][1], stream) != SPARK_GPU_SUCCESS )
 		return status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR;
 	if ( layer < K3_FIRST_ROUTED_LAYER )
 		status = LmPassCheck(p, K3StreamedDenseMlp<LmMxfp4>(&b, shards, K3_STREAMED_SHARDS, partial, hidden_accumulator, rows, multiprocessors, stream),
@@ -480,19 +481,19 @@ SparkStatus K3Streamed::Layer(LmPass *p, uint32_t layer, uint64_t dense_item, ui
 			status = LmPassCheck(p, K3StreamedMoeEnd<LmMxfp4>(&b, shards, K3_STREAMED_SHARDS, &join, latent_accumulator, rows, multiprocessors, stream),
 				"expert combine", layer);
 	}
-	if ( status == SPARK_STATUS_OK && cudaEventRecord(p->marks[layer][2], stream) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuEventRecord(p->marks[layer][2], stream) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	return status;
 }
 
-static SparkStatus K3StreamedStates(K3Streamed *s, uint32_t target, uint32_t to_slot, cudaStream_t stream)
+static SparkStatus K3StreamedStates(K3Streamed *s, uint32_t target, uint32_t to_slot, SparkGpuStream stream)
 {
 	const SparkK3Dispatch *d = s->dispatch;
 	const uint64_t heads = d->kda_rank_heads, slot_bytes = K3_KDA_RANK_STATE_SLOT_BYTES(heads, 0u);
 	const uint64_t qk = heads * K3_KDA_KEY_DIM * K3_KDA_CONV_KERNEL, v = heads * K3_KDA_VALUE_DIM * K3_KDA_CONV_KERNEL;
 	uint32_t layer, part;
-	cudaError_t error = cudaSuccess;
-	for (layer = 0u; layer < K3_KDA_LAYER_COUNT && error == cudaSuccess && s->pass.round.status == SPARK_STATUS_OK; layer++)
+	SparkGpuError error = SPARK_GPU_SUCCESS;
+	for (layer = 0u; layer < K3_KDA_LAYER_COUNT && error == SPARK_GPU_SUCCESS && s->pass.round.status == SPARK_STATUS_OK; layer++)
 	{
 		const uint64_t slot = (uint64_t)layer * d->sequences + target;
 		const K3StreamedKdaState *mine = &s->states[(uint64_t)layer * K3_STREAMED_SHARDS + s->pass.rank], *first = &s->states[(uint64_t)layer * K3_STREAMED_SHARDS];
@@ -501,19 +502,19 @@ static SparkStatus K3StreamedStates(K3Streamed *s, uint32_t target, uint32_t to_
 		uint8_t *const kept[4] = {mine->state_pool, (uint8_t *)mine->q_window, (uint8_t *)mine->k_window, (uint8_t *)mine->v_window};
 		uint8_t *const send[4] = {(uint8_t *)s->kda.summary_send, (uint8_t *)s->kda.tail_send, (uint8_t *)(s->kda.tail_send + qk), (uint8_t *)(s->kda.tail_send + 2u * qk)};
 		const uint64_t bytes[4] = {slot_bytes, qk * 2u, qk * 2u, v * 2u};
-		for (part = 0u; part < 4u && error == cudaSuccess; part++)
-			error = cudaMemcpyAsync(to_slot != 0u ? pool[part] : send[part], to_slot != 0u ? kept[part] : pool[part], (size_t)bytes[part], cudaMemcpyDeviceToDevice, stream);
-		if ( to_slot != 0u || error != cudaSuccess )
+		for (part = 0u; part < 4u && error == SPARK_GPU_SUCCESS; part++)
+			error = SparkGpuMemcpyAsync(to_slot != 0u ? pool[part] : send[part], to_slot != 0u ? kept[part] : pool[part], (size_t)bytes[part], SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream);
+		if ( to_slot != 0u || error != SPARK_GPU_SUCCESS )
 			continue;
 		LmPassRound(&s->pass.round, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(slot_bytes / 2u), s->kda.summary_send, first->state_pool);
 		LmPassRound(&s->pass.round, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(2u * qk + v), s->kda.tail_send, first->q_window);
 	}
-	if ( error != cudaSuccess )
+	if ( error != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return s->pass.round.status;
 }
 
-SparkStatus K3Streamed::Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, cudaStream_t stream)
+SparkStatus K3Streamed::Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, SparkGpuStream stream)
 {
 	SparkStatus status;
 	(void)p;
@@ -531,7 +532,7 @@ SparkStatus K3Streamed::Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *
 	return K3StreamedStates(this, request->state_target, 0u, stream);
 }
 
-SparkStatus K3Streamed::PassBegin(LmPass *p, const LmPassStep *step, cudaStream_t stream)
+SparkStatus K3Streamed::PassBegin(LmPass *p, const LmPassStep *step, SparkGpuStream stream)
 {
 	uint32_t *small = p->host_staging, chunk, row;
 	SparkStatus status;
@@ -559,13 +560,13 @@ SparkStatus K3Streamed::PassBegin(LmPass *p, const LmPassStep *step, cudaStream_
 		status = LmPassUpload((void *)mla.older_sequence, small + K3_STREAMED_CHUNKS + 7u, sizeof(uint32_t), stream);
 	if ( status == SPARK_STATUS_OK && index_context_device != 0 )
 		status = LmPassUpload(index_context_device + step->sequence_slot, small + K3_STREAMED_CHUNKS + 5u, sizeof(uint32_t), stream);
-	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	for (row = 0u; row < step->pass_rows && status == SPARK_STATUS_OK; row++)
 		small[row] = step->sequence_slot;
 	if ( status == SPARK_STATUS_OK )
 		status = LmPassUpload(store_sequence_device, small, (uint64_t)step->pass_rows * sizeof(uint32_t), stream);
-	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -582,24 +583,24 @@ void K3Streamed::PassReport(LmPass *p, uint32_t pass)
 	uint32_t layer;
 	for (layer = 0u; layer < K3_LAYERS; layer++)
 	{
-		if ( cudaEventElapsedTime(&part, p->marks[layer][0], p->marks[layer][1]) == cudaSuccess )
+		if ( SparkGpuEventElapsedTime(&part, p->marks[layer][0], p->marks[layer][1]) == SPARK_GPU_SUCCESS )
 			gpu[K3_LAYER_KIND(layer) == LM_LAYER_RECURRENT ? 1u : 0u] += part;
-		if ( cudaEventElapsedTime(&part, p->marks[layer][1], p->marks[layer][2]) == cudaSuccess )
+		if ( SparkGpuEventElapsedTime(&part, p->marks[layer][1], p->marks[layer][2]) == SPARK_GPU_SUCCESS )
 			gpu[2] += part;
-		if ( layer + 1u < K3_LAYERS && cudaEventElapsedTime(&part, p->marks[layer][2], p->marks[layer + 1u][0]) == cudaSuccess )
+		if ( layer + 1u < K3_LAYERS && SparkGpuEventElapsedTime(&part, p->marks[layer][2], p->marks[layer + 1u][0]) == SPARK_GPU_SUCCESS )
 			gpu[3] += part;
 	}
 	fprintf(stderr, "sparkpipe_k3: streamed prefill pass %u GPU: MLA attention %.1f s, KDA attention %.1f s, MLP and experts %.1f s, between layers %.1f s\n", pass + 1u,
 		gpu[0] / 1e3, gpu[1] / 1e3, gpu[2] / 1e3, gpu[3] / 1e3);
 }
 
-SparkStatus K3Streamed::End(LmPass *p, const SparkStageRunnerStreamedPrefill *request, cudaStream_t stream)
+SparkStatus K3Streamed::End(LmPass *p, const SparkStageRunnerStreamedPrefill *request, SparkGpuStream stream)
 {
 	(void)p;
 	return K3StreamedStates(this, request->state_target, 1u, stream);
 }
 
-static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, cudaStream_t stream)
+static SparkStatus K3StreamedRun(K3Streamed *s, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, SparkGpuStream stream)
 {
 	return LmPassRun(&s->pass, s, request, services, stream);
 }

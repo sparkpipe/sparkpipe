@@ -3,6 +3,7 @@
 #include "model-families/k3/source/layer.cuh"
 #include "inference/kernels/l2_load.cuh"
 #include "sparkpipe/spark_k3_family.h"
+#include "sparkpipe/spark_gpu.h"
 
 struct K3LayerWeights
 {
@@ -247,29 +248,29 @@ static void K3L2PlanAttention(const K3LayerBuffers *b, uint32_t layer, LmL2LoadP
 		LmL2LoadAdd(plan,b->mla_q_down_weight,(uint64_t)K3_Q_LORA_RANK * row);
 }
 
-static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t phase, const LmL2LoadPlan *plan, cudaStream_t stream)
+static int32_t K3L2LoadRound(const K3SliceState *state, uint32_t layer, uint32_t phase, const LmL2LoadPlan *plan, SparkGpuStream stream)
 {
 	void *stream_word = (void *)(uintptr_t)stream;
-	cudaStream_t side = (cudaStream_t)(uintptr_t)state->load_stream;
+	SparkGpuStream side = (SparkGpuStream)(uintptr_t)state->load_stream;
 	uint32_t forked = 0u;
-	cudaError_t error = cudaSuccess;
+	SparkGpuError error = SPARK_GPU_SUCCESS;
 	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_BEGIN);
 	if ( plan != 0 && plan->count != 0u && side != 0 && state->collective_published != 0 &&
 		state->collective_published(state->collective_context) != 0u )
 	{
-		error = cudaEventRecord((cudaEvent_t)state->load_fork,stream);
-		if ( error == cudaSuccess )
-			error = cudaStreamWaitEvent(side,(cudaEvent_t)state->load_fork,0u);
-		if ( error == cudaSuccess )
+		error = SparkGpuEventRecord((SparkGpuEvent)state->load_fork,stream);
+		if ( error == SPARK_GPU_SUCCESS )
+			error = SparkGpuStreamWaitEvent(side,(SparkGpuEvent)state->load_fork,0u);
+		if ( error == SPARK_GPU_SUCCESS )
 			error = LmL2LoadLaunch(plan,K3_L2_LOAD_BLOCKS,side);
-		if ( error == cudaSuccess )
-			error = cudaEventRecord((cudaEvent_t)state->load_join,side);
-		forked = error == cudaSuccess ? 1u : 0u;
+		if ( error == SPARK_GPU_SUCCESS )
+			error = SparkGpuEventRecord((SparkGpuEvent)state->load_join,side);
+		forked = error == SPARK_GPU_SUCCESS ? 1u : 0u;
 	}
 	state->layer_collective(state->collective_context,stream_word,layer,phase | K3_COLLECTIVE_FINISH);
 	if ( forked != 0u )
-		error = cudaStreamWaitEvent(stream,(cudaEvent_t)state->load_join,0u);
-	return(error == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		error = SparkGpuStreamWaitEvent(stream,(SparkGpuEvent)state->load_join,0u);
+	return(error == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t K3SliceFailure(uint32_t layer,const char *phase,int32_t status)
@@ -286,14 +287,14 @@ static uint32_t K3PairReady(const K3SliceState *state, const K3LayerBuffers *a, 
 		K3LayerMlaGatherReady(a,rows_a) != 0u && K3LayerMlaGatherReady(b,rows_b) != 0u ? 1u : 0u);
 }
 
-static int32_t K3PairFence(const K3SliceState *state, cudaStream_t waiter, cudaStream_t signaler)
+static int32_t K3PairFence(const K3SliceState *state, SparkGpuStream waiter, SparkGpuStream signaler)
 {
-	cudaEvent_t fence = (cudaEvent_t)state->pair_fence;
-	return(cudaEventRecord(fence,signaler) == cudaSuccess && cudaStreamWaitEvent(waiter,fence,0u) == cudaSuccess
+	SparkGpuEvent fence = (SparkGpuEvent)state->pair_fence;
+	return(SparkGpuEventRecord(fence,signaler) == SPARK_GPU_SUCCESS && SparkGpuStreamWaitEvent(waiter,fence,0u) == SPARK_GPU_SUCCESS
 		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static int32_t K3PairRound(const K3SliceState *state, void *lane, cudaStream_t main, cudaStream_t producer, cudaStream_t consumer, uint32_t layer, uint32_t phase, uint32_t split)
+static int32_t K3PairRound(const K3SliceState *state, void *lane, SparkGpuStream main, SparkGpuStream producer, SparkGpuStream consumer, uint32_t layer, uint32_t phase, uint32_t split)
 {
 	void *const word = (void *)(uintptr_t)main;
 	if ( K3PairFence(state,main,producer) != LM_LAUNCH_OK )
@@ -318,7 +319,7 @@ struct K3Cuda
 		const K3LayerWeights *weights;
 		const K3SliceState *state;
 		K3LayerBuffers *buffers[2];
-		cudaStream_t streams[3];
+		SparkGpuStream streams[3];
 		uint32_t rows[2];
 		uint32_t sequences;
 		uint32_t commit;
@@ -333,9 +334,9 @@ struct K3Cuda
 		return c.buffers[lane];
 	}
 
-	static cudaStream_t Stream(const Context &c, uint32_t stream)
+	static SparkGpuStream Stream(const Context &c, uint32_t stream)
 	{
-		return stream == K3_STREAM_NONE ? (cudaStream_t)0 : c.streams[stream];
+		return stream == K3_STREAM_NONE ? (SparkGpuStream)0 : c.streams[stream];
 	}
 
 	static void *CollectiveLane(const Context &c, uint32_t lane)
@@ -662,7 +663,7 @@ struct K3Cuda
 template<class Format, class Geometry>
 static void K3CudaContext(typename K3Cuda<Format,Geometry>::Context *c, const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a,
 	K3LayerBuffers *b, uint32_t rows_a, uint32_t rows_b, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
-	uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t multiprocessors, SparkGpuStream stream)
 {
 	memset(c, 0, sizeof(*c));
 	c->weights = weights;
@@ -680,7 +681,7 @@ static void K3CudaContext(typename K3Cuda<Format,Geometry>::Context *c, const K3
 }
 
 template<class Format, class Geometry>
-static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	typename K3Cuda<Format,Geometry>::Context c;
 	K3CudaContext<Format,Geometry>(&c, weights, state, buffers, (K3LayerBuffers *)0, rows, 0u, sequences, commit, packed_rows, context, multiprocessors,
@@ -689,12 +690,12 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 }
 
 template<class Format, class Geometry>
-static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a, uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchSlicePair(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *a, K3LayerBuffers *b, uint32_t first_layer, uint32_t layer_count, uint32_t rows_a, uint32_t rows_b, uint32_t commit, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	typename K3Cuda<Format,Geometry>::Context c;
 	K3CudaContext<Format,Geometry>(&c, weights, state, a, b, rows_a, rows_b, 1u, commit, 0u, 0u, multiprocessors, stream);
-	c.streams[K3_STREAM_A] = (cudaStream_t)state->pair_stream_a;
-	c.streams[K3_STREAM_B] = (cudaStream_t)state->pair_stream_b;
+	c.streams[K3_STREAM_A] = (SparkGpuStream)state->pair_stream_a;
+	c.streams[K3_STREAM_B] = (SparkGpuStream)state->pair_stream_b;
 	return(K3Schedule<K3Cuda<Format,Geometry>>::SlicePair(c, first_layer, layer_count));
 }
 
@@ -702,7 +703,7 @@ template<class Format, class Geometry>
 static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceState *state,
 	K3LayerBuffers *buffers, uint32_t layer, uint32_t phase, uint32_t rows,
 	uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context,
-	uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t multiprocessors, SparkGpuStream stream)
 {
 	typename K3Cuda<Format,Geometry>::Context c;
 	K3CudaContext<Format,Geometry>(&c, weights, state, buffers, (K3LayerBuffers *)0, rows, 0u, sequences, commit, packed_rows, context, multiprocessors,
@@ -711,7 +712,7 @@ static int32_t K3LaunchSliceHalf(const K3LayerWeights *weights, const K3SliceSta
 }
 
 template<class Format>
-static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin, const uint32_t *verify_row_indices, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin, const uint32_t *verify_row_indices, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	uint32_t layer;
 	(void)multiprocessors;
