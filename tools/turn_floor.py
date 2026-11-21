@@ -570,6 +570,76 @@ def markdown(summary):
     return "\n".join(lines)
 
 
+def entries(document, kind, event=None):
+    return [entry for entry in document["summary"] if entry["kind"] == kind and (event is None or entry.get("event") == event)]
+
+
+def seconds(value):
+    return "–" if value is None else f"{value / 1000:,.2f}"
+
+
+def floor_cell(entry):
+    if entry is None or entry["ttft_ms"] is None:
+        return "–"
+    part = (entry.get("largest_part") or "").replace("_ms", "").replace("_", " ")
+    return f"{seconds(entry['ttft_ms'])} ({part})" if part else seconds(entry["ttft_ms"])
+
+
+def report_tables(documents):
+    contexts = sorted({entry["context"] for document in documents for entry in entries(document, "turn")})
+    tails = sorted({entry["tail"] for document in documents for entry in entries(document, "turn")})
+    lines = []
+    for tail in [0] + tails:
+        title = "no new tokens (the decode sample)" if tail == 0 else f"{tail:,} new tokens"
+        lines += ["", f"First token on a cached session, {title}: seconds, with the largest part.", "",
+                  "| Model | " + " | ".join(f"{context:,}" for context in contexts) + " |", "| --- | " + " | ".join("---:" for _ in contexts) + " |"]
+        for document in documents:
+            found = {entry["context"]: entry for entry in (entries(document, "decode") if tail == 0 else entries(document, "turn")) if tail == 0 or entry["tail"] == tail}
+            lines.append(f"| {document['model']} | " + " | ".join(floor_cell(found.get(context)) for context in contexts) + " |")
+    lines += ["", "Parts of the first token with 50 new tokens, ms: send, queue, restore, prefill, first step.", "",
+              "| Model | " + " | ".join(f"{context:,}" for context in contexts) + " |", "| --- | " + " | ".join("---" for _ in contexts) + " |"]
+    for document in documents:
+        found = {entry["context"]: entry for entry in entries(document, "turn") if entry["tail"] == min(tails, default=None)}
+        lines.append(f"| {document['model']} | " + " | ".join("–" if context not in found else " / ".join(cell(found[context].get(name)) for name in PART_NAMES)
+                                                                 for context in contexts) + " |")
+    decode_contexts = sorted({entry["context"] for document in documents for entry in entries(document, "decode")})
+    lines += ["", "Plain decode, tok/s, by context.", "", "| Model | " + " | ".join(f"{context:,}" for context in decode_contexts) + " |",
+              "| --- | " + " | ".join("---:" for _ in decode_contexts) + " |"]
+    for document in documents:
+        found = {entry["context"]: entry for entry in entries(document, "decode")}
+        lines.append(f"| {document['model']} | " + " | ".join(cell((found.get(context) or {}).get("decode_tok_s"), 1) for context in decode_contexts) + " |")
+    lines += ["", "Cold events: seconds to the first token, with the tokens prefilled.", "",
+              "| Model | Opening | Second session, same opening | Subagent opening | Second subagent | After an engine restart | After a swap away and back |",
+              "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for document in documents:
+        cells = []
+        for kind, event in (("opening", None), ("opening_second", None), ("subagent", None), ("subagent_second", None), ("resume", "restart"), ("resume", "swap")):
+            found = entries(document, kind, event)
+            cells.append("–" if not found else f"{seconds(found[0]['ttft_ms'])} ({cell(found[0]['prefill_tokens'])} of {cell(found[0]['prompt_tokens'])})")
+        lines.append(f"| {document['model']} | " + " | ".join(cells) + " |")
+    lines += ["", "Restore, save and the wait behind one background wave.", "",
+              "| Model | Restore, s | Tokens restored | Restore tok/s | Rank restore, µs a page | Rank save, µs a page | Probe alone, ms | Behind a wave: median / max, ms | Background wave: rows, s |",
+              "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for document in documents:
+        resumes = [entry for entry in entries(document, "resume") if entry.get("restore_ms")]
+        restore = max(resumes, key=lambda entry: entry["restore_ms"]) if resumes else None
+        store = document.get("kv_store") or {}
+        behind, alone, wave = entries(document, "probe_behind"), entries(document, "probe_solo"), entries(document, "wave_background")
+        wait = (behind[0].get("wait_ms") or {}) if behind else {}
+        lines.append(f"| {document['model']} | {seconds(restore['restore_ms']) if restore else '–'} | {cell(restore['cached_tokens']) if restore else '–'} | "
+                     f"{cell(restore['cached_tokens'] / (restore['restore_ms'] / 1000)) if restore else '–'} | "
+                     f"{cell(store['restore_ns'] / store['restore_pages'] / 1000) if store.get('restore_pages') else '–'} | "
+                     f"{cell(store['save_ns'] / store['save_pages'] / 1000) if store.get('save_pages') else '–'} | {cell(alone[0]['ttft_ms']) if alone else '–'} | "
+                     f"{cell(wait.get('median'))} / {cell(wait.get('max'))} | "
+                     f"{cell(wave[0]['wave_rows_max']) if wave else '–'}, {seconds(wave[0]['wave_wall_ms_max']) if wave else '–'} |")
+    return "\n".join(lines).strip()
+
+
+def report(arguments):
+    documents = [json.loads((Path(folder) / "summary.json").read_text()) for folder in arguments.folders]
+    print(report_tables(documents))
+
+
 def parts(arguments):
     rows, marks, store = join(arguments.folder, arguments.api_log)
     folder = Path(arguments.folder)
@@ -614,6 +684,8 @@ def build_parser():
     reporter = commands.add_parser("parts")
     reporter.add_argument("folder")
     reporter.add_argument("--api-log")
+    tables = commands.add_parser("report")
+    tables.add_argument("folders", nargs="+")
     return parser
 
 
@@ -626,8 +698,10 @@ def main():
         if "resume" in arguments.arms and not arguments.event:
             raise SystemExit("turn_floor: the resume arm needs --event, what happened to the session since its last turn")
         run(arguments)
-    else:
+    elif arguments.command == "parts":
         parts(arguments)
+    else:
+        report(arguments)
 
 
 if __name__ == "__main__":

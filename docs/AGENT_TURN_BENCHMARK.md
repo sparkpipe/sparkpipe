@@ -238,6 +238,11 @@ also holds the change in the ranks' `kv_store_report` counters over the run
 (`save_pages`, `save_ns`, `restore_pages`, `restore_ns`), which give the
 save and restore rates.
 
+`turn_floor.py report DIR...` reads several runs' `summary.json` and prints
+the tables that compare models: first token by context for each tail with
+its largest part, the parts for the smallest tail, plain decode rate by
+context, the cold events, and restore, save and wave-wait figures.
+
 ## The memory gate
 
 `--memory-hosts` (or `tools/fleet_memory_watch.py` on its own) samples

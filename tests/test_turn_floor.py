@@ -203,6 +203,7 @@ with tempfile.TemporaryDirectory() as folder:
     stub.restore_next = True
     run_tool(*common, "--arms", "resume", "--event", "swap")
     table = run_tool("parts", str(output))
+    tables = run_tool("report", str(output))
     rows = [json.loads(line) for line in (output / "parts.jsonl").read_text().splitlines()]
     summary = json.loads((output / "summary.json").read_text())
     server.shutdown()
@@ -245,6 +246,8 @@ entry = next(item for item in summary["summary"] if item["kind"] == "resume")
 check(entry["largest_part"] == "restore_ms", f"the summary names the largest part of a resume: {entry['largest_part']}")
 check(summary["kv_store"]["save_pages"] == len(rows), f"the run's saved pages are the change in the store counters over the run: {summary['kv_store']['save_pages']}")
 check("| resume (swap) |" in table and "| turn tail 50 |" in table, "the table has a row for each kind of request")
+check("| stub | " in tables and "(prefill)" in tables and "(first step)" in tables and "Plain decode, tok/s" in tables and "After a swap away and back" in tables and
+      "Behind a wave" in tables, f"the report compares models by context, tail, cold event and wave wait: {tables[:300]}")
 
 for failure in failures:
     print("FAIL test_turn_floor: " + failure)
