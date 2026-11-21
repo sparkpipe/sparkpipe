@@ -9,6 +9,7 @@
 #include <mutex>
 #include <stdint.h>
 #include <string.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_GEMM_MAX_TRACKED_CUDA_DEVICES 64u
 
@@ -51,26 +52,26 @@ template<
 	bool INDIRECT_A = false,
 	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE,
 	bool INTERLEAVED_B = false>
-static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
+static SparkGpuError LmGemmOptIn(uint32_t shared_bytes)
 {
     static std::mutex grant_mutex;
     static uint64_t granted_device_mask = 0u;
-    cudaError_t status;
+    SparkGpuError status;
     uint64_t device_bit;
     int device_index;
 
-    status = cudaGetDevice(&device_index);
-    if (status != cudaSuccess)
+    status = SparkGpuGetDevice(&device_index);
+    if (status != SPARK_GPU_SUCCESS)
         return status;
     if (device_index < 0 ||
         (uint32_t)device_index >= LM_GEMM_MAX_TRACKED_CUDA_DEVICES)
-        return cudaErrorInvalidDevice;
+        return SPARK_GPU_ERROR_INVALID_DEVICE;
     device_bit = UINT64_C(1) << (uint32_t)device_index;
     {
         std::lock_guard<std::mutex> lock(grant_mutex);
         if ((granted_device_mask & device_bit) != 0u)
-            return cudaSuccess;
-        status = cudaFuncSetAttribute(
+            return SPARK_GPU_SUCCESS;
+        status = SparkGpuFuncSetAttribute(
             (const void *)LmGemmKernel<
                 FormatA,
                 FormatB,
@@ -82,9 +83,9 @@ static cudaError_t LmGemmOptIn(uint32_t shared_bytes)
 					INDIRECT_A,
 					ACTIVATION_CODEC,
 					INTERLEAVED_B>,
-            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,
             (int)shared_bytes);
-        if (status == cudaSuccess)
+        if (status == SPARK_GPU_SUCCESS)
             granted_device_mask |= device_bit;
     }
     return status;
@@ -101,7 +102,7 @@ template<
 	bool INDIRECT_A = false,
 	uint32_t ACTIVATION_CODEC = SPARK_ACTIVATION_CODEC_NONE,
 	bool INTERLEAVED_B = false>
-static cudaError_t LmGemmLaunchTile(
+static SparkGpuError LmGemmLaunchTile(
     const LmGemmArguments &args,
     const CUtensorMap &activation_map,
     const CUtensorMap &weight_map,
@@ -109,7 +110,7 @@ static cudaError_t LmGemmLaunchTile(
     const LmTileGeometry &weight_geometry,
     bool grouped,
     const LmLaunchPlan &plan,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     constexpr uint32_t shared = LmGemmSharedBytes<
         FormatA,
@@ -119,7 +120,7 @@ static cudaError_t LmGemmLaunchTile(
         TILE_K,
         STAGES,
         INTERLEAVED_B>();
-    cudaError_t status;
+    SparkGpuError status;
 
     static_assert(
         shared <= LM_SMEM_SM_TOTAL,
@@ -135,7 +136,7 @@ static cudaError_t LmGemmLaunchTile(
 			INDIRECT_A,
 			ACTIVATION_CODEC,
 			INTERLEAVED_B>(shared);
-    if (status != cudaSuccess)
+    if (status != SPARK_GPU_SUCCESS)
         return status;
     LM_LAUNCH((LmGemmKernel<
         FormatA,
@@ -155,7 +156,7 @@ static cudaError_t LmGemmLaunchTile(
             activation_geometry,
             weight_geometry,
             grouped);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 static int32_t LmGemmEncodeActivationMap(
@@ -250,7 +251,7 @@ static int32_t LmGemmLaunchAsymmetric(
     uint32_t output_dimension,
     uint32_t multiprocessors,
     bool grouped,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     LmLaunchShape shape;
     LmLaunchPlan plan;
@@ -428,7 +429,7 @@ static int32_t LmGemmLaunchAsymmetric(
             plan.tile_m,
             (output_dimension + TILE_N - 1u) / TILE_N,
             args->group_tile_prefix);
-        if (cudaPeekAtLastError() != cudaSuccess)
+        if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS)
             return LM_LAUNCH_ERR_LAUNCH;
     }
 
@@ -471,7 +472,7 @@ static int32_t LmGemmLaunchAsymmetric(
                     weight_geometry,
                     grouped,
                     plan,
-                    stream) == cudaSuccess
+                    stream) == SPARK_GPU_SUCCESS
                 ? LM_LAUNCH_OK
                 : LM_LAUNCH_ERR_LAUNCH;
         case 32u:
@@ -493,7 +494,7 @@ static int32_t LmGemmLaunchAsymmetric(
                     weight_geometry,
                     grouped,
                     plan,
-                    stream) == cudaSuccess
+                    stream) == SPARK_GPU_SUCCESS
                 ? LM_LAUNCH_OK
                 : LM_LAUNCH_ERR_LAUNCH;
         case 64u:
@@ -515,7 +516,7 @@ static int32_t LmGemmLaunchAsymmetric(
                     weight_geometry,
                     grouped,
                     plan,
-                    stream) == cudaSuccess
+                    stream) == SPARK_GPU_SUCCESS
                 ? LM_LAUNCH_OK
                 : LM_LAUNCH_ERR_LAUNCH;
         default:
@@ -542,7 +543,7 @@ static int32_t LmGemmWeightOnlyLaunchMode(
     uint32_t output_dimension,
     uint32_t multiprocessors,
     bool grouped,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
 	constexpr uint32_t tile_k =
 		LmTileKIsTmaLoadable(64u,LmBf16Format::kStoredBits,LmBf16Format::kTmaSwizzle) &&
@@ -594,7 +595,7 @@ static int32_t LmGemmWeightOnlyLaunch(
 	uint32_t output_dimension,
 	uint32_t multiprocessors,
 	bool grouped,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,false,ACTIVATION_CODEC>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
@@ -618,7 +619,7 @@ static int32_t LmGemmWeightOnlyIndirectLaunch(
 	uint32_t input_dimension,
 	uint32_t output_dimension,
 	uint32_t multiprocessors,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmGemmWeightOnlyLaunchMode<WeightFormat,TILE_N,STAGES,WARPS,true,ACTIVATION_CODEC>(
 		args,activation_bf16,weight_bytes,packed_rows,tokens,top_k,group_count,
@@ -643,7 +644,7 @@ static int32_t LmGemmWeightOnlyInterleavedLaunch(
 	uint32_t output_dimension,
 	uint32_t multiprocessors,
 	bool grouped,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmGemmLaunchAsymmetric<
 		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
@@ -669,7 +670,7 @@ static int32_t LmGemmWeightOnlyIndirectInterleavedLaunch(
 	uint32_t input_dimension,
 	uint32_t output_dimension,
 	uint32_t multiprocessors,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmGemmLaunchAsymmetric<
 		LmBf16Format,WeightFormat,TILE_N,TILE_K,STAGES,WARPS,
@@ -696,7 +697,7 @@ static int32_t LmGemmLaunch(
     uint32_t output_dimension,
     uint32_t multiprocessors,
     bool grouped,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     return LmGemmLaunchAsymmetric<
         Format,
@@ -732,7 +733,7 @@ static int32_t LmGemmLaunchTileK(
     uint32_t output_dimension,
     uint32_t multiprocessors,
     bool grouped,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     uint32_t tile_k = LmGemmSelectTileK(Format::kTileK, input_dimension);
     if ( tile_k == Format::kTileK )

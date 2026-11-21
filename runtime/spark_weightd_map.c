@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include "sparkpipe/spark_gpu.h"
 
 enum
 {
@@ -22,7 +23,7 @@ enum
 typedef struct SparkWeightdMapSlot
 {
 	uint64_t identifier;
-	cudaEvent_t event;
+	SparkGpuEvent event;
 	uint32_t state;
 } SparkWeightdMapSlot;
 
@@ -76,7 +77,7 @@ static SparkStatus map_context(const SparkWeightdMap *map)
 	int32_t device;
 	if ( map == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaGetDevice(&device) != cudaSuccess || cuCtxGetCurrent(&context) != CUDA_SUCCESS )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || cuCtxGetCurrent(&context) != CUDA_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return(device == map->device && context == map->context ? SPARK_STATUS_OK : SPARK_STATUS_TARGET_MISMATCH);
 }
@@ -152,7 +153,7 @@ static SparkStatus map_free_initial(SparkWeightdMap *map)
 	for (i=0u; i<MAP_LEASE_COUNT; i++)
 		if ( map->slots[i].event != 0 )
 		{
-			if ( cudaEventDestroy(map->slots[i].event) != cudaSuccess )
+			if ( SparkGpuEventDestroy(map->slots[i].event) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			map->slots[i].event = 0;
 		}
@@ -172,12 +173,12 @@ static SparkStatus map_initialize_cuda(SparkWeightdMap *map)
 	CUmemAllocationProp prop;
 	size_t granularity;
 	uint32_t i;
-	if ( cudaGetDevice(&map->device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&map->device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( cuCtxGetCurrent(&map->context) != CUDA_SUCCESS || map->context == 0 )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	for (i=0u; i<MAP_LEASE_COUNT; i++)
-		if ( cudaEventCreateWithFlags(&map->slots[i].event,cudaEventDisableTiming) != cudaSuccess )
+		if ( SparkGpuEventCreateWithFlags(&map->slots[i].event,SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -399,7 +400,7 @@ static SparkStatus map_release_locked(SparkWeightdMap *map,uint64_t identifier,u
 {
 	SparkWeightdMapSlot *slot;
 	SparkWeightdWorkingSetResult result;
-	cudaError_t ready;
+	SparkGpuError ready;
 	SparkStatus status = map_context(map);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -410,9 +411,9 @@ static SparkStatus map_release_locked(SparkWeightdMap *map,uint64_t identifier,u
 		SPARK_FAIL(SPARK_STATUS_BUSY);
 	if ( slot->state == MAP_RECORDED )
 	{
-		ready = cudaEventQuery(slot->event);
-		if ( ready != cudaSuccess )
-			return(ready == cudaErrorNotReady ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR);
+		ready = SparkGpuEventQuery(slot->event);
+		if ( ready != SPARK_GPU_SUCCESS )
+			return(ready == SPARK_GPU_ERROR_NOT_READY ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR);
 	}
 	slot->state = MAP_RETIRING;
 	status = map_drop_slot(map,(uint32_t)(slot - map->slots));
@@ -673,7 +674,7 @@ SparkStatus SparkWeightdMapBase(const SparkWeightdMap *map,void **address)
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream)
+SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,SparkGpuStream stream)
 {
 	SparkWeightdMapSlot *slot;
 	SparkStatus status = map_context(map);
@@ -684,7 +685,7 @@ SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identi
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	if ( slot->state != MAP_INFLIGHT )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaEventRecord(slot->event,stream) != cudaSuccess )
+	if ( SparkGpuEventRecord(slot->event,stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	slot->state = MAP_RECORDED;
 	return(SPARK_STATUS_OK);
