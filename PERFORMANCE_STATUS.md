@@ -457,20 +457,42 @@ snapshot store's chain links grow with the square of the chain length.
 
 ### Exact reuse
 
-Not measured: the fleet was unavailable. The follow-up and cached-turn
-figures above were measured before the exact-reuse rules
+Not yet measured on the fleet. The follow-up and cached-turn figures above
+were measured before the exact-reuse rules
 ([`docs/EXACTNESS_GATE.md`](docs/EXACTNESS_GATE.md)) and have not been
-measured with them. Gate GX's receipts will give, for each served model:
+measured with them.
 
-- cold prefill at 8K, 100K and 300K with the rules' wave ends: one at every
-  cut, and a one-row wave for the prompt's last token;
+What the rules add, counted in tokens and waves, not in time:
+
+- A follow-up turn computes the previous reply again as prefill: the reply's
+  tokens at the model's prefill rate, every turn. For a model with
+  `reply_commit` set, that wave starts when the reply ends, so the turn
+  waits only for what is left of it, and a reply that no turn follows costs
+  one wave that nobody reads.
+- A follow-up turn runs one wave more than before: the reply, the new input,
+  then the last token.
+- Every prompt ends with a one-row wave for its last token. Before, an
+  adapter without recurrent state computed the last token with the rows
+  before it.
+- A cold prompt runs one wave more for each cut it names: where its opening
+  ends and where each block of its head ends.
+- A prompt that shares a block of its head with an earlier prompt resumes at
+  that block's cut, at most 71 tokens before the block's text ends.
+
+Gate GX's receipts will give, for each lane:
+
+- cold prefill at 8K, 100K and 300K with the rules' wave ends;
 - time to first token of a follow-up turn that computes the previous reply
   again as prefill (`session` units), and of one whose reply was committed
   when it ended (`committed` units), with the seconds each commit took;
+- time to first token of a conversation that shares the first blocks of its
+  head with an earlier one (`opening` units);
 - time to first token after an eviction, with the pages and bytes read back;
 - the decode rate as served on a cached prompt;
 - how many requests sent together give the tokens they give alone (the
-  gate's `crowd` step).
+  gate's `crowd` step);
+- the waves the ranks refused for capacity, and the requests that waited out
+  the in-flight budget (`load`).
 
 ## How the numbers are measured
 

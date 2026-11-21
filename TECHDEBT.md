@@ -1100,10 +1100,10 @@ as recorded debt for models too large for a group.
 - **Exact reuse (gate GX, `docs/EXACTNESS_GATE.md`), open items.**
   - Gate GX has not run on the fleet. The engine rules are proven on the
     host tests only (`tests/test_model_batch_engine_mock.c`, the API test and
-    `tests/test_gx_gate.py`). Run `scripts/gx_gate.sh` for every served model
-    on a release candidate, and record the cost of the rules in
-    `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends, and time
-    per turn with the previous reply computed again.
+    `tests/test_gx_gate.py`). Run the first runs of `docs/EXACTNESS_GATE.md`
+    on a release candidate, every lane included, and record the cost of the
+    rules in `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends,
+    and time per turn with the previous reply computed again.
   - A follow-up turn computes the previous reply again as prefill, from one
     token before the earlier prompt's end. The other exact form commits a
     finished reply at once, so the next turn resumes where the reply ends:
@@ -1146,6 +1146,11 @@ as recorded debt for models too large for a group.
     model directory of `deployment/hub/chat_frontend.json`; it fails when
     the margin is not above the worst count. A tokenizer that needs more
     only makes two prompts share less at that block, never differ.
+  - A block's cut falls on a 64-token grid on every lane. DeepSeek V4.1
+    Flash has 256-token cache blocks, so three of four such cuts end inside
+    a cache block there. Reuse is exact either way; the state kept at such a
+    cut holds a partly filled page. Take the grid from the engine once its
+    API reports the block size.
   - Each state kept at a block's cut is one recurrent-state copy in the
     lane's state store. A head with many system blocks keeps one per block.
     Measure what a head costs to compute cold with its cuts, and what its
