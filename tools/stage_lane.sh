@@ -98,24 +98,36 @@ firmware_copy() {
   for file in "$@"; do sources="$sources $STAGE_FIRMWARE/$file"; done
   for attempt in 1 2 3 4 5; do
     if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
-      $SSH "$STAGE_FIRMWARE_HOST" "scp -q -o BatchMode=yes$sources $host:$destination" < /dev/null && return 0
+      $SSH "$STAGE_FIRMWARE_HOST" "scp -q -r -o BatchMode=yes$sources $host:$destination" < /dev/null && return 0
     else
-      scp -q $sources "$host:$destination" && return 0
+      scp -q -r $sources "$host:$destination" && return 0
     fi
     sleep $((attempt * 2))
   done
   return 1
 }
 
+firmware_kernels_check() {
+  local kernels="$STAGE_FIRMWARE/$ADAPTER_FILE.kernels"
+  if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+    $SSH "$STAGE_FIRMWARE_HOST" "test -d $kernels" < /dev/null && return 0
+  else
+    [ -d "$kernels" ] && return 0
+  fi
+  echo "stage_lane setup: $kernels is missing${STAGE_FIRMWARE_HOST:+ on $STAGE_FIRMWARE_HOST}; every rank gets the adapter with its kernels directory, which the adapter's build installs beside it" >&2
+  exit 1
+}
+
 setup() {
   local generated rank host root pack state busy=""
-  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library and its <adapter>.kernels directory, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
   for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
     case "$state" in active|activating|deactivating|reloading|refreshing) busy="$busy $host($state)" ;; esac
   done
   [ -z "$busy" ] || { echo "stage_lane setup: $UNIT is running on:$busy; setup rewrites the lane's pack digest and clears its KV cache, snapshots and links, so stop the lane first (stage_lane.sh stop)" >&2; exit 1; }
+  firmware_kernels_check
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
   for rank in $(seq 0 $LAST_RANK); do
@@ -123,9 +135,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && rm -rf $root/lib/$ADAPTER_FILE.kernels && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       firmware_copy "$host" "$root/bin/" sparkpipe_model_residentd weightd_warm
       firmware_copy "$host" "$root/lib/$ADAPTER_FILE" "$ADAPTER_FILE"
+      firmware_copy "$host" "$root/lib/" "$ADAPTER_FILE.kernels"
       firmware_copy "$host" "$root/lib/runtime_libs/" runtime_libs/libsparkpipe_device_cuda.so
       firmware_copy "$host" "$root/lib/hidden_transport.so" libhidden_transport_spark_host_rdma_verbs.so
       scp -q "$generated/deployment.json" "$host:$root/"
@@ -161,6 +174,7 @@ api_setup() {
   $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib/runtime_libs $api/runtime/tokenizer
     install -m 755 $STAGE_API_FIRMWARE/sparkpipe_model_api $STAGE_API_FIRMWARE/sparkpipe_tokenize_prompt $api/bin/
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
+    rm -rf $api/runtime/lib/$ADAPTER_FILE.kernels && cp -R $STAGE_API_FIRMWARE/$ADAPTER_FILE.kernels $api/runtime/lib/
     install -m 755 $STAGE_API_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so $api/runtime/lib/runtime_libs/
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"

@@ -9,7 +9,7 @@ if [ -n "${K3_RECORD:-}" ]; then
   done
 fi
 : "${K3_LANE:?K3_LANE is the weightd mesh lane (1..3, never 0)}"
-: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
+: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so and its libk3_tp16_serving_adapter.so.kernels directory, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
 : "${K3_STATE_BUDGET_BYTES:?K3_STATE_BUDGET_BYTES is the per-rank KDA state + windows + MLA KV + scratch budget the runner enforces}"
@@ -24,6 +24,7 @@ HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
 ADAPTER_FILE=libk3_tp16_serving_adapter.so
+LANE_ADAPTER=lib/libk3_serving_adapter.so
 PACK_DIR=sparkdata/k3.mxfp4.tp16/packs
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/k3-lanes/lane$K3_LANE/root"; }
@@ -64,6 +65,7 @@ render() {
 
 setup() {
   local generated rank host root pack
+  [ -d "$K3_FIRMWARE/$ADAPTER_FILE.kernels" ] || { echo "k3_lane setup: $K3_FIRMWARE/$ADAPTER_FILE.kernels is missing; every rank gets the adapter with its kernels directory, which the adapter's build installs beside it" >&2; exit 1; }
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
   for rank in $(seq 0 15); do
@@ -71,9 +73,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && rm -rf $root/$LANE_ADAPTER.kernels && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$host:$root/bin/"
-      scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/libk3_serving_adapter.so"
+      scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/$LANE_ADAPTER"
+      scp -q -r "$K3_FIRMWARE/$ADAPTER_FILE.kernels" "$host:$root/$LANE_ADAPTER.kernels"
       scp -q "$K3_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
       scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
       scp -q "$generated/deployment.json" "$host:$root/"
