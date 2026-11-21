@@ -287,11 +287,31 @@ tail.
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
 
-Copies and fills that touch pageable memory are refused with
-`SPARK_STATUS_UNSUPPORTED` until queues run host work. Events, host
-callbacks, waits between queues, kernel libraries and launches through
-the device layer are still refused the same way. The backend adopts no
-foreign memory or queue.
+Events are 32-byte marks carved from a pooled host allocation. Recording
+one is a queue operation that releases a timestamped copy of the event's
+next generation 16 bytes into the mark, then the queue's fence, then an
+unsigned 64-bit maximum of the generation into the mark's first word. The
+event completes when that word reaches the generation, by which time its
+queue has passed the record; a later record that finishes first is never
+undone by an earlier one. A queue waits on an event by acquiring the
+mark's first word at or past the generation, so waits between queues
+need no host round trip. Elapsed time is the difference of the two
+marks' GPU timestamps.
+
+Each queue has a host worker thread for host work. A host step releases
+a reached gate the worker polls, acquires a done gate the worker writes
+after running the function, then releases the queue's fence, so the
+queue holds behind the host work for as long as it takes (the contract
+holds one for 6 s). Host callbacks run there, and so do copies and fills
+that touch pageable memory: in queue order, through an 8 MiB pinned
+bounce buffer per queue when the device side has no host view. Because
+one device-layer call can take several submissions, the backend maps
+device-layer sequence numbers to fence values through a ring.
+
+Kernel libraries and launches through the device layer are still
+refused with `SPARK_STATUS_UNSUPPORTED`, as the device contract expects
+of a backend without device kernels. The backend adopts no foreign
+memory or queue, and a queue it owns is never captured into a graph.
 
 Every channel registers with unified memory before anything is
 submitted on it, and the backend never schedules a single channel: the
@@ -306,20 +326,28 @@ queue channels join the scheduled group afterwards.
 the module logged any `NVRM:` Xid or assertion line meanwhile, or if the
 log cannot be read.
 
-Two GPU tests run under `make test-nvrm-gpu`:
+The GPU tests that run under `make test-nvrm-gpu`, besides the
+launch-shape probe and first light:
 
 - **`tests/test_nvrm_memory.c`** opens the device through the device
   layer and checks every space, address reuse, zero-filled fresh memory,
   copies and unaligned fills through every space and registered memory,
   a copy and a fill of more than 2^31 bytes, a mapped file read from an
-  unaligned offset, 64 queues opened and closed in turn, two queues
-  copying at once, the pageable refusal, and reopening after a shutdown.
+  unaligned offset, pageable copies through the bounce buffer and pageable
+  fills, 64 queues opened and closed in turn, two queues copying at once,
+  and reopening after a shutdown.
+- **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
+  the backend-neutral device contract the host, Metal and CUDA backends
+  pass: spaces, copies, events, waits between queues, host callbacks, busy
+  buffers and events, holds longer than a GPU watchdog, 20000 event
+  record-and-destroy rounds, timing, file mappings and registration.
 - **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
   copy-engine fill then a kernel reading it, a kernel writing then a
   copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of
-  fill, kernel and copy with no host wait. It reads results back through
-  the copy engine into host memory, and starts the fence just below
-  2^32 so every engine's release crosses it.
+  fill, kernel and copy with no host wait, and a copy on a second queue
+  that waits on the first queue's mark after a kernel there. It reads
+  results back through the copy engine into host memory, and starts the
+  fence just below 2^32 so every engine's release crosses it.
 
 On GB10 both pass. With the copies moved to a second channel and no wait
 between the channels, a copy after a kernel reads stale data in 32 of 32

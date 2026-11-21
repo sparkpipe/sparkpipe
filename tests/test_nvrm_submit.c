@@ -268,10 +268,11 @@ static void TestMarks(void)
 		"a mark is three five-word semaphore methods and takes the next fence value");
 	CHECK(PushWord(&fake,0) == header && PushWord(&fake,1) == (uint32_t)(mark + 16u) && PushWord(&fake,3) == 7u &&
 		PushWord(&fake,5) == (1u | (1u << 20) | (1u << 24) | (1u << 25)),"first a timestamped release of the payload 16 bytes into the mark");
-	CHECK(PushWord(&fake,6) == header && PushWord(&fake,7) == (uint32_t)mark && PushWord(&fake,9) == 7u &&
-		PushWord(&fake,11) == (6u | (1u << 20) | (1u << 24) | (1u << 27) | (1u << 31)),
-		"then an unsigned 64-bit maximum into the mark's first word, so a later mark that finishes first is never undone");
-	CHECK(PushWord(&fake,13) == (uint32_t)FENCE_ADDRESS && PushWord(&fake,15) == 1u,"then the channel's fence");
+	CHECK(PushWord(&fake,6) == header && PushWord(&fake,7) == (uint32_t)FENCE_ADDRESS && PushWord(&fake,9) == 1u,
+		"then the channel's fence, so the queue has passed the mark before anyone sees it complete");
+	CHECK(PushWord(&fake,12) == header && PushWord(&fake,13) == (uint32_t)mark && PushWord(&fake,15) == 7u &&
+		PushWord(&fake,17) == (6u | (1u << 20) | (1u << 24) | (1u << 27) | (1u << 31)),
+		"last an unsigned 64-bit maximum into the mark's first word, so a later mark that finishes first is never undone");
 	CHECK(SparkNvrmAwait(&fake.gpu,channel,mark,7u,&value,"mark") == SPARK_STATUS_OK && value == 2u &&
 		PushWord(&fake,18) == header && PushWord(&fake,19) == (uint32_t)mark && PushWord(&fake,21) == 7u && PushWord(&fake,23) == (3u | (1u << 24)),
 		"a wait acquires the mark's first word at or past the payload, then releases the fence");

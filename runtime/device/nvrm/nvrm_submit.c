@@ -292,13 +292,17 @@ SparkStatus SparkNvrmMark(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t
 	SUBMIT_TRY(SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_HOST,owner));
 	status = SparkNvrmSemaphoreRelease(channel,address + SPARK_NVRM_MARK_TIME_OFFSET,payload,1u,owner);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmSemaphoreRelease(channel,channel->fence.address,channel->fence_value + 1u,0u,owner);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkNvrmSemaphoreMax(channel,address,payload,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmOpEnd(gpu,channel,SPARK_NVRM_ENGINE_HOST,value,owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmOpAbandon(channel);
 		SPARK_FAIL(status);
 	}
-	return(SparkNvrmOpFinishHost(gpu,channel,value,owner));
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvrmAwait(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t payload, uint64_t *value, const char *owner)
