@@ -24,6 +24,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
 #include "sparkpipe/spark_mimo26_family.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define MM_THREADS 256u
 #define MM_FP8_GROUP 128u
@@ -188,7 +189,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 	};
 
 	static const char *Tag(void)
@@ -218,21 +219,21 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	}
 
 	static int32_t Fp8(const MimoScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return LmDenseRows<LmFp8>(weight.weight, LmScaleTensorBuild(weight.scale, LM_SCALE_ENCODING_F32, 1u, output_dimension, input_dimension, 1u,
 			MM_FP8_GROUP), source, destination, (float *)0, rows, input_dimension, output_dimension, RowExact(step), step->multiprocessors, stream);
 	}
 
 	static int32_t Bf16(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
-		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
 			RowExact(step), step->multiprocessors, stream);
 	}
 
 	static int32_t ExpertProjection(const LmLocalExpertRoutes &routes, const MimoScaled &weight, const uint16_t *activation, uint16_t *output, uint32_t down,
-		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const LmScaleTensor scale = LmWeightCodecScaleTensor<SPARK_WEIGHT_CODEC_MXFP4_E2M1>(weight.scale, G::kLocalExperts, output_dimension,
 			input_dimension);
@@ -241,7 +242,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			RowExact(step));
 	}
 
-	static void Norm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, cudaStream_t stream)
+	static void Norm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, SparkGpuStream stream)
 	{
 		LM_LAUNCH((LmBf16RmsNormKernel<MM_THREADS>), rows, MM_THREADS, (G::kHidden + MM_THREADS / 32u) * sizeof(float), stream, input, weight, output,
 			G::kHidden, G::kHidden, G::kEpsilon);
@@ -252,7 +253,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	{
 		const MimoLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		using Kv = typename std::conditional<FULL, typename S::FullKv, typename S::SlidingKv>::type;
 		constexpr uint32_t KVH = FULL ? G::kFullKvHeads : G::kSlidingKvHeads;
 		constexpr uint32_t KW = FULL ? S::kFullKey : S::kSlidingKey, VW = FULL ? S::kFullValue : S::kSlidingValue;
@@ -285,13 +286,13 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,G::kHeadDim,G::kValueDim>(*view, state->query, G::kHeads, step->sequence_of_row,
 				step->context_length, step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u,
-				FULL ? 0u : G::kWindow) != cudaSuccess )
+				FULL ? 0u : G::kWindow) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmGqaShardMergeLaunch<G::kValueDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream,
-				FULL ? (const float *)0 : layer->sinks) != cudaSuccess ||
+				FULL ? (const float *)0 : layer->sinks) != SPARK_GPU_SUCCESS ||
 			Bf16(layer->out, state->merged, state->partial, (float *)0, rows, S::kRankWidth, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
@@ -301,7 +302,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	{
 		const MimoLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows;
 		if ( Fp8(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * S::kDenseRows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -313,14 +314,14 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ExpertRows(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, cudaStream_t stream)
+	static SparkStatus ExpertRows(State *state, const MimoLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows, SparkGpuStream stream)
 	{
 		const uint32_t routes = rows * G::kTopK;
 		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
 		if ( Bf16(layer->router, normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK ||
 			LmTopkGroupLimitedLaunch<MM_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
-				state->route_weight, 1.0f, step->route_fault, stream) != cudaSuccess )
+				state->route_weight, 1.0f, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
@@ -361,7 +362,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		return status;
 	}
 
-	static SparkStatus Residual(State *state, uint16_t *hidden, uint32_t rows, cudaStream_t stream)
+	static SparkStatus Residual(State *state, uint16_t *hidden, uint32_t rows, SparkGpuStream stream)
 	{
 		LM_LAUNCH((MimoResidualKernel), Blocks((uint64_t)rows * G::kHidden), MM_THREADS, 0, stream, hidden, state->partial, (uint64_t)rows * G::kHidden);
 		return CudaStageLaunched();
@@ -583,8 +584,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			inv_freq[0][pair] = 1.0f / (float)pow((double)G::kSlidingTheta, (double)exponent);
 			inv_freq[1][pair] = 1.0f / (float)pow((double)G::kFullTheta, (double)exponent);
 		}
-		if ( cudaMemcpy(state->sliding_inv_freq, inv_freq[0], sizeof(inv_freq[0]), cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(state->full_inv_freq, inv_freq[1], sizeof(inv_freq[1]), cudaMemcpyHostToDevice) != cudaSuccess )
+		if ( SparkGpuMemcpy(state->sliding_inv_freq, inv_freq[0], sizeof(inv_freq[0]), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(state->full_inv_freq, inv_freq[1], sizeof(inv_freq[1]), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		return SPARK_STATUS_OK;
 	}
