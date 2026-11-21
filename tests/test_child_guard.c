@@ -115,6 +115,8 @@ static int TestGuardVictim(const char *mode_name,int32_t report_fd,int32_t go_fd
 	char go;
 	mode = TestGuardFindMode(mode_name);
 	assert(mode != 0);
+	if ( mode->signal_number > 0 && mode->signal_number != SIGKILL )
+		assert(signal(mode->signal_number,SIG_DFL) != SIG_ERR);
 	assert(fcntl(report_fd,F_SETFD,FD_CLOEXEC) == 0);
 	assert(fcntl(go_fd,F_SETFD,FD_CLOEXEC) == 0);
 	count = 0u;
