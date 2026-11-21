@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+proc="${1:-/proc}"
+dev="${2:-/dev}"
+major() {
+	awk -v name="$1" '$2 == name { print $1; exit }' "$proc/devices"
+}
+node() {
+	if [ -c "$1" ] && [ "$(stat -c '%t:%T' "$1")" = "$(printf '%x:%x' "$2" "$3")" ]; then
+		chmod 0666 "$1"
+		return 0
+	fi
+	rm -f "$1"
+	mknod -m 0666 "$1" c "$2" "$3"
+}
+control=$(major nvidiactl)
+if [ -n "$control" ]; then
+	node "$dev/nvidiactl" "$control" 255
+	gpus=0
+	for information in "$proc"/driver/nvidia/gpus/*/information; do
+		[ -f "$information" ] || continue
+		minor=$(awk -F: '$1 == "Device Minor" { gsub(/[ \t]/, "", $2); print $2 }' "$information")
+		[ -n "$minor" ] || { echo "gpu-device-nodes: no Device Minor in $information" >&2; exit 1; }
+		node "$dev/nvidia$minor" "$control" "$minor"
+		gpus=$((gpus + 1))
+	done
+	[ "$gpus" -gt 0 ] || { echo "gpu-device-nodes: nvidiactl is registered but $proc/driver/nvidia/gpus lists no GPU" >&2; exit 1; }
+fi
+uvm=$(major nvidia-uvm)
+if [ -n "$uvm" ]; then
+	node "$dev/nvidia-uvm" "$uvm" 0
+fi
