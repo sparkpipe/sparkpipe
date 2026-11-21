@@ -55,6 +55,7 @@ HUB_GATEWAY_RANK = 15
 HUB_NOTIFY = "192.168.50.4:5514"
 NETWORK_MANAGER_RUNTIME = "/usr/local/sbin/ds4-switched-fabric-apply"
 DMA_GUARD_RUNTIME = "/usr/local/sbin/spark-dma-guard"
+DSCP_TRUST_RUNTIME = "/usr/local/sbin/sparkpipe-dscp-trust"
 CEPH_UID = 167
 CEPH_STATE_ROOT = Path("/var/lib/ceph")
 CEPH_LOG_ROOT = Path("/var/log/ceph")
@@ -142,6 +143,7 @@ ASSET_SOURCES.update({
     "/etc/systemd/timesyncd.conf.d/sparkpipe-hub.conf": ("tools/devcycle/fleet/timesyncd-sparkpipe-hub.conf",0o644),
     "/etc/systemd/system/sparkpipe-roce-qos.service": ("tools/fabric/sparkpipe-roce-qos.service",0o644),
     "/usr/local/sbin/sparkpipe_roce_qos.sh": ("tools/fabric/sparkpipe_roce_qos.sh",0o755),
+    DSCP_TRUST_RUNTIME: ("tools/fabric/sparkpipe_dscp_trust.sh",0o755),
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}.target.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-cluster-start-after-ssh.conf",0o644),
     f"/etc/systemd/system/ceph-{CEPH_CLUSTER_FSID}@.service.d/20-ds4-start-after-ssh.conf": ("tools/devcycle/fleet/ceph-daemon-start-after-ssh.conf",0o644),
 })
@@ -1013,7 +1015,7 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
     expected_address = f"{RAIL2_PREFIX}.{rank}/{RAIL2_PREFIX_LENGTH}"
     addresses = [row.split()[3] for row in command(["ip","-4","-o","addr","show","dev",RAIL2_INTERFACE,"scope","global"],check=False).splitlines() if len(row.split()) > 3]
     idle_state = read_optional(Path("/sys/class/net") / RAIL2_IDLE_INTERFACE / "operstate").strip()
-    trust = command(["mlnx_qos","-i",RAIL2_INTERFACE],check=False)
+    trust = command([DSCP_TRUST_RUNTIME,"check",RAIL2_INTERFACE],check=False)
     pfc = command(["dcb","pfc","show","dev",RAIL2_INTERFACE,"prio-pfc"],check=False)
     buffers = command(["dcb","buffer","show","dev",RAIL2_INTERFACE,"prio-buffer"],check=False)
     observations = {"rail2:addresses":addresses,"rail2:idle_operstate":idle_state,"rail2:prio_pfc":pfc,"rail2:prio_buffer":buffers}
@@ -1021,7 +1023,7 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
         failures.append(f"rail2-address:{','.join(addresses) or 'none'}")
     if idle_state != "down":
         failures.append(f"rail2-idle-function:{idle_state or 'missing'}")
-    if "Priority trust state: dscp" not in trust:
+    if trust != f"{RAIL2_INTERFACE} trusts DSCP":
         failures.append("rail2-trust")
     if re.findall(r"\b([0-7]):on\b",pfc) != list(RAIL2_LOSSLESS_PRIORITIES):
         failures.append("rail2-pfc")
