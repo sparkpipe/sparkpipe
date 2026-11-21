@@ -106,7 +106,7 @@ class GxGateTests(unittest.TestCase):
 
     def plan(self, *extra):
         return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--contexts", "2048,4096",
-                    "--declared-contexts", "2048", "--drafted-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--seed", "fixed", *extra)
+                    "--declared-contexts", "1024,2048", "--drafted-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed", *extra)
 
     def run_gate(self, engine, skip=(), without_change=(), intrude=None):
         server = serve(engine)
@@ -136,7 +136,8 @@ class GxGateTests(unittest.TestCase):
         engine = FakeEngine()
         status, receipt, failed, table = self.run_gate(engine)
         self.assertEqual((status, receipt["verdict"], failed), (0, "PASS", []), table)
-        self.assertEqual(len(receipt["verdicts"]), 12)
+        self.assertEqual(len(receipt["verdicts"]), 14)
+        self.assertEqual({(entry["nominal"], entry["group"]) for entry in receipt["verdicts"]}, {(1024, 2048), (2048, 2048), (4096, 4096)})
         self.assertEqual({entry["case"] for entry in receipt["verdicts"]}, set(gx.CASES))
         for entry in receipt["verdicts"]:
             self.assertEqual((entry["reuse"], entry["restored"]), ("PASS", "PASS"), entry)
@@ -144,7 +145,7 @@ class GxGateTests(unittest.TestCase):
             self.assertGreater(entry["cached_tokens"]["chain"], 0)
             self.assertGreater(entry["cached_tokens"]["restore"], 0)
         declared = [body for body in engine.bodies if "cache_points" in body]
-        self.assertTrue(declared and all(body["cache_points"] == [1792] and "logprobs" in body for body in declared))
+        self.assertTrue(declared and all(body["cache_points"] in ([768], [1792]) and "logprobs" in body for body in declared))
         self.assertTrue(any("speculation" not in body for body in engine.bodies), "a drafted session's turns leave speculation at the engine's default")
         self.assertTrue(all(body.get("speculation") is False for body in engine.bodies if "logprobs" in body))
 
@@ -214,6 +215,7 @@ class GxGateTests(unittest.TestCase):
         arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed"]
         status, listing = call(*arguments, "--context-limit", "32768")
         self.assertEqual(status, 0, listing)
+        self.assertEqual([line.split()[0] for line in listing.splitlines()], ["chain", "park:100000", "restore:100000", "cold:1", "cold:40", "cold:500", "cold:5000"])
         state = json.loads(Path(self.state).read_text())
         self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] == "prefix"}), [(8000, 8021), (100000, 16405)])
         self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] == "declared"}), [(8000, 6913), (20000, 16129)])
@@ -229,6 +231,7 @@ class GxGateTests(unittest.TestCase):
         self.assertEqual(status, 0, listing)
         state = json.loads(Path(self.state).read_text())
         self.assertEqual(sorted({unit["context"] for unit in state["units"] if unit["case"] == "session"}), [8021, 100021, 300021])
+        self.assertEqual([line.split()[0] for line in listing.splitlines() if line.startswith("park")], ["park:20000", "park:100000", "park:300000"])
         self.assertEqual(state["skipped"], [])
         Path(self.state).unlink()
         status, listing = call(*arguments, "--context-limit", "16000")
