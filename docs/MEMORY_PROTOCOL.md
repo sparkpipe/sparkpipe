@@ -76,15 +76,17 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 | method | request | response |
 |---|---|---|
 | `model_ready` | model | ready |
-| `render_ids` | model, messages, tools, kwargs, suffix, start | ids, reasoning_open |
-| `continuation_ids` | model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start | ids (or null), reasoning_open |
-| `cut_ids` | model, messages, tools, kwargs, sentinel | ids (or null) |
+| `render_ids` | model, messages, tools, kwargs, suffix, start | ids, reasoning_open, cuts, keep |
+| `continuation_ids` | model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start | ids (or null), reasoning_open, cuts, keep |
+| `cut_ids` | model, messages, tools, kwargs, sentinel | ids (or null), cuts, keep |
 | `count` | model, text | tokens |
 | `complete` | model, ids, max_tokens, reasoning_open, kind, trace, and optionally cuts, keep | text |
 
 `complete` runs at background priority through the same sequence gate as every other request.
 
 `cuts` and `keep` are optional and mean what they mean on the engine API (`docs/LITELLM_FRONTEND.md`, `docs/EXACTNESS_GATE.md`): arrays of at most 16,384 rising token counts inside `ids`. A cut is where the caller's prompt structure ends a prefill wave, and `keep` lists the cuts where the engine keeps state. A completion resumes from an earlier one only at a wave end both name, so a caller that sends several completions over one shared prefix names where that prefix ends in both fields, in every one of them: the first computes the prefix and keeps its state, and the others resume there. Without the fields a completion resumes only at a checkpoint anchor inside the shared prefix. Malformed fields answer 400 `invalid_request`.
+
+The three rendering methods answer with `cuts` and `keep` for their `ids`, to be passed to `complete` unchanged. `cuts` are the cuts the chat layer names for a request with the same messages, tools and settings: where the opening ends, where each block of the head ends, and for each assistant message one token before it began and where it ends. `continuation_ids` adds the two cuts of the reply in `generated_ids`. `keep` lists the cuts where the chat layer asks for state, which is the opening's end; `cut_ids` also lists its last cut, where the conversation up to the sentinel ends, so a completion on its ids leaves state there and a later request on the same messages resumes there. A caller may list any other returned cut in `keep`. Both are empty when `ids` is null or the prompt has no cut. A response without the fields comes from a chat layer that does not name cuts.
 
 Within a protocol, methods only add. A caller that meets 404 `unsupported` treats the feature as absent.
 

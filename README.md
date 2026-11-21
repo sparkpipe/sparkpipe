@@ -268,10 +268,10 @@ cache held (`docs/EXACTNESS_GATE.md`).
 - The chat layer names the cuts: where the prompt's opening ends, where
   each block of its head ends (the tools, each system block, each block of
   the first user message), where a context pack ends, one token before each
-  replayed reply began and where it ends. It asks for state at the opening,
-  the tools, the system blocks and the pack, and in the first message at a
-  block with `cache_control`, so a conversation that shares any of those
-  with an earlier one resumes there. `max_tokens: 0` on the Messages shape, or
+  earlier reply began and where it ends. It asks for state at the opening's
+  end and a pack's ends, and at a block of the head that the client marked
+  with `cache_control`, so a conversation that shares any of those with an
+  earlier one resumes there. `max_tokens: 0` on the Messages shape, or
   `commit_only` on the Chat Completions and Responses shapes, is a commit;
   the answer is one `cache.commit` object.
 

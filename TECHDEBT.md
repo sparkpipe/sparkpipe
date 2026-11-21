@@ -1133,11 +1133,23 @@ as recorded debt for models too large for a group.
   - Every prompt of at least one block now ends with a one-row wave for its
     last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
     state, used to run its last token in the last wave.
-  - The chat layer names cuts only for replies it replays from its replay
-    store. A history it renders from text, with no replay record, names
-    none, so that request resumes at the last anchor or row-grid wave end it
-    shares with the session. Derive the reply boundaries from the rendered
-    prompt where the template puts a control token on the boundary.
+  - A history rendered from text names its replies' cuts from the control
+    tokens around each assistant turn, but only when no reply of the history
+    is replayed. A history that mixes replayed replies and replies without a
+    record names cuts for the replayed ones alone, so the turn resumes at
+    the last cut before the first reply without one. Name the others from
+    the text between the replayed turns.
+  - A reply rendered from text gets its first cut only when the history's
+    assistant header carries the generation prompt less its last token. A
+    template that opens reasoning in the generation prompt and renders
+    history without it has no such position, so its turns resume at the
+    reply's end of the turn before, or at an anchor.
+  - The engine keeps the newest four states on a path that are not on a
+    checkpoint anchor and drops the oldest first. In an opening the oldest
+    are the most widely shared, so a session's own turns release its
+    opening's states within a few turns, and the chat layer therefore asks
+    for state at few places. Kept states need a class of their own and a
+    bound, apart from the states of a session's turns (stage 2).
   - The 8-token margin of a block's cut (`tools/serving/prompt_cuts.py`) is
     measured on one served tokenizer only: Qwen 3.8, over 18,456 paragraph
     ends of 79 repository texts with four joins, where at most 2 trailing

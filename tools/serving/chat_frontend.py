@@ -1171,6 +1171,62 @@ class Model:
             self.openings.popitem(last=False)
         return opening
 
+    def reply_header(self, tools, kwargs):
+        key = hashlib.sha256(chat_replay.canonical(["reply header", tools or [], kwargs]).encode()).digest()
+        if key in self.openings:
+            self.openings.move_to_end(key)
+            return self.openings[key]
+        opening, header = self.generation_prompt(tools, kwargs), None
+        anchor = max((control for control in self.vocabulary.control_strings() if control and opening and opening.startswith(control)), key=len, default=None)
+        if anchor is not None:
+            context = dict(self.template_defaults)
+            context.update(kwargs)
+            mark = REPLAY_SENTINEL.format(0)
+            probe = [{"role": "user", "content": GENERATION_PROBE}, {"role": "assistant", "content": mark}, {"role": "user", "content": GENERATION_PROBE}]
+            try:
+                text, pieces = self.renderer.pieces(probe, tools, context)
+                at = text.find(mark)
+                start = rfind_in(template_spans(pieces), text, anchor, 0, at) if at >= 0 else -1
+                if start >= 0 and (opening.startswith(text[start:at]) or text[start:at].startswith(opening)):
+                    header = text[start:at]
+            except RequestError:
+                header = None
+        self.openings[key] = header
+        while len(self.openings) > GENERATION_CACHE:
+            self.openings.popitem(last=False)
+        return header
+
+    def turn_cuts(self, messages, tools, kwargs, pack, ids):
+        turns = sum(1 for message in messages if message.get("role") == "assistant")
+        header = self.reply_header(tools, kwargs) if turns else None
+        if not header:
+            return []
+        opening = list(self.vocabulary.encode(self.generation_prompt(tools, kwargs), True))
+        stops = set(self.stop_token_ids)
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        try:
+            text, pieces = self.renderer.pieces(messages, tools, context)
+            if pack is not None:
+                pieces = context_packs.splice(text, pieces, pack)
+            spans = template_spans(pieces)
+            cuts, cursor, count = [], 0, 0
+            for _ in range(turns):
+                start = find_in(spans, text, header, cursor, len(text))
+                close = min((position for position in (find_in(spans, text, stop, start + len(header), len(text)) for stop in self.stop_strings) if position >= 0),
+                            default=-1) if start >= 0 else -1
+                if close < 0:
+                    break
+                count += len(encode_span(self, pieces, cursor, start))
+                begin = count + len(opening) - 1
+                count += len(encode_span(self, pieces, start, close))
+                cursor = close
+                if begin < count < len(ids) and ids[count] in stops and list(ids[begin - len(opening) + 1:begin]) == opening[:-1]:
+                    cuts += [begin, count]
+        except RequestError:
+            return []
+        return cuts
+
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
 SOURCE_ATTRIBUTE = re.compile(r' ([a-z][a-z-]*)="([^"]*)"')
@@ -1919,6 +1975,10 @@ def opening_cuts(model, messages, marks, tools, kwargs, pack, ids, tools_kept=Fa
     return cuts, keep
 
 
+def reply_cuts(model, messages, tools, kwargs, pack, ids):
+    return model.turn_cuts(messages, tools, kwargs, pack, ids) if any(message.get("role") == "assistant" for message in messages) else []
+
+
 def name_cuts(model, engine, replay, structural, kept):
     every = structure_cuts(replay, len(engine["prompt_token_ids"]), structural)
     cuts = every[:ENGINE_MAX_CUTS]
@@ -1957,17 +2017,30 @@ class MemoryHost:
         return {"ready": await self.frontend.memory_model_ready(self.model(request))}
 
     def render_ids(self, request):
-        ids, reasoning_open = self.frontend.memory_render_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["suffix"],
-                                                               request["start"])
-        return {"ids": ids, "reasoning_open": reasoning_open}
+        model = self.model(request)
+        ids, reasoning_open = self.frontend.memory_render_ids(model, request["messages"], request["tools"], request["kwargs"], request["suffix"], request["start"])
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], ids)
+        return {"ids": ids, "reasoning_open": reasoning_open, "cuts": cuts, "keep": keep}
 
     def continuation_ids(self, request):
-        found = self.frontend.memory_continuation_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["prompt_ids"],
+        model = self.model(request)
+        found = self.frontend.memory_continuation_ids(model, request["messages"], request["tools"], request["kwargs"], request["prompt_ids"],
                                                       request["generated_ids"], request["instruction"], request["suffix"], request["start"])
-        return {"ids": found[0] if found else None, "reasoning_open": bool(found and found[1])}
+        if not found:
+            return {"ids": None, "reasoning_open": False, "cuts": [], "keep": []}
+        prompt, generated = list(request["prompt_ids"]), list(request["generated_ids"])
+        while generated and generated[-1] in model.stop_token_ids:
+            generated.pop()
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], prompt, (len(prompt) - 1, len(prompt) + len(generated)))
+        return {"ids": found[0], "reasoning_open": bool(found[1]), "cuts": [cut for cut in cuts if cut < len(found[0])], "keep": keep}
 
     def cut_ids(self, request):
-        return {"ids": self.frontend.memory_cut_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["sentinel"])}
+        model = self.model(request)
+        ids = self.frontend.memory_cut_ids(model, request["messages"], request["tools"], request["kwargs"], request["sentinel"])
+        if ids is None:
+            return {"ids": None, "cuts": [], "keep": []}
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], ids)
+        return {"ids": ids, "cuts": cuts, "keep": sorted(set(keep) | set(cuts[-1:]))}
 
     def count(self, request):
         return {"tokens": self.frontend.memory_count(self.model(request), request["text"])}
@@ -2923,7 +2996,10 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        cuts, dropped = name_cuts(model, engine, replay, *opening_cuts(model, messages, [], tools, kwargs, pack, engine["prompt_token_ids"]))
+        structural, kept = opening_cuts(model, messages, [], tools, kwargs, pack, engine["prompt_token_ids"])
+        if replay is None:
+            structural = structural + reply_cuts(model, messages, tools, kwargs, pack and pack[1], engine["prompt_token_ids"])
+        cuts, dropped = name_cuts(model, engine, replay, structural, kept)
         plan["cuts_dropped"] = dropped
         trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
@@ -3301,6 +3377,12 @@ class Frontend:
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None
 
+    def memory_cuts(self, model, messages, tools, kwargs, ids, more=()):
+        messages = normalize_messages(messages)
+        structural, kept = opening_cuts(model, messages, [], tools, kwargs, None, ids)
+        cuts = sorted({cut for cut in (*structural, *reply_cuts(model, messages, tools, kwargs, None, ids), *more) if cut > 0})[:ENGINE_MAX_CUTS]
+        return cuts, [cut for cut in sorted(set(kept)) if cut in cuts]
+
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None, cuts=(), keep=()):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
         if cuts:
@@ -3617,6 +3699,8 @@ class Frontend:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
         structural, kept = opening_cuts(model, messages, marks, tools, kwargs, pack, ids, bool(translated.get("tools_marked")) and session is None)
+        if replay is None:
+            structural = structural + reply_cuts(model, messages, tools, kwargs, pack and pack[1], ids)
         if forced_ids:
             structural, kept = structural + [len(ids) - len(forced_ids) - 1], kept + [len(ids) - len(forced_ids) - 1]
         plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, structural, kept)[1]

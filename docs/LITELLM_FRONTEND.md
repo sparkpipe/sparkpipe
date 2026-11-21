@@ -615,7 +615,13 @@ engine's `cuts` from the prompt's structure:
   with the same block get the same cut. A block's cut within one cache
   block of the opening's end is left out;
 - where a context pack ends, which is where the pack's warm-up commit ended;
-- one token before each replayed reply began, and where the reply ends;
+- one token before each earlier reply began, and where the reply ends. A
+  replayed reply's cuts come from its record. A history rendered from text,
+  with no replay record, gets them from its control tokens: the token that
+  opens the assistant turn, plus the generation prompt less its last token,
+  and the token that closes the turn. The first is named only when the
+  prompt's tokens there are the generation prompt's, so it is the position
+  one token before the earlier prompt's end;
 - one token before the opening of a forced tool call. A forced opening is
   stored with the reply, so the next turn's cut before the reply falls
   there and not one token before the forced prompt's end.

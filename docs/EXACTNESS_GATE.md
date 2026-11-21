@@ -36,7 +36,7 @@ them from the request and from nothing else.
   counts where its structure ends a wave. The chat layer names where the
   prompt's opening ends, where each block of the head ends (the tools, each
   system block, each block of the first user message but its last), where a
-  context pack ends, one token before each replayed reply began and where it
+  context pack ends, one token before each earlier reply began and where it
   ends. A block's end is not a token boundary, so its cut is the last cache
   block at or before the tokens of the text through the block, tokenized by
   itself, less a margin (`tools/serving/prompt_cuts.py`); the gate's
