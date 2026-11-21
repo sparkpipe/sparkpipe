@@ -446,7 +446,9 @@ Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/cl9010_callback.
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/cl9067.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/cl90f1.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/cla06c.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clc361.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clc56f.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clc661.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clc761.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clc96f.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/class/clca6f.h

@@ -150,3 +150,69 @@ Rebuild the fixtures on a host with the release nvcc:
 python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc
 python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc --check
 ```
+
+## Opening the device
+
+`runtime/device/nvrm/nvrm_rm.c` and `nvrm_gpu.c` open a GPU through the
+module's device files:
+
+1. **Version check.** Open `/dev/nvidiactl` and check the module version
+   strictly (`NV_ESC_CHECK_VERSION_STR`). A mismatch fails with
+   `SPARK_STATUS_TARGET_MISMATCH`, naming the loaded version and the one
+   the backend is built for.
+2. **Device.** Allocate a root client and pick the GPU from the module's
+   card list. Open and register `/dev/nvidia<minor>`, then allocate the
+   device and subdevice.
+3. **Classes.** Require the Blackwell compute B, GPFIFO A, copy B and Hopper
+   usermode classes from the device's class list, and read the GPC, TPC,
+   SM and warp counts and the SM version.
+4. **Address space.** Allocate a virtual memory object, map the usermode
+   page (the doorbell), and allocate a GPU address space owned by unified
+   memory. Register the GPU and the address space with `/dev/nvidia-uvm`.
+5. **Channel.** Allocate a channel group and a context share. Build one
+   compute channel from a 1024-entry GPFIFO ring and its USERD page, an
+   error notifier, a 1 MiB push buffer and a fence semaphore. Read its
+   work-submit token, register it with unified memory and schedule the
+   group. Bind the compute class with its shared and local memory windows.
+
+Every RM status is turned into a `SparkStatus` naming the RM status code
+(`NV_ERR_NO_MEMORY` becomes `CAPACITY_EXCEEDED`, an unknown class
+`UNSUPPORTED`, and so on).
+
+Memory comes in three kinds, all mapped into the GPU at the same address
+the CPU sees, below 2^40:
+
+- **Host memory.** Anonymous pages the backend maps itself and
+  registers by OS descriptor.
+- **System memory.** Allocated by the module, GPU-cached, with 2 MiB
+  pages from 8 MiB up.
+- **Uncached system memory.** Allocated by the module, GPU-uncached, for
+  notifiers.
+
+`nvrm_channel.c` writes push-buffer methods, GPFIFO entries, GPPut and the
+doorbell, host semaphore releases (with an optional GPU timestamp), and
+waits on a semaphore value with a timeout. It provisions the
+per-thread local memory a program needs. `nvrm_launch.c` loads a cubin
+into host memory, relocates it, and queues a launch: the QMD and constant
+bank 0 in a 256-byte aligned slot, then `SEND_PCAS_A` and the scheduling
+method.
+
+`tests/test_nvrm_submit.c` checks, without a GPU, that methods, ring
+entries, GPPut, the doorbell, semaphore releases and launch slots are
+encoded as the class headers say, and that each misuse is refused.
+
+## First light and memory bandwidth
+
+Two tools run on a GPU host with the pinned module:
+
+- **`build/nvrm_first_light`** (`make nvrm-first-light`) opens the GPU and
+  prints its identity. It launches the fixture's first-light kernel 16
+  times (4 groups of 128 threads), waits for both the grid's release and
+  a timestamped channel release, and checks every output word. It
+  reports the host submit-to-completion time and the GPU time around the
+  grid.
+- **`build/nvrm_memory_bandwidth`** (`make nvrm-memory-bandwidth`) measures
+  the stream read and copy kernels over each memory kind between two
+  timestamped releases. `build/cuda_memory_bandwidth` measures the same
+  kernels over `cudaMalloc` memory on the CUDA flavour, for the
+  comparison.

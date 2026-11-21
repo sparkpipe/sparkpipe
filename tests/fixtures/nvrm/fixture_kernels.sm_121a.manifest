@@ -1,11 +1,14 @@
 nvcc 13.0.88
 flags -O3 -gencode arch=compute_121a,code=sm_121a -cubin -Xptxas -v -I. -Iinclude -Isrc
-source tests/nvrm/fixture_kernels.cu 1a9e811154c29d0b06a868efd7b6a85ff3ca03dc189f3a926548ef2d5bd5e717
-cubin c875451a2d637f59e2607ca07507aea02e5921ef8b0897334cbdbbda6423db20 66640
+source tests/nvrm/fixture_kernels.cu 4fad5735d05470b57fff50349f235ef84c8300c7491953d623fd1845e1c01469
+cubin 63819cb87b0478357e3f4ed38f03f9a80f6105a950e345827f902120fcdfb897 76608
 kernel SparkNvrmFirstLight registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
 kernel SparkNvrmLargeParameter registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
 kernel SparkNvrmLocalStack registers 40 barriers 0 stack 256 spill_stores 0 spill_loads 0 smem 0
 kernel SparkNvrmParameterMix registers 11 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
 kernel SparkNvrmStaticShared registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000
+kernel SparkNvrmStreamCopy registers 14 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+kernel SparkNvrmStreamFill registers 14 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+kernel SparkNvrmStreamRead registers 18 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
 kernel _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf registers 64 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 0
 kernel _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf registers 36 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 0

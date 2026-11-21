@@ -29,7 +29,7 @@ SPARKPIPE_DEVICE_FLAVOURS := cuda nvrm
 ifneq ($(words $(SPARKPIPE_DEVICE)) $(filter $(SPARKPIPE_DEVICE),$(SPARKPIPE_DEVICE_FLAVOURS)),1 $(SPARKPIPE_DEVICE))
 $(error SPARKPIPE_DEVICE=$(SPARKPIPE_DEVICE) is not a device flavour; the flavours are $(SPARKPIPE_DEVICE_FLAVOURS))
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device test-nvrm clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -397,7 +397,7 @@ TEST_NAMES += test_stage_kv_shared_prefix
 TEST_NAMES += test_device_contract test_device_instance
 endif
 TEST_NAMES += test_device_serving_runner
-TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd
+TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd test_nvrm_submit
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
@@ -1443,8 +1443,28 @@ $(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runt
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
-.PHONY: nvrm-device test-nvrm
+.PHONY: nvrm-device nvrm-first-light test-nvrm
 nvrm-device: $(DEVICE_NVRM_LIBRARY)
+
+build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+nvrm-first-light: build/nvrm_first_light
+
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
+
+.PHONY: nvrm-first-light-static
+nvrm-first-light-static: build/nvrm_first_light_static
+
+build/nvrm_memory_bandwidth: tools/nvrm_memory_bandwidth.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+.PHONY: nvrm-memory-bandwidth
+nvrm-memory-bandwidth: build/nvrm_memory_bandwidth
+
+build/cuda_memory_bandwidth: tools/cuda_memory_bandwidth.cu tests/nvrm/fixture_kernels.cu tests/nvrm/fixture_kernels.h | build
+	@if command -v $(NVCC) > /dev/null; then $(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@; else echo "SKIP cuda_memory_bandwidth (no CUDA toolkit)"; fi
 
 build/test_device_nvrm: tests/test_device_nvrm.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1455,7 +1475,10 @@ build/test_nvrm_cubin: tests/test_nvrm_cubin.c tests/nvrm/fixture_kernels.h $(DE
 build/test_nvrm_qmd: tests/test_nvrm_qmd.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd
+build/test_nvrm_submit: tests/test_nvrm_submit.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
