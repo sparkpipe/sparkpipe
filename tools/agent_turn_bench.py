@@ -884,6 +884,35 @@ def cold(arguments):
     print(floor_markdown(summarize_floor(load_records([output]))), flush=True)
 
 
+def render(arguments):
+    output = Path(arguments.output)
+    output.mkdir(parents=True, exist_ok=True)
+    setup = Setup(arguments)
+    recorder = Recorder(output / "turns.jsonl")
+    recorder.write(run_header(arguments, setup, "render"))
+    try:
+        for shape in setup.shapes:
+            session = floor_session(setup, arguments, shape, arguments.nonce)
+            for context in arguments.contexts:
+                tokens = session.fill(context, setup.ratio, setup.count)
+                body = dict(session.count_body(), model=arguments.model)
+                size = len(json.dumps(body).encode())
+                times = []
+                for _ in range(arguments.repeats):
+                    started = time.monotonic()
+                    status, reply = setup.client.post_json("/v1/messages/count_tokens", body)
+                    times.append((time.monotonic() - started) * 1000)
+                    if status != 200:
+                        raise SystemExit(f"agent_turn_bench: count_tokens answered {status}: {json.dumps(reply)[:300]}")
+                record = {"phase": "render", "shape": shape, "context": context, "prompt_tokens": tokens, "body_bytes": size, "label": arguments.label,
+                          "render_ms": rounded(percentile(times, 0.5), 1), "render_ms_min": rounded(min(times), 1), "render_ms_max": rounded(max(times), 1),
+                          "repeats": len(times), "error": None}
+                recorder.write(record)
+                print(json.dumps(record), flush=True)
+    finally:
+        recorder.close()
+
+
 def run_header(arguments, setup, command):
     return {"phase": "run", "command": command, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "endpoint": arguments.endpoint, "model": arguments.model,
             "model_entry": setup.entry, "public_key": setup.key is not None, "characters_per_token": round(setup.ratio, 4), "shapes": setup.shapes,
@@ -1185,16 +1214,16 @@ def build_parser():
     session_arguments(planner)
     planner.add_argument("--prefill-rate", type=float, default=0.0)
     planner.add_argument("--output")
-    for name in ("floor", "cold"):
+    for name in ("floor", "cold", "render"):
         timer = commands.add_parser(name)
         session_arguments(timer)
         timer.add_argument("--output", required=True)
         timer.add_argument("--reply-tokens", type=int, default=64)
         timer.add_argument("--nonce", default=None)
-        if name == "floor":
+        if name != "cold":
             timer.add_argument("--contexts", type=lambda text: [int(value) for value in text.split(",")], default=[20000, 50000, 135000, 300000])
             timer.add_argument("--tails", type=lambda text: [int(value) for value in text.split(",")], default=[50, 300, 2400])
-            timer.add_argument("--repeats", type=int, default=3)
+            timer.add_argument("--repeats", type=int, default=3 if name == "floor" else 5)
         else:
             timer.add_argument("--events", type=lambda text: text.split(","), default=["opening", "subagent"])
             timer.add_argument("--event", default=None)
@@ -1213,7 +1242,7 @@ def main():
         if unknown or ("resume" in arguments.events and not arguments.event):
             raise SystemExit(f"agent_turn_bench: cold events are {', '.join(COLD_EVENTS)}, and resume needs --event, what happened to the session since floor")
         arguments.nonce = arguments.nonce or uuid.uuid4().hex[:12]
-    {"run": run, "plan": plan, "report": report, "floor": floor, "cold": cold}[arguments.command](arguments)
+    {"run": run, "plan": plan, "report": report, "floor": floor, "cold": cold, "render": render}[arguments.command](arguments)
 
 
 if __name__ == "__main__":

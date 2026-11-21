@@ -302,6 +302,8 @@ def check_floor_and_cold(tmp, check):
         bench.cold(timer_arguments("cold", harness.base, corpus_dir, output, "messages", ("--events", "resume", "--event", "swap")))
         sent = len(harness.engine.requests) - after_floor
         classes = sorted({request["priority"] for request in harness.engine.requests})
+        bench.render(timer_arguments("render", harness.base, corpus_dir, tmp / "render", "messages", ("--contexts", "3000,6000", "--repeats", "3")))
+        rendered = len(harness.engine.requests) - after_floor - sent
     records = bench.load_records([output])
     turns = [record for record in records if record["phase"] == "floor"]
     grows = [record for record in records if record["phase"] == "floor_grow"]
@@ -331,6 +333,9 @@ def check_floor_and_cold(tmp, check):
     check(resume["event"] == "swap" and resume["cached_tokens"] >= last["prompt_tokens"] and resume["context"] == 6000,
           f"the resume turn continues the saved floor session and names its event: {resume['event']} {resume['cached_tokens']} cached")
     check(sent == 5, f"the cold arms sent {sent} requests, not two openings, two subagents and one resume")
+    renders = [record for record in bench.load_records([tmp / "render"]) if record["phase"] == "render"]
+    check(rendered == 0 and len(renders) == 2 and all(record["render_ms"] > 0 and record["repeats"] == 3 and record["prompt_tokens"] >= record["context"] * 0.8 for record in renders),
+          f"render times the chat layer's rendering and tokenizing at each context and sends the engine nothing: {rendered} engine requests, {renders}")
     table = bench.floor_markdown(bench.summarize_floor(records))
     check("| floor tail 50 | messages |" in table and "| cold_resume (swap) tail 300 |" in table and "first_opening" in table, "the report has no floor, resume or cause rows")
 

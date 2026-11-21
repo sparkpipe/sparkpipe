@@ -170,6 +170,11 @@ session is saved as `session-<shape>.json` for the resume event.
 | `subagent` | a subagent of one type on a `--subagent-tokens` (37,000) opening with five tools, then a second with another brief | the same pair, with the subagent class and agent type headers |
 | `resume` | one turn with a 300-token tail on the saved `floor` session; needs `--event NAME` | what the session costs after the operator did `NAME` to it: a swap away and back, an engine restart, an eviction |
 
+**`render`** times the chat layer alone: it fills a session to each of
+`--contexts` and asks `/v1/messages/count_tokens` for it `--repeats` times.
+That request is translated, rendered and tokenized like a real one and never
+reaches an engine, so the model need not be resident.
+
 `--nonce` goes into the first tool's description and the system prompt, so
 each `cold` run is a first sight unless the nonce is repeated. A request
 without a key carries the chat layer's miss ledger
