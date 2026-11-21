@@ -304,7 +304,7 @@ def main():
         temp = Path(directory)
         source = temp / 'test.c'
         command = [os.environ.get('CC', 'cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
-                   '-ffunction-sections', '-fdata-sections', '-I' + str(ROOT / 'include'),
+                   '-ffunction-sections', '-fdata-sections', '-I' + str(ROOT), '-I' + str(ROOT / 'include'),
                    '-I' + str(ROOT / 'tests/cuda_stub'), str(source), '-pthread',
                    '-Wl,-dead_strip' if sys.platform == 'darwin' else '-Wl,--gc-sections',
                    '-o', str(temp / 'test')]

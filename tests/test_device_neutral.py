@@ -77,7 +77,7 @@ VARIABLE_REFERENCE = re.compile(r"\$\(([A-Za-z0-9_]+)\)")
 
 PENDING = {
     "include/sparkpipe/family/glm/spark_glm_head_maxloc.cuh": {"placement": 1},
-    "include/sparkpipe/family/module/spark_module_combine.h": {"handle": 4, "token": 8},
+    "include/sparkpipe/family/module/spark_module_combine.h": {"handle": 4},
     "include/sparkpipe/spark_hidden_transport.h": {"handle": 3},
     "include/sparkpipe/spark_kv_shard.h": {"token": 3},
     "include/sparkpipe/spark_model_driver.h": {"handle": 2},
@@ -85,9 +85,8 @@ PENDING = {
     "include/sparkpipe/spark_module_abi.h": {"handle": 1},
     "include/sparkpipe/spark_stage_runner.h": {"handle": 2},
     "include/sparkpipe/spark_stage_runner_model.h": {"handle": 7},
-    "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 3, "header": 1, "token": 23},
+    "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 3},
     "include/sparkpipe/spark_tp_device_collective.h": {"handle": 22},
-    "include/sparkpipe/spark_weightd_map.h": {"header": 1, "token": 1},
     "inference/kernels/layer_kind.cuh": {"rename": 1},
     "inference/kernels/tensor_map.cuh": {"rename": 1},
     "model-families/k3/source/config.h": {"device-include": 1},
