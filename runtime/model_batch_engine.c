@@ -5175,7 +5175,7 @@ SparkStatus SparkModelBatchEngineCacheStateBegin(
 	if ( engine == 0 || state == 0 || token_count == 0u || (prompt_token_ids == 0) == (identity == 0) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( engine->probe_active != 0u )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	memset(state,0,sizeof(*state));
 	state->abi_version = SPARK_MODEL_BATCH_ENGINE_ABI_VERSION;
 	state->descriptor_bytes = (uint32_t)sizeof(*state);
@@ -5210,7 +5210,7 @@ SparkStatus SparkModelBatchEngineCacheStateBegin(
 	for (rank=0u; rank<view.rank_count && rank<SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_NODE_COUNT; rank++)
 		engine->probe_generations[rank] = SparkModelPipelineClientGetRankCacheProbe(engine->pipeline,rank,&report) == SPARK_STATUS_OK ? report.generation : 0u;
 	if ( SparkModelPipelineClientCacheProbe(engine->pipeline,&state->identity,state->probed_token_count) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_BUSY);
+		SPARK_FAIL(SPARK_STATUS_BUSY);
 	engine->probe_state = *state;
 	engine->probe_active = 1u;
 	return(SPARK_STATUS_PENDING);

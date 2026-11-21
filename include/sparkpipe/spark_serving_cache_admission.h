@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_admission.h"
+#include "sparkpipe/spark_error_site.h"
 
 typedef struct SparkServingCacheAdmission
 {
@@ -20,12 +21,12 @@ static inline SparkStatus SparkServingCacheBuildRequest(const SparkServingCacheA
 	uint32_t count;
 	SparkStatus status;
 	if ( cache == 0 || submission == 0 || request == 0 || cache->lanes == 0 || cache->lane_capacity == 0u || cache->program_id == 0u || submission->lane_count < submission->active_sequence_count )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkModelServingAdapterBuildDriverCacheLanes(submission,cache->lanes,cache->lane_capacity,&count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( count != submission->active_sequence_count )
-		return(SPARK_STATUS_SCHEMA_ERROR);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SparkAdmissionRequestFromSubmission(cache->program_id,submission,cache->lanes,flags,request));
 }
 
@@ -36,11 +37,11 @@ static inline SparkStatus SparkServingCacheAdmissionRun(const SparkServingCacheA
 	SparkStatus status;
 	uint32_t index;
 	if ( cache == 0 || cache->validate == 0 || cache->driver == 0 || submissions == 0 || count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE && flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT && flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE && count != 1u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (index=0u; index<count; index++)
 	{
 		status = cache->validate(cache->adapter_state,&submissions[index]);
@@ -67,7 +68,7 @@ static inline SparkStatus SparkServingCacheProbeRun(const SparkServingCacheAdmis
 	SparkModelDriverCacheLane lane;
 	SparkStatus status;
 	if ( cache == 0 || cache->driver == 0 || cache->program_id == 0u || identity == 0 || token_count == 0u || probe == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&lane,0,sizeof(lane));
 	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
 	lane.prefix_token_count = token_count;
@@ -82,7 +83,7 @@ static inline SparkStatus SparkServingCacheProbeRun(const SparkServingCacheAdmis
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	if ( decision.accepted == 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	SparkModelDriverLoadCacheProbe(&decision,probe);
 	return(SPARK_STATUS_OK);
 }
@@ -93,7 +94,7 @@ static inline SparkStatus SparkServingCacheHintRun(const SparkServingCacheAdmiss
 	SparkModelDriverAdmissionDecision decision;
 	SparkModelDriverCacheLane lane;
 	if ( cache == 0 || cache->driver == 0 || cache->program_id == 0u || identity == 0 || token_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(&lane,0,sizeof(lane));
 	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
 	lane.prefix_token_count = token_count;
