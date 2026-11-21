@@ -910,6 +910,9 @@ as recorded debt for models too large for a group.
   node's KV store fills to its quota and stays there. Open with that:
   - the quota path has fleet proof only at 8 GiB per rank (above), and now
     carries every eviction;
+  - a store's open scan and its index now hold a full quota of files, about
+    4.1M at fleet page sizes: measure the scan time at lane start and the
+    index memory on a full node;
   - `DELETE /v1/cache` does not reach the engine's tiers. The serving layer
     deletes its own stores and answers `not_deleted: engine_cache` (#1789);
   - nothing writes the working-state directive, and nothing restores a fleet
