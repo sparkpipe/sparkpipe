@@ -771,10 +771,41 @@ SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner)
 	return(DeviceQueueOpen(queue,owner,0));
 }
 
+static SparkDeviceQueue *DeviceQueueListed(const void *native)
+{
+	SparkDeviceQueue *queue;
+	for ( queue = device_queues; queue != 0; queue = queue->next )
+		if ( (const void *)queue == native )
+			return(queue);
+	return(0);
+}
+
 SparkStatus SparkDeviceQueueAdopt(SparkDeviceQueue **queue, void *native, const char *owner)
 {
-	if ( native == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"needs the backend's own queue to adopt"));
+	SparkDeviceQueue *listed = 0;
+	SparkStatus status;
+	if ( native == 0 || queue == 0 )
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"needs an output and the backend's own queue to adopt");
+		SPARK_FAIL(refused);
+	}
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("queue_adopt",owner);
+	if ( status == SPARK_STATUS_OK && (listed = DeviceQueueListed(native)) != 0 )
+	{
+		if ( listed == device_sync_queue )
+			status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"the synchronous copy queue belongs to the device");
+		else
+		{
+			listed->borrows++;
+			*queue = listed;
+		}
+	}
+	pthread_mutex_unlock(&device_mutex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	if ( listed != 0 )
+		return(SPARK_STATUS_OK);
 	return(DeviceQueueOpen(queue,owner,native));
 }
 
@@ -813,7 +844,18 @@ SparkStatus SparkDeviceQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
 
 SparkStatus SparkDeviceQueueDestroy(SparkDeviceQueue *queue)
 {
-	SparkStatus status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+	SparkStatus status;
+	uint32_t borrowed = 0u;
+	pthread_mutex_lock(&device_mutex);
+	if ( DeviceQueueListed(queue) != 0 && queue->borrows != 0u )
+	{
+		queue->borrows--;
+		borrowed = 1u;
+	}
+	pthread_mutex_unlock(&device_mutex);
+	if ( borrowed != 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	pthread_mutex_lock(&device_mutex);

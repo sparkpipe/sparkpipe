@@ -133,6 +133,35 @@ static void TestSpaces(void)
 	CHECK(device.handle == 0u && device.device == 0u,"free clears the buffer");
 }
 
+static uint32_t BorrowedFill(SparkDeviceQueue *queue, SparkDeviceBuffer *buffer, uint8_t value)
+{
+	const uint8_t *bytes = (const uint8_t *)buffer->host;
+	return(SparkDeviceFill(queue,At(buffer,0u),value,64u) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK &&
+		bytes[0] == value && bytes[63] == value);
+}
+
+static void TestAdoptOwnQueue(uint32_t adopts)
+{
+	SparkDeviceQueue *owner = 0,*borrowed = 0,*again = 0,*gone = 0,*refused = 0;
+	SparkDeviceBuffer scratch;
+	CHECK(SparkDeviceAllocate(&scratch,SPARK_DEVICE_SPACE_SHARED_COHERENT,4096u,"adopt scratch") == SPARK_STATUS_OK &&
+		SparkDeviceQueueCreate(&owner,"adopt owner") == SPARK_STATUS_OK,"create a queue and a host-visible buffer");
+	CHECK(SparkDeviceQueueAdopt(&borrowed,owner,"adopt own") == SPARK_STATUS_OK && borrowed == owner,
+		"adopting one of the device's own live queues hands back that queue, its sequence numbers and capture state");
+	CHECK(BorrowedFill(borrowed,&scratch,0x42),"work queued through the adopted handle runs");
+	CHECK(SparkDeviceQueueDestroy(borrowed) == SPARK_STATUS_OK && BorrowedFill(owner,&scratch,0x43),"releasing the adopted handle leaves the owner's queue working");
+	CHECK(SparkDeviceQueueAdopt(&again,owner,"adopt own again") == SPARK_STATUS_OK && again == owner && SparkDeviceQueueDestroy(owner) == SPARK_STATUS_OK &&
+		BorrowedFill(again,&scratch,0x44),"released by its owner first, the queue lives on for the adopter");
+	CHECK(SparkDeviceQueueDestroy(again) == SPARK_STATUS_OK,"the last release destroys the queue");
+	if ( adopts == 0u )
+	{
+		CHECK(SparkDeviceQueueCreate(&gone,"adopt gone") == SPARK_STATUS_OK && SparkDeviceQueueDestroy(gone) == SPARK_STATUS_OK &&
+			SparkDeviceQueueAdopt(&refused,gone,"adopt freed") == SPARK_STATUS_UNSUPPORTED && refused == 0,
+			"a freed queue's handle is not adopted: it is no longer a live queue of the device");
+	}
+	CHECK(SparkDeviceFree(&scratch) == SPARK_STATUS_OK,"free the scratch buffer");
+}
+
 static void TestAdopt(void)
 {
 	SparkDeviceBuffer held, adopted;
@@ -156,6 +185,7 @@ static void TestAdopt(void)
 			"a backend that owns all its queues refuses to adopt one");
 	}
 	CHECK(SparkDeviceFree(&held) == SPARK_STATUS_OK,"free the held buffer");
+	TestAdoptOwnQueue(adopts);
 }
 
 static void TestCopies(SparkDeviceQueue *queue)
