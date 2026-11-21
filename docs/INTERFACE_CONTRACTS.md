@@ -126,6 +126,37 @@ While an engine serves, the cache writes a prefix to disk (a snapshot save or a 
 - The stage KV binding gives each lane a table of one fingerprint per page the node KV quota holds, at least its logical page count and at most `SPARK_STAGE_KV_UNREAD_LIMIT` (2M fingerprints, 16 MB), so a dropped page is remembered for about as many later drops as the old store kept files, or half as many at fleet page sizes (about 120 KB a page per rank, so the 500 GB quota is 4.1M pages). It logs `kv binding unread prefixes` at load and `unread_discards=` and `unread_returns=` on its `kv binding arena` close line.
 - What this costs: the first return of a dropped prefix is recomputed; a conversation whose newest turn was dropped before the next turn recomputes that turn; an identical resend after a crash recomputes its prompt; the fingerprints live in memory, so a restart forgets them.
 
+### Prefix probe
+
+`SparkKvPageCacheProbePrefix` answers, for a prefix identity and its token
+count, what this rank has of it, and changes nothing: it marks no entry
+read, moves nothing in the LRU order, raises no priority and starts no
+restore.
+
+- `held_token_count`: the token count when the cache has an entry for the
+  prefix, else 0.
+- `resident_token_count`: tokens of the chain whose pages are on the device.
+- `saved_token_count`: for a held prefix, the deepest entry that is saved
+  together with every entry before it. For a prefix the cache does not hold,
+  the token count when the snapshot store has its last page file; a chain is
+  written root first and evicted leaf first, so that file implies the rest.
+- `state_token_count`: the deepest entry on the chain that still has its
+  state, which is where a request for this prefix can resume. Without a
+  state store every entry is such a point.
+
+The probe reaches a rank as an admission with
+`SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE` and one prefix lane, the
+shape of a cache hint. The decision is accepted and carries the four counts
+in fields a probe has no other use for: `driver_dispatch_generation` (held),
+`residency_match_score` (resident), `driver_dispatch_cookie0` (saved) and
+`driver_dispatch_cookie1` (state). `SparkModelDriverStoreCacheProbe` and
+`SparkModelDriverLoadCacheProbe` are the only code that reads or writes them
+that way. The adapter's `cache_probe` runs it, the rank daemon answers a
+`CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
+least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
+`...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
+zero counts.
+
 ### Pinned lane transaction
 
 `SparkKvPageCacheBeginPinnedLaneTransaction(cache, lane, logical_pages, physical_pages, page_capacity, page_count_out, mutation_flags_out)` prepares a lane, begins its transaction and pins its full page table.

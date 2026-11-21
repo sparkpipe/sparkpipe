@@ -146,6 +146,98 @@ messages,responses` alternates the shapes within one team.
 A warm request is a normal request with `max_tokens` 1. Its `prefill_ms` is
 the seed's cold prefill, and the summary reports it under `warm`.
 
+## The turn floor and the cold events
+
+Two more commands time one session at a time, where the arms above time
+many. Both write `turns.jsonl` in `--output`, and `report` prints their
+table.
+
+**`floor`** answers what a typical turn costs at each context length. One
+session per shape grows through `--contexts` (default 20,000, 50,000,
+135,000 and 300,000 tokens). At each level it sends the level request
+(`floor_grow`), then `--repeats` (default 3) turns for each of `--tails`
+(default 50, 300 and 2,400 tokens): the last reply goes back as it came,
+with a tool result of that size, so the request is the reply plus the tail
+on a cached prefix. `--reply-tokens` (default 64) bounds each reply. The
+session is saved as `session-<shape>.json` for the resume event.
+
+**`cold`** times the events that lose a prefix (`--events`, default
+`opening,subagent`):
+
+| Event | Requests | What it shows |
+| --- | --- | --- |
+| `opening` | a new session on a `--opening-tokens` (46,000) opening, then a second session on the same opening | the first is cold from its first tool on; the second pays from the engine's nearest resume point |
+| `subagent` | a subagent of one type on a `--subagent-tokens` (37,000) opening with five tools, then a second with another brief | the same pair, with the subagent class and agent type headers |
+| `resume` | one turn with a 300-token tail on the saved `floor` session; needs `--event NAME` | what the session costs after the operator did `NAME` to it: a swap away and back, an engine restart, an eviction |
+
+`--nonce` goes into the first tool's description and the system prompt, so
+each `cold` run is a first sight unless the nonce is repeated. A request
+without a key carries the chat layer's miss ledger
+(`docs/LITELLM_FRONTEND.md`), and the table shows its cause and missed
+tokens; a keyed request shows the times only.
+
+```sh
+T="--endpoint http://127.0.0.1:8433 --model glm-5.3 --corpus $W/corpus --label glm53 --output $W/glm53-floor"
+python3 $W/agent_turn_bench.py floor $T --shapes messages,responses
+python3 $W/agent_turn_bench.py cold $T --shapes messages
+python3 $W/agent_turn_bench.py cold $T --shapes messages --events resume --event swap
+python3 $W/agent_turn_bench.py report $W/glm53-floor
+```
+
+### The engine's share: `tools/turn_floor.py`
+
+`tools/turn_floor.py` sends token ids straight to one engine API, with no
+chat layer, and splits each request's time to first token with the engine's
+own log. It is the measurement behind the turn floor in
+`PERFORMANCE_STATUS.md`. Run it on the engine's host, so its clock is the
+engine's.
+
+```sh
+python3 turn_floor.py run --endpoint http://127.0.0.1:8459 --tokens tokens.txt --api-log /srv/workspace/sparkpipe/logs/k3-kv-api.log \
+    --label kimi-k3 --output $W/kimi-k3 --arms turns,openings,wave
+python3 turn_floor.py run ... --arms resume --event swap
+python3 turn_floor.py parts $W/kimi-k3
+```
+
+- `--tokens` is a file of token ids from the model's own tokenizer
+  (`sparkpipe_tokenize_prompt --tokenizer-compiled ... --text-file ...`,
+  one id a line). A run's prompts start at a random rotation of it (the
+  `salt`, kept in `session.json`), so nothing an earlier run cached is
+  reused.
+- **`turns`**: at each of `--contexts`, a `grow` request, then `--repeats`
+  plain turns for each of `--tails` with speculation off, `--spec-repeats`
+  turns as served, and a `decode` sample of `--decode-tokens` on the whole
+  history with speculation off (its new tail is 0, so its first token is the
+  floor of the floor).
+- **`decode`**: grows the session to `--decode-context` and samples there.
+- **`openings`**: a 46,000-token opening, a second session on it, a
+  37,000-token subagent opening, and a second subagent that shares 97% of it.
+- **`wave`**: a `--wave-tokens` prompt at background priority, and a
+  2,048-token cached probe sent at interactive priority again and again
+  while it runs. The probe's time beyond its solo time is the wait behind a
+  background wave.
+- **`resume`**: one turn on the saved session after `--event`.
+
+`parts` joins each request to its `request_measurements` line by the
+SHA-256 of its token ids and reads the `batch_step` and `batch_rejected`
+lines of that request:
+
+| Part | From |
+| --- | --- |
+| send | client send to the engine's acceptance: the HTTP request, the body's JSON and the hand-off to the engine thread |
+| queue | acceptance to the first admitted dispatch, when the ranks never answered pending |
+| restore | the same interval when they did (`batch_rejected status=18`): the ranks were restoring the prefix |
+| prefill | first admitted dispatch to the dispatch of the first decode step: the waves, and the publishes between them |
+| first step | that dispatch to the first token |
+
+The decode step's dispatch time is not logged; it is the time of the
+step's last token minus the step's logged wall time. The join therefore
+needs plain decode steps, so turns as served (`turn_spec`), whose first
+step is a verify frame, get send, queue and restore only. `summary.json`
+also holds the change in the ranks' `kv_store_report` counters over the run
+(`save_pages`, `save_ns`, `restore_pages`, `restore_ns`), which give the
+save and restore rates.
+
 ## The memory gate
 
 `--memory-hosts` (or `tools/fleet_memory_watch.py` on its own) samples
