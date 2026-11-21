@@ -336,16 +336,20 @@ answer: the `truth` arm after the turns, and before and after a turn that
 follows a stop and start of the lane.
 
 ```sh
-SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build \
+SLOT_MODEL=dsv41_flash_tp4 SLOT_LABEL=deepseek-v4.1-flash-tp4 SLOT_FW=fw-$SHA \
+    SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build \
     SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN \
     scripts/turn_floor_slot.sh $RUN
 ```
 
-- `SLOT_MODEL` is a `tools/stage_lane.py` model (default `dsv41_flash_tp4`),
-  `SLOT_FIRST` its first node (default 4, so spark4 to spark7), `SLOT_LANE`
-  its mesh lane (default 1), `SLOT_CONTEXTS` its levels (default
-  `8000,50000`). The `STAGE_*` sizes of `tools/stage_lane.sh` keep the
-  script's defaults unless the caller sets them.
+- `SLOT_MODEL` is a `tools/stage_lane.py` model and has no default,
+  `SLOT_FIRST` is its first node (default 4, so spark4 to spark7 for a lane
+  of four), `SLOT_LANE` its mesh lane (default 1), `SLOT_CONTEXTS` its
+  levels (default `8000,50000`). The `STAGE_*` sizes of
+  `tools/stage_lane.sh` keep the script's defaults unless the caller sets
+  them. Every setting is checked before it is used: the model and the label
+  against a pattern, the node, the lane and the port as whole numbers in
+  range, the paths as plain paths.
 - It refuses to start unless the swap controller reads `idle None None`,
   both builds are complete and of one commit (`SOURCE_COMMIT` in `SLOT_FW`
   and beside `SLOT_API_BUILD`), and every node of the group has
@@ -460,8 +464,10 @@ stopped:
 
 ```sh
 RUN=s0$(date -u +%H%M)
-SLOT_DRY=1 SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN scripts/turn_floor_slot.sh $RUN
-SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN scripts/turn_floor_slot.sh $RUN
+export SLOT_MODEL=dsv41_flash_tp4 SLOT_LABEL=deepseek-v4.1-flash-tp4 SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build
+export SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN
+SLOT_DRY=1 scripts/turn_floor_slot.sh $RUN
+scripts/turn_floor_slot.sh $RUN
 ```
 
 About 15 minutes of the lane are expected, as an estimate: its start, two

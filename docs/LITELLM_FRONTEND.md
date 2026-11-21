@@ -375,11 +375,11 @@ every rank has it:
 | Field | Meaning |
 | --- | --- |
 | `probed_tokens`, `identity` | the prefix the ranks were asked about |
-| `ranks`, `ranks_reported`, `complete` | how many ranks were asked and answered; `complete` is false when a rank did not answer within 5 s |
+| `ranks`, `ranks_reported`, `complete` | how many ranks were asked and answered; `complete` is false when a rank did not answer within 5 s. The request has its own deadline one second later, so it answers even when the engine thread does not |
 | `ranks_failed` | ranks whose answer was a failure, for example an adapter that cannot be probed. Such a rank vouches for nothing, so every count below reads 0 when this is not 0 |
 | `held_tokens` | the prefix length when every rank's page cache has an entry for it, else 0 |
 | `resident_tokens` | tokens of that prefix whose pages are on the device |
-| `saved_tokens` | the longest part of the prefix, from token 0, that is in the snapshot store; for a prefix a rank no longer holds in memory, its whole length when its last page file is on disk |
+| `saved_tokens` | the longest part of the prefix, from token 0, whose page files are in the snapshot store now, checked in the store's index; for a prefix a rank no longer holds in memory, its whole length when every page file from its last to its first is there, and 0 when one is missing |
 | `state_tokens` | the nearest point at or below the prefix that the ranks can resume from: on a model with recurrent state, the deepest entry that still has its state |
 | `read_tokens` | the part of the prefix, from token 0, that a later request has read. The ranks save that part by themselves; the rest reaches the snapshot store only when the engine closes. 0 for a prefix no rank holds in memory. The design's classes (tail, kept, pinned) are not built yet, and this is what the engine knows in their place |
 | `block_tokens`, `checkpoint_tokens` | the page size and the checkpoint distance of this adapter (0 when it resumes at any block) |
@@ -734,12 +734,18 @@ Causes, in the order they are tried:
 | `restored` | the engine waited for a restore | `restore_ms` |
 | `lost` | an earlier request carried more than the engine matched | `lost_reason`: `wiped` (the working state was wiped since it was carried), `release` (the adapter artifact changed), `swap` (the model was away since), `restart` (another API boot), `evicted` (none of these), or null when the engine reports no boot |
 | `pack_profile` | the request is the first with its tool set or template settings on a pack | |
-| `first_opening`, `opening_changed` | a session's first request prefills 256 or more opening tokens nobody had carried. `first_opening` when its family (scope, model, API shape, request class and agent type) has no opening yet; otherwise `opening_changed` | `cause_block`: the first part that differs from the family's newest opening, in the order `tools`, `attribution` (a first system block that starts with `x-anthropic-billing-header:`), `system`, `project_context` (the text before the first prompt); `template` when every part is known and the prompt still rendered differently, as with another reasoning effort |
+| `first_opening`, `opening_changed` | a session's first request prefills more than one block of opening tokens nobody had carried. `first_opening` when its family (scope, model, API shape, request class and agent type) has no opening yet; otherwise `opening_changed` | `cause_block`: the first part that differs from the family's newest opening, in the order `tools`, `attribution` (a first system block that starts with `x-anthropic-billing-header:`), `system`, `project_context` (the text before the first prompt); `template` when every part is known and the prompt still rendered differently, as with another reasoning effort |
 | `resume_point` | the engine matched more than one block beyond where it resumed | `recomputed_tokens` |
+| `unattributed` | nothing above explains what was prefilled beyond the tail. On a session the ledger does not know (the client sent no session id, or the chat layer restarted) the request's own tail cannot be told from the rest, so all of its prefill is here, with `tail_tokens` and `miss_tokens` null | |
 
-A cause other than the first, fourth and last needs a miss of more than one
-block; without an engine cache object the bound is the model's
-`resume_tokens`, so a resume at a checkpoint is not called lost. Two things
+The causes are tried in the table's order and the first that holds is the
+request's cause, so `unattributed` is what is left: every request that
+prefilled more than one block beyond the tail the ledger knows has a cause,
+and the cold time of a set of requests divides among the causes with nothing
+over. `compaction`, `history_changed`, `lost`, `pack_profile` and
+`unattributed` need that much; without an engine cache object the bound is
+the model's `resume_tokens`, so a resume at a checkpoint is not called lost.
+Two things
 limit what the ledger can say. It lives in the chat layer's memory, so a
 restarted chat layer has seen nothing and knows no session. And it counts in
 64-token blocks, so `seen_tokens`, `opening_tokens` and `cause_position` are

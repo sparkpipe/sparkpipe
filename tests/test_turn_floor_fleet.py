@@ -65,7 +65,8 @@ check(code == 2 and "usage:" in error, "no model prints the usage")
 
 
 def slot(*arguments, **environment):
-    values = dict(os.environ, SLOT_DRY="1", SLOT_FW="/local/fw", SLOT_API_BUILD="/hub/build", SLOT_TOKENS="/hub/tokens.txt", SLOT_OUT="/local/out", HOME="/nonexistent-home")
+    values = dict(os.environ, SLOT_DRY="1", SLOT_MODEL="dsv41_flash_tp4", SLOT_LABEL="deepseek-v4.1-flash-tp4", SLOT_FW="/local/fw", SLOT_API_BUILD="/hub/build",
+                  SLOT_TOKENS="/hub/tokens.txt", SLOT_OUT="/local/out", HOME="/nonexistent-home")
     values.update(environment)
     for name in [name for name, value in values.items() if value is None]:
         del values[name]
@@ -94,10 +95,19 @@ check("--endpoint http://127.0.0.1:8492 --tokens /hub/tokens.txt --api-log /srv/
       f"the tool is pointed at the test lane's own API and log: {turns}")
 code, out, _ = slot("s0b", SLOT_FIRST="8", SLOT_CONTEXTS="8000", SLOT_LANE="3")
 check(code == 0 and "on spark8 spark9 sparka sparkb, mesh lane 3, API unit tf-slot-api-8 on port 8493" in out and "--contexts 8000 " in out, "another group of four takes its own nodes, port and unit")
-code, _, error = slot("s0a", SLOT_MODEL="no-such-model")
-check(code == 2 and "SLOT-REFUSED: 'no-such-model' is not a tools/stage_lane.py model" in error, "a model the lane tool does not know is refused")
+code, _, error = slot("s0a", SLOT_MODEL="no_such_model")
+check(code == 2 and "SLOT-REFUSED: 'no_such_model' is not a tools/stage_lane.py model" in error, "a model the lane tool does not know is refused")
+code, _, error = slot("s0a", SLOT_MODEL=None)
+check(code != 0 and "SLOT_MODEL is the tools/stage_lane.py model of the lane" in error, "the model must be named; there is no default")
+refused = {"SLOT_MODEL": "a;rm -rf x", "SLOT_FIRST": "four", "SLOT_LANE": "9", "SLOT_CONTEXTS": "8000;ls", "SLOT_PORT": "80", "SLOT_WAVE": "0", "SLOT_MIN_FREE_GIB": "-1",
+           "SLOT_LABEL": "a b", "SLOT_DIR": "relative/dir", "SLOT_TOKENS": "/hub/$(id).txt", "SLOT_API_BUILD": "/hub/build;x"}
+for name, value in refused.items():
+    code, out, error = slot("s0a", **{name: value})
+    check(code == 2 and "SLOT-REFUSED: " in error and out == "", f"{name}={value!r} is refused before anything is planned: {error.strip()[-120:]}")
+code, _, error = slot("s0a", SLOT_FIRST="14")
+check(code == 2 and "no lane at node 14" in error, "a group that would run past the sixteenth node is refused")
 code, _, error = slot("two words")
-check(code == 2 and "may hold letters" in error, "a run id is one word")
+check(code == 2 and "the run id is 'two words'" in error, "a run id is one word")
 code, _, error = slot("s0a", SLOT_FW=None)
 check(code != 0 and "SLOT_FW is the local folder" in error, "the node files must be named")
 code, _, error = slot()
