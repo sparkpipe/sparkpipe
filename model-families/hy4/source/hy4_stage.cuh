@@ -343,16 +343,16 @@ struct HyModel : CudaStage<HyModel<G>>
 			Linear(layer->index_k, state->normed, state->index_k, rows, G::kHidden, G::kIndexDim, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->index_weights, state->normed, (uint16_t *)0, state->index_weights, rows, G::kHidden, G::kIndexHeads, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyLayerNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kIndexNormEpsilon);
+		LM_LAUNCH((HyLayerNormKernel<HY_THREADS>), rows, HY_THREADS, 0, stream, state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kIndexNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,G::kIndexHeads), HY_THREADS, 0, stream,
 			state->index_q, step->positions, G::kIndexHeads, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->index_k, step->positions, 1u, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
-		HyScaleRowsKernel<<<Blocks((uint64_t)rows * G::kIndexHeads), HY_THREADS, 0, stream>>>(state->index_weights, (uint64_t)rows * G::kIndexHeads,
+		LM_LAUNCH((HyScaleRowsKernel), Blocks((uint64_t)rows * G::kIndexHeads), HY_THREADS, 0, stream, state->index_weights, (uint64_t)rows * G::kIndexHeads,
 			(float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::IndexKv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->index_k, step->sequence_of_row,
 			step->positions, rows, G::kIndexDim);
-		HyIndexScoreKernel<typename S::IndexKv,G::kIndexHeads,G::kIndexDim><<<dim3((state->local_capacity + HY_THREADS - 1u) / HY_THREADS, rows), HY_THREADS, 0, stream>>>(*view,
+		LM_LAUNCH((HyIndexScoreKernel<typename S::IndexKv,G::kIndexHeads,G::kIndexDim>), dim3((state->local_capacity + HY_THREADS - 1u) / HY_THREADS, rows), HY_THREADS, 0, stream, *view,
 			state->index_q, state->index_weights, step->sequence_of_row, step->context_length, step->positions, state->index_scores,
 			state->local_capacity, G::kIndexTopk);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -396,7 +396,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			Linear(layer->kv_a, state->normed, state->kv, rows, G::kHidden, S::kSlot, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyRmsNormKernel<HY_THREADS,G::kQLora><<<rows, HY_THREADS, 0, stream>>>(state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kQLora>), rows, HY_THREADS, 0, stream, state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
 			G::kEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK )
@@ -405,9 +405,9 @@ struct HyModel : CudaStage<HyModel<G>>
 			HY_THREADS, 0, stream, state->q, layer->uk, state->q_latent, S::kRankHeads, rows);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,S::kRankHeads), HY_THREADS, 0, stream,
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
-		HyQueryPackKernel<<<dim3(rows, S::kRankHeads), HY_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
+		LM_LAUNCH((HyQueryPackKernel), dim3(rows, S::kRankHeads), HY_THREADS, 0, stream, state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
 			G::kNope, G::kRope);
-		HyRmsNormKernel<HY_THREADS,G::kLatent><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kLatent>), rows, HY_THREADS, 0, stream, state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
@@ -436,7 +436,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmPerHeadProjectSplitKernel<HY_THREADS,G::kLatent,G::kValueDim>), dim3(rows,S::kRankHeads,G::kValueDim / LM_PER_HEAD_SPLIT_OUTPUTS),
 			HY_THREADS, 0, stream, state->latent, layer->uv, state->value, S::kRankHeads, rows);
-		HySigmoidGateKernel<<<Blocks((uint64_t)rows * S::kRankHeads * G::kValueDim), HY_THREADS, 0, stream>>>(state->value, state->gate,
+		LM_LAUNCH((HySigmoidGateKernel), Blocks((uint64_t)rows * S::kRankHeads * G::kValueDim), HY_THREADS, 0, stream, state->value, state->gate,
 			(uint64_t)rows * S::kRankHeads * G::kValueDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->out, state->value, state->partial, rows, S::kRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )
@@ -471,13 +471,13 @@ struct HyModel : CudaStage<HyModel<G>>
 			LmTopkGroupLimitedLaunch<HY_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
 				state->route_weight, G::kRouteScale, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<HY_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
 		expert_routes.tile_prefix_up = state->tile_prefix_up;
@@ -493,7 +493,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			LmLocalExpertsUp<LmMxfp8>(expert_routes, layer->moe_w3.weight, Scales(layer->moe_w3.scale, G::kLocalExperts, G::kMoeInter, G::kHidden),
 				normed, state->expert_up, G::kHidden, G::kMoeInter, stream, exact) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), HY_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), HY_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter, G::kSwigluLimit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmLocalExpertsDown<LmMxfp8>(expert_routes, layer->moe_w2.weight, Scales(layer->moe_w2.scale, G::kLocalExperts, G::kHidden, G::kMoeInter),
@@ -505,14 +505,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, state->shared_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
-		LmHcExpandFlatKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16,
+		LM_LAUNCH((LmHcExpandFlatKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, frame.step->hidden_bf16,
 			state->streams, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
@@ -524,14 +524,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		LmHcMix<HY_THREADS,G::kStreams,2u * G::kStreams,G::kHidden>(state->streams, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn,
 			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, ffn ? layer.mlp_hc_base : layer.attn_hc_base, state->hc_partial, state->hc_post, state->mixed, rows,
 			G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude, frame.stream);
-		HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, frame.stream>>>(state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kHidden>), rows, HY_THREADS, 0, frame.stream, state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
 			G::kHidden, G::kHidden, G::kEpsilon);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
-		LmHcPostKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(state->streams, state->hc_post,
+		LM_LAUNCH((LmHcPostKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, state->streams, state->hc_post,
 			state->partial, G::kHidden);
 		return SPARK_STATUS_OK;
 	}

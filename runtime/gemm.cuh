@@ -137,7 +137,7 @@ static cudaError_t LmGemmLaunchTile(
 			INTERLEAVED_B>(shared);
     if (status != cudaSuccess)
         return status;
-    LmGemmKernel<
+    LM_LAUNCH((LmGemmKernel<
         FormatA,
         FormatB,
         TILE_M,
@@ -147,8 +147,8 @@ static cudaError_t LmGemmLaunchTile(
 		WARPS,
 			INDIRECT_A,
 			ACTIVATION_CODEC,
-			INTERLEAVED_B>
-        <<<plan.grid_blocks, plan.block_threads, shared, stream>>>(
+			INTERLEAVED_B>),
+        plan.grid_blocks, plan.block_threads, shared, stream,
             args,
             activation_map,
             weight_map,
@@ -422,7 +422,7 @@ static int32_t LmGemmLaunchAsymmetric(
 	args->activation_bytes = activation_bytes;
     if (group_count > 1u && args->prefix_built == 0u)
     {
-        LmGemmTilePrefixKernel<32u><<<1u, 32u, 0u, stream>>>(
+        LM_LAUNCH((LmGemmTilePrefixKernel<32u>), 1u, 32u, 0u, stream,
             args->group_row_offset,
             group_count,
             plan.tile_m,

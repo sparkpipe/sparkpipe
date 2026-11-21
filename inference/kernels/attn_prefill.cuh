@@ -2,6 +2,7 @@
 
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/mma.cuh"
+#include "runtime/launch.h"
 #include <math.h>
 #include <stdint.h>
 
@@ -625,7 +626,7 @@ static inline cudaError_t LmPrefillBlockTableLaunch(
 		return cudaErrorInvalidValue;
 	if (segment_ends != 0 && segment_capacity == 0u)
 		return cudaErrorInvalidValue;
-	LmPrefillBlockTableKernel<ROWS_PER_BLOCK><<<1, 32, 0, stream>>>(cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
+	LM_LAUNCH((LmPrefillBlockTableKernel<ROWS_PER_BLOCK>), 1, 32, 0, stream, cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
 	return cudaPeekAtLastError();
 }
 
@@ -659,7 +660,7 @@ static inline cudaError_t LmLatentAttentionPrefillLaunch(
 				return error;
 			granted = true;
 		}
-		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES><<<block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+		LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>), block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream,
 			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, 0, 0, 0, 0u);
 		return cudaPeekAtLastError();
 	}
@@ -713,9 +714,9 @@ static inline cudaError_t LmLatentAttentionSparsePrefillLaunch(
 	}
 	if (selected_count != SELECTED)
 		return cudaErrorInvalidValue;
-	LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED><<<blocks, LM_PREFILL_UNION_THREADS, 0, stream>>>(
+	LM_LAUNCH((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
 		selected_positions, row_position, rows, block_table, capacity, union_positions, union_masks, union_counts);
-	LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES><<<blocks, LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, shared, stream,
 		query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, union_positions, union_masks, union_counts, capacity);
 	return cudaPeekAtLastError();
 }

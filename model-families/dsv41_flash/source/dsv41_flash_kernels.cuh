@@ -6,6 +6,7 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "sparkpipe/spark_kv_shard.h"
+#include "runtime/launch.h"
 
 #define SPARK_DSV41_FLASH_KV_FP4_GROUP 16u
 #define SPARK_DSV41_FLASH_KV_FP4_AMAX_FLOOR (6.0f * 0.001953125f)
@@ -46,7 +47,7 @@ static inline cudaError_t SparkDsv41FlashLaunchKvFp4Qdq(cudaStream_t stream, uin
 		width % SPARK_DSV41_FLASH_KV_FP4_GROUP != 0u || row_stride < width )
 		return(cudaErrorInvalidValue);
 	groups = (uint64_t)row_count * (width / SPARK_DSV41_FLASH_KV_FP4_GROUP);
-	SparkDsv41FlashKvFp4QdqKernel<<<(uint32_t)((groups + 255u) / 256u),256u,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashKvFp4QdqKernel),(uint32_t)((groups + 255u) / 256u),256u,0,stream,
 		data_bf16,row_stride,row_count,width);
 	return(cudaGetLastError());
 }
@@ -122,7 +123,7 @@ static inline cudaError_t SparkDsv41FlashLaunchEngramGate(
 	if ( streams_bf16 == 0 || kv_bf16 == 0 || q_weight_bf16 == 0 ||
 		k_weight_bf16 == 0 || row_count == 0u || hc == 0u || dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashEngramGateKernel<<<dim3(row_count,hc),SPARK_DSV41_FLASH_ENGRAM_THREADS,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashEngramGateKernel),dim3(row_count,hc),SPARK_DSV41_FLASH_ENGRAM_THREADS,0,stream,
 		streams_bf16,kv_bf16,q_weight_bf16,k_weight_bf16,hc,dimension,epsilon);
 	return(cudaGetLastError());
 }
@@ -242,7 +243,7 @@ static inline cudaError_t SparkDsv41FlashLaunchCandidateMask(
 	if ( scores_f32 == 0 || widths == 0 || block_scores_f32 == 0 || row_count == 0u ||
 		block_size == 0u || topk_blocks == 0u || block_stride * block_size < row_stride )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashCandidateMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashCandidateMaskKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,
 		scores_f32,widths,row_stride,block_scores_f32,block_stride,block_size,topk_blocks);
 	return(cudaGetLastError());
 }
@@ -328,7 +329,7 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockMax(
 	if ( scores_f32 == 0 || sequence_of_row == 0 || context_length == 0 || row_position == 0 || block_scores_f32 == 0 || row_count == 0u ||
 		shard.grain == 0u || shard.degree == 0u || shard.rank >= shard.degree || (uint64_t)block_stride * shard.grain < score_stride )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashShardBlockMaxKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashShardBlockMaxKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,
 		scores_f32,score_stride,shard,sequence_of_row,context_length,row_position,block_scores_f32,block_stride);
 	return(cudaGetLastError());
 }
@@ -345,7 +346,7 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockMask(
 {
 	if ( selected == 0 || mask == 0 || row_count == 0u || keep == 0u || blocks.degree == 0u || blocks.rank >= blocks.degree )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashShardBlockMaskKernel<<<row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashShardBlockMaskKernel),row_count,SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,
 		global_stride,selected,keep,blocks,mask,block_stride);
 	return(cudaGetLastError());
 }
@@ -362,7 +363,7 @@ static inline cudaError_t SparkDsv41FlashLaunchShardBlockApply(
 	if ( scores_f32 == 0 || mask == 0 || row_count == 0u || grain == 0u || (uint64_t)block_stride * grain < score_stride )
 		return(cudaErrorInvalidValue);
 	const uint64_t spans = (score_stride + 16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS - 1u) / (16u * SPARK_DSV41_FLASH_CANDIDATE_THREADS);
-	SparkDsv41FlashShardBlockApplyKernel<<<dim3((uint32_t)(spans < 256u ? spans : 256u),row_count),SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashShardBlockApplyKernel),dim3((uint32_t)(spans < 256u ? spans : 256u),row_count),SPARK_DSV41_FLASH_CANDIDATE_THREADS,0,stream,
 		scores_f32,score_stride,grain,mask,block_stride);
 	return(cudaGetLastError());
 }
@@ -448,13 +449,13 @@ static inline cudaError_t SparkDsv41FlashLaunchFp8BlockLinear(
 		((uintptr_t)weight_e4m3 % 16u) != 0u )
 		return(cudaErrorInvalidValue);
 	groups = (uint64_t)row_count * (input_dimension / SPARK_DSV41_FLASH_FP8_BLOCK);
-	SparkDsv41FlashActQuantKernel<<<(uint32_t)((groups + 255u) / 256u),256u,0,stream>>>(
+	LM_LAUNCH((SparkDsv41FlashActQuantKernel),(uint32_t)((groups + 255u) / 256u),256u,0,stream,
 		input_bf16,activation_scratch_f32,row_count,input_dimension);
 	status = cudaGetLastError();
 	if ( status != cudaSuccess )
 		return(status);
-	SparkDsv41FlashFp8BlockLinearKernel<<<dim3((output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,row_count),
-		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream>>>(weight_e4m3,scale_ue8m0,activation_scratch_f32,output_bf16,
+	LM_LAUNCH((SparkDsv41FlashFp8BlockLinearKernel), dim3((output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,row_count),
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_e4m3,scale_ue8m0,activation_scratch_f32,output_bf16,
 		input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
@@ -483,7 +484,7 @@ static inline cudaError_t SparkDsv41FlashLaunchRmsNorm(cudaStream_t stream, cons
 {
 	if ( input_bf16 == 0 || weight_bf16 == 0 || output_bf16 == 0 || row_count == 0u || dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashRmsNormKernel<<<row_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream>>>(input_bf16,weight_bf16,output_bf16,dimension,epsilon);
+	LM_LAUNCH((SparkDsv41FlashRmsNormKernel),row_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,input_bf16,weight_bf16,output_bf16,dimension,epsilon);
 	return(cudaGetLastError());
 }
 
@@ -507,7 +508,7 @@ static inline cudaError_t SparkDsv41FlashLaunchRope(cudaStream_t stream, uint16_
 {
 	if ( data_bf16 == 0 || cos_sin_f32 == 0 || head_count == 0u || rope_dimension == 0u || rope_dimension > head_dimension || rope_dimension / 2u > 1024u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashRopeKernel<<<head_count,rope_dimension / 2u,0,stream>>>(data_bf16,cos_sin_f32,head_count,head_dimension,rope_dimension,inverse);
+	LM_LAUNCH((SparkDsv41FlashRopeKernel),head_count,rope_dimension / 2u,0,stream,data_bf16,cos_sin_f32,head_count,head_dimension,rope_dimension,inverse);
 	return(cudaGetLastError());
 }
 
@@ -539,7 +540,7 @@ static inline cudaError_t SparkDsv41FlashLaunchFp8QdqCopy(cudaStream_t stream, c
 	if ( source_bf16 == 0 || data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u )
 		return(cudaErrorInvalidValue);
 	groups = (uint32_t)(element_count / SPARK_DSV41_FLASH_FP8_BLOCK);
-	SparkDsv41FlashFp8QdqKernel<<<(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream>>>(source_bf16,data_bf16,groups);
+	LM_LAUNCH((SparkDsv41FlashFp8QdqKernel),(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream,source_bf16,data_bf16,groups);
 	return(cudaGetLastError());
 }
 
@@ -615,7 +616,7 @@ static inline cudaError_t SparkDsv41FlashLaunchSinkAttention(cudaStream_t stream
 	if ( query_bf16 == 0 || keys_bf16 == 0 || indices == 0 || sink_f32 == 0 || output_bf16 == 0 ||
 		index_count == 0u || index_count > SPARK_DSV41_FLASH_ATTENTION_MAX_KEYS || head_count == 0u || head_dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashSinkAttentionKernel<<<head_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream>>>(query_bf16,keys_bf16,indices,index_count,sink_f32,output_bf16,head_dimension,softmax_scale);
+	LM_LAUNCH((SparkDsv41FlashSinkAttentionKernel),head_count,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,query_bf16,keys_bf16,indices,index_count,sink_f32,output_bf16,head_dimension,softmax_scale);
 	return(cudaGetLastError());
 }
 
@@ -665,8 +666,8 @@ static inline cudaError_t SparkDsv41FlashLaunchGroupedFp8Linear(cudaStream_t str
 	if ( weight_e4m3 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || output_bf16 == 0 || input_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u ||
 		output_dimension % SPARK_DSV41_FLASH_FP8_BLOCK != 0u || outputs_per_group == 0u || output_dimension % outputs_per_group != 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashGroupedFp8LinearKernel<<<(output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
-		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream>>>(weight_e4m3,scale_ue8m0,input_bf16,output_bf16,input_dimension,output_dimension,outputs_per_group);
+	LM_LAUNCH((SparkDsv41FlashGroupedFp8LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_e4m3,scale_ue8m0,input_bf16,output_bf16,input_dimension,output_dimension,outputs_per_group);
 	return(cudaGetLastError());
 }
 
@@ -731,7 +732,7 @@ static inline cudaError_t SparkDsv41FlashLaunchGate(cudaStream_t stream, const u
 	if ( input_bf16 == 0 || weight_bf16 == 0 || bias_f32 == 0 || indices_out == 0 || weights_out == 0 ||
 		expert_count == 0u || expert_count > SPARK_DSV41_FLASH_MAX_EXPERTS || topk == 0u || topk > SPARK_DSV41_FLASH_MAX_ROUTED || topk > expert_count )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashGateKernel<<<1u,SPARK_DSV41_FLASH_ROW_THREADS,0,stream>>>(input_bf16,weight_bf16,bias_f32,indices_out,weights_out,expert_count,dimension,topk,route_scale);
+	LM_LAUNCH((SparkDsv41FlashGateKernel),1u,SPARK_DSV41_FLASH_ROW_THREADS,0,stream,input_bf16,weight_bf16,bias_f32,indices_out,weights_out,expert_count,dimension,topk,route_scale);
 	return(cudaGetLastError());
 }
 
@@ -777,12 +778,12 @@ static inline cudaError_t SparkDsv41FlashLaunchMxfp4Linear(cudaStream_t stream, 
 	if ( payload_e2m1 == 0 || scale_ue8m0 == 0 || input_bf16 == 0 || activation_scratch_f32 == 0 || output_bf16 == 0 ||
 		input_dimension == 0u || input_dimension % 32u != 0u || output_dimension == 0u || ((uintptr_t)payload_e2m1 % 16u) != 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashActQuantKernel<<<(input_dimension / 32u + 255u) / 256u,256u,0,stream>>>(input_bf16,activation_scratch_f32,1u,input_dimension);
+	LM_LAUNCH((SparkDsv41FlashActQuantKernel),(input_dimension / 32u + 255u) / 256u,256u,0,stream,input_bf16,activation_scratch_f32,1u,input_dimension);
 	status = cudaGetLastError();
 	if ( status != cudaSuccess )
 		return(status);
-	SparkDsv41FlashMxfp4LinearKernel<<<(output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
-		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream>>>(payload_e2m1,scale_ue8m0,activation_scratch_f32,output_bf16,input_dimension,output_dimension);
+	LM_LAUNCH((SparkDsv41FlashMxfp4LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, payload_e2m1,scale_ue8m0,activation_scratch_f32,output_bf16,input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
 
@@ -801,7 +802,7 @@ static inline cudaError_t SparkDsv41FlashLaunchSwiglu(cudaStream_t stream, const
 {
 	if ( gate_bf16 == 0 || up_bf16 == 0 || output_bf16 == 0 || width == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashSwigluKernel<<<(width + 255u) / 256u,256u,0,stream>>>(gate_bf16,up_bf16,output_bf16,width,limit,weight);
+	LM_LAUNCH((SparkDsv41FlashSwigluKernel),(width + 255u) / 256u,256u,0,stream,gate_bf16,up_bf16,output_bf16,width,limit,weight);
 	return(cudaGetLastError());
 }
 
@@ -850,8 +851,8 @@ static inline cudaError_t SparkDsv41FlashLaunchBf16Linear(cudaStream_t stream, c
 {
 	if ( weight_bf16 == 0 || input_bf16 == 0 || (output_f32 == 0 && output_bf16 == 0) || input_dimension == 0u || output_dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashBf16LinearKernel<<<(output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
-		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream>>>(weight_bf16,input_bf16,output_f32,output_bf16,input_dimension,output_dimension);
+	LM_LAUNCH((SparkDsv41FlashBf16LinearKernel), (output_dimension + SPARK_DSV41_FLASH_LINEAR_WARPS - 1u) / SPARK_DSV41_FLASH_LINEAR_WARPS,
+		SPARK_DSV41_FLASH_LINEAR_WARPS * 32u,0,stream, weight_bf16,input_bf16,output_f32,output_bf16,input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
 
@@ -915,6 +916,6 @@ static inline cudaError_t SparkDsv41FlashLaunchIndexScore(cudaStream_t stream, c
 {
 	if ( query_bf16 == 0 || keys_bf16 == 0 || head_weights_bf16 == 0 || scores_f32 == 0 || key_count == 0u || head_count == 0u || head_dimension == 0u )
 		return(cudaErrorInvalidValue);
-	SparkDsv41FlashIndexScoreKernel<<<(key_count + 7u) / 8u,256u,0,stream>>>(query_bf16,keys_bf16,head_weights_bf16,scores_f32,key_count,head_count,head_dimension);
+	LM_LAUNCH((SparkDsv41FlashIndexScoreKernel),(key_count + 7u) / 8u,256u,0,stream,query_bf16,keys_bf16,head_weights_bf16,scores_f32,key_count,head_count,head_dimension);
 	return(cudaGetLastError());
 }

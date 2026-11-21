@@ -725,13 +725,13 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 				state->kv_attached);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		Glm5NextDenseOffsetsKernel<<<1u, 1u, 0, frame->stream>>>(state->dense_row_offset, rows);
+		LM_LAUNCH((Glm5NextDenseOffsetsKernel), 1u, 1u, 0, frame->stream, state->dense_row_offset, rows);
 		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus HyperBegin(Glm5NextModelState *state, Frame &frame)
 	{
-		LmHcExpandStreamsKernel<G5N_HIDDEN><<<dim3((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, frame.step->rows), G5N_THREADS, 0, frame.stream>>>(
+		LM_LAUNCH((LmHcExpandStreamsKernel<G5N_HIDDEN>), dim3((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, frame.step->rows), G5N_THREADS, 0, frame.stream,
 			frame.step->hidden_bf16, state->streams, frame.step->rows);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -814,7 +814,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	{
 		const SparkStageRunnerStep *step = frame.step;
 		const uint32_t rows = step->rows;
-		LmHcStreamsMeanKernel<G5N_HIDDEN><<<rows, G5N_THREADS, 0, frame.stream>>>(state->streams, state->streams_mean, rows);
+		LM_LAUNCH((LmHcStreamsMeanKernel<G5N_HIDDEN>), rows, G5N_THREADS, 0, frame.stream, state->streams, state->streams_mean, rows);
 		LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), frame.stream, state->streams_mean,
 			(const uint16_t *)state->final_norm, step->hidden_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
 		if ( cudaPeekAtLastError() != cudaSuccess )

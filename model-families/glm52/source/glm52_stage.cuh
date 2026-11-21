@@ -680,7 +680,7 @@ template<class S>
 static int32_t GlmAttentionPrologue(const GlmBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	int32_t status;
-	GlmProjectionNormKernel<S><<<dim3(rows, 2u), GLM_THREADS, 0, stream>>>(b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
+	LM_LAUNCH((GlmProjectionNormKernel<S>), dim3(rows, 2u), GLM_THREADS, 0, stream, b->projection_gather_bf16, b->weights->q_a_norm, b->weights->kv_a_norm, b->positions,
 		b->q_compressed_bf16, b->kv_slot_bf16, rows, b->tp_degree, GlmProjectionSliceWidth<S>(b->tp_degree), GlmProjectionSliceMax(S::kQueryA, b->tp_degree),
 		S::kRope, S::kRopeTheta, S::kRmsEpsilon, b->q_input_bf16, b->rope_table);
 	if ( cudaPeekAtLastError() != cudaSuccess )
@@ -2175,7 +2175,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			hidden = state->hidden;
 			positions = state->positions + wave->first;
 			slots = state->wave_slots + wave->first;
-			GlmRowsGatherKernel<<<rows, GLM_THREADS, 0, stream>>>(state->order + wave->first, step->hidden_bf16, hidden, S::kHidden);
+			LM_LAUNCH((GlmRowsGatherKernel), rows, GLM_THREADS, 0, stream, state->order + wave->first, step->hidden_bf16, hidden, S::kHidden);
 		}
 		else
 		{
@@ -2185,10 +2185,10 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		}
 		if ( cudaMemsetAsync(state->residual, 0, (size_t)rows * S::kHidden * sizeof(uint16_t), stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		GlmWaveContextKernel<<<1u, GLM_THREADS, 0, stream>>>(slots, positions, state->context_lengths, rows);
+		LM_LAUNCH((GlmWaveContextKernel), 1u, GLM_THREADS, 0, stream, slots, positions, state->context_lengths, rows);
 		if ( wave->gather != 0u )
 		{
-			GlmGatherPlanKernel<<<1u, 1u, 0, stream>>>(slots, positions, rows, state->slots, state->plan, state->kv_error);
+			LM_LAUNCH((GlmGatherPlanKernel), 1u, 1u, 0, stream, slots, positions, rows, state->slots, state->plan, state->kv_error);
 			if ( cudaMemsetAsync(state->digest, 0, GLM_DIGESTS * sizeof(unsigned long long), stream) != cudaSuccess ||
 				LmKvShardRemapLaunch<GLM_THREADS>(state->shard, wave->latent, state->plan + 3u * state->slots, state->max_positions, state->latent_remap,
 					stream) != cudaSuccess ||
@@ -2206,7 +2206,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		}
 		if ( wave->gather != 0u && wave->select_rows > rows )
 		{
-			GlmPadRowsKernel<<<1u, GLM_THREADS, 0, stream>>>(positions, slots, state->padded_positions, state->padded_slots, rows, wave->select_rows);
+			LM_LAUNCH((GlmPadRowsKernel), 1u, GLM_THREADS, 0, stream, positions, slots, state->padded_positions, state->padded_slots, rows, wave->select_rows);
 			positions = state->padded_positions;
 			slots = state->padded_slots;
 		}
@@ -2241,7 +2241,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 				hidden, state->residual, state->final_norm, 0, state->normed, S::kHidden, S::kHidden, S::kRmsEpsilon);
 		if ( wave->ordered != 0u )
-			GlmRowsScatterKernel<<<rows, GLM_THREADS, 0, stream>>>(state->order + wave->first, state->normed, step->hidden_bf16, S::kHidden);
+			LM_LAUNCH((GlmRowsScatterKernel), rows, GLM_THREADS, 0, stream, state->order + wave->first, state->normed, step->hidden_bf16, S::kHidden);
 		else if ( cudaMemcpyAsync(hidden, state->normed, (size_t)rows * S::kHidden * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( cudaPeekAtLastError() != cudaSuccess )
