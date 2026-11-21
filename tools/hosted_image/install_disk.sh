@@ -53,6 +53,14 @@ root="${disk}p2"
 for partition in "$esp" "$root"; do
 	[ -z "$(findmnt -rn -S "$partition" -o TARGET)" ] || fail "$partition is mounted"
 done
+esp_partuuid="$(lsblk -dno PARTUUID "$esp")"
+[ -n "$esp_partuuid" ] || fail "$esp has no GPT partition UUID"
+boot_entry="$(awk -v partition="gpt,$esp_partuuid," '
+	/^BootOrder:/ { order = "," $2 "," }
+	$1 ~ /^Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*$/ && index(tolower($0), tolower(partition)) && index(tolower($0), "file(\\efi\\ubuntu\\shimaa64.efi)") { entries[substr($1, 5, 4)] = 1 }
+	END { for (entry in entries) if (index(order, "," entry ",")) { print "Boot" entry; exit } }
+' <<< "$nvram")"
+[ -n "$boot_entry" ] || fail "no active firmware boot entry in BootOrder loads \\EFI\\ubuntu\\shimaa64.efi from $esp (partition $esp_partuuid)"
 [ ! -e "$work" ] || [ -z "$(ls -A "$work")" ] || fail "$work is not empty"
 
 mounted=()
@@ -144,4 +152,4 @@ grep -q "vmlinuz-$KERNEL_RELEASE" "$target/boot/grub/grub.cfg" || fail "/boot/gr
 unmount_all
 [ "$(efibootmgr -v)" = "$nvram" ] || fail "the firmware boot entries changed during the install"
 [ -z "$(findmnt -rn -o TARGET | awk -v top="$work" '$0 == top || index($0, top "/") == 1')" ] || fail "mounts remain under $work"
-echo "install_disk: installed $(sed -n 's/^source_commit //p' "$image/MANIFEST") on $root (SPARKROOT) with $esp (SPARKESP); DGX OS is in /.dgxos-$stamp until acceptance"
+echo "install_disk: installed $(sed -n 's/^source_commit //p' "$image/MANIFEST") on $root (SPARKROOT) with $esp (SPARKESP), booted by the unchanged firmware entry $boot_entry; DGX OS is in /.dgxos-$stamp until acceptance"

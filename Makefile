@@ -1257,6 +1257,11 @@ build/test_kv_snapshot_cuda: tests/test_kv_snapshot_cuda.c tests/test_kv_snapsho
 test-kv-snapshot-cuda: build/test_kv_snapshot_cuda
 	./build/test_kv_snapshot_cuda $(CURDIR)/build
 
+.PHONY: hosted-disk-dryrun
+hosted-disk-dryrun:
+	@[ -n "$(IMAGE)" ] && [ -n "$(DIR)" ] || { echo "usage: sudo make hosted-disk-dryrun IMAGE=BUILD_DIR DIR=NEW_DIR" >&2; exit 2; }
+	bash tools/hosted_image/dryrun_install_disk.sh --image "$(IMAGE)" --dir "$(DIR)"
+
 build/test_k3_kv_cache: tests/test_k3_kv_cache.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 

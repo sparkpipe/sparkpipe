@@ -198,8 +198,11 @@ Before it changes anything it checks:
   the archive's SHA-256;
 - the identity bundle (below) is well formed;
 - both partitions have the expected filesystem types and neither is mounted;
-- the EFI partition holds `EFI/ubuntu/shimaa64.efi`, which the firmware's
-  existing boot entry loads (the install never adds a boot entry);
+- an active firmware boot entry in `BootOrder` loads
+  `\EFI\ubuntu\shimaa64.efi` from this disk's EFI partition, matched by its
+  GPT partition UUID. The install never adds or changes a boot entry, so that
+  entry is what boots the installed image;
+- the EFI partition holds `EFI/ubuntu/shimaa64.efi`;
 - `e2fsck` finds the root clean;
 - nothing else is mounted under the work directory's target;
 - the root has 10 GiB free and holds no earlier set-aside directory.
@@ -248,6 +251,59 @@ firmware boot entries were never changed, so rollback runs no
 The set-aside directory is removed only after the node passes acceptance.
 After that, `hosted_dependency_audit.py image --rootfs /` over the whole
 installed root, with no exclusions, is the gate.
+
+### Dry run
+
+[`dryrun_install_disk.sh`](../tools/hosted_image/dryrun_install_disk.sh)
+is the behavioural test of `install_disk.sh`, and every change to the
+installer runs it:
+
+```sh
+sudo make hosted-disk-dryrun IMAGE=BUILD_DIR DIR=NEW_DIR
+```
+
+It needs root, loop device support and 40 GiB free beside `NEW_DIR`. It
+touches no real disk, uses no GPU, and never writes the host's firmware
+boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
+attaches it as a loop device and partitions it like a node, then seeds:
+
+- a previous system;
+- `/home/spark1` with a 256 MiB pack and a release root linked to a stub
+  `libcuda.so.1`;
+- an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
+  directory;
+- an identity bundle.
+
+The installer reads firmware boot entries through a wrapper that prints
+the host's `efibootmgr -v` plus one active entry in `BootOrder` that loads
+`\EFI\ubuntu\shimaa64.efi` from the loop device's EFI partition. The
+wrapper accepts only `-v`. Then the harness runs, in order:
+
+1. the installer with the host's real boot entries, which must refuse
+   because no entry loads this EFI partition;
+2. an install, then the checks:
+   - `/home` is unchanged (owners, modes, sizes, mtimes and the pack's
+     checksum);
+   - the old root and the old `EFI/ubuntu` are intact in the set-aside
+     directory;
+   - labels, identity, user, groups, modes and `fstab` are as expected;
+   - nothing outside `/home` belongs to a uid or gid of 1000 or above;
+   - the initramfs was rebuilt with the dropbear key;
+   - the kernel entry uses the root UUID and the GB10 arguments;
+   - `EFI/ubuntu` holds the image's own signed shim and GRUB;
+   - everything outside `EFI/ubuntu` on the EFI partition is byte-identical;
+3. the rollback described above, checked against the old root and the
+   whole old EFI partition;
+4. the installer refusing while `/.hosted-<stamp>` exists;
+5. a second install, with the same checks;
+6. the acceptance gate: after the set-aside directory is deleted, the
+   image audit over the installed root fails on the stub-linked release
+   root in `/home`, then passes once that root is removed;
+7. a check that the host's `efibootmgr -v` is unchanged.
+
+Before it removes anything it checks that only its own mount is under
+`NEW_DIR`. It detaches the loop device on exit, prints what is still
+mounted or attached, and writes its exit status to `NEW_DIR/exit`.
 
 ### Identity bundle
 

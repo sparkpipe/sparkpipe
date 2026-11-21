@@ -10,6 +10,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "tools" / "hosted_image" / "install_disk.sh"
 SOURCE = SCRIPT.read_text()
+HARNESS = ROOT / "tools" / "hosted_image" / "dryrun_install_disk.sh"
+HARNESS_SOURCE = HARNESS.read_text()
 
 
 class InstallDiskInputsTest(unittest.TestCase):
@@ -123,6 +125,13 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertLess(SOURCE.index('chroot "$target" update-initramfs'), SOURCE.rindex(compared))
         self.assertLess(SOURCE.rindex(compared), SOURCE.index("unmount_all\n[ "))
 
+    def test_the_existing_firmware_entry_must_boot_the_esp_before_anything_changes(self):
+        self.assertIn('esp_partuuid="$(lsblk -dno PARTUUID "$esp")"', SOURCE)
+        self.assertIn("/^BootOrder:/", SOURCE)
+        self.assertIn('"file(\\\\efi\\\\ubuntu\\\\shimaa64.efi)"', SOURCE)
+        self.assertLess(SOURCE.index('nvram="$(efibootmgr -v)"'), SOURCE.index('boot_entry="$(awk'))
+        self.assertLess(SOURCE.index('[ -n "$boot_entry" ] || fail'), SOURCE.index('e2fsck -fp "$root"'))
+
     def test_the_old_loader_is_kept_for_rollback_before_the_bootloader_install(self):
         self.assertLess(SOURCE.index('[ -s "$work/esp/EFI/ubuntu/shimaa64.efi" ] || fail'), SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
         copy = SOURCE.index('cp -a "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu"')
@@ -147,6 +156,47 @@ class InstallDiskContractTest(unittest.TestCase):
 
     def test_the_script_is_executable(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))
+
+
+class DryRunHarnessTest(unittest.TestCase):
+    def run_harness(self, *arguments):
+        return subprocess.run(["bash", str(HARNESS), *arguments], capture_output=True, text=True)
+
+    def test_usage_needs_an_image_and_a_new_directory(self):
+        self.assertEqual(self.run_harness().returncode, 2)
+        self.assertEqual(self.run_harness("--image", "x").returncode, 2)
+        self.assertEqual(self.run_harness("--dir", "x").returncode, 2)
+
+    @unittest.skipIf(os.geteuid() == 0, "the refusal is for unprivileged users")
+    def test_it_refuses_to_run_without_root_before_creating_anything(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "dryrun"
+            result = self.run_harness("--image", directory, "--dir", str(target))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("run as root", result.stderr)
+            self.assertFalse(target.exists())
+
+    def test_root_and_loop_support_are_checked_before_any_change(self):
+        first_change = HARNESS_SOURCE.index('mkdir -p "$dir"')
+        self.assertLess(HARNESS_SOURCE.index('[ "$(id -u)" -eq 0 ] || fail "run as root"'), first_change)
+        self.assertLess(HARNESS_SOURCE.index("[ -e /dev/loop-control ] || fail"), first_change)
+        self.assertLess(HARNESS_SOURCE.index('[ ! -e "$dir" ] || fail'), first_change)
+
+    def test_the_host_firmware_is_only_read(self):
+        calls = re.findall(r"efibootmgr[^\n]*", HARNESS_SOURCE)
+        self.assertTrue(calls)
+        self.assertNotRegex(HARNESS_SOURCE, r"efibootmgr +-[^v]")
+        self.assertIn('[ "$(efibootmgr -v)" = "$nvram_before" ] || fail', HARNESS_SOURCE)
+        self.assertIn('[ "$*" = -v ] ||', HARNESS_SOURCE)
+
+    def test_it_runs_the_installer_from_its_own_tree_and_a_make_target_runs_it(self):
+        self.assertIn('installer="$here/install_disk.sh"', HARNESS_SOURCE)
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn("hosted-disk-dryrun:", makefile)
+        self.assertIn('bash tools/hosted_image/dryrun_install_disk.sh --image "$(IMAGE)" --dir "$(DIR)"', makefile)
+
+    def test_the_harness_is_executable(self):
+        self.assertTrue(os.access(HARNESS, os.X_OK))
 
 
 if __name__ == "__main__":
