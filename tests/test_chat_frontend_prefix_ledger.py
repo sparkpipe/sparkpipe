@@ -85,6 +85,12 @@ check(not hasattr(chat_frontend, "cache_points") and chat_frontend.structure_cut
       chat_frontend.structure_cuts({"cuts": [12, 4, 4, 0, 9, 7]}, 9) == [4, 7] and chat_frontend.structure_cuts({"cuts": [7]}, 9, [3, 9]) == [3, 7] and
       chat_frontend.structure_cuts(None, 9, [3]) == [3],
       "cuts come from the prompt's opening and the turns it replays: rising, distinct, inside the prompt")
+limit = chat_frontend.ENGINE_MAX_CUTS
+long_body = {"prompt_token_ids": [0] * (3 * limit + 100)}
+named, dropped = chat_frontend.name_cuts(model, long_body, {"cuts": list(range(2, 2 * limit + 40, 2))}, [1, 2 * limit + 51])
+check(named == long_body["cuts"] == [1] + list(range(2, 2 * limit, 2)) and len(named) == limit and dropped == 21 and long_body["keep"] == [1] and
+      chat_frontend.CUTS_CAPPED[model.id] == 1,
+      f"past the engine's limit the oldest cuts are kept and the newest are not named, so the first waves stay the same from turn to turn; the event is counted: {len(named)} {dropped}")
 
 
 class ForkModel(FakeModel):

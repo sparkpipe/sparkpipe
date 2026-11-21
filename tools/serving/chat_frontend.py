@@ -718,6 +718,7 @@ INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
 ENGINE_MAX_CUTS = 16384
+CUTS_CAPPED = Counter()
 BULK_SUFFIX = "-bulk"
 
 
@@ -1836,8 +1837,7 @@ class PrefixLedger:
 
 
 def structure_cuts(replay, total, opening=()):
-    cuts = sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
-    return cuts[-ENGINE_MAX_CUTS:]
+    return sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
 
 
 def opening_cuts(model, messages, tools, kwargs, pack, ids):
@@ -1849,14 +1849,20 @@ def opening_cuts(model, messages, tools, kwargs, pack, ids):
     return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and head[:end] == opening[:end]]
 
 
-def name_cuts(engine, replay, kept):
-    cuts = structure_cuts(replay, len(engine["prompt_token_ids"]), kept)
-    keep = [cut for cut in sorted(set(kept)) if cut in cuts]
+def name_cuts(model, engine, replay, kept):
+    every = structure_cuts(replay, len(engine["prompt_token_ids"]), kept)
+    cuts = every[:ENGINE_MAX_CUTS]
+    named = set(cuts)
+    keep = [cut for cut in sorted(set(kept)) if cut in named]
     if cuts:
         engine["cuts"] = cuts
     if keep:
         engine["keep"] = keep
-    return cuts
+    if len(every) > len(cuts):
+        CUTS_CAPPED[model.id] += 1
+        print(json.dumps({"event": "cuts_capped", "model": model.id, "named": len(cuts), "dropped": len(every) - len(cuts), "prompt_tokens": len(engine["prompt_token_ids"]),
+                          "from_token": every[len(cuts)]}), file=sys.stderr, flush=True)
+    return cuts, len(every) - len(cuts)
 
 
 def commit_flag(body):
@@ -2389,7 +2395,7 @@ class Frontend:
         return recorded
 
     def reply_commit(self, model, plan, result):
-        if not getattr(model, "reply_commit", False) or plan.get("reply_committed") or plan.get("commit_only"):
+        if not getattr(model, "reply_commit", False) or plan.get("reply_committed") or plan.get("commit_only") or plan.get("cuts_dropped"):
             return
         prompt = list(plan["engine_body"]["prompt_token_ids"])
         tokens = list(result["token_ids"])
@@ -2401,7 +2407,9 @@ class Frontend:
         plan["reply_committed"] = True
         cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
         pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens)
-        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0][-ENGINE_MAX_CUTS:],
+        if len(cuts) > ENGINE_MAX_CUTS:
+            return
+        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0],
                                                                plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), plan.get("request_id")))
         self.reply_commits.add(pending)
         pending.task.add_done_callback(lambda task: self.reply_commits.discard(pending))
@@ -2523,7 +2531,7 @@ class Frontend:
             if self.memory is not None:
                 states[model.id]["memory_jobs"] = await self.memory_pending(model)
         healthy = all(state["status"] == 200 for state in states.values())
-        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults}, status=200 if healthy else 503)
+        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults, "cuts_capped": dict(CUTS_CAPPED)}, status=200 if healthy else 503)
 
     async def liveliness(self, request):
         return web.json_response({"ok": True})
@@ -2844,7 +2852,8 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        cuts = name_cuts(engine, replay, opening_cuts(model, messages, tools, kwargs, pack, engine["prompt_token_ids"]))
+        cuts, dropped = name_cuts(model, engine, replay, opening_cuts(model, messages, tools, kwargs, pack, engine["prompt_token_ids"]))
+        plan["cuts_dropped"] = dropped
         trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
@@ -3527,7 +3536,7 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        name_cuts(plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids) + ([len(ids) - len(forced_ids) - 1] if forced_ids else []))
+        plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids) + ([len(ids) - len(forced_ids) - 1] if forced_ids else []))[1]
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)

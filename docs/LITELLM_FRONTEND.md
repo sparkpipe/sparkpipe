@@ -265,7 +265,7 @@ Optional request fields:
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
 | `cuts` | array of up to 16,384 rising token counts inside the prompt: where the request's structure ends a prefill wave (where a shared prefix ends, one token before a reply began, where a reply ends). A later request resumes at a cut only when it names the same cuts up to there. Cuts change which waves compute the prompt, never the prompt. See `docs/EXACTNESS_GATE.md` |
 | `keep` | array of rising token counts: the cuts where the engine keeps state, so a later request can resume there. A count that is not a cut, or that lies inside the prompt's first cache block, is ignored. State is always kept one token before the prompt's end |
-| `commit_only` | boolean. `true` computes the prompt to its end, keeps the state there and generates nothing: the reply has no tokens, `finish_reason` is `commit` and `usage.published_tokens` is the prompt length. It takes no `max_tokens` or `logprobs` (`400 commit_only_conflict`) |
+| `commit_only` | boolean. `true` computes the prompt to its end, keeps the state there and generates nothing: the reply has no tokens, `finish_reason` is `commit` and `usage.published_tokens` is the position the engine marked as a resume point with state: the prompt's end, or 0 when the mark failed or the prompt took the streamed prefill and shares nothing. It takes no `max_tokens` or `logprobs` (`400 commit_only_conflict`) |
 | `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
@@ -612,6 +612,12 @@ engine's `cuts` from the prompt's structure:
   stored with the reply, so the next turn's cut before the reply falls
   there and not one token before the forced prompt's end.
 
+A request names at most 16,384 cuts. Past that the oldest stay and newer
+ones are not named, so the first waves are the same from turn to turn and
+only the tail after the last named cut is computed again; `/health` counts
+such requests per model in `cuts_capped`, and each logs a `cuts_capped`
+line.
+
 It lists the first two and the last in `keep`, so the engine keeps state
 there. Another
 conversation with the same system prompt and tools, or another request on
@@ -626,7 +632,9 @@ still read and ignored (`TECHDEBT.md`, Exact reuse).
 prompt is planned as for any request, the engine computes it to its end and
 keeps the state there, and the answer is one `cache.commit` object (`model`,
 `prompt_tokens`, `cached_tokens`, `committed_tokens`, `prefill_ms` and the
-`sparkpipe` record), whatever the request says about streaming. A commit
+`sparkpipe` record), whatever the request says about streaming.
+`committed_tokens` is what the engine marked as resumable beyond what was
+cached, so it is 0 when the engine kept no resume point. A commit
 takes no output limit, logprobs, forced tool choice or WebSocket.
 
 A model whose settings carry `"reply_commit": true` commits each reply it
