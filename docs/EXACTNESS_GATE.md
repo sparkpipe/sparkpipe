@@ -189,8 +189,9 @@ A block is one model's run, and it can be run again after anything stops it.
   again, for the units the restore step still needs, and then evicts.
 - A step still running on the hub is left alone: the driver refuses to start
   beside it.
-- `GX_REST` idles that many seconds after every request longer than
-  `GX_REST_OVER` (60) seconds.
+- `GX_REST` (60) idles that many seconds after every request that ran
+  `GX_REST_OVER` (60) seconds or longer. Each request's record says whether a
+  gap followed it, so the gap never counts into a timing.
 
 An attempt that the engine cut short cannot read the API's served count
 afterwards. It reads the engine's completed count from the API log instead,
@@ -202,6 +203,23 @@ and counts as alone unless that shows another client's request.
 GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 ```
 
+- A fresh block starts with a preflight (`GX_PREFLIGHT=0` skips it): one 8K
+  prefix with one 40-token tail runs its `chain` step, a cache clear and its
+  `cold` step in a state of its own, and `gx_gate.py check` runs the tool's
+  own checks on it: every step done, the commit confirmed, each request
+  found in the API log, logprobs for every token, the reuse resumed at its
+  cut and the cold run cold. A difference between reuse and cold is a
+  finding and does not stop the block; anything else does, before the
+  block's plan is written.
+- The block notes what the controller had active when it started, its lane
+  record, API and port, the release, and every cache change with the
+  seconds the stop and the start took and rank 0's last
+  `kv snapshot store close` line. The receipt holds the notes under `block`.
+- When the block ends, the model that was active before it is activated
+  again and must answer a real request (`GX_END=none` leaves the fleet idle;
+  a model id names another).
+- A model's long contexts can run as a block of their own: give the second
+  pass its own `GX_DIR` and `GX_PLAN="--cases prefix,session --contexts 300000"`.
 - In a release, `scripts/release_rollout.sh gx` runs it after `qualify` for
   the served models (`GX_MODELS`; `ONLY` limits them), keeps its hub files in
   the release's work directory, copies receipts to the kit state's `gx`
@@ -212,11 +230,12 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
   the driver again on a directory that holds a state resumes it.
 - `GX_PLAN` passes plan options, for example
   `--contexts 8000 --tails 1,40`.
-- `GX_END` names the model to leave active; the default leaves none.
 - Each step runs detached on the hub, so a dropped connection does not end
   it.
-- The receipt `<model>.json`, the verdict table `<model>.txt` and the run
-  log `<model>.log` are copied to `GX_OUT`.
+- The receipt `<model>.json`, the verdict table `<model>.txt`, the run log
+  `<model>.log` and `<model>.apilog.tgz`, the slice of the API log each
+  attempt of a step covers, are copied to `GX_OUT`. The API log itself does
+  not outlive a release.
 
 ## What a receipt measures
 
@@ -228,12 +247,27 @@ Per request (`steps.<step>.requests[]`):
 | Field | Meaning |
 | --- | --- |
 | `label`, `attempt`, `max_tokens` | The unit and turn, and which attempt of the step sent it. A commit has `max_tokens` 0 and `finish_reason` `commit` |
+| `started_utc`, `finished_utc` | Wall clock at the client, to the millisecond |
+| `sent_ns`, `first_ns`, `end_ns` | The hub's monotonic clock just before the request is written, at the first streamed tokens and at the end of the stream. Requests are streamed, as the chat layer sends them |
+| `request_id`, `boot_pid`, `accepted_ns`, `first_dispatch_ns`, `first_ready_ns`, `last_ready_ns` | The engine's own record of the request, on the same clock |
+| `rested_seconds` | The idle gap that followed the request |
 | `cuts`, `keep` | The cuts the request named and where it asked for state |
 | `prompt_tokens`, `cached_tokens`, `prefilled_tokens` | The prompt, the position the request resumed at, and what it computed |
 | `seconds` | Wall time at the client |
-| `queue_ms`, `first_token_ms`, `last_token_ms` | From the engine's own request record: accepted to first dispatch, to the first token and to the last |
+| `queue_ms`, `first_token_ms`, `last_token_ms` | From the engine's own request record: accepted to first dispatch, to the first token and to the last. The first dispatch is the first one the ranks admit, so in a `restore` step the queue time holds the wait for the restore |
 | `decode_tokens_per_second` | Over the tokens after the first. Session replies are 96 tokens of chain decode |
 | `completion_tokens`, `finish_reason`, `stale_prefix_recomputes` | |
+
+A result in a `restore` step also carries `restore`: the pages the ranks
+read back for it, the seconds of the slowest rank and of all ranks
+together, the bytes (pages times the pool's bytes a page) and the misses.
+
+`steps.chain.served` holds, for each context, one reply of 128 tokens with
+speculation at the engine's default on a prompt that is already cached: the
+decode rate as served. Session turns are 96 tokens with speculation off.
+
+Per attempt of a step: the idle gap in force, and the API log's path with
+the byte offsets the attempt covers and the name of its copy.
 
 Per attempt of a step, before and after: the running engine's KV store
 counters summed over its ranks (pages and nanoseconds saved and restored,

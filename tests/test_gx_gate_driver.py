@@ -32,6 +32,7 @@ case "$*" in
   *8440/activate*) model="$(printf '%s' "$*" | sed 's/.*"model":"\\([^"]*\\)".*/\\1/')"; printf '"%s"' "$model" > "$FAKE_FLEET/active"; echo "activate $model" >> "$FAKE_FLEET/events.log" ;;
   *8440/deactivate*) printf null > "$FAKE_FLEET/active"; echo deactivate >> "$FAKE_FLEET/events.log" ;;
   */v1/models*) echo '{"data": [{"max_model_len": 262144}]}' ;;
+  */v1/completions*) echo "request $(printf '%s' "$*" | sed 's/.*127\\.0\\.0\\.1:\\([0-9]*\\).*/\\1/')" >> "$FAKE_FLEET/events.log"; [ -e "$FAKE_FLEET/silent" ] || echo '{"tokens":[4203],"usage":{}}' ;;
   *) exit 22 ;;
 esac
 """,
@@ -87,6 +88,11 @@ elif arguments[0] == "run":
     json.dump(state, open("state.json", "w"))
     print("ran " + arguments[1])
     sys.exit(1 if stops else 0)
+elif arguments[0] == "note":
+    note("note " + " | ".join(arguments[3:]))
+elif arguments[0] == "check":
+    note("check " + " ".join(arguments[1:]) + " in " + os.path.basename(os.getcwd()))
+    sys.exit(1 if os.environ.get("FAKE_GX_CHECK_FAIL") else 0)
 else:
     state = json.load(open("state.json"))
     open(arguments[arguments.index("--output") + 1], "w").write('{"verdict": "PASS"}')
@@ -130,7 +136,7 @@ def build(fleet):
 def run(fleet, lane, api, **extra):
     out = fleet / "receipts"
     environment = dict(os.environ, PATH=f"{fleet / 'bin'}:{os.environ['PATH']}", FAKE_FLEET=str(fleet), FAKE_LANE=lane, FAKE_API=api, HUB_WORK=str(fleet / "srv-workspace"),
-                       GX_RELEASE="testsha", GX_OUT=str(out), **extra)
+                       GX_RELEASE="testsha", GX_OUT=str(out), **dict({"GX_PREFLIGHT": "0"}, **extra))
     log = fleet / "events.log"
     before = len(log.read_text().splitlines()) if log.exists() else 0
     result = subprocess.run(["bash", str(SCRIPT), MODEL], capture_output=True, text=True, env=environment, timeout=300)
@@ -150,7 +156,11 @@ def runs(events):
 
 
 def order(events):
-    return [line.split()[0] + (":" + line.split()[1] if line.startswith("run ") else "") for line in events]
+    return [line.split()[0] + (":" + line.split()[1] if line.startswith("run ") else "") for line in events if not line.startswith("note ")]
+
+
+def notes(events):
+    return [dict(pair.partition("=")[::2] for pair in line[5:].split(" | ")) for line in events if line.startswith("note ")]
 
 
 with tempfile.TemporaryDirectory() as directory:
@@ -169,6 +179,13 @@ with tempfile.TemporaryDirectory() as directory:
     check(all(f'active="{MODEL}"' in line for line in seen.values()), f"a step ran without the model active: {seen}")
     check(all(f"api=http://127.0.0.1:{row(MODEL)[4]}" in line and f"log={fleet / 'srv-workspace'}/logs/{api}.log" in line for line in seen.values()), f"a step did not get the model's API address and log: {seen}")
     check(all("rest=45 over=60" in line for line in seen.values()), f"GX_REST did not reach the steps: {seen}")
+    written = notes(events)
+    check(written[0] == {"block": "start", "active_before": "None", "lane": lane, "api": api, "port": row(MODEL)[4], "release": "testsha", "nodes": "16",
+                         "path": "engine API, no chat layer", "rest_seconds": "45", "rest_over_seconds": "60"}, f"the block's first note does not name what was active, the lane, the API and the idle gap: {written[:1]}")
+    changes = [note for note in written if "change" in note]
+    check([(note["change"], note["before_step"]) for note in changes] == [("clear", "park:8000"), ("evict", "restore:8000"), ("evict", "restore:100000"), ("clear", "cold:1")] and
+          all(note["by"] == "controller stop and start" and note["stop_seconds"].isdigit() and note["start_seconds"].isdigit() and "rank0_store_close" in note for note in changes),
+          f"each cache change is not noted with what did it and how long the stop and the start took: {changes}")
     sequence = order(events)
     check(sequence[sequence.index("run:chain") + 1:sequence.index("run:park:8000")] == ["deactivate", "activate"], f"a clear is not one stop and one start through the controller: {sequence}")
     check(sequence[sequence.index("run:park:8000") + 1:sequence.index("run:restore:8000")] == ["deactivate", "activate"], f"an evict is not one stop and one start through the controller: {sequence}")
@@ -179,7 +196,34 @@ with tempfile.TemporaryDirectory() as directory:
     check((fleet / "rtx5090" / api / "runtime" / "other").exists(), "a clear removed more than the prefix index from the API's runtime directory")
     check(all((fleet / "receipts" / f"{MODEL}.{suffix}").exists() for suffix in ("json", "txt", "log")), "the receipt, the verdict table and the run log were not copied back", result)
     result, events = run(fleet, lane, api)
-    check(result.returncode == 0 and f"GX-PASS {MODEL}" in result.stdout and events == ["deactivate"], f"a finished state ran steps or restarted the model: {events}", result)
+    check(result.returncode == 0 and f"GX-PASS {MODEL}" in result.stdout and order(events) == ["deactivate"], f"a finished state ran steps or restarted the model: {events}", result)
+    check(notes(events)[0]["block"] == "resume" and notes(events)[0]["rest_seconds"] == "60", f"a block run again is not noted as resumed, with the idle gap on by default: {notes(events)}")
+
+with tempfile.TemporaryDirectory() as directory:
+    fleet = pathlib.Path(directory)
+    lane, api, other = build(fleet)
+    (fleet / "active").write_text('"qwen3.8-max"')
+    result, events = run(fleet, lane, api, GX_PREFLIGHT="1")
+    sequence = order(events)
+    check(result.returncode == 0 and f"GX-PASS {MODEL}" in result.stdout, "a block with a preflight did not pass", result)
+    check(sequence[:8] == ["activate", "plan", "run:chain", "deactivate", "activate", "run:cold:40", "check", "plan"] and
+          "--cases prefix --contexts 8000 --tails 40" in events[1] and events[sequence.index("check")].endswith("--steps chain,cold:40 in preflight"),
+          f"a fresh block does not start with one 8K unit and the tool's own checks: {sequence[:9]} {events[1]}", result)
+    check([name for name in sequence if name.startswith("run:")][2:] == ["run:" + name for name in ORDER], f"the block's own steps did not follow the preflight: {sequence}")
+    check(notes(events)[0]["active_before"] == "qwen3.8-max", f"the block does not note what was active when it started: {notes(events)[:1]}")
+    check(sequence[-2:] == ["activate", "request"] and events[-1] == "request " + row("qwen3.8-max")[4] and (fleet / "active").read_text() == '"qwen3.8-max"' and
+          "GX-RESTORED qwen3.8-max" in result.stdout, f"the model that served before the block is not active again and proven with a real request: {events[-3:]}", result)
+
+with tempfile.TemporaryDirectory() as directory:
+    fleet = pathlib.Path(directory)
+    lane, api, other = build(fleet)
+    (fleet / "active").write_text('"qwen3.8-max"')
+    (fleet / "silent").write_text("")
+    result, events = run(fleet, lane, api, GX_PREFLIGHT="1", FAKE_GX_CHECK_FAIL="1")
+    sequence = order(events)
+    check(result.returncode != 0 and f"GX-PREFLIGHT-FAILED {MODEL}" in result.stdout and sequence.count("plan") == 1 and [name for name in sequence if name.startswith("run:")] == ["run:chain", "run:cold:40"],
+          f"a failed preflight did not stop the block before its plan: {sequence}", result)
+    check(sequence[-2:] == ["activate", "request"] and "GX-RESTORE-FAILED qwen3.8-max" in result.stdout, f"production that does not answer a real request after the block is not reported: {events[-3:]}", result)
 
 with tempfile.TemporaryDirectory() as directory:
     fleet = pathlib.Path(directory)
@@ -244,4 +288,4 @@ if os.path.exists("/proc/self/cmdline"):
 if failures:
     print("FAIL test_gx_gate_driver:\n" + "\n".join(failures))
     sys.exit(1)
-print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change")
+print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change; a fresh block starts with one 8K unit and the tool's own checks, and stops there when they fail; the block notes what was active, its lane, the idle gap and each cache change with the seconds its stop and start took; the model that served before the block is activated again and must answer a real request")

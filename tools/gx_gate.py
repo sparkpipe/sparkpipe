@@ -59,6 +59,7 @@ MID_BLOCK = 21
 KEPT_OTHER = 8
 SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
+RESTORE_SETTLE_SECONDS = 1.0
 LOG_TAIL_BYTES = 16 << 20
 STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "restore_pages", "restore_ns", "restore_misses", "restore_failures", "store_files",
                   "store_used_bytes", "store_evictions", "pool_resident_pages", "pool_physical_pages", "pool_device_bytes", "pool_adopted_pages", "pool_evicted_entries",
@@ -105,7 +106,7 @@ def context_tokens(case, nominal):
 
 def build_plan(arguments):
     tails = sorted(set(arguments.tails))
-    reserve = 3 * max(tails) + 2 * arguments.reply_tokens + arguments.max_tokens + BLOCK
+    reserve = 3 * max(tails) + 2 * arguments.reply_tokens + max(arguments.max_tokens, arguments.served_tokens) + BLOCK
     room = (arguments.context_limit - reserve - MID_BLOCK) // GRID * GRID
     if room < 2 * GRID:
         raise GateError("a context of %d positions leaves no room for a prefix beside three %d-token tails" % (arguments.context_limit, max(tails)))
@@ -249,9 +250,12 @@ class Api:
                 except ValueError:
                     return {}
                 out = {"stale_prefix_recomputes": event.get("stale_prefix_recomputes"), "queue_ms": round((event["first_dispatch_ns"] - event["accepted_ns"]) / 1e6, 3),
+                       "request_id": event.get("request_id"), "boot_pid": event.get("boot_pid"), "accepted_ns": event["accepted_ns"], "first_dispatch_ns": event["first_dispatch_ns"],
                        "engine": {name: event.get(name) for name in ENGINE_IDENTITY}}
                 ready = [entry[1] for entry in event.get("tokens") or []]
                 if ready:
+                    out["first_ready_ns"] = ready[0]
+                    out["last_ready_ns"] = ready[-1]
                     out["first_token_ms"] = round((ready[0] - event["accepted_ns"]) / 1e6, 3)
                     out["last_token_ms"] = round((ready[-1] - event["accepted_ns"]) / 1e6, 3)
                 if len(ready) > 1 and ready[-1] > ready[0]:
@@ -292,50 +296,69 @@ class Api:
 
     def complete(self, prompt, max_tokens, options):
         commit = max_tokens == 0
-        body = dict(options, prompt_token_ids=prompt, temperature=0)
+        body = dict(options, prompt_token_ids=prompt, temperature=0, stream=True)
         body.update({"commit_only": True} if commit else {"max_tokens": max_tokens})
         request = urllib.request.Request(self.base + "/v1/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         offset = self.log_size()
-        started = time.monotonic()
+        tokens, logprobs, usage, reason, first_ns = [], [], {}, None, None
+        started_utc, sent_ns = stamp_ms(), time.monotonic_ns()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                reply = json.loads(response.read())
+                closed = False
+                for raw in response:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        closed = True
+                        break
+                    event = json.loads(data)
+                    if "error" in event:
+                        raise RequestError("the stream carried an error: %s" % json.dumps(event["error"])[:300], True)
+                    if event.get("tokens"):
+                        first_ns = first_ns if first_ns is not None else time.monotonic_ns()
+                        tokens.extend(int(token) for token in event["tokens"])
+                    logprobs.extend(event.get("token_logprobs") or [])
+                    usage = event.get("usage") or usage
+                    reason = ((event.get("choices") or [{}])[0]).get("finish_reason") or reason
+                if not closed:
+                    raise RequestError("the stream ended before [DONE]", True)
         except urllib.error.HTTPError as error:
             raise RequestError("HTTP %d: %s" % (error.code, error.read()[:300].decode(errors="replace")), error.code >= 500)
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise RequestError(str(error), False)
-        seconds = time.monotonic() - started
-        usage = reply.get("usage") or {}
+        end_ns = time.monotonic_ns()
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
-        tokens = reply.get("tokens")
-        reason = reply.get("finish_reason") or ((reply.get("choices") or [{}])[0]).get("finish_reason")
-        if not isinstance(tokens, list) or not isinstance(cached, int) or usage.get("prompt_tokens") != len(prompt):
-            raise RequestError("the reply carries no token list, no cached_tokens or another prompt length: %s" % json.dumps(reply)[:300], True)
+        if not isinstance(cached, int) or usage.get("prompt_tokens") != len(prompt):
+            raise RequestError("the reply carries no cached_tokens or another prompt length: %s" % json.dumps(usage)[:300], True)
         if commit and (tokens or reason != "commit" or usage.get("published_tokens") != len(prompt)):
-            raise RequestError("the commit generated tokens or does not report its prompt as published: %s" % json.dumps(reply)[:300], True)
-        if not commit and not tokens:
-            raise RequestError("the reply carries no tokens: %s" % json.dumps(reply)[:300], True)
+            raise RequestError("the commit generated tokens or does not report its prompt as published: %s %s" % (reason, json.dumps(usage)[:300]), True)
+        if not commit and (not tokens or reason is None):
+            raise RequestError("the reply carries no tokens or no finish reason: %s" % json.dumps(usage)[:300], True)
         digest = prompt_digest(prompt)
-        result = {"prompt_tokens": len(prompt), "prompt_sha256": digest, "cached_tokens": cached, "prefilled_tokens": len(prompt) - cached, "tokens": [int(token) for token in tokens],
-                  "finish_reason": reason, "seconds": round(seconds, 3)}
+        result = {"prompt_tokens": len(prompt), "prompt_sha256": digest, "cached_tokens": cached, "prefilled_tokens": len(prompt) - cached, "tokens": tokens,
+                  "finish_reason": reason, "seconds": round((end_ns - sent_ns) / 1e9, 3), "started_utc": started_utc, "finished_utc": stamp_ms(),
+                  "sent_ns": sent_ns, "first_ns": first_ns, "end_ns": end_ns}
         if "cuts" in options:
             result["cuts"] = options["cuts"]
         if "keep" in options:
             result["keep"] = options["keep"]
         if "logprobs" in options:
-            result["logprobs"] = reply.get("token_logprobs")
+            result["logprobs"] = logprobs
         result.update(self.measurements(offset, digest))
         return result
 
 
 class Step:
-    def __init__(self, api, state, name, save, rest_seconds=0.0, rest_over_seconds=0.0):
+    def __init__(self, api, state, name, save, rest_seconds=0.0, rest_over_seconds=0.0, slices=None):
         self.api = api
         self.state = state
         self.name = name
         self.save = save
         self.rest_seconds = rest_seconds
         self.rest_over_seconds = rest_over_seconds
+        self.slices = slices
         self.options = state["options"]
         self.prompts = Prompts(state)
         self.record = None
@@ -370,12 +393,13 @@ class Step:
             identity = result.pop("engine", None)
             if identity is not None:
                 self.attempt.setdefault("engine", identity)
+            rests = self.rest_seconds > 0 and result["seconds"] >= self.rest_over_seconds
             self.record["requests"].append(dict({key: value for key, value in result.items() if key not in ("tokens", "logprobs")}, label=label, attempt=len(self.record["attempts"]),
-                                                max_tokens=max_tokens, completion_tokens=len(result["tokens"])))
+                                                max_tokens=max_tokens, completion_tokens=len(result["tokens"]), rested_seconds=self.rest_seconds if rests else 0))
             print("%s %s %s prompt=%d cached=%d out=%d %.1fs" % (stamp(), self.name, label, result["prompt_tokens"], result["cached_tokens"], len(result["tokens"]), result["seconds"]), flush=True)
         if cold and result["cached_tokens"] != 0:
             raise GateError("%s reports %d cached tokens where this step needs a cold run: clear the cache before the step" % (label, result["cached_tokens"]))
-        if self.rest_seconds > 0 and result["seconds"] >= self.rest_over_seconds:
+        if rests:
             time.sleep(self.rest_seconds)
         return result
 
@@ -442,8 +466,21 @@ class Step:
                 if units and self.warmed(units):
                     for unit in units:
                         self.settle(unit, lambda unit=unit: self.measure(unit, None))
+            self.served(nominal)
             for case in SESSION_CASES:
                 self.sessions(self.pending(self.units((case,), nominal)), lambda unit, first: self.measure(unit, self.turns(unit, first)))
+
+    def served(self, nominal):
+        units = [unit for unit in self.units(("prefix",), nominal) if unit["id"] in self.record["results"]]
+        label = "prefix/%d/served" % nominal
+        if not self.options.get("served_tokens") or not units or str(nominal) in self.record.setdefault("served", {}) or label in self.record["errors"]:
+            return
+        unit = min(units, key=lambda unit: (unit["tail"] < 40, unit["tail"]))
+        try:
+            self.record["served"][str(nominal)] = self.send(label, self.prompts.last(unit, None), self.options["served_tokens"], {"cuts": turn_cuts(unit, [])})
+        except UnitError as error:
+            self.record["errors"][label] = str(error)
+        self.save()
 
     def park(self, group):
         restored = self.settled(self.state["steps"].get("restore:%d" % group) or {})
@@ -466,7 +503,25 @@ class Step:
                 if unit["id"] in parked["errors"]:
                     self.record["errors"][unit["id"]] = "its park step failed: %s" % parked["errors"][unit["id"]]
                     continue
+                before = self.api.counters()
                 self.settle(unit, lambda unit=unit: self.measure(unit, parked["replies"].get(unit["id"])))
+                self.restored(unit, before)
+        self.save()
+
+    def restored(self, unit, before):
+        result = self.record["results"].get(unit["id"])
+        if result is None or not before.get("store"):
+            return
+        time.sleep(RESTORE_SETTLE_SECONDS)
+        after = self.api.counters()
+        if after.get("boot_pid") != before.get("boot_pid") or not after.get("store"):
+            return
+        pages = after["store"]["restore_pages"] - before["store"]["restore_pages"]
+        pool_pages = after["store"]["pool_physical_pages"]
+        result["restore"] = {"pages": pages, "rank_seconds_sum": round((after["store"]["restore_ns"] - before["store"]["restore_ns"]) / 1e9, 3),
+                             "slowest_rank_seconds": round((after["slowest_rank"]["restore_ns"] - before["slowest_rank"]["restore_ns"]) / 1e9, 3),
+                             "bytes": pages * after["store"]["pool_device_bytes"] // pool_pages if pool_pages else None,
+                             "misses": after["store"]["restore_misses"] - before["store"]["restore_misses"]}
         self.save()
 
     def cold(self, tail):
@@ -527,7 +582,8 @@ class Step:
         self.record = self.state["steps"].setdefault(self.name, {"requests": [], "results": {}, "replies": {}, "errors": {}, "attempts": []})
         self.record.pop("finished", None)
         self.record.pop("interrupted", None)
-        self.attempt = {"started": stamp(), "requests": 0, "completed": 0, "health_before": before, "counters_before": self.api.counters()}
+        self.attempt = {"started": stamp(), "requests": 0, "completed": 0, "health_before": before, "counters_before": self.api.counters(),
+                        "rest": {"seconds": self.rest_seconds, "over_seconds": self.rest_over_seconds}, "log": {"path": self.api.log_path, "start": self.api.log_size()}}
         self.record["attempts"].append(self.attempt)
         self.save()
         try:
@@ -543,14 +599,40 @@ class Step:
             self.record.setdefault("interrupted", str(error))
             self.attempt["foreign_requests"] = self.logged_foreign()
         self.attempt["finished"] = stamp()
+        self.attempt["log"]["end"] = self.api.log_size()
+        self.attempt["log"]["copy"] = self.slice()
         if "interrupted" not in self.record:
             self.record["finished"] = stamp()
         self.save()
         return "finished" in self.record
 
+    def slice(self):
+        log = self.attempt["log"]
+        if self.slices is None or log["start"] is None or log["end"] is None or log["end"] < log["start"]:
+            return None
+        name = "%s.%d.apilog" % (self.name.replace(":", "-"), len(self.record["attempts"]))
+        try:
+            with open(log["path"], "rb") as source, open(os.path.join(self.slices, name), "wb") as copy:
+                source.seek(log["start"])
+                left = log["end"] - log["start"]
+                while left > 0:
+                    chunk = source.read(min(left, 1 << 20))
+                    if not chunk:
+                        break
+                    copy.write(chunk)
+                    left -= len(chunk)
+        except OSError:
+            return None
+        return name
+
 
 def stamp():
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def stamp_ms():
+    now = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now)) + ".%03dZ" % int(now % 1 * 1000)
 
 
 def first_difference(left, right):
@@ -672,7 +754,8 @@ def command_plan(arguments):
         raise GateError("%s exists: a state is planned once, because its prompts must be new to the cache" % arguments.state)
     plan = build_plan(arguments)
     state = dict(plan, kind=KIND, seed=arguments.seed, model=arguments.model, release=arguments.release, context_limit=arguments.context_limit,
-                 options={"max_tokens": arguments.max_tokens, "reply_tokens": arguments.reply_tokens, "logprobs": arguments.logprobs, "crowd": arguments.crowd}, steps={})
+                 options={"max_tokens": arguments.max_tokens, "reply_tokens": arguments.reply_tokens, "logprobs": arguments.logprobs, "crowd": arguments.crowd,
+                          "served_tokens": arguments.served_tokens}, steps={}, block=[])
     save(arguments.state, state)
     return command_steps(arguments)
 
@@ -688,11 +771,60 @@ def command_steps(arguments):
 
 def command_run(arguments):
     state = load(arguments.state)
-    step = Step(Api(arguments.api, arguments.timeout, arguments.api_log), state, arguments.step, lambda: save(arguments.state, state), arguments.rest_seconds, arguments.rest_over_seconds)
+    step = Step(Api(arguments.api, arguments.timeout, arguments.api_log), state, arguments.step, lambda: save(arguments.state, state), arguments.rest_seconds, arguments.rest_over_seconds,
+                os.path.dirname(os.path.abspath(arguments.state)) if arguments.api_log else None)
     passed = step.run()
     if not passed:
         print("GX-STEP-STOPPED %s: %s" % (arguments.step, step.record["interrupted"]), flush=True)
     return 0 if passed else 1
+
+
+def command_note(arguments):
+    state = load(arguments.state)
+    note = {"at": stamp()}
+    for pair in arguments.pairs:
+        key, separator, value = pair.partition("=")
+        if not separator or not key:
+            raise GateError("a note is KEY=VALUE, not %r" % pair)
+        note[key] = value
+    state.setdefault("block", []).append(note)
+    save(arguments.state, state)
+    return 0
+
+
+def command_check(arguments):
+    state = load(arguments.state)
+    verdicts, alone, _ = judge(state)
+    wanted = arguments.steps or ["chain"] + ["cold:%d" % tail for tail in state["tails"]]
+    problems, findings = [], []
+    for name in wanted:
+        if step_status(state, name) != "done":
+            problems.append("step %s is %s" % (name, step_status(state, name)))
+    if not alone:
+        problems.append("the API served a request the gate did not send")
+    requests = [request for name in wanted for request in (state["steps"].get(name) or {}).get("requests", [])]
+    if any(unit["case"] == "prefix" for unit in state["units"]) and not any(request.get("max_tokens") == 0 and request.get("finish_reason") == "commit" for request in requests):
+        problems.append("no commit was confirmed")
+    for request in requests:
+        if "error" in request:
+            problems.append("%s failed: %s" % (request["label"], request["error"]))
+        elif not arguments.no_log and ("queue_ms" not in request or (request["completion_tokens"] and "first_token_ms" not in request)):
+            problems.append("%s has no record in the API log: check --api-log" % request["label"])
+    for entry in verdicts:
+        for arm in ("chain", "cold"):
+            result = (state["steps"].get(arm if arm == "chain" else "cold:%d" % entry["tail"]) or {}).get("results", {}).get(entry["id"])
+            if result is not None and (len(result.get("logprobs") or []) != len(result["tokens"]) or not all(isinstance(row, list) and row for row in result["logprobs"])):
+                problems.append("%s %s carries %d logprob rows for %d tokens" % (entry["id"], arm, len(result.get("logprobs") or []), len(result["tokens"])))
+        if entry["reuse"] == "FAIL":
+            findings.append("%s differs between reuse and cold: %s" % (entry["id"], describe(entry["reuse_detail"])))
+        elif entry["reuse"] != "PASS":
+            problems.append("%s reuse is %s" % (entry["id"], entry["reuse"]))
+    for line in findings:
+        print("check: finding: %s" % line)
+    for line in problems:
+        print("check: %s" % line)
+    print("check: %s" % ("ok" if not problems else "%d problems" % len(problems)))
+    return 1 if problems else 0
 
 
 def command_verdict(arguments):
@@ -742,6 +874,7 @@ def main(argv=None):
     plan.add_argument("--reply-tokens", type=int, default=96)
     plan.add_argument("--logprobs", type=int, default=4)
     plan.add_argument("--crowd", type=int, default=0, help="add a step that sends each committed prefix's tails this many at a time; 0 for none")
+    plan.add_argument("--served-tokens", type=int, default=128, help="tokens of the timing-only reply after each context's prefix units, speculation at the engine default; 0 for none")
     plan.add_argument("--seed", default=str(time.time_ns()))
     steps = commands.add_parser("steps", help="print each step, the cache change before it, its state and its settled units")
     steps.add_argument("--state", required=True)
@@ -756,17 +889,24 @@ def main(argv=None):
     verdict = commands.add_parser("verdict", help="compare the arms and write the receipt")
     verdict.add_argument("--state", required=True)
     verdict.add_argument("--output")
+    note = commands.add_parser("note", help="append facts about the block to the state: what was active, the lane, a cache change and how long it took")
+    note.add_argument("--state", required=True)
+    note.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
+    check = commands.add_parser("check", help="the tool's own checks on the steps run so far: exit 0 unless a step, a request or a record is not what the gate needs")
+    check.add_argument("--state", required=True)
+    check.add_argument("--steps", type=lambda text: [name for name in text.split(",") if name], default=None)
+    check.add_argument("--no-log", action="store_true", help="do not require the API log's record of each request")
     arguments = parser.parse_args(argv)
     if arguments.command == "plan":
         unknown = sorted(set(arguments.cases) - set(CASES))
         if unknown or not arguments.cases:
             parser.error("unknown cases %s; known: %s" % (unknown, ",".join(CASES)))
-        if not arguments.tails or min(arguments.tails) < 1 or arguments.max_tokens < 1 or arguments.reply_tokens < 1:
-            parser.error("--tails, --max-tokens and --reply-tokens must be at least 1")
+        if not arguments.tails or min(arguments.tails) < 1 or arguments.max_tokens < 1 or arguments.reply_tokens < 1 or arguments.served_tokens < 0:
+            parser.error("--tails, --max-tokens and --reply-tokens must be at least 1, and --served-tokens at least 0")
         if arguments.crowd == 1 or arguments.crowd < 0:
             parser.error("--crowd is 0 or at least 2")
     try:
-        return {"plan": command_plan, "steps": command_steps, "run": command_run, "verdict": command_verdict}[arguments.command](arguments)
+        return {"plan": command_plan, "steps": command_steps, "run": command_run, "verdict": command_verdict, "note": command_note, "check": command_check}[arguments.command](arguments)
     except GateError as error:
         print("gx_gate: %s" % error, file=sys.stderr)
         return 1

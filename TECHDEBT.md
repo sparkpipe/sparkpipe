@@ -1100,7 +1100,14 @@ as recorded debt for models too large for a group.
   - The pages a reply's decode steps publish carry identities no other
     request can name. They stay in the rank page cache, unread, until
     eviction takes them. Seal them as private pages and drop them when the
-    sequence is released.
+    sequence is released. The publish of a prompt's last token is the same:
+    one copied page per request that nothing reads.
+  - The engine no longer sets the staged-publish lane flag
+    (`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED`,
+    `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED`): it marked a reply's last
+    block as a resume point once the request was released. The flag, its
+    checks and the page cache's promotion of a staged state are now unused.
+    Remove them with the next change to the rank page cache.
   - Every prompt of at least one block now ends with a one-row wave for its
     last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
     state, used to run its last token in the last wave.
