@@ -1892,6 +1892,147 @@ step), while the gate's decode request (a 200-token prompt and 16 tokens)
 took 2.04 s against 2.08; scores identical at 56 deep and 30 fresh
 positions. Kept because it is exact and shortens every decode step.
 
+The prompt's last token runs in the last wave (2026-11-19). The engine
+used to stop a prompt's last wave one token before its end, publish the
+cache checkpoint there, and run the last token as a one-row step: about 33
+ms of step and up to 9 ms of gap on an 8,192-token prompt. The last wave
+now runs through the last token and publishes the checkpoint one token
+before the end from inside it (`docs/INTERFACE_CONTRACTS.md`, "Folded
+prompt checkpoint"); the rank saves the two pieces of DSV4.1's state that
+differ there, the ratio-2 compressors' pending row and the n-gram history.
+In this first build a prompt whose last token or the one before it ended a
+256-token page kept the one-row step, so 8,192, 32,768 and 131,072 tokens
+did not fold; the runs below use 8,100, 32,100 and 131,000.
+
+Both arms run the same rank build and an engine with no cache stride, as
+every figure since the cache-stride table; only the fold capability
+differs:
+
+| Arm | 8,100 tokens | 32,100 tokens | 131,000 tokens |
+| --- | ---: | ---: | ---: |
+| one-row last step | 16,740 tok/s | 26,397 | 28,716 |
+| folded | 17,790 | 27,097 | 29,242 |
+| one-row last step | 16,926 | 26,541 | 29,405 |
+| folded | 17,801 | 27,003 | 29,764 |
+| one-row last step | 16,803 | 26,530 | 29,341 |
+| folded | 17,967 | 27,100 | 29,732 |
+| mean, one-row | 16,823 | 26,489 | 29,154 |
+| mean, folded | 17,853 | 27,067 | 29,579 |
+
+That is +6.1%, +2.2% and +1.5%, and 237%, 320% and 352% of the four-Spark
+reference. At 8,192 / 32,768 / 131,072 tokens the two arms are level
+(16,887 / 26,607 / 29,133 against 16,639 / 26,333 / 29,426), and every run
+answers the 40,000-token prompt with `b79b025295d2819f`.
+
+The checkpoint is exact. With the capability off the build scores the deep
+and fresh probes as `zn18d1` and `zn18f1` bit for bit (56 and 30
+positions). Seven prompts sent twice in one session, the second time each
+resuming at the checkpoint the first folded, score bit for bit as the same
+prompts on the one-row engine. The first output token is computed in the
+wave instead of a one-row step, as the publisher's forward pass does, so
+its log-probs move: the seven prompts have the same best token and differ
+by at most 0.75 in a log-prob; on the deep probes, whose 16-token
+extensions now run as 17-row waves past the 16-row kernel switch, the best
+token is the same at 56 of 56 and 29 of 30 positions and a log-prob moves
+by at most 3.3.
+
+Prompts that end on a page edge fold too (2026-11-19). When N - 1 ends a
+page, that page is sealed as the checkpoint with its state and token N - 1
+stays in the open page after it. When N ends a page, the full page is
+sealed without state and the checkpoint goes onto a device copy of it. A
+wave that ends on the 64th page names 64 block identities; the first build
+held 63 and refused 32,768- and 131,072-token prompts. Same rank build, no
+cache stride, fresh prefix `fk19`, three runs each:
+
+| Arm | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| one-row last step | 17,213 tok/s | 26,445 | 29,412 |
+| folded | 18,308 | 26,950 | 29,262 |
+| one-row last step | 16,832 | 26,682 | 29,029 |
+| folded | 17,464 | 27,162 | 29,755 |
+| one-row last step | 17,252 | 26,517 | 28,892 |
+| folded | 16,382 | 27,127 | 29,443 |
+| mean, one-row | 17,099 | 26,548 | 29,111 |
+| mean, folded | 17,385 | 27,080 | 29,487 |
+
+That is +1.7%, +2.0% and +1.3% (the folded 8,192-token runs range from
+16,382 to 18,308), and 231%, 320% and 351% of the four-Spark reference.
+
+Exactness at the page edges, from repeats and from rank 0's saved
+snapshots of both engines compared byte for byte:
+
+- N - 1 ends a page (8,193 to 69,633 tokens): every saved page is the same
+  as the one-row engine's, and the state records differ only in the window
+  ring's slot for token N - 1, which a resume rewrites. Repeats that resume
+  at a held checkpoint score bit for bit as the one-row engine. The store
+  keeps the four newest states of a chain, so the two oldest checkpoints
+  of the six-prompt chain were gone by the repeats; those two repeats
+  folded from an earlier point, and their first tokens moved as every
+  folded first token does.
+- N ends a page (8,192 to 69,632 tokens): the checkpoint's state and its
+  copied page differ only in token N - 1's slot, which a resume rewrites.
+  The full page ending at N holds token N - 1's KV from the folded wave.
+  The one-row engine seals that page only when the next request, resuming
+  at N - 1, recomputes token N - 1 as the first row of its own wave, and
+  the two computations differ in low bits. A prompt that extends past N
+  reads the folded value. In the six-prompt chain the repeats of the
+  first two prompts score bit for bit as the one-row engine; from the
+  third on, whose cached chain passes through an earlier folded page, they
+  differ in low bits (same best token 6 of 6, at most 1.41 in a log-prob).
+  The cache keeps the first copy of a block it seals, so a chain can hold
+  the folded value next to a checkpoint that a later wave computed with the
+  recomputed one; the one-row engine has the same mix when a reply's
+  one-row steps seal a block that a later prompt recomputes.
+- Folded runs repeat bit for bit across lanes (two more lanes, `fm19`).
+
+The fold is removed (2026-11-20). The release capture (`vs20`, on the
+sixteen ranks) sends each prompt several times: the first request runs
+cold, and later ones resume at the checkpoint and compute the prompt's last
+token as a one-row step. Folded, the cold request computes that token in
+the wave, whose kernels round differently, and the greedy tokens of
+`long_2k` differ from the second token on and those of `long_8k` from the
+sixth. The capture's one-step requests extend a prompt one token at a
+time, so each of them ends in such a step, and its chain, speculation and
+batch comparisons would fail on every long DSV4.1 prompt. Cold and cached
+requests agree only when the last prompt token runs through the one-row
+step's kernels. A fold that keeps those kernels saves only the engine's
+turnaround between the last wave and the one-row step. The one-row arm's
+API logs above (`ff19b`, `fk19b`) put it at 1.7, 2.3 and 5.7 ms at 8K, 32K
+and 131K tokens: 0.6, 1.5 and 4.7 ms from the wave's result to the next
+dispatch, and 0.8 to 1.1 ms of transfer around the step. That is at most
+0.4% of a prompt, so the fold and its checkpoint paths are removed and a
+prompt's last token runs as a one-row step again. Prefill figures below
+that ran folded builds, the mesh-depth arms of 2026-11-20 among them,
+include the fold's gain.
+
+Checked on the fleet (`ex20`, the stack head at 76e941a8a without the fold
+against the folded build of `vs20`, same ranks and release). The capture
+(`ex20x1`) gives chain and speculating tokens equal to the one-step tokens
+on all seven prompts, `long_2k` and `long_8k` included. The batched tokens
+of `capital` and `arith` differ from token 1 and token 14, the
+batch-composition effect release c2b714343 records. Against the folded
+capture the one-step tokens match on the four short prompts, `long_2k` and
+`long_8k` differ from token 2 and token 6, and `copy` keeps its tokens with
+log-probs up to 1.97 apart. Prefill, three alternating runs each, every run
+answering the 40,000-token prompt with `b79b025295d2819f`:
+
+| Arm | 8,192 tokens | 32,768 tokens | 131,072 tokens |
+| --- | ---: | ---: | ---: |
+| one-row last step | 16,998 tok/s | 26,957 | 29,725 |
+| folded | 18,186 | 27,939 | 30,328 |
+| one-row last step | 17,385 | 26,524 | 29,778 |
+| folded | 17,998 | 27,774 | 30,066 |
+| one-row last step | 17,448 | 27,084 | 29,867 |
+| folded | 18,774 | 27,774 | 30,307 |
+| mean, one-row | 17,277 | 26,855 | 29,790 |
+| mean, folded | 18,319 | 27,829 | 30,234 |
+
+On this build the fold was worth 6.0%, 3.6% and 1.5%: a prompt's one-row
+last step takes 30.6 ms of service on the ranks. Without the fold the lane
+runs at 230%, 317% and 354% of the four-Spark reference.
+
+The engine of the fold runs has no cache stride, as the module now has
+(next section).
 The module drops the 16,384-token cache stride (2026-11-19). Every
 16,384-token wave ended at a cache point and ran layers 20 to 39 on its
 last rows so that the recurrent state could be saved there: 17,284 /
