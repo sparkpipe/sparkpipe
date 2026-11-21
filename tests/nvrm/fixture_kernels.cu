@@ -138,6 +138,12 @@ extern "C" __global__ void SparkNvrmDeepFrame(uint32_t *output, uint32_t pick)
 	output[lane] = total;
 }
 
+extern "C" __global__ void SparkNvrmNoParameters(void)
+{
+	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+		spark_nvrm_fixture_word ^= 1u;
+}
+
 extern "C" __global__ void SparkNvrmProbeDimensions(uint32_t *output)
 {
 	if ( threadIdx.x == 0u && threadIdx.y == 0u && threadIdx.z == 0u && blockIdx.x == 0u && blockIdx.y == 0u && blockIdx.z == 0u )

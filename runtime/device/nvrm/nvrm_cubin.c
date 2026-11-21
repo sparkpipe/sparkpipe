@@ -304,7 +304,8 @@ static SparkStatus CubinBanks(const CubinReader *reader, SparkNvrmCubinKernel *k
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus CubinKernel(const CubinReader *reader, const char *name, uint32_t parameter_offset, SparkNvrmCubinKernel *kernel)
+static SparkStatus CubinKernel(const CubinReader *reader, const char *name, uint32_t parameter_offset, uint32_t has_parameters,
+	SparkNvrmCubinKernel *kernel)
 {
 	const CubinSection *text = CubinFind(reader,".text.",name);
 	const CubinSection *shared = CubinFind(reader,".nv.shared.",name);
@@ -322,7 +323,11 @@ static SparkStatus CubinKernel(const CubinReader *reader, const char *name, uint
 	status = CubinBanks(reader,kernel);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
-	if ( kernel->bank[0].present == 0u || parameter_offset > kernel->bank[0].bytes )
+	if ( kernel->bank[0].present == 0u )
+		CUBIN_REFUSE(SPARK_STATUS_PARSE_ERROR,reader,"a kernel has no constant bank 0");
+	if ( has_parameters == 0u )
+		parameter_offset = (uint32_t)kernel->bank[0].bytes;
+	if ( parameter_offset > kernel->bank[0].bytes )
 		CUBIN_REFUSE(SPARK_STATUS_PARSE_ERROR,reader,"a kernel's parameters lie outside its constant bank 0");
 	kernel->parameter_offset = parameter_offset;
 	kernel->parameter_bytes = (uint32_t)(kernel->bank[0].bytes - parameter_offset);
@@ -343,8 +348,8 @@ static SparkStatus CubinKernels(const CubinReader *reader, SparkNvrmCubin *cubin
 		if ( strncmp(section->label,".nv.info.",prefix) != 0 || section->label[prefix] == '\0' )
 			continue;
 		status = CubinParameterBank(reader,section,&offset,&found);
-		if ( status == SPARK_STATUS_OK && found != 0u )
-			status = CubinKernel(reader,section->label + prefix,offset,&cubin->kernels[cubin->kernel_count++]);
+		if ( status == SPARK_STATUS_OK && (found != 0u || CubinFind(reader,".text.",section->label + prefix) != 0) )
+			status = CubinKernel(reader,section->label + prefix,offset,found,&cubin->kernels[cubin->kernel_count++]);
 		if ( status != SPARK_STATUS_OK )
 			SPARK_FAIL(status);
 	}

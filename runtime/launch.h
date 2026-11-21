@@ -133,4 +133,8 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 #define LM_LAUNCH_MAX_OPTIN_KERNELS 16u
 #define LM_LAUNCH_MAX_TRACKED_DEVICES 64u
 
+#ifdef SPARKPIPE_DEVICE_NVRM
+#include "runtime/device/nvrm/launch_nvrm.h"
+#else
 #include "runtime/device/cuda/launch_cuda.h"
+#endif

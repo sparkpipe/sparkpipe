@@ -93,7 +93,10 @@ kernel table and one loadable image:
   that a module's `__device__` variable starts zeroed and keeps its value
   across launches, and that its `__constant__` table reads back.
 - **Kernels.** A kernel is a `.nv.info.<name>` section that carries a
-  parameter-bank record. Its code is `.text.<name>`. Its static shared memory is the size of
+  parameter-bank record, or that has a `.text.<name>` section of its own: a
+  kernel without parameters has no parameter-bank record, and its
+  parameters are taken to start at the end of bank 0, 0 bytes long. Its
+  code is `.text.<name>`. Its static shared memory is the size of
   `.nv.shared.<name>`, which includes the 1 KiB reserved per block. Its
   register count and minimum stack come from the function records in
   `.nv.info`, matched to the kernel through the symbol table. The
@@ -488,6 +491,57 @@ unregistering; each abort is checked in a child process. Its
 a registered kernel. It checks that the kernel is cached, that a
 2000-byte-named kernel resolves, and that after the release the device
 shuts down with no live library.
+
+## Hosted launches
+
+A build with `-DSPARKPIPE_DEVICE_NVRM` takes the nvrm fronts:
+`sparkpipe/spark_gpu.h` includes `runtime/device/nvrm/spark_gpu_nvrm.h`, and
+`runtime/launch.h` includes `runtime/device/nvrm/launch_nvrm.h`. Without the
+macro both stay on the CUDA fronts. Their implementation is
+`runtime/device/nvrm/spark_gpu_nvrm.c`, in the nvrm library.
+
+- **Streams.** `SparkGpuStream` is a `SparkDeviceQueue *`. The null stream
+  is a process default queue, created on first use
+  (`SparkNvrmGpuDefaultStream`).
+- **Errors.** `SparkGpuError` takes CUDA's numbers for the
+  `SPARK_GPU_SUCCESS` and `SPARK_GPU_ERROR_*` names the call sites use. Each
+  thread keeps its last error. A failed call records it,
+  `SparkGpuPeekAtLastError` reads it without clearing, `SparkGpuGetLastError`
+  reads and clears it, and a later successful call leaves it as it was. The
+  detail is in `SparkDeviceLastError()`.
+- **`LM_LAUNCH`** keeps its form: `LM_LAUNCH((kernel), grid, block, shared,
+  stream, args...)`, which yields no value. `LmLaunchKernel` converts each
+  argument to its parameter's type, as `<<<>>>` does, and lays the
+  parameters out at their alignment and size. `SparkNvrmLaunchPacked` finds
+  the registered kernel and checks the layout against the kernel's PTX
+  parameter table: the count, each offset and size, and the total. A
+  mismatch is refused, naming the parameter. It then launches with the
+  packed block as the launch's constants.
+- **Not supported yet.** `LM_LAUNCH_DEPENDENT` and `LmLaunchClusterKernel`
+  are refused with `SPARK_GPU_ERROR_NOT_SUPPORTED`, naming the kernel,
+  until the launch descriptor carries programmatic dependence and clusters
+  (Phase 3).
+- **Shared memory.** `LmKernelSharedMemoryOptIn` grants what the device has
+  and refuses more.
+- **Release.** `SparkNvrmGpuRelease` destroys the default queue and the
+  registered kernels before `SparkDeviceShutdown`.
+
+`tests/nvrm/hosted_launch.cu` is compiled with `nvcc -cudart none
+-DSPARKPIPE_DEVICE_NVRM` and `-keep`. Its kernel directory gets the cubin
+and a manifest written by `tools/nvrm_kernel_manifest.py`, and it links
+with the C++ compiler against the nvrm library alone. It covers:
+
+- a signature mixing a byte, a pointer, a 16-bit value, a struct, a float
+  and a signed byte, given an `int`, a pointer, an `int`, the struct, a
+  float, an `int` and a pointer;
+- a template kernel on a created queue;
+- a kernel without arguments;
+- Peek and Get, and a refused launch;
+- the dependent and cluster refusals;
+- a disagreeing layout, an unregistered function, and the opt-in limit.
+
+`build/test_nvrm_hosted_launch` is part of `make test-nvrm-gpu`, so the GPU
+gate needs `nvcc` on the host. Without it the gate fails, naming `nvcc`.
 
 ## First light and memory bandwidth
 
