@@ -3,6 +3,7 @@
 #include "inference/kernels/attn_prefill.cuh"
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/tma.cuh"
+#include "runtime/launch.h"
 
 #define LM_LATENT_SHARD_PREFILL_MIN_ROWS 17u
 
@@ -692,7 +693,7 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 	const uint32_t blocks = (rows + ROWS - 1u) / ROWS, groups = selection.padded_heads != 0u ? 1u : total_heads / block_heads;
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors() / (groups * split_count);
 	const uint32_t grid = blocks < resident ? blocks : resident > 0u ? resident : 1u;
-	LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS><<<dim3(grid, groups, split_count), LM_LATENT_SHARD_PREFILL_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>), dim3(grid, groups, split_count), LM_LATENT_SHARD_PREFILL_THREADS, shared, stream,
 		cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows,
 		split_count, split_stride, selection);
 	return cudaPeekAtLastError();
@@ -791,7 +792,7 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream, LmLatentShardDense(heads_per_rank));
 		if (error != cudaSuccess)
 			return error;
-		LmLatentShardSplitMergeKernel<LATENT><<<dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream>>>(split_partials, split_rank_stride, split_stride, splits,
+		LM_LAUNCH((LmLatentShardSplitMergeKernel<LATENT>), dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, split_partials, split_rank_stride, split_stride, splits,
 			partials + records * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), partial_rank_stride, heads_per_rank);
 		error = cudaPeekAtLastError();
 		if (error != cudaSuccess)

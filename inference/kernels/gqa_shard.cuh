@@ -615,13 +615,13 @@ static inline cudaError_t LmGqaShardPartialLaunch(
 				return(error);
 			granted = true;
 		}
-		LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
-			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream>>>(
+		LM_LAUNCH((LmGqaShardTiledKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3((rows * (heads / KV_HEADS) + LM_GQA_SHARD_TILED_QUERIES - 1u) /
+			LM_GQA_SHARD_TILED_QUERIES,KV_HEADS,VALUE_DIM / LmGqaShardTiledValuePart<VALUE_DIM>()),LM_GQA_SHARD_TILED_THREADS,shared,stream,
 			cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 			fork_positions,slot_offsets);
 		return(cudaPeekAtLastError());
 	}
-	LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM><<<dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream>>>(
+	LM_LAUNCH((LmGqaShardPartialKernel<Geometry,Pages,KV_HEADS,HEAD_DIM,VALUE_DIM>),dim3(rows,KV_HEADS),(heads / KV_HEADS) * 32u,0,stream,
 		cache,query_bf16,heads,sequence_of_row,context_length,row_position,qk_scale,send,destination_stride,rows,block_mask,mask_words,block_tokens,window,
 		fork_positions,slot_offsets);
 	return(cudaPeekAtLastError());

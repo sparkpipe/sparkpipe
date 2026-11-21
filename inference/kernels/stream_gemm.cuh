@@ -499,7 +499,7 @@ static int32_t LmStreamGemmLaunchTile(const LmStreamGemmArguments *args, uint64_
 	blocks = (uint64_t)multiprocessors * (uint64_t)resident.load();
 	if ( tile_bound < blocks )
 		blocks = tile_bound;
-	LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS><<<(uint32_t)blocks,LM_STREAM_THREADS,shared,stream>>>(*args);
+	LM_LAUNCH((LmStreamGemmKernel<Format,TILE_M,TILE_N,TILE_K,WARP_ROWS>),(uint32_t)blocks,LM_STREAM_THREADS,shared,stream,*args);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

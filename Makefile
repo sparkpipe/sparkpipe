@@ -455,6 +455,7 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_launch_path.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_capture_cuda.py \
 	tests/test_device_contract_metal.py \

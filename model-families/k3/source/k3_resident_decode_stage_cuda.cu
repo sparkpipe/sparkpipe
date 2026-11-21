@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_weightd_cxx.h"
 
 #include "sparkpipe/spark_tp_mesh_round_control.h"
+#include "runtime/launch.h"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
@@ -876,7 +877,7 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 	if ( rows <= d->attention_rows && SparkKvShardExchangeCostNs(gather_rounds, (uint64_t)(degree - 1u) * units * unit) >=
 		SparkKvShardExchangeCostNs(scatter_rounds, (uint64_t)(degree - 1u) * (query_units + partial_units) * unit) )
 		return 0;
-	K3DispatchGatherPlanKernel<<<1u, 1u, 0, stream>>>(d->gather_plan, d->sequences, sequence, context);
+	LM_LAUNCH((K3DispatchGatherPlanKernel), 1u, 1u, 0, stream, d->gather_plan, d->sequences, sequence, context);
 	if ( cudaPeekAtLastError() != cudaSuccess )
 		return -1;
 	b->shard_gather = 1u;
@@ -899,7 +900,7 @@ static int32_t K3DispatchMhaPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t
 		(uint64_t)most * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t) > b->shard_mha_keys_bytes ||
 		(uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) > send_bytes )
 		return 0;
-	K3DispatchGatherPlanKernel<<<1u, 1u, 0, stream>>>(d->gather_plan, d->sequences, in->gather_sequence, in->gather_context);
+	LM_LAUNCH((K3DispatchGatherPlanKernel), 1u, 1u, 0, stream, d->gather_plan, d->sequences, in->gather_sequence, in->gather_context);
 	if ( cudaPeekAtLastError() != cudaSuccess )
 		return -1;
 	b->shard_mha = 1u;
@@ -995,7 +996,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 		const uint32_t *dense_offset = b->dense_row_offset;
 		uint32_t *dense_tiles = b->dense_tile_prefix;
 		int32_t status;
-		K3DispatchPairKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(d->pair_arrays, rows_a, rows_b);
+		LM_LAUNCH((K3DispatchPairKernel), (rows + 255u) / 256u, 256u, 0, stream, d->pair_arrays, rows_a, rows_b);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
 		K3DispatchPairView(d, b, d->pair_buffers, rows_a);

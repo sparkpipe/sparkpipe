@@ -2,6 +2,7 @@
 
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "runtime/launch.h"
 
 static __global__ void LmCellPackMxfp4Kernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ scales,
 	uint8_t *__restrict__ cells, uint32_t output_dimension, uint32_t input_dimension, uint64_t chunks)
@@ -47,7 +48,7 @@ static int32_t LmCellPackMxfp4(const void *payload, const void *scales, void *ce
 		LmSkinnyAligned(cells) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	chunks = LmCellPackBytes(groups, output_dimension, input_dimension) / LM_SKINNY_CHUNK_BYTES;
-	LmCellPackMxfp4Kernel<<<(uint32_t)((chunks + 255u) / 256u), 256u, 0, stream>>>((const uint8_t *)payload, (const uint8_t *)scales,
+	LM_LAUNCH((LmCellPackMxfp4Kernel), (uint32_t)((chunks + 255u) / 256u), 256u, 0, stream, (const uint8_t *)payload, (const uint8_t *)scales,
 		(uint8_t *)cells, output_dimension, input_dimension, chunks);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

@@ -20,6 +20,7 @@
 #include "inference/kernels/sample.cuh"
 #include "inference/kernels/stage_head.cuh"
 #include "inference/kernels/weight_prefetch.cuh"
+#include "runtime/launch.h"
 
 #define STAGE_RUNNER_SAMPLE_THREADS 1024u
 #define STAGE_RUNNER_DISTRIBUTION_HEAD_ROWS 4u
@@ -140,8 +141,8 @@ static SparkStatus StageRunnerCombineGatherBf16(void *combine_context,
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		sources.rank[r] = (const uint16_t *)source_devices[r];
 	}
-	StageRunnerGatherStripesKernel<<<(source_count * elements_per_rank + 255u) / 256u,
-		256u, 0, (cudaStream_t)cuda_stream>>>(
+	LM_LAUNCH((StageRunnerGatherStripesKernel), (source_count * elements_per_rank + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream,
 		sources,(uint16_t *)destination_device,source_count,elements_per_rank);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -170,8 +171,8 @@ static SparkStatus StageRunnerCombineBf16(void *combine_context,
 	(void)combine_context;
 	if ( destination_device == 0 || source_device == 0 || elements == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	StageRunnerCombinePairKernel<<<(elements + 255u) / 256u,
-		256u, 0, (cudaStream_t)cuda_stream>>>(
+	LM_LAUNCH((StageRunnerCombinePairKernel), (elements + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream,
 		(const uint16_t *)source_device,(uint16_t *)destination_device,elements);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -192,8 +193,8 @@ static SparkStatus StageRunnerCombineTp4Bf16(void *combine_context,
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		sources.rank[r] = (const uint16_t *)rank_devices[r];
 	}
-	StageRunnerCombineTp4TreeKernel<<<(elements + 255u) / 256u,
-		256u, 0, (cudaStream_t)cuda_stream>>>(
+	LM_LAUNCH((StageRunnerCombineTp4TreeKernel), (elements + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream,
 		sources,(uint16_t *)destination_device,active_sequence_count,hidden_dimension);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -223,8 +224,8 @@ static SparkStatus StageRunnerCombineU64Max(void *combine_context,
 	(void)combine_context;
 	if ( destination_device == 0 || source_device == 0 || element_count == 0u )
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	StageRunnerCombineU64MaxKernel<<<(element_count + 255u) / 256u,
-		256u, 0, (cudaStream_t)cuda_stream>>>(
+	LM_LAUNCH((StageRunnerCombineU64MaxKernel), (element_count + 255u) / 256u,
+		256u, 0, (cudaStream_t)cuda_stream,
 		source_device,destination_device,element_count);
 	return cudaGetLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
@@ -1467,7 +1468,7 @@ static SparkStatus StageRunnerDistribution(SparkStageRunnerState *state,
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( count == 0u )
 		return SPARK_STATUS_OK;
-	LmStageRowsGatherKernel<<<count, LM_STAGE_HEAD_THREADS, 0, stream>>>(state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
+	LM_LAUNCH((LmStageRowsGatherKernel), count, LM_STAGE_HEAD_THREADS, 0, stream, state->distribution_rows, state->hidden, state->distribution_hidden, hidden);
 	if ( state->geometry.head_prenormed == 0u && state->geometry.head_norm_f32 != 0u && state->geometry.head_norm_round_first != 0u )
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,float,true>), count, LM_STAGE_HEAD_THREADS, (hidden + 8u) * sizeof(float), stream,
 			state->distribution_hidden, 0, (const float *)state->head_norm_weight, 0, state->distribution_normed, hidden, hidden, state->geometry.rms_epsilon);
@@ -1734,14 +1735,14 @@ static SparkStatus StageRunnerHeadArgmax(SparkStageRunnerState *state, const Spa
 	const uint32_t rows = in->rows, sequences = in->sequences;
 	if ( state->head_last_rows == 0u || sequences >= rows || in->sequence_row_begin == 0 || in->sequence_row_indices == 0 )
 		return StageRunnerHeadRows(state, state->hidden, state->output_token, state->output_score, rows, stream);
-	LmStageLastRowsGatherKernel<<<sequences, LM_STAGE_HEAD_THREADS, 0, stream>>>(in->sequence_row_begin,
+	LM_LAUNCH((LmStageLastRowsGatherKernel), sequences, LM_STAGE_HEAD_THREADS, 0, stream, in->sequence_row_begin,
 		in->sequence_row_indices, state->hidden, state->head_hidden, state->geometry.hidden);
 	if ( cudaPeekAtLastError() != cudaSuccess )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	status = StageRunnerHeadRows(state, state->head_hidden, state->head_token, state->head_score, sequences, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LmStageLastRowsScatterKernel<<<(sequences + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS, LM_STAGE_HEAD_THREADS, 0, stream>>>(
+	LM_LAUNCH((LmStageLastRowsScatterKernel), (sequences + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS, LM_STAGE_HEAD_THREADS, 0, stream,
 		in->sequence_row_begin, in->sequence_row_indices, state->head_token, state->head_score,
 		state->output_token, state->output_score, sequences);
 	return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -2175,7 +2176,7 @@ static SparkStatus StageRunnerStepRun(SparkStageRunnerState *state, const SparkS
 		{ fprintf(stderr, "sparkpipe_stage_runner: %s step failed status=%d\n", state->model_interface->tag, (int)status); return status; }
 	if ( state->tap_slab_device != 0 && state->tap_final_entry != UINT32_MAX )
 	{
-		StageRunnerTapCopyKernel<<<dim3((state->geometry.hidden + 255u) / 256u, in->rows), 256u, 0, stream>>>(in->hidden_bf16,
+		LM_LAUNCH((StageRunnerTapCopyKernel), dim3((state->geometry.hidden + 255u) / 256u, in->rows), 256u, 0, stream, in->hidden_bf16,
 			state->tap_slab_device + (uint64_t)state->tap_final_entry * state->geometry.hidden, in->rows, state->geometry.hidden,
 			state->tap_plan.row_stride_elements);
 		if ( cudaPeekAtLastError() != cudaSuccess )
@@ -2189,7 +2190,7 @@ static SparkStatus StageRunnerStepRun(SparkStageRunnerState *state, const SparkS
 			status = StageRunnerDistribution(state, runner, dispatch, stream);
 		if ( status != SPARK_STATUS_OK || dispatch == 0 )
 			return status;
-		StageRunnerStoreOutputsKernel<<<(in->rows + 63u) / 64u, 64u, 0, stream>>>(dispatch->output_token_ids, dispatch->output_scores,
+		LM_LAUNCH((StageRunnerStoreOutputsKernel), (in->rows + 63u) / 64u, 64u, 0, stream, dispatch->output_token_ids, dispatch->output_scores,
 			state->output_token, state->output_score, state->chain_step_device, in->rows);
 		return cudaPeekAtLastError() == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	}
@@ -2827,7 +2828,7 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 				fprintf(stderr, "sparkpipe_stage_runner: decode chain refused at step %u: the model's graph key depends on host row metadata\n", step);
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			}
-			StageRunnerChainAdvanceKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(state->token_ids_device,
+			LM_LAUNCH((StageRunnerChainAdvanceKernel), (rows + 63u) / 64u, 64u, 0, stream, state->token_ids_device,
 				state->output_token, (uint32_t *)dispatch->positions, (uint32_t *)dispatch->context_length,
 				dispatch->sequence_of_row, rows, state->chain_step_device, state->distribution_positions, dispatch->distribution_count);
 			if ( cudaPeekAtLastError() != cudaSuccess )

@@ -13,6 +13,7 @@
 #include "inference/kernels/ngram_hash.cuh"
 #include "inference/kernels/stream_gemm.cuh"
 #include "dsv41_flash_kernels.cuh"
+#include "runtime/launch.h"
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u
@@ -48,8 +49,8 @@ static inline cudaError_t D41LaunchFrequencies(float *table, double theta, doubl
 	const double low = floor(low_raw) > 0.0 ? floor(low_raw) : 0.0;
 	const double high = ceil(high_raw) < rope - 1.0 ? ceil(high_raw) : rope - 1.0;
 	const double span = high - low > 1e-3 ? high - low : 1e-3;
-	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
-	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
+	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
+	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
 		1.0f / (float)span, 1u);
 	return cudaGetLastError();
 }
@@ -232,7 +233,7 @@ static inline void D41InitRecords(float *records, uint64_t destination_stride, u
 	cudaStream_t stream)
 {
 	const uint32_t span = rows * heads_per_destination * D41K_RECORD, blocks = (span + D41K_THREADS - 1u) / D41K_THREADS;
-	D41InitRecordsKernel<<<blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream>>>(records, destination_stride, span, destinations);
+	LM_LAUNCH((D41InitRecordsKernel), blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);
 }
 
 static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,

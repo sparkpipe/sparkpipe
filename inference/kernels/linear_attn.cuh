@@ -777,7 +777,7 @@ static inline cudaError_t LmDeltaRuleChunkLaunch(uint8_t *state_pool, uint32_t s
 	cudaError_t error = cudaFuncSetAttribute(LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared);
 	if ( error != cudaSuccess || sequences == 0u || key_heads == 0u )
 		return(error != cudaSuccess ? error : cudaErrorInvalidValue);
-	LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State><<<dim3(sequences,key_heads,1u),LM_DELTA_CHUNK_THREADS,shared,stream>>>(state_pool,slot_bytes,state_index,
+	LM_LAUNCH((LmDeltaRuleChunkKernel<REDUCE_THREADS,KEY_DIM,VALUE_DIM,State>),dim3(sequences,key_heads,1u),LM_DELTA_CHUNK_THREADS,shared,stream,state_pool,slot_bytes,state_index,
 		sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices);
 	return(cudaPeekAtLastError());
 }

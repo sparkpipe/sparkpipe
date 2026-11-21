@@ -90,7 +90,7 @@ static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *sca
 		((uintptr_t)codes & 7u) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	blocks = (elements / 8u + LM_MX_THREADS - 1u) / LM_MX_THREADS;
-	LmMxQuantizeKernel<<<(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream>>>(source,codes,scales,elements / 8u,
+	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,elements / 8u,
 		elements / 8u,0u);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
@@ -103,7 +103,7 @@ static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uin
 		((uintptr_t)source & 15u) != 0u || ((uintptr_t)codes & 7u) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	blocks = (octets + LM_MX_THREADS - 1u) / LM_MX_THREADS;
-	LmMxQuantizeKernel<<<(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream>>>(source,codes,scales,octets,
+	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,octets,
 		width / 8u,row_stride);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
@@ -350,7 +350,7 @@ static int32_t LmMxGemmLaunchGroups(const LmMxGemmArguments *args, const LmMxGem
 			return(LM_LAUNCH_ERR_ATTRIBUTE);
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
-	LmMxGemmKernel<TILE_M,TILE_N,WARPS_M><<<(uint32_t)(tiles < multiprocessors ? tiles : multiprocessors),LM_MX_THREADS,shared,stream>>>(*args,*groups);
+	LM_LAUNCH((LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>),(uint32_t)(tiles < multiprocessors ? tiles : multiprocessors),LM_MX_THREADS,shared,stream,*args,*groups);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
