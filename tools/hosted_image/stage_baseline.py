@@ -15,9 +15,9 @@ IMAGE_NODE_ID = "sparkff"
 OFFLINE_VERBS = ("enable", "disable", "mask", "unmask", "set-default")
 RUNTIME_VERBS = ("daemon-reload", "restart", "start", "stop", "try-reload-or-restart", "reset-failed", "show",
                  "list-units", "set-property", "is-active", "is-enabled")
-LIVE_COMMANDS = ("sysctl", "udevadm", "modprobe", "loginctl", "hostnamectl")
+LIVE_COMMANDS = ("sysctl", "udevadm", "modprobe", "loginctl", "hostnamectl", "update-grub")
 NODE_STEPS = ("install_packages", "install_node_identity", "install_node_layout", "install_sshd_hardening",
-              "install_grub_policy", "install_efi_boot_order", "rebuild_initramfs", "install_ceph_policy", "heal_time_sync")
+              "install_efi_boot_order", "rebuild_initramfs", "install_ceph_policy", "heal_time_sync")
 
 
 def load_baseline():
