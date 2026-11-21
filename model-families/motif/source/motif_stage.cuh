@@ -287,7 +287,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus HyperBegin(State *state, Frame &frame)
 	{
-		LmHcExpandStreamsKernel<MO_HIDDEN><<<dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, frame.step->rows), MO_THREADS, 0, frame.stream>>>(
+		LM_LAUNCH((LmHcExpandStreamsKernel<MO_HIDDEN>), dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, frame.step->rows), MO_THREADS, 0, frame.stream,
 			frame.step->hidden_bf16, state->streams, frame.step->rows);
 		return CudaStageLaunched();
 	}
@@ -342,11 +342,11 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			inv_freq, 1.0f, MO_LATENT);
 		if ( LmPerHeadProjectRowsLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream) != cudaSuccess )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);
-		MotifQueryPackKernel<<<dim3(rows, kHeads), MO_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, kHeads);
+		LM_LAUNCH((MotifQueryPackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads);
 		LM_LAUNCH((LmKvShardStoreKernel<MotifKv, MO_THREADS>), rows, MO_THREADS, 0, stream, state->views[layer], state->slot, step->sequence_of_row,
 			step->positions, rows, MO_SLOT);
 		if ( window )
-			MotifWindowListKernel<<<rows, MO_THREADS, 0, stream>>>(step->positions, state->windows, rows);
+			LM_LAUNCH((MotifWindowListKernel), rows, MO_THREADS, 0, stream, step->positions, state->windows, rows);
 		status = Check(LM_LAUNCH_OK, "kv store", layer);
 		CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status == SPARK_STATUS_OK )
@@ -387,7 +387,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static SparkStatus HyperPost(State *state, Frame &frame, uint32_t layer, uint32_t part)
 	{
 		(void)part;
-		LmHcPostF32Kernel<LM_HC_SITE_STREAMS><<<dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream>>>(state->partial, state->snapshot,
+		LM_LAUNCH((LmHcPostF32Kernel<LM_HC_SITE_STREAMS>), dim3(frame.step->rows, MO_HIDDEN / MO_THREADS), MO_THREADS, 0, frame.stream, state->partial, state->snapshot,
 			state->hc_post, state->hc_comb, state->streams, frame.step->rows, LM_HC_SITE_STREAMS, MO_HIDDEN);
 		return Check(LM_LAUNCH_OK, "hc post", layer);
 	}
@@ -432,14 +432,14 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			status = Check(LM_LAUNCH_ERR_LAUNCH, "router top-k", layer);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 			state->expert_first, kLocalExperts);
 		if ( LmRouteBuild<MO_THREADS, kLocalExperts + 1u>(state->route_expert, rows, routes, MO_TOP_K, state->group_row_offset, state->route_packed_row,
 				state->route_source_token, 2u * MO_EXPERT_INTER, MO_HIDDEN, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "route build", layer);
 		if ( cudaMemsetAsync(state->param_of_row, 0, (uint64_t)routes * sizeof(uint32_t), stream) != cudaSuccess )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "route params", layer);
-		MotifRouteParamKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_packed_row, state->param_of_row, routes, kLocalExperts);
+		LM_LAUNCH((MotifRouteParamKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_packed_row, state->param_of_row, routes, kLocalExperts);
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
 		expert_routes.tile_prefix_up = state->tile_prefix_up;
@@ -462,7 +462,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			status = OwnedMlp(state, frame, layer, w->shared_gate_up, w->shared_down, w->shared_poly, MO_EXPERT_INTER, state->shared_out);
 		if ( status == SPARK_STATUS_OK )
 		{
-			LmMoeLocalWeightedFinalizeKernel<<<dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, rows), MO_THREADS, 0, stream>>>(state->expert_out,
+			LM_LAUNCH((LmMoeLocalWeightedFinalizeKernel), dim3((MO_HIDDEN + MO_THREADS - 1u) / MO_THREADS, rows), MO_THREADS, 0, stream, state->expert_out,
 				state->route_packed_row, state->route_expert, state->route_weight, w->owner != 0u ? state->shared_out : (const uint16_t *)0, state->partial,
 				MO_TOP_K, kLocalExperts, MO_HIDDEN);
 			status = Check(LM_LAUNCH_OK, "experts finalize", layer);
@@ -475,7 +475,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static SparkStatus HyperEnd(State *state, Frame &frame)
 	{
 		const uint32_t rows = frame.step->rows;
-		LmHcStreamsMeanKernel<MO_HIDDEN><<<rows, MO_THREADS, 0, frame.stream>>>(state->streams, frame.step->hidden_bf16, rows);
+		LM_LAUNCH((LmHcStreamsMeanKernel<MO_HIDDEN>), rows, MO_THREADS, 0, frame.stream, state->streams, frame.step->hidden_bf16, rows);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		state->steps++;

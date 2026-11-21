@@ -5,6 +5,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
+#include "runtime/launch.h"
 
 #define LM_POLY_NORM_PARAMS 4u
 
@@ -50,6 +51,6 @@ static cudaError_t LmPolyNormMulLaunch(const uint16_t *gate_up, const float *par
 {
 	if ( rows == 0u )
 		return cudaSuccess;
-	LmPolyNormMulKernel<256u, ROUTED><<<rows, 256u, 0, stream>>>(gate_up, params, param_of_row, out, rows, width, clamp, bias_clamp, out_scale, epsilon);
+	LM_LAUNCH((LmPolyNormMulKernel<256u, ROUTED>), rows, 256u, 0, stream, gate_up, params, param_of_row, out, rows, width, clamp, bias_clamp, out_scale, epsilon);
 	return cudaPeekAtLastError();
 }

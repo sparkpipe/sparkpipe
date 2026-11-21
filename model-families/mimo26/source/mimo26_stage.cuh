@@ -243,7 +243,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static void Norm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, cudaStream_t stream)
 	{
-		LmBf16RmsNormKernel<MM_THREADS><<<rows, MM_THREADS, (G::kHidden + MM_THREADS / 32u) * sizeof(float), stream>>>(input, weight, output,
+		LM_LAUNCH((LmBf16RmsNormKernel<MM_THREADS>), rows, MM_THREADS, (G::kHidden + MM_THREADS / 32u) * sizeof(float), stream, input, weight, output,
 			G::kHidden, G::kHidden, G::kEpsilon);
 	}
 
@@ -270,8 +270,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_rows, state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		MimoGatherRowsKernel<<<dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, local_rows, degree);
-		MimoSplitKernel<<<dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream>>>(state->attn_full, state->query, state->key, state->value, S::kQuery,
+		LM_LAUNCH((MimoGatherRowsKernel), dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
+		LM_LAUNCH((MimoSplitKernel), dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_full, state->query, state->key, state->value, S::kQuery,
 			KW, VW, G::kValueScale);
 		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,G::kHeads), MM_THREADS, 0, stream,
 			state->query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
@@ -279,7 +279,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,KVH), MM_THREADS, 0, stream,
 			state->key, step->positions, KVH, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
 			FULL ? state->full_inv_freq : state->sliding_inv_freq, 1.0f, 0u);
-		MimoPackSlotKernel<<<dim3(Blocks(KW + VW), rows), MM_THREADS, 0, stream>>>(state->key, state->value, state->slot, KW, VW);
+		LM_LAUNCH((MimoPackSlotKernel), dim3(Blocks(KW + VW), rows), MM_THREADS, 0, stream, state->key, state->value, state->slot, KW, VW);
 		LM_LAUNCH((LmKvShardStoreKernel<Kv,MM_THREADS>), rows, MM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
 			rows, KW + VW);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -305,7 +305,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		const uint32_t rows = step->rows;
 		if ( Fp8(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * S::kDenseRows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		MimoSwigluKernel<<<dim3(Blocks(S::kDenseRows), rows), MM_THREADS, 0, stream>>>(state->gate_up, state->gate_up + S::kDenseRows,
+		LM_LAUNCH((MimoSwigluKernel), dim3(Blocks(S::kDenseRows), rows), MM_THREADS, 0, stream, state->gate_up, state->gate_up + S::kDenseRows,
 			2u * S::kDenseRows, state->intermediate, S::kDenseRows);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Fp8(layer->ffn_down, state->intermediate, state->partial, rows, S::kDenseRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
@@ -322,7 +322,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			LmTopkGroupLimitedLaunch<MM_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
 				state->route_weight, 1.0f, step->route_fault, stream) != cudaSuccess )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<MM_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
@@ -341,12 +341,12 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		MimoSwigluKernel<<<dim3(Blocks(G::kMoeInter), routes), MM_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, G::kMoeInter,
+		LM_LAUNCH((MimoSwigluKernel), dim3(Blocks(G::kMoeInter), routes), MM_THREADS, 0, stream, state->expert_gate, state->expert_up, G::kMoeInter,
 			state->expert_act, G::kMoeInter);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		MimoMoeCombineKernel<<<dim3(Blocks(G::kHidden), rows), MM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((MimoMoeCombineKernel), dim3(Blocks(G::kHidden), rows), MM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->route_weight, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -363,7 +363,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Residual(State *state, uint16_t *hidden, uint32_t rows, cudaStream_t stream)
 	{
-		MimoResidualKernel<<<Blocks((uint64_t)rows * G::kHidden), MM_THREADS, 0, stream>>>(hidden, state->partial, (uint64_t)rows * G::kHidden);
+		LM_LAUNCH((MimoResidualKernel), Blocks((uint64_t)rows * G::kHidden), MM_THREADS, 0, stream, hidden, state->partial, (uint64_t)rows * G::kHidden);
 		return CudaStageLaunched();
 	}
 

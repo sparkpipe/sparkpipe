@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_state_span.h"
+#include "runtime/launch.h"
 
 #define LM_STATE_SNAPSHOT_THREADS 256u
 
@@ -51,6 +52,6 @@ static inline cudaError_t LmStateSpansCopy(
 	grid.x = (row_words_max + LM_STATE_SNAPSHOT_THREADS - 1u) / LM_STATE_SNAPSHOT_THREADS;
 	grid.y = rows;
 	grid.z = span_count;
-	LmStateSpansCopyKernel<<<grid,LM_STATE_SNAPSHOT_THREADS,0u,stream>>>(device_spans,span_count,snapshot,state_index,rows,restore);
+	LM_LAUNCH((LmStateSpansCopyKernel),grid,LM_STATE_SNAPSHOT_THREADS,0u,stream,device_spans,span_count,snapshot,state_index,rows,restore);
 	return(cudaPeekAtLastError());
 }

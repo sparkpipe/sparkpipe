@@ -241,7 +241,7 @@ static inline cudaError_t LmAttentionBlockPartialLaunch(
 			return(error);
 		granted = true;
 	}
-	LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM><<<dim3((rows + LM_ATTENTION_BLOCK_QUERIES - 1u) / LM_ATTENTION_BLOCK_QUERIES,heads),LM_ATTENTION_BLOCK_THREADS,shared,stream>>>(
+	LM_LAUNCH((LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM>),dim3((rows + LM_ATTENTION_BLOCK_QUERIES - 1u) / LM_ATTENTION_BLOCK_QUERIES,heads),LM_ATTENTION_BLOCK_THREADS,shared,stream,
 		query_bf16,heads,row_position,rows,slots,slot_pitch,key_first,key_count,qk_scale,send);
 	return(cudaPeekAtLastError());
 }

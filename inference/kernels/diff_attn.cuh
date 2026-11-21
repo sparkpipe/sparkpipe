@@ -4,6 +4,7 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/kernel_math.cuh"
+#include "runtime/launch.h"
 
 __global__ void LmDifferentialGateKernel(const uint16_t *__restrict__ heads_bf16, const uint16_t *__restrict__ lambda_bf16, uint32_t lambda_stride,
 	const uint16_t *__restrict__ gate_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t groups, uint32_t signal, uint32_t dim)
@@ -27,6 +28,6 @@ static cudaError_t LmDifferentialGateLaunch(const uint16_t *heads, const uint16_
 	if ( rows == 0u )
 		return cudaSuccess;
 	const uint32_t width = groups * signal * dim;
-	LmDifferentialGateKernel<<<dim3((width + 255u) / 256u, rows), 256u, 0, stream>>>(heads, lambda, lambda_stride, gate, out, rows, groups, signal, dim);
+	LM_LAUNCH((LmDifferentialGateKernel), dim3((width + 255u) / 256u, rows), 256u, 0, stream, heads, lambda, lambda_stride, gate, out, rows, groups, signal, dim);
 	return cudaPeekAtLastError();
 }
