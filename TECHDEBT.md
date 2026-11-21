@@ -1867,10 +1867,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   and the audit in the publish step of hosted release roots.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
-  - a disk install that has run:
+  - a disk install that has run on a node:
     [`install_disk.sh`](tools/hosted_image/install_disk.sh) installs onto a
-    node's disk and keeps `/home`, but only its input checks run under test,
-    and it has not yet installed onto any disk;
+    node's disk and keeps `/home`. Its dry run, `make hosted-disk-dryrun`,
+    passes on a partitioned disk-image file: install, rollback, the refusal
+    while a set-aside directory exists, a second install and the audit gate.
+    It has not yet installed onto a node's disk, and no disk it installed
+    has booted;
   - proving it on a spare Spark and on a four-node group against the
     factory OS.
 
