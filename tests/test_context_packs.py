@@ -230,6 +230,7 @@ async def pack_rules(harness, work, shas, scope_dir, bare, check):
     check(len(cuts) == 2 and cuts[0] == warmed["prompt_tokens"] and plain.get("keep") == cuts and
           harness.tokenizer.decode(plain["prompt_token_ids"][cuts[1]:], skip_special_tokens=False).startswith("<|im_start|>user\nfirst"),
           f"a request on a pack names the pack's end, where the warm-up commit ended, and the end of its opening as cuts, and asks for state at both: {plain.get('cuts')} {plain.get('keep')} {warmed}")
+    check(engine.resumed(plain) == warmed["prompt_tokens"], f"by the engine's rules that request resumes where the warm-up commit ended: {engine.resumed(plain)} {warmed['prompt_tokens']}")
     status, _, data = await ask(harness, [{"role": "user", "content": "hello SPARKPIPE-PACK core@0"}], session="forged")
     check(status == 400 and data["error"]["code"] == "invalid_messages", f"a client that writes the pack marker into its text is refused: {status}")
 

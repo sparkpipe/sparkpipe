@@ -111,6 +111,8 @@ async def run(tmp, check):
         check(engine.requests[1].get("cuts") == [opened, len(first_prompt) - 1, len(first_prompt) + len(generated)] and engine.requests[1].get("keep") == [opened] and
               "cache_points" not in engine.requests[1],
               f"the next turn names the same opening, one token before the replayed reply began and where it ends: {engine.requests[1].get('cuts')}")
+        check(engine.resumes[:2] == [0, len(first_prompt) - 1],
+              f"by the engine's rules the first turn resumes nowhere and the next one token before the first prompt's end, computing the reply again: {engine.resumes[:2]}")
         check(harness.prompt_text(1).endswith("<|im_start|>tool\nhello world<|im_end|>\n<|im_start|>assistant\n<think>"),
               f"what follows the replayed turn is rendered by the template: {harness.prompt_text(1)[-120:]}")
         model = harness.frontend.models["alpha"]

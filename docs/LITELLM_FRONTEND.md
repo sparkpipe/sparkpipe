@@ -617,8 +617,9 @@ there. Another
 conversation with the same system prompt and tools, or another request on
 the pack, then resumes at that cut instead of at the last checkpoint anchor
 before it. Cuts inside the opening (between system blocks, or between the
-system prompt and the tools) are not named, and a client's `cache_control`
-marks are still read and ignored (`TECHDEBT.md`, Exact reuse).
+system prompt and the tools) and inside a message (after a document that a
+question follows) are not named, and a client's `cache_control` marks are
+still read and ignored (`TECHDEBT.md`, Exact reuse).
 
 `max_tokens: 0` on Messages, or
 `commit_only: true` on Chat Completions and Responses, is a commit. The

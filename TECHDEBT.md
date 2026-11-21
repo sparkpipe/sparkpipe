@@ -1130,17 +1130,20 @@ as recorded debt for models too large for a group.
     and the project context are rendered as one text and joined before
     tokenizing (`tools/serving/chat_shapes.py`), so a block boundary is not a
     token boundary. Two conversations that share only the first system block
-    resume at the last checkpoint anchor inside it. A client's
-    `cache_control` marks are read and ignored; a mark inside the opening
-    should become a cut with `keep` where its block ends. Tokenizing the
-    blocks apart would change the tokens at each join against the
-    publisher's whole-text tokenization. The cut that keeps the publisher's
-    tokens is the last token boundary of the whole text at or before the
-    block's end, read from the tokenizer's offsets; two prompts that share
-    the block name the same cut when the join starts a new pre-token (a
-    blank line does). A mark on a message needs nothing: state is always kept
-    one token before the prompt's end, and a cut there that later turns did
-    not name would break their resume.
+    resume at the last checkpoint anchor inside it. The same holds inside
+    a message: two requests that carry the same document and ask different
+    questions after it, in one user message, share nothing past the last
+    anchor inside the document. A client's `cache_control` marks are read
+    and ignored; a mark on a block that is not the last of its message, or
+    on a system block, should become a cut with `keep` where its block
+    ends. Tokenizing the blocks apart would change the tokens at each join
+    against the publisher's whole-text tokenization. The cut that keeps the
+    publisher's tokens is the last token boundary of the whole text at or
+    before the block's end, read from the tokenizer's offsets; two prompts
+    that share the block name the same cut when the join starts a new
+    pre-token (a blank line does). A mark on the last block of the last
+    message needs nothing: state is always kept one token before the
+    prompt's end, and a later turn names that position as a cut.
   - The opening cut costs each request one render of the opening and a
     digest of its system prompt and tools (cached by that digest). Not
     measured.
@@ -1149,11 +1152,13 @@ as recorded debt for models too large for a group.
     pack resumes at a checkpoint anchor or a row-budget wave end, so the
     estimate overstates. Set `resume_tokens` per model to the spacing of its
     kept wave ends, or report the engine's cached tokens alone.
-  - The chat tests' engine stand-in (`tests/chat_harness_fixture.py`) reports
-    cached tokens by the longest prefix shared with any earlier prompt or
-    reply. The real engine resumes only at wave ends. Make the stand-in
-    follow the rules, as the gate's does (`tests/test_gx_gate.py`), so the
-    chat tests' cached counts are the engine's.
+  - The chat tests' engine stand-in (`tests/chat_harness_fixture.py`) still
+    reports cached tokens by the longest prefix shared with any earlier
+    prompt or reply. It also records where the engine's rules resume each
+    request (`resumes`, the model of the gate's stand-in in
+    `tests/test_gx_gate.py`), and the commit, messages and pack tests assert
+    it. Make the reported cached tokens follow that model too, so every chat
+    test's cached count is the engine's.
   - A lane with a streamed prefill computes every prompt that streams whole
     and shares none of it, so on such a lane a follow-up turn of a long
     prompt pays the whole prefill again. Reuse there needs the streamed

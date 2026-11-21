@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import json
 import re
@@ -25,6 +26,7 @@ TEMPLATE = (
     "{%- if add_generation_prompt %}<|im_start|>assistant\n<think>{% endif %}"
 )
 CODEX_INSTRUCTIONS = "You are a coding agent in the Codex CLI."
+STRIDE = 16384
 CORPUS = ["hello world, the weather in Paris is sunny today", "read the file a.txt and list the directory", "call the tool with path and pattern",
           "user assistant system tool think reply answer question", "The answer is 42. Let me check the file first."] * 20
 
@@ -87,6 +89,8 @@ class Engine:
         self.cache_all = False
         self.ignores_commit = False
         self.usage = []
+        self.points = set()
+        self.resumes = []
 
     def tokens(self, text):
         ids = []
@@ -104,10 +108,29 @@ class Engine:
             ids.append(self.tokenizer.token_to_id("<|im_end|>"))
         self.replies.append((ids, finish))
 
+    def resume(self, prompt, body):
+        commit = body.get("commit_only") is True
+        final = len(prompt) if commit else len(prompt) - 1
+        strides = list(range(STRIDE, len(prompt), STRIDE))
+        ends = sorted(set([cut for cut in body.get("cuts", []) if cut < len(prompt)] + strides + [final]))
+        kept = set(strides) | set(body.get("keep", [])) | {final}
+        found = 0
+        for end in ends:
+            key = (hashlib.sha256(json.dumps(prompt[:end]).encode()).hexdigest(), tuple(cut for cut in ends if cut <= end))
+            if end < len(prompt) and key in self.points:
+                found = end
+            if end in kept:
+                self.points.add(key)
+        return found
+
+    def resumed(self, request):
+        return next(self.resumes[index] for index, sent in enumerate(self.requests) if sent is request)
+
     async def completions(self, request):
         body = await request.json()
         self.requests.append(body)
         prompt = body["prompt_token_ids"]
+        self.resumes.append(self.resume(prompt, body))
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})

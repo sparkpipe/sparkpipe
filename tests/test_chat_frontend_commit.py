@@ -98,6 +98,7 @@ async def run_reply_commit(tmp, check):
         check(first.get("cuts") == first.get("keep") == [opened] == engine.requests[0].get("keep") and prompt[:opened] == engine.requests[0]["prompt_token_ids"][:opened] and
               harness.tokenizer.decode(prompt[opened:], skip_special_tokens=False).startswith("<|im_start|>user\n"),
               f"two conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there: {first.get('cuts')} {engine.requests[0].get('keep')}")
+        check(engine.resumed(first) == opened, f"by the engine's rules the second conversation resumes where the shared opening ends: {engine.resumed(first)} {opened}")
         check(commit.get("cuts") == [opened, len(prompt) - 1] and "keep" not in commit and commit.get("stream") is True and "max_tokens" not in commit and
               commit.get("priority") == first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
               f"the commit names the turn's cuts and one token before the turn's prompt ended, and runs in the turn's own class: {commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
@@ -108,6 +109,8 @@ async def run_reply_commit(tmp, check):
         second = next(request for request in reversed(engine.requests) if "max_tokens" in request)
         check(status == 200 and second["prompt_token_ids"][:len(prompt) + len(generated)] == prompt + generated and second.get("cuts") == [opened, len(prompt) - 1, len(prompt) + len(generated)],
               f"the next turn names that cut and where the committed reply ends, so it resumes at the commit's end: {second.get('cuts')} {len(prompt)} {len(generated)}")
+        check(engine.resumed(commit) == len(prompt) - 1 and engine.resumed(second) == len(prompt) + len(generated),
+              f"by the engine's rules the commit resumes one token before the turn's prompt ended and the next turn where the reply ends: {engine.resumed(commit)} {engine.resumed(second)}")
         found = await commits_seen(engine, 2)
         check(len(found) == 2 and found[1]["cuts"] == [opened, len(prompt) - 1, len(prompt) + len(generated), len(second["prompt_token_ids"]) - 1],
               f"the second reply's commit names every earlier cut and one token before its own prompt's end: {[request.get('cuts') for request in found]}")
@@ -140,6 +143,7 @@ async def run_reply_commit(tmp, check):
         joined = next(request for request in reversed(engine.requests) if "max_tokens" in request)
         check(status == 200 and joined.get("cuts", [None])[-1] == len(held[-1]["prompt_token_ids"]) and joined["prompt_token_ids"][:joined["cuts"][-1]] == held[-1]["prompt_token_ids"],
               f"the turn is sent once the commit is done and names the commit's end as its last cut: {status} {joined.get('cuts')} {len(held[-1].get('prompt_token_ids', []))}")
+        check(engine.resumed(joined) == len(held[-1]["prompt_token_ids"]), f"by the engine's rules the turn that waited resumes where the commit ended: {engine.resumed(joined)}")
         await commits_seen(engine, before + 3)
         frontend = harness.frontend
         for _ in range(300):
@@ -172,6 +176,8 @@ async def run_reply_commit(tmp, check):
         check(status == 200 and call.get("name") == "read" and after.get("cuts") == forced["cuts"] + [len(commit.get("prompt_token_ids", []))] and
               after["prompt_token_ids"][:len(commit.get("prompt_token_ids", []))] == commit.get("prompt_token_ids"),
               f"the turn after a forced tool call names that cut and the reply's end, so it resumes where the committed reply ends: {after.get('cuts')} {forced.get('cuts')}")
+        check(engine.resumed(commit) == before and engine.resumed(after) == len(commit.get("prompt_token_ids", [])),
+              f"by the engine's rules the forced turn's commit resumes one token before the forced opening and the next turn where the reply ends: {engine.resumed(commit)} {engine.resumed(after)}")
         await commits_seen(engine, seen + 2)
         for _ in range(300):
             if not frontend.reply_commits:
