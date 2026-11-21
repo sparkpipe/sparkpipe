@@ -2,7 +2,7 @@
 
 This is the specification of the API and CLI a customer uses on a fleet it holds, as it ships on 4 January 2027. Every feature removes waiting or repeated work from an engineer's day. Section 1 says, for each saving, where the engine starts today and the work that delivers it. Section 18 assigns that work and lists the acceptance tests that close it.
 
-The product rules (who holds a fleet, bookings, working-state deletion) are in the Customer Agreement and `docs/FLEET_BOOKINGS.md`. The engine side of working state is `docs/WORKING_STATE.md` (PR #1691, with the hub in PR #1692). This file is the customer-facing contract built on top of them.
+The product rules (who holds a fleet, bookings, working-state deletion) are in the Customer Agreement and `docs/FLEET_BOOKINGS.md`. The engine side of working state is `docs/WORKING_STATE.md` (PR #1691, with the hub in PR #1692). How the cache keeps and anticipates exact prefixes is designed in `docs/PREFILL_ANTICIPATION.md`. This file is the customer-facing contract built on top of them.
 
 ## 1. Where the time goes, and what removes it
 
@@ -10,13 +10,13 @@ An engineer working with a coding agent waits for three things: prefill of conte
 
 | Saving | Mechanism | Starting point on `main` | Work | Acceptance test |
 | --- | --- | --- | --- | --- |
-| No re-prefill after a break | Automatic prefix cache, kept while the account holds the fleet | Prefix cache exists: hash-chained 64-token blocks, LRU (`cache/prefix_cache.c`). Retention is 24 h from last use (`spark_kv_snapshot.h:27`) | Held-hours retention and the wipe at a change of user (#1691, #1692). Snapshot store proven at the full per-node budget; today only 8 GiB per rank is proven (`TECHDEBT.md:579-599`). Prefix index that survives a release and a restart (`datacenter:operations/FLEET_RELEASE_RUNBOOK.md:298` drops it today) | Gate A |
+| No re-prefill after a break | Automatic prefix cache, kept while the account holds the fleet | Prefix cache exists: hash-chained 64-token blocks, LRU (`cache/prefix_cache.c`). Retention is 24 h from last use (`spark_kv_snapshot.h:27`) | No deletion by age in any tier while the fleet is held, and deletion on request through every tier (§4, #1789). Snapshot store proven at the full per-node budget; today only 8 GiB per rank is proven (`TECHDEBT.md:579-599`). Prefix index that survives a release and a restart (`datacenter:operations/FLEET_RELEASE_RUNBOOK.md:298` drops it today) | Gate A |
 | Every turn resumes where the last one ended | Assistant turns replayed token-exact, so the next request matches up to the end of the previous reply | The chat layer keeps reply text byte-exact for chat (`LITELLM_FRONTEND.md:33-37`). Kimi K3 resumes only at 16,384-token checkpoints or at the end of a reply (§5.1) | The same guarantee for Anthropic Messages and Responses, including tool calls and reasoning (§3.2) | Gate A |
 | Long agent sessions never fail | Bounded recurrent-state store | A K3 conversation fails after about 977 checkpointed requests (`PERFORMANCE_STATUS.md:450-452`) | Evict the oldest checkpoints instead of failing | Gate A |
 | No accidental cold fleet | Several models resident at once when they fit; a model that does not fit replaces another only on purpose | One model at a time, and "the last requested model wins" (`LITELLM_FRONTEND.md:132`). A switch takes 16–46 s, at worst 79 s (`PERFORMANCE_STATUS.md:174-202`). The cache is saved and restored: 137,600 tokens back in 2.7 s | Resident sets with a per-node memory budget for weights and cache, per-model cache pools, the alias table, and explicit replacement (§4.5). A background "haiku" call is served by a small resident model or the main one, and never swaps the fleet | Gate A |
 | Big prompts paid for once | Long prefill publishes its cache | The fast streamed 1M prefill (16.2 min) publishes no cache blocks and stops decode meanwhile (`TECHDEBT.md:308-326`). A reusable 1M prefill takes about 76 min (`PERFORMANCE_STATUS.md:68`) | Streamed prefill that publishes its blocks to the prefix cache and snapshot store | Gate C |
-| The codebase is already in context | Context packs (§5): a repository snapshot placed first in every prompt, kept warm | None | Pack builder, versioned aliases, and refresh in idle time | Gate D |
-| A session starts warm | Prefill-only warm-up of an exact future prefix, and pins that protect it | `max_tokens` must be 1 or more (`node/model_api.c:1622-1631`); `max_tokens` 1 commits a prompt. No pinning | `POST /v1/cache/warm` and pins (§4) | Gate B |
+| The codebase is already in context | Context packs (§5): a repository snapshot placed ahead of the client's prompt, kept in the cache | The pack builder and the git remote are merged (`tools/serving/context_packs.py`) and not deployed. Its file order moves on every build, so a push recomputes most of the pack | Stable slots, a delta per push and a re-base at night (§5) | Gate D |
+| A session starts warm | The engine keeps every session, each client's opening and what the customer names, and restores them from NVMe (§4) | `max_tokens` must be 1 or more (`node/model_api.c`), and a `max_tokens` 1 warm-up leaves a later request to resume in the middle of a block. Nothing is protected from eviction, and an unread prefix is never saved | Commits that sample nothing, resumption that equals a cold run, the keep set in every tier, and restore before the request (§4) | Gate B |
 | Faster generation | Speculation | Lookup drafts from the request's own text, plus a model drafter for K3 and DeepSeek V4.1 Flash. 126.4 tok/s on K3 whole-file rewrites, against 15.3 plain. No speculation at batch 2 or more (`PERFORMANCE_STATUS.md:50-51`) | Per-fleet drafter choice (§8), and speculation at batch 2 and more | tok/s per request in telemetry |
 | Parallel agents | Batching | 8 sequences for K3, and 4 requests at once per key (`LITELLM_FRONTEND.md:401`) | Holder keys exempt from the per-key cap (#1692). Two sequences kept for interactive use while Functions run | Aggregate tok/s in telemetry |
 | A lost node pair costs hours, not days | The hub reports which part of the cache a pair failure destroyed. The market credits the rebuild hours (Agreement 6.6), and a Function rebuilds the cache | Pair mirror on branch (`docs/WORKING_STATE.md`, #1691/#1692); no loss report | Loss report from the hub, automatic credit, and the rebuild Function (§7.2) | Gate A |
@@ -31,10 +31,10 @@ All paths are under `https://sparkpipe.ai/pay/api`. Every request authenticates 
 | Area | Paths |
 | --- | --- |
 | Inference | `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/responses`, `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/codex/models`, `HEAD /api/hello`, WebSocket `/v1/responses` |
-| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `GET/POST/DELETE /v1/cache/pins`, `DELETE /v1/cache`, `GET/PUT /v1/models/resident`, `GET/PUT /v1/models/aliases` |
+| Working state | `GET /v1/state`, `POST /v1/cache/warm`, `POST /v1/cache/restore`, `GET/POST/DELETE /v1/cache/pins`, `GET /v1/sessions`, `DELETE /v1/cache`, `GET/PUT /v1/models/resident`, `GET/PUT /v1/models/aliases` |
 | Usage records | `GET /v1/requests` |
-| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh`, `POST/GET /v1/packs/trees` |
-| Anticipator | `GET/PUT /v1/anticipator`, `GET /v1/anticipator/plan`, `POST /v1/anticipator/plan/approve`, `PUT /v1/anticipator/focus`, `GET /v1/anticipator/report` |
+| Context packs | `GET/POST /v1/packs`, `GET/DELETE /v1/packs/{name}`, `POST /v1/packs/{name}/refresh`, `POST /v1/packs/{name}/rebase` |
+| Night run | `GET/PUT /v1/anticipator`, `GET /v1/anticipator/plan`, `POST /v1/anticipator/plan/approve`, `GET /v1/anticipator/report` |
 | Repositories | `GET/POST /v1/repos`, `DELETE /v1/repos/{name}`, git over HTTPS at `/git/{repo}.git` |
 | Storage | `GET /v1/storage`, `PUT/GET/DELETE /v1/storage/{path}`, `GET /v1/storage/changes`, `POST /v1/export`, `POST /v1/restore` |
 | Fetch | `GET/POST /v1/fetch`, `GET/DELETE /v1/fetch/{id}`, `POST /v1/fetch/{id}/resume` |
@@ -105,15 +105,15 @@ The store is working state: it lives on the fleet, follows the same deletion rul
 
 Anthropic Messages, streaming and non-streaming. What Claude Code sends and how the fleet answers:
 
-- **System.** `system` as a string or an array of text blocks. `cache_control` markers are accepted and ignored: caching is automatic and has no TTL while the fleet is held. Mid-conversation `role: "system"` messages are rendered in place as system turns.
+- **System.** `system` as a string or an array of text blocks. Text blocks stay separate blocks, so sessions that share their first blocks share that prefix. `cache_control` markers ask the engine to keep state at those positions (§4); they never change what is computed, and caching is automatic with no TTL while the fleet is held. Mid-conversation `role: "system"` messages are rendered in place as system turns.
 - **Content blocks.** `text` and `tool_use`. `tool_result`, whose content is a string or blocks. `thinking` with `signature`, replayed per §3.2. `image` only on models that take images; otherwise 400 `image_not_supported`.
 - **Tools.** `tools` with `input_schema`, and `tool_choice` set to `auto`, `any`, `tool` or `none`, mapped to the model's tool-call format by the chat layer's parsers. `defer_loading` and `tool_reference` (MCP tool search) are not supported; the setup turns that beta off.
 - **Reasoning.** `thinking` (`enabled` with `budget_tokens`, or `adaptive`) and `output_config.effort` map to the model's reasoning switch and, where the model has one, its budget. Otherwise they are ignored.
-- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read for the session id in `user_id` (§3.8) and for the class key `x-sparkpipe-priority`.
+- **Other fields.** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences` and `stream` work. `max_tokens: 0` commits the prompt without generating (§4.2). Unknown fields are accepted and ignored, and so are `anthropic-beta` headers. `metadata` is read for the session id in `user_id` (§3.8) and for the class key `x-sparkpipe-priority`.
 - **Response.** `id`, `content` blocks, and `stop_reason`: `end_turn`, `tool_use`, `max_tokens` or `stop_sequence`.
   - **Usage:**
     - `cache_read_input_tokens` is the prompt tokens the engine matched in its cache (for an API key, at most the prefix that key's account itself sent, in 64-token blocks);
-    - `cache_creation_input_tokens` is 0 until the engine reports the prompt tokens it commits;
+    - `cache_creation_input_tokens` is the prompt tokens this request computed and committed to the cache;
     - `input_tokens` is the rest;
     - `output_tokens` is what was generated.
 
@@ -154,10 +154,10 @@ OpenAI Responses, which is the only wire format Codex supports for custom provid
   - `instructions` and function `tools`;
   - `tool_choice`, `parallel_tool_calls`, `max_output_tokens`, `temperature`, `top_p`, `stream`, `store` and `previous_response_id`.
 - **Previous responses.** `previous_response_id` works for responses stored as working state, which is the default here. `store: false` stores no response for later reference, but the replay store of §3.2 still keeps the generated tokens. `prompt_cache_key` is the session: it reaches the telemetry record as `session` and drives affinity (§3.8).
-- **Stored responses.** `GET /v1/responses/{id}` returns a stored response as it was answered, and `DELETE /v1/responses/{id}` deletes it. Both answer 404 for an id of another account or of another member of the same account, as `previous_response_id` does. Stored responses are working state (§4): `DELETE /v1/cache`, a wipe at a change of user and the 24-hour retention remove them.
+- **Stored responses.** `GET /v1/responses/{id}` returns a stored response as it was answered, and `DELETE /v1/responses/{id}` deletes it. Both answer 404 for an id of another account or of another member of the same account, as `previous_response_id` does. Stored responses are working state (§4): `DELETE /v1/cache` and the end of the hold remove them, and nothing else does.
 - **WebSocket.** `GET /v1/responses` with a WebSocket upgrade is Codex's transport for `supports_websockets`. Each `response.create` message carries the request body and gets the same events as the SSE stream, one JSON text message each.
   - A `previous_response_id` that names the connection's last response works even with `store: false`.
-  - `generate: false` keeps the input on the connection without generating.
+  - `generate: false` commits the input without generating (§4.2) and keeps it on the connection. Codex sends it when a session starts and when it restores a thread, so its opening is computed before the first turn.
   - Errors before a response starts are `error` events with `status`, the error body and the `retry-after` header.
   - The telemetry record's `transport` (`http` or `websocket`) and `turn_ms` compare the two transports.
 - **Stream events:**
@@ -205,9 +205,21 @@ Every response carries what it cost in time:
   "prompt_tokens": 182340, "cached_tokens": 181760, "prefill_tokens": 580, "engine_rounds": 1,
   "queue_ms": 0, "prefill_ms": 1240, "ttft_ms": 1310,
   "output_tokens": 912, "decode_tps": 15.8, "draft_accept": 0.71,
-  "cold_prefill_ms_estimate": 312000
+  "cold_prefill_ms_estimate": 312000,
+  "resumed_at": 181760, "restore_ms": 0, "background_wait_ms": 0, "miss": null
 }
 ```
+
+**Why a request prefilled.** `resumed_at` is the state point the request resumed from, `restore_ms` is the time spent bringing saved state back from NVMe, and `background_wait_ms` is the time it waited behind a background wave. When a request prefills more than its new text, `miss` names the cause, and the record keeps it:
+- `opening_new` or `opening_changed`, with the block that changed;
+- `session_restored`, when the chain came back from NVMe;
+- `session_lost`, with what took it: `evicted`, `restart`, `update` or `swap`;
+- `compaction`;
+- `history_changed`, with the position where the client's copy of the conversation stopped matching;
+- `pack_copy`, the first use of a pack with a new tool set;
+- `model_not_resident`.
+
+No content is recorded. The morning report sums these records by cause (§5.7).
 
 `cold_prefill_ms_estimate` is the measured prefill rate for this model at this length, applied to the tokens that came from the cache: the wait the cache removed. `engine_rounds` counts the model's generations behind the response. It is more than one when context memory answered one of its own tool calls before the reply; then the prompt and cache counts are the last generation's, `output_tokens` counts every generation, and `prefill_ms` and `ttft_ms` run from the first. `GET /v1/requests?since=&until=` returns these records, without prompts or replies; they are the operational records the privacy policy already lists, kept for a year. `sparkpipe stats` sums them into "prefill avoided this week", which is the number the Customer Zero report publishes.
 
@@ -255,11 +267,11 @@ The timer that runs it within a day of each release, and the internal status pag
   - `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1`;
   - a `modelOverrides` entry, so `/model` lists our models.
 - **Priority from hint headers.** With hint headers on, Claude Code marks each request with `x-claude-code-request-class`. Claude Code 2.1.308 sends `main`, `subagent`, `workflow`, `compaction`, `auxiliary` and `side_reply`: every class runs at interactive priority, including `compaction` and `auxiliary` (titles, summaries such as WebFetch's page summary, quota checks and the other calls outside the main thread and its subagents), because the agent waits for most of them (§3.1). The two classes still mark side requests, which context memory leaves raw.
-- **Affinity.** `X-Claude-Code-Session-Id`, which Claude Code 2.1.308 sends on every request, and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12). Without the header, the session is the `session_id` in `metadata.user_id`, a JSON string in 2.1.x and a `_session_<id>` suffix in older releases.
+- **Affinity.** `X-Claude-Code-Session-Id`, which Claude Code 2.1.308 sends on every request, and `x-claude-code-agent-id` drive pack-version affinity (§5), routing between fleets (§14) and fair share (§12). `x-claude-code-agent-type` names the subagent type whose opening is kept (§4), and `x-claude-code-context-compacted` tells the engine that the session continues from its opening and that the old chain can be released. Without the header, the session is the `session_id` in `metadata.user_id`, a JSON string in 2.1.x and a `_session_<id>` suffix in older releases.
 - **The SparkPipe plugin for Claude Code**, from our plugin marketplace on GitHub, bundles:
   - the MCP server of §10;
   - slash commands: `/sparkpipe:status`, `/sparkpipe:report`, `/sparkpipe:stats`, `/sparkpipe:run` (tests on the sandbox host with the local diff) and `/sparkpipe:fn`;
-  - a `SessionStart` hook that warms the session's pack after a resume, a compaction or a long pause (§4.2);
+  - a `SessionStart` hook that asks the fleet to make the session's chain, its opening and its pack resident when a session starts or resumes (`POST /v1/cache/restore`, §4.2), and tells it the checkout's commit (§5.2);
   - a skill that tells the agent when to use the fleet's `run`, `search_code` and `pack_info` instead of local tools.
 - **Status line.** `sparkpipe statusline` shows the fleet, the resident models, the cached share of the last turn and the prefill avoided today.
 
@@ -273,7 +285,7 @@ The timer that runs it within a day of each release, and the internal status pag
 
   It merges into `config.toml` without changing any other setting, and refuses, leaving the file as it was, when it cannot. The profile file is SparkPipe's own and is rewritten whole.
 - **Affinity.** Codex's session-derived `prompt_cache_key` drives pack-version affinity and routing. Its local compaction runs as a subagent marked `x-openai-subagent: compact`, at interactive priority like every Codex request, because the next turn waits for it.
-- **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn.
+- **WebSocket transport.** `/v1/responses` also accepts Codex's optional WebSocket transport (`supports_websockets`), which removes a connection set-up per turn and carries Codex's own warm-up (§3.4). Setup turns it on.
 
 **OpenCode** (Anthropic Messages through its `@ai-sdk/anthropic` provider, so tools and reasoning keep full fidelity)
 - **Setup.** `sparkpipe setup opencode` writes `opencode.json`:
@@ -286,46 +298,69 @@ The timer that runs it within a day of each release, and the internal status pag
   - `"share": "disabled"`, so sessions are never uploaded outside Korea.
 
   These are OpenCode 1's keys (`provider`, `small_model`, `agent`, `mcp`), which OpenCode 2 still reads.
-- **The SparkPipe plugin for OpenCode** does what the Claude Code plugin does: it warms on session start, reports status and adds the fleet commands.
+- **The SparkPipe plugin for OpenCode** does what the Claude Code plugin does: it restores the session on start, reports status and adds the fleet commands.
 - **models.dev.** Our models and their served context windows are published there, so OpenCode knows them without any manual setting.
 
 ## 4. Working state
+
+The engine keeps what it computed for as long as the account holds the fleet. Nothing is deleted because of its age. Cached state leaves the fleet in three ways only: a full tier evicts by class (below), the customer deletes it (§4.4), or the hold ends (Agreement 6.2). The design and its build stages are in `docs/PREFILL_ANTICIPATION.md`.
+
+**Exact.** A request gives the same tokens whether it runs cold or resumes from the cache, at any length of new text. The release kit proves it for every served model.
+
+**What the engine keeps by itself**, with no setting and no call:
+- **Every session's chain.** It is saved to NVMe when the session goes idle and made resident again when its next request arrives: after a night or a weekend, a model swap, a restart and, where an engine update leaves the arithmetic unchanged, an update.
+- **Each client's opening**: the tool block, the system blocks and the project context that sessions of one client, tool set and project share. It is learned once two sessions have branched from it, with one per subagent type.
+- **What a client commits itself**: Codex's warm-up at session start, and a Messages request with `max_tokens: 0`.
+
+**The keep set** is what the engine protects, by class. Every tier honours the class: device and host pages, recurrent states, the API's prefix index, the snapshot store and the save at close.
+
+| Class | Members | Saved to NVMe | Evicted |
+| --- | --- | --- | --- |
+| tail | Anything else | After its first read | First |
+| kept | The newest prompt of every live session | When the session has been idle for 120 s, and first at close | After tails, and never before it is saved |
+| pinned | Sessions that are no longer live, openings, what the customer names (§4.2, §4.3) and packs (§5) | When created | Last, and never before it is saved |
+
+A session is live until it has been idle for 30 minutes, a setting. Nothing leaves the keep set because of its age. The set is bounded by its budgets (§5.6), and when they are short the entries that save the fewest recompute seconds per gigabyte go first.
+
+**Background work**, which is every commit and restore the engine starts by itself, runs only while no interactive request is queued or running, one job at a time, and gives way between prefill waves. It never loads or swaps a model. A commit a client asks for at its own session's start is interactive work.
 
 ### 4.1 `GET /v1/state`
 
 Returns:
 - the resident models, their memory use and the alias table;
-- cache use against capacity: device pages, snapshot store and mirror state;
-- pins, packs and their warm status;
+- cache use against capacity in each tier: device pages, state records, the snapshot store and mirror state;
+- the keep set. For each entry: its kind (session, opening, named, pack), model, tokens, the tokens resident and the tokens saved, its nearest state point, its class and its last use. The engine answers these; no flag in the serving layer does;
+- the budgets, and what the last night run did (§5.3);
+- pins, and packs with their base and delta versions;
 - the active drafter;
 - the Function runs in progress;
 - the time the working state would be deleted if the account stopped holding the fleet.
 
 ### 4.2 `POST /v1/cache/warm`
 
-Prefills a prompt and commits it to the cache without generating anything.
+Commits a prompt: the engine computes it to its end and keeps state there, without sampling a token. A later request that starts with the same tokens resumes at exactly that point, and answers as a cold run would.
 
-- **Body.** The body is a Messages, Responses or chat request (`format`: `anthropic`, `openai_responses` or `openai_chat`). It is rendered exactly as a real request would be, so the warmed prefix is the prefix a later request will match.
+- **Body.** The body is a Messages, Responses or chat request (`format`: `anthropic`, `openai_responses` or `openai_chat`). It is rendered exactly as a real request would be, so the committed prefix is the prefix a later request will match.
 - **Response.** `prompt_tokens`, `cached_tokens`, `committed_tokens` and `prefill_ms`.
-- **Priority and limit.** Warm requests run at low priority: they wait for interactive requests and never delay them. They count against a per-fleet budget of the cache, published on the Fleet List.
-- **Build.** The engine gets a commit-only request flag. Until then the chat layer sends `max_tokens` 1 and discards the token, as chat memory's prewarm does.
+- **Kept.** A prefix committed here is a named entry of the keep set, class pinned, until its pin is removed (§4.3).
+- **Other ways to commit.** `max_tokens: 0` on Messages, `commit_only: true` on Responses and chat completions, and Codex's own `generate: false` over the WebSocket (§3.4). These commit the session's own prefix, class kept.
+- **Computed once.** A request whose prefix another request is already computing waits for it. Eight subagents that start together on a cold opening cost one prefill.
 
-Warm-ups are used:
-- by the CLI and Functions after a handover, a release or a pack refresh;
-- by an optional Claude Code `SessionStart` hook that warms the current pack when a session starts after a long pause.
+`POST /v1/cache/restore {"session": "…"}`, `{"pin": "…"}` or `{"pack": "core"}` makes a saved prefix resident before the request that needs it, and answers with the tokens resident and the time it took. A saved prefix is always restored, never computed again. The Claude Code and OpenCode plugins call it when a session starts or resumes (§3.8).
 
-### 4.3 Pins
+### 4.3 Pins and sessions
 
-- **`POST /v1/cache/pins {"request": "r_…"}` or `{"pack": "core"}`** pins the prompt prefix of a past request or warm-up, or a pack's current version. A pinned chain is evicted only when the cache would otherwise refuse a request, and then after every unpinned chain.
+- **`POST /v1/cache/pins {"request": "r_…"}`, `{"session": "…"}` or `{"pack": "core"}`** pins the prompt prefix of a past request or commit, a session's chain, or a pack. A pinned prefix is evicted only when the cache would otherwise refuse a request, and then after every unpinned one.
 - **Limits.** Pins are limited to half the fleet's cache.
 - **`GET` and `DELETE`** list and remove pins.
-- **Build.** The page cache already evicts by priority (`TECHDEBT.md:608-630`). Pins add a priority the coordinator's LRU skips (`cache/prefix_cache.c:739-800`).
+- **`GET /v1/sessions`** lists the account's sessions: id, client, model, tokens, last use, whether it is live, and the tokens resident and saved. `sparkpipe sessions` prints it and `sparkpipe resume SESSION` restores one.
 
 ### 4.4 `DELETE /v1/cache`
 
 Deletes the account's working-state cache on that fleet now, as clause 6.2 of the Agreement allows ("earlier when Customer asks"). With `?storage=true`, the customer storage goes too.
 
-- The answer is `{"deleted", "not_deleted", "note"}`. `deleted` names what went: the replay store, the alias table, stored responses, packs (and repositories with `?storage=true`), and `memory` once the memory program confirms it forgot the account's context-memory sessions. `not_deleted` names anything still to go.
+- It empties every tier on every node before it answers: device and host pages, recurrent states, the weightd pools, the snapshot files and their mirror copies, the prefix index, kept prompts and the keep set.
+- The answer is `{"deleted", "not_deleted", "note"}`. `deleted` names what went: the engine's cache, the replay store, the alias table, stored responses, packs (and repositories with `?storage=true`), and `memory` once the memory program confirms it forgot the account's context-memory sessions. If anything could not be deleted, the status is 500 and `not_deleted` names it.
 - The account's cached-token ledger (§3.3) is cleared with it, and only that account's.
 
 ### 4.5 Resident models and aliases
@@ -344,69 +379,49 @@ A fleet keeps as many models resident as fit in its memory. Kimi K3 (1.56 TB) fi
   - `PUT /v1/models/aliases {"claude-haiku-*": "glm-5.3-flash", "claude-*": "glm-5.3+core", "gpt-*": "glm-5.3+core"}` maps names that clients send by themselves.
   - The default table maps `claude-*` and `gpt-*` to the first resident model.
 
-## 5. Context packs and the anticipator
+## 5. Context packs and the night run
 
-A pack is a snapshot of a repository rendered into one deterministic text block. The fleet places it first in every prompt that names the pack's alias: before the client's own system prompt. Every session, subagent and Function then shares one warm prefix that already holds the code. The agent reads less and searches less, and none of it is prefilled twice.
+A pack is a snapshot of a repository rendered into one deterministic text block. The fleet places it ahead of the client's own prompt in every request that names the pack's alias. Every session, subagent and Function on that pack then shares one stored prefix that already holds the code.
 
-Precomputed context only saves time when a real request starts with exactly those tokens. Claude Code, Codex and OpenCode begin every prompt with their own system prompt and the conversation, and the files arrive later through tool calls. So the fleet controls what a prompt starts with by placing a pack first. The anticipator (§5.3) decides which packs to build and keep warm, and §5.4 says how a session lands on one.
+A pack is for work that wants the repository in the prompt: questions over the whole codebase, reviews, second opinions, and agent sessions on a model where the measured trade is positive (Gate D). It is an option with published figures, not the default for agent sessions. A session already keeps every file it reads in its own cached prefix (§4), and a long prefix slows decode (cost, below).
+
+Precomputed context only saves time when a real request starts with exactly those tokens. So the fleet builds only prefixes it knows exactly: a pack it rendered itself, a session's own history, a client's opening. It does not guess which files tomorrow's sessions will combine.
 
 ### 5.1 Packs
 
-- **Build.** `POST /v1/packs {"name": "core", "repo": "main", "include": ["src/**", "include/**"], "exclude": [...], "budget_tokens": 400000}`.
-  - Files come from an ingested repository (§6). They are ordered by how rarely they changed in the last 90 days, least-changed first, with ties broken by path.
+- **Build.** `POST /v1/packs {"name": "core", "repo": "main", "include": ["src/**", "include/**"], "exclude": [...], "budget_tokens": 400000}` builds one base for that repository and model.
+  - Files come from an ingested repository (§6).
+  - **Stable slots.** A file gets its place when it first enters the pack and keeps it: at the first build the files that changed least in the last 90 days come first, with ties broken by path. Later, new files are appended. Nothing is sorted again on a push.
   - Each file is rendered as `<file path="…" commit="…">…</file>` after a header that names the repository and gives the instruction to read a file before editing it. `commit` is the last commit that changed that file.
-  - The snapshot's own commit and its file count come after the last file, not in the header, so a push changes no token before the first changed file.
+  - The base's own commit and its file count come after the last file, not in the header.
   - The header, each file block and the footer are tokenized separately with the model's tokenizer and joined, so a file's tokens never depend on its neighbours.
   - Binary and generated files and anything over the budget are left out and listed in the response.
 - **Alias.** `<model>+<pack>`, for example `kimi-k3+core`.
-- **Placement.** The pack is one system turn before all of the client's messages: before the Messages `system`, a chat request's own system messages and Codex's `instructions`. The template renders it like any system turn. What a template puts ahead of the messages, such as tool declarations, stays ahead of the pack, so the stored pack prefix is shared by requests with the same tools and template settings. Warm-ups therefore render the pack with each tool set recently seen on it.
-- **Refresh.**
-  - `POST /v1/packs/{name}/refresh`, or automatically after a push (§6), builds a new version.
-  - Only the part after the first changed file has to be prefilled again. For K3 that means everything after the last 16,384-token checkpoint before it, which is why rarely changed files come first.
-  - The new version is prefilled at low priority, and the alias moves to it only once it is warm. No request ever waits for a rebuild.
-- **Session affinity.** A conversation that started on version A keeps version A, matched by its prompt prefix and by `x-claude-code-session-id` when present, because switching it would invalidate the conversation's whole cache. New sessions get the newest warm version. Old versions are dropped when no session has used them for 24 hours.
-- **Cost.** A pack makes every prompt longer, so decode slows a little: K3 runs at 16.2 tok/s at 8K, 15.1 at 73K and 12.0–12.4 at 1M (`PERFORMANCE_STATUS.md:36-38,65-81`). The budget is the customer's choice. Gate D records what a pack saves on a real task list, for the Customer Zero report.
+- **Placement.** The pack goes ahead of the tool block wherever the model family's template allows it, so one stored copy serves every tool set. Where a template puts tools first, each tool set is its own copy, and the budgets count each copy. A family whose template starts with a reasoning-effort header keeps one effort for the pack's sessions.
+- **Session affinity.** A conversation keeps the base and delta (§5.2) it started with, matched by its prompt prefix and by `x-claude-code-session-id` when present, because switching would invalidate the conversation's whole cache.
+- **Cost.** A pack makes every prompt longer, so decode slows: drafted whole-file rewrites on Kimi K3 run at 76.8 tok/s at 73K of context and 41.8 at 337K (`PERFORMANCE_STATUS.md`). The budget is the customer's choice. Gate D records what a pack saves and costs on a real task list, for the Customer Zero report.
 
-### 5.2 Pack trees
+### 5.2 Delta and re-base
 
-A pack tree shares one stored prefix across many packs. Each level is a contiguous run of files:
-
-| Level | What it holds | Changes |
-| --- | --- | --- |
-| Root | Specs, frozen headers and interfaces, project instructions (`AGENTS.md`, `CLAUDE.md`), the files every task needs | Monthly |
-| Trunk | One subsystem's headers, types, tables and utilities | Weekly |
-| Leaf | A working set: a module or module pair, its tests and the recent diff | Daily |
-
-A leaf pack is root, trunk and leaf rendered one after another, named `<tree>/<leaf>` (for example `kimi-k3+core/net-crypto`).
-
-- **Stored once.** The prefix cache is hash-chained in 64-token blocks, so every leaf of a tree reuses the stored root and trunk; only each leaf's own tail is extra.
-- **Aligned to resume points.** Each level ends on the model's resume boundary: 16,384 tokens for K3 and 4,096 for GLM 5.3 Flash, and any 64-token block for models that resume anywhere. The builder pads a level with a fixed separator up to the boundary, so moving from one leaf to another never recomputes the shared part.
-- **Budget.** `max_leaf_tokens` caps a whole leaf pack (default 400K, up to the model's window).
+- **A push does not touch the base.** Changes since the base's commit go into a second block right after it: a unified diff for each changed file, or the whole file when it is new or small. After a push only the delta is prefilled.
+- **New sessions** get the base and the current delta once the delta is committed. No request ever waits for a rebuild, and a request for a pack that is not built yet is served without the pack.
+- **Re-base.** When the delta passes `max_delta_tokens` (§5.6), and in the night run, a new base is built. It reuses the old base's cache up to the first slot whose file changed, and the files that change most sit last.
+- **Branches.** The delta is computed against the session's branch when the client tells the fleet its commit (Codex sends it; the Claude Code plugin's hook does), and otherwise against the default branch. Edits that are not pushed reach the model through its own reads. The pack header names the commit it shows.
 - **API.**
-  - `POST /v1/packs/trees {"name": "core", "repo": "main", "root": [...], "trunks": {...}, "leaves": "auto" | {...}}` defines a tree. Leaves can be named by the customer, proposed by the anticipator, or both.
-  - `GET /v1/packs/trees/{name}` lists its levels, versions, tokens and warm state.
+  - `POST /v1/packs/{name}/refresh`, or a push (§6), rebuilds the delta.
+  - `POST /v1/packs/{name}/rebase` builds a new base now.
+  - `GET /v1/packs/{name}` lists the base and the deltas with their commits, tokens and, from the engine, the tokens resident and saved.
 
-### 5.3 The anticipator
+### 5.3 The night run
 
-Every night, the anticipator chooses which leaves to build and keep warm for the next working day, within the budgets the customer sets. It explains each choice, and it measures the next day whether its choices were used.
+Anticipate tomorrow is the night run. In the window the customer sets, it:
 
-**Evidence.** Each source can be switched off:
-1. **Structure.** The include and import graph and the directory layout, from the repository index (§6).
-2. **History.** Files changed together over the last 90 days, the day's commits, and branches with recent pushes.
-3. **Sessions.** Which files the account's sessions read, edited or searched in the last 7 days, and which packs they started on.
-   - This is taken from the paths in tool calls that the chat layer already sees, never from file contents.
-   - It is kept as working state on the fleet and deleted with it.
-4. **Hints.** What the customer says tomorrow is about: `sparkpipe anticipate focus src/consensus/** "allocator migration"`, a task list file, or pinned leaves.
+1. **Re-bases packs** on the day's pushes.
+2. **Rebuilds what an engine update invalidated**, from kept prompts: an entry a Function keeps (a named prefix, a resumed session, a pack) stores its token ids on the fleet as working state for this purpose.
+3. **Makes tomorrow's work resident** before the window ends: each pack, each client's opening, and the sessions used most recently, as far as the budgets allow.
+4. **Writes the morning report** (§5.7).
 
-**Planning.**
-- **Candidates.** Clusters of files that the evidence ties together, each fitted into a tree as a leaf: directories, pairs of directories, and each recent session's working set.
-- **Score.** Each candidate is scored as:
-  - the expected uses tomorrow (recent sessions on those files, decayed by age, raised by hints)
-  - × the prefill time a use would save (its tokens at the model's measured cold prefill rate)
-  - − the night's prefill time to build it, counted at a tenth of a daytime wait, since night prefill runs on an idle fleet
-  - − the cache it takes.
-- **Selection.** The plan is chosen greedily by score per gigabyte of new cache, counting shared roots and trunks once, until the night's compute budget or the cache budget runs out.
-- **Output.** Every planned leaf lists its files, the signals behind it, its expected uses and its build time.
+**Plan.** `GET /v1/anticipator/plan` lists what tonight's run will do, with the tokens and the time of each item. In `plan` mode nothing is built until the customer approves all of it or chosen items.
 
 **When it runs.**
 - It runs in the night window, only in time the fleet is not serving interactive requests.
@@ -415,20 +430,17 @@ Every night, the anticipator chooses which leaves to build and keep warm for the
 - Cache is per model, so it builds for the account's main resident model unless told otherwise.
 
 **Scale.** These are estimated from our measurements, not yet measured as a whole:
-- **Build rate.** K3 prefills about 460–590 tokens per second at long context, so a 14-hour night builds about 25 million tokens of new context. That is about 50 unshared 500K-token contexts, and many more when leaves share a root and trunks.
+- **Build rate.** K3 prefills about 460–590 tokens per second at long context, so a 14-hour night computes about 25 million tokens of new context.
 - **Storage.** K3's cache takes about 1.9 KB per token per node, so 500 GB per node holds about 260 million tokens.
-- **Payoff.** A 500K-token context costs about 18 minutes to prefill cold, against 3–6 seconds warm.
+- **Payoff.** A 500K-token context costs about 18 minutes to prefill cold. Kept, it is restored from NVMe: 137,600 tokens came back in 2.7 s on K3 (`PERFORMANCE_STATUS.md`).
 
 ### 5.4 Starting a session on a pack
 
-Three ways, each per project directory:
-1. **Named.** `sparkpipe setup claude-code --pack core/net-crypto` writes the project's settings, so every session started there uses that leaf (Claude Code `.claude/settings.local.json`, a Codex profile, OpenCode's project `opencode.json`).
-2. **Automatic.** The alias `<model>+auto` lets the chat layer pick a leaf at a session's first request. It matches:
-   - the working directory and git branch, which Claude Code and Codex include in their first prompt;
-   - the files the first prompt names.
+Two ways, each per project directory:
+1. **Named.** `sparkpipe setup claude-code --pack core` in a project writes that project's alias (Claude Code `.claude/settings.local.json`, a Codex profile, OpenCode's project `opencode.json`). No model name is edited by hand.
+2. **None.** The plain model name.
 
-   The pick is fixed for the whole session, shown in the response telemetry (`pack`) and the status line, and recorded as session evidence. When no leaf matches well enough, the session starts without a pack.
-3. **None.** The plain model name.
+The response telemetry (`pack`) and the status line show the pack and version a session is on.
 
 The fleet never changes the prefix of a running conversation, and never removes files from a client's messages, even when they are already in the pack. Rewriting the client's history would break token-exact replay (§3.2) and surprise the agent. Instead:
 - The pack header lists its files and commit.
@@ -436,10 +448,10 @@ The fleet never changes the prefix of a running conversation, and never removes 
 
 ### 5.5 During the day
 
-After each push, the leaves that contain changed files are rebuilt from the first changed file, starting at the resume boundary before it. This happens at background priority, between interactive turns.
-- New sessions get the new version once it is warm.
+After each push, the pack's delta is rebuilt and committed as background work (§4), between interactive turns.
+- New sessions get the new delta once it is committed.
 - Running sessions keep theirs (§5.1).
-- Daytime refresh uses only sequences that interactive use leaves free.
+- An interactive request that arrives during a background commit waits for at most the prefill wave in flight.
 
 ### 5.6 Controls
 
@@ -448,29 +460,26 @@ After each push, the leaves that contain changed files are rebuilt from the firs
 | `mode` | `off`; `plan` (plan only, build what the customer approves); `auto` (build within budget) | `auto` |
 | `window` | Local start and end time, and time zone | 19:00–09:00, account time zone |
 | `max_hours` | Prefill hours a night | All idle time in the window |
-| `cache_share` | Share of the fleet's cache that anticipated leaves may use | 50% |
-| `max_leaf_tokens` | Largest leaf pack | 400,000 |
-| `signals` | `structure`, `history`, `sessions`, `hints`, each on or off | All on |
+| `cache_share` | Share of the fleet's cache that the keep set may pin | 50% |
+| `max_delta_tokens` | Largest delta before a re-base | A tenth of the pack's budget |
 | `exclude` | Paths never put in a pack | `.gitignore`, `.env*`, keys and certificates, vendored and generated files |
 | `model` | Model the cache is built for | The main resident model |
 
 API and CLI:
 - `GET/PUT /v1/anticipator` holds the settings.
-- `GET /v1/anticipator/plan` shows tonight's plan with reasons.
-- `POST /v1/anticipator/plan/approve` approves all of it or chosen leaves, in `plan` mode.
-- `PUT /v1/anticipator/focus` gives hints for the next day.
+- `GET /v1/anticipator/plan` shows tonight's plan.
+- `POST /v1/anticipator/plan/approve` approves all of it or chosen items, in `plan` mode.
 - `GET /v1/anticipator/report?date=` shows the results.
-- `sparkpipe anticipate status | plan | approve | focus | report | off | auto`.
-- Pins (§4.3) keep any leaf warm regardless of score.
+- `sparkpipe anticipate status | plan | approve | report | off | auto`.
+- To have something ready tomorrow whatever the budget order, commit it (`sparkpipe warm FILE`, §4.2) or pin it (§4.3).
 
 ### 5.7 Does it work
 
-Every morning report includes:
-- what the anticipator built and why;
-- how yesterday went: sessions started, the share that started on an anticipated leaf, the share of those sessions' first-turn tokens served from it, and the prefill time avoided (from telemetry, §3.6);
-- the leaves that were built but never used, and the hours they took.
-
-In `auto` mode, a leaf unused for three nights loses score.
+Every request records why it prefilled anything beyond its new text (§3.6). The morning report sums those records:
+- yesterday's cold seconds by cause: a new or changed opening, a session restored from NVMe, a session lost (and to what), a compaction, a client that changed its own history, a new pack copy, a model that was not resident;
+- what the night run did, and the time each item took;
+- what it could not keep, and why;
+- what it kept that nobody used.
 
 The acceptance test is Gate D2 (§18). It is published in the Customer Zero report whatever the result, so customers see the measured value, not a promise.
 
@@ -559,19 +568,19 @@ A Function is software we build and run for the account on a fleet it holds. It 
 | Function | What it does | Needs |
 | --- | --- | --- |
 | Ingest a repository | Clone and follow a repository, and map its files, symbols and history (§6) | Storage |
-| Build and refresh the cache | Build and refresh packs, warm them, and pin them if asked (§5) | Packs, warm |
-| Anticipate tomorrow | Build and warm the leaves the next day's sessions are most likely to need, within the customer's budgets, and report how they were used (§5.3) | Pack trees, warm |
-| Prefill ahead | Warm named leaves now, and re-warm after a handover or release | Warm |
-| Resume sessions | Re-warm the last prompts of recent sessions from the usage records, after a release or restart | Warm |
+| Build and refresh the cache | Build a pack and commit it; after each push recompute only the delta, and re-base when the delta grows (§5) | Packs, commit |
+| Anticipate tomorrow | The night run: re-base packs, rebuild what an engine update invalidated, make the packs, openings and most recent sessions resident before the day starts, and report yesterday's cold seconds by cause (§5.3) | Keep set, packs |
+| Prefill ahead | Commit and pin the prompts, files and pack branches the customer names, and bring them back after any interruption (§4.2, §4.3) | Commit, pins |
+| Resume sessions | Keep the account's sessions through nights, weekends, swaps, restarts and engine updates (§4): make the most recent ones resident on a schedule or now, and rebuild them from kept prompts after an update that changes the arithmetic | Keep set |
 | Export and restore | §6 | Storage |
 | Daily backup | §6: list the day's changes for the customer's own scheduled `sparkpipe storage sync` to pull | Storage |
-| Rebuild after a loss | When a node pair loses part of the cache (clause 6.6), re-warm packs and recent sessions at background priority, and report what was rebuilt | Warm, loss report |
+| Rebuild after a loss | When a node pair loses part of the cache (clause 6.6), recompute packs and the keep set from kept prompts at background priority, and report what was rebuilt | Keep set, loss report |
 | Review the day's changes | For each change since the last run, review it against the pack and the files it touches, and report findings ranked by severity | Packs |
 | Second opinions | Run the same review on a second model: one already resident, or one loaded for the night and unloaded before the morning (§4.5) | Resident models |
 | Ask the whole codebase | Run one question or instruction over every file or module, and collect the answers | Packs |
 | Keep docs current | Draft updates to architecture notes, API docs and a map of the code after each push, as a branch | Packs, repo push token |
 | Morning report | Everything the night produced, with the week's prefill avoided (§3.6) | Runner |
-| Benchmark your repository | For a demo day or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, warm |
+| Benchmark your repository | For a demo day or any time: ingest the repository, replay a standard set of agent turns on it, and report first-token times warm and cold, decode speed and prefill avoided | Packs, commit |
 | Scheduled model | Change the fleet's resident models on a schedule, for example a second model for the night, with the cache of each saved and restored (§4.5) | Model switch |
 | Tests and fuzzing | Write and run tests and fuzzers for changed code, and report crashes with reproductions | Sandbox |
 | Confirmed findings | Re-run review findings as tests in the sandbox, and keep only those that reproduce | Sandbox |
@@ -696,7 +705,7 @@ Deliveries run in parallel and are retried when a receiver fails, so they can ar
 | `booking.confirmed`, `fleet.allocated`, `waitlist.position` | A booking, a waitlist allocation, a change in the account's own position |
 | `run.finished`, `run.failed`, `report.ready` | §7 |
 | `fetch.finished`, `fetch.failed`, `fetch.needs_token` | §6.1, §6.2 |
-| `pack.warm`, `cache.restored` | A pack version is warm; the cache is back after a handover, a release or a restart |
+| `pack.warm`, `cache.restored` | A pack's base or delta is committed; the keep set is resident again after an engine update or a restart |
 | `models.changed` | A model loaded or unloaded on the fleet |
 | `downtime.credited` | HC credited for downtime or maintenance |
 | `fleet.failover` | A held fleet is down and requests go to a free fleet without working state (Agreement 15.7), and when that ends |
@@ -727,13 +736,14 @@ Deliveries run in parallel and are retried when a receiver fails, so they can ar
 | `sparkpipe compare [--days 30] [--claude DIR]... [--codex DIR]...` | What the Claude Code and Codex logs on this machine (`*.jsonl` changed in the last `--days`, under `~/.claude/projects` and `~/.codex/sessions` by default) cost at Anthropic's and OpenAI's API prices, figured as the site's cost check figures it from the same price table (`site/compare-prices.js`). It shows the requests that wrote their context again after a pause and, when signed in, the price of a fleet week from the account. The logs stay on the machine: the only call is `GET /market/state` with the session |
 | `sparkpipe install`, `install FLEET ITEM [--accept-license]` | What is installed (§16): without arguments, `GET /v1/installs`; with a fleet and a Catalogue item (`none` for nothing), `PUT /v1/installs/{fleet}`. For an item whose Catalogue entry asks for acceptance, it refuses without `--accept-license` and prints the license's name and the URLs of its texts, read from `https://sparkpipe.ai/catalogue.js` or, failing that, from the API's `license` refusal |
 | `sparkpipe book week F3 4`, `book hours F1 2027-01-05T10 2`, `waitlist lock 144` | Bookings (§16). A booking shows the market's quote and sends back the quoted first week and price; if either has changed by then, the market books nothing and answers `409 quote_changed`, stating the new first week and price |
-| `sparkpipe setup claude-code`, `setup codex`, `setup opencode`, `setup [<harness>] --undo` | Writes the client settings and installs the plugins of §3.8; `--undo` restores the keys setup owns (§3.8). With `--fleet F1A` (or `SPARKPIPE_FLEET`), every model and MCP request the harness sends names that fleet in `X-SparkPipe-Fleet`: `ANTHROPIC_CUSTOM_HEADERS` and the MCP entry's headers for Claude Code, `http_headers` in the provider and MCP tables for Codex, the provider's `options.headers` and the MCP headers for OpenCode. Without a fleet, setup removes a fleet an earlier run wrote. Codex and OpenCode read the key from `SPARKPIPE_API_KEY`, and setup prints `export SPARKPIPE_API_KEY="$(sparkpipe keys show)"` for the shell profile, never the key itself |
+| `sparkpipe setup claude-code`, `setup codex`, `setup opencode`, `setup [<harness>] --undo` | Writes the client settings and installs the plugins of §3.8; `--undo` restores the keys setup owns (§3.8). With `--pack NAME`, run in a project, it writes that project's pack alias (§5.4). With `--fleet F1A` (or `SPARKPIPE_FLEET`), every model and MCP request the harness sends names that fleet in `X-SparkPipe-Fleet`: `ANTHROPIC_CUSTOM_HEADERS` and the MCP entry's headers for Claude Code, `http_headers` in the provider and MCP tables for Codex, the provider's `options.headers` and the MCP headers for OpenCode. Without a fleet, setup removes a fleet an earlier run wrote. Codex and OpenCode read the key from `SPARKPIPE_API_KEY`, and setup prints `export SPARKPIPE_API_KEY="$(sparkpipe keys show)"` for the shell profile, never the key itself |
 | `sparkpipe statusline` | The Claude Code status line of §3.8 |
 | `sparkpipe models resident [names]`, `aliases` | §4.5 |
 | `sparkpipe repo add NAME` (prints the push URL) | §6 |
-| `sparkpipe pack create`, `pack refresh`, `pack ls`, `pin` | §5, §4.3 |
-| `sparkpipe anticipate status`, `plan`, `approve`, `focus`, `report`, `off`, `auto` | §5.3, §5.6 |
+| `sparkpipe pack create`, `pack refresh`, `pack rebase`, `pack ls`, `pin` | §5, §4.3 |
+| `sparkpipe anticipate status`, `plan`, `approve`, `report`, `off`, `auto` | §5.3, §5.6 |
 | `sparkpipe warm FILE` | §4.2 |
+| `sparkpipe sessions`, `resume SESSION` | §4.3 |
 | `sparkpipe fn ls`, `fn run NAME`, `fn schedule`, `fn logs ID`, `fn cancel ID` | §7 |
 | `sparkpipe report [DATE]` | The morning report |
 | `sparkpipe stats [--since 7d]` | Cached share, prefill avoided and decode speed, from §3.6 |
@@ -808,10 +818,10 @@ Owners are components, so the work splits into parallel sessions with no shared 
 
 | # | Component | Work | Depends on |
 | --- | --- | --- | --- |
-| 1 | Engine and working state | Merge #1691 and #1692. Prove the snapshot store at the full per-node budget. Keep the prefix index across a release and a restart. Bound K3's recurrent store. Commit-only requests. Pins. Streamed prefill that publishes its blocks | — |
-| 2 | Chat layer (hub) | Messages and Responses translation, token-exact replay (§3.2), alias table and residency rules, telemetry fields, `count_tokens`, keep-alives | Engine: commit-only and pins for §4 |
+| 1 | Engine and working state | No deletion by age while the fleet is held, and deletion on request through every tier (#1789). Prove the snapshot store at the full per-node budget. Keep the prefix index across a release and a restart. Bound K3's recurrent store. Commits that sample nothing, and resumption that equals a cold run. The keep set in every tier, and restore before the request. Streamed prefill that publishes its blocks | — |
+| 2 | Chat layer (hub) | Messages and Responses translation, token-exact replay (§3.2), alias table and residency rules, telemetry fields, `count_tokens`, keep-alives | Engine: commits and the keep set for §4 |
 | 3 | Gateway (VPS) | Pass the new paths through, `X-Api-Key`, 32 MiB bodies, key options, the usage-record store and `/v1/requests`, bearer sessions for the CLI | — |
-| 4 | Packs, repositories, storage | Repository ingest, the pack builder, versioned aliases with session affinity, refresh and warm, storage and fetch | 1, 2 |
+| 4 | Packs, repositories, storage | Repository ingest, the pack builder with stable slots, the delta and the re-base, versioned aliases with session affinity, storage and fetch | 1, 2 |
 | 5 | Function runner | The runner, the Functions that only read code, the morning report | 2, 4 |
 | 6 | Sandbox | Each fleet's reserved sandbox, microVMs, the agent loop, the Functions that run code | 5 |
 | 7 | CLI | `tools/sparkpipe_cli.py` and its tests | 3; grows with each component |
@@ -821,20 +831,23 @@ Owners are components, so the work splits into parallel sessions with no shared 
 
 Acceptance tests, each recorded in `PERFORMANCE_STATUS.md`, all passed before 4 January 2027:
 
-- **Gate A (a held week of Claude Code).** A 300-turn Claude Code session on K3 through `/v1/messages`, with tool use and two pauses of 2 and 14 hours.
+- **Gate A (a held week of Claude Code).** A 300-turn Claude Code session on K3 through `/v1/messages`, with tool use and three pauses of 2, 14 and 64 hours.
   - After the first turn, at least 95% of prompt tokens come from the cache.
   - The first token after each pause comes in under 6 s at 150K tokens.
   - There is no failed request and no unrequested model swap.
   - The cache survives a hub release and one node reboot during the session.
-- **Gate B (warm-up).** A warmed prefix of 150K tokens is fully matched by the next real request, and the warm-up never delays an interactive request by more than one decode step.
+- **Gate B (commit and resume).** A committed prefix of 150K tokens is fully matched by the next real request, which gives the same tokens and logprobs as a cold run of the same prompt, on every served model (gate GX of `docs/PREFILL_ANTICIPATION.md`). A background commit never delays an interactive request by more than the prefill wave in flight (§3.1).
 - **Gate C (big prompts).** A 1M-token prompt prefilled once is answered from the cache by a follow-up, with the first token under 10 s.
-- **Gate D (packs).** On the Customer Zero repository, the same task list with and without a 300K-token pack. Report turns, tokens read through tools, wall time and decode speed, for the Customer Zero report.
-- **Gate D2 (the anticipator).** On the Customer Zero repository over 10 working days, in `auto` mode with default budgets:
-  - at least 60% of sessions start on an anticipated leaf;
-  - in those sessions, at least 90% of first-turn prompt tokens come from the cache;
-  - nightly compute stays within budget, and no interactive request waits for anticipation.
+- **Gate D (packs).** On the Customer Zero repository, the same task list with and without a 300K-token pack. Report turns, tokens read through tools, wall time and decode speed, for the Customer Zero report. A push recomputes only the delta, and a re-base reuses the old base up to the first changed slot.
+- **Gate D2 (a kept day).** On the Customer Zero repository over 10 working days, with Claude Code and Codex, in `auto` mode with default budgets:
+  - a new session, 14 hours after the last request, prefills only its first prompt and any project context that changed;
+  - a session resumed after a night, a weekend or a 105-minute pause gets its first token after a restore and its new text, with nothing computed again before its last state point;
+  - eight subagents started together each prefill only their own brief;
+  - the same holds after another model was swapped in and out, and after a clean restart and a kill;
+  - a new session on another branch reuses the opening and, with a pack, the base and that branch's delta;
+  - nightly compute stays within budget, and no interactive request waits for more than one background wave.
 
-  The report also gives built-but-unused hours.
+  The report also gives each day's cold seconds by cause, and what was kept and never used.
 - **Gate E (a night of Functions).** On the Customer Zero repository, one night runs every Function in §7.2 on its schedule.
   - Every run finishes.
   - Interactive first-token time during the night stays within 10% of an idle fleet's.

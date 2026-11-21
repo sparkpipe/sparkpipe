@@ -121,7 +121,7 @@ REPLAY_MARK = re.compile("\ue000SPARKPIPE-REPLAY-([0-9]+)\ue001")
 GENERATION_PROBE = "\ue000SPARKPIPE-PROBE\ue001"
 GENERATION_CACHE = 64
 DIRECTIVE_CHECK_SECONDS = 1.0
-EXPIRY_SWEEP_SECONDS = 60.0
+RECORD_PRUNE_SECONDS = 60.0
 OWN_SCOPE = "own"
 RECORD_DAYS = 366
 RECORD_PRUNE_SECONDS = 3600.0
@@ -2037,7 +2037,7 @@ class Frontend:
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
             raise SystemExit("chat_frontend: codex takes instructions_file, the base instructions the Codex catalogue gives every model")
         self.codex_instructions = (base / codex["instructions_file"]).read_text() if codex.get("instructions_file") else None
-        self.directive_state = None
+        self.wiped = None
         self.residency_cache = None
         self.residency_task = None
         self.control_error = None
@@ -2053,7 +2053,7 @@ class Frontend:
         self.session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0), timeout=aiohttp.ClientTimeout(total=None, sock_connect=10))
         if self.memory is not None:
             await self.memory.start()
-        self.expire_working_state(time.time(), True)
+        self.wipe_working_state()
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
@@ -2084,40 +2084,38 @@ class Frontend:
         self.foreground[model.id] = self.foreground.get(model.id, 0) + change
         self.memory.notify("foreground", {"model": memory_model(model), "requests": self.foreground[model.id]})
 
-    def expire_working_state(self, now, sweep):
-        wiped, held_until = working_state.read_directive(self.directive) if self.directive is not None else (0, 0)
-        changed = (wiped, held_until) != self.directive_state
-        self.directive_state = (wiped, held_until)
-        if not (changed or sweep):
+    def wipe_working_state(self):
+        wiped = working_state.read_directive(self.directive) if self.directive is not None else 0
+        if wiped == self.wiped:
             return 0
+        self.wiped = wiped
         if self.memory is not None:
-            self.memory.notify("expire", {"wiped": wiped, "held_until": held_until, "now": now})
+            self.memory.notify("expire", {"wiped": wiped})
         if self.workspace is not None:
             try:
-                areas = self.workspace.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+                areas = self.workspace.expire(lambda used: working_state.expired(used, wiped))
             except OSError as error:
-                print(json.dumps({"event": "workspace_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+                print(json.dumps({"event": "workspace_wipe_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
                 areas = []
             if areas:
-                print(json.dumps({"event": "workspace_expired", "areas": areas, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
+                print(json.dumps({"event": "workspace_wiped", "areas": areas, "wiped": wiped}), file=sys.stderr, flush=True)
         try:
-            dropped = self.replay.expire(lambda used: working_state.expired(used, wiped, held_until, now))
+            dropped = self.replay.expire(lambda used: working_state.expired(used, wiped))
         except chat_replay.STORE_ERRORS as error:
-            print(json.dumps({"event": "replay_expiry_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
+            print(json.dumps({"event": "replay_wipe_failed", "error": f"{type(error).__name__}: {error}"}), file=sys.stderr, flush=True)
             return 0
         if dropped:
-            print(json.dumps({"event": "replay_expired", "dropped": dropped, "wiped": wiped, "held_until": held_until}), file=sys.stderr, flush=True)
+            print(json.dumps({"event": "replay_wiped", "dropped": dropped, "wiped": wiped}), file=sys.stderr, flush=True)
         return dropped
 
     async def expiry_loop(self):
         swept = time.monotonic()
         while True:
             await asyncio.sleep(DIRECTIVE_CHECK_SECONDS)
-            sweep = time.monotonic() - swept >= EXPIRY_SWEEP_SECONDS
-            if sweep:
+            if time.monotonic() - swept >= RECORD_PRUNE_SECONDS:
                 swept = time.monotonic()
                 self.prune_records(time.time())
-            self.expire_working_state(time.time(), sweep)
+            self.wipe_working_state()
 
     def prune_records(self, now):
         try:
@@ -3824,7 +3822,7 @@ class Frontend:
         print(json.dumps({"event": "working_state_deleted", "scope": scope, "replay": deleted, "storage": storage, "memory": memory}), file=sys.stderr, flush=True)
         return web.json_response({"deleted": removed,
                                   "not_deleted": ["engine_cache"] + (["memory"] if memory is False else []) + (["storage"] if storage and self.workspace is None else []),
-                                  "note": "the engine's cache is deleted at the next change of user or 24 h after the last hour held"})
+                                  "note": "the engine's cache stays until the fleet is restored to the base image when the hold ends"})
 
     async def forget_memory(self, scope):
         if self.memory is None:

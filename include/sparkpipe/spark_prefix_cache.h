@@ -394,10 +394,6 @@ uint32_t SparkPrefixCacheResumeTagged(
     const uint64_t *resume_tags,
     uint32_t position_count);
 
-SparkStatus SparkPrefixCacheExpire(
-    SparkPrefixCache *cache,
-    uint64_t now_seconds,
-    uint32_t *expired_out);
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,

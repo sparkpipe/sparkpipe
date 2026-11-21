@@ -208,11 +208,11 @@ async def gateway_rules(harness, check):
 
     engine.reply(CALL_REPLY)
     status, _, text = await harness.post("/v1/chat/completions", chat([{"role": "user", "content": "Read b.txt"}]), account="acme")
-    harness.directive(time.time() + 1, 0)
+    harness.directive(time.time() + 1)
     await asyncio.sleep(1.1)
-    frontend.expire_working_state(time.time(), False)
+    frontend.wipe_working_state()
     check("account:acme" not in frontend.replay.scopes and "account:bob" not in frontend.replay.scopes,
-          "a new user on the fleet (a later wiped in the directive) deletes every earlier account's replay store")
+          "a wipe (a later wiped in the directive) deletes every earlier account's replay store")
 
 
 async def ledger_rules(harness, check):
@@ -268,11 +268,11 @@ async def memory_rules(harness, check):
         check(response.status == 200 and "memory" in deleted["not_deleted"] and "memory" not in deleted["deleted"],
               f"a memory program that cannot forget leaves memory listed as not deleted: {deleted}")
         frontend.memory = RecordingMemory()
-        harness.directive(time.time() + 5, 0)
-        frontend.expire_working_state(time.time(), False)
+        harness.directive(time.time() + 5)
+        frontend.wipe_working_state()
         notices = [request for method, request in frontend.memory.notices if method == "expire"]
-        check(len(notices) == 1 and set(notices[0]) == {"wiped", "held_until", "now"} and abs(notices[0]["wiped"] - time.time() - 5) < 2,
-              f"a change of user passes the working-state directive to the memory program: {frontend.memory.notices}")
+        check(len(notices) == 1 and set(notices[0]) == {"wiped"} and abs(notices[0]["wiped"] - time.time() - 5) < 2,
+              f"a wipe passes the working-state directive to the memory program: {frontend.memory.notices}")
     finally:
         frontend.memory = kept
 

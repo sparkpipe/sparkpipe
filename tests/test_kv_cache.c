@@ -1512,30 +1512,27 @@ static void SparkTestPrefixCacheRetention(void)
 	SparkPrefixCacheSequenceBinding bindings[16u],imported_bindings[16u];
 	SparkPrefixCacheCommittedRecord records[8u];
 	SparkPrefixCacheLookup lookup;
-	uint32_t tokens[12u],index,count,added,skipped,expired;
-	uint64_t now = (uint64_t)time(0);
+	uint32_t tokens[12u],index,count,added,skipped;
+	const uint64_t now = (uint64_t)time(0),month = UINT64_C(30) * UINT64_C(86400);
 	SparkTestPrefixCacheResumeOpen(&fixture,&cache,entries,bindings);
 	for (index=0u; index<12u; index++)
 		tokens[index] = 6000u + index;
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,3u * SPARK_TEST_BLOCK_TOKENS,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 0u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 3u);
 	for (index=0u; index<count; index++)
 		assert(records[index].used_seconds != 0u && (uint64_t)records[index].used_seconds + 60u >= now);
-	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheExpire(&cache,now,&expired) == SPARK_STATUS_OK && expired == 0u);
-	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 3u);
-	assert(SparkTestResumeAny(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == 0u);
-	assert(SparkPrefixCacheExportCommitted(&cache,records + 4u,4u,&added) == SPARK_STATUS_OK && added == 0u);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
-	records[0].used_seconds = (uint32_t)(now - SPARK_KV_RETENTION_SECONDS - 60u);
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
 	records[0].used_seconds = 0u;
 	assert(SparkPrefixCacheImportCommitted(&imported,records,1u,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == 1u);
-	records[0].used_seconds = (uint32_t)now;
+	for (index=0u; index<count; index++)
+		records[index].used_seconds = (uint32_t)(now - month);
 	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
-	printf("prefix cache retention: an index record unused for %llu s leaves the cache and is refused on import, an entry a live request holds stays, a record without a use time is refused: ok\n",
-		(unsigned long long)SPARK_KV_RETENTION_SECONDS);
+	assert(SparkTestResumeAny(&imported,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == SparkTestResumeAny(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) && SparkTestResumeAny(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) != 0u);
+	assert(SparkPrefixCacheExportCommitted(&imported,records + 4u,4u,&added) == SPARK_STATUS_OK && added == count);
+	for (index=0u; index<count; index++)
+		assert(records[4u + index].used_seconds == (uint32_t)(now - month));
+	printf("prefix cache retention: an index record last used a month ago is imported with its use time and stays, its resume point is found as before, and a record without a use time is refused: ok\n");
 }
 
 static void SparkTestPrefixCacheResumeSuperseded(void)

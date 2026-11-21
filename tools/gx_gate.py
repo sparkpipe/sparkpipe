@@ -891,7 +891,7 @@ def main(argv=None):
     run.add_argument("--api", required=True, help="C API base URL, e.g. http://127.0.0.1:8461")
     run.add_argument("--api-log", help="the API's log, for time to first token, decode rate and counters")
     run.add_argument("--timeout", type=float, default=7200)
-    run.add_argument("--rest-seconds", type=float, default=0.0, help="idle time after a request that ran longer than --rest-over-seconds")
+    run.add_argument("--rest-seconds", type=float, default=0.0, help="idle time after a request that ran --rest-over-seconds or longer")
     run.add_argument("--rest-over-seconds", type=float, default=60.0)
     verdict = commands.add_parser("verdict", help="compare the arms and write the receipt")
     verdict.add_argument("--state", required=True)
