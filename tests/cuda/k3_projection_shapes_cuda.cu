@@ -83,8 +83,9 @@ int main(void)
 	Tp16(&b);
 	const std::string text = Captured(&b, &status);
 	Expect("the K3 and K3.1 Pro TP16 geometry passes the load check", status == LM_LAUNCH_OK && text.empty() ? 1u : 0u);
-	Expect("routed_up's TP16 slice of 224 takes the tiled GEMM for prefill by shape",
-		b.routed_up_input == 224u && K3ProjectStreams(b.routed_up_input, (const uint16_t *)0) == 0u ? 1u : 0u);
+	Expect("routed_up's TP16 slice of 224 takes the stream GEMM for prefill, with a zero-filled K tail",
+		b.routed_up_input == 224u && K3ProjectStreams(b.routed_up_input, (const uint16_t *)0) != 0u ? 1u : 0u);
+	Expect("an input that is not a multiple of 8 does not take the stream GEMM", K3ProjectStreams(228u, (const uint16_t *)0) == 0u ? 1u : 0u);
 	Expect("shared_w2's TP16 slice of 384 takes the stream GEMM for prefill by shape",
 		b.shared_w2_input == 384u && K3ProjectStreams(b.shared_w2_input, (const uint16_t *)0) != 0u ? 1u : 0u);
 	Expect("an accumulating projection takes the tiled GEMM whatever its input",
@@ -100,6 +101,6 @@ int main(void)
 		printf("FAIL k3 projection shapes: %u cases\n", failures);
 		return 1;
 	}
-	printf("PASS k3 projection shapes: production TP16 slices pass the load check, routed_up takes the tiled GEMM by shape, and an unfit slice refuses at load\n");
+	printf("PASS k3 projection shapes: production TP16 slices pass the load check, every non-accumulating prefill projection, routed_up's 224 among them, takes the stream GEMM by shape, and an unfit slice refuses at load\n");
 	return 0;
 }

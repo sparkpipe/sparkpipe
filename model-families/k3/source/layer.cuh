@@ -283,7 +283,7 @@ static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t
 		output_dimension,0u,0u,stream,1u));
 }
 
-#define K3_STREAM_INPUT_MULTIPLE 64u
+#define K3_STREAM_INPUT_MULTIPLE LmStreamInputMultiple<LmBf16Format>()
 #define K3_TILED_INPUT_MULTIPLE 32u
 
 static uint32_t K3ProjectStreams(uint32_t input_dimension, const uint16_t *accumulate)
@@ -331,9 +331,8 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		&gemm,source,weight,rows,rows,1u,1u,
 		input_dimension,output_dimension,multiprocessors,false,stream);
 	if ( status == LM_LAUNCH_ERR_SHAPE || status == LM_LAUNCH_ERR_TILE )
-		LM_LAUNCH_REFUSE("k3 projection: the tiled GEMM refused %u rows of a %u x %u projection; accumulating prefill waves and inputs that are not a "
-			"multiple of %u run on it, so the input must be a multiple of %u\n",rows,output_dimension,input_dimension,K3_STREAM_INPUT_MULTIPLE,
-			K3_TILED_INPUT_MULTIPLE);
+		LM_LAUNCH_REFUSE("k3 projection: the tiled GEMM refused %u rows of a %u x %u projection; accumulating prefill waves run on it, so the input "
+			"must be a multiple of %u\n",rows,output_dimension,input_dimension,K3_TILED_INPUT_MULTIPLE);
 	return(status);
 }
 
