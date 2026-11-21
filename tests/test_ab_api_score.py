@@ -105,8 +105,9 @@ def score_cases(work):
         check(first.returncode == 0 and len(scored) == 30 and len(api.requests) == 30, "score: one request for every position of every document")
         check(all(request["max_tokens"] == 1 and request["temperature"] == 0 and request["logprobs"] == 20 and request["speculation"] is False for request in api.requests),
               "score: every request is one greedy token with the top 20 log-probs and no speculation")
-        check(sorted({len(request["prompt_token_ids"]) for request in api.requests}) == [70, 73, 76, 79, 82] and all(request["cache_points"] == [64] for request in api.requests),
-              "score: a prompt is the document's tokens before the position, and its cache point is the last 64-token boundary before its end")
+        check(sorted({len(request["prompt_token_ids"]) for request in api.requests}) == [70, 73, 76, 79, 82] and
+              all(request.get("cuts", []) == [69, 72, 75, 78][:(len(request["prompt_token_ids"]) - 70) // 3] and "cache_points" not in request for request in api.requests),
+              "score: a prompt is the document's tokens before the position, and its cuts are one token before every earlier scored position, so it resumes where the previous request ended")
         document = json.loads(index.read_text())["documents"][2]
         data = tokens.read_bytes()
         truth = int.from_bytes(data[4 * (document["offset"] + 76):4 * (document["offset"] + 77)], "little")
@@ -321,7 +322,9 @@ def depth_cases(work, index, tokens):
             done = run("score", "--endpoint", api.endpoint, "--index", work / "J.index.json", "--tokens", work / "J.tokens.u32", "--starts", "100:1000:300", "--stride", "4", "--count", "6",
                        "--out", work / f"{name}.jsonl")
             check(done.returncode == 0 and len(rows(work / f"{name}.jsonl")) == 24, f"depth: run {name} scores four runs of six positions from a range of starts")
-        check(sorted({request["cache_points"][0] for request in first.requests}) == [64, 384, 640, 704, 960], "depth: deep prompts name the last 64-token boundary before their end")
+        deepest = max(first.requests, key=lambda request: len(request["prompt_token_ids"]))
+        check(len(deepest["prompt_token_ids"]) == 1020 and len(deepest["cuts"]) == 23 and deepest["cuts"][:7] == [99, 103, 107, 111, 115, 119, 399] and deepest["cuts"][-1] == 1015,
+              "depth: a deep prompt names one token before every earlier position of its document, across runs")
     finally:
         first.close()
         second.close()

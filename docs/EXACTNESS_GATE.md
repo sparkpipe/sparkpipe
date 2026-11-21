@@ -8,6 +8,39 @@ request, never on what the cache held. This extends invariant I27 from
 `scripts/gx_gate.sh` walks a served model through it with the swap
 controller. Both need the fleet alone.
 
+## How the engine keeps it
+
+Prefill runs in waves, and kernels take different paths by wave size. So a
+request's tokens are fixed only when its waves are fixed. The engine derives
+them from the request and from nothing else.
+
+- **Cuts.** A wave ends at the next of: the row budget (whole blocks), a
+  checkpoint anchor, a cut the request names, one token before the prompt's
+  end, and the prompt's end. A request names its cuts in `cuts`: token
+  counts where its structure ends a wave. The chat layer names one token
+  before each replayed reply began and where it ends.
+- **Resume.** A request resumes only at a wave end of its own cold run, and
+  only where every wave up to there is the same as in the run that left the
+  state. The prefix index stores a tag of the waves with each resume point,
+  and a block's cache identity names the waves that computed it, so two
+  runs share a block only when they computed it alike.
+- **State.** State is kept at anchors, one token before the prompt's end,
+  at a commit's end and at cuts the request lists in `keep`. Keeping state
+  never moves a wave end.
+- **Commit.** `commit_only` computes a prompt to its end, keeps the state
+  there and samples nothing. It is the warm-up.
+- **Replies.** The pages a reply's decode steps write belong to that request
+  alone. A later prompt that carries the reply computes it again as prefill,
+  from the earlier prompt's last cut.
+- **Load.** A wave the ranks refuse for capacity waits and goes out again
+  with the same span.
+- **Streamed prefill.** A prompt that takes the streamed prefill is computed
+  whole every time and shares nothing, because its arithmetic is not the
+  wave arithmetic. No lane in `deployment/lanes.json` streams.
+
+Under concurrency the rows of other requests share a wave, and kernels are
+not yet batch-invariant (`TECHDEBT.md`). The gate runs alone.
+
 ## What is compared
 
 Every prompt is a run of token ids that the engine has never seen: they are
@@ -25,10 +58,14 @@ top 4 logprobs.
 
 | Case | Earlier requests | Last prompt |
 | --- | --- | --- |
-| `prefix` | A one-token completion of the prefix P | P and a new tail |
-| `declared` | The same | The same, declaring a cache point one token before P's end, which is a block boundary off the wave grid. A cold run then cuts its waves where the reusing run resumes |
+| `prefix` | A commit of the prefix P | P and a new tail, with a cut at P's end |
+| `kept` | A one-token completion of P and eight other tokens, with a cut at P's end and state kept there | P and a new tail, with the same cut and keep |
 | `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 96 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
 | `drafted` | The same with speculation left at the engine's default | The same |
+
+A session's turns name their cuts as the chat layer does: where the opening
+ends, one token before each reply began and where each reply ends. The last
+prompt is the same request in every arm, cuts included.
 
 Two verdicts follow for each unit:
 
@@ -36,20 +73,21 @@ Two verdicts follow for each unit:
 - **restored**: restore against chain.
 
 A verdict is `PASS` only when tokens and logprobs are equal, the reusing run
-reported cached tokens, and the cold run reported none. The receipt also
-holds the first differing token, the first differing logprob entry and the
-largest logprob difference up to there.
+resumed at the cut its structure names (P's end, or one token before reply 2
+began), and the cold run reported no cached tokens. The receipt also holds
+the first differing token, the first differing logprob entry and the largest
+logprob difference up to there.
 
 ## Sizes
 
 - Contexts: 8,000, 100,000 and 300,000 tokens for `prefix` and `session`;
-  8,000 and 20,000 for `declared`; 8,000 for `drafted`.
+  8,000 and 20,000 for `kept`; 8,000 for `drafted`.
 - Tails: 1, 40, 500 and 5,000 tokens. A session's three tails have the
   unit's size.
 - A prefix ends 21 tokens past its nominal size, in the middle of a block.
-  A `declared` prefix ends one token past a multiple of 256 that is 768 past
-  a multiple of 1,024: a block boundary for every model, and never a wave
-  boundary of a cold run or a checkpoint anchor.
+  A `kept` prefix ends one token past a multiple of 256 that is 768 past
+  a multiple of 1,024: one token into a block for every model, and never on
+  the row grid or a checkpoint anchor.
 - A context the deployment cannot serve beside three 5,000-token tails is
   fitted to the largest that it can. It is skipped when that is under 1.5
   times a context already in the plan.
@@ -71,7 +109,10 @@ cold:1 clear
 cold:40 clear
 cold:500 clear
 cold:5000 clear
+crowd clear
 ```
+
+The `crowd` line appears only when the plan asks for it.
 
 Prefixes of up to 32,768 tokens share one `park` and `restore` step, named
 after the largest of them. A longer prefix has its own, so the states that
@@ -89,10 +130,25 @@ Cold runs take one cache lifetime per tail size. The units of one tail size
 start from different prefixes, so none of them finds another's KV. Units of
 different tail sizes share a prefix, so they cannot share a lifetime.
 
-Inside a step the order is fixed. `chain` warms the prefix, runs its tails,
+Inside a step the order is fixed. `chain` commits the prefix, runs its tails,
 then runs the sessions. `park` runs the sessions' first two turns, then
-warms the prefix, so the warm-up that nothing has read is the newest chain
+commits the prefix, so the commit that nothing has read is the newest chain
 when the engine closes.
+
+## Requests sent together
+
+`--crowd N` (`GX_PLAN="--crowd 4"`) adds a last step, `crowd`, after a cache
+clear. It commits each prefix alone, then sends that prefix's tails N at a
+time, so their tails share prefill waves and their replies share decode
+steps. `verdict` compares each with the same request from the `chain` step,
+which ran alone from the same committed prefix, and prints
+`concurrent equal=… different=… not-run=…`.
+
+This is measured, not judged: it does not change the verdict. Kernels take
+different paths by the rows in a wave, so a request's tokens can depend on
+the requests beside it until the batch kernels are invariant
+(`TECHDEBT.md`, Dynamic batching). The receipt holds the first differing
+token and the largest logprob difference for each unit.
 
 ## What stops a PASS
 
@@ -101,6 +157,7 @@ when the engine closes.
 | `NOT-RUN` | An arm is missing |
 | `NOT-COLD` | The cold run reported cached tokens, or ran another prompt |
 | `NOT-CACHED` | The chain arm's last prompt reported no cached tokens |
+| `SHORT` | The chain arm's tokens and logprobs equal the cold run's, but it resumed before the cut its structure names, so the reuse under test did not happen |
 | `LOST` | The restore arm's last prompt reported no cached tokens: the chain did not come back |
 | `DIVERGED` | The replayed session produced other replies, so its last prompt is another prompt |
 | `ERROR` | A request of the unit failed while the engine stayed whole; the receipt holds the engine's answer |
@@ -120,15 +177,15 @@ A block is one model's run, and it can be run again after anything stops it.
 
 - **A request fails and the engine stays whole** (every rank connected,
   health `ok`): the unit is marked `ERROR` with the engine's answer and the
-  step goes on. A prefix that does not warm fails its own units only.
+  step goes on. A prefix that does not commit fails its own units only.
 - **The engine is not whole, or a cold run finds cached tokens**: the step
   stops. Every finished unit is already in the state file, which is written
   after each unit.
 - **Run again** (`gx_gate.sh` on the same `GX_DIR`): finished steps are
   skipped. The cache is cleared before the first open step, because nothing
   is known about what the interruption left in it. A `chain` or `cold` step
-  then does only its open units; a chain's shared prefix is warmed again for
-  them. A block that resumes at a `restore` step first runs its `park` step
+  then does only its open units; a chain's shared prefix is committed again
+  for them. A block that resumes at a `restore` step first runs its `park` step
   again, for the units the restore step still needs, and then evicts.
 - A step still running on the hub is left alone: the driver refuses to start
   beside it.
@@ -170,7 +227,8 @@ Per request (`steps.<step>.requests[]`):
 
 | Field | Meaning |
 | --- | --- |
-| `label`, `attempt`, `max_tokens` | The unit and turn, and which attempt of the step sent it |
+| `label`, `attempt`, `max_tokens` | The unit and turn, and which attempt of the step sent it. A commit has `max_tokens` 0 and `finish_reason` `commit` |
+| `cuts`, `keep` | The cuts the request named and where it asked for state |
 | `prompt_tokens`, `cached_tokens`, `prefilled_tokens` | The prompt, the position the request resumed at, and what it computed |
 | `seconds` | Wall time at the client |
 | `queue_ms`, `first_token_ms`, `last_token_ms` | From the engine's own request record: accepted to first dispatch, to the first token and to the last |
@@ -185,9 +243,13 @@ misses, hit tokens, stale-prefix recomputes, refused waves, draft tokens).
 The attempt also names the engine: adapter id, model revision and driver
 artifact SHA-256.
 
-- **Cold fill at a context**: the `*/warm` requests and everything in
-  `cold:*`.
-- **A turn on a kept prefix**: `prefix/<context>/<tail>` in `chain`.
+- **Cold fill at a context**: the `*/warm` requests (a commit's `seconds`
+  is its prefill) and everything in `cold:*`.
+- **A turn on a kept prefix**: `prefix/<context>/<tail>` in `chain`. Each
+  unit's verdict names `resume_cut`, the cut the reuse should resume at.
+- **A turn of a session**: `session/<context>/<tail>/turn2` and the last
+  prompt in `chain`. Each computes the previous reply again as prefill, so
+  its `prefilled_tokens` are the reply plus the new tail plus one.
 - **After an eviction**: the same requests in `restore:*`. Their extra
   `first_token_ms` against `chain` is the restore the user waits for.
   Restored bytes are restored pages times pool bytes per pool page. A

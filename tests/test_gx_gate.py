@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate GX against a fake engine with a prefix cache: an engine whose outputs depend only on the request passes every arm; one whose arithmetic follows its resume point fails reuse against cold; one that corrupts a restored chain fails restored against uninterrupted; a chain lost at eviction, a request from another client and a step not run each leave the verdict INCOMPLETE; a cold step on an uncleared cache stops and finishes after a clear; a step the engine dies under keeps its finished units and does only the rest when it is run again, and a restore that stopped has its park step redone only for the units still open; a request that fails on a healthy engine is recorded on its unit and the step goes on; a context the deployment cannot serve is skipped or fitted; each request's queue time, time to first token and decode rate, and each attempt's KV store and engine counters, come from the API log of the engine that is running."""
+"""Gate GX against a fake engine that resumes only at a wave end its request names (a cut, a stride state, a commit's end or one token before the prompt's end) and only where state was kept: an engine whose outputs depend only on the request passes every arm; a request resumed short of the cut its structure names is INCOMPLETE; one whose arithmetic follows its resume point fails reuse against cold; one that corrupts a restored chain fails restored against uninterrupted; a chain lost at eviction, a request from another client and a step not run each leave the verdict INCOMPLETE; a cold step on an uncleared cache stops and finishes after a clear; a step the engine dies under keeps its finished units and does only the rest when it is run again, and a restore that stopped has its park step redone only for the units still open; a request that fails on a healthy engine is recorded on its unit and the step goes on; a context the deployment cannot serve is skipped or fitted; each request's queue time, time to first token and decode rate, and each attempt's KV store and engine counters, come from the API log of the engine that is running."""
 import contextlib
 import hashlib
 import importlib.util
@@ -7,6 +7,7 @@ import io
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,29 +18,38 @@ gx = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gx)
 
 
+STRIDE = 1024
+
+
 class FakeEngine:
-    def __init__(self, follows_resume=False, loses_on_evict=False, corrupts_restored=False, log=None, dies_after=None, refuses=None):
+    def __init__(self, follows_resume=False, loses_on_evict=False, corrupts_restored=False, log=None, dies_after=None, refuses=None, forgets_cuts=False, forgets_keeps=False,
+                 follows_batch=False):
         self.log = log
+        self.follows_batch = follows_batch
+        self.waiting = 0
+        self.crowded = 0
+        self.forgets_cuts = forgets_cuts
+        self.forgets_keeps = forgets_keeps
         self.follows_resume = follows_resume
         self.loses_on_evict = loses_on_evict
         self.corrupts_restored = corrupts_restored
         self.dies_after = dies_after
         self.refuses = refuses
         self.healthy = True
-        self.chains = []
+        self.points = set()
         self.restored = set()
         self.served = 0
         self.bodies = []
         self.lock = threading.Lock()
 
     def clear(self):
-        self.chains = []
+        self.points = set()
         self.restored = set()
 
     def evict(self):
         if self.loses_on_evict:
-            self.chains = []
-        self.restored = {tuple(chain) for chain in self.chains}
+            self.points = set()
+        self.restored = set(self.points)
 
     def recover(self):
         self.healthy = True
@@ -48,7 +58,18 @@ class FakeEngine:
 
     def complete(self, body):
         prompt = body["prompt_token_ids"]
+        self.waiting += 1
+        if "logprobs" in body:
+            time.sleep(0.02)
+        together = self.waiting
+        try:
+            return self.answer(body, prompt, together)
+        finally:
+            self.waiting -= 1
+
+    def answer(self, body, prompt, together):
         with self.lock:
+            self.crowded = max(self.crowded, together)
             if self.dies_after is not None and len(self.bodies) >= self.dies_after:
                 self.healthy = False
             if not self.healthy:
@@ -57,22 +78,31 @@ class FakeEngine:
             if self.refuses is not None and self.refuses(body):
                 self.served += 1
                 return 502, {"error": {"message": "the engine failed during the reply"}}
+            commit = body.get("commit_only") is True
+            if commit and ("max_tokens" in body or "logprobs" in body):
+                return 400, {"error": {"code": "commit_only_conflict"}}
+            if (self.forgets_cuts and "cuts" in body) or (self.forgets_keeps and "keep" in body):
+                body = {key: value for key, value in body.items() if key not in (("cuts",) if self.forgets_cuts else ()) + (("keep",) if self.forgets_keeps else ())}
+            final = len(prompt) if commit else len(prompt) - 1
+            strides = list(range(STRIDE, len(prompt), STRIDE))
+            ends = sorted(set([cut for cut in body.get("cuts", []) if cut < len(prompt)] + strides + [final]))
+            kept = set(strides) | set(body.get("keep", [])) | {final}
             cached, source = 0, None
-            for chain in self.chains:
-                common = 0
-                while common < min(len(chain), len(prompt)) and chain[common] == prompt[common]:
-                    common += 1
-                common = min(common, len(prompt) - 1)
-                if common > cached:
-                    cached, source = common, tuple(chain)
+            for end in ends:
+                key = (hashlib.sha256(json.dumps(prompt[:end]).encode()).hexdigest(), tuple(cut for cut in ends if cut <= end))
+                if end < len(prompt) and key in self.points:
+                    cached, source = end, key
+                if end in kept:
+                    self.points.add(key)
             digest = hashlib.sha256(json.dumps(prompt).encode()).digest()
-            tokens = [1000 + digest[index % 32] for index in range(body["max_tokens"])]
+            tokens = [1000 + digest[index % 32] for index in range(0 if commit else body["max_tokens"])]
             shift = 0.0
             if self.follows_resume and cached:
                 shift = 0.001
-            if self.corrupts_restored and source in self.restored:
+            if self.follows_batch and together > 1:
+                shift += 0.002
+            if self.corrupts_restored and source in self.restored and tokens:
                 tokens[-1] += 1
-            self.chains.append(list(prompt) + tokens[:-1])
             self.served += 1
             if self.log:
                 with open(self.log, "a") as log:
@@ -83,8 +113,10 @@ class FakeEngine:
                     for rank, pages in ((0, 3), (1, 4)):
                         log.write(json.dumps({"event": "kv_store_report", "boot_pid": 7, "rank": rank, "restore_pages": pages * self.served, "save_pages": 1, "restore_ns": 100 * (rank + 1)}) + "\n")
                     log.write(json.dumps({"event": "engine_measurements", "boot_pid": 7, "completed": self.served, "prefix_hits": 2}) + "\n")
-        reply = {"object": "text_completion", "tokens": tokens, "finish_reason": "length",
+        reply = {"object": "text_completion", "tokens": tokens, "finish_reason": "commit" if commit else "length",
                  "usage": {"prompt_tokens": len(prompt), "completion_tokens": len(tokens), "prompt_tokens_details": {"cached_tokens": cached}}}
+        if commit:
+            reply["usage"]["published_tokens"] = len(prompt)
         if "logprobs" in body:
             reply["token_logprobs"] = [[[token, -0.5 - shift]] + [[token + 1 + rank, -2.0 - rank] for rank in range(body["logprobs"])] for token in tokens]
         return 200, reply
@@ -138,12 +170,12 @@ class GxGateTests(unittest.TestCase):
 
     def plan(self, *extra):
         return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--contexts", "2048,4096",
-                    "--declared-contexts", "1024,2048", "--drafted-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed", *extra)
+                    "--kept-contexts", "1024,2048", "--drafted-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed", *extra)
 
-    def start(self, engine):
+    def start(self, engine, *plan):
         server = serve(engine)
         self.servers.append(server)
-        status, listing = self.plan()
+        status, listing = self.plan(*plan)
         self.assertEqual(status, 0, listing)
         return "http://127.0.0.1:%d" % server.server_address[1], [line.split()[:2] for line in listing.splitlines()]
 
@@ -154,8 +186,8 @@ class GxGateTests(unittest.TestCase):
         status, table = call("verdict", "--state", self.state, "--output", self.receipt)
         return status, json.loads(Path(self.receipt).read_text()), table
 
-    def run_gate(self, engine, skip=(), without_change=()):
-        api, steps = self.start(engine)
+    def run_gate(self, engine, skip=(), without_change=(), plan=()):
+        api, steps = self.start(engine, *plan)
         logged = ["--api-log", engine.log] if engine.log else []
         stopped = []
         for name, change in steps:
@@ -181,12 +213,53 @@ class GxGateTests(unittest.TestCase):
             self.assertEqual(entry["cached_tokens"]["cold"], 0)
             self.assertGreater(entry["cached_tokens"]["chain"], 0)
             self.assertGreater(entry["cached_tokens"]["restore"], 0)
-        declared = [body for body in engine.bodies if "cache_points" in body]
-        self.assertTrue(declared and all(body["cache_points"] in ([768], [1792]) and "logprobs" in body for body in declared))
+        for entry in receipt["verdicts"]:
+            self.assertEqual((entry["cached_tokens"]["chain"], entry["cached_tokens"]["restore"]), (entry["resume_cut"], entry["resume_cut"]), entry)
+        commits = [body for body in engine.bodies if body.get("commit_only")]
+        self.assertTrue(commits and all("max_tokens" not in body and "logprobs" not in body and "cuts" not in body for body in commits), "a prefix is warmed by a commit, which generates nothing")
+        kept = [body for body in engine.bodies if "keep" in body]
+        self.assertTrue(kept and all(body["keep"] in ([769], [1793]) and body["cuts"] == body["keep"] for body in kept), "a kept unit asks for state at the cut where its shared prefix ends")
+        self.assertTrue(all("cuts" in body for body in engine.bodies if not body.get("commit_only")), "every request that generates names its cuts")
+        self.assertTrue(all(body["cuts"] == sorted(set(body["cuts"])) for body in engine.bodies if "cuts" in body))
+        last = max((body for body in engine.bodies if "logprobs" in body), key=lambda body: len(body["cuts"]))
+        self.assertEqual(len(last["cuts"]), 5, "a session's last prompt names where its opening ends, one token before each reply began and where each reply ends")
         self.assertTrue(any("speculation" not in body for body in engine.bodies), "a drafted session's turns leave speculation at the engine's default")
         self.assertTrue(all(body.get("speculation") is False for body in engine.bodies if "logprobs" in body))
         chain = receipt["steps"]["chain"]["requests"]
         self.assertTrue(all(request["prefilled_tokens"] == request["prompt_tokens"] - request["cached_tokens"] and request["completion_tokens"] == request["max_tokens"] for request in chain))
+
+    def test_a_request_resumed_short_of_its_cut_is_incomplete(self):
+        status, receipt, stopped, table = self.run_gate(FakeEngine(forgets_keeps=True))
+        self.assertEqual((status, receipt["verdict"], stopped), (2, "INCOMPLETE", []), table)
+        reuse = {entry["id"]: entry for entry in receipt["verdicts"]}
+        self.assertEqual({name: entry["reuse"] for name, entry in reuse.items() if entry["reuse"] != "PASS"}, {"kept/1024/1": "NOT-CACHED", "kept/2048/1": "SHORT"}, table)
+        short = reuse["kept/2048/1"]
+        self.assertTrue(short["cached_tokens"]["chain"] == 1024 < short["resume_cut"] == 1793 and short["reuse_detail"]["equal"], short)
+        self.assertEqual(reuse["kept/2048/40"]["cached_tokens"]["chain"], 1793, "the one-token unit's own last cut is the shared cut, so the next unit resumes there")
+        self.assertIn("SHORT", table)
+
+    def test_requests_sent_together_are_compared_with_the_same_request_alone(self):
+        for follows_batch, counts in ((False, {"equal": 4, "different": 0, "not_run": 0}), (True, {"equal": 0, "different": 4, "not_run": 0})):
+            engine = FakeEngine(follows_batch=follows_batch)
+            status, receipt, stopped, table = self.run_gate(engine, plan=("--crowd", "2"))
+            self.assertEqual((status, receipt["verdict"], stopped), (0, "PASS", []), table)
+            self.assertEqual(receipt["concurrent"], counts, table)
+            self.assertEqual(engine.crowded, 2, "the crowd step sends two requests at a time and every other step one")
+            crowd = receipt["steps"]["crowd"]
+            self.assertEqual(sorted(crowd["results"]), ["prefix/2048/1", "prefix/2048/40", "prefix/4096/1", "prefix/4096/40"])
+            self.assertEqual([request["label"] for request in crowd["requests"] if request["max_tokens"] == 0], ["prefix/2048/warm", "prefix/4096/warm"])
+            together = [entry for entry in receipt["verdicts"] if "concurrent" in entry]
+            self.assertTrue(all(entry["cached_tokens"]["crowd"] == entry["resume_cut"] for entry in together), together)
+            self.assertIn("concurrent equal=%d different=%d not-run=0" % (counts["equal"], counts["different"]), table)
+            if follows_batch:
+                self.assertIn("sent together it differs from sent alone", table)
+                self.assertAlmostEqual(together[0]["concurrent_detail"]["max_logprob_delta"], 0.002, places=6)
+            Path(self.state).unlink()
+        status, listing = self.plan("--crowd", "2")
+        self.assertEqual([line.split()[:2] for line in listing.splitlines()][-1], ["crowd", "clear"])
+        Path(self.state).unlink()
+        with self.assertRaises(SystemExit):
+            self.plan("--crowd", "1")
 
     def test_the_steps_name_the_cache_change_each_needs(self):
         status, listing = self.plan()
@@ -327,7 +400,7 @@ class GxGateTests(unittest.TestCase):
         second = [request["label"] for request in state["steps"]["park:2048"]["requests"] if request["attempt"] == 2]
         replayed = {label.rsplit("/turn", 1)[0] for label in second if "/turn" in label}
         self.assertTrue(replayed and not replayed & restored, (replayed, restored))
-        self.assertEqual([label for label in second if label.endswith("/warm")], ["declared/2048/warm"])
+        self.assertEqual([label for label in second if label.endswith("/warm")], ["kept/2048/warm"])
         engine.evict()
         self.assertEqual(self.step(api, "restore:2048")[0], 0)
         for name, change in steps[3:]:
@@ -359,14 +432,14 @@ class GxGateTests(unittest.TestCase):
 
     def test_a_prefix_that_does_not_warm_fails_its_units_only(self):
         target = {}
-        engine = FakeEngine(refuses=lambda body: body["max_tokens"] == 1 and len(body["prompt_token_ids"]) == target.get("length"))
+        engine = FakeEngine(refuses=lambda body: body.get("max_tokens") == 1 and len(body["prompt_token_ids"]) == target.get("length"))
         api, steps = self.start(engine)
         state = json.loads(Path(self.state).read_text())
-        target["length"] = next(unit for unit in state["units"] if unit["id"] == "declared/1024/1")["context"]
+        target["length"] = next(unit for unit in state["units"] if unit["id"] == "kept/1024/1")["context"] + gx.KEPT_OTHER
         self.assertEqual(self.step(api, "chain")[0], 0)
         state = json.loads(Path(self.state).read_text())
         errors = state["steps"]["chain"]["errors"]
-        self.assertEqual(sorted(errors), ["declared/1024/1", "declared/1024/40"])
+        self.assertEqual(sorted(errors), ["kept/1024/1", "kept/1024/40"])
         self.assertTrue(all("did not warm" in message for message in errors.values()))
         self.assertEqual(len(state["steps"]["chain"]["results"]), 12)
 
@@ -391,10 +464,11 @@ class GxGateTests(unittest.TestCase):
         self.assertEqual((status, receipt["verdict"], stopped), (0, "PASS", []), table)
         chain = receipt["steps"]["chain"]
         attempt = chain["attempts"][0]
-        self.assertTrue(all((request["queue_ms"], request["first_token_ms"], request["stale_prefix_recomputes"]) == (2.0, 5.0, 0) for request in chain["requests"]), chain["requests"][:2])
+        self.assertTrue(all((request["queue_ms"], request.get("first_token_ms", 5.0), request["stale_prefix_recomputes"]) == (2.0, 5.0, 0) for request in chain["requests"]), chain["requests"][:2])
         measured = [request for request in chain["requests"] if request["max_tokens"] == 6]
         self.assertTrue(measured and all((request["last_token_ms"], request["decode_tokens_per_second"]) == (10.0, 1000.0) for request in measured))
-        self.assertTrue(all("decode_tokens_per_second" not in request for request in chain["requests"] if request["max_tokens"] == 1))
+        self.assertTrue(all("decode_tokens_per_second" not in request for request in chain["requests"] if request["max_tokens"] <= 1))
+        self.assertTrue(all("first_token_ms" not in request and request["finish_reason"] == "commit" and request["completion_tokens"] == 0 for request in chain["requests"] if request["max_tokens"] == 0))
         self.assertEqual(attempt["engine"], {"adapter_id": "fake-adapter", "model_id": "fake", "model_revision": "r1", "driver_program": "fake", "driver_artifact_sha256": "ab" * 32})
         self.assertEqual((attempt["counters_before"]["boot_pid"], attempt["counters_before"]["ranks_reporting"]), (5, 1))
         self.assertEqual((attempt["counters_before"]["store"]["restore_pages"], attempt["counters_before"]["slowest_rank"]["restore_ns"]), (1000, 50))
@@ -412,11 +486,11 @@ class GxGateTests(unittest.TestCase):
         self.assertEqual([line.split()[0] for line in listing.splitlines()], ["chain", "park:100000", "restore:100000", "cold:1", "cold:40", "cold:500", "cold:5000"])
         state = json.loads(Path(self.state).read_text())
         self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] == "prefix"}), [(8000, 8021), (100000, 16405)])
-        self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] == "declared"}), [(8000, 6913), (20000, 16129)])
+        self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] == "kept"}), [(8000, 6913), (20000, 16129)])
         self.assertEqual({(entry["case"], entry["nominal"]) for entry in state["skipped"]}, {("prefix", 300000), ("session", 300000)})
         for unit in state["units"]:
             self.assertLessEqual(unit["context"] + 3 * 5000 + 2 * 96 + 32, 32768)
-            if unit["case"] == "declared":
+            if unit["case"] == "kept":
                 self.assertEqual(((unit["context"] - 1) % 256, (unit["context"] - 1) % 1024), (0, 768))
             else:
                 self.assertNotEqual(unit["context"] % 64, 0)
