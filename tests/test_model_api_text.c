@@ -1370,7 +1370,22 @@ static void TestApiCommitAndCuts(TestApiStack *stack)
 	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"keep\":10}",tokens);
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 400);
-	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; cuts and keep must be rising token counts)\n");
+	(void)TestApiWriteTokens(tokens,sizeof(tokens),first - 2000u,14u);
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[6,9]}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"prompt_tokens\":14") && TestApiBodyContains(body,"\"cached_tokens\":0"));
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"cached_tokens\":13"));
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(!TestApiBodyContains(body,"\"cached_tokens\":13"));
+	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; waves that end at cuts where no state is kept leave a chain the same request resumes one token before its end, and the same tokens without those cuts do not resume there; cuts and keep must be rising token counts)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
