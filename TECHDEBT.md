@@ -1901,9 +1901,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
   version 5 packer tested on release-built kernels, and a backend whose
   every entry still refuses with `UNSUPPORTED`. The barrier count a kernel
-  needs is not read from its cubin yet (the packer takes it as an input),
-  and the constant-bank size encoding awaits a hardware check. Missing: no
-  device open or version check, no memory,
+  needs is not read from its cubin yet (the packer takes it as an input).
+  Device open,
+  memory, one compute channel and kernel launch exist below the backend
+  entries (`nvrm_gpu.c`, `nvrm_channel.c`, `nvrm_launch.c`) and in the
+  first-light tool, and run on GB10 (first light, the launch-shape probe,
+  memory bandwidth at par with `cudaMalloc`); the backend entries do not
+  use them yet. The push buffer does not wrap. Missing: the
+  backend entries' memory,
   queues, events, kernel loading or launch, no command lists replacing
   graphs, no memory shared with weightd, no TMA descriptors and no fault
   reports. Production modules call the CUDA runtime directly (above), so

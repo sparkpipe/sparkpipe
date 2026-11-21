@@ -150,3 +150,98 @@ Rebuild the fixtures on a host with the release nvcc:
 python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc
 python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc --check
 ```
+
+## Opening the device
+
+`runtime/device/nvrm/nvrm_rm.c` and `nvrm_gpu.c` open a GPU through the
+module's device files:
+
+1. **Version check.** Open `/dev/nvidiactl` and check the module version
+   strictly (`NV_ESC_CHECK_VERSION_STR`). A mismatch fails with
+   `SPARK_STATUS_TARGET_MISMATCH`, naming the loaded version and the one
+   the backend is built for.
+2. **Device.** Allocate a root client and pick the GPU from the module's
+   card list. Open and register `/dev/nvidia<minor>`, then allocate the
+   device and subdevice.
+3. **Classes.** Require the Blackwell compute B, GPFIFO A, copy B and Hopper
+   usermode classes from the device's class list, and read the GPC, TPC,
+   SM and warp counts and the SM version.
+4. **Address space.** Allocate a virtual memory object, map the usermode
+   page (the doorbell), and allocate a GPU address space owned by unified
+   memory. Register the GPU and the address space with `/dev/nvidia-uvm`.
+5. **Channel.** Allocate a channel group and a context share. Build one
+   compute channel from a 1024-entry GPFIFO ring and its USERD page, an
+   error notifier, a 1 MiB push buffer and a fence semaphore. Read its
+   work-submit token, register it with unified memory and schedule the
+   group. Bind the compute class with its shared and local memory windows.
+
+Every RM status is turned into a `SparkStatus` naming the RM status code
+(`NV_ERR_NO_MEMORY` becomes `CAPACITY_EXCEEDED`, an unknown class
+`UNSUPPORTED`, and so on).
+
+Memory comes in three kinds, all mapped into the GPU at the same address
+the CPU sees, below 2^40:
+
+- **Host memory.** Anonymous pages the backend maps itself and
+  registers by OS descriptor.
+- **System memory.** Allocated by the module, GPU-cached, with 2 MiB
+  pages from 8 MiB up.
+- **Uncached system memory.** Allocated by the module, GPU-uncached, for
+  notifiers.
+
+`nvrm_channel.c` writes push-buffer methods, GPFIFO entries, GPPut and the
+doorbell, host semaphore releases (with an optional GPU timestamp), and
+waits on a semaphore value with a timeout. It provisions the
+per-thread local memory a program needs. `nvrm_launch.c` loads a cubin
+into host memory, relocates it, and queues a launch: the QMD and constant
+bank 0 in a 256-byte aligned slot, then `SEND_PCAS_A` and the scheduling
+method.
+
+`tests/test_nvrm_submit.c` checks, without a GPU, that methods, ring
+entries, GPPut, the doorbell, semaphore releases and launch slots are
+encoded as the class headers say, and that each misuse is refused.
+
+## Submission and launch shape
+
+A channel's methods are appended to its push buffer and go to the GPU
+only when `SparkNvrmSubmit` writes a GPFIFO entry: a submission carries
+every method pushed since the previous one. Binding the compute class,
+its shared and local memory windows and the local memory with its
+per-TPC size are submitted (and synchronized) when they are set, and
+persist for later launches. `SparkNvrmPushRewind` reuses the push buffer
+once everything in it has been submitted and the caller knows the GPU
+has consumed it.
+
+Compiled kernels read their launch shape (`blockDim`, `gridDim`) from
+driver words in constant bank 0. The launcher fills the words the
+compiled code reads, group x, y, z at words 216-218 and grid x, y, z at
+words 220-222, and leaves the rest of the driver area as it is. The
+offsets belong to the compiler, not the hardware, so
+`tests/test_nvrm_launch_dimensions.c` (`make test-nvrm-gpu`) pins them: it
+fills the driver words with sentinels, has a kernel store its shape, and
+requires each value to come from the word the launcher fills, then
+checks 11 launch shapes. Rerun it for every toolkit or module change.
+
+## First light and memory bandwidth
+
+Two tools run on a GPU host with the pinned module:
+
+- **`build/nvrm_first_light`** (`make nvrm-first-light`) opens the GPU and
+  prints its identity. It launches the fixture's first-light kernel 16
+  times (4 groups of 128 threads), waits for both the grid's release and
+  a timestamped channel release, and checks every output word. It
+  reports the host submit-to-completion time and the GPU time around the
+  grid.
+- **`build/nvrm_memory_bandwidth`** (`make nvrm-memory-bandwidth`) measures
+  the stream read and copy kernels over each memory kind between two
+  timestamped releases. `build/cuda_memory_bandwidth` measures the same
+  kernels over `cudaMalloc` memory on the CUDA flavour, for the
+  comparison.
+
+Measured on GB10 (1 GiB buffers, 5 interleaved rounds of 20 launches,
+median of medians): module-allocated system memory, GPU cached, 2 MiB
+pages, reads at 262.5 GB/s and copies at 228.4 GB/s, within 0.5% of
+`cudaMalloc` (261.3 and 228.3 GB/s). Host memory registered by OS
+descriptor in 4 KiB pages copies at par but reads 18% slower, so device
+memory comes from the module with 2 MiB pages.
+
