@@ -21,6 +21,7 @@
 #include "sparkpipe/spark_weight_stream.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_weightd_map.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_PASS_RANKS SPARK_PASS_PLAN_MAX_RANKS
 #define LM_PASS_MAX_LAYERS 128u
@@ -94,7 +95,7 @@ __global__ static void LmPassEmbedKernel(LmPassVocab vocab, const uint32_t *toke
 		target[index] = source != 0 ? source[index] : zero;
 }
 
-static int32_t LmPassEmbed(const LmPassVocab *vocab, const uint32_t *tokens, uint16_t *hidden, uint32_t rows, cudaStream_t stream)
+static int32_t LmPassEmbed(const LmPassVocab *vocab, const uint32_t *tokens, uint16_t *hidden, uint32_t rows, SparkGpuStream stream)
 {
 	if ( vocab == 0 || vocab->slice_rows == 0u || vocab->slices == 0u || vocab->slices > LM_PASS_RANKS || vocab->width == 0u || (vocab->width * sizeof(uint16_t)) % 16u != 0u ||
 		tokens == 0 || hidden == 0 || rows == 0u )
@@ -156,13 +157,13 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 			const uint64_t width = (uint64_t)count * row_bytes, pitch = (uint64_t)rows * row_bytes;
 			const uint32_t ring = round->next_stage++ % LM_PASS_ROUND_RING;
 			uint8_t *stage = round->send_stage[ring], *landing = round->receive_stage[ring];
-			if ( cudaMemcpy2DAsync(stage, (size_t)width, (const uint8_t *)send + (uint64_t)first * row_bytes, (size_t)pitch, (size_t)width, peers,
-					cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
+			if ( SparkGpuMemcpy2DAsync(stage, (size_t)width, (const uint8_t *)send + (uint64_t)first * row_bytes, (size_t)pitch, (size_t)width, peers,
+					SPARK_GPU_COPY_DEVICE_TO_DEVICE, (SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 			{
 				round->status = SPARK_STATUS_IO_ERROR;
 				return;
 			}
-			LM_LAUNCH((LmPassSumKernel), peers, 256u, 0, (cudaStream_t)stream, stage, width, width, round->sums);
+			LM_LAUNCH((LmPassSumKernel), peers, 256u, 0, (SparkGpuStream)stream, stage, width, width, round->sums);
 			status = round->services->round(round->services->context, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u, 4u * LM_PASS_RANKS,
 				round->sums, round->sums + LM_PASS_RANKS);
 			if ( status == SPARK_STATUS_OK )
@@ -170,9 +171,9 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 			for (uint32_t attempt = 0u; status == SPARK_STATUS_OK; attempt++)
 			{
 				uint32_t peer, bad = UINT32_MAX;
-				LM_LAUNCH((LmPassSumKernel), LM_PASS_RANKS, 256u, 0, (cudaStream_t)stream, landing, width, width, round->sums + LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS);
-				if ( cudaMemcpyAsync(round->sums_host, round->sums, (size_t)(2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS) * sizeof(uint64_t),
-						cudaMemcpyDeviceToHost, (cudaStream_t)stream) != cudaSuccess || cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+				LM_LAUNCH((LmPassSumKernel), LM_PASS_RANKS, 256u, 0, (SparkGpuStream)stream, landing, width, width, round->sums + LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS);
+				if ( SparkGpuMemcpyAsync(round->sums_host, round->sums, (size_t)(2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS) * sizeof(uint64_t),
+						SPARK_GPU_COPY_DEVICE_TO_HOST, (SparkGpuStream)stream) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize((SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 				{
 					status = SPARK_STATUS_IO_ERROR;
 					break;
@@ -196,8 +197,8 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 				}
 				usleep(1000u);
 			}
-			if ( status == SPARK_STATUS_OK && cudaMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, landing, (size_t)width,
-					(size_t)width, LM_PASS_RANKS, cudaMemcpyDeviceToDevice, (cudaStream_t)stream) != cudaSuccess )
+			if ( status == SPARK_STATUS_OK && SparkGpuMemcpy2DAsync((uint8_t *)receive + (uint64_t)first * row_bytes, (size_t)pitch, landing, (size_t)width,
+					(size_t)width, LM_PASS_RANKS, SPARK_GPU_COPY_DEVICE_TO_DEVICE, (SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 				status = SPARK_STATUS_IO_ERROR;
 			if ( status != SPARK_STATUS_OK && round->status == SPARK_STATUS_OK )
 				round->status = status;
@@ -347,12 +348,12 @@ struct LmPass
 	uint8_t *gather_device;
 	uint32_t *host_staging;
 	uint32_t *health;
-	cudaStream_t gather_stream;
-	cudaStream_t copy_stream;
-	cudaEvent_t dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
-	cudaEvent_t slot_done[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
-	cudaEvent_t marks[LM_PASS_MAX_LAYERS][3];
-	cudaEvent_t own_marks[LM_PASS_MAX_LAYERS][2];
+	SparkGpuStream gather_stream;
+	SparkGpuStream copy_stream;
+	SparkGpuEvent dense_done[SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS];
+	SparkGpuEvent slot_done[SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS];
+	SparkGpuEvent marks[LM_PASS_MAX_LAYERS][3];
+	SparkGpuEvent own_marks[LM_PASS_MAX_LAYERS][2];
 	float *balance_device;
 	SparkPassBalance balance;
 	double pass_attention[LM_PASS_RANKS];
@@ -409,11 +410,11 @@ static T *LmPassAlloc(LmPass *p, uint64_t count)
 {
 	void *pointer = 0;
 	const uint64_t bytes = count * sizeof(T) + 256u;
-	if ( p->allocation_count >= LM_PASS_MAX_ALLOCATIONS || cudaMalloc(&pointer, bytes) != cudaSuccess )
+	if ( p->allocation_count >= LM_PASS_MAX_ALLOCATIONS || SparkGpuMalloc(&pointer, bytes) != SPARK_GPU_SUCCESS )
 		return 0;
-	if ( cudaMemset(pointer, 0, bytes) != cudaSuccess )
+	if ( SparkGpuMemset(pointer, 0, bytes) != SPARK_GPU_SUCCESS )
 	{
-		cudaFree(pointer);
+		SparkGpuFree(pointer);
 		return 0;
 	}
 	p->allocations[p->allocation_count++] = pointer;
@@ -435,8 +436,8 @@ static SparkStatus LmPassCopyTensor(const LmPass *p, uint64_t start, uint64_t by
 	if ( first >= last )
 		return SPARK_STATUS_OK;
 	if ( SparkWeightdLazyPackSlice(p->lazy_pack, start, bytes, &slice) != SPARK_STATUS_OK || slice == 0 ||
-		cudaMemcpyAsync(destination + (first - offset), (const uint8_t *)slice + (first - start), (size_t)(last - first), cudaMemcpyDefault, p->copy_stream) != cudaSuccess ||
-		cudaStreamSynchronize(p->copy_stream) != cudaSuccess )
+		SparkGpuMemcpyAsync(destination + (first - offset), (const uint8_t *)slice + (first - start), (size_t)(last - first), SPARK_GPU_COPY_DEFAULT, p->copy_stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamSynchronize(p->copy_stream) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr, "%s: streamed prefill cannot read the own tensor at %llu (%llu bytes) from the spine\n", p->tag, (unsigned long long)start,
 			(unsigned long long)bytes);
@@ -515,8 +516,8 @@ static SparkStatus LmPassReadOwn(void *context, uint64_t pack_offset, uint64_t b
 				p->spent[6] += LmPassNowNs() - mark;
 				return status;
 			}
-			if ( cudaMemcpyAsync(destination, p->pool + pack_offset, (size_t)bytes, cudaMemcpyDefault, p->copy_stream) != cudaSuccess ||
-				cudaStreamSynchronize(p->copy_stream) != cudaSuccess )
+			if ( SparkGpuMemcpyAsync(destination, p->pool + pack_offset, (size_t)bytes, SPARK_GPU_COPY_DEFAULT, p->copy_stream) != SPARK_GPU_SUCCESS ||
+				SparkGpuStreamSynchronize(p->copy_stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			return SPARK_STATUS_OK;
 		}
@@ -549,12 +550,12 @@ static SparkStatus LmPassGather(void *context, const void *mine, void *all, uint
 	uint8_t *send = p->gather_device, *receive = p->gather_device + LM_PASS_GATHER_BYTES;
 	if ( bytes_per_rank == 0u || bytes_per_rank > LM_PASS_GATHER_BYTES || (bytes_per_rank % 2u) != 0u )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaMemcpyAsync(send, mine, (size_t)bytes_per_rank, cudaMemcpyHostToDevice, p->gather_stream) != cudaSuccess )
+	if ( SparkGpuMemcpyAsync(send, mine, (size_t)bytes_per_rank, SPARK_GPU_COPY_HOST_TO_DEVICE, p->gather_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	LmPassRound(&p->round, (void *)p->gather_stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(bytes_per_rank / 2u), send, receive);
 	if ( p->round.status != SPARK_STATUS_OK ||
-		cudaMemcpyAsync(all, receive, (size_t)(bytes_per_rank * LM_PASS_RANKS), cudaMemcpyDeviceToHost, p->gather_stream) != cudaSuccess ||
-		cudaStreamSynchronize(p->gather_stream) != cudaSuccess )
+		SparkGpuMemcpyAsync(all, receive, (size_t)(bytes_per_rank * LM_PASS_RANKS), SPARK_GPU_COPY_DEVICE_TO_HOST, p->gather_stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamSynchronize(p->gather_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(p->round.status != SPARK_STATUS_OK ? p->round.status : SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -581,12 +582,12 @@ static void LmPassDestroy(LmPass *p)
 		SparkWeightStreamClose(p->rows_stream);
 	if ( p->region != 0 )
 	{
-		(void)cudaHostUnregister(p->region);
+		(void)SparkGpuHostUnregister(p->region);
 		free(p->region);
 	}
 	if ( p->rows_region != 0 )
 	{
-		(void)cudaHostUnregister(p->rows_region);
+		(void)SparkGpuHostUnregister(p->rows_region);
 		free(p->rows_region);
 	}
 	if ( p->partner_fd >= 0 )
@@ -602,30 +603,30 @@ static void LmPassDestroy(LmPass *p)
 	free(p->tensors);
 	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS; index++)
 		if ( p->slot_done[index] != 0 )
-			(void)cudaEventDestroy(p->slot_done[index]);
+			(void)SparkGpuEventDestroy(p->slot_done[index]);
 	for (index = 0u; index < SPARK_PACK_WINDOW_MAX_DENSE_BUFFERS; index++)
 		if ( p->dense_done[index] != 0 )
-			(void)cudaEventDestroy(p->dense_done[index]);
+			(void)SparkGpuEventDestroy(p->dense_done[index]);
 	for (index = 0u; index < LM_PASS_MAX_LAYERS * 3u; index++)
 		if ( p->marks[index / 3u][index % 3u] != 0 )
-			(void)cudaEventDestroy(p->marks[index / 3u][index % 3u]);
+			(void)SparkGpuEventDestroy(p->marks[index / 3u][index % 3u]);
 	for (index = 0u; index < LM_PASS_MAX_LAYERS * 2u; index++)
 		if ( p->own_marks[index / 2u][index % 2u] != 0 )
-			(void)cudaEventDestroy(p->own_marks[index / 2u][index % 2u]);
+			(void)SparkGpuEventDestroy(p->own_marks[index / 2u][index % 2u]);
 	if ( p->copy_stream != 0 )
-		(void)cudaStreamDestroy(p->copy_stream);
+		(void)SparkGpuStreamDestroy(p->copy_stream);
 	if ( p->synchronization != 0u )
 	{
 		(void)pthread_cond_destroy(&p->changed);
 		(void)pthread_mutex_destroy(&p->lock);
 	}
 	if ( p->gather_stream != 0 )
-		(void)cudaStreamDestroy(p->gather_stream);
-	cudaFreeHost(p->host_staging);
-	cudaFreeHost(p->health);
-	cudaFreeHost(p->round.sums_host);
+		(void)SparkGpuStreamDestroy(p->gather_stream);
+	SparkGpuFreeHost(p->host_staging);
+	SparkGpuFreeHost(p->health);
+	SparkGpuFreeHost(p->round.sums_host);
 	for (index = 0u; index < p->allocation_count; index++)
-		cudaFree(p->allocations[index]);
+		SparkGpuFree(p->allocations[index]);
 	p->allocation_count = 0u;
 }
 
@@ -644,13 +645,13 @@ static SparkStatus LmPassBuffers(LmPass *p)
 	p->round.rank = p->rank;
 	p->round.tag = p->tag;
 	p->round.sums = LmPassAlloc<uint64_t>(p, 2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS);
-	if ( cudaMallocHost((void **)&p->round.sums_host, (size_t)(2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS) * sizeof(uint64_t)) != cudaSuccess )
+	if ( SparkGpuMallocHost((void **)&p->round.sums_host, (size_t)(2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS) * sizeof(uint64_t)) != SPARK_GPU_SUCCESS )
 		p->round.sums_host = 0;
 	p->balance_device = LmPassAlloc<float>(p, 4u + 4u * LM_PASS_RANKS);
 	p->pass_rows_max = pass;
-	if ( cudaMallocHost((void **)&p->host_staging, (size_t)(pass + 64u) * sizeof(uint32_t)) != cudaSuccess )
+	if ( SparkGpuMallocHost((void **)&p->host_staging, (size_t)(pass + 64u) * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 		p->host_staging = 0;
-	if ( cudaHostAlloc((void **)&p->health, (size_t)(p->layers + 1u) * 2u * sizeof(uint32_t), cudaHostAllocMapped) != cudaSuccess )
+	if ( SparkGpuHostAlloc((void **)&p->health, (size_t)(p->layers + 1u) * 2u * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS )
 		p->health = 0;
 	if ( p->tokens == 0 || p->positions == 0 || p->pass_positions == 0 || p->gather_device == 0 || p->round.sums == 0 || p->round.sums_host == 0 ||
 		p->balance_device == 0 || p->host_staging == 0 || p->health == 0 )
@@ -686,7 +687,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 			SPARK_PACK_WINDOW_MAX_EXPERT_SLOTS, config->dense_buffers, config->expert_slots);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	if ( cudaDeviceGetAttribute(&usable, cudaDevAttrCanUseHostPointerForRegisteredMem, layout->device) != cudaSuccess || usable == 0 )
+	if ( SparkGpuDeviceGetAttribute(&usable, SPARK_GPU_ATTRIBUTE_HOST_POINTER_FOR_REGISTERED_MEMORY, layout->device) != SPARK_GPU_SUCCESS || usable == 0 )
 	{
 		fprintf(stderr, "%s: streamed prefill needs a device that reads registered host memory at the host address\n", layout->tag);
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -745,7 +746,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 		p->rows_region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)p->rows_region_bytes);
 		if ( p->rows_region != 0 )
 			(void)madvise(p->rows_region, (size_t)p->rows_region_bytes, MADV_HUGEPAGE);
-		if ( p->rows_region == 0 || cudaHostRegister(p->rows_region, (size_t)p->rows_region_bytes, cudaHostRegisterDefault) != cudaSuccess )
+		if ( p->rows_region == 0 || SparkGpuHostRegister(p->rows_region, (size_t)p->rows_region_bytes, SPARK_GPU_HOST_REGISTER_DEFAULT) != SPARK_GPU_SUCCESS )
 		{
 			fprintf(stderr, "%s: the %llu-byte streamed row exchange region could not be allocated and registered\n", p->tag, (unsigned long long)p->rows_region_bytes);
 			if ( p->rows_region != 0 )
@@ -762,7 +763,7 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 	p->region = (uint8_t *)aligned_alloc(2ull << 20, (size_t)p->region_bytes);
 	if ( p->region != 0 )
 		(void)madvise(p->region, (size_t)p->region_bytes, MADV_HUGEPAGE);
-	if ( p->region == 0 || cudaHostRegister(p->region, (size_t)p->region_bytes, cudaHostRegisterDefault) != cudaSuccess )
+	if ( p->region == 0 || SparkGpuHostRegister(p->region, (size_t)p->region_bytes, SPARK_GPU_HOST_REGISTER_DEFAULT) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr, "%s: the %llu-byte streamed weight window could not be allocated and registered\n", p->tag, (unsigned long long)p->region_bytes);
 		if ( p->region != 0 )
@@ -789,20 +790,20 @@ static SparkStatus LmPassCreate(LmPass *p, const SparkStageRunnerStreamedPrefill
 		(uint8_t *)aligned_alloc(LM_PASS_DIRECT_ALIGN, (size_t)(LM_PASS_DIRECT_CHUNK + LM_PASS_DIRECT_ALIGN)) : 0;
 	p->stage_bounce = p->bounce != 0 ? (uint8_t *)aligned_alloc(LM_PASS_DIRECT_ALIGN, (size_t)(LM_PASS_DIRECT_CHUNK + LM_PASS_DIRECT_ALIGN)) : 0;
 	status = (p->partner_fd >= 0 || p->streams_experts == 0u) && p->own_fd >= 0 ? LmPassBuffers(p) : SPARK_STATUS_IO_ERROR;
-	if ( status == SPARK_STATUS_OK && (cudaStreamCreateWithFlags(&p->gather_stream, cudaStreamNonBlocking) != cudaSuccess ||
-		cudaStreamCreateWithFlags(&p->copy_stream, cudaStreamNonBlocking) != cudaSuccess) )
+	if ( status == SPARK_STATUS_OK && (SparkGpuStreamCreateWithFlags(&p->gather_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamCreateWithFlags(&p->copy_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS) )
 		status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < p->config.dense_buffers; index++)
-		if ( cudaEventCreateWithFlags(&p->dense_done[index], cudaEventDisableTiming) != cudaSuccess )
+		if ( SparkGpuEventCreateWithFlags(&p->dense_done[index], SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < p->config.expert_slots; index++)
-		if ( cudaEventCreateWithFlags(&p->slot_done[index], cudaEventDisableTiming) != cudaSuccess )
+		if ( SparkGpuEventCreateWithFlags(&p->slot_done[index], SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < p->layers * 3u; index++)
-		if ( cudaEventCreate(&p->marks[index / 3u][index % 3u]) != cudaSuccess )
+		if ( SparkGpuEventCreate(&p->marks[index / 3u][index % 3u]) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 	for (index = 0u; status == SPARK_STATUS_OK && index < p->layers * 2u; index++)
-		if ( cudaEventCreate(&p->own_marks[index / 2u][index % 2u]) != cudaSuccess )
+		if ( SparkGpuEventCreate(&p->own_marks[index / 2u][index % 2u]) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 	{
@@ -911,14 +912,14 @@ static uint8_t *LmPassRowsLanding(const LmPass *p, uint32_t source, uint64_t byt
 	return p->rows_region != 0 ? p->rows_region + (uint64_t)LM_PASS_RANKS * p->rows_block_bytes + (uint64_t)source * bytes : 0;
 }
 
-static SparkStatus LmPassRowsAllGather(LmPass *p, uint64_t bytes, cudaStream_t stream)
+static SparkStatus LmPassRowsAllGather(LmPass *p, uint64_t bytes, SparkGpuStream stream)
 {
 	const uint64_t landing = (uint64_t)LM_PASS_RANKS * p->rows_block_bytes;
 	const uint64_t mark = LmPassNowNs();
 	SparkStatus status;
 	if ( p->rows_stream == 0 || bytes == 0u || bytes > p->rows_block_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkWeightStreamBroadcast(p->rows_stream, landing + (uint64_t)p->rank * bytes, bytes, landing, p->rows_tag++);
 	p->spent[2] += LmPassNowNs() - mark;
@@ -927,13 +928,13 @@ static SparkStatus LmPassRowsAllGather(LmPass *p, uint64_t bytes, cudaStream_t s
 	return status;
 }
 
-static SparkStatus LmPassRowsExchange(LmPass *p, uint64_t bytes, cudaStream_t stream)
+static SparkStatus LmPassRowsExchange(LmPass *p, uint64_t bytes, SparkGpuStream stream)
 {
 	const uint64_t mark = LmPassNowNs();
 	SparkStatus status;
 	if ( p->rows_stream == 0 || bytes == 0u || bytes > p->rows_block_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	status = SparkWeightStreamExchange(p->rows_stream, 0u, p->rows_block_bytes, bytes, (uint64_t)LM_PASS_RANKS * p->rows_block_bytes, p->rows_tag++);
 	p->spent[2] += LmPassNowNs() - mark;
@@ -956,13 +957,13 @@ __global__ static void LmPassSumBlocksKernel(const uint16_t *blocks, uint64_t bl
 	}
 }
 
-static int32_t LmPassSumBlocks(const LmPass *p, uint64_t elements, uint16_t *out_bf16, float *out_f32, uint32_t accumulate, cudaStream_t stream)
+static int32_t LmPassSumBlocks(const LmPass *p, uint64_t elements, uint16_t *out_bf16, float *out_f32, uint32_t accumulate, SparkGpuStream stream)
 {
 	if ( p->rows_region == 0 || elements == 0u || elements > p->rows_block_bytes / sizeof(uint16_t) || (out_bf16 == 0 && out_f32 == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmPassSumBlocksKernel), 512u, LM_PASS_THREADS, 0, stream, (const uint16_t *)LmPassRowsLanding(p, 0u, elements * sizeof(uint16_t)), elements, elements, out_bf16, out_f32,
 		accumulate);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static SparkStatus LmPassCheck(LmPass *p, int32_t launched, const char *what, uint32_t layer)
@@ -982,7 +983,7 @@ static void LmPassStreamFail(LmPass *p, SparkStatus status)
 	pthread_mutex_unlock(&p->lock);
 }
 
-static SparkStatus LmPassAwaitRelease(LmPass *p, const uint64_t *released, uint64_t item, uint32_t depth, cudaEvent_t event)
+static SparkStatus LmPassAwaitRelease(LmPass *p, const uint64_t *released, uint64_t item, uint32_t depth, SparkGpuEvent event)
 {
 	SparkStatus status;
 	const uint64_t mark = LmPassNowNs();
@@ -993,7 +994,7 @@ static SparkStatus LmPassAwaitRelease(LmPass *p, const uint64_t *released, uint6
 		pthread_cond_wait(&p->changed, &p->lock);
 	status = p->stream_status;
 	pthread_mutex_unlock(&p->lock);
-	if ( status == SPARK_STATUS_OK && cudaEventSynchronize(event) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuEventSynchronize(event) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	p->spent[0] += LmPassNowNs() - mark;
 	return status;
@@ -1012,9 +1013,9 @@ static SparkStatus LmPassAwaitPublished(LmPass *p, const uint64_t *published, ui
 	return status;
 }
 
-static SparkStatus LmPassRelease(LmPass *p, uint64_t *released, cudaEvent_t event, cudaStream_t stream)
+static SparkStatus LmPassRelease(LmPass *p, uint64_t *released, SparkGpuEvent event, SparkGpuStream stream)
 {
-	if ( cudaEventRecord(event, stream) != cudaSuccess )
+	if ( SparkGpuEventRecord(event, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	pthread_mutex_lock(&p->lock);
 	(*released)++;
@@ -1109,7 +1110,7 @@ static SparkStatus LmPassStageFree(LmPass *p, uint64_t sequence)
 	status = p->stream_status;
 	pthread_mutex_unlock(&p->lock);
 	for (index = 0u; index < 2u && status == SPARK_STATUS_OK; index++)
-		if ( held[index] != UINT64_MAX && cudaEventSynchronize(p->slot_done[held[index] % p->config.expert_slots]) != cudaSuccess )
+		if ( held[index] != UINT64_MAX && SparkGpuEventSynchronize(p->slot_done[held[index] % p->config.expert_slots]) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 	return status;
 }
@@ -1131,7 +1132,7 @@ static void *LmPassStager(void *argument)
 	LmPass *p = (LmPass *)argument;
 	uint64_t sequence = 0u;
 	uint32_t pass, layer;
-	SparkStatus status = cudaSetDevice(p->device) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	SparkStatus status = SparkGpuSetDevice(p->device) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	for (pass = 0u; pass < p->stream_passes && status == SPARK_STATUS_OK; pass++)
 		for (layer = 0u; layer < p->layers && status == SPARK_STATUS_OK; layer++)
 		{
@@ -1171,7 +1172,7 @@ static void *LmPassStreamer(void *argument)
 	LmPass *p = (LmPass *)argument;
 	uint64_t dense = 0u, experts = 0u, stage = 0u;
 	uint32_t pass, layer, step;
-	SparkStatus status = cudaSetDevice(p->device) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	SparkStatus status = SparkGpuSetDevice(p->device) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 	for (pass = 0u; pass < p->stream_passes && status == SPARK_STATUS_OK; pass++)
 	{
 		status = LmPassStreamDense(p, &p->vocab, dense++);
@@ -1208,7 +1209,7 @@ static SparkStatus LmPassDense(LmPass *p, uint64_t dense_item, uint8_t **rank_ba
 	return status;
 }
 
-static SparkStatus LmPassReleaseDense(LmPass *p, uint64_t dense_item, cudaStream_t stream)
+static SparkStatus LmPassReleaseDense(LmPass *p, uint64_t dense_item, SparkGpuStream stream)
 {
 	return LmPassRelease(p, &p->dense_released, p->dense_done[dense_item % p->config.dense_buffers], stream);
 }
@@ -1224,7 +1225,7 @@ static SparkStatus LmPassExpert(LmPass *p, uint64_t item, uint32_t *source, cons
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus LmPassReleaseExpert(LmPass *p, uint64_t item, cudaStream_t stream)
+static SparkStatus LmPassReleaseExpert(LmPass *p, uint64_t item, SparkGpuStream stream)
 {
 	return LmPassRelease(p, &p->expert_released, p->slot_done[item % p->config.expert_slots], stream);
 }
@@ -1256,25 +1257,25 @@ static SparkStatus LmPassHealth(LmPass *p, uint32_t pass)
 	SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 }
 
-static SparkStatus LmPassUpload(void *device, const void *host, uint64_t bytes, cudaStream_t stream)
+static SparkStatus LmPassUpload(void *device, const void *host, uint64_t bytes, SparkGpuStream stream)
 {
-	return cudaMemcpyAsync(device, host, (size_t)bytes, cudaMemcpyHostToDevice, stream) == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	return SparkGpuMemcpyAsync(device, host, (size_t)bytes, SPARK_GPU_COPY_HOST_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
-static SparkStatus LmPassMeasureHelp(LmPass *p, uint32_t first_layer, uint32_t end_layer, uint64_t first_key, uint32_t rows, uint64_t pass_tokens, cudaStream_t stream)
+static SparkStatus LmPassMeasureHelp(LmPass *p, uint32_t first_layer, uint32_t end_layer, uint64_t first_key, uint32_t rows, uint64_t pass_tokens, SparkGpuStream stream)
 {
 	float sent[4] = {0.0f, 0.0f, 0.0f, 0.0f}, received[4u * LM_PASS_RANKS], part;
 	uint32_t layer, node, measured = 0u;
 	for (layer = first_layer; layer < end_layer; layer++)
 		if ( p->balances[layer] != 0u )
 		{
-			sent[0] = cudaEventElapsedTime(&part, p->own_marks[layer][0], p->own_marks[layer][1]) == cudaSuccess && sent[0] >= 0.0f ? sent[0] + part : -1.0f;
+			sent[0] = SparkGpuEventElapsedTime(&part, p->own_marks[layer][0], p->own_marks[layer][1]) == SPARK_GPU_SUCCESS && sent[0] >= 0.0f ? sent[0] + part : -1.0f;
 			measured++;
 		}
 	if ( LmPassUpload(p->balance_device, sent, sizeof(sent), stream) != SPARK_STATUS_OK )
 		return SPARK_STATUS_IO_ERROR;
 	LmPassRound(&p->round, (void *)stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(sizeof(sent) / 2u), p->balance_device, p->balance_device + 4u);
-	if ( cudaMemcpyAsync(received, p->balance_device + 4u, sizeof(received), cudaMemcpyDeviceToHost, stream) != cudaSuccess || cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( SparkGpuMemcpyAsync(received, p->balance_device + 4u, sizeof(received), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
 	if ( p->round.status != SPARK_STATUS_OK )
 		return p->round.status;
@@ -1305,7 +1306,7 @@ static void LmPassReportHelp(LmPass *p, uint32_t pass)
 }
 
 template<class Model>
-static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, cudaStream_t stream)
+static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services, SparkGpuStream stream)
 {
 	const uint64_t keys = request != 0 ? (uint64_t)request->first_position + request->token_count : 0u;
 	const uint64_t started = LmPassNowNs();
@@ -1325,7 +1326,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 	status = LmPassOpen(p, services);
 	if ( status == SPARK_STATUS_OK )
 		status = model->Begin(p, request, plan.padded_keys, stream);
-	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -1357,7 +1358,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 		step.node_first = step.base + (uint64_t)p->rank * rows;
 		step.node_tokens = step.pass_tokens > (uint64_t)p->rank * rows ? (step.pass_tokens - (uint64_t)p->rank * rows < rows ? step.pass_tokens - (uint64_t)p->rank * rows : rows) : 0u;
 		step.sequence_slot = request->sequence_slot;
-		if ( cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		{
 			status = SPARK_STATUS_IO_ERROR;
 			break;
@@ -1370,9 +1371,9 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 		if ( status == SPARK_STATUS_OK && step.node_tokens != 0u )
 			status = LmPassUpload(p->tokens, request->token_ids + (step.node_first - request->first_position), step.node_tokens * sizeof(uint32_t), stream);
 		if ( status == SPARK_STATUS_OK && step.node_tokens < rows &&
-			cudaMemsetAsync(p->tokens + step.node_tokens, 0, (size_t)(rows - step.node_tokens) * sizeof(uint32_t), stream) != cudaSuccess )
+			SparkGpuMemsetAsync(p->tokens + step.node_tokens, 0, (size_t)(rows - step.node_tokens) * sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
-		if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+		if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )
 			status = model->PassBegin(p, &step, stream);
@@ -1401,7 +1402,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 		{
 			if ( p->balances[layer] != 0u && balanced != 0u && balanced % LM_PASS_HELP_LAYERS == 0u )
 			{
-				status = cudaStreamSynchronize(stream) == cudaSuccess ? LmPassMeasureHelp(p, measured_from, layer, step.base, rows, step.pass_tokens, stream) : SPARK_STATUS_IO_ERROR;
+				status = SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS ? LmPassMeasureHelp(p, measured_from, layer, step.base, rows, step.pass_tokens, stream) : SPARK_STATUS_IO_ERROR;
 				SparkPassPlanHelp(&p->balance, step.base, rows, step.pass_tokens, LM_PASS_HELP_MIN_SHARE);
 				model->HelpChanged(p);
 				measured_from = layer;
@@ -1416,7 +1417,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 			balanced += p->balances[layer] != 0u ? 1u : 0u;
 		}
 		if ( status == SPARK_STATUS_OK )
-			status = cudaStreamSynchronize(stream) == cudaSuccess ? LmPassHealth(p, pass) : SPARK_STATUS_IO_ERROR;
+			status = SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS ? LmPassHealth(p, pass) : SPARK_STATUS_IO_ERROR;
 		if ( status == SPARK_STATUS_OK )
 		{
 			model->PassReport(p, pass);
@@ -1451,10 +1452,10 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 	if ( status == SPARK_STATUS_OK && p->stream_status != SPARK_STATUS_OK )
 		status = p->stream_status;
 	if ( status == SPARK_STATUS_OK )
-		status = cudaStreamSynchronize(stream) == cudaSuccess ? p->round.status : SPARK_STATUS_IO_ERROR;
+		status = SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS ? p->round.status : SPARK_STATUS_IO_ERROR;
 	if ( status == SPARK_STATUS_OK )
 		status = model->End(p, request, stream);
-	if ( status == SPARK_STATUS_OK && cudaStreamSynchronize(stream) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_IO_ERROR;
 	fprintf(stderr, "%s: streamed prefill sequence %llu positions %u..%llu in %u passes status=%d %.1f s; exchanges with a block late or wrong at first check %llu, settled after waiting %llu\n",
 		p->tag, (unsigned long long)request->sequence_id, request->first_position, (unsigned long long)keys, plan.passes, (int)status, (double)(LmPassNowNs() - started) / 1e9,

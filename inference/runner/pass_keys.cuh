@@ -3,6 +3,7 @@
 #include "runtime/launch.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "inference/kernels/kv_shard.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 typedef void (*LmPassCollective)(void *context, void *stream, uint32_t operation, uint32_t rows, uint32_t row_elements, const void *send, void *receive);
 
@@ -41,7 +42,7 @@ __global__ static void LmPassOlderKeysKernel(SparkKvShard shard, const uint8_t *
 }
 
 template<class Geometry, uint32_t THREADS>
-static int32_t LmPassKeysGather(const LmPassKeys *x, uint8_t *latent_keys, cudaStream_t stream)
+static int32_t LmPassKeysGather(const LmPassKeys *x, uint8_t *latent_keys, SparkGpuStream stream)
 {
 	const uint32_t degree = x->store.shard.degree;
 	uint32_t older_rows, chunk_rows, first_local;
@@ -63,7 +64,7 @@ static int32_t LmPassKeysGather(const LmPassKeys *x, uint8_t *latent_keys, cudaS
 	{
 		const uint32_t count = older_rows - first_local < chunk_rows ? older_rows - first_local : chunk_rows;
 		if ( LmKvShardGatherPackRangeLaunch<Geometry,THREADS>(x->store,x->older_sequence,x->older_offset,x->older_context,1u,first_local,first_local + count,
-				x->older_send - (uint64_t)first_local * Geometry::kSlotBytes,stream) != cudaSuccess )
+				x->older_send - (uint64_t)first_local * Geometry::kSlotBytes,stream) != SPARK_GPU_SUCCESS )
 			return(LM_LAUNCH_ERR_LAUNCH);
 		x->collective(x->context,(void *)(uintptr_t)stream,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER,count,Geometry::kSlotBytes / 2u,x->older_send,x->older_receive);
 		LM_LAUNCH((LmPassOlderKeysKernel<Geometry::kSlotBytes>), LM_KV_SHARD_UNPACK_BLOCKS, THREADS, 0, stream,
