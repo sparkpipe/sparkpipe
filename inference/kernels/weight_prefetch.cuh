@@ -5,6 +5,10 @@
 #include <cuda_runtime.h>
 #include "sparkpipe/spark_gpu.h"
 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+#error "inference/kernels/weight_prefetch.cuh: the bulk L2 prefetch (cp.async.bulk.prefetch.L2.global) needs sm_90 or newer; build for sm_120a or sm_121a"
+#endif
+
 #define LM_WEIGHT_PREFETCH_SPANS 8u
 #define LM_WEIGHT_PREFETCH_GROUPS 1024u
 #define LM_WEIGHT_PREFETCH_PIECE_BYTES 16384u
@@ -134,7 +138,7 @@ static __device__ __forceinline__ void LmWeightPrefetchPiece(const LmWeightPrefe
 		return;
 	length -= (uint32_t)position;
 	length = length < LM_WEIGHT_PREFETCH_PIECE_BYTES ? length : LM_WEIGHT_PREFETCH_PIECE_BYTES;
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH__)
 	asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" :: "l"(group->address[span] + position), "r"(length) : "memory");
 #endif
 }

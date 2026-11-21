@@ -681,6 +681,7 @@ PYTHON_TESTS := \
 	tests/test_launch_refusals_cuda.py \
 	tests/test_k3_projection_shapes_cuda.py \
 	tests/test_stream_k_tail_cuda.py \
+	tests/test_arch_guards_cuda.py \
 	tests/test_mx_gemm_cuda.py \
 	tests/test_cell_mx_cuda.py \
 	tests/test_attn_prefill_cuda.py \
