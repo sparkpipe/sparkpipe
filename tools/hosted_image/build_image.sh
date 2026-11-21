@@ -69,6 +69,10 @@ for module in $MODULE_FILES; do
 done
 remove_tree "$out/modules/package"
 
+curl -fsSL "$TAILSCALE_URL/$TAILSCALE_DEB" -o "$out/tool/tailscale.deb"
+echo "$TAILSCALE_SHA256  $out/tool/tailscale.deb" | sha256sum -c --quiet
+[ "$(dpkg-deb -f "$out/tool/tailscale.deb" Version)" = "$TAILSCALE_VERSION" ] || { echo "build_image: $TAILSCALE_DEB is not tailscale $TAILSCALE_VERSION" >&2; exit 1; }
+
 mirrors=()
 for suite in "$SUITE" "$SUITE-updates" "$SUITE-security"; do
 	mirrors+=("deb $SNAPSHOT_URL $suite $COMPONENTS")

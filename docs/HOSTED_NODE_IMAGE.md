@@ -5,6 +5,7 @@ Rented nodes boot one minimal image. It contains:
 - Ubuntu 24.04 from a pinned archive snapshot, with Canonical's `linux-nvidia` 7.0 kernel;
 - Canonical's signed build of NVIDIA's open GPU kernel module at the version the device backend pins, verified by hash, and its GSP firmware;
 - the in-tree `mlx5_core` and `r8127` drivers, with Ubuntu's rdma-core;
+- Tailscale at a pinned version, verified by hash;
 - the node-independent part of the [node baseline](NODE_BASELINE.md);
 - a release root and the node agent.
 
@@ -75,6 +76,9 @@ The steps:
 - the module package, its pool path and sha256, the module version, the
   modules taken from it and their signer;
 - the firmware package;
+- the Tailscale package's version, pool path and sha256 (Tailscale's own
+  repository; the image installs the verified `.deb` and adds no APT source
+  for it);
 - the install paths.
 
 [`image-packages.txt`](../tools/hosted_image/image-packages.txt) names every
@@ -135,11 +139,13 @@ the image gets the same bytes `apply` writes.
   - the masks of the factory boot units;
   - the enabled units (earlyoom, ssh, emergency ssh, the fsck health timer,
     the serial getty, the firewall, fstrim);
+  - the DMA guard: its install step's service and timer, written by the
+    guard's own `unit_text` with the baseline's notify address, timer
+    enabled, so the guard arms 60 s after every boot;
   - `multi-user.target` as the default.
 - **Left to the live node:** `sysctl --system`, `udevadm`, `modprobe`,
   `update-grub` (the disk install generates the GRUB menu), runtime
-  `systemctl` verbs, linger and the DMA guard install, which reports to the
-  hub.
+  `systemctl` verbs and linger.
 - **Left to bring-up:** the node's packages, identity, layout roots, SSH
   password shutdown (it needs the node's login keys) and the initramfs.
   Bring-up's `apply` then adds the node's recovery address to the GRUB

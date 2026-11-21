@@ -27,6 +27,7 @@ ibverbs-providers=50.0-2ubuntu0.2
 ibverbs-utils=50.0-2ubuntu0.2
 rdmacm-utils=50.0-2ubuntu0.2
 nftables=1.0.9-1ubuntu0.1
+iptables=1.8.10-3ubuntu2
 earlyoom=1.7-2
 python3=3.12.3-0ubuntu2.1
 curl=8.5.0-2ubuntu10.16
