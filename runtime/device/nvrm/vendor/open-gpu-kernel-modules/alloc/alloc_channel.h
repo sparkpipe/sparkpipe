@@ -1,0 +1,145 @@
+#pragma once
+
+#include <nvtypes.h>
+
+#include "nvlimits.h"
+#include "nvcfg_sdk.h"
+
+typedef struct NV_MEMORY_DESC_PARAMS {
+    NV_DECLARE_ALIGNED(NvU64 base, 8);
+    NV_DECLARE_ALIGNED(NvU64 size, 8);
+    NvU32 addressSpace;
+    NvU32 cacheAttrib;
+} NV_MEMORY_DESC_PARAMS;
+
+#define NVOS04_FLAGS_CHANNEL_TYPE                                  1:0
+#define NVOS04_FLAGS_CHANNEL_TYPE_PHYSICAL                         0x00000000
+#define NVOS04_FLAGS_CHANNEL_TYPE_VIRTUAL                          0x00000001
+#define NVOS04_FLAGS_CHANNEL_TYPE_PHYSICAL_FOR_VIRTUAL             0x00000002
+
+#define NVOS04_FLAGS_VPR                                           2:2
+#define NVOS04_FLAGS_VPR_FALSE                                     0x00000000
+#define NVOS04_FLAGS_VPR_TRUE                                      0x00000001
+
+#define NVOS04_FLAGS_CC_SECURE                                     2:2
+#define NVOS04_FLAGS_CC_SECURE_FALSE                               0x00000000
+#define NVOS04_FLAGS_CC_SECURE_TRUE                                0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_SKIP_MAP_REFCOUNTING                  3:3
+#define NVOS04_FLAGS_CHANNEL_SKIP_MAP_REFCOUNTING_FALSE            0x00000000
+#define NVOS04_FLAGS_CHANNEL_SKIP_MAP_REFCOUNTING_TRUE             0x00000001
+
+#define NVOS04_FLAGS_GROUP_CHANNEL_RUNQUEUE                       4:4
+#define NVOS04_FLAGS_GROUP_CHANNEL_RUNQUEUE_DEFAULT               0x00000000
+#define NVOS04_FLAGS_GROUP_CHANNEL_RUNQUEUE_ONE                   0x00000001
+
+#define NVOS04_FLAGS_PRIVILEGED_CHANNEL                           5:5
+#define NVOS04_FLAGS_PRIVILEGED_CHANNEL_FALSE                     0x00000000
+#define NVOS04_FLAGS_PRIVILEGED_CHANNEL_TRUE                      0x00000001
+
+#define NVOS04_FLAGS_DELAY_CHANNEL_SCHEDULING                     6:6
+#define NVOS04_FLAGS_DELAY_CHANNEL_SCHEDULING_FALSE               0x00000000
+#define NVOS04_FLAGS_DELAY_CHANNEL_SCHEDULING_TRUE                0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_DENY_PHYSICAL_MODE_CE                7:7
+#define NVOS04_FLAGS_CHANNEL_DENY_PHYSICAL_MODE_CE_FALSE          0x00000000
+#define NVOS04_FLAGS_CHANNEL_DENY_PHYSICAL_MODE_CE_TRUE           0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_VALUE                    10:8
+
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_FIXED                    11:11
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_FIXED_FALSE              0x00000000
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_FIXED_TRUE               0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_PAGE_VALUE               20:12
+
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_PAGE_FIXED               21:21
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_PAGE_FIXED_FALSE         0x00000000
+#define NVOS04_FLAGS_CHANNEL_USERD_INDEX_PAGE_FIXED_TRUE          0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_DENY_AUTH_LEVEL_PRIV                 22:22
+#define NVOS04_FLAGS_CHANNEL_DENY_AUTH_LEVEL_PRIV_FALSE           0x00000000
+#define NVOS04_FLAGS_CHANNEL_DENY_AUTH_LEVEL_PRIV_TRUE            0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_SKIP_SCRUBBER                        23:23
+#define NVOS04_FLAGS_CHANNEL_SKIP_SCRUBBER_FALSE                  0x00000000
+#define NVOS04_FLAGS_CHANNEL_SKIP_SCRUBBER_TRUE                   0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_CLIENT_MAP_FIFO                      24:24
+#define NVOS04_FLAGS_CHANNEL_CLIENT_MAP_FIFO_FALSE                0x00000000
+#define NVOS04_FLAGS_CHANNEL_CLIENT_MAP_FIFO_TRUE                 0x00000001
+
+#define NVOS04_FLAGS_SET_EVICT_LAST_CE_PREFETCH_CHANNEL           25:25
+#define NVOS04_FLAGS_SET_EVICT_LAST_CE_PREFETCH_CHANNEL_FALSE     0x00000000
+#define NVOS04_FLAGS_SET_EVICT_LAST_CE_PREFETCH_CHANNEL_TRUE      0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_VGPU_PLUGIN_CONTEXT                  26:26
+#define NVOS04_FLAGS_CHANNEL_VGPU_PLUGIN_CONTEXT_FALSE            0x00000000
+#define NVOS04_FLAGS_CHANNEL_VGPU_PLUGIN_CONTEXT_TRUE             0x00000001
+
+#define NVOS04_FLAGS_CHANNEL_PBDMA_ACQUIRE_TIMEOUT                 27:27
+#define NVOS04_FLAGS_CHANNEL_PBDMA_ACQUIRE_TIMEOUT_FALSE           0x00000000
+#define NVOS04_FLAGS_CHANNEL_PBDMA_ACQUIRE_TIMEOUT_TRUE            0x00000001
+
+#define NVOS04_FLAGS_GROUP_CHANNEL_THREAD                          29:28
+#define NVOS04_FLAGS_GROUP_CHANNEL_THREAD_DEFAULT                  0x00000000
+#define NVOS04_FLAGS_GROUP_CHANNEL_THREAD_ONE                      0x00000001
+#define NVOS04_FLAGS_GROUP_CHANNEL_THREAD_TWO                      0x00000002
+
+#define NVOS04_FLAGS_MAP_CHANNEL                                   30:30
+#define NVOS04_FLAGS_MAP_CHANNEL_FALSE                             0x00000000
+#define NVOS04_FLAGS_MAP_CHANNEL_TRUE                              0x00000001
+
+#define NVOS04_FLAGS_SKIP_CTXBUFFER_ALLOC                          31:31
+#define NVOS04_FLAGS_SKIP_CTXBUFFER_ALLOC_FALSE                    0x00000000
+#define NVOS04_FLAGS_SKIP_CTXBUFFER_ALLOC_TRUE                     0x00000001
+
+#define CC_CHAN_ALLOC_IV_SIZE_DWORD    3U
+#define CC_CHAN_ALLOC_NONCE_SIZE_DWORD 8U
+
+#define NV_CHANNEL_ALLOC_PARAMS_MESSAGE_ID (0x906fU)
+
+typedef struct NV_CHANNEL_ALLOC_PARAMS {
+
+    NvHandle hObjectError;
+    NvHandle hObjectBuffer;
+    NV_DECLARE_ALIGNED(NvU64 gpFifoOffset, 8);
+    NvU32    gpFifoEntries;
+
+    NvU32    flags;
+
+    NvHandle hContextShare;
+    NvHandle hVASpace;
+
+    NvHandle hUserdMemory[NV_MAX_SUBDEVICES];
+
+    NV_DECLARE_ALIGNED(NvU64 userdOffset[NV_MAX_SUBDEVICES], 8);
+
+    NvU32    engineType;
+
+    NvU32    cid;
+
+    NvU32    subDeviceId;
+    NvHandle hObjectEccError;
+
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS instanceMem, 8);
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS userdMem, 8);
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS ramfcMem, 8);
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS mthdbufMem, 8);
+
+    NvHandle hPhysChannelGroup;
+    NvU32    internalFlags;
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS errorNotifierMem, 8);
+    NV_DECLARE_ALIGNED(NV_MEMORY_DESC_PARAMS eccErrorNotifierMem, 8);
+    NvU32    ProcessID;
+    NvU32    SubProcessID;
+
+    NvU32    encryptIv[CC_CHAN_ALLOC_IV_SIZE_DWORD];
+
+    NvU32    decryptIv[CC_CHAN_ALLOC_IV_SIZE_DWORD];
+
+    NvU32    hmacNonce[CC_CHAN_ALLOC_NONCE_SIZE_DWORD];
+    NvU32    tpcConfigID;
+} NV_CHANNEL_ALLOC_PARAMS;
+
+typedef NV_CHANNEL_ALLOC_PARAMS NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS;
