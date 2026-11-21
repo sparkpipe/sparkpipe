@@ -1117,17 +1117,19 @@ as recorded debt for models too large for a group.
     the turn's own priority class. The chat layer commits every reply it
     records. It could commit only replies that end in a tool call, where the
     next turn is certain.
-  - The pages a reply's decode steps publish carry identities no other
-    request can name. They stay in the rank page cache, unread, until
-    eviction takes them. Seal them as private pages and drop them when the
-    sequence is released. The publish of a prompt's last token is the same:
-    one copied page per request that nothing reads.
-  - The engine no longer sets the staged-publish lane flag
-    (`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED`,
-    `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED`): it marked a reply's last
-    block as a resume point once the request was released. The flag, its
-    checks and the page cache's promotion of a staged state are now unused.
-    Remove them with the next change to the rank page cache.
+  - A prompt that takes the streamed prefill still publishes the blocks of
+    its streamed span, under identities no other request can name. They stay
+    in the rank page cache, unread, until eviction takes them. No lane in
+    `deployment/lanes.json` streams. When one does, name no identity for the
+    span, as the waves after it already do, so its blocks leave at release.
+  - The engine no longer sends a publish frame or a publish flag after a
+    request's last cut, so three things are now unused: the publish-only
+    work kind (`SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH`) with the
+    engine's deferred decode publication, the adapter capability check that
+    a speculating adapter can publish decode checkpoints, and the
+    staged-publish lane flag (`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED`,
+    `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED`) with the page cache's
+    promotion of a staged state. Remove them together.
   - Every prompt of at least one block now ends with a one-row wave for its
     last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
     state, used to run its last token in the last wave.

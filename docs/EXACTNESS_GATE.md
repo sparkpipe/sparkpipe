@@ -31,8 +31,11 @@ them from the request and from nothing else.
 - **Commit.** `commit_only` computes a prompt to its end, keeps the state
   there and samples nothing. It is the warm-up.
 - **Replies.** The pages a reply's decode steps write belong to that request
-  alone. A later prompt that carries the reply computes it again as prefill,
-  from the earlier prompt's last cut. A client may start that work early: it
+  alone. After its last cut a request publishes nothing and names no block,
+  and the ranks drop the blocks it sealed when its sequence is released, so
+  what a turn leaves in the cache does not grow with its reply. A later
+  prompt that carries the reply computes it again as prefill, from the
+  earlier prompt's last cut. A client may start that work early: it
   commits the earlier prompt with the reply, naming one token before the
   earlier prompt's end as a cut, and the later prompt resumes where the
   reply ends. The waves are the same either way. The chat layer does this

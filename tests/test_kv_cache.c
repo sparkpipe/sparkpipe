@@ -2163,7 +2163,6 @@ static void SparkTestKvPageCacheVerifyCommitsKept(void)
 	SparkTestKvIdentity(&identities[1],52u);
 	SparkTestKvPageLane(&lane,1u,0u,1u,7u);
 	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
-	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
 	lane.block_identities = identities;
 	lane.block_identity_count = 2u;
 	assert(SparkKvPageCacheBeginLane(&fixture.cache,&lane,&again) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -2755,6 +2754,50 @@ static void SparkTestKvPageCacheUnpublishedSpanIdentities(void)
 	assert(SparkKvPageCacheReleaseLane(&fixture.cache,1u,8u) == SPARK_STATUS_OK);
 	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,6u) == SPARK_STATUS_OK);
 	printf("kv page cache: a lane that ends inside a block without publishing seals the block it crossed under the identity it names, wave after wave, another sequence attaches to each sealed block, and one attaches inside a block at the publish that follows: ok\n");
+}
+
+static uint32_t SparkTestKvPageValidEntries(const SparkKvPageCache *cache)
+{
+	uint32_t index,count = 0u;
+	for (index=0u; index<cache->entry_capacity; index++)
+		if ( (cache->entries[index].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID) != 0u )
+			count++;
+	return(count);
+}
+
+static void SparkTestKvPageCachePrivateTailLeavesAtRelease(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity named[1u];
+	const SparkKvPageCacheEntry *entries;
+	uint32_t terminal,turn;
+	SparkTestKvPageInitialize(&fixture);
+	entries = fixture.cache.entries;
+	for (turn=0u; turn<3u; turn++)
+	{
+		SparkTestKvPageLane(&lane,10u + turn,0u,0u,1u);
+		(void)SparkTestKvPageBegin(&fixture,&lane);
+		assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+		SparkTestKvPageLane(&lane,10u + turn,0u,1u,7u);
+		lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
+		(void)SparkTestKvPageBegin(&fixture,&lane);
+		assert(SparkKvPageCacheCompleteVerifyLane(&fixture.cache,&lane,5u) == SPARK_STATUS_OK);
+		terminal = fixture.cache.sequences[0u].terminal_entry_index;
+		assert(terminal != SPARK_KV_PAGE_CACHE_NO_INDEX && entries[terminal].token_count == 4u &&
+			(entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u && SparkTestKvPageValidEntries(&fixture.cache) == 1u);
+		assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,10u + turn) == SPARK_STATUS_OK);
+		assert(SparkTestKvPageValidEntries(&fixture.cache) == 0u);
+	}
+	SparkTestKvIdentity(&named[0u],71u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,1u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvPageCacheVerifyLane(&fixture,&lane,1u,7u,named,1u);
+	assert(SparkKvPageCacheCompleteVerifyLane(&fixture.cache,&lane,5u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(SparkTestKvPageValidEntries(&fixture.cache) == 1u && SparkKvPageCachePrefixReady(&fixture.cache,&named[0u],4u) == 1u);
+	printf("kv page cache: a block a sequence seals without naming it leaves the cache when the sequence is released, turn after turn, and a block it names stays: ok\n");
 }
 
 static void SparkTestKvPageCacheSpanKeepsLivePagesResident(void)
@@ -3828,6 +3871,7 @@ int main(void)
 	SparkTestKvPageCacheSpanKeepsLivePagesResident();
 	SparkTestKvPageCacheSpanBlockIdentities();
 	SparkTestKvPageCacheUnpublishedSpanIdentities();
+	SparkTestKvPageCachePrivateTailLeavesAtRelease();
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	SparkTestKvPageCacheUnreadPrefixIsDropped();
 	SparkTestKvPageCacheDeduplicatedPublishIsARead();

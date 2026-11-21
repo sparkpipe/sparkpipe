@@ -331,7 +331,8 @@ static uint32_t SparkModelServingAdapterLaneBlockIdentitiesValid(
 	if ( cache_block_token_count == 0u || lane->context_token_count <= lane->sequence_position )
 		return(lane->cache_block_identity_count == 0u ? 1u : 0u);
 	if ( verify != 0u && (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) == 0u )
-		return(lane->cache_block_identity_count == lane->context_token_count / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count) ? 1u : 0u);
+		return(lane->cache_block_identity_count == 0u ||
+			lane->cache_block_identity_count == lane->context_token_count / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count) ? 1u : 0u);
 	crossed = (lane->context_token_count - 1u) / cache_block_token_count - (uint32_t)(lane->sequence_position / cache_block_token_count);
 	if ( (lane->flags & SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH) != 0u )
 		return(lane->cache_block_identity_count == crossed ? 1u : 0u);

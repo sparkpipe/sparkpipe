@@ -256,7 +256,8 @@ cache held (`docs/EXACTNESS_GATE.md`).
   cuts a request lists in `keep`.
 - A commit (`commit_only`) computes a prompt to its end, keeps the state
   there and samples nothing. It is how a prefix is warmed.
-- A reply's decode steps are never reused. A follow-up prompt resumes one
+- A reply's decode steps are never reused, and nothing of them stays in the
+  cache once the request is released. A follow-up prompt resumes one
   token before the earlier prompt's end and computes the reply again as
   prefill, so a turn costs the previous reply's tokens of prefill on top of
   its new input. A model with `reply_commit` set in the chat layer starts

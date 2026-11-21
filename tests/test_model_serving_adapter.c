@@ -1260,7 +1260,7 @@ static void TestVerifySubmission(void)
 	lanes[1].cache_block_identity_first = 0u;
 	submission.cache_block_identity_count = 0u;
 	submission.cache_block_identities = 0;
-	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	lanes[0].cache_block_identity_count = 1u;
 	lanes[1].cache_block_identity_first = 1u;
 	submission.cache_block_identity_count = 1u;

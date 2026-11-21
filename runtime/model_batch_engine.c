@@ -1924,7 +1924,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		emitted = request->generated_token_count - generated_before;
 		complete = submission->verify != 0u ? (emitted != 0u ? 1u : 0u) : (emitted == completion->tokens_per_sequence ? 1u : 0u);
 		checkpoint = submission->verify != 0u ? 0u : SparkModelBatchChainCheckpoint(engine,request,generated_before,completion->tokens_per_sequence);
-		if ( complete != 0u && request->state == SPARK_MODEL_BATCH_REQUEST_READY_DECODE &&
+		if ( complete != 0u && request->state == SPARK_MODEL_BATCH_REQUEST_READY_DECODE && request->cache_private == 0u &&
 			(checkpoint != 0u || request->cache_deferred_publication != 0u) &&
 			(engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_CACHE_PUBLISH) != 0u &&
 			request->prompt_token_count + request->generated_token_count - 1u > request->cache_published_token_count )
@@ -3423,6 +3423,8 @@ static void SparkModelBatchInitializeLane(
 		lane->cache_prefix_token_count = request->cache_prefix_token_count;
 		lane->cache_prefix_identity = request->cache_prefix_identity;
 	}
+	if ( request->cache_private != 0u && sequence_position >= request->defer_end && work_kind != SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH )
+		return;
 	if ( work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && (context_token_count > sequence_position + 1u || engine->building_verify_frame != 0u) )
 	{
 		SparkModelBatchVerifyIdentities(engine,request,request_slot,lane);
@@ -3513,6 +3515,12 @@ static float SparkModelBatchPlanFrameCost(const SparkModelBatchEngine *engine,co
 	return((cost > token_ns ? cost : token_ns) + wait_ns);
 }
 
+static float SparkModelBatchPlanTokenCost(const SparkModelBatchEngine *engine,const SparkModelBatchPlan *plan,uint32_t context)
+{
+	const float cost = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
+	return(cost > 0.0f || plan->lanes < 2u ? cost : SparkSpeculationFrameBatchStepCost(&engine->frame_model,plan->lanes,context));
+}
+
 static uint32_t SparkModelBatchPlanOverCap(const SparkModelBatchEngine *engine,const SparkModelBatchPlan *plan,uint32_t rows,uint32_t context)
 {
 	return(plan->cost_cap_ns != 0.0f && SparkSpeculationFrameBatchCost(&engine->frame_model,plan->lanes,plan->base_rows + rows,context) > plan->cost_cap_ns ? 1u : 0u);
@@ -3545,7 +3553,7 @@ static uint32_t SparkModelBatchExtendModelDraft(
 	SparkSpeculationLookupMatch match;
 	const SparkSpeculationHazard *engine_hazard,*request_hazard;
 	const uint32_t context = position + 1u > plan->context ? position + 1u : plan->context;
-	const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
+	const float token_ns = SparkModelBatchPlanTokenCost(engine,plan,context);
 	const uint32_t sampled = request->sampling.inverse_temperature != 0.0f ? 1u : 0u;
 	uint32_t available,index,extension = 0u,match_class;
 	float survival = 1.0f,gain = 0.0f,best_gain = 0.0f,best_rate,cost;
@@ -3759,7 +3767,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	if ( answer == 0 )
 	{
 		if ( depth == 0u || request->generated_token_count < request->model_backoff_until ||
-			!(SparkSpeculationFrameTokenCost(&engine->frame_model,position + 1u) > 0.0f) )
+			!(SparkModelBatchPlanTokenCost(engine,plan,position + 1u) > 0.0f) )
 			return(0u);
 		answer = SparkModelBatchObtainDraft(engine,request,slot,tokens,position,depth,node_capacity);
 		if ( answer == 0 )
@@ -3777,7 +3785,7 @@ static uint32_t SparkModelBatchPlanModelDraft(
 	engine->draft_node_count = count;
 	{
 		const uint32_t context = position + 1u > plan->context ? position + 1u : plan->context;
-		const float token_ns = SparkSpeculationFrameTokenCost(&engine->frame_model,context);
+		const float token_ns = SparkModelBatchPlanTokenCost(engine,plan,context);
 		float best_rate = 0.0f, best_gain = 0.0f, drafted = 0.0f, reach = 1.0f;
 		wait_ns = (float)engine->model_draft_wait_us * 1000.0f / (float)engine->model_draft_rounds;
 		for (index=1u; index<=depth; index++)
@@ -4452,7 +4460,7 @@ static void SparkModelBatchRecordTiming(
 		if ( submission->lanes[lane].context_token_count > state->context )
 			state->context = submission->lanes[lane].context_token_count;
 	state->clean = submission->lane_count == 1u &&
-		(submission->lanes[0].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH)) == 0u ? 1u : 0u;
+		(submission->lanes[0].flags & (SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN)) == 0u ? 1u : 0u;
 }
 
 static void SparkModelBatchObserveCost(

@@ -90,6 +90,10 @@ Driver ABI 21: a cache lane may name the blocks it crosses whether or not it
 publishes. A prefill wave that ends inside a block at a cut where no state is
 kept publishes nothing, and the KV page cache seals each block it crossed
 under the identity the lane names, so the chain stays shareable past it.
+A lane may also name none of them, a verify lane included (it names every
+block end or none): after a request's last cut the engine names no block and
+publishes nothing. A block sealed without a name belongs to its sequence
+alone, and the page cache frees it when that sequence is released.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.
