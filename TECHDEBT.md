@@ -1138,29 +1138,24 @@ as recorded debt for models too large for a group.
     none, so that request resumes at the last anchor or row-grid wave end it
     shares with the session. Derive the reply boundaries from the rendered
     prompt where the template puts a control token on the boundary.
-  - The chat layer names one cut for the opening, where the system turns
-    and the tools end, and one where a context pack ends, and asks for state
-    at both. Inside the opening it names none: system blocks, the tool block
-    and the project context are rendered as one text and joined before
-    tokenizing (`tools/serving/chat_shapes.py`), so a block boundary is not a
-    token boundary. Two conversations that share only the first system block
-    resume at the last checkpoint anchor inside it. The same holds inside
-    a message: two requests that carry the same document and ask different
-    questions after it, in one user message, share nothing past the last
-    anchor inside the document. A client's `cache_control` marks are read
-    and ignored; a mark on a block that is not the last of its message, or
-    on a system block, should become a cut with `keep` where its block
-    ends. Tokenizing the blocks apart would change the tokens at each join
-    against the publisher's whole-text tokenization. The cut that keeps the
-    publisher's tokens is the last token boundary of the whole text at or
-    before the block's end, read from the tokenizer's offsets; two prompts
-    that share the block name the same cut when the join starts a new
-    pre-token (a blank line does). A mark on the last block of the last
-    message needs nothing: state is always kept one token before the
-    prompt's end, and a later turn names that position as a cut.
-  - The opening cut costs each request one render of the opening and a
-    digest of its system prompt and tools (cached by that digest). Not
-    measured.
+  - The 8-token margin of a block's cut (`tools/serving/prompt_cuts.py`) is
+    measured on one served tokenizer only: Qwen 3.8, over 18,456 paragraph
+    ends of 79 repository texts with four joins, where at most 2 trailing
+    tokens changed (0 in 92%, 1 in 8%, 2 in three cases). The other served
+    tokenizers are on the hub. Run `prompt_cuts.py margin` there with every
+    model directory of `deployment/hub/chat_frontend.json`; it fails when
+    the margin is not above the worst count. A tokenizer that needs more
+    only makes two prompts share less at that block, never differ.
+  - Each state kept at a block's cut is one recurrent-state copy in the
+    lane's state store. A head with many system blocks keeps one per block.
+    Measure what a head costs to compute cold with its cuts, and what its
+    states take, before raising the number of blocks a client may mark.
+  - The head's cuts cost each request a digest of its system prompt, tools
+    and first user message, and each new head one render and one
+    tokenization per block (cached by that digest). Not measured.
+  - A block of the head is found in the rendered prompt by its text. A
+    template that rewrites a block's text (trims it, escapes it) gets no cut
+    for that block.
   - A pack's `resume_from` is an estimate from the model's `resume_tokens`
     (64 for every model in `deployment/hub/chat_frontend.json`). A refreshed
     pack resumes at a checkpoint anchor or a row-budget wave end, so the

@@ -73,6 +73,7 @@ chat_replay = load_sibling("chat_replay")
 chat_shapes = load_sibling("chat_shapes")
 working_state = load_sibling("working_state")
 context_packs = load_sibling("context_packs")
+prompt_cuts = load_sibling("prompt_cuts")
 memory_connector = load_sibling("memory_connector")
 context_packs.RequestError = RequestError
 memory_connector.RequestError = RequestError
@@ -1076,18 +1077,24 @@ class Model:
             prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
         raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
 
-    def opening(self, messages, tools, kwargs, pack=None):
-        leading = []
-        for message in messages:
+    def structure(self, messages, marks, tools, kwargs, pack=None):
+        leading, blocks = [], []
+        for index, message in enumerate(messages):
             if message.get("role") != "system":
                 break
-            leading.append({key: value for key, value in message.items() if key != chat_shapes.HANDLES})
-        key = hashlib.sha256(chat_replay.canonical([leading, tools or [], kwargs, pack[0] if pack else None]).encode()).digest()
+            leading.append(plain_message(message))
+            blocks.append(message_blocks(message, marks[index] if index < len(marks) else None))
+        first = messages[len(leading)] if len(leading) < len(messages) and messages[len(leading)].get("role") == "user" else None
+        asked = message_blocks(first, marks[len(leading)] if len(leading) < len(marks) else None) if first is not None else []
+        first = plain_message(first) if asked else None
+        if pack is not None and blocks:
+            blocks[0] = []
+        key = hashlib.sha256(chat_replay.canonical([leading, first, blocks, asked, tools or [], kwargs, pack[0] if pack else None]).encode()).digest()
         if key in self.opening_cache:
             self.opening_cache.move_to_end(key)
             return self.opening_cache[key]
         try:
-            found = self.opening_probe(leading, tools, kwargs, pack)
+            found = self.structure_probe(leading, first, blocks, asked, tools, kwargs, pack)
         except RequestError:
             found = None
         self.opening_cache[key] = found
@@ -1095,11 +1102,11 @@ class Model:
             self.opening_cache.popitem(last=False)
         return found
 
-    def opening_probe(self, leading, tools, kwargs, pack):
+    def structure_probe(self, leading, first, blocks, asked, tools, kwargs, pack):
         context = dict(self.template_defaults)
         context.update(kwargs)
         pattern = control_pattern(self.vocabulary)
-        text, pieces = self.renderer.pieces(leading + [{"role": "user", "content": GENERATION_PROBE}], tools, context)
+        text, pieces = self.renderer.pieces(leading + [first if first is not None else {"role": "user", "content": GENERATION_PROBE}], tools, context)
         marks = []
         if pack is not None:
             pieces = context_packs.splice(text, pieces, pack[1])
@@ -1108,14 +1115,44 @@ class Model:
                 offset += len(piece)
                 if not isinstance(special, bool):
                     marks.append(offset)
-        probe = text.find(GENERATION_PROBE)
-        end = max((match.start() for start, stop, special in template_spans(pieces) if special and start < probe
-                   for match in pattern.finditer(text, start, min(stop, probe))), default=0) if pattern is not None else 0
-        marks = [mark for mark in marks if mark <= end] + [end]
+        cursor, opened, system_ends, user_ends = 0, None, [], []
+        for group in blocks:
+            for block, _ in group:
+                at = text.find(block, cursor)
+                if at < 0:
+                    continue
+                opened = at if opened is None else opened
+                cursor = at + len(block)
+                system_ends.append(cursor)
+        user = text.find(GENERATION_PROBE, cursor) if first is None else -1
+        for block, kept in asked if first is not None else []:
+            at = text.find(block, cursor)
+            if at < 0:
+                continue
+            user = at if user < 0 else user
+            cursor = at + len(block)
+            user_ends.append((cursor, kept))
+        end = max((match.start() for start, stop, special in template_spans(pieces) if special and start < user
+                   for match in pattern.finditer(text, start, min(stop, user))), default=0) if pattern is not None else 0
         if end <= 0:
             return None
-        ids = array("I", encode_span(self, pieces, 0, end))
-        return ids, sorted({len(encode_span(self, pieces, 0, mark)) for mark in marks[:-1]} | {len(ids)})
+        bounds = [(mark, True, True) for mark in marks if mark <= end] + [(end, True, True)]
+        if tools and opened:
+            bounds.append((opened, False, True))
+        bounds.extend((offset, False, True) for offset in system_ends if offset < end)
+        bounds.extend((offset, False, kept) for offset, kept in user_ends[:-1] if offset > end)
+        bounds.sort()
+        opening = array("I", encode_span(self, pieces, 0, end))
+        counts = [len(opening) if offset == end else len(encode_span(self, pieces, 0, offset)) for offset, _, _ in bounds]
+        named, floor = [], 0
+        for index, (offset, exact, kept) in enumerate(bounds):
+            count = counts[index]
+            later = next((counts[other] for other in range(index + 1, len(bounds)) if bounds[other][1]), None)
+            cut = count if exact else prompt_cuts.structural_cut(count)
+            if cut > floor and (exact or later is None or later - count >= prompt_cuts.BLOCK_TOKENS):
+                named.append((cut, kept, exact))
+            floor = max(floor, count)
+        return opening, named
 
     def generation_prompt(self, tools, kwargs):
         key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
@@ -1850,17 +1887,39 @@ def request_positions(value, name, total):
     return list(value)
 
 
-def opening_cuts(model, messages, tools, kwargs, pack, ids):
-    found = model.opening(messages, tools, kwargs, pack)
+def plain_message(message):
+    return {key: value for key, value in message.items() if key not in (chat_shapes.HANDLES, chat_shapes.BLOCKS)}
+
+
+def message_blocks(message, marked):
+    if marked is not None:
+        return [[block, bool(kept)] for block, kept in marked if block]
+    content = message.get("content")
+    if isinstance(content, str):
+        return [[content, False]] if content else []
+    if isinstance(content, list):
+        return [[part["text"], False] for part in content if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str) and part["text"]]
+    return []
+
+
+def opening_cuts(model, messages, marks, tools, kwargs, pack, ids):
+    found = model.structure(messages, marks, tools, kwargs, pack)
     if found is None:
-        return []
-    opening, ends = found
+        return [], []
+    opening, named = found
     head = array("I", ids[:len(opening)])
-    return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and head[:end] == opening[:end]]
+    cuts, keep = [], []
+    for cut, kept, exact in named:
+        if not CACHE_BLOCK_TOKENS <= cut < len(ids) or (exact and head[:cut] != opening[:cut]):
+            continue
+        cuts.append(cut)
+        if kept:
+            keep.append(cut)
+    return cuts, keep
 
 
-def name_cuts(model, engine, replay, kept):
-    every = structure_cuts(replay, len(engine["prompt_token_ids"]), kept)
+def name_cuts(model, engine, replay, structural, kept):
+    every = structure_cuts(replay, len(engine["prompt_token_ids"]), structural)
     cuts = every[:ENGINE_MAX_CUTS]
     named = set(cuts)
     keep = [cut for cut in sorted(set(kept)) if cut in named]
@@ -2863,7 +2922,7 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        cuts, dropped = name_cuts(model, engine, replay, opening_cuts(model, messages, tools, kwargs, pack, engine["prompt_token_ids"]))
+        cuts, dropped = name_cuts(model, engine, replay, *opening_cuts(model, messages, [], tools, kwargs, pack, engine["prompt_token_ids"]))
         plan["cuts_dropped"] = dropped
         trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
@@ -3482,8 +3541,12 @@ class Frontend:
         body = await self.read_body(request) if body is None else body
         if shape == "messages":
             translated = chat_shapes.messages_request(body)
+            translated["blocks"] = chat_shapes.take_blocks(translated["messages"])
         else:
-            translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers), local)
+            asked = chat_shapes.responses_request(body)
+            taken = chat_shapes.take_blocks(asked["input_messages"])
+            translated = self.responses_input(asked, scope, self.member_of(key, request.headers), local)
+            translated["blocks"] = [None] * (len(translated["messages"]) - len(taken)) + taken
         model, bulk, pack = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
@@ -3494,6 +3557,7 @@ class Frontend:
 
     async def harness_plan(self, model, translated, scope, headers, key, bulk):
         messages = normalize_messages(translated["messages"])
+        marks = list(translated.get("blocks") or [])
         pack = None
         tools = translated["tools"] or None
         choice = translated["tool_choice"]
@@ -3523,11 +3587,11 @@ class Frontend:
                                                   "target": None, "identity": list(identity)})
             if prepared is not None and prepared["session"] is not None:
                 session = memory_connector.Session(self.memory, prepared["session"])
-                messages, tools = normalize_messages(prepared["messages"]), prepared["tools"]
+                messages, tools, marks = normalize_messages(prepared["messages"]), prepared["tools"], []
                 lined = {key: prepared["trace"][key] for key in ("memory_lined", "memory_open")}
         if session is None and translated.get("pack_request") is not None:
             pack = self.choose_pack(translated["pack_request"], messages, tools, kwargs)
-            messages = [context_packs.pack_message(pack[0])] + messages
+            messages, marks = [context_packs.pack_message(pack[0])] + messages, [None] + marks
         contexts = chat_replay.context_digests(model.id, tools, kwargs, messages)
         replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts, pack and pack[1])
         messages = without_handles(messages)
@@ -3551,7 +3615,10 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids) + ([len(ids) - len(forced_ids) - 1] if forced_ids else []))[1]
+        structural, kept = opening_cuts(model, messages, marks, tools, kwargs, pack, ids)
+        if forced_ids:
+            structural, kept = structural + [len(ids) - len(forced_ids) - 1], kept + [len(ids) - len(forced_ids) - 1]
+        plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, structural, kept)[1]
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)

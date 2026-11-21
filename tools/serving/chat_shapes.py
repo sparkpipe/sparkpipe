@@ -21,6 +21,7 @@ CUSTOM_INPUT = "input"
 BUDGET_EFFORTS = ((4096, "low"), (16384, "medium"))
 EFFORT_FALLBACKS = {"max": ("high",), "xhigh": ("high",), "minimal": ("minimal", "low"), "none": ("minimal", "low")}
 HANDLES = "replay_handles"
+BLOCKS = "prompt_blocks"
 AFFINITY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 SESSION_MARK = "_session_"
 
@@ -87,6 +88,26 @@ def joined(parts):
     if all(part.get("type") == "text" for part in parts):
         return "\n\n".join(part["text"] for part in parts)
     return parts
+
+
+def with_blocks(message, blocks):
+    blocks = [[text, bool(kept)] for text, kept in blocks if text]
+    if isinstance(message.get("content"), str) and (len(blocks) > 1 or any(kept for _, kept in blocks)):
+        message[BLOCKS] = blocks
+    return message
+
+
+def take_blocks(messages):
+    return [message.pop(BLOCKS, None) for message in messages]
+
+
+def marked(block):
+    return block.get("cache_control") is not None
+
+
+def system_message(content, where):
+    return with_blocks({"role": "system", "content": text_only(content, where)},
+                       [(str(block.get("text") or ""), marked(block)) for block in block_list(content, where)])
 
 
 def block_list(content, where):
@@ -173,16 +194,19 @@ def assistant_from_blocks(content):
 
 
 def user_from_blocks(content, request):
-    out, parts = [], []
+    out, parts, marks = [], [], []
 
     def flush():
         if parts:
-            out.append({"role": "user", "content": joined(list(parts))})
+            out.append(with_blocks({"role": "user", "content": joined(list(parts))}, [(part.get("text", ""), kept) for part, kept in zip(parts, marks)]))
             parts.clear()
+            marks.clear()
 
     blocks = block_list(content, "user content")
     for block in blocks:
         kind = block.get("type")
+        if kind in ("text", "image", "document"):
+            marks.append(marked(block))
         if kind == "text":
             parts.append({"type": "text", "text": str(block.get("text") or "")})
         elif kind == "image":
@@ -261,9 +285,8 @@ def messages_request(body):
     messages = []
     system = body.get("system")
     if system is not None:
-        text = text_only(system, "system")
-        if text:
-            messages.append({"role": "system", "content": text})
+        if text_only(system, "system"):
+            messages.append(system_message(system, "system"))
     if not isinstance(body.get("messages"), list) or not body["messages"]:
         raise invalid("messages must be a non-empty array")
     for message in body["messages"]:
@@ -271,7 +294,7 @@ def messages_request(body):
             raise invalid("every message must be an object")
         role = message.get("role")
         if role == "system":
-            messages.append({"role": "system", "content": text_only(message.get("content"), "a system message")})
+            messages.append(system_message(message.get("content"), "a system message"))
         elif role == "assistant":
             messages.append(assistant_from_blocks(message.get("content")))
         elif role == "user":
@@ -380,7 +403,9 @@ def responses_messages(items, request):
             if role not in ("user", "system", "developer"):
                 raise invalid("message roles must be user, assistant, system or developer")
             flush()
-            out.append({"role": role, "content": responses_text(item.get("content"), request, f"a {role} message")})
+            content = item.get("content")
+            out.append(with_blocks({"role": role, "content": responses_text(content, request, f"a {role} message")},
+                                   [(str(part.get("text") or ""), False) for part in content if isinstance(part, dict)] if isinstance(content, list) else []))
         elif kind == "reasoning":
             turn = turn or Turn()
             text = reasoning_text(item)

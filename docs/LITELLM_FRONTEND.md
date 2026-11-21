@@ -603,9 +603,17 @@ engine's `cuts` from the prompt's structure:
 
 - where the opening ends: the leading system turns and the tools, up to the
   control token that starts the first message. The chat layer finds it by
-  rendering the opening with a probe message, and names it only when the
-  prompt's tokens begin with the opening's tokens and it is at least one
-  cache block long;
+  rendering the head of the prompt (the opening and the first user message)
+  on its own, and names it only when the prompt's tokens begin with the
+  opening's tokens and it is at least one cache block long;
+- where each block of the head ends: the tools, each system block (each
+  `system` text block on Messages, each leading system or developer message
+  elsewhere) and each content block of the first user message but its last.
+  A block's end is not a token boundary, so its cut is the last cache block
+  at or before the tokens of the prompt's text through the block, tokenized
+  by itself, less 8 tokens (`tools/serving/prompt_cuts.py`). Two prompts
+  with the same block get the same cut. A block's cut within one cache
+  block of the opening's end is left out;
 - where a context pack ends, which is where the pack's warm-up commit ended;
 - one token before each replayed reply began, and where the reply ends;
 - one token before the opening of a forced tool call. A forced opening is
@@ -618,14 +626,15 @@ only the tail after the last named cut is computed again; `/health` counts
 such requests per model in `cuts_capped`, and each logs a `cuts_capped`
 line.
 
-It lists the first two and the last in `keep`, so the engine keeps state
-there. Another
-conversation with the same system prompt and tools, or another request on
-the pack, then resumes at that cut instead of at the last checkpoint anchor
-before it. Cuts inside the opening (between system blocks, or between the
-system prompt and the tools) and inside a message (after a document that a
-question follows) are not named, and a client's `cache_control` marks are
-still read and ignored (`TECHDEBT.md`, Exact reuse).
+It lists in `keep`, so that the engine keeps state there: the opening's
+end, the tools' and system blocks' ends, a pack's end, the cut before a
+forced tool call, and in the first user message the end of a block that
+carries `cache_control`. A conversation that shares the tools and the first
+system block with an earlier one, or a document in its first message, or a
+pack, then resumes at that cut instead of at the last checkpoint anchor
+before it. `cache_control` anywhere else is read and changes nothing: state
+is always kept one token before a prompt's end, and a cut that a later turn
+might not name would stop that turn from resuming.
 
 `max_tokens: 0` on Messages, or
 `commit_only: true` on Chat Completions and Responses, is a commit. The

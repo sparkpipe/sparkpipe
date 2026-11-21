@@ -66,7 +66,7 @@ class FakeModel(chat_frontend.Model):
     def render(self, messages, tools, kwargs):
         return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
-    def opening(self, messages, tools, kwargs, pack=None):
+    def structure(self, messages, marks, tools, kwargs, pack=None):
         return None
 
 
@@ -87,7 +87,7 @@ check(not hasattr(chat_frontend, "cache_points") and chat_frontend.structure_cut
       "cuts come from the prompt's opening and the turns it replays: rising, distinct, inside the prompt")
 limit = chat_frontend.ENGINE_MAX_CUTS
 long_body = {"prompt_token_ids": [0] * (3 * limit + 100)}
-named, dropped = chat_frontend.name_cuts(model, long_body, {"cuts": list(range(2, 2 * limit + 40, 2))}, [1, 2 * limit + 51])
+named, dropped = chat_frontend.name_cuts(model, long_body, {"cuts": list(range(2, 2 * limit + 40, 2))}, [1, 2 * limit + 51], [1, 2 * limit + 51])
 check(named == long_body["cuts"] == [1] + list(range(2, 2 * limit, 2)) and len(named) == limit and dropped == 21 and long_body["keep"] == [1] and
       chat_frontend.CUTS_CAPPED[model.id] == 1,
       f"past the engine's limit the oldest cuts are kept and the newest are not named, so the first waves stay the same from turn to turn; the event is counted: {len(named)} {dropped}")

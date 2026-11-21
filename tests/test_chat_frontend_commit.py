@@ -161,7 +161,7 @@ async def run_reply_commit(tmp, check):
         opening = len(engine.tokens("</think><tool_call>"))
         before = len(prompt) - opening - 1
         check(status == 200 and harness.tokenizer.decode(prompt[-opening:], skip_special_tokens=False) == "</think><tool_call>" and
-              forced.get("cuts", [None])[-1] == before and forced.get("keep", [None])[-1] == before and len(forced["cuts"]) == 2,
+              forced.get("cuts", [None])[-1] == before and forced.get("keep", [None])[-1] == before and len(forced["cuts"]) >= 2,
               f"a turn with a forced tool choice names one token before its forced opening as a cut and asks for state there: {forced.get('cuts')} {forced.get('keep')} {len(prompt)}")
         found = await commits_seen(engine, seen + 1)
         commit = found[-1] if len(found) > seen else {}

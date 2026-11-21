@@ -18,8 +18,13 @@ them from the request and from nothing else.
   checkpoint anchor, a cut the request names, one token before the prompt's
   end, and the prompt's end. A request names its cuts in `cuts`: token
   counts where its structure ends a wave. The chat layer names where the
-  prompt's opening ends, where a context pack ends, one token before each
-  replayed reply began and where it ends.
+  prompt's opening ends, where each block of the head ends (the tools, each
+  system block, each block of the first user message but its last), where a
+  context pack ends, one token before each replayed reply began and where it
+  ends. A block's end is not a token boundary, so its cut is the last cache
+  block at or before the tokens of the text through the block, tokenized by
+  itself, less a margin (`tools/serving/prompt_cuts.py`); the gate's
+  `opening` case takes its cuts from the same function.
 - **Resume.** A request resumes only at a wave end of its own cold run, and
   only where every wave up to there is the same as in the run that left the
   state. The prefix index stores a tag of the waves with each resume point,
