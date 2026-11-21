@@ -275,7 +275,7 @@ static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object
 static SparkStatus StageServingParseStreamed(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
 {
 	static const char *const members[] = { "partner_pack", "fabric_device", "pair_device", "node_rows", "gid_index", "pair_gid_index",
-		"traffic_class", "dense_buffers", "expert_slots" };
+		"traffic_class", "dense_buffers", "expert_slots", "index_fp8" };
 	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
 	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
 		StageServingKnownMembers(state, doc, object, "streamed_prefill", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK ||
@@ -288,7 +288,8 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 		StageServingU32Member(state, doc, object, "streamed_prefill", "pair_gid_index", &streamed->pair_gid_index) != SPARK_STATUS_OK ||
 		StageServingU32Member(state, doc, object, "streamed_prefill", "traffic_class", &streamed->traffic_class) != SPARK_STATUS_OK ||
 		StageServingU32Member(state, doc, object, "streamed_prefill", "dense_buffers", &streamed->dense_buffers) != SPARK_STATUS_OK ||
-		StageServingU32Member(state, doc, object, "streamed_prefill", "expert_slots", &streamed->expert_slots) != SPARK_STATUS_OK )
+		StageServingU32Member(state, doc, object, "streamed_prefill", "expert_slots", &streamed->expert_slots) != SPARK_STATUS_OK ||
+		StageServingOptionalU32Member(state, doc, object, "streamed_prefill", "index_fp8", 0u, &streamed->index_fp8) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	streamed->partner_pack_path = state->streamed_partner_pack;
 	streamed->fabric_device = state->streamed_fabric_device;
@@ -296,6 +297,11 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	if ( streamed->node_rows == 0u || streamed->partner_pack_path == 0 || streamed->fabric_device == 0 || streamed->pair_device == 0 )
 	{
 		fprintf(stderr, "%s adapter: streamed_prefill needs node_rows, partner_pack, fabric_device and pair_device\n", state->model->module_tag);
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	if ( streamed->index_fp8 > 1u )
+	{
+		fprintf(stderr, "%s adapter: streamed_prefill.index_fp8 is 0 (BF16 index keys and queries) or 1 (FP8 as the publisher's engine)\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
 	return SPARK_STATUS_OK;

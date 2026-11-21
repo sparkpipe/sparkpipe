@@ -93,6 +93,9 @@ current authority.
 - [`K3_VS_GB10_VLLM.md`](K3_VS_GB10_VLLM.md): K3 against the gb10-vllm
   stack, lever by lever, with SparkPipe's numbers from
   [`PERFORMANCE_STATUS.md`](../PERFORMANCE_STATUS.md).
+- [`K3_PREFILL_PLAN.md`](K3_PREFILL_PLAN.md): Kimi K3.1 Pro 1M-token
+  prefill: the measured split, the cost model and the levers ranked by
+  minutes saved.
 
 ## Speculation
 

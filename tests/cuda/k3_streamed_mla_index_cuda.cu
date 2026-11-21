@@ -210,28 +210,26 @@ static void MiSetup(MiNode *n,uint32_t node,uint32_t nodes,NodeEmulationWorld *w
 	x->index_store = MiView<K3IndexKv>(owned,table,error);
 	x->index_context = x->key_context;
 	x->index_local = MiAlloc<uint16_t>((uint64_t)rows * K3_INDEX_DIM);
-	x->index_keys = MiAlloc<uint16_t>((uint64_t)MI_ROWS * K3_INDEX_DIM);
-	x->index_packed = MiAlloc<uint8_t>((uint64_t)SparkKvShardGatherKeys(owned,MI_ROWS) * K3IndexKv::kSlotBytes);
+	x->index_full = MiAlloc<uint8_t>((uint64_t)MI_ROWS * K3IndexKv::kSlotBytes);
 	x->index_heads_local = MiAlloc<uint16_t>((uint64_t)rows * K3_INDEX_HEADS);
 	x->index_heads = MiAlloc<uint16_t>((uint64_t)MI_ROWS * K3_INDEX_HEADS);
 	x->index_query = MiAlloc<uint16_t>((uint64_t)MI_CHUNK * K3_INDEX_QUERY);
-	x->index_score_floats = (uint64_t)MI_CHUNK * SparkKvShardGatherKeys(owned,MI_ROWS);
+	x->index_score_floats = (uint64_t)MI_CHUNK * MI_ROWS;
 	x->index_scores = MiAlloc<float>(x->index_score_floats);
-	x->index_send = MiAlloc<uint2>((uint64_t)nodes * MI_CHUNK * K3_INDEX_TOPK);
-	x->index_received = MiAlloc<uint2>((uint64_t)nodes * MI_CHUNK * K3_INDEX_TOPK);
+	x->index_send = MiAlloc<uint2>((uint64_t)MI_CHUNK * K3_INDEX_TOPK);
 	x->index_bitmap_words = LmIndexSelectBitmapWords(MI_ROWS);
 	x->index_bitmaps = MiAlloc<uint32_t>((uint64_t)MI_CHUNK * 2u * x->index_bitmap_words);
 	x->index_selected_local = MiAlloc<uint32_t>((uint64_t)rows * K3_INDEX_TOPK);
-	x->index_selected = MiAlloc<uint32_t>((uint64_t)MI_ROWS * K3_INDEX_TOPK);
 	x->index_error = (LmFrameError *)MiAlloc<uint8_t>(sizeof(LmFrameError));
 	x->index_chunk = MI_CHUNK;
 	x->key_pages = table;
 	x->zero_rows = x->pass_sequence_of_row;
 	x->key_error = error;
 	x->sparse_rows = MI_SPARSE_ROWS;
-	x->sparse_query = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_MLA_KV_A_DIM);
-	x->sparse_partials = MiAlloc<float>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
-	x->sparse_latent = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_KV_LORA_RANK);
+	x->sparse_query = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * K3_MLA_KV_A_DIM);
+	x->sparse_partials = MiAlloc<float>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
+	x->sparse_latent = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * K3_MLA_HEADS * K3_KV_LORA_RANK);
+	x->sparse_slice = MiAlloc<uint16_t>((uint64_t)MI_SPARSE_ROWS * MI_HEADS * K3_MLA_KV_A_DIM);
 	MI_CUDA(cudaStreamCreate(&n->stream));
 }
 
@@ -331,9 +329,9 @@ int main(void)
 	std::vector<uint32_t> selected((uint64_t)MI_ROWS * K3_INDEX_TOPK);
 	std::vector<uint16_t> latents((uint64_t)MI_ROWS * K3_Q_LORA_RANK),keys((uint64_t)MI_ROWS * K3_INDEX_DIM),heads((uint64_t)MI_ROWS * K3_INDEX_HEADS);
 	std::vector<uint16_t> wq((uint64_t)K3_INDEX_QUERY * K3_Q_LORA_RANK);
-	MI_CUDA(cudaMemcpy(selected.data(),one[0].x.index_selected,selected.size() * 4u,cudaMemcpyDeviceToHost));
+	MI_CUDA(cudaMemcpy(selected.data(),one[0].x.index_selected_local,selected.size() * 4u,cudaMemcpyDeviceToHost));
 	MI_CUDA(cudaMemcpy(latents.data(),one[0].x.q_latents,latents.size() * 2u,cudaMemcpyDeviceToHost));
-	MI_CUDA(cudaMemcpy(keys.data(),one[0].x.index_keys,keys.size() * 2u,cudaMemcpyDeviceToHost));
+	MI_CUDA(cudaMemcpy(keys.data(),one[0].x.index_full,keys.size() * 2u,cudaMemcpyDeviceToHost));
 	MI_CUDA(cudaMemcpy(heads.data(),one[0].x.index_heads,heads.size() * 2u,cudaMemcpyDeviceToHost));
 	MI_CUDA(cudaMemcpy(wq.data(),index_query,wq.size() * 2u,cudaMemcpyDeviceToHost));
 	uint32_t worst_overlap = K3_INDEX_TOPK,invalid = 0u;
@@ -384,7 +382,7 @@ int main(void)
 	MI_CUDA(cudaMemcpy(&error_host,error,sizeof(error_host),cudaMemcpyDeviceToHost));
 	MiCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access errors");
 	MiCheck(nonfinite == 0u,"every output element is finite");
-	MiCheck(nodes_rms <= 0.002,"four nodes, each scoring only the index keys it owns and merging the exchanged candidates, match one node within 0.2% relative RMS");
+	MiCheck(nodes_rms <= 0.002,"four nodes, each scoring and attending its share of every node's rows against all index keys, match one node within 0.2% relative RMS");
 	MiCheck(invalid == 0u,"each row past 2,048 positions selects 2,048 distinct earlier positions");
 	MiCheck(worst_overlap >= K3_INDEX_TOPK * 99u / 100u,"the selection is the top 2,048 of d^-0.5 H^-0.5 sum_h w_h relu(q_h . k) recomputed on the host (99% overlap; the rest are bf16 near-ties)");
 	MiCheck(early_rms <= 0.015,"rows within 2,048 positions attend every earlier key, so the sparse latent path matches the dense expanded path within 1.5% (the absorbed query rounds once more than the expanded one)");
