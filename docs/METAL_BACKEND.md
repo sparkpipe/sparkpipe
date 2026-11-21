@@ -42,11 +42,11 @@ buffers in binding order. The host and CUDA backends load no kernel libraries;
 
 ## The Metal queue
 
-A queue owns one `MTLCommandQueue`. Copies, fills, kernel launches and event
-waits are encoded into the queue's open command buffer on the calling thread;
-the buffer is committed when the host waits or queries, records an event,
-queues a host callback, or after 64 operations, so the GPU starts on a long
-step while the host is still encoding it.
+A queue owns one `MTLCommandQueue`. Copies, fills and kernel launches are
+encoded into the queue's open command buffer on the calling thread; the buffer
+is committed when the host waits or queries, records an event, queues a host
+callback, waits on an event that has not completed, or after 64 operations, so
+the GPU starts on a long step while the host is still encoding it.
 
 - Launches go into one serial compute encoder per command buffer, and copies
   and fills into blit encoders in the same buffer. Buffers use Metal's tracked
@@ -55,16 +55,26 @@ step while the host is still encoding it.
 - Command buffers hold unretained references; the device layer's stamps keep
   every bound buffer and kernel alive until the work that uses it completes.
 - A host callback runs on the queue's worker thread after everything before it
-  completes, and work queued after it waits on a per-queue shared event that
-  the worker signals when the callback returns, so the callback has the same
-  ordering as `cudaLaunchHostFunc`.
-- An event is an `MTLSharedEvent` signalled at the end of a committed command
-  buffer; another queue waits on it with `encodeWaitForEvent`, so cross-queue
-  order needs no host round trip. Event timestamps are the command buffer's
-  `GPUEndTime`.
+  completes, and the queue holds the command buffers queued after it on the
+  host until the callback returns, so the callback has the same ordering as
+  `cudaLaunchHostFunc`.
+- An event completes with the command buffer that records it. A queue that
+  waits on an event that has not completed holds its later command buffers on
+  the host, and the recording queue's worker commits them when the event
+  completes. Event timestamps are the command buffer's `GPUEndTime`.
+- The GPU never waits on an event or a callback. macOS aborts a command buffer
+  that waits on the GPU for about five seconds
+  (`kIOGPUCommandBufferCallbackErrorTimeout`: an M4 passes a 4 s wait and
+  aborts a 5 s one), and an aborted buffer faults the device. Cross-queue waits
+  used to be `encodeWaitForEvent` on an `MTLSharedEvent`: on 2026-11-17 the M5
+  Ultra's Qwen3.8-27B engine waited that way on its KV copy-on-write fence for
+  about 5 s, the step was aborted, and every request failed until the engine
+  restarted. `TestLongHold` holds one queue behind a callback and another
+  behind the first queue's event for 6 s.
 - A failed command buffer marks the queue and the device faulted; the next wait
   returns `IO_ERROR` with Metal's error text, and every later device call fails
-  (as on the other backends).
+  (as on the other backends). The serving adapter prints that text when a step,
+  keep or reset wait fails.
 
 Queues are not ordered with each other without an event: a copy on one queue
 followed by `SparkDeviceCopySync` on the device's synchronous queue needs a
