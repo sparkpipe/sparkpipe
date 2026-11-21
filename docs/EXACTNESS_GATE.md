@@ -336,9 +336,9 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 
 The gate has not yet run on a real engine. These are the runs that come
 first, in order, with their commands. `<sha>` is the nine-character commit
-of the candidate. Every command runs from a checkout of it, under the hold,
-in a shell that has read the kit library, which defines `hub` and
-`HUB_WORK`:
+of the candidate. Every command runs from a checkout of it, in a shell that
+has read the kit library, which defines `hub` and `HUB_WORK`. From step 2 on
+they run under the hold.
 
 ```
 . scripts/rollover_lib.sh
@@ -386,8 +386,8 @@ The driver ends with the lane and its API stopped and the lane reclaimed.
 `GX-BLOCK-PAUSED` means the minutes ran out: the same command goes on from
 the first open step.
 
-**3. Slot 2: DeepSeek V4.1 Flash on four ranks**, about 30 minutes. As slot
-1 with these settings:
+**3. Slot 2: DeepSeek V4.1 Flash on four ranks**, about 30 minutes. The
+other settings of slot 1 stay as they are:
 
 ```
 export STAGE_MODEL=dsv41_flash_tp4 STAGE_MEMORY_MAX=32G
@@ -413,7 +413,8 @@ GX_PLAN="--contexts 8000,100000" scripts/release_rollout.sh gx
 ```
 
 The seven run every case with prefixes of 8,000 and 100,000 tokens; the
-other fourteen run the short plan. Receipts land in `$STATE/gx`. A lane
+other fourteen run the short plan. Receipts land in the kit state's `gx`
+directory (`scripts/state-<sha>/gx` unless `STATE` names another). A lane
 that stops is run again with `ONLY="<model>"` and the same command; it
 goes on from its first open step.
 
@@ -423,7 +424,7 @@ the largest prefix that fits.
 
 ```
 ONLY="glm-5.3 kimi-k3 kimi-k3.1-pro deepseek-v4.1-flash qwen3.8-27b" \
-  GX_DIR=$HUB_WORK/release-<sha>/gx-long GX_OUT=$STATE/gx-long \
+  GX_DIR=$HUB_WORK/release-<sha>/gx-long GX_OUT=${STATE:-scripts/state-<sha>}/gx-long \
   GX_PLAN="--cases prefix,session --contexts 300000" scripts/release_rollout.sh gx
 ```
 
@@ -437,8 +438,7 @@ receipt fields that section names.
 `<model>.txt`. `INCOMPLETE` names what is missing ([What stops a
 PASS](#what-stops-a-pass)); `FAIL` is a difference between a reusing run
 and a cold run, and the receipt holds the first differing token and
-logprob. A `FAIL` is a finding about the engine, not about the gate: stop
-and report it with the receipt.
+logprob. A `FAIL` is a finding: stop and report it with the receipt.
 
 ## What a receipt measures
 
