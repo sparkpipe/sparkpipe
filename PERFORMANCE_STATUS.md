@@ -463,7 +463,9 @@ The first token of a turn is the sum of five parts, which
 request reaching the engine (send), its wait for a first admitted wave
 (queue), its wait for a prefix to come back from NVMe (restore), the prefill
 waves over the new tokens, and the one-row wave of the last prompt token,
-whose result is the first token.
+whose result is the first token. An adapter without checkpoints (GLM 5.3
+Full) has no separate last wave: its last token rides in the last prefill
+wave.
 
 Measured so far: one request (2026-11-21, release c2b714343, 16 Sparks;
 receipts in

@@ -254,13 +254,16 @@ lines of that request:
 | prefill | first admitted dispatch to the dispatch of the last prompt token's wave: the waves over every new token but the last, and what runs between them |
 | first step | the last prompt token's wave, one row, whose result is the first token: one decode step's worth of work |
 
-The engine prefills every new token but the last in waves and then runs the
-last token as a wave of one row; the first token is ready when that wave
-returns, and the chains of the reply come after it. The split reads that
-wave from the log (the request's last `kind=prefill` line, `rows=1`) and
-takes its wall time as the first step. When a request's last prefill wave
-carries more than one row, the first step reads 0 and everything before the
-first token counts as prefill. `decode_tok_s` is the tokens after the first
+An adapter that keeps checkpoints puts one a token before the prompt's end
+(`SparkModelBatchPromptCheckpoint`), so the engine prefills every new token
+but the last in waves and then runs the last token as a wave of one row; the
+first token is ready when that wave returns, and the chains of the reply
+come after it. The split reads that wave from the log (the request's last
+`kind=prefill` line, `rows=1`) and takes its wall time as the first step. An
+adapter without checkpoints (GLM 5.3 Full on release c2b714343) and a prompt
+shorter than a block have no such wave: the last token rides in the last
+prefill wave, the first step reads 0 and everything before the first token
+counts as prefill. `decode_tok_s` is the tokens after the first
 over the time from the first token's stamp to the last; the tokens of one
 chain share a stamp. `summary.json` also holds the change in the ranks'
 `kv_store_report` counters over the run (`save_pages`, `save_ns`,
