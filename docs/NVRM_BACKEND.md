@@ -293,6 +293,19 @@ callbacks, waits between queues, kernel libraries and launches through
 the device layer are still refused the same way. The backend adopts no
 foreign memory or queue.
 
+Every channel registers with unified memory before anything is
+submitted on it, and the backend never schedules a single channel: the
+module refuses to schedule a graphics channel in a unified-memory address
+space whose context has not been bound by that registration ("Cannot
+schedule externally-owned channel ... with unbound allocations"). The
+channel group is scheduled once, after its first channel is registered;
+queue channels join the scheduled group afterwards.
+
+`make test-nvrm-gpu` reads the kernel log before and after the run
+(`tools/nvrm_kernel_log.sh`, with `dmesg` or `sudo -n dmesg`) and fails if
+the module logged any `NVRM:` Xid or assertion line meanwhile, or if the
+log cannot be read.
+
 Two GPU tests run under `make test-nvrm-gpu`:
 
 - **`tests/test_nvrm_memory.c`** opens the device through the device

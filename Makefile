@@ -1508,7 +1508,9 @@ build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY
 NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order
 .PHONY: test-nvrm-gpu
 test-nvrm-gpu: $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
-	@set -e; for test_binary in $(NVRM_GPU_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done; echo "RUN build/nvrm_first_light"; ./build/nvrm_first_light
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	for test_binary in $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light; do echo "RUN $$test_binary"; ./$$test_binary || status=1; done; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
