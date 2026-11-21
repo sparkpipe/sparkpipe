@@ -581,11 +581,111 @@ static void TestTokenContinuationRebuildsLanesFromSlots(void)
 	pthread_mutex_destroy(&runtime.mutex);
 }
 
+static void TestSpansRebuildTheFullContinuation(void)
+{
+	static uint8_t full[16384],compact[16384],slot_message[16384],expanded[16384];
+	SparkModelResidentdRuntime runtime;
+	SparkModelResidentdRoute route;
+	SparkModelResidentdSlot slot;
+	SparkModelResidentdSequenceSlot sequence_slots[8];
+	SparkModelServingAdapterDescriptor descriptor;
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	SparkModelResidentIpcSubmit *wire = (SparkModelResidentIpcSubmit *)compact;
+	uint32_t tokens[7],row_lanes[7],full_bytes,compact_bytes,*lane_rows;
+	uint64_t positions[7],sequences[7];
+	const uint32_t rows[2] = {4u,3u};
+	uint32_t row = 0u;
+	memset(&runtime,0,sizeof(runtime));
+	memset(&route,0,sizeof(route));
+	memset(&slot,0,sizeof(slot));
+	memset(sequence_slots,0,sizeof(sequence_slots));
+	memset(&submission,0,sizeof(submission));
+	memset(lanes,0,sizeof(lanes));
+	TestDescriptor(&descriptor);
+	assert(pthread_mutex_init(&runtime.mutex,0) == 0);
+	runtime.routes = &route;
+	runtime.slots = &slot;
+	runtime.route_capacity = 1u;
+	runtime.route_message_capacity = sizeof(slot_message);
+	runtime.sequence_slots = sequence_slots;
+	runtime.expanded_message = expanded;
+	runtime.runtime_limits.max_active_sequence_count = 8u;
+	runtime.runtime_limits.max_input_row_count = 8u;
+	runtime.runtime_limits.resident_sequence_capacity = 8u;
+	runtime.adapter_library.adapter_interface.descriptor = &descriptor;
+	runtime.client.generation = 9u;
+	slot.message = slot_message;
+	for (uint32_t lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 21u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = 77u;
+		lanes[lane].sequence_id = 31u + lane;
+		lanes[lane].sequence_position = 64u + 16u * lane;
+		lanes[lane].context_token_count = (uint32_t)lanes[lane].sequence_position + rows[lane];
+		lanes[lane].state_target_token_count = lanes[lane].context_token_count;
+		lanes[lane].resident_sequence_slot = 2u + 3u * lane;
+		lanes[lane].input_token_id = 300u + lane;
+		lanes[lane].flags = lane == 1u ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN : 0u;
+		for (uint32_t step=0u; step<rows[lane]; step++,row++)
+		{
+			tokens[row] = 900u + row;
+			row_lanes[row] = lane;
+			positions[row] = lanes[lane].sequence_position + step;
+			sequences[row] = lanes[lane].sequence_id;
+		}
+		sequence_slots[2u + 3u * lane].bound = 1u;
+		sequence_slots[2u + 3u * lane].request_id = lanes[lane].request_id;
+		sequence_slots[2u + 3u * lane].request_generation = lanes[lane].request_generation;
+		sequence_slots[2u + 3u * lane].sequence_id = lanes[lane].sequence_id;
+		assert(SparkModelContinuationLeaseEstablish(&sequence_slots[2u + 3u * lane].lease,9u,2u,lanes[lane].sequence_position,60u) == SPARK_STATUS_OK);
+	}
+	submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission.submission_id = 70u;
+	submission.request_id = 70u;
+	submission.sequence_id = 70u;
+	submission.control_generation = 2u;
+	submission.transaction_id = 70u;
+	submission.dispatch_generation = 70u;
+	submission.request_generation = 1u;
+	submission.step_generation = 77u;
+	submission.tokens_per_sequence = 1u;
+	submission.active_sequence_count = 2u;
+	submission.new_token_count = row;
+	submission.lane_count = 2u;
+	submission.row_count = row;
+	submission.token_count = row;
+	submission.lanes = lanes;
+	submission.token_ids = tokens;
+	submission.row_lane_indices = row_lanes;
+	submission.row_positions = positions;
+	submission.row_sequence_ids = sequences;
+	assert(SparkModelResidentIpcEncodeContinuation(&submission,13u,9u,full,sizeof(full),&full_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodeSpanContinuation(&submission,13u,9u,compact,sizeof(compact),&compact_bytes) == SPARK_STATUS_OK);
+	assert(compact_bytes < full_bytes);
+	lane_rows = (uint32_t *)(compact + wire->row_lane_indices_offset);
+	lane_rows[0] = 5u;
+	assert(SparkModelResidentdProcessSpans(&runtime,compact,compact_bytes) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(route.active == 0u && runtime.client.last_submission_id == 0u);
+	lane_rows[0] = 4u;
+	assert(SparkModelResidentdProcessSpans(&runtime,compact,compact_bytes) == SPARK_STATUS_OK);
+	assert(route.active == 1u && route.state == SPARK_MODEL_RESIDENTD_ROUTE_CONTINUATION_PREPARING && route.message_id == 13u && route.message_bytes == full_bytes);
+	assert(memcmp(slot_message,full,full_bytes) == 0);
+	assert(route.submission.row_count == 7u && route.submission.row_lane_indices[4] == 1u && route.submission.row_positions[4] == 80u &&
+		route.submission.row_sequence_ids[6] == 32u && route.submission.token_ids[6] == 906u && runtime.client.last_submission_id == 70u);
+	assert(SparkModelResidentdDeactivateRouteLocked(&runtime,&route) == SPARK_STATUS_OK);
+	pthread_mutex_destroy(&runtime.mutex);
+}
+
 int main(void)
 {
 	TestBoundRouteKeepsTheSingleDecode();
 	TestReservedRouteStartsWithAnEmptyCompletion();
 	TestTokenContinuationRebuildsLanesFromSlots();
+	TestSpansRebuildTheFullContinuation();
 	TestRejectedCompletionFailsRouteWithItsStatus((uint32_t)SPARK_STATUS_MAXIMUM + 1u,0u,SPARK_STATUS_INVALID_ARGUMENT);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_NO_LANE);
 	TestFailedCompletionKeepsItsStatus(SPARK_STATUS_EVICT_DENIED);

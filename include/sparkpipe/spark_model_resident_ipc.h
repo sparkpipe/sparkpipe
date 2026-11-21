@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 28u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 29u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -27,6 +27,8 @@ extern "C" {
 #define SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT 11u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT 12u
 #define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS 13u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE_SPANS 14u
+#define SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_SPANS 15u
 
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT 1u
 #define SPARK_MODEL_RESIDENT_IPC_DECISION_ABORT 2u
@@ -393,6 +395,35 @@ SparkStatus SparkModelResidentIpcExpandTokenContinuation(
 	const void *message_buffer,
 	uint32_t message_bytes,
 	const SparkModelServingLane *previous_lanes,
+	void *expanded_buffer,
+	uint32_t expanded_capacity,
+	uint32_t *expanded_bytes_out);
+uint32_t SparkModelResidentIpcIsSubmissionKind(uint32_t kind);
+uint32_t SparkModelResidentIpcIsPreparationKind(uint32_t kind);
+uint32_t SparkModelResidentIpcRowsAreLaneSpans(
+	const SparkModelServingSubmission *submission);
+SparkStatus SparkModelResidentIpcCalculateSpanBytes(
+	uint32_t lane_count,
+	uint32_t row_count,
+	uint32_t cache_block_identity_count,
+	uint32_t model_extension_bytes,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcEncodeSpanPreparation(
+	const SparkModelServingSubmission *submission,
+	uint64_t message_id,
+	void *message_buffer,
+	uint32_t message_capacity,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcEncodeSpanContinuation(
+	const SparkModelServingSubmission *submission,
+	uint64_t message_id,
+	uint64_t client_generation,
+	void *message_buffer,
+	uint32_t message_capacity,
+	uint32_t *message_bytes_out);
+SparkStatus SparkModelResidentIpcExpandSpans(
+	const void *message_buffer,
+	uint32_t message_bytes,
 	void *expanded_buffer,
 	uint32_t expanded_capacity,
 	uint32_t *expanded_bytes_out);
