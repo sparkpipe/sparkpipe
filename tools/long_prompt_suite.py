@@ -407,9 +407,13 @@ def divergence(reference, arm):
     for index in range(min(shared, len(reference_lp), len(arm_lp))):
         first, second = reference_lp[index][0][1], arm_lp[index][0][1]
         if first is not None and second is not None:
-            deltas.append(abs(first - second))
-    out["chosen_logprob_delta_mean"] = sum(deltas) / len(deltas) if deltas else None
-    out["chosen_logprob_delta_max"] = max(deltas) if deltas else None
+            deltas.append(second - first)
+    out["compared_tokens"] = len(deltas)
+    out["chosen_logprob_delta_sum"] = sum(deltas)
+    out["chosen_logprob_delta_abs_sum"] = sum(abs(delta) for delta in deltas)
+    out["chosen_logprob_delta_mean"] = sum(abs(delta) for delta in deltas) / len(deltas) if deltas else None
+    out["chosen_logprob_delta_signed_mean"] = sum(deltas) / len(deltas) if deltas else None
+    out["chosen_logprob_delta_max"] = max(abs(delta) for delta in deltas) if deltas else None
     out["identical_logprobs"] = out["identical"] and reference_lp == arm_lp
     if shared < min(len(left), len(right)) and shared < len(reference_lp):
         alternatives = [entry for entry in reference_lp[shared] if entry[1] is not None]
@@ -473,9 +477,6 @@ def compare(args):
         report["prompts"][prompt_id] = row
     report["items"] = [{"item": item, "reference": reference_rows[item]["fraction"], "arm": arm_rows[item]["fraction"]}
                        for item in items if reference_rows[item]["fraction"] != arm_rows[item]["fraction"]]
-    text = json.dumps(report, indent=1)
-    if args.out:
-        Path(args.out).write_text(text + "\n")
     whole = report["all"]
     print(f"{whole['questions']} questions in {whole['prompts']} prompts: reference {whole['reference_right']} right, arm {whole['arm_right']}; "
           f"only reference {whole['only_reference']}, only arm {whole['only_arm']} (exact McNemar p {whole['mcnemar_p']:.4f})")
@@ -483,8 +484,18 @@ def compare(args):
         for key, value in block.items():
             print(f"  {name} {key}: {value['reference_right']}/{value['questions']} vs {value['arm_right']}/{value['questions']}, "
                   f"fraction {value['reference_fraction']:.3f} vs {value['arm_fraction']:.3f}, only reference {value['only_reference']}, only arm {value['only_arm']}")
-    identical = sum(1 for row in report["prompts"].values() if row["identical"])
-    print(f"  answers identical in {identical} of {len(report['prompts'])} prompts")
+    rows = list(report["prompts"].values())
+    compared = sum(row["compared_tokens"] for row in rows)
+    report["logprobs"] = {"compared_tokens": compared,
+                          "chosen_logprob_delta_mean": sum(row["chosen_logprob_delta_abs_sum"] for row in rows) / compared if compared else None,
+                          "chosen_logprob_delta_signed_mean": sum(row["chosen_logprob_delta_sum"] for row in rows) / compared if compared else None,
+                          "chosen_logprob_delta_max": max((row["chosen_logprob_delta_max"] for row in rows if row["chosen_logprob_delta_max"] is not None), default=None)}
+    if args.out:
+        Path(args.out).write_text(json.dumps(report, indent=1) + "\n")
+    identical = sum(1 for row in rows if row["identical"])
+    print(f"  answers identical in {identical} of {len(rows)} prompts; over {compared} answer tokens both sides generated alike, "
+          f"the chosen token's log-prob moves {report['logprobs']['chosen_logprob_delta_mean'] or 0.0:.4f} on average "
+          f"({report['logprobs']['chosen_logprob_delta_signed_mean'] or 0.0:+.4f} signed, arm minus reference), at most {report['logprobs']['chosen_logprob_delta_max'] or 0.0:.4f}")
     return 0
 
 
