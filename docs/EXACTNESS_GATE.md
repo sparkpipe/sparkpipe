@@ -17,7 +17,7 @@ and it runs three times.
 | Arm | Cache when the last prompt runs | Step |
 | --- | --- | --- |
 | chain | Holds the unit's own earlier requests, in memory | `chain` |
-| restore | Holds them again after the engine went down and came back with its device pool dropped | `park:CONTEXT`, then `restore:CONTEXT` |
+| restore | Holds them again after the engine went down and came back with its device pool dropped | `park:GROUP`, then `restore:GROUP` |
 | cold | Holds nothing of the unit | `cold:TAIL` |
 
 The last prompt asks for 32 tokens, greedy, one step at a time, with the
@@ -27,7 +27,7 @@ top 4 logprobs.
 | --- | --- | --- |
 | `prefix` | A one-token completion of the prefix P | P and a new tail |
 | `declared` | The same | The same, declaring a cache point one token before P's end, which is a block boundary off the wave grid. A cold run then cuts its waves where the reusing run resumes |
-| `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 48 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
+| `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 96 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
 | `drafted` | The same with speculation left at the engine's default | The same |
 
 Two verdicts follow for each unit:
@@ -103,7 +103,9 @@ when the engine closes.
 | `NOT-CACHED` | The chain arm's last prompt reported no cached tokens |
 | `LOST` | The restore arm's last prompt reported no cached tokens: the chain did not come back |
 | `DIVERGED` | The replayed session produced other replies, so its last prompt is another prompt |
-| `alone=no` | The API served a request the gate did not send, or a step failed |
+| `ERROR` | A request of the unit failed while the engine stayed whole; the receipt holds the engine's answer |
+| `alone=no` | The API served a request the gate did not send |
+| a step not `done` | It stopped, or was never run |
 
 Each of these leaves the verdict `INCOMPLETE`. A step that needs a cold run
 and finds cached tokens stops at once.
@@ -111,6 +113,31 @@ and finds cached tokens stops at once.
 `recomputed_after_restore` is the number of tokens the restore arm computed
 again that the chain arm reused. Above zero, part of the chain or one of its
 states did not come back.
+
+## Interruptions
+
+A block is one model's run, and it can be run again after anything stops it.
+
+- **A request fails and the engine stays whole** (every rank connected,
+  health `ok`): the unit is marked `ERROR` with the engine's answer and the
+  step goes on. A prefix that does not warm fails its own units only.
+- **The engine is not whole, or a cold run finds cached tokens**: the step
+  stops. Every finished unit is already in the state file, which is written
+  after each unit.
+- **Run again** (`gx_gate.sh` on the same `GX_DIR`): finished steps are
+  skipped. The cache is cleared before the first open step, because nothing
+  is known about what the interruption left in it. A `chain` or `cold` step
+  then does only its open units; a chain's shared prefix is warmed again for
+  them. A block that resumes at a `restore` step first runs its `park` step
+  again, for the units the restore step still needs, and then evicts.
+- A step still running on the hub is left alone: the driver refuses to start
+  beside it.
+- `GX_REST` idles that many seconds after every request longer than
+  `GX_REST_OVER` (60) seconds.
+
+An attempt that the engine cut short cannot read the API's served count
+afterwards. It reads the engine's completed count from the API log instead,
+and counts as alone unless that shows another client's request.
 
 ## Running it
 
@@ -124,7 +151,8 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
   directory and leaves `qwen3.8-max` active. It fails unless every model
   passes.
 - State and logs are kept on the hub under `$HUB_WORK/gx/<sha>/<model>/`.
-  A state is planned once: its prompts must be new to the cache.
+  A state is planned once: its prompts must be new to the cache. Running
+  the driver again on a directory that holds a state resumes it.
 - `GX_PLAN` passes plan options, for example
   `--contexts 8000 --tails 1,40`.
 - `GX_END` names the model to leave active; the default leaves none.
@@ -133,14 +161,34 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 - The receipt `<model>.json`, the verdict table `<model>.txt` and the run
   log `<model>.log` are copied to `GX_OUT`.
 
-Every request's record holds its prompt length, cached tokens, wall seconds
-and, from the API log, its queue time, time to first token and stale-prefix
-recomputes. The warm-ups and the cold runs are cold fills of each context,
-and the tails are the cost of a turn at that context.
+## What a receipt measures
 
-Each step also records, before and after, the running engine's KV store
+The receipts are also the fleet's turn-floor record, so no second matrix has
+to run for it.
+
+Per request (`steps.<step>.requests[]`):
+
+| Field | Meaning |
+| --- | --- |
+| `label`, `attempt`, `max_tokens` | The unit and turn, and which attempt of the step sent it |
+| `prompt_tokens`, `cached_tokens`, `prefilled_tokens` | The prompt, the position the request resumed at, and what it computed |
+| `seconds` | Wall time at the client |
+| `queue_ms`, `first_token_ms`, `last_token_ms` | From the engine's own request record: accepted to first dispatch, to the first token and to the last |
+| `decode_tokens_per_second` | Over the tokens after the first. Session replies are 96 tokens of chain decode |
+| `completion_tokens`, `finish_reason`, `stale_prefix_recomputes` | |
+
+Per attempt of a step, before and after: the running engine's KV store
 counters summed over its ranks (pages and nanoseconds saved and restored,
-restore misses, store files and bytes, pages adopted from the device pool)
-and its prefix counters (hits, misses, hit tokens, stale-prefix recomputes,
-refused waves, draft tokens). A `restore` step with no restored pages did
-not read from NVMe.
+restore misses, store files and bytes, device pool pages and bytes), the
+slowest rank's save and restore time, and the engine's prefix counters (hits,
+misses, hit tokens, stale-prefix recomputes, refused waves, draft tokens).
+The attempt also names the engine: adapter id, model revision and driver
+artifact SHA-256.
+
+- **Cold fill at a context**: the `*/warm` requests and everything in
+  `cold:*`.
+- **A turn on a kept prefix**: `prefix/<context>/<tail>` in `chain`.
+- **After an eviction**: the same requests in `restore:*`. Their extra
+  `first_token_ms` against `chain` is the restore the user waits for.
+  Restored bytes are restored pages times pool bytes per pool page. A
+  `restore` step with no restored pages did not read from NVMe.
