@@ -1699,6 +1699,42 @@ static __global__ void D41ExpertActKernel(const uint16_t *__restrict__ gate_up, 
 	}
 }
 
+static void D41SharedPart(uint32_t part, uint32_t parts, uint32_t granules, uint32_t granule, uint32_t *first, uint32_t *width)
+{
+	const uint32_t base = granules / parts, extra = granules % parts;
+	*first = (part * base + (part < extra ? part : extra)) * granule;
+	*width = (base + (part < extra ? 1u : 0u)) * granule;
+}
+
+static __global__ void D41MoeFinalizeF32Kernel(const uint16_t *__restrict__ packed, const uint32_t *__restrict__ route_packed_row,
+	const uint32_t *__restrict__ route_expert, const float *__restrict__ shared, float *__restrict__ output, uint32_t top_k, uint32_t local_experts,
+	uint32_t width)
+{
+	const uint32_t row = blockIdx.y;
+	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
+	{
+		float total = 0.0f;
+		for ( uint32_t k = 0u; k < top_k; ++k )
+		{
+			const uint32_t route = row * top_k + k;
+			if ( route_expert[route] < local_experts )
+				total += LmBf16ToFloat(packed[(uint64_t)route_packed_row[route] * width + element]);
+		}
+		output[(uint64_t)row * width + element] = total + shared[(uint64_t)row * width + element];
+	}
+}
+
+static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
+{
+	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
+	{
+		float sum = 0.0f;
+		for ( uint32_t source = 0u; source < degree; ++source )
+			sum += gathered[(uint64_t)source * elements + index];
+		output[index] = __bfloat16_as_ushort(__float2bfloat16_rn(sum));
+	}
+}
+
 static __global__ void D41SumSourcesKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
