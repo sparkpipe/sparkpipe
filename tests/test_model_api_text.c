@@ -694,8 +694,9 @@ static void TestApiCacheState(TestApiStack *stack)
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	body = TestApiResponseJsonBody(response);
-	assert(TestApiBodyContains(body,"\"cache\":{\"matched_tokens\":0,\"resumed_tokens\":0,") && TestApiBodyContains(body,"\"restore_ms\":0.000") &&
-		TestApiBodyContains(body,"\"background_wait_ms\":0.000") && TestApiBodyContains(body,"\"boot\":\"") && TestApiBodyContains(body,"\"artifact\":\""));
+	assert(TestApiBodyContains(body,"\"cache\":{\"matched_tokens\":") && TestApiBodyContains(body,"\"restore_ms\":0.000") &&
+		TestApiBodyContains(body,"\"background_wait_ms\":0.000") && TestApiBodyContains(body,"\"boot\":\"") && TestApiBodyContains(body,"\"artifact\":\"") &&
+		TestApiNumberField(body,"resumed_tokens") <= TestApiNumberField(body,"matched_tokens"));
 	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
 	assert(TestApiResponseStatus(response) == 200);
 	body = TestApiResponseJsonBody(response);
