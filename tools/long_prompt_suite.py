@@ -6,7 +6,7 @@ build    writes prompts for RULER's retrieval and tracking tasks with several qu
          uuid key-value needles (mk3) and variable chains in noise (vt). Each prompt opens with its own
          task id, so no two prompts share a cached prefix.
 run      sends each prompt alone through the chat endpoint: temperature 0, no speculation, the top
-         log-probs of every generated token. A rerun skips the prompts its output already holds; with
+         log-probs of every generated token. A rerun skips the prompts its output already answered; with
          --deadline it starts a prompt only when its estimated time fits before the deadline.
 score    scores one run question by question.
 compare  pairs two runs question by question: each side's score, the questions only one side gets,
@@ -303,7 +303,7 @@ def estimate_table(text):
 
 def run(args):
     suite = load_suite(args.suite)
-    done = read_runs(args.out)
+    done = {prompt_id for prompt_id, row in read_runs(args.out).items() if row.get("failure") is None}
     order = args.only.split(",") if args.only else list(suite)
     estimate = estimate_table(args.estimate or "")
     for prompt_id in order:
