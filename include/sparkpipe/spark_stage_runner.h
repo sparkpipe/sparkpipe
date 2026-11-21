@@ -102,6 +102,8 @@ typedef struct SparkStageRunnerConfiguration
 	uint32_t head_row_capacity;
 	uint32_t output_vocabulary;
 	SparkStageRunnerStreamedPrefillConfig streamed_prefill;
+	SparkStatus (*kv_pool_hold)(void *context, uint32_t hold);
+	void *kv_pool_context;
 } SparkStageRunnerConfiguration;
 
 typedef struct SparkStageRunnerDispatch

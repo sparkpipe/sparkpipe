@@ -260,6 +260,8 @@ typedef struct SparkStageRunnerState
 	SparkStageRunnerWeights weights;
 	const char *rank_pack_path;
 	uint64_t pass_pool_cap_bytes;
+	SparkStatus (*kv_pool_hold)(void *context, uint32_t hold);
+	void *kv_pool_context;
 	void *mesh_mapping;
 	uint64_t mesh_mapping_bytes;
 	uint64_t switch_count;
@@ -978,6 +980,8 @@ static SparkStatus StageRunnerAttachWeights(SparkStageRunnerState *state, const 
 	state->weights = configuration->weights;
 	state->rank_pack_path = configuration->rank_pack_path;
 	state->pass_pool_cap_bytes = configuration->streamed_prefill.expert_pool_cap_bytes;
+	state->kv_pool_hold = configuration->kv_pool_hold;
+	state->kv_pool_context = configuration->kv_pool_context;
 	if ( state->pass_pool_cap_bytes != 0u && state->weights.expert_pool_cap_bytes != 0u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: a lane that switches to a %llu-byte expert pool for its streamed prefills starts with the whole arena, not a %llu-byte cap\n",
@@ -2769,7 +2773,8 @@ static SparkStatus StageRunnerSwitchWeights(SparkStageRunnerState *state, const 
 static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerStreamedPrefill request;
-	SparkStatus status;
+	SparkStatus status, released;
+	uint32_t held = 0u;
 	if ( state->deferred_active == 0u )
 		return SPARK_STATUS_OK;
 	if ( dispatch->host_positions == 0 || dispatch->host_sequence_of_row == 0 || dispatch->host_sequence_of_row[0] != state->deferred_slot ||
@@ -2789,11 +2794,24 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.multiprocessors = state->multiprocessors;
 	request.route_fault = state->route_fault;
 	state->sum_flags = state->deferred_flags;
-	status = state->pass_pool_cap_bytes != 0u ? StageRunnerSwitchWeights(state, runner, state->pass_pool_cap_bytes) : SPARK_STATUS_OK;
+	status = SPARK_STATUS_OK;
+	if ( state->pass_pool_cap_bytes != 0u && state->kv_pool_hold != 0 )
+	{
+		status = state->kv_pool_hold(state->kv_pool_context, 1u);
+		held = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
+	if ( status == SPARK_STATUS_OK && state->pass_pool_cap_bytes != 0u )
+		status = StageRunnerSwitchWeights(state, runner, state->pass_pool_cap_bytes);
 	if ( status == SPARK_STATUS_OK )
 		status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
 	if ( status == SPARK_STATUS_OK && state->pass_pool_cap_bytes != 0u )
 		status = StageRunnerSwitchWeights(state, runner, state->weights.expert_pool_cap_bytes);
+	if ( held != 0u )
+	{
+		released = state->kv_pool_hold(state->kv_pool_context, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = released;
+	}
 	state->sum_flags = 0u;
 	StageRunnerSumReport(state, state->deferred_flags, state->deferred_count);
 	state->deferred_active = 0u;

@@ -277,6 +277,32 @@ static void TestPoolAtMinimumParksEveryPage(void)
 	printf("pool held at its minimum: a node reserve of only the minimum chunks never lets the pool grow, so every page past one sequence's parks, and the derived backing holds every logical page the minimum leaves out\n");
 }
 
+static void TestHeldPoolGrowsOnlyAfterRelease(void)
+{
+	TestPoolView a;
+	uint32_t round;
+	assert(SparkStageKvBindingInitialize(&ENGINE_A.binding,&ENGINE_A.configuration) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingHoldPoolGrowth(&ENGINE_A.binding,2u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkStageKvBindingHoldPoolGrowth(&ENGINE_A.binding,1u) == SPARK_STATUS_OK);
+	for (round=0u; round<2u * TEST_LOGICAL; round++)
+	{
+		EnginePublish(&ENGINE_A,(uint8_t)(0x20u + round));
+		SleepMs(2u);
+	}
+	a = EngineView(&ENGINE_A);
+	assert(a.chunks == TEST_MINIMUM_CHUNKS && a.grows == 0u && a.pages < TEST_PHYSICAL && CommittedChunks() == TEST_MINIMUM_CHUNKS);
+	assert(ENGINE_A.binding.arena.park_backing_full_count == 0u && ENGINE_A.binding.arena.park_failure_count == 0u);
+	assert(SparkStageKvBindingHoldPoolGrowth(&ENGINE_A.binding,0u) == SPARK_STATUS_OK);
+	for (round=0u; round<TEST_WAIT_MS / 10u && a.chunks == TEST_MINIMUM_CHUNKS; round++)
+	{
+		EnginePublish(&ENGINE_A,(uint8_t)(0x80u + round));
+		SleepMs(10u);
+		a = EngineView(&ENGINE_A);
+	}
+	assert(a.chunks > TEST_MINIMUM_CHUNKS && a.grows >= 1u && CommittedChunks() <= TEST_POOL_CHUNKS);
+	printf("held pool: while growth is held the pool keeps its size under pressure though the node reserve has room, pages past it park or evict, and once released it grows again\n");
+}
+
 static void TestLayoutAndAttach(void)
 {
 	TestPoolView a;
@@ -371,6 +397,11 @@ int main(void)
 	TestKvServerStart((uint64_t)TEST_MINIMUM_CHUNKS * TEST_CHUNK_BYTES);
 	EngineConfigure(&ENGINE_A,"kvpoolm");
 	TestPoolAtMinimumParksEveryPage();
+	EngineClose(&ENGINE_A);
+	TestKvServerFinish();
+	TestKvServerStart((uint64_t)TEST_POOL_CHUNKS * TEST_CHUNK_BYTES);
+	EngineConfigure(&ENGINE_A,"kvpoolh");
+	TestHeldPoolGrowsOnlyAfterRelease();
 	EngineClose(&ENGINE_A);
 	TestKvServerFinish();
 	TestKvServerStart((uint64_t)TEST_POOL_CHUNKS * TEST_CHUNK_BYTES);

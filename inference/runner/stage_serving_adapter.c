@@ -960,6 +960,12 @@ static const SparkModelDriverInterface StageServingDriver =
 	.admit = StageServingDriverAdmit,
 };
 
+static SparkStatus StageServingKvPoolHold(void *context, uint32_t hold)
+{
+	SparkStageServingState *state = (SparkStageServingState *)context;
+	return SparkStageKvBindingHoldPoolGrowth(&state->kv, hold);
+}
+
 static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
@@ -1214,6 +1220,8 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
+	state->runner_config.kv_pool_hold = StageServingKvPoolHold;
+	state->runner_config.kv_pool_context = state;
 	status = StageServingAllocate(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());

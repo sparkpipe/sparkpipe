@@ -3091,9 +3091,11 @@ static void SparkStageKvBindingPoolGrow(SparkStageKvBinding *binding)
 	uint32_t before = binding->kv_pool.mapped_count,pages = binding->arena.resident_block_capacity,target,limit;
 	SparkStatus status;
 	target = before > binding->kv_pool.chunk_capacity / 2u ? binding->kv_pool.chunk_capacity : 2u * before;
+	binding->pool_growing = 1u;
 	(void)pthread_mutex_unlock(&binding->mutex);
 	status = SparkWeightdKvPoolGrow(&binding->kv_pool,target,&state,SPARK_WEIGHTD_KV_POOL_TIMEOUT_DEFAULT_NS);
 	(void)pthread_mutex_lock(&binding->mutex);
+	binding->pool_growing = 0u;
 	SparkStageKvBindingPoolOutcome(binding,"grow",status);
 	limit = SparkStageKvBindingPoolPageLimit(binding,binding->kv_pool.mapped_count);
 	if ( limit > binding->arena.resident_block_capacity )
@@ -3114,6 +3116,27 @@ static void SparkStageKvBindingPoolGrow(SparkStageKvBinding *binding)
 		binding->kv_pool.chunk_capacity,pages,binding->arena.resident_block_capacity,binding->physical_page_count,binding->kv_pool_wanted_chunks,
 		(unsigned long long)binding->kv_pool.kv_committed_bytes,(unsigned long long)binding->kv_pool.kv_reserve_bytes);
 	SparkStageKvBindingLogCapacity(binding,"grew");
+}
+
+SparkStatus SparkStageKvBindingHoldPoolGrowth(SparkStageKvBinding *binding,uint32_t hold)
+{
+	const struct timespec nap = { 0, 1000000L };
+	uint32_t chunks;
+	if ( binding == 0 || hold > 1u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	(void)pthread_mutex_lock(&binding->mutex);
+	binding->pool_growth_held = hold;
+	while ( hold != 0u && binding->pool_growing != 0u )
+	{
+		(void)pthread_mutex_unlock(&binding->mutex);
+		(void)nanosleep(&nap,0);
+		(void)pthread_mutex_lock(&binding->mutex);
+	}
+	chunks = binding->kv_pool.mapped_count;
+	(void)pthread_mutex_unlock(&binding->mutex);
+	if ( binding->kv_pool.client != 0 )
+		fprintf(stderr,"%s kv pool growth %s at chunks=%u of %u\n",binding->module_tag,hold != 0u ? "held" : "released",chunks,binding->kv_pool.chunk_capacity);
+	return(SPARK_STATUS_OK);
 }
 
 static void SparkStageKvBindingPoolShrink(SparkStageKvBinding *binding,uint64_t reclaim_bytes)
@@ -3162,7 +3185,7 @@ static void SparkStageKvBindingPoolTick(SparkStageKvBinding *binding)
 	{
 		binding->pool_pressure_mark = pressure;
 		binding->pool_idle_ticks = 0u;
-		if ( binding->kv_pool.mapped_count < binding->kv_pool.chunk_capacity )
+		if ( binding->kv_pool.mapped_count < binding->kv_pool.chunk_capacity && binding->pool_growth_held == 0u )
 			SparkStageKvBindingPoolGrow(binding);
 		return;
 	}
