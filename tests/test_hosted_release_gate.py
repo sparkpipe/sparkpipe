@@ -103,6 +103,18 @@ class DebtListTest(unittest.TestCase):
         self.assertTrue(listed)
         self.assertEqual(listed - shipped, set())
 
+    def test_the_gate_stages_each_shipped_adapter_with_its_kernels_directory(self):
+        adapters = make_words("HOSTED_RELEASE_ADAPTERS", "SHARED_LIBRARY_EXT=so")
+        self.assertTrue(adapters)
+        self.assertEqual(set(adapters) - set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so")), set())
+        self.assertEqual(make_words("HOSTED_RELEASE_KERNELS", "SHARED_LIBRARY_EXT=so"), [adapter + ".kernels" for adapter in adapters])
+        chosen = ["build/sparkpipe_model_api", adapters[0]]
+        self.assertEqual(make_words("HOSTED_RELEASE_KERNELS", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
+                         [adapters[0] + ".kernels"])
+        recipe = subprocess.run(["make", "-s", "-n", "-C", str(ROOT), "hosted-release-gate", "HOSTED_RELEASE_FILES=tools/fleet_node_agent.sh",
+                                 "HOSTED_RELEASE_ADAPTERS=tools/fleet_node_agent.sh"], capture_output=True, text=True, check=True).stdout
+        self.assertIn("--stage tools/fleet_node_agent.sh tools/fleet_node_agent.sh.kernels\n", recipe)
+
     def test_host_only_programs_are_shipped_and_never_debt(self):
         shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
         host_only = set(make_words("HOSTED_RELEASE_HOST_ONLY_FILES", "SHARED_LIBRARY_EXT=so"))
@@ -232,20 +244,29 @@ class GateTest(unittest.TestCase):
         project = self.base / "project"
         write(project / "build" / "tool", "#!/bin/sh\necho ready\n")
         write(project / "tools" / "agent.sh", "#!/bin/sh\nnvidia-smi\n")
+        write(project / "build" / "libmodule.so.kernels" / "unit.cubin", "image\n", 0o644)
+        write(project / "build" / "libmodule.so.kernels" / "unit.manifest", "kernel unit\n", 0o644)
+        write(project / "build" / "linked.kernels" / "unit.cubin", "image\n", 0o644)
+        os.symlink("unit.cubin", project / "build" / "linked.kernels" / "alias.cubin")
+        (project / "build" / "empty.kernels" / "nested").mkdir(parents=True)
+        os.symlink("tool", project / "build" / "alias")
         staged = project / "staged"
         write(staged / "leftover", "old\n")
+        shipped = {"build/tool", "tools/agent.sh", "build/libmodule.so.kernels/unit.cubin", "build/libmodule.so.kernels/unit.manifest"}
         cwd = os.getcwd()
         os.chdir(project)
         try:
-            MODULE.stage("staged", ["build/tool", "tools/agent.sh"])
-            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "tools/agent.sh"})
+            MODULE.stage("staged", ["build/tool", "tools/agent.sh", "build/libmodule.so.kernels"])
+            self.assertEqual(MODULE.root_files("staged"), shipped)
             self.assertEqual(os.stat("staged/build/tool").st_mode & 0o777, 0o755)
-            for sources in (["build/*"], ["/etc/hostname"], ["../project/build/tool"], ["build/absent"], []):
+            refused = (["build/*"], ["/etc/hostname"], ["../project/build/tool"], ["build/absent"], [],
+                       ["build/alias"], ["build/libmodule.so.kernels/"], ["build/linked.kernels"], ["build/empty.kernels"])
+            for sources in refused:
                 with self.subTest(sources):
                     with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-                        MODULE.stage("staged", sources)
+                        MODULE.stage("staged", ["build/tool", *sources] if sources else sources)
                     self.assertEqual(raised.exception.code, 2)
-            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "tools/agent.sh"})
+            self.assertEqual(MODULE.root_files("staged"), shipped)
         finally:
             os.chdir(cwd)
 

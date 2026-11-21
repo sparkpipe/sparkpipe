@@ -119,14 +119,38 @@ def root_files(root):
     return files
 
 
+def directory_files(source):
+    files = []
+    for directory, subdirectories, names in os.walk(source):
+        for name in subdirectories + names:
+            path = os.path.join(directory, name)
+            if os.path.islink(path):
+                fail(f"{path} is a symbolic link inside {source}")
+            if os.path.isfile(path):
+                files.append(path)
+            elif not os.path.isdir(path):
+                fail(f"{path} inside {source} is not a regular file")
+    if not files:
+        fail(f"{source} holds no files")
+    return sorted(files)
+
+
+def staged_files(source):
+    if not exact_path(source):
+        fail(f"{source!r} is not an exact path relative to the repository")
+    if os.path.islink(source):
+        fail(f"{source} is a symbolic link; stage the file it names")
+    if os.path.isfile(source):
+        return [source]
+    if os.path.isdir(source):
+        return directory_files(source)
+    fail(f"{source} was not built")
+
+
 def stage(root, sources):
     if not sources:
         fail("nothing to stage")
-    for source in sources:
-        if not exact_path(source):
-            fail(f"{source!r} is not an exact path relative to the repository")
-        if not os.path.isfile(source) or os.path.islink(source):
-            fail(f"{source} was not built")
+    sources = [path for source in sources for path in staged_files(source)]
     if os.path.lexists(root):
         if not os.path.isdir(root) or os.path.islink(root):
             fail(f"{root} exists and is not a staging directory")
@@ -205,7 +229,7 @@ def parse_args(argv):
     check_parser = commands.add_parser("check")
     check_parser.add_argument("--complete", action="store_true")
     check_parser.add_argument("--debt", default=DEBT_PATH)
-    check_parser.add_argument("--stage", nargs="+", metavar="FILE")
+    check_parser.add_argument("--stage", nargs="+", metavar="PATH")
     check_parser.add_argument("root")
     findings_parser = commands.add_parser("findings")
     findings_parser.add_argument("--debt", default=DEBT_PATH)

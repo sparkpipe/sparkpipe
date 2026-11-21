@@ -989,12 +989,13 @@ HOSTED_RELEASE_HUB_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_p
 HOSTED_RELEASE_HOST_ONLY_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/sparkpipe_model_batch build/weightd_receipt tools/fleet_node_agent.sh
 HOSTED_RELEASE_ADAPTERS = $(sort $(foreach variable,$(filter-out %_METAL_SERVING_ADAPTER,$(filter %_SERVING_ADAPTER,$(.VARIABLES))),$($(variable))))
 HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB_FILES) $(HOSTED_RELEASE_ADAPTERS) tools/fleet_node_agent.sh)
+HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
 HOSTED_RELEASE_ROOT ?= build/hosted_release_root
 HOSTED_RELEASE_GATE_FLAGS ?=
 
 .PHONY: hosted-release-gate
 hosted-release-gate: $(HOSTED_RELEASE_FILES)
-	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_FILES)
+	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS)
 
 MODULE_KERNELS_FLAGS = --keep --keep-dir $@.kernels
 define nvcc_module

@@ -120,16 +120,21 @@ python3 tools/hosted_release_gate.py shrink BASE
 
 `make hosted-release-gate` builds the files a release ships, copies them to
 `build/hosted_release_root` under their repository paths and checks that
-root. The default set is every file the release kit installs:
+root. The default set is every file a lane root or hub API directory ships:
 
 - the node files `HOSTED_RELEASE_NODE_FILES`, which equal the kit's `NODE`
   list;
 - the hub API files `HOSTED_RELEASE_HUB_FILES`;
-- every CUDA serving adapter;
+- every CUDA serving adapter, with the `<adapter>.kernels` directory of
+  cubins and kernel manifests its build installs beside it, which lane setup
+  ships with it (`HOSTED_RELEASE_KERNELS`);
 - `tools/fleet_node_agent.sh`.
 
 `HOSTED_RELEASE_FILES` replaces the set and `HOSTED_RELEASE_ROOT` the
-directory.
+directory. A replaced set still stages the kernels directory of every
+adapter it names. `--stage` takes exact paths only: a file, or a directory
+whose entries are all regular files or directories. It refuses symbolic
+links and a directory with no files.
 
 The debt list groups files by the reason they need an NVIDIA library. Each
 file is named by its exact path, with no patterns or directories, and each
@@ -191,8 +196,10 @@ also runs in `make test`. It checks four things.
   no CUDA library. The host-only programs' link lines name none either,
   while weightd's tools keep `-lcuda`.
 - **The gate.** It passes a listed finding and fails new, stale and missing
-  ones. It stages exact paths only. `shrink` fails on any added file or
-  finding in a scratch Git repository. The release kit's `NODE` list equals
+  ones. It stages exact paths only, and a directory only when it holds
+  regular files and no links. `shrink` fails on any added file or
+  finding in a scratch Git repository. The gate stages each shipped adapter
+  with its kernels directory. The release kit's `NODE` list equals
   `HOSTED_RELEASE_NODE_FILES`, and its hosted mode gates both builds before
   it writes the firmware directory.
 - **The host-only build**, on Linux. It builds the host-only programs from a
