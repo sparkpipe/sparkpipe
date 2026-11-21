@@ -1317,6 +1317,62 @@ static void TestApiStreamFirstUsage(TestApiStack *stack)
 	printf("test_model_api_text: stream usage OK (the first streamed event carries the prompt and cached counts, the last the whole usage)\n");
 }
 
+static size_t TestApiWriteTokens(char *request,size_t capacity,uint32_t first,uint32_t count)
+{
+	size_t length = 0u;
+	uint32_t index;
+	for (index=0u; index<count; index++)
+		length += (size_t)snprintf(request + length,capacity - length,"%s%u",index == 0u ? "" : ",",first + index);
+	assert(length < capacity);
+	return(length);
+}
+
+static void TestApiCommitAndCuts(TestApiStack *stack)
+{
+	char request[1024],response[65536],tokens[512];
+	const char *body;
+	const uint32_t first = 3000u + (uint32_t)(((uint64_t)getpid() * 31u + (uint64_t)time(0)) % 1000u);
+	(void)TestApiWriteTokens(tokens,sizeof(tokens),first,14u);
+	{
+		char committed[512];
+		(void)TestApiWriteTokens(committed,sizeof(committed),first,10u);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true}",committed);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		assert(TestApiBodyContains(body,"\"finish_reason\":\"commit\"") && TestApiBodyContains(body,"\"completion_tokens\":0") &&
+			TestApiBodyContains(body,"\"prompt_tokens\":10") && TestApiBodyContains(body,"\"published_tokens\":10") && TestApiBodyContains(body,"\"cached_tokens\":0"));
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true,\"max_tokens\":1}",committed);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400 && TestApiBodyContains(TestApiResponseJsonBody(response),"commit_only_conflict"));
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true,\"logprobs\":2}",committed);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400 && TestApiBodyContains(TestApiResponseJsonBody(response),"commit_only_conflict"));
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true,\"stream\":true}",committed);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200 && strstr(response,"\"finish_reason\":\"commit\"") != 0 && strstr(response,"\"published_tokens\":10") != 0 &&
+			strstr(response,"\"tokens\":[]") != 0 && strstr(response,"data: [DONE]") != 0);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":1}",committed);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400);
+	}
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[10],\"keep\":[10]}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"prompt_tokens\":14") && TestApiBodyContains(body,"\"cached_tokens\":10"));
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[10,6]}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[0]}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"keep\":10}",tokens);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; cuts and keep must be rising token counts)\n");
+}
+
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)
 {
 	TestApiStack stack;
@@ -1436,6 +1492,7 @@ int main(void)
 	TestApiChatDeclaredStops(&stack);
 	TestApiSamplingOptions(&stack);
 	TestApiStreamFirstUsage(&stack);
+	TestApiCommitAndCuts(&stack);
 	TestApiClientDisconnectDrains(&stack);
 	TestApiHttpBounds(&stack);
 	TestApiStopTokenIds(&stack);

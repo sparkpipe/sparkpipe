@@ -263,6 +263,9 @@ Optional request fields:
 | `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
 | `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
+| `cuts` | array of up to 16,384 rising token counts inside the prompt: where the request's structure ends a prefill wave (where a shared prefix ends, one token before a reply began, where a reply ends). A later request resumes at a cut only when it names the same cuts up to there. Cuts change which waves compute the prompt, never the prompt. See `docs/EXACTNESS_GATE.md` |
+| `keep` | array of rising token counts: the cuts where the engine keeps state, so a later request can resume there. A count that is not a cut is ignored. State is always kept one token before the prompt's end |
+| `commit_only` | boolean. `true` computes the prompt to its end, keeps the state there and generates nothing: the reply has no tokens, `finish_reason` is `commit` and `usage.published_tokens` is the prompt length. It takes no `max_tokens` or `logprobs` (`400 commit_only_conflict`) |
 | `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
@@ -318,7 +321,8 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p`, `top_k`, `logprobs`, `speculation` or `chat_template_kwargs`, or
+`top_p`, `top_k`, `logprobs`, `speculation`, `commit_only`, `cuts`, `keep`
+or `chat_template_kwargs`, or
 `chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
 `400 invalid_option`, never a silent default. With `temperature` 0,
 `top_p` and `top_k` cannot change the greedy token and are not forwarded.

@@ -1283,6 +1283,21 @@ static void SparkTestPrefixCacheResumeOpen(SparkTestKvFixture *fixture,SparkPref
 	assert(SparkPrefixCacheInitialize(cache,&configuration) == SPARK_STATUS_OK);
 }
 
+#define SPARK_TEST_RESUME_TAG UINT64_C(7)
+
+static uint32_t SparkTestResumeAny(SparkPrefixCache *cache,const uint32_t *tokens,uint32_t matched)
+{
+	uint32_t positions[64u],index;
+	uint64_t tags[64u];
+	assert(matched <= 64u);
+	for (index=0u; index<matched; index++)
+	{
+		positions[index] = index + 1u;
+		tags[index] = SPARK_TEST_RESUME_TAG;
+	}
+	return(SparkPrefixCacheResumeTagged(cache,tokens,matched,positions,tags,matched));
+}
+
 static void SparkTestPrefixCacheResumePoints(void)
 {
 	SparkTestKvFixture fixture,imported_fixture;
@@ -1297,26 +1312,48 @@ static void SparkTestPrefixCacheResumePoints(void)
 		tokens[index] = other[index] = 2000u + index;
 	other[10] = 7u;
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,8u,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheMarkResume(&cache,tokens,8u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,8u,0x1111u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,14u,&lookup) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,14u,0x5555u) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,16u,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,4u) == 0u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,12u) == 8u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,other,12u) == 8u);
-	assert(SparkPrefixCacheMarkResume(&cache,other,12u) == SPARK_STATUS_NOT_FOUND);
-	assert(SparkPrefixCacheMarkResume(&cache,tokens,16u) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,16u) == 16u);
-	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 4u);
-	for (index=0u,resume_records=0u; index<count; index++)
-		resume_records += records[index].flags == SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME ? 1u : 0u;
-	assert(resume_records == 2u);
-	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
-	records[0].flags |= 0x40u;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
-	records[0].flags &= ~0x40u;
-	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
-	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,16u) == 16u);
-	assert(SparkPrefixCacheResumeTokenCount(&imported,tokens,12u) == 8u);
-	printf("prefix cache resume points: only marked publication ends resume, a lookup truncates to the last one, and the marks survive export and import: ok\n");
+	{
+		static const uint32_t wave_ends[3u] = {4u,8u,16u},inside[2u] = {6u,8u},partial[2u] = {8u,14u};
+		static const uint64_t same_waves[3u] = {0x3333u,0x1111u,0x2222u},other_waves[3u] = {0x3333u,0x9999u,0x2222u};
+		static const uint64_t inside_tags[2u] = {0x1111u,0x1111u},partial_tags[2u] = {0x1111u,0x5555u},partial_other[2u] = {0x1111u,0x6666u};
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,4u,wave_ends,same_waves,3u) == 0u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,12u,wave_ends,same_waves,3u) == 8u);
+		assert(SparkPrefixCacheResumeTagged(&cache,other,10u,wave_ends,same_waves,3u) == 8u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,12u,wave_ends,other_waves,3u) == 0u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,12u,inside,inside_tags,2u) == 8u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,12u,inside,inside_tags,1u) == 0u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,12u,0,0,0u) == 0u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,15u,partial,partial_tags,2u) == 14u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,15u,partial,partial_other,2u) == 8u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,13u,partial,partial_tags,2u) == 8u);
+		assert(SparkPrefixCacheClearResume(&cache,tokens,14u) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,15u,partial,partial_tags,2u) == 8u);
+		assert(SparkPrefixCacheMarkResume(&cache,other,12u,0x4444u) == SPARK_STATUS_NOT_FOUND);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,16u,0x2222u) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,16u,wave_ends,same_waves,3u) == 16u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,16u,wave_ends,other_waves,3u) == 16u);
+		assert(SparkPrefixCacheResumeTagged(&cache,tokens,16u,wave_ends,other_waves,2u) == 0u);
+		assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK && count == 5u);
+		for (index=0u,resume_records=0u; index<count; index++)
+		{
+			resume_records += records[index].flags == SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME ? 1u : 0u;
+			assert((records[index].flags == SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) == (records[index].resume_tag != 0u));
+		}
+		assert(resume_records == 2u);
+		SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
+		records[0].flags |= 0x40u;
+		assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == 0u && skipped == count);
+		records[0].flags &= ~0x40u;
+		assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
+		assert(SparkPrefixCacheResumeTagged(&imported,tokens,16u,wave_ends,same_waves,3u) == 16u);
+		assert(SparkPrefixCacheResumeTagged(&imported,tokens,12u,wave_ends,same_waves,3u) == 8u);
+		assert(SparkPrefixCacheResumeTagged(&imported,tokens,12u,wave_ends,other_waves,3u) == 0u);
+	}
+	printf("prefix cache resume points: only a marked publication end whose tag the request names resumes, the deepest one at or under the match wins, inside a block as well, and marks and tags survive export and import: ok\n");
 }
 
 static double SparkTestNowSeconds(void)
@@ -1425,13 +1462,13 @@ static void SparkTestPrefixCacheResumeInsideLastBlock(void)
 		for (index=prompt; index<12u; index++)
 			extended[index] = 9000u + index;
 		assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,prompt - 1u,&lookup) == SPARK_STATUS_OK);
-		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt - 1u) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt - 1u,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 		assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,prompt,&lookup) == SPARK_STATUS_OK);
-		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,prompt) == prompt - 1u);
-		assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,prompt - 1u) == prompt - 1u);
-		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,SPARK_TEST_BLOCK_TOKENS) == 0u);
-		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt) == SPARK_STATUS_OK);
-		assert(SparkPrefixCacheResumeTokenCount(&cache,extended,prompt) == prompt);
+		assert(SparkTestResumeAny(&cache,extended,prompt) == prompt - 1u);
+		assert(SparkTestResumeAny(&cache,tokens,prompt - 1u) == prompt - 1u);
+		assert(SparkTestResumeAny(&cache,extended,SPARK_TEST_BLOCK_TOKENS) == 0u);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,prompt,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
+		assert(SparkTestResumeAny(&cache,extended,prompt) == prompt);
 	}
 	printf("prefix cache resume points: a resumable point inside the last matched block is found under a longer stateless publication, partial or full, and a resumable longest match still wins: ok\n");
 }
@@ -1453,17 +1490,17 @@ static void SparkTestPrefixCacheResumeInsideEarlierBlock(void)
 		follow[index] = 9500u + index;
 	sibling[checkpoint - 1u] = 11u;
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,checkpoint + 1u,&lookup) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheCommitPrompt(&cache,1u,tokens,reply_end,&lookup) == SPARK_STATUS_OK);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,reply_end) == checkpoint);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,checkpoint) == checkpoint);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,follow,checkpoint - 1u) == 0u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,sibling,checkpoint - 1u) == 0u);
+	assert(SparkTestResumeAny(&cache,follow,reply_end) == checkpoint);
+	assert(SparkTestResumeAny(&cache,follow,checkpoint) == checkpoint);
+	assert(SparkTestResumeAny(&cache,follow,checkpoint - 1u) == 0u);
+	assert(SparkTestResumeAny(&cache,sibling,checkpoint - 1u) == 0u);
 	assert(SparkPrefixCacheExportCommitted(&cache,records,8u,&count) == SPARK_STATUS_OK);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
 	assert(SparkPrefixCacheImportCommitted(&imported,records,count,&added,&skipped) == SPARK_STATUS_OK && added == count && skipped == 0u);
-	assert(SparkPrefixCacheResumeTokenCount(&imported,follow,reply_end) == checkpoint);
+	assert(SparkTestResumeAny(&imported,follow,reply_end) == checkpoint);
 	printf("prefix cache resume points: a resumable point inside an earlier matched block is found when a later turn matches past it, a sibling that diverges before it gets none, and import keeps it findable: ok\n");
 }
 
@@ -1488,7 +1525,7 @@ static void SparkTestPrefixCacheRetention(void)
 	assert(SparkPrefixCacheReleaseSequence(&cache,1u) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheExpire(&cache,now,&expired) == SPARK_STATUS_OK && expired == 0u);
 	assert(SparkPrefixCacheExpire(&cache,now + SPARK_KV_RETENTION_SECONDS + 60u,&expired) == SPARK_STATUS_OK && expired == 3u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == 0u);
+	assert(SparkTestResumeAny(&cache,tokens,3u * SPARK_TEST_BLOCK_TOKENS) == 0u);
 	assert(SparkPrefixCacheExportCommitted(&cache,records + 4u,4u,&added) == SPARK_STATUS_OK && added == 0u);
 	SparkTestPrefixCacheResumeOpen(&imported_fixture,&imported,imported_entries,imported_bindings);
 	records[0].used_seconds = (uint32_t)(now - SPARK_KV_RETENTION_SECONDS - 60u);
@@ -1519,24 +1556,24 @@ static void SparkTestPrefixCacheResumeSuperseded(void)
 	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,8u,4u,anchor + 1u,&superseded) == SPARK_STATUS_INVALID_ARGUMENT);
 	for (position=SPARK_TEST_BLOCK_TOKENS; position<=6u*SPARK_TEST_BLOCK_TOKENS; position+=SPARK_TEST_BLOCK_TOKENS)
 	{
-		assert(SparkPrefixCacheMarkResume(&cache,tokens,position) == SPARK_STATUS_OK);
+		assert(SparkPrefixCacheMarkResume(&cache,tokens,position,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 		assert(SparkPrefixCacheSupersedeResume(&cache,tokens,position,4u,anchor,&superseded) == SPARK_STATUS_OK);
 		assert(superseded == (position == 5u * SPARK_TEST_BLOCK_TOKENS || position == 6u * SPARK_TEST_BLOCK_TOKENS ? 1u : 0u));
 		total += superseded;
 	}
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,11u) == 0u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,23u) == 20u);
-	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint) == SPARK_STATUS_OK);
+	assert(SparkTestResumeAny(&cache,tokens,11u) == 0u);
+	assert(SparkTestResumeAny(&cache,tokens,15u) == 12u);
+	assert(SparkTestResumeAny(&cache,tokens,23u) == 20u);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,checkpoint,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,checkpoint,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
-	assert(SparkPrefixCacheMarkResume(&cache,tokens,28u) == SPARK_STATUS_OK);
+	assert(SparkPrefixCacheMarkResume(&cache,tokens,28u,SPARK_TEST_RESUME_TAG) == SPARK_STATUS_OK);
 	assert(SparkPrefixCacheSupersedeResume(&cache,tokens,28u,4u,anchor,&superseded) == SPARK_STATUS_OK && superseded == 0u);
 	assert(total == 2u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,15u) == 12u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,19u) == 16u);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,checkpoint) == checkpoint);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,27u) == checkpoint);
-	assert(SparkPrefixCacheResumeTokenCount(&cache,tokens,28u) == 28u);
+	assert(SparkTestResumeAny(&cache,tokens,15u) == 12u);
+	assert(SparkTestResumeAny(&cache,tokens,19u) == 16u);
+	assert(SparkTestResumeAny(&cache,tokens,checkpoint) == checkpoint);
+	assert(SparkTestResumeAny(&cache,tokens,27u) == checkpoint);
+	assert(SparkTestResumeAny(&cache,tokens,28u) == 28u);
 	printf("prefix cache resume points: marking a resume point clears the block-aligned ones on its path beyond the three nearest, as the ranks drop those states, keeps every checkpoint-aligned one, and never counts a resume point inside a block: ok\n");
 }
 
