@@ -262,6 +262,7 @@ struct LmHcStagedShape
 	static constexpr uint32_t kShared = LM_HC_STAGED_SLOTS * kSlotBytes;
 };
 
+#ifdef __CUDACC__
 static __device__ __forceinline__ void LmHcStageCopy(uint32_t shared, const void *source, uint32_t bytes)
 {
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
@@ -390,13 +391,17 @@ static int32_t LmHcSinkhornPartialStaged(const uint16_t *streams, const float *f
 	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
+#endif
+
 template<uint32_t STREAMS>
 static int32_t LmHcSinkhornPartials(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, cudaStream_t stream)
 {
+#ifdef __CUDACC__
 	if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
 		return LmHcSinkhornPartialStaged<STREAMS,LM_HC_SINKHORN_WIDE_ROWS>(streams, fn, partials, rows, width, stream);
 	if ( rows >= LM_HC_SINKHORN_ROWS_FROM )
 		return LmHcSinkhornPartialStaged<STREAMS,LM_HC_SINKHORN_ROWS>(streams, fn, partials, rows, width, stream);
+#endif
 	if ( rows == 0u || width == 0u )
 		return LM_LAUNCH_ERR_SHAPE;
 	LM_LAUNCH((LmHcSinkhornPartialKernel<STREAMS>), dim3(LmHcSinkhornShape<STREAMS>::kTasks, rows), LM_HC_SINKHORN_THREADS, 0, stream, streams, fn,
