@@ -906,8 +906,6 @@ template<class S>
 static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
 {
 	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
-	static_assert((GLM_STREAM_EXPERT_ROWS - 1u) * S::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * S::kExperts,
-		"every wave below the stream threshold fits the grouped skinny expert kernel, whose mean rows per expert are bounded");
 	LmGemmArguments gemm;
 	int32_t status;
 	memset(&gemm, 0, sizeof(gemm));
@@ -1536,6 +1534,16 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		{
 			fprintf(stderr, "%s: TP%u gives %u heads per rank; the packed prefill tables and the context split need 4\n", G::Tag(), state->tp_degree, state->heads);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		{
+			const uint32_t below_stream = state->max_rows < GLM_STREAM_EXPERT_ROWS ? state->max_rows : GLM_STREAM_EXPERT_ROWS - 1u;
+			if ( (uint64_t)below_stream * S::kTopK > (uint64_t)LM_SKINNY_GROUPED_MAX_MEAN_ROWS * S::kExperts )
+			{
+				fprintf(stderr, "%s: waves of up to %u rows route %llu expert pairs, past the %u the grouped skinny kernel takes over %u experts; waves "
+					"below %u rows run on it, so serve at most %u rows per wave\n", G::Tag(), below_stream, (unsigned long long)below_stream * S::kTopK,
+					LM_SKINNY_GROUPED_MAX_MEAN_ROWS * S::kExperts, S::kExperts, GLM_STREAM_EXPERT_ROWS, LM_SKINNY_GROUPED_MAX_MEAN_ROWS * S::kExperts / S::kTopK);
+				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+			}
 		}
 		status = PackRead(state, configuration->rank_pack_path);
 		if ( status != SPARK_STATUS_OK )
