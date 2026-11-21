@@ -1113,7 +1113,7 @@ class Model:
         marks = [mark for mark in marks if mark <= end] + [end]
         if end <= 0:
             return None
-        ids = encode_span(self, pieces, 0, end)
+        ids = array("I", encode_span(self, pieces, 0, end))
         return ids, sorted({len(encode_span(self, pieces, 0, mark)) for mark in marks[:-1]} | {len(ids)})
 
     def generation_prompt(self, tools, kwargs):
@@ -1845,7 +1845,8 @@ def opening_cuts(model, messages, tools, kwargs, pack, ids):
     if found is None:
         return []
     opening, ends = found
-    return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and ids[:end] == opening[:end]]
+    head = array("I", ids[:len(opening)])
+    return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and head[:end] == opening[:end]]
 
 
 def name_cuts(engine, replay, kept):

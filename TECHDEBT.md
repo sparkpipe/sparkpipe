@@ -1132,10 +1132,13 @@ as recorded debt for models too large for a group.
     token boundary. Two conversations that share only the first system block
     resume at the last checkpoint anchor inside it. A client's
     `cache_control` marks are read and ignored; a mark inside the opening
-    should become a cut with `keep` where its block ends. That needs the
-    blocks tokenized apart, which changes the tokens at each join against
-    the publisher's whole-text tokenization, or a boundary placed on a
-    control token. A mark on a message needs nothing: state is always kept
+    should become a cut with `keep` where its block ends. Tokenizing the
+    blocks apart would change the tokens at each join against the
+    publisher's whole-text tokenization. The cut that keeps the publisher's
+    tokens is the last token boundary of the whole text at or before the
+    block's end, read from the tokenizer's offsets; two prompts that share
+    the block name the same cut when the join starts a new pre-token (a
+    blank line does). A mark on a message needs nothing: state is always kept
     one token before the prompt's end, and a cut there that later turns did
     not name would break their resume.
   - The opening cut costs each request one render of the opening and a
