@@ -39,7 +39,7 @@ GATED_ROOTS = (
     "src",
     "text",
 )
-BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal")
+BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal", "runtime/device/nvrm")
 DEVICE_DIRS = ("inference/kernels", "inference/runner", "model-families", "modules") + BACKEND_DIRS
 EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 HOST_SUFFIXES = {".c", ".h", ".cc", ".cpp", ".hpp", ".m", ".mm"}

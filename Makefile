@@ -403,7 +403,7 @@ TEST_NAMES += test_stage_kv_shared_prefix
 TEST_NAMES += test_device_contract test_device_instance
 endif
 TEST_NAMES += test_device_serving_runner
-TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd test_nvrm_submit test_nvrm_open_order
+TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd test_nvrm_submit test_nvrm_open_order test_nvrm_register
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
@@ -1499,7 +1499,7 @@ endif
 build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
-NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order
+NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register
 
 build/test_nvrm_launch_dimensions: tests/test_nvrm_launch_dimensions.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1517,7 +1517,13 @@ build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture
 build/test_nvrm_module_state: tests/test_nvrm_module_state.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state
+build/test_nvrm_register: tests/test_nvrm_register.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_nvrm_register_gpu: tests/test_nvrm_register.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_NVRM_REGISTER_GPU $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu
 .PHONY: test-nvrm-gpu
 test-nvrm-gpu: $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
 	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \

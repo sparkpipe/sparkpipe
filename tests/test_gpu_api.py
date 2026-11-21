@@ -47,7 +47,7 @@ ROOTS = (
     "src",
     "text",
 )
-BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal")
+BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal", "runtime/device/nvrm")
 EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 
 PENDING = {
