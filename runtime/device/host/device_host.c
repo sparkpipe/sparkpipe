@@ -10,6 +10,8 @@
 
 #include "runtime/device/device_backend.h"
 
+#define HOST_CONSTANT_BYTES 4096u
+
 typedef enum HostMemoryKind
 {
 	HOST_MEMORY_ANONYMOUS = 1,
@@ -109,6 +111,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		(pages > 0 ? (uint64_t)pages * host_page_bytes : 0u);
 	properties->max_buffer_bytes = 1ull << 44;
 	properties->properties = 0u;
+	properties->max_constant_bytes = HOST_CONSTANT_BYTES;
 	return(SPARK_STATUS_OK);
 }
 

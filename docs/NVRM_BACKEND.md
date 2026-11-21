@@ -161,7 +161,8 @@ The parser and the packer are tested in `make test` without a GPU:
 - **`tests/test_nvrm_cubin.c`.** It parses
   `tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin`, release-built from
   `tests/nvrm/fixture_kernels.cu` (first-light, parameter-layout, static
-  shared, stack and large-parameter kernels, plus two RMS-norm kernels from
+  shared, stack, 4104-byte and 32,764-byte parameter and 2000-byte name
+  kernels, plus two RMS-norm kernels from
   `inference/kernels/norm.cuh`). Each kernel's registers, stack and shared
   memory must equal ptxas's own report in the fixture manifest, and its
   parameter bytes the C layout of its signature. A synthetic image then
@@ -343,14 +344,21 @@ finds a kernel by name and reports its thread limit (the PTX bound, else
 (`SparkDeviceKernelInfo.parameters`, from the manifest). A launch passes
 the kernel's whole parameter block, packed by its C parameter types, as
 the launch's constants; the block must be exactly the kernel's parameter
-size, and bindings are refused. Each launch's descriptor and bank 0 go in
-a slot from a per-queue ring of 512, reused once the launch that held it
-has completed. The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
+size, and bindings are refused. A parameter block may be up to 32,764
+bytes, CUDA's own kernel parameter limit on compute capability 7.0 and
+later, which the backend reports as `max_constant_bytes`. Each launch's
+descriptor and bank 0 (512 bytes plus the kernel's bank 0 rounded up to
+256) go in a slot from a per-queue 4 MiB byte ring; the space is reused
+once the launch that held it has completed. A kernel name may be up to
+4096 bytes, so mangled template names are found whole; the manifest keeps
+each name on the heap. The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
 `SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS` property bits (Metal sets the
 first), and the device contract branches on them: its parameter-block
 branch loads the fixture cubin,
 checks the reported layout, refuses bindings and a wrong-sized block, and
-reads back a launch. The backend adopts no foreign memory or queue, and
+reads back a launch. It also creates, launches and destroys a kernel with
+a 2000-byte name, launches a 4104-byte and a 32,764-byte parameter block
+and reads every word back, and refuses a block 4 bytes over the limit. The backend adopts no foreign memory or queue, and
 a queue it owns is never captured into a graph.
 
 Every channel registers with unified memory before anything is

@@ -77,7 +77,7 @@ struct SparkDeviceKernel
 	void *backend;
 	SparkDeviceKernel *next;
 	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
-	char name[SPARK_DEVICE_KERNEL_NAME_BYTES];
+	char *name;
 };
 
 SparkStatus SparkDeviceRecordError(SparkStatus status, const char *operation, const char *owner, int32_t backend_code, const char *text);

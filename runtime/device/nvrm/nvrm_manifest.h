@@ -9,7 +9,6 @@
 extern "C" {
 #endif
 
-#define SPARK_NVRM_MANIFEST_NAME_BYTES 256u
 #define SPARK_NVRM_MANIFEST_DIGEST_BYTES 65u
 
 typedef struct SparkNvrmParameter
@@ -21,7 +20,7 @@ typedef struct SparkNvrmParameter
 
 typedef struct SparkNvrmManifestKernel
 {
-	char name[SPARK_NVRM_MANIFEST_NAME_BYTES];
+	char *name;
 	uint32_t registers;
 	uint32_t barriers;
 	uint32_t stack_bytes;

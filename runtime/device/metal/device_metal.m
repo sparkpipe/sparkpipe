@@ -36,6 +36,7 @@ typedef struct MetalAllocation
 
 #define METAL_COMMIT_OPERATIONS 64u
 #define METAL_ERROR_BYTES 128u
+#define METAL_CONSTANT_BYTES 4096u
 
 typedef struct MetalEvent
 {
@@ -179,6 +180,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		properties->properties = SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | (metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 		properties->max_group_threads = (uint32_t)metal_device.maxThreadsPerThreadgroup.width;
 		properties->max_shared_bytes = (uint32_t)metal_device.maxThreadgroupMemoryLength;
+		properties->max_constant_bytes = METAL_CONSTANT_BYTES;
 	}
 	return(SPARK_STATUS_OK);
 }
