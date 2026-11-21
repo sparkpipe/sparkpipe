@@ -230,6 +230,17 @@ python3 turn_floor.py parts $W/kimi-k3
   while it runs. The probe's time beyond its solo time is the wait behind a
   background wave.
 - **`resume`**: one turn on the saved session after `--event`.
+- **`truth`**: asks the engine what it holds of the saved session
+  (`POST /v1/cache/state` with the session's token ids) and keeps the answer
+  in the run's record under `--event`; `parts` lists the answers in
+  `summary.json` as `cache_states`. An engine without the endpoint answers
+  404, which is recorded and stops nothing.
+
+Every completion's `cache` object, when the engine sends one, is kept with
+the request (`cache_matched_tokens`, `cache_resumed_tokens`,
+`cache_restore_ms`, `cache_background_wait_ms`, `cache_boot`,
+`cache_artifact`), so what the engine says of a request stands beside what
+its log says.
 
 `parts` joins each request to its `request_measurements` line by the
 SHA-256 of its token ids and reads the `batch_step` and `batch_rejected`

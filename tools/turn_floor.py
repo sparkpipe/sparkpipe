@@ -37,6 +37,7 @@ STORE_FIELDS = ("save_pages", "save_ns", "save_count", "restore_pages", "restore
                 "pool_evicted_entries", "spill_write_bytes", "spill_read_bytes", "write_bytes")
 PART_NAMES = ("send_ms", "queue_ms", "restore_ms", "prefill_ms", "first_step_ms")
 CLIENT_PARTS = ("send_ms", "reply_ms")
+CACHE_FIELDS = ("matched_tokens", "resumed_tokens", "restore_ms", "background_wait_ms", "boot", "artifact")
 SESSION_SAMPLES = ("turn", "turn_spec", "decode", "decode_served")
 CLOCK_APART = "the client's clock is not the engine's (a send or reply time came out negative), so send and reply times are left out"
 
@@ -111,6 +112,22 @@ class Engine:
         finally:
             connection.close()
 
+    def cache_state(self, ids):
+        connection = self.connection(60)
+        try:
+            connection.request("POST", "/v1/cache/state", json.dumps({"prompt_token_ids": ids}, separators=(",", ":")).encode(),
+                               {"Content-Type": "application/json", "User-Agent": USER_AGENT})
+            response = connection.getresponse()
+            text = response.read().decode("utf-8", "replace")
+            try:
+                return response.status, json.loads(text)
+            except json.JSONDecodeError:
+                return response.status, {"body": text[:300]}
+        except (OSError, http.client.HTTPException) as error:
+            return 0, {"transport": f"{type(error).__name__}: {error}"}
+        finally:
+            connection.close()
+
     def context_limit(self):
         status, models = self.get("/v1/models")
         if status != 200:
@@ -158,6 +175,8 @@ class Engine:
                 usage = event.get("usage")
                 if usage:
                     record["cached_tokens"] = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", record["cached_tokens"])
+                if isinstance(event.get("cache"), dict):
+                    record.update({"cache_" + name: event["cache"].get(name) for name in CACHE_FIELDS})
                 finish = (event.get("choices") or [{}])[0].get("finish_reason")
                 record["finish"] = finish or record["finish"]
         except (OSError, http.client.HTTPException, json.JSONDecodeError) as error:
@@ -380,6 +399,19 @@ class Run:
         time.sleep(RESUME_SETTLE_SECONDS)
         self.turn("turn_after_resume", len(history), RESUME_TAIL_TOKENS, False)
 
+    def truth(self):
+        history = self.state["history"]
+        if not history:
+            raise SystemExit("turn_floor: there is no saved session to ask the engine about; run the turns arm first")
+        status, answer = self.engine.cache_state(history)
+        self.state["sequence"] += 1
+        record = {"kind": "cache_state", "event": self.arguments.event, "sequence": self.state["sequence"], "label": self.arguments.label, "model": self.model,
+                  "history_tokens": len(history), "http_status": status, "answer": answer, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                  "log_offset": self.log_offset()}
+        self.write(record)
+        self.save()
+        print(json.dumps({key: record[key] for key in ("kind", "event", "history_tokens", "http_status", "answer")}), flush=True)
+
     def close(self):
         self.mark("end")
         self.requests.close()
@@ -527,7 +559,7 @@ def split(request, measurement, steps, rejections):
 def join(folder, log_path=None, log_base=0):
     records = read_requests(folder)
     marks = [record for record in records if record.get("kind") == "mark"]
-    requests = [record for record in records if record.get("kind") != "mark"]
+    requests = [record for record in records if record.get("kind") not in ("mark", "cache_state")]
     log_path = log_path or next((mark["api_log"] for mark in marks if mark.get("api_log")), None)
     if log_path is None:
         raise SystemExit("turn_floor: the run recorded no engine log; pass --api-log")
@@ -595,7 +627,7 @@ def summarize(rows):
                  "prefill_waves": median([row.get("prefill_waves") for row in group]), "wave_rows_max": max((row.get("wave_rows_max") or 0 for row in group), default=0),
                  "wave_wall_ms_max": max((row.get("wave_wall_ms_max") or 0.0 for row in group), default=0.0),
                  "matched": sum(1 for row in group if not row.get("unmatched")), "notes": sorted({note for row in group for note in row.get("notes") or []})}
-        for name in PART_NAMES:
+        for name in PART_NAMES + ("cache_restore_ms", "cache_background_wait_ms"):
             entry[name] = median([row.get(name) for row in group])
         named = {name: entry[name] for name in PART_NAMES if entry[name] is not None}
         entry["largest_part"] = max(named, key=named.get) if named else None
@@ -715,7 +747,9 @@ def parts(arguments):
     summary = summarize(rows)
     document = {"model": next((mark.get("model") for mark in marks), None), "label": next((mark.get("label") for mark in marks), None),
                 "requests": len(rows), "unmatched": sum(1 for row in rows if row.get("unmatched")), "kv_store": store, "clock_shared": shared,
-                "clock": next((mark.get("clock") for mark in marks if mark.get("clock")), None), "summary": summary}
+                "clock": next((mark.get("clock") for mark in marks if mark.get("clock")), None),
+                "cache_states": [{key: record.get(key) for key in ("event", "sequence", "history_tokens", "http_status", "answer", "utc")}
+                                 for record in read_requests(folder) if record.get("kind") == "cache_state"], "summary": summary}
     (folder / "summary.json").write_text(json.dumps(document, indent=1) + "\n")
     print(markdown(summary))
     if not shared:
@@ -812,9 +846,9 @@ def build_parser():
 def main():
     arguments = build_parser().parse_args()
     if arguments.command == "run":
-        unknown = [arm for arm in arguments.arms if arm not in ("turns", "decode", "openings", "wave", "resume")]
+        unknown = [arm for arm in arguments.arms if arm not in ("turns", "decode", "openings", "wave", "resume", "truth")]
         if unknown:
-            raise SystemExit(f"turn_floor: unknown arms {unknown}; the arms are turns, decode, openings, wave and resume")
+            raise SystemExit(f"turn_floor: unknown arms {unknown}; the arms are turns, decode, openings, wave, resume and truth")
         if "resume" in arguments.arms and not arguments.event:
             raise SystemExit("turn_floor: the resume arm needs --event, what happened to the session since its last turn")
         run(arguments)

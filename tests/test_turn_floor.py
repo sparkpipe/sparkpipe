@@ -59,6 +59,8 @@ class Stub:
         self.requests = []
         self.truth = {}
         self.refuse_in = 0
+        self.restored_ms = 0.0
+        self.answers_state = True
 
     def cached(self, ids):
         best = 0
@@ -98,9 +100,11 @@ class Stub:
         self.requests.append({"priority": body.get("priority"), "speculation": body.get("speculation"), "prompt": len(ids), "cached": cached})
         with self.busy:
             time.sleep(QUEUE_MS / 1000)
+            self.restored_ms = 0.0
             if restore:
                 self.write(f"batch_rejected status=18 kind=1 submission=7 request={request_id}")
                 time.sleep(RESTORE_MS / 1000)
+                self.restored_ms = (time.monotonic_ns() - accepted) / 1e6
                 self.store["restore_pages"] += cached // 64
                 self.store["restore_ns"] += int(RESTORE_MS * 1e6)
                 self.report_store()
@@ -173,6 +177,15 @@ def handler(stub):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/v1/cache/state":
+                if not stub.answers_state:
+                    self.send_error(404)
+                    return
+                held = stub.cached(body["prompt_token_ids"] + [0])
+                self.reply({"object": "cache.state", "complete": True, "prompt_tokens": len(body["prompt_token_ids"]), "matched_tokens": held, "resume_tokens": held,
+                            "probed_tokens": held, "ranks": 1, "ranks_reported": 1, "ranks_failed": 0, "held_tokens": held, "resident_tokens": held, "saved_tokens": 0,
+                            "state_tokens": held, "read_tokens": held, "boot": str(BOOT)})
+                return
             with stub.lock:
                 stub.refuse_in -= 1
                 refused = stub.refuse_in == 0
@@ -194,6 +207,9 @@ def handler(stub):
             def emit(tokens, cached, finish):
                 event = {"object": "text_completion", "choices": [{"index": 0, "text": "", "finish_reason": finish}], "tokens": tokens,
                          "usage": {"prompt_tokens": len(body["prompt_token_ids"]), "prompt_tokens_details": {"cached_tokens": cached}}}
+                if finish is not None:
+                    event["cache"] = {"matched_tokens": cached + 3, "resumed_tokens": cached, "restore_ms": stub.restored_ms, "background_wait_ms": 0.0,
+                                      "boot": str(BOOT), "artifact": "0123456789abcdef"}
                 self.wfile.write(("data: " + json.dumps(event) + "\n\n").encode())
                 self.wfile.flush()
 
@@ -290,6 +306,10 @@ with tempfile.TemporaryDirectory() as folder:
     state = json.loads((output / "session.json").read_text())
     check(state["levels"] == [2000, 4000], f"the turns arm finishes every context level that fits the engine: {state['levels']}")
     check(len(state["history"]) > 4000, "the session keeps its prompt and every reply as its history")
+    run_tool(*common, "--arms", "truth", "--event", "after the turns")
+    stub.answers_state = False
+    run_tool(*common, "--arms", "truth", "--event", "an engine without the endpoint")
+    stub.answers_state = True
     run_tool(*common, "--arms", "openings,wave")
     stub.restore_next = True
     run_tool(*common, "--arms", "resume", "--event", "swap")
@@ -309,6 +329,11 @@ with tempfile.TemporaryDirectory() as folder:
     server.shutdown()
 
 check(summary["unmatched"] == 0, f"every request finds its own line in the engine log by prompt digest: {summary['unmatched']} unmatched")
+asked = summary["cache_states"]
+check(len(asked) == 2 and asked[0]["event"] == "after the turns" and asked[0]["http_status"] == 200 and asked[0]["answer"]["ranks_failed"] == 0 and
+      asked[0]["answer"]["held_tokens"] == asked[0]["history_tokens"] == asked[0]["answer"]["prompt_tokens"] and asked[0]["answer"]["resident_tokens"] == asked[0]["history_tokens"] and
+      asked[1]["http_status"] == 404,
+      f"the truth arm asks the engine what it holds of the session and keeps the answer, and an engine without the endpoint is recorded, not fatal: {asked}")
 timed = ("queue_ms", "restore_ms", "prefill_ms", "first_step_ms", "prefill_waves", "prefill_rows", "decode_tok_s", "restore_polls", "request_id")
 check(cut["log_start"] == log_start and cut["log_base"] < cut["log_start"] and cut["baseline_reports"] == 1 and cut["kept"] < cut["lines"] and len(recut) == len(rows) and
       all({name: one.get(name) for name in timed} == {name: other.get(name) for name in timed} for one, other in zip(rows, recut)) and
@@ -385,6 +410,9 @@ check(resume["event"] == "swap" and resume["restore_ms"] >= RESTORE_MS + QUEUE_M
       resume["prefill_waves"] == 1 and resume["prefill_ms"] >= WAVE_MS + WAVE_GAP_MS - EARLY_MS,
       f"a request the ranks answered pending waited for a restore, apart from its prefill: {round(resume['restore_ms'], 1)} ms restore, {round(resume['prefill_ms'], 1)} ms prefill")
 check(resume["store"]["restore_pages"] > 0 and resume["store"]["restore_ns"] == int(RESTORE_MS * 1e6), f"the resume's restored pages come from the engine's store reports: {resume['store']}")
+check(resume["cache_matched_tokens"] == resume["cached_tokens"] + 3 and resume["cache_resumed_tokens"] == resume["cached_tokens"] and resume["cache_boot"] == str(BOOT) and
+      near(resume["cache_restore_ms"], resume["restore_ms"], PART_SLACK_MS) and all(row["cache_restore_ms"] == 0 for row in small),
+      f"what the engine says of itself in a reply's cache object is kept beside what the log says, so the two can be compared: {resume['cache_restore_ms']} and {resume['restore_ms']}")
 entry = next(item for item in summary["summary"] if item["kind"] == "resume")
 known = dict({name: resume["truth"][name] for name in ENGINE_PARTS}, **({"send_ms": resume["send_ms"]} if resume["send_ms"] is not None else {}))
 check(entry["largest_part"] == max(known, key=known.get), f"the summary names the largest part of a resume: {entry['largest_part']} of {known}")
