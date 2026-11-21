@@ -30,6 +30,40 @@ hub_space() {
 }
 swap() { hub "token=\$(cat $SWAP_TOKEN) && printf 'Authorization: Bearer %s\\n' \"\$token\" | curl -sf -H @- $1"; }
 controller() { swap localhost:8440/status | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['state'], d['active'], d['error'])"; }
+activate() {
+  local model="$1" i out
+  swap "-X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || { echo "activate $model: the swap controller refused"; return 2; }
+  for i in $(seq 1 120); do
+    sleep 5
+    out="$(swap localhost:8440/status | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+h = (d.get('history') or [{}])[-1]
+print(d['state'], d['active'], h.get('seconds'), json.dumps(d['error']))" 2>/dev/null)" || continue
+    set -- $out
+    [ "${1:-}" = failed ] && { echo "activate $model: $out"; return 2; }
+    [ "${1:-}" = idle ] || continue
+    echo "activate $model: $out"
+    [ "$2" = "$model" ] && [ "$4" = null ] && return 0
+    return 3
+  done
+  echo "activate $model: timeout"; return 1
+}
+deactivate() {
+  local i out
+  swap "-X POST localhost:8440/deactivate" > /dev/null || { echo "deactivate: the swap controller refused"; return 2; }
+  for i in $(seq 1 120); do
+    sleep 5
+    out="$(controller 2>/dev/null)" || continue
+    set -- $out
+    [ "${1:-}" = failed ] && { echo "deactivate: $out"; return 2; }
+    [ "${1:-}" = idle ] || continue
+    echo "deactivate: $out"
+    [ "$2" = None ] && return 0
+    return 3
+  done
+  echo "deactivate: timeout"; return 1
+}
 restore_max() {
   activate qwen3.8-max && return 0
   sleep 30; activate qwen3.8-max && return 0
