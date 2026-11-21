@@ -74,6 +74,8 @@ CONSTANTS = {
     "cudaHostAllocPortable": "SPARK_GPU_HOST_ALLOC_PORTABLE",
     "cudaHostAllocMapped": "SPARK_GPU_HOST_ALLOC_MAPPED",
     "cudaHostRegisterDefault": "SPARK_GPU_HOST_REGISTER_DEFAULT",
+    "cudaHostRegisterPortable": "SPARK_GPU_HOST_REGISTER_PORTABLE",
+    "cudaHostRegisterMapped": "SPARK_GPU_HOST_REGISTER_MAPPED",
     "cudaStreamCaptureStatusNone": "SPARK_GPU_CAPTURE_STATUS_NONE",
     "cudaStreamCaptureModeThreadLocal": "SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL",
     "cudaDevAttrMultiProcessorCount": "SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT",
