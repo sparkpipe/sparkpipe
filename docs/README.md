@@ -122,6 +122,9 @@ current authority.
   cycle.
 - [`NODE_BASELINE.md`](NODE_BASELINE.md): the OS policy every node runs, why
   each item exists, and the procedure for replacing or adding a node.
+- [`HOSTED_DEPENDENCY_AUDIT.md`](HOSTED_DEPENDENCY_AUDIT.md): the release
+  gate that fails a hosted release root, node image or running node carrying
+  NVIDIA user-space libraries, tools or packages.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
