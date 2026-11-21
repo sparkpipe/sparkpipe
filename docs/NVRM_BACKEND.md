@@ -185,38 +185,66 @@ Every RM status is turned into a `SparkStatus` naming the RM status code
 (`NV_ERR_NO_MEMORY` becomes `CAPACITY_EXCEEDED`, an unknown class
 `UNSUPPORTED`, and so on).
 
-Memory comes in three kinds, all mapped into the GPU at the same address
-the CPU sees, below 2^40:
+At open the backend reserves one range of process addresses,
+64 GiB to 1 TiB (`nvrm_address.c`), and hands out GPU addresses from it
+first-fit, with released spans merged and used again. Everything the GPU
+reaches lives in this range, so push buffers stay below 2^40 and a GPU
+address that the CPU also maps is the same number on both sides. A range
+another mapping already holds is refused rather than replaced.
 
-- **Host memory.** Anonymous pages the backend maps itself and
-  registers by OS descriptor.
+Memory comes in five kinds:
+
+- **Host memory.** Anonymous pages the backend maps itself at the GPU
+  address and registers by OS descriptor. It is CPU-cached and coherent.
 - **System memory.** Allocated by the module, GPU-cached, with 2 MiB
-  pages from 8 MiB up.
+  pages from 8 MiB up. It is not coherent with the CPU: the copy engine
+  and the SMs see each other's writes through the GPU's L2, but the CPU's
+  view misses writes still held there. A coherent mapping (CPU-cached and
+  snooped) fixes that but cost 38% of read and 29% of copy bandwidth on
+  GB10, so device memory stays non-coherent and the device layer never
+  gives it a host view.
 - **Uncached system memory.** Allocated by the module, GPU-uncached, for
   notifiers.
+- **User memory.** Pages the caller already has (`SparkDeviceRegister`),
+  registered by OS descriptor from the page that holds the first byte.
+  The module pins every page when the descriptor is made.
+- **Read-only user memory.** The same for a file mapping
+  (`SparkDeviceMapFile`): pinned without write access, and mapped into
+  the GPU read-only.
 
-`nvrm_channel.c` writes push-buffer methods, GPFIFO entries, GPPut and the
-doorbell, host semaphore releases (with an optional GPU timestamp), and
-waits on a semaphore value with a timeout. It provisions the
-per-thread local memory a program needs. `nvrm_launch.c` loads a cubin
-into host memory, relocates it, and queues a launch: the QMD and constant
-bank 0 in a 256-byte aligned slot, then `SEND_PCAS_A` and the scheduling
-method.
+`nvrm_submit.c` writes push-buffer methods, GPFIFO entries, GPPut and the
+doorbell, host semaphore releases and acquires, and waits on a semaphore
+value with a timeout. `nvrm_channel.c` builds channels and provisions the
+per-thread local memory a program needs. `nvrm_copy.c` queues copy-engine
+copies and fills. `nvrm_launch.c` loads a cubin into host memory,
+relocates it, and queues a launch: the QMD and constant bank 0 in a
+256-byte aligned slot, then `SEND_PCAS_A` and the scheduling method.
 
 `tests/test_nvrm_submit.c` checks, without a GPU, that methods, ring
-entries, GPPut, the doorbell, semaphore releases and launch slots are
-encoded as the class headers say, and that each misuse is refused.
+entries, GPPut, the doorbell, push-buffer reuse, ordered copies and
+fills, semaphore releases and launch slots are encoded as the class
+headers say, that the address map hands out, reuses and merges spans,
+and that each misuse is refused.
 
 ## Submission and launch shape
 
 A channel's methods are appended to its push buffer and go to the GPU
 only when `SparkNvrmSubmit` writes a GPFIFO entry: a submission carries
-every method pushed since the previous one. Binding the compute class,
-its shared and local memory windows and the local memory with its
-per-TPC size are submitted (and synchronized) when they are set, and
-persist for later launches. `SparkNvrmPushRewind` reuses the push buffer
-once everything in it has been submitted and the caller knows the GPU
-has consumed it.
+every method pushed since the previous one. Every submission ends with a
+release of the channel's 64-bit fence, its own or one the submission
+adds, and the channel remembers each submission's span of the push
+buffer with its fence value. The push buffer is a ring: when the next
+method does not fit before the end, the unsubmitted methods move to the
+start, after the backend has waited for the GPU to finish the
+submissions they would overwrite and no longer. The GPFIFO ring is
+reused the same way.
+
+Binding the compute class (subchannel 1), the copy class (subchannel 4)
+and the shared and local memory windows is submitted and synchronized
+when a channel is made. A launch binds the current local memory on its
+own channel when that channel has not seen it yet. Growing the local
+memory allocates a larger one and keeps the old one until the device
+closes, because launches on other channels may still use it.
 
 Compiled kernels read their launch shape (`blockDim`, `gridDim`) from
 driver words in constant bank 0. The launcher fills the words the
@@ -227,6 +255,78 @@ offsets belong to the compiler, not the hardware, so
 fills the driver words with sentinels, has a kernel store its shape, and
 requires each value to come from the word the launcher fills, then
 checks 11 launch shapes. Rerun it for every toolkit or module change.
+
+A grid's release semaphore carries a 64-bit payload only with the QMD's
+`RELEASE_PAYLOAD64B` bit set; without it the upper word is dropped.
+
+## Queues, copies and fills
+
+A queue is one channel: one GPFIFO ring with compute on subchannel 1 and
+the copy engine on subchannel 4, and the channel's fence as the queue's
+timeline. Each copy, fill or launch is one submission that the engine
+doing the work ends by releasing the next fence value: the copy engine
+with its own 64-bit semaphore release after the transfers, a grid with
+its QMD release. Before work on another engine than the previous
+operation's, the queue waits until the fence reaches that operation's
+value. Back-to-back copy-engine work needs no wait, because each
+transfer is non-pipelined.
+
+Copies and fills go in lines of at most 2^31 bytes. A fill writes the
+byte from the copy engine's remap constant: four bytes per element over
+the aligned middle, one byte per element over an unaligned head and
+tail.
+
+`device_nvrm.c` maps the device layer onto this:
+
+| Space | nvrm memory | Host view | Device address |
+|---|---|---|---|
+| device-private | system memory, zero-filled by the copy engine | none | yes |
+| shared coherent | host memory | same address | yes |
+| host pinned | host memory | same address | yes |
+| host pageable | heap | yes | none |
+| registered | user memory | the caller's pointer | yes |
+| file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+Copies and fills that touch pageable memory are refused with
+`SPARK_STATUS_UNSUPPORTED` until queues run host work. Events, host
+callbacks, waits between queues, kernel libraries and launches through
+the device layer are still refused the same way. The backend adopts no
+foreign memory or queue.
+
+Every channel registers with unified memory before anything is
+submitted on it, and the backend never schedules a single channel: the
+module refuses to schedule a graphics channel in a unified-memory address
+space whose context has not been bound by that registration ("Cannot
+schedule externally-owned channel ... with unbound allocations"). The
+channel group is scheduled once, after its first channel is registered;
+queue channels join the scheduled group afterwards.
+
+`make test-nvrm-gpu` reads the kernel log before and after the run
+(`tools/nvrm_kernel_log.sh`, with `dmesg` or `sudo -n dmesg`) and fails if
+the module logged any `NVRM:` Xid or assertion line meanwhile, or if the
+log cannot be read.
+
+Two GPU tests run under `make test-nvrm-gpu`:
+
+- **`tests/test_nvrm_memory.c`** opens the device through the device
+  layer and checks every space, address reuse, zero-filled fresh memory,
+  copies and unaligned fills through every space and registered memory,
+  a copy and a fill of more than 2^31 bytes, a mapped file read from an
+  unaligned offset, 64 queues opened and closed in turn, two queues
+  copying at once, the pageable refusal, and reopening after a shutdown.
+- **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
+  copy-engine fill then a kernel reading it, a kernel writing then a
+  copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of
+  fill, kernel and copy with no host wait. It reads results back through
+  the copy engine into host memory, and starts the fence just below
+  2^32 so every engine's release crosses it.
+
+On GB10 both pass. With the copies moved to a second channel and no wait
+between the channels, a copy after a kernel reads stale data in 32 of 32
+rounds and every back-to-back set is wrong, so the test sees misordering.
+Within one channel the hardware orders an engine switch by itself (the
+test passes with the queue's wait removed). The queue keeps the wait,
+which is what the class headers document.
 
 ## First light and memory bandwidth
 
@@ -249,5 +349,7 @@ median of medians): module-allocated system memory, GPU cached, 2 MiB
 pages, reads at 262.5 GB/s and copies at 228.4 GB/s, within 0.5% of
 `cudaMalloc` (261.3 and 228.3 GB/s). Host memory registered by OS
 descriptor in 4 KiB pages copies at par but reads 18% slower, so device
-memory comes from the module with 2 MiB pages.
+memory comes from the module with 2 MiB pages. Remeasured with queues in
+place (5 interleaved rounds, median): system memory reads at 262.5 and
+copies at 228.2 GB/s against `cudaMalloc`'s 262.1 and 228.1.
 

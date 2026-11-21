@@ -117,7 +117,7 @@ static int Launch(Light *light, uint32_t value, uint64_t round, uint64_t *nanose
 	request.release_payload = round;
 	start = SparkMonotonicNs();
 	if ( SparkNvrmSemaphoreRelease(channel,light->semaphore.address + 32u,round,1u,"first light") != SPARK_STATUS_OK ||
-		SparkNvrmLaunchQueue(&light->gpu,&light->program,&request,"first light") != SPARK_STATUS_OK ||
+		SparkNvrmLaunchQueue(&light->gpu,channel,&light->program,&request,"first light") != SPARK_STATUS_OK ||
 		SparkNvrmSemaphoreRelease(channel,light->semaphore.address + 16u,round,1u,"first light") != SPARK_STATUS_OK ||
 		SparkNvrmSubmit(&light->gpu,channel,"first light") != SPARK_STATUS_OK )
 		return(Failed("submit the launch"));

@@ -32,7 +32,7 @@ int main(void)
 	CHECK(status != SPARK_STATUS_OK,"initialize refuses without a device");
 	CHECK(SparkDeviceLastError()->status == status && strcmp(SparkDeviceLastError()->operation,"initialize") == 0,
 		"the refusal is recorded against initialize");
-	CHECK(strstr(SparkDeviceLastError()->text,"nvrm") != 0,"the refusal names the nvrm backend");
+	CHECK(strstr(SparkDeviceLastError()->text,"/dev/nvidiactl") != 0,"the refusal names the open kernel module's control device it could not open");
 	CHECK(SparkDeviceInitialize(&configuration) == status,"a second initialize refuses the same way rather than claiming the device");
 	CHECK(SparkDeviceAllocate(&buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4096u,"after refusal") == SPARK_STATUS_INVALID_ARGUMENT &&
 		strcmp(SparkDeviceLastError()->text,"device is not initialized") == 0,"the device stays closed after the refusal");
@@ -43,6 +43,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS the nvrm backend refuses to open without the open kernel module's device, naming itself\n");
+	printf("PASS the nvrm backend refuses to open without the open kernel module's device, naming the device\n");
 	return(0);
 }

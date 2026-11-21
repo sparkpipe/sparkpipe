@@ -98,7 +98,7 @@ static int ProbeRun(Probe *probe, const uint32_t grid[3], const uint32_t block[3
 	request.slot_bytes = (uint32_t)probe->slot.bytes;
 	request.release_address = probe->semaphore.address;
 	request.release_payload = value;
-	if ( SparkNvrmLaunchQueue(&probe->gpu,&probe->program,&request,"probe") != SPARK_STATUS_OK )
+	if ( SparkNvrmLaunchQueue(&probe->gpu,channel,&probe->program,&request,"probe") != SPARK_STATUS_OK )
 		return(ProbeFailed("queue the probe"));
 	if ( sentinels != 0u )
 	{

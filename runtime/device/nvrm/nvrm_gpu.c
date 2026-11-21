@@ -34,7 +34,7 @@
 
 #define GPU_CARDS 64u
 #define GPU_LOW_BASE 0x1000000000ull
-#define GPU_LOW_BYTES 0x1000000000ull
+#define GPU_LOW_BYTES 0xf000000000ull
 #define GPU_VASPACE_BASE 0x1000ull
 #define GPU_VASPACE_BYTES 0x1fffffb000000ull
 #define GPU_VIRTUAL_LIMIT 0x1ffffffffffffull
@@ -42,11 +42,6 @@
 #define GPU_SHARED_WINDOW 0x729400000000ull
 #define GPU_LOCAL_WINDOW 0x729300000000ull
 #define GPU_MEMORY_FORMAT 6u
-#if defined(__linux__)
-#define GPU_RESERVE_FLAGS (MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE)
-#else
-#define GPU_RESERVE_FLAGS (MAP_SHARED | MAP_ANONYMOUS)
-#endif
 
 #define GPU_REFUSE(code, operation, owner, text) \
 	do { \
@@ -64,16 +59,6 @@
 static uint64_t GpuRound(uint64_t value, uint64_t unit)
 {
 	return((value + unit - 1u) / unit * unit);
-}
-
-SparkStatus SparkNvrmVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, uint64_t *address, const char *owner)
-{
-	const uint64_t start = GpuRound(gpu->low_next,align);
-	if ( start + bytes > gpu->low_end || start + bytes < start )
-		GPU_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,"the device's host-visible address range is exhausted");
-	*address = start;
-	gpu->low_next = start + bytes;
-	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus GpuSelectCard(SparkNvrmGpu *gpu, uint32_t ordinal, const char *owner)
@@ -298,6 +283,11 @@ static SparkStatus GpuAddressSpace(SparkNvrmGpu *gpu, const char *owner)
 	return(GpuUnifiedMemory(gpu,owner));
 }
 
+static uint32_t GpuReadOnly(const SparkNvrmMemory *memory)
+{
+	return(memory->kind == SPARK_NVRM_MEMORY_USER_READ_ONLY ? 1u : 0u);
+}
+
 static SparkStatus GpuUvmMap(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
 {
 	UVM_CREATE_EXTERNAL_RANGE_PARAMS range;
@@ -317,7 +307,8 @@ static SparkStatus GpuUvmMap(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const c
 	dma.length = memory->bytes;
 	dma.flags = (NvV32)(SPARK_NVRM_VALUE(NVOS46_FLAGS_PAGE_SIZE,NVOS46_FLAGS_PAGE_SIZE_4KB) |
 		SPARK_NVRM_VALUE(NVOS46_FLAGS_CACHE_SNOOP,NVOS46_FLAGS_CACHE_SNOOP_ENABLE) |
-		SPARK_NVRM_VALUE(NVOS46_FLAGS_DMA_OFFSET_FIXED,NVOS46_FLAGS_DMA_OFFSET_FIXED_TRUE));
+		SPARK_NVRM_VALUE(NVOS46_FLAGS_DMA_OFFSET_FIXED,NVOS46_FLAGS_DMA_OFFSET_FIXED_TRUE) |
+		SPARK_NVRM_VALUE(NVOS46_FLAGS_ACCESS,GpuReadOnly(memory) != 0u ? NVOS46_FLAGS_ACCESS_READ_ONLY : NVOS46_FLAGS_ACCESS_READ_WRITE));
 	dma.dmaOffset = memory->address;
 	GPU_TRY(SparkNvrmRmIoctl(gpu->rm.control,NV_ESC_RM_MAP_MEMORY_DMA,&dma,(uint32_t)sizeof(dma),"allocate",owner));
 	GPU_TRY(SparkNvrmRmStatus(dma.status,"allocate",owner));
@@ -334,7 +325,7 @@ static SparkStatus GpuUvmMap(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const c
 	map->hMemory = memory->handle;
 	map->gpuAttributesCount = 1u;
 	memcpy(map->perGpuAttributes[0].gpuUuid.uuid,gpu->uuid,sizeof(gpu->uuid));
-	map->perGpuAttributes[0].gpuMappingType = UvmGpuMappingTypeReadWriteAtomic;
+	map->perGpuAttributes[0].gpuMappingType = GpuReadOnly(memory) != 0u ? UvmGpuMappingTypeReadOnly : UvmGpuMappingTypeReadWriteAtomic;
 	status = SparkNvrmRmUvm(&gpu->rm,-1,UVM_MAP_EXTERNAL_ALLOCATION,map,(uint32_t)sizeof(*map),&map->rmStatus,"allocate",owner);
 	free(map);
 	if ( status != SPARK_STATUS_OK )
@@ -342,17 +333,9 @@ static SparkStatus GpuUvmMap(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const c
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus GpuHostMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
+static SparkStatus GpuOsDescriptor(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
 {
 	nv_ioctl_nvos02_parameters_with_fd made;
-	void *cpu;
-	cpu = mmap((void *)(uintptr_t)memory->address,(size_t)memory->bytes,PROT_READ | PROT_WRITE,GPU_RESERVE_FLAGS,-1,0);
-	if ( cpu != MAP_FAILED && cpu != (void *)(uintptr_t)memory->address )
-		munmap(cpu,(size_t)memory->bytes);
-	if ( cpu == MAP_FAILED || cpu != (void *)(uintptr_t)memory->address )
-		GPU_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,"cannot reserve host memory at the device address");
-	memory->cpu = (uint8_t *)cpu;
-	memory->host_mapped = 1u;
 	memset(&made,0,sizeof(made));
 	made.fd = -1;
 	made.params.hRoot = gpu->rm.client;
@@ -360,13 +343,24 @@ static SparkStatus GpuHostMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, con
 	made.params.hObjectNew = gpu->host_handle_next++;
 	made.params.hClass = NV01_MEMORY_SYSTEM_OS_DESCRIPTOR;
 	made.params.flags = (NvV32)(SPARK_NVRM_VALUE(NVOS02_FLAGS_PHYSICALITY,NVOS02_FLAGS_PHYSICALITY_NONCONTIGUOUS) |
-		SPARK_NVRM_VALUE(NVOS02_FLAGS_COHERENCY,NVOS02_FLAGS_COHERENCY_CACHED) | SPARK_NVRM_VALUE(NVOS02_FLAGS_MAPPING,NVOS02_FLAGS_MAPPING_NO_MAP));
-	made.params.pMemory = (NvP64)(uintptr_t)cpu;
+		SPARK_NVRM_VALUE(NVOS02_FLAGS_COHERENCY,NVOS02_FLAGS_COHERENCY_CACHED) | SPARK_NVRM_VALUE(NVOS02_FLAGS_MAPPING,NVOS02_FLAGS_MAPPING_NO_MAP) |
+		SPARK_NVRM_VALUE(NVOS02_FLAGS_ALLOC_USER_READ_ONLY,GpuReadOnly(memory) != 0u ? NVOS02_FLAGS_ALLOC_USER_READ_ONLY_YES : NVOS02_FLAGS_ALLOC_USER_READ_ONLY_NO));
+	made.params.pMemory = (NvP64)(uintptr_t)memory->cpu;
 	made.params.limit = memory->bytes - 1u;
 	GPU_TRY(SparkNvrmRmIoctl(gpu->device_fd,NV_ESC_RM_ALLOC_MEMORY,&made,(uint32_t)sizeof(made),"allocate",owner));
 	GPU_TRY(SparkNvrmRmStatus(made.params.status,"allocate",owner));
 	memory->handle = made.params.hObjectNew;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus GpuHostMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
+{
+	void *cpu = mmap((void *)(uintptr_t)memory->address,(size_t)memory->bytes,PROT_READ | PROT_WRITE,MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED,-1,0);
+	if ( cpu == MAP_FAILED )
+		GPU_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,"cannot back the device address range with host memory");
+	memory->cpu = (uint8_t *)cpu;
+	memory->host_mapped = 1u;
+	return(GpuOsDescriptor(gpu,memory,owner));
 }
 
 static SparkStatus GpuSystemMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
@@ -381,6 +375,7 @@ static SparkStatus GpuSystemMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, c
 		NVOS32_ALLOC_FLAGS_IGNORE_BANK_PLACEMENT;
 	made.attr = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR_PHYSICALITY,NVOS32_ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR_LOCATION,NVOS32_ATTR_LOCATION_PCI) |
+		SPARK_NVRM_VALUE(NVOS32_ATTR_COHERENCY,NVOS32_ATTR_COHERENCY_UNCACHED) |
 		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR_PAGE_SIZE,NVOS32_ATTR_PAGE_SIZE_HUGE) : 0u));
 	made.attr2 = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR2_GPU_CACHEABLE,uncached != 0u ? NVOS32_ATTR2_GPU_CACHEABLE_NO : NVOS32_ATTR2_GPU_CACHEABLE_YES) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR2_ZBC,NVOS32_ATTR2_ZBC_PREFER_NO_ZBC) |
@@ -403,9 +398,38 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 	memory->map_fd = -1;
 	memory->page_bytes = kind != SPARK_NVRM_MEMORY_HOST && bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES;
 	memory->bytes = GpuRound(bytes != 0u ? bytes : 1u,memory->page_bytes);
+	if ( kind != SPARK_NVRM_MEMORY_HOST && kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"the module allocates host, system or uncached system memory");
 	status = SparkNvrmVirtual(gpu,memory->bytes,memory->page_bytes,&memory->address,owner);
+	memory->virtual_reserved = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = kind == SPARK_NVRM_MEMORY_HOST ? GpuHostMemory(gpu,memory,owner) : GpuSystemMemory(gpu,memory,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = GpuUvmMap(gpu,memory,owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmMemoryRelease(gpu,memory);
+		SPARK_FAIL(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner)
+{
+	const uintptr_t first = (uintptr_t)host & ~(uintptr_t)(SPARK_NVRM_PAGE_BYTES - 1u);
+	SparkStatus status;
+	memset(memory,0,sizeof(*memory));
+	memory->kind = kind;
+	memory->map_fd = -1;
+	if ( host == 0 || bytes == 0u || (kind != SPARK_NVRM_MEMORY_USER && kind != SPARK_NVRM_MEMORY_USER_READ_ONLY) )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"register",owner,"attaching needs host memory, a size and a user memory kind");
+	memory->cpu = (uint8_t *)first;
+	memory->page_bytes = SPARK_NVRM_PAGE_BYTES;
+	memory->bytes = GpuRound((uintptr_t)host - first + bytes,SPARK_NVRM_PAGE_BYTES);
+	status = SparkNvrmVirtual(gpu,memory->bytes,SPARK_NVRM_PAGE_BYTES,&memory->address,owner);
+	memory->virtual_reserved = status == SPARK_STATUS_OK ? 1u : 0u;
+	if ( status == SPARK_STATUS_OK )
+		status = GpuOsDescriptor(gpu,memory,owner);
 	if ( status == SPARK_STATUS_OK )
 		status = GpuUvmMap(gpu,memory,owner);
 	if ( status != SPARK_STATUS_OK )
@@ -426,12 +450,14 @@ void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory)
 		release.length = memory->bytes;
 		(void)ioctl(gpu->rm.uvm,UVM_FREE,&release);
 	}
-	if ( memory->handle != 0u )
-		(void)SparkNvrmRmFree(&gpu->rm,gpu->device,memory->handle,"free");
 	if ( memory->host_mapped != 0u )
-		munmap(memory->cpu,(size_t)memory->bytes);
+		SparkNvrmReserveCpu(gpu,(uint64_t)(uintptr_t)memory->cpu,memory->bytes);
 	if ( memory->map_fd >= 0 )
 		close(memory->map_fd);
+	if ( memory->handle != 0u )
+		(void)SparkNvrmRmFree(&gpu->rm,gpu->device,memory->handle,"free");
+	if ( memory->virtual_reserved != 0u )
+		SparkNvrmVirtualRelease(gpu,memory->address,memory->bytes);
 	memset(memory,0,sizeof(*memory));
 	memory->map_fd = -1;
 }
@@ -443,8 +469,6 @@ SparkStatus SparkNvrmGpuOpen(SparkNvrmGpu *gpu, uint32_t ordinal, SparkNvrmMemor
 	gpu->device_fd = -1;
 	gpu->uvm_mm_fd = -1;
 	gpu->usermode_fd = -1;
-	gpu->low_next = GPU_LOW_BASE;
-	gpu->low_end = GPU_LOW_BASE + GPU_LOW_BYTES;
 	gpu->host_handle_next = GPU_HOST_HANDLE_BASE;
 	gpu->shared_window = GPU_SHARED_WINDOW;
 	gpu->local_window = GPU_LOCAL_WINDOW;
@@ -453,6 +477,8 @@ SparkStatus SparkNvrmGpuOpen(SparkNvrmGpu *gpu, uint32_t ordinal, SparkNvrmMemor
 	gpu->compute.push.map_fd = -1;
 	gpu->local_memory.map_fd = -1;
 	status = SparkNvrmRmOpen(&gpu->rm,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmAddressOpen(gpu,GPU_LOW_BASE,GPU_LOW_BYTES,owner);
 	if ( status == SPARK_STATUS_OK )
 		status = GpuSelectCard(gpu,ordinal,owner);
 	if ( status == SPARK_STATUS_OK )
@@ -475,9 +501,12 @@ SparkStatus SparkNvrmGpuOpen(SparkNvrmGpu *gpu, uint32_t ordinal, SparkNvrmMemor
 
 void SparkNvrmGpuClose(SparkNvrmGpu *gpu)
 {
+	uint32_t index;
 	SparkNvrmChannelClose(gpu);
 	if ( gpu->local_memory.bytes != 0u )
 		SparkNvrmMemoryRelease(gpu,&gpu->local_memory);
+	for (index = 0u; index < gpu->local_retired_count; index++)
+		SparkNvrmMemoryRelease(gpu,&gpu->local_retired[index]);
 	if ( gpu->usermode_page != 0 )
 		munmap((void *)gpu->usermode_page,NVC361_NV_USERMODE__SIZE);
 	if ( gpu->usermode_fd >= 0 )
@@ -487,6 +516,7 @@ void SparkNvrmGpuClose(SparkNvrmGpu *gpu)
 	if ( gpu->device_fd >= 0 )
 		close(gpu->device_fd);
 	SparkNvrmRmClose(&gpu->rm);
+	SparkNvrmAddressClose(gpu);
 	memset(gpu,0,sizeof(*gpu));
 	gpu->device_fd = -1;
 	gpu->uvm_mm_fd = -1;
