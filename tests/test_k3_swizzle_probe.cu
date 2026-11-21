@@ -1,185 +1,135 @@
-
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include "runtime/gemm.cuh"
 
 #define PROBE_ROWS 17u
+#define PROBE_ROW_BYTES 64u
+#define PROBE_GROUPS 2u
+#define PROBE_WIDE_ROWS 4u
+#define PROBE_WIDE_ROW_BYTES 256u
+#define PROBE_WIDE_BOX_BYTES 128u
+#define PROBE_STAGE_ALIGN 1024u
 
-__global__ void SwizzleProbeKernel(const CUtensorMap *map, uint8_t *dump)
+#define CUDA(call) do { cudaError_t e = (call); if ( e != cudaSuccess ) { printf("FAIL line=%d cuda=%s call=%s\n", __LINE__, cudaGetErrorString(e), #call); exit(1); } } while ( 0 )
+
+template<uint32_t BYTES>
+__global__ void ProbeLoadKernel(const __grid_constant__ CUtensorMap map, uint32_t rank, int32_t x, int32_t y, int32_t z, uint8_t *dump)
 {
-    __shared__ __align__(128) uint8_t stage[PROBE_ROWS * 64u];
+    __shared__ __align__(PROBE_STAGE_ALIGN) uint8_t stage[BYTES];
     __shared__ uint64_t barrier;
     if ( threadIdx.x == 0u )
     {
         LmMbarrierInit(&barrier, 1u);
         LmMbarrierInitFence();
         __threadfence_block();
-        LmMbarrierArriveExpect(&barrier, PROBE_ROWS * 64u);
-        LmTmaLoad2d(stage, map, &barrier, 0, 0);
+        LmMbarrierArriveExpect(&barrier, BYTES);
+        if ( rank == 3u )
+            LmTmaLoad3d(stage, &map, &barrier, x, y, z);
+        else
+            LmTmaLoad2d(stage, &map, &barrier, x, y);
         LmMbarrierWait(&barrier, 0u);
-        for ( uint32_t i = 0u; i < PROBE_ROWS * 64u; ++i )
+        for ( uint32_t i = 0u; i < BYTES; ++i )
             dump[i] = stage[i];
     }
 }
 
-__global__ void Rank3ProbeKernel(const CUtensorMap *map, uint8_t *dump)
+static uint8_t ProbeByte(uint64_t offset)
 {
-    __shared__ __align__(128) uint8_t stage[PROBE_ROWS * 64u];
-    __shared__ uint64_t barrier;
-    if ( threadIdx.x == 0u )
-    {
-        LmMbarrierInit(&barrier, 1u);
-        LmMbarrierInitFence();
-        __threadfence_block();
-        LmMbarrierArriveExpect(&barrier, PROBE_ROWS * 64u);
-        LmTmaLoad3d(stage, map, &barrier, 0, 0, 0);
-        LmMbarrierWait(&barrier, 0u);
-        for ( uint32_t i = 0u; i < PROBE_ROWS * 64u; ++i )
-            dump[i] = stage[i];
-    }
+    uint64_t value = offset * 0x9e3779b97f4a7c15ull;
+    return (uint8_t)((value >> 56u) ^ (value >> 24u) ^ offset);
 }
 
-__global__ void TwoBoxProbeKernel(const CUtensorMap *map, uint16_t *dump)
+static uint32_t Swizzled(uint32_t offset, uint32_t swizzle_bytes)
 {
-    __shared__ __align__(128) uint16_t stage[4u * 128u];
-    __shared__ uint64_t barrier;
-    if ( threadIdx.x == 0u )
+    const uint32_t chunks = swizzle_bytes / 16u;
+    return offset ^ (((offset >> 7u) & (chunks - 1u)) << 4u);
+}
+
+template<uint32_t BYTES>
+static int Probe(const char *name, const LmTensorMapRequest *shape, uint64_t global_bytes, uint32_t rank, int32_t x, int32_t y, int32_t z)
+{
+    const uint32_t box_row_bytes = (uint32_t)((uint64_t)shape->box_columns * shape->element_bits / 8u);
+    const uint64_t row_bytes = shape->columns * shape->element_bits / 8u;
+    std::vector<uint8_t> global(global_bytes), dump(BYTES), expected(BYTES);
+    uint8_t *device_global = 0, *device_dump = 0;
+    alignas(64) CUtensorMap map;
+    LmTensorMapRequest request = *shape;
+    uint32_t row, byte, mismatches = 0u;
+    if ( (uint64_t)box_row_bytes * shape->box_rows != BYTES || row_bytes * shape->rows * shape->groups != global_bytes )
     {
-        LmMbarrierInit(&barrier, 1u);
-        LmMbarrierInitFence();
-        __threadfence_block();
-        LmMbarrierArriveExpect(&barrier, 4u * 256u);
-        LmTmaLoad2d(stage, map, &barrier, 0, 0);
-        LmTmaLoad2d(stage + 64u, map, &barrier, 128, 0);
-        LmMbarrierWait(&barrier, 0u);
-        for ( uint32_t i = 0u; i < 4u * 128u; ++i )
-            dump[i] = stage[i];
+        printf("FAIL %s: the box is %u bytes and the stage %u; the tensor spans %llu bytes and the buffer %llu\n", name,
+            box_row_bytes * shape->box_rows, BYTES, (unsigned long long)(row_bytes * shape->rows * shape->groups), (unsigned long long)global_bytes);
+        return 1;
     }
+    for ( uint64_t i = 0u; i < global_bytes; ++i )
+        global[i] = ProbeByte(i);
+    CUDA(cudaMalloc((void **)&device_global, global_bytes));
+    CUDA(cudaMalloc((void **)&device_dump, BYTES));
+    CUDA(cudaMemcpy(device_global, global.data(), global_bytes, cudaMemcpyHostToDevice));
+    CUDA(cudaMemset(device_dump, 0, BYTES));
+    request.global_address = device_global;
+    if ( LmGemmTensorMapCached(&map, &request) != LM_TM_ENCODE_OK )
+    {
+        printf("FAIL %s: the tensor map did not encode\n", name);
+        return 1;
+    }
+    ProbeLoadKernel<BYTES><<<1u, 1u>>>(map, rank, x, y, z, device_dump);
+    CUDA(cudaGetLastError());
+    CUDA(cudaDeviceSynchronize());
+    CUDA(cudaMemcpy(dump.data(), device_dump, BYTES, cudaMemcpyDeviceToHost));
+    for ( row = 0u; row < shape->box_rows; ++row )
+        for ( byte = 0u; byte < box_row_bytes; ++byte )
+        {
+            const uint64_t source = ((uint64_t)z * shape->rows + (uint64_t)y + row) * row_bytes + (uint64_t)x + byte;
+            expected[Swizzled(row * box_row_bytes + byte, box_row_bytes)] = global[source];
+        }
+    for ( row = 0u; row < BYTES; ++row )
+        if ( dump[row] != expected[row] )
+        {
+            if ( mismatches == 0u )
+                printf("FAIL %s: stage byte %u holds %u, the %u-byte swizzle of the box puts %u there\n", name, row, dump[row], box_row_bytes, expected[row]);
+            mismatches++;
+        }
+    CUDA(cudaFree(device_global));
+    CUDA(cudaFree(device_dump));
+    if ( mismatches != 0u )
+    {
+        printf("FAIL %s: %u of %u staged bytes differ\n", name, mismatches, BYTES);
+        return 1;
+    }
+    printf("PASS %s: %u staged bytes follow the %u-byte swizzle of the box at (%d, %d, %d)\n", name, BYTES, box_row_bytes, x, y, z);
+    return 0;
 }
 
 int main(void)
 {
-    cudaError_t err;
-    int32_t status;
-    uint8_t *d_global = 0, *d_dump = 0;
-    uint8_t h_global[PROBE_ROWS * 64u], h_dump[PROBE_ROWS * 64u];
-    alignas(64) CUtensorMap map;
-    LmTensorMapRequest request;
-
-    for ( uint32_t r = 0u; r < PROBE_ROWS; ++r )
-        for ( uint32_t b = 0u; b < 64u; ++b )
-            h_global[r * 64u + b] = (uint8_t)(((r % 4u) * 64u) + b);
-
-    cudaSetDevice(0);
-    cudaMalloc(&d_global, sizeof(h_global));
-    cudaMalloc(&d_dump, sizeof(h_dump));
-    cudaMemcpy(d_global, h_global, sizeof(h_global), cudaMemcpyHostToDevice);
-
-    memset(&request, 0, sizeof(request));
-    request.global_address = d_global;
-    request.rows = PROBE_ROWS;
-    request.columns = 64u;
-    request.groups = 1u;
-    request.box_rows = PROBE_ROWS;
-    request.box_columns = 64u;
-    request.element_bits = 8u;
-    status = LmGemmTensorMapCached(&map, &request);
-    if ( status != LM_TM_ENCODE_OK ) { printf("encode %d\n", status); return 1; }
-
-    SwizzleProbeKernel<<<1u, 1u>>>(&map, d_dump);
-    err = cudaDeviceSynchronize();
-    if ( err != cudaSuccess ) { printf("sync %d\n", (int)err); return 1; }
-    cudaMemcpy(h_dump, d_dump, sizeof(h_dump), cudaMemcpyDeviceToHost);
-
-    printf("per staged row: first 8 bytes and last 8 bytes as [src_row%%4, byte]:\n");
-    for ( uint32_t r = 0u; r < PROBE_ROWS; ++r )
-    {
-        printf("staged row %2u: head", r);
-        for ( uint32_t b = 0u; b < 8u; ++b )
-            printf(" %3u", h_dump[r * 64u + b]);
-        printf("  tail");
-        for ( uint32_t b = 56u; b < 64u; ++b )
-            printf(" %3u", h_dump[r * 64u + b]);
-        printf("\n");
-    }
-
-    {
-        uint8_t *d_w = 0, *d_d3 = 0;
-        uint8_t h_w[2u * PROBE_ROWS * 64u], h_d3[PROBE_ROWS * 64u];
-        alignas(64) CUtensorMap wmap;
-        LmTensorMapRequest wreq;
-        for ( uint32_t e = 0u; e < 2u; ++e )
-            for ( uint32_t r = 0u; r < PROBE_ROWS; ++r )
-                for ( uint32_t b = 0u; b < 64u; ++b )
-                    h_w[(e * PROBE_ROWS + r) * 64u + b] = (uint8_t)(((r % 4u) * 64u) + b);
-        cudaMalloc(&d_w, sizeof(h_w));
-        cudaMalloc(&d_d3, sizeof(h_d3));
-        cudaMemset(d_d3, 0, sizeof(h_d3));
-        cudaMemcpy(d_w, h_w, sizeof(h_w), cudaMemcpyHostToDevice);
-        {
-            (void)0;
-        }
-        memset(&wreq, 0, sizeof(wreq));
-        wreq.global_address = d_w;
-        wreq.rows = 272u;
-        wreq.columns = 64u;
-        wreq.groups = 2u;
-        wreq.box_rows = 136u;
-        wreq.box_columns = 64u;
-        wreq.element_bits = 8u;
-        status = LmGemmTensorMapCached(&wmap, &wreq);
-        if ( status != LM_TM_ENCODE_OK ) { printf("wmap encode %d\n", status); return 1; }
-        {
-            uint8_t *d_d3b = d_d3;
-            (void)d_d3b;
-        }
-        Rank3ProbeKernel<<<1u, 1u>>>(&wmap, d_d3);
-        err = cudaDeviceSynchronize();
-        if ( err != cudaSuccess ) { printf("sync3 %d\n", (int)err); return 1; }
-        cudaMemcpy(h_d3, d_d3, sizeof(h_d3), cudaMemcpyDeviceToHost);
-        printf("rank-3 staged rows 15..17 first 8 bytes (plane = src_row%%4):\n");
-        for ( uint32_t r = 15u; r <= 17u; ++r )
-        {
-            printf("row %u:", r);
-            for ( uint32_t b = 0u; b < 8u; ++b )
-                printf(" %3u", h_d3[r * 64u + b]);
-            printf("\n");
-        }
-    }
-
-    {
-        uint16_t *d_a = 0, *d_d2 = 0;
-        uint16_t h_a[4u * 128u], h_d2[4u * 128u];
-        alignas(64) CUtensorMap amap;
-        LmTensorMapRequest areq;
-        for ( uint32_t r = 0u; r < 4u; ++r )
-            for ( uint32_t k = 0u; k < 128u; ++k )
-                h_a[r * 128u + k] = (uint16_t)(r * 128u + k);
-        cudaMalloc(&d_a, sizeof(h_a));
-        cudaMalloc(&d_d2, sizeof(h_d2));
-        cudaMemcpy(d_a, h_a, sizeof(h_a), cudaMemcpyHostToDevice);
-        memset(&areq, 0, sizeof(areq));
-        areq.global_address = d_a;
-        areq.rows = 4u;
-        areq.columns = 256u;
-        areq.groups = 1u;
-        areq.box_rows = 4u;
-        areq.box_columns = 64u;
-        areq.element_bits = 16u;
-        status = LmGemmTensorMapCached(&amap, &areq);
-        if ( status != LM_TM_ENCODE_OK ) { printf("amap encode %d\n", status); return 1; }
-        TwoBoxProbeKernel<<<1u, 1u>>>(&amap, d_d2);
-        err = cudaDeviceSynchronize();
-        if ( err != cudaSuccess ) { printf("sync2 %d\n", (int)err); return 1; }
-        cudaMemcpy(h_d2, d_d2, sizeof(h_d2), cudaMemcpyDeviceToHost);
-        printf("two-box staged row 0: k 0..7, 60..67, 120..127 (value names global [row,k]):\n");
-        printf("k 0..7:    ");
-        for ( uint32_t k = 0u; k < 8u; ++k ) printf(" %u", h_d2[k]);
-        printf("\nk 60..67:  ");
-        for ( uint32_t k = 60u; k < 68u; ++k ) printf(" %u", h_d2[k]);
-        printf("\nk 120..127:");
-        for ( uint32_t k = 120u; k < 128u; ++k ) printf(" %u", h_d2[k]);
-        printf("\n");
-    }
+    LmTensorMapRequest rows, groups, wide;
+    int failures = 0;
+    CUDA(cudaSetDevice(0));
+    memset(&rows, 0, sizeof(rows));
+    rows.rows = PROBE_ROWS;
+    rows.columns = PROBE_ROW_BYTES;
+    rows.groups = 1u;
+    rows.box_rows = PROBE_ROWS;
+    rows.box_columns = PROBE_ROW_BYTES;
+    rows.element_bits = 8u;
+    groups = rows;
+    groups.groups = PROBE_GROUPS;
+    memset(&wide, 0, sizeof(wide));
+    wide.rows = PROBE_WIDE_ROWS;
+    wide.columns = PROBE_WIDE_ROW_BYTES / 2u;
+    wide.groups = 1u;
+    wide.box_rows = PROBE_WIDE_ROWS;
+    wide.box_columns = PROBE_WIDE_BOX_BYTES / 2u;
+    wide.element_bits = 16u;
+    failures += Probe<PROBE_ROWS * PROBE_ROW_BYTES>("ragged 17-row box, 64-byte rows", &rows, PROBE_ROWS * PROBE_ROW_BYTES, 2u, 0, 0, 0);
+    failures += Probe<PROBE_ROWS * PROBE_ROW_BYTES>("rank-3 map, second group", &groups, PROBE_GROUPS * PROBE_ROWS * PROBE_ROW_BYTES, 3u, 0, 0, 1);
+    failures += Probe<PROBE_WIDE_ROWS * PROBE_WIDE_BOX_BYTES>("bf16 rows, first 128-byte box", &wide, PROBE_WIDE_ROWS * PROBE_WIDE_ROW_BYTES, 2u, 0, 0, 0);
+    failures += Probe<PROBE_WIDE_ROWS * PROBE_WIDE_BOX_BYTES>("bf16 rows, second 128-byte box", &wide, PROBE_WIDE_ROWS * PROBE_WIDE_ROW_BYTES, 2u, (int32_t)PROBE_WIDE_BOX_BYTES, 0, 0);
+    if ( failures != 0 )
+        return 1;
+    printf("PASS k3 swizzle probe\n");
     return 0;
 }
