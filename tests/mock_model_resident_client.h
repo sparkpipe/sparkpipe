@@ -38,6 +38,7 @@ uint32_t MockResidentClientOwnsSubmission(uint32_t stage_index, uint64_t submiss
 SparkModelResidentClient *MockResidentClientByRank(uint32_t stage_index);
 uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind);
 void MockResidentClientSetCacheProbe(uint32_t rank,const SparkModelServingCacheProbe *answer,uint32_t silent);
+void MockResidentClientSetCacheProbeStatus(uint32_t rank,SparkStatus status);
 uint32_t MockResidentClientTokenContinuations(uint32_t stage_index);
 uint32_t MockResidentClientSpanSubmissions(uint32_t stage_index);
 uint32_t MockResidentClientReleaseSubmissions(uint32_t stage_index);

@@ -138,8 +138,9 @@ restore.
 - `resident_token_count`: tokens of the chain whose pages are on the device.
 - `saved_token_count`: for a held prefix, the deepest entry that is saved
   together with every entry before it. For a prefix the cache does not hold,
-  the token count when the snapshot store has its last page file; a chain is
-  written root first and evicted leaf first, so that file implies the rest.
+  the token count when the snapshot store has its last page file or is
+  writing it; a chain is written root first and evicted leaf first, so that
+  file implies the rest.
 - `state_token_count`: the deepest entry on the chain that still has its
   state, which is where a request for this prefix can resume. Without a
   state store every entry is such a point.
@@ -166,7 +167,9 @@ fields that way. The adapter's `cache_probe` runs it, the rank daemon answers
 a `CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
 least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
 `...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
-zero counts.
+zero counts, and so does a rank whose probe failed, with its status. The
+engine counts those answers in `failed_rank_count`, so a prefix no rank
+vouches for can be told from a prefix no rank has.
 
 ### Pinned lane transaction
 

@@ -376,6 +376,7 @@ every rank has it:
 | --- | --- |
 | `probed_tokens`, `identity` | the prefix the ranks were asked about |
 | `ranks`, `ranks_reported`, `complete` | how many ranks were asked and answered; `complete` is false when a rank did not answer within 5 s |
+| `ranks_failed` | ranks whose answer was a failure, for example an adapter that cannot be probed. Such a rank vouches for nothing, so every count below reads 0 when this is not 0 |
 | `held_tokens` | the prefix length when every rank's page cache has an entry for it, else 0 |
 | `resident_tokens` | tokens of that prefix whose pages are on the device |
 | `saved_tokens` | the longest part of the prefix, from token 0, that is in the snapshot store; for a prefix a rank no longer holds in memory, its whole length when its last page file is on disk |

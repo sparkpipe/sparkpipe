@@ -79,6 +79,7 @@ struct SparkModelResidentClient
 	uint32_t cache_hint_calls;
 	uint32_t cache_probe_calls;
 	uint32_t cache_probe_silent;
+	uint32_t cache_probe_status;
 	SparkModelServingCacheProbe cache_probe_answer;
 	SparkModelResidentCacheProbeReport cache_probe_report;
 	uint32_t token_continuations;
@@ -416,6 +417,14 @@ void MockResidentClientSetCacheProbe(uint32_t rank,const SparkModelServingCacheP
 		return;
 	client->cache_probe_answer = *answer;
 	client->cache_probe_silent = silent;
+	client->cache_probe_status = (uint32_t)SPARK_STATUS_OK;
+}
+
+void MockResidentClientSetCacheProbeStatus(uint32_t rank,SparkStatus status)
+{
+	SparkModelResidentClient *client = MockResidentClientByRank(rank);
+	if ( client != 0 )
+		client->cache_probe_status = (uint32_t)status;
 }
 
 SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
@@ -430,8 +439,10 @@ SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,
 	client->cache_probe_report.generation++;
 	client->cache_probe_report.identity = *identity;
 	client->cache_probe_report.token_count = token_count;
-	client->cache_probe_report.status = SPARK_STATUS_OK;
+	client->cache_probe_report.status = client->cache_probe_status;
 	client->cache_probe_report.probe = client->cache_probe_answer;
+	if ( client->cache_probe_status != (uint32_t)SPARK_STATUS_OK )
+		memset(&client->cache_probe_report.probe,0,sizeof(client->cache_probe_report.probe));
 	return(SPARK_STATUS_OK);
 }
 

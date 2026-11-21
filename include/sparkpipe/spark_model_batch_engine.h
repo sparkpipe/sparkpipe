@@ -180,6 +180,7 @@ typedef struct SparkModelBatchCacheState
 	uint32_t probed_token_count;
 	uint32_t rank_count;
 	uint32_t reported_rank_count;
+	uint32_t failed_rank_count;
 	uint32_t held_token_count;
 	uint32_t resident_token_count;
 	uint32_t saved_token_count;

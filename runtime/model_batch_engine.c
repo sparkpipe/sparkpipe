@@ -5251,7 +5251,7 @@ SparkStatus SparkModelBatchEngineCacheStatePoll(
 {
 	SparkModelResidentCacheProbeReport report;
 	SparkModelBatchCacheState *probe;
-	uint32_t rank,reported = 0u,held = UINT32_MAX,resident = UINT32_MAX,saved = UINT32_MAX,resume = UINT32_MAX,reread = UINT32_MAX;
+	uint32_t rank,reported = 0u,failed = 0u,held = UINT32_MAX,resident = UINT32_MAX,saved = UINT32_MAX,resume = UINT32_MAX,reread = UINT32_MAX;
 	if ( engine == 0 || state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( engine->probe_active == 0u )
@@ -5263,6 +5263,7 @@ SparkStatus SparkModelBatchEngineCacheStatePoll(
 			report.token_count != probe->probed_token_count || memcmp(&report.identity,&probe->identity,sizeof(report.identity)) != 0 )
 			continue;
 		reported++;
+		failed += report.status != (uint32_t)SPARK_STATUS_OK ? 1u : 0u;
 		held = report.probe.held_token_count < held ? report.probe.held_token_count : held;
 		resident = report.probe.resident_token_count < resident ? report.probe.resident_token_count : resident;
 		saved = report.probe.saved_token_count < saved ? report.probe.saved_token_count : saved;
@@ -5270,6 +5271,7 @@ SparkStatus SparkModelBatchEngineCacheStatePoll(
 		reread = report.probe.read_token_count < reread ? report.probe.read_token_count : reread;
 	}
 	probe->reported_rank_count = reported;
+	probe->failed_rank_count = failed;
 	probe->held_token_count = reported != 0u ? held : 0u;
 	probe->resident_token_count = reported != 0u ? resident : 0u;
 	probe->saved_token_count = reported != 0u ? saved : 0u;

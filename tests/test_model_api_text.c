@@ -710,7 +710,7 @@ static void TestApiCacheState(TestApiStack *stack)
 	assert(TestApiBodyContains(body,"\"object\":\"cache.state\"") && TestApiBodyContains(body,"\"complete\":true") && TestApiNumberField(body,"prompt_tokens") == 12u &&
 		TestApiNumberField(body,"matched_tokens") >= 8u && probed == TestApiNumberField(body,"matched_tokens") && TestApiNumberField(body,"ranks") == TEST_RANK_COUNT &&
 		TestApiNumberField(body,"ranks_reported") == TEST_RANK_COUNT && TestApiNumberField(body,"held_tokens") == probed && TestApiNumberField(body,"resident_tokens") == probed &&
-		TestApiNumberField(body,"saved_tokens") == 0u && TestApiNumberField(body,"state_tokens") == probed && TestApiNumberField(body,"read_tokens") == 0u &&
+		TestApiNumberField(body,"saved_tokens") == 0u && TestApiNumberField(body,"state_tokens") == probed && TestApiNumberField(body,"read_tokens") == 0u && TestApiNumberField(body,"ranks_failed") == 0u &&
 		TestApiNumberField(body,"block_tokens") != 0u);
 	found = strstr(body,"\"identity\":\"");
 	assert(found != 0 && strlen(found) > 12u + 64u);

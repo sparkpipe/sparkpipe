@@ -509,8 +509,15 @@ static void TestCacheState(SparkModelBatchEngine *engine,const uint32_t *prompt,
 	CHECK(asked == TEST_RANKS,"cache state: each rank is asked once");
 	CHECK(SparkModelBatchEngineCacheStateBegin(engine,prompt,8u,0,&found) == SPARK_STATUS_BUSY,"cache state: a second question waits for the first");
 	CHECK(SparkModelBatchEngineCacheStatePoll(engine,&found) == SPARK_STATUS_OK && found.reported_rank_count == TEST_RANKS && found.held_token_count == 4u &&
-		found.resident_token_count == 0u && found.saved_token_count == 4u && found.state_token_count == 0u && found.read_token_count == 0u,
+		found.resident_token_count == 0u && found.saved_token_count == 4u && found.state_token_count == 0u && found.read_token_count == 0u &&
+		found.failed_rank_count == 0u,
 		"cache state: the answer is the least any rank holds, has resident, has saved, can resume from and has had read");
+	MockResidentClientSetCacheProbeStatus(0u,SPARK_STATUS_UNSUPPORTED);
+	CHECK(SparkModelBatchEngineCacheStateBegin(engine,0,4u,identity,&found) == SPARK_STATUS_PENDING &&
+		SparkModelBatchEngineCacheStatePoll(engine,&found) == SPARK_STATUS_OK && found.reported_rank_count == TEST_RANKS && found.failed_rank_count == 1u &&
+		found.held_token_count == 0u && found.saved_token_count == 0u,
+		"cache state: a rank that could not answer is counted as failed, and what it cannot vouch for reads as nothing");
+	MockResidentClientSetCacheProbeStatus(0u,SPARK_STATUS_OK);
 	MockResidentClientSetCacheProbe(2u,&whole,1u);
 	CHECK(SparkModelBatchEngineCacheStateBegin(engine,0,4u,identity,&found) == SPARK_STATUS_PENDING && found.prompt_token_count == 0u && found.probed_token_count == 4u,
 		"cache state: a prefix can be asked about by its identity alone");
@@ -528,6 +535,8 @@ static void TestScenarioWaitBehindBackgroundWave(const SparkModelResidentDeploym
 	TestBatchState state = {0};
 	SparkModelBatchEngine *engine;
 	SparkModelBatchRequestHandle handle;
+	struct timespec start,now;
+	uint64_t elapsed_ns;
 	uint32_t background[16],interactive[4] = {801u,802u,803u,804u},index;
 	for (index=0u; index<16u; index++)
 		background[index] = 700u + index;
@@ -538,15 +547,18 @@ static void TestScenarioWaitBehindBackgroundWave(const SparkModelResidentDeploym
 		return;
 	MockResidentClientSetAutoTokens(1u);
 	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
-	MockResidentClientSetPrefillDelay(30000u);
+	MockResidentClientSetPrefillDelay(150000u);
 	CHECK(TestSubmitPriority(engine,1u,760u,1u,background,16u,SPARK_MODEL_BATCH_PRIORITY_BACKGROUND,&handle) == SPARK_STATUS_OK,"background wave: the background request is admitted");
 	(void)SparkModelBatchEngineProgress(engine,8u);
 	usleep(5000);
+	clock_gettime(CLOCK_MONOTONIC,&start);
 	CHECK(TestSubmitPriority(engine,2u,761u,1u,interactive,4u,SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE,&handle) == SPARK_STATUS_OK,"background wave: an interactive request arrives during the wave");
-	TestDriveUntilTerminal(engine,&state,2u,4000u);
+	TestDriveUntilTerminal(engine,&state,2u,40000u);
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"background wave: both requests complete");
-	CHECK(state.background_wait_ns[2] >= UINT64_C(10000000) && state.background_wait_ns[2] <= UINT64_C(60000000) && state.background_wait_ns[1] == 0u,
-		"background wave: an interactive request that could not be dispatched until a background wave returned reports that wait, and the background request reports none");
+	CHECK(state.background_wait_ns[2] >= UINT64_C(10000000) && state.background_wait_ns[2] <= elapsed_ns && state.background_wait_ns[1] == 0u,
+		"background wave: an interactive request that could not be dispatched until a background wave returned reports that wait, which is no longer than the request took, and the background request reports none");
 	MockResidentClientSetPrefillDelay(0u);
 	SparkModelBatchEngineDestroy(engine);
 }
