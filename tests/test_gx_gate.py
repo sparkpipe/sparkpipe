@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import shutil
 import tempfile
 import threading
 import time
@@ -17,6 +18,9 @@ spec = importlib.util.spec_from_file_location("gx_gate", ROOT / "tools/gx_gate.p
 gx = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gx)
 gx.RESTORE_SETTLE_SECONDS = 0.0
+rule = importlib.util.spec_from_file_location("prompt_cuts", ROOT / "tools/serving/prompt_cuts.py")
+prompt_cuts = importlib.util.module_from_spec(rule)
+rule.loader.exec_module(prompt_cuts)
 
 
 STRIDE = 1024
@@ -24,8 +28,9 @@ STRIDE = 1024
 
 class FakeEngine:
     def __init__(self, follows_resume=False, loses_on_evict=False, corrupts_restored=False, log=None, dies_after=None, refuses=None, forgets_cuts=False, forgets_keeps=False,
-                 follows_batch=False, watches_crowd=False):
+                 follows_batch=False, watches_crowd=False, load=(None, None)):
         self.log = log
+        self.load = load
         self.follows_batch = follows_batch
         self.watches_crowd = watches_crowd
         self.present = []
@@ -121,7 +126,8 @@ class FakeEngine:
                     for rank, pages in ((0, 3), (1, 4)):
                         log.write(json.dumps({"event": "kv_store_report", "boot_pid": 7, "rank": rank, "restore_pages": pages * self.served, "save_pages": 1, "restore_ns": 100 * (rank + 1),
                                               "pool_physical_pages": 10, "pool_device_bytes": 10 << 20}) + "\n")
-                    log.write(json.dumps({"event": "engine_measurements", "boot_pid": 7, "completed": self.served, "prefix_hits": 2}) + "\n")
+                    waits = {"rejected_waves_capacity": self.load[0] * self.served, "retry_deadlines": self.load[1]} if self.load[0] is not None else {}
+                    log.write(json.dumps(dict({"event": "engine_measurements", "boot_pid": 7, "completed": self.served, "prefix_hits": 2}, **waits)) + "\n")
         reply = {"object": "text_completion", "tokens": tokens, "finish_reason": "commit" if commit else "length",
                  "usage": {"prompt_tokens": len(prompt), "completion_tokens": len(tokens), "prompt_tokens_details": {"cached_tokens": cached}}}
         if commit:
@@ -200,7 +206,7 @@ class GxGateTests(unittest.TestCase):
 
     def plan(self, *extra):
         return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--contexts", "2048,4096",
-                    "--kept-contexts", "1024,2048", "--drafted-contexts", "2048", "--committed-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed",
+                    "--kept-contexts", "1024,2048", "--drafted-contexts", "2048", "--committed-contexts", "2048", "--opening-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed",
                     "--served-tokens", "5", *extra)
 
     def start(self, engine, *plan):
@@ -236,7 +242,7 @@ class GxGateTests(unittest.TestCase):
         engine = FakeEngine()
         status, receipt, stopped, table = self.run_gate(engine)
         self.assertEqual((status, receipt["verdict"], stopped), (0, "PASS", []), table)
-        self.assertEqual(len(receipt["verdicts"]), 16)
+        self.assertEqual(len(receipt["verdicts"]), 18)
         self.assertEqual({entry["case"] for entry in receipt["verdicts"]}, set(gx.CASES))
         self.assertEqual({(entry["nominal"], entry["group"]) for entry in receipt["verdicts"]}, {(1024, 2048), (2048, 2048), (4096, 4096)})
         for entry in receipt["verdicts"]:
@@ -258,7 +264,12 @@ class GxGateTests(unittest.TestCase):
         for entry in committed:
             self.assertEqual(entry["resume_cut"], sessions[entry["tail"]]["resume_cut"] + 1 + 8, "a turn after a committed reply resumes where the reply ends, not one token before the earlier prompt's end")
         kept = [body for body in engine.bodies if "keep" in body]
-        self.assertTrue(kept and all(body["keep"] in ([769], [1793]) and body["cuts"] == body["keep"] for body in kept), "a kept unit asks for state at the cut where its shared prefix ends")
+        self.assertTrue(kept and all(body["keep"] in ([769], [1793], [448, 1536, 2069]) and body["cuts"] == body["keep"] for body in kept), "a kept unit asks for state at the cut where its shared prefix ends")
+        opening = [entry for entry in receipt["verdicts"] if entry["case"] == "opening"]
+        self.assertEqual([(entry["context"], entry["resume_cut"], entry["cached_tokens"]["chain"], entry["cached_tokens"]["restore"]) for entry in opening], [(2069, 1536, 1536, 1536)] * 2,
+                         "a prompt whose head shares two blocks with an earlier prompt resumes at the second block's cut, short of where the blocks' text ends")
+        self.assertEqual([prompt_cuts.structural_cut(end) for end in gx.head_blocks(opening[0])], [448, 1536], "the cuts of a head's blocks are the chat layer's own rule")
+        self.assertEqual(sum(1 for body in engine.bodies if body.get("keep") == [448, 1536, 2069] and body["max_tokens"] == 1), 2, "the head is warmed by another prompt that shares its first two blocks")
         self.assertTrue(all("cuts" in body for body in engine.bodies if not body.get("commit_only")), "every request that generates names its cuts")
         self.assertTrue(all(body["cuts"] == sorted(set(body["cuts"])) for body in engine.bodies if "cuts" in body))
         last = max((body for body in engine.bodies if "logprobs" in body), key=lambda body: len(body["cuts"]))
@@ -281,7 +292,7 @@ class GxGateTests(unittest.TestCase):
         status, receipt, stopped, table = self.run_gate(FakeEngine(forgets_keeps=True))
         self.assertEqual((status, receipt["verdict"], stopped), (2, "INCOMPLETE", []), table)
         reuse = {entry["id"]: entry for entry in receipt["verdicts"]}
-        self.assertEqual({name: entry["reuse"] for name, entry in reuse.items() if entry["reuse"] != "PASS"}, {"kept/1024/1": "NOT-CACHED", "kept/2048/1": "SHORT"}, table)
+        self.assertEqual({name: entry["reuse"] for name, entry in reuse.items() if entry["reuse"] != "PASS"}, {"kept/1024/1": "NOT-CACHED", "kept/2048/1": "SHORT", "opening/2048/1": "SHORT", "opening/2048/40": "SHORT"}, table)
         short = reuse["kept/2048/1"]
         self.assertTrue(short["cached_tokens"]["chain"] == 1024 < short["resume_cut"] == 1793 and short["reuse_detail"]["equal"], short)
         self.assertEqual(reuse["kept/2048/40"]["cached_tokens"]["chain"], 1793, "the one-token unit's own last cut is the shared cut, so the next unit resumes there")
@@ -316,7 +327,7 @@ class GxGateTests(unittest.TestCase):
         self.assertEqual([line.split()[:3] for line in listing.splitlines()],
                          [["chain", "none", "open"], ["park:2048", "clear", "open"], ["restore:2048", "evict", "open"], ["park:4096", "none", "open"], ["restore:4096", "evict", "open"],
                           ["cold:1", "clear", "open"], ["cold:40", "clear", "open"]])
-        self.assertEqual(listing.splitlines()[0].split()[3], "0/16")
+        self.assertEqual(listing.splitlines()[0].split()[3], "0/18")
         status, again = self.plan()
         self.assertEqual(status, 1)
         self.assertIn("planned once", again)
@@ -389,13 +400,13 @@ class GxGateTests(unittest.TestCase):
         self.assertIn("GX-STEP-STOPPED chain", output)
         state = json.loads(Path(self.state).read_text())
         kept = dict(state["steps"]["chain"]["results"])
-        self.assertTrue(0 < len(kept) < 16, kept.keys())
-        self.assertEqual(call("steps", "--state", self.state)[1].splitlines()[0].split()[2:], ["stopped", "%d/16" % len(kept)])
+        self.assertTrue(0 < len(kept) < 18, kept.keys())
+        self.assertEqual(call("steps", "--state", self.state)[1].splitlines()[0].split()[2:], ["stopped", "%d/18" % len(kept)])
         engine.recover()
         status, output = self.step(api, "chain")
         self.assertEqual(status, 0, output)
         state = json.loads(Path(self.state).read_text())
-        self.assertEqual(len(state["steps"]["chain"]["results"]), 16)
+        self.assertEqual(len(state["steps"]["chain"]["results"]), 18)
         for unit, result in kept.items():
             self.assertEqual(state["steps"]["chain"]["results"][unit], result)
         again = [request["label"] for request in state["steps"]["chain"]["requests"] if request["attempt"] == 2]
@@ -449,7 +460,7 @@ class GxGateTests(unittest.TestCase):
         second = [request["label"] for request in state["steps"]["park:2048"]["requests"] if request["attempt"] == 2]
         replayed = {label.rsplit("/turn", 1)[0] for label in second if "/turn" in label}
         self.assertTrue(replayed and not replayed & restored, (replayed, restored))
-        self.assertEqual([label for label in second if label.endswith("/warm")], ["kept/2048/warm"])
+        self.assertEqual([label for label in second if label.endswith("/warm")], ["kept/2048/warm", "opening/2048/warm"])
         engine.evict()
         self.assertEqual(self.step(api, "restore:2048")[0], 0)
         for name, change in steps[3:]:
@@ -490,7 +501,7 @@ class GxGateTests(unittest.TestCase):
         errors = state["steps"]["chain"]["errors"]
         self.assertEqual(sorted(errors), ["kept/1024/1", "kept/1024/40"])
         self.assertTrue(all("did not warm" in message for message in errors.values()))
-        self.assertEqual(len(state["steps"]["chain"]["results"]), 14)
+        self.assertEqual(len(state["steps"]["chain"]["results"]), 16)
 
     def test_a_long_request_is_followed_by_a_rest(self):
         engine = FakeEngine()
@@ -582,6 +593,26 @@ class GxGateTests(unittest.TestCase):
             self.assertIn(text, output)
             Path(self.state).unlink()
 
+    def test_waves_the_ranks_refused_are_counted_and_a_request_that_waited_out_the_budget_fails_the_check(self):
+        log = str(Path(self.directory.name) / "api.log")
+        for load, expected, text in (((2, 0), 0, "check: finding: the ranks refused %d waves of step chain for capacity"), ((0, 1), 1, "check: 1 requests of step chain waited out the in-flight budget")):
+            Path(log).write_text("")
+            engine = FakeEngine(log=log, load=load)
+            api, steps = self.start(engine, "--cases", "prefix", "--contexts", "2048", "--tails", "40")
+            self.assertEqual(self.step(api, "chain", "--api-log", log)[0], 0)
+            chained = engine.served
+            engine.clear()
+            self.assertEqual(self.step(api, "cold:40", "--api-log", log)[0], 0)
+            status, output = call("check", "--state", self.state)
+            self.assertEqual(status, expected, output)
+            self.assertIn(text % (2 * chained) if "%d" in text else text, output)
+            status, receipt, table = self.verdict()
+            self.assertEqual(receipt["load"], {"chain": {"rejected_waves_capacity": load[0] * chained, "retry_deadlines": load[1]},
+                                               "cold:40": {"rejected_waves_capacity": load[0] * (engine.served - chained), "retry_deadlines": 0}}, table)
+            self.assertIn("waves refused for capacity=%d requests that waited out the in-flight budget=%d" % (load[0] * engine.served, load[1]), table)
+            self.assertEqual(receipt["steps"]["chain"]["attempts"][0]["counters_after"]["engine"]["retry_deadlines"], load[1])
+            Path(self.state).unlink()
+
     def test_contexts_are_fitted_to_the_deployment(self):
         arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed"]
         status, listing = call(*arguments, "--context-limit", "32768")
@@ -609,6 +640,38 @@ class GxGateTests(unittest.TestCase):
         status, listing = call(*arguments, "--context-limit", "16000")
         self.assertEqual(status, 1)
         self.assertIn("no room", listing)
+
+    def test_a_head_takes_its_cuts_from_the_chat_layer_s_rule(self):
+        arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed", "--context-limit", "1048576", "--cases", "opening", "--tails", "1"]
+        status, listing = call(*arguments)
+        self.assertEqual(status, 0, listing)
+        unit = json.loads(Path(self.state).read_text())["units"][0]
+        self.assertEqual((unit["id"], unit["context"], gx.head_blocks(unit), gx.head_cuts(unit)), ("opening/8000/1", 8021, (2005, 6015), [1984, 5952, 8021]))
+        self.assertEqual(gx.head_cuts(unit)[:2], [prompt_cuts.structural_cut(end) for end in (2005, 6015)])
+        prompts = gx.Prompts({"seed": "fixed"})
+        first, second, other = prompts.last(unit, None), prompts.last(dict(unit, id="opening/8000/40", tail=40), None), prompts.other(unit)
+        self.assertTrue(first[:6015] == second[:6015] == other[:6015] and len({first[6015], second[6015], other[6015]}) > 1 and first[6015:8021] != second[6015:8021],
+                        "every prompt of a head shares its first two blocks and no more")
+        Path(self.state).unlink()
+        status, listing = call(*arguments, "--opening-contexts", "200")
+        self.assertEqual(status, 1)
+        self.assertIn("too short", listing)
+        alone = Path(self.directory.name) / "alone"
+        alone.mkdir()
+        shutil.copy(ROOT / "tools/gx_gate.py", alone / "gx_gate.py")
+        lone = importlib.util.spec_from_file_location("gx_gate_alone", alone / "gx_gate.py")
+        tool = importlib.util.module_from_spec(lone)
+        lone.loader.exec_module(tool)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            status = tool.main(arguments)
+        self.assertEqual(status, 1)
+        self.assertIn("prompt_cuts.py is not beside gx_gate.py", output.getvalue())
+        self.assertFalse(Path(self.state).exists())
+        shutil.copy(ROOT / "tools/serving/prompt_cuts.py", alone / "prompt_cuts.py")
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            status = tool.main(arguments)
+        self.assertEqual(status, 0, output.getvalue())
 
 
 if __name__ == "__main__":

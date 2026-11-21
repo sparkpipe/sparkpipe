@@ -38,6 +38,7 @@ is recorded on its unit, and the step goes on.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import struct
@@ -48,7 +49,7 @@ import urllib.error
 import urllib.request
 
 KIND = "sparkpipe.gx-gate.v3"
-PREFIX_CASES = ("prefix", "kept")
+PREFIX_CASES = ("prefix", "kept", "opening")
 SESSION_CASES = ("session", "drafted", "committed")
 CASES = PREFIX_CASES + SESSION_CASES
 TOKEN_LOW = 1000
@@ -59,6 +60,7 @@ MID_BLOCK = 21
 KEPT_OTHER = 8
 SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
+CUT_RULE = {}
 RESTORE_SETTLE_SECONDS = 1.0
 LOG_TAIL_BYTES = 16 << 20
 STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "restore_pages", "restore_ns", "restore_misses", "restore_failures", "store_files",
@@ -66,7 +68,8 @@ STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "re
                   "spill_write_bytes")
 STORE_SLOWEST = ("save_ns", "restore_ns")
 ENGINE_COUNTERS = ("completed", "prefix_hits", "prefix_misses", "prefix_hit_tokens", "stale_prefix_recomputes", "rejected_waves_busy", "rejected_waves_not_found",
-                   "verify_lanes", "draft_tokens", "accepted_draft_tokens")
+                   "rejected_waves_capacity", "retry_deadlines", "verify_lanes", "draft_tokens", "accepted_draft_tokens")
+LOAD_COUNTERS = ("rejected_waves_capacity", "retry_deadlines")
 ENGINE_IDENTITY = ("adapter_id", "model_id", "model_revision", "driver_program", "driver_artifact_sha256")
 
 
@@ -98,10 +101,32 @@ def prompt_digest(tokens):
     return hashlib.sha256(struct.pack("<%dI" % len(tokens), *tokens)).hexdigest()
 
 
+def chat_layer_cut(prefix_tokens):
+    here = os.path.dirname(os.path.abspath(__file__))
+    if "rule" not in CUT_RULE:
+        source = next((path for path in (os.path.join(here, "prompt_cuts.py"), os.path.join(here, "serving", "prompt_cuts.py")) if os.path.exists(path)), None)
+        if source is None:
+            raise GateError("prompt_cuts.py is not beside gx_gate.py: the opening case takes its cuts from the chat layer's own rule")
+        spec = importlib.util.spec_from_file_location("prompt_cuts", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        CUT_RULE["rule"] = module.structural_cut
+    return CUT_RULE["rule"](prefix_tokens)
+
+
 def context_tokens(case, nominal):
     if case == "kept":
         return nominal // GRID * GRID - BLOCK + 1
     return nominal + MID_BLOCK
+
+
+def head_blocks(unit):
+    tools = unit["context"] // 4
+    return tools, tools + unit["context"] // 2
+
+
+def head_cuts(unit):
+    return sorted({cut for cut in (chat_layer_cut(end) for end in head_blocks(unit)) if cut > 0} | {unit["context"]})
 
 
 def build_plan(arguments):
@@ -112,7 +137,7 @@ def build_plan(arguments):
         raise GateError("a context of %d positions leaves no room for a prefix beside three %d-token tails" % (arguments.context_limit, max(tails)))
     units, skipped = [], []
     wanted = {"prefix": arguments.contexts, "session": arguments.contexts, "kept": arguments.kept_contexts, "drafted": arguments.drafted_contexts,
-              "committed": arguments.committed_contexts}
+              "committed": arguments.committed_contexts, "opening": arguments.opening_contexts}
     for case in CASES:
         if case not in arguments.cases:
             continue
@@ -127,6 +152,9 @@ def build_plan(arguments):
                 units.append({"id": "%s/%d/%d" % (case, nominal, tail), "case": case, "nominal": nominal, "context": context_tokens(case, fitted), "tail": tail})
     if not units:
         raise GateError("the plan holds no unit")
+    for unit in units:
+        if unit["case"] == "opening" and len(head_cuts(unit)) != 3:
+            raise GateError("a head of %d tokens is too short for a cut after each of its first two blocks" % unit["context"])
     small = max([unit["nominal"] for unit in units if unit["context"] <= arguments.small_context], default=None)
     for unit in units:
         unit["group"] = small if unit["context"] <= arguments.small_context else unit["nominal"]
@@ -181,15 +209,23 @@ class Prompts:
         return self.run("%s/%s" % (unit["id"], name), unit["tail"])
 
     def last(self, unit, replies):
+        if unit["case"] == "opening":
+            shared = head_blocks(unit)[1]
+            return self.prefix(unit)[:shared] + self.run("%s/block" % unit["id"], unit["context"] - shared) + self.part(unit, "tail")
         if unit["case"] in PREFIX_CASES:
             return self.prefix(unit) + self.part(unit, "tail")
         return self.prefix(unit) + self.part(unit, "first") + replies[0] + self.part(unit, "second") + replies[1] + self.part(unit, "third")
 
     def other(self, unit):
+        if unit["case"] == "opening":
+            shared = head_blocks(unit)[1]
+            return self.prefix(unit)[:shared] + self.run("%s/%d/other" % (unit["case"], unit["nominal"]), unit["context"] - shared + KEPT_OTHER)
         return self.prefix(unit) + self.run("%s/%d/other" % (unit["case"], unit["nominal"]), KEPT_OTHER)
 
 
 def turn_cuts(unit, replies):
+    if unit["case"] == "opening":
+        return head_cuts(unit)
     cuts = [unit["context"]]
     end = unit["context"] + unit["tail"]
     for reply in replies:
@@ -199,6 +235,8 @@ def turn_cuts(unit, replies):
 
 
 def resume_cut(unit, replies):
+    if unit["case"] == "opening":
+        return chat_layer_cut(head_blocks(unit)[1])
     if unit["case"] in PREFIX_CASES:
         return unit["context"]
     if unit["case"] == "committed":
@@ -421,6 +459,8 @@ class Step:
         try:
             if unit["case"] == "kept":
                 self.send(label, self.prompts.other(unit), 1, {"speculation": False, "cuts": [unit["context"]], "keep": [unit["context"]]}, cold=True)
+            elif unit["case"] == "opening":
+                self.send(label, self.prompts.other(unit), 1, {"speculation": False, "cuts": head_cuts(unit), "keep": head_cuts(unit)}, cold=True)
             else:
                 self.send(label, self.prompts.prefix(unit), 0, {}, cold=True)
         except UnitError as error:
@@ -435,6 +475,8 @@ class Step:
         options = {"logprobs": self.options["logprobs"], "speculation": False, "cuts": turn_cuts(unit, replies or [])}
         if unit["case"] == "kept":
             options["keep"] = [unit["context"]]
+        if unit["case"] == "opening":
+            options["keep"] = head_cuts(unit)
         return options
 
     def measure(self, unit, replies, cold=False):
@@ -726,6 +768,18 @@ def judge(state):
     return verdicts, alone, verdict
 
 
+def waited(state, names):
+    counts = {}
+    for name in names:
+        counts[name] = dict.fromkeys(LOAD_COUNTERS, 0)
+        for attempt in (state["steps"].get(name) or {}).get("attempts", []):
+            before, after = attempt.get("counters_before") or {}, attempt.get("counters_after") or {}
+            start = (before.get("engine") or {}) if before.get("boot_pid") == after.get("boot_pid") else {}
+            for counter in LOAD_COUNTERS:
+                counts[name][counter] += max(0, ((after.get("engine") or {}).get(counter) or 0) - (start.get(counter) or 0))
+    return counts
+
+
 def describe(detail):
     if detail is None:
         return "-"
@@ -825,6 +879,11 @@ def command_check(arguments):
             findings.append("%s differs between reuse and cold: %s" % (entry["id"], describe(entry["reuse_detail"])))
         elif entry["reuse"] != "PASS":
             problems.append("%s reuse is %s" % (entry["id"], entry["reuse"]))
+    for name, counts in waited(state, wanted).items():
+        if counts["retry_deadlines"]:
+            problems.append("%d requests of step %s waited out the in-flight budget on a wave the ranks kept refusing" % (counts["retry_deadlines"], name))
+        if counts["rejected_waves_capacity"]:
+            findings.append("the ranks refused %d waves of step %s for capacity; each waits and goes out again with the same span" % (counts["rejected_waves_capacity"], name))
     for line in findings:
         print("check: finding: %s" % line)
     for line in problems:
@@ -836,7 +895,7 @@ def command_check(arguments):
 def command_verdict(arguments):
     state = load(arguments.state)
     verdicts, alone, verdict = judge(state)
-    receipt = dict(state, verdicts=verdicts, alone=alone, verdict=verdict)
+    receipt = dict(state, verdicts=verdicts, alone=alone, verdict=verdict, load=waited(state, sorted(state["steps"])))
     together = [entry["concurrent"] for entry in verdicts if "concurrent" in entry]
     if together:
         receipt["concurrent"] = {name.lower().replace("-", "_"): together.count(name) for name in ("EQUAL", "DIFFERENT", "NOT-RUN")}
@@ -857,6 +916,7 @@ def command_verdict(arguments):
             print("step %s is %s%s" % (name, step_status(state, name), ": " + state["steps"][name]["interrupted"] if step_status(state, name) == "stopped" else ""))
     if together:
         print("concurrent equal=%d different=%d not-run=%d" % (together.count("EQUAL"), together.count("DIFFERENT"), together.count("NOT-RUN")))
+    print("waves refused for capacity=%d requests that waited out the in-flight budget=%d" % tuple(sum(counts[counter] for counts in receipt["load"].values()) for counter in LOAD_COUNTERS))
     print("alone=%s" % ("yes" if alone else "no"))
     print("verdict=%s" % verdict)
     return {"PASS": 0, "INCOMPLETE": 2}.get(verdict, 1)
@@ -874,6 +934,7 @@ def main(argv=None):
     plan.add_argument("--kept-contexts", type=numbers, default=[8000, 20000])
     plan.add_argument("--drafted-contexts", type=numbers, default=[8000])
     plan.add_argument("--committed-contexts", type=numbers, default=[8000], help="sessions whose replies are committed at once, so the next turn resumes where the reply ends")
+    plan.add_argument("--opening-contexts", type=numbers, default=[8000], help="heads of three blocks whose cuts come from the chat layer's rule; a second conversation shares the first two blocks")
     plan.add_argument("--tails", type=numbers, default=[1, 40, 500, 5000])
     plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))

@@ -166,7 +166,7 @@ gx_model() {
   held=$(hub "mkdir -p $dir && { test -e $dir/state.json && echo state || echo none; }") || { echo "GX-FAILED $id: the hub does not answer"; return 1; }
   [ "$held" = state ] && fresh=0 || fresh=1
   if gx_running "$dir"; then echo "GX-FAILED $id: a step of this state still runs on the hub (pid $(hub "cat $dir/run.pid")); wait for it or stop it, then run this again"; return 1; fi
-  scp -q "$KIT/../tools/gx_gate.py" rtx5090:$GX_TOOL || { echo "GX-FAILED $id: the hub did not take the tool"; return 1; }
+  scp -q "$KIT/../tools/gx_gate.py" rtx5090:$GX_TOOL && scp -q "$KIT/../tools/serving/prompt_cuts.py" rtx5090:$GX_DIR/prompt_cuts.py || { echo "GX-FAILED $id: the hub did not take the tool"; return 1; }
   if [ "$GX_BACKEND" = lane ]; then
     [ "$(controller)" = "idle None None" ] && [ "$(lane_engines)" = 0 ] || { echo "GX-FAILED $id: a staged lane runs only with production stopped and no engine on any node; take the fleet hold first"; return 1; }
   else

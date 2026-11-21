@@ -73,6 +73,7 @@ top 4 logprobs.
 | --- | --- | --- |
 | `prefix` | A commit of the prefix P | P and a new tail, with a cut at P's end |
 | `kept` | A one-token completion of P and eight other tokens, with a cut at P's end and state kept there | P and a new tail, with the same cut and keep |
+| `opening` | A one-token completion of another prompt whose head shares this one's first two blocks, with the head's cuts and state kept at each | A head of three blocks and a new tail, with the same cuts and keep |
 | `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 96 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
 | `drafted` | The same with speculation left at the engine's default | The same |
 | `committed` | As `session`, and after each reply a commit of that turn's prompt with the reply, naming the turn's cuts and one token before the turn's prompt ended | The same |
@@ -81,23 +82,32 @@ A session's turns name their cuts as the chat layer does: where the opening
 ends, one token before each reply began and where each reply ends. The last
 prompt is the same request in every arm, cuts included.
 
+An `opening` unit stands for a second conversation that shares its tools and
+its first system block with an earlier one. Its head has three blocks: the
+first ends a quarter of the way in, the second three quarters in. The cuts of
+those two ends come from the chat layer's own rule
+(`structural_cut` in `tools/serving/prompt_cuts.py`), so each lies a few
+tokens before the end of the shared text, on a cache block; the third cut is
+the head's end. Every unit has a third block of its own, so it can resume
+only at the second block's cut.
+
 Two verdicts follow for each unit:
 
 - **reuse**: chain against cold.
 - **restored**: restore against chain.
 
 A verdict is `PASS` only when tokens and logprobs are equal, the reusing run
-resumed at the cut its structure names (P's end; one token before reply 2
-began; for `committed`, where reply 2 ends), and the cold run reported no
-cached tokens. The receipt also holds
-the first differing token, the first differing logprob entry and the largest
-logprob difference up to there.
+resumed at the cut its structure names (P's end; for `opening`, the cut of
+the head's second block; one token before reply 2 began; for `committed`,
+where reply 2 ends), and the cold run reported no cached tokens. The receipt
+also holds the first differing token, the first differing logprob entry and
+the largest logprob difference up to there.
 
 ## Sizes
 
 - Contexts: 8,000, 100,000 and 300,000 tokens for `prefix` and `session`;
-  8,000 and 20,000 for `kept`; 8,000 for `drafted` and for `committed`
-  (`--committed-contexts`).
+  8,000 and 20,000 for `kept`; 8,000 for `drafted`, for `committed`
+  (`--committed-contexts`) and for `opening` (`--opening-contexts`).
 - Tails: 1, 40, 500 and 5,000 tokens. A session's three tails have the
   unit's size.
 - A prefix ends 21 tokens past its nominal size, in the middle of a block.
@@ -146,10 +156,11 @@ Cold runs take one cache lifetime per tail size. The units of one tail size
 start from different prefixes, so none of them finds another's KV. Units of
 different tail sizes share a prefix, so they cannot share a lifetime.
 
-Inside a step the order is fixed. `chain` commits the prefix, runs its tails,
-then runs the sessions. `park` runs the sessions' first two turns, then
-commits the prefix, so the commit that nothing has read is the newest chain
-when the engine closes.
+Inside a step the order is fixed. `chain` warms each prefix (a commit; for
+`kept` and `opening`, the other prompt), runs its tails, then runs the
+sessions. `park` runs the sessions' first two turns, then warms the
+prefixes, so the commit that nothing has read is the newest chain when the
+engine closes.
 
 ## Requests sent together
 
@@ -176,7 +187,7 @@ token and the largest logprob difference for each unit.
 | `SHORT` | The chain arm's tokens and logprobs equal the cold run's, but it resumed before the cut its structure names, so the reuse under test did not happen |
 | `LOST` | The restore arm's last prompt reported no cached tokens: the chain did not come back |
 | `DIVERGED` | The replayed session produced other replies, so its last prompt is another prompt |
-| `ERROR` | A request of the unit failed while the engine stayed whole; the receipt holds the engine's answer |
+| `ERROR` | A request of the unit failed while the engine stayed whole; the receipt holds the engine's answer. A request that waited out the in-flight budget on a wave the ranks kept refusing ends this way |
 | `alone=no` | The API served a request the gate did not send |
 | a step not `done` | It stopped, or was never run |
 
@@ -186,6 +197,16 @@ and finds cached tokens stops at once.
 `recomputed_after_restore` is the number of tokens the restore arm computed
 again that the chain arm reused. Above zero, part of the chain or one of its
 states did not come back.
+
+**Waves that waited.** A wave the ranks refuse for capacity is never made
+smaller: it waits and goes out again with the same span, and a request whose
+wave is refused for the whole in-flight budget fails. The receipt counts
+both for each step under `load` (`rejected_waves_capacity`,
+`retry_deadlines`), from the engine's counters before and after each
+attempt, and the verdict table prints their sums. An attempt that starts on
+an engine that has not yet reported counts from that engine's start.
+`gx_gate.py check` reports refused waves as a finding and fails on a request
+that waited out the budget.
 
 ## Interruptions
 
@@ -252,6 +273,9 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
   the release's work directory, copies receipts to the kit state's `gx`
   directory and leaves `qwen3.8-max` active. It fails unless every model
   passes.
+- The driver copies `tools/gx_gate.py` and the chat layer's cut rule,
+  `tools/serving/prompt_cuts.py`, to `$HUB_WORK/gx/<sha>/`. A plan with an
+  `opening` unit fails when the rule is not beside the tool.
 - State and logs are kept on the hub under `$HUB_WORK/gx/<sha>/<model>/`.
   A state is planned once: its prompts must be new to the cache. Running
   the driver again on a directory that holds a state resumes it.
@@ -303,7 +327,9 @@ Per attempt of a step, before and after: the running engine's KV store
 counters summed over its ranks (pages and nanoseconds saved and restored,
 restore misses, store files and bytes, device pool pages and bytes), the
 slowest rank's save and restore time, and the engine's prefix counters (hits,
-misses, hit tokens, stale-prefix recomputes, refused waves, draft tokens).
+misses, hit tokens, stale-prefix recomputes, waves refused as busy, as not
+found and for capacity, requests that waited out the in-flight budget, draft
+tokens).
 The attempt also names the engine: adapter id, model revision and driver
 artifact SHA-256.
 
@@ -311,6 +337,9 @@ artifact SHA-256.
   is its prefill) and everything in `cold:*`.
 - **A turn on a kept prefix**: `prefix/<context>/<tail>` in `chain`. Each
   unit's verdict names `resume_cut`, the cut the reuse should resume at.
+- **A conversation that shares a head's first blocks**:
+  `opening/<context>/<tail>` in `chain`. Its `prefilled_tokens` are the
+  head past the second block's cut plus the tail.
 - **A turn of a session**: `session/<context>/<tail>/turn2` and the last
   prompt in `chain`. Each computes the previous reply again as prefill, so
   its `prefilled_tokens` are the reply plus the new tail plus one.

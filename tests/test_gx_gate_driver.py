@@ -203,6 +203,8 @@ with tempfile.TemporaryDirectory() as directory:
     check(all((fleet / f"spark{HEX[index]}" / lane / "root" / "packs" / "pack.sha256").exists() for index in range(16)), "a clear touched the lane's pack digest")
     check((fleet / "rtx5090" / api / "runtime" / "other").exists(), "a clear removed more than the prefix index from the API's runtime directory")
     check(all((fleet / "receipts" / f"{MODEL}.{suffix}").exists() for suffix in ("json", "txt", "log")), "the receipt, the verdict table and the run log were not copied back", result)
+    rule = fleet / "srv-workspace" / "gx" / "testsha" / "prompt_cuts.py"
+    check(rule.exists() and rule.read_bytes() == (ROOT / "tools" / "serving" / "prompt_cuts.py").read_bytes(), "the chat layer's cut rule was not copied beside the gate tool", result)
     result, events = run(fleet, lane, api)
     check(result.returncode == 0 and f"GX-PASS {MODEL}" in result.stdout and order(events) == ["deactivate"], f"a finished state ran steps or restarted the model: {events}", result)
     check(notes(events)[0]["block"] == "resume" and notes(events)[0]["rest_seconds"] == "60", f"a block run again is not noted as resumed, with the idle gap on by default: {notes(events)}")
