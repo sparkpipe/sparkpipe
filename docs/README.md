@@ -125,6 +125,8 @@ current authority.
 - [`HOSTED_DEPENDENCY_AUDIT.md`](HOSTED_DEPENDENCY_AUDIT.md): the release
   gate that fails a hosted release root, node image or running node carrying
   NVIDIA user-space libraries, tools or packages.
+- [`HOSTED_NODE_IMAGE.md`](HOSTED_NODE_IMAGE.md): the rented nodes' image,
+  its pins, GB10 settings, GPU device nodes and the baseline it carries.
 - [`CX7_DMA_INVESTIGATION_2026-10.md`](CX7_DMA_INVESTIGATION_2026-10.md):
   the Lenovo ConnectX-7 completion-timeout and SMMU0 stall investigation
   (dated record: incidents, every crash run, mitigations, implications, open
