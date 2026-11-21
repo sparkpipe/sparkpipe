@@ -67,7 +67,7 @@ def fake_toolkit(directory, libraries=False):
         lib64 = Path(directory, "lib64")
         lib64.mkdir()
         for name, soname in (("libcuda.so", "libcuda.so.1"), ("libcudart.so", "libcudart.so.13")):
-            subprocess.run(["cc", "-shared", "-fPIC", f"-Wl,-soname,{soname}", f"-I{CUDA_STUB}",
+            subprocess.run(["cc", "-shared", "-fPIC", f"-Wl,-soname,{soname}", f"-I{ROOT}", f"-I{ROOT / 'include'}", f"-I{CUDA_STUB}",
                             f"-I{ROOT / 'model-families' / 'common' / 'include'}", str(CUDA_STUB / "cuda_runtime_stub.c"),
                             "-o", str(lib64 / name)], check=True)
     return Path(directory)
