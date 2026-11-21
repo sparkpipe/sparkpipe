@@ -2961,6 +2961,7 @@ static void TestScenarioResumeSuperseded(const SparkModelResidentDeployment *dep
 static void TestScenarioLookupVerify(const SparkModelResidentDeployment *deployment,const SparkModelResidentDeployment *plain_deployment,const char *runtime_root);
 static void TestScenarioLookupVerifyMixedLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioSharedVerifyEndsOnBlock(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioModelDraftsYieldToPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioDraftWaitFreesEngine(const SparkModelResidentDeployment *deployment,const char *runtime_root);
@@ -2999,6 +3000,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioLookupVerify(&deployment,&plain,runtime_root);
 		TestScenarioLookupVerifyMixedLanes(&deployment,runtime_root);
 		TestScenarioBatchVerify(&deployment,runtime_root);
+		TestScenarioSharedVerifyEndsOnBlock(&deployment,runtime_root);
 		TestScenarioModelDrafts(&deployment,runtime_root);
 		TestScenarioModelDraftsYieldToPrefill(&deployment,runtime_root);
 		TestScenarioDraftWaitFreesEngine(&deployment,runtime_root);
@@ -3943,6 +3945,54 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	shared = MockResidentClientTakeVerifyShared();
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,"batch verify: a drafting request and one with speculation off both complete when they share verify frames");
 	CHECK(shared != 0u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: a lane with no drafts rides shared verify frames across cache block boundaries and both emit the greedy stream");
+	SparkModelBatchEngineDestroy(engine);
+}
+
+static void TestScenarioSharedVerifyEndsOnBlock(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	const uint32_t prompt = 44u,budget = 37u,block = 16u,end = prompt + budget - 1u;
+	uint32_t script[256],index,last_decode = UINT32_MAX,republished = 0u;
+	SparkModelServingLane lane,last;
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	for (index=0u; index<40u; index++)
+		script[index] = 1000u + (index * 7u) % 97u;
+	for (index=40u; index<prompt; index++)
+		script[index] = 2000u + index;
+	for (index=prompt; index<256u; index++)
+		script[index] = script[(index - prompt) % 40u];
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	memset(&last,0,sizeof(last));
+	engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,930u,200u,script,prompt);
+	TestDraftsDisabled = 1u;
+	TestSubmitPrompt(engine,2u,931u,budget,script,prompt);
+	TestDraftsDisabled = 0u;
+	TestDriveUntilTerminal(engine,&state,2u,3000u);
+	for (index=0u; MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.request_id != 2u )
+			continue;
+		if ( MockResidentClientLaneWorkKind(index) == SPARK_MODEL_SERVING_WORK_KIND_DECODE )
+		{
+			last_decode = index;
+			last = lane;
+		}
+		if ( MockResidentClientLaneWorkKind(index) == SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH && lane.cache_publish_token_count == end )
+			republished++;
+	}
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,
+		"verify ends on block: both requests complete");
+	CHECK(TestScriptedOutputMatches(&state,2u,script,prompt,budget) != 0u,"verify ends on block: the speculation-off request emits the greedy stream");
+	CHECK(end % block == 0u && last_decode != UINT32_MAX && (MockResidentClientLaneSubmissionFlags(last_decode) & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u &&
+		last.sequence_position + 1u == end && last.context_token_count == end,
+		"verify ends on block: the speculation-off request's last token comes from a shared verify frame whose kept length ends a cache block");
+	CHECK(republished == 0u,"verify ends on block: the engine records the block the verify frame sealed and sends no publish for it after the reply ends");
 	SparkModelBatchEngineDestroy(engine);
 }
 
