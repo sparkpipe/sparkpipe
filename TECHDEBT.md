@@ -1506,6 +1506,13 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   explicit shape predicate; then the losing kernel's refusal can fail through
   `SPARK_FAIL`, as the 20 former slow-path sites do.
 
+- K3 and K3.1 Pro `routed_up` prefill runs on the tiled GEMM because its TP16
+  slice (3584/16 = 224) is not a multiple of the stream GEMM's 64. On spark1 a
+  2048-row routed_up wave (N 7168) takes a median 0.51 ms there against 0.22 ms
+  on the stream GEMM over the same wave zero-padded to K 256, whose output is
+  bit-identical. A K tail in the stream GEMM that sums in the same order closes
+  the gap.
+
 ## Runtime completion
 
 - A submission that fails residentd's cache validation is retried until its
