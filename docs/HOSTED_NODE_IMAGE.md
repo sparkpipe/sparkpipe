@@ -155,6 +155,15 @@ Any other command the baseline runs fails the build, so a new baseline step
 is placed by a change here. `baseline-report.json` lists what was applied and
 what was left.
 
+## An image node never updates itself
+
+A rented node changes only by a new image, never during a rental. The image
+masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`)
+and `motd-news`, which fetches news from Ubuntu
+([`masked-units.txt`](../tools/hosted_image/masked-units.txt),
+[`mask_units.sh`](../tools/hosted_image/mask_units.sh)). It carries no
+`unattended-upgrades`, and the build fails if a dependency brings it in.
+
 ## First boot and bring-up
 
 `sparkpipe-host-keys.service` runs once, before SSH. It generates the node's

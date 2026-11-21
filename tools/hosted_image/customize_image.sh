@@ -31,5 +31,7 @@ install -d -m 0755 "$root/run/sshd"
 python3 "$here/stage_baseline.py" "$root" --source-ref "$source_ref" --report "$out/baseline-report.json"
 rmdir "$root/run/sshd"
 systemctl --root="$root" enable sparkpipe-host-keys.service
+"$here/mask_units.sh" "$root"
+! chroot "$root" dpkg-query -W -f='${Status}' unattended-upgrades 2> /dev/null | grep -q "ok installed" || { echo "customize_image: unattended-upgrades is in the image; an image node never updates itself" >&2; exit 1; }
 rm -f "$root"/etc/ssh/ssh_host_*_key "$root"/etc/ssh/ssh_host_*_key.pub "$root"/etc/dropbear/initramfs/dropbear_*_host_key
 SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chroot "$root" update-initramfs -u -k "$KERNEL_RELEASE" > "$out/initramfs.log" 2>&1 || { tail -20 "$out/initramfs.log" >&2; exit 1; }

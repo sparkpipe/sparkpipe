@@ -227,9 +227,33 @@ class StaticFilesTest(unittest.TestCase):
         self.assertFalse([token for token in tokens if token.startswith(("console=", "ip=", "fsck."))])
 
 
+class SelfUpdateTest(unittest.TestCase):
+    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service")
+
+    def test_the_image_masks_every_update_and_news_unit_and_carries_no_unattended_upgrades(self):
+        self.assertEqual((IMAGE / "masked-units.txt").read_text().split(), list(self.UNITS))
+        self.assertNotIn("unattended-upgrades", dict(packages("image-packages.txt")))
+        self.assertIn('"$here/mask_units.sh" "$root"', (IMAGE / "customize_image.sh").read_text())
+
+    @unittest.skipUnless(shutil.which("systemctl"), "no systemctl on this host")
+    def test_a_staged_root_has_the_update_timers_masked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            units = root / "usr" / "lib" / "systemd" / "system"
+            units.mkdir(parents=True)
+            (root / "etc" / "systemd" / "system").mkdir(parents=True)
+            for unit in self.UNITS:
+                kind = "Timer" if unit.endswith(".timer") else "Service"
+                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + ("OnCalendar=daily\n[Install]\nWantedBy=timers.target\n" if kind == "Timer" else "ExecStart=/bin/true\n"))
+            completed = subprocess.run(["bash", str(IMAGE / "mask_units.sh"), str(root)], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            for unit in self.UNITS:
+                self.assertEqual(os.readlink(root / "etc" / "systemd" / "system" / unit), "/dev/null")
+
+
 class BuildDriverTest(unittest.TestCase):
     def test_the_entry_scripts_are_executable(self):
-        for path in ("build_image.sh", "customize_image.sh", "files/usr/lib/sparkpipe/gpu-device-nodes", "files/usr/lib/sparkpipe/host-keys"):
+        for path in ("build_image.sh", "customize_image.sh", "mask_units.sh", "files/usr/lib/sparkpipe/gpu-device-nodes", "files/usr/lib/sparkpipe/host-keys"):
             with self.subTest(path=path):
                 self.assertTrue(os.access(IMAGE / path, os.X_OK))
 
