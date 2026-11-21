@@ -9,6 +9,7 @@
 
 #include "sparkpipe/spark_tp_mesh_round_control.h"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, const void *slice_state,
 	void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows,
@@ -267,7 +268,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	d->tp_degree = tp_degree;
 	d->kda_rank_heads = layout.heads;
 	d->state_bytes = state_plan;
-	cudaSetDevice(device);
+	SparkGpuSetDevice(device);
 	d->first_layer = sizing->first_layer;
 	d->layer_count = sizing->layer_count;
 	d->kda_count = sizing->kda_layer_count;
@@ -287,19 +288,19 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	if ( state_bytes + 2u * qk_bytes + v_bytes !=
 		state_plan.kda_state + state_plan.kda_windows )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
-	if ( cudaMalloc(&d->kda_state_pool, state_bytes) != cudaSuccess ||
-		cudaMalloc(&d->kda_q_window_pool, qk_bytes) != cudaSuccess ||
-		cudaMalloc(&d->kda_k_window_pool, qk_bytes) != cudaSuccess ||
-		cudaMalloc(&d->kda_v_window_pool, v_bytes) != cudaSuccess )
+	if ( SparkGpuMalloc(&d->kda_state_pool, state_bytes) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&d->kda_q_window_pool, qk_bytes) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&d->kda_k_window_pool, qk_bytes) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&d->kda_v_window_pool, v_bytes) != SPARK_GPU_SUCCESS )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	cudaMemset(d->kda_state_pool, 0, state_bytes);
-	cudaMemset(d->kda_q_window_pool, 0, qk_bytes);
-	cudaMemset(d->kda_k_window_pool, 0, qk_bytes);
-	cudaMemset(d->kda_v_window_pool, 0, v_bytes);
+	SparkGpuMemset(d->kda_state_pool, 0, state_bytes);
+	SparkGpuMemset(d->kda_q_window_pool, 0, qk_bytes);
+	SparkGpuMemset(d->kda_k_window_pool, 0, qk_bytes);
+	SparkGpuMemset(d->kda_v_window_pool, 0, v_bytes);
 
-	if ( cudaMalloc(&d->access_error, (size_t)(d->mla_count != 0u ? d->mla_count : 1u) * sizeof(LmKvAccessError)) != cudaSuccess )
+	if ( SparkGpuMalloc(&d->access_error, (size_t)(d->mla_count != 0u ? d->mla_count : 1u) * sizeof(LmKvAccessError)) != SPARK_GPU_SUCCESS )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	cudaMemset(d->access_error, 0, (size_t)(d->mla_count != 0u ? d->mla_count : 1u) * sizeof(LmKvAccessError));
+	SparkGpuMemset(d->access_error, 0, (size_t)(d->mla_count != 0u ? d->mla_count : 1u) * sizeof(LmKvAccessError));
 	d->mla_cache = new LmKvView[d->mla_count != 0u ? d->mla_count : 1u];
 	for ( uint32_t i = 0u; i < d->mla_count; ++i )
 	{
@@ -351,9 +352,9 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(attention_rows, tp_degree) + 48u +
 			(size_t)K3DispatchExpandedValueBytes(attention_rows, tp_degree) + 16u;
 	d->scratch_bytes += 256u;
-	if ( cudaMalloc(&d->scratch, d->scratch_bytes) != cudaSuccess )
+	if ( SparkGpuMalloc(&d->scratch, d->scratch_bytes) != SPARK_GPU_SUCCESS )
 		{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-	cudaMemset(d->scratch, 0, d->scratch_bytes);
+	SparkGpuMemset(d->scratch, 0, d->scratch_bytes);
 	K3LayerBuffers *b = d->buffers_host;
 	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
 	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
@@ -394,14 +395,14 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 		b->shard_gather_keys = (const uint8_t *)b->shard_query_gathered_bf16;
 		b->shard_gather_values_bytes = K3DispatchExpandedValueBytes(attention_rows, tp_degree);
 		b->shard_gather_values = b->shard_gather_values_bytes != 0u ? k3_carve(d, &off, (size_t)b->shard_gather_values_bytes) : 0;
-		if ( cudaMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != cudaSuccess )
+		if ( SparkGpuMalloc(&d->gather_plan, (size_t)3u * sequences * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-		cudaMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
+		SparkGpuMemset(d->gather_plan, 0, (size_t)3u * sequences * sizeof(uint32_t));
 		d->pair_buffers = new K3LayerBuffers;
 		memset(d->pair_buffers, 0, sizeof(*d->pair_buffers));
-		if ( cudaMalloc(&d->pair_arrays, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t)) != cudaSuccess )
+		if ( SparkGpuMalloc(&d->pair_arrays, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 			{ SparkK3DispatchDestroy(d); return SPARK_K3_DISPATCH_ERR_CUDA; }
-		cudaMemset(d->pair_arrays, 0, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t));
+		SparkGpuMemset(d->pair_arrays, 0, ((size_t)K3_DISPATCH_PAIR_IDENTITY + max_rows) * sizeof(uint32_t));
 	}
 	return SPARK_K3_DISPATCH_OK;
 }
@@ -463,11 +464,11 @@ int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
 	uint64_t total = 0u;
 	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
 		total += (sizes[i] + 255u) & ~(uint64_t)255u;
-	if ( cudaMalloc(&d->index_scratch, total) != cudaSuccess ||
-		cudaMalloc(&d->index_access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != cudaSuccess )
+	if ( SparkGpuMalloc(&d->index_scratch, total) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&d->index_access_error, (size_t)d->mla_count * sizeof(LmKvAccessError)) != SPARK_GPU_SUCCESS )
 		return SPARK_K3_DISPATCH_ERR_CUDA;
-	cudaMemset(d->index_scratch, 0, total);
-	cudaMemset(d->index_access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
+	SparkGpuMemset(d->index_scratch, 0, total);
+	SparkGpuMemset(d->index_access_error, 0, (size_t)d->mla_count * sizeof(LmKvAccessError));
 	total = 0u;
 	for ( uint32_t i = 0u; i < sizeof(sizes) / sizeof(sizes[0]); i++ )
 	{
@@ -500,7 +501,7 @@ int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d)
 }
 
 int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
-	uint32_t tp_degree, cudaStream_t stream)
+	uint32_t tp_degree, SparkGpuStream stream)
 {
 	SparkK3SlotResetSpan spans[SPARK_K3_SLOT_RESET_SPANS_MAX];
 	uint8_t *pools[SPARK_K3_SLOT_POOLS];
@@ -516,8 +517,8 @@ int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
 	pools[SPARK_K3_SLOT_POOL_K_WINDOW] = (uint8_t *)d->kda_k_window_pool;
 	pools[SPARK_K3_SLOT_POOL_V_WINDOW] = (uint8_t *)d->kda_v_window_pool;
 	for ( uint32_t i = 0u; i < count; ++i )
-		if ( cudaMemsetAsync(pools[spans[i].pool] + spans[i].offset, 0,
-				spans[i].bytes, stream) != cudaSuccess )
+		if ( SparkGpuMemsetAsync(pools[spans[i].pool] + spans[i].offset, 0,
+				spans[i].bytes, stream) != SPARK_GPU_SUCCESS )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
 	return SPARK_K3_DISPATCH_OK;
 }
@@ -526,20 +527,20 @@ void SparkK3DispatchDestroy(SparkK3Dispatch *d)
 {
 	if ( d == 0 )
 		return;
-	cudaFree(d->kda_state_pool); cudaFree(d->kda_q_window_pool);
-	cudaFree(d->kda_k_window_pool); cudaFree(d->kda_v_window_pool);
-	cudaFree(d->access_error);
-	cudaFree(d->scratch);
-	cudaFree(d->gather_plan);
-	cudaFree(d->pair_arrays);
-	cudaFree(d->replay_pool);
-	cudaFree(d->mha_keys);
-	cudaFree(d->mha_query);
+	SparkGpuFree(d->kda_state_pool); SparkGpuFree(d->kda_q_window_pool);
+	SparkGpuFree(d->kda_k_window_pool); SparkGpuFree(d->kda_v_window_pool);
+	SparkGpuFree(d->access_error);
+	SparkGpuFree(d->scratch);
+	SparkGpuFree(d->gather_plan);
+	SparkGpuFree(d->pair_arrays);
+	SparkGpuFree(d->replay_pool);
+	SparkGpuFree(d->mha_keys);
+	SparkGpuFree(d->mha_query);
 	delete d->pair_buffers;
 	delete[] d->mla_cache;
 	delete[] d->index_cache;
-	cudaFree(d->index_access_error);
-	cudaFree(d->index_scratch);
+	SparkGpuFree(d->index_access_error);
+	SparkGpuFree(d->index_scratch);
 	delete[] d->weights;
 	delete d->slice_state;
 	delete d->buffers;
@@ -577,13 +578,13 @@ static int32_t K3DispatchMhaPrepare(SparkK3Dispatch *d, const K3LayerWeights *ho
 	}
 	keys = SparkKvShardGatherKeys(b->kv_shard, d->kv_pages_per_view * K3_KV_PAGE_SLOTS);
 	query_bytes = (uint64_t)d->attention_rows * K3_MLA_HEADS * K3_MHA_QK * sizeof(uint16_t);
-	cudaSetDevice(d->device);
-	if ( cudaMalloc(&d->mha_keys, keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMalloc(&d->mha_query, query_bytes) != cudaSuccess )
+	SparkGpuSetDevice(d->device);
+	if ( SparkGpuMalloc(&d->mha_keys, keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&d->mha_query, query_bytes) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr, "sparkpipe_k3: expanded MHA attention buffers (%llu local keys, %llu bytes) do not fit\n",
 			(unsigned long long)keys, (unsigned long long)(keys * K3_MHA_KEY_ELEMENTS * sizeof(uint16_t) + query_bytes));
-		cudaFree(d->mha_keys);
+		SparkGpuFree(d->mha_keys);
 		d->mha_keys = 0;
 		d->mha_query = 0;
 		return SPARK_K3_DISPATCH_ERR_CUDA;
@@ -812,7 +813,7 @@ static uint32_t K3DispatchGatherHistory(SparkKvShard shard, uint32_t windows, ui
 }
 
 static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequence,
-	uint32_t context, uint32_t first, cudaStream_t stream)
+	uint32_t context, uint32_t first, SparkGpuStream stream)
 {
 	const uint32_t degree = b->kv_shard.degree;
 	const uint64_t unit = (uint64_t)K3_HIDDEN * sizeof(uint16_t);
@@ -878,7 +879,7 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 		SparkKvShardExchangeCostNs(scatter_rounds, (uint64_t)(degree - 1u) * (query_units + partial_units) * unit) )
 		return 0;
 	LM_LAUNCH((K3DispatchGatherPlanKernel), 1u, 1u, 0, stream, d->gather_plan, d->sequences, sequence, context);
-	if ( cudaPeekAtLastError() != cudaSuccess )
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		return -1;
 	b->shard_gather = 1u;
 	b->shard_gather_most_keys = most;
@@ -891,7 +892,7 @@ static int32_t K3DispatchGatherPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint3
 }
 
 static int32_t K3DispatchMhaPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t rows, uint32_t sequences,
-	const SparkK3StepInput *in, cudaStream_t stream)
+	const SparkK3StepInput *in, SparkGpuStream stream)
 {
 	const uint32_t most = SparkKvShardGatherKeys(b->kv_shard, in->gather_context);
 	const uint64_t send_bytes = (uint64_t)b->kv_shard.degree * SparkK3KvShardPartialStride(d->attention_rows, b->kv_shard.degree) * sizeof(float);
@@ -901,7 +902,7 @@ static int32_t K3DispatchMhaPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t
 		(uint64_t)most * K3_MLA_KV_A_DIM * sizeof(uint16_t) > send_bytes )
 		return 0;
 	LM_LAUNCH((K3DispatchGatherPlanKernel), 1u, 1u, 0, stream, d->gather_plan, d->sequences, in->gather_sequence, in->gather_context);
-	if ( cudaPeekAtLastError() != cudaSuccess )
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		return -1;
 	b->shard_mha = 1u;
 	b->shard_gather_most_keys = most;
@@ -913,13 +914,13 @@ static int32_t K3DispatchMhaPlan(SparkK3Dispatch *d, K3LayerBuffers *b, uint32_t
 
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
-	uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t context, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	if ( d == 0 || in == 0 || rows == 0u || rows > d->max_rows ||
 		sequences == 0u || sequences > d->sequences ||
 		SparkK3DispatchShardRows(d, rows) != SPARK_K3_DISPATCH_OK )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
-	cudaSetDevice(d->device);
+	SparkGpuSetDevice(d->device);
 	K3LayerBuffers *b = d->buffers_host;
 	b->hidden_bf16 = (uint16_t *)in->hidden_in;
 	b->positions = in->positions;
@@ -997,7 +998,7 @@ int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 		uint32_t *dense_tiles = b->dense_tile_prefix;
 		int32_t status;
 		LM_LAUNCH((K3DispatchPairKernel), (rows + 255u) / 256u, 256u, 0, stream, d->pair_arrays, rows_a, rows_b);
-		if ( cudaPeekAtLastError() != cudaSuccess )
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			return SPARK_K3_DISPATCH_ERR_CUDA;
 		K3DispatchPairView(d, b, d->pair_buffers, rows_a);
 		if ( K3PairReady(d->slice_state, b, d->pair_buffers, rows_a, rows_b) != 0u )
@@ -1041,8 +1042,8 @@ int32_t SparkK3DispatchEnableVerify(SparkK3Dispatch *d, uint32_t rows)
 	const uint64_t heads = d->kda_rank_heads, layers_rows = (uint64_t)d->kda_count * rows;
 	const uint64_t qk = layers_rows * heads * K3_KDA_KEY_DIM, v = layers_rows * heads * K3_KDA_VALUE_DIM;
 	const uint64_t bytes = 2u * qk * sizeof(uint16_t) + v * sizeof(uint16_t) + qk * sizeof(float) + layers_rows * heads * sizeof(float);
-	cudaSetDevice(d->device);
-	if ( cudaMalloc(&d->replay_pool, bytes) != cudaSuccess )
+	SparkGpuSetDevice(d->device);
+	if ( SparkGpuMalloc(&d->replay_pool, bytes) != SPARK_GPU_SUCCESS )
 	{
 		d->replay_pool = 0;
 		fprintf(stderr, "sparkpipe_k3: verify replay buffers (%llu bytes for %u rows) do not fit\n", (unsigned long long)bytes, rows);
@@ -1064,12 +1065,12 @@ int32_t SparkK3DispatchEnableVerify(SparkK3Dispatch *d, uint32_t rows)
 
 int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
 	const uint32_t *state_index, const uint32_t *kept, uint32_t sequences, uint32_t rows, uint32_t multiprocessors,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( d == 0 || d->replay_rows == 0u || rows == 0u || rows > d->replay_rows || sequences == 0u || sequences > d->sequences ||
 		sequence_row_begin == 0 || state_index == 0 || kept == 0 )
 		return SPARK_K3_DISPATCH_ERR_ARGUMENT;
-	cudaSetDevice(d->device);
+	SparkGpuSetDevice(d->device);
 	K3LayerBuffers *b = d->buffers_host;
 	b->sequence_row_begin = sequence_row_begin;
 	b->sequence_row_indices = sequence_row_indices;
@@ -1078,5 +1079,5 @@ int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_beg
 	const int32_t status = K3StageFold(d->weights, d->slice_state, d->buffers, d->first_layer, d->layer_count, sequences,
 		sequence_row_begin, sequence_row_indices, kept, rows, multiprocessors, (void *)stream);
 	d->slice_state->replay_active = 0u;
-	return status == LM_LAUNCH_OK && cudaPeekAtLastError() == cudaSuccess ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
+	return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? SPARK_K3_DISPATCH_OK : SPARK_K3_DISPATCH_ERR_CUDA;
 }

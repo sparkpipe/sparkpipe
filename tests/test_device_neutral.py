@@ -96,7 +96,7 @@ PENDING = {
     "model-families/glm5_next/include/sparkpipe/spark_glm5_next_index_cp.h": {"token": 3},
     "model-families/glm5_next/include/sparkpipe/spark_glm5_next_kv_shard.h": {"token": 3},
     "model-families/k3/include/sparkpipe/spark_k3_kv_shard.h": {"token": 3},
-    "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1, "header": 1, "token": 3},
+    "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1},
     "node/model_residentd.c": {"header": 1, "token": 29},
     "node/weightd_mesh.c": {"header": 1, "token": 3},
     "ring/transport/hidden_transport.c": {"handle": 1},
