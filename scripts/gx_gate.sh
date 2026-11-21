@@ -13,10 +13,78 @@ GX_REST_OVER=${GX_REST_OVER:-60}
 GX_PREFLIGHT=${GX_PREFLIGHT:-1}
 GX_TOOL=$GX_DIR/gx_gate.py
 GX_BEFORE=$(controller 2>/dev/null | awk '{print $2}')
-[ $# -ge 1 ] || { echo "usage: GX_RELEASE=<sha> GX_OUT=<dir> $0 MODEL..." >&2; exit 2; }
+GX_BACKEND=${GX_BACKEND:-controller}
+GX_STAGE_LANE_TOOL=${GX_STAGE_LANE_TOOL:-$KIT/../tools/stage_lane.sh}
+[ $# -ge 1 ] || { echo "usage: GX_RELEASE=<sha> GX_OUT=<dir> $0 MODEL...   (GX_BACKEND=lane: one tools/stage_lane.py lane, with its STAGE_ settings)" >&2; exit 2; }
+GX_NODES=$(seq 0 15 | tr '\n' ' ')
+GX_NODE_COUNT=16
+case "$GX_BACKEND" in
+  controller) ;;
+  lane)
+    : "${STAGE_MODEL:?GX_BACKEND=lane needs STAGE_MODEL, a tools/stage_lane.py MODELS entry}"
+    : "${STAGE_LANE:?GX_BACKEND=lane needs STAGE_LANE, the weightd mesh lane}"
+    STAGE_FIRST_NODE=${STAGE_FIRST_NODE:-0}
+    [ $# = 1 ] && [ "$1" = "$STAGE_MODEL" ] || { echo "GX_BACKEND=lane runs one lane: the argument must be STAGE_MODEL ($STAGE_MODEL)" >&2; exit 2; }
+    GX_LANE_FACTS=$(python3 - "$KIT/../tools" "$STAGE_MODEL" "$STAGE_LANE" <<'FACTS'
+import sys
+sys.path.insert(0, sys.argv[1])
+import stage_lane
+model = stage_lane.MODELS[sys.argv[2]]
+entry = stage_lane.swap_entry(sys.argv[2], model, int(sys.argv[3]), None)
+print(stage_lane.lane_ranks(model))
+print(model["api_port"])
+print(entry["api_start"])
+print(entry["api_stop"])
+FACTS
+    ) || { echo "GX_BACKEND=lane: tools/stage_lane.py does not describe $STAGE_MODEL" >&2; exit 2; }
+    GX_NODE_COUNT=$(printf '%s\n' "$GX_LANE_FACTS" | sed -n 1p)
+    GX_LANE_PORT=$(printf '%s\n' "$GX_LANE_FACTS" | sed -n 2p)
+    GX_API_START=$(printf '%s\n' "$GX_LANE_FACTS" | sed -n 3p)
+    GX_API_STOP=$(printf '%s\n' "$GX_LANE_FACTS" | sed -n 4p)
+    GX_NODES=$(seq "$STAGE_FIRST_NODE" $((STAGE_FIRST_NODE + GX_NODE_COUNT - 1)) | tr '\n' ' ')
+    GX_LANE_PATH=stage-lanes/$STAGE_MODEL/lane$STAGE_LANE
+    ;;
+  *) echo "GX_BACKEND is controller or lane, not '$GX_BACKEND'" >&2; exit 2 ;;
+esac
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
-field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; api) echo "$4";; port) echo "$5";; esac; }
+field() {
+  local r k="$2"
+  if [ "$GX_BACKEND" = lane ]; then
+    case "$k" in lane) echo "$GX_LANE_PATH";; api) echo "$STAGE_MODEL-kv-api";; port) echo "$GX_LANE_PORT";; esac
+    return 0
+  fi
+  r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; api) echo "$4";; port) echo "$5";; esac
+}
 lane_engines() { fan "pgrep -f '^[^ ]*bin/sparkpipe_model_[r]esidentd( |\$)' | wc -l" | awk '{s+=$2} END {print s+0}'; }
+gx_fan() {
+  local label=$1 command=$2 n bad=""
+  for n in $GX_NODES; do node "$n" "$command" > /dev/null 2>&1 || bad="$bad spark${HEX:$n:1}"; done
+  [ -z "$bad" ] || { echo "$label FAILED on:$bad"; return 1; }
+}
+
+lane_up() {
+  local run i n states="" health=""
+  run=gx$(date -u +%Y%m%dT%H%M%SZ)
+  STAGE_RUN_ID=$run "$GX_STAGE_LANE_TOOL" start || { echo "lane_up: the lane did not start"; return 1; }
+  for i in $(seq 1 180); do
+    states=$(for n in $GX_NODES; do node "$n" "\$HOME/$GX_LANE_PATH/root/lane.sh ready $run" 2>&1; done | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')
+    case "$states" in *DEAD*) echo "lane_up: a rank died: $states"; return 1 ;; "READY=$GX_NODE_COUNT ") break ;; esac
+    sleep 5
+  done
+  [ "$states" = "READY=$GX_NODE_COUNT " ] || { echo "lane_up: the ranks are not ready: $states"; return 1; }
+  hub "$GX_API_START" || { echo "lane_up: the API unit did not start"; return 1; }
+  for i in $(seq 1 60); do
+    health=$(hub "curl -s -m 5 http://127.0.0.1:$GX_LANE_PORT/health")
+    case "$health" in *'"status":"ok"'*"\"connected_ranks\":$GX_NODE_COUNT"*) echo "lane up: run $run"; return 0 ;; esac
+    sleep 5
+  done
+  echo "lane_up: the API is not healthy on $GX_NODE_COUNT ranks: ${health:0:200}"; return 1
+}
+
+lane_down() { hub "$GX_API_STOP"; "$GX_STAGE_LANE_TOOL" stop; }
+
+gx_up() { if [ "$GX_BACKEND" = lane ]; then lane_up; else activate "$1"; fi; }
+gx_down() { if [ "$GX_BACKEND" = lane ]; then lane_down; else deactivate; fi; }
 
 gx_note() { local dir=$1; shift; hub "cd $dir && python3 $GX_TOOL note --state state.json $(printf '%q ' "$@")" > /dev/null; }
 
@@ -26,16 +94,20 @@ gx_change() {
   [ "$change" = none ] && return 0
   stamp "gx $id cache $change"
   began=$(date +%s)
-  deactivate || return 1
+  gx_down || return 1
   stopped=$(date +%s)
-  [ "$(lane_engines)" = 0 ] || { echo "GX-CHANGE-FAILED $id: an engine still runs after the controller stopped every model"; return 1; }
-  close=$(node 0 "grep -ah 'kv snapshot store close' \$HOME/$lane/root/logs/* 2>/dev/null | tail -n 1" 2>/dev/null | cut -c1-600)
+  [ "$(lane_engines)" = 0 ] || { echo "GX-CHANGE-FAILED $id: an engine still runs after every model was stopped"; return 1; }
+  close=$(node "${GX_NODES%% *}" "grep -ah 'kv snapshot store close' \$HOME/$lane/root/logs/* 2>/dev/null | tail -n 1" 2>/dev/null | cut -c1-600)
+  if [ "$GX_BACKEND" = lane ]; then
+    gx_fan "drop-kv $lane" "\$HOME/$lane/root/lane.sh drop-kv" || return 1
+  fi
   if [ "$change" = clear ]; then
-    fan_all "clear $lane" "find \$HOME/$lane/root/kvsnapshot \$HOME/$lane/root/kvcache -mindepth 1 -delete" || return 1
+    gx_fan "clear $lane" "find \$HOME/$lane/root/kvsnapshot \$HOME/$lane/root/kvcache -mindepth 1 -delete" || return 1
     hub "rm -f ~/$api/runtime/prefix_index.spi" || return 1
   fi
-  activate "$id" || return 1
-  [ -z "$dir" ] || gx_note "$dir" "change=$change" "before_step=$step" "by=controller stop and start" "stop_seconds=$((stopped - began))" "start_seconds=$(($(date +%s) - stopped))" "rank0_store_close=$close"
+  gx_up "$id" || return 1
+  [ -z "$dir" ] || gx_note "$dir" "change=$change" "before_step=$step" "by=$([ "$GX_BACKEND" = lane ] && echo "lane stop, drop-kv and start" || echo "controller stop and start")" \
+    "stop_seconds=$((stopped - began))" "start_seconds=$(($(date +%s) - stopped))" "rank0_store_close=$close"
 }
 
 gx_alive() {
@@ -93,9 +165,13 @@ gx_model() {
   [ "$held" = state ] && fresh=0 || fresh=1
   if gx_running "$dir"; then echo "GX-FAILED $id: a step of this state still runs on the hub (pid $(hub "cat $dir/run.pid")); wait for it or stop it, then run this again"; return 1; fi
   scp -q "$KIT/../tools/gx_gate.py" rtx5090:$GX_TOOL || { echo "GX-FAILED $id: the hub did not take the tool"; return 1; }
-  [ "$(lane_engines)" = 0 ] || [ "$(controller)" != "idle None None" ] || { echo "GX-FAILED $id: engines run that the controller did not start; the gate needs the fleet alone"; return 1; }
+  if [ "$GX_BACKEND" = lane ]; then
+    [ "$(controller)" = "idle None None" ] && [ "$(lane_engines)" = 0 ] || { echo "GX-FAILED $id: a staged lane runs only with production stopped and no engine on any node; take the fleet hold first"; return 1; }
+  else
+    [ "$(lane_engines)" = 0 ] || [ "$(controller)" != "idle None None" ] || { echo "GX-FAILED $id: engines run that the controller did not start; the gate needs the fleet alone"; return 1; }
+  fi
   if [ "$fresh" = 1 ]; then
-    activate "$id" || { echo "GX-ACTIVATE-FAILED $id"; return 1; }
+    gx_up "$id" || { echo "GX-ACTIVATE-FAILED $id"; return 1; }
     limit=$(hub "curl -s -m 10 http://127.0.0.1:$port/v1/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["max_model_len"])') || { echo "GX-FAILED $id: its API names no context length"; return 1; }
     if [ "$GX_PREFLIGHT" != 0 ]; then
       gx_preflight "$id" "$port" "$api" "$dir" "$limit" || { echo "GX-PREFLIGHT-FAILED $id: the tool's own checks failed on one 8K unit; the block was not started"; return 1; }
@@ -105,7 +181,7 @@ gx_model() {
     steps=$(hub "cd $dir && python3 $GX_TOOL steps --state state.json") || { echo "GX-FAILED $id: its state does not load: $steps"; return 1; }
     echo "gx $id resumes: $(printf '%s\n' "$steps" | awk '$3 != "done" {print $1 "=" $3 "(" $4 ")"}' | tr '\n' ' ')"
   fi
-  gx_note "$dir" "block=$([ "$fresh" = 1 ] && echo start || echo resume)" "active_before=${GX_BEFORE:-unknown}" "lane=$lane" "api=$api" "port=$port" "release=$GX_RELEASE" "nodes=16" "path=engine API, no chat layer" \
+  gx_note "$dir" "block=$([ "$fresh" = 1 ] && echo start || echo resume)" "active_before=${GX_BEFORE:-unknown}" "lane=$lane" "api=$api" "port=$port" "release=$GX_RELEASE" "nodes=$GX_NODE_COUNT" "first_node=${GX_NODES%% *}" "path=engine API, no chat layer" \
     "rest_seconds=$GX_REST" "rest_over_seconds=$GX_REST_OVER"
   while read -r step change state rest; do
     [ "$state" = done ] && continue
@@ -132,6 +208,12 @@ failed=0
 for id in "$@"; do
   gx_model "$id" || failed=1
 done
+if [ "$GX_BACKEND" = lane ]; then
+  lane_down || failed=1
+  "$GX_STAGE_LANE_TOOL" reclaim || failed=1
+  echo "GX-LANE-STOPPED $STAGE_MODEL: the lane and its API are stopped and its weights and KV are reclaimed; production is restored by whoever holds the fleet"
+  exit "$failed"
+fi
 case "$GX_END" in
   before) [ -n "$GX_BEFORE" ] && [ "$GX_BEFORE" != None ] && GX_END=$GX_BEFORE || GX_END=none ;;
 esac

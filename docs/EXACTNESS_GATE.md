@@ -218,6 +218,17 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 - When the block ends, the model that was active before it is activated
   again and must answer a real request (`GX_END=none` leaves the fleet idle;
   a model id names another).
+- `GX_BACKEND=lane` runs the gate on a lane staged with
+  `tools/stage_lane.sh` instead of a served model: a group of four nodes, for
+  example. The argument is the lane's `STAGE_MODEL`, and the lane's `STAGE_`
+  settings are those it was set up with (`setup` and `api-setup` come
+  first). The driver then never calls the swap controller. It refuses
+  unless production is stopped and no engine runs on any node, starts the
+  lane and its hub API itself, and changes the cache with the lane's own
+  stop and start: `lane.sh drop-kv` on the lane's nodes for an eviction, and
+  the lane's `kvsnapshot`, `kvcache` and prefix index removed as well for a
+  clear. It ends with the lane and its API stopped and the lane reclaimed.
+  Whoever holds the fleet restores production afterwards.
 - A model's long contexts can run as a block of their own: give the second
   pass its own `GX_DIR` and `GX_PLAN="--cases prefix,session --contexts 300000"`.
 - In a release, `scripts/release_rollout.sh gx` runs it after `qualify` for
