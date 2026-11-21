@@ -196,6 +196,8 @@ static_assert(!D41_WHOLE || (D41_HIDDEN % D41_FP8_BLOCK == 0u && D41_FFN_GATHER_
 static_assert(!D41_WHOLE || (D41_WO_A_ROWS % LM_MX_TILE_K == 0u && D41_OWNER_OUTPUT_ELEMENTS % 8u == 0u && D41_OWNER_OUTPUT_ELEMENTS <= D41_HIDDEN &&
 	D41_OWNER_OUTPUT_ELEMENTS <= D41_TP * D41_MOE_ROW_ELEMENTS && D41_WO_A_ROWS / 2u <= D41_HIDDEN),
 	"an owner's attention output rows cross as fp8 codes with their scales inside the MoE exchange buffers, and every rank's o_b rows gather as collective rows");
+static_assert(!D41_WHOLE || D41_HIDDEN <= D41_TP * D41_MOE_ROW_ELEMENTS,
+	"an owner's tap rows gather to every rank as hidden-wide collective rows inside the MoE exchange buffers");
 static_assert(D41_SHARED_ROUTED == 0u || (D41_SHARED_GRANULE % (4u * D41_FP8_BLOCK) == 0u && D41_HIDDEN_SLICE % D41_FP8_BLOCK == 0u),
 	"a routed shared slice is whole 16-byte rows of fp8 codes with 4-byte scale rows, and each rank's down columns are whole fp8 row blocks");
 static_assert(D41_WINDOW_EDGE_ROWS >= D41_WINDOW + D41_OWN_ROWS_STEP - 1u && D41_HEAD_DIM == D41K_LATENT,
@@ -320,7 +322,7 @@ struct D41ModelState : CudaStageState
 	uint16_t *tap_slab;
 	uint64_t tap_stride;
 	uint32_t *tap_first_row;
-	uint32_t tap_reach;
+	uint32_t tap_reach, taps;
 	uint64_t landing_stride[2];
 	uint8_t *landing;
 	uint16_t *ring_send, *ring_landing;
@@ -1239,8 +1241,7 @@ static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const S
 
 static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerStep *step)
 {
-	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && state->own_rows == 0u && state->dump == 0 &&
-		state->tap_slab == 0 ? 1u : 0u;
+	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && state->own_rows == 0u && state->dump == 0 ? 1u : 0u;
 }
 
 static SparkStatus D41SpreadGather(D41ModelState *state, cudaStream_t stream, uint32_t rows, uint32_t width, uint16_t *source, uint16_t *target,
@@ -1684,7 +1685,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	if ( D41_WHOLE )
 	{
 		const uint32_t split = (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
-		if ( D41_ROWS && state->own_rows == 0u && step->commit != 0u && state->dump == 0 && state->tap_slab == 0 &&
+		if ( D41_ROWS && state->own_rows == 0u && step->commit != 0u && state->dump == 0 &&
 			D41MxReady(&state->mx, split, D41_QLORA, state->row_invariant) != 0u )
 			return D41AttentionSplit(state, layer, index, step, split, stream);
 		if ( D41SpreadRow(state, step) != 0u )
@@ -2649,7 +2650,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 			state->context_slots, 1u);
 		LmHcExpandStreamsKernel<D41_HIDDEN><<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, rows);
 		state->own_rows = (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
-		if ( step->commit == 0u || rows < D41_OWN_ROWS_MIN || state->own_rows * D41_TP > state->max_rows || state->tap_slab != 0 || state->dump != 0 )
+		if ( step->commit == 0u || rows < D41_OWN_ROWS_MIN || state->own_rows * D41_TP > state->max_rows || state->dump != 0 )
 			state->own_rows = 0u;
 		state->own_first = state->tp_rank * state->own_rows;
 		state->own_pad = state->own_rows != 0u ? state->own_rows * D41_TP - rows : 0u;
@@ -3001,12 +3002,29 @@ struct D41Cuda : CudaStage<D41Cuda>
 
 	static SparkStatus Tap(D41ModelState *state, Frame &frame, uint32_t index)
 	{
-		const uint32_t rows = frame.current->rows;
-		if ( state->tap_slab != 0 && state->tap_output[index] >= 0 )
-			LmStreamMeanRowsKernel<D41_THREADS><<<dim3((D41_HIDDEN + D41_THREADS - 1u) / D41_THREADS, rows), D41_THREADS, 0, frame.stream>>>(state->streams,
-				state->tap_slab + (uint64_t)frame.shifted * state->tap_stride + (uint64_t)state->tap_output[index] * D41_HIDDEN, rows, D41K_HC, D41_HIDDEN,
-				state->tap_stride);
-		return SPARK_STATUS_OK;
+		if ( state->taps == 0u || state->tap_output[index] < 0 )
+			return SPARK_STATUS_OK;
+		const uint32_t rows = frame.current->rows, own = state->own_rows;
+		const uint64_t offset = (uint64_t)frame.shifted * state->tap_stride + (uint64_t)state->tap_output[index] * D41_HIDDEN;
+		const dim3 grid((D41_HIDDEN + D41_THREADS - 1u) / D41_THREADS, own != 0u ? own : rows);
+		SparkStatus status;
+		if ( own == 0u )
+		{
+			if ( state->tap_slab != 0 )
+				LmStreamMeanRowsKernel<D41_THREADS><<<grid, D41_THREADS, 0, frame.stream>>>(state->streams, state->tap_slab + offset, rows, D41K_HC,
+					D41_HIDDEN, state->tap_stride);
+			return D41Launched();
+		}
+		LmStreamMeanRowsKernel<D41_THREADS><<<grid, D41_THREADS, 0, frame.stream>>>(state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN,
+			state->moe_send, own, D41K_HC, D41_HIDDEN, D41_HIDDEN);
+		status = D41Launched();
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HIDDEN, state->moe_send,
+				state->moe_received);
+		if ( status == SPARK_STATUS_OK && state->tap_slab != 0 && cudaMemcpy2DAsync(state->tap_slab + offset, state->tap_stride * sizeof(uint16_t),
+			state->moe_received, D41_HIDDEN * sizeof(uint16_t), D41_HIDDEN * sizeof(uint16_t), rows, cudaMemcpyDeviceToDevice, frame.stream) != cudaSuccess )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		return status;
 	}
 
 	static SparkStatus Finish(D41ModelState *state, Frame &frame, uint32_t index)
@@ -4182,6 +4200,7 @@ inline SparkStatus D41Cuda::TapPlan(void *model, const SparkStageRunnerTapPlan *
 			reach = D41TailReach(layer + 1u);
 	}
 	memcpy(state->tap_output, outputs, sizeof(outputs));
+	state->taps = 1u;
 	state->tap_slab = plan->capture != 0u ? plan->slab : 0;
 	state->tap_stride = plan->row_stride_elements;
 	state->tap_first_row = plan->first_row;

@@ -687,6 +687,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_window_fold.py \
 	tests/test_dsv41_exchange.py \
 	tests/test_dsv41_shared_split.py \
+	tests/test_dsv41_tap_paths.py \
 	tests/test_dsv41_hc_mix.py \
 	tests/test_skinny_rows.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
