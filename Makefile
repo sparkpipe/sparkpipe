@@ -15,19 +15,23 @@ ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS)
 SPARKPIPE_HOST_CUDA_STUB_SOURCE := tests/cuda_stub/cuda_runtime_stub.c
 SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE :=
-SPARKPIPE_CUDA_RUNTIME_LINK :=
-SPARKPIPE_CUDA_DRIVER_LINK :=
 else
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include
 SPARKPIPE_HOST_CUDA_STUB_SOURCE :=
 SPARKPIPE_TP_DEVICE_TEST_CUDA_STUB_SOURCE := tests/cuda_stub/cuda_runtime_stub.c
-SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
-SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 SPARKPIPE_DEVICE ?= cuda
 SPARKPIPE_DEVICE_FLAVOURS := cuda nvrm
 ifneq ($(words $(SPARKPIPE_DEVICE)) $(filter $(SPARKPIPE_DEVICE),$(SPARKPIPE_DEVICE_FLAVOURS)),1 $(SPARKPIPE_DEVICE))
 $(error SPARKPIPE_DEVICE=$(SPARKPIPE_DEVICE) is not a device flavour; the flavours are $(SPARKPIPE_DEVICE_FLAVOURS))
+endif
+SPARKPIPE_CUDA_RUNTIME_LINK :=
+SPARKPIPE_CUDA_DRIVER_LINK :=
+ifeq ($(SPARKPIPE_DEVICE),cuda)
+ifneq ($(CUDA_RUNTIME_HEADER),)
+SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
+SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
+endif
 endif
 NVRM_FLAVOUR_GOALS := nvrm-device test-nvrm clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
@@ -47,7 +51,9 @@ DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideploym
 CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
+ifeq ($(SPARKPIPE_DEVICE),cuda)
 LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
+endif
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
@@ -473,6 +479,7 @@ PYTHON_TESTS := \
 	tests/test_third_party_notices.py \
 	tests/test_nvrm_headers.py \
 	tests/test_device_flavours.py \
+	tests/test_device_link_flags.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
