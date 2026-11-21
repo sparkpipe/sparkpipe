@@ -91,7 +91,7 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertNotIn("rm -", SOURCE)
         self.assertIn("! -name home ! -name lost+found", SOURCE)
         self.assertIn("--exclude=./home", SOURCE)
-        self.assertIn('mv "$target/$entry" "$aside/"', SOURCE)
+        self.assertIn('mv "$target/$entry" "$aside/root/"', SOURCE)
 
     def test_nvram_is_only_read_and_must_not_change(self):
         self.assertIn("--no-nvram", SOURCE)
@@ -114,15 +114,27 @@ class InstallDiskContractTest(unittest.TestCase):
             self.assertIn(option, grub.split())
         self.assertNotIn("--removable", grub.split())
         self.assertIn("-ipath ./efi/ubuntu -prune", SOURCE)
-        self.assertLess(SOURCE.index('mount_at "$esp" "$target/boot/efi"'), SOURCE.index('esp_before="$(foreign_esp_entries)"'))
-        self.assertLess(SOURCE.index('esp_before="$(foreign_esp_entries)"'), SOURCE.index('chroot "$target" grub-install'))
-        self.assertLess(SOURCE.index('chroot "$target" update-initramfs'), SOURCE.index('[ "$(foreign_esp_entries)" = "$esp_before" ] || fail'))
-        self.assertLess(SOURCE.index('[ "$(foreign_esp_entries)" = "$esp_before" ] || fail'), SOURCE.index("unmount_all\n[ "))
+        recorded = 'esp_before="$(foreign_esp_entries "$work/esp")"'
+        compared = '[ "$(foreign_esp_entries "$target/boot/efi")" = "$esp_before" ] || fail'
+        self.assertLess(SOURCE.index('mount_at -o ro "$esp" "$work/esp"'), SOURCE.index(recorded))
+        self.assertLess(SOURCE.index(recorded), SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
+        self.assertEqual(SOURCE.count(compared), 2)
+        self.assertLess(SOURCE.index(compared), SOURCE.index('chroot "$target" grub-install'))
+        self.assertLess(SOURCE.index('chroot "$target" update-initramfs'), SOURCE.rindex(compared))
+        self.assertLess(SOURCE.rindex(compared), SOURCE.index("unmount_all\n[ "))
+
+    def test_the_old_loader_is_kept_for_rollback_before_the_bootloader_install(self):
+        self.assertLess(SOURCE.index('[ -s "$work/esp/EFI/ubuntu/shimaa64.efi" ] || fail'), SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
+        copy = SOURCE.index('cp -a "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu"')
+        check = SOURCE.index('diff -r "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu" > /dev/null || fail')
+        self.assertLess(copy, check)
+        self.assertLess(check, SOURCE.index('mount_at "$esp" "$target/boot/efi"'))
+        self.assertLess(check, SOURCE.index('chroot "$target" grub-install'))
 
     def test_the_target_is_checked_before_it_is_changed(self):
         self.assertLess(SOURCE.index('findmnt -rn -S "$partition"'), SOURCE.index('mount_at "$root" "$target"'))
         self.assertLess(SOURCE.index('e2fsck -fp "$root"'), SOURCE.index('mount_at "$root" "$target"'))
-        self.assertLess(SOURCE.index("previous aside directory"), SOURCE.index('mkdir "$aside"'))
+        self.assertLess(SOURCE.index("previous aside directory"), SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
         self.assertLess(SOURCE.index("tar --zstd -xpf"), SOURCE.index("-uid +999 -a ! -uid 65534"))
         self.assertIn("trap unmount_all EXIT", SOURCE)
 

@@ -63,32 +63,46 @@ unmount_all() {
 	done
 	mounted=()
 }
+unmount_last() {
+	local last=$(( ${#mounted[@]} - 1 ))
+	umount "${mounted[$last]}"
+	unset "mounted[$last]"
+	mounted=("${mounted[@]}")
+}
 trap unmount_all EXIT
 mount_at() {
 	mount "$@"
 	mounted+=("${*: -1}")
 }
 foreign_esp_entries() {
-	(cd "$target/boot/efi" && find . -ipath ./efi/ubuntu -prune -o -type f -exec sha256sum {} + -o -print) | sort
+	(cd "$1" && find . -ipath ./efi/ubuntu -prune -o -type f -exec sha256sum {} + -o -print) | sort
 }
 
 e2fsck -fp "$root" && status=0 || status=$?
 [ "$status" -le 1 ] || fail "e2fsck on $root reported $status"
-mkdir -p "$work/target"
-target="$(realpath "$work/target")"
+mkdir -p "$work/target" "$work/esp"
+work="$(realpath "$work")"
+target="$work/target"
 mount_at "$root" "$target"
 [ "$(findmnt -rn -o TARGET | awk -v top="$target" '$0 == top || index($0, top "/") == 1')" = "$target" ] || fail "something else is mounted under $target"
 [ "$(df --output=avail -B1G "$target" | tail -1 | tr -d ' ')" -ge 10 ] || fail "$root has less than 10 GiB free"
 [ -z "$(find "$target" -mindepth 1 -maxdepth 1 \( -name '.dgxos-*' -o -name '.hosted-*' \) -print -quit)" ] || fail "$root holds a previous aside directory; finish its acceptance or rollback first"
+mount_at -o ro "$esp" "$work/esp"
+[ -s "$work/esp/EFI/ubuntu/shimaa64.efi" ] || fail "$esp has no EFI/ubuntu/shimaa64.efi for the firmware boot entry to load"
+esp_before="$(foreign_esp_entries "$work/esp")"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 aside="$target/.dgxos-$stamp"
-mkdir "$aside"
+mkdir -p "$aside/root" "$aside/esp/EFI"
 find "$target" -mindepth 1 -maxdepth 1 ! -name home ! -name lost+found ! -name ".dgxos-$stamp" -printf '%f\n' | sort > "$work/aside.list"
 while read -r entry; do
-	mv "$target/$entry" "$aside/"
+	mv "$target/$entry" "$aside/root/"
 done < "$work/aside.list"
-echo "install_disk: moved $(wc -l < "$work/aside.list") top-level entries into /.dgxos-$stamp; /home stays"
+echo "install_disk: moved $(wc -l < "$work/aside.list") top-level entries into /.dgxos-$stamp/root; /home stays"
+cp -a "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu"
+diff -r "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu" > /dev/null || fail "the copy of EFI/ubuntu in /.dgxos-$stamp/esp differs from $esp"
+unmount_last
+echo "install_disk: copied EFI/ubuntu from $esp into /.dgxos-$stamp/esp"
 
 tar --zstd -xpf "$image/rootfs.tar.zst" --numeric-owner --xattrs --xattrs-include='*' --exclude=./home -C "$target"
 [ "$(stat -c %u:%g:%a "$target")" = "0:0:755" ] || fail "the installed root is $(stat -c %u:%g:%a "$target"), not 0:0:755"
@@ -113,7 +127,7 @@ done
 
 install -d -o 0 -g 0 -m 0755 "$target/boot/efi"
 mount_at "$esp" "$target/boot/efi"
-esp_before="$(foreign_esp_entries)"
+[ "$(foreign_esp_entries "$target/boot/efi")" = "$esp_before" ] || fail "the EFI system partition changed outside EFI/ubuntu before the bootloader install"
 for directory in dev proc sys; do
 	mount_at --bind "/$directory" "$target/$directory"
 done
@@ -124,10 +138,10 @@ chroot "$target" update-initramfs -u -k "$KERNEL_RELEASE"
 for file in shimaa64.efi grubaa64.efi grub.cfg; do
 	[ -s "$target/boot/efi/EFI/ubuntu/$file" ] || fail "the EFI system partition has no EFI/ubuntu/$file"
 done
-[ "$(foreign_esp_entries)" = "$esp_before" ] || fail "the EFI system partition changed outside EFI/ubuntu"
+[ "$(foreign_esp_entries "$target/boot/efi")" = "$esp_before" ] || fail "the EFI system partition changed outside EFI/ubuntu"
 grep -q "$(blkid -s UUID -o value "$root")" "$target/boot/efi/EFI/ubuntu/grub.cfg" || fail "EFI/ubuntu/grub.cfg does not search the installed root"
 grep -q "vmlinuz-$KERNEL_RELEASE" "$target/boot/grub/grub.cfg" || fail "/boot/grub/grub.cfg has no entry for $KERNEL_RELEASE"
 unmount_all
 [ "$(efibootmgr -v)" = "$nvram" ] || fail "the firmware boot entries changed during the install"
-[ -z "$(findmnt -rn -o TARGET | awk -v top="$target" '$0 == top || index($0, top "/") == 1')" ] || fail "mounts remain under $target"
+[ -z "$(findmnt -rn -o TARGET | awk -v top="$work" '$0 == top || index($0, top "/") == 1')" ] || fail "mounts remain under $work"
 echo "install_disk: installed $(sed -n 's/^source_commit //p' "$image/MANIFEST") on $root (SPARKROOT) with $esp (SPARKESP); DGX OS is in /.dgxos-$stamp until acceptance"

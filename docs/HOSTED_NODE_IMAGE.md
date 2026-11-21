@@ -198,6 +198,8 @@ Before it changes anything it checks:
   the archive's SHA-256;
 - the identity bundle (below) is well formed;
 - both partitions have the expected filesystem types and neither is mounted;
+- the EFI partition holds `EFI/ubuntu/shimaa64.efi`, which the firmware's
+  existing boot entry loads (the install never adds a boot entry);
 - `e2fsck` finds the root clean;
 - nothing else is mounted under the work directory's target;
 - the root has 10 GiB free and holds no earlier set-aside directory.
@@ -205,8 +207,10 @@ Before it changes anything it checks:
 Then it:
 
 1. moves every top-level entry of the old root except `home` and
-   `lost+found` into `/.dgxos-<UTC stamp>`. These are renames on one
+   `lost+found` into `/.dgxos-<UTC stamp>/root`. These are renames on one
    filesystem, so nothing is copied and the old system can be moved back.
+   It then copies the old system's `EFI/ubuntu` from the EFI partition into
+   `/.dgxos-<UTC stamp>/esp/EFI/ubuntu` and compares the copy.
 2. extracts the image beside `/home`, then checks that `/` is `0:0 755` and
    that no path outside `/home` belongs to a uid or gid of 1000 or above.
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
@@ -229,6 +233,15 @@ Then it:
 
 It never deletes anything. Every mount it makes is undone on exit, and
 `/sys/firmware/efi/efivars` is never mounted in the chroot.
+
+Rollback, from the same kind of rescue system: move every top-level entry
+of the installed root except `home`, `lost+found` and `.dgxos-<stamp>` into
+`/.hosted-<stamp>`, move the entries of `/.dgxos-<stamp>/root` back to `/`,
+move the EFI partition's `EFI/ubuntu` into `/.hosted-<stamp>/esp/EFI`,
+copy `/.dgxos-<stamp>/esp/EFI/ubuntu` back onto the EFI partition, and
+restore the old labels. The old loader comes back byte for byte, and
+`EFI/BOOT` and the firmware boot entries were never changed, so rollback
+runs no `grub-install`.
 
 The set-aside directory is removed only after the node passes acceptance.
 After that, `hosted_dependency_audit.py image --rootfs /` over the whole
