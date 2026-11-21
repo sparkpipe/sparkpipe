@@ -2691,6 +2691,72 @@ static void SparkTestKvPageCacheSpanBlockIdentities(void)
 	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestKvPageCacheUnpublishedSpanIdentities(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity blocks[1u];
+	const SparkKvPageCacheEntry *entries;
+	uint32_t page,mutation_flags,block_entry,second_entry;
+	SparkTestKvPageInitialize(&fixture);
+	entries = fixture.cache.entries;
+	SparkTestKvIdentity(&blocks[0u],51u);
+	SparkTestKvPageLane(&lane,1u,0u,0u,6u);
+	lane.block_identity_count = 1u;
+	lane.block_identities = blocks;
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	block_entry = fixture.cache.sequences[0u].terminal_entry_index;
+	assert(block_entry != SPARK_KV_PAGE_CACHE_NO_INDEX && entries[block_entry].token_count == 4u &&
+		(entries[block_entry].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) == 0u && memcmp(&entries[block_entry].identity,&blocks[0u],sizeof(blocks[0u])) == 0);
+	assert(fixture.cache.sequences[0u].mutable_page_count == 1u && fixture.cache.sequences[0u].next_token_position == 6u);
+	SparkTestKvPageLane(&lane,2u,1u,4u,6u);
+	SparkTestKvPagePrefix(&lane,4u,51u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[1u].terminal_entry_index == block_entry);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,1u,2u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,3u,0u,0u,6u);
+	lane.block_identity_count = 2u;
+	lane.block_identities = blocks;
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_INVALID_ARGUMENT);
+	SparkTestKvPageLane(&lane,6u,0u,0u,6u);
+	lane.block_identity_count = 1u;
+	lane.block_identities = blocks;
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0u].terminal_entry_index == block_entry);
+	SparkTestKvIdentity(&blocks[0u],52u);
+	SparkTestKvPageLane(&lane,6u,0u,6u,9u);
+	lane.block_identity_count = 1u;
+	lane.block_identities = blocks;
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	second_entry = fixture.cache.sequences[0u].terminal_entry_index;
+	assert(second_entry != block_entry && entries[second_entry].token_count == 8u && entries[second_entry].parent_entry_index == block_entry &&
+		(entries[second_entry].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) == 0u);
+	SparkTestKvIdentity(&blocks[0u],53u);
+	SparkTestKvPageLane(&lane,6u,0u,9u,13u);
+	SparkTestKvPagePublish(&lane,13u,54u);
+	lane.block_identity_count = 1u;
+	lane.block_identities = blocks;
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(entries[fixture.cache.sequences[0u].terminal_entry_index].token_count == 13u);
+	SparkTestKvPageLane(&lane,7u,1u,13u,13u);
+	SparkTestKvPagePrefix(&lane,13u,54u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[1u].terminal_entry_index == fixture.cache.sequences[0u].terminal_entry_index);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,1u,7u) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,8u,1u,8u,9u);
+	SparkTestKvPagePrefix(&lane,8u,52u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[1u].terminal_entry_index == second_entry);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,1u,8u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,6u) == SPARK_STATUS_OK);
+	printf("kv page cache: a lane that ends inside a block without publishing seals the block it crossed under the identity it names, wave after wave, another sequence attaches to each sealed block, and one attaches inside a block at the publish that follows: ok\n");
+}
+
 static void SparkTestKvPageCacheSpanKeepsLivePagesResident(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -3761,6 +3827,7 @@ int main(void)
 	SparkTestKvPageCacheMultiBlockSpan();
 	SparkTestKvPageCacheSpanKeepsLivePagesResident();
 	SparkTestKvPageCacheSpanBlockIdentities();
+	SparkTestKvPageCacheUnpublishedSpanIdentities();
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	SparkTestKvPageCacheUnreadPrefixIsDropped();
 	SparkTestKvPageCacheDeduplicatedPublishIsARead();

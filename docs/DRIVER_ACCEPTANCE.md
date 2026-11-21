@@ -86,6 +86,10 @@ verify-flagged cache lanes; the KV page cache and the stage binding then let
 the lane's next wave start anywhere in the window the verify left (its first
 row plus one to its last row plus one) and nowhere else. Cache geometry and positive
 runtime page capacities are required.
+Driver ABI 21: a cache lane may name the blocks it crosses whether or not it
+publishes. A prefill wave that ends inside a block at a cut where no state is
+kept publishes nothing, and the KV page cache seals each block it crossed
+under the identity the lane names, so the chain stays shareable past it.
 Clearing every remaining capability bit does not skip any of these checks.
 The remaining descriptors describe transport/topology and specialized
 execution modes; they cannot waive required externally observable behavior.
