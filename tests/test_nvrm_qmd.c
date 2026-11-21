@@ -246,6 +246,7 @@ static void TestBank0(const SparkNvrmCubinKernel *kernel)
 {
 	struct { uint32_t *output; uint32_t value; } arguments = {(uint32_t *)(uintptr_t)0x7d0000001000ull,0xabcdef01u};
 	const uint64_t shared_window = 0x729400000000ull,local_window = 0x729300000000ull;
+	const uint32_t grid[3] = {7u, 5u, 3u},block[3] = {96u, 2u, 1u};
 	const uint32_t bytes = (uint32_t)kernel->bank[0].bytes;
 	uint8_t *bank = (uint8_t *)malloc(bytes);
 	SparkNvrmCubinKernel overlapping = *kernel;
@@ -253,19 +254,26 @@ static void TestBank0(const SparkNvrmCubinKernel *kernel)
 	if ( bank == 0 )
 		return;
 	memset(bank,0xee,bytes);
-	CHECK(kernel->parameter_bytes == 12u && SparkNvrmBank0Build(kernel,shared_window,local_window,&arguments,12u,bank,bytes,"bank") == SPARK_STATUS_OK,
+	CHECK(kernel->parameter_bytes == 12u && SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,bytes,"bank") == SPARK_STATUS_OK,
 		"constant bank 0 builds for the first-light kernel");
 	words = (uint32_t *)(void *)bank;
 	CHECK(words[188] == 0x00000000u && words[189] == 0x7294u && words[190] == 0x00000000u && words[191] == 0x7293u && words[223] == 0xfffdc0u,
 		"the shared and local memory windows and the last driver word are set");
-	CHECK(words[0] == 0u && words[187] == 0u && words[192] == 0u && words[222] == 0u,"the other driver words are zero");
+	CHECK(words[SPARK_NVRM_BANK0_WORD_BLOCK_X] == 96u && words[SPARK_NVRM_BANK0_WORD_BLOCK_Y] == 2u && words[SPARK_NVRM_BANK0_WORD_BLOCK_Z] == 1u &&
+		words[SPARK_NVRM_BANK0_WORD_GRID_X] == 7u && words[SPARK_NVRM_BANK0_WORD_GRID_Y] == 5u && words[SPARK_NVRM_BANK0_WORD_GRID_Z] == 3u,
+		"the launch shape lands in the words the compiled code reads it from");
+	CHECK(words[0] == 0u && words[187] == 0u && words[192] == 0u && words[215] == 0u && words[219] == 0u,"the other driver words are zero");
+	CHECK(SparkNvrmBank0WordClaimed(216u) && SparkNvrmBank0WordClaimed(222u) && SparkNvrmBank0WordClaimed(188u) && SparkNvrmBank0WordClaimed(223u) &&
+		!SparkNvrmBank0WordClaimed(219u) && !SparkNvrmBank0WordClaimed(0u),"exactly the window, last and launch-shape words are claimed");
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,0,block,&arguments,12u,bank,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+		"a bank without a launch shape is refused");
 	CHECK(memcmp(bank + SPARK_NVRM_BANK0_DRIVER_BYTES,&arguments,12u) == 0,"the arguments follow the driver words at the kernel's parameter offset");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,&arguments,8u,bank,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,8u,bank,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"an argument block of the wrong size is refused");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,&arguments,12u,bank,bytes - 1u,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,bytes - 1u,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"a constant bank smaller than the parameters is refused");
 	overlapping.parameter_offset = 0x160u;
-	CHECK(SparkNvrmBank0Build(&overlapping,shared_window,local_window,&arguments,12u,bank,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(&overlapping,shared_window,local_window,grid,block,&arguments,12u,bank,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"parameters overlapping the driver words are refused");
 	free(bank);
 }

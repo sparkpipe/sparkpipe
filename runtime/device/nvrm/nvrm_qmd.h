@@ -14,6 +14,12 @@ extern "C" {
 #define SPARK_NVRM_BANK0_DRIVER_BYTES 0x380u
 #define SPARK_NVRM_BANK_ALIGN 256u
 #define SPARK_NVRM_SHARED_CONFIG_KIB_MAX 100u
+#define SPARK_NVRM_BANK0_WORD_BLOCK_X 216u
+#define SPARK_NVRM_BANK0_WORD_BLOCK_Y 217u
+#define SPARK_NVRM_BANK0_WORD_BLOCK_Z 218u
+#define SPARK_NVRM_BANK0_WORD_GRID_X 220u
+#define SPARK_NVRM_BANK0_WORD_GRID_Y 221u
+#define SPARK_NVRM_BANK0_WORD_GRID_Z 222u
 
 typedef struct SparkNvrmQmd
 {
@@ -43,7 +49,9 @@ SparkStatus SparkNvrmQmdWrite(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, ui
 uint64_t SparkNvrmQmdRead(const SparkNvrmQmd *qmd, uint32_t high, uint32_t low);
 SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *qmd, const char *owner);
 SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t shared_window, uint64_t local_window,
-	const void *arguments, uint32_t argument_bytes, uint8_t *bank, uint32_t bank_bytes, const char *owner);
+	const uint32_t grid[3], const uint32_t block[3], const void *arguments, uint32_t argument_bytes, uint8_t *bank, uint32_t bank_bytes,
+	const char *owner);
+int SparkNvrmBank0WordClaimed(uint32_t word);
 
 #ifdef __cplusplus
 }
