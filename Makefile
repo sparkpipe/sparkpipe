@@ -417,6 +417,7 @@ PYTHON_TESTS := \
 	tests/test_telemetry_alert.py \
 	tests/test_stray_fixture_processes.py \
 	tests/test_fixture_reaping.py \
+	tests/test_child_guard_inherited_signals.py \
 	tests/test_kv_binding_async_source.py \
 	tests/test_kv_snapshot_law.py \
 	tests/test_ab_stats.py \
