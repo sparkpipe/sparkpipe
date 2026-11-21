@@ -132,3 +132,10 @@ Every request's record holds its prompt length, cached tokens, wall seconds
 and, from the API log, its queue time, time to first token and stale-prefix
 recomputes. The warm-ups and the cold runs are cold fills of each context,
 and the tails are the cost of a turn at that context.
+
+Each step also records, before and after, the running engine's KV store
+counters summed over its ranks (pages and nanoseconds saved and restored,
+restore misses, store files and bytes, pages adopted from the device pool)
+and its prefix counters (hits, misses, hit tokens, stale-prefix recomputes,
+refused waves, draft tokens). A `restore` step with no restored pages did
+not read from NVMe.
