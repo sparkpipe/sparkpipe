@@ -6,7 +6,14 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 . "$here/pins.conf"
 source_ref="$(cat "$out/inputs/source-commit")"
-cp -a "$here/files/." "$root/"
+install_tree() {
+	(cd "$1" && find . -type f -print) | sort | while read -r file; do
+		if [ -x "$1/$file" ]; then mode=0755; else mode=0644; fi
+		install -D -o 0 -g 0 -m "$mode" "$1/$file" "$2/${file#./}"
+	done
+}
+[ -z "$(find "$here/files" "$out/inputs/release-root" ! -type f ! -type d -print -quit)" ] || { echo "customize_image: the image files and the release root may hold only files and directories" >&2; exit 1; }
+install_tree "$here/files" "$root"
 chmod 0600 "$root/etc/netplan/01-sparkpipe.yaml"
 install -m 0600 "$out/inputs/spark-firewall.nft" "$root/etc/spark-firewall.nft"
 install -d "$root/lib/modules/$KERNEL_RELEASE/updates"
@@ -18,8 +25,8 @@ for module in $MODULE_FILES; do
 	[ "$(chroot "$root" modinfo -k "$KERNEL_RELEASE" -n "$module")" = "/lib/modules/$KERNEL_RELEASE/updates/$module.ko" ] || { echo "customize_image: depmod does not resolve $module to the installed module" >&2; exit 1; }
 done
 [ -f "$root/lib/firmware/nvidia/$MODULE_VERSION/gsp_ga10x.bin" ] || { echo "customize_image: $FIRMWARE_PACKAGE did not install the GSP firmware for $MODULE_VERSION" >&2; exit 1; }
-install -d "$root/$RELEASE_ROOT_PATH" "$(dirname "$root/$AGENT_PATH")"
-cp -a "$out/inputs/release-root/." "$root/$RELEASE_ROOT_PATH/"
+install -d -o 0 -g 0 -m 0755 "$root/$RELEASE_ROOT_PATH" "$(dirname "$root/$AGENT_PATH")"
+install_tree "$out/inputs/release-root" "$root/$RELEASE_ROOT_PATH"
 git -C "$repo" show "$source_ref:tools/fleet_node_agent.sh" > "$root/$AGENT_PATH"
 chmod 0755 "$root/$AGENT_PATH"
 printf 'sparkpipe-node\n' > "$root/etc/hostname"
@@ -35,3 +42,6 @@ systemctl --root="$root" enable sparkpipe-host-keys.service
 ! chroot "$root" dpkg-query -W -f='${Status}' unattended-upgrades 2> /dev/null | grep -q "ok installed" || { echo "customize_image: unattended-upgrades is in the image; an image node never updates itself" >&2; exit 1; }
 rm -f "$root"/etc/ssh/ssh_host_*_key "$root"/etc/ssh/ssh_host_*_key.pub "$root"/etc/dropbear/initramfs/dropbear_*_host_key
 SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chroot "$root" update-initramfs -u -k "$KERNEL_RELEASE" > "$out/initramfs.log" 2>&1 || { tail -20 "$out/initramfs.log" >&2; exit 1; }
+[ "$(stat -c %u:%g:%a "$root")" = "0:0:755" ] || { echo "customize_image: the image root is $(stat -c %u:%g:%a "$root"), not 0:0:755" >&2; exit 1; }
+owned="$(find "$root" -xdev \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)"
+[ -z "$owned" ] || { echo "customize_image: ${owned#"$root"} belongs to uid or gid 1000 or above; the image takes no build user's ownership" >&2; exit 1; }

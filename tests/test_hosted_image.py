@@ -251,6 +251,42 @@ class SelfUpdateTest(unittest.TestCase):
                 self.assertEqual(os.readlink(root / "etc" / "systemd" / "system" / unit), "/dev/null")
 
 
+class OwnershipTest(unittest.TestCase):
+    HOOK = (IMAGE / "customize_image.sh").read_text()
+
+    def test_the_hook_installs_files_root_owned_and_never_copies_build_ownership(self):
+        self.assertNotIn("cp -a", self.HOOK)
+        self.assertIn('install -D -o 0 -g 0 -m "$mode"', self.HOOK)
+        self.assertIn('install_tree "$here/files" "$root"', self.HOOK)
+        self.assertIn('install_tree "$out/inputs/release-root" "$root/$RELEASE_ROOT_PATH"', self.HOOK)
+
+    def test_the_hook_fails_on_any_build_user_ownership_and_on_a_root_that_is_not_root_owned_0755(self):
+        self.assertIn("-uid +999 -a ! -uid 65534", self.HOOK)
+        self.assertIn("-gid +999 -a ! -gid 65534", self.HOOK)
+        self.assertIn('= "0:0:755" ]', self.HOOK)
+        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index("-uid +999"))
+        self.assertGreater(self.HOOK.index("-uid +999"), self.HOOK.index("update-initramfs"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "install -o 0 needs root on Linux")
+    def test_install_tree_gives_root_ownership_and_plain_modes(self):
+        function = self.HOOK[self.HOOK.index("install_tree() {"):self.HOOK.index("\n}\n", self.HOOK.index("install_tree() {")) + 3]
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "source")
+            (source / "etc" / "x").mkdir(parents=True)
+            (source / "etc" / "x" / "conf").write_text("c\n")
+            (source / "etc" / "x" / "conf").chmod(0o664)
+            (source / "bin").mkdir()
+            (source / "bin" / "tool").write_text("#!/bin/sh\n")
+            (source / "bin" / "tool").chmod(0o775)
+            os.chown(source / "etc" / "x" / "conf", 1000, 1000)
+            target = Path(directory, "target")
+            target.mkdir()
+            subprocess.run(["bash", "-c", function + f'install_tree "{source}" "{target}"'], check=True)
+            self.assertEqual((os.stat(target / "etc" / "x" / "conf").st_uid, os.stat(target / "etc" / "x" / "conf").st_mode & 0o777), (0, 0o644))
+            self.assertEqual(os.stat(target / "bin" / "tool").st_mode & 0o777, 0o755)
+            self.assertEqual(os.stat(target / "etc" / "x").st_mode & 0o777, 0o755)
+
+
 class BuildDriverTest(unittest.TestCase):
     def test_the_entry_scripts_are_executable(self):
         for path in ("build_image.sh", "customize_image.sh", "mask_units.sh", "files/usr/lib/sparkpipe/gpu-device-nodes", "files/usr/lib/sparkpipe/host-keys"):

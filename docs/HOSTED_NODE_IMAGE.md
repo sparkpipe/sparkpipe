@@ -170,6 +170,14 @@ and `motd-news`, which fetches news from Ubuntu
 SSH and initramfs SSH host keys and rebuilds the initramfs with them. The
 image has none.
 
+The image can also boot from a file on another node's filesystem, without
+repartitioning, through initramfs-tools' own loop root (`root=UUID=<host
+filesystem> loop=<path to the SPARKROOT file> loopfstype=ext4`). That
+command line must say `rw`, not `ro`. With `ro`, the initramfs attaches
+the loop device read-only, so `/` can never be remounted read-write, and
+the units that write state (logind, timesyncd, the DMA guard's boot record)
+fail.
+
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
 does not stop the boot); the disk install creates both. The
