@@ -16,6 +16,7 @@
 
 #include "sparkpipe/spark_head_screen.h"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #if defined(__CUDACC__)
 #define SPARK_LM_LAUNCH(launch_statement) launch_statement
@@ -435,8 +436,8 @@ static __global__ void SparkLmHeadCertifiedReduceKernel(const float *partial_sco
 
 #include <mma.h>
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8Quantize(
-	cudaStream_t stream,const void *head_bf16,uint8_t *shadow_payload,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8Quantize(
+	SparkGpuStream stream,const void *head_bf16,uint8_t *shadow_payload,
 	float *shadow_scale_f32,float *cert_norm_f32,uint32_t candidate_count,
 	uint32_t hidden_dimension)
 {
@@ -444,7 +445,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8Quantize(
 	if ( head_bf16 == 0 || shadow_payload == 0 || shadow_scale_f32 == 0 ||
 		cert_norm_f32 == 0 || candidate_count == 0u || hidden_dimension == 0u ||
 		(hidden_dimension % SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) /
 		SPARK_LM_CTA_WARPS;
 	SPARK_LM_LAUNCH((
@@ -452,7 +453,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8Quantize(
 			stream, head_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,
 			candidate_count,hidden_dimension)
 	));
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }
 
 typedef struct SparkLmHeadCertifiedFp8Scratch
@@ -478,8 +479,8 @@ static inline SparkLmHeadCertifiedFp8Scratch SparkLmHeadCertifiedFp8ScratchView(
 	return(view);
 }
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
-	cudaStream_t stream,const void *hidden_bf16,const void *head_weight_bf16,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
+	SparkGpuStream stream,const void *hidden_bf16,const void *head_weight_bf16,
 	const uint8_t *shadow_payload,const float *shadow_scale_f32,
 	const float *cert_norm_f32,void *scratch,uint32_t *candidate_ids,
 	uint32_t *candidate_count,uint32_t *output_token_id,float *output_score,
@@ -498,7 +499,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count != 1u || vocabulary_count == 0u ||
 		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	view = SparkLmHeadCertifiedFp8ScratchView(scratch,vocabulary_count,
 		hidden_dimension);
 	SPARK_LM_LAUNCH((
@@ -527,11 +528,11 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 			view.partial_scores,view.partial_candidates,output_token_id,output_score,
 			candidate_offset)
 	));
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
-	cudaStream_t stream,const void *hidden_bf16,const void *head_weight_bf16,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
+	SparkGpuStream stream,const void *hidden_bf16,const void *head_weight_bf16,
 	const uint8_t *shadow_payload,const float *shadow_scale_f32,
 	const float *cert_norm_f32,void *scratch,uint32_t *candidate_ids,
 	uint32_t *candidate_count,uint32_t *output_token_id,float *output_score,
@@ -554,7 +555,7 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count == 0u || vocabulary_count == 0u ||
 		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	for (row=0u; row<row_count; row++)
 	{
 		view = SparkLmHeadCertifiedFp8ScratchView((float *)scratch + row * row_floats,vocabulary_count,hidden_dimension);
@@ -596,5 +597,5 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 				candidate_offset)
 		));
 	}
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }
