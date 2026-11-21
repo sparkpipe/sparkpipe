@@ -1,6 +1,0 @@
-build-essential=12.10ubuntu1
-linux-headers-7.0.0-1025-nvidia=7.0.0-1025.26~24.04.1
-kmod=31+20240202-2ubuntu7.2
-openssl=3.0.13-0ubuntu3.16
-xz-utils=5.6.1+really5.4.5-1ubuntu0.4
-zstd=1.5.5+dfsg2-2build1.1

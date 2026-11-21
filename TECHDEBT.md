@@ -1870,9 +1870,7 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - a disk install: partitions labelled `SPARKROOT` and `SPARKESP`, shim and
     GRUB on the EFI system partition, the boot entry;
   - proving it on a spare Spark and on a four-node group against the
-    factory OS;
-  - a SparkPipe module signing key and its enrollment on each node while
-    Secure Boot is on.
+    factory OS.
 
   These node and hub functions call `nvidia-smi` or DGX OS tools, which the
   image does not carry, and need replacements:

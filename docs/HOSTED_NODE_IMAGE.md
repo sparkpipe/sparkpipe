@@ -3,7 +3,7 @@
 Rented nodes boot one minimal image. It contains:
 
 - Ubuntu 24.04 from a pinned archive snapshot, with Canonical's `linux-nvidia` 7.0 kernel;
-- NVIDIA's open GPU kernel module, built from source at the version the device backend pins, and its GSP firmware;
+- Canonical's signed build of NVIDIA's open GPU kernel module at the version the device backend pins, verified by hash, and its GSP firmware;
 - the in-tree `mlx5_core` and `r8127` drivers, with Ubuntu's rdma-core;
 - the node-independent part of the [node baseline](NODE_BASELINE.md);
 - a release root and the node agent.
@@ -17,51 +17,49 @@ filesystem and on its release root.
 ```bash
 sudo tools/hosted_image/build_image.sh --out ~/nvfree/image/build-N \
   --source-ref HEAD --release-root RELEASE_ROOT \
-  --firewall-ruleset spark-firewall.nft \
-  --module-key module-key.pem --module-cert module-cert.pem
+  --firewall-ruleset spark-firewall.nft
 ```
 
 It runs as root on an arm64 Ubuntu host from a clean checkout at
 `--source-ref`. No GPU is used, and no package, module or setting is
-changed on the build host. All six inputs are required:
+changed on the build host. All four inputs are required:
 
 - `--release-root` must pass the root audit before anything is built.
-- `--firewall-ruleset` is the private host firewall ruleset, so the firewall is active from the first boot.
-- `--module-key` (PEM) and `--module-cert` (PEM) sign the kernel modules.
+- `--firewall-ruleset` is the private host firewall ruleset, so the firewall
+  is active from the first boot. It is a build input and is never committed.
 
 The steps:
 
 1. Download mmdebstrap `MMDEBSTRAP_VERSION` from the snapshot, check its
    sha256, and run it from the unpacked package.
-2. Clone the open module at `OPEN_MODULE_TAG` and check that it is commit
-   `OPEN_MODULE_COMMIT`.
-3. Build a chroot from `build-packages.txt`. In it, build the modules
-   against `linux-headers-KERNEL_RELEASE`, then sign `nvidia.ko` and
-   `nvidia-uvm.ko` with the kernel's `sign-file`. The chroot is then
-   deleted, and the key with it.
-4. Build the image from `image-packages.txt` with
+2. Download `MODULE_PACKAGE` from the snapshot and check its sha256 and
+   package name. Unpack it, and take only `nvidia.ko` and `nvidia-uvm.ko`.
+   Each must report `MODULE_VERSION`, the vermagic of `KERNEL_RELEASE` and
+   `MODULE_SIGNER`. The package itself is not installed.
+3. Build the image from `image-packages.txt` with
    [`customize_image.sh`](../tools/hosted_image/customize_image.sh), which:
    - copies [`files/`](../tools/hosted_image/files/) and the firewall
      ruleset;
-   - installs the signed modules under
-     `/lib/modules/KERNEL_RELEASE/updates/sparkpipe/` and checks that
-     `depmod` resolves `nvidia` to them;
+   - installs the two modules under `/lib/modules/KERNEL_RELEASE/updates/`
+     and checks that `depmod` resolves each to them;
    - checks the GSP firmware for the module's version;
    - copies the release root to `/opt/sparkpipe/release` and the agent to
      `/opt/sparkpipe/core/bin/fleet_node_agent.sh`;
    - stages the baseline (below) and enables the host-key unit;
    - removes every SSH and initramfs host key;
    - rebuilds the initramfs.
+4. Check that no mount remains under the output directory. Every removal
+   the build makes first checks this with `findmnt` and refuses otherwise.
 5. Run the image audit. On a failure, the root filesystem is kept for
    inspection and nothing is packed.
 6. Write `rootfs.tar.zst` (sorted names, mtimes clamped to the snapshot
-   time), `MANIFEST`, `audit.json`, `baseline-report.json`,
-   `module-cert.der` and the build logs.
+   time), `MANIFEST`, `audit.json`, `baseline-report.json` and the build
+   logs.
 
 `MANIFEST` records:
 
 - the source commit and every pin;
-- the module signer's SHA-256 fingerprint;
+- each module's sha256;
 - the archive's sha256 and the audit verdict;
 - every release-root file with its sha256;
 - every installed package with its version.
@@ -74,16 +72,18 @@ The steps:
   serves arm64) and `SOURCE_DATE_EPOCH`, its time;
 - the kernel release;
 - mmdebstrap's version and sha256;
-- the open module's repository, tag and commit;
+- the module package, its pool path and sha256, the module version, the
+  modules taken from it and their signer;
 - the firmware package;
 - the install paths.
 
-[`image-packages.txt`](../tools/hosted_image/image-packages.txt) and
-[`build-packages.txt`](../tools/hosted_image/build-packages.txt) name every
+[`image-packages.txt`](../tools/hosted_image/image-packages.txt) names every
 top-level package as `name=version`. Each version is the highest the
 snapshot holds across `noble`, `noble-updates` and `noble-security`, by
 `dpkg --compare-versions`; the snapshot fixes every dependency. A pin
-changes only together with the snapshot.
+changes only together with the snapshot. The kernel and the module package
+are one pair: a new module version means a new kernel release, new pins and
+requalification of the device backend.
 
 ## GB10 settings
 
@@ -156,9 +156,6 @@ system partition `SPARKESP` (vfat); the disk install creates both. The
 hostname is `sparkpipe-node` until bring-up.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
-
-1. identity and keys;
-2. `apply`, reboot and `audit`;
-3. with Secure Boot on, enroll the module certificate once:
-   `mokutil --import module-cert.der`, then confirm in MokManager on the
-   console at the next boot.
+identity and keys, then `apply`, reboot and `audit`. The modules load under
+Secure Boot through the kernel's own signing chain, so a node needs no
+enrollment step.

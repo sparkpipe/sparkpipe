@@ -35,24 +35,26 @@ def packages(name):
 
 class PinsTest(unittest.TestCase):
     def test_every_package_is_pinned_once_and_none_is_rejected_by_the_image_audit(self):
-        for name in ("image-packages.txt", "build-packages.txt"):
-            with self.subTest(list=name):
-                entries = packages(name)
-                self.assertTrue(all(len(entry) == 2 and entry[0] and re.fullmatch(r"[0-9][A-Za-z0-9.+~:-]*", entry[1]) for entry in entries))
-                self.assertEqual(len({entry[0] for entry in entries}), len(entries))
+        entries = packages("image-packages.txt")
+        self.assertTrue(all(len(entry) == 2 and entry[0] and re.fullmatch(r"[0-9][A-Za-z0-9.+~:-]*", entry[1]) for entry in entries))
+        self.assertEqual(len({entry[0] for entry in entries}), len(entries))
         self.assertEqual([entry for entry in packages("image-packages.txt") if AUDIT.package_reason(*entry)], [])
 
     def test_kernel_module_firmware_and_tool_pins_agree(self):
         image = dict(packages("image-packages.txt"))
-        build = dict(packages("build-packages.txt"))
         kernel = PINS["KERNEL_RELEASE"]
+        branch = PINS["MODULE_VERSION"].split(".")[0]
         self.assertIn(f"linux-image-{kernel}", image)
         self.assertIn(f"linux-modules-{kernel}", image)
-        self.assertEqual(build[f"linux-headers-{kernel}"], image[f"linux-image-{kernel}"])
-        self.assertEqual(PINS["FIRMWARE_PACKAGE"], f"nvidia-firmware-{PINS['OPEN_MODULE_TAG'].split('.')[0]}-{PINS['OPEN_MODULE_TAG']}")
-        self.assertTrue(image[PINS["FIRMWARE_PACKAGE"]].startswith(PINS["OPEN_MODULE_TAG"] + "-"))
-        self.assertRegex(PINS["OPEN_MODULE_COMMIT"], r"^[0-9a-f]{40}$")
-        self.assertRegex(PINS["MMDEBSTRAP_SHA256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(PINS["MODULE_PACKAGE"], f"linux-modules-nvidia-{branch}-open-{kernel}")
+        self.assertIn(f"/{PINS['MODULE_PACKAGE']}_{image[f'linux-image-{kernel}']}_{PINS['ARCHITECTURE']}.deb", PINS["MODULE_DEB"])
+        self.assertNotIn(PINS["MODULE_PACKAGE"], image)
+        self.assertEqual(AUDIT.package_reason(PINS["MODULE_PACKAGE"], image[f"linux-image-{kernel}"]), "")
+        self.assertEqual(PINS["MODULE_FILES"].split(), ["nvidia", "nvidia-uvm"])
+        self.assertEqual(PINS["FIRMWARE_PACKAGE"], f"nvidia-firmware-{branch}-{PINS['MODULE_VERSION']}")
+        self.assertTrue(image[PINS["FIRMWARE_PACKAGE"]].startswith(PINS["MODULE_VERSION"] + "-"))
+        for key in ("MMDEBSTRAP_SHA256", "MODULE_SHA256"):
+            self.assertRegex(PINS[key], r"^[0-9a-f]{64}$")
         self.assertIn(f"_{PINS['MMDEBSTRAP_VERSION']}-", PINS["MMDEBSTRAP_DEB"])
         self.assertRegex(PINS["SNAPSHOT_URL"], r"^https://snapshot\.ubuntu\.com/ubuntu/[0-9]{8}T[0-9]{6}Z$")
 
@@ -208,8 +210,7 @@ class BuildDriverTest(unittest.TestCase):
         self.assertEqual(subprocess.run(["bash", script], capture_output=True).returncode, 2)
         with tempfile.TemporaryDirectory() as directory:
             completed = subprocess.run(["bash", script, "--out", f"{directory}/out", "--source-ref", "HEAD", "--release-root", f"{directory}/absent",
-                                        "--firewall-ruleset", f"{directory}/absent.nft", "--module-key", f"{directory}/key", "--module-cert", f"{directory}/cert"],
-                                       capture_output=True, text=True)
+                                        "--firewall-ruleset", f"{directory}/absent.nft"], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 1)
             self.assertFalse(Path(directory, "out").exists())
 
