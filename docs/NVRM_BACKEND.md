@@ -84,8 +84,14 @@ are ELF images, and `runtime/device/nvrm/nvrm_cubin.c` reads them into a
 kernel table and one loadable image:
 
 - **Image.** The allocated `PROGBITS` sections (code and constant banks) are laid out in
-  section order at their own alignment, at least 128 bytes; nothing else
+  section order at their own alignment, at least 128 bytes. Allocated
+  `NOBITS` sections (a module's zero-initialized `__device__` variables)
+  get zeroed space in the same layout, except the per-block
+  `.nv.shared.<name>` sections, which only size shared memory. Nothing else
   is loaded. A loaded section that asks for a fixed address is refused.
+  `tests/test_nvrm_module_state.c` (`make test-nvrm-gpu`) checks on the GPU
+  that a module's `__device__` variable starts zeroed and keeps its value
+  across launches, and that its `__constant__` table reads back.
 - **Kernels.** A kernel is a `.nv.info.<name>` section that carries a
   parameter-bank record. Its code is `.text.<name>`. Its static shared memory is the size of
   `.nv.shared.<name>`, which includes the 1 KiB reserved per block. Its

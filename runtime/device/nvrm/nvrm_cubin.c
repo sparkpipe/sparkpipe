@@ -18,6 +18,7 @@
 #define ELF_SECTION_SYMTAB 2u
 #define ELF_SECTION_RELA 4u
 #define ELF_SECTION_NOBITS 8u
+#define CUBIN_SHARED_PREFIX ".nv.shared."
 #define ELF_SECTION_REL 9u
 #define ELF_FLAG_ALLOC 2u
 #define INFO_FORMAT_VALUE 4u
@@ -176,6 +177,15 @@ static SparkStatus CubinSymbols(CubinReader *reader)
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t CubinPlaced(const CubinSection *section)
+{
+	if ( (section->flags & ELF_FLAG_ALLOC) == 0u )
+		return(0u);
+	if ( section->type == ELF_SECTION_PROGBITS )
+		return(1u);
+	return(section->type == ELF_SECTION_NOBITS && strncmp(section->label,CUBIN_SHARED_PREFIX,strlen(CUBIN_SHARED_PREFIX)) != 0 ? 1u : 0u);
+}
+
 static SparkStatus CubinLayout(CubinReader *reader, SparkNvrmCubin *cubin)
 {
 	uint64_t cursor = 0u;
@@ -184,7 +194,7 @@ static SparkStatus CubinLayout(CubinReader *reader, SparkNvrmCubin *cubin)
 	{
 		CubinSection *section = &reader->sections[index];
 		uint64_t align = section->align > SPARK_NVRM_CUBIN_SECTION_ALIGN ? section->align : SPARK_NVRM_CUBIN_SECTION_ALIGN;
-		if ( section->type != ELF_SECTION_PROGBITS || (section->flags & ELF_FLAG_ALLOC) == 0u )
+		if ( CubinPlaced(section) == 0u )
 			continue;
 		if ( section->address != 0u )
 			CUBIN_REFUSE(SPARK_STATUS_UNSUPPORTED,reader,"a loaded section asks for a fixed address");
@@ -199,7 +209,7 @@ static SparkStatus CubinLayout(CubinReader *reader, SparkNvrmCubin *cubin)
 	if ( cubin->image == 0 )
 		CUBIN_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,reader,"out of host memory for the kernel image");
 	for (index = 0u; index < reader->count; index++)
-		if ( reader->sections[index].loaded != 0u )
+		if ( reader->sections[index].loaded != 0u && reader->sections[index].type == ELF_SECTION_PROGBITS )
 			memcpy(cubin->image + reader->sections[index].placed,reader->blob + reader->sections[index].offset,(size_t)reader->sections[index].bytes);
 	return(SPARK_STATUS_OK);
 }

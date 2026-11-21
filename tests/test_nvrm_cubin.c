@@ -59,6 +59,8 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmStreamCopy", PARAMETER_END(StreamCopyParameters,count)},
 	{"SparkNvrmStreamFill", PARAMETER_END(StreamFillParameters,value)},
 	{"SparkNvrmProbeDimensions", PARAMETER_END(FirstLightParameters,output)},
+	{"SparkNvrmGlobalSwap", PARAMETER_END(FirstLightParameters,value)},
+	{"SparkNvrmConstantTable", PARAMETER_END(FirstLightParameters,output)},
 };
 
 static uint8_t *ReadFile(const char *path, uint64_t *bytes)
@@ -150,7 +152,7 @@ static void TestFixture(void)
 	CHECK(listed == sizeof(expected_layouts) / sizeof(expected_layouts[0]) && cubin.kernel_count == listed,
 		"the parser lists exactly the compiler's entry functions");
 	CHECK(SparkNvrmCubinKernelNamed(&cubin,"SparkNvrmAbsent") == 0,"an absent kernel is not found");
-	CHECK(cubin.relocation_count == 0u,"the fixture kernels need no relocation");
+	CHECK(cubin.relocation_count != 0u,"the module's device variable is reached through relocations");
 	SparkNvrmCubinRelease(&cubin);
 	CHECK(cubin.image == 0 && cubin.kernels == 0 && cubin.kernel_count == 0u,"release clears the parsed image");
 	CHECK(SparkNvrmCubinParse(blob,63u,"fixture",&cubin) == SPARK_STATUS_PARSE_ERROR && cubin.image == 0,"a cubin cut inside its header is refused");
