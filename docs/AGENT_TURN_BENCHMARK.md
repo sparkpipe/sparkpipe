@@ -328,6 +328,163 @@ TF_RUN=tf-20261122 TF_OUT=qualification/turn-floor-20261122 TF_TOKENS=/srv/works
   does not arrange who may use the fleet or restore the production model:
   whoever runs it does both, before and after.
 
+### A test lane of a build: `scripts/turn_floor_slot.sh`
+
+The slot script runs the tool against a build that is not released, on a
+test lane of one group of nodes, and adds what only such a build can
+answer: the `truth` arm after the turns, and before and after a turn that
+follows a stop and start of the lane.
+
+```sh
+SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build \
+    SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN \
+    scripts/turn_floor_slot.sh $RUN
+```
+
+- `SLOT_MODEL` is a `tools/stage_lane.py` model (default `dsv41_flash_tp4`),
+  `SLOT_FIRST` its first node (default 4, so spark4 to spark7), `SLOT_LANE`
+  its mesh lane (default 1), `SLOT_CONTEXTS` its levels (default
+  `8000,50000`). The `STAGE_*` sizes of `tools/stage_lane.sh` keep the
+  script's defaults unless the caller sets them.
+- It refuses to start unless the swap controller reads `idle None None`,
+  both builds are complete and of one commit (`SOURCE_COMMIT` in `SLOT_FW`
+  and beside `SLOT_API_BUILD`), and every node of the group has
+  `SLOT_MIN_FREE_GIB` (default 100) GiB available.
+- Then: the lane (`stage_lane.sh setup`, `start`, wait for every rank), the
+  API as a transient unit on the hub, the `turns`, `truth` and `wave` arms,
+  a stop and start of the API and the lane that keeps the API's prefix
+  index, `truth`, `resume --event restart`, `truth`, the split, the excerpt,
+  and the receipts copied to `SLOT_OUT`.
+- On every exit it stops the API unit, stops the lane and reclaims it, and
+  prints each node's available memory.
+- `SLOT_DRY=1` reaches no host and prints the plan. A run id is used once:
+  the lane's logs are named by it.
+
+## Starting the fleet measurements
+
+Nothing below has run on the fleet yet except one cold request
+(`qualification/turn-floor-20261121/`). Both scripts have run only as dry
+runs. This section is what a session needs to start either run without
+other knowledge.
+
+Who may use the fleet, and when, is in
+`datacenter:operations/FLEET_HOLD.md`; read it first. Neither script takes
+or releases the fleet, stops the production model or restores it: the
+caller does, before and after, as that document says.
+
+**Token files.** Each model family needs a file of token ids from its own
+tokenizer, one id a line, at least 450,000 ids for a 300,000-token level.
+On the hub, from a text of a few megabytes and the compiled tokenizer of a
+served model's API folder:
+
+```sh
+split -b 1500000 corpus.txt part.
+for part in part.??; do ~/k3-kv-api/bin/sparkpipe_tokenize_prompt --tokenizer-compiled ~/k3-kv-api/runtime/tokenizer/tokenizer.compiled --text-file $part --output $part.ids; done
+cat part.??.ids > tokens-k3.txt
+```
+
+The families are `k3` (Kimi K3 and K3.1 Pro), `glm53` (GLM 5.3 Full and
+Flash), `qwen38` (Qwen 3.8 27B and Max) and `dsv41` (DeepSeek V4.1 Flash);
+the API folder of a model is the fourth field of
+`python3 tools/lane_config.py release-row MODEL`. The tokenizer takes
+about 1.5 MB of text a call.
+
+**The sixteen-node plan.** One chain per model, cold once per level, every
+tail resumed from it. Print it first, then run it:
+
+```sh
+export TF_RUN=tf-$(date -u +%Y%m%d) TF_OUT=qualification/turn-floor-$(date -u +%Y%m%d) TF_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens
+PLAN="qwen3.8-max=qwen38=8000,24000 glm-5.3-flash=glm53=8000,100000=turns,wave,openings,restart qwen3.8-27b=qwen38=8000,100000,240000=turns,wave,openings,restart deepseek-v4.1-flash=dsv41=8000,100000,300000=turns,wave,openings,restart glm-5.3=glm53=8000,100000 kimi-k3=k3=8000,100000 kimi-k3.1-pro=k3=8000,100000"
+TF_DRY=1 scripts/turn_floor_fleet.sh $PLAN
+scripts/turn_floor_fleet.sh $PLAN
+python3 tools/turn_floor.py report $TF_OUT/*/
+```
+
+Run it from bash, or from zsh as `scripts/turn_floor_fleet.sh ${=PLAN}`:
+zsh does not split `$PLAN` into words.
+
+| Model | Levels | Estimated minutes | Longest single prefill, estimated |
+| --- | --- | ---: | ---: |
+| Qwen 3.8 Max | 8K, 24K | 4 | 0.5 min |
+| GLM 5.3 Flash | 8K, 100K, openings | 4 | 0.8 min |
+| Qwen 3.8 27B | 8K, 100K, 240K, openings | 5 | 1.5 min |
+| DeepSeek V4.1 Flash | 8K, 100K, 300K, openings | 7 | 2.5 min |
+| GLM 5.3 Full | 8K, 100K | 4 | 1.9 min |
+| Kimi K3 | 8K, 100K | 5 | 2.9 min |
+| Kimi K3.1 Pro | 8K, 100K | 7 | 4.1 min |
+| All seven | | 36 | |
+
+The minutes are estimates from release c2b714343's 7.4K prefill rates
+(`qualification/releases/c2b714343/`) and the long-prompt rates above in
+`PERFORMANCE_STATUS.md`; none is measured at these depths on this release.
+They include each model's swap in and its stop and start. A run that stops
+is continued by the same command with the same `TF_RUN`.
+
+It gives, per model: the first token of a turn at each level for 1, 40, 500
+and 5,000 new tokens with its parts, plain and as-served decode at each
+level, the wait behind a 20,000-token background prefill, the 46K and 37K
+openings on the three models that run them, and one turn after a stop and
+start. It does not give 300K on GLM 5.3 Full, Kimi K3 and Kimi K3.1 Pro, or
+anything beyond 300K.
+
+Afterwards: the receipts under `TF_OUT` go into the pull request, the
+`report` tables go into the "First token of a turn" section of
+`PERFORMANCE_STATUS.md` with the largest part named for each model, and the
+K3 follow-up line under "KV cache and long context" is replaced by K3's
+row.
+
+**The four-node slot.** It proves the instruments of a build on real
+ranks. For commit `$SHA` of the build under test, from bash on a workstation
+whose ssh knows the release kit's host names (`lenovo7`, the build host,
+and `rtx5090`, the hub):
+
+```sh
+SHA=$(git rev-parse --short=9 HEAD)
+COPYFILE_DISABLE=1 git archive --format=tar $SHA > /tmp/src-$SHA.tar
+NODE="build/sparkpipe_model_residentd build/weightd_warm build/libhidden_transport_spark_host_rdma_verbs.so build/runtime_libs/libsparkpipe_device_cuda.so build/libdsv41_flash_tp4_serving_adapter.so"
+API="build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/libdsv41_flash_tp4_serving_adapter.so build/runtime_libs/libsparkpipe_device_cuda.so"
+python3 tools/sparkcp.py /tmp/src-$SHA.tar lenovo7:build-rp/
+ssh lenovo7 "cd ~/build-rp && rm -rf fw-$SHA-src && mkdir fw-$SHA-src && tar -C fw-$SHA-src -xf src-$SHA.tar && cd fw-$SHA-src && export PATH=/usr/local/cuda/bin:\$PATH && make -j8 $NODE"
+mkdir -p fw-$SHA/runtime_libs && echo $SHA > fw-$SHA/SOURCE_COMMIT
+python3 tools/sparkcp.py lenovo7:build-rp/fw-$SHA-src/build/sparkpipe_model_residentd lenovo7:build-rp/fw-$SHA-src/build/weightd_warm lenovo7:build-rp/fw-$SHA-src/build/libdsv41_flash_tp4_serving_adapter.so lenovo7:build-rp/fw-$SHA-src/build/libhidden_transport_spark_host_rdma_verbs.so fw-$SHA/
+python3 tools/sparkcp.py lenovo7:build-rp/fw-$SHA-src/build/runtime_libs/libsparkpipe_device_cuda.so fw-$SHA/runtime_libs/
+ssh rtx5090 "mkdir -p /srv/workspace/sparkpipe/turn-floor-slot"
+python3 tools/sparkcp.py /tmp/src-$SHA.tar hub:/srv/workspace/sparkpipe/turn-floor-slot/
+ssh rtx5090 "cd /srv/workspace/sparkpipe/turn-floor-slot && rm -rf api-build-$SHA && mkdir api-build-$SHA && tar -C api-build-$SHA -xf src-$SHA.tar && echo $SHA > api-build-$SHA/SOURCE_COMMIT && cd api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make -j8 $API"
+```
+
+Both builds took under a minute on 2026-11-21. The node files are copied to
+the nodes from the workstation by `tools/stage_lane.sh`, so none of them
+has to sit on the hub. Then, holding the fleet with the production model
+stopped:
+
+```sh
+RUN=s0$(date -u +%H%M)
+SLOT_DRY=1 SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN scripts/turn_floor_slot.sh $RUN
+SLOT_FW=fw-$SHA SLOT_API_BUILD=/srv/workspace/sparkpipe/turn-floor-slot/api-build-$SHA/build SLOT_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens/tokens-dsv41.txt SLOT_OUT=qualification/turn-floor-slot-$RUN scripts/turn_floor_slot.sh $RUN
+```
+
+About 15 minutes of the lane are expected, as an estimate: its start, two
+levels of turns, a 60,000-token background prefill, a stop and start, one
+resumed turn. What to read in `summary.json` and `parts.jsonl` afterwards:
+
+- `cache_states`: after the turns every rank should hold the session and
+  have it resident (`held_tokens`, `resident_tokens`, `ranks_failed` 0).
+  Before the resume no rank should hold it (`held_tokens` 0), and
+  `saved_tokens` says how much of it the snapshot store has: a session a
+  clean stop saved should read as saved. After the resume it should be held
+  again. A probe that reads otherwise where the store's own counters show
+  the pages restored is a fault of the probe.
+- The resumed turn: `cache_restore_ms`, which the engine reports, against
+  `restore_ms`, which the split reads from the refused waves in the log.
+- The probes behind the wave: `cache_background_wait_ms` against their
+  `queue_ms`.
+- Every turn: `cache_matched_tokens` and `cache_resumed_tokens` against the
+  `cached_tokens` of its usage.
+
+A difference in any of these is a fault in the instruments, to be fixed
+before the sixteen-node numbers are read through them.
+
 `turn_floor.py report DIR...` reads several runs' `summary.json` and prints
 the tables that compare models: first token by context for each tail with
 its largest part, the parts for the smallest tail, plain decode rate by

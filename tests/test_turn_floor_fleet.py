@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""scripts/turn_floor_fleet.sh walks served models through tools/turn_floor.py on the hub. With TF_DRY=1 it reaches no host and prints what it would do, which is what this test reads: each model's lane record, its steps in order, and what the driver refuses."""
+"""scripts/turn_floor_fleet.sh walks served models through tools/turn_floor.py on the hub, and scripts/turn_floor_slot.sh runs the tool on a test lane of a build under test. With TF_DRY=1 and SLOT_DRY=1 they reach no host and print what they would do, which is what this test reads: each model's lane record, the steps in order, and what the scripts refuse."""
 import os
 import subprocess
 import sys
@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "turn_floor_fleet.sh"
+SLOT = ROOT / "scripts" / "turn_floor_slot.sh"
 failures = []
 
 
@@ -60,6 +61,47 @@ code, _, error = plan("kimi-k3=k3=8000", TF_RUN=None)
 check(code != 0 and "TF_RUN names this run" in error, "the run must be named")
 code, _, error = plan()
 check(code == 2 and "usage:" in error, "no model prints the usage")
+
+
+
+def slot(*arguments, **environment):
+    values = dict(os.environ, SLOT_DRY="1", SLOT_FW="/local/fw", SLOT_API_BUILD="/hub/build", SLOT_TOKENS="/hub/tokens.txt", SLOT_OUT="/local/out", HOME="/nonexistent-home")
+    values.update(environment)
+    for name in [name for name, value in values.items() if value is None]:
+        del values[name]
+    done = subprocess.run(["bash", str(SLOT), *arguments], capture_output=True, text=True, timeout=120, env=values, cwd=str(ROOT))
+    return done.returncode, done.stdout, done.stderr
+
+
+code, out, _ = slot("s0a")
+lines = out.splitlines()
+check(code == 0 and lines[0] == "slot s0a: dsv41_flash_tp4 on spark4 spark5 spark6 spark7, mesh lane 1, API unit tf-slot-api-4 on port 8492, hub folder /srv/workspace/sparkpipe/turn-floor-slot/s0a",
+      f"the slot names its model, its four nodes, its mesh lane and its API: {lines[:1]}")
+check('the controller reads "idle None None"' in lines[1] and "sparkpipe_model_residentd weightd_warm libdsv41_flash_tp4_serving_adapter.so" in lines[1] and
+      "sparkpipe_model_api sparkpipe_tokenize_prompt libdsv41_flash_tp4_serving_adapter.so" in lines[1] and "both SOURCE_COMMIT files are equal" in lines[1] and
+      "each node has 100 GiB available" in lines[1],
+      f"the slot refuses beside an active model, with a file of either build missing, with two commits, or with a node short of memory: {lines[1][:200]}")
+arms = [line.rsplit("--arms ", 1)[1] for line in lines if line.startswith("hub: ") and "--arms " in line]
+check(arms == ["turns", "truth --event after-the-turns", "wave", "truth --event before-the-resume", "resume --event restart", "truth --event after-the-resume"],
+      f"the slot runs the turns, asks the engine, runs the wave, restarts the lane, and asks before and after the resumed turn: {arms}")
+order = [line.split(":", 1)[0] for line in lines[2:]]
+check(order == ["lane", "api", "hub", "hub", "hub", "restart", "hub", "hub", "hub", "hub", "copy", "always"] and "stage_lane.sh stop; stage_lane.sh reclaim" in lines[-1] and
+      "prefix index kept" in next(line for line in lines if line.startswith("restart:")) and lines[-2].endswith(" to /local/out/"),
+      f"the lane comes up before the API, the restart keeps the API's prefix index, and the lane is stopped and reclaimed on every exit: {order}")
+turns = next(line for line in lines if line.endswith("--arms turns"))
+check("--endpoint http://127.0.0.1:8492 --tokens /hub/tokens.txt --api-log /srv/workspace/sparkpipe/turn-floor-slot/s0a/api.log --label deepseek-v4.1-flash-tp4 --output . --contexts 8000,50000 "
+      "--tails 1,40,500,5000 --repeats 3 --spec-repeats 0 --once-from 2000 --decode-tokens 96 --served-tokens 128 --wave-tokens 60000" in turns,
+      f"the tool is pointed at the test lane's own API and log: {turns}")
+code, out, _ = slot("s0b", SLOT_FIRST="8", SLOT_CONTEXTS="8000", SLOT_LANE="3")
+check(code == 0 and "on spark8 spark9 sparka sparkb, mesh lane 3, API unit tf-slot-api-8 on port 8493" in out and "--contexts 8000 " in out, "another group of four takes its own nodes, port and unit")
+code, _, error = slot("s0a", SLOT_MODEL="no-such-model")
+check(code == 2 and "SLOT-REFUSED: 'no-such-model' is not a tools/stage_lane.py model" in error, "a model the lane tool does not know is refused")
+code, _, error = slot("two words")
+check(code == 2 and "may hold letters" in error, "a run id is one word")
+code, _, error = slot("s0a", SLOT_FW=None)
+check(code != 0 and "SLOT_FW is the local folder" in error, "the node files must be named")
+code, _, error = slot()
+check(code == 2 and "usage:" in error, "no run id prints the usage")
 
 for failure in failures:
     print("FAIL test_turn_floor_fleet: " + failure)

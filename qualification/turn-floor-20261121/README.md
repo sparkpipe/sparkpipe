@@ -1,8 +1,10 @@
-# Turn floor, first receipt (2026-11-21)
+# One cold request (2026-11-21)
 
-One request, measured for stage 0 of `docs/PREFILL_ANTICIPATION.md` with
-`tools/turn_floor.py`. The run was planned over seven models. Not measured:
-the fleet was unavailable after this request.
+This folder holds one request and nothing else: a 20,000-token prompt with
+nothing cached, sent once to Qwen 3.8 Max with `tools/turn_floor.py`. It is
+one cold prefill. It says nothing about a turn on a cached session, about
+another context length or about another model; none of those is measured
+yet on the fleet.
 
 ## Configuration
 
@@ -48,9 +50,11 @@ Request 100002, 20,000 tokens cold:
 | Reply leg, engine to client | 0.3 ms |
 | Decode after the first token | 12.0 tok/s (15 tokens in chains of 8 and 7) |
 
-The log also holds request 100003, which another client sent 2.4 s after
-the first was accepted: 5 prompt tokens, 8 output tokens, interactive like
-the first, not streamed. Only the engine's side of it is known.
+The engine's log of those 33 seconds also has the lines of request 100003,
+which another client sent 2.4 s after the first was accepted: 5 prompt
+tokens, 8 output tokens, interactive like the first, not streamed. It is not
+a request of this run and only the engine's side of it is known; it is
+described here because its lines are in the excerpt.
 
 | Request 100003 | Service | Wall |
 | --- | ---: | ---: |
