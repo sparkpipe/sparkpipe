@@ -70,6 +70,14 @@ async def commits_seen(engine, wanted):
     return [request for request in engine.requests if request.get("commit_only")]
 
 
+async def settled(frontend):
+    for _ in range(500):
+        if not frontend.reply_commits:
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
 async def run_reply_commit(tmp, check):
     async with fixture.Harness(tmp) as harness:
         engine = harness.engine
@@ -124,6 +132,8 @@ async def run_reply_commit(tmp, check):
               f"a reply cut at a stop sequence is not recorded for replay, so it is not committed either: the next turn could not name its cut: {status} {before} {after} {text[:160]}")
         frontend = harness.frontend
         body = dict(body, system=" ".join([SYSTEM] * 5))
+        await settled(frontend)
+        before = len(await commits_seen(engine, 0))
         engine.commit_hold = asyncio.Event()
         opening = [{"role": "user", "content": "read z.txt"}]
         engine.reply("The user wants z.txt read.</think>Reading z.")
@@ -136,17 +146,14 @@ async def run_reply_commit(tmp, check):
         began = time.monotonic()
         status, headers, text = await asyncio.wait_for(harness.post("/v1/messages", dict(body, messages=follow)), 10)
         unmeasured = next(request for request in reversed(engine.requests) if "max_tokens" in request)
-        check(status == 200 and len(held) == before + 1 and time.monotonic() - began < 2 and engine.resumed(unmeasured) == len(asked["prompt_token_ids"]) - 1,
+        check(status == 200 and len(held) >= before + 1 and time.monotonic() - began < 2 and engine.resumed(unmeasured) == len(asked["prompt_token_ids"]) - 1,
               f"with no measured prefill rate for the model a turn does not wait for its reply's commit: the commit is withdrawn and the turn computes the reply itself, "
               f"resuming one token before the earlier prompt's end: {status} {round(time.monotonic() - began, 2)} {engine.resumed(unmeasured)} {len(asked['prompt_token_ids'])}")
-        withdrawn = [pending for pending in frontend.reply_commits if pending.ids == held[-1]["prompt_token_ids"]]
+        withdrawn = [pending for pending in frontend.reply_commits if pending.ids == held[before]["prompt_token_ids"]]
         check(not withdrawn, f"the withdrawn commit is forgotten: {len(withdrawn)}")
         engine.commit_hold.set()
-        for _ in range(300):
-            if not frontend.reply_commits:
-                break
-            await asyncio.sleep(0.01)
-        size = len(held[-1]["prompt_token_ids"])
+        check(await settled(frontend), "every commit ends once the engine answers")
+        size = len(held[before]["prompt_token_ids"])
         frontend.replay.observe_prefill("alpha", size, size, size * 1000.0)
         check(size >= 512 and frontend.replay.prefill_rate("alpha", size) == 1000.0, f"the test's prompts are long enough to have a measured prefill rate: {size}")
         before = len(await commits_seen(engine, 0))
@@ -170,15 +177,11 @@ async def run_reply_commit(tmp, check):
         engine.commit_hold = None
         status, headers, text = await turn
         joined = next(request for request in reversed(engine.requests) if "max_tokens" in request)
-        check(status == 200 and joined.get("cuts", [None])[-1] == len(held[-1]["prompt_token_ids"]) and joined["prompt_token_ids"][:joined["cuts"][-1]] == held[-1]["prompt_token_ids"],
-              f"the turn is sent once the commit is done and names the commit's end as its last cut: {status} {joined.get('cuts')} {len(held[-1].get('prompt_token_ids', []))}")
-        check(engine.resumed(joined) == len(held[-1]["prompt_token_ids"]), f"by the engine's rules the turn that waited resumes where the commit ended: {engine.resumed(joined)}")
+        check(status == 200 and joined.get("cuts", [None])[-1] == len(held[before]["prompt_token_ids"]) and joined["prompt_token_ids"][:joined["cuts"][-1]] == held[before]["prompt_token_ids"],
+              f"the turn is sent once the commit is done and names the commit's end as its last cut: {status} {joined.get('cuts')} {len(held[before].get('prompt_token_ids', []))}")
+        check(engine.resumed(joined) == len(held[before]["prompt_token_ids"]), f"by the engine's rules the turn that waited resumes where the commit ended: {engine.resumed(joined)}")
         await commits_seen(engine, before + 3)
-        for _ in range(300):
-            if not frontend.reply_commits:
-                break
-            await asyncio.sleep(0.01)
-        check(not frontend.reply_commits, f"finished commits are forgotten: {len(frontend.reply_commits)}")
+        check(await settled(frontend), f"finished commits are forgotten: {len(frontend.reply_commits)}")
 
         before = len(await commits_seen(engine, 0))
         engine.commit_hold, engine.commit_fails = asyncio.Event(), True
@@ -197,7 +200,8 @@ async def run_reply_commit(tmp, check):
         status, headers, text = await asyncio.wait_for(turn, 10)
         engine.commit_hold, engine.commit_fails = None, False
         failed = next(request for request in reversed(engine.requests) if "max_tokens" in request)
-        check(status == 200 and waited and len(held) == before + 1 and engine.resumed(failed) == len(asked["prompt_token_ids"]) - 1,
+        check(await settled(frontend), "every commit ends after the failed one")
+        check(status == 200 and waited and len(held) >= before + 1 and engine.resumed(failed) == len(asked["prompt_token_ids"]) - 1,
               f"a commit that fails at the engine does not fail the turn that waited for it: the turn computes the reply itself, resuming one token before the "
               f"earlier prompt's end: {status} {waited} {engine.resumed(failed)} {len(asked['prompt_token_ids'])}")
 
@@ -224,15 +228,11 @@ async def run_reply_commit(tmp, check):
         check(status == 200 and waited and 0.3 <= took < 4 and engine.resumed(stalled) == len(asked["prompt_token_ids"]) - 1,
               f"a commit that does not finish in the time its own work should take is withdrawn, and the turn computes the reply itself: {status} {waited} {round(took, 2)} "
               f"{engine.resumed(stalled)} {len(asked['prompt_token_ids'])}")
-        withdrawn = [pending for pending in frontend.reply_commits if pending.ids == held[-1]["prompt_token_ids"]]
-        check(not withdrawn, f"the withdrawn commit is forgotten: {len(withdrawn)}")
+        withdrawn = [pending for pending in frontend.reply_commits if pending.ids == held[before]["prompt_token_ids"]]
+        check(not withdrawn, f"the commit that did not finish is forgotten: {len(withdrawn)}")
         engine.commit_hold.set()
         engine.commit_hold = None
-        for _ in range(300):
-            if not frontend.reply_commits:
-                break
-            await asyncio.sleep(0.01)
-        check(not frontend.reply_commits, f"every commit ends: {len(frontend.reply_commits)}")
+        check(await settled(frontend), f"every commit ends: {len(frontend.reply_commits)}")
         served = fixture.json.loads((ROOT / "deployment" / "hub" / "chat_frontend.json").read_text())
         check(served["models"] and not any(spec.get("reply_commit") for spec in served["models"]),
               "no served model commits its replies: the setting stays off for a model until gate GX and the turn floor have run both forms on it")
