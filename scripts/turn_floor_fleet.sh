@@ -19,6 +19,7 @@ TF_DRY=${TF_DRY:-0}
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; api) echo "$4";; port) echo "$5";; esac; }
 dry() { [ "$TF_DRY" = 1 ]; }
+copy() { if command -v sparkcp > /dev/null 2>&1; then sparkcp "$@"; else python3 "$KIT/../tools/sparkcp.py" "$@"; fi; }
 
 type activate > /dev/null 2>&1 || activate() {
   local model="$1" i out
@@ -86,7 +87,7 @@ tf_model() {
   stamp "tf $id (lane $lane, api $api, port $port, levels $levels, arms $arms)"
   if ! dry; then
     hub "mkdir -p $dir && test -s $TF_TOKENS/tokens-$family.txt" || { echo "TF-FAILED $id: the hub has no $TF_TOKENS/tokens-$family.txt"; return 1; }
-    sparkcp "$KIT/../tools/turn_floor.py" "hub:$TF_DIR/" > /dev/null || { echo "TF-FAILED $id: the hub did not take the tool"; return 1; }
+    copy "$KIT/../tools/turn_floor.py" "hub:$TF_DIR/" > /dev/null || { echo "TF-FAILED $id: the hub did not take the tool"; return 1; }
   fi
   tf_on "$id" || { echo "TF-ACTIVATE-FAILED $id"; return 1; }
   for arm in ${arms//,/ }; do
@@ -106,7 +107,7 @@ tf_model() {
   tf_remote "$dir" parts "python3 ../turn_floor.py parts ." || { echo "TF-FAILED $id parts"; return 1; }
   tf_remote "$dir" excerpt "python3 ../turn_floor.py excerpt . --output engine.log" || { echo "TF-FAILED $id excerpt"; return 1; }
   dry && { echo "  copy: hub:$dir/{requests.jsonl,parts.jsonl,summary.json,engine.log,run.log} to $TF_OUT/$id/"; return 0; }
-  mkdir -p "$TF_OUT/$id" && sparkcp "hub:$dir/requests.jsonl" "hub:$dir/parts.jsonl" "hub:$dir/summary.json" "hub:$dir/engine.log" "hub:$dir/run.log" "$TF_OUT/$id/" > /dev/null ||
+  mkdir -p "$TF_OUT/$id" && copy "hub:$dir/requests.jsonl" "hub:$dir/parts.jsonl" "hub:$dir/summary.json" "hub:$dir/engine.log" "hub:$dir/run.log" "$TF_OUT/$id/" > /dev/null ||
     { echo "TF-FAILED $id: the receipts did not copy"; return 1; }
   echo "TF-DONE $id: receipts in $TF_OUT/$id"
 }
