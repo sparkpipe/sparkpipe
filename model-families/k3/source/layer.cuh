@@ -944,11 +944,16 @@ static uint32_t K3LayerMlaExpandedReady(const K3LayerBuffers *b, uint32_t rows)
 		(b->shard_gather_windows <= 1u || (b->shard_gather_windows == passes && b->shard_gather_window_keys == keys)) ? 1u : 0u);
 }
 
+static uint32_t K3LayerMlaGatherIndexReady(const K3LayerBuffers *b)
+{
+	return(K3LayerIndexed(b) == 0u || (b->shard_gather_windows <= 1u && b->shard_gather_expanded == 0u && b->shard_gather_prefetched == 0u) ? 1u : 0u);
+}
+
 template<class Geometry>
 static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, cudaStream_t stream)
 {
 	static_assert(Geometry::kSlotBytes == K3_MLA_KV_A_DIM * sizeof(uint16_t), "gathered keys are packed at the latent row width the value expansion reads");
-	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerIndexed(b) != 0u )
+	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerMlaGatherIndexReady(b) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	if ( b->shard_gather_prefetched != 0u )
 		return((uint64_t)b->shard_gather_prefetched * b->shard_gather_window_keys < b->shard_gather_most_keys &&
@@ -995,8 +1000,27 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
 	uint32_t rank;
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= K3LayerMlaPasses(b) || keys == 0u ||
-		(expanded != 0u && K3LayerMlaExpandedReady(b,rows) == 0u) )
+		(expanded != 0u && K3LayerMlaExpandedReady(b,rows) == 0u) || K3LayerMlaGatherIndexReady(b) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
+	if ( b->index_active != 0u )
+	{
+		if ( window != 0u || K3LayerMlaPasses(b) != 1u || b->index_selected == 0 )
+			return(LM_LAUNCH_ERR_SHAPE);
+		for ( rank = 0u; rank < b->kv_shard.degree; rank++ )
+		{
+			source = b->kv_shard;
+			source.rank = rank;
+			if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,landing + (uint64_t)rank * stride,
+					b->shard_gather_offset,b->shard_gather_context) != 0 )
+				return(LM_LAUNCH_ERR_SHAPE);
+			if ( LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
+					b->shard_query_rank_stride,heads,heads,b->sequence_of_row,b->context_length,b->positions,b->index_selected,K3_INDEX_TOPK,K3_INDEX_TOPK,
+					K3_MLA_QK_SCALE,b->shard_partials_received_f32 + (uint64_t)rank * b->shard_partial_rank_stride,b->shard_partial_rank_stride,heads,1u,
+					rows,stream) != cudaSuccess )
+				return(LM_LAUNCH_ERR_LAUNCH);
+		}
+		return(LM_LAUNCH_OK);
+	}
 	if ( expanded != 0u )
 	{
 		source = b->kv_shard;

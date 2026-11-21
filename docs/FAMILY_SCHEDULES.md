@@ -69,6 +69,19 @@ paired ordering adds fences and collective rounds, which are backend
 operations, and keeps the enqueue order the pipelining depends on. A
 backend without streams runs `Slice` and never instantiates `SlicePair`.
 
+A sharded MLA layer attends one of two ways, the CUDA dispatch choosing
+the cheaper exchange for the wave: the scatter gathers every rank's
+queries and exchanges FP32 partial records (about 290 KB a row a layer at
+TP16), the key gather moves the context's latent keys once (1,152 bytes a
+key). Both run the indexer's select loop (`MlaSelect`) when the pack has
+one. An indexed layer on the key gather attends each source rank's
+selected keys in the landing with the scatter's own kernel and records,
+one source at a time, so the merged output is the scatter's bit for bit
+(`tests/cuda/latent_gather_prefill_cuda.cu`). It runs only when the
+context's keys fit one landing (about 196,000 positions at 2,048
+attention rows) and never on the paired halves, which have no select
+loop yet; other indexed waves take the scatter.
+
 DeepSeek V4.1 Flash's layer map (compression ratio, KV and index sources,
 cache owners, engram layers) lives in its family header; the rows that
 later layers skip ("tail" rows) and the candidate-source compress are the
