@@ -89,6 +89,8 @@ typedef struct SparkNvrmGpu
 	SparkNvrmChannel compute;
 	SparkNvrmMemory local_memory;
 	uint32_t local_bytes_per_thread;
+	uint64_t local_bytes_per_tpc;
+	uint32_t state_pending;
 	uint64_t shared_window;
 	uint64_t local_window;
 } SparkNvrmGpu;
@@ -105,6 +107,7 @@ SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t first_byte, const char *owner);
 SparkStatus SparkNvrmSemaphoreRelease(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t timestamp, const char *owner);
 SparkStatus SparkNvrmEnsureLocalMemory(SparkNvrmGpu *gpu, uint32_t bytes_per_thread, const char *owner);
+SparkStatus SparkNvrmPushComputeState(SparkNvrmGpu *gpu, const char *owner);
 SparkStatus SparkNvrmWaitValue(const volatile uint64_t *semaphore, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner);
 
 #ifdef __cplusplus

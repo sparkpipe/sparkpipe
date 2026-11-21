@@ -184,15 +184,35 @@ static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, 
 
 static SparkStatus ChannelBind(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
 {
-	uint32_t object = gpu->compute_class,window[2];
+	uint32_t object = gpu->compute_class;
 	CHANNEL_TRY(SparkNvrmPush(channel,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_OBJECT,&object,1u,owner));
-	window[0] = (uint32_t)(gpu->local_window >> 32);
-	window[1] = (uint32_t)gpu->local_window;
-	CHANNEL_TRY(SparkNvrmPush(channel,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_WINDOW_A,window,2u,owner));
-	window[0] = (uint32_t)(gpu->shared_window >> 32);
-	window[1] = (uint32_t)gpu->shared_window;
-	CHANNEL_TRY(SparkNvrmPush(channel,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_SHARED_MEMORY_WINDOW_A,window,2u,owner));
+	gpu->state_pending = 1u;
 	return(SparkNvrmChannelSync(gpu,channel,CHANNEL_SYNC_TIMEOUT_NS,owner));
+}
+
+SparkStatus SparkNvrmPushComputeState(SparkNvrmGpu *gpu, const char *owner)
+{
+	uint32_t words[3];
+	if ( gpu->state_pending == 0u )
+		return(SPARK_STATUS_OK);
+	words[0] = (uint32_t)(gpu->local_window >> 32);
+	words[1] = (uint32_t)gpu->local_window;
+	CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_WINDOW_A,words,2u,owner));
+	words[0] = (uint32_t)(gpu->shared_window >> 32);
+	words[1] = (uint32_t)gpu->shared_window;
+	CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_SHARED_MEMORY_WINDOW_A,words,2u,owner));
+	if ( gpu->local_memory.bytes != 0u )
+	{
+		words[0] = (uint32_t)(gpu->local_memory.address >> 32);
+		words[1] = (uint32_t)gpu->local_memory.address;
+		CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_A,words,2u,owner));
+		words[0] = (uint32_t)(gpu->local_bytes_per_tpc >> 32);
+		words[1] = (uint32_t)gpu->local_bytes_per_tpc;
+		words[2] = CHANNEL_LOCAL_SM_MASK;
+		CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_NON_THROTTLED_A,words,3u,owner));
+	}
+	gpu->state_pending = 0u;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvrmChannelOpen(SparkNvrmGpu *gpu, SparkNvrmMemoryKind control_kind, const char *owner)
@@ -247,7 +267,6 @@ void SparkNvrmChannelClose(SparkNvrmGpu *gpu)
 SparkStatus SparkNvrmEnsureLocalMemory(SparkNvrmGpu *gpu, uint32_t bytes_per_thread, const char *owner)
 {
 	SparkNvrmMemory grown,previous;
-	uint32_t words[3];
 	uint64_t per_thread,per_tpc,total;
 	if ( gpu->local_bytes_per_thread >= bytes_per_thread && gpu->local_memory.bytes != 0u )
 		return(SPARK_STATUS_OK);
@@ -255,17 +274,13 @@ SparkStatus SparkNvrmEnsureLocalMemory(SparkNvrmGpu *gpu, uint32_t bytes_per_thr
 	per_tpc = ChannelRound(ChannelRound(per_thread * 32u,CHANNEL_LOCAL_WARP_ALIGN) * gpu->warps_per_sm * gpu->sms_per_tpc,CHANNEL_LOCAL_TPC_ALIGN);
 	total = ChannelRound(per_tpc * gpu->tpcs_per_gpc * gpu->gpcs,CHANNEL_LOCAL_TOTAL_ALIGN);
 	CHANNEL_TRY(SparkNvrmMemoryAllocate(gpu,total,SPARK_NVRM_MEMORY_SYSTEM,&grown,owner));
-	words[0] = (uint32_t)(grown.address >> 32);
-	words[1] = (uint32_t)grown.address;
-	CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_A,words,2u,owner));
-	words[0] = (uint32_t)(per_tpc >> 32);
-	words[1] = (uint32_t)per_tpc;
-	words[2] = CHANNEL_LOCAL_SM_MASK;
-	CHANNEL_TRY(SparkNvrmPush(&gpu->compute,CHANNEL_COMPUTE_SUBCHANNEL,NVCEC0_SET_SHADER_LOCAL_MEMORY_NON_THROTTLED_A,words,3u,owner));
-	CHANNEL_TRY(SparkNvrmChannelSync(gpu,&gpu->compute,CHANNEL_SYNC_TIMEOUT_NS,owner));
 	previous = gpu->local_memory;
+	if ( previous.bytes != 0u )
+		CHANNEL_TRY(SparkNvrmChannelSync(gpu,&gpu->compute,CHANNEL_SYNC_TIMEOUT_NS,owner));
 	gpu->local_memory = grown;
 	gpu->local_bytes_per_thread = (uint32_t)per_thread;
+	gpu->local_bytes_per_tpc = per_tpc;
+	gpu->state_pending = 1u;
 	if ( previous.bytes != 0u )
 		SparkNvrmMemoryRelease(gpu,&previous);
 	return(SPARK_STATUS_OK);

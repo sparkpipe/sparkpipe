@@ -105,6 +105,7 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, const SparkNvrmProgram *prog
 	LaunchShape(gpu,program,request,&shape);
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
+	LAUNCH_TRY(SparkNvrmPushComputeState(gpu,owner));
 	word = (uint32_t)(request->slot_address >> 8);
 	LAUNCH_TRY(SparkNvrmPush(&gpu->compute,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&word,1u,owner));
 	word = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;

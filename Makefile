@@ -29,7 +29,7 @@ SPARKPIPE_DEVICE_FLAVOURS := cuda nvrm
 ifneq ($(words $(SPARKPIPE_DEVICE)) $(filter $(SPARKPIPE_DEVICE),$(SPARKPIPE_DEVICE_FLAVOURS)),1 $(SPARKPIPE_DEVICE))
 $(error SPARKPIPE_DEVICE=$(SPARKPIPE_DEVICE) is not a device flavour; the flavours are $(SPARKPIPE_DEVICE_FLAVOURS))
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-memory-bandwidth test-nvrm clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -1450,6 +1450,12 @@ build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 nvrm-first-light: build/nvrm_first_light
+
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
+
+.PHONY: nvrm-first-light-static
+nvrm-first-light-static: build/nvrm_first_light_static
 
 build/nvrm_memory_bandwidth: tools/nvrm_memory_bandwidth.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@

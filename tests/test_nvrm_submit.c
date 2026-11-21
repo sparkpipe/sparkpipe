@@ -214,6 +214,22 @@ static void TestLaunch(void)
 			"the slot holds the descriptor for this kernel, its bank 0 after the descriptor and the release");
 		memcpy(&word,slot + SPARK_NVRM_LAUNCH_QMD_BYTES + SPARK_NVRM_BANK0_DRIVER_BYTES + 8u,4u);
 		CHECK(word == value,"the arguments land in bank 0 at the kernel's parameter offset");
+		fake.gpu.compute.push_used = 0u;
+		fake.gpu.state_pending = 1u;
+		fake.gpu.local_memory.bytes = 1u << 21;
+		fake.gpu.local_memory.address = 0x1000a00000ull;
+		fake.gpu.local_bytes_per_tpc = 0x1b0000u;
+		CHECK(SparkNvrmLaunchQueue(&fake.gpu,&program,&request,"launch") == SPARK_STATUS_OK && fake.gpu.state_pending == 0u &&
+			fake.gpu.compute.push_used == 4u * (3u + 3u + 3u + 4u + 2u + 2u),"pending compute state is sent once, with the next launch");
+		CHECK(PushWord(&fake,0) == ((1u << 29) | (2u << 16) | (1u << 13) | (0x07b0u >> 2)) && PushWord(&fake,1) == 0x7293u && PushWord(&fake,2) == 0u &&
+			PushWord(&fake,3) == ((1u << 29) | (2u << 16) | (1u << 13) | (0x02a0u >> 2)) && PushWord(&fake,4) == 0x7294u &&
+			PushWord(&fake,6) == ((1u << 29) | (2u << 16) | (1u << 13) | (0x0790u >> 2)) && PushWord(&fake,7) == 0x10u && PushWord(&fake,8) == 0x00a00000u &&
+			PushWord(&fake,9) == ((1u << 29) | (3u << 16) | (1u << 13) | (0x02e4u >> 2)) && PushWord(&fake,10) == 0u && PushWord(&fake,11) == 0x1b0000u &&
+			PushWord(&fake,12) == 0xffu && PushWord(&fake,13) == ((1u << 29) | (1u << 16) | (1u << 13) | (0x02b4u >> 2)),
+			"the local and shared windows, the local memory and its per-TPC size precede the launch");
+		fake.gpu.compute.push_used = 0u;
+		CHECK(SparkNvrmLaunchQueue(&fake.gpu,&program,&request,"launch") == SPARK_STATUS_OK && fake.gpu.compute.push_used == 16u,
+			"a later launch sends no state again");
 		fake.gpu.local_bytes_per_thread = 0x100u;
 		CHECK(SparkNvrmLaunchQueue(&fake.gpu,&program,&request,"launch") == SPARK_STATUS_INVALID_ARGUMENT,
 			"a kernel needing more local memory than provisioned is refused");
