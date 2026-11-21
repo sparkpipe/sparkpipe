@@ -24,6 +24,9 @@ git -C "$repo" show "$source_ref:tools/fleet_node_agent.sh" > "$root/$AGENT_PATH
 chmod 0755 "$root/$AGENT_PATH"
 printf 'sparkpipe-node\n' > "$root/etc/hostname"
 printf 'LABEL=SPARKROOT\t/\text4\terrors=remount-ro\t0\t1\nLABEL=SPARKESP\t/boot/efi\tvfat\tumask=0077,nofail,x-systemd.device-timeout=10s\t0\t1\n' > "$root/etc/fstab"
+install -m 0644 "$out/tool/tailscale.deb" "$root/tmp/tailscale.deb"
+chroot "$root" dpkg -i /tmp/tailscale.deb > "$out/tailscale-install.log" 2>&1 || { tail -20 "$out/tailscale-install.log" >&2; exit 1; }
+rm -f "$root/tmp/tailscale.deb"
 python3 "$here/stage_baseline.py" "$root" --source-ref "$source_ref" --report "$out/baseline-report.json"
 systemctl --root="$root" enable sparkpipe-host-keys.service
 rm -f "$root"/etc/ssh/ssh_host_*_key "$root"/etc/ssh/ssh_host_*_key.pub "$root"/etc/dropbear/initramfs/dropbear_*_host_key

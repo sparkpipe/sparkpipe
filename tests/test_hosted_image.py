@@ -27,6 +27,7 @@ READ_TEXT = Path.read_text
 AUDIT = load("hosted_dependency_audit_for_image", ROOT / "tools" / "hosted_dependency_audit.py")
 STAGER = load("hosted_image_stage_baseline", IMAGE / "stage_baseline.py")
 BASELINE = STAGER.load_baseline()
+GUARD = STAGER.load_guard()
 PINS = {key: quoted or plain for key, quoted, plain in re.findall(r'^([A-Z0-9_]+)=(?:"([^"]*)"|(\S*))$', (IMAGE / "pins.conf").read_text(), re.M)}
 
 
@@ -55,7 +56,10 @@ class PinsTest(unittest.TestCase):
         self.assertEqual(PINS["MODULE_FILES"].split(), ["nvidia", "nvidia-uvm"])
         self.assertEqual(PINS["FIRMWARE_PACKAGE"], f"nvidia-firmware-{branch}-{PINS['MODULE_VERSION']}")
         self.assertTrue(image[PINS["FIRMWARE_PACKAGE"]].startswith(PINS["MODULE_VERSION"] + "-"))
-        for key in ("MMDEBSTRAP_SHA256", "MODULE_SHA256"):
+        self.assertEqual(PINS["TAILSCALE_DEB"], f"pool/tailscale_{PINS['TAILSCALE_VERSION']}_{PINS['ARCHITECTURE']}.deb")
+        self.assertIn("iptables", image)
+        self.assertEqual(AUDIT.package_reason("tailscale", PINS["TAILSCALE_VERSION"]), "")
+        for key in ("MMDEBSTRAP_SHA256", "MODULE_SHA256", "TAILSCALE_SHA256"):
             self.assertRegex(PINS[key], r"^[0-9a-f]{64}$")
         self.assertIn(f"_{PINS['MMDEBSTRAP_VERSION']}-", PINS["MMDEBSTRAP_DEB"])
         self.assertRegex(PINS["SNAPSHOT_URL"], r"^https://snapshot\.ubuntu\.com/ubuntu/[0-9]{8}T[0-9]{6}Z$")
@@ -67,13 +71,15 @@ class PinsTest(unittest.TestCase):
 
 class StagerTest(unittest.TestCase):
     def staged_apply(self):
-        recorder = STAGER.Recorder(BASELINE)
+        recorder = STAGER.Recorder(BASELINE, GUARD)
         commands = []
         writes = {}
 
         def run(argv, input_bytes=None, timeout=120, check=True, env=None):
             where, command = STAGER.classify(BASELINE, argv)
             commands.append((where, tuple(command)))
+            if where == "guard":
+                return recorder.install_guard(command[3], timeout)
             return subprocess.CompletedProcess(command, 0, b"", b"")
 
         payload = {"assets": {path: {"text": "asset\n", "mode": 0o644} for path in BASELINE.STAGED_ASSET_DESTINATIONS},
@@ -113,7 +119,14 @@ class StagerTest(unittest.TestCase):
         self.assertTrue(all("--now" not in command for command in image))
         self.assertIn(("sysctl", "--system"), live)
         self.assertIn(("modprobe", "sch_fq_codel"), live)
-        self.assertIn((BASELINE.DMA_GUARD_RUNTIME, "install", "--notify", BASELINE.HUB_NOTIFY), live)
+        self.assertIn(("guard", (BASELINE.DMA_GUARD_RUNTIME, "install", "--notify", BASELINE.HUB_NOTIFY)), commands)
+        self.assertIn(("systemctl", "--root=/", "enable", "spark-dma-guard.timer"), image)
+        service, timer = GUARD.unit_text(BASELINE.HUB_NOTIFY)
+        self.assertEqual(writes[str(GUARD.SERVICE_PATH)], (service, 0o644))
+        self.assertEqual(writes[str(GUARD.TIMER_PATH)], (timer, 0o644))
+        for path in ("/etc/sysctl.d/99-spark-recovery.conf", "/etc/systemd/system.conf.d/90-ds4-recovery.conf"):
+            self.assertIn(path, writes)
+        self.assertIn("kernel.hung_task_panic=1", writes["/etc/sysctl.d/99-spark-recovery.conf"][0].split())
         self.assertIn(("loginctl", "enable-linger", STAGER.IMAGE_NODE_ID), live)
         self.assertEqual(sorted(set(recorder.node)), sorted({"install_packages", "install_node_identity", "install_node_layout",
                                                              "install_sshd_hardening", "rebuild_initramfs"}))

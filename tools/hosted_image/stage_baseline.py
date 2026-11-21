@@ -11,6 +11,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = ROOT / "tools" / "devcycle" / "ds4_spark_brickproof.py"
+GUARD = ROOT / "tools" / "devcycle" / "spark_dma_guard.py"
 IMAGE_NODE_ID = "sparkff"
 OFFLINE_VERBS = ("enable", "disable", "mask", "unmask", "set-default")
 RUNTIME_VERBS = ("daemon-reload", "restart", "start", "stop", "try-reload-or-restart", "reset-failed", "show",
@@ -20,12 +21,20 @@ NODE_STEPS = ("install_packages", "install_node_identity", "install_node_layout"
               "install_efi_boot_order", "rebuild_initramfs", "install_ceph_policy", "heal_time_sync")
 
 
-def load_baseline():
-    spec = importlib.util.spec_from_file_location("ds4_spark_brickproof", BASELINE)
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_baseline():
+    return load("ds4_spark_brickproof", BASELINE)
+
+
+def load_guard():
+    return load("spark_dma_guard", GUARD)
 
 
 def classify(module, argv):
@@ -37,14 +46,17 @@ def classify(module, argv):
             return "live", argv
     if argv[0] == "/usr/sbin/sshd" and "-t" in argv:
         return "image", argv
+    if argv[0] == module.DMA_GUARD_RUNTIME and argv[1:3] == ["install", "--notify"] and len(argv) == 4:
+        return "guard", argv
     if argv[0] in LIVE_COMMANDS or argv[0] == module.DMA_GUARD_RUNTIME:
         return "live", argv
     raise module.BrickproofError(f"the image stager cannot place this baseline command: {argv}")
 
 
 class Recorder:
-    def __init__(self, module):
+    def __init__(self, module, guard):
         self.module = module
+        self.guard = guard
         self.applied = []
         self.live = []
         self.node = []
@@ -54,6 +66,8 @@ class Recorder:
         if where == "live":
             self.live.append(command)
             return subprocess.CompletedProcess(command, 0, b"", b"")
+        if where == "guard":
+            return self.install_guard(command[3], timeout)
         result = subprocess.run(command, input=input_bytes, capture_output=True, timeout=timeout, env=env,
                                 stdin=None if input_bytes is not None else subprocess.DEVNULL)
         self.applied.append({"command": command, "returncode": result.returncode})
@@ -61,6 +75,13 @@ class Recorder:
             raise self.module.BrickproofError(
                 f"{' '.join(command)} failed: {(result.stderr or result.stdout).decode('utf-8', 'replace').strip()}")
         return result
+
+    def install_guard(self, target, timeout):
+        host, port = self.guard.parse_target(target)
+        service, timer = self.guard.unit_text(f"{host}:{port}")
+        self.module.atomic_write(self.guard.SERVICE_PATH, service, 0o644)
+        self.module.atomic_write(self.guard.TIMER_PATH, timer, 0o644)
+        return self.module.run(["systemctl", "enable", self.guard.TIMER_PATH.name])
 
     def deferred(self, name):
         def record(*arguments, **keywords):
@@ -88,7 +109,7 @@ def stage(module, payload, rootfs):
         os.close(read)
         status = 0
         try:
-            recorder = Recorder(module)
+            recorder = Recorder(module, load_guard())
             recorder.install()
             os.chroot(rootfs)
             os.chdir("/")
