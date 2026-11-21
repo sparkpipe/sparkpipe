@@ -5,6 +5,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #ifdef __CUDACC__
 #include <cooperative_groups.h>
@@ -180,14 +181,14 @@ void LmHyperInjectWeightsClusterKernel(const uint16_t *__restrict__ normed_bf16,
 }
 
 template<uint32_t THREADS, uint32_t STREAMS>
-static inline cudaError_t LmHyperInjectWeightsLaunch(uint32_t rows, cudaStream_t stream, const uint16_t *normed_bf16, const uint16_t *weight_bf16, float *inject,
+static inline SparkGpuError LmHyperInjectWeightsLaunch(uint32_t rows, SparkGpuStream stream, const uint16_t *normed_bf16, const uint16_t *weight_bf16, float *inject,
 	uint32_t width)
 {
 	if ( rows != 0u && rows <= LM_HYPER_INJECT_CLUSTER_ROWS )
 		return LmLaunchClusterKernel((LmHyperInjectWeightsClusterKernel<THREADS, STREAMS>), dim3(rows * (THREADS / LM_WARP_LANES)), dim3(LM_WARP_LANES), 0,
 			stream, THREADS / LM_WARP_LANES, 0u, normed_bf16, weight_bf16, inject, width);
 	LM_LAUNCH((LmHyperInjectWeightsKernel<THREADS, STREAMS>), rows, THREADS, 0, stream, normed_bf16, weight_bf16, inject, width);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t THREADS>

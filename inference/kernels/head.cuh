@@ -9,6 +9,7 @@
 #include "include/sparkpipe/spark_sampling.h"
 #include "runtime/launch.h"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 template<uint32_t ROWS>
 static __device__ __forceinline__ void LmHeadRowsReduce(float (*best_score)[LM_ROWS_TILE_N], uint32_t (*best_token)[LM_ROWS_TILE_N], uint32_t threads)
@@ -546,7 +547,7 @@ static int32_t LmHeadTopk(
 	uint32_t rows,
 	uint32_t hidden,
 	uint32_t vocabulary,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	uint32_t tiles;
 
@@ -559,7 +560,7 @@ static int32_t LmHeadTopk(
 		normed_bf16,head_weight_bf16,token_ids,candidate_score,candidate_token,rows,hidden,vocabulary);
 	LM_LAUNCH((LmHeadTopkCommitKernel<THREADS,K>), rows, THREADS, 0, stream,
 		candidate_score,candidate_token,tiles,token_out,score_out,rows);
-	return(cudaPeekAtLastError() == cudaSuccess
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH);
 }

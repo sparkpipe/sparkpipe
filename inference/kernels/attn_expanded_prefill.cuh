@@ -3,6 +3,7 @@
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/tma.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_EXPANDED_PREFILL_COMPUTE_WARPS 8u
 #define LM_EXPANDED_PREFILL_PRODUCER_WARPS 2u
@@ -171,7 +172,7 @@ void LmLatentValueExpandKernel(
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
-static inline cudaError_t LmLatentValueExpandLaunch(
+static inline SparkGpuError LmLatentValueExpandLaunch(
 	const uint8_t *keys,
 	uint64_t key_source_stride,
 	uint32_t sources,
@@ -180,7 +181,7 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 	uint32_t heads,
 	uint8_t *values,
 	uint64_t value_source_stride,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmLatentExpandSharedBytes<VALUE>();
 	static bool granted = false;
@@ -188,21 +189,21 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 		(key_source_stride % 16u) != 0u || (value_source_stride % 16u) != 0u ||
 		(sources > 1u && (key_source_stride < (uint64_t)keys_per_source * ROW_DIM * 2u ||
 			value_source_stride < (uint64_t)keys_per_source * heads * VALUE * 2u)))
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (keys_per_source == 0u)
-		return cudaSuccess;
+		return SPARK_GPU_SUCCESS;
 	if (!granted)
 	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-		if (error != cudaSuccess)
+		SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
 	if ((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>), dim3(heads, (keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, sources), LM_LATENT_EXPAND_THREADS, shared, stream,
 		keys, key_source_stride, keys_per_source, weight_bf16, heads, values, value_source_stride, (uint64_t)heads * VALUE, VALUE);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM>
@@ -227,7 +228,7 @@ void LmLatentRopeBroadcastKernel(
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM>
-static inline cudaError_t LmLatentRopeBroadcastLaunch(
+static inline SparkGpuError LmLatentRopeBroadcastLaunch(
 	const uint8_t *keys,
 	uint32_t key_count,
 	uint32_t heads,
@@ -235,20 +236,20 @@ static inline cudaError_t LmLatentRopeBroadcastLaunch(
 	uint64_t key_pitch,
 	uint64_t head_pitch,
 	uint64_t rope_offset,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	static_assert(ROW_DIM > LATENT && (ROW_DIM - LATENT) % 2u == 0u, "the rope part follows the latent and is whole bf16 pairs");
 	if (keys == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || rope_offset % 2u != 0u || head_pitch % 2u != 0u || key_pitch % 2u != 0u ||
 		head_pitch < rope_offset + (ROW_DIM - LATENT) || key_pitch < (uint64_t)(heads - 1u) * head_pitch + rope_offset + (ROW_DIM - LATENT))
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (key_count == 0u)
-		return cudaSuccess;
+		return SPARK_GPU_SUCCESS;
 	LM_LAUNCH((LmLatentRopeBroadcastKernel<LATENT, ROW_DIM>), key_count, 256, 0, stream, keys, key_count, heads, output, key_pitch, head_pitch, rope_offset);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t LATENT, uint32_t ROW_DIM, uint32_t VALUE>
-static inline cudaError_t LmLatentExpandPitchedLaunch(
+static inline SparkGpuError LmLatentExpandPitchedLaunch(
 	const uint8_t *keys,
 	uint32_t key_count,
 	const uint16_t *weight_bf16,
@@ -256,27 +257,27 @@ static inline cudaError_t LmLatentExpandPitchedLaunch(
 	uint8_t *output,
 	uint64_t key_pitch,
 	uint64_t head_pitch,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmLatentExpandSharedBytes<VALUE>();
 	static bool granted = false;
 	if (keys == 0 || weight_bf16 == 0 || output == 0 || heads == 0u || (uintptr_t)output % 4u != 0u || head_pitch < VALUE ||
 		key_pitch < (uint64_t)(heads - 1u) * head_pitch + VALUE || key_pitch % 2u != 0u || head_pitch % 2u != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (key_count == 0u)
-		return cudaSuccess;
+		return SPARK_GPU_SUCCESS;
 	if (!granted)
 	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-		if (error != cudaSuccess)
+		SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
 	if ((key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>), dim3(heads, (key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, 1u), LM_LATENT_EXPAND_THREADS, shared, stream,
 		keys, 0u, key_count, weight_bf16, heads, output, 0u, key_pitch, head_pitch);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
@@ -638,7 +639,7 @@ void LmExpandedGatherPrefillKernel(
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
-static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
+static inline SparkGpuError LmExpandedGatherPrefillSourcesLaunch(
 	LmKvShardGatherView cache,
 	uint32_t sources,
 	uint64_t key_source_stride,
@@ -653,7 +654,7 @@ static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
 	float *partials,
 	uint64_t partial_source_stride,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmExpandedPrefillSharedBytes<LATENT + ROPE, VALUE>();
 	static bool granted = false;
@@ -664,22 +665,22 @@ static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
 		(sources > 1u && (key_source_stride == 0u || value_source_stride == 0u ||
 			partial_source_stride < (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(VALUE))) ||
 		(key_source_stride % 16u) != 0u || (value_source_stride % 16u) != 0u || (partial_source_stride % 2u) != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (!granted)
 	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-		if (error != cudaSuccess)
+		SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
 	LM_LAUNCH((LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>), dim3((rows + LM_EXPANDED_PREFILL_ROWS - 1u) / LM_EXPANDED_PREFILL_ROWS, heads_per_rank / LM_EXPANDED_PREFILL_HEADS, sources), LM_EXPANDED_PREFILL_THREADS, shared, stream,
 		cache, values, query_bf16, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, rows,
 		key_source_stride, value_source_stride, partial_source_stride);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t VALUE>
-static inline cudaError_t LmExpandedGatherPrefillLaunch(
+static inline SparkGpuError LmExpandedGatherPrefillLaunch(
 	LmKvShardGatherView cache,
 	const uint8_t *values,
 	const uint16_t *query_bf16,
@@ -690,7 +691,7 @@ static inline cudaError_t LmExpandedGatherPrefillLaunch(
 	float qk_scale,
 	float *partials,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return LmExpandedGatherPrefillSourcesLaunch<Geometry, LATENT, ROPE, VALUE>(cache, 1u, 0u, values, 0u, query_bf16, heads_per_rank,
 		sequence_of_row, context_length, row_position, qk_scale, partials, 0u, rows, stream);

@@ -4,10 +4,11 @@
 
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 template<class Format>
 static int32_t LmDenseRows(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, float *output_f32, uint32_t rows,
-	uint32_t input_dimension, uint32_t output_dimension, uint32_t row_exact, uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t input_dimension, uint32_t output_dimension, uint32_t row_exact, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
 	{
