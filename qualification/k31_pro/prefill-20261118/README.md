@@ -140,8 +140,8 @@ Files:
 
 The FP8 index (`streamed_prefill.index_fp8` 1) against BF16 on a fixed suite
 of long prompts, answered by the mode-switch lane. Five of the suite's 20
-prompts are paired so far: two power losses on the fleet stopped the runs,
-and the rest waits for stable power. Files in [`lps-20261121/`](lps-20261121/).
+prompts are paired so far: the runs stopped early (the table below says
+where), and the rest is queued. Files in [`lps-20261121/`](lps-20261121/).
 
 The suite (`tools/long_prompt_suite.py`, seed 20261121) holds RULER's
 retrieval and tracking tasks with several questions a prompt:
@@ -166,10 +166,10 @@ The lane is `k31_pro_rp` on all 16 Sparks.
 | Run | Index | Answered | Stopped by |
 | --- | --- | --- | --- |
 | LB1 | BF16 | the four 131K-0 prompts, mk-458k-0 | mv-458k-0: the KV pool grew from 400 to 800 chunks (11.7 GB against the 8 GiB reserve) while the arena was detached, so the switch back found no room (`spark_weightd_lazy_pack.c:156`) |
-| LF1 | FP8 | the four 131K-0 prompts, mk-458k-0, mv-458k-0 | mk3-458k-0: the Sparks lost power at 02:18:57Z |
-| LB2 | BF16 | a repeat of mk-131k-0, identical to LB1 to the bit | mk-1000k-0: spark8's second 100G port went down for 7 s at 04:13:05Z in pass 2, and a collective round ran out its 30 s |
-| LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4); 90 s later a weightd restart on all 16 repaired the mesh the reboot had left with failed queue pairs |
-| LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: spark9, sparka, sparkb, sparkd and sparkf lost power at about 06:04Z, as pass 2 began (their journals stop at 06:03:41-46Z, no shutdown, panic or DMA-guard trigger), and the weight stream's connections to them ran out of retries |
+| LF1 | FP8 | the four 131K-0 prompts, mk-458k-0, mv-458k-0 | mk3-458k-0: the lane lost all 16 ranks at 02:18:57Z |
+| LB2 | BF16 | a repeat of mk-131k-0, identical to LB1 to the bit | mk-1000k-0: spark8 lost one of its two links for 7 s at 04:13:05Z in pass 2, and a collective round ran out its 30 s |
+| LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4): the mesh still held failed queue pairs from the nodes' restart after LF1, and a weightd restart on all 16 repaired it 90 s later |
+| LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: the lane lost spark9, sparka, sparkb, sparkd and sparkf at about 06:04Z, as pass 2 began, and the weight stream's connections to them ran out of retries |
 
 LB3's two 1M answers have no FP8 pair yet, so the comparison below leaves
 them out. BF16 gets all 16 of their questions right (`long_prompt_suite.py
@@ -241,8 +241,8 @@ Files:
   mk3-1000k-0 pass: six ranks' weight streams ran out of retries (`transport
   retry counter exceeded`), the others' rotation steps stalled, and all
   failed at layer 4 of pass 2, after all 16 ranks had finished pass 1. The
-  logs of the five ranks that lost power stop at the start of this prefill
-  and end in zeros: their last lines were lost with the power.
+  logs of the five ranks the lane lost stop at the start of this prefill
+  and end in zeros: their last lines never reached the disk.
 - `events.txt`: the driver's events for each run.
 
 ## Files
