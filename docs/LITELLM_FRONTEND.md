@@ -642,17 +642,17 @@ conversations (each readable only by the member that stored it) and its
 alias table; `prefill.sqlite` holds only the measured
 prefill rates per model and length, with no request content. Stored
 responses and turns share `replay.budget_bytes`; over it, the least recently
-used rows go first, whichever account holds them. Deletion follows the
-working-state rule of `docs/WORKING_STATE.md` through the function in
+used rows go first, whichever account holds them. Nothing is deleted for
+its age. Deletion follows the function in
 `tools/serving/working_state.py`: every second the chat layer reads the
-directive the working-state controller writes on the hub
-(`replay.directive`, `~/sparkdata/working-state/directive`), and every row
-last used before `wiped` (another account started using the fleet), or 24 h
-after the later of its last use and `held_until`, is deleted; an account
-whose rows are all gone has its files removed. A missing directive is
-`wiped 0`, `held_until 0`: 24 h after last use. `DELETE /v1/cache` removes
-the account's files at once; the engine's cache goes at the next change of
-user or by the same 24 h rule, and the answer says so (`not_deleted`).
+working-state directive on its host (`replay.directive`,
+`~/sparkdata/working-state/directive`, two lines:
+`sparkpipe-working-state 2` and `wiped <unix seconds>`), and every row last
+used before `wiped` is deleted; an account whose rows are all gone has its
+files removed. A missing directive is `wiped 0`: nothing is deleted.
+`DELETE /v1/cache` removes the account's files at once; the engine's cache
+stays until the fleet is restored to the base image when the hold ends, and
+the answer says so (`not_deleted`).
 Responses `store` (true unless the request sets it to false, as in OpenAI's
 API) decides whether the conversation is kept for `previous_response_id`;
 the generated tokens are kept either way. A failed write to the store (disk
@@ -844,8 +844,7 @@ Checked after the restart: `/v1/models` and `/v1/codex/models`, a Messages
 and a Responses request on GLM 5.3, `count_tokens`, the replay directory
 created with mode 700, the gateway key refused without
 `X-SparkPipe-Account` (400 `account_required`) and served with it, and every
-VPS file equal to the commit. No directive exists yet, so rows expire 24 h
-after their last use until the working-state controller writes one.
+VPS file equal to the commit.
 
 ### Repositories and context packs (2026-11-06)
 
@@ -903,11 +902,12 @@ it gets 404 for a name that exists elsewhere.
   version built yet it answers 409 `pack_building`. The session is
   `X-Claude-Code-Session-Id`, `x-session-affinity`, `X-Session-Id` or Codex's
   `prompt_cache_key`; without one, the first system and first user message.
-  Versions that are not current and that no session used for 24 hours are
-  dropped at the next refresh, with their pins.
-- **Deletion.** Areas follow the working-state rule: at a change of user, or
-  24 h after the last booked hour, the expiry sweep deletes every area last
-  used before it, repositories and packs together. `DELETE /v1/cache`
+  A version that is not current and that no session is on is dropped when
+  a newer one becomes current. A session keeps its version however long it
+  pauses; the newest 4,096 sessions of a pack are remembered.
+- **Deletion.** Areas follow the working-state rule: a wipe mark deletes
+  every area last used before it, repositories and packs together, and
+  nothing is deleted for its age. `DELETE /v1/cache`
   deletes the packs, and `?storage=true` the whole area. Deleting a pack or
   an area cancels its refresh, and a refresh never writes into a deleted pack.
 

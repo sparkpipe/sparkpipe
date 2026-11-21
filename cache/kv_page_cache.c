@@ -327,14 +327,6 @@ static uint32_t SparkKvPageCacheTakeUnread(SparkKvPageCache *cache,const SparkMo
 	return(1u);
 }
 
-static void SparkKvPageCacheExpireUnread(SparkKvPageCache *cache,uint64_t now_seconds)
-{
-	uint32_t index;
-	for (index=0u; cache->unread != 0 && index<cache->unread_capacity; index++)
-		if ( cache->unread[index].tag != 0u && (uint64_t)cache->unread[index].used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds )
-			memset(&cache->unread[index],0,sizeof(cache->unread[index]));
-}
-
 static uint32_t SparkKvPageCacheFindEntry(
 	SparkKvPageCache *cache,
 	const SparkModelDriverCacheIdentity *identity,
@@ -768,46 +760,6 @@ SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache)
 	if ( SparkKvPageCacheIsValid(cache) == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkKvPageCacheEvictUnusedExcept(cache,0,0u));
-}
-
-static uint32_t SparkKvPageCacheExpiredDiscardable(const SparkKvPageCache *cache,uint32_t entry_index,uint64_t now_seconds)
-{
-	return(cache->entries[entry_index].used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds &&
-		SparkKvPageCachePageCanDiscard(cache,cache->entries[entry_index].logical_page_index) != 0u ? 1u : 0u);
-}
-
-SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries)
-{
-	uint32_t entry,next,pass,total = 0u,link,parent,chain;
-	if ( expired_entries != 0 )
-		*expired_entries = 0u;
-	if ( SparkKvPageCacheIsValid(cache) == 0u )
-		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkKvPageCacheExpireUnread(cache,now_seconds);
-	do
-	{
-		pass = 0u;
-		for (entry=cache->lru_head; entry != SPARK_KV_PAGE_CACHE_NO_INDEX; entry=next)
-		{
-			next = cache->entries[entry].lru_next;
-			if ( SparkKvPageCacheExpiredDiscardable(cache,entry,now_seconds) == 0u )
-				continue;
-			for (link=entry, chain=1u; chain != 0u; link=parent)
-			{
-				parent = cache->entries[link].parent_entry_index;
-				chain = parent < cache->entry_capacity && cache->entries[parent].reference_count == 1u &&
-					SparkKvPageCacheExpiredDiscardable(cache,parent,now_seconds) != 0u ? 1u : 0u;
-				if ( SparkKvPageCacheEvictEntryInChain(cache,link,link == entry ? 1u : 0u,chain == 0u ? 1u : 0u) != SPARK_STATUS_OK )
-					break;
-				pass++;
-			}
-		}
-		total += pass;
-	} while ( pass != 0u );
-	cache->expired_entry_count += total;
-	if ( expired_entries != 0 )
-		*expired_entries = total;
-	return(SPARK_STATUS_OK);
 }
 
 static uint32_t SparkKvPageCacheHoldsState(const SparkKvPageCache *cache,uint32_t entry_index)

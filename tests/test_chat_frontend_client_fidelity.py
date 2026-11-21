@@ -361,12 +361,12 @@ async def stored(harness, check):
     engine.reply(CODEX_ANSWER)
     status, _, text = await harness.post("/v1/responses", codex_body([codex_user("Until the wipe")], store=True, stream=False), account="acme")
     wiped = json.loads(text)["id"]
-    harness.directive(time.time() + 5, 0)
-    harness.frontend.expire_working_state(time.time(), True)
+    harness.directive(time.time() + 5)
+    harness.frontend.wipe_working_state()
     async with harness.session.get(harness.base + "/v1/responses/" + wiped, headers=harness.headers(account="acme")) as response:
-        check(response.status == 404, "a wipe at a change of user removes stored responses by the working-state rule")
-    harness.directive(0, 0)
-    harness.frontend.expire_working_state(time.time(), True)
+        check(response.status == 404, "a wipe removes stored responses by the working-state rule")
+    harness.directive(0)
+    harness.frontend.wipe_working_state()
     engine.reply(CODEX_ANSWER)
     status, _, text = await harness.post("/v1/responses", codex_body([codex_user("Across a restart")], store=True, stream=False), account="acme")
     return json.loads(text)

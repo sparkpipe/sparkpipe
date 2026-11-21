@@ -101,19 +101,19 @@ def main():
         for table in ("turns", "responses", "aliases"):
             store.scopes["account:acme"].db.execute(f"UPDATE {table} SET used = ?", (time.time() - 100,))
         wiped = time.time() - 50
-        dropped = store.expire(lambda used: working_state.expired(used, wiped, 0, time.time()))
+        dropped = store.expire(lambda used: working_state.expired(used, wiped))
         raw = b"".join(path.read_bytes() for path in root.iterdir() if path.name.startswith("own"))
         check(dropped >= 1 and store.find("own", None, MODEL, ["toolu_old"], chat_replay.view_digest(MODEL, {"role": "assistant", "content": "old"}), CONTEXT) is None,
-              "a turn last used before the fleet's current user started is deleted")
+              "a turn last used before the wipe is deleted")
         check(array("I", marker).tobytes() not in raw, "a deleted turn's tokens are overwritten in the store file, not left in free pages")
         check("account:acme" not in store.scopes and not (root / "account-acme.sqlite").exists() and not (root / "account-acme.sqlite-wal").exists(),
-              "an account whose whole store expired has its files removed")
+              "an account whose whole store was wiped has its files removed")
         store.put("own", None, MODEL, view, CONTEXT, [1], [])
-        store.scopes["own"].db.execute("UPDATE turns SET used = ?", (time.time() - 2 * 86400,))
-        store.expire(lambda used: working_state.expired(used, 0, time.time() + 3600, time.time()))
-        check(store.turns("own") > 0, "state stays while its account still holds the fleet, even after 24 hours without use")
-        store.expire(lambda used: working_state.expired(used, 0, time.time() - 86401, time.time()))
-        check(store.turns("own") == 0 and not (root / "own.sqlite").exists(), "state goes 24 hours after the later of its last use and the last hour held")
+        store.scopes["own"].db.execute("UPDATE turns SET used = ?", (time.time() - 400 * 86400,))
+        store.expire(lambda used: working_state.expired(used, 0))
+        check(store.turns("own") > 0, "state last used 400 days ago stays: nothing is deleted for its age")
+        store.expire(lambda used: working_state.expired(used, time.time()))
+        check(store.turns("own") == 0 and not (root / "own.sqlite").exists(), "a wipe ordered after its last use deletes it and removes the empty store")
 
         store.put("key:k_1", "k_1", MODEL, view, CONTEXT, [1, 2], [])
         store.put("account:b", None, MODEL, view, CONTEXT, [3, 4], [])
@@ -150,7 +150,7 @@ def main():
     print("PASS test_chat_replay_store: a turn keeps only its generated tokens, is found by its handles or by its reply after the same earlier "
           "conversation, only by its own member, and never when the client edited it; "
           "each account has its own private store file; responses count against the budget; turns, responses and aliases survive a restart; the "
-          "working-state rule deletes state used before the current user started or 24 hours after the last use and hour held, overwriting it and "
+          "working-state rule deletes state used before a wipe and nothing for its age, overwriting it and "
           "removing empty stores; eviction is least recently used across accounts; cold prefills give a measured rate near their length")
     return 0
 

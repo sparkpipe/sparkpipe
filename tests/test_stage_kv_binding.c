@@ -1198,38 +1198,23 @@ static void TestAdoptedPagesKeepTheirAge(void)
 {
 	uint8_t pages[2][TEST_PAGE_BYTES];
 	struct timespec now;
-	uint64_t kept_since,due_since,oldest;
-	uint32_t held,expired = 0u;
+	uint64_t aged_since,oldest;
+	uint32_t held;
 	Open();
 	PublishTwoPageChain(pages);
 	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
-	kept_since = (uint64_t)now.tv_sec - (SPARK_KV_RETENTION_SECONDS - SPARK_KV_DETACHED_POOL_SECONDS) + 600u;
+	aged_since = (uint64_t)now.tv_sec - UINT64_C(400) * UINT64_C(86400);
 	assert(ValidPageEntries(&oldest) == 2u && oldest + 60u >= (uint64_t)now.tv_sec);
-	AgePageEntries(kept_since);
-	Unload();
-	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
-	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
-	pthread_mutex_lock(&BINDING.mutex);
-	held = ValidPageEntries(&oldest);
-	assert(BINDING.kv_pool_adopted_pages == 2u && held == 2u && oldest == kept_since);
-	assert(SparkKvPageCacheExpire(&BINDING.page_cache,kept_since + SPARK_KV_RETENTION_SECONDS,&expired) == SPARK_STATUS_OK);
-	pthread_mutex_unlock(&BINDING.mutex);
-	assert(expired == 2u && ValidPageEntries(&oldest) == 0u);
-	Close();
-	Open();
-	PublishTwoPageChain(pages);
-	assert(clock_gettime(CLOCK_REALTIME,&now) == 0);
-	due_since = (uint64_t)now.tv_sec - SPARK_KV_RETENTION_SECONDS + 60u;
-	AgePageEntries(due_since);
+	AgePageEntries(aged_since);
 	Unload();
 	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	pthread_mutex_lock(&BINDING.mutex);
 	held = ValidPageEntries(&oldest);
 	pthread_mutex_unlock(&BINDING.mutex);
-	assert(BINDING.kv_pool_adopted_pages == 0u && held == 0u);
+	assert(BINDING.kv_pool_adopted_pages == 2u && held == 2u && oldest == aged_since);
 	Close();
-	printf("adopted pages keep their age: pages that would outlive the retention limit within the detached-pool hour are dropped before the pool is sealed, older ones come back from the weightd seal with their age and the expiry sweep drops them on time\n");
+	printf("adopted pages keep their age: pages last used 400 days ago are sealed into the weightd pool and come back with their age; none is dropped for being old\n");
 }
 
 static void TestRestartAdoptsDevicePages(void)
