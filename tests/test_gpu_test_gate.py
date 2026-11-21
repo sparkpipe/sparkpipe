@@ -6,8 +6,10 @@ gate runs that set on a GPU host. This test checks, without a GPU, that its
 plan holds every Python test that asks for an sm_121 device and no other test
 beyond the listed prerequisite ones, that it runs every `make test-*` GPU
 target, that each artifact it builds for a prerequisite test has a rule, and
-that its verdicts mean what the gate reports and it hands its kernel-log mark
-to the shared rule, tools/nvrm_kernel_log.sh, and takes that rule's verdict.
+that its verdicts mean what the gate reports, that a base at the head's
+commit shares the head's worktree while any other base gets its own, and that
+it hands its kernel-log mark to the shared rule, tools/nvrm_kernel_log.sh, and
+takes that rule's verdict.
 """
 import importlib.util
 import re
@@ -61,6 +63,19 @@ def main():
         clean, report = gate.kernel_log_check(rule, mark)
         if mark != "12.5" or clean or report != "FAIL Xid 13":
             failures.append("the gate does not pass its mark to the kernel-log rule or read its verdict: %r %r %r" % (mark, clean, report))
+    with tempfile.TemporaryDirectory(prefix="gpu-gate-trees-") as scratch:
+        repository = Path(scratch) / "repository"
+        git = ["git", "-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "-C", str(repository)]
+        gate.subprocess.run(["git", "init", "-q", str(repository)], check=True)
+        gate.subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "first"], check=True)
+        gate.subprocess.run(git + ["tag", "first"], check=True)
+        gate.subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "second"], check=True)
+        head, base, builds = gate.trees(repository, Path(scratch) / "same", "HEAD", "HEAD")
+        if base != head or [label for label, _ in builds] != ["head"]:
+            failures.append("a base at the head's commit does not reuse the head's worktree: %s %s %s" % (head, base, builds))
+        head, base, builds = gate.trees(repository, Path(scratch) / "two", "HEAD", "first")
+        if base == head or [label for label, _ in builds] != ["head", "base"] or gate.commit_of(base, "HEAD") != gate.commit_of(repository, "first"):
+            failures.append("a base at another commit does not get its own worktree at that commit: %s %s %s" % (head, base, builds))
     if gate.KERNEL_LOG_RULE != "tools/nvrm_kernel_log.sh":
         failures.append("the gate does not use the shared kernel-log rule tools/nvrm_kernel_log.sh")
     for failure in failures:

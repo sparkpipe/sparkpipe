@@ -6,7 +6,8 @@ skip there and the `make test-*` GPU targets never run. This gate runs that
 whole set on a GPU host (a Lenovo or a GB10 node), in git worktrees of both
 revisions built the way `make test` builds them, plus the artifacts some tests
 name that `make test` does not build. Each test runs on the head; a test that
-fails there runs on the base too, so every result is classified:
+fails there runs on the base too, so every result is classified. When base
+and head are the same commit, one worktree serves both:
 
   PASS        passes on the head
   REGRESSION  fails on the head and passes on the base
@@ -143,16 +144,29 @@ def run_logged(command, tree, log):
     return code, time.monotonic() - started
 
 
-def worktree(work, label, revision):
+def commit_of(repository, revision):
+    return subprocess.run(["git", "-C", str(repository), "rev-parse", revision + "^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def worktree(repository, work, label, wanted):
     path = Path(work) / label
-    wanted = subprocess.run(["git", "-C", str(ROOT), "rev-parse", revision + "^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
     if path.exists():
         current = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         if current == wanted:
             return path
-        subprocess.run(["git", "-C", str(ROOT), "worktree", "remove", "--force", str(path)], check=True)
-    subprocess.run(["git", "-C", str(ROOT), "worktree", "add", "--detach", str(path), wanted], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repository), "worktree", "remove", "--force", str(path)], check=True)
+    subprocess.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(path), wanted], check=True, capture_output=True)
     return path
+
+
+def trees(repository, work, head_revision, base_revision):
+    head_commit = commit_of(repository, head_revision)
+    base_commit = commit_of(repository, base_revision)
+    head = worktree(repository, work, "head", head_commit)
+    if base_commit == head_commit:
+        return head, head, [("head", head)]
+    base = worktree(repository, work, "base", base_commit)
+    return head, base, [("head", head), ("base", base)]
 
 
 def build(tree, extra, jobs, log):
@@ -193,12 +207,13 @@ def main(argv):
     work = Path(options.work)
     logs = work / "logs"
     logs.mkdir(parents=True, exist_ok=True)
-    head = worktree(work, "head", options.head)
-    base = worktree(work, "base", options.base)
+    head, base, builds = trees(ROOT, work, options.head, options.base)
+    if base == head:
+        print("base and head are the same commit; one worktree serves both")
     selected = plan(head)
     rule = kernel_log_rule(ROOT)
     mark = kernel_log_mark(rule)
-    for label, tree in (("head", head), ("base", base)):
+    for label, tree in builds:
         build(tree, selected["build"], options.jobs, logs / ("build.%s.log" % label))
     pins = host_ci_pins(head)
     results = []
