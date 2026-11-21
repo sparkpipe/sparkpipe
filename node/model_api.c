@@ -1935,11 +1935,11 @@ static void handle_cache_state(int fd, char *body, uint32_t body_len)
 		(void)snprintf(hex + 2u * index,3u,"%02x",state.identity.sha256[index]);
 	(void)snprintf(response,sizeof(response),
 		"{\"object\":\"cache.state\",\"complete\":%s,\"prompt_tokens\":%u,\"matched_tokens\":%u,\"resume_tokens\":%u,\"probed_tokens\":%u,\"identity\":\"%s\","
-		"\"ranks\":%u,\"ranks_reported\":%u,\"held_tokens\":%u,\"resident_tokens\":%u,\"saved_tokens\":%u,\"state_tokens\":%u,"
+		"\"ranks\":%u,\"ranks_reported\":%u,\"held_tokens\":%u,\"resident_tokens\":%u,\"saved_tokens\":%u,\"state_tokens\":%u,\"read_tokens\":%u,"
 		"\"block_tokens\":%u,\"checkpoint_tokens\":%u,\"boot\":\"%s\",\"artifact\":\"%.16s\"}",
 		status == (uint32_t)SPARK_STATUS_OK ? "true" : "false",state.prompt_token_count,state.matched_token_count,state.resume_token_count,state.probed_token_count,
 		state.probed_token_count != 0u ? hex : "",state.rank_count,state.reported_rank_count,state.held_token_count,state.resident_token_count,state.saved_token_count,
-		state.state_token_count,state.cache_block_token_count,state.cache_checkpoint_token_count,ApiBootId,api_artifact());
+		state.state_token_count,state.read_token_count,state.cache_block_token_count,state.cache_checkpoint_token_count,ApiBootId,api_artifact());
 	send_response(fd,200,response);
 }
 

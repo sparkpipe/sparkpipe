@@ -326,10 +326,10 @@ SparkStatus SparkModelResidentIpcValidateCacheProbeReport(
 	status = SparkModelResidentIpcValidateHeader(report != 0 ? &report->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_REPORT_BYTES);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
-	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->token_count == 0u || report->reserved0 != 0u ||
+	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->token_count == 0u ||
 		report->status > (uint32_t)SPARK_STATUS_MAXIMUM || report->probe.held_token_count > report->token_count ||
 		report->probe.resident_token_count > report->token_count || report->probe.saved_token_count > report->token_count ||
-		report->probe.state_token_count > report->token_count )
+		report->probe.state_token_count > report->token_count || report->probe.read_token_count > report->token_count )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }

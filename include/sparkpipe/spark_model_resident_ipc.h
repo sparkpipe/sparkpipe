@@ -179,7 +179,6 @@ typedef struct SparkModelResidentIpcCacheProbeReport
 	uint32_t token_count;
 	uint32_t status;
 	uint32_t rank_index;
-	uint32_t reserved0;
 	SparkModelServingCacheProbe probe;
 } SparkModelResidentIpcCacheProbeReport;
 

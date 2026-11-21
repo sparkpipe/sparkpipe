@@ -106,6 +106,7 @@ typedef struct SparkModelDriverCacheProbe
     uint32_t resident_token_count;
     uint32_t saved_token_count;
     uint32_t state_token_count;
+    uint32_t read_token_count;
 } SparkModelDriverCacheProbe;
 
 typedef struct SparkModelDriverCacheLane

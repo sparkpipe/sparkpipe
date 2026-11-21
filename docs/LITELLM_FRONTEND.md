@@ -380,6 +380,7 @@ every rank has it:
 | `resident_tokens` | tokens of that prefix whose pages are on the device |
 | `saved_tokens` | the longest part of the prefix, from token 0, that is in the snapshot store; for a prefix a rank no longer holds in memory, its whole length when its last page file is on disk |
 | `state_tokens` | the nearest point at or below the prefix that the ranks can resume from: on a model with recurrent state, the deepest entry that still has its state |
+| `read_tokens` | the part of the prefix, from token 0, that a later request has read. The ranks save that part by themselves; the rest reaches the snapshot store only when the engine closes. 0 for a prefix no rank holds in memory. The design's classes (tail, kept, pinned) are not built yet, and this is what the engine knows in their place |
 | `block_tokens`, `checkpoint_tokens` | the page size and the checkpoint distance of this adapter (0 when it resumes at any block) |
 | `boot`, `artifact` | as in the cache object |
 

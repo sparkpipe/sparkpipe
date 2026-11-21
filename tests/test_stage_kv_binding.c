@@ -1429,7 +1429,9 @@ static SparkModelDriverCacheProbe ProbePrefix(uint32_t token_count,uint8_t ident
 	step.request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE;
 	step.request.cache_lanes = &lane;
 	step.request.cache_lane_count = 1u;
-	assert(SparkStageKvBindingAdmit(&BINDING,&step.request,&step.decision) == SPARK_STATUS_OK && step.decision.accepted == 1u);
+	assert(SparkModelDriverAdmissionRequestIsValid(&step.request) == 1u);
+	assert(SparkStageKvBindingAdmit(&BINDING,&step.request,&step.decision) == SPARK_STATUS_OK && step.decision.accepted == 1u &&
+		SparkModelDriverAdmissionDecisionStatus(&step.decision) == SPARK_STATUS_OK);
 	SparkModelDriverLoadCacheProbe(&step.decision,&probe);
 	return(probe);
 }
@@ -1458,7 +1460,8 @@ static void TestRestoreHintStartsEarly(void)
 	hint.request.cache_lanes = &lane;
 	hint.request.cache_lane_count = 1u;
 	probe = ProbePrefix(8u,0x71u);
-	assert(probe.held_token_count == 0u && probe.resident_token_count == 0u && probe.saved_token_count == 8u && probe.state_token_count == 8u);
+	assert(probe.held_token_count == 0u && probe.resident_token_count == 0u && probe.saved_token_count == 8u && probe.state_token_count == 8u &&
+		probe.read_token_count == 0u);
 	probe = ProbePrefix(8u,0x55u);
 	assert(probe.held_token_count == 0u && probe.resident_token_count == 0u && probe.saved_token_count == 0u && probe.state_token_count == 0u);
 	assert(BINDING.restore_hints == 0u && BINDING.restore_jobs == 0u);
@@ -1471,7 +1474,8 @@ static void TestRestoreHintStartsEarly(void)
 	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK && BINDING.restore_pending_answers == 0u && BINDING.restore_jobs == 1u);
 	assert(SparkStageKvBindingAdmit(&BINDING,&hint.request,&hint.decision) == SPARK_STATUS_OK && BINDING.restore_hinted_jobs == 1u);
 	probe = ProbePrefix(8u,0x71u);
-	assert(probe.held_token_count == 8u && probe.resident_token_count == 8u && probe.saved_token_count == 8u && probe.state_token_count == 8u);
+	assert(probe.held_token_count == 8u && probe.resident_token_count == 8u && probe.saved_token_count == 8u && probe.state_token_count == 8u &&
+		probe.read_token_count == 8u);
 	Close();
 	printf("restore hint: a hinted prefix restores before its prepare, which is admitted without waiting; a resident prefix queues nothing\n");
 	printf("cache probe: a prefix saved on disk and not yet restored reads as saved and not held, an unknown one as nothing, a restored one as held, resident and saved, and a probe starts no restore\n");

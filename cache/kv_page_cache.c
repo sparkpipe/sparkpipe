@@ -3370,6 +3370,8 @@ void SparkKvPageCacheProbePrefix(const SparkKvPageCache *cache,const SparkModelD
 		tokens = entry->token_count - (entry->parent_entry_index < cache->entry_capacity ? cache->entries[entry->parent_entry_index].token_count : 0u);
 		if ( probe->state_token_count == 0u && (cache->state_store == 0 || SparkKvPageCacheHoldsState(cache,index) != 0u) )
 			probe->state_token_count = entry->token_count;
+		if ( probe->read_token_count == 0u && SparkKvPageCacheReused(cache,index) != 0u )
+			probe->read_token_count = entry->token_count;
 		if ( entry->logical_page_index < cache->kv_cache_arena->logical_block_count &&
 			(cache->kv_cache_arena->blocks[entry->logical_page_index].flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u &&
 			cache->kv_cache_arena->blocks[entry->logical_page_index].resident_slot_index != SPARK_KV_CACHE_NO_RESIDENT_SLOT )

@@ -863,7 +863,7 @@ static void TestCacheProbeWire(void)
 	SparkModelResidentIpcCacheProbe probe;
 	SparkModelResidentIpcCacheProbeReport report,bad;
 	SparkModelServingCacheIdentity identity;
-	SparkModelServingCacheProbe held = {4096u,2048u,4096u,4032u};
+	SparkModelServingCacheProbe held = {4096u,2048u,4096u,4032u,4096u};
 	memset(&identity,0x5a,sizeof(identity));
 	assert(SparkModelResidentIpcInitializeCacheProbe(&probe,77u,&identity,4096u) == SPARK_STATUS_OK);
 	assert(SparkModelResidentIpcValidateCacheProbe(&probe,sizeof(probe)) == SPARK_STATUS_OK && probe.header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE);
@@ -878,6 +878,9 @@ static void TestCacheProbeWire(void)
 	assert(SparkModelResidentIpcValidateCacheProbeReport(&report,sizeof(report),77u,6u) == SPARK_STATUS_SCHEMA_ERROR);
 	bad = report;
 	bad.probe.saved_token_count = 4097u;
+	assert(SparkModelResidentIpcValidateCacheProbeReport(&bad,sizeof(bad),77u,5u) == SPARK_STATUS_SCHEMA_ERROR);
+	bad = report;
+	bad.probe.read_token_count = 4097u;
 	assert(SparkModelResidentIpcValidateCacheProbeReport(&bad,sizeof(bad),77u,5u) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(SparkModelResidentIpcIsSubmissionKind(SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE) == 0u &&
 		SparkModelResidentIpcIsSubmissionKind(SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT) == 0u);

@@ -5251,7 +5251,7 @@ SparkStatus SparkModelBatchEngineCacheStatePoll(
 {
 	SparkModelResidentCacheProbeReport report;
 	SparkModelBatchCacheState *probe;
-	uint32_t rank,reported = 0u,held = UINT32_MAX,resident = UINT32_MAX,saved = UINT32_MAX,resume = UINT32_MAX;
+	uint32_t rank,reported = 0u,held = UINT32_MAX,resident = UINT32_MAX,saved = UINT32_MAX,resume = UINT32_MAX,reread = UINT32_MAX;
 	if ( engine == 0 || state == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( engine->probe_active == 0u )
@@ -5267,12 +5267,14 @@ SparkStatus SparkModelBatchEngineCacheStatePoll(
 		resident = report.probe.resident_token_count < resident ? report.probe.resident_token_count : resident;
 		saved = report.probe.saved_token_count < saved ? report.probe.saved_token_count : saved;
 		resume = report.probe.state_token_count < resume ? report.probe.state_token_count : resume;
+		reread = report.probe.read_token_count < reread ? report.probe.read_token_count : reread;
 	}
 	probe->reported_rank_count = reported;
 	probe->held_token_count = reported != 0u ? held : 0u;
 	probe->resident_token_count = reported != 0u ? resident : 0u;
 	probe->saved_token_count = reported != 0u ? saved : 0u;
 	probe->state_token_count = reported != 0u ? resume : 0u;
+	probe->read_token_count = reported != 0u ? reread : 0u;
 	*state = *probe;
 	if ( reported < probe->rank_count )
 		return(SPARK_STATUS_PENDING);

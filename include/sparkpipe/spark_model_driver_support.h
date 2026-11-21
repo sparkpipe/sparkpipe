@@ -123,20 +123,22 @@ static inline void SparkModelDriverStoreCacheProbe(
     SparkModelDriverAdmissionDecision *decision,
     const SparkModelDriverCacheProbe *probe)
 {
-    decision->driver_dispatch_generation = probe->held_token_count;
+    decision->endpoint_cost = probe->held_token_count;
     decision->residency_match_score = probe->resident_token_count;
-    decision->driver_dispatch_cookie0 = probe->saved_token_count;
-    decision->driver_dispatch_cookie1 = probe->state_token_count;
+    decision->host_staging_bytes = probe->saved_token_count;
+    decision->device_memcpy_bytes = probe->state_token_count;
+    decision->estimated_service_time_ns = probe->read_token_count;
 }
 
 static inline void SparkModelDriverLoadCacheProbe(
     const SparkModelDriverAdmissionDecision *decision,
     SparkModelDriverCacheProbe *probe)
 {
-    probe->held_token_count = (uint32_t)decision->driver_dispatch_generation;
+    probe->held_token_count = (uint32_t)decision->endpoint_cost;
     probe->resident_token_count = (uint32_t)decision->residency_match_score;
-    probe->saved_token_count = (uint32_t)decision->driver_dispatch_cookie0;
-    probe->state_token_count = (uint32_t)decision->driver_dispatch_cookie1;
+    probe->saved_token_count = (uint32_t)decision->host_staging_bytes;
+    probe->state_token_count = (uint32_t)decision->device_memcpy_bytes;
+    probe->read_token_count = (uint32_t)decision->estimated_service_time_ns;
 }
 
 static inline uint32_t SparkModelDriverAdmissionRequestIsValid(

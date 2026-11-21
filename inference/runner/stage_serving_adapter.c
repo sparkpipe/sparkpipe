@@ -1989,6 +1989,7 @@ static SparkStatus StageServingCacheProbe(void *adapter_state,
 	probe->resident_token_count = found.resident_token_count;
 	probe->saved_token_count = found.saved_token_count;
 	probe->state_token_count = found.state_token_count;
+	probe->read_token_count = found.read_token_count;
 	return SPARK_STATUS_OK;
 }
 

@@ -143,16 +143,27 @@ restore.
 - `state_token_count`: the deepest entry on the chain that still has its
   state, which is where a request for this prefix can resume. Without a
   state store every entry is such a point.
+- `read_token_count`: the deepest entry on the chain that a later request
+  has read, 0 when none has. Under the rule that a prefix is written only
+  after something reads it, this is the part the rank saves by itself; the
+  rest reaches the store only at close. It is 0 for a prefix the cache does
+  not hold. The three classes of `docs/PREFILL_ANTICIPATION.md` (tail, kept,
+  pinned) do not exist yet; read or unread is what a rank knows today.
 
 The probe reaches a rank as an admission with
 `SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE` and one prefix lane, the
-shape of a cache hint. The decision is accepted and carries the four counts
-in fields a probe has no other use for: `driver_dispatch_generation` (held),
-`residency_match_score` (resident), `driver_dispatch_cookie0` (saved) and
-`driver_dispatch_cookie1` (state). `SparkModelDriverStoreCacheProbe` and
-`SparkModelDriverLoadCacheProbe` are the only code that reads or writes them
-that way. The adapter's `cache_probe` runs it, the rank daemon answers a
-`CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
+shape of a cache hint. The decision is accepted, takes no dispatch slot, and
+carries the five counts in the estimate fields, which a probe has no other
+use for: `endpoint_cost` (held), `residency_match_score` (resident),
+`host_staging_bytes` (saved), `device_memcpy_bytes` (state) and
+`estimated_service_time_ns` (read). The dispatch generation and the two
+dispatch cookies stay zero: `SparkModelDriverAdmissionDecisionIsValid`
+refuses a decision that sets one of them without a dispatch slot, and
+`SparkModelDriverEvaluateAdmission` returns that refusal as
+`SPARK_STATUS_ABI_MISMATCH`. `SparkModelDriverStoreCacheProbe` and
+`SparkModelDriverLoadCacheProbe` are the only code that reads or writes the
+fields that way. The adapter's `cache_probe` runs it, the rank daemon answers
+a `CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
 least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
 `...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
 zero counts.

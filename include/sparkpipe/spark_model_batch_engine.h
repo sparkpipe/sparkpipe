@@ -184,6 +184,7 @@ typedef struct SparkModelBatchCacheState
 	uint32_t resident_token_count;
 	uint32_t saved_token_count;
 	uint32_t state_token_count;
+	uint32_t read_token_count;
 	uint32_t cache_block_token_count;
 	uint32_t cache_checkpoint_token_count;
 	SparkModelServingCacheIdentity identity;

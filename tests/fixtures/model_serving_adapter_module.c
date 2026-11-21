@@ -640,6 +640,7 @@ static SparkStatus TestModelServingCacheProbe(void *adapter_state,const SparkMod
 	probe->resident_token_count = token_count;
 	probe->saved_token_count = 0u;
 	probe->state_token_count = token_count;
+	probe->read_token_count = 0u;
 	return(SPARK_STATUS_OK);
 }
 

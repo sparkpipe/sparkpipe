@@ -494,7 +494,7 @@ static void TestScenarioCachedPrefixSessionReset(const SparkModelResidentDeploym
 static void TestCacheState(SparkModelBatchEngine *engine,const uint32_t *prompt,const SparkModelServingCacheIdentity *identity)
 {
 	static const uint32_t unknown[8] = {91u,92u,93u,94u,95u,96u,97u,98u};
-	SparkModelServingCacheProbe whole = {4u,4u,4u,4u},parked = {4u,0u,4u,0u};
+	SparkModelServingCacheProbe whole = {4u,4u,4u,4u,4u},parked = {4u,0u,4u,0u,0u};
 	SparkModelBatchCacheState found;
 	uint32_t rank,asked = 0u;
 	for (rank=0u; rank<TEST_RANKS; rank++)
@@ -509,8 +509,8 @@ static void TestCacheState(SparkModelBatchEngine *engine,const uint32_t *prompt,
 	CHECK(asked == TEST_RANKS,"cache state: each rank is asked once");
 	CHECK(SparkModelBatchEngineCacheStateBegin(engine,prompt,8u,0,&found) == SPARK_STATUS_BUSY,"cache state: a second question waits for the first");
 	CHECK(SparkModelBatchEngineCacheStatePoll(engine,&found) == SPARK_STATUS_OK && found.reported_rank_count == TEST_RANKS && found.held_token_count == 4u &&
-		found.resident_token_count == 0u && found.saved_token_count == 4u && found.state_token_count == 0u,
-		"cache state: the answer is the least any rank holds, has resident, has saved and can resume from");
+		found.resident_token_count == 0u && found.saved_token_count == 4u && found.state_token_count == 0u && found.read_token_count == 0u,
+		"cache state: the answer is the least any rank holds, has resident, has saved, can resume from and has had read");
 	MockResidentClientSetCacheProbe(2u,&whole,1u);
 	CHECK(SparkModelBatchEngineCacheStateBegin(engine,0,4u,identity,&found) == SPARK_STATUS_PENDING && found.prompt_token_count == 0u && found.probed_token_count == 4u,
 		"cache state: a prefix can be asked about by its identity alone");
