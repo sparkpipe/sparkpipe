@@ -434,6 +434,8 @@ PYTHON_TESTS := \
 	tests/test_kexaone2_reference_batch.py \
 	tests/test_api_stress.py \
 	tests/test_agent_turn_bench.py \
+	tests/test_turn_floor.py \
+	tests/test_turn_floor_fleet.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
@@ -721,6 +723,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_request_fields.py \
 	tests/test_chat_frontend_output_cap.py \
 	tests/test_chat_frontend_prefix_ledger.py \
+	tests/test_chat_frontend_miss_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
 	tests/test_chat_frontend_effort_levels.py \
 	tests/test_open_webui_github_tool.py \

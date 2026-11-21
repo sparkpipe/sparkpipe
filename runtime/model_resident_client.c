@@ -79,8 +79,10 @@ struct SparkModelResidentClient
 	uint64_t last_submission_id;
 	uint64_t status_message_id;
 	uint32_t status_outstanding;
-	uint32_t reserved_status;
+	uint32_t probe_outstanding;
+	uint64_t probe_message_id;
 	SparkModelResidentStatusReport status_report;
+	SparkModelResidentCacheProbeReport probe_report;
 	uint64_t submitted_count;
 	uint64_t prepared_total;
 	uint64_t continued_total;
@@ -436,6 +438,7 @@ void SparkModelResidentClientFailStop(SparkModelResidentClient *client)
 		return;
 	client->connected = 0u;
 	client->status_outstanding = 0u;
+	client->probe_outstanding = 0u;
 	if ( client->fd >= 0 )
 	{
 		(void)shutdown(client->fd,SHUT_RDWR);
@@ -1101,6 +1104,63 @@ SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,c
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	SparkModelResidentClientOutput *output;
+	uint32_t index;
+	SparkStatus status;
+	if ( client == 0 || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( client->probe_outstanding != 0u )
+		SPARK_FAIL(SPARK_STATUS_DUPLICATE);
+	if ( client->output_count >= client->queue_capacity )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	if ( client->output_message_capacity < SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_BYTES )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	index = (client->output_head + client->output_count) % client->queue_capacity;
+	output = &client->outputs[index];
+	status = SparkModelResidentIpcInitializeCacheProbe((SparkModelResidentIpcCacheProbe *)(client->output_storage + ((uint64_t)index * client->output_message_capacity)),client->next_message_id,identity,token_count);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	client->probe_message_id = client->next_message_id++;
+	client->probe_outstanding = 1u;
+	output->message_bytes = SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_BYTES;
+	output->sent_bytes = 0u;
+	client->output_count++;
+	(void)SparkModelResidentClientFlush(client);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkModelResidentClientProcessCacheProbe(
+	SparkModelResidentClient *client,
+	const SparkModelResidentIpcCacheProbeReport *report,
+	uint32_t message_bytes)
+{
+	SparkStatus status;
+	if ( client->probe_outstanding == 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	status = SparkModelResidentIpcValidateCacheProbeReport(report,message_bytes,client->probe_message_id,client->rank_index);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	client->probe_report.generation++;
+	client->probe_report.identity = report->identity;
+	client->probe_report.token_count = report->token_count;
+	client->probe_report.status = report->status;
+	client->probe_report.probe = report->probe;
+	client->probe_outstanding = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientGetCacheProbe(const SparkModelResidentClient *client,SparkModelResidentCacheProbeReport *report)
+{
+	if ( client == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	*report = client->probe_report;
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report)
 {
 	if ( client == 0 || report == 0 )
@@ -1118,6 +1178,8 @@ static SparkStatus SparkModelResidentClientProcessMessage(
 	header = (const SparkModelResidentIpcHeader *)message;
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REPORT )
 		return(SparkModelResidentClientProcessStatus(client,(const SparkModelResidentIpcStatusReport *)message,message_bytes));
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT )
+		return(SparkModelResidentClientProcessCacheProbe(client,(const SparkModelResidentIpcCacheProbeReport *)message,message_bytes));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_SUBMIT_RESULT )
 		return(SparkModelResidentClientProcessResult(client,(const SparkModelResidentIpcSubmitResult *)message,message_bytes));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_COMPLETION )

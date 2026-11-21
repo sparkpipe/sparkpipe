@@ -17,6 +17,7 @@ enum
 	MOCK_CALL_CAN_ABORT,
 	MOCK_CALL_STATUS_REQUEST,
 	MOCK_CALL_CACHE_HINT,
+	MOCK_CALL_CACHE_PROBE,
 	MOCK_CALL_COUNT
 };
 
@@ -36,6 +37,8 @@ uint32_t MockResidentClientPendingCount(uint32_t stage_index);
 uint32_t MockResidentClientOwnsSubmission(uint32_t stage_index, uint64_t submission_id);
 SparkModelResidentClient *MockResidentClientByRank(uint32_t stage_index);
 uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind);
+void MockResidentClientSetCacheProbe(uint32_t rank,const SparkModelServingCacheProbe *answer,uint32_t silent);
+void MockResidentClientSetCacheProbeStatus(uint32_t rank,SparkStatus status);
 uint32_t MockResidentClientTokenContinuations(uint32_t stage_index);
 uint32_t MockResidentClientSpanSubmissions(uint32_t stage_index);
 uint32_t MockResidentClientReleaseSubmissions(uint32_t stage_index);
