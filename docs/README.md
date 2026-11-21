@@ -141,6 +141,10 @@ current authority.
 - [`MEGA_PR_PRODUCT_AUDIT_2026-11-10.md`](MEGA_PR_PRODUCT_AUDIT_2026-11-10.md):
   the mega-PR against the product: what an engineer saves after it, what the
   site promises that is not built, and what to do first.
+- [`PREFILL_ANTICIPATION.md`](PREFILL_ANTICIPATION.md): audit of the context
+  packs, the anticipator and the cache controls; where prefill time goes in
+  agent sessions; and the proposed design and build order for keeping and
+  anticipating exact prefixes.
 - [`ROADMAP.md`](ROADMAP.md): the order in which that work closes, with each
   milestone's exit criterion. It now includes M10 (speculation at B1-B64)
   and M11 (drivers in parallel).

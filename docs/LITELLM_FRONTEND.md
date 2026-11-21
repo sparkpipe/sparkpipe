@@ -878,7 +878,7 @@ it gets 404 for a name that exists elsewhere.
   background. Files are ordered by how often they changed on the first-parent
   history in the 90 days before the commit's own time, then by path, so the
   same commit gives the same order on any day. Secrets, vendored trees, lock
-  files and generated stubs are never packed (the anticipator's default
+  files and generated stubs are never packed (the builder's default
   exclusions); binary, generated and over-budget files are listed under
   `left_out`. The version is `<pack>@` and 12 hex digits of the token
   digest; its token ids are stored as `versions/<digest>.ids` beside the
