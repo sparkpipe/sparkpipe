@@ -2965,6 +2965,94 @@ static void TestScenarioSession(const SparkModelResidentDeployment *deployment,c
 	SparkModelBatchEngineDestroy(engine);
 }
 
+static void TestScenarioCommittedReply(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	static const uint32_t cuts[4] = {13u,17u,21u,25u};
+	TestBatchState state = {0};
+	SparkModelBatchEngine *engine;
+	SparkModelServingLane lane = {0},committed[8],resumed[16],cold[16];
+	uint32_t prompt[30],index,committed_count,resumed_count,cold_count,first,same;
+	for (index=0u; index<30u; index++)
+		prompt[index] = 1200u + index;
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,830u,3u,prompt,14u);
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 3u,"committed reply: the first turn replies with three tokens");
+	for (index=0u; index<3u; index++)
+		prompt[14u + index] = state.token_ids[1][index];
+	CHECK(TestSubmitWithCuts(engine,2u,831u,prompt,17u,cuts,1u,0,0u,0u) == SPARK_STATUS_OK,"committed reply: the first turn's prompt and reply are committed, naming one token before that prompt's end");
+	CHECK(TestWaitFirstRequestLane(engine,2u,&lane) != 0u && lane.sequence_position == 13u && lane.cache_prefix_token_count == 13u && lane.context_token_count == 17u,
+		"committed reply: the commit resumes one token before the first turn's prompt ended and computes the reply as one prefill wave");
+	TestDriveUntilTerminal(engine,&state,2u,800u);
+	CHECK(state.completed_events[2] == 1u && state.token_events[2] == 0u,"committed reply: the commit completes and samples nothing");
+	CHECK(TestSubmitWithCuts(engine,3u,832u,prompt,22u,cuts,2u,0,0u,3u) == SPARK_STATUS_OK,"committed reply: the second turn names one token before the reply began and where the reply ends");
+	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.sequence_position == 17u && lane.cache_prefix_token_count == 17u && lane.context_token_count == 21u,
+		"committed reply: the second turn resumes where the committed reply ends and computes only its new input");
+	TestDriveUntilTerminal(engine,&state,3u,800u);
+	CHECK(state.completed_events[3] == 1u && state.token_events[3] == 3u && state.cached_tokens[3] == 17u,"committed reply: the second turn replies with three tokens");
+	for (index=0u; index<3u; index++)
+		prompt[22u + index] = state.token_ids[3][index];
+	CHECK(TestSubmitWithCuts(engine,4u,833u,prompt,25u,cuts,3u,0,0u,0u) == SPARK_STATUS_OK,"committed reply: the second reply is committed with its turn's cuts and one token before that turn's prompt ended");
+	CHECK(TestWaitFirstRequestLane(engine,4u,&lane) != 0u && lane.sequence_position == 21u && lane.cache_prefix_token_count == 21u && lane.context_token_count == 24u,
+		"committed reply: the second commit resumes one token before the second turn's prompt ended and stops its first wave at the stride");
+	TestDriveUntilTerminal(engine,&state,4u,800u);
+	committed_count = TestPrefillLanes(4u,25u,committed,8u);
+	CHECK(state.completed_events[4] == 1u && state.token_events[4] == 0u && committed_count == 2u,"committed reply: the second commit runs two waves and samples nothing");
+	CHECK(TestSubmitWithCuts(engine,5u,834u,prompt,30u,cuts,4u,0,0u,1u) == SPARK_STATUS_OK,"committed reply: the third turn names the cuts of both earlier turns");
+	CHECK(TestWaitFirstRequestLane(engine,5u,&lane) != 0u && lane.sequence_position == 25u && lane.cache_prefix_token_count == 25u,
+		"committed reply: the third turn resumes where the second committed reply ends");
+	TestDriveUntilTerminal(engine,&state,5u,800u);
+	CHECK(state.completed_events[5] == 1u && state.cached_tokens[5] == 25u && state.error_events[1] + state.error_events[2] + state.error_events[3] + state.error_events[4] + state.error_events[5] == 0u,
+		"committed reply: the third turn completes");
+	resumed_count = TestPrefillLanes(5u,30u,resumed,16u);
+	SparkModelBatchEngineDestroy(engine);
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	engine = TestConnectRows(deployment,&state,runtime_root,10u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetTokenStart(1000u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	CHECK(TestSubmitWithCuts(engine,6u,835u,prompt,30u,cuts,4u,0,0u,1u) == SPARK_STATUS_OK,"committed reply: the last prompt is sent cold to an engine with an empty cache");
+	TestDriveUntilTerminal(engine,&state,1u,800u);
+	cold_count = TestPrefillLanes(6u,30u,cold,16u);
+	CHECK(state.completed_events[6] == 1u && state.cached_tokens[6] == 0u && cold_count == 9u,"committed reply: the cold run computes the whole prompt in nine waves");
+	for (first=0u; first<cold_count && cold[first].sequence_position != 21u; first++)
+		;
+	same = committed_count == 2u && first + committed_count < cold_count ? 1u : 0u;
+	for (index=0u; same != 0u && index<committed_count; index++)
+	{
+		const SparkModelServingLane *a = &committed[index],*b = &cold[first + index];
+		same &= a->sequence_position == b->sequence_position && a->context_token_count == b->context_token_count && a->state_target_token_count == b->state_target_token_count &&
+			a->cache_block_identity_count == b->cache_block_identity_count ? 1u : 0u;
+		if ( a->context_token_count < 25u )
+			same &= a->cache_publish_token_count == b->cache_publish_token_count && a->cache_publish_token_count != 0u &&
+				memcmp(&a->cache_publish_identity,&b->cache_publish_identity,sizeof(a->cache_publish_identity)) == 0 ? 1u : 0u;
+	}
+	CHECK(same != 0u,"committed reply: the waves that committed the second reply are the cold run's waves over the same tokens, with the same spans, state targets and stride identity");
+	for (first=0u; first<cold_count && cold[first].sequence_position != 25u; first++)
+		;
+	same = resumed_count != 0u && first + resumed_count == cold_count ? 1u : 0u;
+	for (index=0u; same != 0u && index<resumed_count; index++)
+	{
+		const SparkModelServingLane *a = &resumed[index],*b = &cold[first + index];
+		same &= a->sequence_position == b->sequence_position && a->context_token_count == b->context_token_count && a->state_target_token_count == b->state_target_token_count &&
+			a->cache_publish_token_count == b->cache_publish_token_count && a->cache_block_identity_count == b->cache_block_identity_count &&
+			(a->flags & ~SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX) == b->flags ? 1u : 0u;
+		if ( a->context_token_count < 30u && a->cache_publish_token_count != 0u )
+			same &= memcmp(&a->cache_publish_identity,&b->cache_publish_identity,sizeof(a->cache_publish_identity)) == 0 ? 1u : 0u;
+	}
+	CHECK(same != 0u,"committed reply: the waves the third turn ran are exactly the cold run's waves from the reply's end on, with the same spans, state targets and published identities");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	static const uint32_t expected_spans[4] = {8u,4u,5u,1u},expected_ends[4] = {8u,12u,17u,18u},expected_stateful[4] = {0u,1u,1u,0u};
@@ -3251,6 +3339,7 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 	TestScenarioKeptCut(&deployment,runtime_root);
 	TestScenarioCommit(&deployment,runtime_root);
 	TestScenarioSession(&deployment,runtime_root);
+	TestScenarioCommittedReply(&deployment,runtime_root);
 	TestScenarioRecurrentStreamedCheckpoint(&deployment,runtime_root);
 	TestScenarioRecurrentStaleResume(&deployment,runtime_root);
 	TestScenarioReplyCheckpoint(&deployment,runtime_root);

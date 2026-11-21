@@ -82,6 +82,7 @@ class Engine:
         self.committed = []
         self.delay = 0.0
         self.hold = None
+        self.commit_hold = None
         self.early_usage = True
         self.cache_all = False
         self.ignores_commit = False
@@ -117,6 +118,8 @@ class Engine:
             if "max_tokens" in body or "logprobs" in body:
                 return web.json_response({"error": {"code": "commit_only_conflict"}}, status=400)
             await response.prepare(request)
+            if self.commit_hold is not None:
+                await self.commit_hold.wait()
             event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
                      "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
                                "published_tokens": len(prompt)}}

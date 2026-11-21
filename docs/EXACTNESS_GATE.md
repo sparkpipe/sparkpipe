@@ -31,7 +31,11 @@ them from the request and from nothing else.
   there and samples nothing. It is the warm-up.
 - **Replies.** The pages a reply's decode steps write belong to that request
   alone. A later prompt that carries the reply computes it again as prefill,
-  from the earlier prompt's last cut.
+  from the earlier prompt's last cut. A client may start that work early: it
+  commits the earlier prompt with the reply, naming one token before the
+  earlier prompt's end as a cut, and the later prompt resumes where the
+  reply ends. The waves are the same either way. The chat layer does this
+  for a model with `reply_commit` set.
 - **Load.** A wave the ranks refuse for capacity waits and goes out again
   with the same span.
 - **Streamed prefill.** A prompt that takes the streamed prefill is computed
@@ -62,6 +66,7 @@ top 4 logprobs.
 | `kept` | A one-token completion of P and eight other tokens, with a cut at P's end and state kept there | P and a new tail, with the same cut and keep |
 | `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 96 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
 | `drafted` | The same with speculation left at the engine's default | The same |
+| `committed` | As `session`, and after each reply a commit of that turn's prompt with the reply, naming the turn's cuts and one token before the turn's prompt ended | The same |
 
 A session's turns name their cuts as the chat layer does: where the opening
 ends, one token before each reply began and where each reply ends. The last
@@ -73,15 +78,17 @@ Two verdicts follow for each unit:
 - **restored**: restore against chain.
 
 A verdict is `PASS` only when tokens and logprobs are equal, the reusing run
-resumed at the cut its structure names (P's end, or one token before reply 2
-began), and the cold run reported no cached tokens. The receipt also holds
+resumed at the cut its structure names (P's end; one token before reply 2
+began; for `committed`, where reply 2 ends), and the cold run reported no
+cached tokens. The receipt also holds
 the first differing token, the first differing logprob entry and the largest
 logprob difference up to there.
 
 ## Sizes
 
 - Contexts: 8,000, 100,000 and 300,000 tokens for `prefix` and `session`;
-  8,000 and 20,000 for `kept`; 8,000 for `drafted`.
+  8,000 and 20,000 for `kept`; 8,000 for `drafted` and for `committed`
+  (`--committed-contexts`).
 - Tails: 1, 40, 500 and 5,000 tokens. A session's three tails have the
   unit's size.
 - A prefix ends 21 tokens past its nominal size, in the middle of a block.
@@ -298,6 +305,13 @@ artifact SHA-256.
 - **A turn of a session**: `session/<context>/<tail>/turn2` and the last
   prompt in `chain`. Each computes the previous reply again as prefill, so
   its `prefilled_tokens` are the reply plus the new tail plus one.
+- **A turn after a committed reply**: `committed/<context>/<tail>/turn2` and
+  the last prompt in `chain`. Their `prefilled_tokens` are the new tail
+  alone. `committed/<context>/<tail>/commit1` and `commit2` are the commits:
+  a commit's `seconds` is the reply's prefill, run before the next turn
+  instead of inside it. Against the `session` unit of the same context and
+  tail, the difference in `first_token_ms` is what a committed reply saves a
+  turn, and a commit's `seconds` is what it costs when no turn follows.
 - **After an eviction**: the same requests in `restore:*`. Their extra
   `first_token_ms` against `chain` is the restore the user waits for.
   Restored bytes are restored pages times pool bytes per pool page. A

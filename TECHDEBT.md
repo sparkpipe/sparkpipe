@@ -1093,10 +1093,23 @@ as recorded debt for models too large for a group.
     `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends, and time
     per turn with the previous reply computed again.
   - A follow-up turn computes the previous reply again as prefill, from one
-    token before the earlier prompt's end. The other exact form is to commit
-    a finished reply at once, during the tool pause, so the next turn resumes
-    where the reply ends. It is not built. The gate's measured time per turn
-    decides it per model.
+    token before the earlier prompt's end. The other exact form commits a
+    finished reply at once, so the next turn resumes where the reply ends:
+    the chat layer's `reply_commit` model setting, off for every model. The
+    waves are the same in both forms; a commit only starts the reply's wave
+    before the next turn arrives. Neither form is measured. The gate's
+    `session` and `committed` units give the time per turn of each: turn the
+    setting on for the models where the committed form is faster, and record
+    both in `PERFORMANCE_STATUS.md`.
+  - A reply commit whose conversation never continues is one wasted wave, in
+    the turn's own priority class. The chat layer commits every reply it
+    records. It could commit only replies that end in a tool call, where the
+    next turn is certain.
+  - A turn with a forced tool choice stores the forced opening with the
+    reply, so the next turn's cut before the reply is not one token before
+    the earlier prompt's end. The next turn then resumes at an earlier kept
+    state and computes more, in either form. Record the forced opening's
+    length with the reply and name the cut after it.
   - The pages a reply's decode steps publish carry identities no other
     request can name. They stay in the rank page cache, unread, until
     eviction takes them. Seal them as private pages and drop them when the

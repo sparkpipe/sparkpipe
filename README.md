@@ -259,7 +259,11 @@ cache held (`docs/EXACTNESS_GATE.md`).
 - A reply's decode steps are never reused. A follow-up prompt resumes one
   token before the earlier prompt's end and computes the reply again as
   prefill, so a turn costs the previous reply's tokens of prefill on top of
-  its new input.
+  its new input. A model with `reply_commit` set in the chat layer starts
+  that work when the reply ends: the reply is committed at once, and the
+  next turn resumes where it ends. Both forms compute the reply in the same
+  wave, so the tokens are the same. The setting is off for every model until
+  gate GX has measured both.
 - The chat layer names the cuts: one token before each replayed reply began
   and where it ends. `max_tokens: 0` on the Messages shape, or `commit_only`
   on the Chat Completions and Responses shapes, is a commit; the answer is

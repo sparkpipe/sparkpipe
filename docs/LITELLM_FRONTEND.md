@@ -598,6 +598,30 @@ tokenizes as it did when the turn was generated, and the prompt matches the
 engine's cache up to the end of the previous reply. A forced tool choice
 stores its opening marker with the generated tokens.
 
+Cuts and commits (`docs/EXACTNESS_GATE.md`). The chat layer names the
+engine's `cuts` for the replies a prompt replays: one token before each
+replayed reply began and where it ends. `max_tokens: 0` on Messages, or
+`commit_only: true` on Chat Completions and Responses, is a commit. The
+prompt is planned as for any request, the engine computes it to its end and
+keeps the state there, and the answer is one `cache.commit` object (`model`,
+`prompt_tokens`, `cached_tokens`, `committed_tokens`, `prefill_ms` and the
+`sparkpipe` record), whatever the request says about streaming. A commit
+takes no output limit, logprobs, forced tool choice or WebSocket.
+
+A model whose settings carry `"reply_commit": true` commits each reply it
+records for replay as soon as the reply ends: the turn's prompt and the
+reply's tokens without the stop token, in the turn's own priority class,
+through the sequence gate and under the account that made the turn. The next
+turn then resumes where the reply ends, instead of computing the reply again
+while the user waits. A turn of the same account and member that arrives
+while its reply's commit is at the engine waits for it, so the reply is
+computed once; a commit that has not reached the engine is withdrawn and the
+turn computes the reply itself. A commit never wakes an engine that is down.
+Each one logs a `reply_commit` line with its prompt and cached tokens,
+seconds and outcome (`done`, `withdrawn`, `refused` or the engine's error
+code). The setting is off for every model until gate GX has measured both
+forms.
+
 Working state and deletion (§3.2, Agreement 6.2). The store is a directory
 (`replay.directory`, mode 700 whoever created it) with one SQLite file per
 account (`account-<id>.sqlite` for a gateway account, `key-<id>.sqlite` for
@@ -805,8 +829,8 @@ it gets 404 for a name that exists elsewhere.
 - **Refresh.** A push or `POST /v1/packs/{name}/refresh` builds the new
   version, then warms it in the background class (the priority
   `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
-  as a one-token completion whose prompt is the template's prefix and the
-  pack (`warm_prefix`, which `commit_only` replaces once E5 lands). It warms
+  as a commit (`commit_only`) whose prompt is the template's prefix and the
+  pack (`warm_prefix`). It warms
   once for each of the last four tool sets and template settings requests
   used on the pack, or once with none. The engine's prefix cache reuses every
   token before the first changed file; `last_refresh` reports that file, its

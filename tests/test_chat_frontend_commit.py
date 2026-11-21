@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused."""
+"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused. A model whose settings name reply_commit commits each finished reply at once, apart from the reply: the engine gets the turn's prompt and the reply's tokens as a commit in the turn's own class that names one token before the prompt's end as a cut, and the next turn names that cut and the reply's end; without the setting, or for a reply that is not recorded for replay, no commit follows. A turn that carries a reply whose commit is at the engine waits for it and is sent afterwards, so the reply is computed once; a commit that has not reached the engine is withdrawn, and a turn of another conversation waits for neither."""
 import asyncio
 import importlib.util
 import tempfile
@@ -60,11 +60,103 @@ async def run(tmp, check):
         check(status == 502 and "commit_only_unsupported" in text, f"an engine that generates tokens for a commit is refused: {status} {text[:160]}")
 
 
+async def commits_seen(engine, wanted):
+    for _ in range(300):
+        found = [request for request in engine.requests if request.get("commit_only")]
+        if len(found) >= wanted:
+            return found
+        await asyncio.sleep(0.01)
+    return [request for request in engine.requests if request.get("commit_only")]
+
+
+async def run_reply_commit(tmp, check):
+    async with fixture.Harness(tmp) as harness:
+        engine = harness.engine
+        body = {"model": "alpha", "max_tokens": 64, "system": SYSTEM, "messages": MESSAGES}
+        engine.reply("The user wants a.txt read.</think>Reading it.")
+        status, headers, text = await harness.post("/v1/messages", body)
+        await asyncio.sleep(0.1)
+        check(status == 200 and not any(request.get("commit_only") for request in engine.requests), f"a model without reply_commit commits no reply: {status} {[sorted(request) for request in engine.requests]}")
+        harness.frontend.models["alpha"].reply_commit = True
+        messages = [{"role": "user", "content": "call the tool with path and pattern"}]
+        engine.reply("The user wants a tool call.</think>Calling it.")
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=messages))
+        first = next(request for request in engine.requests if request["prompt_token_ids"] != engine.requests[0]["prompt_token_ids"])
+        prompt = first["prompt_token_ids"]
+        generated = engine.committed[-1][len(prompt):] if engine.committed[-1][:len(prompt)] == prompt else None
+        found = await commits_seen(engine, 1)
+        commit = found[0] if found else {}
+        check(status == 200 and generated and commit.get("prompt_token_ids") == prompt + generated, f"the finished reply is committed as the turn's prompt and the reply's tokens without the stop token: {len(found)} {sorted(commit)}")
+        check(commit.get("cuts") == [len(prompt) - 1] and commit.get("stream") is True and "max_tokens" not in commit and commit.get("priority") == first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
+              f"the commit names one token before the turn's prompt ended as a cut and runs in the turn's own class: {commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
+        reply = fixture.json.loads(text)
+        engine.reply("The file is listed.</think>Done.")
+        history = messages + [{"role": "assistant", "content": reply["content"]}, {"role": "user", "content": "list the directory"}]
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=history))
+        second = next(request for request in reversed(engine.requests) if "max_tokens" in request)
+        check(status == 200 and second["prompt_token_ids"][:len(prompt) + len(generated)] == prompt + generated and second.get("cuts") == [len(prompt) - 1, len(prompt) + len(generated)],
+              f"the next turn names that cut and where the committed reply ends, so it resumes at the commit's end: {second.get('cuts')} {len(prompt)} {len(generated)}")
+        found = await commits_seen(engine, 2)
+        check(len(found) == 2 and found[1]["cuts"] == [len(prompt) - 1, len(prompt) + len(generated), len(second["prompt_token_ids"]) - 1],
+              f"the second reply's commit names every earlier cut and one token before its own prompt's end: {[request.get('cuts') for request in found]}")
+        before = len([request for request in engine.requests if request.get("commit_only")])
+        engine.reply("Cut short.</think>Before STOPHERE after")
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=[{"role": "user", "content": "hello world"}], stop_sequences=["STOPHERE"]))
+        await asyncio.sleep(0.15)
+        after = len([request for request in engine.requests if request.get("commit_only")])
+        check(status == 200 and fixture.json.loads(text).get("stop_reason") == "stop_sequence" and after == before,
+              f"a reply cut at a stop sequence is not recorded for replay, so it is not committed either: the next turn could not name its cut: {status} {before} {after} {text[:160]}")
+        engine.commit_hold = asyncio.Event()
+        opening = [{"role": "user", "content": "read b.txt"}]
+        engine.reply("The user wants b.txt read.</think>Reading b.")
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=opening))
+        reply = fixture.json.loads(text)
+        held = await commits_seen(engine, before + 1)
+        sent = len(engine.requests)
+        follow = opening + [{"role": "assistant", "content": reply["content"]}, {"role": "user", "content": "now c.txt"}]
+        engine.reply("Next.</think>Reading c.")
+        turn = asyncio.ensure_future(harness.post("/v1/messages", dict(body, messages=follow)))
+        await asyncio.sleep(0.2)
+        check(status == 200 and len(held) == before + 1 and not turn.done() and len(engine.requests) == sent,
+              f"a turn that carries a reply whose commit is at the engine is not sent while the commit runs: {status} {len(held)} {turn.done()} {len(engine.requests) - sent}")
+        engine.reply("Elsewhere.</think>Other.")
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=[{"role": "user", "content": "another conversation"}]))
+        check(status == 200 and not turn.done(), f"a turn of another conversation does not wait for that commit: {status} {turn.done()}")
+        engine.commit_hold.set()
+        engine.commit_hold = None
+        status, headers, text = await turn
+        joined = next(request for request in reversed(engine.requests) if "max_tokens" in request)
+        check(status == 200 and joined.get("cuts", [None])[-1] == len(held[-1]["prompt_token_ids"]) and joined["prompt_token_ids"][:joined["cuts"][-1]] == held[-1]["prompt_token_ids"],
+              f"the turn is sent once the commit is done and names the commit's end as its last cut: {status} {joined.get('cuts')} {len(held[-1].get('prompt_token_ids', []))}")
+        await commits_seen(engine, before + 3)
+        frontend = harness.frontend
+        for _ in range(300):
+            if not frontend.reply_commits:
+                break
+            await asyncio.sleep(0.01)
+        check(not frontend.reply_commits, f"finished commits are forgotten: {len(frontend.reply_commits)}")
+        gate = ("account:a", "m1")
+        waiting = chat_frontend.ReplyCommit("alpha", gate, [5, 6, 7])
+        others = [chat_frontend.ReplyCommit("alpha", gate, [5, 6, 9]), chat_frontend.ReplyCommit("alpha", ("account:b", "m1"), [5, 6, 7]), chat_frontend.ReplyCommit("beta", gate, [5, 6, 7])]
+        for pending in [waiting] + others:
+            pending.task = asyncio.ensure_future(asyncio.sleep(30))
+        frontend.reply_commits.update([waiting] + others)
+        await frontend.reply_joined(frontend.models["alpha"], {"engine_body": {"prompt_token_ids": [5, 6, 7, 8, 9], "cuts": [2, 3]}, "gate": gate})
+        await asyncio.sleep(0)
+        check(waiting.task.cancelled() and not any(pending.task.done() for pending in others),
+              f"a commit that has not reached the engine is withdrawn when its next turn arrives, and none of another reply, account or model is: {waiting.task.cancelled()} {[pending.task.done() for pending in others]}")
+        for pending in others:
+            pending.task.cancel()
+        frontend.reply_commits.clear()
+
+
 def main():
     check = fixture.Checks("test_chat_frontend_commit")
     with tempfile.TemporaryDirectory() as tmp:
         asyncio.run(run(Path(tmp), check))
-    return check.finish("a commit computes and keeps a prompt on every shape and generates nothing")
+    with tempfile.TemporaryDirectory() as tmp:
+        asyncio.run(run_reply_commit(Path(tmp), check))
+    return check.finish("a commit computes and keeps a prompt on every shape and generates nothing; with reply_commit each finished reply is committed at once, the next turn names its end and waits for a commit that is running")
 
 
 if __name__ == "__main__":

@@ -464,6 +464,11 @@ async def heartbeat(events, interval):
         await iterator.aclose()
 
 
+class ReplyCommit:
+    def __init__(self, model, gate, ids):
+        self.model, self.gate, self.ids, self.sent, self.task = model, gate, ids, False, None
+
+
 class LiveRequest:
     def __init__(self, scope, member):
         self.scope, self.member = scope, member
@@ -1035,6 +1040,9 @@ class Model:
         if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % CACHE_BLOCK_TOKENS:
             raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {CACHE_BLOCK_TOKENS}: the positions a cached prefix resumes from")
         self.images = spec.get("images", False) is True
+        self.reply_commit = spec.get("reply_commit", False)
+        if not isinstance(self.reply_commit, bool):
+            raise SystemExit(f"chat_frontend: {self.id} reply_commit must be a boolean: commit each finished reply at once, so the next turn resumes where it ends")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -1962,6 +1970,7 @@ class Frontend:
             self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
                                                      repositories["max_packs"])
         self.pack_tasks = set()
+        self.reply_commits = set()
         self.records = RequestRecords(records_folder(config, base))
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
@@ -1987,10 +1996,11 @@ class Frontend:
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
-        for task in (self.expiry_task, *self.pack_tasks):
+        commits = [pending.task for pending in self.reply_commits]
+        for task in (self.expiry_task, *self.pack_tasks, *commits):
             if task is not None:
                 task.cancel()
-        await asyncio.gather(*self.pack_tasks, return_exceptions=True)
+        await asyncio.gather(*self.pack_tasks, *commits, return_exceptions=True)
         if self.memory is not None:
             await self.memory.stop()
         await self.session.close()
@@ -2310,12 +2320,83 @@ class Frontend:
         if plan.get("session") is not None and plan["session"].rounds:
             return None
         try:
-            return self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
-                                   list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
+            recorded = self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
+                                       list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
         except chat_replay.STORE_ERRORS as error:
             print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
                   file=sys.stderr, flush=True)
             return None
+        self.reply_commit(model, plan, result)
+        return recorded
+
+    def reply_commit(self, model, plan, result):
+        if not getattr(model, "reply_commit", False) or plan.get("reply_committed") or plan.get("commit_only"):
+            return
+        prompt = list(plan["engine_body"]["prompt_token_ids"])
+        tokens = list(result["token_ids"])
+        stops = set(model.stop_token_ids)
+        while tokens and tokens[-1] in stops:
+            tokens.pop()
+        if not tokens or len(prompt) + len(tokens) >= model.context_tokens:
+            return
+        plan["reply_committed"] = True
+        cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - 1})
+        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens)
+        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0][-ENGINE_MAX_CUTS:],
+                                                               plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), plan.get("request_id")))
+        self.reply_commits.add(pending)
+        pending.task.add_done_callback(lambda task: self.reply_commits.discard(pending))
+
+    async def commit_reply(self, model, pending, cuts, priority, request):
+        scope, member = pending.gate
+        started = time.monotonic()
+        usage, finish, outcome = {}, None, "error"
+        try:
+            await model.sequences.acquire(priority, None, scope, member)
+            try:
+                pending.sent = True
+                body = {"prompt_token_ids": pending.ids, "stream": True, "commit_only": True, "priority": priority}
+                if cuts:
+                    body["cuts"] = cuts
+                events = self.engine_events(model, body)
+                try:
+                    async for chunk in events:
+                        if "error" in chunk:
+                            raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                        usage = chunk.get("usage") or usage
+                        finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+                finally:
+                    await events.aclose()
+                outcome = "done" if finish == "commit" else "refused"
+            finally:
+                await model.sequences.release(scope, member)
+            if outcome == "done":
+                self.prefix_ledger(model).record(list(pending.ids))
+        except RequestError as error:
+            outcome = error.code
+        except asyncio.CancelledError:
+            outcome = "withdrawn"
+            raise
+        finally:
+            print(json.dumps({"event": "reply_commit", "model": model.id, "request": request, "prompt_tokens": len(pending.ids),
+                              "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), "seconds": round(time.monotonic() - started, 3),
+                              "outcome": outcome}), file=sys.stderr, flush=True)
+
+    async def reply_joined(self, model, plan):
+        ids = plan["engine_body"]["prompt_token_ids"]
+        cuts = set(plan["engine_body"].get("cuts", ()))
+        gate = plan.get("gate", (OWN_SCOPE, None))
+        for pending in [pending for pending in self.reply_commits
+                        if (pending.model, pending.gate) == (model.id, gate) and len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids]:
+            if pending.sent:
+                await asyncio.wait({pending.task})
+            else:
+                pending.task.cancel()
+
+    async def entered(self, model, plan, scope, member):
+        if getattr(model, "reply_commit", False):
+            await self.reply_joined(model, plan)
+        await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member)
 
     def store_safely(self, plan, action, *arguments):
         try:
@@ -3202,9 +3283,7 @@ class Frontend:
             self.memory_foreground(model, 1)
         try:
             try:
-                await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
-                                                                            BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member),
-                                 lambda: model.sequences.release(scope, member))
+                await live.until(plan["request_id"], self.entered(model, plan, scope, member), lambda: model.sequences.release(scope, member))
             except RequestError as error:
                 return failed(error)
             plan["timing"]["admitted"] = time.monotonic()

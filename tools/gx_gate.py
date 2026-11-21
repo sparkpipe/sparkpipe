@@ -49,7 +49,7 @@ import urllib.request
 
 KIND = "sparkpipe.gx-gate.v3"
 PREFIX_CASES = ("prefix", "kept")
-SESSION_CASES = ("session", "drafted")
+SESSION_CASES = ("session", "drafted", "committed")
 CASES = PREFIX_CASES + SESSION_CASES
 TOKEN_LOW = 1000
 TOKEN_HIGH = 30000
@@ -111,7 +111,8 @@ def build_plan(arguments):
     if room < 2 * GRID:
         raise GateError("a context of %d positions leaves no room for a prefix beside three %d-token tails" % (arguments.context_limit, max(tails)))
     units, skipped = [], []
-    wanted = {"prefix": arguments.contexts, "session": arguments.contexts, "kept": arguments.kept_contexts, "drafted": arguments.drafted_contexts}
+    wanted = {"prefix": arguments.contexts, "session": arguments.contexts, "kept": arguments.kept_contexts, "drafted": arguments.drafted_contexts,
+              "committed": arguments.committed_contexts}
     for case in CASES:
         if case not in arguments.cases:
             continue
@@ -200,6 +201,8 @@ def turn_cuts(unit, replies):
 def resume_cut(unit, replies):
     if unit["case"] in PREFIX_CASES:
         return unit["context"]
+    if unit["case"] == "committed":
+        return unit["context"] + 2 * unit["tail"] + len(replies[0]) + len(replies[1])
     return unit["context"] + 2 * unit["tail"] + len(replies[0]) - 1
 
 
@@ -443,11 +446,14 @@ class Step:
             self.record["results"][unit["id"]] = result
 
     def turns(self, unit, first):
-        options = {"speculation": False} if unit["case"] == "session" else {}
+        options = {} if unit["case"] == "drafted" else {"speculation": False}
         prompt = self.prompts.prefix(unit) + self.prompts.part(unit, "first")
         replies = []
         for turn, name in enumerate(("second", "third")):
-            reply = self.send("%s/turn%d" % (unit["id"], turn + 1), prompt, self.options["reply_tokens"], dict(options, cuts=turn_cuts(unit, replies)), cold=first and turn == 0)
+            cuts = turn_cuts(unit, replies)
+            reply = self.send("%s/turn%d" % (unit["id"], turn + 1), prompt, self.options["reply_tokens"], dict(options, cuts=cuts), cold=first and turn == 0)
+            if unit["case"] == "committed":
+                self.send("%s/commit%d" % (unit["id"], turn + 1), prompt + reply["tokens"], 0, {"cuts": sorted(set(cuts + [len(prompt) - 1]))})
             replies.append(reply["tokens"])
             prompt = prompt + reply["tokens"] + self.prompts.part(unit, name)
         self.record["replies"][unit["id"]] = replies
@@ -867,6 +873,7 @@ def main(argv=None):
     plan.add_argument("--contexts", type=numbers, default=[8000, 100000, 300000])
     plan.add_argument("--kept-contexts", type=numbers, default=[8000, 20000])
     plan.add_argument("--drafted-contexts", type=numbers, default=[8000])
+    plan.add_argument("--committed-contexts", type=numbers, default=[8000], help="sessions whose replies are committed at once, so the next turn resumes where the reply ends")
     plan.add_argument("--tails", type=numbers, default=[1, 40, 500, 5000])
     plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))
