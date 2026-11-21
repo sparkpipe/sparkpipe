@@ -113,11 +113,11 @@ class Engine:
         finally:
             connection.close()
 
-    def cache_state(self, ids):
+    def cache_state(self, ids, cuts=()):
         connection = self.connection(60)
+        body = dict({"prompt_token_ids": ids}, **({"cuts": list(cuts)} if cuts else {}))
         try:
-            connection.request("POST", "/v1/cache/state", json.dumps({"prompt_token_ids": ids}, separators=(",", ":")).encode(),
-                               {"Content-Type": "application/json", "User-Agent": USER_AGENT})
+            connection.request("POST", "/v1/cache/state", json.dumps(body, separators=(",", ":")).encode(), {"Content-Type": "application/json", "User-Agent": USER_AGENT})
             response = connection.getresponse()
             text = response.read().decode("utf-8", "replace")
             try:
@@ -135,14 +135,19 @@ class Engine:
             raise SystemExit(f"turn_floor: /v1/models answered {status}: {json.dumps(models)[:200]}")
         return int(models["data"][0]["max_model_len"]), models["data"][0]["id"]
 
-    def complete(self, ids, max_tokens, priority=INTERACTIVE, speculation=None):
+    def complete(self, ids, max_tokens, priority=INTERACTIVE, speculation=None, cuts=(), keep=()):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "temperature": 0, "priority": priority}
         if speculation is not None:
             body["speculation"] = speculation
+        if cuts:
+            body["cuts"] = list(cuts)
+        if keep:
+            body["keep"] = list(keep)
         encode_started = now_ns()
         data = json.dumps(body, separators=(",", ":")).encode()
         record = {"prompt_tokens": len(ids), "prompt_sha256": prompt_sha256(ids), "max_tokens": max_tokens, "priority": priority, "speculation": speculation,
                   "body_bytes": len(data), "encode_ms": rounded((now_ns() - encode_started) / 1e6, 2), "tokens": [], "token_ns": [], "cached_tokens": None,
+                  "cut_count": len(cuts), "last_cut": cuts[-1] if cuts else None,
                   "finish": None, "error": None, "first_ns": None}
         connection = self.connection()
         record["sent_ns"] = now_ns()
@@ -269,12 +274,18 @@ class Run:
         self.state["taken"] += count
         return piece
 
-    def send(self, kind, ids, max_tokens, context=None, tail=None, priority=INTERACTIVE, speculation=None, **extra):
+    def session_cuts(self, length):
+        return [cut for cut in self.state.get("cuts", []) if cut < length]
+
+    def remember_reply(self, prompt_tokens, reply_tokens):
+        self.state.setdefault("cuts", []).extend([prompt_tokens - 1, prompt_tokens + reply_tokens])
+
+    def send(self, kind, ids, max_tokens, context=None, tail=None, priority=INTERACTIVE, speculation=None, cuts=(), keep=(), **extra):
         self.state["sequence"] += 1
         if self.resumed and kind in SESSION_SAMPLES:
             extra["first_of_run"] = True
         self.resumed = False
-        record = self.engine.complete(ids, max_tokens, priority, speculation)
+        record = self.engine.complete(ids, max_tokens, priority, speculation, cuts, keep)
         line = dict(shown(record), kind=kind, context=context, tail=tail, sequence=self.state["sequence"], label=self.arguments.label, model=self.model,
                     log_offset=self.log_offset(), **extra)
         self.write(line)
@@ -289,17 +300,19 @@ class Run:
         taken = self.state["taken"]
         new = self.take(tail)
         try:
-            record = self.send(kind, history + new, self.arguments.reply_tokens, context, tail, speculation=speculation)
+            record = self.send(kind, history + new, self.arguments.reply_tokens, context, tail, speculation=speculation, cuts=self.session_cuts(len(history) + len(new)))
         except SystemExit:
             self.state["taken"] = taken
             raise
+        self.remember_reply(len(history) + len(new), len(record["tokens"]))
         self.state["history"] = history + new + record["tokens"]
         if done is not None:
             self.state["level"]["done"] = done
         self.save()
 
     def sample(self, kind, context, tokens, speculation, done):
-        self.send(kind, list(self.state["history"]), tokens, context, 0, speculation=speculation)
+        history = list(self.state["history"])
+        self.send(kind, history, tokens, context, 0, speculation=speculation, cuts=self.session_cuts(len(history)))
         self.state["level"]["done"] = done
         self.save()
 
@@ -345,21 +358,22 @@ class Run:
         missing = context - len(self.state["history"])
         if missing > 0:
             self.turn("grow", context, missing, False)
-        self.send("decode", list(self.state["history"]), self.arguments.decode_tokens, context, 0, speculation=False)
+        history = list(self.state["history"])
+        self.send("decode", history, self.arguments.decode_tokens, context, 0, speculation=False, cuts=self.session_cuts(len(history)))
 
     def openings(self):
         reply = self.arguments.reply_tokens
         opening = self.source.piece("opening", 0, self.opening_tokens)
-        self.send("opening", opening, reply, len(opening), len(opening), speculation=False)
         shared = len(opening) - SECOND_PROMPT_TOKENS
+        self.send("opening", opening, reply, len(opening), len(opening), speculation=False, cuts=[shared], keep=[shared])
         self.send("opening_second", opening[:shared] + self.source.piece("second_prompt", 0, SECOND_PROMPT_TOKENS), reply, len(opening), SECOND_PROMPT_TOKENS,
-                  speculation=False, shared_tokens=shared)
+                  speculation=False, cuts=[shared], keep=[shared], shared_tokens=shared)
         size = self.subagent_tokens
         unique = min(int(size * SUBAGENT_UNIQUE_SHARE), SUBAGENT_BRIEF_TOKENS)
         subagent = self.source.piece("subagent", 0, size)
-        self.send("subagent", subagent, reply, size, size, speculation=False)
+        self.send("subagent", subagent, reply, size, size, speculation=False, cuts=[size - unique], keep=[size - unique])
         self.send("subagent_second", subagent[:size - unique] + self.source.piece("subagent_brief", 0, unique), reply, size, unique, speculation=False,
-                  shared_tokens=size - unique)
+                  cuts=[size - unique], keep=[size - unique], shared_tokens=size - unique)
 
     def wave(self):
         arguments = self.arguments
@@ -400,7 +414,9 @@ class Run:
             raise SystemExit("turn_floor: there is no saved session to resume; run the turns arm first")
         new = self.source.piece("resume", self.state["resume_taken"], RESUME_TAIL_TOKENS)
         self.state["resume_taken"] += RESUME_TAIL_TOKENS
-        record = self.send("resume", history + new, self.arguments.reply_tokens, len(history), RESUME_TAIL_TOKENS, speculation=False, event=self.arguments.event)
+        record = self.send("resume", history + new, self.arguments.reply_tokens, len(history), RESUME_TAIL_TOKENS, speculation=False,
+                           cuts=self.session_cuts(len(history) + len(new)), event=self.arguments.event)
+        self.remember_reply(len(history) + len(new), len(record["tokens"]))
         self.state["history"] = history + new + record["tokens"]
         self.save()
         time.sleep(RESUME_SETTLE_SECONDS)
@@ -410,7 +426,7 @@ class Run:
         history = self.state["history"]
         if not history:
             raise SystemExit("turn_floor: there is no saved session to ask the engine about; run the turns arm first")
-        status, answer = self.engine.cache_state(history)
+        status, answer = self.engine.cache_state(history, self.session_cuts(len(history)))
         self.state["sequence"] += 1
         record = {"kind": "cache_state", "event": self.arguments.event, "sequence": self.state["sequence"], "label": self.arguments.label, "model": self.model,
                   "history_tokens": len(history), "http_status": status, "answer": answer, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

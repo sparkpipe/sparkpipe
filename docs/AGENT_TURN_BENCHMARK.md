@@ -239,6 +239,14 @@ python3 turn_floor.py parts $W/kimi-k3
   `summary.json` as `cache_states`. An engine without the endpoint answers
   404, which is recorded and stops nothing.
 
+Every request names its cuts, as the chat layer does for a conversation. A
+session request sends `cuts`: for each earlier reply of the session, one
+token before that turn's prompt ended and where its reply ended. The
+question of the `truth` arm sends the same list. An opening and the second
+request on it send the length they share as a cut and in `keep`, so state is
+kept there. An engine that does not know the members ignores them; one that
+resumes only at the cuts a request names needs them to resume a turn at all.
+
 Every completion's `cache` object, when the engine sends one, is kept with
 the request (`cache_matched_tokens`, `cache_resumed_tokens`,
 `cache_restore_ms`, `cache_background_wait_ms`, `cache_boot`,

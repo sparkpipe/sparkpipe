@@ -61,6 +61,7 @@ class Stub:
         self.refuse_in = 0
         self.restored_ms = 0.0
         self.answers_state = True
+        self.state_cuts = []
 
     def cached(self, ids):
         best = 0
@@ -97,7 +98,8 @@ class Stub:
             cached = self.cached(ids)
             restore, self.restore_next = self.restore_next, False
         accepted = time.monotonic_ns()
-        self.requests.append({"priority": body.get("priority"), "speculation": body.get("speculation"), "prompt": len(ids), "cached": cached})
+        self.requests.append({"priority": body.get("priority"), "speculation": body.get("speculation"), "prompt": len(ids), "cached": cached,
+                              "cuts": body.get("cuts") or [], "keep": body.get("keep") or []})
         with self.busy:
             time.sleep(QUEUE_MS / 1000)
             self.restored_ms = 0.0
@@ -181,6 +183,7 @@ def handler(stub):
                 if not stub.answers_state:
                     self.send_error(404)
                     return
+                stub.state_cuts.append(body.get("cuts") or [])
                 held = stub.cached(body["prompt_token_ids"] + [0])
                 self.reply({"object": "cache.state", "complete": True, "prompt_tokens": len(body["prompt_token_ids"]), "matched_tokens": held, "resume_tokens": held,
                             "probed_tokens": held, "ranks": 1, "ranks_reported": 1, "ranks_failed": 0, "held_tokens": held, "resident_tokens": held, "saved_tokens": 0,
@@ -329,6 +332,30 @@ with tempfile.TemporaryDirectory() as folder:
     server.shutdown()
 
 check(summary["unmatched"] == 0, f"every request finds its own line in the engine log by prompt digest: {summary['unmatched']} unmatched")
+sent = {}
+for request in stub.requests:
+    sent.setdefault(request["prompt"], []).append(request)
+named, wrong, before_resume = [], [], None
+for row in [row for row in rows if row.get("error") is None]:
+    wanted = [cut for cut in named if cut < row["prompt_tokens"]]
+    if row["kind"] in ("resume", "turn_after_resume") and before_resume is None:
+        before_resume = list(named)
+    if row["kind"] in ("grow", "turn", "turn_spec", "resume", "turn_after_resume", "decode", "decode_served"):
+        if any(request["cuts"] != wanted or request["keep"] for request in sent[row["prompt_tokens"]]) or row["cut_count"] != len(wanted):
+            wrong.append((row["kind"], row["prompt_tokens"], wanted[-2:], [request["cuts"][-2:] for request in sent[row["prompt_tokens"]]]))
+    if row["kind"] in ("grow", "turn", "turn_spec", "resume", "turn_after_resume"):
+        named += [row["prompt_tokens"] - 1, row["prompt_tokens"] + row["output_tokens"]]
+last_turn = [row for row in rows if row["kind"] in ("grow", "turn", "turn_spec") and row.get("error") is None][-1]
+check(not wrong and len(named) >= 24 and named == sorted(named),
+      f"every session request names, for each earlier reply, one token before that turn's prompt ended and where its reply ended: {wrong[:3]}")
+whole = last_turn["prompt_tokens"] + last_turn["output_tokens"]
+check(before_resume[-2:] == [last_turn["prompt_tokens"] - 1, whole] and stub.state_cuts[0] == [cut for cut in before_resume if cut < whole] and
+      stub.state_cuts[0][-1] == last_turn["prompt_tokens"] - 1,
+      f"the question to the engine about the session names the cuts a request on the whole session would, ending one token before its last prompt ended: {stub.state_cuts[0][-4:]}")
+opened = [request for request in stub.requests if request["prompt"] == CONTEXT_LIMIT - 6 - 64]
+shared, brief = CONTEXT_LIMIT - 6 - 64 - 500, CONTEXT_LIMIT - 6 - 64 - int((CONTEXT_LIMIT - 6 - 64) * 0.03)
+check([request["cuts"] for request in opened] == [[shared], [shared], [brief], [brief]] and all(request["keep"] == request["cuts"] for request in opened),
+      f"an opening and the second request on it name where what they share ends, and ask for state there: {[(request['cuts'], request['keep']) for request in opened]}")
 asked = summary["cache_states"]
 check(len(asked) == 2 and asked[0]["event"] == "after the turns" and asked[0]["http_status"] == 200 and asked[0]["answer"]["ranks_failed"] == 0 and
       asked[0]["answer"]["held_tokens"] == asked[0]["history_tokens"] == asked[0]["answer"]["prompt_tokens"] and asked[0]["answer"]["resident_tokens"] == asked[0]["history_tokens"] and
