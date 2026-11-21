@@ -1,8 +1,9 @@
 """Every kernel launch in production code goes through LM_LAUNCH.
 
 A device backend supplies its launcher behind the LM_LAUNCH family of names in
-runtime/launch.h, so a triple-chevron launch in a production source root is a
-launch that backend cannot see. tools/launch_sites.py finds those launches and
+runtime/launch.h (the CUDA one in runtime/device/cuda/launch_cuda.h), so a
+triple-chevron launch in a production source root outside the backends is a
+launch another backend cannot see. tools/launch_sites.py finds those launches and
 rewrites them; this test fails while any remain, and checks on scratch text that
 the rewrite keeps the kernel, the configuration, the arguments and every line
 break, writes out an omitted shared size and stream, and keeps a parenthesized

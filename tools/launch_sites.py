@@ -3,8 +3,9 @@
 
 Every kernel launch in production code goes through LM_LAUNCH from
 runtime/launch.h, so a device backend can supply its own launcher behind the
-one name. This tool finds each `kernel<<<grid, block[, shared[, stream]]>>>(...)`
-in the production source roots and rewrites it as
+one name; only the backends under runtime/device/ use the launch syntax.
+This tool finds each `kernel<<<grid, block[, shared[, stream]]>>>(...)` in
+the production source roots and rewrites it as
 `LM_LAUNCH((kernel), grid, block, shared, stream, ...)` with the omitted
 shared size and stream written out as their defaults (0 and 0). The text of
 the kernel, the configuration and the arguments is kept as written, including
@@ -39,7 +40,8 @@ LAUNCH_ROOTS = (
     "src",
     "text",
 )
-LAUNCH_HEADER = "runtime/launch.h"
+DEVICE_BACKENDS = "runtime/device/"
+LAUNCH_HEADER = "runtime/device/cuda/launch_cuda.h"
 SUFFIXES = {".cu", ".cuh", ".h", ".hpp", ".cc", ".cpp"}
 OPEN = {"(": ")", "[": "]", "{": "}"}
 CLOSE = {")": "(", "]": "[", "}": "{"}
@@ -269,7 +271,7 @@ def launch_files(root):
         for path in sorted(base.rglob("*")):
             if path.is_file() and path.suffix in SUFFIXES:
                 relative = path.relative_to(root).as_posix()
-                if relative != LAUNCH_HEADER:
+                if not relative.startswith(DEVICE_BACKENDS):
                     yield path, relative
 
 
