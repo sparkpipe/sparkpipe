@@ -6,6 +6,7 @@
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/norm.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_POLY_NORM_PARAMS 4u
 
@@ -46,11 +47,11 @@ __global__ __launch_bounds__(THREADS) void LmPolyNormMulKernel(const uint16_t *_
 }
 
 template<bool ROUTED>
-static cudaError_t LmPolyNormMulLaunch(const uint16_t *gate_up, const float *params, const uint32_t *param_of_row, uint16_t *out, uint32_t rows,
-	uint32_t width, float clamp, float bias_clamp, float out_scale, float epsilon, cudaStream_t stream)
+static SparkGpuError LmPolyNormMulLaunch(const uint16_t *gate_up, const float *params, const uint32_t *param_of_row, uint16_t *out, uint32_t rows,
+	uint32_t width, float clamp, float bias_clamp, float out_scale, float epsilon, SparkGpuStream stream)
 {
 	if ( rows == 0u )
-		return cudaSuccess;
+		return SPARK_GPU_SUCCESS;
 	LM_LAUNCH((LmPolyNormMulKernel<256u, ROUTED>), rows, 256u, 0, stream, gate_up, params, param_of_row, out, rows, width, clamp, bias_clamp, out_scale, epsilon);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }

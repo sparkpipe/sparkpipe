@@ -6,6 +6,7 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/rows_tile.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 struct LmQkvLayout
 {
@@ -174,14 +175,14 @@ void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const u
 }
 
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
-static inline cudaError_t LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream)
 {
 	constexpr uint32_t few = THREADS / LM_ROWS_TILE_N, many = 4u * few;
 	if ( rows <= few )
 		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, few>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, 1u), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 	else
 		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, many>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, (rows + many - 1u) / many), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<

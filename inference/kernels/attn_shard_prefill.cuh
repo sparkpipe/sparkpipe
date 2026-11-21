@@ -4,6 +4,7 @@
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/tma.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_LATENT_SHARD_PREFILL_MIN_ROWS 17u
 
@@ -54,11 +55,11 @@ static inline uint32_t LmLatentShardPrefillMultiprocessors(void)
 {
 	static uint32_t known[LM_LATENT_SHARD_DEVICES];
 	int device = 0, count = 0;
-	if (cudaGetDevice(&device) != cudaSuccess || device < 0)
+	if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0)
 		return 1u;
 	if ((uint32_t)device < LM_LATENT_SHARD_DEVICES && known[device] != 0u)
 		return known[device];
-	if (cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device) != cudaSuccess || count < 1)
+	if (SparkGpuDeviceGetAttribute(&count, SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT, device) != SPARK_GPU_SUCCESS || count < 1)
 		return 1u;
 	if ((uint32_t)device < LM_LATENT_SHARD_DEVICES)
 		known[device] = (uint32_t)count;
@@ -650,7 +651,7 @@ void LmLatentShardPrefillKernel(
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE, uint32_t ROWS>
-static inline cudaError_t LmLatentShardPrefillRowsLaunch(
+static inline SparkGpuError LmLatentShardPrefillRowsLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -665,7 +666,7 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 	uint32_t rows,
 	uint32_t split_count,
 	uint64_t split_stride,
-	cudaStream_t stream,
+	SparkGpuStream stream,
 	LmLatentShardSelection selection)
 {
 	constexpr uint32_t block_heads = LM_LATENT_SHARD_QUERIES / ROWS;
@@ -682,11 +683,11 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 		query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
 		partial_rank_stride < (uint64_t)rows * selection.record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) ||
 		(partial_rank_stride % 2u) != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (!granted)
 	{
-		cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
-		if (error != cudaSuccess)
+		SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
@@ -696,7 +697,7 @@ static inline cudaError_t LmLatentShardPrefillRowsLaunch(
 	LM_LAUNCH((LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>), dim3(grid, groups, split_count), LM_LATENT_SHARD_PREFILL_THREADS, shared, stream,
 		cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows,
 		split_count, split_stride, selection);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t LATENT>
@@ -753,7 +754,7 @@ static inline uint64_t LmLatentShardDecodeSplitFloats(uint32_t rows, uint32_t to
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardSplitLaunch(
+static inline SparkGpuError LmLatentShardSplitLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -768,19 +769,19 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 	uint64_t partial_rank_stride,
 	uint32_t rows,
 	uint32_t splits,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t total_heads = heads_per_rank * cache.shard.degree;
 	const uint64_t row_floats = (uint64_t)splits * total_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
 	uint32_t first, count, chunk;
-	cudaError_t error;
+	SparkGpuError error;
 	if (rows == 0u || splits == 0u || total_heads == 0u || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (splits == 1u)
 		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
 			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (split_partials == 0 || split_capacity_floats < row_floats)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	chunk = split_capacity_floats / row_floats < rows ? (uint32_t)(split_capacity_floats / row_floats) : rows;
 	for (first = 0u; first < rows; first += count)
 	{
@@ -790,19 +791,19 @@ static inline cudaError_t LmLatentShardSplitLaunch(
 		const uint64_t records = (uint64_t)first * heads_per_rank;
 		error = LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16 + records * (LATENT + ROPE), query_rank_stride, heads_per_rank, total_heads,
 			sequence_of_row + first, context_length, row_position + first, qk_scale, split_partials, split_rank_stride, count, splits, split_stride, stream, LmLatentShardDense(heads_per_rank));
-		if (error != cudaSuccess)
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		LM_LAUNCH((LmLatentShardSplitMergeKernel<LATENT>), dim3(count, total_heads), LM_LATENT_SHARD_THREADS, 0, stream, split_partials, split_rank_stride, split_stride, splits,
 			partials + records * LM_LATENT_SHARD_RECORD_FLOATS(LATENT), partial_rank_stride, heads_per_rank);
-		error = cudaPeekAtLastError();
-		if (error != cudaSuccess)
+		error = SparkGpuPeekAtLastError();
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 	}
-	return cudaSuccess;
+	return SPARK_GPU_SUCCESS;
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardDecodeLaunch(
+static inline SparkGpuError LmLatentShardDecodeLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -816,19 +817,19 @@ static inline cudaError_t LmLatentShardDecodeLaunch(
 	float *partials,
 	uint64_t partial_rank_stride,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t total_heads = heads_per_rank * cache.shard.degree, splits = rows != 0u ? LmLatentShardDecodeSplits(rows) : 1u;
 	if (rows == 0u || rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (splits > 1u && (split_partials == 0 || split_capacity_floats < LmLatentShardDecodeSplitFloats(rows, total_heads, LATENT)))
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	return LmLatentShardSplitLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length,
 		row_position, qk_scale, split_partials, split_capacity_floats, partials, partial_rank_stride, rows, splits, stream);
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardPrefillLaunch(
+static inline SparkGpuError LmLatentShardPrefillLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -840,16 +841,16 @@ static inline cudaError_t LmLatentShardPrefillLaunch(
 	float *partials,
 	uint64_t partial_rank_stride,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ((heads_per_rank * cache.shard.degree) % LM_LATENT_SHARD_QUERIES != 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank,
 		heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentGatherPrefillLaunch(
+static inline SparkGpuError LmLatentGatherPrefillLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint32_t heads_per_rank,
@@ -859,7 +860,7 @@ static inline cudaError_t LmLatentGatherPrefillLaunch(
 	float qk_scale,
 	float *partials,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint64_t query_stride = (uint64_t)rows * heads_per_rank * (LATENT + ROPE);
 	const uint64_t partial_stride = (uint64_t)rows * heads_per_rank * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
@@ -884,7 +885,7 @@ static __host__ __device__ constexpr bool LmLatentShardTensorFits(void)
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardAttendHeadsLaunch(
+static inline SparkGpuError LmLatentShardAttendHeadsLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -902,7 +903,7 @@ static inline cudaError_t LmLatentShardAttendHeadsLaunch(
 	uint32_t record_heads,
 	uint32_t record_copies,
 	uint32_t rows,
-	cudaStream_t stream,
+	SparkGpuStream stream,
 	const uint32_t *split_positions = 0,
 	const uint32_t *split_offsets = 0,
 	uint32_t heads_per_block_limit = 4u)
@@ -926,7 +927,7 @@ static inline cudaError_t LmLatentShardAttendHeadsLaunch(
 }
 
 template<class Geometry, class Pages, uint32_t LATENT, uint32_t ROPE>
-static inline cudaError_t LmLatentShardAttendLaunch(
+static inline SparkGpuError LmLatentShardAttendLaunch(
 	Pages cache,
 	const uint16_t *query_bf16,
 	uint64_t query_rank_stride,
@@ -941,7 +942,7 @@ static inline cudaError_t LmLatentShardAttendLaunch(
 	float *partials,
 	uint64_t partial_rank_stride,
 	uint32_t rows,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return LmLatentShardAttendHeadsLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, heads_per_rank * cache.shard.degree,
 		sequence_of_row, context_length, row_position, selected_positions, selected_count, dense_limit, qk_scale, partials, partial_rank_stride, heads_per_rank, 1u,
