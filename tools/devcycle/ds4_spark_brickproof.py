@@ -215,7 +215,10 @@ class BrickproofError(RuntimeError):
 
 
 def run(argv: list[str],input_bytes: bytes | None = None,timeout: int = 120,check: bool = True,env: dict[str,str] | None = None) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(argv,input=input_bytes,stdin=None if input_bytes is not None else subprocess.DEVNULL,capture_output=True,timeout=timeout,env=env)
+    try:
+        result = subprocess.run(argv,input=input_bytes,stdin=None if input_bytes is not None else subprocess.DEVNULL,capture_output=True,timeout=timeout,env=env)
+    except FileNotFoundError:
+        result = subprocess.CompletedProcess(argv,127,b"",f"{argv[0]}: command not found".encode())
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).decode("utf-8",errors="replace").strip()
         raise BrickproofError(f"command failed ({result.returncode}): {' '.join(argv)}: {detail}")

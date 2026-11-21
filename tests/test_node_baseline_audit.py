@@ -416,6 +416,14 @@ class ControllerTest(unittest.TestCase):
             with self.assertRaises(OSError):
                 MODULE.read_optional(Path("/sys/class/net/enp1s0f1np1/speed"))
 
+    def test_a_missing_program_is_a_failed_command_not_a_crash(self) -> None:
+        result = MODULE.run(["/nonexistent/sparkpipe-missing-tool","-i","x"],check=False)
+        self.assertEqual(result.returncode,127)
+        self.assertIn(b"command not found",result.stderr)
+        self.assertEqual(MODULE.command(["/nonexistent/sparkpipe-missing-tool"],check=False),"")
+        with self.assertRaises(MODULE.BrickproofError):
+            MODULE.run(["/nonexistent/sparkpipe-missing-tool"])
+
     def test_a_fabric_port_without_link_is_reported_down_not_a_crash(self) -> None:
         original = MODULE.Path.read_text
         def read_text(path: Path, *args: object, **keywords: object) -> str:
