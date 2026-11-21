@@ -626,15 +626,30 @@ only the tail after the last named cut is computed again; `/health` counts
 such requests per model in `cuts_capped`, and each logs a `cuts_capped`
 line.
 
+Every one of these cuts is named whether or not state is kept at it. The
+cuts fix the waves, and so the identities of everything after them: a cut
+added later makes the rest of a prompt cold once. What is kept can change
+from request to request.
+
 It lists in `keep`, so that the engine keeps state there: the opening's
-end, the tools' and system blocks' ends, a pack's end, the cut before a
-forced tool call, and in the first user message the end of a block that
-carries `cache_control`. A conversation that shares the tools and the first
-system block with an earlier one, or a document in its first message, or a
-pack, then resumes at that cut instead of at the last checkpoint anchor
-before it. `cache_control` anywhere else is read and changes nothing: state
-is always kept one token before a prompt's end, and a cut that a later turn
-might not name would stop that turn from resuming.
+end, a pack's ends and the cut before a forced tool call, always; and the
+cut of a block of the head (the tools, a system block, a block of the first
+user message but its last) only when the client marked that block with
+`cache_control`. On Messages a mark on any tool counts for the tools; on
+Chat Completions a mark on a content part counts for that part. A lane has
+few state records and the engine keeps only the newest few on a path, so a
+state at every block would push out the widely shared ones first. A client
+that marks, marks where its static part ends, and that is the state worth a
+record; a client that does not gets the opening's end.
+
+A conversation that shares a marked block with an earlier one, or the
+opening, or a pack, then resumes at that cut instead of at the last
+checkpoint anchor before it. A request needs no mark of its own to resume
+where an earlier request's mark left state. `cache_control` on a later
+message is read and changes nothing: such a mark moves from turn to turn,
+so it never adds a cut (a cut that one turn names and the next does not
+would change the waves of what they share and stop every resume), and state
+is always kept one token before a prompt's end.
 
 `max_tokens: 0` on Messages, or
 `commit_only: true` on Chat Completions and Responses, is a commit. The

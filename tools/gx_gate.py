@@ -130,6 +130,10 @@ def head_cuts(unit):
     return sorted({cut for cut in (chat_layer_cut(end) for end in head_blocks(unit)) if cut > 0} | {unit["context"]})
 
 
+def head_keeps(unit):
+    return head_cuts(unit)[1:]
+
+
 def build_plan(arguments):
     tails = sorted(set(arguments.tails))
     reserve = 3 * max(tails) + 2 * arguments.reply_tokens + max(arguments.max_tokens, arguments.served_tokens) + BLOCK
@@ -461,7 +465,7 @@ class Step:
             if unit["case"] == "kept":
                 self.send(label, self.prompts.other(unit), 1, {"speculation": False, "cuts": [unit["context"]], "keep": [unit["context"]]}, cold=True)
             elif unit["case"] == "opening":
-                self.send(label, self.prompts.other(unit), 1, {"speculation": False, "cuts": head_cuts(unit), "keep": head_cuts(unit)}, cold=True)
+                self.send(label, self.prompts.other(unit), 1, {"speculation": False, "cuts": head_cuts(unit), "keep": head_keeps(unit)}, cold=True)
             else:
                 self.send(label, self.prompts.prefix(unit), 0, {}, cold=True)
         except UnitError as error:
@@ -477,7 +481,7 @@ class Step:
         if unit["case"] == "kept":
             options["keep"] = [unit["context"]]
         if unit["case"] == "opening":
-            options["keep"] = head_cuts(unit)
+            options["keep"] = head_keeps(unit)
         return options
 
     def measure(self, unit, replies, cold=False):
@@ -939,7 +943,8 @@ def main(argv=None):
     plan.add_argument("--kept-contexts", type=contexts, default=[8000, 20000])
     plan.add_argument("--drafted-contexts", type=contexts, default=[8000])
     plan.add_argument("--committed-contexts", type=contexts, default=[8000], help="sessions whose replies are committed at once, so the next turn resumes where the reply ends")
-    plan.add_argument("--opening-contexts", type=contexts, default=[8000], help="heads of three blocks whose cuts come from the chat layer's rule; a second conversation shares the first two blocks")
+    plan.add_argument("--opening-contexts", type=contexts, default=[8000],
+                      help="heads of three blocks whose cuts come from the chat layer's rule, with state at the second block's cut and the head's end; a second conversation shares the first two blocks")
     plan.add_argument("--tails", type=numbers, default=[1, 40, 500, 5000])
     plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))

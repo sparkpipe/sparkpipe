@@ -1077,7 +1077,7 @@ class Model:
             prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
         raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
 
-    def structure(self, messages, marks, tools, kwargs, pack=None):
+    def structure(self, messages, marks, tools, kwargs, pack=None, tools_kept=False):
         leading, blocks = [], []
         for index, message in enumerate(messages):
             if message.get("role") != "system":
@@ -1089,12 +1089,12 @@ class Model:
         first = plain_message(first) if asked else None
         if pack is not None and blocks:
             blocks[0] = []
-        key = hashlib.sha256(chat_replay.canonical([leading, first, blocks, asked, tools or [], kwargs, pack[0] if pack else None]).encode()).digest()
+        key = hashlib.sha256(chat_replay.canonical([leading, first, blocks, asked, tools or [], kwargs, pack[0] if pack else None, bool(tools_kept)]).encode()).digest()
         if key in self.opening_cache:
             self.opening_cache.move_to_end(key)
             return self.opening_cache[key]
         try:
-            found = self.structure_probe(leading, first, blocks, asked, tools, kwargs, pack)
+            found = self.structure_probe(leading, first, blocks, asked, tools, kwargs, pack, bool(tools_kept))
         except RequestError:
             found = None
         self.opening_cache[key] = found
@@ -1102,7 +1102,7 @@ class Model:
             self.opening_cache.popitem(last=False)
         return found
 
-    def structure_probe(self, leading, first, blocks, asked, tools, kwargs, pack):
+    def structure_probe(self, leading, first, blocks, asked, tools, kwargs, pack, tools_kept):
         context = dict(self.template_defaults)
         context.update(kwargs)
         pattern = control_pattern(self.vocabulary)
@@ -1117,13 +1117,13 @@ class Model:
                     marks.append(offset)
         cursor, opened, system_ends, user_ends = 0, None, [], []
         for group in blocks:
-            for block, _ in group:
+            for block, kept in group:
                 at = text.find(block, cursor)
                 if at < 0:
                     continue
                 opened = at if opened is None else opened
                 cursor = at + len(block)
-                system_ends.append(cursor)
+                system_ends.append((cursor, kept))
         user = text.find(GENERATION_PROBE, cursor) if first is None else -1
         for block, kept in asked if first is not None else []:
             at = text.find(block, cursor)
@@ -1138,8 +1138,8 @@ class Model:
             return None
         bounds = [(mark, True, True) for mark in marks if mark <= end] + [(end, True, True)]
         if tools and opened:
-            bounds.append((opened, False, True))
-        bounds.extend((offset, False, True) for offset in system_ends if offset < end)
+            bounds.append((opened, False, tools_kept))
+        bounds.extend((offset, False, kept) for offset, kept in system_ends if offset < end)
         bounds.extend((offset, False, kept) for offset, kept in user_ends[:-1] if offset > end)
         bounds.sort()
         opening = array("I", encode_span(self, pieces, 0, end))
@@ -1898,12 +1898,13 @@ def message_blocks(message, marked):
     if isinstance(content, str):
         return [[content, False]] if content else []
     if isinstance(content, list):
-        return [[part["text"], False] for part in content if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str) and part["text"]]
+        return [[part["text"], chat_shapes.marked(part)] for part in content
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str) and part["text"]]
     return []
 
 
-def opening_cuts(model, messages, marks, tools, kwargs, pack, ids):
-    found = model.structure(messages, marks, tools, kwargs, pack)
+def opening_cuts(model, messages, marks, tools, kwargs, pack, ids, tools_kept=False):
+    found = model.structure(messages, marks, tools, kwargs, pack, tools_kept)
     if found is None:
         return [], []
     opening, named = found
@@ -3615,7 +3616,7 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        structural, kept = opening_cuts(model, messages, marks, tools, kwargs, pack, ids)
+        structural, kept = opening_cuts(model, messages, marks, tools, kwargs, pack, ids, bool(translated.get("tools_marked")) and session is None)
         if forced_ids:
             structural, kept = structural + [len(ids) - len(forced_ids) - 1], kept + [len(ids) - len(forced_ids) - 1]
         plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, structural, kept)[1]

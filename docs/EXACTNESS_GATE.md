@@ -89,7 +89,7 @@ top 4 logprobs.
 | --- | --- | --- |
 | `prefix` | A commit of the prefix P | P and a new tail, with a cut at P's end |
 | `kept` | A one-token completion of P and eight other tokens, with a cut at P's end and state kept there | P and a new tail, with the same cut and keep |
-| `opening` | A one-token completion of another prompt whose head shares this one's first two blocks, with the head's cuts and state kept at each | A head of three blocks and a new tail, with the same cuts and keep |
+| `opening` | A one-token completion of another prompt whose head shares this one's first two blocks, with the head's cuts, and state kept at the second block's cut and the head's end | A head of three blocks and a new tail, with the same cuts and keep |
 | `session` | Turn 1 (opening and first prompt) and turn 2 (plus reply 1 and a tail), each answered with 96 tokens as decode chains, speculation off | Turn 3: plus reply 2 and a tail |
 | `drafted` | The same with speculation left at the engine's default | The same |
 | `committed` | As `session`, and after each reply a commit of that turn's prompt with the reply, naming the turn's cuts and one token before the turn's prompt ended | The same |
@@ -104,8 +104,10 @@ first ends a quarter of the way in, the second three quarters in. The cuts of
 those two ends come from the chat layer's own rule
 (`structural_cut` in `tools/serving/prompt_cuts.py`), so each lies a few
 tokens before the end of the shared text, on a cache block; the third cut is
-the head's end. Every unit has a third block of its own, so it can resume
-only at the second block's cut.
+the head's end. State is kept as the chat layer keeps it: at the head's end,
+and at the second block's cut, where a client's `cache_control` mark would
+sit; the first block's cut has none. Every unit has a third block of its
+own, so it can resume only at the second block's cut.
 
 Two verdicts follow for each unit:
 

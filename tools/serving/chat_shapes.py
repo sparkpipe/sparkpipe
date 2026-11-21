@@ -310,6 +310,7 @@ def messages_request(body):
     if body.get("stream") not in (None, True, False):
         raise invalid("stream must be a boolean")
     request.update(model=body["model"], messages=messages, tools=anthropic_tools(body.get("tools")), tool_choice=anthropic_tool_choice(body.get("tool_choice")),
+                   tools_marked=any(isinstance(tool, dict) and marked(tool) for tool in body.get("tools") or []),
                    effort=output.get("effort"), thinking=thinking.get("type"), budget=thinking.get("budget_tokens"),
                    max_tokens=body.get("max_tokens"), stops=stop_list(body.get("stop_sequences"), "stop_sequences"), sampling=sampling(body),
                    stream=bool(body.get("stream")), custom_tools=frozenset(), affinity=metadata_session(body.get("metadata")))

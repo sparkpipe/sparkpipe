@@ -264,12 +264,13 @@ class GxGateTests(unittest.TestCase):
         for entry in committed:
             self.assertEqual(entry["resume_cut"], sessions[entry["tail"]]["resume_cut"] + 1 + 8, "a turn after a committed reply resumes where the reply ends, not one token before the earlier prompt's end")
         kept = [body for body in engine.bodies if "keep" in body]
-        self.assertTrue(kept and all(body["keep"] in ([769], [1793], [448, 1536, 2069]) and body["cuts"] == body["keep"] for body in kept), "a kept unit asks for state at the cut where its shared prefix ends")
+        self.assertTrue(kept and all((body["keep"] in ([769], [1793]) and body["cuts"] == body["keep"]) or (body["keep"], body["cuts"]) == ([1536, 2069], [448, 1536, 2069]) for body in kept),
+                        "a kept unit asks for state at the cut where its shared prefix ends, and a head at its second block's cut and its end but not at its first block's cut")
         opening = [entry for entry in receipt["verdicts"] if entry["case"] == "opening"]
         self.assertEqual([(entry["context"], entry["resume_cut"], entry["cached_tokens"]["chain"], entry["cached_tokens"]["restore"]) for entry in opening], [(2069, 1536, 1536, 1536)] * 2,
                          "a prompt whose head shares two blocks with an earlier prompt resumes at the second block's cut, short of where the blocks' text ends")
         self.assertEqual([prompt_cuts.structural_cut(end) for end in gx.head_blocks(opening[0])], [448, 1536], "the cuts of a head's blocks are the chat layer's own rule")
-        self.assertEqual(sum(1 for body in engine.bodies if body.get("keep") == [448, 1536, 2069] and body["max_tokens"] == 1), 2, "the head is warmed by another prompt that shares its first two blocks")
+        self.assertEqual(sum(1 for body in engine.bodies if body.get("keep") == [1536, 2069] and body["max_tokens"] == 1), 2, "the head is warmed by another prompt that shares its first two blocks")
         self.assertTrue(all("cuts" in body for body in engine.bodies if not body.get("commit_only")), "every request that generates names its cuts")
         self.assertTrue(all(body["cuts"] == sorted(set(body["cuts"])) for body in engine.bodies if "cuts" in body))
         last = max((body for body in engine.bodies if "logprobs" in body), key=lambda body: len(body["cuts"]))
