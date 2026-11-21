@@ -1867,6 +1867,7 @@ static void handle_cache_state(int fd, char *body, uint32_t body_len)
 	uint32_t *tokens = 0,token_count = 0u,by_identity = 0u,status,index;
 	int32_t root,member;
 	memset(&doc,0,sizeof(doc));
+	memset(&identity,0,sizeof(identity));
 	if ( SparkJsonParseText(body,body_len,&doc) != SPARK_STATUS_OK )
 	{
 		send_response(fd,400,"{\"error\":\"invalid json\"}");
