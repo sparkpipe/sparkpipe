@@ -83,11 +83,21 @@ typedef struct SparkDeviceLaunch
 	uint32_t binding_count;
 } SparkDeviceLaunch;
 
+typedef struct SparkDeviceParameter
+{
+	uint32_t offset;
+	uint32_t bytes;
+	uint32_t align;
+} SparkDeviceParameter;
+
 typedef struct SparkDeviceKernelInfo
 {
 	uint32_t max_threads;
 	uint32_t simd_width;
 	uint32_t static_shared_bytes;
+	uint32_t parameter_count;
+	uint32_t parameter_bytes;
+	const SparkDeviceParameter *parameters;
 } SparkDeviceKernelInfo;
 
 typedef struct SparkDeviceProperties

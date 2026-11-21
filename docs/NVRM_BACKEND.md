@@ -336,10 +336,19 @@ bounce buffer per queue when the device side has no host view. Because
 one device-layer call can take several submissions, the backend maps
 device-layer sequence numbers to fence values through a ring.
 
-Kernel libraries and launches through the device layer are still
-refused with `SPARK_STATUS_UNSUPPORTED`, as the device contract expects
-of a backend without device kernels. The backend adopts no foreign
-memory or queue, and a queue it owns is never captured into a graph.
+Kernel libraries are cubins with their manifests
+(`SparkDeviceLibraryLoad` on the `.cubin` path). `SparkDeviceKernelCreate`
+finds a kernel by name and reports its thread limit (the PTX bound, else
+1024), its static shared memory and its parameter layout
+(`SparkDeviceKernelInfo.parameters`, from the manifest). A launch passes
+the kernel's whole parameter block, packed by its C parameter types, as
+the launch's constants; the block must be exactly the kernel's parameter
+size, and bindings are refused. Each launch's descriptor and bank 0 go in
+a slot from a per-queue ring of 512, reused once the launch that held it
+has completed. The device contract's nvrm branch loads the fixture cubin,
+checks the reported layout, refuses bindings and a wrong-sized block, and
+reads back a launch. The backend adopts no foreign memory or queue, and
+a queue it owns is never captured into a graph.
 
 Every channel registers with unified memory before anything is
 submitted on it, and the backend never schedules a single channel: the
