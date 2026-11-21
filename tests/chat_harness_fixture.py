@@ -84,6 +84,7 @@ class Engine:
         self.hold = None
         self.early_usage = True
         self.cache_all = False
+        self.ignores_commit = False
         self.usage = []
 
     def tokens(self, text):
@@ -109,9 +110,23 @@ class Engine:
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        if body.get("commit_only") is True and self.ignores_commit:
+            body = dict(body, max_tokens=4)
+        elif body.get("commit_only") is True:
+            if "max_tokens" in body or "logprobs" in body:
+                return web.json_response({"error": {"code": "commit_only_conflict"}}, status=400)
+            await response.prepare(request)
+            event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
+                     "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
+                               "published_tokens": len(prompt)}}
+            await response.write(("data: " + json.dumps(event) + "\n\n").encode())
+            self.committed.append(list(prompt))
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
         ids = ids[:body["max_tokens"]]
-        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         if self.hold is not None:
             await self.hold.wait()

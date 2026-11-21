@@ -102,6 +102,9 @@ async def run(tmp, check):
               f"the cache matches the whole previous turn, {len(engine.committed[0])} tokens: {delta['usage']}")
         check(delta["sparkpipe"]["replayed_tokens"] == len(first_prompt) + len(generated) and headers.get("X-SparkPipe-Replayed-Tokens") == str(len(first_prompt) + len(generated)),
               f"telemetry says how many prompt tokens came from the replay store: {delta['sparkpipe']}")
+        check(all(name not in engine.requests[0] for name in ("cuts", "keep", "cache_points")) and
+              engine.requests[1].get("cuts") == [len(first_prompt) - 1, len(first_prompt) + len(generated)] and "cache_points" not in engine.requests[1],
+              f"a first turn names no cut; the next turn names one token before the replayed reply began and where it ends: {engine.requests[1].get('cuts')}")
         check(harness.prompt_text(1).endswith("<|im_start|>tool\nhello world<|im_end|>\n<|im_start|>assistant\n<think>"),
               f"what follows the replayed turn is rendered by the template: {harness.prompt_text(1)[-120:]}")
         model = harness.frontend.models["alpha"]

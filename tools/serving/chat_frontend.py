@@ -712,6 +712,7 @@ TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
+ENGINE_MAX_CUTS = 16384
 BULK_SUFFIX = "-bulk"
 
 
@@ -1784,8 +1785,16 @@ class PrefixLedger:
             self.blocks.popitem(last=False)
 
 
-def cache_points(seen, total):
-    return [seen] if 0 < seen < total else []
+def structure_cuts(replay, total):
+    cuts = sorted({cut for cut in (replay or {}).get("cuts", ()) if 0 < cut < total})
+    return cuts[-ENGINE_MAX_CUTS:]
+
+
+def commit_flag(body):
+    value = body.get("commit_only")
+    if value is not None and not isinstance(value, bool):
+        raise RequestError(400, "invalid_request", "commit_only must be a boolean")
+    return value is True
 
 
 def memory_model(model):
@@ -2283,14 +2292,17 @@ class Frontend:
         stops = set(model.stop_token_ids)
         ids = encode_span(model, pieces, 0, regions[0][0])
         replayed = 0
+        cuts = []
         for number, (start, close, tokens) in enumerate(regions):
             ids.extend(model.vocabulary.encode(opening, True))
+            cuts.append(len(ids) - 1)
             ids.extend(tokens)
             following = encode_span(model, pieces, close, regions[number + 1][0] if number + 1 < len(regions) else len(text))
             head, rest = chat_replay.splice(ids, following, stops)
             replayed = len(head)
+            cuts.append(replayed)
             ids = head + rest
-        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions)}
+        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions), "cuts": cuts}
 
     def replay_record(self, model, plan, assistant, result, handles, turn=None):
         if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
@@ -2316,7 +2328,7 @@ class Frontend:
         timing = plan["timing"]
         first, last, admitted = timing.get("first"), timing.get("last"), timing.get("admitted", started)
         completion = usage["completion"]
-        prefill_ms = round((first - admitted) * 1000) if first else None
+        prefill_ms = round((first - admitted) * 1000) if first else plan.get("prefill_ms")
         rounds = result.get("engine_rounds", 1)
         if prefill_ms is not None and self.replay is not None and rounds == 1:
             self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
@@ -2594,14 +2606,16 @@ class Frontend:
         started = time.monotonic()
         priority = self.hinted_priority(False, {PRIORITY_HEADER: "background"}, None)
         await model.sequences.acquire(priority, None, scope, None)
-        usage = {}
+        usage, finish = {}, None
         try:
-            body = {"prompt_token_ids": list(ids), "max_tokens": 1, "stream": True, "stop_token_ids": model.stop_token_ids,
-                    "priority": priority, "temperature": 0.0}
+            body = {"prompt_token_ids": list(ids), "stream": True, "commit_only": True, "priority": priority}
             async for chunk in self.engine_stream(model, body, True):
                 usage = chunk.get("usage") or usage
+                finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
         finally:
             await model.sequences.release(scope, None)
+        if finish != "commit":
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
         self.prefix_ledger(model).record(list(ids))
         self.public_prefix_ledger(scope, model).record(list(ids))
         return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
@@ -2690,10 +2704,10 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        points = cache_points(seen, len(engine["prompt_token_ids"]))
-        if points:
-            engine["cache_points"] = points
-        trace.update(seen_tokens=seen, seen_of=seen_of)
+        cuts = structure_cuts(replay, len(engine["prompt_token_ids"]))
+        if cuts:
+            engine["cuts"] = cuts
+        trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
         plan["trace"] = trace
@@ -2704,6 +2718,11 @@ class Frontend:
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, chat_shapes.OVERFLOW_CODE, f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}",
                                overflow=(len(prompt_ids), model.context_tokens - 1))
+        if commit_flag(body):
+            if body.get("max_completion_tokens") is not None or body.get("max_tokens") is not None or body.get("logprobs"):
+                raise RequestError(400, "invalid_request", "commit_only computes the prompt, keeps its state and generates nothing, so it takes no max_tokens or logprobs")
+            return {"body": body, "engine_body": {"prompt_token_ids": prompt_ids, "stream": True, "commit_only": True, "priority": request_priority(model, body)},
+                    "parser": None, "prompt_tokens": len(prompt_ids), "messages": messages, "tools": tools, "kwargs": kwargs, "session": session, "commit_only": True}
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
@@ -3066,9 +3085,6 @@ class Frontend:
 
     async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
-        points = cache_points(self.prefix_ledger(model).seen(ids)[0], len(ids))
-        if points:
-            body["cache_points"] = points
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
@@ -3155,7 +3171,7 @@ class Frontend:
             plan["trace"]["key"] = public["id"]
             plan.update(public_key=public, public_scope=scope)
             plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
-            return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+            return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
             try:
@@ -3165,7 +3181,7 @@ class Frontend:
                 return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
-        return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
 
     def stamp(self, plan, started, headers, affinity=None):
         plan["request_id"] = "r_" + uuid.uuid4().hex[:24]
@@ -3229,6 +3245,39 @@ class Frontend:
         print(json.dumps({"event": "request_cancelled", "request": identifier, "released": live.finished.is_set()}), file=sys.stderr, flush=True)
         return web.json_response({"id": identifier, "object": "request", "cancelled": True, "released": live.finished.is_set()})
 
+    async def commit(self, model, plan):
+        usage, finish = None, None
+        live = self.live.get(plan.get("request_id"))
+        events = self.engine_stream(model, plan["engine_body"], "public_key" in plan)
+        async for chunk in (events if live is None else live.watch(plan["request_id"], events)):
+            if "error" in chunk:
+                raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+            if chunk.get("tokens"):
+                raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine generated tokens for a commit; it needs an engine that takes commit_only")
+            finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+            usage = chunk.get("usage") or usage
+        published = usage.get("published_tokens") if isinstance(usage, dict) else None
+        if finish != "commit" or isinstance(published, bool) or not isinstance(published, int):
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
+        plan["prefill_ms"] = round((time.monotonic() - plan["timing"].get("admitted", plan["timing"]["arrived"])) * 1000)
+        self.prefix_ledger(model).record(list(plan["engine_body"]["prompt_token_ids"]))
+        return {"usage": usage, "token_ids": [], "finish_reason": "commit", "engine_finish": "commit", "published": published}
+
+    async def commit_answer(self, request, model, body, plan, started):
+        shape = plan.get("shape", "chat")
+        failed = anthropic_error_response if shape == "messages" else responses_error_response if shape == "responses" else error_response
+        try:
+            result = await self.commit(model, plan)
+        except RequestError as error:
+            self.log(model, plan["prompt_tokens"], None, started, None, error.code, plan.get("trace"))
+            return failed(error)
+        usage, record = self.settle(model, plan, result, None, started, request.headers, shape)
+        self.record_public_prefix(model, plan, result)
+        self.log(model, plan["prompt_tokens"], result["usage"], started, None, "commit", plan.get("trace"))
+        return web.json_response({"object": "cache.commit", "model": model.id, "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"],
+                                  "committed_tokens": max(0, result["published"] - usage["cached"]), "prefill_ms": record["prefill_ms"], "sparkpipe": record},
+                                 headers=self.early_headers(model, plan, request.headers))
+
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
         if assistant is not None:
@@ -3280,6 +3329,7 @@ class Frontend:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
         translated["metadata"] = body.get("metadata")
         translated["pack_request"] = self.pack_request(scope, pack, request.headers, key, translated.get("affinity"))
+        translated["commit_only"] = translated.get("max_tokens") == 0 if shape == "messages" else commit_flag(body)
         return body, translated, model, bulk, key, scope
 
     async def harness_plan(self, model, translated, scope, headers, key, bulk):
@@ -3333,10 +3383,17 @@ class Frontend:
             text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
         body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
+        if translated.get("commit_only"):
+            if forced:
+                raise RequestError(400, "invalid_request", "a commit generates nothing, so it takes no forced tool choice")
+            body = {"commit_only": True}
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
+        cuts = structure_cuts(replay, len(ids))
+        if cuts:
+            plan["engine_body"]["cuts"] = cuts
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)
@@ -3361,7 +3418,7 @@ class Frontend:
             return failed(error)
         self.stamp(plan, started, request.headers, translated.get("affinity"))
         plan.update(shape=shape, translated=translated, request_body=body)
-        return await self.admitted(request, model, body, plan, started, self.harness_answer, failed)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.harness_answer, failed)
 
     def responses_echo(self, body, translated):
         echo = {key: body.get(key) for key in ("instructions", "previous_response_id", "temperature", "top_p", "max_output_tokens", "metadata", "user")}
@@ -3481,6 +3538,8 @@ class Frontend:
             body["stream"] = True
             body, translated, model, bulk, key, scope = await self.translate(request, "responses", body, local)
             await self.admit_model(model, key, request.headers)
+            if translated["commit_only"]:
+                raise RequestError(400, "invalid_request", "commit_only is not taken on the WebSocket; send it to POST /v1/responses")
             if generate is False:
                 await self.socket_warmup(sink, body, translated, local)
                 return

@@ -76,10 +76,11 @@ frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(model).record(first["engine_body"]["prompt_token_ids"] + [9, 9])
 second = asyncio.run(frontend.plan(model, body, None))
 check(second["trace"]["seen_tokens"] == 3 and second["trace"]["seen_of"] == 5, "a repeated prompt's trace reports the earlier request's prefix and length")
-check("cache_points" not in first["engine_body"] and "cache_points" not in second["engine_body"],
-      "a first prompt and a prompt an earlier request carried whole declare no cache point")
-check(chat_frontend.cache_points(0, 9) == [] and chat_frontend.cache_points(9, 9) == [] and chat_frontend.cache_points(4, 9) == [4],
-      "a cache point is declared only where a shared prefix ends inside the prompt")
+check(all(name not in plan["engine_body"] for plan in (first, second) for name in ("cache_points", "cuts", "keep")),
+      "a first prompt and a prompt an earlier request carried whole name no cut: what the ledger has seen never reaches the engine")
+check(not hasattr(chat_frontend, "cache_points") and chat_frontend.structure_cuts(None, 9) == [] and
+      chat_frontend.structure_cuts({"cuts": [12, 4, 4, 0, 9, 7]}, 9) == [4, 7],
+      "cuts come from the turns the prompt replays: rising, distinct, inside the prompt")
 
 
 class ForkModel(FakeModel):
@@ -92,8 +93,8 @@ fork = ForkModel()
 frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(fork).record([1, 3, 4, 9, 9])
 diverged = asyncio.run(frontend.plan(fork, {"messages": [{"role": "user", "content": "ho"}]}, None))
-check(diverged["engine_body"].get("cache_points") == [2],
-      f"a prompt that shares a prefix with an earlier one and then diverges declares a cache point where the shared prefix ends: {diverged['engine_body'].get('cache_points')}")
+check(diverged["trace"]["seen_tokens"] == 2 and all(name not in diverged["engine_body"] for name in ("cache_points", "cuts", "keep")),
+      f"a prompt that shares a prefix with an earlier one and then diverges reports what it has seen in its trace only, so earlier traffic never moves a cut: {diverged['engine_body'].keys()}")
 
 captured = []
 
@@ -105,8 +106,8 @@ async def capture(model_, body_):
 
 frontend.gated_events = capture
 background = asyncio.run(frontend.memory_complete(fork, [1, 3, 6, 7], 4))
-check(captured and captured[-1].get("cache_points") == [2],
-      f"a background completion that shares a prefix declares the same cache point: {captured[-1].get('cache_points') if captured else None}")
+check(captured and all(name not in captured[-1] for name in ("cache_points", "cuts", "keep")),
+      f"a background completion that shares a prefix names no cut either: {sorted(captured[-1]) if captured else None}")
 
 for failure in failures:
     print("FAIL test_chat_frontend_prefix_ledger: " + failure)
