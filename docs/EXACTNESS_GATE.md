@@ -8,6 +8,21 @@ request, never on what the cache held. This extends invariant I27 from
 `scripts/gx_gate.sh` walks a served model through it with the swap
 controller. Both need the fleet alone.
 
+## Where it runs
+
+Gate GX belongs to release qualification, on a fleet that holds no customer
+data. Its `clear` deletes a lane's KV: the snapshot store and the backing
+files on every node, and the API's prefix index. On a fleet a customer
+holds, that KV is the customer's, so the gate never runs there. A request
+from any other client leaves the receipt `INCOMPLETE`.
+
+Fleet operations are not in this repository. Host roles, the hold that
+gives a session the fleet and the release steps are in
+`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`. Read it before touching a
+fleet host.
+
+Status: not yet measured on the fleet. No lane has been gated.
+
 ## What is compared
 
 Every prompt is a run of token ids that the engine has never seen: they are
