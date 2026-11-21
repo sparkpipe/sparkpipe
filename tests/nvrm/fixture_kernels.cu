@@ -40,6 +40,19 @@ extern "C" __global__ void SparkNvrmLargeParameter(SparkNvrmFixtureBlock block, 
 	output[threadIdx.x] = block.words[threadIdx.x % SPARK_NVRM_FIXTURE_BLOCK_WORDS];
 }
 
+extern "C" __global__ void SparkNvrmHugeParameter(uint32_t *output, SparkNvrmFixtureHuge block)
+{
+	uint32_t index;
+	for (index = blockIdx.x * blockDim.x + threadIdx.x; index < SPARK_NVRM_FIXTURE_HUGE_WORDS; index += gridDim.x * blockDim.x)
+		output[index] = block.words[index];
+}
+
+extern "C" __global__ void SPARK_NVRM_FIXTURE_LONG_NAME(uint32_t *output, uint32_t value)
+{
+	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
+	output[index] = value + index;
+}
+
 template __global__ void LmBf16RmsNormKernel<256u>(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t dimension,
 	uint32_t row_stride, float epsilon);
 template __global__ void LmFusedResidualRmsNormKernel<256u, uint16_t, false>(const uint16_t *__restrict__ input_bf16,

@@ -35,6 +35,7 @@ typedef struct ParameterMixParameters { uint8_t small; const uint64_t *table; ui
 typedef struct StaticSharedParameters { float *output; uint32_t count; } StaticSharedParameters;
 typedef struct LocalStackParameters { uint32_t *output; uint32_t pick; } LocalStackParameters;
 typedef struct LargeParameterParameters { SparkNvrmFixtureBlock block; uint32_t *output; } LargeParameterParameters;
+typedef struct HugeParameterParameters { uint32_t *output; SparkNvrmFixtureHuge block; } HugeParameterParameters;
 typedef struct RmsNormParameters { const uint16_t *input; const uint16_t *weight; uint16_t *output; uint32_t dimension; uint32_t row_stride; float epsilon; } RmsNormParameters;
 typedef struct StreamReadParameters { const void *source; uint64_t count; uint32_t *sink; } StreamReadParameters;
 typedef struct StreamCopyParameters { const void *source; void *destination; uint64_t count; } StreamCopyParameters;
@@ -53,6 +54,8 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmStaticShared", PARAMETER_END(StaticSharedParameters,count)},
 	{"SparkNvrmLocalStack", PARAMETER_END(LocalStackParameters,pick)},
 	{"SparkNvrmLargeParameter", PARAMETER_END(LargeParameterParameters,output)},
+	{"SparkNvrmHugeParameter", PARAMETER_END(HugeParameterParameters,block)},
+	{SPARK_NVRM_FIXTURE_LONG_TEXT, PARAMETER_END(FirstLightParameters,value)},
 	{"_Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf", PARAMETER_END(RmsNormParameters,epsilon)},
 	{"_Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf", PARAMETER_END(FusedRmsNormParameters,epsilon)},
 	{"SparkNvrmStreamRead", PARAMETER_END(StreamReadParameters,sink)},
@@ -126,23 +129,26 @@ static void TestFixture(void)
 	CHECK(SparkNvrmCubinParse(blob,bytes,"fixture",&cubin) == SPARK_STATUS_OK,"the release-built fixture cubin parses");
 	for (line = strtok(manifest,"\n"); line != 0; line = strtok(0,"\n"))
 	{
-		char name[256],what[512];
+		char what[512];
+		char *name = line + strlen("kernel "),*space;
 		unsigned registers,barriers,stack,stores,loads,smem;
 		const SparkNvrmCubinKernel *kernel;
-		if ( sscanf(line,"kernel %255s registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u",
-			name,&registers,&barriers,&stack,&stores,&loads,&smem) != 7 )
+		if ( strncmp(line,"kernel ",strlen("kernel ")) != 0 || (space = strchr(name,' ')) == 0 )
+			continue;
+		*space = '\0';
+		if ( sscanf(space + 1,"registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u",&registers,&barriers,&stack,&stores,&loads,&smem) != 6 )
 			continue;
 		listed++;
 		kernel = SparkNvrmCubinKernelNamed(&cubin,name);
-		snprintf(what,sizeof(what),"the parser finds the compiler's kernel %s",name);
+		snprintf(what,sizeof(what),"the parser finds the compiler's kernel %.200s",name);
 		CHECK(kernel != 0,what);
 		if ( kernel == 0 )
 			continue;
-		snprintf(what,sizeof(what),"%s: registers %u, stack %u and shared %u match the compiler's report",name,kernel->registers,kernel->stack_bytes,kernel->shared_bytes);
+		snprintf(what,sizeof(what),"%.200s: registers %u, stack %u and shared %u match the compiler's report",name,kernel->registers,kernel->stack_bytes,kernel->shared_bytes);
 		CHECK(kernel->registers == registers && kernel->stack_bytes == stack && kernel->shared_bytes == smem + RESERVED_SHARED_BYTES,what);
-		snprintf(what,sizeof(what),"%s: parameters at %#x for %u bytes follow the driver words and the C layout",name,kernel->parameter_offset,kernel->parameter_bytes);
+		snprintf(what,sizeof(what),"%.200s: parameters at %#x for %u bytes follow the driver words and the C layout",name,kernel->parameter_offset,kernel->parameter_bytes);
 		CHECK(kernel->parameter_offset == SPARK_NVRM_BANK0_DRIVER_BYTES && kernel->parameter_bytes == ExpectedParameters(name),what);
-		snprintf(what,sizeof(what),"%s: code and constant bank 0 are aligned and inside the image",name);
+		snprintf(what,sizeof(what),"%.200s: code and constant bank 0 are aligned and inside the image",name);
 		CHECK(kernel->code_bytes != 0u && kernel->code_offset % SPARK_NVRM_CUBIN_SECTION_ALIGN == 0u &&
 			kernel->code_offset + kernel->code_bytes <= cubin.image_bytes && kernel->bank[0].present != 0u &&
 			kernel->bank[0].image_offset % SPARK_NVRM_CUBIN_SECTION_ALIGN == 0u &&
@@ -192,6 +198,9 @@ static void TestManifest(void)
 		CHECK(mix != 0 && mix->parameter_count == 7u && mix->parameters[3].align == 8u && mix->parameters[3].offset == 24u && mix->max_threads == 128u,
 			"a mixed parameter list keeps its PTX types, alignment, offsets and launch bound");
 		CHECK(shared != 0 && shared->barriers == 1u,"the compiler's barrier count is kept for the launch descriptor");
+		CHECK(SparkNvrmManifestKernelNamed(&manifest,SPARK_NVRM_FIXTURE_LONG_TEXT) != 0 &&
+			strlen(SPARK_NVRM_FIXTURE_LONG_TEXT) == SPARK_NVRM_FIXTURE_LONG_REPEATS * strlen(SPARK_NVRM_FIXTURE_QUOTE(SPARK_NVRM_FIXTURE_LONG_FRAGMENT)),
+			"a kernel name thousands of bytes long is kept whole");
 	}
 	blob[bytes - 1u] ^= 1u;
 	CHECK(SparkNvrmManifestCheck(&manifest,blob,bytes,&cubin,"manifest") == SPARK_STATUS_TARGET_MISMATCH,"a manifest for another cubin is refused");
@@ -219,6 +228,27 @@ static void TestManifest(void)
 				manifest.kernels == 0;
 		CHECK(refused == sizeof(broken) / sizeof(broken[0]),
 			"a manifest without its cubin, a parameter before its kernel or out of order, a bad alignment, an unknown bound or line is refused");
+	}
+	{
+		static const char head[] = "cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel ";
+		static const char tail[] = " registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n";
+		const size_t name = SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u;
+		char *line = (char *)malloc(sizeof(head) + name + sizeof(tail));
+		CHECK(line != 0,"allocate an over-long manifest line");
+		if ( line != 0 )
+		{
+			memcpy(line,head,sizeof(head) - 1u);
+			memset(line + sizeof(head) - 1u,'K',name);
+			memcpy(line + sizeof(head) - 1u + name,tail,sizeof(tail));
+			CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR && manifest.kernels == 0,
+				"a kernel name longer than a device kernel name can be is refused");
+			memset(line + sizeof(head) - 1u + SPARK_DEVICE_KERNEL_NAME_LIMIT,' ',1u);
+			memmove(line + sizeof(head) - 1u + SPARK_DEVICE_KERNEL_NAME_LIMIT,line + sizeof(head) + SPARK_DEVICE_KERNEL_NAME_LIMIT,sizeof(tail));
+			CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_OK && manifest.kernel_count == 1u &&
+				strlen(manifest.kernels[0].name) == SPARK_DEVICE_KERNEL_NAME_LIMIT,"a kernel name at the limit parses whole");
+			SparkNvrmManifestRelease(&manifest);
+			free(line);
+		}
 	}
 	SparkNvrmCubinRelease(&cubin);
 	free(blob);

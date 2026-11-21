@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 
 typedef struct SparkDeviceSlot
@@ -1087,20 +1088,38 @@ SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibra
 {
 	SparkDeviceKernel *created = 0;
 	SparkStatus status;
-	if ( kernel == 0 || name == 0 || name[0] == '\0' || strlen(name) >= SPARK_DEVICE_KERNEL_NAME_BYTES )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name under 64 bytes"));
-	*kernel = 0;
+	if ( kernel != 0 )
+		*kernel = 0;
+	if ( kernel == 0 || name == 0 || name[0] == '\0' )
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name");
+		SPARK_FAIL(refused);
+	}
+	if ( strlen(name) > SPARK_DEVICE_KERNEL_NAME_LIMIT )
+	{
+		char text[160];
+		snprintf(text,sizeof(text),"a kernel name of %zu bytes is longer than %u: %.64s",strlen(name),SPARK_DEVICE_KERNEL_NAME_LIMIT,name);
+		{
+			const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",0,0,text);
+			SPARK_FAIL(refused);
+		}
+	}
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("kernel_create",name);
 	if ( status == SPARK_STATUS_OK && DeviceLibraryLive(library) == 0 )
 		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"not a loaded library");
 	if ( status == SPARK_STATUS_OK && (created = (SparkDeviceKernel *)calloc(1u,sizeof(*created))) == 0 )
 		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel record");
+	if ( status == SPARK_STATUS_OK && (created->name = strdup(name)) == 0 )
+	{
+		free(created);
+		created = 0;
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel name");
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
 		created->id = device_next_kernel_id++;
 		created->library = library;
-		DeviceCopyText(created->name,sizeof(created->name),name);
 		status = SparkDeviceBackendKernelCreate(created,name);
 		if ( status == SPARK_STATUS_OK && (created->info.max_threads == 0u || created->info.simd_width == 0u) )
 		{
@@ -1108,7 +1127,10 @@ SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibra
 			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",name,0,"the backend reported no thread limit for the kernel");
 		}
 		if ( status != SPARK_STATUS_OK )
+		{
+			free(created->name);
 			free(created);
+		}
 		else
 		{
 			library->kernels++;
@@ -1142,6 +1164,7 @@ SparkStatus SparkDeviceKernelDestroy(SparkDeviceKernel *kernel)
 		SparkDeviceBackendKernelDestroy(kernel);
 		kernel->library->kernels--;
 		kernel->id = 0u;
+		free(kernel->name);
 		free(kernel);
 	}
 	pthread_mutex_unlock(&device_mutex);
@@ -1171,8 +1194,15 @@ static SparkStatus DeviceLaunchShape(const SparkDeviceKernel *kernel, const Spar
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more threads per group than the kernel allows"));
 	if ( (uint64_t)launch->shared_bytes + kernel->info.static_shared_bytes > device_properties.max_shared_bytes )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more group-shared memory than the device has"));
-	if ( launch->constant_bytes > SPARK_DEVICE_MAX_CONSTANT_BYTES || (launch->constant_bytes != 0u) != (launch->constants != 0) )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"constants need a pointer and at most 4096 bytes"));
+	if ( launch->constant_bytes > device_properties.max_constant_bytes || (launch->constant_bytes != 0u) != (launch->constants != 0) )
+	{
+		char text[128];
+		snprintf(text,sizeof(text),"constants need a pointer and at most the backend's %u bytes",device_properties.max_constant_bytes);
+		{
+			const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,text);
+			SPARK_FAIL(refused);
+		}
+	}
 	if ( launch->binding_count > SPARK_DEVICE_MAX_BINDINGS || (launch->binding_count != 0u && launch->bindings == 0) )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"more than 30 bindings or a missing binding table"));
 	return(SPARK_STATUS_OK);

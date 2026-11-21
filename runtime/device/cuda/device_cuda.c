@@ -114,6 +114,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->simd_width = (uint32_t)device.warpSize;
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes : (uint64_t)device.totalGlobalMem;
 	properties->max_buffer_bytes = (uint64_t)device.totalGlobalMem;
+	properties->max_constant_bytes = 0u;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | (device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	(void)managed;
 	(void)pageable;

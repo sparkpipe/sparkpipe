@@ -17,11 +17,11 @@
 #define NVRM_WARP_THREADS 32u
 #define NVRM_GROUP_THREADS 1024u
 #define NVRM_GROUP_SHARED_BYTES 101376u
+#define NVRM_PARAMETER_BYTES 32764u
 #define NVRM_POLL_NS 20000L
 #define NVRM_SEQUENCES 4096u
-#define NVRM_SLOTS 512u
-#define NVRM_SLOT_BYTES (SPARK_NVRM_LAUNCH_QMD_BYTES + \
-	(SPARK_NVRM_BANK0_DRIVER_BYTES + SPARK_DEVICE_MAX_CONSTANT_BYTES + SPARK_NVRM_BANK_ALIGN - 1u) / SPARK_NVRM_BANK_ALIGN * SPARK_NVRM_BANK_ALIGN)
+#define NVRM_SLOT_RING_BYTES (4ull << 20)
+#define NVRM_SLOT_RECORDS 1024u
 #define NVRM_DEFAULT_THREADS 1024u
 #define NVRM_BOUNCE_BYTES (8ull << 20)
 #define NVRM_EVENT_CHUNK_BYTES (64u << 10)
@@ -45,8 +45,10 @@ typedef struct NvrmQueue
 	uint64_t recorded;
 	uint64_t completed;
 	SparkNvrmMemory slots;
-	uint64_t slot_values[NVRM_SLOTS];
-	uint32_t slot_next;
+	uint64_t slot_head;
+	SparkNvrmSegment slot_records[NVRM_SLOT_RECORDS];
+	uint32_t slot_first;
+	uint32_t slot_count;
 } NvrmQueue;
 
 typedef struct NvrmLibrary
@@ -111,6 +113,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_buffer_bytes = memory;
 	properties->max_group_threads = NVRM_GROUP_THREADS;
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
+	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES |
 		SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS;
 	return(SPARK_STATUS_OK);
@@ -630,17 +633,50 @@ void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
 	kernel->backend = 0;
 }
 
-static SparkStatus NvrmSlot(NvrmQueue *nvrm, const char *owner, uint8_t **cpu, uint64_t *address, uint32_t *slot)
+static uint32_t NvrmSlotFree(const NvrmQueue *nvrm, uint64_t start, uint64_t end)
 {
-	const uint32_t index = nvrm->slot_next % NVRM_SLOTS;
+	uint64_t tail;
+	if ( nvrm->slot_count == 0u )
+		return(1u);
+	if ( nvrm->slot_count == NVRM_SLOT_RECORDS )
+		return(0u);
+	tail = nvrm->slot_records[nvrm->slot_first].start;
+	if ( tail < nvrm->slot_head )
+		return(start >= nvrm->slot_head || end <= tail ? 1u : 0u);
+	if ( tail > nvrm->slot_head )
+		return(start >= nvrm->slot_head && end <= tail ? 1u : 0u);
+	return(0u);
+}
+
+static SparkStatus NvrmSlot(NvrmQueue *nvrm, uint32_t bytes, const char *owner, uint64_t *start)
+{
+	const uint64_t completed = SparkNvrmChannelCompleted(&nvrm->channel);
 	if ( nvrm->slots.bytes == 0u )
-		NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,(uint64_t)NVRM_SLOTS * NVRM_SLOT_BYTES,SPARK_NVRM_MEMORY_HOST,&nvrm->slots,owner));
-	NVRM_TRY(SparkNvrmWaitValue((const volatile uint64_t *)(void *)nvrm->channel.fence.cpu,nvrm->slot_values[index],SPARK_NVRM_WAIT_TIMEOUT_NS,
-		"kernel_launch",owner));
-	*cpu = nvrm->slots.cpu + (uint64_t)index * NVRM_SLOT_BYTES;
-	*address = nvrm->slots.address + (uint64_t)index * NVRM_SLOT_BYTES;
-	*slot = index;
+		NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_SLOT_RING_BYTES,SPARK_NVRM_MEMORY_HOST,&nvrm->slots,owner));
+	while ( nvrm->slot_count != 0u && nvrm->slot_records[nvrm->slot_first].value <= completed )
+	{
+		nvrm->slot_first = (nvrm->slot_first + 1u) % NVRM_SLOT_RECORDS;
+		nvrm->slot_count--;
+	}
+	*start = nvrm->slot_head + bytes <= nvrm->slots.bytes ? nvrm->slot_head : 0u;
+	while ( NvrmSlotFree(nvrm,*start,*start + bytes) == 0u )
+	{
+		NVRM_TRY(SparkNvrmWaitValue((const volatile uint64_t *)(void *)nvrm->channel.fence.cpu,nvrm->slot_records[nvrm->slot_first].value,
+			SPARK_NVRM_WAIT_TIMEOUT_NS,"kernel_launch",owner));
+		nvrm->slot_first = (nvrm->slot_first + 1u) % NVRM_SLOT_RECORDS;
+		nvrm->slot_count--;
+	}
 	return(SPARK_STATUS_OK);
+}
+
+static void NvrmSlotTaken(NvrmQueue *nvrm, uint64_t start, uint32_t bytes, uint64_t value)
+{
+	SparkNvrmSegment *record = &nvrm->slot_records[(nvrm->slot_first + nvrm->slot_count) % NVRM_SLOT_RECORDS];
+	record->start = start;
+	record->end = start + bytes;
+	record->value = value;
+	nvrm->slot_count++;
+	nvrm->slot_head = start + bytes;
 }
 
 SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
@@ -649,15 +685,18 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
 	const NvrmKernel *compiled = (const NvrmKernel *)kernel->backend;
 	SparkNvrmLaunchRequest request;
-	uint64_t value = 0u;
-	uint32_t slot = 0u;
+	const uint32_t bytes = SparkNvrmLaunchSlotBytes(compiled->kernel);
+	uint64_t value = 0u,start = 0u;
 	(void)allocations;
 	if ( launch->binding_count != 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,
 			"nvrm kernels take every argument in their parameter block; pass it as the launch's constants"));
 	NVRM_TRY(NvrmRoom(queue,"kernel_launch"));
 	memset(&request,0,sizeof(request));
-	NVRM_TRY(NvrmSlot(nvrm,queue->owner,&request.slot,&request.slot_address,&slot));
+	NVRM_TRY(NvrmSlot(nvrm,bytes,queue->owner,&start));
+	request.slot = nvrm->slots.cpu + start;
+	request.slot_address = nvrm->slots.address + start;
+	request.slot_bytes = bytes;
 	request.kernel = compiled->kernel;
 	request.grid[0] = launch->groups.x;
 	request.grid[1] = launch->groups.y;
@@ -668,10 +707,8 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	request.dynamic_shared_bytes = launch->shared_bytes;
 	request.arguments = launch->constants;
 	request.argument_bytes = launch->constant_bytes;
-	request.slot_bytes = NVRM_SLOT_BYTES;
 	NVRM_TRY(SparkNvrmLaunch(&nvrm_gpu,&nvrm->channel,&compiled->library->program,&request,&value,queue->owner));
-	nvrm->slot_values[slot] = value;
-	nvrm->slot_next++;
+	NvrmSlotTaken(nvrm,start,bytes,value);
 	NvrmEnd(queue);
 	return(SPARK_STATUS_OK);
 }

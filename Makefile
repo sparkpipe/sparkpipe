@@ -1510,8 +1510,9 @@ build/test_nvrm_memory: tests/test_nvrm_memory.c $(DEVICE_NVRM_LIBRARY) | build
 build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-build/test_device_contract_nvrm: tests/test_device_contract.c $(DEVICE_NVRM_LIBRARY) | build
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin"' \
+		-include tests/nvrm/fixture_kernels.h -DSPARK_DEVICE_TEST_LONG_KERNEL=SPARK_NVRM_FIXTURE_LONG_TEXT $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_nvrm_module_state: tests/test_nvrm_module_state.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@

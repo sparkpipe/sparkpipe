@@ -35,8 +35,7 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_BIND_READ 1u
 #define SPARK_DEVICE_BIND_WRITE 2u
 #define SPARK_DEVICE_MAX_BINDINGS 30u
-#define SPARK_DEVICE_MAX_CONSTANT_BYTES 4096u
-#define SPARK_DEVICE_KERNEL_NAME_BYTES 64u
+#define SPARK_DEVICE_KERNEL_NAME_LIMIT 4096u
 
 typedef struct SparkDeviceBuffer
 {
@@ -115,6 +114,7 @@ typedef struct SparkDeviceProperties
 	uint32_t properties;
 	uint32_t max_group_threads;
 	uint32_t max_shared_bytes;
+	uint32_t max_constant_bytes;
 } SparkDeviceProperties;
 
 typedef struct SparkDeviceConfiguration
