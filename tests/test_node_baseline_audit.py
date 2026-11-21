@@ -450,5 +450,51 @@ class ControllerTest(unittest.TestCase):
         run.assert_called_once_with(["systemctl","reset-failed","snap-core22-2438.mount"],check=False)
 
 
+class GpuAuditTest(unittest.TestCase):
+    VERSION = "NVRM version: NVIDIA UNIX Open Kernel Module for aarch64  580.178.04  Release Build  (builder)  Tue Jul  7 13:36:23 UTC 2026\n"
+    INFORMATION = ("Model: \t\t Unknown\nGPU UUID: \t GPU-06759622-c673-b343-e038-1439403d8f57\nBus Location: \t 000f:01:00.0\n"
+                   "Device Minor: \t 0\nGPU Firmware: \t 580.178.04\nGPU Excluded:\t No\n")
+
+    def tree(self,directory: str,version: str | None = VERSION,devices: dict[str,tuple[str,str,str]] | None = None) -> tuple[Path,Path]:
+        proc = Path(directory) / "proc"
+        pci = Path(directory) / "pci"
+        (proc / "gpus").mkdir(parents=True)
+        pci.mkdir()
+        if version is not None:
+            (proc / "version").write_text(version)
+        for bus,(information,vendor,device) in (devices if devices is not None else {"000f:01:00.0":(self.INFORMATION,"0x10de","0x2e12")}).items():
+            (proc / "gpus" / bus).mkdir()
+            (proc / "gpus" / bus / "information").write_text(information)
+            (pci / bus).mkdir()
+            (pci / bus / "vendor").write_text(vendor + "\n")
+            (pci / bus / "device").write_text(device + "\n")
+        return(proc,pci)
+
+    def test_a_gb10_with_its_module_and_firmware_passes_without_nvidia_smi(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            failures,observations = MODULE.audit_gpu(*self.tree(directory))
+        self.assertEqual(failures,[])
+        self.assertEqual((observations["gpu_module"],observations["gpu_pci_id"],observations["gpu_firmware"]),("580.178.04","0x10de:0x2e12","580.178.04"))
+        self.assertEqual(observations["gpu_temperature"],"not measured: waits for the runtime's RM thermal telemetry")
+
+    def test_each_missing_or_wrong_gpu_property_is_a_finding(self) -> None:
+        cases = (
+            ({"version":None},["gpu-module-missing"]),
+            ({"devices":{}},["gpu-count:0"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION,"0x10de","0x2b85")}},["gpu-not-gb10:0x10de:0x2b85"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION.replace("GPU Excluded:\t No","GPU Excluded:\t Yes"),"0x10de","0x2e12")}},["gpu-excluded:Yes"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION.replace("GPU Firmware: \t 580.178.04","GPU Firmware: \t 580.159.03"),"0x10de","0x2e12")}},["gpu-firmware:580.159.03!=580.178.04"]),
+        )
+        for arguments,expected in cases:
+            with self.subTest(expected=expected),tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(MODULE.audit_gpu(*self.tree(directory,**arguments))[0],expected)
+
+    def test_the_audit_runs_no_gpu_user_space_tool(self) -> None:
+        with mock.patch.object(MODULE,"run") as run,mock.patch.object(MODULE,"command") as command,tempfile.TemporaryDirectory() as directory:
+            MODULE.audit_gpu(*self.tree(directory))
+        run.assert_not_called()
+        command.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -106,6 +106,10 @@ NTP_SERVERS = ("192.168.50.4","10.10.250.2")
 CEPH_CLUSTER_FSID = "cd8715a1-47b9-4e4a-8d3c-2cddb02077d1"
 FIREWALL_RULESET = Path("/etc/spark-firewall.nft")
 DMA_GUARD_STATE = Path("/var/lib/spark-dma-guard/boots.json")
+NVIDIA_PROC = Path("/proc/driver/nvidia")
+PCI_DEVICES = Path("/sys/bus/pci/devices")
+GPU_PCI_ID = ("0x10de","0x2e12")
+GPU_TEMPERATURE_UNMEASURED = "not measured: waits for the runtime's RM thermal telemetry"
 RECOVERY_SETTINGS = {"kernel.panic":"60","kernel.softlockup_panic":"1","kernel.hung_task_panic":"1","vm.swappiness":"10"}
 KERNEL_MODULES_LOAD = "".join(f"{module}\n" for module in REQUIRED_KERNEL_MODULES)
 ASSET_SOURCES = {
@@ -1032,12 +1036,37 @@ def audit_rail2(rank: int) -> tuple[list[str],dict[str,object]]:
     return(failures,observations)
 
 
-def audit_gpu() -> tuple[list[str],dict[str,object]]:
-    gpu = run(["nvidia-smi","--query-gpu=name,temperature.gpu","--format=csv,noheader,nounits"],timeout=30,check=False)
-    observations: dict[str,object] = {"gpu":gpu.stdout.decode("utf-8",errors="replace").strip()}
-    if gpu.returncode != 0 or not str(observations["gpu"]).startswith("NVIDIA GB10,"):
-        return(["gpu-unhealthy"],observations)
-    return([],observations)
+def nvidia_information(text: str) -> dict[str,str]:
+    fields = (line.partition(":") for line in text.splitlines())
+    return({key.strip():value.strip() for key,separator,value in fields if separator})
+
+
+def nvidia_module_version(text: str) -> str:
+    match = re.search(r"Kernel Module(?: for \S+)?\s+([0-9]+\.[0-9][0-9.]*)",text.splitlines()[0] if text else "")
+    return(match.group(1) if match else "")
+
+
+def audit_gpu(proc_root: Path = NVIDIA_PROC,pci_root: Path = PCI_DEVICES) -> tuple[list[str],dict[str,object]]:
+    module = nvidia_module_version(read_optional(proc_root / "version"))
+    devices = sorted(path.parent.name for path in (proc_root / "gpus").glob("*/information"))
+    observations: dict[str,object] = {"gpu_module":module,"gpu_devices":devices,"gpu_temperature":GPU_TEMPERATURE_UNMEASURED}
+    if not module:
+        return(["gpu-module-missing"],observations)
+    if len(devices) != 1:
+        return([f"gpu-count:{len(devices)}"],observations)
+    device = devices[0]
+    information = nvidia_information(read_optional(proc_root / "gpus" / device / "information"))
+    identity = tuple(read_optional(pci_root / device / name).strip() for name in ("vendor","device"))
+    firmware = information.get("GPU Firmware","")
+    observations.update({"gpu_pci_id":":".join(identity),"gpu_firmware":firmware,"gpu_excluded":information.get("GPU Excluded",""),"gpu_uuid":information.get("GPU UUID","")})
+    failures = []
+    if identity != GPU_PCI_ID:
+        failures.append(f"gpu-not-gb10:{':'.join(identity)}")
+    if information.get("GPU Excluded") != "No":
+        failures.append(f"gpu-excluded:{information.get('GPU Excluded') or 'unknown'}")
+    if firmware != module:
+        failures.append(f"gpu-firmware:{firmware or 'none'}!={module}")
+    return(failures,observations)
 
 
 def audit_fleet_hardware(node_id: str) -> tuple[list[str],dict[str,object]]:
