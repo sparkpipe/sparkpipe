@@ -89,17 +89,17 @@ requalification of the device backend.
 
 | File | Setting |
 |---|---|
-| `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Appends to `GRUB_CMDLINE_LINUX`: the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=1`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init,power_wrap_init`, `kho=off`, no crash kernel, and `panic=60`, so a failed boot, the initramfs included, reboots instead of waiting at a shell. GRUB runs on the console and the serial line. `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DEFAULT` belong to the baseline's GRUB policy: the serial console `ttyS0` at 921600, no boot-time fsck and the node's recovery address |
+| `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Appends to `GRUB_CMDLINE_LINUX`: the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=0`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init`, no crash kernel, and `panic=60`, so a failed boot, the initramfs included, reboots instead of waiting at a shell. GRUB runs on the console and the serial line. `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DEFAULT` belong to the baseline's GRUB policy: the serial console `ttyS0` at 921600, no boot-time fsck and the node's recovery address |
 | `etc/modprobe.d/sparkpipe-gb10.conf` | nouveau and nova never load; the RTL8127 management port binds `r8127`; `cppc_cpufreq auto_sel_mode=1`; `sbsa_gwdt action=1` |
 | `etc/modules-load.d/sparkpipe-gpu.conf` | `nvidia` and `nvidia_uvm` load at boot |
 | `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address |
-| `etc/security/limits.d/90-sparkpipe.conf` | unlimited locked memory for RDMA registration, 500,000 open files |
+| `etc/security/limits.d/90-sparkpipe.conf` | unlimited locked memory for RDMA registration, 500,000 open files (soft and hard) |
 | `etc/systemd/sleep.conf.d/90-sparkpipe-no-suspend.conf` | no suspend or hibernation |
 | `etc/netplan/01-sparkpipe.yaml` | NetworkManager manages the interfaces; bring-up adds the fleet profiles |
 
-The command line and module options are the ones GB10 nodes run under the
-factory OS, read from a GB10 workstation. Compare them with a Spark's
-`/proc/cmdline` when the image is first proven on one.
+The command line, module options, sysctls and limits are the ones a Spark
+runs under the factory OS (DGX OS 7.5.0), read from its configuration and
+`/proc/cmdline`.
 
 ## GPU device nodes
 
