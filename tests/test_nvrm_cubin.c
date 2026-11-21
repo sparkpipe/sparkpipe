@@ -35,6 +35,9 @@ typedef struct StaticSharedParameters { float *output; uint32_t count; } StaticS
 typedef struct LocalStackParameters { uint32_t *output; uint32_t pick; } LocalStackParameters;
 typedef struct LargeParameterParameters { SparkNvrmFixtureBlock block; uint32_t *output; } LargeParameterParameters;
 typedef struct RmsNormParameters { const uint16_t *input; const uint16_t *weight; uint16_t *output; uint32_t dimension; uint32_t row_stride; float epsilon; } RmsNormParameters;
+typedef struct StreamReadParameters { const void *source; uint64_t count; uint32_t *sink; } StreamReadParameters;
+typedef struct StreamCopyParameters { const void *source; void *destination; uint64_t count; } StreamCopyParameters;
+typedef struct StreamFillParameters { void *destination; uint64_t count; uint32_t value; } StreamFillParameters;
 typedef struct FusedRmsNormParameters { const uint16_t *input; const uint16_t *residual; const uint16_t *weight; uint16_t *residual_out; uint16_t *output; uint32_t dimension; uint32_t row_stride; float epsilon; } FusedRmsNormParameters;
 
 typedef struct ExpectedLayout
@@ -51,6 +54,9 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmLargeParameter", PARAMETER_END(LargeParameterParameters,output)},
 	{"_Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf", PARAMETER_END(RmsNormParameters,epsilon)},
 	{"_Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf", PARAMETER_END(FusedRmsNormParameters,epsilon)},
+	{"SparkNvrmStreamRead", PARAMETER_END(StreamReadParameters,sink)},
+	{"SparkNvrmStreamCopy", PARAMETER_END(StreamCopyParameters,count)},
+	{"SparkNvrmStreamFill", PARAMETER_END(StreamFillParameters,value)},
 };
 
 static uint8_t *ReadFile(const char *path, uint64_t *bytes)
