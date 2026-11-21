@@ -22,6 +22,8 @@ def load(name, path):
     return module
 
 
+UBUNTU_DEFAULT_GRUB = 'GRUB_DEFAULT=0\nGRUB_TIMEOUT_STYLE=hidden\nGRUB_TIMEOUT=0\nGRUB_CMDLINE_LINUX_DEFAULT="quiet splash"\nGRUB_CMDLINE_LINUX=""\n'
+READ_TEXT = Path.read_text
 AUDIT = load("hosted_dependency_audit_for_image", ROOT / "tools" / "hosted_dependency_audit.py")
 STAGER = load("hosted_image_stage_baseline", IMAGE / "stage_baseline.py")
 BASELINE = STAGER.load_baseline()
@@ -89,7 +91,8 @@ class StagerTest(unittest.TestCase):
                         mock.patch.object(BASELINE, "persistent_unit_links", return_value=[]), \
                         mock.patch.object(BASELINE, "retire_stale_snap_units", return_value=[]), \
                         mock.patch.object(BASELINE, "ceph_fsids", return_value=[]), \
-                        mock.patch.object(BASELINE, "FIREWALL_RULESET", ruleset), mock.patch.object(BASELINE.os, "geteuid", return_value=0):
+                        mock.patch.object(BASELINE, "FIREWALL_RULESET", ruleset), mock.patch.object(BASELINE.os, "geteuid", return_value=0), \
+                        mock.patch.object(BASELINE.Path, "read_text", lambda path, *args, **keywords: UBUNTU_DEFAULT_GRUB if str(path) == "/etc/default/grub" else READ_TEXT(path, *args, **keywords)):
                     result = BASELINE.remote_apply(payload)
             finally:
                 for name, value in saved.items():
@@ -113,7 +116,11 @@ class StagerTest(unittest.TestCase):
         self.assertIn((BASELINE.DMA_GUARD_RUNTIME, "install", "--notify", BASELINE.HUB_NOTIFY), live)
         self.assertIn(("loginctl", "enable-linger", STAGER.IMAGE_NODE_ID), live)
         self.assertEqual(sorted(set(recorder.node)), sorted({"install_packages", "install_node_identity", "install_node_layout",
-                                                             "install_sshd_hardening", "install_grub_policy", "rebuild_initramfs"}))
+                                                             "install_sshd_hardening", "rebuild_initramfs"}))
+        self.assertIn(("update-grub",), live)
+        default = BASELINE.shell_assignment(writes["/etc/default/grub"][0], "GRUB_CMDLINE_LINUX_DEFAULT").split()
+        self.assertIn("console=ttyS0,921600", default)
+        self.assertFalse([token for token in default if token.startswith("ip=")])
         for path in (*BASELINE.STAGED_ASSET_DESTINATIONS, "/etc/default/earlyoom", "/etc/sysctl.d/99-dirty-cap.conf",
                      "/etc/systemd/system.conf.d/90-ds4-recovery.conf", "/etc/systemd/system/ssh-emergency.service"):
             self.assertIn(path, writes)
@@ -197,11 +204,14 @@ class StaticFilesTest(unittest.TestCase):
         self.assertTrue(os.access(files / "usr" / "lib" / "sparkpipe" / "gpu-device-nodes", os.X_OK))
         self.assertEqual({module for module in re.findall(r'KERNEL=="([^"]+)"', rules)}, {"nvidia", "nvidia_uvm"})
 
-    def test_the_kernel_console_is_the_serial_line_the_baseline_keeps_a_getty_on(self):
+    def test_the_gb10_fragment_only_appends_to_the_command_line_the_baseline_owns(self):
         grub = (IMAGE / "files" / "etc" / "default" / "grub.d" / "90-sparkpipe-gb10.cfg").read_text()
-        command_line = re.search(r'^GRUB_CMDLINE_LINUX="([^"]*)"$', grub, re.M).group(1).split()
-        getty = re.search(r"serial-getty@(\w+)\.service", (ROOT / "tools" / "devcycle" / "ds4_spark_brickproof.py").read_text()).group(1)
-        self.assertIn(getty, [argument.split("=", 1)[1].split(",")[0] for argument in command_line if argument.startswith("console=")])
+        assignments = dict(re.findall(r'^([A-Z_]+)=(.*)$', grub, re.M))
+        self.assertNotIn("GRUB_CMDLINE_LINUX_DEFAULT", assignments)
+        self.assertNotIn("GRUB_DEFAULT", assignments)
+        self.assertTrue(assignments["GRUB_CMDLINE_LINUX"].startswith('"$GRUB_CMDLINE_LINUX '))
+        tokens = assignments["GRUB_CMDLINE_LINUX"].strip('"').split()[1:]
+        self.assertFalse([token for token in tokens if token.startswith(("console=", "ip=", "fsck."))])
 
 
 class BuildDriverTest(unittest.TestCase):

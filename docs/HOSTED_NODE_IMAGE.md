@@ -89,7 +89,7 @@ requalification of the device backend.
 
 | File | Setting |
 |---|---|
-| `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Serial console `ttyS0` at 921600 (the baseline's getty line) with the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=1`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init,power_wrap_init`, `kho=off`, no crash kernel, no boot-time fsck (the baseline's fsck health timer checks the disks); GRUB on the console and the serial line |
+| `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Appends to `GRUB_CMDLINE_LINUX`: the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=1`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init,power_wrap_init`, `kho=off`, no crash kernel, and `panic=60`, so a failed boot, the initramfs included, reboots instead of waiting at a shell. GRUB runs on the console and the serial line. `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DEFAULT` belong to the baseline's GRUB policy: the serial console `ttyS0` at 921600, no boot-time fsck and the node's recovery address |
 | `etc/modprobe.d/sparkpipe-gb10.conf` | nouveau and nova never load; the RTL8127 management port binds `r8127`; `cppc_cpufreq auto_sel_mode=1`; `sbsa_gwdt action=1` |
 | `etc/modules-load.d/sparkpipe-gpu.conf` | `nvidia` and `nvidia_uvm` load at boot |
 | `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address |
@@ -130,16 +130,20 @@ the image gets the same bytes `apply` writes.
   - the recovery and earlyoom settings, sysctl files and the user slice;
   - the emergency SSH server (checked with the image's `sshd -t`) and the
     recovery key;
+  - the baseline's GRUB defaults for a staged node: serial console and fsck
+    flags, with no recovery address;
   - the masks of the factory boot units;
   - the enabled units (earlyoom, ssh, emergency ssh, the fsck health timer,
     the serial getty, the firewall, fstrim);
   - `multi-user.target` as the default.
 - **Left to the live node:** `sysctl --system`, `udevadm`, `modprobe`,
-  runtime `systemctl` verbs, linger and the DMA guard install, which
-  reports to the hub.
+  `update-grub` (the disk install generates the GRUB menu), runtime
+  `systemctl` verbs, linger and the DMA guard install, which reports to the
+  hub.
 - **Left to bring-up:** the node's packages, identity, layout roots, SSH
-  password shutdown (it needs the node's login keys), the GRUB recovery
-  address and the initramfs.
+  password shutdown (it needs the node's login keys) and the initramfs.
+  Bring-up's `apply` then adds the node's recovery address to the GRUB
+  defaults.
 
 Any other command the baseline runs fails the build, so a new baseline step
 is placed by a change here. `baseline-report.json` lists what was applied and
@@ -152,7 +156,8 @@ SSH and initramfs SSH host keys and rebuilds the initramfs with them. The
 image has none.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
-system partition `SPARKESP` (vfat); the disk install creates both. The
+system partition `SPARKESP` (vfat, `nofail`, so a missing partition
+does not stop the boot); the disk install creates both. The
 hostname is `sparkpipe-node` until bring-up.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
