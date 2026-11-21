@@ -243,6 +243,19 @@ also holds the change in the ranks' `kv_store_report` counters over the run
 (`save_pages`, `save_ns`, `restore_pages`, `restore_ns`), which give the
 save and restore rates.
 
+Send, and the reply leg from the engine's first token to the client's,
+compare the client's clock with the engine's. The engine stamps
+`CLOCK_MONOTONIC`, which is Python's monotonic clock on Linux, so they hold
+only when the tool ran on the engine's host. `parts` checks it: a request
+the engine accepted before the client sent it, or a first token the client
+read before the engine produced it, shows two clocks, and then every send
+and reply time of the run is left out, `summary.json` says
+`"clock_shared": false` and the tables say so. Queue, restore, prefill and
+the first step are differences of the engine's own stamps and stay. The
+`clock` field is the clock the client read. On macOS some Python builds
+count that clock from each process's start, which is the case this catches
+on a workstation.
+
 `turn_floor.py report DIR...` reads several runs' `summary.json` and prints
 the tables that compare models: first token by context for each tail with
 its largest part, the parts for the smallest tail, plain decode rate by

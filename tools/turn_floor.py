@@ -36,6 +36,8 @@ NOTE = re.compile(r"(batch_resume_cleared|batch_resume_superseded|batch_resume_u
 STORE_FIELDS = ("save_pages", "save_ns", "save_count", "restore_pages", "restore_ns", "restore_count", "restore_misses", "restore_failures", "pool_resident_evictions",
                 "pool_evicted_entries", "spill_write_bytes", "spill_read_bytes", "write_bytes")
 PART_NAMES = ("send_ms", "queue_ms", "restore_ms", "prefill_ms", "first_step_ms")
+CLIENT_PARTS = ("send_ms", "reply_ms")
+CLOCK_APART = "the client's clock is not the engine's (a send or reply time came out negative), so send and reply times are left out"
 
 
 def now_ns():
@@ -217,6 +219,7 @@ class Run:
         self.write(dict(extra, kind="mark", what=what, utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), monotonic_ns=now_ns(), log_offset=self.log_offset(),
                         model=self.model, context_limit=self.limit, label=self.arguments.label, salt=self.state["salt"], endpoint=self.arguments.endpoint,
                         api_log=str(self.log_path) if self.log_path else None, health=health, argv=sys.argv[1:],
+                        clock=time.get_clock_info("monotonic").implementation,
                         tool_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()))
 
     def write(self, record):
@@ -513,7 +516,11 @@ def join(folder, log_path=None):
             before = ordered[position - 1] if position else 0
             through = ordered[position + 1] if position + 1 < len(ordered) else log.lines
             row["store"] = log.store_change(before, through)
-    return joined, marks, log.store_change(0, log.lines)
+    shared = not any(row.get(name) is not None and row[name] < 0 for row in joined for name in CLIENT_PARTS)
+    if not shared:
+        for row in joined:
+            row.update({name: None for name in CLIENT_PARTS if name in row})
+    return joined, marks, log.store_change(0, log.lines), shared
 
 
 def cell(value, digits=0):
@@ -632,6 +639,9 @@ def report_tables(documents):
                      f"{cell(store['save_ns'] / store['save_pages'] / 1000) if store.get('save_pages') else '–'} | {cell(alone[0]['ttft_ms']) if alone else '–'} | "
                      f"{cell(wait.get('median'))} / {cell(wait.get('max'))} | "
                      f"{cell(wave[0]['wave_rows_max']) if wave else '–'}, {seconds(wave[0]['wave_wall_ms_max']) if wave else '–'} |")
+    apart = [document["model"] for document in documents if document.get("clock_shared") is False]
+    if apart:
+        lines += ["", f"For {', '.join(str(model) for model in apart)}, {CLOCK_APART}."]
     return "\n".join(lines).strip()
 
 
@@ -641,16 +651,19 @@ def report(arguments):
 
 
 def parts(arguments):
-    rows, marks, store = join(arguments.folder, arguments.api_log)
+    rows, marks, store, shared = join(arguments.folder, arguments.api_log)
     folder = Path(arguments.folder)
     with open(folder / "parts.jsonl", "w") as handle:
         for row in rows:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
     summary = summarize(rows)
     document = {"model": next((mark.get("model") for mark in marks), None), "label": next((mark.get("label") for mark in marks), None),
-                "requests": len(rows), "unmatched": sum(1 for row in rows if row.get("unmatched")), "kv_store": store, "summary": summary}
+                "requests": len(rows), "unmatched": sum(1 for row in rows if row.get("unmatched")), "kv_store": store, "clock_shared": shared,
+                "clock": next((mark.get("clock") for mark in marks if mark.get("clock")), None), "summary": summary}
     (folder / "summary.json").write_text(json.dumps(document, indent=1) + "\n")
     print(markdown(summary))
+    if not shared:
+        print("\n" + CLOCK_APART[0].upper() + CLOCK_APART[1:] + ".")
 
 
 def numbers(text):
