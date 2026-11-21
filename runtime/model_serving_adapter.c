@@ -994,10 +994,17 @@ SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(
 	memset(library,0,sizeof(*library));
 	dynamic_library = dlopen(shared_object_path,RTLD_NOW | RTLD_LOCAL);
 	if ( dynamic_library == 0 )
+	{
+		const char *reason = dlerror();
+		fprintf(stderr,"model serving adapter: cannot load %s: %s\n",shared_object_path,reason != 0 ? reason : "no reason given");
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
 	get_interface = (SparkModelServingAdapterGetInterfaceFunction)dlsym(dynamic_library,SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL);
 	if ( get_interface == 0 )
 	{
+		const char *reason = dlerror();
+		fprintf(stderr,"model serving adapter: %s has no %s: %s\n",shared_object_path,SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL,
+			reason != 0 ? reason : "no reason given");
 		dlclose(dynamic_library);
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
