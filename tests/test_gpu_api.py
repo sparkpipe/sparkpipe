@@ -55,7 +55,6 @@ PENDING = {
     "include/sparkpipe/family/module/spark_module_combine.h": 8,
     "include/sparkpipe/spark_tp_chain_graph.h": 23,
     "include/sparkpipe/spark_weightd_map.h": 1,
-    "model-families/hy4/source/hy4_stage.cuh": 14,
     "node/model_residentd.c": 29,
     "ring/transport/tp_device_collective.c": 98,
     "runtime/gemm.cuh": 27,
