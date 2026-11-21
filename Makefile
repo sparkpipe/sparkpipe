@@ -455,6 +455,7 @@ PYTHON_TESTS := \
 	tests/test_no_source_comments.py \
 	tests/test_ci_supply_chain.py \
 	tests/test_third_party_notices.py \
+	tests/test_nvrm_headers.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \

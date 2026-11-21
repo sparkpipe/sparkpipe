@@ -585,6 +585,8 @@ link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
 decompose hierarchically from that link matrix. The backends are:
 
 - CUDA (production);
+- nvrm (NVIDIA GPUs through the open kernel module, with no vendor user-space
+  library; [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md));
 - host (CI oracle);
 - Metal (Mac Studio);
 - ROCm.
