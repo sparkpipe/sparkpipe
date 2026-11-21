@@ -242,6 +242,21 @@ class BuildDriverTest(unittest.TestCase):
             self.assertEqual(completed.returncode, 1)
             self.assertFalse(Path(directory, "out").exists())
 
+    def test_a_release_root_that_fails_the_audit_is_refused_before_anything_is_built(self):
+        script = str(IMAGE / "build_image.sh")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory, "release")
+            (root / "lib").mkdir(parents=True)
+            (root / "lib" / "libcuda.so.1").write_bytes(b"\x7fELF")
+            ruleset = Path(directory, "spark-firewall.nft")
+            ruleset.write_text("table inet spark_guard {}\n")
+            completed = subprocess.run(["bash", script, "--out", f"{directory}/out", "--source-ref", "HEAD", "--release-root", str(root),
+                                        "--firewall-ruleset", str(ruleset)], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("FAIL library-file lib/libcuda.so.1: libcuda.so.1", completed.stderr)
+            self.assertIn("build_image: the release root fails the dependency audit", completed.stderr)
+            self.assertFalse(Path(directory, "out").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
