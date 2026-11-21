@@ -2021,7 +2021,7 @@ static SparkStatus StageServingSnapshot(void *adapter_state,
 	snapshot->kv_token_capacity = (uint64_t)state->kv.logical_page_count * block;
 	snapshot->max_sequence_positions = state->runner_config.kv_pages_per_sequence * block;
 	SparkStageKvBindingKvStoreCounters(&state->kv, &snapshot->kv_store);
-	if ( stats.lane_fatal != 0u || state->streamed_failed != 0u )
+	if ( stats.lane_fatal != 0u || state->streamed_failed != 0u || SparkDeviceFaulted() != 0u )
 		snapshot->degraded_flags |= SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL;
 	return SPARK_STATUS_OK;
 }

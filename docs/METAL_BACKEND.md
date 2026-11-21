@@ -75,6 +75,18 @@ the GPU starts on a long step while the host is still encoding it.
   returns `IO_ERROR` with Metal's error text, and every later device call fails
   (as on the other backends). The serving adapter prints that text when a step,
   keep or reset wait fails.
+- A faulted device cannot serve again in that process, so the serving
+  adapter's snapshot then reports its lane fatal
+  (`SPARK_MODEL_DRIVER_DEGRADED_LANE_FATAL`, as after a failed streamed
+  prefill). residentd reads the snapshot whenever it delivers a failed
+  completion, whether the adapter refused the submission or completed it with
+  an error. It sends that failure to the model API and exits, instead of
+  failing every later request (I11). On the fleet the node agent starts a
+  fresh engine on a later pass of its loop, and the API's requests wait for
+  the rank to return. On a Mac that nothing supervises, the API's `/health`
+  reports `degraded` with the rank missing until someone starts the engine
+  again. The same holds on CUDA, where an unclassified CUDA error (an
+  illegal address, say) is a device fault.
 
 Queues are not ordered with each other without an event: a copy on one queue
 followed by `SparkDeviceCopySync` on the device's synchronous queue needs a
