@@ -574,7 +574,8 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
         self.assertEqual(MODULE.RAIL2_IDLE_INTERFACE,"enp1s0f0np0")
         self.assertEqual(MODULE.RAIL2_SPEED_MBIT,"100000")
         source = SCRIPT.read_text()
-        self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
+        self.assertNotIn("nvidia-smi",source)
+        self.assertIn('NVIDIA_PROC = Path("/proc/driver/nvidia")',source)
         self.assertIn('["tailscale","status","--json"]',source)
         self.assertIn('layout-root-not-writable:',source)
 
