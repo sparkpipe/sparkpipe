@@ -31,6 +31,7 @@ typedef struct Order
 {
 	SparkNvrmGpu gpu;
 	SparkNvrmChannel queue;
+	SparkNvrmChannel other;
 	SparkNvrmProgram program;
 	const SparkNvrmCubinKernel *copy;
 	const SparkNvrmCubinKernel *fill;
@@ -42,6 +43,7 @@ typedef struct Order
 	SparkNvrmMemory second;
 	SparkNvrmMemory third;
 	SparkNvrmMemory staging;
+	SparkNvrmMemory marks;
 	SparkNvrmMemory sets[3u * ORDER_SETS];
 } Order;
 
@@ -218,6 +220,38 @@ static void TestKernelThenCopy(Order *order)
 	CHECK(late == 0u,"a copy-engine copy queued after a kernel copies everything the kernel wrote");
 }
 
+static void TestAcrossQueues(Order *order)
+{
+	uint32_t round,late = 0u;
+	uint64_t worst = 0u;
+	for (round = 0u; round < ORDER_ROUNDS; round++)
+	{
+		const uint32_t pattern = 0x61000000u + 0x0101u * round;
+		uint64_t value = 0u,copied = 0u,wrong;
+		if ( Stale(order,&order->third,ORDER_BYTES) != 0 || Wait(order,order->queue.fence_value) != 0 ||
+			KernelFill(order,&order->second,ORDER_BYTES,pattern,&value) != 0 )
+			return;
+		if ( SparkNvrmMark(&order->gpu,&order->queue,order->marks.address,round + 1u,&value,"order") != SPARK_STATUS_OK ||
+			SparkNvrmAwait(&order->gpu,&order->other,order->marks.address,round + 1u,&copied,"order") != SPARK_STATUS_OK ||
+			SparkNvrmCopy(&order->gpu,&order->other,order->staging.address,order->second.address,ORDER_BYTES,&copied,"order") != SPARK_STATUS_OK )
+		{
+			Failed("queue the work on two queues");
+			return;
+		}
+		if ( SparkNvrmWaitValue((const volatile uint64_t *)(void *)order->other.fence.cpu,copied,ORDER_TIMEOUT_NS,"queue_wait","order") != SPARK_STATUS_OK )
+		{
+			Failed("wait for the second queue");
+			return;
+		}
+		wrong = WrongPattern(&order->staging,ORDER_BYTES,pattern);
+		late += wrong != 0u;
+		worst = wrong > worst ? wrong : worst;
+	}
+	printf("across queues: %u of %u rounds copied stale elements (worst %llu of %llu)\n",late,ORDER_ROUNDS,(unsigned long long)worst,
+		(unsigned long long)(ORDER_BYTES / ORDER_ELEMENT_BYTES));
+	CHECK(late == 0u,"a copy on one queue that waits on another queue's mark sees everything the other queue's kernel wrote before it");
+}
+
 static void TestAlternation(Order *order)
 {
 	uint64_t value = 0u,wrong_kernel = 0u,wrong_copy = 0u;
@@ -288,6 +322,8 @@ static int Prepare(Order *order)
 	order->slot_bytes = SparkNvrmLaunchSlotBytes(order->copy) > SparkNvrmLaunchSlotBytes(order->fill) ? SparkNvrmLaunchSlotBytes(order->copy) :
 		SparkNvrmLaunchSlotBytes(order->fill);
 	if ( SparkNvrmChannelCreate(&order->gpu,&order->queue,SPARK_NVRM_MEMORY_HOST,"order") != SPARK_STATUS_OK ||
+		SparkNvrmChannelCreate(&order->gpu,&order->other,SPARK_NVRM_MEMORY_HOST,"order") != SPARK_STATUS_OK ||
+		SparkNvrmMemoryAllocate(&order->gpu,SPARK_NVRM_PAGE_BYTES,SPARK_NVRM_MEMORY_HOST,&order->marks,"order") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&order->gpu,(uint64_t)ORDER_SLOTS * order->slot_bytes,SPARK_NVRM_MEMORY_HOST,&order->slots,"order") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&order->gpu,ORDER_BYTES,SPARK_NVRM_MEMORY_SYSTEM,&order->first,"order") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&order->gpu,ORDER_BYTES,SPARK_NVRM_MEMORY_SYSTEM,&order->second,"order") != SPARK_STATUS_OK ||
@@ -308,6 +344,8 @@ static void Release(Order *order)
 	for (set = 0u; set < 3u * ORDER_SETS; set++)
 		if ( order->sets[set].bytes != 0u )
 			SparkNvrmMemoryRelease(&order->gpu,&order->sets[set]);
+	if ( order->marks.bytes != 0u )
+		SparkNvrmMemoryRelease(&order->gpu,&order->marks);
 	if ( order->staging.bytes != 0u )
 		SparkNvrmMemoryRelease(&order->gpu,&order->staging);
 	if ( order->third.bytes != 0u )
@@ -318,6 +356,7 @@ static void Release(Order *order)
 		SparkNvrmMemoryRelease(&order->gpu,&order->first);
 	if ( order->slots.bytes != 0u )
 		SparkNvrmMemoryRelease(&order->gpu,&order->slots);
+	SparkNvrmChannelDestroy(&order->gpu,&order->other);
 	SparkNvrmChannelDestroy(&order->gpu,&order->queue);
 	SparkNvrmProgramRelease(&order->gpu,&order->program);
 	SparkNvrmGpuClose(&order->gpu);
@@ -335,6 +374,7 @@ int main(void)
 	{
 		TestCopyThenKernel(&order);
 		TestKernelThenCopy(&order);
+		TestAcrossQueues(&order);
 		TestAlternation(&order);
 	}
 	Release(&order);
@@ -343,6 +383,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS one queue orders its copy engine and its compute engine in both directions, round after round\n");
+	printf("PASS one queue orders its copy engine and its compute engine in both directions, and a queue waiting on another's mark sees its writes\n");
 	return(0);
 }

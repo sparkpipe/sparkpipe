@@ -149,6 +149,21 @@ static SparkStatus SubmitSemaphore(SparkNvrmChannel *channel, uint64_t address, 
 	return(SparkNvrmPush(channel,SUBMIT_HOST_SUBCHANNEL,NVC56F_SEM_ADDR_LO,words,SUBMIT_SEMAPHORE_WORDS,owner));
 }
 
+SparkStatus SparkNvrmSemaphoreAcquire(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner)
+{
+	const uint32_t acquire = (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_ACQ_CIRC_GEQ);
+	return(SubmitSemaphore(channel,address,value,acquire,8u,owner));
+}
+
+SparkStatus SparkNvrmSemaphoreMax(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner)
+{
+	const uint32_t execute = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_REDUCTION) |
+		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_WFI,NVC56F_SEM_EXECUTE_RELEASE_WFI_EN) |
+		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION,NVC56F_SEM_EXECUTE_REDUCTION_IMAX) |
+		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION_FORMAT,NVC56F_SEM_EXECUTE_REDUCTION_FORMAT_UNSIGNED));
+	return(SubmitSemaphore(channel,address,value,execute,8u,owner));
+}
+
 SparkStatus SparkNvrmSemaphoreRelease(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t timestamp, const char *owner)
 {
 	const uint32_t execute = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_RELEASE) |
@@ -171,10 +186,9 @@ void SparkNvrmOpAbandon(SparkNvrmChannel *channel)
 
 static SparkStatus SubmitOrder(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner)
 {
-	const uint32_t acquire = (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_ACQ_CIRC_GEQ);
 	if ( SubmitOrdered(channel->last_engine,engine) != 0u )
 		return(SPARK_STATUS_OK);
-	return(SubmitSemaphore(channel,channel->fence.address,channel->fence_value,acquire,8u,owner));
+	return(SparkNvrmSemaphoreAcquire(channel,channel->fence.address,channel->fence_value,owner));
 }
 
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner)
@@ -257,4 +271,45 @@ SparkStatus SparkNvrmChannelSync(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, u
 	SUBMIT_TRY(SubmitHostFence(channel,owner));
 	SUBMIT_TRY(SparkNvrmSubmit(gpu,channel,owner));
 	return(SparkNvrmWaitValue((const volatile uint64_t *)(void *)channel->fence.cpu,channel->fence_value,timeout_ns,"synchronize",owner));
+}
+
+SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner)
+{
+	SparkStatus status = SparkNvrmSemaphoreRelease(channel,channel->fence.address,channel->fence_value + 1u,0u,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmOpEnd(gpu,channel,SPARK_NVRM_ENGINE_HOST,value,owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmOpAbandon(channel);
+		SPARK_FAIL(status);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmMark(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t payload, uint64_t *value, const char *owner)
+{
+	SparkStatus status;
+	SUBMIT_TRY(SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_HOST,owner));
+	status = SparkNvrmSemaphoreRelease(channel,address + SPARK_NVRM_MARK_TIME_OFFSET,payload,1u,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmSemaphoreMax(channel,address,payload,owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmOpAbandon(channel);
+		SPARK_FAIL(status);
+	}
+	return(SparkNvrmOpFinishHost(gpu,channel,value,owner));
+}
+
+SparkStatus SparkNvrmAwait(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t payload, uint64_t *value, const char *owner)
+{
+	SparkStatus status;
+	SUBMIT_TRY(SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_HOST,owner));
+	status = SparkNvrmSemaphoreAcquire(channel,address,payload,owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmOpAbandon(channel);
+		SPARK_FAIL(status);
+	}
+	return(SparkNvrmOpFinishHost(gpu,channel,value,owner));
 }

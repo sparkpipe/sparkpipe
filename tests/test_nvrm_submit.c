@@ -255,6 +255,28 @@ static void TestFillSplit(void)
 	CHECK(channel->push_used == 40u * 4u,"then the copy engine's fence release");
 }
 
+static void TestMarks(void)
+{
+	static Fake fake;
+	SparkNvrmChannel *channel;
+	uint64_t value = 0u;
+	const uint64_t mark = 0x1000a00040ull;
+	const uint32_t header = (1u << 29) | (5u << 16) | (0x5cu >> 2);
+	FakeOpen(&fake);
+	channel = &fake.gpu.compute;
+	CHECK(SparkNvrmMark(&fake.gpu,channel,mark,7u,&value,"mark") == SPARK_STATUS_OK && value == 1u && channel->push_used == 72u,
+		"a mark is three five-word semaphore methods and takes the next fence value");
+	CHECK(PushWord(&fake,0) == header && PushWord(&fake,1) == (uint32_t)(mark + 16u) && PushWord(&fake,3) == 7u &&
+		PushWord(&fake,5) == (1u | (1u << 20) | (1u << 24) | (1u << 25)),"first a timestamped release of the payload 16 bytes into the mark");
+	CHECK(PushWord(&fake,6) == header && PushWord(&fake,7) == (uint32_t)mark && PushWord(&fake,9) == 7u &&
+		PushWord(&fake,11) == (6u | (1u << 20) | (1u << 24) | (1u << 27) | (1u << 31)),
+		"then an unsigned 64-bit maximum into the mark's first word, so a later mark that finishes first is never undone");
+	CHECK(PushWord(&fake,13) == (uint32_t)FENCE_ADDRESS && PushWord(&fake,15) == 1u,"then the channel's fence");
+	CHECK(SparkNvrmAwait(&fake.gpu,channel,mark,7u,&value,"mark") == SPARK_STATUS_OK && value == 2u &&
+		PushWord(&fake,18) == header && PushWord(&fake,19) == (uint32_t)mark && PushWord(&fake,21) == 7u && PushWord(&fake,23) == (3u | (1u << 24)),
+		"a wait acquires the mark's first word at or past the payload, then releases the fence");
+}
+
 static void TestAddress(void)
 {
 	static SparkNvrmGpu gpu;
@@ -415,6 +437,7 @@ int main(void)
 	TestReclaim();
 	TestOrdering();
 	TestFillSplit();
+	TestMarks();
 	TestAddress();
 	TestSemaphore();
 	TestLaunch();

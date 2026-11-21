@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
+#include "runtime/device/nvrm/nvrm_host.h"
 #include "runtime/device/nvrm/nvrm_version.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
 
@@ -17,6 +18,11 @@
 #define NVRM_GROUP_THREADS 1024u
 #define NVRM_GROUP_SHARED_BYTES 101376u
 #define NVRM_POLL_NS 20000L
+#define NVRM_SEQUENCES 4096u
+#define NVRM_BOUNCE_BYTES (8ull << 20)
+#define NVRM_EVENT_CHUNK_BYTES (64u << 10)
+#define NVRM_EVENT_CHUNKS 64u
+#define NVRM_EVENT_SLOTS_PER_CHUNK (NVRM_EVENT_CHUNK_BYTES / SPARK_NVRM_MARK_BYTES)
 
 typedef struct NvrmAllocation
 {
@@ -29,10 +35,31 @@ typedef struct NvrmAllocation
 typedef struct NvrmQueue
 {
 	SparkNvrmChannel channel;
-	uint64_t base;
+	SparkNvrmHostWorker worker;
+	SparkNvrmMemory bounce;
+	uint64_t ends[NVRM_SEQUENCES];
+	uint64_t recorded;
+	uint64_t completed;
 } NvrmQueue;
 
+typedef struct NvrmEvent
+{
+	uint32_t slot;
+	uint64_t address;
+	uint8_t *cpu;
+	uint64_t generation;
+} NvrmEvent;
+
+typedef struct NvrmEventPool
+{
+	SparkNvrmMemory chunks[NVRM_EVENT_CHUNKS];
+	uint32_t chunk_count;
+	uint32_t free_slots[NVRM_EVENT_CHUNKS * NVRM_EVENT_SLOTS_PER_CHUNK];
+	uint32_t free_count;
+} NvrmEventPool;
+
 static SparkNvrmGpu nvrm_gpu;
+static NvrmEventPool nvrm_events;
 
 #define NVRM_TRY(call) \
 	do { \
@@ -78,6 +105,10 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 
 SparkStatus SparkDeviceBackendShutdown(void)
 {
+	uint32_t chunk;
+	for (chunk = 0u; chunk < nvrm_events.chunk_count; chunk++)
+		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm_events.chunks[chunk]);
+	memset(&nvrm_events,0,sizeof(nvrm_events));
 	SparkNvrmGpuClose(&nvrm_gpu);
 	return(SPARK_STATUS_OK);
 }
@@ -204,21 +235,82 @@ void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation)
 	allocation->backend = 0;
 }
 
-static SparkStatus NvrmSequence(SparkDeviceQueue *queue, uint64_t value, const char *operation)
+static uint64_t NvrmCompletedSequence(NvrmQueue *nvrm)
 {
-	const NvrmQueue *nvrm = (const NvrmQueue *)queue->backend;
-	char text[128];
-	if ( value == nvrm->base + queue->submitted )
-		return(SPARK_STATUS_OK);
-	snprintf(text,sizeof(text),"the channel released %llu for queue sequence %llu from base %llu",(unsigned long long)value,
-		(unsigned long long)queue->submitted,(unsigned long long)nvrm->base);
-	return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,queue->owner,0,text));
+	const uint64_t reached = SparkNvrmChannelCompleted(&nvrm->channel);
+	const uint64_t recorded = __atomic_load_n(&nvrm->recorded,__ATOMIC_ACQUIRE);
+	uint64_t done = __atomic_load_n(&nvrm->completed,__ATOMIC_ACQUIRE),known = done;
+	while ( done < recorded && __atomic_load_n(&nvrm->ends[(done + 1u) % NVRM_SEQUENCES],__ATOMIC_RELAXED) <= reached )
+		done++;
+	while ( known < done && !__atomic_compare_exchange_n(&nvrm->completed,&known,done,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE) )
+	{
+	}
+	return(done);
 }
 
-static SparkStatus NvrmPageable(SparkDeviceQueue *queue, const char *operation)
+static SparkStatus NvrmRoom(SparkDeviceQueue *queue, const char *operation)
 {
-	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,operation,queue->owner,0,
-		"pageable host memory has no device address; the nvrm backend copies it once queues run host work"));
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	while ( queue->submitted - NvrmCompletedSequence(nvrm) >= NVRM_SEQUENCES )
+	{
+		const uint64_t oldest = __atomic_load_n(&nvrm->completed,__ATOMIC_ACQUIRE) + 1u;
+		NVRM_TRY(SparkNvrmWaitValue((const volatile uint64_t *)(void *)nvrm->channel.fence.cpu,nvrm->ends[oldest % NVRM_SEQUENCES],SPARK_NVRM_WAIT_TIMEOUT_NS,
+			operation,queue->owner));
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static void NvrmEnd(SparkDeviceQueue *queue)
+{
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	__atomic_store_n(&nvrm->ends[queue->submitted % NVRM_SEQUENCES],nvrm->channel.fence_value,__ATOMIC_RELAXED);
+	__atomic_store_n(&nvrm->recorded,queue->submitted,__ATOMIC_RELEASE);
+}
+
+static SparkStatus NvrmHost(SparkDeviceQueue *queue, SparkNvrmHostKind kind, uint8_t *destination, const uint8_t *source, uint64_t bytes, uint8_t byte,
+	const char *operation)
+{
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	SparkNvrmHostItem item;
+	memset(&item,0,sizeof(item));
+	item.kind = kind;
+	item.destination = destination;
+	item.source = source;
+	item.bytes = bytes;
+	item.byte = byte;
+	(void)operation;
+	return(SparkNvrmHostWork(&nvrm_gpu,&nvrm->channel,&nvrm->worker,&item,0,queue->owner));
+}
+
+static SparkStatus NvrmBounce(NvrmQueue *nvrm, const char *owner)
+{
+	if ( nvrm->bounce.bytes != 0u )
+		return(SPARK_STATUS_OK);
+	return(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_BOUNCE_BYTES,SPARK_NVRM_MEMORY_HOST,&nvrm->bounce,owner));
+}
+
+static SparkStatus NvrmStaged(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_offset,
+	const SparkDeviceAllocation *source, uint64_t source_offset, uint64_t bytes)
+{
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	const uint32_t upload = source->device == 0u;
+	uint64_t done;
+	NVRM_TRY(NvrmBounce(nvrm,queue->owner));
+	for (done = 0u; done < bytes; done += NVRM_BOUNCE_BYTES)
+	{
+		const uint64_t chunk = bytes - done < NVRM_BOUNCE_BYTES ? bytes - done : NVRM_BOUNCE_BYTES;
+		if ( upload != 0u )
+		{
+			NVRM_TRY(NvrmHost(queue,SPARK_NVRM_HOST_COPY,nvrm->bounce.cpu,(const uint8_t *)source->host + source_offset + done,chunk,0u,"copy"));
+			NVRM_TRY(SparkNvrmCopy(&nvrm_gpu,&nvrm->channel,destination->device + destination_offset + done,nvrm->bounce.address,chunk,0,queue->owner));
+		}
+		else
+		{
+			NVRM_TRY(SparkNvrmCopy(&nvrm_gpu,&nvrm->channel,nvrm->bounce.address,source->device + source_offset + done,chunk,0,queue->owner));
+			NVRM_TRY(NvrmHost(queue,SPARK_NVRM_HOST_COPY,(uint8_t *)destination->host + destination_offset + done,nvrm->bounce.cpu,chunk,0u,"copy"));
+		}
+	}
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection direction,
@@ -226,22 +318,34 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 	const SparkDeviceAllocation *source, uint64_t source_offset, uint64_t bytes)
 {
 	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
-	uint64_t value = 0u;
+	SparkStatus status;
 	(void)direction;
-	if ( destination->device == 0u || source->device == 0u )
-		return(NvrmPageable(queue,"copy"));
-	NVRM_TRY(SparkNvrmCopy(&nvrm_gpu,&nvrm->channel,destination->device + destination_offset,source->device + source_offset,bytes,&value,queue->owner));
-	return(NvrmSequence(queue,value,"copy"));
+	NVRM_TRY(NvrmRoom(queue,"copy"));
+	if ( destination->device != 0u && source->device != 0u )
+		status = SparkNvrmCopy(&nvrm_gpu,&nvrm->channel,destination->device + destination_offset,source->device + source_offset,bytes,0,queue->owner);
+	else if ( destination->host != 0 && source->host != 0 )
+		status = NvrmHost(queue,SPARK_NVRM_HOST_COPY,(uint8_t *)destination->host + destination_offset,(const uint8_t *)source->host + source_offset,bytes,0u,"copy");
+	else
+		status = NvrmStaged(queue,destination,destination_offset,source,source_offset,bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	NvrmEnd(queue);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendFill(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t offset, uint8_t value, uint64_t bytes)
 {
 	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
-	uint64_t released = 0u;
-	if ( destination->device == 0u )
-		return(NvrmPageable(queue,"fill"));
-	NVRM_TRY(SparkNvrmFill(&nvrm_gpu,&nvrm->channel,destination->device + offset,value,bytes,&released,queue->owner));
-	return(NvrmSequence(queue,released,"fill"));
+	SparkStatus status;
+	NVRM_TRY(NvrmRoom(queue,"fill"));
+	if ( destination->device != 0u )
+		status = SparkNvrmFill(&nvrm_gpu,&nvrm->channel,destination->device + offset,value,bytes,0,queue->owner);
+	else
+		status = NvrmHost(queue,SPARK_NVRM_HOST_FILL,(uint8_t *)destination->host + offset,0,bytes,value,"fill");
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	NvrmEnd(queue);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
@@ -250,13 +354,20 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 	SparkStatus status;
 	if ( nvrm == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"queue_create",queue->owner,ENOMEM,"out of host memory"));
+	nvrm->bounce.map_fd = -1;
 	status = SparkNvrmChannelCreate(&nvrm_gpu,&nvrm->channel,SPARK_NVRM_MEMORY_HOST,queue->owner);
+	if ( status == SPARK_STATUS_OK )
+	{
+		status = SparkNvrmHostOpen(&nvrm_gpu,&nvrm->worker,queue->owner);
+		if ( status != SPARK_STATUS_OK )
+			SparkNvrmChannelDestroy(&nvrm_gpu,&nvrm->channel);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		free(nvrm);
 		SPARK_FAIL(status);
 	}
-	nvrm->base = nvrm->channel.fence_value;
+	nvrm->ends[0] = nvrm->channel.fence_value;
 	queue->backend = nvrm;
 	return(SPARK_STATUS_OK);
 }
@@ -273,21 +384,18 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 	if ( nvrm == 0 )
 		return;
 	SparkNvrmChannelDestroy(&nvrm_gpu,&nvrm->channel);
+	SparkNvrmHostClose(&nvrm_gpu,&nvrm->worker);
+	if ( nvrm->bounce.bytes != 0u )
+		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm->bounce);
 	free(nvrm);
 	queue->backend = 0;
 }
 
-static uint64_t NvrmCompleted(const NvrmQueue *nvrm)
-{
-	const uint64_t reached = SparkNvrmChannelCompleted(&nvrm->channel);
-	return(reached > nvrm->base ? reached - nvrm->base : 0u);
-}
-
 SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequence, uint64_t timeout_ns)
 {
-	const NvrmQueue *nvrm = (const NvrmQueue *)queue->backend;
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
 	const uint64_t start = SparkMonotonicNs();
-	while ( NvrmCompleted(nvrm) < sequence )
+	while ( NvrmCompletedSequence(nvrm) < sequence )
 	{
 		struct timespec pause = {0, NVRM_POLL_NS};
 		if ( timeout_ns != SPARK_DEVICE_WAIT_FOREVER && SparkMonotonicNs() - start >= timeout_ns )
@@ -299,7 +407,7 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)
 {
-	return(NvrmCompleted((const NvrmQueue *)queue->backend));
+	return(NvrmCompletedSequence((NvrmQueue *)queue->backend));
 }
 
 SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
@@ -310,53 +418,116 @@ SparkStatus SparkDeviceBackendQueueCapture(SparkDeviceQueue *queue, uint32_t cap
 
 SparkStatus SparkDeviceBackendQueueHostCallback(SparkDeviceQueue *queue, SparkDeviceHostFunction function, void *context)
 {
-	const SparkStatus status = NvrmMissing("host_callback",queue->owner);
-	(void)function;
-	(void)context;
-	SPARK_FAIL(status);
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	SparkNvrmHostItem item;
+	NVRM_TRY(NvrmRoom(queue,"host_callback"));
+	memset(&item,0,sizeof(item));
+	item.kind = SPARK_NVRM_HOST_CALL;
+	item.function = function;
+	item.context = context;
+	NVRM_TRY(SparkNvrmHostWork(&nvrm_gpu,&nvrm->channel,&nvrm->worker,&item,0,queue->owner));
+	NvrmEnd(queue);
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus NvrmEventGrow(void)
+{
+	SparkNvrmMemory *chunk;
+	uint32_t slot;
+	if ( nvrm_events.chunk_count == NVRM_EVENT_CHUNKS )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"event_create","",0,"every event slot the backend keeps is in use"));
+	chunk = &nvrm_events.chunks[nvrm_events.chunk_count];
+	NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_EVENT_CHUNK_BYTES,SPARK_NVRM_MEMORY_HOST,chunk,"event"));
+	for (slot = NVRM_EVENT_SLOTS_PER_CHUNK; slot > 0u; slot--)
+		nvrm_events.free_slots[nvrm_events.free_count++] = nvrm_events.chunk_count * NVRM_EVENT_SLOTS_PER_CHUNK + slot - 1u;
+	nvrm_events.chunk_count++;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendEventCreate(SparkDeviceEvent *event)
 {
-	const SparkStatus status = NvrmMissing("event_create","");
-	(void)event;
-	SPARK_FAIL(status);
+	NvrmEvent *nvrm = (NvrmEvent *)calloc(1u,sizeof(*nvrm));
+	const SparkNvrmMemory *chunk;
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( nvrm == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"event_create","",ENOMEM,"out of host memory"));
+	if ( nvrm_events.free_count == 0u )
+		status = NvrmEventGrow();
+	if ( status != SPARK_STATUS_OK )
+	{
+		free(nvrm);
+		SPARK_FAIL(status);
+	}
+	nvrm->slot = nvrm_events.free_slots[--nvrm_events.free_count];
+	chunk = &nvrm_events.chunks[nvrm->slot / NVRM_EVENT_SLOTS_PER_CHUNK];
+	nvrm->address = chunk->address + (uint64_t)(nvrm->slot % NVRM_EVENT_SLOTS_PER_CHUNK) * SPARK_NVRM_MARK_BYTES;
+	nvrm->cpu = chunk->cpu + (uint64_t)(nvrm->slot % NVRM_EVENT_SLOTS_PER_CHUNK) * SPARK_NVRM_MARK_BYTES;
+	memset(nvrm->cpu,0,SPARK_NVRM_MARK_BYTES);
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	event->backend = nvrm;
+	return(SPARK_STATUS_OK);
 }
 
 void SparkDeviceBackendEventDestroy(SparkDeviceEvent *event)
 {
+	NvrmEvent *nvrm = (NvrmEvent *)event->backend;
+	if ( nvrm != 0 )
+	{
+		nvrm_events.free_slots[nvrm_events.free_count++] = nvrm->slot;
+		free(nvrm);
+	}
 	event->backend = 0;
 }
 
 SparkStatus SparkDeviceBackendEventRecord(SparkDeviceEvent *event, SparkDeviceQueue *queue)
 {
-	const SparkStatus status = NvrmMissing("event_record",queue->owner);
-	(void)event;
-	SPARK_FAIL(status);
+	NvrmEvent *nvrm = (NvrmEvent *)event->backend;
+	NvrmQueue *owner = (NvrmQueue *)queue->backend;
+	NVRM_TRY(NvrmRoom(queue,"event_record"));
+	NVRM_TRY(SparkNvrmMark(&nvrm_gpu,&owner->channel,nvrm->address,nvrm->generation + 1u,0,queue->owner));
+	nvrm->generation++;
+	NvrmEnd(queue);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendQueueWaitEvent(SparkDeviceQueue *queue, SparkDeviceEvent *event)
 {
-	const SparkStatus status = NvrmMissing("queue_wait_event",queue->owner);
-	(void)event;
-	SPARK_FAIL(status);
+	const NvrmEvent *nvrm = (const NvrmEvent *)event->backend;
+	NvrmQueue *waiter = (NvrmQueue *)queue->backend;
+	NVRM_TRY(NvrmRoom(queue,"queue_wait_event"));
+	NVRM_TRY(SparkNvrmAwait(&nvrm_gpu,&waiter->channel,nvrm->address,nvrm->generation,0,queue->owner));
+	NvrmEnd(queue);
+	return(SPARK_STATUS_OK);
+}
+
+static uint64_t NvrmEventReached(const NvrmEvent *nvrm)
+{
+	return(__atomic_load_n((const volatile uint64_t *)(const void *)nvrm->cpu,__ATOMIC_ACQUIRE));
 }
 
 SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeout_ns)
 {
-	const SparkStatus status = NvrmMissing("event_wait","");
-	(void)event;
-	(void)timeout_ns;
-	SPARK_FAIL(status);
+	const NvrmEvent *nvrm = (const NvrmEvent *)event->backend;
+	const uint64_t generation = nvrm->generation,start = SparkMonotonicNs();
+	while ( NvrmEventReached(nvrm) < generation )
+	{
+		struct timespec pause = {0, NVRM_POLL_NS};
+		if ( timeout_ns != SPARK_DEVICE_WAIT_FOREVER && SparkMonotonicNs() - start >= timeout_ns )
+			return(SPARK_STATUS_PENDING);
+		nanosleep(&pause,0);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceEvent *stop, uint64_t *nanoseconds)
 {
-	const SparkStatus status = NvrmMissing("event_elapsed","");
-	(void)start;
-	(void)stop;
-	(void)nanoseconds;
-	SPARK_FAIL(status);
+	const NvrmEvent *first = (const NvrmEvent *)start->backend,*last = (const NvrmEvent *)stop->backend;
+	const uint64_t begun = __atomic_load_n((const volatile uint64_t *)(const void *)(first->cpu + SPARK_NVRM_MARK_TIME_OFFSET + sizeof(uint64_t)),__ATOMIC_ACQUIRE);
+	const uint64_t ended = __atomic_load_n((const volatile uint64_t *)(const void *)(last->cpu + SPARK_NVRM_MARK_TIME_OFFSET + sizeof(uint64_t)),__ATOMIC_ACQUIRE);
+	if ( ended < begun )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"event_elapsed","",0,"the stop event's GPU time is before the start event's"));
+	*nanoseconds = ended - begun;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path)

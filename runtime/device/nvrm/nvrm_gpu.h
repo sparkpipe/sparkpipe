@@ -15,6 +15,8 @@ extern "C" {
 #define SPARK_NVRM_PUSH_BYTES (1u << 20)
 #define SPARK_NVRM_LOCAL_RETIRED 16u
 #define SPARK_NVRM_WAIT_TIMEOUT_NS 10000000000ull
+#define SPARK_NVRM_MARK_BYTES 32u
+#define SPARK_NVRM_MARK_TIME_OFFSET 16u
 
 typedef enum SparkNvrmMemoryKind
 {
@@ -154,6 +156,8 @@ void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner);
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmSemaphoreRelease(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t timestamp, const char *owner);
+SparkStatus SparkNvrmSemaphoreAcquire(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner);
+SparkStatus SparkNvrmSemaphoreMax(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner);
 SparkStatus SparkNvrmEnsureLocalMemory(SparkNvrmGpu *gpu, uint32_t bytes_per_thread, const char *owner);
 SparkStatus SparkNvrmBindLocalMemory(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmWaitValue(const volatile uint64_t *semaphore, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner);
@@ -161,6 +165,9 @@ uint64_t SparkNvrmChannelCompleted(const SparkNvrmChannel *channel);
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner);
 SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmEngine engine, uint64_t *value, const char *owner);
 void SparkNvrmOpAbandon(SparkNvrmChannel *channel);
+SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner);
+SparkStatus SparkNvrmMark(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t payload, uint64_t *value, const char *owner);
+SparkStatus SparkNvrmAwait(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t payload, uint64_t *value, const char *owner);
 SparkStatus SparkNvrmCopy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t destination, uint64_t source, uint64_t bytes, uint64_t *value,
 	const char *owner);
 SparkStatus SparkNvrmFill(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t destination, uint8_t byte, uint64_t bytes, uint64_t *value,

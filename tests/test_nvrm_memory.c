@@ -13,6 +13,7 @@
 #define MEMORY_FILE_BYTES ((1u << 20) + 123u)
 #define MEMORY_FILE_OFFSET (4096u + 17u)
 #define MEMORY_QUEUE_CYCLES 64u
+#define MEMORY_PAGEABLE_BYTES ((20ull << 20) + 13u)
 
 static int failures;
 
@@ -179,6 +180,32 @@ static void TestFile(SparkDeviceQueue *queue)
 	free(contents);
 }
 
+static void TestPageable(SparkDeviceQueue *queue)
+{
+	SparkDeviceBuffer source,device,back,pinned;
+	uint64_t index,wrong = 0u;
+	CHECK(SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_HOST_PAGEABLE,MEMORY_PAGEABLE_BYTES,"pageable") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,MEMORY_PAGEABLE_BYTES,"pageable") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&back,SPARK_DEVICE_SPACE_HOST_PAGEABLE,MEMORY_PAGEABLE_BYTES,"pageable") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&pinned,SPARK_DEVICE_SPACE_HOST_PINNED,MEMORY_PAGEABLE_BYTES,"pageable") == SPARK_STATUS_OK,"allocate the pageable buffers");
+	if ( source.host == 0 || back.host == 0 || pinned.host == 0 )
+		return;
+	Pattern((uint8_t *)source.host,MEMORY_PAGEABLE_BYTES,5u);
+	CHECK(SparkDeviceCopy(queue,At(&device,3u),At(&source,0u),MEMORY_PAGEABLE_BYTES - 3u) == SPARK_STATUS_OK &&
+		SparkDeviceCopy(queue,At(&back,0u),At(&device,3u),MEMORY_PAGEABLE_BYTES - 3u) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"pageable to device and back, in several bounce-buffer chunks");
+	CHECK(memcmp(back.host,source.host,(size_t)(MEMORY_PAGEABLE_BYTES - 3u)) == 0,"the bytes survive the staged copies");
+	CHECK(SparkDeviceCopy(queue,At(&pinned,0u),At(&source,0u),MEMORY_PAGEABLE_BYTES) == SPARK_STATUS_OK &&
+		SparkDeviceFill(queue,At(&back,1u),0x77u,1000u) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"pageable to pinned memory, and a pageable fill, in queue order");
+	CHECK(memcmp(pinned.host,source.host,(size_t)MEMORY_PAGEABLE_BYTES) == 0,"a pageable to pinned copy runs on the host in queue order");
+	for (index = 0u; index < 1002u; index++)
+		wrong += ((uint8_t *)back.host)[index] != (index >= 1u && index < 1001u ? 0x77u : ((uint8_t *)source.host)[index]);
+	CHECK(wrong == 0u,"a pageable fill reaches exactly its bytes");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&device) == SPARK_STATUS_OK && SparkDeviceFree(&back) == SPARK_STATUS_OK &&
+		SparkDeviceFree(&pinned) == SPARK_STATUS_OK,"free the pageable buffers");
+}
+
 static void TestQueues(void)
 {
 	SparkDeviceQueue *first = 0,*second = 0;
@@ -203,8 +230,6 @@ static void TestQueues(void)
 	}
 	CHECK(SparkDeviceQueueWait(first,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceQueueWait(second,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK &&
 		SparkDeviceQueueQuery(first) == SPARK_STATUS_OK,"both queues finish, and a finished queue answers at once");
-	CHECK(SparkDeviceCopy(first,At(&left,0u),At(&pageable,0u),4096u) == SPARK_STATUS_UNSUPPORTED &&
-		strstr(SparkDeviceLastError()->text,"pageable") != 0,"a copy through pageable memory is refused, naming the reason");
 	CHECK(SparkDeviceQueueCapture(first,1u) == SPARK_STATUS_UNSUPPORTED,"a queue the backend owns is never captured");
 	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&left) == SPARK_STATUS_OK && SparkDeviceFree(&right) == SPARK_STATUS_OK &&
 		SparkDeviceFree(&pageable) == SPARK_STATUS_OK,"free the queue buffers");
@@ -234,6 +259,7 @@ int main(void)
 		TestCopies(queue);
 		TestLarge(queue);
 		TestFile(queue);
+		TestPageable(queue);
 		CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"destroy the queue");
 	}
 	TestQueues();
@@ -244,6 +270,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS nvrm memory spaces, registered and file-backed memory, copy-engine copies and fills, and queues\n");
+	printf("PASS nvrm memory spaces, registered, file-backed and pageable memory, copy-engine copies and fills, and queues\n");
 	return(0);
 }
