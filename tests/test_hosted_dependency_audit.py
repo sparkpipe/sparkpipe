@@ -441,6 +441,15 @@ class ImageTest(unittest.TestCase):
         code, document = run_audit("image", "--rootfs", str(rootfs))
         self.assertEqual((code, document["findings"]), (0, []))
 
+    def test_the_kernel_uapi_cuda_header_is_not_a_toolkit_and_toolkit_headers_are(self):
+        rootfs = self.rootfs("uapi")
+        write(rootfs / "usr" / "include" / "linux" / "cuda.h", "#define CUDA_ADB 1\n")
+        code, document = run_audit("image", "--rootfs", str(rootfs))
+        self.assertEqual((code, document["findings"]), (0, []))
+        write(rootfs / "usr" / "local" / "cuda-13.0" / "include" / "cuda_runtime.h", "\n")
+        code, document = run_audit("image", "--rootfs", str(rootfs))
+        self.assertEqual((code, kinds(document)), (1, {("toolkit-file", "usr/local/cuda-13.0/include/cuda_runtime.h", "cuda_runtime.h")}))
+
     def test_rootfs_without_package_database_fails(self):
         rootfs = self.rootfs("bare")
         (rootfs / "var" / "lib" / "dpkg" / "status").unlink()

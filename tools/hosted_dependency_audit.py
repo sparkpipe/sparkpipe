@@ -43,7 +43,7 @@ NAME_CHARACTERS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 TOOLKIT_FILES = (
     "nvcc", "ptxas", "nvlink", "fatbinary", "cuobjdump", "nvdisasm", "cicc", "cudafe++",
     "nvprune", "cu++filt", "cuda-gdb", "cuda-gdbserver", "compute-sanitizer", "nsys", "ncu",
-    "nvprof", "bin2c", "cuda.h", "cuda_runtime.h", "cuda_runtime_api.h", "nvml.h",
+    "nvprof", "bin2c", "cuda_runtime.h", "cuda_runtime_api.h", "nvml.h",
 )
 CUDA_DIRECTORY = re.compile(r"(?:^|/)cuda(?:-[0-9][0-9.]*)?(?:/|$)")
 TORCH_CUDA_VERSION = re.compile(r"^cuda\s*(?::[^=]*)?=\s*(.+?)\s*$", re.M)
