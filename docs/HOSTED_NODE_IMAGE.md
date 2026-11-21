@@ -238,10 +238,12 @@ Rollback, from the same kind of rescue system: move every top-level entry
 of the installed root except `home`, `lost+found` and `.dgxos-<stamp>` into
 `/.hosted-<stamp>`, move the entries of `/.dgxos-<stamp>/root` back to `/`,
 move the EFI partition's `EFI/ubuntu` into `/.hosted-<stamp>/esp/EFI`,
-copy `/.dgxos-<stamp>/esp/EFI/ubuntu` back onto the EFI partition, and
-restore the old labels. The old loader comes back byte for byte, and
-`EFI/BOOT` and the firmware boot entries were never changed, so rollback
-runs no `grub-install`.
+copy `/.dgxos-<stamp>/esp/EFI/ubuntu` back onto the EFI partition and
+compare the whole partition with what it held before the install, restore
+the old labels, and remove `/.dgxos-<stamp>`, which by then holds only that
+copy. The old loader comes back byte for byte, and `EFI/BOOT` and the
+firmware boot entries were never changed, so rollback runs no
+`grub-install`.
 
 The set-aside directory is removed only after the node passes acceptance.
 After that, `hosted_dependency_audit.py image --rootfs /` over the whole
