@@ -300,7 +300,7 @@ systemctl() { [ "$TEST_QOS" = active ]; }
 ibdev2netdev() { echo "test port 1 ==> test-netdev (Up)"; }
 mesh_addresses() { if [ -n "$TEST_ADDRESS" ]; then echo "$TEST_ADDRESS"; else echo "test gid 3 is 0000:0000:0000:0000:0000:0000:0000:0000, not an IPv4 RoCE address" >&2; return 1; fi; }
 WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
-sparkpipe-dscp-trust() { [ "$*" = "check test-netdev" ] && [ "$TEST_TRUST" = dscp ]; }
+[ "$TEST_TRUST" = absent ] || sparkpipe-dscp-trust() { [ "$*" = "check test-netdev" ] && [ "$TEST_TRUST" = dscp ]; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
 ''' + self.weightd_settings + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
         env = dict(os.environ, TEST_DISK_SHA="changed" if changed else "running",
@@ -373,6 +373,14 @@ sparkpipe-dscp-trust() { [ "$*" = "check test-netdev" ] && [ "$TEST_TRUST" = dsc
         self.assertIn("test (test-netdev) does not trust DSCP", result.stderr)
         self.assertNotIn("starting", result.stdout)
         self.assertNotIn("UNLINK", result.stdout)
+        self.assertFalse((self.directory / "weightd.log").exists())
+
+    def test_a_node_without_the_trust_helper_is_told_to_run_the_baseline(self):
+        result = self.agent(owner="shell", trust="absent")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("sparkpipe-dscp-trust is not installed; the node baseline apply installs it", result.stderr)
+        self.assertNotIn("does not trust DSCP", result.stderr)
+        self.assertNotIn("starting", result.stdout)
         self.assertFalse((self.directory / "weightd.log").exists())
 
     def test_weightd_waits_for_fabric_addresses(self):
