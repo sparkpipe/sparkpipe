@@ -166,10 +166,10 @@ The lane is `k31_pro_rp` on all 16 Sparks.
 | Run | Index | Answered | Stopped by |
 | --- | --- | --- | --- |
 | LB1 | BF16 | the four 131K-0 prompts, mk-458k-0 | mv-458k-0: the KV pool grew from 400 to 800 chunks (11.7 GB against the 8 GiB reserve) while the arena was detached, so the switch back found no room (`spark_weightd_lazy_pack.c:156`) |
-| LF1 | FP8 | the four 131K-0 prompts, mk-458k-0, mv-458k-0 | mk3-458k-0: the lane lost all 16 ranks at 02:18:57Z |
+| LF1 | FP8 | the four 131K-0 prompts, mk-458k-0, mv-458k-0 | mk3-458k-0: the run stopped at 02:18:57Z |
 | LB2 | BF16 | a repeat of mk-131k-0, identical to LB1 to the bit | mk-1000k-0: spark8 lost one of its two links for 7 s at 04:13:05Z in pass 2, and a collective round ran out its 30 s |
-| LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4): the mesh still held failed queue pairs from the nodes' restart after LF1, and a weightd restart on all 16 repaired it 90 s later |
-| LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: the lane lost spark9, sparka, sparkb, sparkd and sparkf at about 06:04Z, as pass 2 began, and the weight stream's connections to them ran out of retries |
+| LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4): the mesh held failed queue pairs, and a weightd restart on all 16 repaired it 90 s later |
+| LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: the run stopped at about 06:04Z, as pass 2 began, when the weight stream's connections to spark9, sparka, sparkb, sparkd and sparkf ran out of retries |
 
 LB3's two 1M answers have no FP8 pair yet, so the comparison below leaves
 them out. BF16 gets all 16 of their questions right (`long_prompt_suite.py
@@ -237,12 +237,12 @@ Files:
 - `prefill-passes.jsonl`, `weight-switches.jsonl`: rank 0's sequence lines
   and switch times; `rank0-LB1.log`, `rank0-LB2.log`, `rank0-LF1.log`,
   `rank0-LB3.log`: rank 0's pool, switch, pass, sequence and error lines.
-- `ranks-LB3-errors.log`: each surviving rank's lines for the failed
-  mk3-1000k-0 pass: six ranks' weight streams ran out of retries (`transport
-  retry counter exceeded`), the others' rotation steps stalled, and all
-  failed at layer 4 of pass 2, after all 16 ranks had finished pass 1. The
-  logs of the five ranks the lane lost stop at the start of this prefill
-  and end in zeros: their last lines never reached the disk.
+- `ranks-LB3-errors.log`: the failure lines of the eleven ranks that logged
+  the stopped mk3-1000k-0 pass: six ranks' weight streams ran out of retries
+  (`transport retry counter exceeded`), the other five's rotation steps
+  stalled, and all failed at layer 4 of pass 2, after all 16 ranks had
+  finished pass 1. The logs of spark9, sparka, sparkb, sparkd and sparkf end
+  at the start of this prefill.
 - `events.txt`: the driver's events for each run.
 
 ## Files
