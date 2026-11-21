@@ -14,6 +14,7 @@
 #include "inference/kernels/stream_gemm.cuh"
 #include "dsv41_flash_kernels.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u
@@ -40,7 +41,7 @@ static __global__ void D41FrequencyKernel(float *__restrict__ table, float theta
 	table[pair] = __fadd_rn(__fmul_rn(__fmul_rn(frequency, inverse_factor), __fsub_rn(1.0f, smooth)), __fmul_rn(frequency, smooth));
 }
 
-static inline cudaError_t D41LaunchFrequencies(float *table, double theta, double compress_theta, double factor, double original,
+static inline SparkGpuError D41LaunchFrequencies(float *table, double theta, double compress_theta, double factor, double original,
 	double beta_fast, double beta_slow)
 {
 	const double rope = 2.0 * D41K_ROPE_PAIRS;
@@ -52,7 +53,7 @@ static inline cudaError_t D41LaunchFrequencies(float *table, double theta, doubl
 	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
 	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
 		1.0f / (float)span, 1u);
-	return cudaGetLastError();
+	return SparkGpuGetLastError();
 }
 
 static __device__ __forceinline__ void D41RopeTurn(uint32_t position, int32_t shift, float inverse_frequency, uint32_t inverse, float *sine,
@@ -230,7 +231,7 @@ static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_
 }
 
 static inline void D41InitRecords(float *records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination, uint32_t destinations,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t span = rows * heads_per_destination * D41K_RECORD, blocks = (span + D41K_THREADS - 1u) / D41K_THREADS;
 	LM_LAUNCH((D41InitRecordsKernel), blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);

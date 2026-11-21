@@ -3,6 +3,7 @@
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "dsv41_flash_stage_kernels.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define D41A_QUERIES 16u
 #define D41A_TILE 32u
@@ -510,29 +511,29 @@ void D41AttendKernel(
 }
 
 template<class Geometry, uint32_t DIM, uint32_t QTILES = 1u>
-static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
+static inline SparkGpuError D41AttendLaunch(LmKvShardView cache, uint32_t compressed, const uint16_t *query, const uint32_t *sequence_of_row,
 	const uint32_t *length, const uint32_t *bound, const uint32_t *selected, uint32_t topk, const uint16_t *wave_kv, const uint16_t *ring,
 	uint64_t ring_slot_stride, uint32_t ring_rows, const uint32_t *positions, const uint32_t *row_lane, const uint32_t *sequence_row_begin,
 	const uint32_t *sequence_row_indices, const uint32_t *recurrent_slot, const float *sink, float qk_scale, uint16_t *output, const float *frequency,
-	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, cudaStream_t stream,
+	uint32_t rope_offset, uint32_t group_heads, uint8_t *codes, uint32_t rows, uint32_t live, uint32_t row_base, SparkGpuStream stream,
 	uint64_t query_part_stride = 0u, uint64_t output_part_stride = 0u, uint64_t codes_part_stride = 0u)
 {
 	const uint64_t shared = D41AttendSharedBytes<DIM, QTILES>(compressed != 0u && selected != 0 ? topk : 0u);
 	static bool granted = false;
 	if (live == 0u)
-		return cudaSuccess;
+		return SPARK_GPU_SUCCESS;
 	if (rows == 0u || live > rows || query == 0 || (output == 0) == (codes == 0) || (QTILES > 1u && query_part_stride == 0u) ||
 		(QTILES > 1u && (output != 0 ? output_part_stride : codes_part_stride) == 0u) ||
 		(codes != 0 && (frequency == 0 || group_heads == 0u || D41A_QUERIES % group_heads != 0u || rope_offset % (DIM / D41A_WARPS) != 0u ||
 		rope_offset >= DIM || (DIM - rope_offset) / 2u > D41K_ROPE_PAIRS)) || wave_kv == 0 || ring == 0 || positions == 0 || row_lane == 0 || sequence_row_begin == 0 ||
 		sequence_row_indices == 0 || recurrent_slot == 0 || sink == 0 || ring_rows == 0u || shared > LM_PREFILL_ATTN_SHARED_LIMIT ||
 		(compressed != 0u && (length == 0 || bound == 0 || sequence_of_row == 0 || SparkKvShardValid(cache.shard, Geometry::kPageSlots) == 0u)))
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (!granted)
 	{
-		const cudaError_t error = cudaFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES>, cudaFuncAttributeMaxDynamicSharedMemorySize,
+		const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)D41AttendKernel<Geometry, DIM, QTILES>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,
 			(int)LM_PREFILL_ATTN_SHARED_LIMIT);
-		if (error != cudaSuccess)
+		if (error != SPARK_GPU_SUCCESS)
 			return error;
 		granted = true;
 	}
@@ -541,5 +542,5 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 	LM_LAUNCH((D41AttendKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
 		selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink,
 		qk_scale, output, output_part_stride, frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
