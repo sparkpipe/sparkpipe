@@ -1,7 +1,6 @@
 import time
 from collections import OrderedDict
 
-RETENTION_SECONDS = 86400
 SESSION_CAPACITY = 65536
 FAMILY_CAPACITY = 4096
 SIGNATURE_CAPACITY = 8
@@ -18,7 +17,7 @@ PACK_PROFILE = "pack_profile"
 MODEL_NOT_RESIDENT = "model_not_resident"
 RESUME_POINT = "resume_point"
 CAUSES = (FIRST_OPENING, OPENING_CHANGED, RESTORED, LOST, COMPACTION, HISTORY_CHANGED, PACK_PROFILE, MODEL_NOT_RESIDENT, RESUME_POINT)
-LOST_REASONS = ("expired", "release", "swap", "restart", "evicted")
+LOST_REASONS = ("wiped", "release", "swap", "restart", "evicted")
 COMPACTION_CLASS = "compaction"
 TEMPLATE_BLOCK = "template"
 REPLY_BLOCK = "reply"
@@ -71,11 +70,11 @@ class Ledger:
                 found = (boot, artifact)
         return found
 
-    def lost_reason(self, model_id, carried_at, boot, artifact, now):
+    def lost_reason(self, model_id, carried_at, boot, artifact, wiped):
         if carried_at is None:
             return None
-        if now - carried_at >= RETENTION_SECONDS:
-            return "expired"
+        if wiped is not None and carried_at < wiped:
+            return "wiped"
         earlier = self.boot_at(model_id, carried_at)
         if earlier is not None and boot is not None and artifact is not None and earlier[1] is not None and earlier[1] != artifact:
             return "release"
@@ -141,7 +140,7 @@ class Ledger:
         elif engine["restore_ms"]:
             cause = RESTORED
         elif lost_tokens:
-            cause, lost = LOST, self.lost_reason(model_id, carried_at, engine["boot"], engine["artifact"], now)
+            cause, lost = LOST, self.lost_reason(model_id, carried_at, engine["boot"], engine["artifact"], facts.get("wiped"))
         elif facts.get("pack_profile_new") and miss is not None and miss > slack:
             cause = PACK_PROFILE
         elif opening_tokens >= OPENING_FLOOR_TOKENS:

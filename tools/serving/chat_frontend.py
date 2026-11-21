@@ -2390,7 +2390,7 @@ class Frontend:
                  "seen_tokens": carried[0], "seen_of": carried[1], "seen_at": carried[2], "opening": plan.get("opening"),
                  "first_prompt_tokens": plan.get("first_prompt_tokens"), "model_wait_ms": timing.get("model_wait_ms"),
                  "pack_profile_new": plan.get("pack_profile_new"), "request_class": client.get("class"), "agent_type": client.get("agent_type"),
-                 "compaction": client.get("compaction"), "compacted": client.get("compacted"), "now": time.time()}
+                 "compaction": client.get("compaction"), "compacted": client.get("compacted"), "wiped": self.wiped, "now": time.time()}
         ledger = self.miss_ledger()
         entry = ledger.entry(facts)
         ledger.settle(facts, timing.get("recorded_tokens", plan["prompt_tokens"] + completion))

@@ -57,7 +57,8 @@ def unit(check):
     check(anchored["cause"] == "resume_point" and anchored["recomputed_tokens"] == 14231 and anchored["lost_tokens"] == 0 and anchored["miss_tokens"] == 14232,
           f"tokens between the engine's resume point and its match are recomputed, not lost: {anchored}")
     for changes, reason in ((dict(engine=engine(0, 0)), "evicted"), (dict(engine=engine(0, 0, boot="b2")), "restart"),
-                            (dict(engine=engine(0, 0, boot="b2", artifact="a2")), "release"), (dict(engine=engine(0, 0), now=NOW + 90000), "expired")):
+                            (dict(engine=engine(0, 0, boot="b2", artifact="a2")), "release"), (dict(engine=engine(0, 0), wiped=NOW + 30), "wiped"),
+                            (dict(engine=engine(0, 0), wiped=NOW - 30, now=NOW + 900000), "evicted")):
         lost = miss_ledger.Ledger()
         lost.entry(first)
         lost.settle(first, 46500)
