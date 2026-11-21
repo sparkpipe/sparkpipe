@@ -1,6 +1,6 @@
 # Prefill anticipation: audit and design
 
-Status: proposed on 21 November 2026, for the owner's review. Code was read at main `c2b714343`, and draft PR #1821 at `c5d5ea0cd`. Nothing here is built yet. Section 10 lists the sources and how each number was obtained.
+Status: approved by the owner on 21 November 2026, with the decisions in section 9. Code was read at main `c2b714343`, and draft PR #1821 at `c5d5ea0cd`. Nothing here is built yet. Section 10 lists the sources and how each number was obtained.
 
 ## 1. Verdict
 
@@ -11,12 +11,12 @@ The work so far anticipates **files**: packs of files, and nightly leaves of fil
 Public agent traces show where the time goes:
 
 - **Inside a session** that keeps its own prefix, prefill is 2–10% of model time, provided a small tail costs in proportion to its size. That has not been measured at long context on the current release (the turn floor, section 3).
-- **The minutes are lost when the prefix is lost**: coming back after a break, a new session's opening, a subagent's opening, a compaction, a model swap, an engine restart or release, and the 24-hour expiry.
+- **The minutes are lost when the prefix is lost**: coming back after a break, a new session's opening, a subagent's opening, a compaction, a model swap, an engine restart or release, and the engine's deletion of anything unused for 24 hours.
 
 The design therefore does three things, in this order:
 
 1. **Make reuse exact by rule.** A request gives the same tokens whether it runs cold or from the cache. Today that is unproven for a cached prefix followed by a new tail.
-2. **Keep what was computed.** A session's chain, each client's opening and any prefix the customer names survive eviction, swaps, restarts and, where the arithmetic is unchanged, releases. They come back from NVMe in seconds.
+2. **Keep what was computed.** A session's chain, each client's opening and any prefix the customer names survive nights and weekends, eviction, swaps, restarts and, where the arithmetic is unchanged, releases. Nothing is deleted because of its age while the customer holds the fleet. Kept prefixes come back from NVMe in seconds.
 3. **Anticipate only prefixes that are known exactly**, on events and client signals, never by guessing file sets.
 
 Repository packs stay, restructured, for work that wants the repository in the prompt. They stop being the centre.
@@ -30,6 +30,7 @@ Repository packs stay, restructured, for work that wants the repository in the p
 | Cache controls, draft PR #1821 | Untouched since 6 November. Conflicts with main in 7 files | Pins never reach the ranks, and the warm-up is not a commit (below) |
 | Save after read, PR #1949 | Released on 20 November | Correct for ordinary tails. It drops every warm-up that is evicted before its first read |
 | Resume sessions | No code | The spec's method cannot work: no prompt tokens are stored anywhere on the fleet |
+| Working state, draft PR #1691 | Open since 1 November, conflicts with main | Main's engine still deletes cached state 24 hours after its last use, whoever holds the fleet (launch issue #1789) |
 | Deployed chat layer | The copy of 4 November | Predates packs. Under the menu model all of this must run on the renter's fleet, and the code assumes a shared hub behind our gateway |
 
 ### Defects found
@@ -126,7 +127,7 @@ A repository in front of every prompt is not free. Drafted whole-file rewrites o
 
 1. **Exact only.** Reuse never changes a token.
 2. **The unit is a prefix from token 0.** Prefixes are anticipated; files are not.
-3. **Keep before predicting.** What was computed once is not computed again.
+3. **Keep before predicting.** What was computed once is not computed again, and it is never deleted because of its age while the customer holds the fleet.
 4. **Predict only what is known exactly**: a session's own history, a client's opening, and prompts we build ourselves.
 5. **A client's messages are never rewritten.** The one thing removed is a billing-attribution line that some clients put first; it carries no instruction.
 6. **Nothing for the developer to choose.** One setup, then it works.
@@ -195,8 +196,15 @@ PR #1949's rule (write a prefix only after something reads it) stays for ordinar
 - the API's prefix index (protected entries);
 - recurrent states: a kept or pinned state is exempt from the newest-4 rule and is spilled, not dropped, when the store is full;
 - the snapshot store's quota eviction;
-- the close-time save, which runs pinned, then kept, then newest tails, with a time limit that scales with what is unsaved;
-- expiry (decision 1).
+- the close-time save, which runs pinned, then kept, then newest tails, with a time limit that scales with what is unsaved.
+
+**No deletion by age.** While the customer holds the fleet, no tier deletes cached state because it is old: not the device and host page caches, the weightd pools, the snapshot files, the API's prefix index, the batch engine's copy of a finished request's tokens, the draft servers' contexts or the serving layer's stores. Today each of them deletes what was unused for 24 hours. Cached state leaves in three ways only:
+
+- **Capacity.** A full tier evicts in class order: tails, then kept, then pinned.
+- **The customer's request.** `DELETE /v1/cache` empties every tier at once and fails loudly if one cannot be emptied. Today it leaves the engine's cache in place.
+- **The end of the hold.** Working state is deleted when another customer's booking of the fleet starts, or 24 hours after the customer's last hour (Customer Agreement 6.2). Our administration software does this when it restores the fleet to the base image, whatever software the customer installed. The engine does not need to know the bookings.
+
+The invariant "Cached request state expires" in `sparkpipe_invariants.md` is rewritten to this rule in the change that removes the age limit.
 
 **State points.** State is kept at the last cut of every request, at commit ends, at cuts the client marks, at checkpoint anchors, and at opening cuts where a second session has branched. A saved prefix needs its state on NVMe, not in memory.
 
@@ -217,12 +225,12 @@ The keep set is a short list of prefixes that are known exactly. The keeper is t
 | Kind | Known exactly because | Kept how |
 | --- | --- | --- |
 | live | It is a running session's last prompt | Class kept, automatically |
-| resume | It is the last prompt of a session used today or yesterday, or one the customer names | Pinned on NVMe; made resident on a signal or a schedule |
+| resume | It is the last prompt of a session that is no longer live | Pinned on NVMe; made resident on a signal or a schedule |
 | opening | Two sessions with the same client, tool set and project context branched from it | Pinned; a state at its last cut. One per subagent type as well |
 | named | The customer sent it: `POST /v1/cache/warm`, `sparkpipe warm FILE`, a pin | Pinned |
 | pack | We built it (5.5) | Pinned, with its delta |
 
-A session is live from its first request until it has been idle for 30 minutes. It then joins the resume set, which by default holds the sessions used today and yesterday. Both periods are settings.
+A session is live from its first request until it has been idle for 30 minutes, a setting. It then joins the resume set and stays there: nothing leaves the keep set because of its age. The set is bounded by its budgets alone, and when they are short the entries that save the fewest recompute seconds per gigabyte go first. Before the day starts, the night run makes the sessions used most recently resident.
 
 **Automatic, or a Function.** The engine does this by itself, as part of its cache: exact reuse, keeping live sessions, learning openings, honouring a client's own commit, and restoring on use. A Function the customer starts or schedules adds the rest: Resume sessions (the resume set, making it resident before the day, rebuilding it after a new epoch), Prefill ahead (named entries), Build and refresh the cache (packs) and Anticipate tomorrow (the night run and its report).
 
@@ -349,9 +357,9 @@ Per-turn time inside a session does not change with this design. Stage 0 measure
 | --- | --- | --- |
 | 0. Measure | The miss ledger and engine truth; benchmark arms; per model: time to first token against context and tail size, decode rate against context, restore and save rates, wait behind a background wave | A `PERFORMANCE_STATUS.md` section with those numbers on the current release |
 | 1. Exactness | R1–R7; the commit request with state at its end; client marks as state points; the `seen` cache point removed | GX passes on every served model and joins the release kit |
-| 2. Durable store | The three classes in every layer; idle and close saves; state rules; index protection; restore hints proven; warm-ups that cannot swap | A chain survives eviction, a swap away and back, a clean restart and a kill, and continues bit-equal (I27) |
+| 2. Durable store | No deletion by age in any tier, and `DELETE /v1/cache` through every tier, first; then the three classes in every layer; idle and close saves; state rules; index protection; restore hints proven; warm-ups that cannot swap | A session left on Friday is a hit on Monday. A chain survives eviction, a swap away and back, a clean restart and a kill, and continues bit-equal (I27). After `DELETE /v1/cache` a scan of every node finds nothing |
 | 3. Keeper and signals | The keep set (live, resume, opening, named); Codex warm-up; Claude Code headers, hook and setup; `POST /v1/cache/warm`, pins, `GET /v1/state`; the CLI | The day table below, per model, with Claude Code and Codex |
-| 4. Releases and expiry | KV epoch proven by the release kit; rebuild from kept prompts; decision 1 implemented | A release with an unchanged epoch keeps every pinned prefix; one with a new epoch rebuilds them in order |
+| 4. Releases | KV epoch proven by the release kit; rebuild from kept prompts | A release with an unchanged epoch keeps every pinned prefix; one with a new epoch rebuilds them in order |
 | 5. Packs | Stable slots, delta, re-base, placement, selection; the whole-repository Functions on top | A push recomputes only the delta; a re-base reuses the base up to the first changed slot; the agent-session comparison is published |
 | 6. Night run | The keeper's night window and the morning report | The report's cold seconds match the ledger |
 
@@ -364,36 +372,39 @@ Stage 0 and stage 1 can start together. Stage 5 needs stages 1 and 2 only.
 | 09:00 new session | 14 hours after the last request | Only the first prompt, and any project context that changed, is prefilled |
 | 09:05 resume | Yesterday's 150K session resumed | First token after a restore plus the new tail; nothing recomputed before the last cut |
 | 10:45 after a meeting | 105 minutes idle | Same |
+| Monday 09:00 | Friday's session resumed after 64 hours | Same |
 | Subagents | 8 started together | Each prefills its own brief only |
 | After a swap | Another model, then back | Same as resume |
 | After a restart | Clean, and killed | Same as resume |
 | 14:10 other branch | A new session on another branch | The opening is a hit; with a pack, base plus that branch's delta |
 | Under background work | A request arrives during a commit | It waits at most one wave |
 
-**Launch issues.** #1792 becomes stages 1–3. #1791's "survives releases and restarts" is stages 2 and 4. #1800 is stage 5. #1801 and Gate D2 become stage 6. The client hook belongs to #1788.
+**Launch issues.** #1792 becomes stages 1–3. #1789's engine rule (kept while the fleet is held, deleted on request) is the first part of stage 2. #1791's "survives releases and restarts" is stages 2 and 4. #1800 is stage 5. #1801 and Gate D2 become stage 6. The client hook belongs to #1788.
 
 ## 8. What happens to existing work
 
-These changes wait for the owner's go-ahead (decision 3).
+The owner gave the go-ahead for these on 21 November 2026 (decision 3).
 
-- **#1821** is not rebased. Its request and response shapes (`commit_only`, the `cache.commit` object, the three warm formats), its `GET /v1/state` outline, its pin test, its warm-gate check tool, its cold-prefill seeds and its per-request draft counts are carried into stages 1–3.
-- **`tools/serving/context_packs.py`** keeps what section 5.5 lists and loses the re-sort, the per-profile guessing and the belief-based `warm` state.
-- **`tools/anticipator.py`** loses the leaf planner (candidates, tree, scoring) and the command that reads agent logs. Its settings, controls and report outline move to the keeper.
-- **`docs/ANTICIPATOR.md` and `docs/FLEET_API.md` §4–5** are rewritten to this design.
+- **#1821** is closed without a rebase. Its request and response shapes (`commit_only`, the `cache.commit` object, the three warm formats), its `GET /v1/state` outline, its pin test, its warm-gate check tool, its cold-prefill seeds and its per-request draft counts are carried into stages 1–3.
+- **`tools/serving/context_packs.py`** keeps what section 5.5 lists and loses the re-sort, the per-profile guessing and the belief-based `warm` state, in stage 5.
+- **`tools/anticipator.py`** is removed. It was the leaf planner (candidates, tree, scoring), the command that read agent logs, and a settings, approval and report shell that handled leaf plans only. The night run's settings, approval mode and report are specified in `docs/FLEET_API.md` §5 and built in stage 6. The receipt of its one run stays in `qualification/anticipator/20261105/` (decision 4).
+- **`docs/ANTICIPATOR.md`** goes with the tool, and **`docs/FLEET_API.md` §4–5** are rewritten to this design.
+- **Issues #1792, #1800 and #1801** are rewritten to the stages of section 7.
+- **#1691** (working state, draft) is not part of the go-ahead and is untouched. Its rule kept cached state until 24 hours after the later of its last use and the held hours, through a directive every tier reads. Under decision 1 the engine has no age rule, so the held hours need not reach the engine. What stage 2 takes from it is the deletion on request through every tier and its tests.
 
-## 9. Decisions for the owner
+## 9. Decisions
 
-1. **Expiry of kept prefixes.** The invariant deletes cached request state 24 hours after its last use, and nothing may lengthen that. Friday's sessions and openings are therefore gone on Monday. The Customer Agreement and the privacy policy promise working state from one booking to the next, until 24 hours after the customer's last hour.
-   - **A: unchanged.** Monday starts cold except for packs, which are rebuilt from the repository.
-   - **B: a prefix the customer keeps counts as in use while the customer holds the fleet.** Everything else keeps the 24-hour rule, and `DELETE /v1/cache` still removes all of it. Recommended.
-2. **The site's four Function lines and its day table.** Under this design:
-   - Resume sessions keeps sessions through nights, swaps, restarts and releases.
+The owner decided these on 21 November 2026.
+
+1. **Expiry.** "As long as the fleet lease continues, there should be no time based purging." No tier deletes cached state because of its age while the customer holds the fleet (section 5.2). This goes further than the option the review recommended, which exempted only kept prefixes.
+2. **Site wording.** The four Function lines and the day table on the home page are aligned with this design:
+   - Resume sessions keeps sessions through nights, weekends, swaps, restarts and engine updates.
    - Prefill ahead keeps what the customer names.
-   - Build and refresh the cache builds the pack and recomputes only the delta after a push.
+   - Build and refresh the cache builds the pack and recomputes only what changed after a push.
    - Anticipate tomorrow is the night run and its report.
-   - "Up to 500K tokens" and "4.7–5.1 s" need the stage 0 numbers.
+   - The day table's "4.7–5.1 s" stays until stage 0 measures the current release.
 3. **Go-ahead for section 8**: close #1821, rewrite issues #1792, #1800 and #1801, and retire the leaf planner.
-4. **The #1768 receipt** (`qualification/anticipator/20261105/`) was built from agent session logs on a workstation. Whether it stays in the tree is the owner's call.
+4. **The #1768 receipt** (`qualification/anticipator/20261105/`), built from agent session logs on a workstation, stays in the tree.
 
 ## 10. Sources and method
 
