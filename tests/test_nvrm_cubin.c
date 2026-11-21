@@ -66,6 +66,7 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmConstantTable", PARAMETER_END(FirstLightParameters,output)},
 	{"SparkNvrmCallStack", PARAMETER_END(FirstLightParameters,value)},
 	{"SparkNvrmDeepFrame", PARAMETER_END(FirstLightParameters,value)},
+	{"SparkNvrmNoParameters", 0u},
 };
 
 static uint8_t *ReadFile(const char *path, uint64_t *bytes)
