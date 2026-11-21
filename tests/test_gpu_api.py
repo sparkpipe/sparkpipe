@@ -59,7 +59,6 @@ PENDING = {
     "model-families/hy4/source/hy4_stage.cuh": 14,
     "model-families/ling/source/ling_stage.cuh": 27,
     "model-families/mimo26/source/mimo26_stage.cuh": 18,
-    "model-families/motif/source/motif_stage.cuh": 31,
     "node/model_residentd.c": 29,
     "ring/transport/tp_device_collective.c": 98,
     "runtime/gemm.cuh": 27,
