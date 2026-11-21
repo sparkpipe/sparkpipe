@@ -52,7 +52,6 @@ EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 
 PENDING = {
     "node/model_residentd.c": 29,
-    "ring/transport/tp_device_collective.c": 98,
     "runtime/launch.h": 20,
 }
 
