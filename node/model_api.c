@@ -50,10 +50,12 @@
 #define API_STOP_DRAIN_MS 10000u
 #define API_CACHE_STATE_WAIT_MS 5000u
 #define API_CACHE_STATE_SLICE_MS 50u
+#define API_CACHE_STATE_GRACE_MS 1000u
 #define API_PROBE_IDLE 0u
 #define API_PROBE_ASKED 1u
 #define API_PROBE_WAITING 2u
 #define API_PROBE_DONE 3u
+#define API_PROBE_ABANDONED 4u
 #define API_CACHE_JSON_BYTES 320u
 #define API_USAGE_JSON_BYTES (160u + API_CACHE_JSON_BYTES)
 
@@ -785,6 +787,11 @@ static void api_cache_probe_step(void)
 {
 	SparkStatus status;
 	pthread_mutex_lock(&Probe.mutex);
+	if ( Probe.stage == API_PROBE_ABANDONED )
+	{
+		SparkModelBatchEngineCacheStateEnd(S.engine);
+		Probe.stage = API_PROBE_IDLE;
+	}
 	if ( Probe.stage == API_PROBE_ASKED )
 	{
 		status = SparkModelBatchEngineCacheStateBegin(S.engine,Probe.by_identity != 0u ? 0 : Probe.tokens,Probe.token_count,Probe.by_identity != 0u ? &Probe.identity : 0,&Probe.state);
@@ -1906,7 +1913,7 @@ static void handle_cache_state(int fd, char *body, uint32_t body_len)
 	pthread_mutex_unlock(&Probe.mutex);
 	api_wake_worker();
 	pthread_mutex_lock(&Probe.mutex);
-	while ( Probe.stage != API_PROBE_DONE && S.running != 0 )
+	while ( Probe.stage != API_PROBE_DONE && S.running != 0 && api_now_ms() < Probe.deadline_ms + API_CACHE_STATE_GRACE_MS )
 	{
 		struct timespec until;
 		clock_gettime(CLOCK_REALTIME,&until);
@@ -1917,12 +1924,15 @@ static void handle_cache_state(int fd, char *body, uint32_t body_len)
 			until.tv_nsec -= 1000000000L;
 		}
 		(void)pthread_cond_timedwait(&Probe.cond,&Probe.mutex,&until);
+		if ( Probe.stage != API_PROBE_DONE )
+			api_wake_worker();
 	}
 	state = Probe.state;
-	status = Probe.stage == API_PROBE_DONE ? Probe.status : (uint32_t)SPARK_STATUS_IO_ERROR;
+	status = Probe.stage == API_PROBE_DONE ? Probe.status : Probe.stage == API_PROBE_WAITING ? (uint32_t)SPARK_STATUS_PENDING : (uint32_t)SPARK_STATUS_IO_ERROR;
 	Probe.tokens = 0;
-	Probe.stage = API_PROBE_IDLE;
+	Probe.stage = Probe.stage == API_PROBE_WAITING ? API_PROBE_ABANDONED : API_PROBE_IDLE;
 	pthread_mutex_unlock(&Probe.mutex);
+	api_wake_worker();
 	free(tokens);
 	if ( status != (uint32_t)SPARK_STATUS_OK && status != (uint32_t)SPARK_STATUS_PENDING )
 	{

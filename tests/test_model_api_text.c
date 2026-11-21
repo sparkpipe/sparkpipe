@@ -734,6 +734,41 @@ static void TestApiCacheState(TestApiStack *stack)
 	printf("cache state: a completion reports its match, resume point, waits, boot and artifact; POST /v1/cache/state answers for token ids or an identity with what every rank holds\n");
 }
 
+static void TestApiCacheStateSilentRank(TestApiStack *stack)
+{
+	static const char request[] = "{\"prompt_token_ids\":[901,902,903,904,905,906,907,908,909,910,911,912]}";
+	char response[65536];
+	struct timespec before,after;
+	const char *body;
+	uint64_t elapsed_ms;
+	uint32_t attempt,complete = 0u;
+	assert(kill(stack->residents[1],SIGSTOP) == 0);
+	assert(clock_gettime(CLOCK_MONOTONIC,&before) == 0);
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state",request,response,sizeof(response));
+	assert(clock_gettime(CLOCK_MONOTONIC,&after) == 0);
+	assert(kill(stack->residents[1],SIGCONT) == 0);
+	elapsed_ms = (uint64_t)(after.tv_sec - before.tv_sec) * UINT64_C(1000) + (uint64_t)(after.tv_nsec / 1000000L) - (uint64_t)(before.tv_nsec / 1000000L);
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"complete\":false") && TestApiNumberField(body,"ranks") == TEST_RANK_COUNT &&
+		TestApiNumberField(body,"ranks_reported") == TEST_RANK_COUNT - 1u && TestApiNumberField(body,"matched_tokens") >= 8u);
+	assert(elapsed_ms >= 4000u && elapsed_ms < 9000u);
+	for (attempt=0u; attempt<100u && complete == 0u; attempt++)
+	{
+		struct timespec delay = {0,100000000L};
+		TestApiHttpCall(stack->api_port,"POST","/v1/cache/state",request,response,sizeof(response));
+		if ( TestApiResponseStatus(response) == 200 && TestApiBodyContains(TestApiResponseJsonBody(response),"\"complete\":true") )
+			complete = 1u;
+		else nanosleep(&delay,0);
+	}
+	assert(complete != 0u);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiNumberField(body,"ranks_reported") == TEST_RANK_COUNT && TestApiNumberField(body,"ranks_failed") == 0u &&
+		TestApiNumberField(body,"held_tokens") == TestApiNumberField(body,"probed_tokens"));
+	printf("cache state: with one rank silent the request answers at its deadline with the ranks that did report, in %llu ms, and the next request is served\n",
+		(unsigned long long)elapsed_ms);
+}
+
 static void TestApiTurnFloorTool(TestApiStack *stack)
 {
 	static const char output[] = "build/test_model_api_text_turn_floor";
@@ -1498,6 +1533,7 @@ int main(void)
 	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiCacheState(&stack);
+	TestApiCacheStateSilentRank(&stack);
 	TestApiContextLimit(&stack);
 	TestApiTurnFloorTool(&stack);
 	TestApiStopApi(&stack);
