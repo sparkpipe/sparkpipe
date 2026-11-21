@@ -33,15 +33,15 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$out" ] && [ -n "$source_ref" ] && [ -n "$release_root" ] && [ -n "$firewall" ] || usage
-[ "$(id -u)" -eq 0 ] || { echo "build_image: run as root; mmdebstrap builds the root in root mode" >&2; exit 1; }
 [ -d "$release_root" ] || { echo "build_image: release root $release_root is not a directory" >&2; exit 1; }
 [ -z "$(find "$release_root" -type l -print -quit)" ] || { echo "build_image: release root $release_root holds a symbolic link" >&2; exit 1; }
 [ -s "$firewall" ] || { echo "build_image: firewall ruleset $firewall is missing or empty" >&2; exit 1; }
+python3 "$repo/tools/hosted_dependency_audit.py" root "$release_root" > /dev/null || { python3 "$repo/tools/hosted_dependency_audit.py" root "$release_root" >&2 || true; echo "build_image: the release root fails the dependency audit" >&2; exit 1; }
 [ ! -e "$out" ] || { echo "build_image: $out exists; give a new output directory" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || { echo "build_image: run as root; mmdebstrap builds the root in root mode" >&2; exit 1; }
 out="$(realpath -m "$out")"
 commit="$(git -C "$repo" rev-parse --verify "$source_ref^{commit}")"
 [ "$(git -C "$repo" rev-parse HEAD)" = "$commit" ] && [ -z "$(git -C "$repo" status --porcelain)" ] || { echo "build_image: the checkout must be clean at $source_ref" >&2; exit 1; }
-python3 "$repo/tools/hosted_dependency_audit.py" root "$release_root" > /dev/null || { python3 "$repo/tools/hosted_dependency_audit.py" root "$release_root" >&2; echo "build_image: the release root fails the dependency audit" >&2; exit 1; }
 start="$(date +%s)"
 
 mkdir -p "$out/inputs/release-root" "$out/tool" "$out/modules"
