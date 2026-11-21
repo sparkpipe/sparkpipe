@@ -1963,6 +1963,16 @@ and the multidev docs on 2026-09-28. Line numbers are in
   target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
   kernel launch (it refuses kernel libraries today) and graph capture and
   replay.
+- The nvrm backend (`runtime/device/nvrm/`,
+  [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
+  from the pinned open kernel module (580.178.04) and open-gpu-doc, the
+  `SPARKPIPE_DEVICE=cuda|nvrm` build flavour and a library whose every entry
+  refuses with `UNSUPPORTED`: no device open or version check, no memory,
+  queues, events, kernel loading or launch, no command lists replacing
+  graphs, no memory shared with weightd, no TMA descriptors and no fault
+  reports. Production modules call the CUDA runtime directly (above), so
+  even a complete backend serves nothing until they move behind the device
+  layer or a GPU API of our own.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,
