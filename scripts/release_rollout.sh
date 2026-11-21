@@ -5,25 +5,6 @@ KIT=$(cd "$(dirname "$0")" && pwd)
 . "$KIT/../tools/lane_run_log.sh"
 RELEASE_FW=${FW:?FW is the local release firmware dir (release_build.sh output)}
 RELEASE_APIB=${APIB:?APIB is the hub api build dir, e.g. $HUB_WORK/api-build-<sha>/build}
-activate() {
-  local model="$1" i out
-  swap "-X POST localhost:8440/activate -d '{\"model\":\"$model\"}'" > /dev/null || { echo "activate $model: the swap controller refused"; return 2; }
-  for i in $(seq 1 120); do
-    sleep 5
-    out="$(swap localhost:8440/status | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-h = (d.get('history') or [{}])[-1]
-print(d['state'], d['active'], h.get('seconds'), json.dumps(d['error']))" 2>/dev/null)" || continue
-    set -- $out
-    [ "${1:-}" = failed ] && { echo "activate $model: $out"; return 2; }
-    [ "${1:-}" = idle ] || continue
-    echo "activate $model: $out"
-    [ "$2" = "$model" ] && [ "$4" = null ] && return 0
-    return 3
-  done
-  echo "activate $model: timeout"; return 1
-}
 FW=$RELEASE_FW
 APIB=$RELEASE_APIB
 SHA=$(cat "$FW/SOURCE_COMMIT")
