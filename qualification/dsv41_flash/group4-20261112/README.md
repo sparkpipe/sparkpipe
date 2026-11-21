@@ -2111,3 +2111,72 @@ other. Concurrent streams are not reproducible run to run on either build
 (requests join steps at different points, and a step's arithmetic depends
 on its row count), so their generated texts differ between any two runs;
 all of them are coherent text.
+
+### Drafts on the sixteen ranks (2026-11-21)
+
+The lane's record has always named a drafter (DSpark for this checkpoint,
+fed the outputs of layers 36 to 38 by rank 15), but this module could not
+serve one. Only the tap rank holds a tap slab, and three path choices read
+it: the spread for steps of up to 16 rows, the split attention for
+committed waves under 2,048 rows, and owned rows. With taps on, rank 15
+took the whole paths while its peers took the others, so their
+collectives no longer matched.
+
+The choices no longer read the slab. The spread and split paths leave
+every row's streams on every rank, so the tap rank captures them as
+before. In an owned wave (the owned tail is the case at layers 36 to 38)
+a rank holds only its own rows, so at a tap layer every rank takes the
+mean of its rows' streams, the rows gather to every rank as hidden-wide
+rows in the MoE exchange buffers, and the tap rank copies them into its
+slab. That is three gathers of about 5 MB at the end of a prompt.
+
+On the fleet (runs `dr21`, adapter 98ee1d5d9df2e9f7 with residentd and
+hub engine of `ex20`), the drafter service ran on the hub's GPU under
+its own unit, and rank 15 streamed its taps to the hub's 100G address.
+
+- **Exact.** With the drafter supplying the drafts, the release capture's
+  chained, speculating and batched tokens equal its one-step tokens on
+  all 7 prompts, and its one-step tokens equal those of `ex20x1` (the
+  same stack without taps). Drafts were accepted at the same rate after
+  `long_8k` (7,103 tokens, its taps through the owned-tail gather) as
+  after `long_2k` (2,222 tokens, whose upper layers run whole): 27 of 55
+  and 27 of 58.
+- **Taps cost nothing measurable.** Plain decode is 24.43 ms a token with
+  taps on and 24.33 without. Prefill at 32,768 tokens ran at 27,671
+  tok/s, against 26,855 for the same stack without taps on 2026-11-20.
+
+One stream, 96-token prompts, 256 tokens, greedy, two runs:
+
+| Prompt | Plain | With drafts |
+| --- | ---: | ---: |
+| prose (security of control systems) | 40.7, 41.2 tok/s | 76.1, 82.0 |
+| prose (optimization) | 41.1, 40.8 | 63.7, 63.7 |
+| LaTeX macros | 41.1, 40.9 | 58.9, 61.2 |
+| all three | 41.0 | 67.6 |
+
+After 8,000-token prompts, with drafts: 49.1 and 45.6 tok/s on two prose
+documents and 87.8 on C code. Eight streams give 135 to 138 tok/s with
+or without drafts.
+
+A verify step keeps 2.64 tokens on average and costs:
+
+| Rows | Service | Tokens kept |
+| ---: | ---: | ---: |
+| 1 (no drafts) | 24.2 ms | 1 |
+| 2 | 31.3 ms | 1.57 |
+| 3 | 37.7 ms | 1.95 |
+| 4 | 39.8 ms | 2.48 |
+| 5 | 44.3 ms | 3.45 |
+| 6 | 48.1 ms | 4.86 |
+
+- A draft row costs about 4.7 ms. On four ranks the receipt put a row at
+  5.5 ms of expert reads (1.06 GB a rank); here a rank reads only 0.27 GB
+  for it, so most of the 4.7 ms is something else, not yet traced.
+- The engine waits 3.1 to 4.4 ms a step for drafts. The drafter computes
+  a round in 3.2 ms after the step's taps arrive.
+- Eight streams with drafts make verify steps of 18 to 33 rows. Those
+  exceed the spread's 16 rows and run the whole path (25 rows: 211 ms),
+  so the engine's frame planner seldom drafts there.
+
+The reference reports 82.6 tok/s for one stream with drafts and 207.4
+for eight, on its own prompts, not these.
