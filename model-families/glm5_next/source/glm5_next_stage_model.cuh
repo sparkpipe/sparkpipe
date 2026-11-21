@@ -1,4 +1,5 @@
 #pragma once
+#include "sparkpipe/spark_gpu.h"
 
 typedef struct Glm5NextBuffer
 {
@@ -335,8 +336,8 @@ static SparkStatus Glm5NextAllocate(Glm5NextModelState *state, uint32_t lane)
 	for ( uint32_t index = 0u; index < sizeof(plan) / sizeof(plan[0]); ++index )
 		if ( plan[index].bytes == 0u )
 			*plan[index].pointer = 0;
-		else if ( cudaMalloc(plan[index].pointer, (size_t)plan[index].bytes) != cudaSuccess ||
-			cudaMemset(*plan[index].pointer, 0, (size_t)plan[index].bytes) != cudaSuccess )
+		else if ( SparkGpuMalloc(plan[index].pointer, (size_t)plan[index].bytes) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemset(*plan[index].pointer, 0, (size_t)plan[index].bytes) != SPARK_GPU_SUCCESS )
 		{
 			*plan[index].pointer = 0;
 			fprintf(stderr, "sparkpipe_glm5_next: scratch buffer %u of %llu bytes does not fit\n", index, (unsigned long long)plan[index].bytes);
@@ -381,7 +382,7 @@ static void Glm5NextLaneFree(Glm5NextModelState *state)
 		const uint32_t count = Glm5NextScratch(donor, fields);
 		for ( uint32_t index = 0u; index < count; ++index )
 			if ( *fields[index] != 0 )
-				(void)cudaFree(*fields[index]);
+				(void)SparkGpuFree(*fields[index]);
 		free(donor);
 	}
 	state->lane_scratch = 0;
@@ -421,7 +422,7 @@ static void Glm5NextFree(Glm5NextModelState *state)
 	};
 	for ( uint32_t index = 0u; index < sizeof(pointers) / sizeof(pointers[0]); ++index )
 		if ( pointers[index] != 0 )
-			(void)cudaFree(pointers[index]);
+			(void)SparkGpuFree(pointers[index]);
 	free(state->entries);
 }
 
@@ -654,7 +655,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		state->services->fail(state->services->context, status);
 	}
 
-	static SparkStatus Round(Glm5NextModelState *state, cudaStream_t stream, uint32_t operation, uint32_t rows, const void *local, void *full)
+	static SparkStatus Round(Glm5NextModelState *state, SparkGpuStream stream, uint32_t operation, uint32_t rows, const void *local, void *full)
 	{
 		if ( rows == 0u || rows > state->collective_capacity )
 		{
@@ -668,12 +669,12 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	{
 		if ( status == LM_LAUNCH_OK )
 			return SPARK_STATUS_OK;
-		fprintf(stderr, "%s: %s failed at layer %u status=%d cuda=%s\n", G::Tag(), site, layer, (int)status, cudaGetErrorString(cudaPeekAtLastError()));
+		fprintf(stderr, "%s: %s failed at layer %u status=%d cuda=%s\n", G::Tag(), site, layer, (int)status, SparkGpuGetErrorString(SparkGpuPeekAtLastError()));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 
 	static SparkStatus LatentAttention(Glm5NextModelState *state, const Glm5NextLayerBuffers *b, const SparkStageRunnerStep *step, uint32_t context,
-		cudaStream_t stream)
+		SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors, layer = b->layer_index, D = state->tp_degree;
 		SparkStatus status;
@@ -705,7 +706,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 		uint32_t context;
 		Glm5NextLayerBuffers b;
 	};
@@ -714,7 +715,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	{
 		const uint32_t rows = step->rows;
 		frame->step = step;
-		frame->stream = (cudaStream_t)stream_void;
+		frame->stream = (SparkGpuStream)stream_void;
 		frame->context = step->commit != 0u && step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context :
 			state->context_capacity;
 		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
@@ -733,7 +734,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	{
 		LM_LAUNCH((LmHcExpandStreamsKernel<G5N_HIDDEN>), dim3((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, frame.step->rows), G5N_THREADS, 0, frame.stream,
 			frame.step->hidden_bf16, state->streams, frame.step->rows);
-		if ( cudaPeekAtLastError() != cudaSuccess )
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return SPARK_STATUS_OK;
 	}
@@ -791,7 +792,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 	{
 		Glm5NextLayerBuffers *b = &frame.b;
 		const uint32_t rows = frame.step->rows, sms = frame.step->multiprocessors;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const void *w1 = 0, *w2 = 0;
 		SparkStatus status = Launch(Glm5NextMoeRoute(b, rows, sms, stream), "moe route", layer);
 		if ( status == SPARK_STATUS_OK )
@@ -817,7 +818,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		LM_LAUNCH((LmHcStreamsMeanKernel<G5N_HIDDEN>), rows, G5N_THREADS, 0, frame.stream, state->streams, state->streams_mean, rows);
 		LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), frame.stream, state->streams_mean,
 			(const uint16_t *)state->final_norm, step->hidden_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
-		if ( cudaPeekAtLastError() != cudaSuccess )
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		state->steps++;
 		if ( rows > step->sequences )
@@ -1015,7 +1016,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 			if ( state->layers[layer].kda_ordinal != G5N_NO_ORDINAL )
 			{
 				Glm5NextBindLayer(state, step, layer, &b);
-				status = Launch(Glm5NextKdaRecur(&b, step->rows, step->sequences, kept, 1u, (cudaStream_t)stream_void), "kda keep rows", layer);
+				status = Launch(Glm5NextKdaRecur(&b, step->rows, step->sequences, kept, 1u, (SparkGpuStream)stream_void), "kda keep rows", layer);
 			}
 		return status;
 	}
