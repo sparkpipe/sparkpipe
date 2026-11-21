@@ -1151,13 +1151,15 @@ as recorded debt for models too large for a group.
     for state at few places. Kept states need a class of their own and a
     bound, apart from the states of a session's turns (stage 2).
   - The 8-token margin of a block's cut (`tools/serving/prompt_cuts.py`) is
-    measured on one served tokenizer only: Qwen 3.8, over 18,456 paragraph
-    ends of 79 repository texts with four joins, where at most 2 trailing
-    tokens changed (0 in 92%, 1 in 8%, 2 in three cases). The other served
-    tokenizers are on the hub. Run `prompt_cuts.py margin` there with every
-    model directory of `deployment/hub/chat_frontend.json`; it fails when
-    the margin is not above the worst count. A tokenizer that needs more
-    only makes two prompts share less at that block, never differ.
+    measured on one of the thirteen served tokenizers only: Qwen 3.8 (four
+    lanes), over 4,614 paragraph ends of 79 repository texts, each with four
+    joins, where at most 2 trailing tokens changed (0 in 92%, 1 in 8%, 2 in
+    three cases). The other twelve are measured where their files are: run
+    `prompt_cuts.py margin` with every model directory of
+    `deployment/hub/chat_frontend.json`; it fails when the margin is not
+    above the worst count, and `docs/EXACTNESS_GATE.md` lists the result
+    for each. A tokenizer that needs more only makes two prompts share less
+    at that block, never differ.
   - A block's cut falls on a 64-token grid on every lane. DeepSeek V4.1
     Flash has 256-token cache blocks, so three of four such cuts end inside
     a cache block there. Reuse is exact either way; the state kept at such a

@@ -70,6 +70,29 @@ them from the request and from nothing else.
 Under concurrency the rows of other requests share a wave, and kernels are
 not yet batch-invariant (`TECHDEBT.md`). The gate runs alone.
 
+### The margin of a block's cut
+
+A block's cut lies 8 tokens before the tokens of the text through the
+block, rounded down to 64. The margin has to exceed the number of trailing
+tokens that change when more text follows the block; otherwise two prompts
+with the same block share less at that block. They never differ: the cut
+only decides where a wave ends.
+
+`tools/serving/prompt_cuts.py margin --tokenizer DIR... --text FILE...`
+measures it: for every paragraph end in the texts it tokenizes the text
+before the end alone and with the rest joined by a blank line, a newline, a
+space and nothing, and counts the trailing tokens that changed. It exits 1
+when the worst count is not below the margin.
+
+| Tokenizer | Lanes | Samples | Trailing tokens changed | Worst |
+| --- | --- | ---: | --- | ---: |
+| Qwen 3.8 | `qwen3.8-27b`, `qwen3.8-27b-fp8`, `qwen3.8-max`, `qwen3.8-flash` | 18,456 | none in 17,012, one in 1,441, two in 3 | 2 |
+| The other twelve | GLM 5.3 (2 lanes), Kimi K3 (2), Gemma 4 (2), Ling 3.0 (2), MiMo v2.6 (2), DeepSeek V4.1 Flash, HY4, Muse Glimmer, Laguna S, K-EXAONE, A.X K2, Solar Open 2 | | not yet measured | |
+
+The samples are 4,614 paragraph ends of 79 documents of this repository,
+each with the four joins. The other tokenizers are measured where their
+files are, before their lanes are gated.
+
 ## What is compared
 
 Every prompt is a run of token ids that the engine has never seen: they are
