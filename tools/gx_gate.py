@@ -326,7 +326,7 @@ class Step:
         print("%s %s %s prompt=%d cached=%d out=%d %.1fs" % (stamp(), self.name, label, result["prompt_tokens"], result["cached_tokens"], len(result["tokens"]), result["seconds"]), flush=True)
         if cold and result["cached_tokens"] != 0:
             raise GateError("%s reports %d cached tokens where this step needs a cold run: clear the cache before the step" % (label, result["cached_tokens"]))
-        if self.rest_seconds > 0 and result["seconds"] > self.rest_over_seconds:
+        if self.rest_seconds > 0 and result["seconds"] >= self.rest_over_seconds:
             time.sleep(self.rest_seconds)
         return result
 
@@ -648,7 +648,7 @@ def main(argv=None):
     run.add_argument("--api", required=True, help="C API base URL, e.g. http://127.0.0.1:8461")
     run.add_argument("--api-log", help="the API's log, for time to first token, decode rate and counters")
     run.add_argument("--timeout", type=float, default=7200)
-    run.add_argument("--rest-seconds", type=float, default=0.0, help="idle time after a request that ran longer than --rest-over-seconds")
+    run.add_argument("--rest-seconds", type=float, default=0.0, help="idle time after a request that ran --rest-over-seconds or longer")
     run.add_argument("--rest-over-seconds", type=float, default=60.0)
     verdict = commands.add_parser("verdict", help="compare the arms and write the receipt")
     verdict.add_argument("--state", required=True)
