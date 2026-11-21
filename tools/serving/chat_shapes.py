@@ -282,8 +282,8 @@ def messages_request(body):
     thinking = thinking if isinstance(thinking, dict) else {}
     output = body.get("output_config")
     output = output if isinstance(output, dict) else {}
-    if body.get("max_tokens") is not None and (isinstance(body["max_tokens"], bool) or not isinstance(body["max_tokens"], int) or body["max_tokens"] < 1):
-        raise invalid("max_tokens must be a positive integer")
+    if body.get("max_tokens") is not None and (isinstance(body["max_tokens"], bool) or not isinstance(body["max_tokens"], int) or body["max_tokens"] < 0):
+        raise invalid("max_tokens must be a positive integer, or 0 to compute and keep the prompt without generating")
     if body.get("stream") not in (None, True, False):
         raise invalid("stream must be a boolean")
     request.update(model=body["model"], messages=messages, tools=anthropic_tools(body.get("tools")), tool_choice=anthropic_tool_choice(body.get("tool_choice")),

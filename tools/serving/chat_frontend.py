@@ -464,6 +464,11 @@ async def heartbeat(events, interval):
         await iterator.aclose()
 
 
+class ReplyCommit:
+    def __init__(self, model, gate, ids):
+        self.model, self.gate, self.ids, self.sent, self.task = model, gate, ids, False, None
+
+
 class LiveRequest:
     def __init__(self, scope, member):
         self.scope, self.member = scope, member
@@ -712,6 +717,8 @@ TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
+ENGINE_MAX_CUTS = 16384
+CUTS_CAPPED = Counter()
 BULK_SUFFIX = "-bulk"
 
 
@@ -1025,6 +1032,7 @@ class Model:
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.stop_strings = list(spec["stop_tokens"])
         self.openings = OrderedDict()
+        self.opening_cache = OrderedDict()
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
         sequences = spec.get("sequences")
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
@@ -1034,6 +1042,9 @@ class Model:
         if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % CACHE_BLOCK_TOKENS:
             raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {CACHE_BLOCK_TOKENS}: the positions a cached prefix resumes from")
         self.images = spec.get("images", False) is True
+        self.reply_commit = spec.get("reply_commit", False)
+        if not isinstance(self.reply_commit, bool):
+            raise SystemExit(f"chat_frontend: {self.id} reply_commit must be a boolean: commit each finished reply at once, so the next turn resumes where it ends")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -1064,6 +1075,47 @@ class Model:
                 return prefix + list(special), len(prefix)
             prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
         raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
+
+    def opening(self, messages, tools, kwargs, pack=None):
+        leading = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            leading.append({key: value for key, value in message.items() if key != chat_shapes.HANDLES})
+        key = hashlib.sha256(chat_replay.canonical([leading, tools or [], kwargs, pack[0] if pack else None]).encode()).digest()
+        if key in self.opening_cache:
+            self.opening_cache.move_to_end(key)
+            return self.opening_cache[key]
+        try:
+            found = self.opening_probe(leading, tools, kwargs, pack)
+        except RequestError:
+            found = None
+        self.opening_cache[key] = found
+        while len(self.opening_cache) > GENERATION_CACHE:
+            self.opening_cache.popitem(last=False)
+        return found
+
+    def opening_probe(self, leading, tools, kwargs, pack):
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        pattern = control_pattern(self.vocabulary)
+        text, pieces = self.renderer.pieces(leading + [{"role": "user", "content": GENERATION_PROBE}], tools, context)
+        marks = []
+        if pack is not None:
+            pieces = context_packs.splice(text, pieces, pack[1])
+            offset = 0
+            for piece, special in pieces:
+                offset += len(piece)
+                if not isinstance(special, bool):
+                    marks.append(offset)
+        probe = text.find(GENERATION_PROBE)
+        end = max((match.start() for start, stop, special in template_spans(pieces) if special and start < probe
+                   for match in pattern.finditer(text, start, min(stop, probe))), default=0) if pattern is not None else 0
+        marks = [mark for mark in marks if mark <= end] + [end]
+        if end <= 0:
+            return None
+        ids = array("I", encode_span(self, pieces, 0, end))
+        return ids, sorted({len(encode_span(self, pieces, 0, mark)) for mark in marks[:-1]} | {len(ids)})
 
     def generation_prompt(self, tools, kwargs):
         key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
@@ -1784,8 +1836,50 @@ class PrefixLedger:
             self.blocks.popitem(last=False)
 
 
-def cache_points(seen, total):
-    return [seen] if 0 < seen < total else []
+def structure_cuts(replay, total, opening=()):
+    return sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
+
+
+def request_positions(value, name, total):
+    if value is None:
+        return []
+    if (not isinstance(value, list) or len(value) > ENGINE_MAX_CUTS or
+            any(isinstance(position, bool) or not isinstance(position, int) or not 0 < position < total for position in value) or
+            any(later <= earlier for earlier, later in zip(value, value[1:]))):
+        raise RequestError(400, "invalid_request", f"{name} must be an array of at most {ENGINE_MAX_CUTS} rising token counts inside the prompt")
+    return list(value)
+
+
+def opening_cuts(model, messages, tools, kwargs, pack, ids):
+    found = model.opening(messages, tools, kwargs, pack)
+    if found is None:
+        return []
+    opening, ends = found
+    head = array("I", ids[:len(opening)])
+    return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and head[:end] == opening[:end]]
+
+
+def name_cuts(model, engine, replay, kept):
+    every = structure_cuts(replay, len(engine["prompt_token_ids"]), kept)
+    cuts = every[:ENGINE_MAX_CUTS]
+    named = set(cuts)
+    keep = [cut for cut in sorted(set(kept)) if cut in named]
+    if cuts:
+        engine["cuts"] = cuts
+    if keep:
+        engine["keep"] = keep
+    if len(every) > len(cuts):
+        CUTS_CAPPED[model.id] += 1
+        print(json.dumps({"event": "cuts_capped", "model": model.id, "named": len(cuts), "dropped": len(every) - len(cuts), "prompt_tokens": len(engine["prompt_token_ids"]),
+                          "from_token": every[len(cuts)]}), file=sys.stderr, flush=True)
+    return cuts, len(every) - len(cuts)
+
+
+def commit_flag(body):
+    value = body.get("commit_only")
+    if value is not None and not isinstance(value, bool):
+        raise RequestError(400, "invalid_request", "commit_only must be a boolean")
+    return value is True
 
 
 def memory_model(model):
@@ -1819,8 +1913,9 @@ class MemoryHost:
         return {"tokens": self.frontend.memory_count(self.model(request), request["text"])}
 
     async def complete(self, request):
-        return {"text": await self.frontend.memory_complete(self.model(request), request["ids"], request["max_tokens"], request["reasoning_open"], request["kind"],
-                                                            request["trace"])}
+        ids = request["ids"]
+        return {"text": await self.frontend.memory_complete(self.model(request), ids, request["max_tokens"], request["reasoning_open"], request["kind"], request["trace"],
+                                                            request_positions(request.get("cuts"), "cuts", len(ids)), request_positions(request.get("keep"), "keep", len(ids)))}
 
 
 def utc_stamp(moment):
@@ -1953,6 +2048,7 @@ class Frontend:
             self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
                                                      repositories["max_packs"])
         self.pack_tasks = set()
+        self.reply_commits = set()
         self.records = RequestRecords(records_folder(config, base))
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
@@ -1978,10 +2074,11 @@ class Frontend:
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
-        for task in (self.expiry_task, *self.pack_tasks):
+        commits = [pending.task for pending in self.reply_commits]
+        for task in (self.expiry_task, *self.pack_tasks, *commits):
             if task is not None:
                 task.cancel()
-        await asyncio.gather(*self.pack_tasks, return_exceptions=True)
+        await asyncio.gather(*self.pack_tasks, *commits, return_exceptions=True)
         if self.memory is not None:
             await self.memory.stop()
         await self.session.close()
@@ -2281,14 +2378,17 @@ class Frontend:
         stops = set(model.stop_token_ids)
         ids = encode_span(model, pieces, 0, regions[0][0])
         replayed = 0
+        cuts = []
         for number, (start, close, tokens) in enumerate(regions):
             ids.extend(model.vocabulary.encode(opening, True))
+            cuts.append(len(ids) - 1)
             ids.extend(tokens)
             following = encode_span(model, pieces, close, regions[number + 1][0] if number + 1 < len(regions) else len(text))
             head, rest = chat_replay.splice(ids, following, stops)
             replayed = len(head)
+            cuts.append(replayed)
             ids = head + rest
-        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions)}
+        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions), "cuts": cuts}
 
     def replay_record(self, model, plan, assistant, result, handles, turn=None):
         if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
@@ -2296,12 +2396,85 @@ class Frontend:
         if plan.get("session") is not None and plan["session"].rounds:
             return None
         try:
-            return self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
-                                   list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
+            recorded = self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
+                                       list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
         except chat_replay.STORE_ERRORS as error:
             print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
                   file=sys.stderr, flush=True)
             return None
+        self.reply_commit(model, plan, result)
+        return recorded
+
+    def reply_commit(self, model, plan, result):
+        if not getattr(model, "reply_commit", False) or plan.get("reply_committed") or plan.get("commit_only") or plan.get("cuts_dropped"):
+            return
+        prompt = list(plan["engine_body"]["prompt_token_ids"])
+        tokens = list(result["token_ids"])
+        stops = set(model.stop_token_ids)
+        while tokens and tokens[-1] in stops:
+            tokens.pop()
+        if not tokens or len(prompt) + len(tokens) >= model.context_tokens:
+            return
+        plan["reply_committed"] = True
+        cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
+        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens)
+        if len(cuts) > ENGINE_MAX_CUTS:
+            return
+        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0],
+                                                               plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), plan.get("request_id")))
+        self.reply_commits.add(pending)
+        pending.task.add_done_callback(lambda task: self.reply_commits.discard(pending))
+
+    async def commit_reply(self, model, pending, cuts, priority, request):
+        scope, member = pending.gate
+        started = time.monotonic()
+        usage, finish, outcome = {}, None, "error"
+        try:
+            await model.sequences.acquire(priority, None, scope, member)
+            try:
+                pending.sent = True
+                body = {"prompt_token_ids": pending.ids, "stream": True, "commit_only": True, "priority": priority}
+                if cuts:
+                    body["cuts"] = cuts
+                events = self.engine_events(model, body)
+                try:
+                    async for chunk in events:
+                        if "error" in chunk:
+                            raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                        usage = chunk.get("usage") or usage
+                        finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+                finally:
+                    await events.aclose()
+                outcome = "done" if finish == "commit" else "refused"
+            finally:
+                await model.sequences.release(scope, member)
+            if outcome == "done":
+                self.prefix_ledger(model).record(list(pending.ids))
+        except RequestError as error:
+            outcome = error.code
+        except asyncio.CancelledError:
+            outcome = "withdrawn"
+            raise
+        finally:
+            print(json.dumps({"event": "reply_commit", "model": model.id, "request": request, "prompt_tokens": len(pending.ids),
+                              "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), "seconds": round(time.monotonic() - started, 3),
+                              "outcome": outcome}), file=sys.stderr, flush=True)
+
+    async def reply_joined(self, model, plan):
+        ids = plan["engine_body"]["prompt_token_ids"]
+        cuts = set(plan["engine_body"].get("cuts", ()))
+        gate = plan.get("gate", (OWN_SCOPE, None))
+        for pending in [pending for pending in self.reply_commits
+                        if (pending.model, pending.gate) == (model.id, gate) and len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids]:
+            if pending.sent:
+                await asyncio.wait({pending.task})
+            else:
+                pending.task.cancel()
+
+    async def entered(self, model, plan, scope, member):
+        if getattr(model, "reply_commit", False):
+            await self.reply_joined(model, plan)
+        await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member)
 
     def store_safely(self, plan, action, *arguments):
         try:
@@ -2314,7 +2487,7 @@ class Frontend:
         timing = plan["timing"]
         first, last, admitted = timing.get("first"), timing.get("last"), timing.get("admitted", started)
         completion = usage["completion"]
-        prefill_ms = round((first - admitted) * 1000) if first else None
+        prefill_ms = round((first - admitted) * 1000) if first else plan.get("prefill_ms")
         rounds = result.get("engine_rounds", 1)
         if prefill_ms is not None and self.replay is not None and rounds == 1:
             self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
@@ -2369,7 +2542,7 @@ class Frontend:
             if self.memory is not None:
                 states[model.id]["memory_jobs"] = await self.memory_pending(model)
         healthy = all(state["status"] == 200 for state in states.values())
-        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults}, status=200 if healthy else 503)
+        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults, "cuts_capped": dict(CUTS_CAPPED)}, status=200 if healthy else 503)
 
     async def liveliness(self, request):
         return web.json_response({"ok": True})
@@ -2592,14 +2765,16 @@ class Frontend:
         started = time.monotonic()
         priority = self.hinted_priority(False, {PRIORITY_HEADER: "background"}, None)
         await model.sequences.acquire(priority, None, scope, None)
-        usage = {}
+        usage, finish = {}, None
         try:
-            body = {"prompt_token_ids": list(ids), "max_tokens": 1, "stream": True, "stop_token_ids": model.stop_token_ids,
-                    "priority": priority, "temperature": 0.0}
+            body = {"prompt_token_ids": list(ids), "stream": True, "commit_only": True, "priority": priority}
             async for chunk in self.engine_stream(model, body, True):
                 usage = chunk.get("usage") or usage
+                finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
         finally:
             await model.sequences.release(scope, None)
+        if finish != "commit":
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
         self.prefix_ledger(model).record(list(ids))
         self.public_prefix_ledger(scope, model).record(list(ids))
         return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
@@ -2688,10 +2863,9 @@ class Frontend:
                     pack=pack and pack[0])
         engine = plan["engine_body"]
         seen, seen_of = self.prefix_ledger(model).seen(engine["prompt_token_ids"])
-        points = cache_points(seen, len(engine["prompt_token_ids"]))
-        if points:
-            engine["cache_points"] = points
-        trace.update(seen_tokens=seen, seen_of=seen_of)
+        cuts, dropped = name_cuts(model, engine, replay, opening_cuts(model, messages, tools, kwargs, pack, engine["prompt_token_ids"]))
+        plan["cuts_dropped"] = dropped
+        trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
         plan["trace"] = trace
@@ -2702,6 +2876,11 @@ class Frontend:
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, chat_shapes.OVERFLOW_CODE, f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}",
                                overflow=(len(prompt_ids), model.context_tokens - 1))
+        if commit_flag(body):
+            if body.get("max_completion_tokens") is not None or body.get("max_tokens") is not None or body.get("logprobs"):
+                raise RequestError(400, "invalid_request", "commit_only computes the prompt, keeps its state and generates nothing, so it takes no max_tokens or logprobs")
+            return {"body": body, "engine_body": {"prompt_token_ids": prompt_ids, "stream": True, "commit_only": True, "priority": request_priority(model, body)},
+                    "parser": None, "prompt_tokens": len(prompt_ids), "messages": messages, "tools": tools, "kwargs": kwargs, "session": session, "commit_only": True}
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
@@ -3062,11 +3241,12 @@ class Frontend:
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None, cuts=(), keep=()):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
-        points = cache_points(self.prefix_ledger(model).seen(ids)[0], len(ids))
-        if points:
-            body["cache_points"] = points
+        if cuts:
+            body["cuts"] = list(cuts)
+        if keep:
+            body["keep"] = list(keep)
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
@@ -3153,7 +3333,7 @@ class Frontend:
             plan["trace"]["key"] = public["id"]
             plan.update(public_key=public, public_scope=scope)
             plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
-            return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+            return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
             try:
@@ -3163,7 +3343,7 @@ class Frontend:
                 return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
-        return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
 
     def stamp(self, plan, started, headers, affinity=None):
         plan["request_id"] = "r_" + uuid.uuid4().hex[:24]
@@ -3184,9 +3364,7 @@ class Frontend:
             self.memory_foreground(model, 1)
         try:
             try:
-                await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
-                                                                            BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member),
-                                 lambda: model.sequences.release(scope, member))
+                await live.until(plan["request_id"], self.entered(model, plan, scope, member), lambda: model.sequences.release(scope, member))
             except RequestError as error:
                 return failed(error)
             plan["timing"]["admitted"] = time.monotonic()
@@ -3226,6 +3404,39 @@ class Frontend:
             pass
         print(json.dumps({"event": "request_cancelled", "request": identifier, "released": live.finished.is_set()}), file=sys.stderr, flush=True)
         return web.json_response({"id": identifier, "object": "request", "cancelled": True, "released": live.finished.is_set()})
+
+    async def commit(self, model, plan):
+        usage, finish = None, None
+        live = self.live.get(plan.get("request_id"))
+        events = self.engine_stream(model, plan["engine_body"], "public_key" in plan)
+        async for chunk in (events if live is None else live.watch(plan["request_id"], events)):
+            if "error" in chunk:
+                raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+            if chunk.get("tokens"):
+                raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine generated tokens for a commit; it needs an engine that takes commit_only")
+            finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+            usage = chunk.get("usage") or usage
+        published = usage.get("published_tokens") if isinstance(usage, dict) else None
+        if finish != "commit" or isinstance(published, bool) or not isinstance(published, int):
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
+        plan["prefill_ms"] = round((time.monotonic() - plan["timing"].get("admitted", plan["timing"]["arrived"])) * 1000)
+        self.prefix_ledger(model).record(list(plan["engine_body"]["prompt_token_ids"]))
+        return {"usage": usage, "token_ids": [], "finish_reason": "commit", "engine_finish": "commit", "published": published}
+
+    async def commit_answer(self, request, model, body, plan, started):
+        shape = plan.get("shape", "chat")
+        failed = anthropic_error_response if shape == "messages" else responses_error_response if shape == "responses" else error_response
+        try:
+            result = await self.commit(model, plan)
+        except RequestError as error:
+            self.log(model, plan["prompt_tokens"], None, started, None, error.code, plan.get("trace"))
+            return failed(error)
+        usage, record = self.settle(model, plan, result, None, started, request.headers, shape)
+        self.record_public_prefix(model, plan, result)
+        self.log(model, plan["prompt_tokens"], result["usage"], started, None, "commit", plan.get("trace"))
+        return web.json_response({"object": "cache.commit", "model": model.id, "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"],
+                                  "committed_tokens": max(0, result["published"] - usage["cached"]), "prefill_ms": record["prefill_ms"], "sparkpipe": record},
+                                 headers=self.early_headers(model, plan, request.headers))
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -3278,6 +3489,7 @@ class Frontend:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
         translated["metadata"] = body.get("metadata")
         translated["pack_request"] = self.pack_request(scope, pack, request.headers, key, translated.get("affinity"))
+        translated["commit_only"] = translated.get("max_tokens") == 0 if shape == "messages" else commit_flag(body)
         return body, translated, model, bulk, key, scope
 
     async def harness_plan(self, model, translated, scope, headers, key, bulk):
@@ -3331,10 +3543,15 @@ class Frontend:
             text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
         body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
+        if translated.get("commit_only"):
+            if forced:
+                raise RequestError(400, "invalid_request", "a commit generates nothing, so it takes no forced tool choice")
+            body = {"commit_only": True}
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
+        plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids) + ([len(ids) - len(forced_ids) - 1] if forced_ids else []))[1]
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)
@@ -3359,7 +3576,7 @@ class Frontend:
             return failed(error)
         self.stamp(plan, started, request.headers, translated.get("affinity"))
         plan.update(shape=shape, translated=translated, request_body=body)
-        return await self.admitted(request, model, body, plan, started, self.harness_answer, failed)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.harness_answer, failed)
 
     def responses_echo(self, body, translated):
         echo = {key: body.get(key) for key in ("instructions", "previous_response_id", "temperature", "top_p", "max_output_tokens", "metadata", "user")}
@@ -3479,6 +3696,8 @@ class Frontend:
             body["stream"] = True
             body, translated, model, bulk, key, scope = await self.translate(request, "responses", body, local)
             await self.admit_model(model, key, request.headers)
+            if translated["commit_only"]:
+                raise RequestError(400, "invalid_request", "commit_only is not taken on the WebSocket; send it to POST /v1/responses")
             if generate is False:
                 await self.socket_warmup(sink, body, translated, local)
                 return

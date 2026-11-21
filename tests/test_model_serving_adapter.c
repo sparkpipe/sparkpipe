@@ -9,8 +9,8 @@
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
 #endif
 
-_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 20u,
-	"resident decode chaining and verify frames require model-driver ABI 20");
+_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 21u,
+	"resident decode chaining, verify frames and block identities on lanes that do not publish require model-driver ABI 21");
 
 static SparkStatus TestInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,
@@ -615,6 +615,27 @@ static void TestDriverCacheLaneMapping(void)
 		serving_lanes[0].cache_block_identity_first = serving_lanes[0].cache_block_identity_count = 0u;
 		submission.cache_block_identity_count = 0u;
 		submission.cache_block_identities = 0;
+	}
+	{
+		SparkModelServingCacheIdentity crossed[1];
+		memset(crossed,0,sizeof(crossed));
+		crossed[0].sha256[0] = 9u;
+		submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+		serving_lanes[1].sequence_position = 0u;
+		serving_lanes[1].context_token_count = 70u;
+		serving_lanes[1].cache_block_identity_first = 0u;
+		serving_lanes[1].cache_block_identity_count = 1u;
+		submission.cache_block_identity_count = 1u;
+		submission.cache_block_identities = crossed;
+		assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,driver_lanes,2u,&lane_count) == SPARK_STATUS_OK);
+		assert(driver_lanes[1].flags == 0u && driver_lanes[1].publish_token_count == 0u && driver_lanes[1].block_identity_count == 1u &&
+			driver_lanes[1].block_identities != 0 && driver_lanes[1].block_identities[0].sha256[0] == 9u);
+		serving_lanes[1].sequence_position = 5u;
+		serving_lanes[1].context_token_count = 6u;
+		serving_lanes[1].cache_block_identity_count = 0u;
+		submission.cache_block_identity_count = 0u;
+		submission.cache_block_identities = 0;
+		submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_DECODE;
 	}
 	submission.work_kind = SPARK_MODEL_SERVING_WORK_KIND_RELEASE;
 	assert(SparkModelServingAdapterBuildDriverCacheLanes(&submission,driver_lanes,2u,&lane_count) == SPARK_STATUS_OK);
@@ -1239,7 +1260,7 @@ static void TestVerifySubmission(void)
 	lanes[1].cache_block_identity_first = 0u;
 	submission.cache_block_identity_count = 0u;
 	submission.cache_block_identities = 0;
-	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelServingAdapterValidateSubmission(&descriptor,&submission) == SPARK_STATUS_OK);
 	lanes[0].cache_block_identity_count = 1u;
 	lanes[1].cache_block_identity_first = 1u;
 	submission.cache_block_identity_count = 1u;

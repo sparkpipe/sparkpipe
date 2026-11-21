@@ -1097,6 +1097,92 @@ as recorded debt for models too large for a group.
 
 ## Prefix reuse (I23)
 
+- **Exact reuse (gate GX, `docs/EXACTNESS_GATE.md`), open items.**
+  - Gate GX has not run on the fleet. The engine rules are proven on the
+    host tests only (`tests/test_model_batch_engine_mock.c`, the API test and
+    `tests/test_gx_gate.py`). Run `scripts/gx_gate.sh` for every served model
+    on a release candidate, and record the cost of the rules in
+    `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends, and time
+    per turn with the previous reply computed again.
+  - A follow-up turn computes the previous reply again as prefill, from one
+    token before the earlier prompt's end. The other exact form commits a
+    finished reply at once, so the next turn resumes where the reply ends:
+    the chat layer's `reply_commit` model setting, off for every model. The
+    waves are the same in both forms; a commit only starts the reply's wave
+    before the next turn arrives. Neither form is measured. The gate's
+    `session` and `committed` units give the time per turn of each: turn the
+    setting on for the models where the committed form is faster, and record
+    both in `PERFORMANCE_STATUS.md`.
+  - A reply commit whose conversation never continues is one wasted wave, in
+    the turn's own priority class. The chat layer commits every reply it
+    records. It could commit only replies that end in a tool call, where the
+    next turn is certain.
+  - A prompt that takes the streamed prefill still publishes the blocks of
+    its streamed span, under identities no other request can name. They stay
+    in the rank page cache, unread, until eviction takes them. No lane in
+    `deployment/lanes.json` streams. When one does, name no identity for the
+    span, as the waves after it already do, so its blocks leave at release.
+  - The engine no longer sends a publish frame or a publish flag after a
+    request's last cut, so three things are now unused: the publish-only
+    work kind (`SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH`) with the
+    engine's deferred decode publication, the adapter capability check that
+    a speculating adapter can publish decode checkpoints, and the
+    staged-publish lane flag (`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED`,
+    `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED`) with the page cache's
+    promotion of a staged state. Remove them together.
+  - Every prompt of at least one block now ends with a one-row wave for its
+    last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
+    state, used to run its last token in the last wave.
+  - The chat layer names cuts only for replies it replays from its replay
+    store. A history it renders from text, with no replay record, names
+    none, so that request resumes at the last anchor or row-grid wave end it
+    shares with the session. Derive the reply boundaries from the rendered
+    prompt where the template puts a control token on the boundary.
+  - The chat layer names one cut for the opening, where the system turns
+    and the tools end, and one where a context pack ends, and asks for state
+    at both. Inside the opening it names none: system blocks, the tool block
+    and the project context are rendered as one text and joined before
+    tokenizing (`tools/serving/chat_shapes.py`), so a block boundary is not a
+    token boundary. Two conversations that share only the first system block
+    resume at the last checkpoint anchor inside it. The same holds inside
+    a message: two requests that carry the same document and ask different
+    questions after it, in one user message, share nothing past the last
+    anchor inside the document. A client's `cache_control` marks are read
+    and ignored; a mark on a block that is not the last of its message, or
+    on a system block, should become a cut with `keep` where its block
+    ends. Tokenizing the blocks apart would change the tokens at each join
+    against the publisher's whole-text tokenization. The cut that keeps the
+    publisher's tokens is the last token boundary of the whole text at or
+    before the block's end, read from the tokenizer's offsets; two prompts
+    that share the block name the same cut when the join starts a new
+    pre-token (a blank line does). A mark on the last block of the last
+    message needs nothing: state is always kept one token before the
+    prompt's end, and a later turn names that position as a cut.
+  - The opening cut costs each request one render of the opening and a
+    digest of its system prompt and tools (cached by that digest). Not
+    measured.
+  - A pack's `resume_from` is an estimate from the model's `resume_tokens`
+    (64 for every model in `deployment/hub/chat_frontend.json`). A refreshed
+    pack resumes at a checkpoint anchor or a row-budget wave end, so the
+    estimate overstates. Set `resume_tokens` per model to the spacing of its
+    kept wave ends, or report the engine's cached tokens alone.
+  - The chat tests' engine stand-in (`tests/chat_harness_fixture.py`) still
+    reports cached tokens by the longest prefix shared with any earlier
+    prompt or reply. It also records where the engine's rules resume each
+    request (`resumes`, the model of the gate's stand-in in
+    `tests/test_gx_gate.py`), and the commit, messages and pack tests assert
+    it. Make the reported cached tokens follow that model too, so every chat
+    test's cached count is the engine's.
+  - A lane with a streamed prefill computes every prompt that streams whole
+    and shares none of it, so on such a lane a follow-up turn of a long
+    prompt pays the whole prefill again. Reuse there needs the streamed
+    span to end at cuts and its passes to split at fixed places, so that a
+    resumed request computes what the cold one does.
+  - The same request under concurrency shares its waves with other requests'
+    rows. Exactness there waits for batch-invariant kernels (Dynamic
+    batching, below). The gate's `crowd` step measures the difference and
+    does not judge it; it has not run on the fleet.
+
 Prefix reuse is required and non-compliant adapters are refused at load
 ([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
 required).

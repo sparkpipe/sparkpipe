@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import json
 import re
@@ -25,6 +26,7 @@ TEMPLATE = (
     "{%- if add_generation_prompt %}<|im_start|>assistant\n<think>{% endif %}"
 )
 CODEX_INSTRUCTIONS = "You are a coding agent in the Codex CLI."
+STRIDE = 16384
 CORPUS = ["hello world, the weather in Paris is sunny today", "read the file a.txt and list the directory", "call the tool with path and pattern",
           "user assistant system tool think reply answer question", "The answer is 42. Let me check the file first."] * 20
 
@@ -82,9 +84,13 @@ class Engine:
         self.committed = []
         self.delay = 0.0
         self.hold = None
+        self.commit_hold = None
         self.early_usage = True
         self.cache_all = False
+        self.ignores_commit = False
         self.usage = []
+        self.points = set()
+        self.resumes = []
 
     def tokens(self, text):
         ids = []
@@ -102,16 +108,51 @@ class Engine:
             ids.append(self.tokenizer.token_to_id("<|im_end|>"))
         self.replies.append((ids, finish))
 
+    def resume(self, prompt, body):
+        commit = body.get("commit_only") is True
+        final = len(prompt) if commit else len(prompt) - 1
+        strides = list(range(STRIDE, len(prompt), STRIDE))
+        ends = sorted(set([cut for cut in body.get("cuts", []) if cut < len(prompt)] + strides + [final]))
+        kept = set(strides) | set(body.get("keep", [])) | {final}
+        found = 0
+        for end in ends:
+            key = (hashlib.sha256(json.dumps(prompt[:end]).encode()).hexdigest(), tuple(cut for cut in ends if cut <= end))
+            if end < len(prompt) and key in self.points:
+                found = end
+            if end in kept:
+                self.points.add(key)
+        return found
+
+    def resumed(self, request):
+        return next(self.resumes[index] for index, sent in enumerate(self.requests) if sent is request)
+
     async def completions(self, request):
         body = await request.json()
         self.requests.append(body)
         prompt = body["prompt_token_ids"]
+        self.resumes.append(self.resume(prompt, body))
         cached = max((common_prefix(prompt, context) for context in self.committed), default=0)
         cached = len(prompt) if self.cache_all else min(cached, len(prompt) - 1)
         self.usage.append({"prompt_tokens": len(prompt), "cached_tokens": cached})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        if body.get("commit_only") is True and self.ignores_commit:
+            body = dict(body, max_tokens=4)
+        elif body.get("commit_only") is True:
+            if "max_tokens" in body or "logprobs" in body:
+                return web.json_response({"error": {"code": "commit_only_conflict"}}, status=400)
+            await response.prepare(request)
+            if self.commit_hold is not None:
+                await self.commit_hold.wait()
+            event = {"tokens": [], "choices": [{"finish_reason": "commit"}],
+                     "usage": {"prompt_tokens": len(prompt), "completion_tokens": 0, "total_tokens": len(prompt), "prompt_tokens_details": {"cached_tokens": cached},
+                               "published_tokens": len(prompt)}}
+            await response.write(("data: " + json.dumps(event) + "\n\n").encode())
+            self.committed.append(list(prompt))
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
         ids, finish = self.replies.pop(0) if self.replies else (self.tokens("ok") + [self.tokenizer.token_to_id("<|im_end|>")], "stop")
         ids = ids[:body["max_tokens"]]
-        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await response.prepare(request)
         if self.hold is not None:
             await self.hold.wait()

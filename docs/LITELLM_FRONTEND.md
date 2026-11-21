@@ -263,6 +263,9 @@ Optional request fields:
 | `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
 | `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
+| `cuts` | array of up to 16,384 rising token counts inside the prompt: where the request's structure ends a prefill wave (where a shared prefix ends, one token before a reply began, where a reply ends). A later request resumes at a cut only when it names the same cuts up to there. Cuts change which waves compute the prompt, never the prompt. See `docs/EXACTNESS_GATE.md` |
+| `keep` | array of rising token counts: the cuts where the engine keeps state, so a later request can resume there. A count that is not a cut, or that lies inside the prompt's first cache block, is ignored. State is always kept one token before the prompt's end |
+| `commit_only` | boolean. `true` computes the prompt to its end, keeps the state there and generates nothing: the reply has no tokens, `finish_reason` is `commit` and `usage.published_tokens` is the position the engine marked as a resume point with state: the prompt's end, or 0 when the mark failed or the prompt took the streamed prefill and shares nothing. It takes no `max_tokens` or `logprobs` (`400 commit_only_conflict`) |
 | `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
@@ -318,7 +321,8 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p`, `top_k`, `logprobs`, `speculation` or `chat_template_kwargs`, or
+`top_p`, `top_k`, `logprobs`, `speculation`, `commit_only`, `cuts`, `keep`
+or `chat_template_kwargs`, or
 `chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
 `400 invalid_option`, never a silent default. With `temperature` 0,
 `top_p` and `top_k` cannot change the greedy token and are not forwarded.
@@ -594,6 +598,59 @@ tokenizes as it did when the turn was generated, and the prompt matches the
 engine's cache up to the end of the previous reply. A forced tool choice
 stores its opening marker with the generated tokens.
 
+Cuts and commits (`docs/EXACTNESS_GATE.md`). The chat layer names the
+engine's `cuts` from the prompt's structure:
+
+- where the opening ends: the leading system turns and the tools, up to the
+  control token that starts the first message. The chat layer finds it by
+  rendering the opening with a probe message, and names it only when the
+  prompt's tokens begin with the opening's tokens and it is at least one
+  cache block long;
+- where a context pack ends, which is where the pack's warm-up commit ended;
+- one token before each replayed reply began, and where the reply ends;
+- one token before the opening of a forced tool call. A forced opening is
+  stored with the reply, so the next turn's cut before the reply falls
+  there and not one token before the forced prompt's end.
+
+A request names at most 16,384 cuts. Past that the oldest stay and newer
+ones are not named, so the first waves are the same from turn to turn and
+only the tail after the last named cut is computed again; `/health` counts
+such requests per model in `cuts_capped`, and each logs a `cuts_capped`
+line.
+
+It lists the first two and the last in `keep`, so the engine keeps state
+there. Another
+conversation with the same system prompt and tools, or another request on
+the pack, then resumes at that cut instead of at the last checkpoint anchor
+before it. Cuts inside the opening (between system blocks, or between the
+system prompt and the tools) and inside a message (after a document that a
+question follows) are not named, and a client's `cache_control` marks are
+still read and ignored (`TECHDEBT.md`, Exact reuse).
+
+`max_tokens: 0` on Messages, or
+`commit_only: true` on Chat Completions and Responses, is a commit. The
+prompt is planned as for any request, the engine computes it to its end and
+keeps the state there, and the answer is one `cache.commit` object (`model`,
+`prompt_tokens`, `cached_tokens`, `committed_tokens`, `prefill_ms` and the
+`sparkpipe` record), whatever the request says about streaming.
+`committed_tokens` is what the engine marked as resumable beyond what was
+cached, so it is 0 when the engine kept no resume point. A commit
+takes no output limit, logprobs, forced tool choice or WebSocket.
+
+A model whose settings carry `"reply_commit": true` commits each reply it
+records for replay as soon as the reply ends: the turn's prompt and the
+reply's tokens without the stop token, in the turn's own priority class,
+through the sequence gate and under the account that made the turn. The next
+turn then resumes where the reply ends, instead of computing the reply again
+while the user waits. A turn of the same account and member that arrives
+while its reply's commit is at the engine waits for it, so the reply is
+computed once; a commit that has not reached the engine is withdrawn and the
+turn computes the reply itself. A commit never wakes an engine that is down.
+Each one logs a `reply_commit` line with its prompt and cached tokens,
+seconds and outcome (`done`, `withdrawn`, `refused` or the engine's error
+code). The setting is off for every model until gate GX has measured both
+forms.
+
 Working state and deletion (§3.2, Agreement 6.2). The store is a directory
 (`replay.directory`, mode 700 whoever created it) with one SQLite file per
 account (`account-<id>.sqlite` for a gateway account, `key-<id>.sqlite` for
@@ -800,14 +857,17 @@ it gets 404 for a name that exists elsewhere.
 - **Refresh.** A push or `POST /v1/packs/{name}/refresh` builds the new
   version, then warms it in the background class (the priority
   `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
-  as a one-token completion whose prompt is the template's prefix and the
-  pack (`warm_prefix`, which `commit_only` replaces once E5 lands). It warms
+  as a commit (`commit_only`) whose prompt is the template's prefix and the
+  pack (`warm_prefix`). A request on the pack names the commit's end as a
+  cut, so it resumes exactly there. It warms
   once for each of the last four tool sets and template settings requests
-  used on the pack, or once with none. The engine's prefix cache reuses every
-  token before the first changed file; `last_refresh` reports that file, its
+  used on the pack, or once with none. A refreshed version's commit resumes
+  at the last wave end before the first changed file where the earlier
+  commit left state: a checkpoint anchor on a model with recurrent state, a
+  row-budget wave end on one without. `last_refresh` reports that file, its
   token offset (`changed_at`) and, per warm-up, the prompt and cached tokens
-  and `resume_from`, the model's `resume_tokens` boundary (default 64) before
-  the change. The alias moves to the new version only when every warm-up is
+  (what the engine reused) and `resume_from`, an estimate: the model's
+  `resume_tokens` boundary (default 64) before the change. The alias moves to the new version only when every warm-up is
   done, and a `pack.warm` line is logged. A refresh that arrives during one
   runs once more after it.
 - **Sessions.** The first request of a session pins the current warm

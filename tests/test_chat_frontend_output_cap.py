@@ -39,6 +39,9 @@ class FakeModel(chat_frontend.Model):
     def render(self, messages, tools, kwargs):
         return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
+    def opening(self, messages, tools, kwargs, pack=None):
+        return None
+
 
 def budget(model, extra):
     frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)

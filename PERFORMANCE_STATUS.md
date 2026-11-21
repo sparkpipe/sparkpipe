@@ -455,6 +455,23 @@ Limits today: K3's recurrent-state store fills after about 977 checkpointed
 requests in one conversation, after which the request fails, and the
 snapshot store's chain links grow with the square of the chain length.
 
+### Exact reuse
+
+Not measured: the fleet was unavailable. The follow-up and cached-turn
+figures above were measured before the exact-reuse rules
+([`docs/EXACTNESS_GATE.md`](docs/EXACTNESS_GATE.md)) and have not been
+measured with them. Gate GX's receipts will give, for each served model:
+
+- cold prefill at 8K, 100K and 300K with the rules' wave ends: one at every
+  cut, and a one-row wave for the prompt's last token;
+- time to first token of a follow-up turn that computes the previous reply
+  again as prefill (`session` units), and of one whose reply was committed
+  when it ended (`committed` units), with the seconds each commit took;
+- time to first token after an eviction, with the pages and bytes read back;
+- the decode rate as served on a cached prompt;
+- how many requests sent together give the tokens they give alone (the
+  gate's `crowd` step).
+
 ## How the numbers are measured
 
 - Tool: [`tools/api_serving_perf.py`](tools/api_serving_perf.py) against each

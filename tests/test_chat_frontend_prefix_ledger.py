@@ -66,6 +66,9 @@ class FakeModel(chat_frontend.Model):
     def render(self, messages, tools, kwargs):
         return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
+    def opening(self, messages, tools, kwargs, pack=None):
+        return None
+
 
 frontend = chat_frontend.Frontend.__new__(chat_frontend.Frontend)
 model = FakeModel()
@@ -76,10 +79,18 @@ frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(model).record(first["engine_body"]["prompt_token_ids"] + [9, 9])
 second = asyncio.run(frontend.plan(model, body, None))
 check(second["trace"]["seen_tokens"] == 3 and second["trace"]["seen_of"] == 5, "a repeated prompt's trace reports the earlier request's prefix and length")
-check("cache_points" not in first["engine_body"] and "cache_points" not in second["engine_body"],
-      "a first prompt and a prompt an earlier request carried whole declare no cache point")
-check(chat_frontend.cache_points(0, 9) == [] and chat_frontend.cache_points(9, 9) == [] and chat_frontend.cache_points(4, 9) == [4],
-      "a cache point is declared only where a shared prefix ends inside the prompt")
+check(all(name not in plan["engine_body"] for plan in (first, second) for name in ("cache_points", "cuts", "keep")),
+      "a first prompt and a prompt an earlier request carried whole name no cut: what the ledger has seen never reaches the engine")
+check(not hasattr(chat_frontend, "cache_points") and chat_frontend.structure_cuts(None, 9) == [] and
+      chat_frontend.structure_cuts({"cuts": [12, 4, 4, 0, 9, 7]}, 9) == [4, 7] and chat_frontend.structure_cuts({"cuts": [7]}, 9, [3, 9]) == [3, 7] and
+      chat_frontend.structure_cuts(None, 9, [3]) == [3],
+      "cuts come from the prompt's opening and the turns it replays: rising, distinct, inside the prompt")
+limit = chat_frontend.ENGINE_MAX_CUTS
+long_body = {"prompt_token_ids": [0] * (3 * limit + 100)}
+named, dropped = chat_frontend.name_cuts(model, long_body, {"cuts": list(range(2, 2 * limit + 40, 2))}, [1, 2 * limit + 51])
+check(named == long_body["cuts"] == [1] + list(range(2, 2 * limit, 2)) and len(named) == limit and dropped == 21 and long_body["keep"] == [1] and
+      chat_frontend.CUTS_CAPPED[model.id] == 1,
+      f"past the engine's limit the oldest cuts are kept and the newest are not named, so the first waves stay the same from turn to turn; the event is counted: {len(named)} {dropped}")
 
 
 class ForkModel(FakeModel):
@@ -92,8 +103,8 @@ fork = ForkModel()
 frontend.prefixes["fake"] = PrefixLedger(block_tokens=1)
 frontend.prefix_ledger(fork).record([1, 3, 4, 9, 9])
 diverged = asyncio.run(frontend.plan(fork, {"messages": [{"role": "user", "content": "ho"}]}, None))
-check(diverged["engine_body"].get("cache_points") == [2],
-      f"a prompt that shares a prefix with an earlier one and then diverges declares a cache point where the shared prefix ends: {diverged['engine_body'].get('cache_points')}")
+check(diverged["trace"]["seen_tokens"] == 2 and all(name not in diverged["engine_body"] for name in ("cache_points", "cuts", "keep")),
+      f"a prompt that shares a prefix with an earlier one and then diverges reports what it has seen in its trace only, so earlier traffic never moves a cut: {diverged['engine_body'].keys()}")
 
 captured = []
 
@@ -105,8 +116,23 @@ async def capture(model_, body_):
 
 frontend.gated_events = capture
 background = asyncio.run(frontend.memory_complete(fork, [1, 3, 6, 7], 4))
-check(captured and captured[-1].get("cache_points") == [2],
-      f"a background completion that shares a prefix declares the same cache point: {captured[-1].get('cache_points') if captured else None}")
+check(captured and all(name not in captured[-1] for name in ("cache_points", "cuts", "keep")),
+      f"a background completion that shares a prefix names no cut either: {sorted(captured[-1]) if captured else None}")
+host = chat_frontend.MemoryHost(frontend)
+frontend.models = {"fake": fork}
+request = {"model": {"id": "fake"}, "ids": [1, 3, 6, 7, 8], "max_tokens": 4, "reasoning_open": False, "kind": "background", "trace": None}
+asyncio.run(host.complete(dict(request, cuts=[2, 4], keep=[2])))
+check(captured[-1].get("cuts") == [2, 4] and captured[-1].get("keep") == [2],
+      f"a host completion that names where its shared view ends passes the cuts and the kept cut to the engine: {captured[-1].get('cuts')} {captured[-1].get('keep')}")
+asyncio.run(host.complete(request))
+check(all(name not in captured[-1] for name in ("cuts", "keep")), "the fields are optional: a host completion without them names none")
+for wrong in ({"cuts": [4, 2]}, {"cuts": [0]}, {"cuts": [5]}, {"keep": [2, 2]}, {"cuts": "2"}, {"cuts": [True]}, {"keep": [1.5]}):
+    try:
+        asyncio.run(host.complete(dict(request, **wrong)))
+        refused = None
+    except chat_frontend.RequestError as error:
+        refused = (error.status, error.code)
+    check(refused == (400, "invalid_request"), f"cuts and keep must be rising token counts inside the prompt, as on the engine API: {wrong} gave {refused}")
 
 for failure in failures:
     print("FAIL test_chat_frontend_prefix_ledger: " + failure)

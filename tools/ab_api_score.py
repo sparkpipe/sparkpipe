@@ -4,8 +4,9 @@
 score    sends one greedy request per scored position of a frozen corpus
          (sparkpipe-ab-corpus-v1): the document's tokens before the position as
          prompt_token_ids, max_tokens 1, the top 20 log-probs, no speculation.
-         Each request names the last 64-token boundary before its end as a
-         cache point, so the next position of the same document resumes there.
+         Each request names, as cuts, one token before every earlier scored
+         position of its document, so it resumes where the request for the
+         previous position ended.
          A rerun appends only the missing positions. A gate run asks one
          request at a time: a row's log-probs depend slightly on the rows
          that share its prefill wave (docs/VARIANT_GATE.md).
@@ -50,7 +51,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 TOP = 20
-BLOCK = 64
+MAX_CUTS = 16384
 CORPUS_FORMAT = "sparkpipe-ab-corpus-v1"
 COMPARISON_FORMAT = "sparkpipe-ab-api-comparison-v1"
 VERDICT_FORMAT = "sparkpipe-variant-gate-v2"
@@ -106,14 +107,15 @@ def positions(length, starts, stride, count):
         raise ScoreError(f"position {chosen[-1][1]} does not fit a {length}-token document")
     if len({position for _, position in chosen}) != len(chosen):
         raise ScoreError("the runs of positions overlap: space --starts at least --stride x --count apart")
+    if len(chosen) > MAX_CUTS + 1:
+        raise ScoreError(f"{len(chosen)} positions a document: a request names every earlier position as a cut and takes at most {MAX_CUTS}")
     return chosen
 
 
-def ask(endpoint, prompt, timeout):
+def ask(endpoint, prompt, cuts, timeout):
     body = {"prompt_token_ids": prompt, "max_tokens": 1, "temperature": 0, "logprobs": TOP, "speculation": False}
-    point = (len(prompt) - 1) // BLOCK * BLOCK
-    if point > 0:
-        body["cache_points"] = [point]
+    if cuts:
+        body["cuts"] = cuts
     request = urllib.request.Request(endpoint.rstrip("/") + "/v1/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.load(response)
@@ -131,10 +133,12 @@ def score(args):
 
     def one(document):
         rows = 0
+        cuts = []
         for start, position in positions(len(document["tokens"]), starts, args.stride, args.count):
+            earlier, cuts = cuts, cuts + [position - 1]
             if (document["id"], position) in done:
                 continue
-            reply = ask(args.endpoint, document["tokens"][:position], args.timeout)
+            reply = ask(args.endpoint, document["tokens"][:position], earlier, args.timeout)
             lists = reply.get("token_logprobs") or []
             stopped = not lists and reply.get("tokens") == [] and (reply.get("choices") or [{}])[0].get("finish_reason") == "stop"
             if not stopped and (len(lists) != 1 or not lists[0]):

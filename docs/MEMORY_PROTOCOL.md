@@ -80,9 +80,11 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 | `continuation_ids` | model, messages, tools, kwargs, prompt_ids, generated_ids, instruction, suffix, start | ids (or null), reasoning_open |
 | `cut_ids` | model, messages, tools, kwargs, sentinel | ids (or null) |
 | `count` | model, text | tokens |
-| `complete` | model, ids, max_tokens, reasoning_open, kind, trace | text |
+| `complete` | model, ids, max_tokens, reasoning_open, kind, trace, and optionally cuts, keep | text |
 
 `complete` runs at background priority through the same sequence gate as every other request.
+
+`cuts` and `keep` are optional and mean what they mean on the engine API (`docs/LITELLM_FRONTEND.md`, `docs/EXACTNESS_GATE.md`): arrays of at most 16,384 rising token counts inside `ids`. A cut is where the caller's prompt structure ends a prefill wave, and `keep` lists the cuts where the engine keeps state. A completion resumes from an earlier one only at a wave end both name, so a caller that sends several completions over one shared prefix names where that prefix ends in both fields, in every one of them: the first computes the prefix and keeps its state, and the others resume there. Without the fields a completion resumes only at a checkpoint anchor inside the shared prefix. Malformed fields answer 400 `invalid_request`.
 
 Within a protocol, methods only add. A caller that meets 404 `unsupported` treats the feature as absent.
 
