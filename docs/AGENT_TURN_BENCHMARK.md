@@ -212,9 +212,15 @@ python3 turn_floor.py parts $W/kimi-k3
 - **`turns`**: at each of `--contexts`, a `grow` request, then `--repeats`
   plain turns for each of `--tails` with speculation off, `--spec-repeats`
   turns as served, a `decode` sample of `--decode-tokens` on the whole
-  history with speculation off (its new tail is 0, so its first token is the
-  floor of the floor), and with `--served-tokens` a `decode_served` sample
-  of that many tokens with speculation as the engine serves it. A tail of
+  history with speculation off, and with `--served-tokens` a `decode_served`
+  sample of that many tokens on the same prompt with speculation as the
+  engine serves it. A sample's new tail is 0. On an engine that reuses the
+  pages a reply wrote, the first token of either sample is the last prompt
+  token's wave alone, the floor of the floor. On an engine that resumes only
+  at cuts, the `decode` sample also computes the last reply again, and the
+  `decode_served` sample, which repeats its prompt, is the one whose first
+  token is that wave alone. The decode rate is read from the tokens after
+  the first, so it is the same reading on both. A tail of
   `--once-from` tokens or more runs once and only plain, so a long tail is
   not prefilled again for each repeat.
 - A level that does not fit the engine's context beside its turns is
