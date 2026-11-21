@@ -3,9 +3,7 @@
 
 #include "cpuopsys.h"
 
-#ifndef NVTYPES_USE_STDINT
 #define NVTYPES_USE_STDINT 0
-#endif
 
 #if NVTYPES_USE_STDINT
 #ifdef __cplusplus

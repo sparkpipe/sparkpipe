@@ -38,6 +38,10 @@ def lexer_cases(generator):
         ("disabled_else", raises(generator, lambda: generator.drop_disabled("#if 0\na\n#else\nb\n#endif")), "an #if 0 group with an #else or #elif branch"),
         ("disabled_open", raises(generator, lambda: generator.drop_disabled("#if 0\na\n")), "an #if 0 group without its #endif"),
         ("tidy", generator.tidy("\n\na  \n\n\n\nb\t\n\n"), "a\n\nb\n"),
+        ("pinned_default", generator.pin_defaults("#ifndef A\n#define A 0\n#endif\n#if !defined(B)\n#define B 1\n#endif\n#ifndef G\n#define G\n#endif\n", "case"),
+         "#define A 0\n#define B 1\n#ifndef G\n#define G\n#endif\n"),
+        ("branched_default", raises(generator, lambda: generator.pin_defaults("#ifndef A\n#define A 0\n#else\n#define C 1\n#endif\n", "case")),
+         "case: the build default A has branches and cannot be fixed at its value"),
     ]
 
 
