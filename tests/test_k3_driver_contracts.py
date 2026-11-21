@@ -134,10 +134,10 @@ def main():
 
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
-        for call in ("cudaMemcpy", "cudaMalloc", "cudaFree",
-                     "cudaStreamSynchronize", "cudaDeviceSynchronize",
-                     "cudaMemcpyAsync"):
-            if call in text:
+        for call in ("Memcpy", "Malloc", "Free", "StreamSynchronize",
+                     "DeviceSynchronize", "MemcpyAsync"):
+            call = next((prefix + call for prefix in ("cuda", "SparkGpu") if prefix + call in text), None)
+            if call is not None:
                 print(f"  FAIL {name} names {call}; the layer path only "
                       f"enqueues launches, the runner owns memory and "
                       f"completion")
