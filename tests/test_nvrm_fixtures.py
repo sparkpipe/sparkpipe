@@ -22,32 +22,6 @@ def release_nvcc_flags():
     return run.stdout.split() if run.returncode == 0 else None
 
 
-def report_cases(tool):
-    failures = []
-    text = ("ptxas info    : 0 bytes gmem\n"
-            "ptxas info    : Compiling entry function 'a' for 'sm_121a'\n"
-            "ptxas info    : Function properties for a\n"
-            "    16 bytes stack frame, 4 bytes spill stores, 8 bytes spill loads\n"
-            "ptxas info    : Used 30 registers, used 1 barriers, 2048 bytes smem\n"
-            "ptxas info    : Compiling entry function 'b' for 'sm_121a'\n"
-            "ptxas info    : Function properties for b\n"
-            "    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\n"
-            "ptxas info    : Used 8 registers, used 0 barriers\n")
-    got = tool.report(text, ARCH)
-    if got != {"a": {"stack": 16, "spill_stores": 4, "spill_loads": 8, "registers": 30, "barriers": 1, "smem": 2048},
-               "b": {"stack": 0, "spill_stores": 0, "spill_loads": 0, "registers": 8, "barriers": 0, "smem": 0}}:
-        failures.append(f"the ptxas report parses to {got}")
-    for label, broken in (("another arch", text.replace("for 'sm_121a'", "for 'sm_120a'", 1)),
-                          ("a missing resource line", text.replace("ptxas info    : Used 8 registers, used 0 barriers\n", "")),
-                          ("no entry function", "ptxas info    : 0 bytes gmem\n")):
-        try:
-            tool.report(broken, ARCH)
-            failures.append(f"a report with {label} was accepted")
-        except tool.FixtureError:
-            pass
-    return failures
-
-
 def fixture_cases(tool):
     failures = []
     cubin = ROOT / tool.FIXTURES / f"fixture_kernels.{ARCH}.cubin"
@@ -75,7 +49,7 @@ def fixture_cases(tool):
 
 def main():
     tool = load_tool()
-    failures = report_cases(tool) + fixture_cases(tool)
+    failures = fixture_cases(tool)
     for failure in failures:
         print(f"FAIL {failure}")
     if failures:

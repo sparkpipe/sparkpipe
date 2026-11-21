@@ -33,7 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -486,6 +486,7 @@ PYTHON_TESTS := \
 	tests/test_nvrm_fixtures.py \
 	tests/test_nvrm_kernel_manifest.py \
 	tests/test_gpu_test_gate.py \
+	tests/test_nvrm_gpu_gate.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
@@ -1531,10 +1532,17 @@ build/test_nvrm_register_gpu: tests/test_nvrm_register.c tests/nvrm/fixture_kern
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_NVRM_REGISTER_GPU $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu
-.PHONY: test-nvrm-gpu
-test-nvrm-gpu: $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
-	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
-	for test_binary in $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light; do echo "RUN $$test_binary"; ./$$test_binary || status=1; done; \
+NVRM_CONTROL_DEVICE := /dev/nvidiactl
+
+.PHONY: test-nvrm-gpu nvrm-gpu-present
+nvrm-gpu-present:
+	@if [ ! -e $(NVRM_CONTROL_DEVICE) ]; then echo "FAIL test-nvrm-gpu: $(NVRM_CONTROL_DEVICE) is missing; the GPU gate runs only where the open kernel module is loaded"; exit 1; fi
+
+test-nvrm-gpu: nvrm-gpu-present $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; output=build/test-nvrm-gpu.output; \
+	for test_binary in $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light; do echo "RUN $$test_binary"; \
+		./$$test_binary > $$output 2>&1 || status=1; cat $$output; \
+		if grep -q '^SKIP' $$output; then echo "FAIL $$test_binary skipped part of the GPU gate"; status=1; fi; done; \
 	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done

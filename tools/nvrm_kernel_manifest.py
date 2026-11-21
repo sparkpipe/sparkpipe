@@ -8,12 +8,17 @@ the same compile, and the compile's ptxas -v log) become <tu>.manifest:
     flags <the compile's code-generation flags>
     source <path> <sha256>
     cubin <sha256> <bytes>
-    kernel <name> registers R barriers B stack S spill_stores T spill_loads L smem M
+    kernel <name> registers R barriers B stack S spill_stores T spill_loads L smem M [cumulative C]
     param <name> <index> <ptx type> align A bytes N offset O
     bound <name> <directive> <values>
 
 Kernels are the PTX's .entry functions; each needs ptxas's report for the
 target in the log, which may also hold other translation units' reports.
+stack is the kernel's own frame, from the "Function properties" block that
+names the kernel; a callee's block is not the kernel's. cumulative is the
+stack its whole call chain needs, recorded whenever ptxas reports it; the
+runtime sizes local memory by it. A kernel reported twice for the target
+with different numbers is refused.
 Parameters are laid out as the PTX ISA lays out .param space: in
 declaration order, each at its alignment (.align N, else its type's size).
 
@@ -31,8 +36,11 @@ import sys
 from pathlib import Path
 
 ENTRY = re.compile(r"^ptxas info\s+: Compiling entry function '([^']+)' for '([^']+)'$")
+PROPERTIES = re.compile(r"^ptxas info\s+: Function properties for (\S+)$")
 FRAME = re.compile(r"^\s+(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads$")
-USED = re.compile(r"^ptxas info\s+: Used (\d+) registers, used (\d+) barriers(?:, (\d+) bytes smem)?(?:, .*)?$")
+USED = re.compile(r"^ptxas info\s+: Used (\d+) registers, used (\d+) barriers((?:, [^,]+)*)$")
+SMEM = re.compile(r", (\d+) bytes smem(?:,|$)")
+CUMULATIVE = re.compile(r", (\d+) bytes cumulative stack size(?:,|$)")
 VERSION = re.compile(r"release [0-9.]+, V([0-9.]+)")
 PTX_ENTRY = re.compile(r"\.entry\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)([^{]*)\{")
 PTX_PARAM = re.compile(r"\.param\s+(?:\.align\s+(\d+)\s+)?\.([a-z]\d+)(?:\s+\.ptr(?:\s+\.[a-z]+)*(?:\s+\.align\s+\d+)?)?\s+[\w$]+(?:\[(\d+)\])?")
@@ -55,21 +63,36 @@ def nvcc_version(nvcc):
 def ptxas_report(text, arch):
     kernels = {}
     current = None
+    properties = None
+    fields = {}
     for line in text.splitlines():
         entry = ENTRY.match(line)
         if entry:
             current = entry.group(1) if entry.group(2) == arch else None
-            if current is not None:
-                kernels[current] = {}
+            properties = None
+            fields = {}
+            continue
+        named = PROPERTIES.match(line)
+        if named:
+            properties = named.group(1)
             continue
         frame = FRAME.match(line)
-        if frame and current is not None:
-            kernels[current].update(stack=int(frame.group(1)), spill_stores=int(frame.group(2)), spill_loads=int(frame.group(3)))
+        if frame and current is not None and properties == current:
+            fields.update(stack=int(frame.group(1)), spill_stores=int(frame.group(2)), spill_loads=int(frame.group(3)))
             continue
         used = USED.match(line)
         if used and current is not None:
-            kernels[current].update(registers=int(used.group(1)), barriers=int(used.group(2)), smem=int(used.group(3) or 0))
+            smem = SMEM.search(used.group(3))
+            cumulative = CUMULATIVE.search(used.group(3))
+            fields.update(registers=int(used.group(1)), barriers=int(used.group(2)), smem=int(smem.group(1)) if smem else 0)
+            if cumulative is not None:
+                fields.update(cumulative=int(cumulative.group(1)))
+            if current in kernels and kernels[current] != fields:
+                raise ManifestError(f"the ptxas log reports {current} for {arch} twice with different numbers: {kernels[current]} and {fields}")
+            kernels[current] = fields
             current = None
+            properties = None
+            fields = {}
     return kernels
 
 
@@ -113,8 +136,11 @@ def manifest(version, flags, source_name, source_bytes, cubin_bytes, ptx_text, l
         missing = [field for field in REPORT_FIELDS if field not in fields]
         if missing:
             raise ManifestError(f"ptxas reported no {', '.join(missing)} for {name}")
+        if "cumulative" in fields and fields["cumulative"] < fields["stack"]:
+            raise ManifestError(f"ptxas reported {name}'s cumulative stack {fields['cumulative']} below its own frame {fields['stack']}")
+        cumulative = f" cumulative {fields['cumulative']}" if "cumulative" in fields else ""
         lines.append(f"kernel {name} registers {fields['registers']} barriers {fields['barriers']} stack {fields['stack']} "
-                     f"spill_stores {fields['spill_stores']} spill_loads {fields['spill_loads']} smem {fields['smem']}")
+                     f"spill_stores {fields['spill_stores']} spill_loads {fields['spill_loads']} smem {fields['smem']}{cumulative}")
         layout, bounds = parameters[name]
         for index, (kind, align, size, offset) in enumerate(layout):
             lines.append(f"param {name} {index} {kind} align {align} bytes {size} offset {offset}")

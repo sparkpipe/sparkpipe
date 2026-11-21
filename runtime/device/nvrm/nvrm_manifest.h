@@ -24,6 +24,8 @@ typedef struct SparkNvrmManifestKernel
 	uint32_t registers;
 	uint32_t barriers;
 	uint32_t stack_bytes;
+	uint32_t cumulative_bytes;
+	uint32_t cumulative_reported;
 	uint32_t shared_bytes;
 	uint32_t parameter_count;
 	uint32_t parameter_capacity;
@@ -44,6 +46,7 @@ typedef struct SparkNvrmManifest
 SparkStatus SparkNvrmManifestParse(const char *text, uint64_t bytes, const char *owner, SparkNvrmManifest *manifest);
 const SparkNvrmManifestKernel *SparkNvrmManifestKernelNamed(const SparkNvrmManifest *manifest, const char *name);
 uint32_t SparkNvrmManifestParameterEnd(const SparkNvrmManifestKernel *kernel);
+uint32_t SparkNvrmManifestStackNeed(const SparkNvrmManifestKernel *kernel);
 SparkStatus SparkNvrmManifestCheck(const SparkNvrmManifest *manifest, const uint8_t *blob, uint64_t bytes, const SparkNvrmCubin *cubin, const char *owner);
 void SparkNvrmManifestRelease(SparkNvrmManifest *manifest);
 

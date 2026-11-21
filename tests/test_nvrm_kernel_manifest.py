@@ -4,9 +4,13 @@
 Synthetic inputs, no compiler: a stand-in nvcc that only answers --version, a
 PTX with two kernels (one with a mixed, aligned parameter list and a launch
 bound), and a ptxas log that also holds another translation unit's report and
-a report for another target. The manifest must list this unit's kernels with
-ptxas's numbers and the PTX ISA layout, and nothing is written when a kernel
-has no report for the target.
+a report for another target, and a callee's "Function properties" block
+before and after a kernel's own. The manifest must list this unit's kernels
+with ptxas's numbers (the kernel's own frame, and the cumulative stack when
+reported, in either order with smem) and the PTX ISA layout. Nothing is
+written when a kernel has no report for the target, when one kernel is
+reported twice for it with different numbers, or when a cumulative stack is
+below the kernel's own frame.
 """
 import hashlib
 import os
@@ -53,11 +57,15 @@ ptxas info    : Used 99 registers, used 0 barriers
 ptxas info    : Compiling entry function 'Alpha' for 'sm_121a'
 ptxas info    : Function properties for Alpha
     16 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads
-ptxas info    : Used 12 registers, used 0 barriers, 8 bytes cumulative stack size
+ptxas info    : Used 12 registers, used 0 barriers, 4216 bytes cumulative stack size
+ptxas info    : Function properties for _Z6Helperjj
+    4200 bytes stack frame, 84 bytes spill stores, 84 bytes spill loads
 ptxas info    : Compiling entry function 'Beta' for 'sm_121a'
+ptxas info    : Function properties for _Z6Helperjj
+    999 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
 ptxas info    : Function properties for Beta
     0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
-ptxas info    : Used 22 registers, used 1 barriers, 4000 bytes smem
+ptxas info    : Used 22 registers, used 1 barriers, 64 bytes cumulative stack size, 4000 bytes smem
 """
 
 
@@ -90,10 +98,10 @@ def main():
             "flags -O3 -arch=sm_121a",
             f"source {directory / 'unit.cu'} {source_digest}",
             f"cubin {cubin_digest} 15",
-            "kernel Alpha registers 12 barriers 0 stack 16 spill_stores 4 spill_loads 4 smem 0",
+            "kernel Alpha registers 12 barriers 0 stack 16 spill_stores 4 spill_loads 4 smem 0 cumulative 4216",
             "param Alpha 0 u64 align 8 bytes 8 offset 0",
             "param Alpha 1 u32 align 4 bytes 4 offset 8",
-            "kernel Beta registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000",
+            "kernel Beta registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000 cumulative 64",
             "param Beta 0 u8 align 1 bytes 1 offset 0",
             "param Beta 1 b8 align 8 bytes 24 offset 8",
             "param Beta 2 f32 align 4 bytes 4 offset 32",
@@ -105,11 +113,28 @@ def main():
         elif output.read_text() != expected:
             failures.append("the manifest differs from the expected lines:\n" + output.read_text())
         missing = directory / "missing.log"
-        missing.write_text(LOG.replace("for 'sm_121a'\nptxas info    : Function properties for Beta", "for 'sm_90a'\nptxas info    : Function properties for Beta"))
+        missing.write_text(LOG.replace("entry function 'Beta' for 'sm_121a'", "entry function 'Beta' for 'sm_90a'"))
         refused = directory / "refused.manifest"
         result = run(directory, missing, refused)
         if result.returncode != 1 or "no sm_121a report for Beta" not in result.stdout or refused.exists():
             failures.append(f"a kernel with only another target's report must be refused and nothing written: {result.stdout.strip()}")
+        twice = directory / "twice.log"
+        twice.write_text(LOG + "ptxas info    : Compiling entry function 'Alpha' for 'sm_121a'\nptxas info    : Function properties for Alpha\n"
+                         "    16 bytes stack frame, 4 bytes spill stores, 4 bytes spill loads\n"
+                         "ptxas info    : Used 13 registers, used 0 barriers, 4216 bytes cumulative stack size\n")
+        result = run(directory, twice, refused)
+        if result.returncode != 1 or "reports Alpha for sm_121a twice with different numbers" not in result.stdout or refused.exists():
+            failures.append(f"two reports of one kernel for one target with different numbers must be refused: {result.stdout.strip()}")
+        same = directory / "same.log"
+        same.write_text(LOG + LOG)
+        result = run(directory, same, output)
+        if result.returncode != 0 or output.read_text() != expected:
+            failures.append(f"a log that repeats a report with the same numbers must still be accepted: {result.stdout.strip()}")
+        below = directory / "below.log"
+        below.write_text(LOG.replace("4216 bytes cumulative", "8 bytes cumulative"))
+        result = run(directory, below, refused)
+        if result.returncode != 1 or "below its own frame" not in result.stdout or refused.exists():
+            failures.append(f"a cumulative stack below the kernel's own frame must be refused: {result.stdout.strip()}")
         result = run(directory, directory / "absent.log", refused)
         if result.returncode != 1 or refused.exists():
             failures.append("an unreadable log must be refused and nothing written")
