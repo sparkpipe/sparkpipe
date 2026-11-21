@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sparkpipe/spark_error_site.h"
@@ -7,6 +9,9 @@
 
 #define LAUNCH_COMPUTE_SUBCHANNEL 1u
 #define LAUNCH_BARRIERS 1u
+#define LAUNCH_PATH_BYTES 4096u
+#define LAUNCH_CUBIN_SUFFIX ".cubin"
+#define LAUNCH_MANIFEST_SUFFIX ".manifest"
 
 #define LAUNCH_TRY(call) \
 	do { \
@@ -15,13 +20,27 @@
 			SPARK_FAIL(launch_status); \
 	} while (0)
 
-SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, SparkNvrmProgram *program, const char *owner)
+static SparkStatus LaunchManifest(SparkNvrmProgram *program, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,
+	const char *owner)
+{
+	uint32_t index;
+	LAUNCH_TRY(SparkNvrmManifestParse(manifest,manifest_bytes,owner,&program->manifest));
+	LAUNCH_TRY(SparkNvrmManifestCheck(&program->manifest,blob,bytes,&program->cubin,owner));
+	for (index = 0u; index < program->cubin.kernel_count; index++)
+		program->cubin.kernels[index].barriers = SparkNvrmManifestKernelNamed(&program->manifest,program->cubin.kernels[index].name)->barriers;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,
+	SparkNvrmProgram *program, const char *owner)
 {
 	SparkStatus status;
 	memset(program,0,sizeof(*program));
 	program->code.map_fd = -1;
 	LAUNCH_TRY(SparkNvrmCubinParse(blob,bytes,owner,&program->cubin));
-	status = SparkNvrmMemoryAllocate(gpu,program->cubin.image_bytes + SPARK_NVRM_PROGRAM_PAD,SPARK_NVRM_MEMORY_HOST,&program->code,owner);
+	status = LaunchManifest(program,blob,bytes,manifest,manifest_bytes,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmMemoryAllocate(gpu,program->cubin.image_bytes + SPARK_NVRM_PROGRAM_PAD,SPARK_NVRM_MEMORY_HOST,&program->code,owner);
 	if ( status == SPARK_STATUS_OK )
 	{
 		uint32_t index,stack = 0u;
@@ -40,10 +59,76 @@ SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_
 	return(SPARK_STATUS_OK);
 }
 
+static uint8_t *LaunchReadFile(const char *path, uint64_t *bytes)
+{
+	FILE *file = fopen(path,"rb");
+	uint8_t *data = 0;
+	long length = -1;
+	if ( file == 0 )
+		return(0);
+	if ( fseek(file,0,SEEK_END) == 0 )
+		length = ftell(file);
+	if ( length >= 0 && fseek(file,0,SEEK_SET) == 0 )
+		data = (uint8_t *)malloc((size_t)length + 1u);
+	if ( data != 0 && fread(data,1u,(size_t)length,file) != (size_t)length )
+	{
+		free(data);
+		data = 0;
+	}
+	fclose(file);
+	if ( data != 0 )
+	{
+		data[length] = 0u;
+		*bytes = (uint64_t)length;
+	}
+	return(data);
+}
+
+static SparkStatus LaunchMissing(const char *path, const char *what, const char *owner)
+{
+	char text[128];
+	snprintf(text,sizeof(text),"cannot read %s %.80s",what,path);
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"library_load",owner,0,text);
+		SPARK_FAIL(status);
+	}
+}
+
+SparkStatus SparkNvrmProgramLoadFile(SparkNvrmGpu *gpu, const char *path, SparkNvrmProgram *program, const char *owner)
+{
+	char manifest_path[LAUNCH_PATH_BYTES];
+	const size_t length = strlen(path),suffix = sizeof(LAUNCH_CUBIN_SUFFIX) - 1u;
+	uint64_t bytes = 0u,manifest_bytes = 0u;
+	uint8_t *blob,*manifest;
+	SparkStatus status;
+	if ( length <= suffix || strcmp(path + length - suffix,LAUNCH_CUBIN_SUFFIX) != 0 || length - suffix + sizeof(LAUNCH_MANIFEST_SUFFIX) > sizeof(manifest_path) )
+	{
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"library_load",owner,0,"a kernel image is a .cubin file with its .manifest beside it");
+		SPARK_FAIL(status);
+	}
+	snprintf(manifest_path,sizeof(manifest_path),"%.*s%s",(int)(length - suffix),path,LAUNCH_MANIFEST_SUFFIX);
+	blob = LaunchReadFile(path,&bytes);
+	if ( blob == 0 )
+		return(LaunchMissing(path,"the kernel image",owner));
+	manifest = LaunchReadFile(manifest_path,&manifest_bytes);
+	if ( manifest == 0 )
+	{
+		free(blob);
+		return(LaunchMissing(manifest_path,"the kernel image's manifest",owner));
+	}
+	status = SparkNvrmProgramLoad(gpu,blob,bytes,(const char *)manifest,manifest_bytes,program,owner);
+	free(manifest);
+	free(blob);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return(SPARK_STATUS_OK);
+}
+
 void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program)
 {
 	if ( program->code.bytes != 0u )
 		SparkNvrmMemoryRelease(gpu,&program->code);
+	SparkNvrmManifestRelease(&program->manifest);
 	SparkNvrmCubinRelease(&program->cubin);
 	memset(program,0,sizeof(*program));
 	program->code.map_fd = -1;
@@ -64,7 +149,7 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 	memcpy(shape->grid,request->grid,sizeof(shape->grid));
 	memcpy(shape->block,request->block,sizeof(shape->block));
 	shape->registers = kernel->registers;
-	shape->barriers = LAUNCH_BARRIERS;
+	shape->barriers = kernel->barriers > LAUNCH_BARRIERS ? kernel->barriers : LAUNCH_BARRIERS;
 	shape->shared_bytes = kernel->shared_bytes + request->dynamic_shared_bytes;
 	shape->local_bytes = gpu->local_bytes_per_thread;
 	shape->sass_version = gpu->sass_version;

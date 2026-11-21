@@ -29,27 +29,6 @@ static int Failed(const char *step)
 	return(1);
 }
 
-static uint8_t *ReadFile(const char *path, uint64_t *bytes)
-{
-	FILE *file = fopen(path,"rb");
-	uint8_t *data;
-	long length;
-	if ( file == 0 )
-		return(0);
-	fseek(file,0,SEEK_END);
-	length = ftell(file);
-	fseek(file,0,SEEK_SET);
-	data = (uint8_t *)malloc((size_t)length);
-	if ( data != 0 && fread(data,1u,(size_t)length,file) != (size_t)length )
-	{
-		free(data);
-		data = 0;
-	}
-	fclose(file);
-	*bytes = (uint64_t)length;
-	return(data);
-}
-
 static void Describe(const SparkNvrmGpu *gpu)
 {
 	uint32_t index;
@@ -65,18 +44,8 @@ static void Describe(const SparkNvrmGpu *gpu)
 
 static int Load(Light *light, const char *path)
 {
-	uint64_t bytes = 0u;
-	uint8_t *blob = ReadFile(path,&bytes);
-	SparkStatus status;
-	if ( blob == 0 )
-	{
-		printf("FAIL cannot read %s\n",path);
-		return(1);
-	}
-	status = SparkNvrmProgramLoad(&light->gpu,blob,bytes,&light->program,"first light");
-	free(blob);
-	if ( status != SPARK_STATUS_OK )
-		return(Failed("load the kernel image"));
+	if ( SparkNvrmProgramLoadFile(&light->gpu,path,&light->program,"first light") != SPARK_STATUS_OK )
+		return(Failed("load the kernel image and its manifest"));
 	light->kernel = SparkNvrmCubinKernelNamed(&light->program.cubin,"SparkNvrmFirstLight");
 	if ( light->kernel == 0 )
 	{

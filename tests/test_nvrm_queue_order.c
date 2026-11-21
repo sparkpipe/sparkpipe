@@ -66,27 +66,6 @@ static int Failed(const char *step)
 	return(1);
 }
 
-static uint8_t *ReadFile(const char *path, uint64_t *bytes)
-{
-	FILE *file = fopen(path,"rb");
-	uint8_t *data;
-	long length;
-	if ( file == 0 )
-		return(0);
-	fseek(file,0,SEEK_END);
-	length = ftell(file);
-	fseek(file,0,SEEK_SET);
-	data = (uint8_t *)malloc((size_t)length);
-	if ( data != 0 && fread(data,1u,(size_t)length,file) != (size_t)length )
-	{
-		free(data);
-		data = 0;
-	}
-	fclose(file);
-	*bytes = (uint64_t)length;
-	return(data);
-}
-
 static int Launch(Order *order, const SparkNvrmCubinKernel *kernel, const void *arguments, uint32_t bytes, uint64_t *value)
 {
 	SparkNvrmLaunchRequest request;
@@ -300,20 +279,11 @@ static void TestAlternation(Order *order)
 
 static int Prepare(Order *order)
 {
-	uint64_t bytes = 0u;
-	uint8_t *blob = ReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes);
 	uint32_t set;
-	if ( blob == 0 )
-	{
-		printf("FAIL cannot read %s\n",SPARK_NVRM_FIXTURE_CUBIN);
-		failures++;
-		return(1);
-	}
 	if ( SparkNvrmGpuOpen(&order->gpu,0u,SPARK_NVRM_MEMORY_HOST,"order") != SPARK_STATUS_OK )
 		return(Failed("open the GPU"));
-	if ( SparkNvrmProgramLoad(&order->gpu,blob,bytes,&order->program,"order") != SPARK_STATUS_OK )
+	if ( SparkNvrmProgramLoadFile(&order->gpu,SPARK_NVRM_FIXTURE_CUBIN,&order->program,"order") != SPARK_STATUS_OK )
 		return(Failed("load the fixture"));
-	free(blob);
 	order->copy = SparkNvrmCubinKernelNamed(&order->program.cubin,"SparkNvrmStreamCopy");
 	order->fill = SparkNvrmCubinKernelNamed(&order->program.cubin,"SparkNvrmStreamFill");
 	if ( order->copy == 0 || order->fill == 0 )

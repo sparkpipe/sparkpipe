@@ -106,6 +106,28 @@ register count, parameters outside bank 0) fails with
 `SPARK_STATUS_PARSE_ERROR` or `SPARK_STATUS_UNSUPPORTED`, naming the
 cause, against `library_load`.
 
+Every cubin ships with a manifest beside it (`<name>.manifest` next to
+`<name>.cubin`), written by the same compile
+(`tools/nvrm_cubin_fixtures.py` for the fixtures). It names the cubin by
+size and sha256 and lists, per kernel:
+
+- **The compiler's resource report:** registers, barriers, stack frame,
+  spills and static shared memory, from `ptxas -v`.
+- **The parameter table:** each parameter's PTX type, alignment, size and
+  offset, in declaration order. It comes from the `.param` declarations of
+  the PTX that nvcc fed ptxas in that compile (kept with `-keep`), laid out
+  as the PTX ISA defines kernel parameters.
+- **Launch bounds and cluster directives:** `.maxntid`, `.reqntid`,
+  `.minnctapersm`, `.maxnreg`, `.reqnctapercluster`, `.explicitcluster` and
+  `.maxclusterrank`.
+
+`SparkNvrmProgramLoadFile` loads a cubin only with its manifest, and
+`nvrm_manifest.c` checks the two against each other: the digest and
+size, the same kernels, and each kernel's registers, stack and parameter
+table ending exactly where its constant bank does. A mismatch fails with
+`SPARK_STATUS_TARGET_MISMATCH` against `library_load`. A launch takes its
+barrier count from the manifest, and at least one.
+
 ## Launch descriptors
 
 `runtime/device/nvrm/nvrm_qmd.c` packs a Blackwell compute launch

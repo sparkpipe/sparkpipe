@@ -40,27 +40,6 @@ typedef struct Probe
 
 static const char *const probe_names[PROBE_VALUES] = {"block x", "block y", "block z", "grid x", "grid y", "grid z"};
 
-static uint8_t *ReadFile(const char *path, uint64_t *bytes)
-{
-	FILE *file = fopen(path,"rb");
-	uint8_t *data;
-	long length;
-	if ( file == 0 )
-		return(0);
-	fseek(file,0,SEEK_END);
-	length = ftell(file);
-	fseek(file,0,SEEK_SET);
-	data = (uint8_t *)malloc((size_t)length);
-	if ( data != 0 && fread(data,1u,(size_t)length,file) != (size_t)length )
-	{
-		free(data);
-		data = 0;
-	}
-	fclose(file);
-	*bytes = (uint64_t)length;
-	return(data);
-}
-
 static int ProbeFailed(const char *step)
 {
 	const SparkDeviceError *error = SparkDeviceLastError();
@@ -181,24 +160,15 @@ static void Release(Probe *probe)
 int main(void)
 {
 	static Probe probe;
-	uint64_t bytes = 0u;
-	uint8_t *blob;
 	if ( access("/dev/nvidiactl",F_OK) != 0 )
 	{
 		printf("SKIP test_nvrm_launch_dimensions (no open kernel module on this host)\n");
 		return(0);
 	}
-	blob = ReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes);
-	if ( blob == 0 )
-	{
-		printf("FAIL cannot read %s\n",SPARK_NVRM_FIXTURE_CUBIN);
-		return(1);
-	}
 	if ( SparkNvrmGpuOpen(&probe.gpu,0u,SPARK_NVRM_MEMORY_HOST,"probe") != SPARK_STATUS_OK )
 		return(ProbeFailed("open the GPU"));
-	if ( SparkNvrmProgramLoad(&probe.gpu,blob,bytes,&probe.program,"probe") != SPARK_STATUS_OK )
+	if ( SparkNvrmProgramLoadFile(&probe.gpu,SPARK_NVRM_FIXTURE_CUBIN,&probe.program,"probe") != SPARK_STATUS_OK )
 		return(ProbeFailed("load the fixture"));
-	free(blob);
 	probe.kernel = SparkNvrmCubinKernelNamed(&probe.program.cubin,"SparkNvrmProbeDimensions");
 	if ( probe.kernel == 0 ||
 		SparkNvrmMemoryAllocate(&probe.gpu,SPARK_NVRM_PAGE_BYTES,SPARK_NVRM_MEMORY_HOST,&probe.output,"probe") != SPARK_STATUS_OK ||
