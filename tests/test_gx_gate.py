@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate GX against a fake engine with a prefix cache: an engine whose outputs depend only on the request passes every arm; one whose arithmetic follows its resume point fails reuse against cold; one that corrupts a restored chain fails restored against uninterrupted; a chain lost at eviction, a cold step on an uncleared cache, a request from another client and a step not run each leave the verdict INCOMPLETE; a context the deployment cannot serve is skipped or fitted."""
+"""Gate GX against a fake engine with a prefix cache: an engine whose outputs depend only on the request passes every arm; one whose arithmetic follows its resume point fails reuse against cold; one that corrupts a restored chain fails restored against uninterrupted; a chain lost at eviction, a cold step on an uncleared cache, a request from another client and a step not run each leave the verdict INCOMPLETE; a context the deployment cannot serve is skipped or fitted; each request's queue time and time to first token, and each step's KV store and engine counters, come from the API log of the engine that is running."""
 import contextlib
 import hashlib
 import importlib.util
@@ -18,7 +18,8 @@ spec.loader.exec_module(gx)
 
 
 class FakeEngine:
-    def __init__(self, follows_resume=False, loses_on_evict=False, corrupts_restored=False):
+    def __init__(self, follows_resume=False, loses_on_evict=False, corrupts_restored=False, log=None):
+        self.log = log
         self.follows_resume = follows_resume
         self.loses_on_evict = loses_on_evict
         self.corrupts_restored = corrupts_restored
@@ -58,6 +59,13 @@ class FakeEngine:
                 tokens[-1] += 1
             self.chains.append(list(prompt) + tokens[:-1])
             self.served += 1
+            if self.log:
+                with open(self.log, "a") as log:
+                    log.write("api " + json.dumps({"event": "request_measurements", "boot_pid": 7, "prompt_sha256": gx.prompt_digest(prompt), "accepted_ns": 1000000,
+                                                   "first_dispatch_ns": 3000000, "stale_prefix_recomputes": 0, "tokens": [[token, 6000000 + index * 1000000] for index, token in enumerate(tokens)]}) + "\n")
+                    for rank, pages in ((0, 3), (1, 4)):
+                        log.write(json.dumps({"event": "kv_store_report", "boot_pid": 7, "rank": rank, "restore_pages": pages * self.served, "save_pages": 1}) + "\n")
+                    log.write(json.dumps({"event": "engine_measurements", "boot_pid": 7, "completed": self.served, "prefix_hits": 2}) + "\n")
         reply = {"object": "text_completion", "tokens": tokens, "finish_reason": "length",
                  "usage": {"prompt_tokens": len(prompt), "completion_tokens": len(tokens), "prompt_tokens_details": {"cached_tokens": cached}}}
         if "logprobs" in body:
@@ -111,6 +119,7 @@ class GxGateTests(unittest.TestCase):
     def run_gate(self, engine, skip=(), without_change=(), intrude=None):
         server = serve(engine)
         api = "http://127.0.0.1:%d" % server.server_address[1]
+        logged = ["--api-log", engine.log] if engine.log else []
         try:
             status, listing = self.plan()
             self.assertEqual(status, 0, listing)
@@ -123,7 +132,7 @@ class GxGateTests(unittest.TestCase):
                     getattr(engine, change, lambda: None)()
                 if name == intrude:
                     engine.complete({"prompt_token_ids": [5, 6, 7], "max_tokens": 1})
-                status, output = call("run", name, "--state", self.state, "--api", api)
+                status, output = call("run", name, "--state", self.state, "--api", api, *logged)
                 if status != 0:
                     failed.append((name, output))
             status, table = call("verdict", "--state", self.state, "--output", self.receipt)
@@ -210,6 +219,24 @@ class GxGateTests(unittest.TestCase):
         status, receipt, failed, table = self.run_gate(FakeEngine(), skip=("park:4096", "restore:4096"))
         self.assertEqual((status, receipt["verdict"]), (2, "INCOMPLETE"), table)
         self.assertEqual({entry["restored"] for entry in receipt["verdicts"] if entry["nominal"] == 4096}, {"NOT-RUN"})
+
+    def test_timing_and_counters_come_from_the_running_engine_s_log(self):
+        log = str(Path(self.directory.name) / "api.log")
+        with open(log, "w") as handle:
+            handle.write(json.dumps({"event": "kv_store_report", "boot_pid": 5, "rank": 9, "restore_pages": 1000, "save_pages": 1000}) + "\n")
+            handle.write("not json\n")
+        status, receipt, failed, table = self.run_gate(FakeEngine(log=log))
+        self.assertEqual((status, receipt["verdict"], failed), (0, "PASS", []), table)
+        chain = receipt["steps"]["chain"]
+        self.assertTrue(all((request["queue_ms"], request["first_token_ms"], request["stale_prefix_recomputes"]) == (2.0, 5.0, 0) for request in chain["requests"]), chain["requests"][:2])
+        measured = [request for request in chain["requests"] if request["max_tokens"] == 6]
+        self.assertTrue(measured and all(request["last_token_ms"] == 10.0 for request in measured))
+        self.assertEqual(chain["counters_before"], {"ranks_reporting": 1, "store": dict.fromkeys(gx.STORE_COUNTERS, 0) | {"restore_pages": 1000, "save_pages": 1000}})
+        served = len(chain["requests"])
+        self.assertEqual(chain["counters_after"]["ranks_reporting"], 2)
+        self.assertEqual((chain["counters_after"]["store"]["restore_pages"], chain["counters_after"]["store"]["save_pages"]), (7 * served, 2))
+        self.assertEqual((chain["counters_after"]["engine"]["completed"], chain["counters_after"]["engine"]["prefix_hits"]), (served, 2))
+        self.assertEqual(receipt["steps"]["cold:1"]["counters_before"]["engine"]["completed"], sum(len(step["requests"]) for name, step in receipt["steps"].items() if name != "cold:1" and name != "cold:40"))
 
     def test_contexts_are_fitted_to_the_deployment(self):
         arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed"]

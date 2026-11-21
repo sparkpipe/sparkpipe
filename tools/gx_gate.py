@@ -40,6 +40,11 @@ GRID = 1024
 MID_BLOCK = 21
 SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
+LOG_TAIL_BYTES = 16 << 20
+STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "restore_pages", "restore_ns", "restore_misses", "restore_failures", "store_files",
+                  "store_used_bytes", "store_evictions", "pool_resident_pages", "pool_adopted_pages", "pool_evicted_entries", "spill_write_bytes")
+ENGINE_COUNTERS = ("completed", "prefix_hits", "prefix_misses", "prefix_hit_tokens", "stale_prefix_recomputes", "rejected_waves_busy", "rejected_waves_not_found",
+                   "verify_lanes", "draft_tokens", "accepted_draft_tokens")
 
 
 class GateError(Exception):
@@ -186,6 +191,34 @@ class Api:
                 return {}
             time.sleep(0.2)
 
+    def counters(self):
+        size = self.log_size()
+        if size is None:
+            return {}
+        ranks, engine, boot = {}, None, None
+        try:
+            with open(self.log_path, errors="replace") as log:
+                log.seek(max(0, size - LOG_TAIL_BYTES))
+                for line in log:
+                    if '"kv_store_report"' not in line and '"engine_measurements"' not in line:
+                        continue
+                    try:
+                        event = json.loads(line[line.index("{"):])
+                    except ValueError:
+                        continue
+                    if event.get("boot_pid") != boot:
+                        ranks, engine, boot = {}, None, event.get("boot_pid")
+                    if event.get("event") == "kv_store_report":
+                        ranks[event.get("rank")] = event
+                    else:
+                        engine = event
+        except OSError:
+            return {}
+        out = {"ranks_reporting": len(ranks), "store": {name: sum(report.get(name) or 0 for report in ranks.values()) for name in STORE_COUNTERS}}
+        if engine is not None:
+            out["engine"] = {name: engine.get(name) for name in ENGINE_COUNTERS}
+        return out
+
     def complete(self, prompt, max_tokens, options):
         body = dict(options, prompt_token_ids=prompt, max_tokens=max_tokens, temperature=0)
         request = urllib.request.Request(self.base + "/v1/completions", data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
@@ -308,6 +341,7 @@ class Step:
         self.record["health_before"] = before
         if before.get("live_requests"):
             raise GateError("the API has %d live requests: the gate runs alone" % before["live_requests"])
+        self.record["counters_before"] = self.api.counters()
         try:
             if kind == "chain":
                 self.chain()
@@ -321,6 +355,7 @@ class Step:
             self.record["foreign_requests"] = after.get("served", 0) - before.get("served", 0) - len(self.record["requests"])
         except GateError as error:
             self.record.setdefault("error", str(error))
+        self.record["counters_after"] = self.api.counters()
         self.record["finished"] = stamp()
         self.state["steps"][self.name] = self.record
         return "error" not in self.record
