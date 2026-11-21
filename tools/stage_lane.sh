@@ -107,6 +107,20 @@ firmware_copy() {
   return 1
 }
 
+firmware_copy_tree() {
+  local host="$1" destination="$2" tree="$3" attempt
+  [ -d "$STAGE_FIRMWARE/$tree" ] || { echo "stage_lane: $STAGE_FIRMWARE/$tree is missing; build the adapter with its kernels directory" >&2; return 1; }
+  for attempt in 1 2 3 4 5; do
+    if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+      $SSH "$STAGE_FIRMWARE_HOST" "scp -q -r -o BatchMode=yes $STAGE_FIRMWARE/$tree $host:$destination" < /dev/null && return 0
+    else
+      scp -q -r "$STAGE_FIRMWARE/$tree" "$host:$destination" && return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  return 1
+}
+
 setup() {
   local generated rank host root pack state busy=""
   : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
@@ -126,6 +140,8 @@ setup() {
       $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
       firmware_copy "$host" "$root/bin/" sparkpipe_model_residentd weightd_warm
       firmware_copy "$host" "$root/lib/$ADAPTER_FILE" "$ADAPTER_FILE"
+      $SSH "$host" "rm -rf $root/lib/$ADAPTER_FILE.kernels" < /dev/null
+      firmware_copy_tree "$host" "$root/lib/" "$ADAPTER_FILE.kernels"
       firmware_copy "$host" "$root/lib/runtime_libs/" runtime_libs/libsparkpipe_device_cuda.so
       firmware_copy "$host" "$root/lib/hidden_transport.so" libhidden_transport_spark_host_rdma_verbs.so
       scp -q "$generated/deployment.json" "$host:$root/"
@@ -161,6 +177,7 @@ api_setup() {
   $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib/runtime_libs $api/runtime/tokenizer
     install -m 755 $STAGE_API_FIRMWARE/sparkpipe_model_api $STAGE_API_FIRMWARE/sparkpipe_tokenize_prompt $api/bin/
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
+    rm -rf $api/runtime/lib/$ADAPTER_FILE.kernels && cp -R $STAGE_API_FIRMWARE/$ADAPTER_FILE.kernels $api/runtime/lib/
     install -m 755 $STAGE_API_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so $api/runtime/lib/runtime_libs/
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"
