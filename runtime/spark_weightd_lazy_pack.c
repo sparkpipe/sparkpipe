@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "sparkpipe/spark_gpu.h"
 
 SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 {
@@ -37,7 +38,7 @@ SparkStatus SparkWeightdLazyPackDestroy(SparkWeightdLazyPack *pack)
 	}
 	if ( pack->spine_allocation != 0 )
 	{
-		if ( cudaFree(pack->spine_allocation) != cudaSuccess )
+		if ( SparkGpuFree(pack->spine_allocation) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		pack->spine_allocation = 0;
 		pack->spine = 0;
@@ -77,7 +78,7 @@ static SparkStatus lazy_spine_load(SparkWeightdLazyPack *pack,int32_t fd,const S
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	status = SparkWeightdNodeMemoryAdmit(SPARK_WEIGHTD_MEMINFO_PATH,bytes + 255u,"private weight spine",request->identity.model);
-	if ( status == SPARK_STATUS_OK && cudaMalloc(&pack->spine_allocation,(size_t)(bytes + 255u)) != cudaSuccess )
+	if ( status == SPARK_STATUS_OK && SparkGpuMalloc(&pack->spine_allocation,(size_t)(bytes + 255u)) != SPARK_GPU_SUCCESS )
 	{
 		pack->spine_allocation = 0;
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;

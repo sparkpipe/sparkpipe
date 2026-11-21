@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 #include <cuda.h>
-#include <cuda_runtime.h>
+#include "sparkpipe/spark_gpu.h"
 
 static void SparkWeightdAttachSetReason(char *reason, const char *text)
 {
@@ -204,8 +204,8 @@ static void SparkWeightdAttachCloseBatchFds(SparkWeightdExportBatch *batch)
 static int SparkWeightdAttachDeviceId(void)
 {
     int device = 0;
-    (void)cudaFree(0);
-    (void)cudaGetDevice(&device);
+    (void)SparkGpuFree(0);
+    (void)SparkGpuGetDevice(&device);
     return device;
 }
 

@@ -29,6 +29,7 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#include "sparkpipe/spark_gpu.h"
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -99,7 +100,6 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
     return 0u;
 }
 
-#include <cuda_runtime.h>
 #include <cuda.h>
 
 #include "sparkpipe/spark_sha256.h"
@@ -867,7 +867,7 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     uint32_t index;
     int device = 0;
 
-    if (cudaGetDevice(&device) != cudaSuccess)
+    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
@@ -968,7 +968,7 @@ static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
     CUdeviceptr base = 0;
     int device = 0;
 
-    if (cudaGetDevice(&device) != cudaSuccess)
+    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
@@ -1423,8 +1423,8 @@ static SparkStatus SparkWeightdVerifySinkWrite(void *context,
     if (sink->hash == 2u)
         SparkCk128Update(&sink->ck, data, (size_t)bytes);
     if (sink->device != 0 &&
-        cudaMemcpy((void *)(sink->device + offset), data, (size_t)bytes,
-            cudaMemcpyHostToDevice) != cudaSuccess)
+        SparkGpuMemcpy((void *)(sink->device + offset), data, (size_t)bytes,
+            SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS)
         return SPARK_STATUS_IO_ERROR;
     return SPARK_STATUS_OK;
 }
@@ -1734,7 +1734,7 @@ static SparkStatus SparkWeightdSlotsFill(SparkWeightdServer *server,
 	CUmemAllocationProp prop;
 	uint32_t index;
 	int device = 0;
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -1846,7 +1846,7 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 
 	if ( arena->expert_pool_bytes <= arena->identity.arena_bytes )
 		SPARK_RETURN(SparkWeightdCreateSlots(server,arena));
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -2255,7 +2255,7 @@ static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,Spark
     uint32_t index;
     int device = 0;
 
-    if (cudaGetDevice(&device) != cudaSuccess)
+    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
@@ -2415,8 +2415,8 @@ static SparkStatus SparkWeightdEvictGroup(SparkWeightdServer *server,SparkWeight
 	arena->experts[group_index].present = 0u;
 	arena->epoch++;
 	if ( arena->epoch_device != 0 )
-		(void)cudaMemcpy(arena->epoch_device,&arena->epoch,
-		    sizeof(uint64_t),cudaMemcpyHostToDevice);
+		(void)SparkGpuMemcpy(arena->epoch_device,&arena->epoch,
+		    sizeof(uint64_t),SPARK_GPU_COPY_HOST_TO_DEVICE);
 	return(SPARK_STATUS_OK);
 }
 
@@ -2482,12 +2482,12 @@ static SparkStatus SparkWeightdLoadRangeFromStaging(SparkWeightdArena *arena,
 	SparkCk128Finalize(&context,digest);
 	if ( memcmp(digest,range->digest,sizeof(digest)) != 0 )
 		return(SPARK_STATUS_HASH_MISMATCH);
-	if ( cudaMemcpy((uint8_t *)arena->device_base + range->offset,source,
-		(size_t)range->bytes,cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMemcpy((uint8_t *)arena->device_base + range->offset,source,
+		(size_t)range->bytes,SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
 			(unsigned long long)range->offset,
-			(unsigned long long)range->bytes,cudaGetErrorString(cudaGetLastError()));
+			(unsigned long long)range->bytes,SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	return(SPARK_STATUS_OK);
@@ -2538,11 +2538,11 @@ static SparkStatus SparkWeightdLeaseSinkRange(void *context,uint32_t span_index,
 	if ( span_offset == 0u )
 		SparkCk128Initialize(&sink->context);
 	SparkCk128Update(&sink->context,data,(size_t)bytes);
-	if ( cudaMemcpy((uint8_t *)sink->arena->device_base + range->offset + span_offset,data,(size_t)bytes,cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMemcpy((uint8_t *)sink->arena->device_base + range->offset + span_offset,data,(size_t)bytes,SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
 			(unsigned long long)(range->offset + span_offset),
-			(unsigned long long)bytes,cudaGetErrorString(cudaGetLastError()));
+			(unsigned long long)bytes,SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	if ( span_offset + bytes == range->bytes )
@@ -2743,9 +2743,9 @@ static SparkStatus SparkWeightdAcquireLoad(SparkWeightdServer *server,SparkWeigh
 	status = SparkWeightdLoadLease(server,arena,fd,is_direct,lease);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_lease status=%u\n",(unsigned)status);
-	else if ( cudaDeviceSynchronize() != cudaSuccess )
+	else if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 	{
-		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_complete cuda=%d\n",(int)cudaGetLastError());
+		fprintf(stderr,"ACQUIRE-LOAD-STAGE stage=load_complete cuda=%d\n",(int)SparkGpuGetLastError());
 		status = SPARK_STATUS_IO_ERROR;
 	}
 	(void)close(fd);
@@ -3607,7 +3607,7 @@ static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKv
 	SparkWeightdKvMakeRoom(server,pool,(uint64_t)(target - pool->chunk_count) * pool->chunk_bytes);
 	room = SparkWeightdKvFreeBytes(server) / pool->chunk_bytes;
 	grant = target - pool->chunk_count < room ? target : pool->chunk_count + (uint32_t)room;
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
 		return(pool->chunk_count);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -3647,7 +3647,7 @@ static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAtt
 		request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX || SparkWeightdKvChunksFor(request->device_bytes,request->chunk_bytes) > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
 		memchr(request->label,'\0',sizeof(request->label)) == 0 || request->label[0] == '\0' )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -5046,7 +5046,7 @@ SparkStatus SparkWeightdServerCreateUnbound(const SparkWeightdServerConfig *conf
     if (pipe(instance->dispatch_notify) != 0 ||
         fcntl(instance->dispatch_notify[0],F_SETFL,O_NONBLOCK) != 0 ||
         fcntl(instance->dispatch_notify[1],F_SETFL,O_NONBLOCK) != 0 ||
-        cudaFree(0) != cudaSuccess ||
+        SparkGpuFree(0) != SPARK_GPU_SUCCESS ||
         SparkWeightdWorkerCreate(&instance->worker) != SPARK_STATUS_OK)
     {
         SparkWeightdServerDestroy(instance);
