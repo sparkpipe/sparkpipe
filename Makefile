@@ -462,6 +462,7 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
 	tests/test_launch_path.py \
+	tests/test_gpu_api.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_capture_cuda.py \
 	tests/test_device_contract_metal.py \
@@ -649,6 +650,7 @@ PYTHON_TESTS := \
 	tests/test_route_nan_cuda.py \
 	tests/test_bf16_convert_cuda.py \
 	tests/test_rms_norm_cuda.py \
+	tests/test_gpu_api_cuda.py \
 	tests/test_quantise_rows_cuda.py \
 	tests/test_index_select_bound_cuda.py \
 	tests/test_moe_finalize_add_cuda.py \

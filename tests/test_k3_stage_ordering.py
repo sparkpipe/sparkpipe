@@ -23,6 +23,14 @@ def body(text, name):
     return text[match.end():cursor]
 
 
+GPU = r"(?:cuda|SparkGpu)"
+
+
+def first(text, call):
+    found = [index for index in (text.find("cuda" + call), text.find("SparkGpu" + call)) if index >= 0]
+    return min(found) if found else -1
+
+
 def statements_calling(text, call):
     return [m.group(0) for m in re.finditer(r"(?m)^\s*" + call + r"\(", text)]
 
@@ -32,19 +40,19 @@ def check_runner(failures):
     model = MODEL.read_text()
     for source, name in ((text, "StageRunnerCopy"), (model, "K3RunnerCopy")):
         copy = body(source, name)
-        if not re.search(r"cudaMemcpyAsync\(destination,\s*source,[^;]*stream\)", copy) or \
-                not re.search(r"return cudaStreamSynchronize\(stream\);", copy):
+        if not re.search(GPU + r"MemcpyAsync\(destination,\s*source,[^;]*stream\)", copy) or \
+                not re.search(r"return " + GPU + r"StreamSynchronize\(stream\);", copy):
             failures.append(f"{name} is not an execution-stream copy followed by a "
                             "sync of that stream; residentd's stream is non-blocking, so a "
                             "legacy-stream copy races the step kernels")
     acquire = body(text, "StageRunnerExpertWeightsService")
     outside = text.replace(acquire, "") + model
-    if re.search(r"\bcudaMemcpy\(", outside):
+    if re.search(r"\b" + GPU + r"Memcpy\(", outside):
         failures.append("a legacy-stream cudaMemcpy appears outside the expert route "
                         "readback; stage inputs, index buffers, collective staging and "
                         "outputs go through the stream-ordered copy")
-    sync = acquire.find("cudaStreamSynchronize(state->stream)")
-    readback = acquire.find("cudaMemcpy(")
+    sync = first(acquire, "StreamSynchronize(state->stream)")
+    readback = first(acquire, "Memcpy(")
     if readback >= 0 and (sync < 0 or sync > readback):
         failures.append("the expert route readback does not follow a sync of the "
                         "execution stream, so it can read stale group offsets")
@@ -52,10 +60,11 @@ def check_runner(failures):
         failures.append("a device-collective enqueue result is discarded, or the model "
                         "calls the device collective instead of the runner's round service")
     apply = body(model, "K3RunnerTpApply")
-    if not apply or statements_calling(apply, "cudaMemcpyAsync"):
+    if not apply or statements_calling(apply, GPU + "MemcpyAsync"):
         failures.append("the device-collective apply step discards a copy result; "
                         "a failed gate_up or shared copy must fail the step")
-    if apply.count("cudaMemcpyAsync(") == 0 or apply.count("SPARK_STATUS_IO_ERROR") < apply.count("cudaMemcpyAsync("):
+    copies = apply.count("cudaMemcpyAsync(") + apply.count("SparkGpuMemcpyAsync(")
+    if copies == 0 or apply.count("SPARK_STATUS_IO_ERROR") < copies:
         failures.append("a device-collective apply copy does not record its failure")
     registered = set(re.findall(r"completion_function\s*=\s*(\w+);", text))
     for name in re.findall(r"^static void (\w+)\([^)]*\)\s*\{", text, re.M):
@@ -70,7 +79,7 @@ def check_runner(failures):
         failures.append("a tensor-parallel layer reduce without its device collective does not fail the step")
     submit = body(text, "SparkStageRunnerSubmit")
     begin = submit.find("StageRunnerChainBegin(state, dispatch->request_id)")
-    first_work = min(i for i in (submit.find("cudaMemcpyAsync(state->token_ids_device"), submit.find("StageRunnerStageInput(")) if i >= 0)
+    first_work = min(i for i in (first(submit, "MemcpyAsync(state->token_ids_device"), submit.find("StageRunnerStageInput(")) if i >= 0)
     if begin < 0 or begin > first_work:
         failures.append("the step does not key its device-collective chain before "
                         "its first collective; an unkeyed chain exhausts the "

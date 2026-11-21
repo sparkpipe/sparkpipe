@@ -112,6 +112,7 @@ FAST_TESTS = (
     "tests/test_dry_law.py",
     "tests/test_device_neutral.py",
     "tests/test_launch_path.py",
+    "tests/test_gpu_api.py",
     "tests/test_no_symlinks.py",
     "tests/test_unlinked_components.py",
     "tests/test_sources_exist.py",
