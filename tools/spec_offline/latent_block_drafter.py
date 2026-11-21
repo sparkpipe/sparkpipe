@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import math
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -392,7 +391,6 @@ class LatentContext:
         self.held = np.zeros(0, dtype=bool)
         self.tokens = np.zeros(0, dtype=np.uint32)
         self.verified = 0
-        self.used = time.monotonic()
 
     def grow(self, end):
         if end <= self.held.shape[0]:
@@ -425,7 +423,6 @@ class LatentContext:
                 self.pages[index][page][lo - page * self.page_positions:hi - page * self.page_positions] = rows[index][lo - first:hi - first]
         self.held[first:end] = True
         self.tokens[first:end] = tokens
-        self.used = time.monotonic()
 
     def ring_rows(self, position):
         begin = max(0, position - (self.window - self.drafter.block))

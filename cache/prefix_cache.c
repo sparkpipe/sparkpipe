@@ -3410,40 +3410,6 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     return resume;
 }
 
-SparkStatus SparkPrefixCacheExpire(
-    SparkPrefixCache *cache,
-    uint64_t now_seconds,
-    uint32_t *expired_out)
-{
-    uint32_t entry_index;
-    uint32_t expired = 0u;
-    SparkStatus status;
-
-    if (cache == 0 || expired_out == 0)
-    {
-        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-    }
-    *expired_out = 0u;
-    for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
-    {
-        SparkPrefixCacheEntry *entry = &cache->entries[entry_index];
-        if (!SparkPrefixCacheEntryIsEvictable(entry) ||
-            (uint64_t)entry->used_seconds + SPARK_KV_RETENTION_SECONDS > now_seconds)
-        {
-            continue;
-        }
-        status = SparkPrefixCacheInvalidateEntry(cache, entry);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        expired++;
-    }
-    cache->evicted_block_count += expired;
-    *expired_out = expired;
-    return SPARK_STATUS_OK;
-}
-
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,
@@ -3591,7 +3557,6 @@ SparkStatus SparkPrefixCacheImportCommitted(
     uint32_t imported = 0u;
     uint32_t skipped = 0u;
     uint64_t epoch;
-    uint64_t now_seconds = SparkPrefixCacheNowSeconds();
     SparkPrefixCacheParentIndex parents;
     SparkStatus status;
 
@@ -3618,7 +3583,6 @@ SparkStatus SparkPrefixCacheImportCommitted(
         if (record->token_count == 0u || record->token_count > cache->block_token_count ||
             record->first_token_index % cache->block_token_count != 0u ||
             (record->flags & ~SPARK_PREFIX_CACHE_ENTRY_FLAG_RESUME) != 0u || record->used_seconds == 0u ||
-            (uint64_t)record->used_seconds + SPARK_KV_RETENTION_SECONDS <= now_seconds ||
             SparkPrefixCacheFindEntry(cache, record->parent_hash, record->block_hash, record->content_hash,
                 &record_digest, record->first_token_index, record->token_count, 0u) != 0 ||
             cache->free_entry_head == SPARK_PREFIX_CACHE_NO_ENTRY)
