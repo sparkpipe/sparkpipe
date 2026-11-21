@@ -711,6 +711,7 @@ PYTHON_TESTS := \
 	tests/test_chat_frontend_output_cap.py \
 	tests/test_chat_frontend_prefix_ledger.py \
 	tests/test_chat_frontend_sampling_defaults.py \
+	tests/test_chat_frontend_effort_levels.py \
 	tests/test_open_webui_github_tool.py \
 	tests/test_open_webui_models_opt_in.py \
 	tests/test_model_swap_drain_quiet.py \
