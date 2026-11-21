@@ -3,13 +3,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
+#include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_hy4_device_stage.h"
 #include "sparkpipe/spark_hy4_family.h"
 #include "sparkpipe/spark_hy4_tp16_stage_model.h"
 
 #define HD_SLICES 32u
 #define HD_MIXES 8u
+#define HD_SELECT_ROWS 64u
 
 template<class P>
 struct HyDevice
@@ -24,12 +27,23 @@ struct HyDevice
 		SparkTensor scale;
 	};
 
+	struct Indexer
+	{
+		SparkDeviceWeight query;
+		SparkDeviceWeight key;
+		SparkTensor key_norm;
+		SparkTensor key_bias;
+		SparkTensor weights;
+	};
+
 	struct Layer
 	{
 		Hyper hyper[2];
 		SparkTensor input_norm;
 		SparkTensor post_norm;
 		SparkDeviceLatentAttentionWeights attention;
+		Indexer indexer;
+		uint32_t index_slot;
 		SparkDeviceFfnWeights ffn;
 		SparkDeviceFfnWeights shared;
 		SparkTensor router;
@@ -46,6 +60,10 @@ struct HyDevice
 		SparkDeviceStageShape shape;
 		SparkDeviceLatentAttentionShape attention_shape;
 		SparkDeviceLatentAttentionRope rope;
+		SparkIndexerShape index_shape;
+		SparkHeadRopeParams index_query_rope;
+		SparkHeadRopeParams index_key_rope;
+		uint32_t score_stride;
 		Layer layers[G::kLayers];
 		Hyper head;
 		uint32_t ffn_rows;
@@ -60,12 +78,25 @@ struct HyDevice
 		SparkDeviceLatentAttentionScratch attention;
 		SparkDeviceFfnScratch ffn_scratch;
 		SparkDeviceExpertsScratch experts;
+		SparkTensor index_query;
+		SparkTensor index_key;
+		SparkTensor index_weights;
+		SparkTensor index_scores;
+		SparkTensor selected;
 	};
 
 	struct Frame
 	{
 		SparkDeviceStepTensors t;
 		SparkDeviceQueue *queue;
+		uint32_t sparse;
+	};
+
+	struct IndexStep
+	{
+		State *state;
+		const Frame *frame;
+		const Layer *layer;
 	};
 
 	static uint64_t Max(uint64_t a, uint64_t b)
@@ -103,6 +134,40 @@ struct HyDevice
 		attention->norm_bf16 = 1u;
 		attention->sinks = 1u;
 		attention->tensor_prefix = "";
+		SparkIndexerShape *index = &state->index_shape;
+		memset(index, 0, sizeof(*index));
+		index->heads = G::kIndexHeads;
+		index->head_dimension = G::kIndexDim;
+		index->key_norm = SPARK_INDEXER_NORM_LAYER;
+		index->key_norm_epsilon = G::kIndexNormEpsilon;
+		index->score_scale = (float)(1.0 / sqrt((double)G::kIndexHeads * G::kIndexDim));
+		index->topk = G::kIndexTopk;
+		index->key_ratio = 1u;
+		index->query_stride = L::kIndexWidth;
+		index->weight_stride = G::kIndexHeads;
+		index->weight_f32 = 1u;
+		index->key_stride = G::kIndexDim;
+		shape->index_layers = G::kIndexLayers;
+		shape->index_page_bytes = SparkIndexerCacheBytes(index, 1u, SPARK_DEVICE_RUNNER_PAGE_SLOTS);
+	}
+
+	static void IndexRope(State *state)
+	{
+		SparkHeadRopeParams *query = &state->index_query_rope, *key = &state->index_key_rope;
+		*query = state->rope.key;
+		query->heads = G::kIndexHeads;
+		query->head_dimension = query->rope_dimension = G::kRope;
+		query->input_stride = query->output_stride = L::kIndexWidth;
+		query->input_offset = G::kIndexDim - G::kRope;
+		query->input_head_stride = query->output_head_stride = G::kIndexDim;
+		*key = *query;
+		key->heads = 1u;
+		key->input_stride = key->output_stride = G::kIndexDim;
+	}
+
+	static uint32_t SelectRows(const State *state)
+	{
+		return state->stage.max_rows < HD_SELECT_ROWS ? state->stage.max_rows : HD_SELECT_ROWS;
 	}
 
 	static uint32_t ScratchSlices(State *state, SparkDeviceStageSlice *slices)
@@ -123,7 +188,8 @@ struct HyDevice
 			{ rows * L::kSlot * 2u, &state->attention.kv },
 			{ rows * heads * G::kValueDim * 2u, &state->attention.gate },
 			{ rows * heads * L::kSlot * 2u, &state->attention.packed },
-			{ SparkOpsAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, state->stage.max_positions), &state->attention.records },
+			{ Max(SparkOpsAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, state->stage.max_positions),
+				SparkIndexerAttentionScratchBytes(state->stage.max_rows, (uint32_t)heads, G::kLatent, G::kIndexTopk)), &state->attention.records },
 			{ rows * heads * G::kLatent * 2u, &state->attention.latent },
 			{ rows * heads * G::kValueDim * 2u, &state->attention.value },
 			{ rows * 2u * ffn * 2u, &state->ffn_scratch.gate_up },
@@ -134,8 +200,13 @@ struct HyDevice
 			{ routes * G::kMoeInter * 2u, &state->experts.act },
 			{ routes * hidden * 2u, &state->experts.out },
 			{ (routes + 1u) * hidden * 2u, &state->experts.sorted },
-			{ Max(Max(2u * ffn, (uint64_t)G::kQLora), Max((uint64_t)heads * L::kQkDim, Max((uint64_t)L::kSlot, hidden))) * Max(hidden, (uint64_t)G::kQLora) * 2u,
-				&state->stage.dequant }
+			{ rows * L::kIndexWidth * 2u, &state->index_query },
+			{ rows * G::kIndexDim * 2u, &state->index_key },
+			{ rows * G::kIndexHeads * sizeof(float), &state->index_weights },
+			{ SparkIndexerScoreBytes(SelectRows(state), state->score_stride), &state->index_scores },
+			{ SparkIndexerSelectedBytes(state->stage.max_rows, G::kIndexTopk), &state->selected },
+			{ Max(Max(Max(2u * ffn, (uint64_t)G::kQLora), Max((uint64_t)heads * L::kQkDim, Max((uint64_t)L::kSlot, hidden))), (uint64_t)L::kIndexWidth) *
+				Max(hidden, (uint64_t)G::kQLora) * 2u, &state->stage.dequant }
 		};
 		const uint32_t count = sizeof(plan) / sizeof(plan[0]);
 		for ( uint32_t index = 0u; index < count; index++ )
@@ -156,6 +227,8 @@ struct HyDevice
 		if ( status == SPARK_STATUS_OK && (SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK ||
 			SparkNamedPackConfigU32(&state->stage.pack, "shared_rows", &state->shared_rows) != SPARK_STATUS_OK) )
 			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_PARSE_ERROR, "the pack configuration lacks ffn_rows or shared_rows");
+		if ( status == SPARK_STATUS_OK )
+			state->score_stride = SparkIndexerScoreStride(state->stage.max_positions);
 		const SparkDeviceStageConfigValue config[] =
 		{
 			{ "hidden", G::kHidden }, { "layers", G::kLayers }, { "vocab", G::kVocab }, { "vocab_rows", G::kVocab / G::kTpDegree },
@@ -169,6 +242,7 @@ struct HyDevice
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		SparkDeviceLatentAttentionRopePrepare(&state->attention_shape, L::kRankHeads, &state->rope);
+		IndexRope(state);
 		return SparkDeviceStageGeometry(&state->stage, geometry);
 	}
 
@@ -202,6 +276,25 @@ struct HyDevice
 		return status;
 	}
 
+	static SparkStatus BindIndexer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, Indexer *indexer)
+	{
+		SparkStatus status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_q", L::kIndexWidth, G::kQLora, &indexer->query);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerWeight(&state->stage, weights, index, "index_k", G::kIndexDim, G::kHidden, &indexer->key);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_k_norm", "f32", (uint64_t)G::kIndexDim * sizeof(float), &indexer->key_norm);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_k_bias", "f32", (uint64_t)G::kIndexDim * sizeof(float), &indexer->key_bias);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "index_weights", "bf16", (uint64_t)G::kIndexHeads * G::kHidden * 2u,
+				&indexer->weights);
+		if ( status == SPARK_STATUS_OK && (indexer->query.scale_group != SPARK_MXFP8_GROUP || indexer->key.scale_group != SPARK_MXFP8_GROUP) )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "the indexer's query and key projections are MXFP8");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceStageNoteKvRead(&state->stage, 0u, (uint64_t)G::kIndexDim * 2u);
+		return status;
+	}
+
 	static SparkStatus BindLayer(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index)
 	{
 		Layer *layer = &state->layers[index];
@@ -219,6 +312,8 @@ struct HyDevice
 			status = SparkDeviceStageLayerTensor(&state->stage, weights, index, "post_norm", "bf16", G::kHidden * 2u, &layer->post_norm);
 		if ( status == SPARK_STATUS_OK )
 			status = SparkDeviceLatentAttentionBind(&state->stage, weights, index, &state->attention_shape, &layer->attention);
+		if ( status == SPARK_STATUS_OK && G::IndexerLayer(index) )
+			status = BindIndexer(state, weights, index, &layer->indexer);
 		if ( status == SPARK_STATUS_OK && index < G::kDenseLayers )
 			return SparkDeviceFfnBind(&state->stage, weights, index, state->ffn_rows, &layer->ffn);
 		if ( status == SPARK_STATUS_OK )
@@ -236,6 +331,14 @@ struct HyDevice
 		return status;
 	}
 
+	static uint32_t IndexSlots(State *state)
+	{
+		uint32_t indexers = 0u;
+		for ( uint32_t index = 0u; index < G::kLayers; index++ )
+			state->layers[index].index_slot = G::IndexerLayer(index) ? indexers++ : indexers == 0u ? 0u : indexers - 1u;
+		return indexers;
+	}
+
 	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
 	{
 		State *state = (State *)model;
@@ -249,6 +352,8 @@ struct HyDevice
 			status = BindLayer(state, weights, index);
 		if ( status != SPARK_STATUS_OK )
 			return status;
+		if ( IndexSlots(state) != G::kIndexLayers || !G::IndexerLayer(0u) )
+			return SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_SCHEMA_ERROR, "the indexer layers must number the model's and include the first layer");
 		return SparkDeviceStageAllocate(&state->stage, slices, ScratchSlices(state, slices));
 	}
 
@@ -275,10 +380,13 @@ struct HyDevice
 	{
 		frame->queue = (SparkDeviceQueue *)queue;
 		SparkStatus status = SparkDeviceStageStepTables(&state->stage, step, &frame->t);
+		frame->sparse = 0u;
 		for ( uint32_t row = 0u; status == SPARK_STATUS_OK && row < frame->t.rows; row++ )
-			if ( frame->t.host_positions == 0 || frame->t.host_positions[row] >= G::kIndexTopk )
-				status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_CAPACITY_EXCEEDED,
-					"the indexer is not built: a row may see at most the indexer's top-k keys, where attention is dense");
+			if ( SparkIndexerVisibleKeys(&state->index_shape, frame->t.host_positions[row]) > G::kIndexTopk )
+				frame->sparse = 1u;
+		if ( status == SPARK_STATUS_OK && frame->sparse != 0u && frame->t.tree != 0u )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_UNSUPPORTED,
+				"the indexer scores a row's whole prefix, so a tree frame must keep every row within the indexer's top-k keys");
 		return status;
 	}
 
@@ -308,10 +416,79 @@ struct HyDevice
 		return status;
 	}
 
+	static SparkTensor Rows(SparkTensor tensor, uint32_t first, uint64_t row_bytes)
+	{
+		const uint64_t at = (uint64_t)first * row_bytes;
+		return SparkTensorSlice(tensor, at, tensor.bytes - at);
+	}
+
+	static SparkStatus Select(State *state, const Frame &frame, const SparkIndexerCache &cache)
+	{
+		const uint32_t rows = frame.t.rows, chunk = SelectRows(state);
+		SparkStatus status = SPARK_STATUS_OK;
+		for ( uint32_t first = 0u; status == SPARK_STATUS_OK && first < rows; first += chunk )
+		{
+			const uint32_t count = rows - first < chunk ? rows - first : chunk;
+			status = SparkIndexerSelect(state->stage.ops, frame.queue, &cache, Rows(state->index_query, first, L::kIndexWidth * 2u),
+				Rows(state->index_weights, first, G::kIndexHeads * sizeof(float)), Rows(frame.t.sequence_of_row, first, sizeof(uint32_t)),
+				Rows(frame.t.positions, first, sizeof(uint32_t)), state->index_scores, Rows(state->selected, first, G::kIndexTopk * sizeof(uint32_t)),
+				&state->index_shape, count, state->score_stride);
+		}
+		return status;
+	}
+
+	static SparkStatus Index(void *context, SparkDeviceQueue *queue, SparkTensor query_lora, uint32_t query_lora_stride)
+	{
+		const IndexStep *index = (const IndexStep *)context;
+		State *state = index->state;
+		const Frame &frame = *index->frame;
+		const Indexer &indexer = index->layer->indexer;
+		const uint32_t rows = frame.t.rows;
+		const uint64_t nope_bytes = (uint64_t)(G::kIndexDim - G::kRope) * 2u;
+		const SparkIndexerCache cache = SparkDeviceStageIndexCache(&state->stage, index->layer->index_slot);
+		SparkHeadRopeParams query = state->index_query_rope, key = state->index_key_rope;
+		SparkGemvParams weights;
+		SparkStatus status = SparkDeviceLinearWeight(&state->stage, queue, query_lora, query_lora_stride, &indexer.query, state->index_query, L::kIndexWidth, rows,
+			G::kQLora, L::kIndexWidth);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLinearWeight(&state->stage, queue, state->normed, G::kHidden, &indexer.key, state->index_key, G::kIndexDim, rows, G::kHidden,
+				G::kIndexDim);
+		memset(&weights, 0, sizeof(weights));
+		weights.rows = rows;
+		weights.input_dimension = weights.input_stride = G::kHidden;
+		weights.output_dimension = weights.output_stride = G::kIndexHeads;
+		weights.output_f32 = 1u;
+		weights.projection = state->stage.shape->projection;
+		weights.row_exact = state->stage.step_exact;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkOpsLinear(state->stage.ops, queue, state->normed, indexer.weights, state->index_weights, &weights);
+		query.rows = key.rows = rows;
+		if ( status == SPARK_STATUS_OK )
+			status = SparkOpsHeadRmsNormRope(state->stage.ops, queue, state->index_query, state->index_query, frame.t.positions,
+				SparkTensorSlice(state->index_query, nope_bytes, state->index_query.bytes - nope_bytes), &query);
+		if ( status == SPARK_STATUS_OK && cache.pool.bytes == 0u )
+			status = SparkDeviceStageRefuse(&state->stage, SPARK_STATUS_INVALID_ARGUMENT, "the indexer needs the attached index-key pool");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkIndexerStoreKeys(state->stage.ops, queue, &cache, state->index_key, &indexer.key_norm, &indexer.key_bias, &key, frame.t.sequence_of_row,
+				frame.t.positions, frame.t.tree != 0u ? frame.t.slots : frame.t.positions, &state->index_shape, rows);
+		if ( status == SPARK_STATUS_OK && frame.sparse != 0u )
+			status = Select(state, frame, cache);
+		return status;
+	}
+
 	static SparkStatus Attention(State *state, const Frame &frame, const Layer &layer, uint32_t index)
 	{
-		return SparkDeviceLatentAttention(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention, index,
-			&state->attention, state->normed, state->partial);
+		IndexStep step = { state, &frame, &layer };
+		SparkDeviceLatentSelection selection;
+		memset(&selection, 0, sizeof(selection));
+		selection.select = G::IndexerLayer(index) ? Index : 0;
+		selection.context = &step;
+		selection.sparse = frame.sparse;
+		selection.selected = state->selected;
+		selection.topk = G::kIndexTopk;
+		selection.key_ratio = state->index_shape.key_ratio;
+		return SparkDeviceLatentAttentionSelected(&state->stage, frame.queue, &state->attention_shape, &state->rope, &frame.t, &layer.attention, index,
+			&state->attention, &selection, state->normed, state->partial);
 	}
 
 	static SparkStatus AllReduce(State *state, const Frame &frame)

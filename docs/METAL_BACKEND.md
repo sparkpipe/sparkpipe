@@ -98,7 +98,7 @@ tensor sizes before each launch.
 | `spark_causal_conv_silu` | depthwise causal convolution over a per-sequence window, BF16 sum, then `SparkMathSwishFast` (`x * sigmoid(x)`, CUDA's `LM_CONV_SWISH`); with a dilation the window holds `(taps - 1) dilation + 1` entries and the taps read every `dilation`-th one, oldest first, as `LmCausalConvLaunch`'s dilated form (the n-gram embedding's conv); with `weight_f32` the taps are FP32 and the sum goes to the swish unrounded (Kimi K3's KDA); with `swish_once` BF16 taps' FP32 sum also goes to the swish unrounded, rounded once after it, as FLA's `ShortConvolution` (Ling 3.0 Flash and Fin, CUDA's `LM_CONV_SWISH_ONCE`; Solar Open 2's publisher rounds the sum first) |
 | `spark_gated_delta_prepare`, `spark_channel_delta_prepare`, `spark_gated_delta_rule` | L2-normalised query and key, decay and write strength, then the gated delta rule over FP32 state, one SIMD group per value column. The gated form has one decay per value head (Qwen's gated delta); the channel form (`SparkOpsChannelDelta`, the KDA layers of Ling and Solar) has one per key channel, `SparkMathBoundedDecay`: `exp(lower sigmoid(exp(a) (f + b)))` as CUDA's `LmBoundedDecayKernel`, a write strength by `beta_mode`: `sigmoid(beta)` (`LmSigmoidRowsKernel`), doubled `2 bf16(sigmoid(beta))` or rounded `bf16(sigmoid(beta))` (`LmBf16SigmoidRowsKernel`, GLM 5.3 Flash), and the rule multiplies each key row of the state by its channel's decay. With `prenorm_epsilon` the query and key are L2-normalised twice, first `bf16(x rsqrt(sum x^2 + prenorm_epsilon))` and then the usual normalisation of that (Kimi K3) |
 | `spark_kv_store_paged` | key and value rows into 64-slot pages through a page table; a position outside its sequence's pages or a page outside the pool raises the device error word (`SparkKvPage`, shared with the attention kernels) |
-| `spark_attention_{decode,prefill_blocks,combine}_d{128,256,512,192v128,576v512}` | causal grouped-query attention over paged KV for 128-, 256- and 512-wide heads, for 192-wide queries and keys with 128-wide values, and for latent attention's 576-wide queries and keys (latent and rope) with 512-wide values (`value_dimension`; a KV slot then holds the keys then the values at their own widths), decode split into 128-key partitions and merged, prefill in FlashAttention-2's plain forward (one partition; each row's 64-key tiles, aligned from key 0, walked from the diagonal back to the first key through `kernel_math.cuh`'s `SparkMathFlashTiles` and `SparkMathFlashTile`, so the running maximum starts at the diagonal and each tile's weights round to BF16 against the maximum so far), with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate, the sigmoid in FP32 (`SPARK_ATTENTION_GATE_SIGMOID`, `LmOutputGateKernel` as Kimi K3 uses it) or rounded to BF16 first as the publishers' code rounds it (`SPARK_ATTENTION_GATE_SIGMOID_BF16`: Gemma's `GemmaSigmoidGateKernel`, and `LmOutputGateKernel` with `ROUND_GATE` for Qwen 3.8 and the Ling family's GQA), read from the fused projection or from a separate gate projection; and optional per-head sinks (`has_sinks`), which the combine takes into the running maximum and adds as `exp(sink - max)` to the denominator, as CUDA's `LmGqaShardMergeLaunch` does; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions in two passes (the 8 SIMD groups score their strided keys into threadgroup memory, then every group weights against the partition's one maximum), prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the probability-times-value product in `matmul2d`, the online softmax in FP32 between them); prefill's online softmax rescales the running sum and accumulators at every new maximum, as CUDA's GQA softmax does. Both take the publishers' FlashAttention form (`SparkMathAttentionValueWeight`): the weight `exp(s - m)` multiplies the values rounded to BF16, against each 128-key partition's maximum in decode and against the running maximum per 64-key tile in prefill (a BF16 `matmul2d` operand), while the running sum adds the FP32 weight. A key whose score is the maximum keeps weight exactly 1, so every independent maximum leaves one large weight unrounded: decode used to keep a running maximum in each SIMD group, 8 per 128-key partition (48 for a 700-key row), and so rounded systematically less than the references' one maximum per row (Muse's decode positions sat +0.041 past the floor; with one maximum per partition +0.015, and the multi-floor rule goes from +1.11 to -0.15 sigma) |
+| `spark_attention_{decode,prefill_blocks,combine}_d{128,256,512,192v128,576v512}` | causal grouped-query attention over paged KV for 128-, 256- and 512-wide heads, for 192-wide queries and keys with 128-wide values, and for latent attention's 576-wide queries and keys (latent and rope) with 512-wide values (`value_dimension`; a KV slot then holds the keys then the values at their own widths), decode split into 128-key partitions and merged (with a sliding window only the partitions from the one holding the row's first window key launch, `window_partitions`: the ones before it hold no visible key, so the merge is bit for bit the same and a window of 128 takes at most two partitions however long the row), prefill in FlashAttention-2's plain forward (one partition; each row's 64-key tiles, aligned from key 0, walked from the diagonal back to the first key through `kernel_math.cuh`'s `SparkMathFlashTiles` and `SparkMathFlashTile`, so the running maximum starts at the diagonal and each tile's weights round to BF16 against the maximum so far), with an optional sliding window (a row sees its last `window` positions) and an optional sigmoid output gate, the sigmoid in FP32 (`SPARK_ATTENTION_GATE_SIGMOID`, `LmOutputGateKernel` as Kimi K3 uses it) or rounded to BF16 first as the publishers' code rounds it (`SPARK_ATTENTION_GATE_SIGMOID_BF16`: Gemma's `GemmaSigmoidGateKernel`, and `LmOutputGateKernel` with `ROUND_GATE` for Qwen 3.8 and the Ling family's GQA), read from the fused projection or from a separate gate projection; and optional per-head sinks (`has_sinks`), which the combine takes into the running maximum and adds as `exp(sink - max)` to the denominator, as CUDA's `LmGqaShardMergeLaunch` does; a key on a page `SparkKvPage` rejects raises the device error word and is skipped (decode per key, prefill per 64-key tile); decode walks 128-key partitions in two passes (the 8 SIMD groups score their strided keys into threadgroup memory, then every group weights against the partition's one maximum), prefill computes 32 (16 for 512-wide heads) query rows against 64-key pages on the tensor operations (scores and the probability-times-value product in `matmul2d`, the online softmax in FP32 between them); prefill's online softmax rescales the running sum and accumulators at every new maximum, as CUDA's GQA softmax does. Both take the publishers' FlashAttention form (`SparkMathAttentionValueWeight`): the weight `exp(s - m)` multiplies the values rounded to BF16, against each 128-key partition's maximum in decode and against the running maximum per 64-key tile in prefill (a BF16 `matmul2d` operand), while the running sum adds the FP32 weight. A key whose score is the maximum keeps weight exactly 1, so every independent maximum leaves one large weight unrounded: decode used to keep a running maximum in each SIMD group, 8 per 128-key partition (48 for a 700-key row), and so rounded systematically less than the references' one maximum per row (Muse's decode positions sat +0.041 past the floor; with one maximum per partition +0.015, and the multi-floor rule goes from +1.11 to -0.15 sigma) |
 | `spark_silu_mul`, `spark_gelu_tanh_mul`, `spark_silu_clamp_mul`, `spark_silu_gate_limit_mul`, `spark_add_rows` | the gated activations (`bf16(silu(g) u)`, `bf16(bf16(gelu_tanh(g)) u)` with `SparkMathGeluTanh`, `bf16(min(silu(g), L) clamp(u, -L, L))` with `SparkMathClampedGlu`, CUDA's `LmSiluMulLimitKernel`, and `bf16(silu(min(g, L)) clamp(u, -L, L))` with `SparkMathGateLimitedGlu`, CUDA's `LmSiluMulGateLimitKernel`) and the final residual add; `spark_situ_mul` is SiTU, `bf16(SparkMathSitu(g, u, limit, up_limit))`: `limit tanh(g / limit) sigmoid(g)` times `u`, or `up_limit tanh(u / up_limit)` when `up_limit` is set, shared with CUDA's `LmSituMulKernel` (Kimi K3's first layer and shared experts) |
 | `spark_attnres_score`, `spark_attnres_mix` | attention residuals over a bank of block sums and the running partial (at most `SPARK_ATTNRES_MAX_SOURCES`, the partial last): each source's score is the FP32 dot of its RMS-normalised row with the site's BF16 query weight, then a softmax over the sources and the FP32 mix of the sources rounded once (Kimi K3's residual stream) |
 | `spark_silu_mul_routed`, `spark_gelu_tanh_mul_routed`, `spark_silu_clamp_mul_routed`, `spark_silu_gate_limit_mul_routed` | the experts' gated activations with the route weight folded in before the down projection, as CUDA's `LmSwigluPackedKernel`, `LmGeluTanhPackedKernel` and `LingSiluClampPackedKernel` do: `bf16(silu(g) u w)`, `bf16(bf16(gelu_tanh(g)) u w)` with `SparkMathGeluTanhScaleFirst`, `bf16(min(silu(g), L) clamp(u, -L, L) w)`, and `bf16(silu(min(g, L)) clamp(u, -L, L) w)` (`LmSwigluPackedValue` with a finite limit: K-EXAONE's last 16 layers, HY4's experts) |
@@ -515,6 +515,33 @@ seven audio and TTS tokens (ids 248,070 to 248,076), so `metal_stage_run`
 gives them an output vocabulary of 248,070 against the 27B's 248,077. Text
 tokenizes the same, so `tools/metal_gates.sh qwen3.5-4b` and `qwen3.5-2b` run
 on the 27B's gate prompts.
+
+Qwen 3.8 Flash runs on the same stage at TP 1 with its sparse-attention
+indexer, the CUDA stage's (`model-families/qwen38/source/qwen38_hybrid_stage.cuh`)
+through the shared indexer API (`inference/runner/device_indexer.h`). Every
+attention layer projects `attn_index_qk` (640 rows) from the attention input:
+four 128-wide query heads, RMS-normed with `attn_index_q_norm` and roped at
+the row's position like the attention query, and one raw key. Each closed
+block of four positions pools its four raw keys, `bf16(sum / 4)` in position
+order, from the frame and a per-sequence window of the last raw keys that a
+committed step saves and a kept verify row replays; the pooled key is
+RMS-normed with `attn_index_k_norm`, roped at the block's first position and
+stored at the block's index. The index keys live in the stage's second KV
+pool (`SparkDeviceStageShape.index_layers`, one layer per attention layer,
+pages of 16 blocks on the main page table, `SparkDeviceStageIndexCache` with
+16 slots a page). A frame whose rows all sit below position 2,051
+attends densely, exactly as without the indexer: there each row sees at most
+512 complete blocks, all of which the indexer keeps. A frame with a row at
+or past 2,051 scores each complete block `sum over heads of ReLU(q . k) /
+sqrt(128)` in head order (`heads_in_order`, one FP32 unit weight set shared
+by every row: `weight_f32` and `weight_shared`), keeps the 512 best, expands
+them with the row's open block into 2,051 positions
+(`SparkIndexerExpandPools`) and attends those with a key ratio of one
+(`SparkDeviceAttentionSelected`). Its four index heads take the in-order sum, so
+`SparkOpsIndexerScore` needs whole 16-head groups only for the tiled sum.
+Tree frames are refused on the indexer layout (`tree_verify` is off): index
+keys pool at logical positions, and a kept tree path does not store them
+again, so speculation runs as chains.
 
 `model-families/gemma4/device/gemma4_device_stage.cpp` is Gemma 4 26B A4B
 (text only) on the same layers: 30 layers, every sixth one (from the sixth)
@@ -1183,6 +1210,13 @@ layers serve them:
   `spark_head_gate` with one-wide heads), `sinks` (the attention's per-head
   sinks, sliced to the rank's heads) and `tensor_prefix` (`mla_` by default,
   none for HY4's names).
+  `SparkDeviceLatentAttentionSelected` takes a sparse-attention selection:
+  its callback runs after the slot is stored and before attention with the
+  normed query LoRA (or the branch input without one), so a family's indexer
+  projects, stores and selects there; with `sparse` set the heads attend the
+  `selected` positions through `SparkIndexerAttention` with the same sinks,
+  otherwise through `spark_attention` exactly as `SparkDeviceLatentAttention`,
+  which is the selected form without a selection.
 
 The experts are `SparkDeviceSigmoidExperts` with the router named `router`,
 8 groups of 64 experts of which 4 stay open (`spark_route_sigmoid_topk`),
@@ -1330,9 +1364,23 @@ times 2.827 over the bias-corrected scores (`spark_route_sigmoid_topk`),
 10 and the route weight before the down projection, and the shared expert
 joined in route order (`spark_route_combine_shared`); `spark_hc_post` adds
 the branch to each stream with its post weight, and `spark_hc_mix4` collapses
-the streams before the head norm and the head. The sparse-attention indexer is
-not built: a row that sees more than the indexer's 2,048 keys is refused,
-and below that the indexer keeps every key, so attention is exactly dense. The
+the streams before the head norm and the head. The sparse-attention indexer
+runs through the shared Metal indexer (`inference/runner/device_indexer.h`)
+on the 21 indexer layers (0 and every fourth from 1): the index query is
+`index_q` (MXFP8) of the normed query LoRA, the index key `index_k` of the
+branch input, LayerNormed with its FP32 weight and bias (epsilon 1e-6), and
+the last 64 of each 128 are roped as the attention's rope (interleaved pairs,
+rounded terms, theta 1e7); the head weights are the BF16 `index_weights` in
+FP32 and the score scale is `1/64`. `SparkIndexerStoreKeys` keeps every
+row's key in a second paged KV region (`SparkDeviceStageShape.index_layers`,
+`index_page_bytes`; the device runner allocates it and the stage attaches it
+as `index_pool`), so later rows score every earlier key. A step with a row
+that sees more than 2,048 keys selects in 64-row chunks
+(`SparkIndexerSelect`) and attends only the selection with the sinks
+(`SparkIndexerAttention` through `SparkDeviceLatentAttentionSelected`); the
+layers between indexer layers reuse the last selection, as the reference's
+"shared" layers do. A step whose rows all see at most 2,048 keys attends
+exactly as before, and a tree frame with a longer row is refused. The
 FP8 checkpoint is 766 GB, so it runs as eight ranks paged from the SSD
 (`tools/hy4_tp16_pack.py --tp-degree 8`); `tools/hy4_reference.py` gains the
 `gate-prompts` and `teacher` modes (variant b sums every product in
@@ -1372,9 +1420,21 @@ gate-limited SwiGLU at 10 and no route weight, `spark_route_combine_weighted`,
 and the shared expert added (`spark_add_rows`), as CUDA's finalize and add;
 every rank holds all 288 experts split by intermediate width. After each
 all-reduce `spark_hc_post_comb` updates the streams, and `spark_stream_mean`
-and the final BF16 norm feed the prenormed head. The indexer is not built:
-a row that sees more than 2,048 keys is refused, and below that every pool
-is selected and attention is dense. The FP8 checkpoint is 309 GB, so it runs
+and the final BF16 norm feed the prenormed head. Each latent layer binds
+its indexer (`index_q`, `index_k`, `index_gate`, `index_head`, `index_norm`,
+`index_norm_bias` (the LayerNorm widened exactly to f32, as the store kernel
+reads it), `index_ape`) and every step stores the layer-normed index
+keys with their compression gates (`SparkIndexerStoreGatedKeys`) in the
+stage's second KV region, one index layer per latent layer, as HY4 and
+GLM 5.3 Full do. A step whose rows all see at most 2,048 keys attends
+densely, exactly as before; in a longer step dense rows keep the dense
+kernel over their runs (`SparkDeviceLatentAttentionAttend`) and the rest
+attend the indexer's selection (`SparkDeviceLatentAttentionAttendSelected`).
+The selection scores keys pooled by softmax(gate + ape) over four positions
+(`SparkIndexerScorePooled`, with the head-weight scale as `weight_scale`),
+keeps the top 512 pools and expands them with the open tail into 2,051
+positions (`SparkIndexerExpandPools`), which attention gathers with a key
+ratio of one. The FP8 checkpoint is 309 GB, so it runs
 as eight ranks paged from the SSD (`tools/glm53flash_tp16_pack.py
 --tp-degree 8`, which reads the checkpoint through the CUDA stagepack's
 reader, so the BF16 projections are its `bf16(e4m3 x scale)`); the reference
@@ -1410,8 +1470,34 @@ and the shared expert added, as CUDA's finalize and add. The projections stay
 FP8 (`fp8_e4m3` with an FP32 scale per row and 128 inputs, CUDA's skinny FP8
 arithmetic), and the last layer's partial is added and the head norm taken
 in the stage (`prenormed_head`) from the rounded sum, as the publisher's
-closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do. The indexer is not built,
-so a row past position 2,047 is refused. The 704 GB checkpoint packs to about
+closing add and norm and CUDA's `LmFusedResidualRmsNormKernel` do.
+
+The sparse-attention indexer runs through the shared Metal indexer
+(`inference/runner/device_indexer.h`) as CUDA's DSA path does. Layers 0-2
+and every fourth layer from 6 carry an indexer
+(`SparkGlm52StagePackLayerHasFullIndexer`); the layers between reuse the
+last selection. On every step each indexer layer projects its 128-wide key
+from the normed residual (`index_k`, FP8), and `SparkIndexerStoreKeys`
+takes the LayerNorm with weight and bias (epsilon 1e-6), ropes the leading
+64 dimensions (interleaved, the main rope's frequencies and rounded terms)
+and stores the key in the stage's second paged KV pool, which shares the
+latent cache's page table (`SparkDeviceStageShape.index_layers`, one layer
+per indexer, `SparkDeviceStageIndexCache`). When a row of the step sees
+more than 2,048 keys the indexer layer also projects 32 index heads of 128
+from the normed query LoRA (`index_q`), ropes them the same way, weights
+each head by `index_head` in FP32 (`weight_f32`: the BF16 projection's
+FP32 sum, not rounded, as the publisher's `GlmMoeDsaIndexer` and
+`AXK2Indexer` in transformers keep `weights_proj` in FP32 and score in FP32)
+and `SparkIndexerSelect` scores
+`sum_h w_h relu(q_h . k)` times `128^-0.5 32^-0.5` and keeps the top 2,048
+positions, 16 rows at a time. Both run in the selection callback of
+`SparkDeviceLatentAttentionSelected`, after the latent slot is stored and
+before the attention, which then reads only the selected keys
+(`SparkIndexerAttention`). A step whose rows all see
+at most 2,048 keys attends densely, exactly as before; in a step that
+needs the indexer every row attends its selection, which for a short row
+is every visible key, as CUDA's step-wide context test does. A tree step
+that needs the indexer is refused. The 704 GB checkpoint packs to about
 780 GB at TP8 (`tools/glm52_tp16_pack.py --model glm53full --tp-degree 8`,
 through the CUDA stagepack's reader), paged from the SSD;
 `tools/glm52_reference.py --model glm53full` gives the gate prompts in GLM
@@ -1434,7 +1520,10 @@ the normed query and the raw q_a output side by side, 3,072 wide) and
 head's values as `bf16(v sigmoid(g))` after the value projection, as
 `LmHeadSigmoidGateKernel`); YaRN rope through `SparkRopeYarnRampTable`, the
 CUDA stage's own table builder moved into `spark_rope_plan.h`; and routing
-over 8 groups of which 4 stay open. Layer 0 is dense. The FP8 checkpoint is
+over 8 groups of which 4 stay open. Layer 0 is dense. Every layer carries
+its own indexer, 64 heads of 128 with the half-split rope on the YaRN
+frequencies (`tools/axk2_reference.py`'s `indexer`), so every layer selects.
+The FP8 checkpoint is
 647 GB (`tools/glm52_tp16_pack.py --model axk2`, `tools/glm52_reference.py
 --model axk2` with its ChatML turn):
 
@@ -1490,15 +1579,62 @@ a step; the Metal backend's `LayerRows`, `Tap` and `LayerEnd` do nothing.
   rank's `engram_kv` rows, gathers the ranks' rows and gates every stream
   (`spark_stream_key_gate`). `End` keeps the last three mapped tokens.
 
-The sparse-attention indexer is not built. A row at position 512 or later
-is refused: from there the ratio-1 layers see more than the indexer's 512
-compressed keys, and below it the indexer keeps every key, so attention is
-exactly dense. The gate prompts are therefore 496 tokens.
+- Indexer: when layers 2, 8, 14 and 20 store a compressed key they also
+  store its index key, through the shared indexer
+  (`inference/runner/device_indexer.h`): the normed latent projected by the
+  layer's `idx_k` (BF16, 512 to 128), normed with `idx_k_norm`, roped at the
+  group's first position and rounded through FP4 with power-of-two 32-wide
+  blocks (`SPARK_QDQ_FP4_POW2`), as the publisher's `Indexer` does, then
+  `SparkIndexerStoreKeys` at the compressed index into the cache's layer
+  of the second KV pool (`index_layers` 4, pages of
+  `SparkIndexerCacheBytes` for one page, through
+  `SparkDeviceStageIndexCache`, as HY4 keeps its index keys; the first pool
+  still holds the 40 window layers and the 4 compressed caches). Every key
+  is stored from position 0, so a row
+  that later needs a selection finds them all. An index source layer (2, 8,
+  14, 20, 24, 28, 32, 36) with a row that sees more than 512 compressed keys
+  projects the index query (`idx_q_b`, all 32 index heads on every rank, on
+  the FP8 query latent; rope at the row's position; the same FP4 rounding)
+  and the head weights as the publisher's `Indexer.forward` forms them,
+  `bf16(bf16(idx_weights x) (128^-0.5 32^-0.5))` (a BF16 projection, then
+  `SparkOpsScaleRows`), scores every compressed key as its
+  `(einsum(q, k).relu() * weights).sum(heads)` on BF16 tensors does: each
+  head's dot rounded to BF16, each weighted term rounded, the FP32 sum over
+  heads in order rounded (`heads_in_order` with `round_bf16`), and keeps the top 512
+  compressed keys of the owner
+  cache with `SparkIndexerScore` and `SparkIndexerTopk`; the layers up to the next index source
+  reuse the selection, as the publisher's shared `topk_idxs` does. A step
+  whose rows all see at most 512 compressed keys at a layer attends every
+  key exactly as before.
+
+A step with a row whose layer sees more than 512 compressed keys (position
+512 on the ratio-1 layers, 1,025 on the ratio-2 ones) attends through
+`SparkIndexerAttentionExtra`: the layer's window keys and the selected keys
+of the cache's layer in one softmax with the sinks. The window part launches only the partitions that
+hold the row's window keys (`window_partitions`), at most two of 128 keys
+however long the row, so the records hold every row; the stage still runs it
+in row blocks that fit them. Layers 0 and 1 attend their window through
+`SparkOpsAttention`: decode the same way, prefill in FlashAttention-2's
+partitions from key 0, so a long prefill chunk that does not fill the GPU
+still needs a record per 1,024 keys and is refused when the records cannot
+hold them. The index scores run in
+row blocks that fit the score buffer (its size for 16,384 compressed keys a
+row), each block scored at the frame's longest compressed width. From a row
+past 16,384 compressed keys, layer 20 picks its candidate blocks as CUDA's
+`SparkDsv41FlashCandidateMaskKernel` does: each block of 8 scores is scored
+by its maximum, the block holding the row's newest key always counts as
+largest, and the 2,048 largest blocks stay, ties to the lower block
+(`SparkIndexerCandidateBlocks`: `spark_indexer_block_max` into the exact
+top-k). Layer 20 selects from its own unmasked scores; index layers 24 to
+36 set every score outside the candidate blocks to -inf
+(`SparkIndexerApplyCandidates`, `spark_indexer_candidate_mask`) before their
+top 512. Below that width every block is a candidate and both steps are
+skipped. The gate prompts are 496 tokens.
 
 `tools/dsv41_flash_tp16_pack.py --tp-degree 8` writes the rank packs (about
 38 GB each: the official FP8 bytes with the 32 x 32 UE8M0 block scales
-repeated per row, the MXFP4 expert planes, the hash tables) and the engram
-file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
+repeated per row, the MXFP4 expert planes, the indexer's tensors, the hash
+tables) and the engram file; `tools/dsv41_flash_reference.py` gives the gate prompts in the model's
 chat turn and the FP32 teacher:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
@@ -1540,6 +1676,31 @@ tiktoken vocabulary and the FP32 teacher:
 
     SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
         sh tools/metal_gates.sh kimi-k3 PACKS/k3.tp8.rank00.pack REFERENCE_DIR OUT REVISION
+
+Kimi K3.1 Pro is the same stage with `kIndexer` set (`kimi-k3.1-pro`,
+`SparkK31ProDeviceStageModelAt`). Its checkpoint's `dsa_config` makes the
+packer add the DSA indexer to each MLA layer, replicated on every rank so each
+rank selects the same positions without a collective: `mla_index_q` (wq_b),
+`mla_index_k` (wk) and `mla_index_w` (weights_proj) as the checkpoint's bf16,
+`mla_index_norm` and `mla_index_norm_bias` (k_norm) widened exactly to f32;
+the rank files are `k31.tp<N>.rank<NN>.pack` and their layout adds
+`index_topk`, `index_heads` and `index_dim`. Each MLA layer runs
+`SparkDeviceLatentAttentionSelected` with HY4's selection: after the KV store
+its selector projects the key from the normed hidden and stores the
+layer-normed keys through `SparkIndexerStoreKeys` in the stage's second KV
+region (one index layer per MLA layer, `SparkDeviceStageIndexCache`). When a
+row of the step sees more than 2,048 keys the step is sparse: the selector
+also projects the head weights from the normed hidden and the index query
+from the normed q latent, selects each row's top 2,048 earlier positions with
+`SparkIndexerSelect` in row blocks that keep the score buffer under 256 MiB,
+and attention reads only those (`SparkIndexerAttention`); other steps attend
+densely. The plain K3 stage refuses a pack that carries the indexer. Sparse
+tree steps are refused: the indexer API has no tree visibility.
+
+    python3 tools/k3_tp16_pack.py --tp-degree 8 --checkpoint K31_CHECKPOINT \
+        --output-dir PACKS --contract model_contracts/k31_pro_authoritative.json
+    SPARK_GATE_TP=8 SPARK_GATE_STREAM=1 SPARK_GATE_DECODE=16 SPARK_GATE_GREEDY=8 \
+        sh tools/metal_gates.sh kimi-k3.1-pro PACKS/k31.tp8.rank00.pack REFERENCE_DIR OUT REVISION
 
 ### Motif 3 on eight ranks
 
