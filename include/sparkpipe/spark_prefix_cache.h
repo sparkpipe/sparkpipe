@@ -388,10 +388,6 @@ uint32_t SparkPrefixCacheResumeTokenCount(
     const uint32_t *token_ids,
     uint32_t matched_token_count);
 
-SparkStatus SparkPrefixCacheExpire(
-    SparkPrefixCache *cache,
-    uint64_t now_seconds,
-    uint32_t *expired_out);
 SparkStatus SparkPrefixCacheExportCommitted(
     const SparkPrefixCache *cache,
     SparkPrefixCacheCommittedRecord *records,

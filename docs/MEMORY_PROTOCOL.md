@@ -48,7 +48,7 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 | `foreground` | model, requests | — |
 | `cancel_all` | — | — |
 | `forget` | scope | — |
-| `expire` | wiped, held_until, now | — |
+| `expire` | wiped | — |
 | `session.claims` | session, call | claimed |
 | `session.can_continue` | session | can |
 | `session.continue_with` | session, content, reasoning, calls | messages |
@@ -65,7 +65,7 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
   - `foreground` carries the chat layer's count of requests in flight for a model, so a lost notice heals at the next one;
   - `cancel_all`;
   - `session.release`;
-  - `expire`, sent when the working-state directive changes and on the chat layer's sweep: the program deletes every identity whose last use falls before `wiped`, or when `now` is 24 hours or more past the later of its last use and `held_until`, the same rule as the chat layer's own working state.
+  - `expire`, sent with `wiped` when the working-state directive's wipe mark changes: the program deletes every identity whose last use falls before `wiped`, the same rule as the chat layer's own working state. Nothing is deleted for its age.
 - **forget** deletes every identity whose scope is `scope` or starts with `scope/` (its members), sessions included, before it answers. The chat layer calls it for `DELETE /v1/cache` and reports memory as deleted only after the answer.
 - A session the chat layer never releases is dropped after the program's `session_seconds`.
 - The program keeps each identity's memory apart. The chat layer passes the identity on every request and never reads memory's store.

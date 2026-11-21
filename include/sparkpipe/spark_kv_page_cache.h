@@ -14,7 +14,7 @@ struct SparkKvSharedIndex;
 extern "C" {
 #endif
 
-#define SPARK_KV_PAGE_CACHE_ABI_VERSION 16u
+#define SPARK_KV_PAGE_CACHE_ABI_VERSION 17u
 #define SPARK_KV_PAGE_CACHE_NO_INDEX UINT32_MAX
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_VALID UINT32_C(0x00000001)
 #define SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS UINT32_C(0x00000002)
@@ -267,7 +267,6 @@ typedef struct SparkKvPageCache
 	uint64_t checkpoint_persist_count;
 	uint64_t state_dropped_unsaved_count;
 	uint64_t evicted_entry_count;
-	uint64_t expired_entry_count;
 	uint64_t released_sequence_count;
 	SparkKvPageCacheDeviceCopy device_copy;
 	uint32_t copy_unavailable_logged;
@@ -327,7 +326,6 @@ SparkStatus SparkKvPageCacheRestoreFinish(SparkKvPageCache *cache,SparkKvPageCac
 SparkStatus SparkKvPageCacheExportResident(const SparkKvPageCache *cache,SparkKvPageCacheResidentRecord *records,uint32_t capacity,uint32_t *count_out);
 SparkStatus SparkKvPageCacheAdoptResident(SparkKvPageCache *cache,const SparkKvPageCacheResidentRecord *records,uint32_t count,uint32_t *adopted_out);
 SparkStatus SparkKvPageCacheEvictUnused(SparkKvPageCache *cache);
-SparkStatus SparkKvPageCacheExpire(SparkKvPageCache *cache,uint64_t now_seconds,uint32_t *expired_entries);
 SparkStatus SparkKvPageCacheDemoteState(SparkKvPageCache *cache,const uint32_t *protected_pages,uint32_t protected_count);
 void SparkKvPageCacheSpillStates(SparkKvPageCache *cache);
 void SparkKvPageCachePersistAllStates(SparkKvPageCache *cache);

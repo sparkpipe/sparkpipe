@@ -1,6 +1,6 @@
 # Prefill anticipation: audit and design
 
-Status: approved by the owner on 21 November 2026, with the decisions in section 9. Code was read at main `c2b714343`, and draft PR #1821 at `c5d5ea0cd`. Nothing here is built yet. Section 10 lists the sources and how each number was obtained.
+Status: approved by the owner on 21 November 2026, with the decisions in section 9. Code was read at main `c2b714343`, and draft PR #1821 at `c5d5ea0cd`. Built so far: no tier deletes cached state for its age (the first part of stage 2); everything else is still to build. Section 10 lists the sources and how each number was obtained.
 
 ## 1. Verdict
 
@@ -198,13 +198,13 @@ PR #1949's rule (write a prefix only after something reads it) stays for ordinar
 - the snapshot store's quota eviction;
 - the close-time save, which runs pinned, then kept, then newest tails, with a time limit that scales with what is unsaved.
 
-**No deletion by age.** While the customer holds the fleet, no tier deletes cached state because it is old: not the device and host page caches, the weightd pools, the snapshot files, the API's prefix index, the batch engine's copy of a finished request's tokens, the draft servers' contexts or the serving layer's stores. Today each of them deletes what was unused for 24 hours. Cached state leaves in three ways only:
+**No deletion by age.** While the customer holds the fleet, no tier deletes cached state because it is old: not the device and host page caches, the weightd pools, the snapshot files, the API's prefix index, the draft servers' contexts or the serving layer's stores. Until 21 November 2026 each of them deleted what was unused for 24 hours. Cached state leaves in three ways only:
 
 - **Capacity.** A full tier evicts in class order: tails, then kept, then pinned.
 - **The customer's request.** `DELETE /v1/cache` empties every tier at once and fails loudly if one cannot be emptied. Today it leaves the engine's cache in place.
 - **The end of the hold.** Working state is deleted when another customer's booking of the fleet starts, or 24 hours after the customer's last hour (Customer Agreement 6.2). Our administration software does this when it restores the fleet to the base image, whatever software the customer installed. The engine does not need to know the bookings.
 
-The invariant "Cached request state expires" in `sparkpipe_invariants.md` is rewritten to this rule in the change that removes the age limit.
+The invariant in `sparkpipe_invariants.md` is "Cached request state is kept while the fleet is held". One timer remains: weightd releases the memory of a pool that has had no owner for an hour, after the closing engine saved it to NVMe.
 
 **State points.** State is kept at the last cut of every request, at commit ends, at cuts the client marks, at checkpoint anchors, and at opening cuts where a second session has branched. A saved prefix needs its state on NVMe, not in memory.
 
