@@ -467,6 +467,106 @@ static void TestContinuationsCarryOnlyTokens(SparkModelPipelineClient *pipeline,
 	TestTokenStep(cb,&submission);
 }
 
+static void TestSpanStepSubmission(SparkModelServingSubmission *submission, SparkModelServingLane *lanes, uint64_t submission_id, uint64_t position, uint64_t step_generation, uint32_t interleaved)
+{
+	static uint32_t token_ids[6];
+	static uint32_t row_lane_indices[6];
+	static uint64_t row_positions[6];
+	static uint64_t row_sequence_ids[6];
+	uint32_t lane,row,step;
+	memset(lanes,0,2u * sizeof(lanes[0]));
+	for (lane=0u; lane<2u; lane++)
+	{
+		lanes[lane].request_id = 8000u + lane;
+		lanes[lane].request_generation = 1u;
+		lanes[lane].step_generation = step_generation;
+		lanes[lane].sequence_id = 800u + lane;
+		lanes[lane].resident_sequence_slot = 24u + lane;
+		lanes[lane].sequence_position = position;
+		lanes[lane].context_token_count = position + 3u;
+		lanes[lane].state_target_token_count = position + 3u;
+		lanes[lane].input_token_id = 60u + (uint32_t)position + lane;
+	}
+	for (row=0u; row<6u; row++)
+	{
+		lane = interleaved != 0u ? row % 2u : row / 3u;
+		step = interleaved != 0u ? row / 2u : row % 3u;
+		token_ids[row] = 60u + (uint32_t)position + row;
+		row_lane_indices[row] = lane;
+		row_positions[row] = position + step;
+		row_sequence_ids[row] = 800u + lane;
+	}
+	memset(submission,0,sizeof(*submission));
+	submission->abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+	submission->descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+	submission->work_kind = SPARK_MODEL_SERVING_WORK_KIND_PREFILL;
+	submission->tokens_per_sequence = 1u;
+	submission->submission_id = submission_id;
+	submission->request_id = 8000u;
+	submission->sequence_id = 800u;
+	submission->sequence_position = position;
+	submission->control_generation = 1u;
+	submission->transaction_id = submission_id + 1000u;
+	submission->dispatch_generation = 1u;
+	submission->request_generation = 1u;
+	submission->step_generation = step_generation;
+	submission->residency.word0 = submission_id;
+	submission->residency.word1 = submission_id + 100u;
+	submission->residency.generation = submission_id + 200u;
+	submission->residency.owner = 1u;
+	submission->active_sequence_count = 2u;
+	submission->new_token_count = 6u;
+	submission->lane_count = 2u;
+	submission->row_count = 6u;
+	submission->token_count = 6u;
+	submission->lanes = lanes;
+	submission->token_ids = token_ids;
+	submission->row_lane_indices = row_lane_indices;
+	submission->row_positions = row_positions;
+	submission->row_sequence_ids = row_sequence_ids;
+}
+
+static void TestSpanStepCompletes(const TestCallbackState *cb, const SparkModelServingSubmission *submission, const char *name)
+{
+	uint32_t completions = cb->completion_count;
+	TestLeaseCompletion(submission,SPARK_STATUS_OK);
+	CHECK(cb->completion_count == completions + 1u && cb->last_completion_status == SPARK_STATUS_OK,name);
+}
+
+static void TestPrefillRowsTravelAsSpans(SparkModelPipelineClient *pipeline, const TestCallbackState *cb)
+{
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lanes[2];
+	uint32_t continues,prepares,rank,spans;
+	TestSpanStepSubmission(&submission,lanes,40u,0u,5000u,0u);
+	prepares = MockResidentClientCalls(0u,MOCK_CALL_PREPARE);
+	spans = MockResidentClientSpanSubmissions(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_PREPARE) == prepares + 1u && MockResidentClientSpanSubmissions(0u) == spans + 1u,
+		"spans: a prefill whose rows follow its lanes prepares with their tokens alone");
+	for (rank=1u; rank<TEST_RANKS; rank++)
+		CHECK(MockResidentClientSpanSubmissions(rank) == MockResidentClientSpanSubmissions(0u),"spans: every rank gets the same form");
+	TestFireAllRanksResult(40u,SPARK_STATUS_OK);
+	TestFireAllRanksDecision(40u,SPARK_MODEL_RESIDENT_IPC_DECISION_COMMIT);
+	TestSpanStepCompletes(cb,&submission,"spans: the prepared chunk completes and leases its lanes");
+	TestSpanStepSubmission(&submission,lanes,41u,3u,5001u,0u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	spans = MockResidentClientSpanSubmissions(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u && MockResidentClientSpanSubmissions(0u) == spans + 1u,
+		"spans: the next chunk continues on the lease with its tokens alone");
+	TestFireAllRanksResult(41u,SPARK_STATUS_OK);
+	TestSpanStepCompletes(cb,&submission,"spans: the continued chunk completes");
+	TestSpanStepSubmission(&submission,lanes,42u,6u,5002u,1u);
+	continues = MockResidentClientCalls(0u,MOCK_CALL_CONTINUE);
+	spans = MockResidentClientSpanSubmissions(0u);
+	CHECK(SparkModelPipelineClientSubmit(pipeline,&submission) == SPARK_STATUS_OK &&
+		MockResidentClientCalls(0u,MOCK_CALL_CONTINUE) == continues + 1u && MockResidentClientSpanSubmissions(0u) == spans,
+		"spans: rows that interleave their lanes are sent whole");
+	TestFireAllRanksResult(42u,SPARK_STATUS_OK);
+	TestSpanStepCompletes(cb,&submission,"spans: the whole chunk completes");
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -628,6 +728,7 @@ int main(void)
 		SparkModelPipelineClientAllRanksReady(pipeline) != 0u,
 		"complete new session publishes one fingerprint");
 
+	TestPrefillRowsTravelAsSpans(pipeline,&cb);
 	TestFailedStepDropsLeases(pipeline,&cb);
 	TestContinuationsCarryOnlyTokens(pipeline,&cb);
 	TestRefusedContinuationIsContained(pipeline,&cb);

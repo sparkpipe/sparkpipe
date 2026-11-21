@@ -37,6 +37,7 @@ uint32_t MockResidentClientOwnsSubmission(uint32_t stage_index, uint64_t submiss
 SparkModelResidentClient *MockResidentClientByRank(uint32_t stage_index);
 uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind);
 uint32_t MockResidentClientTokenContinuations(uint32_t stage_index);
+uint32_t MockResidentClientSpanSubmissions(uint32_t stage_index);
 uint32_t MockResidentClientReleaseSubmissions(uint32_t stage_index);
 uint64_t MockResidentClientGeneration(uint32_t stage_index);
 uint32_t MockResidentClientLastLane(uint32_t stage_index,SparkModelServingLane *lane);

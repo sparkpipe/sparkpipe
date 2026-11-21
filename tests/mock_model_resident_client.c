@@ -78,6 +78,7 @@ struct SparkModelResidentClient
 	uint32_t status_request_calls;
 	uint32_t cache_hint_calls;
 	uint32_t token_continuations;
+	uint32_t span_submissions;
 	uint32_t last_cache_hint_tokens;
 	uint32_t status_outstanding;
 	SparkModelResidentStatusReport status_report;
@@ -181,6 +182,12 @@ uint32_t MockResidentClientTokenContinuations(uint32_t stage_index)
 {
 	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
 	return( c != 0 ? c->token_continuations : 0u );
+}
+
+uint32_t MockResidentClientSpanSubmissions(uint32_t stage_index)
+{
+	SparkModelResidentClient *c = MockResidentClientByRank(stage_index);
+	return( c != 0 ? c->span_submissions : 0u );
 }
 
 uint64_t MockResidentClientGeneration(uint32_t stage_index)
@@ -736,6 +743,38 @@ SparkStatus SparkModelResidentClientCanQueueEncodedContinuation(
 	return(client->scripted_call_status[MOCK_CALL_CAN_CONTINUE]);
 }
 
+static uint32_t MockResidentClientSpansExpandToSubmission(
+	const SparkModelServingSubmission *submission,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcSubmit *wire = (const SparkModelResidentIpcSubmit *)message;
+	SparkModelResidentIpcSubmit *expanded_wire,*direct_wire;
+	uint8_t *direct,*expanded;
+	uint32_t capacity,direct_bytes,expanded_bytes,matches;
+	SparkStatus status;
+	if ( SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,submission->model_extension_bytes,0u,&capacity) != SPARK_STATUS_OK )
+		return(0u);
+	expanded = (uint8_t *)malloc(capacity);
+	direct = (uint8_t *)malloc(capacity);
+	status = expanded != 0 && direct != 0 ? SparkModelResidentIpcExpandSpans(message,message_bytes,expanded,capacity,&expanded_bytes) : SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( status == SPARK_STATUS_OK )
+		status = wire->header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE_SPANS ?
+			SparkModelResidentIpcEncodePreparation(submission,wire->header.message_id,direct,capacity,&direct_bytes) :
+			SparkModelResidentIpcEncodeContinuation(submission,wire->header.message_id,wire->client_generation,direct,capacity,&direct_bytes);
+	matches = status == SPARK_STATUS_OK && expanded_bytes == direct_bytes ? 1u : 0u;
+	if ( matches != 0u )
+	{
+		expanded_wire = (SparkModelResidentIpcSubmit *)expanded;
+		direct_wire = (SparkModelResidentIpcSubmit *)direct;
+		expanded_wire->deadline_remaining_ns = direct_wire->deadline_remaining_ns;
+		matches = memcmp(expanded,direct,direct_bytes) == 0 ? 1u : 0u;
+	}
+	free(expanded);
+	free(direct);
+	return(matches);
+}
+
 SparkStatus SparkModelResidentClientQueueEncoded(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission,
@@ -745,11 +784,18 @@ SparkStatus SparkModelResidentClientQueueEncoded(
 	const SparkModelResidentIpcHeader *header = (const SparkModelResidentIpcHeader *)message;
 	if ( message == 0 || message_bytes < SPARK_MODEL_RESIDENT_IPC_SUBMIT_BYTES )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE )
+	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_PREPARE_SPANS || header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_SPANS )
+	{
+		if ( submission == 0 || MockResidentClientSpansExpandToSubmission(submission,message,message_bytes) == 0u )
+			return(SPARK_STATUS_SCHEMA_ERROR);
+		if ( client != 0 )
+			client->span_submissions++;
+	}
+	if ( SparkModelResidentIpcIsPreparationKind(header->kind) != 0u )
 		return(SparkModelResidentClientPrepare(client,submission));
 	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS && client != 0 )
 		client->token_continuations++;
-	if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE || header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CONTINUE_TOKENS )
+	if ( SparkModelResidentIpcIsSubmissionKind(header->kind) != 0u )
 		return(SparkModelResidentClientContinue(client,submission));
 	return(SPARK_STATUS_INVALID_ARGUMENT);
 }
