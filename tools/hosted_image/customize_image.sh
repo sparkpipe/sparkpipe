@@ -27,7 +27,9 @@ printf 'LABEL=SPARKROOT\t/\text4\terrors=remount-ro\t0\t1\nLABEL=SPARKESP\t/boot
 install -m 0644 "$out/tool/tailscale.deb" "$root/tmp/tailscale.deb"
 chroot "$root" dpkg -i /tmp/tailscale.deb > "$out/tailscale-install.log" 2>&1 || { tail -20 "$out/tailscale-install.log" >&2; exit 1; }
 rm -f "$root/tmp/tailscale.deb"
+install -d -m 0755 "$root/run/sshd"
 python3 "$here/stage_baseline.py" "$root" --source-ref "$source_ref" --report "$out/baseline-report.json"
+rmdir "$root/run/sshd"
 systemctl --root="$root" enable sparkpipe-host-keys.service
 rm -f "$root"/etc/ssh/ssh_host_*_key "$root"/etc/ssh/ssh_host_*_key.pub "$root"/etc/dropbear/initramfs/dropbear_*_host_key
 SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chroot "$root" update-initramfs -u -k "$KERNEL_RELEASE" > "$out/initramfs.log" 2>&1 || { tail -20 "$out/initramfs.log" >&2; exit 1; }
