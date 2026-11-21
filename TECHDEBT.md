@@ -1856,15 +1856,31 @@ and the multidev docs on 2026-09-28. Line numbers are in
   image without NVIDIA's user-space packages.
   [`tools/hosted_dependency_audit.py`](tools/hosted_dependency_audit.py)
   ([`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)) is
-  the gate for release roots, node images and running nodes, and every
-  release root built from main fails it. The 25 serving adapters, the hidden
-  transport, `sparkpipe_weightd`, `weightdctl` and `weightd_warm` need
-  `libcuda.so.1` and `libcudart.so.13`; `sparkpipe_model_residentd` and the
-  CUDA device library need `libcudart.so.13`. `sparkpipe_model_api` and
-  `sparkpipe_tokenize_prompt` pass only because the linker's `--as-needed`
-  drops the `-lcuda` that the global `LDFLAGS` give every link line. Still to
-  build: that device backend, a build flavour that links neither library,
-  and the audit in the publish step of hosted release roots.
+  the gate for release roots, node images and running nodes.
+  `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
+  a release root with any finding outside
+  [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
+  may only shrink. It lists 31 files:
+  - the 25 serving adapters, whose kernels and stage runner run through the
+    CUDA runtime and driver API (`libcuda.so.1`, `libcudart.so.13`). The
+    hub's API also loads an adapter for its descriptor, so the hub ships
+    them too;
+  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`, because weightd's
+    memory code uses the driver API and its client calls share objects with
+    it (`runtime/spark_weightd.c`, `runtime/spark_weightd_worker.c`);
+  - the RDMA transport, for its kernels and for those weightd client calls;
+  - `sparkpipe_model_residentd`, whose boundary buffers and streams go
+    through `spark_gpu.h` (`libcudart.so.13`);
+  - the CUDA device library (`libcudart.so.13`).
+
+  `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
+  `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
+  library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
+  - that device backend;
+  - a build flavour that links neither library;
+  - moving weightd's client calls out of the objects that hold its device
+    code, which would take the driver library out of `weightd_warm`,
+    `weightdctl` and the transport.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

@@ -41,6 +41,11 @@ jobs:
             python3 tools/ci_lanes.py "$BASE" "$HEAD" >> "$GITHUB_OUTPUT"
           fi
           cat "$GITHUB_OUTPUT"
+      - name: Check that the hosted release debt list only shrinks
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 tools/hosted_release_gate.py shrink "$BASE"
 
   light-tests:
     needs: lanes

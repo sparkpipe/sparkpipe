@@ -1,0 +1,389 @@
+import contextlib
+import copy
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+GATE = ROOT / "tools" / "hosted_release_gate.py"
+SPEC = importlib.util.spec_from_file_location("hosted_release_gate", GATE)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC.loader is not None
+SPEC.loader.exec_module(MODULE)
+AUDIT = MODULE.load_audit()
+RELEASE_BUILD = ROOT / "scripts" / "release_build.sh"
+CUDA_STUB = ROOT / "tests" / "cuda_stub"
+HOST_ONLY_PROGRAMS = ("build/sparkpipe_model_api", "build/sparkpipe_model_batch", "build/sparkpipe_tokenize_prompt", "build/weightd_receipt")
+BUILD_INPUT_FILES = ("Makefile", "sources.mk")
+BUILD_INPUT_DIRECTORIES = ("cache", "config", "deployment", "include", "inference", "model-families", "model_contracts",
+                           "modules", "node", "ring", "runtime", "schema", "src", "tests", "text", "tools")
+GIT_IDENTITY = {"GIT_AUTHOR_NAME": "fixture", "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+                "GIT_COMMITTER_NAME": "fixture", "GIT_COMMITTER_EMAIL": "fixture@example.invalid"}
+
+
+def compiler_links_elf():
+    compiler = shutil.which("cc")
+    if compiler is None:
+        return False
+    with tempfile.TemporaryDirectory() as directory:
+        source = Path(directory, "probe.c")
+        source.write_text("int spark_probe(void) { return 0; }\n")
+        output = Path(directory, "libprobe.so")
+        built = subprocess.run([compiler, "-shared", "-fPIC", str(source), "-o", str(output)], capture_output=True)
+        return built.returncode == 0 and output.read_bytes()[:4] == b"\x7fELF"
+
+
+ELF_HOST = compiler_links_elf()
+needs_elf = unittest.skipUnless(ELF_HOST, "the host cc does not link ELF objects")
+
+
+def make_words(variable, *assignments, directory=ROOT):
+    with tempfile.NamedTemporaryFile("w", suffix=".mk", delete=False) as printer:
+        printer.write("print-%:\n\t@echo $($*)\n")
+    try:
+        completed = subprocess.run(
+            ["make", "-s", "--no-print-directory", "-C", str(directory), "-f", "Makefile", "-f", printer.name,
+             f"print-{variable}", *assignments], capture_output=True, text=True, check=True)
+    finally:
+        os.unlink(printer.name)
+    return completed.stdout.split()
+
+
+def fake_toolkit(directory, libraries=False):
+    include = Path(directory, "include")
+    include.mkdir(parents=True)
+    for header in ("cuda.h", "cuda_runtime.h", "cuda_runtime_api.h"):
+        shutil.copy2(CUDA_STUB / header, include / header)
+    if libraries:
+        lib64 = Path(directory, "lib64")
+        lib64.mkdir()
+        for name, soname in (("libcuda.so", "libcuda.so.1"), ("libcudart.so", "libcudart.so.13")):
+            subprocess.run(["cc", "-shared", "-fPIC", f"-Wl,-soname,{soname}", f"-I{CUDA_STUB}",
+                            f"-I{ROOT / 'model-families' / 'common' / 'include'}", str(CUDA_STUB / "cuda_runtime_stub.c"),
+                            "-o", str(lib64 / name)], check=True)
+    return Path(directory)
+
+
+def write(path, text, mode=0o755):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    path.chmod(mode)
+    return path
+
+
+def debt(files, reason="Fixture reason that names why the file needs the library."):
+    return {"schema_version": 1, "debt": [{"reason": reason, "files": files}]}
+
+
+def run_check(root, document, complete=False):
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        failures = MODULE.check(str(root), document, complete)
+    return failures, output.getvalue()
+
+
+class DebtListTest(unittest.TestCase):
+    def setUp(self):
+        with open(MODULE.DEBT_PATH, "r", encoding="utf-8") as source:
+            self.document = json.load(source)
+
+    def test_committed_debt_list_is_valid_and_names_only_shipped_files(self):
+        self.assertEqual(MODULE.debt_errors(self.document), [])
+        shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
+        listed = {path for group in self.document["debt"] for path in group["files"]}
+        self.assertTrue(listed)
+        self.assertEqual(listed - shipped, set())
+
+    def test_host_only_programs_are_shipped_and_never_debt(self):
+        shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
+        host_only = set(make_words("HOSTED_RELEASE_HOST_ONLY_FILES", "SHARED_LIBRARY_EXT=so"))
+        listed = {path for group in self.document["debt"] for path in group["files"]}
+        self.assertEqual(set(HOST_ONLY_PROGRAMS) | {"tools/fleet_node_agent.sh"}, host_only)
+        self.assertEqual(host_only - shipped, set())
+        self.assertEqual(host_only & listed, set())
+
+    def test_validation_refuses_patterns_loose_paths_and_unexplained_entries(self):
+        good = debt({"build/a.so": ["needed libcuda.so.1"]})
+        self.assertEqual(MODULE.debt_errors(good), [])
+        cases = {
+            "pattern": debt({"build/*.so": ["needed libcuda.so.1"]}),
+            "class": debt({"build/lib[ab].so": ["needed libcuda.so.1"]}),
+            "absolute": debt({"/build/a.so": ["needed libcuda.so.1"]}),
+            "parent": debt({"../a.so": ["needed libcuda.so.1"]}),
+            "unnormalized": debt({"build//a.so": ["needed libcuda.so.1"]}),
+            "directory": debt({"build/": ["needed libcuda.so.1"]}),
+            "short reason": debt({"build/a.so": ["needed libcuda.so.1"]}, reason="needs it"),
+            "no findings": debt({"build/a.so": []}),
+            "unsorted findings": debt({"build/a.so": ["needed libcudart.so.13", "needed libcuda.so.1"]}),
+            "repeated finding": debt({"build/a.so": ["needed libcuda.so.1", "needed libcuda.so.1"]}),
+            "unparsed kind": debt({"build/a.so": ["unparsed bad header"]}),
+            "empty kind": debt({"build/a.so": ["empty nothing to audit"]}),
+            "no detail": debt({"build/a.so": ["needed"]}),
+            "unsorted files": debt({"build/b.so": ["needed libcuda.so.1"], "build/a.so": ["needed libcuda.so.1"]}),
+        }
+        for name, document in cases.items():
+            with self.subTest(name):
+                self.assertTrue(MODULE.debt_errors(document))
+        twice = debt({"build/a.so": ["needed libcuda.so.1"]})
+        twice["debt"].append({"reason": "Another fixture reason that is long enough.", "files": {"build/a.so": ["needed libcudart.so.13"]}})
+        self.assertTrue(any("already listed" in error for error in MODULE.debt_errors(twice)))
+        repeated = copy.deepcopy(good)
+        repeated["debt"].append(copy.deepcopy(good["debt"][0]))
+        self.assertTrue(any("repeats the reason" in error for error in MODULE.debt_errors(repeated)))
+        self.assertTrue(MODULE.debt_errors({"schema_version": 2, "debt": []}))
+        self.assertTrue(MODULE.debt_errors({"schema_version": 1, "debt": [], "patterns": ["*"]}))
+
+
+class LinkFlagsTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.toolkit = fake_toolkit(Path(self.directory.name, "cuda"))
+
+    def test_global_link_flags_name_no_device_library_on_a_cuda_host(self):
+        home = f"CUDA_HOME={self.toolkit}"
+        self.assertIn("-lcuda", make_words("SPARKPIPE_CUDA_DRIVER_LINK", home))
+        self.assertIn("-lcudart", make_words("SPARKPIPE_CUDA_RUNTIME_LINK", home))
+        flags = make_words("LDFLAGS", home) + make_words("LDLIBS", home)
+        self.assertEqual([flag for flag in flags if "cuda" in flag], [])
+
+    def test_host_only_link_lines_name_no_device_library_and_device_programs_keep_theirs(self):
+        host_only = list(HOST_ONLY_PROGRAMS)
+        controls = ["build/weightd_warm", "build/weightdctl"]
+        completed = subprocess.run(["make", "-n", "-B", "-C", str(ROOT), f"CUDA_HOME={self.toolkit}", *host_only, *controls],
+                                   capture_output=True, text=True, check=True)
+        links = {}
+        for line in completed.stdout.splitlines():
+            match = re.search(r"\s-o\s+(\S+)\s*$", line)
+            if match and " -c " not in f" {line} ":
+                links[match.group(1)] = line
+        for target in host_only:
+            with self.subTest(target):
+                self.assertIn(target, links)
+                self.assertNotRegex(links[target], r"-lcuda\b|-lcudart\b|lib64")
+        for target in controls:
+            with self.subTest(target):
+                self.assertRegex(links[target], r"-lcuda\b")
+
+
+class GateTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.base = Path(self.directory.name)
+        self.root = self.base / "root"
+        write(self.root / "bin" / "probe.sh", "#!/bin/sh\nnvidia-smi -q\n")
+        write(self.root / "bin" / "clean.sh", "#!/bin/sh\necho ready\n")
+
+    def test_listed_finding_passes_and_an_unlisted_one_fails(self):
+        failures, output = run_check(self.root, debt({"bin/probe.sh": ["tool-string nvidia-smi"]}))
+        self.assertEqual(failures, [])
+        self.assertIn(": PASS (2 scanned, 1 findings on the debt list in 1 files, 0 failures)", output)
+        failures, output = run_check(self.root, debt({"bin/other.sh": ["tool-string nvidia-smi"]}))
+        self.assertEqual(failures, ["FAIL new tool-string bin/probe.sh: nvidia-smi"])
+        self.assertIn(": FAIL", output)
+
+    def test_a_listed_finding_that_is_gone_is_stale_and_must_be_removed(self):
+        document = debt({"bin/clean.sh": ["tool-string nvidia-smi"], "bin/probe.sh": ["tool-string nvidia-smi"]})
+        failures, _ = run_check(self.root, document)
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].startswith("FAIL stale bin/clean.sh: tool-string nvidia-smi is gone"))
+
+    def test_a_listed_file_the_root_lacks_fails_only_a_complete_root(self):
+        document = debt({"bin/absent.so": ["needed libcuda.so.1"], "bin/probe.sh": ["tool-string nvidia-smi"]})
+        self.assertEqual(run_check(self.root, document)[0], [])
+        failures, _ = run_check(self.root, document, complete=True)
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].startswith("FAIL missing bin/absent.so"))
+
+    def test_an_empty_root_fails_whatever_the_debt_list_says(self):
+        empty = self.base / "empty"
+        empty.mkdir()
+        failures, _ = run_check(empty, debt({"bin/probe.sh": ["tool-string nvidia-smi"]}))
+        self.assertEqual(failures, ["FAIL new empty .: nothing to audit"])
+
+    @needs_elf
+    def test_needed_entries_must_match_the_list_exactly(self):
+        libraries = self.base / "libraries"
+        libraries.mkdir()
+        source = write(libraries / "stub.c", "int spark_fixture_symbol(void) { return 1; }\n", 0o644)
+        subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libcuda.so.1", str(source), "-o", str(libraries / "libcuda.so")], check=True)
+        program = write(self.base / "program.c", "int main(void) { return 0; }\n", 0o644)
+        (self.root / "lib").mkdir()
+        subprocess.run(["cc", str(program), "-o", str(self.root / "lib" / "engine"), "-Wl,--no-as-needed",
+                        f"-L{libraries}", "-lcuda"], check=True)
+        listed = {"bin/probe.sh": ["tool-string nvidia-smi"], "lib/engine": ["needed libcuda.so.1"]}
+        self.assertEqual(run_check(self.root, debt(listed))[0], [])
+        listed["lib/engine"] = ["needed libcudart.so.13"]
+        failures, _ = run_check(self.root, debt(listed))
+        self.assertEqual(failures[0], "FAIL new needed lib/engine: libcuda.so.1")
+        self.assertTrue(failures[1].startswith("FAIL stale lib/engine: needed libcudart.so.13 is gone"))
+
+    def test_stage_copies_exact_paths_and_refuses_anything_else(self):
+        project = self.base / "project"
+        write(project / "build" / "tool", "#!/bin/sh\necho ready\n")
+        write(project / "tools" / "agent.sh", "#!/bin/sh\nnvidia-smi\n")
+        staged = project / "staged"
+        write(staged / "leftover", "old\n")
+        cwd = os.getcwd()
+        os.chdir(project)
+        try:
+            MODULE.stage("staged", ["build/tool", "tools/agent.sh"])
+            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "tools/agent.sh"})
+            self.assertEqual(os.stat("staged/build/tool").st_mode & 0o777, 0o755)
+            for sources in (["build/*"], ["/etc/hostname"], ["../project/build/tool"], ["build/absent"], []):
+                with self.subTest(sources):
+                    with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                        MODULE.stage("staged", sources)
+                    self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "tools/agent.sh"})
+        finally:
+            os.chdir(cwd)
+
+    def test_command_line_stages_checks_and_exits_with_the_verdict(self):
+        project = self.base / "project"
+        write(project / "build" / "tool", "#!/bin/sh\nnvidia-smi\n")
+        listed = project / "debt.json"
+        listed.write_text(json.dumps(debt({"build/tool": ["tool-string nvidia-smi"]})))
+        command = [sys.executable, str(GATE), "check", "--debt", str(listed), "--complete", "root", "--stage", "build/tool"]
+        completed = subprocess.run(command, cwd=project, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        listed.write_text(json.dumps(debt({"build/other": ["tool-string nvidia-smi"]})))
+        completed = subprocess.run(command, cwd=project, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("FAIL new tool-string build/tool: nvidia-smi", completed.stdout)
+        self.assertIn("FAIL missing build/other", completed.stdout)
+        findings = subprocess.run([sys.executable, str(GATE), "findings", "--debt", str(listed), "root"],
+                                  cwd=project, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(findings.stdout)["debt"], [{"reason": "", "files": {"build/tool": ["tool-string nvidia-smi"]}}])
+
+
+class ShrinkTest(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.repository = Path(self.directory.name)
+        self.git("init", "-q")
+        write(self.repository / "README", "fixture\n", 0o644)
+        self.commit("start")
+        self.start = self.head()
+        self.listed = {"build/a.so": ["needed libcuda.so.1", "needed libcudart.so.13"], "build/b": ["needed libcudart.so.13"]}
+        self.write_debt(self.listed)
+        self.commit("debt")
+        self.base = self.head()
+
+    def git(self, *arguments):
+        return subprocess.run(["git", "-c", "commit.gpgsign=false", "-C", str(self.repository), *arguments], capture_output=True, text=True, check=True,
+                              env={**os.environ, **GIT_IDENTITY}).stdout.strip()
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+
+    def head(self):
+        return self.git("rev-parse", "HEAD")
+
+    def write_debt(self, files):
+        path = self.repository / MODULE.DEBT_RELATIVE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(debt(files)))
+
+    def shrink(self, base):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = MODULE.shrink(base, str(self.repository))
+        return code, output.getvalue()
+
+    def test_removing_entries_passes_and_adding_any_fails(self):
+        self.write_debt({"build/a.so": ["needed libcuda.so.1", "needed libcudart.so.13"]})
+        self.assertEqual(self.shrink(self.base)[0], 0)
+        self.write_debt({"build/a.so": ["needed libcuda.so.1"], "build/b": ["needed libcudart.so.13"]})
+        self.assertEqual(self.shrink(self.base)[0], 0)
+        self.write_debt({**self.listed, "build/c": ["needed libcuda.so.1"]})
+        code, output = self.shrink(self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL grew build/c: needed libcuda.so.1", output)
+        self.write_debt({**self.listed, "build/b": ["needed libcuda.so.1", "needed libcudart.so.13"]})
+        code, output = self.shrink(self.base)
+        self.assertEqual(code, 1)
+        self.assertIn("FAIL grew build/b: needed libcuda.so.1", output)
+
+    def test_the_change_that_introduces_the_list_passes_and_an_unknown_base_is_refused(self):
+        code, output = self.shrink(self.start)
+        self.assertEqual(code, 0)
+        self.assertIn("introduces it with 3 findings", output)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            self.shrink("0" * 40)
+        self.assertEqual(raised.exception.code, 2)
+
+
+class ReleaseKitTest(unittest.TestCase):
+    def test_release_build_ships_exactly_the_gated_node_files(self):
+        text = RELEASE_BUILD.read_text()
+        node = re.search(r'^NODE="([^"]+)"$', text, re.M)
+        self.assertIsNotNone(node)
+        self.assertEqual(node.group(1).split(), make_words("HOSTED_RELEASE_NODE_FILES", "SHARED_LIBRARY_EXT=so"))
+        hub = re.search(r'^HUB_FILES="([^"]+)"$', text, re.M)
+        self.assertIsNotNone(hub)
+        self.assertEqual(set(hub.group(1).split()), set(make_words("HOSTED_RELEASE_HUB_FILES")) | {"build/runtime_libs/libsparkpipe_device_cuda.so"})
+
+    def test_hosted_mode_gates_both_builds_before_it_writes_the_firmware_directory(self):
+        text = RELEASE_BUILD.read_text()
+        block = re.search(r'^if \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
+        self.assertIsNotNone(block)
+        lines = block.group(1).splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
+        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO'", lines[0])
+        self.assertIn("ssh -o BatchMode=yes rtx5090", lines[1])
+        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO'", lines[1])
+        for line in lines:
+            self.assertTrue(line.rstrip().endswith("exit 1; }"))
+        self.assertLess(block.start(), text.index("rm -rf $OUT"))
+
+
+@unittest.skipUnless(ELF_HOST and sys.platform.startswith("linux") and shutil.which("make"), "builds ELF programs with GNU make on Linux")
+class HostOnlyBuildTest(unittest.TestCase):
+    def test_host_only_programs_link_no_device_library_on_a_cuda_host(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "source"
+            source.mkdir()
+            for name in BUILD_INPUT_FILES:
+                shutil.copy2(ROOT / name, source / name)
+            for name in BUILD_INPUT_DIRECTORIES:
+                shutil.copytree(ROOT / name, source / name, symlinks=True,
+                                ignore=shutil.ignore_patterns("build", "__pycache__", "*.pyc"))
+            toolkit = fake_toolkit(base / "cuda", libraries=True)
+            host_only = make_words("HOSTED_RELEASE_HOST_ONLY_FILES", directory=source)
+            built = [path for path in host_only if path.startswith("build/")]
+            control = "build/weightd_warm"
+            completed = subprocess.run(["make", "-C", str(source), f"-j{os.cpu_count() or 2}", f"CUDA_HOME={toolkit}",
+                                        "CC=cc -Wl,--no-as-needed", *built, control], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stdout[-4000:] + completed.stderr[-4000:])
+            cwd = os.getcwd()
+            os.chdir(source)
+            try:
+                MODULE.stage(str(base / "host_only"), host_only)
+                MODULE.stage(str(base / "control"), [control])
+            finally:
+                os.chdir(cwd)
+            report = AUDIT.audit_root(str(base / "host_only"))
+            self.assertEqual(report.scanned, len(host_only))
+            self.assertEqual(report.findings(), [])
+            control_report = AUDIT.audit_root(str(base / "control"))
+            self.assertIn(("build/weightd_warm", "needed", "libcuda.so.1"), control_report.found)
+            self.assertIn(("build/weightd_warm", "needed", "libcudart.so.13"), control_report.found)
+
+
+if __name__ == "__main__":
+    unittest.main()

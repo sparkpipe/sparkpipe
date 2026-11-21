@@ -23,4 +23,9 @@ ssh -o BatchMode=yes $HOST "cd ~/build-rp && rm -rf fw-$SHA-src && mkdir fw-$SHA
 wait
 ssh -o BatchMode=yes $HOST "grep -n -E ' error|Error ' ~/build-rp/fw-$SHA.out | head -5" < /dev/null
 ssh -o BatchMode=yes rtx5090 "grep -n -E ' error|Error ' $HUB_WORK/logs/api-$SHA.out | head -5; cd $HUB_WORK/api-build-$SHA/build && sha256sum sparkpipe_model_api sparkpipe_tokenize_prompt *.so runtime_libs/libsparkpipe_device_cuda.so | cut -c1-16,65- > ../SHA16" < /dev/null
+HUB_FILES="build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/runtime_libs/libsparkpipe_device_cuda.so"
+if [ "${HOSTED:-0}" = 1 ]; then
+  ssh -o BatchMode=yes $HOST "cd ~/build-rp/fw-$SHA-src && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO'" < /dev/null || { echo "release_build: the hosted release gate refused the node files of $SHA; nothing is written to $OUT" >&2; exit 1; }
+  ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO'" < /dev/null || { echo "release_build: the hosted release gate refused the hub API files of $SHA; nothing is written to $OUT" >&2; exit 1; }
+fi
 rm -rf $OUT && mkdir -p $OUT && ssh $HOST "cd ~/build-rp/fw-$SHA-src/build && tar cf - $(echo $NODE $SO | sed 's#build/##g')" < /dev/null | tar -C $OUT -xf - && echo $SHA > $OUT/SOURCE_COMMIT && (cd $OUT && shasum -a 256 $(echo $NODE $SO | sed 's#build/##g') | cut -c1-16,65- > SHA16 && shasum -a 256 $(echo $NODE $SO | sed "s#build/##g") > SHA256SUMS) && wc -l < $OUT/SHA16 && echo FW-DIR $OUT && echo APIB $HUB_WORK/api-build-$SHA/build

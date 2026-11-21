@@ -100,6 +100,74 @@ firmware, including the GSP firmware (`nvidia-firmware-<branch>-<version>`,
 `linux-firmware`); Ubuntu's `rdma-core`, `ibverbs-providers` and
 `mstflint`; and SparkPipe's own files.
 
+## Release gate
+
+A release root built today still carries CUDA-linked files: the serving
+adapters, weightd and the rest. Until each one moves to SparkPipe's own
+device backend, the gate accepts exactly those findings and nothing else.
+[`tools/hosted_release_gate.py`](../tools/hosted_release_gate.py) runs the
+`root` audit over a staged release root and compares every finding with the
+debt list,
+[`tools/hosted_release_debt.json`](../tools/hosted_release_debt.json):
+
+```bash
+make hosted-release-gate
+make hosted-release-gate HOSTED_RELEASE_GATE_FLAGS=--complete
+HOSTED=1 scripts/release_build.sh REV
+python3 tools/hosted_release_gate.py findings build/hosted_release_root
+python3 tools/hosted_release_gate.py shrink BASE
+```
+
+`make hosted-release-gate` builds the files a release ships, copies them to
+`build/hosted_release_root` under their repository paths and checks that
+root. The default set is every file the release kit installs:
+
+- the node files `HOSTED_RELEASE_NODE_FILES`, which equal the kit's `NODE`
+  list;
+- the hub API files `HOSTED_RELEASE_HUB_FILES`;
+- every CUDA serving adapter;
+- `tools/fleet_node_agent.sh`.
+
+`HOSTED_RELEASE_FILES` replaces the set and `HOSTED_RELEASE_ROOT` the
+directory.
+
+The debt list groups files by the reason they need an NVIDIA library. Each
+file is named by its exact path, with no patterns or directories, and each
+finding by its kind and detail, for example `needed libcuda.so.1`. The gate
+fails:
+
+- `new`: a finding the list does not name;
+- `stale`: a listed finding that the shipped file no longer has, which must
+  be removed from the list;
+- `missing`, with `--complete` only: a listed file the root does not ship.
+
+The files `HOSTED_RELEASE_HOST_ONLY_FILES` names never appear on the list:
+
+- `sparkpipe_model_api`;
+- `sparkpipe_tokenize_prompt`;
+- `sparkpipe_model_batch`;
+- `weightd_receipt`;
+- the node agent.
+
+They have no device code, and no link line names a CUDA library for them.
+The CUDA flavour gives `-lcuda` and `-lcudart` only to the targets that call
+those libraries. The global `LDFLAGS` carry neither.
+
+The list can only shrink:
+
+- the CUDA compile job in CI builds the complete set in the CUDA 13
+  container and runs the gate with `--complete`, so a new dependency fails
+  and so does a cleared one still on the list;
+- the CI lanes job runs `shrink` against the pull request's base, which fails
+  on any file or finding the base list did not have;
+- the receipts of the compile job include `hosted_release_findings.json`,
+  the findings in the debt list's format.
+
+`HOSTED=1 scripts/release_build.sh` runs the gate on the build host over the
+node files and adapters, and on the hub over the API files and adapters,
+before it writes the firmware directory. A refusal stops the kit with
+nothing written. Without `HOSTED=1` the kit builds as before.
+
 ## Tests
 
 [`tests/test_hosted_dependency_audit.py`](../tests/test_hosted_dependency_audit.py)
@@ -112,3 +180,23 @@ on the second. A live-process case loads a stand-in library and audits the
 running process. The ELF cases need a `cc` that links ELF, so they skip on
 macOS; the package, maps, name, script and Python-package cases run
 everywhere.
+
+[`tests/test_hosted_release_gate.py`](../tests/test_hosted_release_gate.py)
+also runs in `make test`. It checks four things.
+
+- **The debt list.** It is valid and names only files a release ships. The
+  validation refuses patterns, loose or duplicated paths, unsorted entries,
+  short reasons and finding kinds that are never debt.
+- **Link flags.** With a stand-in CUDA toolkit, the global link flags name
+  no CUDA library. The host-only programs' link lines name none either,
+  while weightd's tools keep `-lcuda`.
+- **The gate.** It passes a listed finding and fails new, stale and missing
+  ones. It stages exact paths only. `shrink` fails on any added file or
+  finding in a scratch Git repository. The release kit's `NODE` list equals
+  `HOSTED_RELEASE_NODE_FILES`, and its hosted mode gates both builds before
+  it writes the firmware directory.
+- **The host-only build**, on Linux. It builds the host-only programs from a
+  copy of the sources with the stand-in toolkit and `-Wl,--no-as-needed`.
+  The audit must find nothing in them, so a CUDA library on any of their
+  link lines fails even where `--as-needed` would drop it. A control build
+  of `weightd_warm` must show `libcuda.so.1` and `libcudart.so.13`.
