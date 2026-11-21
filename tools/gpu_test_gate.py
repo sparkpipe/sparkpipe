@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -175,13 +176,22 @@ def commit_of(repository, revision):
     return subprocess.run(["git", "-C", str(repository), "rev-parse", revision + "^{commit}"], capture_output=True, text=True, check=True).stdout.strip()
 
 
+def registered_worktrees(repository):
+    listing = subprocess.run(["git", "-C", str(repository), "worktree", "list", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    return {Path(line[len("worktree "):]).resolve() for line in listing.splitlines() if line.startswith("worktree ")}
+
+
 def worktree(repository, work, label, wanted):
     path = Path(work) / label
     if path.exists():
-        current = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        if current == wanted:
-            return path
-        subprocess.run(["git", "-C", str(repository), "worktree", "remove", "--force", str(path)], check=True)
+        if path.resolve() in registered_worktrees(repository):
+            current = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+            if current == wanted:
+                return path
+            subprocess.run(["git", "-C", str(repository), "worktree", "remove", "--force", str(path)], check=True)
+        else:
+            shutil.rmtree(path)
+    subprocess.run(["git", "-C", str(repository), "worktree", "prune"], check=True)
     subprocess.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(path), wanted], check=True, capture_output=True)
     return path
 
