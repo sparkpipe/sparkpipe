@@ -405,6 +405,63 @@ Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
 
+## Kernel registration
+
+`runtime/device/nvrm/nvrm_register.c` defines the registration entry points
+that nvcc's host stubs call, so an nvcc-compiled module links against the
+nvrm library with `-cudart none` and no NVIDIA user-space library. The set
+is what an object compiled that way leaves undefined: `__cudaRegisterFatBinary`,
+`__cudaRegisterFatBinaryEnd`, `__cudaUnregisterFatBinary`,
+`__cudaRegisterFunction`, `__cudaRegisterVar`, `__cudaPopCallConfiguration`,
+`__cudaGetKernel` and `__cudaLaunchKernel`. Their declarations are the CUDA
+headers' (`crt/host_runtime.h`, `crt/device_functions.h`).
+`__cudaRegisterManagedVar`, `__cudaInitModule`,
+`__cudaPushCallConfiguration`, `__cudaLaunchKernel_ptsz` and
+`cudaLaunchKernel` are defined too.
+
+- **Modules.** The first fat binary a module registers finds that module from
+  its caller's address. On Linux this uses `dl_iterate_phdr`, and the main
+  program is `/proc/self/exe`; elsewhere it uses `dladdr`. The return
+  address is read in a frame with no large locals: a function with a 4 KiB
+  path buffer gets a stack-probe call at entry, and that call overwrites the
+  link register first. The module's kernels live in `<module path>.kernels/`.
+  Every `.cubin` there needs its `.manifest`, and every manifest its cubin.
+  Other files, such as compiler leftovers from `--keep`, are ignored. The
+  manifests are parsed on the spot (host work only, safe in a constructor).
+  A kernel name in two cubins of one module is refused. So is a missing
+  directory, an unpaired file, a directory with no cubin, or a manifest
+  that does not parse.
+- **Failures are sticky.** A module that fails prints one line naming its
+  path and the cause. It keeps the failure, and every launch of its kernels
+  returns it. Later fat binaries of the same module reuse the first scan.
+- **Functions and variables.** `__cudaRegisterFunction` maps the host stub's
+  address to the kernel's mangled name. A name no cubin of the module lists
+  is refused, naming it. `__cudaRegisterVar` records the host shadow's
+  address and the symbol's name. Any host access to it
+  (`SparkNvrmRegisteredVariable`) is refused, naming the symbol: the engine
+  makes no symbol calls. A managed variable fails its module, because the
+  hosted runtime provides no managed memory.
+- **Lazy kernels.** The device is not initialized while constructors run, so
+  `SparkNvrmRegisteredKernel(host, &kernel)` loads the kernel's cubin as a
+  device library and creates the kernel on first use, then caches it for
+  the process. `SparkNvrmRegisteredRelease` destroys the cached kernels and
+  unloads their libraries, so `SparkDeviceShutdown` finds none live; the
+  next launch creates them again. Unregistering a module's last fat binary
+  releases its kernels and forgets its entries.
+- **`<<<>>>` aborts.** The `<<<>>>` entry points, the runtime-API
+  `cudaLaunchKernel` and `__cudaInitModule` abort, naming the kernel where
+  they know it. Every launch goes through `LM_LAUNCH`. A push-configuration
+  failure that merely returned an error would make `<<<>>>` skip its launch
+  without a word.
+
+`tests/test_nvrm_register.c` covers each refusal, the name and variable
+lookups, a fat binary registered from the test program itself, and
+unregistering; each abort is checked in a child process. Its
+`build/test_nvrm_register_gpu` build (in `make test-nvrm-gpu`) also launches
+a registered kernel. It checks that the kernel is cached, that a
+2000-byte-named kernel resolves, and that after the release the device
+shuts down with no live library.
+
 ## First light and memory bandwidth
 
 Two tools run on a GPU host with the pinned module:

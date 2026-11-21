@@ -59,7 +59,7 @@ SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_
 	return(SPARK_STATUS_OK);
 }
 
-static uint8_t *LaunchReadFile(const char *path, uint64_t *bytes)
+uint8_t *SparkNvrmReadFile(const char *path, uint64_t *bytes)
 {
 	FILE *file = fopen(path,"rb");
 	uint8_t *data = 0;
@@ -107,10 +107,10 @@ SparkStatus SparkNvrmProgramLoadFile(SparkNvrmGpu *gpu, const char *path, SparkN
 		SPARK_FAIL(status);
 	}
 	snprintf(manifest_path,sizeof(manifest_path),"%.*s%s",(int)(length - suffix),path,LAUNCH_MANIFEST_SUFFIX);
-	blob = LaunchReadFile(path,&bytes);
+	blob = SparkNvrmReadFile(path,&bytes);
 	if ( blob == 0 )
 		return(LaunchMissing(path,"the kernel image",owner));
-	manifest = LaunchReadFile(manifest_path,&manifest_bytes);
+	manifest = SparkNvrmReadFile(manifest_path,&manifest_bytes);
 	if ( manifest == 0 )
 	{
 		free(blob);
