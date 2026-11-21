@@ -28,7 +28,7 @@
 #define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
 #define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
 #define STAGE_RUNNER_GRAPH_KEYS 2u
-#define STAGE_RUNNER_GRAPH_SLOTS (2u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
+#define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS 16u
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
@@ -267,6 +267,8 @@ typedef struct SparkStageRunnerState
 	uint32_t rows;
 	uint32_t logical_sequence_count;
 	const uint16_t *embed_weight;
+	uint16_t *embed_table;
+	uint32_t embed_gather;
 	const uint16_t *head_norm_weight;
 	const uint16_t *head_weight;
 	uint8_t *head_certified_fp8_payload;
@@ -1296,11 +1298,19 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 				configuration->output_vocabulary, state->vocab, state->tp_rank, state->tp_rank * state->vocab_slice_rows);
 			status = SPARK_STATUS_INVALID_ARGUMENT;
 		}
+		else if ( state->geometry.embed_gather != 0u && runner->owns_embedding != 0u && state->tp_degree > 1u &&
+			(uint64_t)state->geometry.embed_rows * state->tp_degree != state->vocab )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: gathering the embedding needs %u even shards of the %u-row vocabulary, not %u rows a rank\n",
+				state->tp_degree, state->vocab, state->geometry.embed_rows);
+			status = SPARK_STATUS_PARSE_ERROR;
+		}
 		else
 		{
 			state->output_vocab = configuration->output_vocabulary;
 			state->head_output_rows = state->output_vocab - state->tp_rank * state->vocab_slice_rows < state->vocab_slice_rows ?
 				state->output_vocab - state->tp_rank * state->vocab_slice_rows : state->vocab_slice_rows;
+			state->embed_gather = state->geometry.embed_gather != 0u && runner->owns_embedding != 0u && state->tp_degree > 1u ? 1u : 0u;
 		}
 	}
 	if ( status == SPARK_STATUS_OK )
@@ -1636,8 +1646,29 @@ static void StageRunnerLayerMarksEnd(SparkStageRunnerState *state, uint32_t rank
 	state->layer_waves = 0u;
 }
 
+static SparkStatus StageRunnerGatherEmbedding(SparkStageRunnerState *state, cudaStream_t stream)
+{
+	const uint64_t bytes = (uint64_t)state->vocab * state->geometry.hidden * sizeof(uint16_t);
+	SparkStatus status;
+	if ( state->embed_table == 0 && cudaMalloc((void **)&state->embed_table, bytes) != cudaSuccess )
+	{
+		state->embed_table = 0;
+		fprintf(stderr, "sparkpipe_stage_runner: %llu bytes for the gathered embedding table could not be allocated\n", (unsigned long long)bytes);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	status = StageRunnerMarkedRound(state, 0u, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL,
+		state->geometry.embed_rows, state->geometry.hidden, state->embed_weight, state->embed_table);
+	if ( status == SPARK_STATUS_OK )
+		state->embed_gather = 2u;
+	return status;
+}
+
 static SparkStatus StageRunnerEmbed(SparkStageRunnerState *state, const SparkStageRunner *runner, uint32_t rows, cudaStream_t stream)
 {
+	if ( state->embed_gather == 2u )
+		return LmStageEmbeddingWhole(state->embed_table, state->token_ids_device, state->hidden, rows, state->geometry.hidden, state->vocab,
+			state->geometry.embed_alias_first, state->geometry.embed_alias_count, state->geometry.embed_alias_row, stream) == LM_LAUNCH_OK ?
+			SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	const int32_t launched = state->geometry.embed_alias_count != 0u
 		? LmStageEmbeddingAlias(state->embed_weight, state->token_ids_device, state->hidden, rows, state->geometry.hidden,
 			runner->tp_rank * state->vocab_slice_rows, state->vocab_slice_rows, state->geometry.embed_alias_first,
@@ -2175,9 +2206,9 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 	return status;
 }
 
-static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled)
+static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled, uint32_t last_rows)
 {
-	return ((sampled != 0u ? STAGE_RUNNER_GRAPH_KEYS : 0u) + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
+	return (((last_rows != 0u ? 2u : 0u) + (sampled != 0u ? 1u : 0u)) * STAGE_RUNNER_GRAPH_KEYS + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
 }
 
 static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
@@ -2191,14 +2222,14 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 		rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
 }
 
-static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, SparkStageRunnerStep *identity)
+static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, uint32_t ignores_gather, SparkStageRunnerStep *identity)
 {
 	memcpy(identity, in, sizeof(*identity));
 	identity->host_positions = 0;
 	identity->host_sequence_of_row = 0;
 	identity->host_slots = 0;
 	identity->host_parent_rows = 0;
-	if ( in->graph_key == 2u )
+	if ( in->graph_key == 2u || ignores_gather != 0u )
 	{
 		identity->gather_context = 0u;
 		identity->gather_sequence = 0u;
@@ -2261,7 +2292,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	const SparkStageRunnerStep *in, cudaStream_t stream)
 {
 	const uint64_t started = SparkMonotonicNs();
-	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state));
+	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state), in->last_rows_only);
 	cudaGraph_t graph = 0;
 	cudaGraphExec_t exec = 0;
 	cudaError_t error = cudaSuccess;
@@ -2302,7 +2333,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		abort();
 	}
 	state->graph_exec[slot] = exec;
-	StageRunnerGraphIdentity(in, &state->graph_input[slot]);
+	StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &state->graph_input[slot]);
 	state->graph_token_out[slot] = state->step_dispatch->output_token_ids;
 	state->graph_score_out[slot] = state->step_dispatch->output_scores;
 	state->graph_distribution_count[slot] = state->step_dispatch->distribution_count;
@@ -2416,11 +2447,17 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	const uint32_t rows = in->rows;
 	const SparkStageRunnerDispatch *dispatch = state->step_dispatch;
 	SparkStageRunnerStep identity;
+	if ( state->embed_gather == 1u )
+	{
+		const SparkStatus gathered = StageRunnerGatherEmbedding(state, stream);
+		if ( gathered != SPARK_STATUS_OK )
+			return gathered;
+	}
 	if ( in->graph_key != 0u && in->graph_key <= STAGE_RUNNER_GRAPH_KEYS && dispatch != 0 &&
 		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
 	{
-		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state));
-		StageRunnerGraphIdentity(in, &identity);
+		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
+		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
 		if ( state->graph_exec[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
 			state->graph_token_out[slot] != dispatch->output_token_ids || state->graph_score_out[slot] != dispatch->output_scores ||
 			state->graph_distribution_count[slot] != dispatch->distribution_count) )
@@ -3297,6 +3334,8 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	cudaFree(state->head_screened_count);
 	cudaFree(state->hidden);
 	cudaFree(state->head_normed);
+	if ( state->embed_table != 0 )
+		cudaFree(state->embed_table);
 	cudaFree(state->head_maxloc);
 	cudaFree(state->head_hidden);
 	cudaFree(state->head_token);

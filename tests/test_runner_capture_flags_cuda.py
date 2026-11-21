@@ -1,4 +1,6 @@
-"""A stage-runner decode graph that cannot be captured on an sm_121 device aborts the rank instead of running eager."""
+"""Stage-runner graph replay leaves the gather fields out of a graph's identity only for verify steps and for models whose
+geometry sets graph_ignores_gather, a prompt's last step and a decode step keep separate graph slots, and a decode graph that
+cannot be captured on an sm_121 device aborts the rank instead of running eager."""
 import subprocess
 import sys
 from pathlib import Path

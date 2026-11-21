@@ -180,6 +180,169 @@ void LmTopkExactGatherKernel(const float *__restrict__ values, const uint32_t *_
 		out[index] = out[index] != 0xffffffffu ? row_positions[out[index]] : 0xffffffffu;
 }
 
+#define LM_TOPK_WIDE_THREADS 512u
+#define LM_TOPK_WIDE_BUCKETS 2048u
+#define LM_TOPK_WIDE_CANDIDATES 2048u
+#define LM_TOPK_WIDE_MAX_K 2048u
+#define LM_TOPK_EXACT_CACHED_ROW 16384u
+
+static __device__ __forceinline__ uint32_t LmTopkWideExclusive(uint32_t value, uint32_t *warp_sums)
+{
+	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,warp = threadIdx.x / LM_TOPK_WARP_LANES;
+	uint32_t inclusive = value,before = 0u,other,offset;
+	for (offset = 1u; offset < LM_TOPK_WARP_LANES; offset <<= 1u)
+	{
+		other = __shfl_up_sync(0xffffffffu,inclusive,offset);
+		if ( lane >= offset )
+			inclusive += other;
+	}
+	if ( lane == LM_TOPK_WARP_LANES - 1u )
+		warp_sums[warp] = inclusive;
+	__syncthreads();
+	for (other = 0u; other < warp; other++)
+		before += warp_sums[other];
+	__syncthreads();
+	return(before + inclusive - value);
+}
+
+static __device__ __forceinline__ uint32_t LmTopkWideAppend(uint32_t take, uint32_t *count)
+{
+	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES;
+	const uint32_t ballot = __ballot_sync(0xffffffffu,take != 0u);
+	uint32_t base = 0u;
+	if ( ballot != 0u && lane == (uint32_t)__ffs(ballot) - 1u )
+		base = atomicAdd(count,(uint32_t)__popc(ballot));
+	base = __shfl_sync(0xffffffffu,base,__ffs(ballot != 0u ? ballot : 1u) - 1);
+	return(base + (uint32_t)__popc(ballot & ((1u << lane) - 1u)));
+}
+
+template<class T>
+static __device__ __forceinline__ void LmTopkWideSort(T *values, uint32_t padded)
+{
+	uint32_t size,stride,index,low,high;
+	for (size = 2u; size <= padded; size <<= 1u)
+		for (stride = size >> 1u; stride > 0u; stride >>= 1u)
+		{
+			for (index = threadIdx.x; index < padded / 2u; index += LM_TOPK_WIDE_THREADS)
+			{
+				low = 2u * index - (index & (stride - 1u));
+				high = low + stride;
+				const T a = values[low],b = values[high];
+				if ( (a > b) == ((low & size) == 0u) )
+				{
+					values[low] = b;
+					values[high] = a;
+				}
+			}
+			__syncthreads();
+		}
+}
+
+static __global__ __launch_bounds__(LM_TOPK_WIDE_THREADS)
+void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+{
+	__shared__ uint32_t histogram[LM_TOPK_WIDE_BUCKETS];
+	__shared__ uint32_t selected[LM_TOPK_WIDE_MAX_K];
+	__shared__ unsigned long long candidates[LM_TOPK_WIDE_CANDIDATES];
+	__shared__ uint32_t warp_sums[LM_TOPK_WIDE_THREADS / LM_TOPK_WARP_LANES];
+	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
+	__shared__ uint32_t choice[3],counts[2];
+	const float *row = scores + (uint64_t)blockIdx.x * n;
+	uint32_t *out = out_indices + (uint64_t)blockIdx.x * k;
+	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,per = LM_TOPK_WIDE_BUCKETS / LM_TOPK_WIDE_THREADS;
+	const uint32_t shifts[3] = { 21u, 10u, 0u },widths[3] = { 11u, 11u, 10u };
+	uint32_t prefix = 0u,mask = 0u,need = k,count = n,pass,base,index,key,bucket,peers,running,part,local[LM_TOPK_WIDE_BUCKETS / LM_TOPK_WIDE_THREADS];
+	static_assert(LM_TOPK_WIDE_BUCKETS % LM_TOPK_WIDE_THREADS == 0u && LM_TOPK_WIDE_THREADS / LM_TOPK_WARP_LANES <= LM_TOPK_WARP_LANES, "whole buckets per thread, one scan level");
+	for (pass = 0u; pass < 3u && count > LM_TOPK_WIDE_CANDIDATES; pass++)
+	{
+		const uint32_t field = (1u << widths[pass]) - 1u;
+		for (index = threadIdx.x; index < LM_TOPK_WIDE_BUCKETS; index += LM_TOPK_WIDE_THREADS)
+			histogram[index] = 0u;
+		__syncthreads();
+		for (base = 0u; base < n; base += LM_TOPK_WIDE_THREADS)
+		{
+			index = base + threadIdx.x;
+			key = index < n ? LmTopkKey(row[index]) : 0u;
+			bucket = index < n && (key & mask) == prefix ? (key >> shifts[pass]) & field : 0xffffffffu;
+			peers = __match_any_sync(0xffffffffu,bucket);
+			if ( bucket != 0xffffffffu && lane == (uint32_t)__ffs(peers) - 1u )
+				atomicAdd(&histogram[bucket],(uint32_t)__popc(peers));
+		}
+		__syncthreads();
+		running = 0u;
+		for (part = 0u; part < per; part++)
+		{
+			local[part] = histogram[LM_TOPK_WIDE_BUCKETS - 1u - (threadIdx.x * per + part)];
+			running += local[part];
+		}
+		running = LmTopkWideExclusive(running,warp_sums);
+		for (part = 0u; part < per; part++)
+		{
+			if ( running < need && running + local[part] >= need )
+			{
+				choice[0] = LM_TOPK_WIDE_BUCKETS - 1u - (threadIdx.x * per + part);
+				choice[1] = running;
+				choice[2] = local[part];
+			}
+			running += local[part];
+		}
+		__syncthreads();
+		prefix |= choice[0] << shifts[pass];
+		mask |= field << shifts[pass];
+		need -= choice[1];
+		count = choice[2];
+		__syncthreads();
+	}
+	if ( count > LM_TOPK_WIDE_CANDIDATES )
+	{
+		if ( threadIdx.x == 0u )
+		{
+			state[LM_TOPK_EXACT_NEED] = need;
+			state[LM_TOPK_EXACT_EMITTED] = 0u;
+			state[LM_TOPK_EXACT_SEEN] = 0u;
+		}
+		__syncthreads();
+		LmTopkExactEmit<LM_TOPK_WIDE_THREADS>(row,n,prefix,out,histogram,state);
+		return;
+	}
+	if ( threadIdx.x < 2u )
+		counts[threadIdx.x] = 0u;
+	__syncthreads();
+	for (base = 0u; base < n; base += LM_TOPK_WIDE_THREADS)
+	{
+		index = base + threadIdx.x;
+		key = index < n ? LmTopkKey(row[index]) : 0u;
+		const uint32_t above = index < n && (key & mask) > prefix ? 1u : 0u;
+		const uint32_t inside = index < n && (key & mask) == prefix ? 1u : 0u;
+		const uint32_t at = LmTopkWideAppend(above,&counts[0]);
+		const uint32_t slot = LmTopkWideAppend(inside,&counts[1]);
+		if ( above != 0u )
+			selected[at] = index;
+		if ( inside != 0u )
+			candidates[slot] = ((unsigned long long)(~key) << 32u) | index;
+	}
+	__syncthreads();
+	const uint32_t greater = counts[0],inside = counts[1];
+	uint32_t padded = 1u;
+	while ( padded < inside )
+		padded <<= 1u;
+	for (index = inside + threadIdx.x; index < padded; index += LM_TOPK_WIDE_THREADS)
+		candidates[index] = ~0ull;
+	__syncthreads();
+	LmTopkWideSort(candidates,padded);
+	for (index = threadIdx.x; index < need; index += LM_TOPK_WIDE_THREADS)
+		selected[greater + index] = (uint32_t)candidates[index];
+	padded = 1u;
+	while ( padded < k )
+		padded <<= 1u;
+	for (index = k + threadIdx.x; index < padded; index += LM_TOPK_WIDE_THREADS)
+		selected[index] = 0xffffffffu;
+	__syncthreads();
+	LmTopkWideSort(selected,padded);
+	for (index = threadIdx.x; index < k; index += LM_TOPK_WIDE_THREADS)
+		out[index] = selected[index];
+}
+
 #include "inference/kernels/topk_exact_cluster.cuh"
 
 template<uint32_t THREADS>

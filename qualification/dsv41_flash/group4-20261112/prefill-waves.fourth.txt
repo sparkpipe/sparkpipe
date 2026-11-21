@@ -1,0 +1,45 @@
+Waves of 4,096 rows: four waves and the tail step of a 32,768-token prompt, figures a 4,096 rows (adapter 23de7e9fac51fc04)
+window: 4 waves of 2 anchor calls, 1423.5 ms a wave, 47201 kernels a wave
+kernel time 1307.7 ms a wave, between kernels 115.7 ms a wave
+mesh runs a wave 85: elapsed 405.6 ms, kernel time 303.1 ms (arrival 119.3, other 183.8), gaps inside runs 102.5 ms, pieces 10020, mesh kernels 45813
+a piece: 40.5 us elapsed, arrival 11.9 us, other kernels 18.3 us, gaps 10.2 us
+top kernels, ms a wave:
+  _Z15LmCellMmaKernelILj0ELj4EEv21LmSkinnyCellArguments17LmC    266.5      49.5 calls   5384.2 us
+  _Z18LmStreamGemmKernelI13LmBf16Block32Lj128ELj128ELj64ELj3    163.9     195.2 calls    839.7 us
+  _Z32SparkTpMeshHardwareArrivalKernelPKhmmP23SparkTpMeshRou    119.3   10019.8 calls     11.9 us
+  _Z29LmHcSinkhornPartialRowsKernelILj4ELj4EEvPKtPKfPfjj         68.5      49.5 calls   1383.5 us
+  _Z28LmHcPostF32SourceMajorKernelILj4EEvPKtPKfS3_Ptj            68.2      50.0 calls   1364.5 us
+  _Z35SparkTpMeshHardwareDirectHalfKernelPKhmmP23SparkTpMesh     63.7    8074.0 calls      7.9 us
+  _Z19D41RmsNormQdqKernelILj256EEvPKtS1_PKfS1_PtS4_jf            51.1      75.0 calls    681.0 us
+  _Z26LmLatentShardPrefillKernelI12LmKvGeometryILj1280ELj128     51.0      18.0 calls   2834.7 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj12     49.8      12.0 calls   4150.8 us
+  _Z18LmStreamGemmKernelI12LmBf16FormatLj128ELj128ELj64ELj32     41.9      77.5 calls    540.4 us
+  _Z24D41MergeWindowSinkKernelPKfS0_PKjjS0_Pt                    37.4      24.8 calls   1512.1 us
+  _Z29SparkTpMeshScatterStageKernelPhmmPK23SparkTpMeshRoundC     36.0    5435.2 calls      6.6 us
+  _Z36SparkTpMeshHardwarePublishWideKernelPhmmPVmP23SparkTpM     29.1    4268.5 calls      6.8 us
+  _Z16D41MoeSendKernelPKtPKfS0_Ptjjjjmfjj                        25.4      25.0 calls   1016.2 us
+  _Z17LmTopkExactKernelILj256EEvPKfjjPj                          25.0      15.0 calls   1668.7 us
+  _Z36SparkTpMeshHardwarePublishGateKernelPV27SparkWeightdMe     20.8    9703.8 calls      2.1 us
+
+Waves of 16,384 rows: two waves with their tail steps of a 65,536-token prompt, figures a 16,384 rows (the build before the launch grid kept its block order, so its MoE send kernel is slower here than in the measured adapter)
+window: 2 waves of 2 anchor calls, 5463.9 ms a wave, 194989 kernels a wave
+kernel time 5013.0 ms a wave, between kernels 450.9 ms a wave
+mesh runs a wave 134: elapsed 1599.2 ms, kernel time 1168.1 ms (arrival 399.3, other 768.8), gaps inside runs 431.1 ms, pieces 42177, mesh kernels 192549
+a piece: 37.9 us elapsed, arrival 9.5 us, other kernels 18.2 us, gaps 10.2 us
+top kernels, ms a wave:
+  _Z15LmCellMmaKernelILj0ELj4EEv21LmSkinnyCellArguments17LmC    681.1      80.0 calls   8513.7 us
+  _Z18LmStreamGemmKernelI13LmBf16Block32Lj128ELj128ELj64ELj3    626.2     295.0 calls   2122.6 us
+  _Z32SparkTpMeshHardwareArrivalKernelPKhmmP23SparkTpMeshRou    399.3   42177.0 calls      9.5 us
+  _Z28LmHcPostF32SourceMajorKernelILj4EEvPKtPKfS3_Ptj           278.4      80.0 calls   3480.3 us
+  _Z27LmWeightedSparseScoreKernelI12LmKvGeometryILj1280ELj12    276.9      48.0 calls   5768.7 us
+  _Z35SparkTpMeshHardwareDirectHalfKernelPKhmmP23SparkTpMesh    270.6   34149.0 calls      7.9 us
+  _Z29LmHcSinkhornPartialRowsKernelILj4ELj4EEvPKtPKfPfjj        264.0      80.0 calls   3299.8 us
+  _Z19D41RmsNormQdqKernelILj256EEvPKtS1_PKfS1_PtS4_jf           209.1     120.0 calls   1742.3 us
+  _Z17LmTopkExactKernelILj256EEvPKfjjPj                         192.5      60.0 calls   3208.8 us
+  _Z26LmLatentShardPrefillKernelI12LmKvGeometryILj1280ELj128    192.3      18.0 calls  10682.5 us
+  _Z18LmStreamGemmKernelI12LmBf16FormatLj128ELj128ELj64ELj32    174.6     119.0 calls   1467.4 us
+  _Z29SparkTpMeshScatterStageKernelPhmmPK23SparkTpMeshRoundC    154.6   23120.0 calls      6.7 us
+  _Z24D41MergeWindowSinkKernelPKfS0_PKjjS0_Pt                   154.0      40.0 calls   3851.2 us
+  _Z16D41MoeSendKernelPKtPKfS0_Ptjjjjmfjj                       133.5      40.0 calls   3337.8 us
+  _Z36SparkTpMeshHardwarePublishWideKernelPhmmPVmP23SparkTpM    122.9   18295.0 calls      6.7 us
+  _Z36SparkTpMeshHardwarePublishGateKernelPV27SparkWeightdMe     88.2   41415.0 calls      2.1 us

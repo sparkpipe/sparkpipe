@@ -22,12 +22,12 @@ static uint64_t Align(uint64_t value)
 	return (value + SPARK_DSV41_FLASH_STAGEPACK_ALIGNMENT_BYTES - 1u) / SPARK_DSV41_FLASH_STAGEPACK_ALIGNMENT_BYTES * SPARK_DSV41_FLASH_STAGEPACK_ALIGNMENT_BYTES;
 }
 
-static uint64_t Place(SparkDsv41FlashStagePackEntry *entry, uint32_t kind, uint32_t layer, uint64_t cursor)
+static uint64_t Place(SparkDsv41FlashStagePackEntry *entry, uint32_t kind, uint32_t layer, uint64_t cursor, uint32_t tp, uint32_t flags)
 {
 	SparkDsv41FlashStagePackTensorShape shape;
 	memset(entry, 0, sizeof(*entry));
 	memset(&shape, 0, sizeof(shape));
-	if ( SparkDsv41FlashStagePackExpectedShape(kind, SPARK_WEIGHT_CODEC_MXFP4_E2M1, 16u, &shape) == 0u )
+	if ( SparkDsv41FlashStagePackExpectedShape(kind, SPARK_WEIGHT_CODEC_MXFP4_E2M1, tp, flags, &shape) == 0u )
 	{
 		fprintf(stderr, "FAIL tensor kind %u has no expected shape in the pack contract\n", kind);
 		exit(1);
@@ -52,7 +52,7 @@ static uint64_t Place(SparkDsv41FlashStagePackEntry *entry, uint32_t kind, uint3
 	return cursor;
 }
 
-static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries)
+static uint32_t BuildFor(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries, uint32_t tp, uint32_t flags)
 {
 	static const uint32_t globals[] = { SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EMBEDDING, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_FINAL_NORM,
 		SPARK_DSV41_FLASH_STAGEPACK_TENSOR_LM_HEAD };
@@ -64,20 +64,26 @@ static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashSta
 				count++;
 	count += 3u;
 	memset(header, 0, sizeof(*header));
-	header->tp_degree = 16u;
+	header->tp_degree = tp;
+	header->flags = flags;
 	header->expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1;
 	header->tensor_count = count;
 	header->directory_offset = 512u;
 	cursor = Align(header->directory_offset + (uint64_t)count * sizeof(SparkDsv41FlashStagePackEntry));
 	count = 0u;
 	for ( kind = 0u; kind < 3u; kind++ )
-		cursor = Place(&entries[count++], globals[kind], SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER, cursor);
+		cursor = Place(&entries[count++], globals[kind], SPARK_DSV41_FLASH_STAGEPACK_GLOBAL_LAYER, cursor, tp, flags);
 	for ( layer = 0u; layer < SPARK_DSV41_FLASH_MODEL_LAYER_COUNT; layer++ )
 		for ( kind = 0u; kind < SPARK_DSV41_FLASH_STAGEPACK_TENSOR_KIND_COUNT; kind++ )
 			if ( SparkDsv41FlashStagePackKindInLayer(kind, layer) != 0u )
-				cursor = Place(&entries[count++], kind, layer, cursor);
+				cursor = Place(&entries[count++], kind, layer, cursor, tp, flags);
 	header->file_bytes = cursor;
 	return count;
+}
+
+static uint32_t Build(SparkDsv41FlashStagePackHeader *header, SparkDsv41FlashStagePackEntry *entries)
+{
+	return BuildFor(header, entries, 16u, 0u);
 }
 
 static uint32_t Find(const SparkDsv41FlashStagePackEntry *entries, uint32_t count, uint32_t kind, uint32_t layer)
@@ -314,7 +320,7 @@ int main(void)
 	memcpy(entries, clean, sizeof(clean));
 	{
 		SparkDsv41FlashStagePackTensorShape shape;
-		SparkDsv41FlashStagePackExpectedShape(SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM, SPARK_WEIGHT_CODEC_MXFP4_E2M1, 16u, &shape);
+		SparkDsv41FlashStagePackExpectedShape(SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM, SPARK_WEIGHT_CODEC_MXFP4_E2M1, 16u, 0u, &shape);
 		entries[sink].layer_index = swa;
 		entries[sink].tensor_kind = SPARK_DSV41_FLASH_STAGEPACK_TENSOR_INDEXER_K_NORM;
 		entries[sink].payload_type = shape.payload_type;
@@ -325,6 +331,22 @@ int main(void)
 		entries[sink].columns = shape.columns;
 		Check(entries[sink].payload_bytes == SparkDsv41FlashStagePackExpectedPayloadBytes(&shape), "the sinks and the indexer key norm are the same size");
 		Check(Run(&header, entries) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_LAYER, "a well-formed indexer tensor in an SWA-only layer is refused");
+	}
+
+	{
+		static SparkDsv41FlashStagePackEntry whole[ENTRIES_MAX];
+		SparkDsv41FlashStagePackHeader four;
+		const uint32_t whole_count = BuildFor(&four, whole, 4u, SPARK_DSV41_FLASH_STAGEPACK_FLAG_WHOLE_EXPERTS);
+		const uint32_t w13_whole = Find(whole, whole_count, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W13_SLICE, 3u);
+		const uint32_t w2_whole = Find(whole, whole_count, SPARK_DSV41_FLASH_STAGEPACK_TENSOR_EXPERT_W2_SLICE, 3u);
+		Check(Run(&four, whole) == 0, "a four-rank directory of whole experts passes under the whole-experts flag");
+		Check(w13_whole != UINT32_MAX && whole[w13_whole].group_count == SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / 4u &&
+			whole[w13_whole].rows == 2u * SPARK_DSV41_FLASH_MODEL_MOE_INTERMEDIATE_DIMENSION && w2_whole != UINT32_MAX &&
+			whole[w2_whole].rows == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && whole[w2_whole].group_count == SPARK_DSV41_FLASH_MODEL_ROUTED_EXPERT_COUNT / 4u,
+			"a rank of four holds a quarter of the experts, every row of each");
+		edited = four;
+		edited.flags = 0u;
+		Check(Run(&edited, whole) == SPARK_DSV41_FLASH_STAGEPACK_CHECK_SHAPE, "whole experts under a header without the flag are refused for their shape");
 	}
 
 	TestIdentityAndEngram(&header);

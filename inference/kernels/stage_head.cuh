@@ -51,6 +51,28 @@ static int32_t LmStageEmbeddingAlias(const uint16_t *embed_weight, const uint32_
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+template<uint32_t THREADS>
+__global__ static void LmStageEmbeddingWholeKernel(const uint16_t *__restrict__ table, const uint32_t *__restrict__ token_ids,
+	uint16_t *__restrict__ hidden_bf16, uint32_t hidden, uint32_t vocab, uint32_t alias_first, uint32_t alias_count, uint32_t alias_row)
+{
+	const uint32_t row = blockIdx.y;
+	const uint32_t token = token_ids[row] - alias_first < alias_count ? alias_row : token_ids[row];
+	const uint16_t *source = token < vocab ? table + (uint64_t)token * hidden : 0;
+	for ( uint32_t k = blockIdx.x * THREADS + threadIdx.x; k < hidden; k += gridDim.x * THREADS )
+	{
+		const uint16_t value = source != 0 ? source[k] : 0u;
+		hidden_bf16[(uint64_t)row * hidden + k] = value == 0x8000u ? 0u : value;
+	}
+}
+
+static int32_t LmStageEmbeddingWhole(const uint16_t *table, const uint32_t *token_ids, uint16_t *hidden_bf16, uint32_t rows, uint32_t hidden,
+	uint32_t vocab, uint32_t alias_first, uint32_t alias_count, uint32_t alias_row, cudaStream_t stream)
+{
+	LM_LAUNCH((LmStageEmbeddingWholeKernel<LM_STAGE_HEAD_THREADS>), dim3((hidden + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS,rows),
+		LM_STAGE_HEAD_THREADS, 0, stream, table,token_ids,hidden_bf16,hidden,vocab,alias_first,alias_count,alias_row);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
 typedef struct LmStageHeadRows
 {
 	const uint16_t *hidden_bf16;

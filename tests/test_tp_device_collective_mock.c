@@ -525,13 +525,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
         (void)close(fd);
         file = fopen(path_log,"r");
         while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
-            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=4 elements=2097152 ") != 0 ? 1u : 0u;
+            pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=0 path=direct-pipelined phases=5 elements=2097152 ") != 0 ? 1u : 0u;
         if ( file != 0 )
             (void)fclose(file);
         (void)unlink(path_log);
         CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == 0u &&
             cuda_stub_mesh_hardware_elements == 2097152u && cuda_stub_mesh_hardware_logical_rows == 1u,
-            "an all-gather of 1048576 local elements runs pipelined as four half-slot chunks and says so");
+            "an all-gather of 1048576 local elements runs pipelined as four half-slot chunks and a closing marker, and says so");
     }
     {
         uint32_t calls_before = cuda_stub_mesh_hardware_calls;
@@ -592,13 +592,13 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
             (void)close(fd);
             file = fopen(path_log,"r");
             while ( file != 0 && fgets(line,sizeof(line),file) != 0 )
-                pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=4 path=reduce-scatter-pipelined phases=3 elements=1049600 ") != 0 ? 1u : 0u;
+                pipelined += strstr(line,"MESH-PATH ") != 0 && strstr(line,"operation=4 path=reduce-scatter-pipelined phases=4 elements=1049600 ") != 0 ? 1u : 0u;
             if ( file != 0 )
                 (void)fclose(file);
             (void)unlink(path_log);
             CHECK(status == SPARK_STATUS_OK && pipelined == 1u && cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
                 cuda_stub_mesh_hardware_elements == 1049600u && (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,
-                "a reduce-scatter of 524800-element rank segments runs pipelined as three half-slot chunks and says so");
+                "a reduce-scatter of 524800-element rank segments runs pipelined as three half-slot chunks and a closing marker, and says so");
             CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_REDUCE_SCATTER_SUM_BF16) == SPARK_STATUS_OK &&
                 cuda_stub_mesh_hardware_operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16 &&
                 (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_FIRST) == 0u,

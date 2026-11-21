@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """GB10 bitwise check of the DSV4.1 row-blocked hyper-connection mix against the task-parallel mix.
 
-Builds build/test_dsv41_hc_mix and runs it on an sm_121 device. The row-blocked kernel reads each
-row's streams once for all 25 mix tasks; every warp partial it writes must be the same bits as the
-task-parallel kernel's, for 1 to 1024 rows including row counts that are not a multiple of the
-block. Perturbing one stream element must change the result.
+Builds build/test_dsv41_hc_mix and runs it on an sm_121 device. The staged row-blocked kernel
+copies the mixer weights and each block's rows into shared memory and splits the 25 mix tasks over
+two thread groups; every warp partial it writes must be the same bits as the task-parallel kernel's,
+for 1 to 1024 rows including row counts that are not a multiple of the block, at the model's width
+and at a width whose last step is partial. Perturbing one stream element must change the result.
 """
 
 import subprocess
