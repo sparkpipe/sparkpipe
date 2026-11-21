@@ -119,12 +119,33 @@ static inline uint32_t SparkModelDriverCacheLaneIsValid(
     return 1u;
 }
 
+static inline void SparkModelDriverStoreCacheProbe(
+    SparkModelDriverAdmissionDecision *decision,
+    const SparkModelDriverCacheProbe *probe)
+{
+    decision->driver_dispatch_generation = probe->held_token_count;
+    decision->residency_match_score = probe->resident_token_count;
+    decision->driver_dispatch_cookie0 = probe->saved_token_count;
+    decision->driver_dispatch_cookie1 = probe->state_token_count;
+}
+
+static inline void SparkModelDriverLoadCacheProbe(
+    const SparkModelDriverAdmissionDecision *decision,
+    SparkModelDriverCacheProbe *probe)
+{
+    probe->held_token_count = (uint32_t)decision->driver_dispatch_generation;
+    probe->resident_token_count = (uint32_t)decision->residency_match_score;
+    probe->saved_token_count = (uint32_t)decision->driver_dispatch_cookie0;
+    probe->state_token_count = (uint32_t)decision->driver_dispatch_cookie1;
+}
+
 static inline uint32_t SparkModelDriverAdmissionRequestIsValid(
     const SparkModelDriverAdmissionRequest *request)
 {
     uint32_t index,releasing,publishing;
     if (request != 0 && request->descriptor_bytes >= sizeof(*request) &&
-        request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT)
+        (request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT ||
+         request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE))
     {
         if (request->program_id == 0u || request->cache_lanes == 0 || request->cache_lane_count == 0u ||
             request->active_slot_count != 0u || request->new_token_count != 0u || request->frame_flags != 0u)

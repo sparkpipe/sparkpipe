@@ -77,6 +77,10 @@ struct SparkModelResidentClient
 	uint32_t abort_calls;
 	uint32_t status_request_calls;
 	uint32_t cache_hint_calls;
+	uint32_t cache_probe_calls;
+	uint32_t cache_probe_silent;
+	SparkModelServingCacheProbe cache_probe_answer;
+	SparkModelResidentCacheProbeReport cache_probe_report;
 	uint32_t token_continuations;
 	uint32_t span_submissions;
 	uint32_t last_cache_hint_tokens;
@@ -174,6 +178,7 @@ uint32_t MockResidentClientCalls(uint32_t stage_index, uint32_t kind)
 		case MOCK_CALL_ABORT: return(c->abort_calls);
 		case MOCK_CALL_STATUS_REQUEST: return(c->status_request_calls);
 		case MOCK_CALL_CACHE_HINT: return(c->cache_hint_calls);
+		case MOCK_CALL_CACHE_PROBE: return(c->cache_probe_calls);
 	}
 	return(0u);
 }
@@ -401,6 +406,40 @@ SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,c
 		return(SPARK_STATUS_IO_ERROR);
 	client->cache_hint_calls++;
 	client->last_cache_hint_tokens = token_count;
+	return(SPARK_STATUS_OK);
+}
+
+void MockResidentClientSetCacheProbe(uint32_t rank,const SparkModelServingCacheProbe *answer,uint32_t silent)
+{
+	SparkModelResidentClient *client = MockResidentClientByRank(rank);
+	if ( client == 0 )
+		return;
+	client->cache_probe_answer = *answer;
+	client->cache_probe_silent = silent;
+}
+
+SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	if ( client == 0 || identity == 0 || token_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( client->connected == 0u )
+		return(SPARK_STATUS_IO_ERROR);
+	client->cache_probe_calls++;
+	if ( client->cache_probe_silent != 0u )
+		return(SPARK_STATUS_OK);
+	client->cache_probe_report.generation++;
+	client->cache_probe_report.identity = *identity;
+	client->cache_probe_report.token_count = token_count;
+	client->cache_probe_report.status = SPARK_STATUS_OK;
+	client->cache_probe_report.probe = client->cache_probe_answer;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentClientGetCacheProbe(const SparkModelResidentClient *client,SparkModelResidentCacheProbeReport *report)
+{
+	if ( client == 0 || report == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	*report = client->cache_probe_report;
 	return(SPARK_STATUS_OK);
 }
 

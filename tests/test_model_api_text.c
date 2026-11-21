@@ -674,6 +674,64 @@ static void TestApiTokenIdServingWithoutTokenizer(TestApiStack *stack)
 		"sidecar; token-id form intact; messages without a declared chat_template is 400)\n");
 }
 
+static unsigned long TestApiNumberField(const char *body,const char *name)
+{
+	char key[64];
+	const char *found;
+	(void)snprintf(key,sizeof(key),"\"%s\":",name);
+	found = strstr(body,key);
+	assert(found != 0);
+	return(strtoul(found + strlen(key),0,10));
+}
+
+static void TestApiCacheState(TestApiStack *stack)
+{
+	static const char ids[] = "[901,902,903,904,905,906,907,908,909,910,911,912]";
+	char response[65536],request[512],identity[65];
+	const char *body,*found;
+	unsigned long matched,probed;
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":%s,\"max_tokens\":2}",ids);
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"cache\":{\"matched_tokens\":0,\"resumed_tokens\":0,") && TestApiBodyContains(body,"\"restore_ms\":0.000") &&
+		TestApiBodyContains(body,"\"background_wait_ms\":0.000") && TestApiBodyContains(body,"\"boot\":\"") && TestApiBodyContains(body,"\"artifact\":\""));
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	matched = TestApiNumberField(body,"matched_tokens");
+	assert(matched >= 8u && matched <= 11u && TestApiNumberField(body,"resumed_tokens") <= matched && TestApiNumberField(body,"cached_tokens") == TestApiNumberField(body,"resumed_tokens"));
+	(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":%s}",ids);
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	probed = TestApiNumberField(body,"probed_tokens");
+	assert(TestApiBodyContains(body,"\"object\":\"cache.state\"") && TestApiBodyContains(body,"\"complete\":true") && TestApiNumberField(body,"prompt_tokens") == 12u &&
+		TestApiNumberField(body,"matched_tokens") >= 8u && probed == TestApiNumberField(body,"matched_tokens") && TestApiNumberField(body,"ranks") == TEST_RANK_COUNT &&
+		TestApiNumberField(body,"ranks_reported") == TEST_RANK_COUNT && TestApiNumberField(body,"held_tokens") == probed && TestApiNumberField(body,"resident_tokens") == probed &&
+		TestApiNumberField(body,"saved_tokens") == 0u && TestApiNumberField(body,"state_tokens") == probed && TestApiNumberField(body,"block_tokens") != 0u);
+	found = strstr(body,"\"identity\":\"");
+	assert(found != 0 && strlen(found) > 12u + 64u);
+	memcpy(identity,found + 12u,64u);
+	identity[64] = '\0';
+	(void)snprintf(request,sizeof(request),"{\"identity\":\"%s\",\"token_count\":%lu}",identity,probed);
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state",request,response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"complete\":true") && TestApiNumberField(body,"prompt_tokens") == 0u && TestApiNumberField(body,"probed_tokens") == probed &&
+		TestApiNumberField(body,"held_tokens") == probed && TestApiBodyContains(body,identity));
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state","{\"prompt_token_ids\":[4001,4002,4003,4004,4005,4006,4007,4008]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"complete\":true") && TestApiNumberField(body,"matched_tokens") == 0u && TestApiNumberField(body,"ranks") == 0u &&
+		TestApiNumberField(body,"held_tokens") == 0u);
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state","{\"token_count\":8}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	TestApiHttpCall(stack->api_port,"POST","/v1/cache/state","{\"identity\":\"zz\",\"token_count\":8}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	printf("cache state: a completion reports its match, resume point, waits, boot and artifact; POST /v1/cache/state answers for token ids or an identity with what every rank holds\n");
+}
+
 static void TestApiWritePromptRequest(char *request,size_t capacity,uint32_t prompt_count,uint32_t max_tokens)
 {
 	size_t length;
@@ -1407,6 +1465,7 @@ int main(void)
 	TestApiIdleWake(&stack);
 	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
+	TestApiCacheState(&stack);
 	TestApiContextLimit(&stack);
 	TestApiStopApi(&stack);
 	TestApiStopResidents(stack.residents,stack.paths);

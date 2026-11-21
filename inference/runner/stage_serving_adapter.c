@@ -1972,6 +1972,26 @@ static SparkStatus StageServingCacheHint(void *adapter_state,
 	return SparkServingCacheHintRun(&cache, identity, token_count);
 }
 
+static SparkStatus StageServingCacheProbe(void *adapter_state,
+	const SparkModelServingCacheIdentity *identity, uint32_t token_count, SparkModelServingCacheProbe *probe)
+{
+	SparkStageServingState *state = (SparkStageServingState *)adapter_state;
+	SparkServingCacheAdmission cache;
+	SparkModelDriverCacheProbe found;
+	SparkStatus status;
+	if ( state == 0 || probe == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	cache = StageServingCacheContext(state, state->prefetch_lanes);
+	status = SparkServingCacheProbeRun(&cache, identity, token_count, &found);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	probe->held_token_count = found.held_token_count;
+	probe->resident_token_count = found.resident_token_count;
+	probe->saved_token_count = found.saved_token_count;
+	probe->state_token_count = found.state_token_count;
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageServingResolvePrefetch(void *adapter_state,
 	const SparkModelServingSubmission *submission, uint32_t resolution)
 {
@@ -2073,6 +2093,7 @@ static SparkModelServingAdapterInterface StageServingInterface =
 	.submit = StageServingSubmit,
 	.prefetch = StageServingPrefetch,
 	.cache_hint = StageServingCacheHint,
+	.cache_probe = StageServingCacheProbe,
 	.resolve_prefetch = StageServingResolvePrefetch,
 	.progress = StageServingProgress,
 	.quiesce = StageServingQuiesce,

@@ -319,6 +319,7 @@ SparkStatus SparkKvPageCacheCountUnsaved(const SparkKvPageCache *cache,uint32_t 
 SparkStatus SparkKvPageCacheRestorePrefix(SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkKvPageCacheRestoreBegin(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
 uint32_t SparkKvPageCachePrefixReady(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count);
+void SparkKvPageCacheProbePrefix(const SparkKvPageCache *cache,const SparkModelDriverCacheIdentity *identity,uint32_t token_count,SparkModelDriverCacheProbe *probe);
 SparkStatus SparkKvPageCacheRestoreReadChain(const SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
 SparkStatus SparkKvPageCacheRestoreAdvance(SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);
 SparkStatus SparkKvPageCacheRestoreRead(const SparkKvPageCache *cache,SparkKvPageCacheRestoreJob *job);

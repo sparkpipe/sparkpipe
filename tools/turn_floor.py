@@ -28,6 +28,10 @@ RESUME_REGION_TOKENS = 16 * RESUME_TAIL_TOKENS
 RESUME_SETTLE_SECONDS = 2.5
 STORE_LOOKBACK_BYTES = 16 << 20
 STEP = re.compile(r"batch_step kind=(\w+) request=(\d+) rows=(\d+) steps=(\d+) .*?kept=(\d+) .*?service_ms=([0-9.]+) wall_ms=([0-9.]+) context=(\d+) gap_ms=([0-9.]+)")
+REJECTED = re.compile(r"batch_rejected status=(\d+) kind=(\d+) submission=\d+ request=(\d+)")
+STATUS_NOT_FOUND = 3
+STATUS_BUSY = 15
+STATUS_PENDING = 18
 NOTE = re.compile(r"(batch_resume_cleared|batch_resume_superseded|batch_resume_unmarked|batch_shared_prefix_lost|batch_prefill_span_shrunk|batch_retry_deadline) request=(\d+)")
 STORE_FIELDS = ("save_pages", "save_ns", "save_count", "restore_pages", "restore_ns", "restore_count", "restore_misses", "restore_failures", "pool_resident_evictions",
                 "pool_evicted_entries", "spill_write_bytes", "spill_read_bytes", "write_bytes")
@@ -361,6 +365,7 @@ class LogSlice:
         self.measurements = {}
         self.steps = {}
         self.notes = {}
+        self.rejections = {}
         self.stores = []
         boot, order = None, 0
         with open(path, "rb") as handle:
@@ -403,6 +408,10 @@ class LogSlice:
                         self.steps.setdefault((boot, int(request)), []).append({"kind": kind, "rows": int(rows), "steps": int(steps), "kept": int(kept),
                                                                                 "service_ms": float(service), "wall_ms": float(wall), "context": int(context),
                                                                                 "gap_ms": float(gap), "order": order})
+                elif line.startswith("batch_rejected "):
+                    match = REJECTED.match(line)
+                    if match:
+                        self.rejections.setdefault((boot, int(match.group(3))), []).append(int(match.group(1)))
                 else:
                     match = NOTE.match(line)
                     if match:
@@ -433,14 +442,19 @@ class LogSlice:
         return total
 
 
-def split(request, measurement, steps):
+def split(request, measurement, steps, rejections):
     tokens = measurement.get("tokens") or []
     accepted, dispatched = measurement["accepted_ns"], measurement["first_dispatch_ns"]
+    pending = sum(1 for status in rejections if status == STATUS_PENDING)
     parts = {"request_id": measurement["request_id"], "boot_pid": measurement.get("boot_pid"), "engine_cached_tokens": measurement.get("cached_prompt_tokens"),
              "stale_prefix_recomputes": measurement.get("stale_prefix_recomputes"), "send_ms": (accepted - request["sent_ns"]) / 1e6,
-             "queue_ms": (dispatched - accepted) / 1e6 if dispatched else None}
+             "restore_polls": pending, "busy_rejections": sum(1 for status in rejections if status == STATUS_BUSY),
+             "stale_rejections": sum(1 for status in rejections if status == STATUS_NOT_FOUND)}
     if not tokens or not dispatched:
         return parts
+    wait = (dispatched - accepted) / 1e6
+    parts["restore_ms"] = wait if pending else 0.0
+    parts["queue_ms"] = wait - parts["restore_ms"]
     first_ready = tokens[0][1]
     parts["engine_ttft_ms"] = (first_ready - accepted) / 1e6
     parts["reply_ms"] = (request["first_ns"] - first_ready) / 1e6 if request.get("first_ns") else None
@@ -454,19 +468,13 @@ def split(request, measurement, steps):
     emitted = head["steps"] if head["kind"] in ("single", "chain") else None
     if emitted is None or emitted > len(tokens):
         return parts
-    decode_end = tokens[emitted - 1][1]
-    decode_dispatch = decode_end - head["wall_ms"] * 1e6
+    decode_dispatch = tokens[emitted - 1][1] - head["wall_ms"] * 1e6
     parts["first_step_ms"] = (first_ready - decode_dispatch) / 1e6
     parts["first_step_kind"] = head["kind"]
     parts["first_step_steps"] = head["steps"]
-    if not prefill:
-        parts["prefill_ms"] = 0.0
-        parts["restore_ms"] = (decode_dispatch - dispatched) / 1e6
-    else:
-        prefill_end = decode_dispatch - head["gap_ms"] * 1e6
-        first_wave = prefill_end - sum(step["wall_ms"] for step in prefill) * 1e6 - sum(step["gap_ms"] for step in prefill[1:]) * 1e6
-        parts["prefill_ms"] = (decode_dispatch - first_wave) / 1e6
-        parts["restore_ms"] = (first_wave - dispatched) / 1e6
+    parts["prefill_ms"] = (decode_dispatch - dispatched) / 1e6
+    parts["waves_ms"] = sum(step["wall_ms"] for step in prefill)
+    parts["between_waves_ms"] = parts["prefill_ms"] - parts["waves_ms"]
     output = [stamp for _, stamp in tokens]
     if len(output) > emitted + 1:
         parts["decode_tok_s"] = (len(output) - 1) / ((output[-1] - output[0]) / 1e9) if output[-1] > output[0] else None
@@ -491,8 +499,9 @@ def join(folder, log_path=None):
         if index < len(candidates):
             used[request["prompt_sha256"]] = index + 1
             measurement = candidates[index]
-            row.update(split(request, measurement, log.request_steps(measurement)))
-            row["notes"] = log.notes.get((measurement.get("boot_pid"), measurement["request_id"]), [])
+            key = (measurement.get("boot_pid"), measurement["request_id"])
+            row.update(split(request, measurement, log.request_steps(measurement), log.rejections.get(key, [])))
+            row["notes"] = log.notes.get(key, [])
             row["order"] = measurement["order"]
         else:
             row["unmatched"] = True

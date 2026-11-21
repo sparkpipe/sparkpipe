@@ -79,12 +79,13 @@ class Stub:
         self.requests.append({"priority": body.get("priority"), "speculation": body.get("speculation"), "prompt": len(ids), "cached": cached})
         with self.busy:
             time.sleep(QUEUE_MS / 1000)
-            dispatched = time.monotonic_ns()
             if restore:
+                self.write(f"batch_rejected status=18 kind=1 submission=7 request={request_id}")
                 time.sleep(RESTORE_MS / 1000)
                 self.store["restore_pages"] += cached // 64
                 self.store["restore_ns"] += int(RESTORE_MS * 1e6)
                 self.report_store()
+            dispatched = time.monotonic_ns()
             rows_left, done, first = len(ids) - 1 - cached, cached, True
             while rows_left > 0:
                 rows = min(rows_left, WAVE_ROWS)
@@ -216,8 +217,8 @@ check(all(row["prefill_tokens"] == 51 for row in small), f"a turn prefills its n
 check(all(row["prefill_waves"] == 1 and near(row["prefill_ms"], WAVE_MS + WAVE_GAP_MS, 12) for row in small),
       f"a small tail costs one prefill wave: {[(row['prefill_waves'], round(row['prefill_ms'], 1)) for row in small]}")
 check(all(near(row["first_step_ms"], STEP_MS, 6) for row in small), f"the first decode step is timed from its dispatch: {[round(row['first_step_ms'], 1) for row in small]}")
-check(all(near(row["queue_ms"], QUEUE_MS, 4) and near(row["restore_ms"], 0, 4) for row in small),
-      f"queue is acceptance to first dispatch and a resident prefix waits for no restore: {[(round(row['queue_ms'], 1), round(row['restore_ms'], 1)) for row in small]}")
+check(all(near(row["queue_ms"], QUEUE_MS, 4) and row["restore_ms"] == 0 and row["restore_polls"] == 0 for row in small),
+      f"queue is acceptance to the first admitted dispatch, and a resident prefix waits for no restore: {[(round(row['queue_ms'], 1), row['restore_ms']) for row in small]}")
 check(all(row["send_ms"] >= 0 and row["reply_ms"] is not None and row["reply_ms"] >= 0 for row in small), "send and reply times are measured on the client's own clock")
 grow = next(row for row in rows if row["kind"] == "grow" and row["context"] == 2000)
 check(grow["cached_tokens"] == 0 and grow["prefill_waves"] == 4 and near(grow["prefill_ms"], 4 * WAVE_MS + 4 * WAVE_GAP_MS, 30),
@@ -236,8 +237,9 @@ check(behind and all(row["priority"] == 2 for row in behind) and any(request["pr
       "the wave arm sends its long prefill as background work and its probes as interactive")
 check(any(row["queue_ms"] > 10 for row in behind), f"a probe that arrives during a background wave shows the wait as queue time: {[round(row['queue_ms'], 1) for row in behind]}")
 resume = next(row for row in rows if row["kind"] == "resume")
-check(resume["event"] == "swap" and near(resume["restore_ms"], RESTORE_MS, 15),
-      f"a resumed session's wait for its restore is separated from its prefill: {round(resume['restore_ms'], 1)} ms")
+check(resume["event"] == "swap" and near(resume["restore_ms"], RESTORE_MS + QUEUE_MS, 15) and resume["restore_polls"] == 1 and resume["queue_ms"] == 0 and
+      near(resume["prefill_ms"], WAVE_MS + WAVE_GAP_MS, 12),
+      f"a request the ranks answered pending waited for a restore, apart from its prefill: {round(resume['restore_ms'], 1)} ms restore, {round(resume['prefill_ms'], 1)} ms prefill")
 check(resume["store"]["restore_pages"] > 0 and resume["store"]["restore_ns"] == int(RESTORE_MS * 1e6), f"the resume's restored pages come from the engine's store reports: {resume['store']}")
 entry = next(item for item in summary["summary"] if item["kind"] == "resume")
 check(entry["largest_part"] == "restore_ms", f"the summary names the largest part of a resume: {entry['largest_part']}")

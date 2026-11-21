@@ -56,6 +56,7 @@ static uint32_t SparkModelResidentIpcTextMatches(
 
 _Static_assert(sizeof(SparkModelDriverKvStoreCounters) == 336u,"SparkModelDriverKvStoreCounters is embedded in the driver, adapter and resident IPC ABIs");
 _Static_assert(sizeof(SparkModelResidentIpcStatusReport) == 56u + sizeof(SparkModelServingAdapterSnapshot),"status report wire layout");
+_Static_assert(sizeof(SparkModelResidentIpcCacheProbe) == 72u && sizeof(SparkModelResidentIpcCacheProbeReport) == 96u,"cache probe wire layout");
 
 static void SparkModelResidentIpcInitializeHeader(
 	SparkModelResidentIpcHeader *header,
@@ -264,6 +265,72 @@ SparkStatus SparkModelResidentIpcInitializeStatusRequest(
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(request,0,sizeof(*request));
 	SparkModelResidentIpcInitializeHeader(&request->header,SPARK_MODEL_RESIDENT_IPC_KIND_STATUS_REQUEST,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,SPARK_MODEL_RESIDENT_IPC_STATUS_REQUEST_BYTES,message_id);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcInitializeCacheProbe(
+	SparkModelResidentIpcCacheProbe *probe,
+	uint64_t message_id,
+	const SparkModelServingCacheIdentity *identity,
+	uint32_t token_count)
+{
+	if ( probe == 0 || message_id == 0u || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(probe,0,sizeof(*probe));
+	SparkModelResidentIpcInitializeHeader(&probe->header,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_BYTES,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_BYTES,message_id);
+	probe->identity = *identity;
+	probe->token_count = token_count;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcValidateCacheProbe(
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheProbe *probe = (const SparkModelResidentIpcCacheProbe *)message;
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateHeader(probe != 0 ? &probe->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( probe->token_count == 0u || probe->reserved0 != 0u )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcInitializeCacheProbeReport(
+	SparkModelResidentIpcCacheProbeReport *report,
+	const SparkModelResidentIpcCacheProbe *request,
+	SparkStatus status,
+	uint32_t rank_index,
+	const SparkModelServingCacheProbe *probe)
+{
+	if ( report == 0 || request == 0 || probe == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(report,0,sizeof(*report));
+	SparkModelResidentIpcInitializeHeader(&report->header,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_REPORT_BYTES,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_REPORT_BYTES,request->header.message_id);
+	report->identity = request->identity;
+	report->token_count = request->token_count;
+	report->status = (uint32_t)status;
+	report->rank_index = rank_index;
+	report->probe = *probe;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelResidentIpcValidateCacheProbeReport(
+	const SparkModelResidentIpcCacheProbeReport *report,
+	uint32_t message_bytes,
+	uint64_t message_id,
+	uint32_t rank_index)
+{
+	SparkStatus status;
+	status = SparkModelResidentIpcValidateHeader(report != 0 ? &report->header : 0,message_bytes,SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT,SPARK_MODEL_RESIDENT_IPC_CACHE_PROBE_REPORT_BYTES);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( report->header.message_id != message_id || report->rank_index != rank_index || report->token_count == 0u || report->reserved0 != 0u ||
+		report->status > (uint32_t)SPARK_STATUS_MAXIMUM || report->probe.held_token_count > report->token_count ||
+		report->probe.resident_token_count > report->token_count || report->probe.saved_token_count > report->token_count ||
+		report->probe.state_token_count > report->token_count )
+		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	return(SPARK_STATUS_OK);
 }
 

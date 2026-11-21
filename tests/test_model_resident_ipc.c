@@ -858,8 +858,34 @@ static void TestIndependentPrefillMessageCapacity(void)
 	assert(SparkModelResidentIpcCalculateSubmitBytes(SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT,SPARK_MODEL_SERVING_ADAPTER_MAX_INPUT_ROW_COUNT + 1u,0u,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,0u,&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void TestCacheProbeWire(void)
+{
+	SparkModelResidentIpcCacheProbe probe;
+	SparkModelResidentIpcCacheProbeReport report,bad;
+	SparkModelServingCacheIdentity identity;
+	SparkModelServingCacheProbe held = {4096u,2048u,4096u,4032u};
+	memset(&identity,0x5a,sizeof(identity));
+	assert(SparkModelResidentIpcInitializeCacheProbe(&probe,77u,&identity,4096u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateCacheProbe(&probe,sizeof(probe)) == SPARK_STATUS_OK && probe.header.kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE);
+	assert(SparkModelResidentIpcInitializeCacheProbe(&probe,77u,&identity,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkModelResidentIpcInitializeCacheProbe(&probe,77u,&identity,4096u) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateCacheProbe(&probe,sizeof(probe) - 1u) != SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcInitializeCacheProbeReport(&report,&probe,SPARK_STATUS_OK,5u,&held) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcValidateCacheProbeReport(&report,sizeof(report),77u,5u) == SPARK_STATUS_OK);
+	assert(report.token_count == 4096u && memcmp(&report.identity,&identity,sizeof(identity)) == 0 && report.probe.resident_token_count == 2048u &&
+		report.probe.state_token_count == 4032u);
+	assert(SparkModelResidentIpcValidateCacheProbeReport(&report,sizeof(report),78u,5u) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcValidateCacheProbeReport(&report,sizeof(report),77u,6u) == SPARK_STATUS_SCHEMA_ERROR);
+	bad = report;
+	bad.probe.saved_token_count = 4097u;
+	assert(SparkModelResidentIpcValidateCacheProbeReport(&bad,sizeof(bad),77u,5u) == SPARK_STATUS_SCHEMA_ERROR);
+	assert(SparkModelResidentIpcIsSubmissionKind(SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE) == 0u &&
+		SparkModelResidentIpcIsSubmissionKind(SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE_REPORT) == 0u);
+}
+
 int main(void)
 {
+	TestCacheProbeWire();
 	TestHello();
 	TestSubmitResult();
 	TestDecision();
