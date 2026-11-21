@@ -1864,7 +1864,25 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `sparkpipe_tokenize_prompt` pass only because the linker's `--as-needed`
   drops the `-lcuda` that the global `LDFLAGS` give every link line. Still to
   build: that device backend, a build flavour that links neither library,
-  the node image, and the audit in the publish step of hosted release roots.
+  and the audit in the publish step of hosted release roots.
+- The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
+  builds and passes the audit, but no node boots it yet. Still to build:
+  - a disk install: partitions labelled `SPARKROOT` and `SPARKESP`, shim and
+    GRUB on the EFI system partition, the boot entry;
+  - proving it on a spare Spark and on a four-node group against the
+    factory OS.
+
+  These node and hub functions call `nvidia-smi` or DGX OS tools, which the
+  image does not carry, and need replacements:
+  - the hub's GPU clock cap (`nvidia-smi -lgc`) and the post-reboot clock
+    check;
+  - the baseline audit's GPU check;
+  - the node telemetry monitor;
+  - the queue's GPU process listing;
+  - GPU persistence (the factory OS runs `nvidia-persistenced`);
+  - `mlnx_qos`, which sets RoCE trust, PFC and buffers in
+    `sparkpipe-roce-qos`, the rail 2 fabric script and the agent's mesh
+    check.
 - The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
   has buffers in the five spaces, register and map_file, queues, events and
   kernel launch, with host, CUDA and Metal backends built as one shared
