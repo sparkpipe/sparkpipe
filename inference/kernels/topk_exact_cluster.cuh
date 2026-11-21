@@ -142,6 +142,9 @@ static inline cudaError_t LmTopkExactRowsLaunch(const float *scores, uint32_t ro
 	if ( LmTopkExactClusterFits(rows,n,k) != 0u )
 		return(LmLaunchClusterKernel((LmTopkExactClusterKernel<LM_TOPK_EXACT_CLUSTER_THREADS,LM_TOPK_EXACT_CLUSTER_BLOCKS>),
 			dim3(rows * LM_TOPK_EXACT_CLUSTER_BLOCKS),dim3(LM_TOPK_EXACT_CLUSTER_THREADS),0,stream,LM_TOPK_EXACT_CLUSTER_BLOCKS,0u,scores,n,k,out_indices));
-	LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
+	if ( n > LM_TOPK_EXACT_CACHED_ROW && n > k && k <= LM_TOPK_WIDE_MAX_K )
+		LM_LAUNCH((LmTopkExactWideKernel),rows,LM_TOPK_WIDE_THREADS,0,stream,scores,n,k,out_indices);
+	else
+		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
 	return(cudaPeekAtLastError());
 }

@@ -154,6 +154,8 @@ static __device__ __forceinline__ const uint8_t *LmKvShardSlotRequired(
 {
 	uint32_t physical_page;
 
+	if ( view.shard.degree == 1u )
+		return(LmKvSlotRequired<Geometry>(view.pages,sequence,position,row,access_kind));
 	if ( LmKvShardReportForeign<Geometry>(view.pages,view.shard,sequence,position,row,access_kind) != 0u )
 		return(0);
 	physical_page = LmKvPhysicalPageRequired<Geometry>(

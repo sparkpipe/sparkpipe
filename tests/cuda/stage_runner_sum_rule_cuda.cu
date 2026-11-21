@@ -5,6 +5,7 @@
 #define FAKE_ROUNDS 64u
 #define FAKE_WIDTH 6144u
 #define FAKE_DEGREE 16u
+#define FAKE_LANE_WAVE 4096u
 
 typedef struct FakeRound
 {
@@ -266,15 +267,15 @@ int main(void)
 	memset(&model, 0, sizeof(model));
 	model_interface.tag = "sum-rule";
 	model_interface.step = FakeStep;
-	positions = new uint32_t[2048];
-	slots = new uint32_t[2048];
-	for ( uint32_t row = 0u; row < 2048u; ++row )
+	positions = new uint32_t[FAKE_LANE_WAVE];
+	slots = new uint32_t[FAKE_LANE_WAVE];
+	for ( uint32_t row = 0u; row < FAKE_LANE_WAVE; ++row )
 	{
 		positions[row] = row;
 		slots[row] = 0u;
 	}
 	if ( cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess ||
-		cudaMalloc((void **)&buffer, (size_t)2048u * FAKE_WIDTH * 2u * sizeof(uint16_t)) != cudaSuccess ||
+		cudaMalloc((void **)&buffer, (size_t)FAKE_LANE_WAVE * FAKE_WIDTH * 2u * sizeof(uint16_t)) != cudaSuccess ||
 		cudaMalloc((void **)&context_device, 4u * sizeof(uint32_t)) != cudaSuccess ||
 		cudaMemset(context_device, 0, 4u * sizeof(uint32_t)) != cudaSuccess )
 	{
@@ -337,8 +338,9 @@ int main(void)
 	Expect(StageRunnerCreateLanes(state) == SPARK_STATUS_OK && state->lanes.created != 0u, "two lanes start");
 	{
 		const uint32_t lanes_pair[2] = {pair, pair}, lanes_plain[2] = {plain, plain};
+		in.rows = FAKE_LANE_WAVE;
 		Expect(StageRunnerStepBody(state, &runner, &in, prefill, state->stream) == SPARK_STATUS_OK, "a two-lane prefill step runs");
-		Expect(fake_count == 2u && fake_rounds[0].rows + fake_rounds[1].rows == 2048u, "each lane sums its own half of the wave");
+		Expect(fake_count == 2u && fake_rounds[0].rows + fake_rounds[1].rows == FAKE_LANE_WAVE, "each lane sums its own half of the wave");
 		ExpectRounds(lanes_pair, 2u, "both lanes of a prefill wave sum pair-first");
 		Expect(StageRunnerStepBody(state, &runner, &in, prefill | verify, state->stream) == SPARK_STATUS_OK, "a two-lane verify step runs");
 		ExpectRounds(lanes_plain, 2u, "both lanes of a prefill dispatch that verifies keep the plain all-reduce");
@@ -364,9 +366,9 @@ int main(void)
 		lanes->lane[1].sum_flags = 0u;
 		state->sum_flags = prefill | verify;
 		calls[0].lane = &lanes->lane[0];
-		calls[0].rows = 1024u;
+		calls[0].rows = FAKE_LANE_WAVE / 2u;
 		calls[1].lane = &lanes->lane[1];
-		calls[1].rows = 1280u;
+		calls[1].rows = FAKE_LANE_WAVE / 2u + 256u;
 		for ( index = 0u; index < 2u; ++index )
 		{
 			calls[index].buffer = buffer;
@@ -377,8 +379,8 @@ int main(void)
 			pthread_join(threads[index], 0);
 		state->sum_flags = 0u;
 		for ( index = 0u; index < fake_count && index < FAKE_ROUNDS; ++index )
-			found |= (fake_rounds[index].rows == 1024u && fake_rounds[index].operation == pair ? 1u : 0u) |
-				(fake_rounds[index].rows == 1280u && fake_rounds[index].operation == plain ? 2u : 0u);
+			found |= (fake_rounds[index].rows == FAKE_LANE_WAVE / 2u && fake_rounds[index].operation == pair ? 1u : 0u) |
+				(fake_rounds[index].rows == FAKE_LANE_WAVE / 2u + 256u && fake_rounds[index].operation == plain ? 2u : 0u);
 		Expect(calls[0].status == SPARK_STATUS_OK && calls[1].status == SPARK_STATUS_OK && fake_count == 2u && found == 3u,
 			"two concurrent lanes each sum by their own dispatch's rule, not the runner's");
 		fake_count = 0u;

@@ -259,6 +259,22 @@ rows in path order, `sequence_row_begin` delimits them per sequence and
 recurrent state and moves each kept branch slot to the trunk position the
 path gives it, so the lane continues as a chain.
 
+The stage runner keeps one captured graph per graph key, row count,
+sampling mode and `last_rows_only` (a prompt's last step sets it, a decode
+step does not), and replays it while the step equals the captured step with
+its host position, sequence, slot and parent pointers left out, so a
+request's last prompt step and its decode steps do not evict each other's
+graph. A verify
+step (key 2) also leaves out `gather_context` and `gather_sequence`, and so
+does every step of a model whose geometry sets `graph_ignores_gather`. A
+prompt's last token arrives as a one-row prefill step that carries the
+prompt's length in `gather_context`, while a decode step carries zero, so a
+model without the flag recaptures its decode graph whenever the prompt
+length changes and again on the decode step after it. A model may set the
+flag only if none of its sources reads either field;
+`tests/test_graph_ignores_gather.py` checks that for every family that sets
+it.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats

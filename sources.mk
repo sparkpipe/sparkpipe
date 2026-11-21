@@ -26,6 +26,7 @@ SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_orchestrator.c \
     runtime/stagepack_format.c \
     runtime/named_pack.c \
+    runtime/row_file.c \
     runtime/spark_expert_working_set.c \
 	runtime/model_serving_adapter.c \
 	runtime/model_resident_endpoint.c \

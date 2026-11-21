@@ -9,9 +9,9 @@
 #define MODEL_OPS 12u
 #define MODEL_EVENTS 512u
 
-enum { OP_WHOLE, OP_PIPE, OP_PAIR_GATHER, OP_PAIR_SCATTER };
+enum { OP_WHOLE, OP_PIPE, OP_PAIR_GATHER, OP_PAIR_SCATTER, OP_PIPE_BARE };
 enum { EVENT_PUBLISH, EVENT_ARRIVE, EVENT_READ };
-enum { SCHEDULE_PRODUCTION, SCHEDULE_EAGER, SCHEDULE_DEEP, SCHEDULE_TOO_DEEP };
+enum { SCHEDULE_PRODUCTION, SCHEDULE_EAGER, SCHEDULE_TOO_DEEP };
 
 typedef struct ModelEvent
 {
@@ -83,11 +83,9 @@ static void ModelProgram(Model *model,uint32_t schedule)
     {
         ModelOp *op = &model->ops[index];
         const uint32_t pair = op->kind == OP_PAIR_GATHER || op->kind == OP_PAIR_SCATTER ? 1u : 0u;
-        const uint32_t deep = op->kind == OP_PIPE && (schedule == SCHEDULE_DEEP || schedule == SCHEDULE_TOO_DEEP) ? 1u : 0u;
-        const uint64_t ahead = schedule == SCHEDULE_TOO_DEEP ? SPARK_WEIGHTD_MESH_SLOTS_PER_RANK : SPARK_WEIGHTD_MESH_PIPELINE_DEPTH;
-        const uint64_t lead = deep != 0u ? ahead : pair != 0u && schedule == SCHEDULE_EAGER ? SPARK_WEIGHTD_MESH_SLOTS_PER_RANK :
-            pair != 0u ? SPARK_TP_MESH_PIPELINE_LEAD : 1u;
-        op->rounds = op->kind == OP_WHOLE ? 1u : op->kind == OP_PIPE ? op->chunks :
+        const uint64_t lead = pair != 0u && schedule == SCHEDULE_EAGER ? SPARK_WEIGHTD_MESH_SLOTS_PER_RANK : pair != 0u ? SPARK_TP_MESH_PIPELINE_LEAD : 1u;
+        const uint64_t depth = schedule == SCHEDULE_TOO_DEEP ? SPARK_WEIGHTD_MESH_SLOTS_PER_RANK : SPARK_WEIGHTD_MESH_PIPELINE_DEPTH;
+        op->rounds = op->kind == OP_WHOLE ? 1u : op->kind == OP_PIPE ? op->chunks + 1u : op->kind == OP_PIPE_BARE ? op->chunks :
             op->kind == OP_PAIR_GATHER ? op->chunks + SPARK_TP_MESH_PAIR_FIRST_GATHER_EXTRA_ROUNDS : op->chunks + 2u;
         op->first_tag = tag;
         tag += op->rounds;
@@ -98,16 +96,29 @@ static void ModelProgram(Model *model,uint32_t schedule)
             ModelEmit(model,EVENT_READ,index,0u);
             continue;
         }
+        if ( op->kind == OP_PIPE || op->kind == OP_PIPE_BARE )
+        {
+            for ( uint64_t launch = 0u; launch < op->chunks + depth; launch++ )
+            {
+                const uint64_t taken = SparkTpMeshPipelineTaken(launch,depth);
+                if ( taken != SPARK_TP_MESH_PIPELINE_NONE )
+                {
+                    ModelEmit(model,EVENT_ARRIVE,index,taken);
+                    ModelEmit(model,EVENT_READ,index,taken);
+                }
+                if ( launch < op->chunks )
+                    ModelEmit(model,EVENT_PUBLISH,index,launch);
+            }
+            if ( op->kind == OP_PIPE )
+            {
+                ModelEmit(model,EVENT_PUBLISH,index,op->chunks);
+                ModelEmit(model,EVENT_ARRIVE,index,op->chunks);
+            }
+            continue;
+        }
         for ( uint64_t round = 0u; round < lead && round < op->rounds; round++ )
             ModelEmit(model,EVENT_PUBLISH,index,round);
-        for ( uint64_t round = 0u; round < op->rounds && deep != 0u; round++ )
-        {
-            ModelEmit(model,EVENT_ARRIVE,index,round);
-            ModelEmit(model,EVENT_READ,index,round);
-            if ( round + ahead < op->rounds )
-                ModelEmit(model,EVENT_PUBLISH,index,round + ahead);
-        }
-        for ( uint64_t round = 0u; round < op->rounds && deep == 0u; round++ )
+        for ( uint64_t round = 0u; round < op->rounds; round++ )
         {
             const uint64_t early = pair != 0u && schedule == SCHEDULE_EAGER ? SPARK_TP_MESH_PIPELINE_NONE : SparkTpMeshPipelineEarly(round,op->rounds);
             const uint64_t late = pair != 0u && schedule == SCHEDULE_EAGER ?
@@ -157,8 +168,8 @@ static void ModelPublish(Model *model,uint32_t sender,const ModelOp *op,uint64_t
             ModelStore(model,&model->data[receiver][sender][slot][0],tag,1u);
             ModelStore(model,&model->data[receiver][sender][slot][1],tag,1u);
         }
-        else if ( op->kind == OP_PIPE )
-            ModelStore(model,&model->data[receiver][sender][slot][half],tag,1u);
+        else if ( op->kind == OP_PIPE || op->kind == OP_PIPE_BARE )
+            ModelStore(model,&model->data[receiver][sender][slot][half],tag,round < op->chunks ? 1u : 0u);
         else
         {
             const uint32_t group = op->kind == OP_PAIR_GATHER ? (round < op->chunks || round >= op->chunks + 2u ? 1u : 0u) : (round >= 2u ? 1u : 0u);
@@ -298,6 +309,8 @@ int main(void)
     static const uint32_t whole_gather[3] = {OP_WHOLE,OP_PAIR_GATHER,OP_WHOLE};
     static const uint32_t whole_scatter[3] = {OP_WHOLE,OP_PAIR_SCATTER,OP_WHOLE};
     static const uint32_t whole_pipe[3] = {OP_WHOLE,OP_PIPE,OP_WHOLE};
+    static const uint32_t whole_bare[3] = {OP_WHOLE,OP_PIPE_BARE,OP_WHOLE};
+    static const uint32_t pipe_runs[5] = {OP_PIPE,OP_PIPE,OP_WHOLE,OP_PIPE,OP_PAIR_SCATTER};
     static const uint32_t mixed[7] = {OP_PAIR_GATHER,OP_PAIR_GATHER,OP_PAIR_SCATTER,OP_PIPE,OP_PAIR_GATHER,OP_WHOLE,OP_PAIR_SCATTER};
     CHECK(SparkTpMeshPipelineEarly(0u,3u) == 1u && SparkTpMeshPipelineEarly(1u,3u) == SPARK_TP_MESH_PIPELINE_NONE &&
         SparkTpMeshPipelineLate(0u,7u) == 2u && SparkTpMeshPipelineLate(3u,7u) == 5u && SparkTpMeshPipelineLate(4u,7u) == SPARK_TP_MESH_PIPELINE_NONE &&
@@ -305,16 +318,23 @@ int main(void)
         "a pipelined round publishes round 1 after round 0 arrives and its last round after the one before it arrives");
     CHECK(ModelSweep(whole_gather,3u,SCHEDULE_EAGER) != 0u && ModelSweep(whole_scatter,3u,SCHEDULE_EAGER) != 0u,
         "publishing a slot ring's worth of pair-first rounds before the first arrival lets a fast rank overwrite a slow rank's unread whole-slot round");
-    CHECK(ModelSweep(whole_pipe,3u,SCHEDULE_DEEP) == 0u && ModelSweep(mixed,7u,SCHEDULE_DEEP) == 0u,
-        "a pipelined round that keeps three pieces in flight, reading each piece before it publishes the one three ahead, never overwrites unread data next to whole-slot and pair-first rounds");
-    CHECK(ModelSweep(whole_pipe,3u,SCHEDULE_TOO_DEEP) != 0u,
+    CHECK(SparkTpMeshPipelineTaken(0u,SPARK_WEIGHTD_MESH_PIPELINE_DEPTH) == SPARK_TP_MESH_PIPELINE_NONE &&
+        SparkTpMeshPipelineTaken(SPARK_WEIGHTD_MESH_PIPELINE_DEPTH - 1u,SPARK_WEIGHTD_MESH_PIPELINE_DEPTH) == SPARK_TP_MESH_PIPELINE_NONE &&
+        SparkTpMeshPipelineTaken(SPARK_WEIGHTD_MESH_PIPELINE_DEPTH,SPARK_WEIGHTD_MESH_PIPELINE_DEPTH) == 0u &&
+        SparkTpMeshPipelineTaken(SPARK_WEIGHTD_MESH_PIPELINE_DEPTH + 5u,SPARK_WEIGHTD_MESH_PIPELINE_DEPTH) == 5u,
+        "a pipelined round publishes its first pieces before any arrival and reads each piece the ring's depth of launches after publishing it");
+    CHECK(ModelSweep(whole_pipe,3u,SCHEDULE_TOO_DEEP) != 0u && ModelSweep(whole_bare,3u,SCHEDULE_TOO_DEEP) != 0u,
         "keeping a slot ring's worth of pieces in flight lets a fast rank overwrite a slow rank's unread whole-slot round");
     CHECK(ModelSweep(whole_gather,3u,SCHEDULE_PRODUCTION) == 0u,
         "a pair-first all-gather between whole-slot rounds never overwrites a slot or tail a slow rank has not read, at 4, 8 and 16 ranks");
     CHECK(ModelSweep(whole_scatter,3u,SCHEDULE_PRODUCTION) == 0u,
         "a pair-first reduce-scatter between whole-slot rounds never overwrites a slot or tail a slow rank has not read, at 4, 8 and 16 ranks");
+    CHECK(ModelSweep(whole_bare,3u,SCHEDULE_PRODUCTION) == 0u,
+        "at the ring's depth a plain pipelined round needs no closing marker: a rank that has read the last piece from every peer knows each peer has read the piece three before it, so the next whole-slot round overwrites nothing unread");
     CHECK(ModelSweep(whole_pipe,3u,SCHEDULE_PRODUCTION) == 0u,
-        "a plain pipelined round between whole-slot rounds never overwrites unread data");
+        "a plain pipelined round that ends when every rank's marker has landed never lets the next whole-slot round overwrite unread data, at 4, 8 and 16 ranks");
+    CHECK(ModelSweep(pipe_runs,5u,SCHEDULE_PRODUCTION) == 0u,
+        "back-to-back plain pipelined rounds with their markers, whole-slot and pair-first rounds never overwrite unread data");
     CHECK(ModelSweep(mixed,7u,SCHEDULE_PRODUCTION) == 0u,
         "back-to-back pair-first, pipelined and whole-slot rounds never overwrite unread data");
     fprintf(stderr,"test_tp_mesh_pipeline_boundaries: %u checks, %u failures\n",test_checks,test_failures);
