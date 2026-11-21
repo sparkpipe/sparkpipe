@@ -7,8 +7,9 @@ plan holds every Python test that asks for an sm_121 device and no other test
 beyond the listed prerequisite ones, that it runs every `make test-*` GPU
 target, that each artifact it builds for a prerequisite test has a rule, and
 that its verdicts mean what the gate reports, that a base at the head's
-commit shares the head's worktree while any other base gets its own, and that
-it hands its kernel-log mark to the shared rule, tools/nvrm_kernel_log.sh, and
+commit shares the head's worktree while any other base gets its own, that a
+head/ or base/ directory another repository or an earlier run left behind is
+replaced by this repository's own worktree, and that it hands its kernel-log mark to the shared rule, tools/nvrm_kernel_log.sh, and
 takes that rule's verdict. It also checks the memory stop: a command that
 runs while available memory is under 20 GiB, or past its timeout, has its whole
 process group killed; a stop ends the gate with exit 3, a STOP line and the
@@ -171,6 +172,23 @@ def main():
         head, base, builds = gate.trees(repository, Path(scratch) / "two", "HEAD", "first")
         if base == head or [label for label, _ in builds] != ["head", "base"] or gate.commit_of(base, "HEAD") != gate.commit_of(repository, "first"):
             failures.append("a base at another commit does not get its own worktree at that commit: %s %s %s" % (head, base, builds))
+        other = Path(scratch) / "other"
+        other_git = ["git", "-c", "user.name=gate", "-c", "user.email=gate@example.invalid", "-C", str(other)]
+        gate.subprocess.run(["git", "init", "-q", str(other)], check=True)
+        gate.subprocess.run(other_git + ["commit", "-q", "--allow-empty", "-m", "other"], check=True)
+        stale = Path(scratch) / "stale"
+        gate.trees(other, stale, "HEAD", "HEAD")
+        (stale / "base").mkdir()
+        (stale / "base" / "leftover").write_text("not a worktree")
+        try:
+            head, base, builds = gate.trees(repository, stale, "HEAD", "first")
+        except gate.subprocess.CalledProcessError as error:
+            failures.append("a work directory left by another repository stops the gate: %s" % error)
+        else:
+            registered = gate.registered_worktrees(repository)
+            if gate.commit_of(head, "HEAD") != gate.commit_of(repository, "HEAD") or gate.commit_of(base, "HEAD") != gate.commit_of(repository, "first") or \
+                    head.resolve() not in registered or base.resolve() not in registered or (base / "leftover").exists():
+                failures.append("stale head/ and base/ directories that are not worktrees of this repository are not replaced by its own worktrees")
     check_stops(failures)
     if gate.KERNEL_LOG_RULE != "tools/nvrm_kernel_log.sh":
         failures.append("the gate does not use the shared kernel-log rule tools/nvrm_kernel_log.sh")
