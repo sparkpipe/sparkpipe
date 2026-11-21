@@ -165,7 +165,10 @@ module's device files:
    GPU's identity: the first open of a GPU's device file initializes it,
    and until then the module knows no GPU by that id (on a host without a
    persistence daemon nothing else has opened it). Then allocate the device
-   and subdevice.
+   and subdevice. `tests/test_nvrm_open_order.c` (Linux,
+   `make test-nvrm`) stands in for the module with link-time wrappers of
+   `open` and `ioctl` that refuse the identity query until the device file
+   is open and registered, and fails on the old order.
 3. **Classes.** Require the Blackwell compute B, GPFIFO A, copy B and Hopper
    usermode classes from the device's class list, and read the GPC, TPC,
    SM and warp counts and the SM version.
