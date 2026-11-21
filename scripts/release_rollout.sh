@@ -16,6 +16,8 @@ BK=$HUB_WORK/backups
 OLD_WD=${OLD_WD:?OLD_WD is the 16-hex weightd every node runs before this release}
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
 MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-27b-fp8 qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
+GX_MODELS="kimi-k3.1-pro kimi-k3 glm-5.3 glm-5.3-flash qwen3.8-27b qwen3.8-max deepseek-v4.1-flash"
+for id in $GX_MODELS; do case " $MODELS " in *" $id "*) ;; *) echo "GX_MODELS names $id, which MODELS does not: refusing to run" >&2; exit 1;; esac; done
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
 python3 -c "import json,sys; sys.exit(sorted(sys.argv[2].split()) != sorted(json.load(open(sys.argv[1]))['lanes']))" "$KIT/../deployment/lanes.json" "$MODELS" || { echo "MODELS differ from the records in deployment/lanes.json: refusing to run" >&2; exit 1; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
@@ -188,6 +190,9 @@ case "$step" in
       fan "grep -a -c -i -E 'error|fail|fault|abort' $(lane_latest_log "\$HOME/$(field $id lane)/root")" | awk '{s+=$2} END {print "rank log error lines:", s}'
     done
     restore_max ;;
+  gx)
+    stamp "gx ${ONLY:-$GX_MODELS}"
+    GX_RELEASE=$SHA GX_DIR=${GX_DIR:-$RD/gx} GX_OUT=${GX_OUT:-$STATE/gx} GX_END=qwen3.8-max "$KIT/gx_gate.sh" ${ONLY:-$GX_MODELS} || { echo "GX-FAILED: a served model's gate did not pass; its receipt is in ${GX_OUT:-$STATE/gx}"; exit 1; } ;;
   restart)
     failed=0
     for id in ${ONLY:-$MODELS}; do
@@ -215,6 +220,6 @@ case "$step" in
     wd_is $OLD_WD || { echo "ROLLBACK-WEIGHTD-NOT-READY: weightd $OLD_WD is not ready on 16 nodes; the models were left down"; exit 1; }
     for id in ${ONLY:-$MODELS}; do activate "$id" && capture "$id" rolledback && compare "$id" old rolledback; done
     restore_max ;;
-  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|stage|backup|down|weightd|install|records|qualify|restart|rollback"; exit 2 ;;
+  *) echo "usage: FW=<fw dir> APIB=<hub build dir> release_rollout.sh precheck|old|roots|stage|backup|down|weightd|install|records|qualify|gx|restart|rollback"; exit 2 ;;
 esac
 stamp "$step done ($(controller))"

@@ -749,6 +749,7 @@ PYTHON_TESTS := \
 	tests/test_i27_session.py \
 	tests/test_gx_gate.py \
 	tests/test_gx_gate_driver.py \
+	tests/test_release_rollout_gx.py \
 	tests/test_qualification_bundle.py \
 	tests/test_glm5_next_expert_pack_layout.py \
 	tests/test_glm5_next_expert_shard_math.py \
