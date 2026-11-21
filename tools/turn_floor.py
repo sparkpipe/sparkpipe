@@ -37,6 +37,7 @@ STORE_FIELDS = ("save_pages", "save_ns", "save_count", "restore_pages", "restore
                 "pool_evicted_entries", "spill_write_bytes", "spill_read_bytes", "write_bytes")
 PART_NAMES = ("send_ms", "queue_ms", "restore_ms", "prefill_ms", "first_step_ms")
 CLIENT_PARTS = ("send_ms", "reply_ms")
+SESSION_SAMPLES = ("turn", "turn_spec", "decode", "decode_served")
 CLOCK_APART = "the client's clock is not the engine's (a send or reply time came out negative), so send and reply times are left out"
 
 
@@ -187,8 +188,10 @@ class Run:
         self.engine = Engine(arguments.endpoint, arguments.timeout)
         self.limit, self.model = self.engine.context_limit()
         self.state_path = self.output / "session.json"
-        self.contexts = [value for value in arguments.contexts if value + self.growth(arguments) + arguments.decode_tokens + 64 < self.limit]
-        if self.state_path.exists():
+        self.contexts = [value for value in arguments.contexts
+                         if value + self.growth(arguments) + max(arguments.decode_tokens, arguments.served_tokens) + 64 < self.limit]
+        self.resumed = self.state_path.exists()
+        if self.resumed:
             self.state = json.loads(self.state_path.read_text())
         else:
             self.state = {"salt": arguments.salt if arguments.salt is not None else random.SystemRandom().randrange(1 << 30), "history": [], "taken": 0,
@@ -205,8 +208,17 @@ class Run:
         self.mark("start")
 
     @staticmethod
-    def growth(arguments):
-        return (arguments.repeats + arguments.spec_repeats) * sum(tail + arguments.reply_tokens for tail in arguments.tails)
+    def level_turns(arguments):
+        turns = []
+        for repeat in range(arguments.repeats + arguments.spec_repeats):
+            for tail in arguments.tails:
+                if repeat == 0 or not arguments.once_from or tail < arguments.once_from:
+                    turns.append(("turn", tail, False) if repeat < arguments.repeats else ("turn_spec", tail, None))
+        return turns
+
+    @classmethod
+    def growth(cls, arguments):
+        return sum(tail + arguments.reply_tokens for _, tail, _ in cls.level_turns(arguments))
 
     def log_offset(self):
         try:
@@ -238,6 +250,9 @@ class Run:
 
     def send(self, kind, ids, max_tokens, context=None, tail=None, priority=INTERACTIVE, speculation=None, **extra):
         self.state["sequence"] += 1
+        if self.resumed and kind in SESSION_SAMPLES:
+            extra["first_of_run"] = True
+        self.resumed = False
         record = self.engine.complete(ids, max_tokens, priority, speculation)
         line = dict(shown(record), kind=kind, context=context, tail=tail, sequence=self.state["sequence"], label=self.arguments.label, model=self.model,
                     log_offset=self.log_offset(), **extra)
@@ -248,11 +263,23 @@ class Run:
             raise SystemExit(f"turn_floor: the {kind} request failed: {json.dumps(record['error'])[:300]}")
         return record
 
-    def turn(self, kind, context, tail, speculation):
+    def turn(self, kind, context, tail, speculation, done=None):
         history = self.state["history"]
+        taken = self.state["taken"]
         new = self.take(tail)
-        record = self.send(kind, history + new, self.arguments.reply_tokens, context, tail, speculation=speculation)
+        try:
+            record = self.send(kind, history + new, self.arguments.reply_tokens, context, tail, speculation=speculation)
+        except SystemExit:
+            self.state["taken"] = taken
+            raise
         self.state["history"] = history + new + record["tokens"]
+        if done is not None:
+            self.state["level"]["done"] = done
+        self.save()
+
+    def sample(self, kind, context, tokens, speculation, done):
+        self.send(kind, list(self.state["history"]), tokens, context, 0, speculation=speculation)
+        self.state["level"]["done"] = done
         self.save()
 
     def turns(self):
@@ -260,15 +287,28 @@ class Run:
         for context in self.contexts:
             if context in self.state["levels"]:
                 continue
-            missing = context - len(self.state["history"])
-            if missing > 0:
-                self.turn("grow", context, missing, False)
-            for repeat in range(arguments.repeats + arguments.spec_repeats):
-                for tail in arguments.tails:
-                    self.turn("turn" if repeat < arguments.repeats else "turn_spec", context, tail, False if repeat < arguments.repeats else None)
-            if arguments.decode_tokens:
-                self.send("decode", list(self.state["history"]), arguments.decode_tokens, context, 0, speculation=False)
+            level = self.state.get("level")
+            if not level or level["context"] != context:
+                level = self.state["level"] = {"context": context, "done": 0}
+            steps = [("grow", None, False)] + self.level_turns(arguments)
+            steps += [("decode", arguments.decode_tokens, False)] if arguments.decode_tokens else []
+            steps += [("decode_served", arguments.served_tokens, None)] if arguments.served_tokens else []
+            for index, (kind, size, speculation) in enumerate(steps):
+                if index < level["done"]:
+                    continue
+                if kind == "grow":
+                    missing = context - len(self.state["history"])
+                    if missing > 0:
+                        self.turn("grow", context, missing, False, index + 1)
+                    else:
+                        level["done"] = index + 1
+                        self.save()
+                elif kind in ("decode", "decode_served"):
+                    self.sample(kind, context, size, speculation, index + 1)
+                else:
+                    self.turn(kind, context, size, speculation, index + 1)
             self.state["levels"].append(context)
+            self.state["level"] = None
             self.save()
 
     def decode(self):
@@ -370,7 +410,7 @@ class LogSlice:
         self.notes = {}
         self.rejections = {}
         self.stores = []
-        boot, order = None, 0
+        boot, order, first_boot = None, 0, None
         with open(path, "rb") as handle:
             back = max(0, start - STORE_LOOKBACK_BYTES)
             handle.seek(back)
@@ -395,6 +435,7 @@ class LogSlice:
                     except json.JSONDecodeError:
                         continue
                     boot = event.get("boot_pid")
+                    first_boot = boot if first_boot is None else first_boot
                     event["order"] = order
                     self.measurements.setdefault(event.get("prompt_sha256"), []).append(event)
                 elif line.startswith("{\"event\":\"kv_store_report\""):
@@ -403,6 +444,7 @@ class LogSlice:
                     except json.JSONDecodeError:
                         continue
                     boot = event.get("boot_pid")
+                    first_boot = boot if first_boot is None else first_boot
                     self.stores.append((order, event))
                 elif line.startswith("batch_step "):
                     match = STEP.match(line)
@@ -420,6 +462,10 @@ class LogSlice:
                     if match:
                         self.notes.setdefault((boot, int(match.group(2))), []).append(match.group(1))
         self.lines = order
+        if first_boot is not None:
+            for table in (self.steps, self.rejections, self.notes):
+                for key in [key for key in table if key[0] is None]:
+                    table[(first_boot, key[1])] = table.pop(key) + table.get((first_boot, key[1]), [])
 
     def request_steps(self, measurement):
         found = self.steps.get((measurement.get("boot_pid"), measurement["request_id"]))
@@ -460,31 +506,25 @@ def split(request, measurement, steps, rejections):
     parts["queue_ms"] = wait - parts["restore_ms"]
     first_ready = tokens[0][1]
     parts["engine_ttft_ms"] = (first_ready - accepted) / 1e6
+    if len(tokens) > 2 and tokens[-1][1] > first_ready:
+        parts["decode_tok_s"] = (len(tokens) - 1) / ((tokens[-1][1] - first_ready) / 1e9)
     parts["reply_ms"] = (request["first_ns"] - first_ready) / 1e6 if request.get("first_ns") else None
     prefill = [step for step in steps if step["kind"] == "prefill"]
     decode = [step for step in steps if step["kind"] != "prefill"]
-    parts.update(prefill_waves=len(prefill), prefill_rows=sum(step["rows"] for step in prefill), prefill_service_ms=sum(step["service_ms"] for step in prefill),
-                 wave_rows_max=max((step["rows"] for step in prefill), default=0), wave_wall_ms_max=max((step["wall_ms"] for step in prefill), default=None))
-    if not decode:
-        return parts
-    head = decode[0]
-    emitted = head["steps"] if head["kind"] in ("single", "chain") else None
-    if emitted is None or emitted > len(tokens):
-        return parts
-    decode_dispatch = tokens[emitted - 1][1] - head["wall_ms"] * 1e6
-    parts["first_step_ms"] = (first_ready - decode_dispatch) / 1e6
-    parts["first_step_kind"] = head["kind"]
-    parts["first_step_steps"] = head["steps"]
-    parts["prefill_ms"] = (decode_dispatch - dispatched) / 1e6
-    parts["waves_ms"] = sum(step["wall_ms"] for step in prefill)
+    last = prefill[-1] if prefill and prefill[-1]["rows"] == 1 else None
+    waves = prefill[:-1] if last else prefill
+    parts["first_step_ms"] = last["wall_ms"] if last else 0.0
+    parts["first_step_service_ms"] = last["service_ms"] if last else None
+    parts["prefill_ms"] = (first_ready - dispatched) / 1e6 - parts["first_step_ms"]
+    parts["waves_ms"] = sum(step["wall_ms"] for step in waves)
     parts["between_waves_ms"] = parts["prefill_ms"] - parts["waves_ms"]
-    output = [stamp for _, stamp in tokens]
-    if len(output) > emitted + 1:
-        parts["decode_tok_s"] = (len(output) - 1) / ((output[-1] - output[0]) / 1e9) if output[-1] > output[0] else None
+    parts.update(prefill_waves=len(waves), prefill_rows=sum(step["rows"] for step in waves), prefill_service_ms=sum(step["service_ms"] for step in waves),
+                 wave_rows_max=max((step["rows"] for step in waves), default=0), wave_wall_ms_max=max((step["wall_ms"] for step in waves), default=None),
+                 decode_step_kind=decode[0]["kind"] if decode else None, decode_step_tokens=decode[0]["steps"] if decode else None)
     return parts
 
 
-def join(folder, log_path=None):
+def join(folder, log_path=None, log_base=0):
     records = read_requests(folder)
     marks = [record for record in records if record.get("kind") == "mark"]
     requests = [record for record in records if record.get("kind") != "mark"]
@@ -492,21 +532,29 @@ def join(folder, log_path=None):
     if log_path is None:
         raise SystemExit("turn_floor: the run recorded no engine log; pass --api-log")
     start = min((mark["log_offset"] for mark in marks if mark.get("log_offset") is not None), default=0)
-    log = LogSlice(log_path, start)
-    used = {}
+    if start < log_base:
+        raise SystemExit(f"turn_floor: the run's log starts at byte {start}, before the copied part of the log at byte {log_base}")
+    log = LogSlice(log_path, start - log_base)
+    sent = {}
+    for position, request in enumerate(requests):
+        sent.setdefault(request["prompt_sha256"], []).append(position)
+    paired = {}
+    for digest, positions in sent.items():
+        candidates = log.measurements.get(digest, [])
+        if len(candidates) < len(positions):
+            positions = [position for position in positions if requests[position].get("error") is None]
+            candidates = candidates[max(0, len(candidates) - len(positions)):]
+        paired.update(zip(positions, candidates))
     joined = []
-    for request in requests:
-        candidates = log.measurements.get(request["prompt_sha256"], [])
-        index = used.get(request["prompt_sha256"], 0)
+    for position, request in enumerate(requests):
         row = dict(request)
-        if index < len(candidates):
-            used[request["prompt_sha256"]] = index + 1
-            measurement = candidates[index]
+        measurement = paired.get(position)
+        if measurement is not None:
             key = (measurement.get("boot_pid"), measurement["request_id"])
             row.update(split(request, measurement, log.request_steps(measurement), log.rejections.get(key, [])))
             row["notes"] = log.notes.get(key, [])
             row["order"] = measurement["order"]
-        else:
+        elif request.get("error") is None:
             row["unmatched"] = True
         joined.append(row)
     ordered = sorted((row["order"] for row in joined if "order" in row))
@@ -532,8 +580,8 @@ def cell(value, digits=0):
 def summarize(rows):
     groups = {}
     for row in rows:
-        if row.get("error") is None and row["kind"] in ("turn", "turn_spec", "decode", "grow", "opening", "opening_second", "subagent", "subagent_second", "resume",
-                                                        "turn_after_resume", "probe_solo", "probe_behind", "wave_background"):
+        if row.get("error") is None and not row.get("first_of_run") and row["kind"] in SESSION_SAMPLES + (
+                "grow", "opening", "opening_second", "subagent", "subagent_second", "resume", "turn_after_resume", "probe_solo", "probe_behind", "wave_background"):
             key = (row["kind"], row.get("event"), row.get("context"), row.get("tail") if row["kind"] in ("turn", "turn_spec") else None)
             groups.setdefault(key, []).append(row)
     summary = []
@@ -615,6 +663,14 @@ def report_tables(documents):
     for document in documents:
         found = {entry["context"]: entry for entry in entries(document, "decode")}
         lines.append(f"| {document['model']} | " + " | ".join(cell((found.get(context) or {}).get("decode_tok_s"), 1) for context in decode_contexts) + " |")
+    served_contexts = sorted({entry["context"] for document in documents for entry in entries(document, "decode_served")})
+    if served_contexts:
+        lines += ["", "Decode as served, tok/s, by context.", "", "| Model | " + " | ".join(f"{context:,}" for context in served_contexts) + " |",
+                  "| --- | " + " | ".join("---:" for _ in served_contexts) + " |"]
+        for document in documents:
+            found = {entry["context"]: entry for entry in entries(document, "decode_served")}
+            lines.append(f"| {document['model']} | " + " | ".join(cell((found.get(context) or {}).get("decode_tok_s") or (found.get(context) or {}).get("stream_tok_s"), 1)
+                                                                 for context in served_contexts) + " |")
     lines += ["", "Cold events: seconds to the first token, with the tokens prefilled.", "",
               "| Model | Opening | Second session, same opening | Subagent opening | Second subagent | After an engine restart | After a swap away and back |",
               "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
@@ -651,7 +707,7 @@ def report(arguments):
 
 
 def parts(arguments):
-    rows, marks, store, shared = join(arguments.folder, arguments.api_log)
+    rows, marks, store, shared = join(arguments.folder, arguments.api_log, arguments.log_base)
     folder = Path(arguments.folder)
     with open(folder / "parts.jsonl", "w") as handle:
         for row in rows:
@@ -664,6 +720,50 @@ def parts(arguments):
     print(markdown(summary))
     if not shared:
         print("\n" + CLOCK_APART[0].upper() + CLOCK_APART[1:] + ".")
+
+
+def excerpt(arguments):
+    marks = [record for record in read_requests(arguments.folder) if record.get("kind") == "mark" and record.get("log_offset") is not None]
+    log_path = arguments.api_log or next((mark["api_log"] for mark in marks if mark.get("api_log")), None)
+    if log_path is None or not marks:
+        raise SystemExit("turn_floor: the run recorded no engine log to take an excerpt of")
+    start, end = min(mark["log_offset"] for mark in marks), max(mark["log_offset"] for mark in marks)
+    before = {}
+    with open(log_path, "rb") as handle:
+        back = max(0, start - STORE_LOOKBACK_BYTES)
+        handle.seek(back)
+        if back:
+            handle.readline()
+        while handle.tell() < start:
+            raw = handle.readline()
+            if not raw:
+                break
+            if raw.startswith(b"{\"event\":\"kv_store_report\""):
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                before[(event.get("boot_pid"), event.get("residentd_pid"), event.get("rank"))] = raw.decode("utf-8", "replace")
+        handle.seek(start)
+        lines = handle.read(end - start).decode("utf-8", "replace").split("\n")
+    baseline = "".join(before.values())
+    kept, first, last = set(), {}, {}
+    for index, line in enumerate(lines):
+        if line.startswith("{\"event\":\"kv_store_report\""):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = (event.get("boot_pid"), event.get("residentd_pid"), event.get("rank"))
+            first.setdefault(key, index)
+            last[key] = index
+        elif line.startswith(("batch_step ", "batch_rejected ", "{\"event\":\"request_measurements\"")) or NOTE.match(line):
+            kept.add(index)
+    kept.update(first.values())
+    kept.update(last.values())
+    Path(arguments.output).write_text(baseline + "".join(lines[index] + "\n" for index in sorted(kept)))
+    print(json.dumps({"excerpt": arguments.output, "log": str(log_path), "log_base": start - len(baseline.encode()), "log_start": start, "bytes": end - start,
+                      "lines": len(lines), "kept": len(kept), "baseline_reports": len(before)}))
 
 
 def numbers(text):
@@ -686,6 +786,8 @@ def build_parser():
     runner.add_argument("--spec-repeats", type=int, default=1)
     runner.add_argument("--reply-tokens", type=int, default=16)
     runner.add_argument("--decode-tokens", type=int, default=96)
+    runner.add_argument("--served-tokens", type=int, default=0)
+    runner.add_argument("--once-from", type=int, default=0)
     runner.add_argument("--decode-context", type=int)
     runner.add_argument("--session-tokens", type=int)
     runner.add_argument("--wave-tokens", type=int, default=60000)
@@ -697,6 +799,11 @@ def build_parser():
     reporter = commands.add_parser("parts")
     reporter.add_argument("folder")
     reporter.add_argument("--api-log")
+    reporter.add_argument("--log-base", type=int, default=0)
+    cutter = commands.add_parser("excerpt")
+    cutter.add_argument("folder")
+    cutter.add_argument("--api-log")
+    cutter.add_argument("--output", required=True)
     tables = commands.add_parser("report")
     tables.add_argument("folders", nargs="+")
     return parser
@@ -713,6 +820,8 @@ def main():
         run(arguments)
     elif arguments.command == "parts":
         parts(arguments)
+    elif arguments.command == "excerpt":
+        excerpt(arguments)
     else:
         report(arguments)
 

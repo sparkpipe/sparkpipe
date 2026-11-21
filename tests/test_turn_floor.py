@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/turn_floor.py times an engine's turns by token ids and splits each first token's time into send, queue, restore, prefill waves and the first decode step, using only the engine's own log. This test serves a stub engine that keeps its own record of each of those times, runs every arm against it and checks that the split recovers them. The stub's sleeps set only a lower bound: a host that sleeps long changes what the stub records, never whether the split agrees with it."""
+"""tools/turn_floor.py times an engine's turns by token ids and splits each first token's time into send, queue, restore, the prefill waves and the one-row wave of the last prompt token, using only the engine's own log. This test serves a stub engine that logs as release c2b714343 does (waves over every prompt token but the last, the last token as a wave of one row that yields the first token, then chains whose tokens share one stamp), keeps its own record of each of those times, runs every arm against it and checks that the split recovers them. The stub's sleeps set only a lower bound: a host that sleeps long changes what the stub records, never whether the split agrees with it."""
 import hashlib
 import http.server
 import importlib.util
@@ -13,6 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOL = ROOT / "tools" / "turn_floor.py"
+RECORDED = ROOT / "tests" / "fixtures" / "turn_floor_c2b714343"
+RECORDED_LOG_BASE = 120651989
 spec = importlib.util.spec_from_file_location("turn_floor", TOOL)
 turn_floor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(turn_floor)
@@ -21,6 +23,8 @@ WAVE_ROWS = 512
 WAVE_MS = 30.0
 WAVE_GAP_MS = 2.0
 STEP_MS = 8.0
+CHAIN_TOKENS = 8
+EARLIER_SAVES = 5
 QUEUE_MS = 3.0
 RESTORE_MS = 120.0
 CONTEXT_LIMIT = 9000
@@ -51,9 +55,10 @@ class Stub:
         self.seen = []
         self.next_id = 100000
         self.restore_next = False
-        self.store = {"save_pages": 0, "save_ns": 0, "restore_pages": 0, "restore_ns": 0}
+        self.store = {"save_pages": EARLIER_SAVES, "save_ns": EARLIER_SAVES * 1000000, "restore_pages": 0, "restore_ns": 0}
         self.requests = []
         self.truth = {}
+        self.refuse_in = 0
 
     def cached(self, ids):
         best = 0
@@ -73,6 +78,14 @@ class Stub:
         with self.lock:
             self.log.write(line + "\n")
             self.log.flush()
+
+    @staticmethod
+    def token(request_id, position):
+        return 5000 + (request_id * 31 + position * 7) % 1000
+
+    def step(self, request_id, kind, rows, steps, wall, context, gap):
+        self.write(f"batch_step kind={kind} request={request_id} rows={rows} steps={steps} drafts=0 trunk=0 tree=0 kept={rows if kind == 'prefill' else steps} match=0 "
+                   f"class=0 expect=0.00 predict_ms=0.00 service_ms={max(wall - 0.2, 0.0):.2f} wall_ms={wall:.2f} context={context} gap_ms={gap:.2f} draft_wait_ms=0.00")
 
     def serve(self, body, emit):
         ids, budget = body["prompt_token_ids"], body["max_tokens"]
@@ -101,28 +114,25 @@ class Stub:
                 time.sleep(WAVE_MS / 1000)
                 wall = (time.monotonic_ns() - began) / 1e6
                 done += rows
-                self.write(f"batch_step kind=prefill request={request_id} rows={rows} steps=1 drafts=0 trunk=0 tree=0 kept={rows} match=0 class=0 expect=0.00 "
-                           f"predict_ms=0.00 service_ms={wall - 0.5:.2f} wall_ms={wall:.2f} context={done} gap_ms={0.0 if first else WAVE_GAP_MS:.2f} draft_wait_ms=0.00")
+                self.step(request_id, "prefill", rows, 1, wall, done, 0.0 if first else WAVE_GAP_MS)
                 rows_left -= rows
                 first = False
-            tokens, steps = [], min(budget, 4)
-            gap_began = time.monotonic_ns()
-            time.sleep(WAVE_GAP_MS / 1000 if not first else 0)
+            if not first:
+                time.sleep(WAVE_GAP_MS / 1000)
             began = time.monotonic_ns()
-            gap = (began - gap_began) / 1e6 if not first else 0.0
-            for step in range(budget):
-                if step == steps:
-                    wall = (time.monotonic_ns() - began) / 1e6
-                    self.write(f"batch_step kind=chain request={request_id} rows=1 steps={steps} drafts=0 trunk=0 tree=0 kept={steps} match=0 class=0 expect=0.00 "
-                               f"predict_ms=0.00 service_ms={wall - 0.2:.2f} wall_ms={wall:.2f} context={len(ids) + 1} gap_ms={gap:.2f} draft_wait_ms=0.00")
-                time.sleep(STEP_MS / 1000)
-                token = 5000 + (request_id * 31 + step * 7) % 1000
-                tokens.append([token, time.monotonic_ns()])
-                emit([token], cached, None)
-            if budget <= steps:
-                wall = (time.monotonic_ns() - began) / 1e6
-                self.write(f"batch_step kind={'single' if steps == 1 else 'chain'} request={request_id} rows=1 steps={steps} drafts=0 trunk=0 tree=0 kept={steps} match=0 "
-                           f"class=0 expect=0.00 predict_ms=0.00 service_ms={wall - 0.2:.2f} wall_ms={wall:.2f} context={len(ids) + 1} gap_ms={gap:.2f} draft_wait_ms=0.00")
+            time.sleep(STEP_MS / 1000)
+            tokens = [[self.token(request_id, 0), time.monotonic_ns()]]
+            self.step(request_id, "prefill", 1, 1, (time.monotonic_ns() - began) / 1e6, len(ids), 0.0 if first else WAVE_GAP_MS)
+            emit([tokens[0][0]], cached, None)
+            while len(tokens) < budget:
+                count = min(budget - len(tokens), CHAIN_TOKENS)
+                chain_began = time.monotonic_ns()
+                time.sleep(count * STEP_MS / 1000)
+                ready = time.monotonic_ns()
+                chain = [self.token(request_id, len(tokens) + index) for index in range(count)]
+                tokens += [[token, ready] for token in chain]
+                self.step(request_id, "chain", 1, count, (time.monotonic_ns() - chain_began) / 1e6, len(ids) + len(tokens), 0.1)
+                emit(chain, cached, None)
         emit([], cached, "length")
         with self.lock:
             self.seen.append(list(ids) + [token for token, _ in tokens][:-1])
@@ -163,6 +173,19 @@ def handler(stub):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            with stub.lock:
+                stub.refuse_in -= 1
+                refused = stub.refuse_in == 0
+            if refused:
+                data = b'{"error":{"message":"refused by the stub"}}'
+                self.send_response(503)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(data)
+                self.close_connection = True
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
@@ -182,9 +205,9 @@ def handler(stub):
     return Handler
 
 
-def run_tool(*arguments):
+def run_tool(*arguments, fails=False):
     done = subprocess.run([sys.executable, str(TOOL), *arguments], capture_output=True, text=True, timeout=300)
-    if done.returncode != 0:
+    if (done.returncode != 0) != fails:
         raise SystemExit(f"FAIL test_turn_floor: turn_floor {' '.join(arguments[:2])} exited {done.returncode}: {done.stderr[-600:]}")
     return done.stdout
 
@@ -227,6 +250,14 @@ def clock_guard(folder, sent_late):
 check(turn_floor.prompt_sha256([1, 2, 3]) == hashlib.sha256(bytes([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])).hexdigest(),
       "a prompt's digest is the SHA-256 of its token ids as little-endian 32-bit words, the engine's own digest")
 
+rows, _, _, shared = turn_floor.join(RECORDED, RECORDED / "engine.log", RECORDED_LOG_BASE)
+cold = rows[0]
+check(len(rows) == 1 and shared and cold["request_id"] == 100002 and cold["prefill_waves"] == 10 and cold["prefill_rows"] == 19999 and cold["wave_rows_max"] == 2048 and
+      cold["first_step_ms"] == 101.25 and cold["first_step_service_ms"] == 92.35 and round(cold["prefill_ms"]) == 31726 and round(cold["between_waves_ms"], 1) == 3.2 and
+      round(cold["queue_ms"], 2) == 0.64 and cold["restore_ms"] == 0 and round(cold["send_ms"], 2) == 1.61 and round(cold["reply_ms"], 2) == 0.28 and
+      round(cold["decode_tok_s"], 2) == 11.99 and cold["decode_step_kind"] == "chain" and cold["decode_step_tokens"] == 8,
+      f"a request recorded on release c2b714343 splits as its log says: ten waves over 19,999 rows, then the last token's one-row wave of 101.25 ms: {cold}")
+
 with tempfile.TemporaryDirectory() as folder:
     folder = Path(folder)
     rows, shared = clock_guard(folder / "together", False)
@@ -240,13 +271,21 @@ with tempfile.TemporaryDirectory() as folder:
     tokens_path = folder / "tokens.txt"
     tokens_path.write_text("\n".join(str(1000 + (index * 7919) % 20000) for index in range(60000)))
     stub = Stub(log_path)
+    stub.report_store()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler(stub))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     endpoint = f"http://127.0.0.1:{server.server_address[1]}"
     output = folder / "run"
     common = ("run", "--endpoint", endpoint, "--tokens", str(tokens_path), "--output", str(output), "--label", "stub", "--api-log", str(log_path),
-              "--contexts", "2000,4000", "--tails", "50,300", "--repeats", "2", "--spec-repeats", "1", "--reply-tokens", "6", "--decode-tokens", "12",
-              "--wave-tokens", "6000", "--wave-lead", "0.02", "--probes-solo", "3")
+              "--contexts", "2000,4000", "--tails", "50,300", "--repeats", "2", "--spec-repeats", "1", "--once-from", "300", "--reply-tokens", "6",
+              "--decode-tokens", "12", "--served-tokens", "10", "--wave-tokens", "6000", "--wave-lead", "0.02", "--probes-solo", "3")
+    stub.refuse_in = 11
+    log_start = log_path.stat().st_size
+    run_tool(*common, "--arms", "turns", fails=True)
+    state = json.loads((output / "session.json").read_text())
+    check(state["levels"] == [2000] and state["level"] == {"context": 4000, "done": 3},
+          f"a run that a refused request stops keeps the levels and the steps of the open level it finished: {state['levels']} {state.get('level')}")
+    interrupted_history = len(state["history"])
     run_tool(*common, "--arms", "turns")
     state = json.loads((output / "session.json").read_text())
     check(state["levels"] == [2000, 4000], f"the turns arm finishes every context level that fits the engine: {state['levels']}")
@@ -258,10 +297,27 @@ with tempfile.TemporaryDirectory() as folder:
     tables = run_tool("report", str(output))
     rows = [json.loads(line) for line in (output / "parts.jsonl").read_text().splitlines()]
     summary = json.loads((output / "summary.json").read_text())
+    cut = json.loads(run_tool("excerpt", str(output), "--output", str(folder / "excerpt.log")))
+    (folder / "excerpt.log").write_text((folder / "excerpt.log").read_text() + "an engine line of a later run\n")
+    again = folder / "again"
+    again.mkdir()
+    (again / "requests.jsonl").write_text((output / "requests.jsonl").read_text())
+    run_tool("parts", str(again), "--api-log", str(folder / "excerpt.log"), "--log-base", str(cut["log_base"]))
+    recut = [json.loads(line) for line in (again / "parts.jsonl").read_text().splitlines()]
+    excerpt_summary = json.loads((again / "summary.json").read_text())
     apart_ms = clocks_apart_ms()
     server.shutdown()
 
 check(summary["unmatched"] == 0, f"every request finds its own line in the engine log by prompt digest: {summary['unmatched']} unmatched")
+timed = ("queue_ms", "restore_ms", "prefill_ms", "first_step_ms", "prefill_waves", "prefill_rows", "decode_tok_s", "restore_polls", "request_id")
+check(cut["log_start"] == log_start and cut["log_base"] < cut["log_start"] and cut["baseline_reports"] == 1 and cut["kept"] < cut["lines"] and len(recut) == len(rows) and
+      all({name: one.get(name) for name in timed} == {name: other.get(name) for name in timed} for one, other in zip(rows, recut)) and
+      excerpt_summary["kv_store"] == summary["kv_store"],
+      f"an excerpt of the engine log, read with the byte it starts at, gives every request the same parts and the run the same store counters: {cut}")
+refused = [row for row in rows if row.get("error") is not None]
+check(len(refused) == 1 and refused[0]["kind"] == "turn" and refused[0]["context"] == 4000 and refused[0]["tail"] == 50 and "request_id" not in refused[0] and
+      not refused[0].get("unmatched"), f"the refused request stays in the record with its error and takes no line of the engine's log: {refused}")
+rows = [row for row in rows if row.get("error") is None]
 taken = {}
 for row in rows:
     recorded = stub.truth.get(row["prompt_sha256"], [])
@@ -277,14 +333,25 @@ rates = [(row["kind"], row.get("decode_tok_s"), row["truth"]["decode_tok_s"]) fo
 check(rates and all(recorded is not None and abs(found - recorded) <= 0.01 * recorded for _, found, recorded in rates),
       f"the decode rate comes from the engine's token times: {rates[:4]}")
 turns = [row for row in rows if row["kind"] == "turn"]
-check(len(turns) == 8, f"two levels, two tails and two repeats make eight plain turns: {len(turns)}")
-check(all(row["speculation"] is False for row in turns) and all(row["speculation"] is None for row in rows if row["kind"] == "turn_spec"),
-      "plain turns turn speculation off and the as-served turns leave it to the engine")
+check(sorted((row["context"], row["tail"]) for row in turns) == [(2000, 50), (2000, 50), (2000, 300), (4000, 50), (4000, 50), (4000, 300)],
+      f"each level runs its short tail twice and its long tail once, and a resumed level repeats nothing it had finished: {[(row['context'], row['tail']) for row in turns]}")
+again = [row for row in rows if row.get("first_of_run")]
+check(len(again) == 1 and again[0]["kind"] == "turn" and again[0]["context"] == 4000 and again[0]["tail"] == 50 and again[0]["prompt_tokens"] == interrupted_history + 50,
+      f"the resumed run sends the refused turn again from the saved history and marks it as the first of its run: {[(row['kind'], row['prompt_tokens']) for row in again]}")
+counted = next(item for item in summary["summary"] if item["kind"] == "turn" and item["context"] == 4000 and item["tail"] == 50)
+check(counted["requests"] == 1, f"a first request of a resumed run is left out of the level's figures: {counted['requests']}")
+spec = [row for row in rows if row["kind"] == "turn_spec"]
+check(all(row["speculation"] is False for row in turns) and len(spec) == 2 and all(row["speculation"] is None and row["tail"] == 50 for row in spec),
+      "plain turns turn speculation off and the as-served turns, short tails only, leave it to the engine")
+served = [row for row in rows if row["kind"] == "decode_served"]
+check(len(served) == 2 and all(row["speculation"] is None and row["output_tokens"] == 10 and row["prefill_tokens"] == 1 for row in served) and
+      "Decode as served, tok/s, by context." in tables, f"each level ends with a reply as served on the whole history: {[(row['context'], row['output_tokens']) for row in served]}")
 small = [row for row in turns if row["tail"] == 50]
 check(all(row["prefill_tokens"] == 51 for row in small), f"a turn prefills its new tail and the last reply token: {[row['prefill_tokens'] for row in small]}")
 check(all(row["prefill_waves"] == 1 and row["prefill_ms"] >= WAVE_MS + WAVE_GAP_MS - EARLY_MS for row in small),
       f"a small tail costs one prefill wave: {[(row['prefill_waves'], round(row['prefill_ms'], 1)) for row in small]}")
-check(all(row["first_step_ms"] >= STEP_MS - EARLY_MS for row in small), f"the first decode step is timed from its dispatch: {[round(row['first_step_ms'], 1) for row in small]}")
+check(all(row["first_step_ms"] >= STEP_MS - EARLY_MS and row["decode_step_kind"] == "chain" for row in small),
+      f"the first token costs the one-row wave of the last prompt token, and the chains come after it: {[round(row['first_step_ms'], 1) for row in small]}")
 check(all(row["queue_ms"] >= QUEUE_MS - EARLY_MS and row["restore_ms"] == 0 and row["restore_polls"] == 0 for row in small),
       f"queue is acceptance to the first admitted dispatch, and a resident prefix waits for no restore: {[(round(row['queue_ms'], 1), row['restore_ms']) for row in small]}")
 if apart_ms >= CLOCK_APART_MS:
@@ -299,8 +366,9 @@ check(grow["cached_tokens"] == 0 and grow["prefill_waves"] == 4 and grow["prefil
       near(grow["between_waves_ms"], grow["prefill_ms"] - grow["waves_ms"], 0.001) and grow["between_waves_ms"] >= 4 * WAVE_GAP_MS - EARLY_MS,
       f"a cold prompt's prefill is the sum of its waves and the gaps between them: {grow['prefill_waves']} waves, {round(grow['prefill_ms'], 1)} ms")
 decode = [row for row in rows if row["kind"] == "decode"]
-check(len(decode) == 2 and all(row["prefill_tokens"] == 1 and row["prefill_waves"] == 0 and row["output_tokens"] == 12 for row in decode),
-      "the decode sample resumes the whole history and prefills nothing")
+check(len(decode) == 2 and all(row["prefill_tokens"] == 1 and row["prefill_waves"] == 0 and row["output_tokens"] == 12 and row["first_step_ms"] >= STEP_MS - EARLY_MS and
+                               row["prefill_ms"] < row["first_step_ms"] for row in decode),
+      f"the decode sample resumes the whole history, so its first token costs the last token's wave and no other: {[(round(row['prefill_ms'], 2), round(row['first_step_ms'], 2)) for row in decode]}")
 check(all(row["decode_tok_s"] is not None and row["decode_tok_s"] <= 1.01 * 1000 / STEP_MS for row in decode),
       f"the decode sample's rate is no faster than the stub's steps: {[row.get('decode_tok_s') for row in decode]}")
 second = next(row for row in rows if row["kind"] == "subagent_second")
@@ -320,7 +388,7 @@ check(resume["store"]["restore_pages"] > 0 and resume["store"]["restore_ns"] == 
 entry = next(item for item in summary["summary"] if item["kind"] == "resume")
 known = dict({name: resume["truth"][name] for name in ENGINE_PARTS}, **({"send_ms": resume["send_ms"]} if resume["send_ms"] is not None else {}))
 check(entry["largest_part"] == max(known, key=known.get), f"the summary names the largest part of a resume: {entry['largest_part']} of {known}")
-check(summary["kv_store"]["save_pages"] == len(rows), f"the run's saved pages are the change in the store counters over the run: {summary['kv_store']['save_pages']}")
+check(summary["kv_store"]["save_pages"] == len(rows), f"the run's saved pages are the change in the store counters over the run: {summary['kv_store']['save_pages']} of {len(rows)}")
 check("| resume (swap) |" in table and "| turn tail 50 |" in table, "the table has a row for each kind of request")
 cells = [turn_floor.floor_cell(item) for item in summary["summary"] if item["kind"] in ("turn", "decode")]
 check(len(cells) == 6 and all("(" in text and text in tables for text in cells),
