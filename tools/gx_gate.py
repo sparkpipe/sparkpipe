@@ -10,14 +10,19 @@ go to NVMe and the device pool is dropped, up again).
 
   chain            a warmed prefix is extended by a new tail, and three-turn
                    sessions run to their last prompt, with nothing interrupted
-  park:CONTEXT     the same requests on a cleared cache, up to the eviction
-  restore:CONTEXT  the rest of them on the restored chains
+  park:GROUP       the same requests on a cleared cache, up to the eviction
+  restore:GROUP    the rest of them on the restored chains
   cold:TAIL        every last prompt of that tail size, on a cleared cache
 
 `verdict` compares the arms: reuse against cold, and restored against
 uninterrupted. A unit passes only when tokens and logprobs are equal, the
 reusing run reports cached tokens and the cold run reports none. Anything not
 run, not cached or not cold leaves the verdict INCOMPLETE, never PASS.
+
+A step that stops is run again after a cache clear and does only the units
+it has not finished. A park step is always run whole for the units its
+restore step still needs. A request that fails while the engine stays whole
+is recorded on its unit, and the step goes on.
 """
 import argparse
 import hashlib
@@ -29,7 +34,7 @@ import time
 import urllib.error
 import urllib.request
 
-KIND = "sparkpipe.gx-gate.v1"
+KIND = "sparkpipe.gx-gate.v2"
 PREFIX_CASES = ("prefix", "declared")
 SESSION_CASES = ("session", "drafted")
 CASES = PREFIX_CASES + SESSION_CASES
@@ -42,12 +47,25 @@ SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
 LOG_TAIL_BYTES = 16 << 20
 STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "restore_pages", "restore_ns", "restore_misses", "restore_failures", "store_files",
-                  "store_used_bytes", "store_evictions", "pool_resident_pages", "pool_adopted_pages", "pool_evicted_entries", "spill_write_bytes")
+                  "store_used_bytes", "store_evictions", "pool_resident_pages", "pool_physical_pages", "pool_device_bytes", "pool_adopted_pages", "pool_evicted_entries",
+                  "spill_write_bytes")
+STORE_SLOWEST = ("save_ns", "restore_ns")
 ENGINE_COUNTERS = ("completed", "prefix_hits", "prefix_misses", "prefix_hit_tokens", "stale_prefix_recomputes", "rejected_waves_busy", "rejected_waves_not_found",
                    "verify_lanes", "draft_tokens", "accepted_draft_tokens")
+ENGINE_IDENTITY = ("adapter_id", "model_id", "model_revision", "driver_program", "driver_artifact_sha256")
 
 
 class GateError(Exception):
+    pass
+
+
+class RequestError(GateError):
+    def __init__(self, message, counted):
+        super().__init__(message)
+        self.counted = counted
+
+
+class UnitError(GateError):
     pass
 
 
@@ -111,10 +129,23 @@ def step_order(plan):
     return order
 
 
+def step_units(state, name):
+    kind, _, value = name.partition(":")
+    return [unit for unit in state["units"] if kind == "chain" or (kind == "cold" and unit["tail"] == int(value)) or (kind in ("park", "restore") and unit["group"] == int(value))]
+
+
+def step_status(state, name):
+    record = state["steps"].get(name)
+    if record is None:
+        return "open"
+    if "finished" in record:
+        return "done"
+    return "stopped" if "interrupted" in record else "partial"
+
+
 class Prompts:
     def __init__(self, state):
         self.seed = state["seed"]
-        self.reply_tokens = state["options"]["reply_tokens"]
         self.cache = {}
 
     def run(self, label, count):
@@ -182,10 +213,14 @@ class Api:
                     event = json.loads(found[found.index("{"):])
                 except ValueError:
                     return {}
-                out = {"stale_prefix_recomputes": event.get("stale_prefix_recomputes"), "queue_ms": round((event["first_dispatch_ns"] - event["accepted_ns"]) / 1e6, 3)}
-                if event.get("tokens"):
-                    out["first_token_ms"] = round((event["tokens"][0][1] - event["accepted_ns"]) / 1e6, 3)
-                    out["last_token_ms"] = round((event["tokens"][-1][1] - event["accepted_ns"]) / 1e6, 3)
+                out = {"stale_prefix_recomputes": event.get("stale_prefix_recomputes"), "queue_ms": round((event["first_dispatch_ns"] - event["accepted_ns"]) / 1e6, 3),
+                       "engine": {name: event.get(name) for name in ENGINE_IDENTITY}}
+                ready = [entry[1] for entry in event.get("tokens") or []]
+                if ready:
+                    out["first_token_ms"] = round((ready[0] - event["accepted_ns"]) / 1e6, 3)
+                    out["last_token_ms"] = round((ready[-1] - event["accepted_ns"]) / 1e6, 3)
+                if len(ready) > 1 and ready[-1] > ready[0]:
+                    out["decode_tokens_per_second"] = round((len(ready) - 1) * 1e9 / (ready[-1] - ready[0]), 3)
                 return out
             if time.monotonic() > deadline:
                 return {}
@@ -214,7 +249,8 @@ class Api:
                         engine = event
         except OSError:
             return {}
-        out = {"ranks_reporting": len(ranks), "store": {name: sum(report.get(name) or 0 for report in ranks.values()) for name in STORE_COUNTERS}}
+        out = {"boot_pid": boot, "ranks_reporting": len(ranks), "store": {name: sum(report.get(name) or 0 for report in ranks.values()) for name in STORE_COUNTERS},
+               "slowest_rank": {name: max([report.get(name) or 0 for report in ranks.values()], default=0) for name in STORE_SLOWEST}}
         if engine is not None:
             out["engine"] = {name: engine.get(name) for name in ENGINE_COUNTERS}
         return out
@@ -228,17 +264,17 @@ class Api:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 reply = json.loads(response.read())
         except urllib.error.HTTPError as error:
-            raise GateError("a completion of %d tokens failed with HTTP %d: %s" % (len(prompt), error.code, error.read()[:300].decode(errors="replace")))
+            raise RequestError("HTTP %d: %s" % (error.code, error.read()[:300].decode(errors="replace")), error.code >= 500)
         except (urllib.error.URLError, OSError, ValueError) as error:
-            raise GateError("a completion of %d tokens failed: %s" % (len(prompt), error))
+            raise RequestError(str(error), False)
         seconds = time.monotonic() - started
         usage = reply.get("usage") or {}
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
         tokens = reply.get("tokens")
         if not isinstance(tokens, list) or not tokens or not isinstance(cached, int) or usage.get("prompt_tokens") != len(prompt):
-            raise GateError("a completion reply carries no tokens, no cached_tokens or another prompt length: %s" % json.dumps(reply)[:300])
+            raise RequestError("the reply carries no tokens, no cached_tokens or another prompt length: %s" % json.dumps(reply)[:300], True)
         digest = prompt_digest(prompt)
-        result = {"prompt_tokens": len(prompt), "prompt_sha256": digest, "cached_tokens": cached, "tokens": [int(token) for token in tokens],
+        result = {"prompt_tokens": len(prompt), "prompt_sha256": digest, "cached_tokens": cached, "prefilled_tokens": len(prompt) - cached, "tokens": [int(token) for token in tokens],
                   "finish_reason": reply.get("finish_reason") or ((reply.get("choices") or [{}])[0]).get("finish_reason"), "seconds": round(seconds, 3)}
         if "logprobs" in options:
             result["logprobs"] = reply.get("token_logprobs")
@@ -247,13 +283,17 @@ class Api:
 
 
 class Step:
-    def __init__(self, api, state, name):
+    def __init__(self, api, state, name, save, rest_seconds=0.0, rest_over_seconds=0.0):
         self.api = api
         self.state = state
         self.name = name
+        self.save = save
+        self.rest_seconds = rest_seconds
+        self.rest_over_seconds = rest_over_seconds
         self.options = state["options"]
         self.prompts = Prompts(state)
-        self.record = {"started": stamp(), "requests": [], "results": {}, "replies": {}}
+        self.record = None
+        self.attempt = None
 
     def units(self, cases, nominal=None, tail=None):
         return [unit for unit in self.state["units"] if unit["case"] in cases and nominal in (None, unit["nominal"]) and tail in (None, unit["tail"])]
@@ -261,16 +301,52 @@ class Step:
     def nominals(self, group=None):
         return sorted({unit["nominal"] for unit in self.state["units"] if group in (None, unit["group"])})
 
+    def settled(self, record):
+        return set(record.get("results", {})) | set(record.get("errors", {}))
+
+    def pending(self, units):
+        return [unit for unit in units if unit["id"] not in self.settled(self.record)]
+
     def send(self, label, prompt, max_tokens, options, cold=False):
-        result = self.api.complete(prompt, max_tokens, options)
-        self.record["requests"].append(dict({key: value for key, value in result.items() if key not in ("tokens", "logprobs")}, label=label, max_tokens=max_tokens))
+        try:
+            result = self.api.complete(prompt, max_tokens, options)
+        except RequestError as error:
+            self.attempt["requests"] += 1 if error.counted else 0
+            self.record["requests"].append({"label": label, "attempt": len(self.record["attempts"]), "prompt_tokens": len(prompt), "max_tokens": max_tokens, "error": str(error)})
+            print("%s %s %s prompt=%d FAILED %s" % (stamp(), self.name, label, len(prompt), error), flush=True)
+            self.api.health()
+            raise UnitError(str(error))
+        self.attempt["requests"] += 1
+        self.attempt["completed"] += 1
+        identity = result.pop("engine", None)
+        if identity is not None:
+            self.attempt.setdefault("engine", identity)
+        self.record["requests"].append(dict({key: value for key, value in result.items() if key not in ("tokens", "logprobs")}, label=label, attempt=len(self.record["attempts"]),
+                                            max_tokens=max_tokens, completion_tokens=len(result["tokens"])))
         print("%s %s %s prompt=%d cached=%d out=%d %.1fs" % (stamp(), self.name, label, result["prompt_tokens"], result["cached_tokens"], len(result["tokens"]), result["seconds"]), flush=True)
         if cold and result["cached_tokens"] != 0:
-            raise GateError("%s reports %d cached tokens where this step needs a cold run: clear the cache, or plan a new state" % (label, result["cached_tokens"]))
+            raise GateError("%s reports %d cached tokens where this step needs a cold run: clear the cache before the step" % (label, result["cached_tokens"]))
+        if self.rest_seconds > 0 and result["seconds"] > self.rest_over_seconds:
+            time.sleep(self.rest_seconds)
         return result
 
-    def warm(self, unit):
-        self.send("%s/%d/warm" % (unit["case"], unit["nominal"]), self.prompts.prefix(unit), 1, {"speculation": False}, cold=True)
+    def settle(self, unit, action):
+        try:
+            action()
+        except UnitError as error:
+            self.record["errors"][unit["id"]] = str(error)
+        self.save()
+
+    def warmed(self, units):
+        try:
+            self.send("%s/%d/warm" % (units[0]["case"], units[0]["nominal"]), self.prompts.prefix(units[0]), 1, {"speculation": False}, cold=True)
+        except UnitError as error:
+            for unit in units:
+                self.record["errors"][unit["id"]] = "its prefix did not warm: %s" % error
+            self.save()
+            return False
+        self.save()
+        return True
 
     def measured(self, unit):
         options = {"logprobs": self.options["logprobs"], "speculation": False}
@@ -292,73 +368,99 @@ class Step:
         self.record["replies"][unit["id"]] = replies
         return prompt
 
-    def chain(self):
+    def sessions(self, units, action):
+        first = True
+        for unit in units:
+            self.settle(unit, lambda unit=unit, first=first: action(unit, first))
+            first = False
+
+    def chain(self, _):
         for nominal in self.nominals():
             for case in PREFIX_CASES:
-                units = self.units((case,), nominal)
-                if units:
-                    self.warm(units[0])
-                for unit in units:
-                    self.measure(unit, self.prompts.last(unit, None))
+                units = self.pending(self.units((case,), nominal))
+                if units and self.warmed(units):
+                    for unit in units:
+                        self.settle(unit, lambda unit=unit: self.measure(unit, self.prompts.last(unit, None)))
             for case in SESSION_CASES:
-                for index, unit in enumerate(self.units((case,), nominal)):
-                    self.measure(unit, self.turns(unit, index == 0))
+                self.sessions(self.pending(self.units((case,), nominal)), lambda unit, first: self.measure(unit, self.turns(unit, first)))
 
     def park(self, group):
+        restored = self.settled(self.state["steps"].get("restore:%d" % group) or {})
+        self.record.update(results={}, replies={}, errors={})
         for nominal in self.nominals(group):
             for case in SESSION_CASES:
-                for index, unit in enumerate(self.units((case,), nominal)):
-                    self.turns(unit, index == 0)
+                self.sessions([unit for unit in self.units((case,), nominal) if unit["id"] not in restored], lambda unit, first: self.turns(unit, first))
         for nominal in self.nominals(group):
             for case in PREFIX_CASES:
-                units = self.units((case,), nominal)
+                units = [unit for unit in self.units((case,), nominal) if unit["id"] not in restored]
                 if units:
-                    self.warm(units[0])
+                    self.warmed(units)
 
     def restore(self, group):
         parked = self.state["steps"].get("park:%d" % group) or {}
-        if parked.get("error") or "finished" not in parked:
+        if "finished" not in parked:
             raise GateError("restore:%d needs a finished park:%d" % (group, group))
         for nominal in self.nominals(group):
-            for unit in self.units(PREFIX_CASES, nominal):
-                self.measure(unit, self.prompts.last(unit, None))
-            for unit in self.units(SESSION_CASES, nominal):
-                self.measure(unit, self.prompts.last(unit, parked["replies"][unit["id"]]))
+            for unit in self.pending(self.units(CASES, nominal)):
+                if unit["id"] in parked["errors"]:
+                    self.record["errors"][unit["id"]] = "its park step failed: %s" % parked["errors"][unit["id"]]
+                    continue
+                self.settle(unit, lambda unit=unit: self.measure(unit, self.prompts.last(unit, parked["replies"].get(unit["id"]))))
+        self.save()
 
     def cold(self, tail):
         chained = self.state["steps"].get("chain") or {}
-        if chained.get("error") or "finished" not in chained:
+        if "finished" not in chained:
             raise GateError("cold:%d needs a finished chain step: a session's last prompt holds its replies" % tail)
-        for unit in self.units(CASES, tail=tail):
-            self.measure(unit, self.prompts.last(unit, chained["replies"].get(unit["id"])), cold=True)
+        for unit in self.pending(self.units(CASES, tail=tail)):
+            if unit["case"] in SESSION_CASES and unit["id"] not in chained["replies"]:
+                self.record["errors"][unit["id"]] = "its session did not finish in the chain step"
+                continue
+            self.settle(unit, lambda unit=unit: self.measure(unit, self.prompts.last(unit, chained["replies"].get(unit["id"])), cold=True))
+        self.save()
+
+    def logged_foreign(self):
+        before, after = self.attempt["counters_before"], self.attempt["counters_after"]
+        counts = [(side.get("engine") or {}).get("completed") for side in (before, after)]
+        if before.get("boot_pid") != after.get("boot_pid") or None in counts:
+            return None
+        return max(0, counts[1] - counts[0] - self.attempt["completed"])
 
     def run(self):
         kind, _, value = self.name.partition(":")
         known = {name for name, _ in step_order(self.state)}
         if self.name not in known:
             raise GateError("unknown step %s; this state has: %s" % (self.name, " ".join(sorted(known))))
+        follower = "restore:%s" % value if kind == "park" else self.name
+        if step_status(self.state, follower) == "done" and step_status(self.state, self.name) == "done":
+            print("%s %s is done" % (stamp(), self.name), flush=True)
+            return True
         before = self.api.health()
-        self.record["health_before"] = before
         if before.get("live_requests"):
             raise GateError("the API has %d live requests: the gate runs alone" % before["live_requests"])
-        self.record["counters_before"] = self.api.counters()
+        self.record = self.state["steps"].setdefault(self.name, {"requests": [], "results": {}, "replies": {}, "errors": {}, "attempts": []})
+        self.record.pop("finished", None)
+        self.record.pop("interrupted", None)
+        self.attempt = {"started": stamp(), "requests": 0, "completed": 0, "health_before": before, "counters_before": self.api.counters()}
+        self.record["attempts"].append(self.attempt)
+        self.save()
         try:
-            if kind == "chain":
-                self.chain()
-            else:
-                getattr(self, kind)(int(value))
+            getattr(self, kind)(int(value) if value else None)
         except GateError as error:
-            self.record["error"] = str(error)
+            self.record["interrupted"] = str(error)
+        self.attempt["counters_after"] = self.api.counters()
         try:
             after = self.api.health()
-            self.record["health_after"] = after
-            self.record["foreign_requests"] = after.get("served", 0) - before.get("served", 0) - len(self.record["requests"])
+            self.attempt["health_after"] = after
+            self.attempt["foreign_requests"] = after.get("served", 0) - before.get("served", 0) - self.attempt["requests"]
         except GateError as error:
-            self.record.setdefault("error", str(error))
-        self.record["counters_after"] = self.api.counters()
-        self.record["finished"] = stamp()
-        self.state["steps"][self.name] = self.record
-        return "error" not in self.record
+            self.record.setdefault("interrupted", str(error))
+            self.attempt["foreign_requests"] = self.logged_foreign()
+        self.attempt["finished"] = stamp()
+        if "interrupted" not in self.record:
+            self.record["finished"] = stamp()
+        self.save()
+        return "finished" in self.record
 
 
 def stamp():
@@ -394,15 +496,21 @@ def compare(left, right):
 
 def judge(state):
     steps = state["steps"]
+    names = {"chain": lambda unit: "chain", "restore": lambda unit: "restore:%d" % unit["group"], "cold": lambda unit: "cold:%d" % unit["tail"]}
     verdicts = []
     for unit in state["units"]:
-        arms = {"chain": (steps.get("chain") or {}).get("results", {}).get(unit["id"]),
-                "restore": (steps.get("restore:%d" % unit["group"]) or {}).get("results", {}).get(unit["id"]),
-                "cold": (steps.get("cold:%d" % unit["tail"]) or {}).get("results", {}).get(unit["id"])}
+        records = {arm: steps.get(name(unit)) or {} for arm, name in names.items()}
+        arms = {arm: record.get("results", {}).get(unit["id"]) for arm, record in records.items()}
+        errors = {arm: record.get("errors", {}).get(unit["id"]) for arm, record in records.items() if record.get("errors", {}).get(unit["id"])}
         entry = dict(unit, cached_tokens={arm: result["cached_tokens"] if result else None for arm, result in arms.items()},
-                     seconds={arm: result["seconds"] if result else None for arm, result in arms.items()})
+                     seconds={arm: result["seconds"] if result else None for arm, result in arms.items()},
+                     first_token_ms={arm: result.get("first_token_ms") if result else None for arm, result in arms.items()})
+        if errors:
+            entry["errors"] = errors
         chain, restore, cold = arms["chain"], arms["restore"], arms["cold"]
-        if chain is None or cold is None:
+        if "chain" in errors or "cold" in errors:
+            entry["reuse"] = "ERROR"
+        elif chain is None or cold is None:
             entry["reuse"] = "NOT-RUN"
         elif cold["cached_tokens"] != 0 or cold["prompt_sha256"] != chain["prompt_sha256"]:
             entry["reuse"] = "NOT-COLD"
@@ -411,7 +519,9 @@ def judge(state):
         else:
             entry["reuse_detail"] = compare(chain, cold)
             entry["reuse"] = "PASS" if entry["reuse_detail"]["equal"] else "FAIL"
-        if chain is None or restore is None:
+        if "chain" in errors or "restore" in errors:
+            entry["restored"] = "ERROR"
+        elif chain is None or restore is None:
             entry["restored"] = "NOT-RUN"
         elif restore["prompt_sha256"] != chain["prompt_sha256"]:
             entry["restored"] = "DIVERGED"
@@ -426,9 +536,10 @@ def judge(state):
         results = (entry["reuse"], entry["restored"])
         entry["verdict"] = "FAIL" if "FAIL" in results else "PASS" if results == ("PASS", "PASS") else "INCOMPLETE"
         verdicts.append(entry)
-    alone = all(step.get("foreign_requests") == 0 and "error" not in step for step in steps.values())
+    alone = all(not attempt.get("foreign_requests") for step in steps.values() for attempt in step.get("attempts", []))
+    finished = all(step_status(state, name) == "done" for name, _ in step_order(state))
     every = [entry["verdict"] for entry in verdicts]
-    verdict = "FAIL" if "FAIL" in every else "PASS" if alone and all(value == "PASS" for value in every) else "INCOMPLETE"
+    verdict = "FAIL" if "FAIL" in every else "PASS" if alone and finished and all(value == "PASS" for value in every) else "INCOMPLETE"
     return verdicts, alone, verdict
 
 
@@ -474,18 +585,18 @@ def command_plan(arguments):
 def command_steps(arguments):
     state = load(arguments.state)
     for name, change in step_order(state):
-        done = state["steps"].get(name) or {}
-        print("%s %s %s" % (name, change, "failed" if done.get("error") else "done" if "finished" in done else "open"))
+        units = step_units(state, name)
+        settled = len([unit for unit in units if unit["id"] in set((state["steps"].get(name) or {}).get("results", {})) | set((state["steps"].get(name) or {}).get("errors", {}))])
+        print("%s %s %s %d/%d" % (name, change, step_status(state, name), settled, len(units)))
     return 0
 
 
 def command_run(arguments):
     state = load(arguments.state)
-    step = Step(Api(arguments.api, arguments.timeout, arguments.api_log), state, arguments.step)
+    step = Step(Api(arguments.api, arguments.timeout, arguments.api_log), state, arguments.step, lambda: save(arguments.state, state), arguments.rest_seconds, arguments.rest_over_seconds)
     passed = step.run()
-    save(arguments.state, state)
     if not passed:
-        print("GX-STEP-FAILED %s: %s" % (arguments.step, step.record["error"]), flush=True)
+        print("GX-STEP-STOPPED %s: %s" % (arguments.step, step.record["interrupted"]), flush=True)
     return 0 if passed else 1
 
 
@@ -499,8 +610,13 @@ def command_verdict(arguments):
         print("%-22s context=%-7d cached chain/restore/cold=%s/%s/%s reuse=%s (%s) restored=%s (%s)" % (
             entry["id"], entry["context"], entry["cached_tokens"]["chain"], entry["cached_tokens"]["restore"], entry["cached_tokens"]["cold"],
             entry["reuse"], describe(entry.get("reuse_detail")), entry["restored"], describe(entry.get("restored_detail"))))
+        for arm, error in sorted(entry.get("errors", {}).items()):
+            print("  %s failed: %s" % (arm, error))
     for skipped in state["skipped"]:
         print("skipped %s/%d: %s" % (skipped["case"], skipped["nominal"], skipped["reason"]))
+    for name, _ in step_order(state):
+        if step_status(state, name) != "done":
+            print("step %s is %s%s" % (name, step_status(state, name), ": " + state["steps"][name]["interrupted"] if step_status(state, name) == "stopped" else ""))
     print("alone=%s" % ("yes" if alone else "no"))
     print("verdict=%s" % verdict)
     return {"PASS": 0, "INCOMPLETE": 2}.get(verdict, 1)
@@ -521,17 +637,19 @@ def main(argv=None):
     plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))
     plan.add_argument("--max-tokens", type=int, default=32)
-    plan.add_argument("--reply-tokens", type=int, default=48)
+    plan.add_argument("--reply-tokens", type=int, default=96)
     plan.add_argument("--logprobs", type=int, default=4)
     plan.add_argument("--seed", default=str(time.time_ns()))
-    steps = commands.add_parser("steps", help="print the steps, the cache change before each, and what is done")
+    steps = commands.add_parser("steps", help="print each step, the cache change before it, its state and its settled units")
     steps.add_argument("--state", required=True)
-    run = commands.add_parser("run", help="run one step against the API")
+    run = commands.add_parser("run", help="run one step against the API, or the rest of a step that stopped")
     run.add_argument("step")
     run.add_argument("--state", required=True)
     run.add_argument("--api", required=True, help="C API base URL, e.g. http://127.0.0.1:8461")
-    run.add_argument("--api-log", help="the API's log, for time to first token and stale-prefix counts")
+    run.add_argument("--api-log", help="the API's log, for time to first token, decode rate and counters")
     run.add_argument("--timeout", type=float, default=7200)
+    run.add_argument("--rest-seconds", type=float, default=0.0, help="idle time after a request that ran longer than --rest-over-seconds")
+    run.add_argument("--rest-over-seconds", type=float, default=60.0)
     verdict = commands.add_parser("verdict", help="compare the arms and write the receipt")
     verdict.add_argument("--state", required=True)
     verdict.add_argument("--output")
