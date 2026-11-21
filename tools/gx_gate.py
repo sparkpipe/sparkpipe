@@ -88,15 +88,18 @@ def build_plan(arguments):
                 units.append({"id": "%s/%d/%d" % (case, nominal, tail), "case": case, "nominal": nominal, "context": context_tokens(case, fitted), "tail": tail})
     if not units:
         raise GateError("the plan holds no unit")
+    small = max([unit["nominal"] for unit in units if unit["context"] <= arguments.small_context], default=None)
+    for unit in units:
+        unit["group"] = small if unit["context"] <= arguments.small_context else unit["nominal"]
     return {"tails": tails, "units": units, "skipped": skipped}
 
 
 def step_order(plan):
     order = [("chain", "none")]
     change = "clear"
-    for nominal in sorted({unit["nominal"] for unit in plan["units"]}):
-        order.append(("park:%d" % nominal, change))
-        order.append(("restore:%d" % nominal, "evict"))
+    for group in sorted({unit["group"] for unit in plan["units"]}):
+        order.append(("park:%d" % group, change))
+        order.append(("restore:%d" % group, "evict"))
         change = "none"
     for tail in plan["tails"]:
         order.append(("cold:%d" % tail, "clear"))
@@ -222,6 +225,9 @@ class Step:
     def units(self, cases, nominal=None, tail=None):
         return [unit for unit in self.state["units"] if unit["case"] in cases and nominal in (None, unit["nominal"]) and tail in (None, unit["tail"])]
 
+    def nominals(self, group=None):
+        return sorted({unit["nominal"] for unit in self.state["units"] if group in (None, unit["group"])})
+
     def send(self, label, prompt, max_tokens, options, cold=False):
         result = self.api.complete(prompt, max_tokens, options)
         self.record["requests"].append(dict({key: value for key, value in result.items() if key not in ("tokens", "logprobs")}, label=label, max_tokens=max_tokens))
@@ -254,7 +260,7 @@ class Step:
         return prompt
 
     def chain(self):
-        for nominal in sorted({unit["nominal"] for unit in self.state["units"]}):
+        for nominal in self.nominals():
             for case in PREFIX_CASES:
                 units = self.units((case,), nominal)
                 if units:
@@ -265,23 +271,26 @@ class Step:
                 for index, unit in enumerate(self.units((case,), nominal)):
                     self.measure(unit, self.turns(unit, index == 0))
 
-    def park(self, nominal):
-        for case in SESSION_CASES:
-            for index, unit in enumerate(self.units((case,), nominal)):
-                self.turns(unit, index == 0)
-        for case in PREFIX_CASES:
-            units = self.units((case,), nominal)
-            if units:
-                self.warm(units[0])
+    def park(self, group):
+        for nominal in self.nominals(group):
+            for case in SESSION_CASES:
+                for index, unit in enumerate(self.units((case,), nominal)):
+                    self.turns(unit, index == 0)
+        for nominal in self.nominals(group):
+            for case in PREFIX_CASES:
+                units = self.units((case,), nominal)
+                if units:
+                    self.warm(units[0])
 
-    def restore(self, nominal):
-        parked = self.state["steps"].get("park:%d" % nominal) or {}
+    def restore(self, group):
+        parked = self.state["steps"].get("park:%d" % group) or {}
         if parked.get("error") or "finished" not in parked:
-            raise GateError("restore:%d needs a finished park:%d" % (nominal, nominal))
-        for unit in self.units(PREFIX_CASES, nominal):
-            self.measure(unit, self.prompts.last(unit, None))
-        for unit in self.units(SESSION_CASES, nominal):
-            self.measure(unit, self.prompts.last(unit, parked["replies"][unit["id"]]))
+            raise GateError("restore:%d needs a finished park:%d" % (group, group))
+        for nominal in self.nominals(group):
+            for unit in self.units(PREFIX_CASES, nominal):
+                self.measure(unit, self.prompts.last(unit, None))
+            for unit in self.units(SESSION_CASES, nominal):
+                self.measure(unit, self.prompts.last(unit, parked["replies"][unit["id"]]))
 
     def cold(self, tail):
         chained = self.state["steps"].get("chain") or {}
@@ -353,7 +362,7 @@ def judge(state):
     verdicts = []
     for unit in state["units"]:
         arms = {"chain": (steps.get("chain") or {}).get("results", {}).get(unit["id"]),
-                "restore": (steps.get("restore:%d" % unit["nominal"]) or {}).get("results", {}).get(unit["id"]),
+                "restore": (steps.get("restore:%d" % unit["group"]) or {}).get("results", {}).get(unit["id"]),
                 "cold": (steps.get("cold:%d" % unit["tail"]) or {}).get("results", {}).get(unit["id"])}
         entry = dict(unit, cached_tokens={arm: result["cached_tokens"] if result else None for arm, result in arms.items()},
                      seconds={arm: result["seconds"] if result else None for arm, result in arms.items()})
@@ -474,6 +483,7 @@ def main(argv=None):
     plan.add_argument("--declared-contexts", type=numbers, default=[8000, 20000])
     plan.add_argument("--drafted-contexts", type=numbers, default=[8000])
     plan.add_argument("--tails", type=numbers, default=[1, 40, 500, 5000])
+    plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))
     plan.add_argument("--max-tokens", type=int, default=32)
     plan.add_argument("--reply-tokens", type=int, default=48)
