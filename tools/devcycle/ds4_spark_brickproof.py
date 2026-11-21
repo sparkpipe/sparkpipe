@@ -8,6 +8,7 @@ import base64
 import binascii
 import concurrent.futures
 import datetime
+import errno
 import json
 import os
 from pathlib import Path
@@ -990,6 +991,10 @@ def read_optional(path: Path) -> str:
         return(path.read_text())
     except (FileNotFoundError,PermissionError):
         return("")
+    except OSError as error:
+        if error.errno == errno.EINVAL:
+            return("")
+        raise
 
 
 def service_value(unit: str,property_name: str) -> str:

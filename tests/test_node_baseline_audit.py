@@ -1,6 +1,8 @@
 import base64
+import errno
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -402,6 +404,31 @@ class ControllerTest(unittest.TestCase):
             self.assertIs(call.call_args.kwargs["stdin"],MODULE.subprocess.DEVNULL)
             MODULE.run(["tee","x"],input_bytes=b"data")
             self.assertIsNone(call.call_args.kwargs["stdin"])
+
+    def test_a_sysfs_attribute_that_answers_einval_reads_as_absent_and_other_errors_still_raise(self) -> None:
+        def raising(code: int):
+            def read_text(path: Path, *args: object, **keywords: object) -> str:
+                raise OSError(code,os.strerror(code),str(path))
+            return(read_text)
+        with mock.patch.object(MODULE.Path,"read_text",raising(errno.EINVAL)):
+            self.assertEqual(MODULE.read_optional(Path("/sys/class/net/enp1s0f1np1/speed")),"")
+        with mock.patch.object(MODULE.Path,"read_text",raising(errno.EIO)):
+            with self.assertRaises(OSError):
+                MODULE.read_optional(Path("/sys/class/net/enp1s0f1np1/speed"))
+
+    def test_a_fabric_port_without_link_is_reported_down_not_a_crash(self) -> None:
+        original = MODULE.Path.read_text
+        def read_text(path: Path, *args: object, **keywords: object) -> str:
+            if str(path).startswith("/sys/class/net/") and path.name in ("speed","duplex","carrier"):
+                raise OSError(errno.EINVAL,"Invalid argument",str(path))
+            return(original(path,*args,**keywords))
+        with mock.patch.object(MODULE.Path,"read_text",read_text), \
+                mock.patch.object(MODULE,"audit_rail2",return_value=([],{})), \
+                mock.patch.object(MODULE,"audit_gpu",return_value=([],{})), \
+                mock.patch.object(MODULE,"run",return_value=mock.Mock(returncode=0,stdout=b'{"BackendState":"Running","Self":{"Online":true,"Tags":["tag:spark"]}}',stderr=b"")):
+            failures,observations = MODULE.audit_fleet_hardware("spark1")
+        self.assertEqual(failures,[f"fabric-link:{MODULE.SWITCHED_INTERFACE}",f"fabric-link:{MODULE.RAIL2_INTERFACE}"])
+        self.assertEqual(observations[f"link:{MODULE.SWITCHED_INTERFACE}"],{"carrier":"","duplex":"","speed_mbit":""})
 
     def test_route_metric_must_be_exactly_the_uplink_metric(self) -> None:
         self.assertTrue(MODULE.uplink_default_route_present(["default via 192.168.50.1 dev enP7s7 proto static metric 10"]))
