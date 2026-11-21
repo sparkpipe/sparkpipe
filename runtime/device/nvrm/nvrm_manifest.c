@@ -62,10 +62,21 @@ static SparkStatus ManifestKernel(SparkNvrmManifest *manifest, const char *line,
 	const char *name = 0;
 	char *copy;
 	size_t length = 0u;
-	unsigned registers,barriers,stack,stores,loads,shared;
+	unsigned registers,barriers,stack,stores,loads,shared,cumulative = 0u;
+	int consumed = 0,tail = 0;
+	uint32_t reported = 0u;
 	MANIFEST_TRY(ManifestName(line,"kernel ",owner,&name,&length));
-	if ( sscanf(name + length," registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u",&registers,&barriers,&stack,&stores,&loads,&shared) != 6 )
+	if ( sscanf(name + length," registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u%n",&registers,&barriers,&stack,&stores,&loads,&shared,
+		&consumed) != 6 )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel line needs its name and the compiler's seven numbers"));
+	if ( name[length + (size_t)consumed] != '\0' )
+	{
+		if ( sscanf(name + length + consumed," cumulative %u%n",&cumulative,&tail) != 1 || name[length + (size_t)consumed + (size_t)tail] != '\0' )
+			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel line ends with the compiler's cumulative stack or nothing"));
+		if ( cumulative < stack )
+			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel's cumulative stack is below its own frame"));
+		reported = 1u;
+	}
 	if ( (copy = (char *)malloc(length + 1u)) == 0 )
 		return(ManifestRefuse(SPARK_STATUS_CAPACITY_EXCEEDED,owner,line,"out of host memory for the kernel name"));
 	memcpy(copy,name,length);
@@ -89,6 +100,8 @@ static SparkStatus ManifestKernel(SparkNvrmManifest *manifest, const char *line,
 	kernel->registers = registers;
 	kernel->barriers = barriers;
 	kernel->stack_bytes = stack;
+	kernel->cumulative_bytes = cumulative;
+	kernel->cumulative_reported = reported;
 	kernel->shared_bytes = shared;
 	return(SPARK_STATUS_OK);
 }
@@ -217,6 +230,11 @@ const SparkNvrmManifestKernel *SparkNvrmManifestKernelNamed(const SparkNvrmManif
 	return(0);
 }
 
+uint32_t SparkNvrmManifestStackNeed(const SparkNvrmManifestKernel *kernel)
+{
+	return(kernel->cumulative_reported != 0u ? kernel->cumulative_bytes : kernel->stack_bytes);
+}
+
 uint32_t SparkNvrmManifestParameterEnd(const SparkNvrmManifestKernel *kernel)
 {
 	const SparkNvrmParameter *last = kernel->parameter_count != 0u ? &kernel->parameters[kernel->parameter_count - 1u] : 0;
@@ -237,10 +255,10 @@ SparkStatus SparkNvrmManifestCheck(const SparkNvrmManifest *manifest, const uint
 		const SparkNvrmManifestKernel *reported = SparkNvrmManifestKernelNamed(manifest,kernel->name);
 		if ( reported == 0 )
 			return(ManifestRefuse(SPARK_STATUS_TARGET_MISMATCH,owner,kernel->name,"the cubin has a kernel the manifest does not list"));
-		if ( reported->registers != kernel->registers || reported->stack_bytes != kernel->stack_bytes ||
+		if ( reported->registers != kernel->registers || SparkNvrmManifestStackNeed(reported) != kernel->stack_bytes ||
 			SparkNvrmManifestParameterEnd(reported) != kernel->parameter_bytes )
 			return(ManifestRefuse(SPARK_STATUS_TARGET_MISMATCH,owner,kernel->name,
-				"the compiler's registers, stack or parameter table disagree with the cubin"));
+				"the compiler's registers, call-chain stack or parameter table disagree with the cubin"));
 	}
 	return(SPARK_STATUS_OK);
 }

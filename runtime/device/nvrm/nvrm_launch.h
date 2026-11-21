@@ -44,6 +44,7 @@ SparkStatus SparkNvrmProgramLoadFile(SparkNvrmGpu *gpu, const char *path, SparkN
 void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program);
 uint8_t *SparkNvrmReadFile(const char *path, uint64_t *bytes);
 uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel);
+SparkStatus SparkNvrmKernelRunnable(const SparkNvrmCubinKernel *kernel, const char *owner);
 SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
 	const char *owner);
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

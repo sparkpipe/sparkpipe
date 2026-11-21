@@ -106,6 +106,38 @@ extern "C" __global__ void SparkNvrmConstantTable(uint32_t *output)
 	output[threadIdx.x] = spark_nvrm_fixture_table[threadIdx.x % SPARK_NVRM_FIXTURE_TABLE_WORDS];
 }
 
+__device__ __noinline__ uint32_t SparkNvrmFixtureDeep(uint32_t pick, uint32_t lane)
+{
+	volatile uint32_t scratch[SPARK_NVRM_FIXTURE_DEEP_WORDS];
+	uint32_t index,total = 0u;
+	for (index = 0u; index < SPARK_NVRM_FIXTURE_DEEP_WORDS; index++)
+		scratch[index] = lane * SPARK_NVRM_FIXTURE_DEEP_STRIDE + index;
+	for (index = 0u; index < SPARK_NVRM_FIXTURE_DEEP_WORDS; index++)
+		total += scratch[(index * pick) % SPARK_NVRM_FIXTURE_DEEP_WORDS];
+	return(total);
+}
+
+typedef uint32_t (*SparkNvrmFixtureDeepFunction)(uint32_t pick, uint32_t lane);
+__device__ SparkNvrmFixtureDeepFunction spark_nvrm_fixture_deep = SparkNvrmFixtureDeep;
+
+extern "C" __global__ void SparkNvrmCallStack(uint32_t *output, uint32_t pick)
+{
+	const uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x;
+	output[lane] = spark_nvrm_fixture_deep(pick,lane);
+}
+
+extern "C" __global__ void SparkNvrmDeepFrame(uint32_t *output, uint32_t pick)
+{
+	volatile uint32_t scratch[SPARK_NVRM_FIXTURE_FRAME_WORDS];
+	const uint32_t lane = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t index,total = 0u;
+	for (index = 0u; index < SPARK_NVRM_FIXTURE_FRAME_WORDS; index++)
+		scratch[index] = lane * SPARK_NVRM_FIXTURE_DEEP_STRIDE + index;
+	for (index = 0u; index < SPARK_NVRM_FIXTURE_FRAME_WORDS; index++)
+		total += scratch[(index * pick) % SPARK_NVRM_FIXTURE_FRAME_WORDS];
+	output[lane] = total;
+}
+
 extern "C" __global__ void SparkNvrmProbeDimensions(uint32_t *output)
 {
 	if ( threadIdx.x == 0u && threadIdx.y == 0u && threadIdx.z == 0u && blockIdx.x == 0u && blockIdx.y == 0u && blockIdx.z == 0u )

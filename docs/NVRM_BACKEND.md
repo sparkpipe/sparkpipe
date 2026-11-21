@@ -96,7 +96,10 @@ kernel table and one loadable image:
   parameter-bank record. Its code is `.text.<name>`. Its static shared memory is the size of
   `.nv.shared.<name>`, which includes the 1 KiB reserved per block. Its
   register count and minimum stack come from the function records in
-  `.nv.info`, matched to the kernel through the symbol table. Its constant
+  `.nv.info`, matched to the kernel through the symbol table. The
+  minimum-stack record (0x12) is the whole call chain's stack: for a kernel
+  that calls a function with a 4200-byte frame, ptxas reports a 0-byte frame
+  and 4200 bytes of cumulative stack, and the record holds 4200. Its constant
   banks are `.nv.constant<N>.<name>`, or `.nv.constant<N>` when every kernel
   shares the bank, and at most 8 of them are allowed.
 - **Parameters.** They start at the offset in the parameter-bank record and
@@ -117,8 +120,16 @@ Every cubin ships with a manifest beside it (`<name>.manifest` next to
 (`tools/nvrm_cubin_fixtures.py` for the fixtures). It names the cubin by
 size and sha256 and lists, per kernel:
 
-- **The compiler's resource report:** registers, barriers, stack frame,
-  spills and static shared memory, from `ptxas -v`.
+- **The compiler's resource report:** registers, barriers, the kernel's
+  own stack frame, spills, static shared memory and, whenever ptxas reports
+  it, the cumulative stack of the kernel's call chain (`cumulative C` at the
+  end of the kernel line), from `ptxas -v`. A frame line counts only under
+  the "Function properties" block that names the kernel; a callee's block
+  is not the kernel's. A log that reports one kernel twice for the target
+  with different numbers, or a cumulative stack below the kernel's frame,
+  is refused. `tools/nvrm_kernel_manifest.py` writes the manifest, and
+  `tools/nvrm_cubin_fixtures.py` loads its code by path for the fixtures, so
+  both use one parser.
 - **The parameter table:** each parameter's PTX type, alignment, size and
   offset, in declaration order. It comes from the `.param` declarations of
   the PTX that nvcc fed ptxas in that compile (kept with `-keep`), laid out
@@ -129,10 +140,22 @@ size and sha256 and lists, per kernel:
 
 `SparkNvrmProgramLoadFile` loads a cubin only with its manifest, and
 `nvrm_manifest.c` checks the two against each other: the digest and
-size, the same kernels, and each kernel's registers, stack and parameter
-table ending exactly where its constant bank does. A mismatch fails with
+size, the same kernels, and each kernel's registers, stack need (the
+cumulative stack when reported, else the frame) and parameter table ending
+exactly where its constant bank does. A mismatch fails with
 `SPARK_STATUS_TARGET_MISMATCH` against `library_load`. A launch takes its
 barrier count from the manifest, and at least one.
+
+Loading a module provisions per-thread local memory for its largest stack
+need plus 0x240 bytes, and a launch whose need is above what was provisioned
+is refused. A kernel's own frame works at any size tried (4400 bytes, every
+thread of a grid that fills the GPU). A kernel whose callees keep stack
+frames of their own, which is any kernel whose stack need exceeds its own
+frame, is refused at kernel creation and at launch with
+`SPARK_STATUS_UNSUPPORTED`, naming the kernel. On GB10 such a call faults
+with an out-of-range local address whatever the per-thread size, up to
+16 KiB, while an indirect call to a frameless callee runs. What the hardware
+needs for callee stacks is not known from an allowed source yet.
 
 ## Launch descriptors
 
@@ -161,7 +184,8 @@ The parser and the packer are tested in `make test` without a GPU:
 - **`tests/test_nvrm_cubin.c`.** It parses
   `tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin`, release-built from
   `tests/nvrm/fixture_kernels.cu` (first-light, parameter-layout, static
-  shared, stack, 4104-byte and 32,764-byte parameter and 2000-byte name
+  shared, stack, 4400-byte frame, call-chain stack, 4104-byte and
+  32,764-byte parameter and 2000-byte name
   kernels, plus two RMS-norm kernels from
   `inference/kernels/norm.cuh`). Each kernel's registers, stack and shared
   memory must equal ptxas's own report in the fixture manifest, and its
@@ -373,7 +397,10 @@ queue channels join the scheduled group afterwards.
 (`tools/nvrm_kernel_log.sh`, with `dmesg` or `sudo -n dmesg`) and fails if
 the module logged any `NVRM:` line meanwhile that reports an Xid, an
 assertion, a refusal ("Cannot ..."), an error, a failure or a fault, or if
-the log cannot be read.
+the log cannot be read. It also fails when `/dev/nvidiactl` is missing,
+before building anything, and when any of its test binaries prints a
+`SKIP` line: a GPU gate that skipped a test is not a pass
+(`tests/test_nvrm_gpu_gate.py`).
 
 The GPU tests that run under `make test-nvrm-gpu`, besides the
 launch-shape probe and first light:

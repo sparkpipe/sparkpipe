@@ -603,6 +603,8 @@ SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char
 	SparkStatus status;
 	if ( found == 0 || reported == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"kernel_create",name,0,"the kernel library has no kernel by that name"));
+	if ( SparkNvrmKernelRunnable(found,name) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	nvrm = (NvrmKernel *)calloc(1u,sizeof(*nvrm));
 	if ( nvrm == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,ENOMEM,"out of host memory"));

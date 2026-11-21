@@ -32,6 +32,7 @@ typedef struct SparkNvrmCubinKernel
 	uint64_t code_bytes;
 	uint32_t registers;
 	uint32_t stack_bytes;
+	uint32_t frame_bytes;
 	uint32_t shared_bytes;
 	uint32_t parameter_offset;
 	uint32_t parameter_bytes;

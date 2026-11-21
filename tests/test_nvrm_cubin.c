@@ -64,6 +64,8 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmProbeDimensions", PARAMETER_END(FirstLightParameters,output)},
 	{"SparkNvrmGlobalSwap", PARAMETER_END(FirstLightParameters,value)},
 	{"SparkNvrmConstantTable", PARAMETER_END(FirstLightParameters,output)},
+	{"SparkNvrmCallStack", PARAMETER_END(FirstLightParameters,value)},
+	{"SparkNvrmDeepFrame", PARAMETER_END(FirstLightParameters,value)},
 };
 
 static uint8_t *ReadFile(const char *path, uint64_t *bytes)
@@ -131,21 +133,25 @@ static void TestFixture(void)
 	{
 		char what[512];
 		char *name = line + strlen("kernel "),*space;
-		unsigned registers,barriers,stack,stores,loads,smem;
+		unsigned registers,barriers,stack,stores,loads,smem,cumulative;
+		const char *tail;
 		const SparkNvrmCubinKernel *kernel;
 		if ( strncmp(line,"kernel ",strlen("kernel ")) != 0 || (space = strchr(name,' ')) == 0 )
 			continue;
 		*space = '\0';
 		if ( sscanf(space + 1,"registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u",&registers,&barriers,&stack,&stores,&loads,&smem) != 6 )
 			continue;
+		tail = strstr(space + 1," cumulative ");
+		cumulative = tail != 0 ? (unsigned)strtoul(tail + strlen(" cumulative "),0,10) : stack;
 		listed++;
 		kernel = SparkNvrmCubinKernelNamed(&cubin,name);
 		snprintf(what,sizeof(what),"the parser finds the compiler's kernel %.200s",name);
 		CHECK(kernel != 0,what);
 		if ( kernel == 0 )
 			continue;
-		snprintf(what,sizeof(what),"%.200s: registers %u, stack %u and shared %u match the compiler's report",name,kernel->registers,kernel->stack_bytes,kernel->shared_bytes);
-		CHECK(kernel->registers == registers && kernel->stack_bytes == stack && kernel->shared_bytes == smem + RESERVED_SHARED_BYTES,what);
+		snprintf(what,sizeof(what),"%.200s: registers %u, call-chain stack %u and shared %u match the compiler's report",name,kernel->registers,
+			kernel->stack_bytes,kernel->shared_bytes);
+		CHECK(kernel->registers == registers && kernel->stack_bytes == cumulative && kernel->shared_bytes == smem + RESERVED_SHARED_BYTES,what);
 		snprintf(what,sizeof(what),"%.200s: parameters at %#x for %u bytes follow the driver words and the C layout",name,kernel->parameter_offset,kernel->parameter_bytes);
 		CHECK(kernel->parameter_offset == SPARK_NVRM_BANK0_DRIVER_BYTES && kernel->parameter_bytes == ExpectedParameters(name),what);
 		snprintf(what,sizeof(what),"%.200s: code and constant bank 0 are aligned and inside the image",name);
@@ -198,6 +204,13 @@ static void TestManifest(void)
 		CHECK(mix != 0 && mix->parameter_count == 7u && mix->parameters[3].align == 8u && mix->parameters[3].offset == 24u && mix->max_threads == 128u,
 			"a mixed parameter list keeps its PTX types, alignment, offsets and launch bound");
 		CHECK(shared != 0 && shared->barriers == 1u,"the compiler's barrier count is kept for the launch descriptor");
+		{
+			const SparkNvrmManifestKernel *call = SparkNvrmManifestKernelNamed(&manifest,"SparkNvrmCallStack");
+			const SparkNvrmCubinKernel *placed = SparkNvrmCubinKernelNamed(&cubin,"SparkNvrmCallStack");
+			CHECK(call != 0 && placed != 0 && call->stack_bytes == 0u && call->cumulative_reported != 0u &&
+				call->cumulative_bytes >= SPARK_NVRM_FIXTURE_DEEP_WORDS * sizeof(uint32_t) && SparkNvrmManifestStackNeed(call) == placed->stack_bytes,
+				"a kernel that calls a function with its own frame needs its call chain's stack, which is what the cubin records");
+		}
 		CHECK(SparkNvrmManifestKernelNamed(&manifest,SPARK_NVRM_FIXTURE_LONG_TEXT) != 0 &&
 			strlen(SPARK_NVRM_FIXTURE_LONG_TEXT) == SPARK_NVRM_FIXTURE_LONG_REPEATS * strlen(SPARK_NVRM_FIXTURE_QUOTE(SPARK_NVRM_FIXTURE_LONG_FRAGMENT)),
 			"a kernel name thousands of bytes long is kept whole");
@@ -221,13 +234,18 @@ static void TestManifest(void)
 			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
 			"bound K warpsize 32\n",
 			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nsomething else\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 16 spill_stores 0 spill_loads 0 smem 0"
+			" cumulative 8\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0"
+			" cumulative 64 extra\n",
 		};
 		uint32_t refused = 0u;
 		for (index = 0u; index < sizeof(broken) / sizeof(broken[0]); index++)
 			refused += SparkNvrmManifestParse(broken[index],strlen(broken[index]),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR &&
 				manifest.kernels == 0;
 		CHECK(refused == sizeof(broken) / sizeof(broken[0]),
-			"a manifest without its cubin, a parameter before its kernel or out of order, a bad alignment, an unknown bound or line is refused");
+			"a manifest without its cubin, a parameter before its kernel or out of order, a bad alignment, an unknown bound or line, a cumulative stack below the "
+			"frame or trailing words are refused");
 	}
 	{
 		static const char head[] = "cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel ";

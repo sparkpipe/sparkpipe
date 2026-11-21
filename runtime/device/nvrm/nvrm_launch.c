@@ -27,7 +27,11 @@ static SparkStatus LaunchManifest(SparkNvrmProgram *program, const uint8_t *blob
 	LAUNCH_TRY(SparkNvrmManifestParse(manifest,manifest_bytes,owner,&program->manifest));
 	LAUNCH_TRY(SparkNvrmManifestCheck(&program->manifest,blob,bytes,&program->cubin,owner));
 	for (index = 0u; index < program->cubin.kernel_count; index++)
-		program->cubin.kernels[index].barriers = SparkNvrmManifestKernelNamed(&program->manifest,program->cubin.kernels[index].name)->barriers;
+	{
+		const SparkNvrmManifestKernel *reported = SparkNvrmManifestKernelNamed(&program->manifest,program->cubin.kernels[index].name);
+		program->cubin.kernels[index].barriers = reported->barriers;
+		program->cubin.kernels[index].frame_bytes = reported->stack_bytes;
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -134,6 +138,19 @@ void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program)
 	program->code.map_fd = -1;
 }
 
+SparkStatus SparkNvrmKernelRunnable(const SparkNvrmCubinKernel *kernel, const char *owner)
+{
+	char text[160];
+	if ( kernel->stack_bytes <= kernel->frame_bytes )
+		return(SPARK_STATUS_OK);
+	snprintf(text,sizeof(text),"%.40s: %u of its %u stack bytes are frames of functions it calls, which the backend cannot run yet",kernel->name,
+		kernel->stack_bytes - kernel->frame_bytes,kernel->stack_bytes);
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",owner,0,text);
+		SPARK_FAIL(status);
+	}
+}
+
 uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel)
 {
 	return(SPARK_NVRM_LAUNCH_QMD_BYTES + (uint32_t)((kernel->bank[0].bytes + SPARK_NVRM_BANK_ALIGN - 1u) / SPARK_NVRM_BANK_ALIGN * SPARK_NVRM_BANK_ALIGN));
@@ -180,6 +197,7 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 			"a launch needs a kernel and a 256-byte aligned slot for its descriptor and constant bank 0");
 		SPARK_FAIL(status);
 	}
+	LAUNCH_TRY(SparkNvrmKernelRunnable(request->kernel,owner));
 	if ( gpu->local_bytes_per_thread < request->kernel->stack_bytes + SPARK_NVRM_LOCAL_EXTRA_BYTES )
 	{
 		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,
