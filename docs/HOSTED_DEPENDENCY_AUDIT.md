@@ -45,7 +45,7 @@ DCGM (`nv-hostengine`, `dcgmi`) and IMEX.
 | root, image | `soname` | an ELF file declares one of the libraries as its `DT_SONAME` |
 | root | `library-string` | a file carries a loadable name of one of the libraries (a `dlopen` string, or the one a statically linked runtime opens) |
 | root | `tool-string` | a file names one of the tools (a script or binary that runs it) |
-| root, image | `library-file`, `tool-file` | a file or link is named as one of the libraries or tools |
+| root, image | `library-file`, `tool-file` | a file or link is named as one of the libraries or tools, or a link (or any link it leads to) points at one by name |
 | root, image | `toolkit-file` | a file is named as a CUDA toolkit compiler, debugger, profiler or runtime header (`nvcc`, `ptxas`, `nvlink`, `fatbinary`, `cuobjdump`, `nvdisasm`, `cicc`, `cuda-gdb`, `compute-sanitizer`, `nsys`, `ncu`, `cuda.h`, `cuda_runtime.h` and the rest of `TOOLKIT_FILES`) |
 | root, image | `runpath` | an ELF file's `DT_RPATH` or `DT_RUNPATH` names a CUDA toolkit directory |
 | root, image | `pytorch-cuda` | a `torch/version.py` declares a CUDA version |
@@ -59,12 +59,18 @@ DCGM (`nv-hostengine`, `dcgmi`) and IMEX.
 | processes | `unreadable` | a process's maps cannot be read (run as root); a process that exits during the scan is skipped |
 
 A file named as one of the libraries or tools is reported by its name; the
-audit does not read its contents. An ELF file that declares one of the
+audit does not read its contents. A symbolic link is followed hop by hop,
+and fails when any target names one of the libraries or tools. In a release
+root a relative target is followed while it stays inside the root, and an
+absolute target is checked by its name only. In an image an absolute target
+resolves inside the image, never on the host running the audit. An ELF file that declares one of the
 libraries as its soname is reported from its dynamic section and is not
 scanned further. Files under `lib/firmware`, `lib/modules` and `usr/src` in
 an image are checked by name only.
 
-**Packages.** An installed package fails when it is:
+**Packages.** A package fails when it is installed, or removed with its
+configuration files left (the detail shows the state; purge it instead).
+It fails when it is:
 
 - a driver user-space library: `libnvidia-*`, and the `lib` packages of
   the CUDA libraries above (`libcublas-*`, `libnvjitlink-*`, `libcudnn*`,

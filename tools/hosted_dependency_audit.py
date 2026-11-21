@@ -72,6 +72,7 @@ APT_VENDOR_SOURCE = re.compile(
 IMAGE_SKIPPED_DIRECTORIES = ("proc", "sys", "dev")
 IMAGE_NAME_ONLY_PREFIXES = ("lib/firmware/", "usr/lib/firmware/", "lib/modules/", "usr/lib/modules/", "usr/src/")
 DT_NEEDED, DT_STRTAB, DT_STRSZ, DT_SONAME, DT_RPATH, DT_RUNPATH = 1, 5, 10, 14, 15, 29
+LINK_HOPS = 40
 SCAN_CHUNK = 1 << 22
 SCAN_OVERLAP = 256
 
@@ -201,16 +202,49 @@ def scan_strings(source):
     return libraries, tools
 
 
-def classify_name(report, relative, name):
+def forbidden_name(name):
     if LIBRARY_FILE.fullmatch(name):
-        report.add("library-file", relative, name)
-    elif name in TOOL_FILES:
-        report.add("tool-file", relative, name)
-    elif name in TOOLKIT_FILES:
-        report.add("toolkit-file", relative, name)
-    else:
-        return False
-    return True
+        return "library-file"
+    if name in TOOL_FILES:
+        return "tool-file"
+    if name in TOOLKIT_FILES:
+        return "toolkit-file"
+    return ""
+
+
+def classify_name(report, relative, name):
+    kind = forbidden_name(name)
+    if kind:
+        report.add(kind, relative, name)
+    return bool(kind)
+
+
+def link_targets(top, path, rooted):
+    targets = []
+    current = path
+    for _ in range(LINK_HOPS):
+        try:
+            target = os.readlink(current)
+        except OSError:
+            return targets
+        targets.append(target)
+        if os.path.isabs(target):
+            if not rooted:
+                return targets
+            current = os.path.join(top, target.lstrip("/"))
+        else:
+            current = os.path.join(os.path.dirname(current), target)
+        current = os.path.normpath(current)
+        if current != top and not current.startswith(top + os.sep):
+            return targets
+    raise OSError(f"more than {LINK_HOPS} links from {path}")
+
+
+def classify_link(report, top, relative, path, rooted):
+    for target in link_targets(top, path, rooted):
+        kind = forbidden_name(os.path.basename(target.rstrip("/")))
+        if kind:
+            report.add(kind, relative, f"link to {target}")
 
 
 def classify_python_package(report, relative, source):
@@ -273,14 +307,21 @@ def entries(top, skipped):
                 yield item.path, item, None
 
 
-def walk(report, top, skipped, scan, name_only_prefixes):
+def walk(report, top, skipped, scan, name_only_prefixes, rooted):
+    top = os.path.abspath(top)
     for path, item, error in entries(top, skipped):
         relative = os.path.relpath(path, top).replace(os.sep, "/")
         if error is not None:
             report.add("unreadable", relative, str(error))
             continue
         report.scanned += 1
-        if classify_name(report, relative, item.name) or item.is_symlink():
+        if classify_name(report, relative, item.name):
+            continue
+        if item.is_symlink():
+            try:
+                classify_link(report, top, relative, path, rooted)
+            except OSError as error:
+                report.add("unreadable", relative, str(error))
             continue
         if not item.is_file(follow_symlinks=False) or relative.startswith(name_only_prefixes):
             continue
@@ -294,7 +335,7 @@ def walk(report, top, skipped, scan, name_only_prefixes):
 
 def audit_root(root):
     report = Report("root", root)
-    walk(report, root, (), True, ())
+    walk(report, root, (), True, (), False)
     report.require_content(".")
     return report
 
@@ -364,7 +405,7 @@ def audit_image(rootfs, dpkg_status, release_roots):
     else:
         audit_packages(report, status)
     audit_apt_sources(report, rootfs)
-    walk(report, rootfs, IMAGE_SKIPPED_DIRECTORIES, False, IMAGE_NAME_ONLY_PREFIXES)
+    walk(report, rootfs, IMAGE_SKIPPED_DIRECTORIES, False, IMAGE_NAME_ONLY_PREFIXES, True)
     report.require_content(".")
     for relative in release_roots:
         if not os.path.isdir(os.path.join(rootfs, relative)):

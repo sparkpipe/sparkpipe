@@ -188,6 +188,46 @@ class ReleaseRootTest(unittest.TestCase):
         self.assertEqual(run_audit("root", str(clean))[0], 0)
 
     @needs_elf
+    def test_innocently_named_link_to_a_rule_library_outside_the_root_fails(self):
+        outside = compile_library(self.build, "libcuda.so.1")
+        clean_outside = compile_library(self.build, "libspark_clean.so.1")
+        needed = compile_library(self.build, "libdev.so")
+        for name, target, expected in (("dirty", outside, 1), ("clean", clean_outside, 0)):
+            with self.subTest(root=name):
+                root = self.root(name)
+                compile_program(root / "bin" / "engine", "int main(void) { return 0; }\n", [needed])
+                (root / "lib" / "runtime_libs").mkdir(parents=True)
+                (root / "lib" / "runtime_libs" / "libdev.so").symlink_to(target)
+                code, document = run_audit("root", str(root))
+                self.assertEqual(code, expected)
+                self.assertEqual(kinds(document), {("library-file", "lib/runtime_libs/libdev.so", f"link to {outside}")} if expected else set())
+
+    def test_link_chains_are_followed_to_a_rule_library_name(self):
+        dirty = self.root("dirty")
+        (dirty / "lib").mkdir()
+        (dirty / "vendor").mkdir()
+        (dirty / "lib" / "libdev.so").symlink_to("../vendor/libgpu.so")
+        (dirty / "vendor" / "libgpu.so").symlink_to("libnvidia-ml.so.1")
+        (dirty / "lib" / "libabsolute.so").symlink_to("/usr/lib/aarch64-linux-gnu/libcudart.so.13")
+        code, document = run_audit("root", str(dirty))
+        self.assertEqual((code, kinds(document)), (1, {
+            ("library-file", "lib/libdev.so", "link to libnvidia-ml.so.1"),
+            ("library-file", "vendor/libgpu.so", "link to libnvidia-ml.so.1"),
+            ("library-file", "lib/libabsolute.so", "link to /usr/lib/aarch64-linux-gnu/libcudart.so.13")}))
+        clean = self.root("clean")
+        write(clean / "lib" / "libspark.so.1", b"spark")
+        (clean / "lib" / "libspark.so").symlink_to("libspark.so.1")
+        (clean / "lib" / "libverbs.so").symlink_to("/usr/lib/aarch64-linux-gnu/libibverbs.so.1")
+        code, document = run_audit("root", str(clean))
+        self.assertEqual((code, document["findings"]), (0, []))
+        looped = self.root("looped")
+        (looped / "a.so").symlink_to("b.so")
+        (looped / "b.so").symlink_to("a.so")
+        code, document = run_audit("root", str(looped))
+        self.assertEqual(code, 1)
+        self.assertEqual({kind for kind, path, detail in kinds(document)}, {"unreadable"})
+
+    @needs_elf
     def test_dlopen_string_of_a_rule_library_fails(self):
         dirty = self.root("dirty")
         compile_program(dirty / "bin" / "telemetry",
@@ -385,6 +425,21 @@ class ImageTest(unittest.TestCase):
                 write(rootfs / relative, data)
                 code, document = run_audit("image", "--rootfs", str(rootfs))
                 self.assertEqual((code, kinds(document)), (1, {(kind, relative, detail)}))
+
+    def test_absolute_links_in_an_image_resolve_inside_the_image(self):
+        rootfs = self.rootfs("links")
+        write(rootfs / "opt" / "vendor" / "libgpu.so.1", b"spark")
+        (rootfs / "opt" / "vendor" / "libgpu.so").symlink_to("/usr/lib/aarch64-linux-gnu/libcuda.so.1")
+        (rootfs / "usr" / "lib").mkdir()
+        (rootfs / "usr" / "lib" / "libdev.so").symlink_to("/opt/vendor/libgpu.so")
+        code, document = run_audit("image", "--rootfs", str(rootfs))
+        self.assertEqual((code, kinds(document)), (1, {
+            ("library-file", "opt/vendor/libgpu.so", "link to /usr/lib/aarch64-linux-gnu/libcuda.so.1"),
+            ("library-file", "usr/lib/libdev.so", "link to /usr/lib/aarch64-linux-gnu/libcuda.so.1")}))
+        (rootfs / "opt" / "vendor" / "libgpu.so").unlink()
+        (rootfs / "opt" / "vendor" / "libgpu.so").symlink_to("libgpu.so.1")
+        code, document = run_audit("image", "--rootfs", str(rootfs))
+        self.assertEqual((code, document["findings"]), (0, []))
 
     def test_rootfs_without_package_database_fails(self):
         rootfs = self.rootfs("bare")
