@@ -76,3 +76,77 @@ runs in `make test` without the upstream trees: it checks the tool's comment
 removal, include resolution and `NOTICE` rewriting on scratch trees, and
 that the headers in the tree, their `NOTICE` entries and
 `nvrm_version.h` all name the pins.
+
+## Kernel images
+
+The backend runs the cubins nvcc builds for the release target. They
+are ELF images, and `runtime/device/nvrm/nvrm_cubin.c` reads them into a
+kernel table and one loadable image:
+
+- **Image.** The allocated `PROGBITS` sections (code and constant banks) are laid out in
+  section order at their own alignment, at least 128 bytes; nothing else
+  is loaded. A loaded section that asks for a fixed address is refused.
+- **Kernels.** A kernel is a `.nv.info.<name>` section that carries a
+  parameter-bank record. Its code is `.text.<name>`. Its static shared memory is the size of
+  `.nv.shared.<name>`, which includes the 1 KiB reserved per block. Its
+  register count and minimum stack come from the function records in
+  `.nv.info`, matched to the kernel through the symbol table. Its constant
+  banks are `.nv.constant<N>.<name>`, or `.nv.constant<N>` when every kernel
+  shares the bank, and at most 8 of them are allowed.
+- **Parameters.** They start at the offset in the parameter-bank record and
+  run to the end of `.nv.constant0.<name>`. On Blackwell they start at
+  0x380, after the 224 driver words.
+- **Relocations.** These are the 64-bit address and the low and high 32-bit address
+  fields. They target loaded sections only and resolve against loaded
+  symbols with the addend. `SparkNvrmCubinRelocate` writes them for a given
+  load address.
+
+Anything else (an unknown relocation, a record cut short, a missing
+register count, parameters outside bank 0) fails with
+`SPARK_STATUS_PARSE_ERROR` or `SPARK_STATUS_UNSUPPORTED`, naming the
+cause, against `library_load`.
+
+## Launch descriptors
+
+`runtime/device/nvrm/nvrm_qmd.c` packs a Blackwell compute launch
+descriptor (QMD version 5, 96 words) from a launch shape, using the bit
+ranges of `clcec0qmd.h`:
+
+- **Shape.** The grid and the group, the registers and the barriers.
+- **Memory.** The shared memory size and the SM shared-memory configuration
+  (32, 64 or 100 KiB), and the per-thread local memory.
+- **Bindings.** The program address and its prefetch, up to 8 constant
+  banks, and an optional release of a 64-bit payload (two words) or a
+  timestamp (four words) to a semaphore.
+
+It refuses a shape the hardware cannot run (no groups, more than 1024
+threads, misaligned addresses, more shared memory than a configuration
+offers) and any value that does not fit its field, naming the field.
+`SparkNvrmBank0Build` writes constant bank 0: the shared and local memory
+windows and the last driver word, then the argument block at the kernel's
+parameter offset, refusing an argument block of any other size.
+
+## Host tests
+
+The parser and the packer are tested in `make test` without a GPU:
+
+- **`tests/test_nvrm_cubin.c`.** It parses
+  `tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin`, release-built from
+  `tests/nvrm/fixture_kernels.cu` (first-light, parameter-layout, static
+  shared, stack and large-parameter kernels, plus two RMS-norm kernels from
+  `inference/kernels/norm.cuh`). Each kernel's registers, stack and shared
+  memory must equal ptxas's own report in the fixture manifest, and its
+  parameter bytes the C layout of its signature. A synthetic image then
+  covers relocations and every refusal.
+- **`tests/test_nvrm_qmd.c`.** It reads every packed field back with an
+  independent bit reader, pins several descriptor words, and covers the
+  refusals and constant bank 0.
+- **`tests/test_nvrm_fixtures.py`.** It checks that the fixtures match their
+  source and the release build's nvcc flags.
+
+Rebuild the fixtures on a host with the release nvcc:
+
+```
+python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc
+python3 -I tools/nvrm_cubin_fixtures.py --nvcc /usr/local/cuda/bin/nvcc --check
+```

@@ -397,7 +397,7 @@ TEST_NAMES += test_stage_kv_shared_prefix
 TEST_NAMES += test_device_contract test_device_instance
 endif
 TEST_NAMES += test_device_serving_runner
-TEST_NAMES += test_device_nvrm
+TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 SHELL_TESTS := \
@@ -473,6 +473,7 @@ PYTHON_TESTS := \
 	tests/test_third_party_notices.py \
 	tests/test_nvrm_headers.py \
 	tests/test_device_flavours.py \
+	tests/test_nvrm_fixtures.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
@@ -1448,7 +1449,13 @@ nvrm-device: $(DEVICE_NVRM_LIBRARY)
 build/test_device_nvrm: tests/test_device_nvrm.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-NVRM_TEST_BINARIES := build/test_device_nvrm
+build/test_nvrm_cubin: tests/test_nvrm_cubin.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_nvrm_qmd: tests/test_nvrm_qmd.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
