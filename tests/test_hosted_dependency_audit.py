@@ -450,6 +450,12 @@ class ImageTest(unittest.TestCase):
         code, document = run_audit("image", "--rootfs", str(rootfs))
         self.assertEqual((code, kinds(document)), (1, {("toolkit-file", "usr/local/cuda-13.0/include/cuda_runtime.h", "cuda_runtime.h")}))
 
+    def test_a_bare_driver_api_header_fails_outside_the_kernel_uapi_directory(self):
+        rootfs = self.rootfs("bare")
+        write(rootfs / "usr" / "include" / "cuda.h", "#define CUDA_VERSION 13000\n")
+        code, document = run_audit("image", "--rootfs", str(rootfs))
+        self.assertEqual((code, kinds(document)), (1, {("toolkit-file", "usr/include/cuda.h", "cuda.h")}))
+
     def test_rootfs_without_package_database_fails(self):
         rootfs = self.rootfs("bare")
         (rootfs / "var" / "lib" / "dpkg" / "status").unlink()

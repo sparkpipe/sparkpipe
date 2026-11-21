@@ -40,10 +40,11 @@ TOOL_STRINGS = tuple(
         re.escape(name[len(prefix):].encode()) for name in TOOL_FILES if name.startswith(prefix)) + rb")(?![A-Za-z0-9_-])")
     for prefix in TOOL_PREFIXES)
 NAME_CHARACTERS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.+-")
+KERNEL_UAPI_HEADERS = ("include/linux/cuda.h",)
 TOOLKIT_FILES = (
     "nvcc", "ptxas", "nvlink", "fatbinary", "cuobjdump", "nvdisasm", "cicc", "cudafe++",
     "nvprune", "cu++filt", "cuda-gdb", "cuda-gdbserver", "compute-sanitizer", "nsys", "ncu",
-    "nvprof", "bin2c", "cuda_runtime.h", "cuda_runtime_api.h", "nvml.h",
+    "nvprof", "bin2c", "cuda.h", "cuda_runtime.h", "cuda_runtime_api.h", "nvml.h",
 )
 CUDA_DIRECTORY = re.compile(r"(?:^|/)cuda(?:-[0-9][0-9.]*)?(?:/|$)")
 TORCH_CUDA_VERSION = re.compile(r"^cuda\s*(?::[^=]*)?=\s*(.+?)\s*$", re.M)
@@ -202,18 +203,19 @@ def scan_strings(source):
     return libraries, tools
 
 
-def forbidden_name(name):
+def forbidden_name(path):
+    name = os.path.basename(path.rstrip("/"))
     if LIBRARY_FILE.fullmatch(name):
         return "library-file"
     if name in TOOL_FILES:
         return "tool-file"
-    if name in TOOLKIT_FILES:
+    if name in TOOLKIT_FILES and not path.endswith(KERNEL_UAPI_HEADERS):
         return "toolkit-file"
     return ""
 
 
 def classify_name(report, relative, name):
-    kind = forbidden_name(name)
+    kind = forbidden_name(relative)
     if kind:
         report.add(kind, relative, name)
     return bool(kind)
@@ -242,7 +244,7 @@ def link_targets(top, path, rooted):
 
 def classify_link(report, top, relative, path, rooted):
     for target in link_targets(top, path, rooted):
-        kind = forbidden_name(os.path.basename(target.rstrip("/")))
+        kind = forbidden_name(target)
         if kind:
             report.add(kind, relative, f"link to {target}")
 

@@ -46,7 +46,7 @@ DCGM (`nv-hostengine`, `dcgmi`) and IMEX.
 | root | `library-string` | a file carries a loadable name of one of the libraries (a `dlopen` string, or the one a statically linked runtime opens) |
 | root | `tool-string` | a file names one of the tools (a script or binary that runs it) |
 | root, image | `library-file`, `tool-file` | a file or link is named as one of the libraries or tools, or a link (or any link it leads to) points at one by name |
-| root, image | `toolkit-file` | a file is named as a CUDA toolkit compiler, debugger, profiler or runtime header (`nvcc`, `ptxas`, `nvlink`, `fatbinary`, `cuobjdump`, `nvdisasm`, `cicc`, `cuda-gdb`, `compute-sanitizer`, `nsys`, `ncu`, `cuda_runtime.h` and the rest of `TOOLKIT_FILES`; not `cuda.h`, which the kernel's own UAPI headers also carry) |
+| root, image | `toolkit-file` | a file is named as a CUDA toolkit compiler, debugger, profiler or runtime header (`nvcc`, `ptxas`, `nvlink`, `fatbinary`, `cuobjdump`, `nvdisasm`, `cicc`, `cuda-gdb`, `compute-sanitizer`, `nsys`, `ncu`, `cuda.h`, `cuda_runtime.h` and the rest of `TOOLKIT_FILES`; the kernel's UAPI header `include/linux/cuda.h`, for the Apple CUDA microcontroller, is not one) |
 | root, image | `runpath` | an ELF file's `DT_RPATH` or `DT_RUNPATH` names a CUDA toolkit directory |
 | root, image | `pytorch-cuda` | a `torch/version.py` declares a CUDA version |
 | root, image | `triton` | a Triton package is present |
