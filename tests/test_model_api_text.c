@@ -791,7 +791,8 @@ static void TestApiTurnFloorTool(TestApiStack *stack)
 	if ( system(command) != 0 )
 	{
 		(void)snprintf(command,sizeof(command),"tail -40 %s.out >&2",output);
-		(void)system(command);
+		if ( system(command) != 0 )
+			fprintf(stderr,"%s.out could not be shown\n",output);
 		assert(0 && "tools/turn_floor.py does not read this API's replies and log");
 	}
 	printf("turn floor tool: its turns, its question about the session and its split run against this API and its log\n");
