@@ -678,6 +678,7 @@ PYTHON_TESTS := \
 	tests/test_node_baseline_contract.py \
 	tests/test_node_baseline_audit.py \
 	tests/test_fleet_post_reboot.py \
+	tests/test_hosted_dependency_audit.py \
 	tests/test_dsv41_flash_geometry.py \
 	tests/test_dsv41_flash_kernels.py \
 	tests/test_dsv41_flash_moe_slices.py \
