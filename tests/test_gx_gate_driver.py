@@ -189,7 +189,7 @@ with tempfile.TemporaryDirectory() as directory:
     check(all("rest=45 over=60" in line for line in seen.values()), f"GX_REST did not reach the steps: {seen}")
     written = notes(events)
     check(written[0] == {"block": "start", "active_before": "None", "lane": lane, "api": api, "port": row(MODEL)[4], "release": "testsha", "nodes": "16", "first_node": "0",
-                         "path": "engine API, no chat layer", "rest_seconds": "45", "rest_over_seconds": "60"}, f"the block's first note does not name what was active, the lane, the API and the idle gap: {written[:1]}")
+                         "path": "engine API, no chat layer", "rest_seconds": "45", "rest_over_seconds": "60", "plan": "full"}, f"the block's first note does not name what was active, the lane, the API, the idle gap and the plan: {written[:1]}")
     changes = [note for note in written if "change" in note]
     check([(note["change"], note["before_step"]) for note in changes] == [("clear", "park:8000"), ("evict", "restore:8000"), ("evict", "restore:100000"), ("clear", "cold:1")] and
           all(note["by"] == "controller stop and start" and note["stop_seconds"].isdigit() and note["start_seconds"].isdigit() and "rank0_store_close" in note for note in changes),
@@ -375,7 +375,15 @@ with tempfile.TemporaryDirectory() as directory:
     check(result.returncode != 0 and "take the fleet hold first" in result.stdout and not any(line.startswith(("lane start", "run ", "plan")) for line in events),
           f"a staged lane started beside production: {events}", result)
 
+with tempfile.TemporaryDirectory() as directory:
+    fleet = pathlib.Path(directory)
+    lane, api, other = build(fleet)
+    result, events = run(fleet, lane, api, GX_SHORT=f"another-model {MODEL}", GX_PLAN="--contexts 300000")
+    planned = [line for line in events if line.startswith("plan ")]
+    check(result.returncode == 0 and len(planned) == 1 and "--contexts 8000,limit --kept-contexts 8000 --tails 1,500" in planned[0] and "300000" not in planned[0] and notes(events)[0]["plan"] == "short",
+          f"a model named in GX_SHORT was not planned with the short plan and noted so: {planned} {notes(events)[:1]}", result)
+
 if failures:
     print("FAIL test_gx_gate_driver:\n" + "\n".join(failures))
     sys.exit(1)
-print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change; a fresh block starts with one 8K unit and the tool's own checks, and stops there when they fail; the block notes what was active, its lane, the idle gap and each cache change with the seconds its stop and start took; the model that served before the block is activated again and must answer a real request; with GX_BACKEND=lane the gate runs a staged lane on its own nodes with production stopped, changes the cache by the lane's stop, drop-kv and start, never calls the swap controller, and leaves the lane stopped and reclaimed; with GX_MINUTES a block starts no step once its minutes are used up and goes on when run again")
+print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change; a fresh block starts with one 8K unit and the tool's own checks, and stops there when they fail; the block notes what was active, its lane, the idle gap and each cache change with the seconds its stop and start took; the model that served before the block is activated again and must answer a real request; with GX_BACKEND=lane the gate runs a staged lane on its own nodes with production stopped, changes the cache by the lane's stop, drop-kv and start, never calls the swap controller, and leaves the lane stopped and reclaimed; with GX_MINUTES a block starts no step once its minutes are used up and goes on when run again; a model named in GX_SHORT is planned with the short plan")

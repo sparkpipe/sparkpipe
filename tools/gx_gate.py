@@ -60,6 +60,7 @@ MID_BLOCK = 21
 KEPT_OTHER = 8
 SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
+LIMIT = "limit"
 CUT_RULE = {}
 RESTORE_SETTLE_SECONDS = 1.0
 LOG_TAIL_BYTES = 16 << 20
@@ -142,7 +143,7 @@ def build_plan(arguments):
         if case not in arguments.cases:
             continue
         kept = []
-        for nominal in sorted(set(wanted[case])):
+        for nominal in sorted({arguments.context_limit if value == LIMIT else value for value in wanted[case]}):
             fitted = min(nominal, room)
             if fitted < nominal and kept and fitted < SPREAD * kept[-1]:
                 skipped.append({"case": case, "nominal": nominal, "reason": "the deployment serves %d positions; the largest prefix that fits, %d, is under %.1f times the %d already run" % (arguments.context_limit, fitted, SPREAD, kept[-1])})
@@ -809,6 +810,10 @@ def numbers(text):
     return [int(value) for value in text.split(",") if value]
 
 
+def contexts(text):
+    return [value if value == LIMIT else int(value) for value in text.split(",") if value]
+
+
 def command_plan(arguments):
     if os.path.exists(arguments.state):
         raise GateError("%s exists: a state is planned once, because its prompts must be new to the cache" % arguments.state)
@@ -930,11 +935,11 @@ def main(argv=None):
     plan.add_argument("--model", required=True)
     plan.add_argument("--release", required=True)
     plan.add_argument("--context-limit", type=int, required=True, help="positions the deployment serves")
-    plan.add_argument("--contexts", type=numbers, default=[8000, 100000, 300000])
-    plan.add_argument("--kept-contexts", type=numbers, default=[8000, 20000])
-    plan.add_argument("--drafted-contexts", type=numbers, default=[8000])
-    plan.add_argument("--committed-contexts", type=numbers, default=[8000], help="sessions whose replies are committed at once, so the next turn resumes where the reply ends")
-    plan.add_argument("--opening-contexts", type=numbers, default=[8000], help="heads of three blocks whose cuts come from the chat layer's rule; a second conversation shares the first two blocks")
+    plan.add_argument("--contexts", type=contexts, default=[8000, 100000, 300000], help="prefix sizes in tokens; 'limit' is the deployment's context limit, fitted beside the tails")
+    plan.add_argument("--kept-contexts", type=contexts, default=[8000, 20000])
+    plan.add_argument("--drafted-contexts", type=contexts, default=[8000])
+    plan.add_argument("--committed-contexts", type=contexts, default=[8000], help="sessions whose replies are committed at once, so the next turn resumes where the reply ends")
+    plan.add_argument("--opening-contexts", type=contexts, default=[8000], help="heads of three blocks whose cuts come from the chat layer's rule; a second conversation shares the first two blocks")
     plan.add_argument("--tails", type=numbers, default=[1, 40, 500, 5000])
     plan.add_argument("--small-context", type=int, default=32768, help="prefixes up to this size share one park and restore step")
     plan.add_argument("--cases", type=lambda text: [name for name in text.split(",") if name], default=list(CASES))

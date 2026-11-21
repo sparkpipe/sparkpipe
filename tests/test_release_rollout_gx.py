@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""release_rollout.sh gx hands the release's served models to scripts/gx_gate.sh with the release commit, a hub directory inside the release's work directory, a receipt directory inside the kit state, and qwen3.8-max as the model to leave active; ONLY limits the models; a gate that does not pass fails the step."""
+"""release_rollout.sh gx hands every lane of the release to scripts/gx_gate.sh, the seven with the full plan first and the others named for the short plan, with the release commit, a hub directory inside the release's work directory, a receipt directory inside the kit state, and qwen3.8-max as the model to leave active; ONLY limits the models; a gate that does not pass fails the step."""
+import json
 import os
 import pathlib
 import subprocess
@@ -18,7 +19,7 @@ HOME="$FAKE_FLEET/$host" exec bash -c "$*"
     "curl": "#!/usr/bin/env bash\ncat > /dev/null\necho '{\"state\": \"idle\", \"active\": \"qwen3.8-max\", \"error\": null}'\n",
 }
 STUB = """#!/usr/bin/env bash
-echo "release=$GX_RELEASE dir=$GX_DIR out=$GX_OUT end=$GX_END models=$*" >> "$FAKE_FLEET/gx.log"
+echo "release=$GX_RELEASE dir=$GX_DIR out=$GX_OUT end=$GX_END short=$GX_SHORT models=$*" >> "$FAKE_FLEET/gx.log"
 exit "${FAKE_GX_STATUS:-0}"
 """
 
@@ -66,7 +67,12 @@ with tempfile.TemporaryDirectory() as directory:
 
     result, lines = run(base)
     check(result.returncode == 0, "the gx step failed although the gate passed", result)
-    check(lines == [f"release={SHA} dir={work}/release-{SHA}/gx out={base / 'state'}/gx end=qwen3.8-max models={SERVED}"], f"the gate was not called once with the release's served models and directories: {lines}", result)
+    lanes = set(json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"])
+    head, _, tail = (lines[0] if len(lines) == 1 else "").partition(" short=")
+    short, _, models = tail.partition(" models=")
+    check(head == f"release={SHA} dir={work}/release-{SHA}/gx out={base / 'state'}/gx end=qwen3.8-max", f"the gate was not called once with the release's directories: {lines}", result)
+    check(models.split()[:7] == SERVED.split() and models.split()[7:] == short.split() and set(short.split()) == lanes - set(SERVED.split()) and len(models.split()) == len(lanes) == 21,
+          f"the gate was not handed every lane, the seven with the full plan first and the other fourteen named for the short plan: {lines}", result)
     result, lines = run(base, ONLY="qwen3.8-27b glm-5.3")
     check(result.returncode == 0 and len(lines) == 1 and lines[0].endswith("models=qwen3.8-27b glm-5.3"), f"ONLY did not limit the models: {lines}", result)
     result, lines = run(base, FAKE_GX_STATUS="1")
@@ -75,4 +81,4 @@ with tempfile.TemporaryDirectory() as directory:
 if failures:
     print("FAIL test_release_rollout_gx:\n" + "\n".join(failures))
     sys.exit(1)
-print("PASS test_release_rollout_gx: release_rollout.sh gx runs scripts/gx_gate.sh for the release's served models with the release commit, a hub directory under the release's work directory, receipts under the kit state and qwen3.8-max left active; ONLY limits the models; a gate that does not pass fails the step")
+print("PASS test_release_rollout_gx: release_rollout.sh gx runs scripts/gx_gate.sh for every lane of the release, the seven with the full plan first and the other fourteen named for the short plan, with the release commit, a hub directory under the release's work directory, receipts under the kit state and qwen3.8-max left active; ONLY limits the models; a gate that does not pass fails the step")

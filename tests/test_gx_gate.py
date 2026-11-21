@@ -640,6 +640,16 @@ class GxGateTests(unittest.TestCase):
         status, listing = call(*arguments, "--context-limit", "16000")
         self.assertEqual(status, 1)
         self.assertIn("no room", listing)
+        status, listing = call(*arguments, "--context-limit", "32768", "--contexts", "8000,limit", "--kept-contexts", "8000", "--tails", "1,500")
+        self.assertEqual(status, 0, listing)
+        state = json.loads(Path(self.state).read_text())
+        self.assertEqual(sorted({(unit["nominal"], unit["context"]) for unit in state["units"] if unit["case"] in ("prefix", "session")}), [(8000, 8021), (32768, 29717)],
+                         "a plan may name the deployment's context limit, and it is fitted beside the tails")
+        self.assertEqual((state["skipped"], {unit["tail"] for unit in state["units"]}, {unit["case"] for unit in state["units"]}), ([], {1, 500}, set(gx.CASES)))
+        self.assertEqual([line.split()[0] for line in listing.splitlines()], ["chain", "park:32768", "restore:32768", "cold:1", "cold:500"])
+        Path(self.state).unlink()
+        with self.assertRaises(SystemExit, msg="only a context may be the limit"), contextlib.redirect_stderr(io.StringIO()):
+            gx.main([*arguments, "--context-limit", "32768", "--tails", "1,limit"])
 
     def test_a_head_takes_its_cuts_from_the_chat_layer_s_rule(self):
         arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed", "--context-limit", "1048576", "--cases", "opening", "--tails", "1"]

@@ -6,6 +6,8 @@ GX_RELEASE=${GX_RELEASE:?GX_RELEASE names the release the fleet runs, e.g. c2b71
 GX_OUT=${GX_OUT:?GX_OUT is the local directory the receipts are copied to}
 GX_DIR=${GX_DIR:-$HUB_WORK/gx/$GX_RELEASE}
 GX_PLAN=${GX_PLAN:-}
+GX_SHORT=${GX_SHORT:-}
+GX_SHORT_PLAN=${GX_SHORT_PLAN:---contexts 8000,limit --kept-contexts 8000 --tails 1,500}
 GX_END=${GX_END:-before}
 GX_POLL=${GX_POLL:-20}
 GX_REST=${GX_REST:-60}
@@ -157,7 +159,8 @@ gx_step() {
 }
 
 gx_model() {
-  local id=$1 lane api port dir limit steps step change state rest fresh first=1 held
+  local id=$1 lane api port dir limit steps step change state rest fresh first=1 held plan=$GX_PLAN kind=full
+  case " $GX_SHORT " in *" $id "*) plan=$GX_SHORT_PLAN kind=short ;; esac
   lane=$(field "$id" lane) && api=$(field "$id" api) && port=$(field "$id" port) || { echo "GX-FAILED $id: no lane record"; return 1; }
   case "$lane" in /*|*..*|*" "*) echo "GX-FAILED $id: lane '$lane' is not a path under the home"; return 1 ;; */lane[0-9]*) ;; *) echo "GX-FAILED $id: lane '$lane' is not <dir>/lane<N>"; return 1 ;; esac
   case "$api:$port" in *-kv-api:[0-9]*) ;; *) echo "GX-FAILED $id: api '$api' port '$port'"; return 1 ;; esac
@@ -178,13 +181,13 @@ gx_model() {
     if [ "$GX_PREFLIGHT" != 0 ]; then
       gx_preflight "$id" "$port" "$api" "$dir" "$limit" || { echo "GX-PREFLIGHT-FAILED $id: the tool's own checks failed on one 8K unit; the block was not started"; return 1; }
     fi
-    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit $GX_PLAN") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
+    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit $plan") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
   else
     steps=$(hub "cd $dir && python3 $GX_TOOL steps --state state.json") || { echo "GX-FAILED $id: its state does not load: $steps"; return 1; }
     echo "gx $id resumes: $(printf '%s\n' "$steps" | awk '$3 != "done" {print $1 "=" $3 "(" $4 ")"}' | tr '\n' ' ')"
   fi
   gx_note "$dir" "block=$([ "$fresh" = 1 ] && echo start || echo resume)" "active_before=${GX_BEFORE:-unknown}" "lane=$lane" "api=$api" "port=$port" "release=$GX_RELEASE" "nodes=$GX_NODE_COUNT" "first_node=${GX_NODES%% *}" "path=engine API, no chat layer" \
-    "rest_seconds=$GX_REST" "rest_over_seconds=$GX_REST_OVER"
+    "rest_seconds=$GX_REST" "rest_over_seconds=$GX_REST_OVER" "plan=$kind"
   while read -r step change state rest; do
     [ "$state" = done ] && continue
     if [ -n "$GX_MINUTES" ] && [ $(($(date +%s) - GX_BEGAN)) -ge $((GX_MINUTES * 60)) ]; then

@@ -8,6 +8,22 @@ request, never on what the cache held. This extends invariant I27 from
 `scripts/gx_gate.sh` walks a served model through it with the swap
 controller. Both need the fleet alone.
 
+## Where it runs
+
+Gate GX belongs to release qualification, on a fleet that holds no customer
+data. Its `clear` deletes a lane's KV: the snapshot store and the backing
+files on every node, and the API's prefix index. On a fleet a customer
+holds, that KV is the customer's, so the gate never runs there. A request
+from any other client leaves the receipt `INCOMPLETE`.
+
+Fleet operations are not in this repository. Host roles, the hold that
+gives a session the fleet and the release steps are in
+`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`. Read it before touching a
+fleet host, and take the hold before the first fleet command of
+[First runs](#first-runs).
+
+Status: not yet measured on the fleet. No lane has been gated.
+
 ## How the engine keeps it
 
 Prefill runs in waves, and kernels take different paths by wave size. So a
@@ -117,6 +133,29 @@ the largest logprob difference up to there.
 - A context the deployment cannot serve beside three 5,000-token tails is
   fitted to the largest that it can. It is skipped when that is under 1.5
   times a context already in the plan.
+
+## Lanes and plans
+
+`scripts/release_rollout.sh gx` runs every lane of `deployment/lanes.json`.
+
+| Lanes | Plan |
+| --- | --- |
+| The seven of `GX_MODELS`: `kimi-k3.1-pro`, `kimi-k3`, `glm-5.3`, `glm-5.3-flash`, `qwen3.8-27b`, `qwen3.8-max`, `deepseek-v4.1-flash` | The full plan: the sizes above |
+| The other fourteen | The short plan, `GX_SHORT_PLAN`: `--contexts 8000,limit --kept-contexts 8000 --tails 1,500`. Every case at 8,000 tokens, `prefix` and `session` also at the lane's context limit, and tails of 1 and 500 tokens |
+| `GX_NOT_GATED` | None |
+
+- `limit` in a plan is the context length the lane's API reports. It is
+  fitted beside the tails like any other context.
+- The two tails of the short plan take both kernel paths of a last wave:
+  one row, and several blocks.
+- The short plan computes a prompt of the lane's context limit cold eight
+  times (two prefixes in `chain`, two in `park`, four cold runs), beside
+  the 8,000-token units. Its time is those tokens at the lane's prefill
+  rate.
+- A lane that cannot run its plan is moved to `GX_NOT_GATED` in
+  `scripts/release_rollout.sh`, and this table names it with the reason.
+  The step prints the list. A lane in neither list gets the short plan, so
+  a new lane is gated unless someone says why it is not.
 
 ## Steps and cache changes
 
@@ -269,10 +308,12 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 - A model's long contexts can run as a block of their own: give the second
   pass its own `GX_DIR` and `GX_PLAN="--cases prefix,session --contexts 300000"`.
 - In a release, `scripts/release_rollout.sh gx` runs it after `qualify` for
-  the served models (`GX_MODELS`; `ONLY` limits them), keeps its hub files in
-  the release's work directory, copies receipts to the kit state's `gx`
-  directory and leaves `qwen3.8-max` active. It fails unless every model
-  passes.
+  every lane ([Lanes and plans](#lanes-and-plans); `ONLY` limits them),
+  keeps its hub files in the release's work directory, copies receipts to
+  the kit state's `gx` directory and leaves `qwen3.8-max` active. It fails
+  unless every lane passes.
+- `GX_SHORT` names the models that get `GX_SHORT_PLAN` instead of
+  `GX_PLAN`. The block's first note says which plan it ran (`plan`).
 - The driver copies `tools/gx_gate.py` and the chat layer's cut rule,
   `tools/serving/prompt_cuts.py`, to `$HUB_WORK/gx/<sha>/`. A plan with an
   `opening` unit fails when the rule is not beside the tool.
@@ -290,6 +331,114 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
   `<model>.log` and `<model>.apilog.tgz`, the slice of the API log each
   attempt of a step covers, are copied to `GX_OUT`. The API log itself does
   not outlive a release.
+
+## First runs
+
+The gate has not yet run on a real engine. These are the runs that come
+first, in order, with their commands. `<sha>` is the nine-character commit
+of the candidate. Every command runs from a checkout of it, under the hold,
+in a shell that has read the kit library, which defines `hub` and
+`HUB_WORK`:
+
+```
+. scripts/rollover_lib.sh
+```
+
+Cache identities changed format with these rules, so KV that an earlier
+release saved is not found by this one. The gate's `clear` removes it lane
+by lane; nothing has to be cleared by hand first.
+
+**1. Build the candidate.**
+
+```
+REPO=$PWD RELEASE_OUT=<directory for the node files> scripts/release_build.sh <sha>
+```
+
+It builds the hub API in `$HUB_WORK/api-build-<sha>/build` and the node
+files on the build host in `~/build-rp/fw-<sha>-src/build`, for the
+adapters of `deployment/lanes.json`. A four-rank lane's adapter is not
+among them and is built in both trees afterwards:
+
+```
+ssh ${BUILD_HOST:-lenovo7} 'cd ~/build-rp/fw-<sha>-src && PATH=/usr/local/cuda/bin:$PATH make -j8 build/libqwen38_27b_tp4_serving_adapter.so build/libdsv41_flash_tp4_serving_adapter.so'
+hub "cd $HUB_WORK/api-build-<sha> && PATH=/usr/local/cuda/bin:\$PATH make -j16 build/libqwen38_27b_tp4_serving_adapter.so build/libdsv41_flash_tp4_serving_adapter.so"
+```
+
+**2. Slot 1: Qwen 3.8 27B FP8 on four ranks**, about 30 minutes. A staged
+lane on four nodes, with production stopped by whoever holds the fleet. The
+mesh lane and the first node are the ones the hold names; the values below
+are an example.
+
+```
+export STAGE_MODEL=qwen38_27b_fp8_tp4 STAGE_LANE=3 STAGE_FIRST_NODE=4
+export STAGE_WEIGHTD_SOCKET=/tmp/spark_weightd.sock STAGE_MEMORY_MAX=16G
+export STAGE_SEQUENCES=8 STAGE_ROWS=1024 STAGE_KV_PAGES=2048 STAGE_KV_PHYSICAL_PAGES_CAP=8192
+export STAGE_FIRMWARE_HOST=${BUILD_HOST:-lenovo7} STAGE_FIRMWARE=build-rp/fw-<sha>-src/build
+export STAGE_API_FIRMWARE=$HUB_WORK/api-build-<sha>/build
+tools/stage_lane.sh setup && tools/stage_lane.sh api-setup
+GX_BACKEND=lane GX_RELEASE=<sha> GX_MINUTES=25 \
+  GX_DIR=$HUB_WORK/gx/<sha>-qwen38-27b-fp8-tp4 GX_OUT=$PWD/qualification/gx-<date>-tp4 \
+  GX_PLAN="--cases prefix,kept,opening,session,committed --contexts 8000,32000 --kept-contexts 8000 --tails 1,40,500,5000 --crowd 4" \
+  scripts/gx_gate.sh qwen38_27b_fp8_tp4
+```
+
+The driver ends with the lane and its API stopped and the lane reclaimed.
+`GX-BLOCK-PAUSED` means the minutes ran out: the same command goes on from
+the first open step.
+
+**3. Slot 2: DeepSeek V4.1 Flash on four ranks**, about 30 minutes. As slot
+1 with these settings:
+
+```
+export STAGE_MODEL=dsv41_flash_tp4 STAGE_MEMORY_MAX=32G
+export STAGE_SEQUENCES=8 STAGE_ROWS=4096 STAGE_KV_PAGES=1024 STAGE_KV_PHYSICAL_PAGES_CAP=8192
+tools/stage_lane.sh setup && tools/stage_lane.sh api-setup
+GX_BACKEND=lane GX_RELEASE=<sha> GX_MINUTES=25 \
+  GX_DIR=$HUB_WORK/gx/<sha>-dsv41-flash-tp4 GX_OUT=$PWD/qualification/gx-<date>-tp4 \
+  GX_PLAN="--cases prefix,opening,session,committed --contexts 8000,32000 --tails 1,40,500,5000" \
+  scripts/gx_gate.sh dsv41_flash_tp4
+```
+
+After both slots pass, the claim is: reuse is exact on those two four-rank
+lanes at 8,000 and 32,000 tokens. The served lanes are other builds and are
+not gated by it.
+
+**4. Pass 1: every lane, short stretches.** The candidate is installed as a
+release root by the kit's steps up to `qualify`
+(`datacenter:operations/FLEET_RELEASE_RUNBOOK.md`), with the same `FW`,
+`APIB`, `OLD_WD` and `STATE` as those steps.
+
+```
+GX_PLAN="--contexts 8000,100000" scripts/release_rollout.sh gx
+```
+
+The seven run every case with prefixes of 8,000 and 100,000 tokens; the
+other fourteen run the short plan. Receipts land in `$STATE/gx`. A lane
+that stops is run again with `ONLY="<model>"` and the same command; it
+goes on from its first open step.
+
+**5. Pass 2: the long contexts** of the lanes that serve more than 200,000
+tokens, in a state of their own. A lane that serves fewer than 300,000 runs
+the largest prefix that fits.
+
+```
+ONLY="glm-5.3 kimi-k3 kimi-k3.1-pro deepseek-v4.1-flash qwen3.8-27b" \
+  GX_DIR=$HUB_WORK/release-<sha>/gx-long GX_OUT=$STATE/gx-long \
+  GX_PLAN="--cases prefix,session --contexts 300000" scripts/release_rollout.sh gx
+```
+
+**6. Keep the result.** Copy the receipts (`<model>.json`, `.txt`, `.log`,
+`.apilog.tgz`) into `qualification/gx-<date>/` with a README that says
+which commit, which lanes, which plan and the verdict of each. The cost of
+the rules goes into `PERFORMANCE_STATUS.md`, "Exact reuse", from the
+receipt fields that section names.
+
+**What a verdict needs.** `verdict=PASS` and `alone=yes` in every
+`<model>.txt`. `INCOMPLETE` names what is missing ([What stops a
+PASS](#what-stops-a-pass)); `FAIL` is a difference between a reusing run
+and a cold run, and the receipt holds the first differing token and
+logprob. A `FAIL` is a finding about the engine, not about the gate: stop
+and report it with the receipt.
 
 ## What a receipt measures
 
