@@ -480,6 +480,7 @@ PYTHON_TESTS := \
 	tests/test_nvrm_headers.py \
 	tests/test_device_flavours.py \
 	tests/test_module_kernels.py \
+	tests/test_staged_kernels_audit.py \
 	tests/test_device_link_flags.py \
 	tests/test_nvrm_fixtures.py \
 	tests/test_nvrm_kernel_manifest.py \
@@ -1357,15 +1358,11 @@ build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
 build/sparkpipe_model_api: node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
-$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(CUDA_HEADER_DEPS)
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
-	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
-		echo "hidden_transport_spark_host_rdma_verbs failed: CUDA headers unavailable" >&2; exit 1; \
-	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
+$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	@if [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -ldl -lpthread -o $@; \
+		$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/rdma.c ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)

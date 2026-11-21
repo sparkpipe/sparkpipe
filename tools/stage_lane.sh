@@ -107,20 +107,52 @@ firmware_copy() {
   return 1
 }
 
+firmware_layout() {
+  printf '%s %s\n' \
+    bin/sparkpipe_model_residentd sparkpipe_model_residentd \
+    bin/weightd_warm weightd_warm \
+    "lib/$ADAPTER_FILE" "$ADAPTER_FILE" \
+    "lib/$ADAPTER_FILE.kernels" "$ADAPTER_FILE.kernels" \
+    lib/runtime_libs/libsparkpipe_device_cuda.so runtime_libs/libsparkpipe_device_cuda.so \
+    lib/hidden_transport.so libhidden_transport_spark_host_rdma_verbs.so
+}
+
 firmware_kernels_check() {
-  local kernels="$STAGE_FIRMWARE/$ADAPTER_FILE.kernels"
-  if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
-    $SSH "$STAGE_FIRMWARE_HOST" "test -d $kernels" < /dev/null && return 0
-  else
-    [ -d "$kernels" ] && return 0
-  fi
-  echo "stage_lane setup: $kernels is missing${STAGE_FIRMWARE_HOST:+ on $STAGE_FIRMWARE_HOST}; every rank gets the adapter with its kernels directory, which the adapter's build installs beside it" >&2
+  local staged source missing=""
+  while read -r staged source; do
+    case "$source" in *.kernels) ;; *) continue ;; esac
+    if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+      $SSH "$STAGE_FIRMWARE_HOST" "test -d $STAGE_FIRMWARE/$source" < /dev/null || missing="$missing $STAGE_FIRMWARE/$source"
+    else
+      [ -d "$STAGE_FIRMWARE/$source" ] || missing="$missing $STAGE_FIRMWARE/$source"
+    fi
+  done < <(firmware_layout)
+  [ -z "$missing" ] && return 0
+  echo "stage_lane setup:$missing is missing${STAGE_FIRMWARE_HOST:+ on $STAGE_FIRMWARE_HOST}; every rank gets each module with its kernels directory, which the module's build installs beside it" >&2
   exit 1
 }
 
+firmware_kernels_staged() {
+  local root="$1" staged source
+  while read -r staged source; do
+    case "$source" in *.kernels) printf ' %s/%s' "$root" "$staged" ;; esac
+  done < <(firmware_layout)
+}
+
+stage_local() {
+  local root="$1" staged source
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds the lane firmware that stage-local copies}"
+  firmware_kernels_check
+  mkdir -p "$root/bin" "$root/lib/runtime_libs"
+  while read -r staged source; do
+    rm -rf "${root:?}/$staged"
+    cp -R "$STAGE_FIRMWARE/$source" "$root/$staged"
+  done < <(firmware_layout)
+}
+
 setup() {
-  local generated rank host root pack state busy=""
-  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library and its <adapter>.kernels directory, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  local generated rank host root pack state staged source busy=""
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, weightd_warm, the model adapter library with its .kernels directory, runtime_libs/libsparkpipe_device_cuda.so and libhidden_transport_spark_host_rdma_verbs.so}"
   for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
@@ -135,12 +167,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && rm -rf $root/lib/$ADAPTER_FILE.kernels && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      firmware_copy "$host" "$root/bin/" sparkpipe_model_residentd weightd_warm
-      firmware_copy "$host" "$root/lib/$ADAPTER_FILE" "$ADAPTER_FILE"
-      firmware_copy "$host" "$root/lib/" "$ADAPTER_FILE.kernels"
-      firmware_copy "$host" "$root/lib/runtime_libs/" runtime_libs/libsparkpipe_device_cuda.so
-      firmware_copy "$host" "$root/lib/hidden_transport.so" libhidden_transport_spark_host_rdma_verbs.so
+      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && rm -rf$(firmware_kernels_staged "$root") && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      while read -r staged source; do
+        firmware_copy "$host" "$root/$staged" "$source"
+      done < <(firmware_layout)
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
@@ -229,10 +259,11 @@ case "${1:-}" in
   lane-scripts)
     for rank in $(seq 0 $LAST_RANK); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
   setup) setup ;;
+  stage-local) stage_local "${2:?stage-local ROOT}" ;;
   start) start ;;
   status) status ;;
   stop) stop ;;
   reclaim) reclaim ;;
   api-setup) api_setup ;;
-  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|reclaim|api-setup" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|stage-local ROOT|start|status|stop|reclaim|api-setup" >&2; exit 2 ;;
 esac

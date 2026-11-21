@@ -267,7 +267,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSendBatch(
 
 static SparkHiddenTransportInterface spark_hidden_spark_host_rdma_interface;
 
-extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
+const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
 {
     memset(&spark_hidden_spark_host_rdma_interface,0,
         sizeof(spark_hidden_spark_host_rdma_interface));

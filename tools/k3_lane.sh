@@ -63,9 +63,46 @@ render() {
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
+firmware_layout() {
+  printf '%s %s\n' \
+    bin/sparkpipe_model_residentd sparkpipe_model_residentd \
+    bin/weightd_warm weightd_warm \
+    "$LANE_ADAPTER" "$ADAPTER_FILE" \
+    "$LANE_ADAPTER.kernels" "$ADAPTER_FILE.kernels" \
+    lib/runtime_libs/libsparkpipe_device_cuda.so runtime_libs/libsparkpipe_device_cuda.so \
+    lib/hidden_transport.so libhidden_transport_spark_host_rdma_verbs.so
+}
+
+firmware_kernels_check() {
+  local staged source missing=""
+  while read -r staged source; do
+    case "$source" in *.kernels) [ -d "$K3_FIRMWARE/$source" ] || missing="$missing $K3_FIRMWARE/$source" ;; esac
+  done < <(firmware_layout)
+  [ -z "$missing" ] && return 0
+  echo "k3_lane setup:$missing is missing; every rank gets each module with its kernels directory, which the module's build installs beside it" >&2
+  exit 1
+}
+
+firmware_kernels_staged() {
+  local root="$1" staged source
+  while read -r staged source; do
+    case "$source" in *.kernels) printf ' %s/%s' "$root" "$staged" ;; esac
+  done < <(firmware_layout)
+}
+
+stage_local() {
+  local root="$1" staged source
+  firmware_kernels_check
+  mkdir -p "$root/bin" "$root/lib/runtime_libs"
+  while read -r staged source; do
+    rm -rf "${root:?}/$staged"
+    cp -R "$K3_FIRMWARE/$source" "$root/$staged"
+  done < <(firmware_layout)
+}
+
 setup() {
-  local generated rank host root pack
-  [ -d "$K3_FIRMWARE/$ADAPTER_FILE.kernels" ] || { echo "k3_lane setup: $K3_FIRMWARE/$ADAPTER_FILE.kernels is missing; every rank gets the adapter with its kernels directory, which the adapter's build installs beside it" >&2; exit 1; }
+  local generated rank host root pack staged source
+  firmware_kernels_check
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
   for rank in $(seq 0 15); do
@@ -73,12 +110,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && rm -rf $root/$LANE_ADAPTER.kernels && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$host:$root/bin/"
-      scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/$LANE_ADAPTER"
-      scp -q -r "$K3_FIRMWARE/$ADAPTER_FILE.kernels" "$host:$root/$LANE_ADAPTER.kernels"
-      scp -q "$K3_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
-      scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
+      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && rm -rf$(firmware_kernels_staged "$root") && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      while read -r staged source; do
+        scp -q -r "$K3_FIRMWARE/$source" "$host:$root/$staged"
+      done < <(firmware_layout)
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256"
@@ -158,6 +193,7 @@ batch() {
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   setup) setup ;;
+  stage-local) stage_local "${2:?stage-local ROOT}" ;;
   start) start ;;
   status) status ;;
   stop) stop ;;
@@ -165,5 +201,5 @@ case "${1:-}" in
   clean) clean ;;
   batch) batch "${2:?batch BATCH_JSON}" ;;
   archive) lane_archive "${2:?archive RUN_ID DESTINATION}" "${3:?archive RUN_ID DESTINATION}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|clean|batch FILE|archive RUN_ID DEST" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|setup|stage-local ROOT|start|status|stop|reclaim|clean|batch FILE|archive RUN_ID DEST" >&2; exit 2 ;;
 esac

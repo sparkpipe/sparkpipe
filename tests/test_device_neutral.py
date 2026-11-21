@@ -98,7 +98,7 @@ PENDING = {
     "model-families/k3/include/sparkpipe/spark_k3_resident_decode_stage_cuda.h": {"device-include": 1},
     "node/weightd_mesh.c": {"header": 1, "token": 3},
     "ring/transport/hidden_transport.c": {"handle": 1},
-    "ring/transport/rdma.cu": {"placement": 1, "rename": 1},
+    "ring/transport/rdma.c": {"handle": 1},
     "ring/transport/tp_device_collective.c": {"handle": 10},
     "runtime/gemm.cuh": {"placement": 1},
     "runtime/gemm_descriptor_cache.h": {"token": 5},
