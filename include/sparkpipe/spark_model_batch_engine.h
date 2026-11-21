@@ -58,6 +58,7 @@ typedef struct SparkModelBatchEvent
 	uint64_t sequence_id;
 	SparkModelBatchRequestHandle request_handle;
 	uint32_t stale_prefix_recompute_count;
+	uint32_t resume_token_count;
 	uint64_t first_dispatch_ns;
 	uint32_t logprob_count;
 	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];

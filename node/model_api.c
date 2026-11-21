@@ -84,6 +84,7 @@ typedef struct ApiRequest
 	uint64_t first_dispatch_ns;
 	uint32_t stale_prefix_recompute_count;
 	uint32_t cached_prompt_token_count;
+	uint32_t resume_token_count;
 	uint32_t engine_completed;
 	volatile uint32_t output_token_count;
 	volatile int done;
@@ -336,6 +337,7 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		if (r->id != ev->request_id)
 			continue;
 		r->cached_prompt_token_count = ev->cached_prompt_token_count;
+		r->resume_token_count = ev->resume_token_count;
 		r->first_dispatch_ns = ev->first_dispatch_ns;
 		r->stale_prefix_recompute_count = ev->stale_prefix_recompute_count;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
@@ -1147,7 +1149,7 @@ static void api_usage_json(char *buffer, size_t capacity, const ApiRequest *req)
 {
 	if ( req->commit_only != 0u )
 		(void)snprintf(buffer,capacity,",\"usage\":{\"prompt_tokens\":%u,\"completion_tokens\":0,\"total_tokens\":%u,\"prompt_tokens_details\":{\"cached_tokens\":%u},\"published_tokens\":%u}",
-			req->prompt_count,req->prompt_count,req->cached_prompt_token_count,req->prompt_count);
+			req->prompt_count,req->prompt_count,req->cached_prompt_token_count,req->resume_token_count);
 	else
 		api_usage_counts_json(buffer,capacity,req->prompt_count,req->output_token_count,req->cached_prompt_token_count);
 }

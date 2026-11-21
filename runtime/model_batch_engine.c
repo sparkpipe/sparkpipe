@@ -101,6 +101,7 @@ typedef struct SparkModelBatchRequestState
 	uint32_t scheduling_bypass_count;
 	uint32_t cache_prefix_token_count;
 	uint32_t cache_published_token_count;
+	uint32_t cache_marked_token_count;
 	uint32_t cache_pending_token_count;
 	uint32_t cache_pending_resume;
 	uint32_t cache_private;
@@ -901,6 +902,7 @@ static void SparkModelBatchEmit(
 	event.sequence_id = request->sequence_id;
 	event.request_handle = request->handle;
 	event.stale_prefix_recompute_count = request->stale_prefix_recompute_count;
+	event.resume_token_count = request->cache_marked_token_count;
 	event.first_dispatch_ns = request->first_dispatch_ns;
 	event.logprob_count = logprob_count;
 	if ( logprob_count != 0u )
@@ -1363,6 +1365,7 @@ static SparkStatus SparkModelBatchRecomputeStalePrefix(SparkModelBatchEngine *en
 	request->defer_end = 0u;
 	request->cache_prefix_token_count = 0u;
 	request->cache_published_token_count = 0u;
+	request->cache_marked_token_count = 0u;
 	request->cache_lookup_epoch = 0u;
 	request->prefix_outcome_recorded = 0u;
 	memset(&request->cache_prefix_identity,0,sizeof(request->cache_prefix_identity));
@@ -1570,12 +1573,16 @@ static SparkStatus SparkModelBatchPublishCompletedPrefix(
 		request->cache_published_token_count,
 		completed_token_count,
 		&committed);
-	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u && completed_token_count == request->stream_token_count &&
-		SparkModelBatchMarkResume(engine,request,tokens,completed_token_count,SparkModelBatchStreamTag(&request->cache_published_digest_context)) != SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && request->cache_pending_resume != 0u && completed_token_count == request->stream_token_count )
 	{
-		engine->cache_resume_unmarked_count++;
-		fprintf(stderr,"batch_resume_unmarked request=%llu tokens=%u unmarked=%llu: a block of the chain is stale, so this wave end is not a resume point\n",
-			(unsigned long long)request->request_id,completed_token_count,(unsigned long long)engine->cache_resume_unmarked_count);
+		if ( SparkModelBatchMarkResume(engine,request,tokens,completed_token_count,SparkModelBatchStreamTag(&request->cache_published_digest_context)) == SPARK_STATUS_OK )
+			request->cache_marked_token_count = completed_token_count;
+		else
+		{
+			engine->cache_resume_unmarked_count++;
+			fprintf(stderr,"batch_resume_unmarked request=%llu tokens=%u unmarked=%llu: a block of the chain is stale, so this wave end is not a resume point\n",
+				(unsigned long long)request->request_id,completed_token_count,(unsigned long long)engine->cache_resume_unmarked_count);
+		}
 	}
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -4825,6 +4832,7 @@ static SparkStatus SparkModelBatchInvalidateEngineSession(SparkModelBatchEngine 
 		request->defer_end = 0u;
 		request->cache_prefix_token_count = 0u;
 		request->cache_published_token_count = 0u;
+		request->cache_marked_token_count = 0u;
 		request->cache_lookup_epoch = 0u;
 		request->prefix_outcome_recorded = 0u;
 		SparkModelBatchStreamBegin(engine,&request->cache_published_digest_context);

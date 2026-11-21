@@ -1414,7 +1414,21 @@ static void TestApiCommitAndCuts(TestApiStack *stack)
 		(void)snprintf(expected,sizeof(expected),"\"cached_tokens\":%u",14u + count);
 		assert(TestApiBodyContains(body,expected));
 	}
-	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; waves that end at cuts where no state is kept leave a chain the same request resumes one token before its end, and the same tokens without those cuts do not resume there; a reply committed with its prompt, naming one token before the prompt's end, resumes there, and the next turn resumes where the reply ends; cuts and keep must be rising token counts)\n");
+	{
+		char small[64],longer[128];
+		(void)TestApiWriteTokens(small,sizeof(small),first - 1500u,2u);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"commit_only\":true}",small);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		assert(TestApiBodyContains(body,"\"finish_reason\":\"commit\"") && TestApiBodyContains(body,"\"prompt_tokens\":2") && TestApiBodyContains(body,"\"published_tokens\":2"));
+		(void)TestApiWriteTokens(longer,sizeof(longer),first - 1500u,9u);
+		(void)snprintf(request,sizeof(request),"{\"prompt_token_ids\":[%s],\"max_tokens\":1,\"cuts\":[2]}",longer);
+		TestApiHttpCall(stack->api_port,"POST","/v1/completions",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"cached_tokens\":2"));
+	}
+	printf("test_model_api_text: commit and cuts OK (a commit computes its prompt, keeps it and generates nothing, streamed or not; a request that names the commit's end as a cut resumes there; waves that end at cuts where no state is kept leave a chain the same request resumes one token before its end, and the same tokens without those cuts do not resume there; a reply committed with its prompt, naming one token before the prompt's end, resumes there, and the next turn resumes where the reply ends; published_tokens is the position the engine marked as a resume point, also for a commit shorter than a block, which a request that names its end resumes from; cuts and keep must be rising token counts)\n");
 }
 
 static void TestApiRefusedStartup(const char *tokenizer_asset_path, const char *label)

@@ -64,6 +64,7 @@ typedef struct TestBatchState
 	uint32_t cancelled_events[TEST_MAX_REQUESTS + 1u];
 	uint32_t total_terminals;
 	uint32_t cached_tokens[TEST_MAX_REQUESTS + 1u];
+	uint32_t marked_tokens[TEST_MAX_REQUESTS + 1u];
 	uint32_t stale_recomputes[TEST_MAX_REQUESTS + 1u];
 	uint64_t accepted_ns[TEST_MAX_REQUESTS + 1u];
 	uint64_t first_dispatch_ns[TEST_MAX_REQUESTS + 1u];
@@ -104,6 +105,7 @@ static void TestBatchEvent(void *context, const SparkModelBatchEvent *event)
 			s->logprob_matches[id]++;
 	}
 	s->stale_recomputes[id] = event->stale_prefix_recompute_count;
+	s->marked_tokens[id] = event->resume_token_count;
 	if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
 	{
 		s->completed_events[id]++;
@@ -1120,6 +1122,7 @@ static void TestScenarioStreamedPrefillDefers(const SparkModelResidentDeployment
 	CHECK(final_seen != 0u && final_index > first_index,"streamed prefill: the final wave runs normally after the deferred ones");
 	TestSubmitPrompt(engine,3u,692u,1u,prompt,11u);
 	TestDriveUntilTerminal(engine,&state,3u,800u);
+	CHECK(state.marked_tokens[1] == 0u,"streamed prefill: a prompt that went private reports no resume point");
 	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 0u,"streamed prefill: a repeat of the streamed prompt reuses nothing, because a streamed prompt is computed whole every time and its blocks stay its own");
 	SparkModelBatchEngineDestroy(engine);
 }
@@ -2832,6 +2835,7 @@ static void TestScenarioCommit(const SparkModelResidentDeployment *deployment,co
 	TestCommit(engine,1u,800u,prompt,14u);
 	TestDriveUntilTerminal(engine,&state,1u,800u);
 	CHECK(state.completed_events[1] == 1u && state.token_events[1] == 0u && state.error_events[1] == 0u,"commit: a commit completes and samples nothing");
+	CHECK(state.marked_tokens[1] == 14u,"commit: its completion reports the position it marked as a resume point with state, the prompt's end");
 	count = TestPrefillPublishes(1u,14u,ends,stateful,8u);
 	CHECK(count == 3u && memcmp(ends,expected_ends,sizeof(expected_ends)) == 0 && memcmp(stateful,expected_stateful,sizeof(expected_stateful)) == 0,
 		"commit: its waves end on the block grid, at the stride and at the prompt's end, and the publish at the end keeps the state");
@@ -2844,6 +2848,7 @@ static void TestScenarioCommit(const SparkModelResidentDeployment *deployment,co
 		"commit: a request that names the commit's end as a cut resumes there");
 	TestDriveUntilTerminal(engine,&state,2u,800u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 14u && state.token_events[2] == 1u,"commit: the resumed request reports the committed tokens and completes");
+	CHECK(state.marked_tokens[2] == 21u,"commit: a request that generates reports one token before its prompt's end as the resume point it marked");
 	TestSubmitPrompt(engine,3u,802u,1u,prompt,22u);
 	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,
 		"commit: the same prompt without that cut runs other waves past the stride, so it resumes at the stride state");
@@ -2853,6 +2858,7 @@ static void TestScenarioCommit(const SparkModelResidentDeployment *deployment,co
 		"commit: a repeated commit resumes at its last wave end before the prompt's end and computes one wave");
 	TestDriveUntilTerminal(engine,&state,4u,800u);
 	CHECK(state.completed_events[3] == 1u && state.completed_events[4] == 1u && state.token_events[4] == 0u && state.error_events[3] + state.error_events[4] == 0u,"commit: every request completes");
+	CHECK(state.marked_tokens[4] == 14u,"commit: a repeated commit marks its end again and reports it");
 	SparkModelBatchEngineDestroy(engine);
 }
 
