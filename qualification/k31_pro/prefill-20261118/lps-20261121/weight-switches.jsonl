@@ -12,6 +12,11 @@
 {"run": "LB2", "to": "pass pool", "seconds": 3.7}
 {"run": "LB2", "to": "whole arena", "seconds": 19.3}
 {"run": "LB2", "to": "pass pool", "seconds": 3.7}
+{"run": "LB3", "to": "pass pool", "seconds": 3.8}
+{"run": "LB3", "to": "whole arena", "seconds": 19.8}
+{"run": "LB3", "to": "pass pool", "seconds": 4.0}
+{"run": "LB3", "to": "whole arena", "seconds": 20.2}
+{"run": "LB3", "to": "pass pool", "seconds": 3.8}
 {"run": "LF1", "to": "pass pool", "seconds": 3.8}
 {"run": "LF1", "to": "whole arena", "seconds": 19.5}
 {"run": "LF1", "to": "pass pool", "seconds": 3.8}

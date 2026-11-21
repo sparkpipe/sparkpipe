@@ -171,8 +171,11 @@ The lane is `k31_pro_rp` on all 16 Sparks.
 | LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4); 90 s later a weightd restart on all 16 repaired the mesh the reboot had left with failed queue pairs |
 | LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: spark9, sparka, sparkb, sparkd and sparkf lost power at about 06:04Z, as pass 2 began (their journals stop at 06:03:41-46Z, no shutdown, panic or DMA-guard trigger), and the weight stream's connections to them ran out of retries |
 
-LB3's answers stay on the hub until it is reachable again; they are not in
-the comparison below.
+LB3's two 1M answers have no FP8 pair yet, so the comparison below leaves
+them out. BF16 gets all 16 of their questions right (`long_prompt_suite.py
+score`), with the first token at 514.0 and 527.7 s. Their passes (480.5 and
+493.0 s) compare with 477.1 and 480.6 s for the 1M needle in BF16 (KS3,
+KS6). The FP8 index alone has answered mv-458k-0, 8 of 8.
 
 LB1 against LF1 on the five prompts both answered (`cmp-bf16-fp8.json`; the
 intervals are 95% bootstrap bounds whose unit is the prompt):
@@ -206,8 +209,9 @@ intervals are 95% bootstrap bounds whose unit is the prompt):
   tokens the chosen token's logprob moves 0.0012 on average (-0.0003 signed,
   FP8 minus BF16) and at most 0.23.
 - Prefill: 131K 108.6-109.4 s with the FP8 index against 109.2-111.7 s
-  (108.6 s in LB2's repeat); mk-458k-0 182.9 s against 204.5 s (11% less). The first token adds the
-  switch to the pass pool (3.7-4.7 s) and back to the whole arena (19.3-20.1 s).
+  (108.6 s in LB2's repeat); mk-458k-0 182.9 s against 204.5 s (11% less).
+  The first token adds the switch to the pass pool (3.7-4.7 s in every run)
+  and back to the whole arena (19.3-20.2 s).
 - BF16 repeats to the bit (`cmp-bf16-repeat.json`: mk-131k-0, LB2 against
   LB1).
 
@@ -218,7 +222,7 @@ Files:
   depths; the suite file's and the haystack's sha256 and the build settings
   (`long_prompt_suite.py build --lengths 131000,458000,1000000 --prompts 2,2,1
   --seed 20261121` with the K3.1 tokenizer rebuilds the suite).
-- `arm-bf16.jsonl` (LB1, with LB1's and LB2's failed rows), `arm-fp8.jsonl`
+- `arm-bf16.jsonl` (LB1 and LB3, with LB1's and LB2's failed rows), `arm-fp8.jsonl`
   (LF1), `arm-bf16-repeat.jsonl` (LB2), `smoke-LB1.jsonl` (LB1's short smoke
   prompts): the client's row for every prompt, with the answer, its tokens
   and logprobs, the time and any failure.
@@ -226,9 +230,19 @@ Files:
 - `api-requests.jsonl`: every request's `request_measurements` line from the
   API: run, prompt, status, prompt tokens and sha256 (equal across arms),
   cached tokens (0 everywhere), output tokens, first-token and decode seconds.
+  Three requests failed before the client wrote a row (mk3-458k-0 in LB1
+  and LF1, mk3-1000k-0 in LB3). Each was the next prompt in the suite's
+  order, and its prompt tokens are that prompt's content tokens plus the 21
+  every mk3 prompt adds.
 - `prefill-passes.jsonl`, `weight-switches.jsonl`: rank 0's sequence lines
-  and switch times; `rank0-LB1.log`, `rank0-LB2.log`, `rank0-LF1.log`: rank
-  0's pool, switch, pass, sequence and error lines.
+  and switch times; `rank0-LB1.log`, `rank0-LB2.log`, `rank0-LF1.log`,
+  `rank0-LB3.log`: rank 0's pool, switch, pass, sequence and error lines.
+- `ranks-LB3-errors.log`: each surviving rank's lines for the failed
+  mk3-1000k-0 pass: six ranks' weight streams ran out of retries (`transport
+  retry counter exceeded`), the others' rotation steps stalled, and all
+  failed at layer 4 of pass 2, after all 16 ranks had finished pass 1. The
+  logs of the five ranks that lost power stop at the start of this prefill
+  and end in zeros: their last lines were lost with the power.
 - `events.txt`: the driver's events for each run.
 
 ## Files

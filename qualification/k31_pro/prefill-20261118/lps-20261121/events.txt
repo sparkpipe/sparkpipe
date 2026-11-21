@@ -15,6 +15,8 @@ LB1 2026-11-21T01:36:53Z done
 LB1 2026-11-21T01:36:53Z teardown
 LB1 2026-11-21T01:37:26Z lane stopped
 LB1 2026-11-21T01:37:29Z lane reclaimed
+LB1 2026-11-21T01:37:29Z release adapter restored on 16 nodes
+LB1 2026-11-21T01:37:30Z tp16 configs restored
 LB1 2026-11-21T01:37:34Z hold released
 LF1 2026-11-21T01:57:56Z hold taken; prompts start only while they fit before 2026-11-21T02:54:56Z
 LF1 2026-11-21T01:57:56Z controller state=idle active=qwen3.8-max
@@ -32,6 +34,8 @@ LF1 2026-11-21T02:56:01Z done
 LF1 2026-11-21T02:56:01Z teardown
 LF1 2026-11-21T02:57:31Z lane stopped
 LF1 2026-11-21T02:57:31Z lane reclaimed
+LF1 2026-11-21T02:57:32Z release adapter restored on 0 nodes
+LF1 2026-11-21T02:57:32Z tp16 configs restored
 LF1 2026-11-21T02:57:37Z MemAvailable below 100 GiB on: spark0() spark1() spark2() spark3() spark4() spark5() spark6() spark7() spark8() spark9() sparka() sparkb() sparkc() sparkd() sparke() sparkf()
 LF1 2026-11-21T02:57:37Z hold released
 LB2 2026-11-21T02:58:56Z hold taken; prompts start only while they fit before 2026-11-21T03:55:56Z
@@ -56,6 +60,8 @@ LB2 2026-11-21T04:14:21Z done
 LB2 2026-11-21T04:14:21Z teardown
 LB2 2026-11-21T04:14:55Z lane stopped
 LB2 2026-11-21T04:14:56Z lane reclaimed
+LB2 2026-11-21T04:14:56Z release adapter restored on 16 nodes
+LB2 2026-11-21T04:14:57Z tp16 configs restored
 LB2 2026-11-21T04:15:01Z hold released
 LF2 2026-11-21T04:41:31Z hold taken; prompts start only while they fit before 2026-11-21T05:38:31Z
 LF2 2026-11-21T04:41:31Z controller state=idle active=qwen3.8-max
@@ -67,4 +73,25 @@ LF2 2026-11-21T04:42:43Z rank sparke DEAD: spark0=WAIT spark1=WAIT spark2=WAIT s
 LF2 2026-11-21T04:42:43Z teardown
 LF2 2026-11-21T04:42:46Z lane stopped
 LF2 2026-11-21T04:42:47Z lane reclaimed
+LF2 2026-11-21T04:42:48Z release adapter restored on 16 nodes
+LF2 2026-11-21T04:42:48Z tp16 configs restored
 LF2 2026-11-21T04:42:53Z hold released
+LB3 2026-11-21T05:40:26Z hold taken; prompts start only while they fit before 2026-11-21T06:37:26Z
+LB3 2026-11-21T05:40:26Z controller state=idle active=qwen3.8-max
+LB3 2026-11-21T05:41:07Z controller: qwen3.8-max deactivated, nothing active
+LB3 2026-11-21T05:41:22Z switch configs written, extra {"index_fp8":0}
+LB3 2026-11-21T05:41:28Z adapter fc2888126311e35b (libk31_pro_tp16_serving_adapter.switch-c2b2.so) on 16 nodes
+LB3 2026-11-21T05:41:34Z lane started
+LB3 2026-11-21T05:41:53Z all ranks ready
+LB3 2026-11-21T05:42:11Z warm done
+LB3 2026-11-21T05:42:18Z api ready
+LB3 2026-11-21T05:42:18Z suite client 1591606 started
+LB3 2026-11-21T06:06:07Z rank 0 failed: sparkpipe_stage_runner: streamed prefill of 1000023 tokens for sequence 1001752 failed status=9; the request fails, no wave fallback
+LB3 2026-11-21T06:06:27Z suite client ended
+LB3 2026-11-21T06:06:37Z done
+LB3 2026-11-21T06:06:37Z teardown
+LB3 2026-11-21T06:06:47Z lane stopped
+LB3 2026-11-21T06:06:56Z lane reclaimed
+LB3 2026-11-21T06:06:56Z release adapter restored on 16 nodes
+LB3 2026-11-21T06:06:57Z tp16 configs restored
+LB3 2026-11-21T06:07:02Z hold released

@@ -234,16 +234,17 @@ by more than the BF16 peak allows.
   [`qualification/k31_pro/prefill-20261118/`](../qualification/k31_pro/prefill-20261118/README.md#fp8-index-on-a-long-prompt-suite-2026-11-21-partial)):
   20 prompts of RULER's retrieval and tracking tasks (mk, mv, mk3, vt) at
   131K, 458K and 1M, 140 questions an arm. Two power losses on the fleet
-  stopped the runs after five paired prompts (36 questions): BF16 36 right, FP8 28; only
-  BF16 8, only FP8 0 (exact McNemar p 0.0078); FP8 minus BF16 -22.2 points,
+  stopped the runs after five paired prompts (36 questions): BF16 36 right,
+  FP8 28; only BF16 8, only FP8 0 (exact McNemar p 0.0078); FP8 minus BF16 -22.2 points,
   95% bootstrap interval over prompts -66.7 to 0.0. All eight are one prompt
   (mv-131k-0), whose first token is a 0.030 near tie under BF16 that FP8
   swaps: FP8 writes out its search and stops at the 384-token cap, its 13
   quoted pairs all right but none numbered. The other four answers are
   identical token for token (logprob moves 0.0012 on average, at most 0.23).
-  mk-458k-0 prefills in 182.9 s against 204.5 s. BF16 answered two 1M
-  prompts (520.5 and 543.6 s end to end) before the second power loss. The
-  remaining 27 prompts need about 2.5 hours of full-fleet load.
+  mk-458k-0 prefills in 182.9 s against 204.5 s. Before the second power
+  loss BF16 answered two 1M prompts, all 16 questions right (520.5 and
+  543.6 s end to end, passes 480.5 and 493.0 s); they have no FP8 pair yet.
+  The remaining 27 prompts need about 2.5 hours of full-fleet load.
 - Where the pass engine wins: a pass streams about 1.3 TB of expert weights
   a node, 128 s today, whatever the prompt. Waves take about 128 s for 64K
   tokens, so the threshold is about 64K now and about 32K after lever 4. On
