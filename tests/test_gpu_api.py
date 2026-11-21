@@ -51,10 +51,6 @@ BACKEND_DIRS = ("runtime/device/cuda", "runtime/device/metal")
 EXCLUDED_PARTS = ("validation", "tools", "__pycache__")
 
 PENDING = {
-    "include/sparkpipe/family/glm/spark_glm_head_maxloc.cuh": 2,
-    "include/sparkpipe/family/module/spark_module_combine.h": 8,
-    "include/sparkpipe/spark_tp_chain_graph.h": 23,
-    "include/sparkpipe/spark_weightd_map.h": 1,
     "node/model_residentd.c": 29,
     "ring/transport/tp_device_collective.c": 98,
     "runtime/gemm.cuh": 27,
