@@ -9,6 +9,29 @@ implement, so code above `include/sparkpipe/spark_device.h` runs on it
 unchanged. What it does not do yet is listed in
 [`TECHDEBT.md`](../TECHDEBT.md#hardware-independence).
 
+## Build flavours
+
+`SPARKPIPE_DEVICE` selects the build flavour: `cuda` (the default, the build
+as it has always been) or `nvrm`. Any other value stops the build. The nvrm
+device library, `build/runtime_libs/libsparkpipe_device_nvrm.so`, builds in
+both flavours (`make nvrm-device`, and as part of `make all`) from
+`runtime/device/device.c` and `runtime/device/nvrm/*.c` with the include
+paths below; it links no vendor library and takes no toolkit include path.
+
+`make SPARKPIPE_DEVICE=nvrm` accepts only the goals ported to it,
+`nvrm-device`, `test-nvrm` and `clean`, and stops naming any other goal:
+the engine, its modules and tools still call the CUDA runtime, so an nvrm
+build of them would not be one. The list grows as targets move over.
+
+Every backend entry the backend does not implement yet fails with
+`SPARK_STATUS_UNSUPPORTED` through `SPARK_FAIL`, naming the operation and
+the module release; no entry reports success for work it did not do.
+`tests/test_device_nvrm.c` checks that on a host without the module's
+control device the backend refuses to open, names itself, and leaves the
+device closed; `tests/test_device_flavours.py` checks the flavour switch,
+the refused goals, that the default build is the cuda flavour, and the
+library's dynamic dependencies.
+
 ## One module version
 
 The resource-manager ioctl structures change between module releases, so the

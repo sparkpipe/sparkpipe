@@ -1865,8 +1865,9 @@ and the multidev docs on 2026-09-28. Line numbers are in
   replay.
 - The nvrm backend (`runtime/device/nvrm/`,
   [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
-  from the pinned open kernel module (580.178.04) and open-gpu-doc, and no
-  code yet: no build flavour, no device open or version check, no memory,
+  from the pinned open kernel module (580.178.04) and open-gpu-doc, the
+  `SPARKPIPE_DEVICE=cuda|nvrm` build flavour and a library whose every entry
+  refuses with `UNSUPPORTED`: no device open or version check, no memory,
   queues, events, kernel loading or launch, no command lists replacing
   graphs, no memory shared with weightd, no TMA descriptors and no fault
   reports. Production modules call the CUDA runtime directly (above), so
