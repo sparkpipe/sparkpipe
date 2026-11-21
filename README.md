@@ -243,6 +243,28 @@ decode step time it has measured at that context. A lane whose steps are slow
 (one that leases experts every step, for example) then wastes at most that
 second of steps after a stop token.
 
+**Exact reuse.** A request's tokens depend on the request, never on what the
+cache held (`docs/EXACTNESS_GATE.md`).
+
+- Prefill waves end at fixed places: the row budget in whole blocks, each
+  checkpoint anchor, each cut the request names (`cuts`), one token before
+  the prompt's end, and the prompt's end. Load never moves a wave end: a wave
+  the ranks refuse for capacity waits and goes out again with the same span.
+- A request resumes only at a wave end of its own cold run that an earlier
+  request reached through the same waves and left state at. State is kept at
+  anchors, one token before the prompt's end, at a commit's end and at the
+  cuts a request lists in `keep`.
+- A commit (`commit_only`) computes a prompt to its end, keeps the state
+  there and samples nothing. It is how a prefix is warmed.
+- A reply's decode steps are never reused. A follow-up prompt resumes one
+  token before the earlier prompt's end and computes the reply again as
+  prefill, so a turn costs the previous reply's tokens of prefill on top of
+  its new input.
+- The chat layer names the cuts: one token before each replayed reply began
+  and where it ends. `max_tokens: 0` on the Messages shape, or `commit_only`
+  on the Chat Completions and Responses shapes, is a commit; the answer is
+  one `cache.commit` object.
+
 **Interactive first.** Every request is interactive or background. The
 class is the engine priority: `SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE` (2)
 and above is interactive, which is what a request gets when it names
@@ -276,11 +298,12 @@ not depend on the class.
 **Streamed prefill for long prompts.** On a lane whose stage config names
 `streamed_prefill` (Kimi K3 today), an interactive prompt of at least
 `streamed_prefill_min_tokens` tokens takes a different path:
-- Every token but the last runs through the streamed prefill. The last token
-  then runs as a one-row wave that samples. On a model with recurrent state
-  the streamed prefill stops one token earlier: the token before the last
-  runs as a one-row wave whose state is the prompt's checkpoint, then the last
-  token samples.
+- Every token but the last two runs through the streamed prefill. The token
+  before the last then runs as a one-row wave, and the last token as a
+  one-row wave that samples.
+- A streamed prompt is computed whole every time. It resumes from nothing
+  and nothing resumes from it, because the streamed arithmetic is not the
+  wave arithmetic a resumed request would continue with.
 - Each node takes a contiguous slice of every pass's tokens. The streamer
   brings every layer's weights through a window, so a pass can hold
   16,384–32,768 rows a node. The deferred tokens are split evenly over the

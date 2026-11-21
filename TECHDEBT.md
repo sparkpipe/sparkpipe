@@ -1085,6 +1085,48 @@ as recorded debt for models too large for a group.
 
 ## Prefix reuse (I23)
 
+- **Exact reuse (gate GX, `docs/EXACTNESS_GATE.md`), open items.**
+  - Gate GX has not run on the fleet. The engine rules are proven on the
+    host tests only (`tests/test_model_batch_engine_mock.c`, the API test and
+    `tests/test_gx_gate.py`). Run `scripts/gx_gate.sh` for every served model
+    on a release candidate, and record the cost of the rules in
+    `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends, and time
+    per turn with the previous reply computed again.
+  - A follow-up turn computes the previous reply again as prefill, from one
+    token before the earlier prompt's end. The other exact form is to commit
+    a finished reply at once, during the tool pause, so the next turn resumes
+    where the reply ends. It is not built. The gate's measured time per turn
+    decides it per model.
+  - The pages a reply's decode steps publish carry identities no other
+    request can name. They stay in the rank page cache, unread, until
+    eviction takes them. Seal them as private pages and drop them when the
+    sequence is released.
+  - Every prompt of at least one block now ends with a one-row wave for its
+    last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
+    state, used to run its last token in the last wave.
+  - The chat layer names cuts only for replies it replays from its replay
+    store. A history it renders from text, with no replay record, names
+    none, so that request resumes at the last anchor or row-grid wave end it
+    shares with the session. Derive the reply boundaries from the rendered
+    prompt where the template puts a control token on the boundary.
+  - The opening has no cuts of its own yet: system blocks, the tool block and
+    the project context are rendered as one text and joined before
+    tokenizing (`tools/serving/chat_shapes.py`), so a block boundary is not a
+    token boundary. A client's `cache_control` marks are read and ignored;
+    they should become `keep` at the cut where their block ends. Both need
+    the blocks tokenized apart, which changes the tokens at each join against
+    the publisher's whole-text tokenization, or a boundary placed on a
+    control token.
+  - A lane with a streamed prefill computes every prompt that streams whole
+    and shares none of it, so on such a lane a follow-up turn of a long
+    prompt pays the whole prefill again. Reuse there needs the streamed
+    span to end at cuts and its passes to split at fixed places, so that a
+    resumed request computes what the cold one does.
+  - The same request under concurrency shares its waves with other requests'
+    rows. Exactness there waits for batch-invariant kernels (Dynamic
+    batching, below). The gate's `crowd` step measures the difference and
+    does not judge it; it has not run on the fleet.
+
 Prefix reuse is required and non-compliant adapters are refused at load
 ([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
 required).

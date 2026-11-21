@@ -133,9 +133,16 @@ changes to common code. Track implementation evidence in
   Publish a reusable prefix only after all matching payloads are complete.
   Partial failures roll back safely; stale transactions cannot publish or
   release a newer owner's state.
-- **I27 — Restored execution matches uninterrupted execution.** Prove hits,
-  misses, eviction, movement, copy-on-write, slot changes and reset with real
-  model state. Descriptor declarations and byte-copy tests alone are insufficient.
+- **I27 — Restored execution matches uninterrupted execution, and resumed
+  execution matches cold.** Prove hits, misses, eviction, movement,
+  copy-on-write, slot changes and reset with real model state. Descriptor
+  declarations and byte-copy tests alone are insufficient. The tokens and
+  logprobs a request produces depend on the request, never on what the cache
+  held: prefill waves end where the request's structure, the row budget and
+  the checkpoint stride put them, a request resumes only at a wave end of its
+  own cold run, and nothing else moves a wave end (gate GX,
+  `docs/EXACTNESS_GATE.md`). The gate runs one request at a time; the same
+  under concurrency needs batch-invariant kernels (`TECHDEBT.md`).
 - **Cached request state expires.** KV and recurrent state derived from
   requests are deleted from every tier (device, host, weightd pool, snapshot
   files) within 24 hours of their last use, whether or not their model is
