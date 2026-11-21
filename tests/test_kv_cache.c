@@ -2166,6 +2166,46 @@ static void SparkTestKvPageCacheVerifyCommitsKept(void)
 	printf("verify commits kept: kept blocks seal under the drafts' identities, rejected rows never reach an identity, the lane resumes exactly at the kept length: ok\n");
 }
 
+static void SparkTestKvPageCachePublishAfterAlignedVerify(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverCacheIdentity identities[2];
+	uint64_t published,deduplicated;
+	uint32_t terminal;
+	SparkTestKvPageInitialize(&fixture);
+	SparkTestKvPageLane(&lane,1u,0u,0u,1u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvIdentity(&identities[0],61u);
+	SparkTestKvIdentity(&identities[1],62u);
+	SparkTestKvPageCacheVerifyLane(&fixture,&lane,1u,8u,identities,2u);
+	assert(SparkKvPageCacheCompleteVerifyLane(&fixture.cache,&lane,8u) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].next_token_position == 8u && fixture.cache.sequences[0].mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK);
+	terminal = fixture.cache.sequences[0].terminal_entry_index;
+	published = fixture.cache.published_page_count;
+	deduplicated = fixture.cache.deduplicated_page_count;
+	assert(terminal != SPARK_KV_PAGE_CACHE_NO_INDEX && fixture.cache.entries[terminal].token_count == 8u);
+	SparkTestKvPageLane(&lane,1u,0u,8u,8u);
+	SparkTestKvPagePublish(&lane,8u,63u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkKvPageCachePrefixReady(&fixture.cache,&lane.publish_identity,8u) == 0u);
+	SparkTestKvPagePublish(&lane,8u,62u);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture.cache.sequences[0].terminal_entry_index == terminal && fixture.cache.sequences[0].next_token_position == 8u &&
+		fixture.cache.sequences[0].mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK);
+	assert(fixture.cache.published_page_count == published && fixture.cache.deduplicated_page_count == deduplicated &&
+		fixture.cache.entries[terminal].reference_count == 1u && (fixture.cache.entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_REUSED) == 0u);
+	assert(SparkKvPageCachePrefixReady(&fixture.cache,&identities[1],8u) == 1u && SparkKvPageCachePrefixReady(&fixture.cache,&identities[0],4u) == 1u);
+	SparkTestKvPageLane(&lane,1u,0u,8u,9u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK && fixture.cache.sequences[0].next_token_position == 9u);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(SparkKvPageCachePrefixReady(&fixture.cache,&identities[1],8u) == 1u);
+	printf("publish after aligned verify: a reply whose verify sealed its last block publishes that prefix as already done, keeps it ready and resumes decoding; a publish under another identity still fails: ok\n");
+}
+
 static void SparkTestKvPageCachePublishesPartialPrefix(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -3625,6 +3665,7 @@ int main(void)
 	if ( status != 0 )
 		return(-status);
 	SparkTestKvPageCacheVerifyCommitsKept();
+	SparkTestKvPageCachePublishAfterAlignedVerify();
 	SparkTestKvPageCachePublishesPartialPrefix();
 	SparkTestKvPageCachePartialBranches(1u);
 	SparkTestKvPageCachePartialBranches(2u);

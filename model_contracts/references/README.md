@@ -48,3 +48,8 @@
   learnable sink, 1M ctx rope theta 1e7, num_nextn_predict_layers=1).
   The PACK source of truth is the AngelSlim UD-IQ1_M GGUF (operator ruling);
   this config is the publisher-geometry reference both artifacts share.
+
+## qwen38_27b_chat_template.jinja
+- Source: Qwen/Qwen3.8-27B @ 1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0 (chat_template.jinja, git blob c0c686f9c38d70d179fb7b5f5aa7530bc913dda3, 8,952 bytes)
+- sha256 c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041, the digest model_contracts/qwen4_flash_authoritative.json freezes for Qwen3.8-Flash-Next's template: the 27B and Flash serve the same file
+- Purpose: the thinking levels the chat layer maps `reasoning_effort` onto. The template reads `reasoning_effort` (low, medium or xhigh; xhigh when it is missing) and `enable_thinking`; tests/test_chat_frontend_effort_levels.py renders every label of qwen3.8-27b, qwen3.8-27b-fp8 and qwen3.8-flash through it. Qwen3.8-2.4T-A95B (qwen3.8-max) has its own template with the same three levels that refuses `enable_thinking: false`.

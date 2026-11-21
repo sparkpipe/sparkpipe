@@ -269,11 +269,53 @@ static void TestRekeyOntoStatelessEntry(void)
 	free(fixture);
 }
 
+static void TestPublishAfterAlignedVerify(void)
+{
+	RetainFixture *fixture = calloc(1u,sizeof(*fixture));
+	SparkModelDriverCacheIdentity identities[2];
+	SparkModelDriverCacheLane lane;
+	uint32_t page,terminal;
+	assert(fixture != 0);
+	RetainOpen(fixture,4u,RETAIN_PAGES * RETAIN_BLOCK_TOKENS);
+	RetainIdentity(&identities[0],9u,1u);
+	RetainIdentity(&identities[1],9u,2u);
+	memset(&lane,0,sizeof(lane));
+	lane.sequence_id = 20u;
+	lane.request_generation = 1u;
+	lane.step_generation = 1u;
+	lane.context_token_count = 2u * RETAIN_BLOCK_TOKENS;
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY;
+	lane.block_identities = identities;
+	lane.block_identity_count = 2u;
+	(void)RetainBegin(fixture,&lane);
+	assert(SparkKvPageCacheCompleteVerifyLane(&fixture->cache,&lane,2u * RETAIN_BLOCK_TOKENS) == SPARK_STATUS_OK);
+	terminal = fixture->cache.sequences[0].terminal_entry_index;
+	assert(fixture->cache.sequences[0].mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK && terminal != SPARK_KV_PAGE_CACHE_NO_INDEX &&
+		(fixture->cache.entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u);
+	RetainLane(&lane,20u,0u,9u,2u,0u);
+	lane.sequence_position = lane.context_token_count;
+	lane.flags &= ~SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = 0u;
+	memset(&lane.prefix_identity,0,sizeof(lane.prefix_identity));
+	assert(SparkKvPageCacheBeginLane(&fixture->cache,&lane,&page) == SPARK_STATUS_OK && page == SPARK_KV_CACHE_NO_BLOCK);
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_INVALID_ARGUMENT);
+	lane.flags |= SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS | SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED;
+	assert(SparkKvPageCacheCompleteLane(&fixture->cache,&lane) == SPARK_STATUS_OK);
+	assert(fixture->cache.sequences[0].terminal_entry_index == terminal && fixture->cache.sequences[0].next_token_position == 2u * RETAIN_BLOCK_TOKENS &&
+		(fixture->cache.entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_STATELESS) != 0u && fixture->stores[1].backing_page_count == 0u);
+	assert(SparkKvPageCacheReleaseLane(&fixture->cache,0u,20u) == SPARK_STATUS_OK);
+	assert(RetainResumable(fixture,9u,2u) == 0u);
+	printf("state publish after aligned verify: a stateless end-of-reply publish of a block the verify sealed completes and leaves it stateless; a checkpoint publish there still fails, since its recurrent state has no page to land on: ok\n");
+	RetainClose(fixture);
+	free(fixture);
+}
+
 int main(void)
 {
 	TestChainRetention();
 	TestPressureOrder();
 	TestRekeyOntoStatelessEntry();
+	TestPublishAfterAlignedVerify();
 	printf("PASS kv state retention\n");
 	return(0);
 }

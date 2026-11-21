@@ -53,6 +53,28 @@ engine URL, the served context, stop tokens, the reasoning and tool-call
 markers, the accepted `chat_template_kwargs` and the mapping of OpenAI
 `reasoning_effort` onto the template's own variable.
 
+Each model's `reasoning_effort` map follows the levels its publisher's
+template defines: `high` takes the top level, and `minimal` turns thinking
+off where the template can. A request without `reasoning_effort` gets the
+template's own default.
+
+| Models | Template variable (default) | low | medium | high |
+|---|---|---|---|---|
+| Qwen 3.8 27B, 27B FP8, Flash and Max | `reasoning_effort` (xhigh) | low | medium | xhigh |
+| GLM-5.3 and GLM-5.3 Flash | `reasoning_effort` (max) | low | high | max |
+| Kimi K3 and K3.1 Pro | `thinking_effort` (none) | low | high | max |
+| DeepSeek V4.1 Flash | `effort` (high) | low | high | max |
+| Muse Glimmer 30B | `reasoning_strength` (high) | low | medium | high |
+
+The other templates only switch thinking on or off, so their low, medium and
+high render the same prompt. Qwen 3.8 Max's template refuses to turn thinking
+off, so it offers no `minimal`. Before 2026-11-20 the Qwen 3.8 entries passed
+only `enable_thinking`, so low, medium and high all rendered xhigh.
+`tests/test_chat_frontend_effort_levels.py` holds this table for every served
+model and renders each label through the Qwen 3.8 template
+(`model_contracts/references/qwen38_27b_chat_template.jinja`); a new model
+fails it until its template's levels are read and listed there.
+
 Known limits:
 
 - The layer forwards `temperature`, `top_p`, `top_k` (vLLM's extension;
