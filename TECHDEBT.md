@@ -1851,6 +1851,20 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
 ## Hardware independence
 
+- Rented nodes carry no NVIDIA user-space software: the engine, weightd and
+  the mesh run on a device backend over the open kernel module, on a node
+  image without NVIDIA's user-space packages.
+  [`tools/hosted_dependency_audit.py`](tools/hosted_dependency_audit.py)
+  ([`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)) is
+  the gate for release roots, node images and running nodes, and every
+  release root built from main fails it. The 25 serving adapters, the hidden
+  transport, `sparkpipe_weightd`, `weightdctl` and `weightd_warm` need
+  `libcuda.so.1` and `libcudart.so.13`; `sparkpipe_model_residentd` and the
+  CUDA device library need `libcudart.so.13`. `sparkpipe_model_api` and
+  `sparkpipe_tokenize_prompt` pass only because the linker's `--as-needed`
+  drops the `-lcuda` that the global `LDFLAGS` give every link line. Still to
+  build: that device backend, a build flavour that links neither library,
+  the node image, and the audit in the publish step of hosted release roots.
 - The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
   has buffers in the five spaces, register and map_file, queues, events and
   kernel launch, with host, CUDA and Metal backends built as one shared
