@@ -478,9 +478,9 @@ static int32_t K3LayerKdaProject(const K3LayerBuffers *b, uint32_t rows, uint32_
 	const uint32_t rank_v = rank_heads * K3_KDA_VALUE_DIM;
 	const uint32_t head_base = b->tp_rank * rank_heads;
 	if ( b->kda_state_bf16 != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( head_base + rank_heads > K3_KDA_HEADS )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_qkv_beta_weight,0,
 		b->fused_qkvb_bf16,rows,K3_HIDDEN,
@@ -525,9 +525,9 @@ static int32_t K3LayerKdaPrepare(const K3LayerBuffers *b, uint32_t rows, uint32_
 	const uint32_t rank_v = rank_heads * K3_KDA_VALUE_DIM;
 	const uint32_t head_base = b->tp_rank * rank_heads;
 	if ( b->kda_state_bf16 != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( head_base + rank_heads > K3_KDA_HEADS )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	state_slot_bytes = (uint32_t)K3_KDA_RANK_STATE_SLOT_BYTES(rank_heads, 0u);
 	LmCausalConvLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->kda_q_conv_weight,b->query_bf16,rank_qk,sequences,commit,b->sequence_row_indices, rows, stream);
 	LmCausalConvLaunch<K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>(b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16,b->kda_k_conv_weight,b->key_bf16,rank_qk,sequences,commit,b->sequence_row_indices, rows, stream);
@@ -566,7 +566,7 @@ static int32_t K3LayerKdaRecur(const K3LayerBuffers *b, const uint16_t *value_bf
 	const float *retention = b->replay_retention != 0 ? b->replay_retention : b->kda_retention;
 	const float *write_gate = b->replay_write_gate != 0 ? b->replay_write_gate : b->kda_write_gate_out;
 	if ( b->kda_state_bf16 != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if constexpr ( LM_WARP_LANES == 32u )
 		LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
 			b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, value_bf16,retention,write_gate,output_bf16, K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS),1u,sequences,commit,b->sequence_row_indices);
@@ -611,7 +611,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 {
 	const uint32_t rank_heads = K3_RANK_DIM(b,kda_heads_rank,K3_KDA_HEADS);
 	if ( b->kda_state_bf16 != 0u || b->tp_rank * rank_heads + rank_heads > K3_KDA_HEADS )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	return(K3LayerKdaBody<Format>(b,rows,sequences,commit,b->hidden_bf16,partial_accumulate,multiprocessors,stream));
@@ -740,7 +740,7 @@ static int32_t K3LayerMlaIndex(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		return(LM_LAUNCH_OK);
 	if ( b->index_key_bf16 == 0 || b->index_query_bf16 == 0 || b->index_head_bf16 == 0 || b->index_shard.shard.degree != b->kv_shard.degree ||
 		LmKvViewIsConfigured(b->index_shard.pages) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_index_key_weight,0,b->index_key_bf16,rows,K3_HIDDEN,K3_INDEX_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -760,13 +760,13 @@ static int32_t K3LayerMlaIndexSelect(const K3LayerBuffers *b, uint32_t rows, Spa
 {
 	const uint32_t first = K3LayerIndexChunkFirst(b), count = K3LayerIndexChunkCount(b, rows), stride = b->index_score_stride;
 	if ( b->index_active == 0u || count == 0u || stride == 0u || b->index_keep == 0u || (uint64_t)count * stride > b->index_score_floats )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( LmWeightedSparseScoreLaunch<K3IndexKv,K3_INDEX_HEADS,K3_INDEX_DIM,LmKvShardView>(b->index_query_bf16 + (uint64_t)first * K3_INDEX_QUERY,
 			b->index_head_bf16 + (uint64_t)first * K3_INDEX_HEADS,b->index_shard,b->sequence_of_row + first,b->context_length,b->positions + first,
 			count,stride,K3_INDEX_SCALE / sqrtf((float)K3_INDEX_HEADS),b->index_scores,stream) != SPARK_GPU_SUCCESS ||
 		LmIndexSelectLocalLaunch<LM_INDEX_SELECT_THREADS>(b->kv_shard,b->index_scores,stride,b->sequence_of_row + first,b->context_length,
 			b->positions + first,b->index_keep,K3_INDEX_TOPK,count,b->index_send,b->index_error,stream) != SPARK_GPU_SUCCESS )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return(LM_LAUNCH_OK);
 }
 
@@ -775,13 +775,12 @@ static int32_t K3LayerMlaIndexMerge(const K3LayerBuffers *b, uint32_t rows, Spar
 	const uint32_t count = K3LayerIndexChunkCount(b, rows), share = K3LayerIndexShare(b, count), own = K3LayerIndexOwnRows(b, count, share);
 	const uint32_t first = K3LayerIndexChunkFirst(b) + b->kv_shard.rank * share, merged = share != 0u ? own : count;
 	if ( b->index_active == 0u || count == 0u || (share != 0u && b->index_selected_own == 0) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( merged == 0u )
 		return(LM_LAUNCH_OK);
-	return(LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(b->index_received,(uint64_t)(share != 0u ? share : count) * b->index_keep,b->kv_shard,b->index_keep,
-		b->sequence_of_row + first,b->context_length,b->positions + first,K3_INDEX_TOPK,K3_INDEX_TOPK,merged,b->index_bitmap_words,b->index_bitmaps,
-		share != 0u ? b->index_selected_own : b->index_selected + (uint64_t)first * K3_INDEX_TOPK,b->index_error,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK :
-		LM_LAUNCH_ERR_LAUNCH);
+	if ( !(LmIndexSelectMergeLaunch<LM_INDEX_SELECT_THREADS>(b->index_received,(uint64_t)(share != 0u ? share : count) * b->index_keep,b->kv_shard,b->index_keep, b->sequence_of_row + first,b->context_length,b->positions + first,K3_INDEX_TOPK,K3_INDEX_TOPK,merged,b->index_bitmap_words,b->index_bitmaps, share != 0u ? b->index_selected_own : b->index_selected + (uint64_t)first * K3_INDEX_TOPK,b->index_error,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaGate(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, SparkGpuStream stream)
@@ -822,7 +821,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 {
 	int32_t status;
 	if ( b->kv_shard.degree > 1u || K3LayerIndexed(b) != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	status = K3LayerMlaQuery<Format,Geometry>(b,rows,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -848,32 +847,28 @@ template<class Geometry>
 static int32_t K3LayerMlaShardPartials(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	if ( K3LayerMlaShardReady(b,rows) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( b->index_active != 0u )
-		return(LmLatentShardAttendLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
-			b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
-			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
-			b->index_selected,K3_INDEX_TOPK,K3_INDEX_TOPK,K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS
-			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !(LmLatentShardAttendLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, b->index_selected,K3_INDEX_TOPK,K3_INDEX_TOPK,K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
 	if ( b->row_invariant != 0u )
-		return(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
-			b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
-			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
-			K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats,
-			b->shard_partials_f32,b->shard_partial_rank_stride,rows,LmLatentShardDecodeSplits(1u),stream) == SPARK_GPU_SUCCESS
-			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !(LmLatentShardSplitLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,LmLatentShardDecodeSplits(1u),stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
 	if ( rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS )
-		return(LmLatentShardPrefillLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
-			b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
-			K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
-			K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS
-			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	return(LmLatentShardDecodeLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(
-		b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride,
-		K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions,
-		K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats,
-		b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !(LmLatentShardPrefillLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+	if ( !(LmLatentShardDecodeLaunch<Geometry,LmKvShardView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>( b->cache_shard,b->shard_query_gathered_bf16,b->shard_query_rank_stride, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_received_floats, b->shard_partials_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static uint32_t K3LayerMlaWindowKeys(const K3LayerBuffers *b, uint32_t window)
@@ -970,14 +965,16 @@ static int32_t K3LayerMlaGatherPack(const K3LayerBuffers *b, uint32_t rows, Spar
 {
 	static_assert(Geometry::kSlotBytes == K3_MLA_KV_A_DIM * sizeof(uint16_t), "gathered keys are packed at the latent row width the value expansion reads");
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerIndexed(b) != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( b->shard_gather_prefetched != 0u )
-		return((uint64_t)b->shard_gather_prefetched * b->shard_gather_window_keys < b->shard_gather_most_keys &&
-			LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,
-				b->shard_gather_context,1u,b->shard_gather_prefetched * b->shard_gather_window_keys,b->shard_gather_most_keys,
-				b->shard_gather_send,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	return(LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,
-		b->shard_gather_context,1u,b->shard_gather_most_keys,b->shard_gather_send,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !((uint64_t)b->shard_gather_prefetched * b->shard_gather_window_keys < b->shard_gather_most_keys && LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset, b->shard_gather_context,1u,b->shard_gather_prefetched * b->shard_gather_window_keys,b->shard_gather_most_keys, b->shard_gather_send,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+	if ( !(LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset, b->shard_gather_context,1u,b->shard_gather_most_keys,b->shard_gather_send,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Geometry>
@@ -986,22 +983,22 @@ static int32_t K3LayerMlaPrefetchPack(const K3LayerBuffers *b, uint32_t rows, co
 	LmKvShardView view;
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || b->shard_gather_windows <= 1u || windows == 0u || windows > b->shard_gather_history ||
 		!LmKvViewIsConfigured(pages) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	view.pages = pages;
 	view.shard = b->kv_shard;
-	return(LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(view,b->shard_gather_list,b->shard_gather_offset,
-		b->shard_gather_context,1u,0u,windows * b->shard_gather_window_keys,b->shard_gather_send,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( !(LmKvShardGatherPackRangeLaunch<Geometry,K3_LAYER_THREADS>(view,b->shard_gather_list,b->shard_gather_offset, b->shard_gather_context,1u,0u,windows * b->shard_gather_window_keys,b->shard_gather_send,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaExpandValues(const K3LayerBuffers *b, uint32_t rows, uint32_t pass, SparkGpuStream stream)
 {
 	const uint32_t keys = K3LayerMlaPassKeys(b,pass);
 	if ( K3LayerMlaExpandedReady(b,rows) == 0u || pass >= b->shard_gather_passes || keys == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmLatentValueExpandLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(K3LayerMlaPassLanding(b,pass),K3LayerMlaWindowStride(b,pass),
-		b->kv_shard.degree,keys,(const uint16_t *)b->mla_kv_b_value_weight,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),
-		b->shard_gather_values,K3LayerMlaValueStride(b),stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( !(LmLatentValueExpandLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(K3LayerMlaPassLanding(b,pass),K3LayerMlaWindowStride(b,pass), b->kv_shard.degree,keys,(const uint16_t *)b->mla_kv_b_value_weight,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS), b->shard_gather_values,K3LayerMlaValueStride(b),stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Geometry>
@@ -1017,18 +1014,17 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 	uint32_t rank;
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || window >= K3LayerMlaPasses(b) || keys == 0u ||
 		(expanded != 0u && K3LayerMlaExpandedReady(b,rows) == 0u) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( expanded != 0u )
 	{
 		source = b->kv_shard;
 		source.rank = 0u;
 		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,landing,b->shard_gather_offset,b->shard_gather_context) != 0 ||
 			(K3LayerMlaPasses(b) > 1u && LmKvShardGatherViewWindow(&view,begin,begin + keys) != 0) )
-			return(LM_LAUNCH_ERR_SHAPE);
-		return(LmExpandedGatherPrefillSourcesLaunch<Geometry,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM,K3_V_HEAD_DIM>(view,b->kv_shard.degree,stride,
-			b->shard_gather_values,K3LayerMlaValueStride(b),b->query_bf16,heads,b->sequence_of_row,b->context_length,b->positions,
-			K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS
-			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+		if ( !(LmExpandedGatherPrefillSourcesLaunch<Geometry,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM,K3_V_HEAD_DIM>(view,b->kv_shard.degree,stride, b->shard_gather_values,K3LayerMlaValueStride(b),b->query_bf16,heads,b->sequence_of_row,b->context_length,b->positions, K3_MLA_QK_SCALE,b->shard_partials_received_f32,b->shard_partial_rank_stride,rows,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
 	}
 	for ( rank = 0u; rank < b->kv_shard.degree; rank++ )
 	{
@@ -1037,11 +1033,11 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 		if ( LmKvShardGatherViewInitialize<Geometry>(&view,b->cache_shard.pages,source,landing + (uint64_t)rank * stride,
 				b->shard_gather_offset,b->shard_gather_context) != 0 ||
 			(K3LayerMlaPasses(b) > 1u && LmKvShardGatherViewWindow(&view,begin,begin + keys) != 0) )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		if ( LmLatentGatherPrefillLaunch<Geometry,LmKvShardGatherView,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>(view,b->query_bf16,
 				heads,b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,
 				b->shard_partials_received_f32 + (uint64_t)rank * b->shard_partial_rank_stride,rows,stream) != SPARK_GPU_SUCCESS )
-			return(LM_LAUNCH_ERR_LAUNCH);
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	return(LM_LAUNCH_OK);
 }
@@ -1049,10 +1045,10 @@ static int32_t K3LayerMlaGatherPartials(const K3LayerBuffers *b, uint32_t rows, 
 static int32_t K3LayerMlaShardMerge(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	if ( K3LayerMlaShardReady(b,rows) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
-		b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->attention_out_bf16,rows,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( !(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride, b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->attention_out_bf16,rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 #define K3_MHA_QK (K3_QK_NOPE_DIM + K3_QK_UNROTATED_DIM)
@@ -1094,7 +1090,7 @@ static int32_t K3LayerMhaUp(const K3LayerBuffers *b, uint32_t rows, uint32_t mul
 {
 	int32_t status;
 	if ( K3LayerIndexed(b) != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_Q_LORA_RANK + 8u) * sizeof(float), stream,
 		b->latent_bf16,0,(const uint16_t *)b->mla_q_norm_weight, 0,b->latent_bf16,K3_Q_LORA_RANK,K3_Q_LORA_RANK,K3_LORA_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_q_b_weight,0,b->query_bf16,rows,K3_Q_LORA_RANK,
@@ -1116,7 +1112,7 @@ static int32_t K3LayerMhaPartials(const K3LayerBuffers *b, uint32_t rows, SparkG
 	const uint64_t key_pitch = K3_MHA_KEY_ELEMENTS;
 	LmKvShardGatherView view;
 	if ( K3LayerMhaReady(b,rows) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmRankMajorRowsKernel<K3_LAYER_THREADS>), dim3((K3_MLA_HEADS * K3_MHA_QK + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS, LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
 		b->shard_query_gathered_bf16,b->shard_mha_query_bf16,rows,heads * K3_MHA_QK,b->kv_shard.degree);
 	if ( LmKvShardGatherPackLaunch<Geometry,K3_LAYER_THREADS>(b->cache_shard,b->shard_gather_list,b->shard_gather_offset,b->shard_gather_context,1u,
@@ -1127,20 +1123,21 @@ static int32_t K3LayerMhaPartials(const K3LayerBuffers *b, uint32_t rows, SparkG
 			key_pitch,K3_MHA_QK,K3_QK_NOPE_DIM,stream) != SPARK_GPU_SUCCESS ||
 		LmLatentExpandPitchedLaunch<K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_V_HEAD_DIM>(b->shard_gather_send,b->shard_gather_most_keys,
 			(const uint16_t *)b->mla_kv_b_value_full_weight,K3_MLA_HEADS,b->shard_mha_keys + (uint64_t)K3_MLA_HEADS * K3_MHA_QK * 2u,key_pitch,K3_V_HEAD_DIM,stream) != SPARK_GPU_SUCCESS )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	if ( LmKvShardGatherViewInitialize<Expanded>(&view,b->cache_shard.pages,b->kv_shard,b->shard_mha_keys,b->shard_gather_offset,b->shard_gather_context) != 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,K3_MLA_HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,b->shard_mha_query_bf16,K3_MLA_HEADS,
-		b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,b->shard_partials_f32,K3LayerMhaPartialStride(b,rows),rows,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( !(LmGqaShardPartialLaunch<Expanded,LmKvShardGatherView,K3_MLA_HEADS,K3_MHA_QK,K3_V_HEAD_DIM>(view,b->shard_mha_query_bf16,K3_MLA_HEADS, b->sequence_of_row,b->context_length,b->positions,K3_MLA_QK_SCALE,b->shard_partials_f32,K3LayerMhaPartialStride(b,rows),rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMhaMerge(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	if ( K3LayerMhaReady(b,rows) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,K3LayerMhaPartialStride(b,rows),b->kv_shard.degree,K3_MLA_HEADS,
-		b->kv_shard.rank,b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( !(LmGqaShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,K3LayerMhaPartialStride(b,rows),b->kv_shard.degree,K3_MLA_HEADS, b->kv_shard.rank,b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaGatherMerge(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
@@ -1148,36 +1145,42 @@ static int32_t K3LayerMlaGatherMerge(const K3LayerBuffers *b, uint32_t rows, Spa
 	if ( b->shard_gather_expanded == 0u )
 		return(K3LayerMlaShardMerge(b,rows,stream));
 	if ( K3LayerMlaExpandedReady(b,rows) == 0u || b->shard_gather_passes != 1u )
-		return(LM_LAUNCH_ERR_SHAPE);
-	return(LmLatentShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
-		b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( !(LmLatentShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,b->shard_partial_rank_stride, b->kv_shard.degree,K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS),b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaShardFold(const K3LayerBuffers *b, uint32_t rows, uint32_t window, SparkGpuStream stream)
 {
 	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerMlaPasses(b) <= 1u || window >= K3LayerMlaPasses(b) || b->shard_gather_running == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( b->shard_gather_expanded != 0u )
-		return(LmLatentShardFoldLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
-			b->kv_shard.degree,heads,b->shard_gather_running,rows,window == 0u ? 1u : 0u,stream) == SPARK_GPU_SUCCESS
-			? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	return(LmLatentShardFoldLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride,
-		b->kv_shard.degree,heads,b->shard_gather_running,rows,window == 0u ? 1u : 0u,stream) == SPARK_GPU_SUCCESS
-		? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !(LmLatentShardFoldLaunch<K3_V_HEAD_DIM>(b->shard_partials_received_f32,b->shard_partial_rank_stride, b->kv_shard.degree,heads,b->shard_gather_running,rows,window == 0u ? 1u : 0u,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+	if ( !(LmLatentShardFoldLaunch<K3_KV_LORA_RANK>(b->shard_partials_received_f32,b->shard_partial_rank_stride, b->kv_shard.degree,heads,b->shard_gather_running,rows,window == 0u ? 1u : 0u,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMlaShardFinish(const K3LayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
 	const uint32_t heads = K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS);
 	if ( K3LayerMlaGatherReady(b,rows) == 0u || K3LayerMlaPasses(b) <= 1u || b->shard_gather_running == 0 )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( b->shard_gather_expanded != 0u )
-		return(LmLatentShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_gather_running,(uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_V_HEAD_DIM),
-			1u,heads,b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
-	return(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_gather_running,(uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK),
-		1u,heads,b->attention_out_bf16,rows,stream) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	{
+		if ( !(LmLatentShardMergeLaunch<K3_V_HEAD_DIM>(b->shard_gather_running,(uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_V_HEAD_DIM), 1u,heads,b->value_bf16,rows,stream) == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return(LM_LAUNCH_OK);
+	}
+	if ( !(LmLatentShardMergeLaunch<K3_KV_LORA_RANK>(b->shard_gather_running,(uint64_t)rows * heads * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK), 1u,heads,b->attention_out_bf16,rows,stream) == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
@@ -1186,7 +1189,7 @@ static int32_t K3LayerMoeSelect(const K3LayerBuffers *b, uint32_t rows,
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	if ( LmTopkRouteLaunch<K3_LAYER_THREADS,K3_TOP_K,true,LM_TOPK_SCORE_SIGMOID>(rows,b->router_logits,K3_EXPERTS,
 		b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE,b->route_fault,stream) != SPARK_GPU_SUCCESS )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	const uint32_t w1_out = K3_EXPERT_INTERMEDIATE * 2u;
 	return(LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
 		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
@@ -1199,7 +1202,6 @@ template<class Format>
 static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 	uint32_t packed_rows, uint32_t multiprocessors, SparkGpuStream stream)
 {
-	LmGemmArguments gemm;
 	int32_t status;
 	const uint32_t moe_in = K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN);
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
@@ -1209,19 +1211,18 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 		const uint32_t experts = K3_EXPERTS / (K3_ROUTED_EXPERT_HIDDEN / moe_in);
 		const uint8_t *slice = (const uint8_t *)b->router_weight + (uint64_t)b->tp_rank * experts * K3_HIDDEN * sizeof(uint16_t);
 		if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
-			return(K3SkinnyRows(slice,b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,stream));
-		status = LmStreamGemmDense<LmBf16Format>(slice,LmScaleTensorNone(),b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,0u,multiprocessors,stream);
-		if ( status != LM_LAUNCH_ERR_SHAPE )
+		{
+			status = K3SkinnyRows(slice,b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,stream);
+			if ( status == LM_LAUNCH_ERR_SHAPE )
+				LM_LAUNCH_REFUSE("k3 router slice: the skinny kernel refused %u rows of this rank's %u x %u router slice; waves of up to %u rows and "
+					"row-invariant waves run on it, so the slice and the normed rows need 16-byte alignment\n",rows,experts,K3_HIDDEN,LM_SKINNY_ROWS_WIDE);
 			return(status);
-		memset(&gemm,0,sizeof(gemm));
-		gemm.scale_a = LmScaleTensorNone();
-		gemm.scale_b = LmScaleTensorNone();
-		gemm.group_row_offset = b->dense_row_offset;
-		gemm.group_tile_prefix = b->dense_tile_prefix;
-		gemm.output_f32 = K3_ROUTER_SLICE(b,rows);
-		return(LmGemmLaunch<LmBf16Format,K3_LAYER_TILE_N,LmBf16Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-			&gemm,b->normed_bf16,slice,rows,rows,1u,1u,
-			K3_HIDDEN,experts,multiprocessors,false,stream));
+		}
+		status = LmStreamGemmDense<LmBf16Format>(slice,LmScaleTensorNone(),b->normed_bf16,(uint16_t *)0,K3_ROUTER_SLICE(b,rows),rows,K3_HIDDEN,experts,0u,0u,multiprocessors,stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			LM_LAUNCH_REFUSE("k3 router slice: the stream GEMM refused %u rows of this rank's %u x %u router slice; prefill waves run on it, so the "
+				"slice must hold an even number of experts and the operands 16-byte alignment\n",rows,experts,K3_HIDDEN);
+		return(status);
 	}
 	status = K3SkinnyRows(b->router_weight,b->normed_bf16,(uint16_t *)0,b->router_logits,rows,K3_HIDDEN,K3_EXPERTS,0u,stream);
 	if ( status == LM_LAUNCH_ERR_SHAPE )
@@ -1283,7 +1284,7 @@ static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
 	const uint32_t channels = b->expert_w1_output / 2u;
 	int32_t status;
 	if ( b->tp_sharded == 0u || b->expert_interleave == 0u || b->expert_w2_input != channels )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( phase == 0u )
 		return(K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 			b->latent_bf16,rows,K3_HIDDEN,slice,multiprocessors,stream));
@@ -1370,7 +1371,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	if ( phase == 2u )
 	{
 		if ( b->tp_sharded == 0u )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
 			b->latent_full_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_full_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 		LM_LAUNCH((K3LatentSliceKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
@@ -1422,7 +1423,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	{
 		if ( moe_in == 0u || K3_ROUTED_EXPERT_HIDDEN % moe_in != 0u ||
 			b->tp_rank >= K3_ROUTED_EXPERT_HIDDEN / moe_in )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		return(LM_LAUNCH_OK);
 	}
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (moe_in + 8u) * sizeof(float), stream,
@@ -1479,7 +1480,9 @@ static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, con
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,K3_HIDDEN,vocabulary);
 	LM_LAUNCH((LmHeadCommitKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->head_candidate_score,b->head_candidate_token,tiles, b->output_token,b->output_score,rows);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( !(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS) )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static int32_t K3ProjectionShapeFits(const char *name, uint32_t input_dimension, uint32_t output_dimension)

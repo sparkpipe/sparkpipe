@@ -683,7 +683,7 @@ static inline SparkGpuError LmLatentShardPrefillRowsLaunch(
 		query_rank_stride < (uint64_t)rows * heads_per_rank * (LATENT + ROPE) ||
 		partial_rank_stride < (uint64_t)rows * selection.record_heads * LM_LATENT_SHARD_RECORD_FLOATS(LATENT) ||
 		(partial_rank_stride % 2u) != 0u)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (!granted)
 	{
 		SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentShardPrefillKernel<Geometry, Pages, LATENT, ROPE, ROWS>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)LM_PREFILL_ATTN_SHARED_LIMIT);
@@ -776,12 +776,12 @@ static inline SparkGpuError LmLatentShardSplitLaunch(
 	uint32_t first, count, chunk;
 	SparkGpuError error;
 	if (rows == 0u || splits == 0u || total_heads == 0u || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (splits == 1u)
 		return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank, total_heads,
 			sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 	if (split_partials == 0 || split_capacity_floats < row_floats)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	chunk = split_capacity_floats / row_floats < rows ? (uint32_t)(split_capacity_floats / row_floats) : rows;
 	for (first = 0u; first < rows; first += count)
 	{
@@ -821,9 +821,9 @@ static inline SparkGpuError LmLatentShardDecodeLaunch(
 {
 	const uint32_t total_heads = heads_per_rank * cache.shard.degree, splits = rows != 0u ? LmLatentShardDecodeSplits(rows) : 1u;
 	if (rows == 0u || rows >= LM_LATENT_SHARD_PREFILL_MIN_ROWS || total_heads % LM_LATENT_SHARD_QUERIES != 0u)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	if (splits > 1u && (split_partials == 0 || split_capacity_floats < LmLatentShardDecodeSplitFloats(rows, total_heads, LATENT)))
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	return LmLatentShardSplitLaunch<Geometry, Pages, LATENT, ROPE>(cache, query_bf16, query_rank_stride, heads_per_rank, sequence_of_row, context_length,
 		row_position, qk_scale, split_partials, split_capacity_floats, partials, partial_rank_stride, rows, splits, stream);
 }
@@ -844,7 +844,7 @@ static inline SparkGpuError LmLatentShardPrefillLaunch(
 	SparkGpuStream stream)
 {
 	if ((heads_per_rank * cache.shard.degree) % LM_LATENT_SHARD_QUERIES != 0u)
-		return SPARK_GPU_ERROR_INVALID_VALUE;
+		SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE);
 	return LmLatentShardPrefillRowsLaunch<Geometry, Pages, LATENT, ROPE, 1u>(cache, query_bf16, query_rank_stride, heads_per_rank,
 		heads_per_rank * cache.shard.degree, sequence_of_row, context_length, row_position, qk_scale, partials, partial_rank_stride, rows, 1u, 0u, stream, LmLatentShardDense(heads_per_rank));
 }

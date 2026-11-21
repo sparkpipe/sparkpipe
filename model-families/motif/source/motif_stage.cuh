@@ -271,7 +271,9 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<MO_THREADS, float, ROUND_FIRST>), rows, MO_THREADS, (dimension + 8u) * sizeof(float), stream, input,
 			(const uint16_t *)0, weight, (uint16_t *)0, output, dimension, stride, MO_EPS);
-		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		if ( !(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return LM_LAUNCH_OK;
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)

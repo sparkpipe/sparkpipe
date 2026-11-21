@@ -384,7 +384,7 @@ static SparkStatus D41LaunchedAt(uint32_t line)
 	if ( error == SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_OK;
 	fprintf(stderr, "sparkpipe_dsv41_flash: CUDA error seen at line %u: %s\n", line, SparkGpuGetErrorString(error));
-	return SPARK_STATUS_INTERNAL_ERROR;
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 #define D41Launched() D41LaunchedAt(__LINE__)
@@ -1870,7 +1870,7 @@ static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK ||
 				LmMxGemmDense(codes, codes + (uint64_t)own * D41_HIDDEN, layer->sh_w3.weight, layer->sh_w3.scale, state->shared_up + first, own,
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_LAUNCH;
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		}
 		return LM_LAUNCH_OK;
 	}
@@ -2627,7 +2627,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		{
 			SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
 			if ( SparkGpuStreamIsCapturing(stream, &capturing) != SPARK_GPU_SUCCESS || capturing != SPARK_GPU_CAPTURE_STATUS_NONE )
-				return SPARK_STATUS_UNSUPPORTED;
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 			status = D41DumpStep(state, step, stream);
 			if ( status != SPARK_STATUS_OK )
 				return status;
@@ -3771,7 +3771,7 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		{
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u carries %u attention sinks, not all %u\n", index, D41_ENTRY(ATTN_SINK, index)->columns,
 				D41_HEADS);
-			return SPARK_STATUS_SCHEMA_ERROR;
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
 		layer->group_sink = layer->sink + (uint64_t)(D41_ATTENTION_RANK(state) / 2u) * 2u * D41_LOCAL_HEADS;
 		layer->sink += (uint64_t)D41_ATTENTION_RANK(state) * D41_LOCAL_HEADS;
