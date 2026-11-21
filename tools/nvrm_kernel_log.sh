@@ -22,7 +22,7 @@ check)
 	found=$(kernel_log | awk -v since="$since" '
 		match($0, /^\[ *[0-9]+\.[0-9]+\]/) {
 			stamp = substr($0, RSTART + 1, RLENGTH - 2) + 0
-			if ( stamp >= since + 0 && $0 ~ /NVRM:/ && $0 ~ /(Xid|ssert)/ )
+			if ( stamp >= since + 0 && $0 ~ /NVRM:/ && $0 ~ /(Xid|ssert|Cannot|[Ee]rror|[Ff]ail|[Ff]ault)/ )
 				print
 		}')
 	if [ -n "$found" ]; then
@@ -30,7 +30,7 @@ check)
 		echo "$found"
 		exit 1
 	fi
-	echo "PASS the kernel log gained no NVRM Xid or assertion line during the run"
+	echo "PASS the kernel log gained no NVRM Xid, assertion, refusal, error or fault line during the run"
 	;;
 *)
 	echo "usage: $0 mark | check MARK" >&2

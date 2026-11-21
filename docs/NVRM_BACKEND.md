@@ -323,8 +323,9 @@ queue channels join the scheduled group afterwards.
 
 `make test-nvrm-gpu` reads the kernel log before and after the run
 (`tools/nvrm_kernel_log.sh`, with `dmesg` or `sudo -n dmesg`) and fails if
-the module logged any `NVRM:` Xid or assertion line meanwhile, or if the
-log cannot be read.
+the module logged any `NVRM:` line meanwhile that reports an Xid, an
+assertion, a refusal ("Cannot ..."), an error, a failure or a fault, or if
+the log cannot be read.
 
 The GPU tests that run under `make test-nvrm-gpu`, besides the
 launch-shape probe and first light:
