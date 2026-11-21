@@ -610,6 +610,18 @@ static __global__ void D41GroupInputKernel(const uint16_t *__restrict__ gathered
 	}
 }
 
+static __global__ void D41RankRowsKernel(const uint4 *__restrict__ gathered, uint4 *__restrict__ output, uint32_t rows, uint32_t quads,
+	uint32_t first_rank, uint32_t ranks)
+{
+	const uint32_t row = blockIdx.y;
+	const uint64_t span = (uint64_t)ranks * quads;
+	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < span; index += (uint64_t)gridDim.x * blockDim.x )
+	{
+		const uint64_t rank = first_rank + index / quads, column = index % quads;
+		output[(uint64_t)row * span + index] = gathered[(rank * rows + row) * quads + column];
+	}
+}
+
 static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uint32_t source_stride, uint16_t *__restrict__ target,
 	uint32_t target_stride, uint32_t width)
 {

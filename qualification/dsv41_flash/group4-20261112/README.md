@@ -2070,3 +2070,44 @@ without stalling its peers, which plausibly absorbs part of each node's
 50 Hz L2 windows; this run did not measure that part on its own. The arm
 with one piece in flight ran about 6% under this receipt's ABI-16 fold
 figures at 32K and 131K (27,067 / 29,579), and the cause is not known yet.
+
+Decode on the sixteen ranks (2026-11-19). One stream of 96-token prompts
+generating 256 tokens takes 25.2 to 25.7 ms a token (about 39 tok/s; the
+four-Spark reference reports 31.79 ms). A trace of ranks 0 and 8
+(`dc19t`):
+
+| Step | | Rank 0 | Rank 8 |
+| --- | --- | ---: | ---: |
+| one row, 25.4 ms | skinny multiplies | 13.3 ms | 4.4 ms |
+| | waiting at arrivals | 2.4 ms | 11.5 ms |
+| eight rows, 82 ms | all 64 heads' projections | 27.9 ms | 27.3 ms |
+| | per-head window fold | 10.5 ms | 10.6 ms |
+| | routed experts | 10.0 ms | 9.9 ms |
+
+- In a one-row step rank 0 computes the whole shared expert, about 225 us
+  a layer, while the other fifteen ranks wait for it.
+- A step of two to sixteen rows (several streams, or a short extension)
+  ran every head on every rank, since the spread of the one-row step
+  covered one row only.
+
+Steps of up to sixteen committed rows now spread their attention too. Each
+rank runs its four heads, half its group's o_a rows and a sixteenth of o_b
+for every row, and the three all-gathers arrive rank-major, so a small
+kernel (`D41RankRowsKernel`) puts each gather in row order, keeping only
+the group's two ranks for the o_a input. Two interleaved runs of each
+build, all streams starting together, 256 tokens each:
+
+| Streams | Before | Spread | |
+| --- | ---: | ---: | ---: |
+| 1 | 39.1 to 39.7 tok/s | 37.6 to 39.5 | same path |
+| 4 | 63.2, 65.0 | 99.6, 98.3 | +54% |
+| 8 | 90.8, 90.5 | 129.2, 143.6 | +50% |
+| 16 | 90.9, 92.1 | 131.3, 131.7 | +44% |
+
+The spread is exact. With the deep scorer at a stride of 8 tokens, so
+that each scored position runs as a nine-row wave, the spread scores all
+56 positions bit for bit as the old path, and two spread lanes match each
+other. Concurrent streams are not reproducible run to run on either build
+(requests join steps at different points, and a step's arithmetic depends
+on its row count), so their generated texts differ between any two runs;
+all of them are coherent text.
