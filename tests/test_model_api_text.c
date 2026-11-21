@@ -734,6 +734,34 @@ static void TestApiCacheState(TestApiStack *stack)
 	printf("cache state: a completion reports its match, resume point, waits, boot and artifact; POST /v1/cache/state answers for token ids or an identity with what every rank holds\n");
 }
 
+static void TestApiTurnFloorTool(TestApiStack *stack)
+{
+	static const char output[] = "build/test_model_api_text_turn_floor";
+	char command[2048];
+	FILE *file;
+	uint32_t index;
+	assert(stack->api_stderr_path != 0);
+	file = fopen("build/test_model_api_text_tokens.txt","w");
+	assert(file != 0);
+	for (index=0u; index<24000u; index++)
+		assert(fprintf(file,"%u\n",1000u + (index * 7919u) % 900u) > 0);
+	assert(fclose(file) == 0);
+	(void)snprintf(command,sizeof(command),"rm -rf %s %s.out",output,output);
+	assert(system(command) == 0);
+	(void)snprintf(command,sizeof(command),
+		"{ python3 tools/turn_floor.py run --endpoint http://127.0.0.1:%u --tokens build/test_model_api_text_tokens.txt --api-log %s --label fixture --output %s "
+		"--contexts 16,32,4096 --tails 2,4 --repeats 1 --spec-repeats 0 --reply-tokens 2 --decode-tokens 3 --served-tokens 3 --arms turns,truth --event after-the-turns && "
+		"python3 tools/turn_floor.py parts %s && python3 tests/turn_floor_run_check.py %s; } > %s.out 2>&1",
+		stack->api_port,stack->api_stderr_path,output,output,output,output);
+	if ( system(command) != 0 )
+	{
+		(void)snprintf(command,sizeof(command),"tail -40 %s.out >&2",output);
+		(void)system(command);
+		assert(0 && "tools/turn_floor.py does not read this API's replies and log");
+	}
+	printf("turn floor tool: its turns, its question about the session and its split run against this API and its log\n");
+}
+
 static void TestApiWritePromptRequest(char *request,size_t capacity,uint32_t prompt_count,uint32_t max_tokens)
 {
 	size_t length;
@@ -1463,12 +1491,15 @@ int main(void)
 	stack.api_port = TestTcpPortRange(1u);
 	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
 	TestApiStartStack(&stack,0);
+	stack.api_stderr_path = "build/test_model_api_text_api_stderr.log";
+	unlink(stack.api_stderr_path);
 	TestApiStartApi(&stack);
 	TestApiIdleWake(&stack);
 	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
 	TestApiCacheState(&stack);
 	TestApiContextLimit(&stack);
+	TestApiTurnFloorTool(&stack);
 	TestApiStopApi(&stack);
 	TestApiStopResidents(stack.residents,stack.paths);
 	unlink(stack.deployment_path);

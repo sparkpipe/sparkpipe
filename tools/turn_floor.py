@@ -24,6 +24,7 @@ PROBE_TOKENS = 2048
 RESUME_TAIL_TOKENS = 300
 SUBAGENT_BRIEF_TOKENS = 2048
 SESSION_SLACK_TOKENS = 8192
+BLOCK_MARGIN_TOKENS = 64
 RESUME_REGION_TOKENS = 16 * RESUME_TAIL_TOKENS
 RESUME_SETTLE_SECONDS = 2.5
 STORE_LOOKBACK_BYTES = 16 << 20
@@ -206,17 +207,18 @@ class Run:
         self.output.mkdir(parents=True, exist_ok=True)
         self.engine = Engine(arguments.endpoint, arguments.timeout)
         self.limit, self.model = self.engine.context_limit()
+        self.margin = min(BLOCK_MARGIN_TOKENS, self.limit // 8)
         self.state_path = self.output / "session.json"
         self.contexts = [value for value in arguments.contexts
-                         if value + self.growth(arguments) + max(arguments.decode_tokens, arguments.served_tokens) + 64 < self.limit]
+                         if value + self.growth(arguments) + max(arguments.decode_tokens, arguments.served_tokens) + self.margin < self.limit]
         self.resumed = self.state_path.exists()
         if self.resumed:
             self.state = json.loads(self.state_path.read_text())
         else:
             self.state = {"salt": arguments.salt if arguments.salt is not None else random.SystemRandom().randrange(1 << 30), "history": [], "taken": 0,
-                          "resume_taken": 0, "levels": [], "sequence": 0, "wave_tokens": min(arguments.wave_tokens, self.limit - 65),
+                          "resume_taken": 0, "levels": [], "sequence": 0, "wave_tokens": max(1, min(arguments.wave_tokens, self.limit - self.margin - 1)),
                           "session_tokens": arguments.session_tokens or min(self.limit, max(self.contexts + [arguments.decode_context or 0]) + self.growth(arguments))}
-        room = self.limit - arguments.reply_tokens - 64
+        room = self.limit - arguments.reply_tokens - self.margin
         self.opening_tokens, self.subagent_tokens, self.probe_tokens = min(OPENING_TOKENS, room), min(SUBAGENT_TOKENS, room), min(PROBE_TOKENS, room)
         self.source = Source(load_tokens(arguments.tokens), self.state["salt"],
                              (("session", self.state["session_tokens"] + SESSION_SLACK_TOKENS), ("opening", self.opening_tokens), ("second_prompt", SECOND_PROMPT_TOKENS),
@@ -303,6 +305,11 @@ class Run:
 
     def turns(self):
         arguments = self.arguments
+        skipped = [value for value in arguments.contexts if value not in self.contexts]
+        if skipped:
+            print(json.dumps({"skipped": "levels", "contexts": skipped, "limit": self.limit, "growth": self.growth(arguments)}), flush=True)
+        if not self.contexts:
+            raise SystemExit(f"turn_floor: no context level of {arguments.contexts} fits the engine's {self.limit} positions beside {self.growth(arguments)} tokens of turns")
         for context in self.contexts:
             if context in self.state["levels"]:
                 continue
@@ -332,7 +339,7 @@ class Run:
 
     def decode(self):
         context = self.arguments.decode_context
-        if context is None or context + self.arguments.decode_tokens + 64 >= self.limit:
+        if context is None or context + self.arguments.decode_tokens + self.margin >= self.limit:
             print(json.dumps({"skipped": "decode", "context": context, "limit": self.limit}), flush=True)
             return
         missing = context - len(self.state["history"])

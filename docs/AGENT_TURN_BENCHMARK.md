@@ -217,6 +217,9 @@ python3 turn_floor.py parts $W/kimi-k3
   of that many tokens with speculation as the engine serves it. A tail of
   `--once-from` tokens or more runs once and only plain, so a long tail is
   not prefilled again for each repeat.
+- A level that does not fit the engine's context beside its turns is
+  skipped and named in the run's output; when none fits, the run stops with
+  an error instead of measuring nothing.
 - A run that stops inside a level keeps the level's finished steps in
   `session.json` and goes on from the next one when the same command runs
   again. The first session request of such a run is marked `first_of_run`
