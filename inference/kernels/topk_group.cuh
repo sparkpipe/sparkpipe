@@ -6,6 +6,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/topk.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 template<uint32_t THREADS, uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
 __global__ __launch_bounds__(THREADS, 1)
@@ -100,12 +101,12 @@ void LmTopkGroupLimitedKernel(const float *__restrict__ logits, const float *__r
 }
 
 template<uint32_t THREADS, uint32_t EXPERTS, uint32_t GROUPS, uint32_t TOPK_GROUPS, uint32_t TOPK>
-static inline cudaError_t LmTopkGroupLimitedLaunch(uint32_t rows, const float *logits, const float *selection_bias, uint32_t *out_indices,
-	float *out_values, float scale, uint32_t *fault, cudaStream_t stream)
+static inline SparkGpuError LmTopkGroupLimitedLaunch(uint32_t rows, const float *logits, const float *selection_bias, uint32_t *out_indices,
+	float *out_values, float scale, uint32_t *fault, SparkGpuStream stream)
 {
 	if ( rows == 0u || logits == 0 || out_indices == 0 || out_values == 0 || fault == 0 )
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmTopkGroupLimitedKernel<THREADS,EXPERTS,GROUPS,TOPK_GROUPS,TOPK>), rows, THREADS, 0, stream, logits, selection_bias, out_indices,
 		out_values, scale, fault);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }

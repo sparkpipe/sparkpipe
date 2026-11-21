@@ -5,6 +5,7 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ void LmRopePair(float *low, float *high, float angle, float scale = 1.0f)
 {
@@ -782,17 +783,17 @@ static inline uint32_t LmLatentAttentionHeadsSupported(uint32_t heads)
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t HEADS>
-static inline cudaError_t LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, cudaStream_t stream)
+static inline SparkGpuError LmLatentAttentionHeadsLaunchShape(const uint16_t *query_latent_bf16, LmKvView cache, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *selected_positions, uint32_t selected_count, uint32_t partitions, float qk_scale, uint16_t *output_bf16, float *split_partials, const uint32_t *row_position, uint32_t rows, SparkGpuStream stream)
 {
     LM_LAUNCH((LmLatentAttentionHeadsKernel<Geometry, LATENT, HEADS>), dim3(rows, partitions), LM_LATENT_HEADS_THREADS, 0, stream, query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position);
-    if (cudaPeekAtLastError() != cudaSuccess || partitions == 1u)
-        return cudaPeekAtLastError();
+    if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS || partitions == 1u)
+        return SparkGpuPeekAtLastError();
     LM_LAUNCH((LmLatentAttentionDecodeSplitCombineKernel<LM_LATENT_HEADS_THREADS, LATENT>), dim3(rows, HEADS), LM_LATENT_HEADS_THREADS, 0, stream, split_partials, output_bf16, HEADS, partitions);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT>
-static inline cudaError_t LmLatentAttentionHeadsLaunch(
+static inline SparkGpuError LmLatentAttentionHeadsLaunch(
     const uint16_t *query_latent_bf16,
     LmKvView cache,
     const uint32_t *sequence_of_row,
@@ -809,7 +810,7 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
     float *split_partials,
     uint32_t split_partial_blocks,
     uint32_t multiprocessor_count,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     uint32_t partitions;
     partitions = rows == 0u || multiprocessor_count == 0u ? 1u : (multiprocessor_count * LM_LATENT_ATTN_SPLIT_CTAS_PER_SM + rows - 1u) / rows;
@@ -822,11 +823,11 @@ static inline cudaError_t LmLatentAttentionHeadsLaunch(
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 2u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
     if (heads == 4u)
         return LmLatentAttentionHeadsLaunchShape<Geometry, LATENT, 4u>(query_latent_bf16, cache, sequence_of_row, context_length, selected_positions, selected_count, partitions, qk_scale, output_bf16, split_partials, row_position, rows, stream);
-    return cudaErrorNotSupported;
+    return SPARK_GPU_ERROR_NOT_SUPPORTED;
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE, bool ROW_INVARIANT = false>
-static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
+static inline SparkGpuError LmLatentAttentionDecodeSplitLaunch(
     const uint16_t *query_latent_bf16,
     const uint16_t *query_rope_bf16,
     LmKvView cache,
@@ -844,7 +845,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
     float *split_partials,
     uint32_t split_partial_blocks,
     uint32_t multiprocessor_count,
-    cudaStream_t stream)
+    SparkGpuStream stream)
 {
     uint32_t blocks;
     uint32_t wanted;
@@ -887,7 +888,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
             qk_scale,
             output_bf16,
             row_position);
-        return cudaPeekAtLastError();
+        return SparkGpuPeekAtLastError();
     }
     LM_LAUNCH(
         (LmLatentAttentionDecodeSplitKernel<
@@ -908,9 +909,9 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
         qk_scale,
         split_partials,
         row_position);
-    if (cudaPeekAtLastError() != cudaSuccess)
+    if (SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS)
     {
-        return cudaPeekAtLastError();
+        return SparkGpuPeekAtLastError();
     }
     LM_LAUNCH(
         (LmLatentAttentionDecodeSplitCombineKernel<THREADS, LATENT>),
@@ -922,7 +923,7 @@ static inline cudaError_t LmLatentAttentionDecodeSplitLaunch(
         output_bf16,
         heads,
         partitions);
-    return cudaPeekAtLastError();
+    return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>

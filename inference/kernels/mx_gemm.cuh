@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <string.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_MX_THREADS 256u
 #define LM_MX_WARPS 8u
@@ -83,7 +84,7 @@ __global__ __launch_bounds__(LM_MX_THREADS) void LmMxQuantizeKernel(const uint16
 	}
 }
 
-static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *scales, uint64_t elements, cudaStream_t stream)
+static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *scales, uint64_t elements, SparkGpuStream stream)
 {
 	uint64_t blocks;
 	if ( source == 0 || codes == 0 || scales == 0 || elements == 0u || elements % LM_MX_BLOCK != 0u || ((uintptr_t)source & 15u) != 0u ||
@@ -92,10 +93,10 @@ static int32_t LmMxQuantize(const uint16_t *source, uint8_t *codes, uint8_t *sca
 	blocks = (elements / 8u + LM_MX_THREADS - 1u) / LM_MX_THREADS;
 	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,elements / 8u,
 		elements / 8u,0u);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uint8_t *codes, uint8_t *scales, uint32_t rows, uint32_t width, cudaStream_t stream)
+static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uint8_t *codes, uint8_t *scales, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
 	const uint64_t octets = (uint64_t)rows * width / 8u;
 	uint64_t blocks;
@@ -105,7 +106,7 @@ static int32_t LmMxQuantizeRows(const uint16_t *source, uint64_t row_stride, uin
 	blocks = (octets + LM_MX_THREADS - 1u) / LM_MX_THREADS;
 	LM_LAUNCH((LmMxQuantizeKernel),(uint32_t)(blocks < LM_MX_QUANTIZE_GRID ? blocks : LM_MX_QUANTIZE_GRID),LM_MX_THREADS,0,stream,source,codes,scales,octets,
 		width / 8u,row_stride);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static __device__ __forceinline__ void LmMxMatrix4(uint32_t address, uint32_t value[4])
@@ -336,22 +337,22 @@ static int32_t LmMxGemmValidate(const LmMxGemmArguments *args, uint32_t multipro
 }
 
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M>
-static int32_t LmMxGemmLaunchGroups(const LmMxGemmArguments *args, const LmMxGemmGroups *groups, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmMxGemmLaunchGroups(const LmMxGemmArguments *args, const LmMxGemmGroups *groups, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	static std::atomic<uint64_t> granted(0u);
 	const uint32_t shared = LmMxStages<TILE_M,TILE_N>() * LmMxStageBytes<TILE_M,TILE_N>();
 	const uint64_t tiles = (uint64_t)((args->rows + TILE_M - 1u) / TILE_M) * ((args->output_dimension + TILE_N - 1u) / TILE_N) * groups->count;
 	int device = 0;
-	if ( cudaGetDevice(&device) != cudaSuccess || device < 0 || (uint32_t)device >= LM_MX_MAX_DEVICES )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_MX_MAX_DEVICES )
 		return(LM_LAUNCH_ERR_ATTRIBUTE);
 	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 	{
-		if ( cudaFuncSetAttribute((const void *)LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)LM_MX_SHARED_LIMIT) != cudaSuccess )
+		if ( SparkGpuFuncSetAttribute((const void *)LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)LM_MX_SHARED_LIMIT) != SPARK_GPU_SUCCESS )
 			return(LM_LAUNCH_ERR_ATTRIBUTE);
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
 	LM_LAUNCH((LmMxGemmKernel<TILE_M,TILE_N,WARPS_M>),(uint32_t)(tiles < multiprocessors ? tiles : multiprocessors),LM_MX_THREADS,shared,stream,*args,*groups);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static LmMxGemmGroups LmMxGemmSingle(const LmMxGemmArguments *args)
@@ -368,7 +369,7 @@ static LmMxGemmGroups LmMxGemmSingle(const LmMxGemmArguments *args)
 }
 
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS_M>
-static int32_t LmMxGemmLaunchTile(const LmMxGemmArguments *args, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmMxGemmLaunchTile(const LmMxGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	const LmMxGemmGroups groups = LmMxGemmSingle(args);
 	return(LmMxGemmLaunchGroups<TILE_M,TILE_N,WARPS_M>(args,&groups,multiprocessors,stream));
@@ -376,7 +377,7 @@ static int32_t LmMxGemmLaunchTile(const LmMxGemmArguments *args, uint32_t multip
 
 static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
 	uint16_t *output_bf16, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset,
-	uint32_t multiprocessors, uint32_t grid_limit, cudaStream_t stream)
+	uint32_t multiprocessors, uint32_t grid_limit, SparkGpuStream stream)
 {
 	LmMxGemmArguments args;
 	uint64_t neuron_tiles;
@@ -407,7 +408,7 @@ static int32_t LmMxGemmDenseGrid(const uint8_t *activation, const uint8_t *activ
 
 static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activation_scale, const uint8_t *weight, const uint8_t *weight_scale,
 	uint16_t *output_bf16, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t output_row_stride, uint32_t output_column_offset,
-	uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t multiprocessors, SparkGpuStream stream)
 {
 	return(LmMxGemmDenseGrid(activation,activation_scale,weight,weight_scale,output_bf16,rows,input_dimension,output_dimension,output_row_stride,
 		output_column_offset,multiprocessors,multiprocessors,stream));
@@ -415,7 +416,7 @@ static int32_t LmMxGemmDense(const uint8_t *activation, const uint8_t *activatio
 
 static int32_t LmMxGemmGrouped(const uint8_t *const *activation, const uint8_t *const *activation_scale, const uint8_t *const *weight,
 	const uint8_t *const *weight_scale, const uint32_t *output_column_offset, uint32_t count, uint16_t *output_bf16, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t output_row_stride, uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t output_dimension, uint32_t output_row_stride, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	LmMxGemmArguments args;
 	LmMxGemmGroups groups;

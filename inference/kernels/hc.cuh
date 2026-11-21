@@ -7,6 +7,7 @@
 #include "dtype.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_HC_MIX_ROWS 4u
 #define LM_HC_MIX_LANES 256u
@@ -189,7 +190,7 @@ static inline uint64_t LmHcMixPartialBytes(uint64_t rows, uint32_t mixes)
 
 template<uint32_t THREADS, uint32_t STREAMS, uint32_t MIXES, uint32_t WIDTH>
 static void LmHcMix(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *partial, float *post, uint16_t *mixed,
-	uint32_t rows, float norm_epsilon, float hc_epsilon, float magnitude, cudaStream_t stream)
+	uint32_t rows, float norm_epsilon, float hc_epsilon, float magnitude, SparkGpuStream stream)
 {
 	if ( rows <= LM_HC_MIX_SPLIT_ROWS )
 	{
@@ -370,31 +371,31 @@ __global__ __launch_bounds__(LM_HC_STAGED_THREADS, 1) void LmHcSinkhornPartialSt
 }
 
 template<uint32_t STREAMS, uint32_t ROWS>
-static int32_t LmHcSinkhornPartialStaged(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, cudaStream_t stream)
+static int32_t LmHcSinkhornPartialStaged(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
 	using T = LmHcStagedShape<STREAMS,ROWS>;
 	static std::atomic<uint64_t> granted(0u);
 	int device = 0;
 	if ( rows == 0u || width == 0u || (STREAMS * width) % 8u != 0u || (((uintptr_t)streams | (uintptr_t)fn) & 15u) != 0u )
 		return LM_LAUNCH_ERR_SHAPE;
-	if ( cudaGetDevice(&device) != cudaSuccess || device < 0 || (uint32_t)device >= LM_HC_MAX_DEVICES )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || device < 0 || (uint32_t)device >= LM_HC_MAX_DEVICES )
 		return LM_LAUNCH_ERR_ATTRIBUTE;
 	if ( (granted.load() & (UINT64_C(1) << (uint32_t)device)) == 0u )
 	{
-		if ( cudaFuncSetAttribute((const void *)LmHcSinkhornPartialStagedKernel<STREAMS,ROWS>, cudaFuncAttributeMaxDynamicSharedMemorySize,
-			(int)T::kShared) != cudaSuccess )
+		if ( SparkGpuFuncSetAttribute((const void *)LmHcSinkhornPartialStagedKernel<STREAMS,ROWS>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,
+			(int)T::kShared) != SPARK_GPU_SUCCESS )
 			return LM_LAUNCH_ERR_ATTRIBUTE;
 		granted.fetch_or(UINT64_C(1) << (uint32_t)device);
 	}
 	LM_LAUNCH((LmHcSinkhornPartialStagedKernel<STREAMS,ROWS>), (rows + ROWS - 1u) / ROWS, LM_HC_STAGED_THREADS, T::kShared, stream, streams, fn,
 		partials, width, rows);
-	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
 #endif
 
 template<uint32_t STREAMS>
-static int32_t LmHcSinkhornPartials(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, cudaStream_t stream)
+static int32_t LmHcSinkhornPartials(const uint16_t *streams, const float *fn, float *partials, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
 #ifdef __CUDACC__
 	if ( rows >= LM_HC_SINKHORN_WIDE_FROM )
@@ -406,7 +407,7 @@ static int32_t LmHcSinkhornPartials(const uint16_t *streams, const float *fn, fl
 		return LM_LAUNCH_ERR_SHAPE;
 	LM_LAUNCH((LmHcSinkhornPartialKernel<STREAMS>), dim3(LmHcSinkhornShape<STREAMS>::kTasks, rows), LM_HC_SINKHORN_THREADS, 0, stream, streams, fn,
 		partials, width);
-	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
 template<uint32_t STREAMS>
@@ -460,13 +461,13 @@ __global__ void LmHcSinkhornKernel(const float *__restrict__ partials, const flo
 
 template<uint32_t STREAMS>
 static int32_t LmHcSinkhornMixes(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *partials, float *pre, float *post,
-	float *comb, uint32_t rows, uint32_t width, float rms_epsilon, uint32_t iterations, float epsilon, cudaStream_t stream)
+	float *comb, uint32_t rows, uint32_t width, float rms_epsilon, uint32_t iterations, float epsilon, SparkGpuStream stream)
 {
 	const int32_t status = LmHcSinkhornPartials<STREAMS>(streams, fn, partials, rows, width, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	LM_LAUNCH((LmHcSinkhornKernel<STREAMS>), rows, 32u, 0, stream, partials, scale, base, pre, post, comb, width, rms_epsilon, iterations, epsilon);
-	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
 
 template<uint32_t STREAMS>

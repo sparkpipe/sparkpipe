@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_state_span.h"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_STATE_SNAPSHOT_THREADS 256u
 
@@ -36,8 +37,8 @@ static __global__ void LmStateSpansCopyKernel(
 	}
 }
 
-static inline cudaError_t LmStateSpansCopy(
-	cudaStream_t stream,
+static inline SparkGpuError LmStateSpansCopy(
+	SparkGpuStream stream,
 	const SparkStateSpan *device_spans,
 	uint32_t span_count,
 	uint32_t row_words_max,
@@ -48,10 +49,10 @@ static inline cudaError_t LmStateSpansCopy(
 {
 	dim3 grid;
 	if ( device_spans == 0 || snapshot == 0 || state_index == 0 || span_count == 0u || rows == 0u || row_words_max == 0u || span_count > 65535u || rows > 65535u || ((uintptr_t)snapshot % SPARK_STATE_SPAN_ALIGN) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	grid.x = (row_words_max + LM_STATE_SNAPSHOT_THREADS - 1u) / LM_STATE_SNAPSHOT_THREADS;
 	grid.y = rows;
 	grid.z = span_count;
 	LM_LAUNCH((LmStateSpansCopyKernel),grid,LM_STATE_SNAPSHOT_THREADS,0u,stream,device_spans,span_count,snapshot,state_index,rows,restore);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

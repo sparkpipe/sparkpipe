@@ -7,6 +7,7 @@
 #include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ uint32_t LmRouteSourceRow(const uint32_t *__restrict__ route_source_token, uint32_t packed_row)
 {
@@ -170,7 +171,7 @@ static int32_t LmRouteBuild(
 	uint32_t tile_n_down,
 	uint32_t *tile_prefix_up,
 	uint32_t *tile_prefix_down,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	uint32_t expected_packed_rows;
 	uint32_t tile_m;
@@ -194,7 +195,7 @@ static int32_t LmRouteBuild(
 		route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
 		route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
 		neuron_tiles_down,tile_prefix_down);
-	return(cudaPeekAtLastError() == cudaSuccess
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH);
 }
@@ -213,7 +214,7 @@ static int32_t LmRouteBuild(
 	uint32_t tile_n,
 	uint32_t *tile_prefix_up,
 	uint32_t *tile_prefix_down,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	return(LmRouteBuild<THREADS,EXPERTS>(route_expert,rows,packed_rows,top_k,
 		group_row_offset,route_packed_row,route_source_token,

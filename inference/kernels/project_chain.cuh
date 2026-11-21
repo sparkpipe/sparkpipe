@@ -4,6 +4,7 @@
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/project.cuh"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_PROJECT_CHAIN_THREADS 256u
 #define LM_PROJECT_CHAIN_OUTPUTS 8u
@@ -123,7 +124,7 @@ void LmPerHeadProjectMmaKernel(const uint16_t *__restrict__ input_bf16, const ui
 }
 
 template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
-static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, cudaStream_t stream,
+static inline SparkGpuError LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream,
 	uint32_t row_exact = 0u)
 {
 	if (rows == 0u || (rows > LM_PROJECT_CHAIN_ROWS && row_exact != 0u))
@@ -132,8 +133,8 @@ static inline cudaError_t LmPerHeadProjectChainLaunch(const uint16_t *input_bf16
 	{
 		LM_LAUNCH((LmPerHeadProjectMmaKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_MMA_OUTPUTS, heads, (rows + LM_PROJECT_MMA_ROWS - 1u) / LM_PROJECT_MMA_ROWS),
 			LM_PROJECT_MMA_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-		return cudaPeekAtLastError();
+		return SparkGpuPeekAtLastError();
 	}
 	LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), LM_PROJECT_CHAIN_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
