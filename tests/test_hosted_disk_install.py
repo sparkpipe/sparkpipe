@@ -108,6 +108,17 @@ class InstallDiskContractTest(unittest.TestCase):
     def test_sudoers_are_checked_before_the_bootloader(self):
         self.assertLess(SOURCE.index('chroot "$target" visudo -cq'), SOURCE.index('chroot "$target" grub-install'))
 
+    def test_the_bootloader_changes_only_its_own_directory_on_the_esp(self):
+        grub = next(line for line in SOURCE.splitlines() if 'chroot "$target" grub-install' in line)
+        for option in ("--bootloader-id=ubuntu", "--no-nvram", "--no-extra-removable"):
+            self.assertIn(option, grub.split())
+        self.assertNotIn("--removable", grub.split())
+        self.assertIn("-ipath ./efi/ubuntu -prune", SOURCE)
+        self.assertLess(SOURCE.index('mount_at "$esp" "$target/boot/efi"'), SOURCE.index('esp_before="$(foreign_esp_entries)"'))
+        self.assertLess(SOURCE.index('esp_before="$(foreign_esp_entries)"'), SOURCE.index('chroot "$target" grub-install'))
+        self.assertLess(SOURCE.index('chroot "$target" update-initramfs'), SOURCE.index('[ "$(foreign_esp_entries)" = "$esp_before" ] || fail'))
+        self.assertLess(SOURCE.index('[ "$(foreign_esp_entries)" = "$esp_before" ] || fail'), SOURCE.index("unmount_all\n[ "))
+
     def test_the_target_is_checked_before_it_is_changed(self):
         self.assertLess(SOURCE.index('findmnt -rn -S "$partition"'), SOURCE.index('mount_at "$root" "$target"'))
         self.assertLess(SOURCE.index('e2fsck -fp "$root"'), SOURCE.index('mount_at "$root" "$target"'))

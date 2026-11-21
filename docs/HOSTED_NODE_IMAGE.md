@@ -212,12 +212,18 @@ Then it:
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
-5. creates `/boot/efi`, mounts the EFI partition there and, in a chroot, checks `sudoers` with `visudo -c`; runs `grub-install` for
-   `arm64-efi` with Secure Boot and `--no-nvram`, which writes shim and GRUB
-   into `EFI/ubuntu` on the existing EFI partition; then runs `update-grub`
-   and `update-initramfs` for the pinned kernel.
+5. creates `/boot/efi`, mounts the EFI partition there and records every
+   path and file checksum on it outside `EFI/ubuntu`. In a chroot it checks
+   `sudoers` with `visudo -c`, then runs `grub-install` for `arm64-efi` with
+   Secure Boot, `--no-nvram` and `--no-extra-removable`, which writes shim
+   and GRUB into `EFI/ubuntu` on the existing EFI partition. Without
+   `--no-extra-removable`, Ubuntu's `grub-install` also copies shim, the
+   fallback loader and MokManager into the firmware's removable-media path
+   `EFI/BOOT`, replacing the loader the old system left there. Then it runs
+   `update-grub` and `update-initramfs` for the pinned kernel.
 6. checks that `EFI/ubuntu` holds the shim, GRUB and a `grub.cfg` that
-   searches the installed root, that `/boot/grub/grub.cfg` boots the pinned
+   searches the installed root, that nothing on the EFI partition outside
+   `EFI/ubuntu` changed, that `/boot/grub/grub.cfg` boots the pinned
    kernel, and that `efibootmgr -v` prints exactly what it printed at the
    start.
 

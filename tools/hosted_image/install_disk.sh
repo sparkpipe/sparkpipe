@@ -68,6 +68,9 @@ mount_at() {
 	mount "$@"
 	mounted+=("${*: -1}")
 }
+foreign_esp_entries() {
+	(cd "$target/boot/efi" && find . -ipath ./efi/ubuntu -prune -o -type f -exec sha256sum {} + -o -print) | sort
+}
 
 e2fsck -fp "$root" && status=0 || status=$?
 [ "$status" -le 1 ] || fail "e2fsck on $root reported $status"
@@ -110,16 +113,18 @@ done
 
 install -d -o 0 -g 0 -m 0755 "$target/boot/efi"
 mount_at "$esp" "$target/boot/efi"
+esp_before="$(foreign_esp_entries)"
 for directory in dev proc sys; do
 	mount_at --bind "/$directory" "$target/$directory"
 done
 chroot "$target" visudo -cq || fail "the sudoers files in the installed root do not parse"
-chroot "$target" grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --uefi-secure-boot --no-nvram
+chroot "$target" grub-install --target=arm64-efi --efi-directory=/boot/efi --bootloader-id=ubuntu --uefi-secure-boot --no-nvram --no-extra-removable
 chroot "$target" update-grub
 chroot "$target" update-initramfs -u -k "$KERNEL_RELEASE"
 for file in shimaa64.efi grubaa64.efi grub.cfg; do
 	[ -s "$target/boot/efi/EFI/ubuntu/$file" ] || fail "the EFI system partition has no EFI/ubuntu/$file"
 done
+[ "$(foreign_esp_entries)" = "$esp_before" ] || fail "the EFI system partition changed outside EFI/ubuntu"
 grep -q "$(blkid -s UUID -o value "$root")" "$target/boot/efi/EFI/ubuntu/grub.cfg" || fail "EFI/ubuntu/grub.cfg does not search the installed root"
 grep -q "vmlinuz-$KERNEL_RELEASE" "$target/boot/grub/grub.cfg" || fail "/boot/grub/grub.cfg has no entry for $KERNEL_RELEASE"
 unmount_all
