@@ -211,9 +211,17 @@ python3 turn_floor.py parts $W/kimi-k3
   reused.
 - **`turns`**: at each of `--contexts`, a `grow` request, then `--repeats`
   plain turns for each of `--tails` with speculation off, `--spec-repeats`
-  turns as served, and a `decode` sample of `--decode-tokens` on the whole
+  turns as served, a `decode` sample of `--decode-tokens` on the whole
   history with speculation off (its new tail is 0, so its first token is the
-  floor of the floor).
+  floor of the floor), and with `--served-tokens` a `decode_served` sample
+  of that many tokens with speculation as the engine serves it. A tail of
+  `--once-from` tokens or more runs once and only plain, so a long tail is
+  not prefilled again for each repeat.
+- A run that stops inside a level keeps the level's finished steps in
+  `session.json` and goes on from the next one when the same command runs
+  again. The first session request of such a run is marked `first_of_run`
+  and left out of the level's figures: what the engine still holds of the
+  session is not what a turn in a row finds.
 - **`decode`**: grows the session to `--decode-context` and samples there.
 - **`openings`**: a 46,000-token opening, a second session on it, a
   37,000-token subagent opening, and a second subagent that shares 97% of it.
@@ -232,16 +240,26 @@ lines of that request:
 | send | client send to the engine's acceptance: the HTTP request, the body's JSON and the hand-off to the engine thread |
 | queue | acceptance to the first admitted dispatch, when the ranks never answered pending |
 | restore | the same interval when they did (`batch_rejected status=18`): the ranks were restoring the prefix |
-| prefill | first admitted dispatch to the dispatch of the first decode step: the waves, and the publishes between them |
-| first step | that dispatch to the first token |
+| prefill | first admitted dispatch to the dispatch of the last prompt token's wave: the waves over every new token but the last, and what runs between them |
+| first step | the last prompt token's wave, one row, whose result is the first token: one decode step's worth of work |
 
-The decode step's dispatch time is not logged; it is the time of the
-step's last token minus the step's logged wall time. The join therefore
-needs plain decode steps, so turns as served (`turn_spec`), whose first
-step is a verify frame, get send, queue and restore only. `summary.json`
-also holds the change in the ranks' `kv_store_report` counters over the run
-(`save_pages`, `save_ns`, `restore_pages`, `restore_ns`), which give the
-save and restore rates.
+The engine prefills every new token but the last in waves and then runs the
+last token as a wave of one row; the first token is ready when that wave
+returns, and the chains of the reply come after it. The split reads that
+wave from the log (the request's last `kind=prefill` line, `rows=1`) and
+takes its wall time as the first step. When a request's last prefill wave
+carries more than one row, the first step reads 0 and everything before the
+first token counts as prefill. `decode_tok_s` is the tokens after the first
+over the time from the first token's stamp to the last; the tokens of one
+chain share a stamp. `summary.json` also holds the change in the ranks'
+`kv_store_report` counters over the run (`save_pages`, `save_ns`,
+`restore_pages`, `restore_ns`), which give the save and restore rates.
+
+`parts --api-log FILE --log-base N` reads a copied part of the engine's log
+that starts at byte `N` of the original, so a run can be split away from the
+host that made it. A request that failed stays in `parts.jsonl` with its
+error and takes no line of the log; when it was sent again, the line belongs
+to the request that succeeded.
 
 Send, and the reply leg from the engine's first token to the client's,
 compare the client's clock with the engine's. The engine stamps
@@ -255,6 +273,43 @@ the first step are differences of the engine's own stamps and stay. The
 `clock` field is the clock the client read. On macOS some Python builds
 count that clock from each process's start, which is the case this catches
 on a workstation.
+
+`turn_floor.py excerpt DIR --output FILE` writes the lines of the engine's
+log that a split reads (steps, refused waves, request records, and each
+rank's store counters before, first and last in the run) and prints the
+`--log-base` that goes with the file. That is the log a receipt keeps.
+
+### On the fleet: `scripts/turn_floor_fleet.sh`
+
+The driver walks served models through the tool on the hub, from the
+workstation, with the release kit's helpers:
+
+```sh
+TF_RUN=tf-20261122 TF_OUT=qualification/turn-floor-20261122 TF_TOKENS=/srv/workspace/sparkpipe/turn-floor/tokens \
+    scripts/turn_floor_fleet.sh kimi-k3=k3=8000,100000 deepseek-v4.1-flash=dsv41=8000,100000,300000=turns,wave,openings,restart
+```
+
+- A model is `MODEL=FAMILY=LEVELS[=ARMS]`: its served name, the token file
+  `tokens-FAMILY.txt` in `TF_TOKENS` on the hub, its context levels, and its
+  arms (`turns,wave,restart` unless named; `openings` is the fourth).
+- The lane, the engine's port and its log come from the model's lane record
+  (`tools/lane_config.py release-row`).
+- Each model: the swap controller activates it; `turns` (every level: a
+  grow, tails of 1, 40, 500 and 5,000 tokens, three times each below 2,000
+  tokens and once above, a 96-token plain decode sample and a 128-token one
+  as served); `wave` (a 20,000-token background prefill with interactive
+  probes); `openings`; `restart` (the controller stops and starts the model,
+  then one turn on the saved session, which has to come back from NVMe);
+  then `parts`, `excerpt`, and the receipts are copied to `TF_OUT`.
+- Every step runs detached on the hub, so a lost connection does not stop
+  it, and is recorded when it ends. Running the same command again goes on
+  where the run stopped: finished steps are skipped and `turns` continues
+  inside its open level. The first failure stops the run; no later model
+  starts.
+- `TF_DRY=1` reaches no host and prints every step and command.
+- The driver changes the active model and leaves the last one active. It
+  does not arrange who may use the fleet or restore the production model:
+  whoever runs it does both, before and after.
 
 `turn_floor.py report DIR...` reads several runs' `summary.json` and prints
 the tables that compare models: first token by context for each tail with
