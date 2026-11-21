@@ -41,10 +41,27 @@ typedef struct MultiPart
 }
 MultiPart;
 
+static uint32_t SingleSplits(uint32_t input,uint32_t output)
+{
+	return output <= LM_SKINNY_SPLIT_MAX_OUTPUTS && input / LmSkinnyFormat<LmBf16Format>::kElements >= LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES ? 1u : 0u;
+}
+
+static void Compare(const void *expected,const void *fused,size_t bytes,const char *against,uint32_t input,uint32_t rows,uint32_t part,uint32_t output)
+{
+	std::vector<uint8_t> a(bytes),b(bytes);
+	CUDA(cudaMemcpy(a.data(),expected,bytes,cudaMemcpyDeviceToHost));
+	CUDA(cudaMemcpy(b.data(),fused,bytes,cudaMemcpyDeviceToHost));
+	if (a != b)
+	{
+		fprintf(stderr,"MISMATCH input=%u rows=%u part=%u output=%u: the fused part differs from %s\n",input,rows,part,output,against);
+		exit(1);
+	}
+}
+
 static void Case(uint32_t input,uint32_t rows,const MultiPart *parts,uint32_t count,cudaStream_t stream)
 {
 	LmSkinnyDenseTarget targets[LM_SKINNY_MULTI_MAX];
-	void *weight[LM_SKINNY_MULTI_MAX],*single[LM_SKINNY_MULTI_MAX],*fused[LM_SKINNY_MULTI_MAX];
+	void *weight[LM_SKINNY_MULTI_MAX],*alone[LM_SKINNY_MULTI_MAX],*single[LM_SKINNY_MULTI_MAX],*fused[LM_SKINNY_MULTI_MAX];
 	size_t bytes[LM_SKINNY_MULTI_MAX];
 	uint16_t *activation=(uint16_t *)UploadRandom((size_t)rows*input,4.0f);
 	uint32_t part;
@@ -53,8 +70,8 @@ static void Case(uint32_t input,uint32_t rows,const MultiPart *parts,uint32_t co
 		const uint32_t stride=parts[part].stride != 0u ? parts[part].stride : parts[part].output;
 		weight[part]=UploadRandom((size_t)parts[part].output*input,0.0625f);
 		bytes[part]=(size_t)rows*stride*(parts[part].f32 ? 4u : 2u);
-		CUDA(cudaMalloc(&single[part],bytes[part])); CUDA(cudaMalloc(&fused[part],bytes[part]));
-		CUDA(cudaMemset(single[part],0x5a,bytes[part])); CUDA(cudaMemset(fused[part],0x5a,bytes[part]));
+		CUDA(cudaMalloc(&alone[part],bytes[part])); CUDA(cudaMalloc(&single[part],bytes[part])); CUDA(cudaMalloc(&fused[part],bytes[part]));
+		CUDA(cudaMemset(alone[part],0x5a,bytes[part])); CUDA(cudaMemset(single[part],0x5a,bytes[part])); CUDA(cudaMemset(fused[part],0x5a,bytes[part]));
 		REQUIRE(LmSkinnyDense<LmBf16Format>(weight[part],activation,parts[part].f32 ? 0 : (uint16_t *)single[part],parts[part].f32 ? (float *)single[part] : 0,rows,input,parts[part].output,parts[part].stride,parts[part].offset,stream) == LM_LAUNCH_OK);
 		targets[part].weight=weight[part];
 		targets[part].scale=LmScaleTensorNone();
@@ -63,20 +80,19 @@ static void Case(uint32_t input,uint32_t rows,const MultiPart *parts,uint32_t co
 		targets[part].output_dimension=parts[part].output;
 		targets[part].output_row_stride=parts[part].stride;
 		targets[part].output_column_offset=parts[part].offset;
+		LmSkinnyDenseTarget one=targets[part];
+		one.output_bf16=parts[part].f32 ? 0 : (uint16_t *)alone[part];
+		one.output_f32=parts[part].f32 ? (float *)alone[part] : 0;
+		REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(&one,1u,activation,rows,input,stream) == LM_LAUNCH_OK);
 	}
 	REQUIRE(LmSkinnyDenseMulti<LmBf16Format>(targets,count,activation,rows,input,stream) == LM_LAUNCH_OK);
 	CUDA(cudaStreamSynchronize(stream));
 	for (part=0u; part<count; part++)
 	{
-		std::vector<uint8_t> a(bytes[part]),b(bytes[part]);
-		CUDA(cudaMemcpy(a.data(),single[part],bytes[part],cudaMemcpyDeviceToHost));
-		CUDA(cudaMemcpy(b.data(),fused[part],bytes[part],cudaMemcpyDeviceToHost));
-		if (a != b)
-		{
-			fprintf(stderr,"MISMATCH input=%u rows=%u part=%u output=%u\n",input,rows,part,parts[part].output);
-			exit(1);
-		}
-		CUDA(cudaFree(weight[part])); CUDA(cudaFree(single[part])); CUDA(cudaFree(fused[part]));
+		Compare(alone[part],fused[part],bytes[part],"its one-part launch",input,rows,part,parts[part].output);
+		if (!SingleSplits(input,parts[part].output))
+			Compare(single[part],fused[part],bytes[part],"its single launch",input,rows,part,parts[part].output);
+		CUDA(cudaFree(weight[part])); CUDA(cudaFree(alone[part])); CUDA(cudaFree(single[part])); CUDA(cudaFree(fused[part]));
 	}
 	CUDA(cudaFree(activation));
 	printf("PASS input=%u rows=%u parts=%u\n",input,rows,count);
