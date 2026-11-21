@@ -1867,8 +1867,10 @@ and the multidev docs on 2026-09-28. Line numbers are in
   and the audit in the publish step of hosted release roots.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
-  - a disk install: partitions labelled `SPARKROOT` and `SPARKESP`, shim and
-    GRUB on the EFI system partition, the boot entry;
+  - a disk install that has run:
+    [`install_disk.sh`](tools/hosted_image/install_disk.sh) installs onto a
+    node's disk and keeps `/home`, but only its input checks run under test,
+    and it has not yet installed onto any disk;
   - proving it on a spare Spark and on a four-node group against the
     factory OS.
 

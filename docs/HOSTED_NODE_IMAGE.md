@@ -172,10 +172,74 @@ image has none.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
-does not stop the boot); the disk install creates both. The
+does not stop the boot); the [disk install](#disk-install) creates both. The
 hostname is `sparkpipe-node` until bring-up.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
 identity and keys, then `apply`, reboot and `audit`. The modules load under
 Secure Boot through the kernel's own signing chain, so a node needs no
 enrollment step.
+
+## Disk install
+
+[`install_disk.sh`](../tools/hosted_image/install_disk.sh) installs a built
+image onto a disk whose first partition is a vfat EFI system partition and
+whose second is an ext4 root. It keeps the root filesystem and its `/home`,
+so a node's packs stay where they are. It runs as root from a system that
+does not boot from that disk, such as a rescue system in RAM:
+
+```sh
+install_disk.sh --disk /dev/nvme0n1 --image BUILD_DIR --identity BUNDLE_DIR --work /run/install
+```
+
+Before it changes anything it checks:
+
+- the build directory's `MANIFEST` records a passing dependency audit and
+  the archive's SHA-256;
+- the identity bundle (below) is well formed;
+- both partitions have the expected filesystem types and neither is mounted;
+- `e2fsck` finds the root clean;
+- nothing else is mounted under the work directory's target;
+- the root has 10 GiB free and holds no earlier set-aside directory.
+
+Then it:
+
+1. moves every top-level entry of the old root except `home` and
+   `lost+found` into `/.dgxos-<UTC stamp>`. These are renames on one
+   filesystem, so nothing is copied and the old system can be moved back.
+2. extracts the image beside `/home`, then checks that `/` is `0:0 755` and
+   that no path outside `/home` belongs to a uid or gid of 1000 or above.
+3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
+   image's `fstab` names.
+4. creates the bundle's groups and its user, then installs its files.
+5. in a chroot: checks `sudoers` with `visudo -c`; runs `grub-install` for
+   `arm64-efi` with Secure Boot and `--no-nvram`, which writes shim and GRUB
+   into `EFI/ubuntu` on the existing EFI partition; then runs `update-grub`
+   and `update-initramfs` for the pinned kernel.
+6. checks that `EFI/ubuntu` holds the shim, GRUB and a `grub.cfg` that
+   searches the installed root, that `/boot/grub/grub.cfg` boots the pinned
+   kernel, and that `efibootmgr -v` prints exactly what it printed at the
+   start.
+
+It never deletes anything. Every mount it makes is undone on exit, and
+`/sys/firmware/efi/efivars` is never mounted in the chroot.
+
+The set-aside directory is removed only after the node passes acceptance.
+After that, `hosted_dependency_audit.py image --rootfs /` over the whole
+installed root, with no exclusions, is the gate.
+
+### Identity bundle
+
+The identity bundle is a directory with three parts:
+
+- `files/` mirrors absolute paths in the installed root, for example
+  `files/etc/hostname`. Each file is installed owned by root with its mode
+  from the bundle. A directory the image lacks is created with its mode from
+  the bundle; a directory the image already has keeps the image's mode.
+  `files/` may hold only regular files and directories.
+- `user.conf` holds `USER_NAME`, `USER_UID`, `USER_GID`, `USER_GROUPS` (a
+  comma list) and `USER_SHELL`, one `KEY=value` per line. It is read as data,
+  never sourced. The user is created with no home of its own, because
+  `/home/<user>` is already on the disk.
+- `groups.conf` holds one `name:gid` line per group the user needs that
+  the image does not have.
