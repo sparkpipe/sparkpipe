@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 20u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 21u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -250,6 +250,7 @@ typedef struct SparkModelDriverAdmissionDecision
     uint64_t driver_dispatch_generation;
     uint64_t driver_dispatch_cookie0;
     uint64_t driver_dispatch_cookie1;
+    SparkModelDriverCacheProbe cache_probe;
 } SparkModelDriverAdmissionDecision;
 
 typedef struct SparkModelDriverKvStoreCounters
