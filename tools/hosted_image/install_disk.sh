@@ -37,6 +37,9 @@ USER_NAME="$(setting USER_NAME)" USER_UID="$(setting USER_UID)" USER_GID="$(sett
 [[ "$USER_GROUPS" =~ ^[a-z0-9,]*$ ]] || fail "$identity/user.conf USER_GROUPS must be a comma list of group names"
 [[ "$USER_NAME" =~ ^[a-z][a-z0-9]*$ ]] && [[ "$USER_UID" =~ ^[0-9]+$ ]] && [[ "$USER_GID" =~ ^[0-9]+$ ]] && [ -n "$USER_SHELL" ] || fail "$identity/user.conf needs USER_NAME, USER_UID, USER_GID, USER_GROUPS and USER_SHELL"
 [ -z "$(find "$identity/files" ! -type f ! -type d -print -quit)" ] || fail "$identity/files may hold only files and directories"
+if [ -f "$identity/files/etc/ssh/ssh_host_ed25519_key" ] && [ ! -f "$identity/files/etc/dropbear/initramfs/dropbear_ed25519_host_key" ]; then
+	fail "$identity carries SSH host keys but no initramfs SSH host keys, so the first boot would not create them"
+fi
 while IFS= read -r line; do
 	[ -z "$line" ] || [[ "$line" =~ ^[a-z_][a-z0-9_-]*:[0-9]+$ ]] || fail "$identity/groups.conf line '$line' is not name:gid"
 done < "$identity/groups.conf"
@@ -105,6 +108,7 @@ done
 	install -D -o 0 -g 0 -m "$(stat -c %a "$identity/files/$file")" "$identity/files/$file" "$target/${file#./}"
 done
 
+install -d -o 0 -g 0 -m 0755 "$target/boot/efi"
 mount_at "$esp" "$target/boot/efi"
 for directory in dev proc sys; do
 	mount_at --bind "/$directory" "$target/$directory"

@@ -66,6 +66,14 @@ class InstallDiskInputsTest(unittest.TestCase):
         (self.identity / "files" / "etc" / "link").symlink_to("hostname")
         self.refused("may hold only files and directories")
         (self.identity / "files" / "etc" / "link").unlink()
+        keys = self.identity / "files" / "etc" / "ssh"
+        keys.mkdir()
+        (keys / "ssh_host_ed25519_key").write_text("key")
+        self.refused("carries SSH host keys but no initramfs SSH host keys")
+        dropbear = self.identity / "files" / "etc" / "dropbear" / "initramfs"
+        dropbear.mkdir(parents=True)
+        (dropbear / "dropbear_ed25519_host_key").write_text("key")
+        self.refused("is not a block device")
         (self.identity / "groups.conf").write_text("codexadmin:1001\nbad name:x\n")
         self.refused("line 'bad name:x' is not name:gid")
         (self.identity / "groups.conf").unlink()
@@ -93,6 +101,9 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertEqual(SOURCE.count("efibootmgr"), len(calls) + SOURCE.count('"efibootmgr cannot read'))
         self.assertIn('[ "$(efibootmgr -v)" = "$nvram" ] || fail', SOURCE)
         self.assertLess(SOURCE.index('nvram="$(efibootmgr -v)"'), SOURCE.index("e2fsck -fp"))
+
+    def test_the_efi_mount_point_exists_before_the_mount(self):
+        self.assertLess(SOURCE.index('install -d -o 0 -g 0 -m 0755 "$target/boot/efi"'), SOURCE.index('mount_at "$esp" "$target/boot/efi"'))
 
     def test_sudoers_are_checked_before_the_bootloader(self):
         self.assertLess(SOURCE.index('chroot "$target" visudo -cq'), SOURCE.index('chroot "$target" grub-install'))

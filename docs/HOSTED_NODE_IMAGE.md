@@ -212,7 +212,7 @@ Then it:
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
-5. in a chroot: checks `sudoers` with `visudo -c`; runs `grub-install` for
+5. creates `/boot/efi`, mounts the EFI partition there and, in a chroot, checks `sudoers` with `visudo -c`; runs `grub-install` for
    `arm64-efi` with Secure Boot and `--no-nvram`, which writes shim and GRUB
    into `EFI/ubuntu` on the existing EFI partition; then runs `update-grub`
    and `update-initramfs` for the pinned kernel.
@@ -236,7 +236,11 @@ The identity bundle is a directory with three parts:
   `files/etc/hostname`. Each file is installed owned by root with its mode
   from the bundle. A directory the image lacks is created with its mode from
   the bundle; a directory the image already has keeps the image's mode.
-  `files/` may hold only regular files and directories.
+  `files/` may hold only regular files and directories. A bundle that
+  carries `/etc/ssh/ssh_host_ed25519_key` must also carry
+  `/etc/dropbear/initramfs/dropbear_ed25519_host_key`: with SSH host keys
+  present, `sparkpipe-host-keys.service` does not run, so nothing else would
+  create the initramfs keys.
 - `user.conf` holds `USER_NAME`, `USER_UID`, `USER_GID`, `USER_GROUPS` (a
   comma list) and `USER_SHELL`, one `KEY=value` per line. It is read as data,
   never sourced. The user is created with no home of its own, because
