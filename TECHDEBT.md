@@ -1906,8 +1906,11 @@ and the multidev docs on 2026-09-28. Line numbers are in
   each, compute and copy ordered on a 64-bit timeline), events, waits
   between queues, host callbacks and timing; the device contract passes on
   GB10 and memory bandwidth is at par with `cudaMalloc`. The barrier count a kernel needs is
-  not read from its cubin yet (the packer takes it as an input). Missing:
-  kernel loading and launch through the backend entries; command lists replacing graphs; memory shared with weightd;
+  not read from its cubin yet (the packer takes it as an input). Kernel libraries (cubins with PTX parameter
+  manifests) load and launch through the device layer with the parameter
+  block as constants. Missing: the kernel registration entry points and
+  the hosted LM_LAUNCH template that map nvcc's host stubs to those
+  kernels; command lists replacing graphs; memory shared with weightd;
   TMA descriptors; fault reports (a hung queue is waited on forever).
   Host-backed memory registers 4 KiB pages and reads 18% slower than
   device memory. Production modules call the CUDA runtime directly

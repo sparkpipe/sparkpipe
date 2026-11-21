@@ -176,7 +176,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes :
 			(uint64_t)metal_device.recommendedMaxWorkingSetSize;
 		properties->max_buffer_bytes = (uint64_t)metal_device.maxBufferLength;
-		properties->properties = metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u;
+		properties->properties = SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | (metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 		properties->max_group_threads = (uint32_t)metal_device.maxThreadsPerThreadgroup.width;
 		properties->max_shared_bytes = (uint32_t)metal_device.maxThreadgroupMemoryLength;
 	}

@@ -35,6 +35,7 @@ typedef struct SparkNvrmCubinKernel
 	uint32_t shared_bytes;
 	uint32_t parameter_offset;
 	uint32_t parameter_bytes;
+	uint32_t barriers;
 	SparkNvrmCubinBank bank[SPARK_NVRM_CUBIN_BANKS];
 } SparkNvrmCubinKernel;
 

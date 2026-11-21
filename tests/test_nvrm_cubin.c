@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_cubin.h"
+#include "runtime/device/nvrm/nvrm_manifest.h"
 #include "runtime/device/nvrm/nvrm_qmd.h"
 #include "tests/nvrm/fixture_kernels.h"
 
@@ -58,6 +59,8 @@ static const ExpectedLayout expected_layouts[] = {
 	{"SparkNvrmStreamCopy", PARAMETER_END(StreamCopyParameters,count)},
 	{"SparkNvrmStreamFill", PARAMETER_END(StreamFillParameters,value)},
 	{"SparkNvrmProbeDimensions", PARAMETER_END(FirstLightParameters,output)},
+	{"SparkNvrmGlobalSwap", PARAMETER_END(FirstLightParameters,value)},
+	{"SparkNvrmConstantTable", PARAMETER_END(FirstLightParameters,output)},
 };
 
 static uint8_t *ReadFile(const char *path, uint64_t *bytes)
@@ -149,7 +152,7 @@ static void TestFixture(void)
 	CHECK(listed == sizeof(expected_layouts) / sizeof(expected_layouts[0]) && cubin.kernel_count == listed,
 		"the parser lists exactly the compiler's entry functions");
 	CHECK(SparkNvrmCubinKernelNamed(&cubin,"SparkNvrmAbsent") == 0,"an absent kernel is not found");
-	CHECK(cubin.relocation_count == 0u,"the fixture kernels need no relocation");
+	CHECK(cubin.relocation_count != 0u,"the module's device variable is reached through relocations");
 	SparkNvrmCubinRelease(&cubin);
 	CHECK(cubin.image == 0 && cubin.kernels == 0 && cubin.kernel_count == 0u,"release clears the parsed image");
 	CHECK(SparkNvrmCubinParse(blob,63u,"fixture",&cubin) == SPARK_STATUS_PARSE_ERROR && cubin.image == 0,"a cubin cut inside its header is refused");
@@ -159,6 +162,67 @@ static void TestFixture(void)
 		"an ELF image for another machine is refused against library_load and its owner");
 	free(blob);
 	free(manifest);
+}
+
+static void TestManifest(void)
+{
+	uint64_t bytes = 0u,text_bytes = 0u;
+	uint8_t *blob = ReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes);
+	char *text = (char *)ReadFile(SPARK_NVRM_FIXTURE_MANIFEST,&text_bytes);
+	SparkNvrmManifest manifest;
+	SparkNvrmCubin cubin;
+	uint32_t index,agree = 0u;
+	CHECK(blob != 0 && text != 0,"the fixture cubin and its manifest are readable");
+	if ( blob == 0 || text == 0 )
+		return;
+	CHECK(SparkNvrmCubinParse(blob,bytes,"manifest",&cubin) == SPARK_STATUS_OK,"the fixture parses");
+	CHECK(SparkNvrmManifestParse(text,text_bytes,"manifest",&manifest) == SPARK_STATUS_OK && manifest.kernel_count == cubin.kernel_count,
+		"the manifest parses and lists every kernel");
+	CHECK(SparkNvrmManifestCheck(&manifest,blob,bytes,&cubin,"manifest") == SPARK_STATUS_OK,"the manifest describes the fixture cubin");
+	for (index = 0u; index < cubin.kernel_count; index++)
+	{
+		const SparkNvrmManifestKernel *reported = SparkNvrmManifestKernelNamed(&manifest,cubin.kernels[index].name);
+		agree += reported != 0 && SparkNvrmManifestParameterEnd(reported) == cubin.kernels[index].parameter_bytes &&
+			SparkNvrmManifestParameterEnd(reported) == ExpectedParameters(cubin.kernels[index].name);
+	}
+	CHECK(agree == cubin.kernel_count,"every kernel's PTX parameter table ends where its constant bank and its C layout say");
+	{
+		const SparkNvrmManifestKernel *mix = SparkNvrmManifestKernelNamed(&manifest,"SparkNvrmParameterMix");
+		const SparkNvrmManifestKernel *shared = SparkNvrmManifestKernelNamed(&manifest,"SparkNvrmStaticShared");
+		CHECK(mix != 0 && mix->parameter_count == 7u && mix->parameters[3].align == 8u && mix->parameters[3].offset == 24u && mix->max_threads == 128u,
+			"a mixed parameter list keeps its PTX types, alignment, offsets and launch bound");
+		CHECK(shared != 0 && shared->barriers == 1u,"the compiler's barrier count is kept for the launch descriptor");
+	}
+	blob[bytes - 1u] ^= 1u;
+	CHECK(SparkNvrmManifestCheck(&manifest,blob,bytes,&cubin,"manifest") == SPARK_STATUS_TARGET_MISMATCH,"a manifest for another cubin is refused");
+	blob[bytes - 1u] ^= 1u;
+	manifest.kernels[0].parameters[manifest.kernels[0].parameter_count - 1u].bytes += 4u;
+	CHECK(SparkNvrmManifestCheck(&manifest,blob,bytes,&cubin,"manifest") == SPARK_STATUS_TARGET_MISMATCH,
+		"a parameter table that ends elsewhere than the kernel's constant bank is refused");
+	SparkNvrmManifestRelease(&manifest);
+	{
+		static const char *const broken[] = {
+			"cubin 00 12\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
+			"kernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nparam K 0 u32 align 4 bytes 4 offset 0\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"param K 0 u32 align 3 bytes 4 offset 0\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"param K 1 u32 align 4 bytes 4 offset 0\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"bound K warpsize 32\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nsomething else\n",
+		};
+		uint32_t refused = 0u;
+		for (index = 0u; index < sizeof(broken) / sizeof(broken[0]); index++)
+			refused += SparkNvrmManifestParse(broken[index],strlen(broken[index]),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR &&
+				manifest.kernels == 0;
+		CHECK(refused == sizeof(broken) / sizeof(broken[0]),
+			"a manifest without its cubin, a parameter before its kernel or out of order, a bad alignment, an unknown bound or line is refused");
+	}
+	SparkNvrmCubinRelease(&cubin);
+	free(blob);
+	free(text);
 }
 
 typedef struct Synthetic
@@ -412,6 +476,7 @@ static void TestRefusals(void)
 int main(void)
 {
 	TestFixture();
+	TestManifest();
 	TestRelocations();
 	TestRefusals();
 	if ( failures != 0 )

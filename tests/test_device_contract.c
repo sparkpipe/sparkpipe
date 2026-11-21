@@ -646,6 +646,69 @@ static void TestKernelBusy(SparkDeviceQueue *queue, SparkDeviceLibrary *library,
 	CHECK(SparkDeviceFree(&out) == SPARK_STATUS_OK,"free after the launch completes");
 }
 
+#ifndef SPARK_DEVICE_TEST_PARAMETER_KERNEL
+#define SPARK_DEVICE_TEST_PARAMETER_KERNEL "SparkNvrmFirstLight"
+#endif
+
+typedef struct ParameterBlock
+{
+	uint64_t output;
+	uint32_t value;
+} ParameterBlock;
+
+static void TestParameterBlockKernels(SparkDeviceQueue *queue)
+{
+	enum { GROUPS = 4, THREADS = 128, WORDS = GROUPS * THREADS };
+	SparkDeviceLibrary *library = 0;
+	SparkDeviceKernel *kernel = 0, *missing = 0;
+	SparkDeviceKernelInfo info;
+	SparkDeviceBuffer output;
+	SparkDeviceBinding binding;
+	SparkDeviceLaunch launch;
+	ParameterBlock block;
+	uint32_t index, wrong = 0u;
+	CHECK(SparkDeviceLibraryLoad(&library,"/nonexistent/kernels.cubin","contract kernels") == SPARK_STATUS_NOT_FOUND && library == 0,"a missing library is refused");
+	CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_OK,"load a kernel library with its manifest");
+	CHECK(SparkDeviceKernelCreate(&missing,library,"contract_absent") == SPARK_STATUS_NOT_FOUND && missing == 0,"an absent kernel is refused");
+	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_PARAMETER_KERNEL) == SPARK_STATUS_OK,"create a kernel by its name");
+	if ( kernel == 0 )
+	{
+		SparkDeviceLibraryUnload(library);
+		return;
+	}
+	CHECK(SparkDeviceKernelGetInfo(kernel,&info) == SPARK_STATUS_OK && info.parameter_count == 2u && info.parameter_bytes == 12u &&
+		info.parameters != 0 && info.parameters[0].offset == 0u && info.parameters[0].bytes == 8u && info.parameters[1].offset == 8u &&
+		info.parameters[1].bytes == 4u && info.parameters[1].align == 4u,"the kernel reports its parameter layout");
+	CHECK(SparkDeviceAllocate(&output,SPARK_DEVICE_SPACE_SHARED_COHERENT,WORDS * sizeof(uint32_t),"parameter block output") == SPARK_STATUS_OK,"allocate the output");
+	memset(&block,0,sizeof(block));
+	block.output = output.device;
+	block.value = 0x5a5a0000u;
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = GROUPS;
+	launch.groups.y = launch.groups.z = 1u;
+	launch.threads.x = THREADS;
+	launch.threads.y = launch.threads.z = 1u;
+	launch.constants = &block;
+	launch.constant_bytes = info.parameter_bytes;
+	binding = Bind(&output,0u,WORDS * sizeof(uint32_t),SPARK_DEVICE_BIND_WRITE);
+	launch.bindings = &binding;
+	launch.binding_count = 1u;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_UNSUPPORTED,"a kernel that takes its arguments in its parameter block refuses bindings");
+	launch.bindings = 0;
+	launch.binding_count = 0u;
+	launch.constant_bytes = info.parameter_bytes + 4u;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_INVALID_ARGUMENT,"a parameter block of the wrong size is refused");
+	launch.constant_bytes = info.parameter_bytes;
+	CHECK(SparkDeviceKernelLaunch(queue,kernel,&launch) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+		"launch the kernel with its parameter block");
+	for ( index = 0u; index < WORDS; index++ )
+		wrong += ((const uint32_t *)output.host)[index] != (block.value ^ index);
+	CHECK(wrong == 0u,"every thread wrote what its parameter block asked for");
+	CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_BUSY,"a library with a live kernel stays loaded");
+	CHECK(SparkDeviceKernelDestroy(kernel) == SPARK_STATUS_OK && SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"destroy the kernel, then unload");
+	CHECK(SparkDeviceFree(&output) == SPARK_STATUS_OK,"free the output");
+}
+
 static void TestKernels(SparkDeviceQueue *queue)
 {
 	SparkDeviceLibrary *library = 0;
@@ -656,7 +719,13 @@ static void TestKernels(SparkDeviceQueue *queue)
 		CHECK(0,"kernel tests need an initialized device");
 		return;
 	}
-	if ( strcmp(SparkDeviceGetProperties()->backend,"metal") != 0 )
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) != 0u &&
+		(SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS) != 0u )
+	{
+		TestParameterBlockKernels(queue);
+		return;
+	}
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) == 0u )
 	{
 		CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_UNSUPPORTED && library == 0,
 			"a backend without device kernels refuses to load a kernel library");

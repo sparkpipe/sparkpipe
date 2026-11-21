@@ -40,27 +40,6 @@ static int Failed(const char *step)
 	return(1);
 }
 
-static uint8_t *ReadFile(const char *path, uint64_t *bytes)
-{
-	FILE *file = fopen(path,"rb");
-	uint8_t *data;
-	long length;
-	if ( file == 0 )
-		return(0);
-	fseek(file,0,SEEK_END);
-	length = ftell(file);
-	fseek(file,0,SEEK_SET);
-	data = (uint8_t *)malloc((size_t)length);
-	if ( data != 0 && fread(data,1u,(size_t)length,file) != (size_t)length )
-	{
-		free(data);
-		data = 0;
-	}
-	fclose(file);
-	*bytes = (uint64_t)length;
-	return(data);
-}
-
 static int CompareTimes(const void *left, const void *right)
 {
 	const uint64_t a = *(const uint64_t *)left,b = *(const uint64_t *)right;
@@ -168,9 +147,8 @@ int main(int argc, char **argv)
 {
 	static Bench bench;
 	const char *path = "tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin",*only = "all";
-	uint64_t bytes = 1024ull << 20,blob_bytes = 0u;
+	uint64_t bytes = 1024ull << 20;
 	uint32_t rounds = 20u;
-	uint8_t *blob;
 	int index,result = 0;
 	for (index = 1; index < argc; index++)
 	{
@@ -193,17 +171,10 @@ int main(int argc, char **argv)
 		printf("FAIL rounds must be 1 to %u and the buffer at least 1 MiB\n",BANDWIDTH_ROUNDS_MAX);
 		return(2);
 	}
-	blob = ReadFile(path,&blob_bytes);
-	if ( blob == 0 )
-	{
-		printf("FAIL cannot read %s\n",path);
-		return(1);
-	}
 	if ( SparkNvrmGpuOpen(&bench.gpu,0u,SPARK_NVRM_MEMORY_HOST,"bandwidth") != SPARK_STATUS_OK )
 		return(Failed("open the GPU"));
-	if ( SparkNvrmProgramLoad(&bench.gpu,blob,blob_bytes,&bench.program,"bandwidth") != SPARK_STATUS_OK )
-		return(Failed("load the kernel image"));
-	free(blob);
+	if ( SparkNvrmProgramLoadFile(&bench.gpu,path,&bench.program,"bandwidth") != SPARK_STATUS_OK )
+		return(Failed("load the kernel image and its manifest"));
 	bench.read = SparkNvrmCubinKernelNamed(&bench.program.cubin,"SparkNvrmStreamRead");
 	bench.copy = SparkNvrmCubinKernelNamed(&bench.program.cubin,"SparkNvrmStreamCopy");
 	bench.fill = SparkNvrmCubinKernelNamed(&bench.program.cubin,"SparkNvrmStreamFill");

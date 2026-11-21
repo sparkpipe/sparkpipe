@@ -84,8 +84,14 @@ are ELF images, and `runtime/device/nvrm/nvrm_cubin.c` reads them into a
 kernel table and one loadable image:
 
 - **Image.** The allocated `PROGBITS` sections (code and constant banks) are laid out in
-  section order at their own alignment, at least 128 bytes; nothing else
+  section order at their own alignment, at least 128 bytes. Allocated
+  `NOBITS` sections (a module's zero-initialized `__device__` variables)
+  get zeroed space in the same layout, except the per-block
+  `.nv.shared.<name>` sections, which only size shared memory. Nothing else
   is loaded. A loaded section that asks for a fixed address is refused.
+  `tests/test_nvrm_module_state.c` (`make test-nvrm-gpu`) checks on the GPU
+  that a module's `__device__` variable starts zeroed and keeps its value
+  across launches, and that its `__constant__` table reads back.
 - **Kernels.** A kernel is a `.nv.info.<name>` section that carries a
   parameter-bank record. Its code is `.text.<name>`. Its static shared memory is the size of
   `.nv.shared.<name>`, which includes the 1 KiB reserved per block. Its
@@ -105,6 +111,28 @@ Anything else (an unknown relocation, a record cut short, a missing
 register count, parameters outside bank 0) fails with
 `SPARK_STATUS_PARSE_ERROR` or `SPARK_STATUS_UNSUPPORTED`, naming the
 cause, against `library_load`.
+
+Every cubin ships with a manifest beside it (`<name>.manifest` next to
+`<name>.cubin`), written by the same compile
+(`tools/nvrm_cubin_fixtures.py` for the fixtures). It names the cubin by
+size and sha256 and lists, per kernel:
+
+- **The compiler's resource report:** registers, barriers, stack frame,
+  spills and static shared memory, from `ptxas -v`.
+- **The parameter table:** each parameter's PTX type, alignment, size and
+  offset, in declaration order. It comes from the `.param` declarations of
+  the PTX that nvcc fed ptxas in that compile (kept with `-keep`), laid out
+  as the PTX ISA defines kernel parameters.
+- **Launch bounds and cluster directives:** `.maxntid`, `.reqntid`,
+  `.minnctapersm`, `.maxnreg`, `.reqnctapercluster`, `.explicitcluster` and
+  `.maxclusterrank`.
+
+`SparkNvrmProgramLoadFile` loads a cubin only with its manifest, and
+`nvrm_manifest.c` checks the two against each other: the digest and
+size, the same kernels, and each kernel's registers, stack and parameter
+table ending exactly where its constant bank does. A mismatch fails with
+`SPARK_STATUS_TARGET_MISMATCH` against `library_load`. A launch takes its
+barrier count from the manifest, and at least one.
 
 ## Launch descriptors
 
@@ -308,10 +336,22 @@ bounce buffer per queue when the device side has no host view. Because
 one device-layer call can take several submissions, the backend maps
 device-layer sequence numbers to fence values through a ring.
 
-Kernel libraries and launches through the device layer are still
-refused with `SPARK_STATUS_UNSUPPORTED`, as the device contract expects
-of a backend without device kernels. The backend adopts no foreign
-memory or queue, and a queue it owns is never captured into a graph.
+Kernel libraries are cubins with their manifests
+(`SparkDeviceLibraryLoad` on the `.cubin` path). `SparkDeviceKernelCreate`
+finds a kernel by name and reports its thread limit (the PTX bound, else
+1024), its static shared memory and its parameter layout
+(`SparkDeviceKernelInfo.parameters`, from the manifest). A launch passes
+the kernel's whole parameter block, packed by its C parameter types, as
+the launch's constants; the block must be exactly the kernel's parameter
+size, and bindings are refused. Each launch's descriptor and bank 0 go in
+a slot from a per-queue ring of 512, reused once the launch that held it
+has completed. The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
+`SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS` property bits (Metal sets the
+first), and the device contract branches on them: its parameter-block
+branch loads the fixture cubin,
+checks the reported layout, refuses bindings and a wrong-sized block, and
+reads back a launch. The backend adopts no foreign memory or queue, and
+a queue it owns is never captured into a graph.
 
 Every channel registers with unified memory before anything is
 submitted on it, and the backend never schedules a single channel: the

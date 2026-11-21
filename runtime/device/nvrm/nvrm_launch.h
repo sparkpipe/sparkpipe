@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_status.h"
 #include "runtime/device/nvrm/nvrm_cubin.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
+#include "runtime/device/nvrm/nvrm_manifest.h"
 #include "runtime/device/nvrm/nvrm_qmd.h"
 
 #ifdef __cplusplus
@@ -18,6 +19,7 @@ extern "C" {
 typedef struct SparkNvrmProgram
 {
 	SparkNvrmCubin cubin;
+	SparkNvrmManifest manifest;
 	SparkNvrmMemory code;
 } SparkNvrmProgram;
 
@@ -36,7 +38,9 @@ typedef struct SparkNvrmLaunchRequest
 	uint64_t release_payload;
 } SparkNvrmLaunchRequest;
 
-SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, SparkNvrmProgram *program, const char *owner);
+SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,
+	SparkNvrmProgram *program, const char *owner);
+SparkStatus SparkNvrmProgramLoadFile(SparkNvrmGpu *gpu, const char *path, SparkNvrmProgram *program, const char *owner);
 void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program);
 uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel);
 SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

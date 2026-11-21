@@ -76,6 +76,23 @@ extern "C" __global__ void __launch_bounds__(256) SparkNvrmStreamFill(uint4 *des
 		destination[index] = make_uint4(value, value ^ 1u, value ^ 2u, value ^ (uint32_t)index);
 }
 
+static __device__ uint32_t spark_nvrm_fixture_word;
+__constant__ uint32_t spark_nvrm_fixture_table[SPARK_NVRM_FIXTURE_TABLE_WORDS] = {0x11111111u, 0x22222222u, 0x33333333u, 0x44444444u};
+
+extern "C" __global__ void SparkNvrmGlobalSwap(uint32_t *output, uint32_t value)
+{
+	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+	{
+		output[0] = spark_nvrm_fixture_word;
+		spark_nvrm_fixture_word = value;
+	}
+}
+
+extern "C" __global__ void SparkNvrmConstantTable(uint32_t *output)
+{
+	output[threadIdx.x] = spark_nvrm_fixture_table[threadIdx.x % SPARK_NVRM_FIXTURE_TABLE_WORDS];
+}
+
 extern "C" __global__ void SparkNvrmProbeDimensions(uint32_t *output)
 {
 	if ( threadIdx.x == 0u && threadIdx.y == 0u && threadIdx.z == 0u && blockIdx.x == 0u && blockIdx.y == 0u && blockIdx.z == 0u )
