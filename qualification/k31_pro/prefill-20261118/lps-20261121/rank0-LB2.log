@@ -1,0 +1,71 @@
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+k31_stage kv pool weightd generation=1 reattached=0 attach_ms=124 chunks=200/880 minimum_chunks=200 chunk_bytes=14680064 pages=16425/95325 kv_committed=2936012800 kv_reserve=8589934592 private_kv_bytes=0
+k31_stage kv capacity pages=16425/95325 tokens=6100800 margin_bytes=5297619188 event=attach resident_tokens=1051200 chunks=200/880
+k31_stage kv pool adopt reattached=0 records=0 adopted_pages=0 refused=new_pool status=ok
+ERRSITE cache/kv_page_store.c:1152 status=3 count=1
+ERRSITE cache/kv_page_store.c:1152 status=3 count=2
+ERRSITE cache/kv_page_store.c:1152 status=3 count=3
+ERRSITE cache/kv_page_store.c:1152 status=3 count=4
+ERRSITE cache/kv_page_store.c:1152 status=3 count=5
+ERRSITE cache/kv_page_store.c:1152 status=3 count=6
+ERRSITE cache/kv_page_store.c:1152 status=3 count=7
+ERRSITE cache/kv_page_store.c:1152 status=3 count=8
+k31_stage kv pool growth held at chunks=200 of 880
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+STAGE-WEIGHTS pass pool in 3.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.262 1:0.26 2:1.43 3:0.832 4:0.867 5:1.45 6:5.31 7:2.97 15:1.06 23:143 31:0.656 39:0.434 47:40.2 55:8.44 63:2.56 71:29.8 79:5.88 87:3.41 92:19.2
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 10.3 s, KDA attention 19.5 s, MLP and experts 77.8 s, between layers 0.2 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 6 3.9 s, fastest rank 0 3.8 s; helpers attended 527340 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/1 rows 8192 x 16 keys to 131038 status=0 at 108.6 s; streamer waited 0.0 s for the GPU to release buffers, compute waited 7.4 s for dense and 70.9 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 7.8 s in dense broadcasts and 100.0 s in expert steps, 23.7 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 1 step ms ready/posted/done/gap: 0:0.3/54.2/73.0/82.0 1:0.0/0.0/62.5/0.0 2:27.3/72.3/108.0/0.0 3:18.6/60.0/92.2/0.0 4:17.9/57.8/89.0/0.0 5:15.7/52.6/75.8/0.0 6:21.3/55.7/76.5/0.0 7:11.9/45.0/66.1/0.0 8:18.7/50.7/66.1/0.0 9:8.0/39.3/53.7/0.0 10:21.4/52.6/73.0/0.0 11:6.5/37.2/51.2/0.0 12:7.6/37.2/54.9/0.0 13:6.5/36.1/48.9/0.0 14:7.4/37.2/50.0/0.0 15:2.9/32.5/46.4/
+sparkpipe_k3: streamed prefill sequence 1000065 positions 0..131038 in 1 passes status=0 108.6 s; exchanges with a block late or wrong at first check 0, settled after waiting 0
+weightd pool exact=90680852480 cap=none used=100612964352 mode=whole-arena
+STAGE-WEIGHTS whole arena in 19.3 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.5, warm 14.6, bind 0.0
+STAGE-WEIGHTS whole arena rendezvous 2 waited 3.8 s
+k31_stage kv pool growth released at chunks=200 of 880
+ERRSITE cache/kv_page_store.c:880 status=15 count=1
+ERRSITE cache/kv_page_store.c:880 status=15 count=2
+ERRSITE cache/kv_page_store.c:880 status=15 count=3
+k31_stage kv pool grew chunks=200->400 of 880 pages=16425->38229 of 95325 wanted_chunks=0 kv_committed=5872025600 kv_reserve=8589934592
+k31_stage kv capacity pages=38229/95325 tokens=6100800 margin_bytes=5297619188 event=grew resident_tokens=2446656 chunks=400/880
+k31_stage kv pool growth held at chunks=400 of 880
+weightd pool exact=90680852480 cap=8589934592 used=8589934592 mode=slots
+STAGE-WEIGHTS pass pool in 3.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+STAGE-WEIGHTS pass pool rendezvous 3 waited 1.0 s
+sparkpipe_k3: streamed prefill node_rows=32768 window=40521170944 (3 x dense 148145024 x 16 ranks, 28 x experts 982646784) engine=26508866076, expert down projections of 8 shards at once, index BF16, partner=/home/spark0/sparkdata/k31_pro.cells.tp16/partner/k31_pro.tp16.rank01.pack
+sparkpipe_k3: streamed prefill pass 0 rank 0 hidden absmax by layer (-1 = embedding): -1:0.159 0:0.266 1:0.297 2:1.43 3:0.832 4:0.926 5:1.66 6:5.31 7:2.97 15:1.05 23:151 31:0.652 39:0.422 47:40.2 55:11.8 63:2.56 71:42.2 79:5.88 87:3.14 92:18.5
+sparkpipe_k3: streamed prefill pass 1 GPU: MLA attention 61.2 s, KDA attention 64.9 s, MLP and experts 72.1 s, between layers 0.3 s
+sparkpipe_k3: streamed prefill pass 1 attention per node: slowest rank 14 13.8 s, fastest rank 0 13.6 s; helpers attended 406860 head-group rows over the pass's layers
+sparkpipe_k3: streamed prefill pass 1/2 rows 31360 x 16 keys to 501760 status=0 at 199.6 s; streamer waited 79.9 s for the GPU to release buffers, compute waited 0.2 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 7.6 s in dense broadcasts and 111.3 s in expert steps, 22.7 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 1 step ms ready/posted/done/gap: 0:0.4/58.2/78.0/76.6 1:0.0/0.0/75.4/0.0 2:25.4/79.0/136.4/0.0 3:21.5/66.6/102.7/0.0 4:30.5/70.8/108.7/0.0 5:22.0/59.3/83.3/0.0 6:35.5/69.1/99.9/0.0 7:14.1/46.9/72.1/0.0 8:35.8/68.4/83.8/0.0 9:9.2/41.1/55.8/0.0 10:20.4/52.4/84.5/0.0 11:9.5/41.0/56.5/0.0 12:3.3/32.8/46.5/832.8 13:1.2/30.7/41.5/0.0 14:3.4/33.0/43.8/0.0 15:0.4/30.1/4
+sparkpipe_k3: streamed prefill attention failed at layer 47 launch=0 collective=9
+sparkpipe_k3: streamed prefill pass 2/2 rows 31232 x 16 keys to 1000353 status=9 at 361.7 s; streamer waited 65.6 s for the GPU to release buffers, compute waited 0.0 s for dense and 0.0 s for expert blocks; streamer waited 0.0 s for the pack reader and spent 3.7 s in dense broadcasts and 56.7 s in expert steps, 11.1 s of them reading the packs
+sparkpipe_k3: streamed prefill pass 2 step ms ready/posted/done/gap: 0:0.3/64.9/87.2/150.7 1:0.0/0.0/78.5/0.0 2:18.1/73.9/121.1/0.0 3:15.1/64.1/100.8/0.0 4:38.9/78.2/121.2/0.0 5:12.7/48.4/79.2/0.0 6:35.2/68.9/93.1/0.0 7:16.7/49.3/72.8/0.0 8:17.5/50.4/69.1/0.0 9:7.0/39.0/56.1/0.0 10:14.0/46.5/74.3/0.0 11:6.0/37.9/56.9/0.0 12:3.2/32.7/46.3/1394.9 13:1.6/31.1/42.3/0.0 14:5.6/35.1/45.9/0.0 15:0.2/29.8
+sparkpipe_k3: streamed prefill expert step 12 failed at layer 48 status=9
+sparkpipe_k3: streamed prefill sequence 1000636 positions 0..1000353 in 2 passes status=9 361.7 s; exchanges with a block late or wrong at first check 1, settled after waiting 0
+k31_stage kv pool growth released at chunks=400 of 880
+sparkpipe_stage_runner: streamed prefill of 1000353 tokens for sequence 1000636 failed status=9; the request fails, no wave fallback
+ERRSITE cache/kv_page_cache.c:4057 status=9 count=1
+ERRSITE runtime/stage_kv_binding.c:2729 status=9 count=1
+k31_stage adapter: the wave after deferred prefill tokens failed status=9; their published blocks hold no KV, so this lane refuses work until it restarts with its KV wiped
+sparkpipe_stage_runner: reset refused: a streamed prefill failed status=9 and its collective rounds may still be queued on this lane's stream; a reset cannot clear them, so the lane exits and must restart
+k31_stage adapter: submit refused: a streamed prefill failed and left published blocks without KV; restart the lane with its KV wiped
+ERRSITE inference/runner/stage_serving_adapter.c:1865 status=17 count=1
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=1
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=1
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=2
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=2
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=3
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=3
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=4
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=4
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=5
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=5
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=6
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=6
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=7
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=7
+ERRSITE cache/kv_page_cache.c:3911 status=15 count=8
+ERRSITE runtime/stage_kv_binding.c:1902 status=15 count=8

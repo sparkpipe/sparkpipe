@@ -476,6 +476,11 @@ uint64_t SparkTpDeviceCollectiveChainEpoch(
 uint64_t SparkTpDeviceCollectiveRoundIndex(
     SparkTpDeviceCollective *collective);
 
+SparkStatus SparkTpDeviceCollectiveSetOperationTimeout(
+    SparkTpDeviceCollective *collective,
+    uint32_t timeout_milli,
+    uint32_t *previous_milli);
+
 SparkStatus SparkTpDeviceCollectiveSubmitU64Max(
     SparkTpDeviceCollective *collective,
     const SparkTpDeviceCollectiveSubmission *submission);

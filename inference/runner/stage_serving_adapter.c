@@ -275,7 +275,7 @@ static SparkStatus StageServingCopyMember(SparkJsonDocument *doc, int32_t object
 static SparkStatus StageServingParseStreamed(SparkStageServingState *state, SparkJsonDocument *doc, int32_t object)
 {
 	static const char *const members[] = { "partner_pack", "fabric_device", "pair_device", "node_rows", "gid_index", "pair_gid_index",
-		"traffic_class", "dense_buffers", "expert_slots", "index_fp8" };
+		"traffic_class", "dense_buffers", "expert_slots", "index_fp8", "expert_pool_cap_bytes" };
 	SparkStageRunnerStreamedPrefillConfig *streamed = &state->runner_config.streamed_prefill;
 	if ( !SparkJsonTokenIsType(doc, object, SPARK_JSON_TOKEN_OBJECT) ||
 		StageServingKnownMembers(state, doc, object, "streamed_prefill", members, sizeof(members) / sizeof(members[0])) != SPARK_STATUS_OK ||
@@ -303,6 +303,16 @@ static SparkStatus StageServingParseStreamed(SparkStageServingState *state, Spar
 	{
 		fprintf(stderr, "%s adapter: streamed_prefill.index_fp8 is 0 (BF16 index keys and queries) or 1 (FP8 as the publisher's engine)\n", state->model->module_tag);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+	}
+	{
+		const int32_t cap = SparkJsonFindObjectMember(doc, object, "expert_pool_cap_bytes");
+		streamed->expert_pool_cap_bytes = 0u;
+		if ( cap >= 0 && (SparkJsonGetUInt64(doc, cap, &streamed->expert_pool_cap_bytes) != SPARK_STATUS_OK || streamed->expert_pool_cap_bytes == 0u) )
+		{
+			fprintf(stderr, "%s adapter: streamed_prefill.expert_pool_cap_bytes is the expert pool the lane switches to for a streamed prefill, a positive byte count; leave it out to keep one pool\n",
+				state->model->module_tag);
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		}
 	}
 	return SPARK_STATUS_OK;
 }
@@ -950,6 +960,12 @@ static const SparkModelDriverInterface StageServingDriver =
 	.admit = StageServingDriverAdmit,
 };
 
+static SparkStatus StageServingKvPoolHold(void *context, uint32_t hold)
+{
+	SparkStageServingState *state = (SparkStageServingState *)context;
+	return SparkStageKvBindingHoldPoolGrowth(&state->kv, hold);
+}
+
 static SparkStatus StageServingBindKv(SparkStageServingState *state,
 	const SparkModelServingAdapterConfiguration *configuration)
 {
@@ -1204,6 +1220,8 @@ static SparkStatus StageServingInitialize(const SparkModelServingAdapterConfigur
 		state->max_shared_rows, state->runner_config.head_row_capacity);
 	state->completion_function = configuration->completion_function;
 	state->completion_context = configuration->completion_context;
+	state->runner_config.kv_pool_hold = StageServingKvPoolHold;
+	state->runner_config.kv_pool_context = state;
 	status = StageServingAllocate(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerInitialize(&state->runner, &state->runner_config, model->runner_model());

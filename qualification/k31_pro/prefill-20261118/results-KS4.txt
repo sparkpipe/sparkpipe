@@ -1,0 +1,3 @@
+{"label": "KS4", "kind": "answer", "offset": 0, "tokens": 400000, "generated": 64, "wall_s": 199.924, "sha256": "f9a76a31ef6f53c2", "text_sha256": "1a95afa58bd438bf", "text": ".\n\n**`sparkpipe_mesh_status`.** `make build/sparkpipe_mesh_s"}
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 500: Error

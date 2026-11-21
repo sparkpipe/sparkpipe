@@ -332,6 +332,12 @@ static int32_t TestK3StreamedIndexCodec(void)
 		"index_fp8 1 asks for the publisher's FP8 index");
 	failures += TestK3Check(TestK3ParseStreamed(",\"index_fp8\":2", &state) == SPARK_STATUS_SCHEMA_ERROR, "index_fp8 is 0 or 1");
 	failures += TestK3Check(TestK3ParseStreamed(",\"index_bits\":8", &state) == SPARK_STATUS_SCHEMA_ERROR, "an unknown streamed prefill member is refused");
+	failures += TestK3Check(TestK3ParseStreamed("", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.expert_pool_cap_bytes == 0u,
+		"a streamed prefill without its own expert pool keeps the lane's one pool");
+	failures += TestK3Check(TestK3ParseStreamed(",\"expert_pool_cap_bytes\":8589934592", &state) == SPARK_STATUS_OK &&
+		state.runner_config.streamed_prefill.expert_pool_cap_bytes == 8589934592ull, "a streamed prefill names the expert pool the lane switches to for it");
+	failures += TestK3Check(TestK3ParseStreamed(",\"expert_pool_cap_bytes\":0", &state) == SPARK_STATUS_SCHEMA_ERROR,
+		"a zero streamed prefill expert pool is refused");
 	return(failures);
 }
 

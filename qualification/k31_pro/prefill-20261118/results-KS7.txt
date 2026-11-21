@@ -1,0 +1,3 @@
+{"label": "KS7", "kind": "answer", "offset": 0, "tokens": 400000, "generated": 64, "wall_s": 199.096, "sha256": "f9a76a31ef6f53c2", "text_sha256": "1a95afa58bd438bf", "text": ".\n\n**`sparkpipe_mesh_status`.** `make build/sparkpipe_mesh_s"}
+{"label": "KS7", "kind": "answer", "offset": 300000, "tokens": 131072, "generated": 32, "wall_s": 145.08, "sha256": "a12e1715c4ea0534", "text_sha256": "80314009cd34f0a7", "text": " or adopts a daemon. It does not kill a\nshared daemon during"}
+{"units": 41600, "depth": 0.5, "key": "44560", "prompt_tokens": 998469, "seconds": 485.6, "answer": "44560", "found": true, "utc": "2026-11-19T12:15:12Z"}

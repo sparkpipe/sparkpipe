@@ -1,0 +1,87 @@
+{
+ "reference": "arm-bf16.jsonl",
+ "arm": "arm-bf16-repeat.jsonl",
+ "all": {
+  "prompts": 1,
+  "questions": 8,
+  "reference_right": 8,
+  "arm_right": 8,
+  "reference_fraction": 1.0,
+  "arm_fraction": 1.0,
+  "only_reference": 0,
+  "only_arm": 0,
+  "mcnemar_p": 1.0,
+  "changed_fraction": 0
+ },
+ "by_family_length": {
+  "mk-131000": {
+   "prompts": 1,
+   "questions": 8,
+   "reference_right": 8,
+   "arm_right": 8,
+   "reference_fraction": 1.0,
+   "arm_fraction": 1.0,
+   "only_reference": 0,
+   "only_arm": 0,
+   "mcnemar_p": 1.0,
+   "changed_fraction": 0
+  }
+ },
+ "by_length": {
+  "131000": {
+   "prompts": 1,
+   "questions": 8,
+   "reference_right": 8,
+   "arm_right": 8,
+   "reference_fraction": 1.0,
+   "arm_fraction": 1.0,
+   "only_reference": 0,
+   "only_arm": 0,
+   "mcnemar_p": 1.0,
+   "changed_fraction": 0
+  }
+ },
+ "by_family": {
+  "mk": {
+   "prompts": 1,
+   "questions": 8,
+   "reference_right": 8,
+   "arm_right": 8,
+   "reference_fraction": 1.0,
+   "arm_fraction": 1.0,
+   "only_reference": 0,
+   "only_arm": 0,
+   "mcnemar_p": 1.0,
+   "changed_fraction": 0
+  }
+ },
+ "prompts": {
+  "mk-131k-0": {
+   "identical": true,
+   "shared_tokens": 78,
+   "reference_tokens": 78,
+   "arm_tokens": 78,
+   "compared_tokens": 78,
+   "chosen_logprob_delta_sum": 0.0,
+   "chosen_logprob_delta_abs_sum": 0.0,
+   "chosen_logprob_delta_mean": 0.0,
+   "chosen_logprob_delta_signed_mean": 0.0,
+   "chosen_logprob_delta_max": 0.0,
+   "identical_logprobs": true,
+   "reference_wall_s": 152.655,
+   "arm_wall_s": 146.364,
+   "prompt_tokens": 131040,
+   "same_prompt_tokens": true,
+   "reference_right": 8,
+   "arm_right": 8,
+   "questions": 8
+  }
+ },
+ "items": [],
+ "logprobs": {
+  "compared_tokens": 78,
+  "chosen_logprob_delta_mean": 0.0,
+  "chosen_logprob_delta_signed_mean": 0.0,
+  "chosen_logprob_delta_max": 0.0
+ }
+}

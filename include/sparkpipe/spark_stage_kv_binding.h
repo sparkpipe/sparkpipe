@@ -326,6 +326,8 @@ struct SparkStageKvBinding
 	uint32_t pool_idle_ticks;
 	uint32_t pool_last_status;
 	uint32_t pool_grow_refused;
+	uint32_t pool_growth_held;
+	uint32_t pool_growing;
 	uint64_t kv_margin_bytes;
 	pthread_cond_t pool_wake;
 	pthread_t pool_thread;
@@ -395,6 +397,7 @@ SparkStatus SparkStageKvBindingPublishFrame(SparkStageKvBinding *binding,SparkMo
 uint32_t SparkStageKvBindingResidentCount(const SparkStageKvBinding *binding);
 SparkStatus SparkStageKvLayoutDigest(const SparkStageKvLayoutIdentity *identity,uint8_t layout_sha256[SPARK_SHA256_DIGEST_BYTES],const char **invalid_input);
 SparkStatus SparkStageKvBindingHoldSaves(SparkStageKvBinding *binding,uint32_t hold);
+SparkStatus SparkStageKvBindingHoldPoolGrowth(SparkStageKvBinding *binding,uint32_t hold);
 SparkStatus SparkStageKvBindingSaveAll(SparkStageKvBinding *binding,uint64_t deadline_ns,uint32_t *saved_out,uint32_t *unsaved_out,uint32_t *ineligible_out);
 void SparkStageKvBindingKvStoreCounters(SparkStageKvBinding *binding,SparkModelDriverKvStoreCounters *counters);
 

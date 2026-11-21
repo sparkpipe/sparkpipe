@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 7u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 8u
 #define SPARK_STAGE_RUNNER_NO_ROW 0xffffffffu
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
@@ -174,6 +174,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*end)(void *model, void *frame, SparkStatus status, void *queue);
 	uint32_t frame_bytes;
 	uint32_t chunk_rows;
+	SparkStatus (*rebind)(void *model, struct SparkWeightdLazyPack *lazy_pack);
 };
 
 #ifdef __cplusplus
