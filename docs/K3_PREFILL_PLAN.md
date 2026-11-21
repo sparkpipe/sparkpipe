@@ -200,6 +200,18 @@ by more than the BF16 peak allows.
   the others waited up to 7.1 s at the rendezvous. Growing the KV pool after
   the reclaim, or a weightd that does not hold its other clients behind a
   grow, would take those seconds off a 1M request.
+- A grow sent just before the switch was answered after the arena was
+  detached, when memory looks plentiful: on 2026-11-21 (run LB1) a 458K
+  prompt took the pool from 400 to 800 chunks (5.9 to 11.7 GB) that way, the
+  whole arena no longer fit beside it after the pass (1.5 GB short), and the
+  request failed. The runner now holds the pool's growth from just before the
+  switch to the pass pool until the whole arena is back
+  (`SparkStageRunnerConfiguration.kv_pool_hold`): a grow already sent is
+  waited out, then pages past the pool's size park or evict as on a full
+  node. The prompt's pages were claimed by its waves before the switch, so
+  the pass needs none. In every run since, the pool kept its size across
+  each switch (200, 400 and 687 chunks), and every pass that finished
+  switched back.
 - Releasing only the expert chunks of one whole-arena attach would keep every
   pointer, but weightd maps a whole arena as one allocation and CUDA frees
   no part of one, so that needs a daemon change and a weightd release; the
@@ -218,6 +230,20 @@ by more than the BF16 peak allows.
   0.062), swaps. A 131K answer keeps 26 of 32 (logprob moves 0.076 on
   average, at most 0.30; a 0.055 near tie swaps). BF16 stays the default
   until you decide.
+- The FP8 index on a long-prompt suite (2026-11-21, partial,
+  [`qualification/k31_pro/prefill-20261118/`](../qualification/k31_pro/prefill-20261118/README.md#fp8-index-on-a-long-prompt-suite-2026-11-21-partial)):
+  20 prompts of RULER's retrieval and tracking tasks (mk, mv, mk3, vt) at
+  131K, 458K and 1M, 140 questions an arm. Two power losses on the fleet
+  stopped the runs after five paired prompts (36 questions): BF16 36 right, FP8 28; only
+  BF16 8, only FP8 0 (exact McNemar p 0.0078); FP8 minus BF16 -22.2 points,
+  95% bootstrap interval over prompts -66.7 to 0.0. All eight are one prompt
+  (mv-131k-0), whose first token is a 0.030 near tie under BF16 that FP8
+  swaps: FP8 writes out its search and stops at the 384-token cap, its 13
+  quoted pairs all right but none numbered. The other four answers are
+  identical token for token (logprob moves 0.0012 on average, at most 0.23).
+  mk-458k-0 prefills in 182.9 s against 204.5 s. BF16 answered two 1M
+  prompts (520.5 and 543.6 s end to end) before the second power loss. The
+  remaining 27 prompts need about 2.5 hours of full-fleet load.
 - Where the pass engine wins: a pass streams about 1.3 TB of expert weights
   a node, 128 s today, whatever the prompt. Waves take about 128 s for 64K
   tokens, so the threshold is about 64K now and about 32K after lever 4. On
@@ -259,7 +285,9 @@ rank, and the 224-wide routed up-projection that takes the slow GEMM path
    764.9 -> 473.4 s) and the FP8 index as an option.
 2. Done: the serving hand-off (section 4), the 1M needle answered by the
    same lane in BF16 and with the FP8 index, and the comparison; the FP8
-   index waits for your decision.
+   index waits for your decision. The long-prompt suite comparison is
+   partial (5 of 20 prompts paired) and resumes on your word once the fleet's
+   power holds.
 3. Exact levers by size: the stream GEMM toward the BF16 peak, the
    collectives (with a decision on the weight stream's class or port), the
    select folded into the score kernel, the SiTU and MoE finalize passes

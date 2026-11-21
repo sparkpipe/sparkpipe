@@ -1,0 +1,70 @@
+LB1 2026-11-21T00:37:43Z hold taken; prompts start only while they fit before 2026-11-21T01:35:43Z
+LB1 2026-11-21T00:37:43Z controller state=idle active=qwen3.8-max
+LB1 2026-11-21T00:38:24Z controller: qwen3.8-max deactivated, nothing active
+LB1 2026-11-21T00:38:40Z switch configs written, extra {"index_fp8":0}
+LB1 2026-11-21T00:38:46Z adapter 237cd69878805dec on 16 nodes
+LB1 2026-11-21T00:38:52Z lane started
+LB1 2026-11-21T00:39:11Z all ranks ready
+LB1 2026-11-21T00:39:29Z warm done
+LB1 2026-11-21T00:39:37Z api ready
+LB1 2026-11-21T00:41:44Z smoke exit 0
+LB1 2026-11-21T00:41:44Z suite client 2182356 started
+LB1 2026-11-21T01:36:45Z hold limit reached
+LB1 2026-11-21T01:36:45Z suite client ended
+LB1 2026-11-21T01:36:53Z done
+LB1 2026-11-21T01:36:53Z teardown
+LB1 2026-11-21T01:37:26Z lane stopped
+LB1 2026-11-21T01:37:29Z lane reclaimed
+LB1 2026-11-21T01:37:34Z hold released
+LF1 2026-11-21T01:57:56Z hold taken; prompts start only while they fit before 2026-11-21T02:54:56Z
+LF1 2026-11-21T01:57:56Z controller state=idle active=qwen3.8-max
+LF1 2026-11-21T01:58:36Z controller: qwen3.8-max deactivated, nothing active
+LF1 2026-11-21T01:58:52Z switch configs written, extra {"index_fp8":1}
+LF1 2026-11-21T01:58:58Z adapter fc2888126311e35b (libk31_pro_tp16_serving_adapter.switch-c2b2.so) on 16 nodes
+LF1 2026-11-21T01:59:04Z lane started
+LF1 2026-11-21T01:59:24Z all ranks ready
+LF1 2026-11-21T01:59:42Z warm done
+LF1 2026-11-21T01:59:50Z api ready
+LF1 2026-11-21T01:59:50Z suite client 3492176 started
+LF1 2026-11-21T02:55:57Z hold limit reached
+LF1 2026-11-21T02:55:57Z suite client ended
+LF1 2026-11-21T02:56:01Z done
+LF1 2026-11-21T02:56:01Z teardown
+LF1 2026-11-21T02:57:31Z lane stopped
+LF1 2026-11-21T02:57:31Z lane reclaimed
+LF1 2026-11-21T02:57:37Z MemAvailable below 100 GiB on: spark0() spark1() spark2() spark3() spark4() spark5() spark6() spark7() spark8() spark9() sparka() sparkb() sparkc() sparkd() sparke() sparkf()
+LF1 2026-11-21T02:57:37Z hold released
+LB2 2026-11-21T02:58:56Z hold taken; prompts start only while they fit before 2026-11-21T03:55:56Z
+LB2 2026-11-21T02:58:56Z controller state=idle active=None
+LB2 2026-11-21T02:59:01Z MemAvailable below 106 GiB on: spark0() spark1() spark2() spark3() spark4() spark5() spark6() spark7() spark8() spark9() sparka() sparkb() sparkc() sparkd() sparke() sparkf()
+LB2 2026-11-21T02:59:01Z teardown
+LB2 2026-11-21T02:59:06Z MemAvailable below 100 GiB on: spark0() spark1() spark2() spark3() spark4() spark5() spark6() spark7() spark8() spark9() sparka() sparkb() sparkc() sparkd() sparke() sparkf()
+LB2 2026-11-21T02:59:06Z hold released
+LB2 2026-11-21T04:03:50Z hold taken; prompts start only while they fit before 2026-11-21T05:00:50Z
+LB2 2026-11-21T04:03:51Z controller state=idle active=None
+LB2 2026-11-21T04:04:06Z switch configs written, extra {"index_fp8":0}
+LB2 2026-11-21T04:04:12Z adapter fc2888126311e35b (libk31_pro_tp16_serving_adapter.switch-c2b2.so) on 16 nodes
+LB2 2026-11-21T04:04:18Z lane started
+LB2 2026-11-21T04:04:37Z all ranks ready
+LB2 2026-11-21T04:04:55Z warm done
+LB2 2026-11-21T04:05:03Z api ready
+LB2 2026-11-21T04:07:29Z repeat exit 0
+LB2 2026-11-21T04:07:29Z suite client 232291 started
+LB2 2026-11-21T04:13:53Z rank 0 failed: sparkpipe_stage_runner: streamed prefill of 1000353 tokens for sequence 1000636 failed status=9; the request fails, no wave fallback
+LB2 2026-11-21T04:14:13Z suite client ended
+LB2 2026-11-21T04:14:21Z done
+LB2 2026-11-21T04:14:21Z teardown
+LB2 2026-11-21T04:14:55Z lane stopped
+LB2 2026-11-21T04:14:56Z lane reclaimed
+LB2 2026-11-21T04:15:01Z hold released
+LF2 2026-11-21T04:41:31Z hold taken; prompts start only while they fit before 2026-11-21T05:38:31Z
+LF2 2026-11-21T04:41:31Z controller state=idle active=qwen3.8-max
+LF2 2026-11-21T04:42:12Z controller: qwen3.8-max deactivated, nothing active
+LF2 2026-11-21T04:42:27Z switch configs written, extra {"index_fp8":1}
+LF2 2026-11-21T04:42:33Z adapter fc2888126311e35b (libk31_pro_tp16_serving_adapter.switch-c2b2.so) on 16 nodes
+LF2 2026-11-21T04:42:39Z lane started
+LF2 2026-11-21T04:42:43Z rank sparke DEAD: spark0=WAIT spark1=WAIT spark2=WAIT spark3=WAIT spark4=WAIT spark5=WAIT spark6=WAIT spark7=WAIT spark8=WAIT spark9=READY sparka=WAIT sparkb=WAIT sparkc=WAIT sparkd=READY sparke=DEAD
+LF2 2026-11-21T04:42:43Z teardown
+LF2 2026-11-21T04:42:46Z lane stopped
+LF2 2026-11-21T04:42:47Z lane reclaimed
+LF2 2026-11-21T04:42:53Z hold released

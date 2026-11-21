@@ -136,6 +136,101 @@ Files:
   `token_logprobs` beside `tokens`; the probe kept only `choices[0].logprobs`
   (null) before KS6 and writes these files from KS6.
 
+## FP8 index on a long-prompt suite, 2026-11-21 (partial)
+
+The FP8 index (`streamed_prefill.index_fp8` 1) against BF16 on a fixed suite
+of long prompts, answered by the mode-switch lane. Five of the suite's 20
+prompts are paired so far: two power losses on the fleet stopped the runs,
+and the rest waits for stable power. Files in [`lps-20261121/`](lps-20261121/).
+
+The suite (`tools/long_prompt_suite.py`, seed 20261121) holds RULER's
+retrieval and tracking tasks with several questions a prompt:
+
+| Family | Prompt | Questions | Output cap |
+| --- | --- | --- | --- |
+| mk | 32 needles, a 7-digit number for a word each, in a text haystack | 8 of the words | 192 tokens |
+| mv | 8 words with 4 numbers each in the haystack; a question is right when all 4 are | all 8 words | 384 |
+| mk3 | a haystack made only of uuid key-value lines | 8 keys | 448 |
+| vt | 4 chains of 5 variable assignments in repeated noise; right when all 5 names are listed | the 4 values | 192 |
+
+Two prompts a family at 131K and 458K tokens and one at 1M: 20 prompts, 140
+questions an arm. The haystack is every `.md` file of `c2b714343` in
+`git ls-tree` order, each followed by a blank line. Each prompt opens with
+its own task id, so no two prompts share a cached prefix. Every request:
+temperature 0, no speculation, the top 6 logprobs of each generated token.
+The arms differ only in `index_fp8`. The adapter is this branch with #1950
+merged onto main `c2b714343`: without the KV pool's growth hold for LB1
+(adapter 237cd698) and with it (fca14155e) from LF1 on (adapter fc288812).
+The lane is `k31_pro_rp` on all 16 Sparks.
+
+| Run | Index | Answered | Stopped by |
+| --- | --- | --- | --- |
+| LB1 | BF16 | the four 131K-0 prompts, mk-458k-0 | mv-458k-0: the KV pool grew from 400 to 800 chunks (11.7 GB against the 8 GiB reserve) while the arena was detached, so the switch back found no room (`spark_weightd_lazy_pack.c:156`) |
+| LF1 | FP8 | the four 131K-0 prompts, mk-458k-0, mv-458k-0 | mk3-458k-0: the Sparks lost power at 02:18:57Z |
+| LB2 | BF16 | a repeat of mk-131k-0, identical to LB1 to the bit | mk-1000k-0: spark8's second 100G port went down for 7 s at 04:13:05Z in pass 2, and a collective round ran out its 30 s |
+| LF2 | FP8 | none | 4 s after the start sparke's rank was dead and ranks 0 and 5 had failed lazy startup (status 4); 90 s later a weightd restart on all 16 repaired the mesh the reboot had left with failed queue pairs |
+| LB3 | BF16 | mk-1000k-0 in 520.5 s, mv-1000k-0 in 543.6 s (passes 480.5 and 493.0 s) | mk3-1000k-0: spark9, sparka, sparkb, sparkd and sparkf lost power at about 06:04Z, as pass 2 began (their journals stop at 06:03:41-46Z, no shutdown, panic or DMA-guard trigger), and the weight stream's connections to them ran out of retries |
+
+LB3's answers stay on the hub until it is reachable again; they are not in
+the comparison below.
+
+LB1 against LF1 on the five prompts both answered (`cmp-bf16-fp8.json`; the
+intervals are 95% bootstrap bounds whose unit is the prompt):
+
+| Group | Prompts | Questions | BF16 right | FP8 right | Only BF16 | Only FP8 | Exact McNemar p | FP8 minus BF16, points (95% interval) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| all | 5 | 36 | 36 | 28 | 8 | 0 | 0.0078 | -22.2 (-66.7 to 0.0) |
+| mk | 2 | 16 | 16 | 16 | 0 | 0 | 1.0000 | 0.0 (0.0 to 0.0) |
+| mk3 | 1 | 8 | 8 | 8 | 0 | 0 | 1.0000 | one prompt |
+| mv | 1 | 8 | 8 | 0 | 8 | 0 | 0.0078 | one prompt |
+| vt | 1 | 4 | 4 | 4 | 0 | 0 | 1.0000 | one prompt |
+| 131K | 4 | 28 | 28 | 20 | 8 | 0 | 0.0078 | -28.6 (-85.7 to 0.0) |
+| 458K | 1 | 8 | 8 | 8 | 0 | 0 | 1.0000 | one prompt |
+
+| Prompt | Tokens | BF16 right | FP8 right | Answers | Pass BF16 / FP8 | First token BF16 / FP8 |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| mk-131k-0 | 131,040 | 8 of 8 | 8 of 8 | identical | 111.7 / 108.6 s | 146.9 / 141.0 s |
+| mv-131k-0 | 131,050 | 8 of 8 | 0 of 8 | differ from the first token | 109.2 / 109.4 s | 145.3 / 142.0 s |
+| mk3-131k-0 | 131,024 | 8 of 8 | 8 of 8 | identical | 110.8 / 109.1 s | 145.0 / 141.7 s |
+| vt-131k-0 | 131,005 | 4 of 4 | 4 of 4 | identical | 110.3 / 108.8 s | 143.0 / 141.6 s |
+| mk-458k-0 | 458,144 | 8 of 8 | 8 of 8 | identical | 204.5 / 182.9 s | 238.6 / 215.9 s |
+
+- All eight questions only BF16 gets are mv-131k-0. Its first token is a
+  near tie under BF16 (`1` at -0.768 against `I` at -0.798, margin 0.030),
+  and the FP8 index swaps it (`I` at -0.654 against `1` at -1.170). FP8
+  then writes out its search, quoting the needle lines, and stops at the
+  384-token cap before the numbered list. The 13 word-number pairs it quotes
+  are all right and cover all 8 words, but no answer line is numbered, so
+  every question scores 0.
+- The other four answers are identical token for token. Over their 454
+  tokens the chosen token's logprob moves 0.0012 on average (-0.0003 signed,
+  FP8 minus BF16) and at most 0.23.
+- Prefill: 131K 108.6-109.4 s with the FP8 index against 109.2-111.7 s
+  (108.6 s in LB2's repeat); mk-458k-0 182.9 s against 204.5 s (11% less). The first token adds the
+  switch to the pass pool (3.7-4.7 s) and back to the whole arena (19.3-20.1 s).
+- BF16 repeats to the bit (`cmp-bf16-repeat.json`: mk-131k-0, LB2 against
+  LB1).
+
+Files:
+
+- `suite-manifest.json`: every prompt's family, length, task id, content
+  tokens and sha256, output cap and questions with their gold answers and
+  depths; the suite file's and the haystack's sha256 and the build settings
+  (`long_prompt_suite.py build --lengths 131000,458000,1000000 --prompts 2,2,1
+  --seed 20261121` with the K3.1 tokenizer rebuilds the suite).
+- `arm-bf16.jsonl` (LB1, with LB1's and LB2's failed rows), `arm-fp8.jsonl`
+  (LF1), `arm-bf16-repeat.jsonl` (LB2), `smoke-LB1.jsonl` (LB1's short smoke
+  prompts): the client's row for every prompt, with the answer, its tokens
+  and logprobs, the time and any failure.
+- `cmp-bf16-fp8.json`, `cmp-bf16-repeat.json`: `long_prompt_suite.py compare`.
+- `api-requests.jsonl`: every request's `request_measurements` line from the
+  API: run, prompt, status, prompt tokens and sha256 (equal across arms),
+  cached tokens (0 everywhere), output tokens, first-token and decode seconds.
+- `prefill-passes.jsonl`, `weight-switches.jsonl`: rank 0's sequence lines
+  and switch times; `rank0-LB1.log`, `rank0-LB2.log`, `rank0-LF1.log`: rank
+  0's pool, switch, pass, sequence and error lines.
+- `events.txt`: the driver's events for each run.
+
 ## Files
 
 - `probes.jsonl`: the client's result for every prompt.
