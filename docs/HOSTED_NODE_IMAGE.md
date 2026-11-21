@@ -180,10 +180,155 @@ fail.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
-does not stop the boot); the disk install creates both. The
+does not stop the boot); the [disk install](#disk-install) creates both. The
 hostname is `sparkpipe-node` until bring-up.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
 identity and keys, then `apply`, reboot and `audit`. The modules load under
 Secure Boot through the kernel's own signing chain, so a node needs no
 enrollment step.
+
+## Disk install
+
+[`install_disk.sh`](../tools/hosted_image/install_disk.sh) installs a built
+image onto a disk whose first partition is a vfat EFI system partition and
+whose second is an ext4 root. It keeps the root filesystem and its `/home`,
+so a node's packs stay where they are. It runs as root from a system that
+does not boot from that disk, such as a rescue system in RAM:
+
+```sh
+install_disk.sh --disk /dev/nvme0n1 --image BUILD_DIR --identity BUNDLE_DIR --work /run/install
+```
+
+Before it changes anything it checks:
+
+- the build directory's `MANIFEST` records a passing dependency audit and
+  the archive's SHA-256;
+- the identity bundle (below) is well formed;
+- both partitions have the expected filesystem types and neither is mounted;
+- an active firmware boot entry in `BootOrder` loads
+  `\EFI\ubuntu\shimaa64.efi` from this disk's EFI partition, matched by its
+  GPT partition UUID. The install never adds or changes a boot entry, so that
+  entry is what boots the installed image;
+- the EFI partition holds `EFI/ubuntu/shimaa64.efi`;
+- `e2fsck` finds the root clean;
+- nothing else is mounted under the work directory's target;
+- the root has 10 GiB free and holds no earlier set-aside directory.
+
+Then it:
+
+1. moves every top-level entry of the old root except `home` and
+   `lost+found` into `/.dgxos-<UTC stamp>/root`. These are renames on one
+   filesystem, so nothing is copied and the old system can be moved back.
+   It then copies the old system's `EFI/ubuntu` from the EFI partition into
+   `/.dgxos-<UTC stamp>/esp/EFI/ubuntu` and compares the copy.
+2. extracts the image beside `/home`, then checks that `/` is `0:0 755` and
+   that no path outside `/home` belongs to a uid or gid of 1000 or above.
+3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
+   image's `fstab` names.
+4. creates the bundle's groups and its user, then installs its files.
+5. creates `/boot/efi`, mounts the EFI partition there and records every
+   path and file checksum on it outside `EFI/ubuntu`. In a chroot it checks
+   `sudoers` with `visudo -c`, then runs `grub-install` for `arm64-efi` with
+   Secure Boot, `--no-nvram` and `--no-extra-removable`, which writes shim
+   and GRUB into `EFI/ubuntu` on the existing EFI partition. Without
+   `--no-extra-removable`, Ubuntu's `grub-install` also copies shim, the
+   fallback loader and MokManager into the firmware's removable-media path
+   `EFI/BOOT`, replacing the loader the old system left there. Then it runs
+   `update-grub` and `update-initramfs` for the pinned kernel.
+6. checks that `EFI/ubuntu` holds the shim, GRUB and a `grub.cfg` that
+   searches the installed root, that nothing on the EFI partition outside
+   `EFI/ubuntu` changed, that `/boot/grub/grub.cfg` boots the pinned
+   kernel, and that `efibootmgr -v` prints exactly what it printed at the
+   start.
+
+It never deletes anything. Every mount it makes is undone on exit, and
+`/sys/firmware/efi/efivars` is never mounted in the chroot.
+
+Rollback, from the same kind of rescue system: move every top-level entry
+of the installed root except `home`, `lost+found` and `.dgxos-<stamp>` into
+`/.hosted-<stamp>`, move the entries of `/.dgxos-<stamp>/root` back to `/`,
+move the EFI partition's `EFI/ubuntu` into `/.hosted-<stamp>/esp/EFI`,
+copy `/.dgxos-<stamp>/esp/EFI/ubuntu` back onto the EFI partition and
+compare the whole partition with what it held before the install, restore
+the old labels, and remove `/.dgxos-<stamp>`, which by then holds only that
+copy. The old loader comes back byte for byte, and `EFI/BOOT` and the
+firmware boot entries were never changed, so rollback runs no
+`grub-install`.
+
+The set-aside directory is removed only after the node passes acceptance.
+After that, `hosted_dependency_audit.py image --rootfs /` over the whole
+installed root, with no exclusions, is the gate.
+
+### Dry run
+
+[`dryrun_install_disk.sh`](../tools/hosted_image/dryrun_install_disk.sh)
+is the behavioural test of `install_disk.sh`, and every change to the
+installer runs it:
+
+```sh
+sudo make hosted-disk-dryrun IMAGE=BUILD_DIR DIR=NEW_DIR
+```
+
+It needs root, loop device support and 40 GiB free beside `NEW_DIR`. It
+touches no real disk, uses no GPU, and never writes the host's firmware
+boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
+attaches it as a loop device and partitions it like a node, then seeds:
+
+- a previous system;
+- `/home/spark1` with a 256 MiB pack and a release root linked to a stub
+  `libcuda.so.1`;
+- an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
+  directory;
+- an identity bundle.
+
+The installer reads firmware boot entries through a wrapper that prints
+the host's `efibootmgr -v` plus one active entry in `BootOrder` that loads
+`\EFI\ubuntu\shimaa64.efi` from the loop device's EFI partition. The
+wrapper accepts only `-v`. Then the harness runs, in order:
+
+1. the installer with the host's real boot entries, which must refuse
+   because no entry loads this EFI partition;
+2. an install, then the checks:
+   - `/home` is unchanged (owners, modes, sizes, mtimes and the pack's
+     checksum);
+   - the old root and the old `EFI/ubuntu` are intact in the set-aside
+     directory;
+   - labels, identity, user, groups, modes and `fstab` are as expected;
+   - nothing outside `/home` belongs to a uid or gid of 1000 or above;
+   - the initramfs was rebuilt with the dropbear key;
+   - the kernel entry uses the root UUID and the GB10 arguments;
+   - `EFI/ubuntu` holds the image's own signed shim and GRUB;
+   - everything outside `EFI/ubuntu` on the EFI partition is byte-identical;
+3. the rollback described above, checked against the old root and the
+   whole old EFI partition;
+4. the installer refusing while `/.hosted-<stamp>` exists;
+5. a second install, with the same checks;
+6. the acceptance gate: after the set-aside directory is deleted, the
+   image audit over the installed root fails on the stub-linked release
+   root in `/home`, then passes once that root is removed;
+7. a check that the host's `efibootmgr -v` is unchanged.
+
+Before it removes anything it checks that only its own mount is under
+`NEW_DIR`. It detaches the loop device on exit, prints what is still
+mounted or attached, and writes its exit status to `NEW_DIR/exit`.
+
+### Identity bundle
+
+The identity bundle is a directory with three parts:
+
+- `files/` mirrors absolute paths in the installed root, for example
+  `files/etc/hostname`. Each file is installed owned by root with its mode
+  from the bundle. A directory the image lacks is created with its mode from
+  the bundle; a directory the image already has keeps the image's mode.
+  `files/` may hold only regular files and directories. A bundle that
+  carries `/etc/ssh/ssh_host_ed25519_key` must also carry
+  `/etc/dropbear/initramfs/dropbear_ed25519_host_key`: with SSH host keys
+  present, `sparkpipe-host-keys.service` does not run, so nothing else would
+  create the initramfs keys.
+- `user.conf` holds `USER_NAME`, `USER_UID`, `USER_GID`, `USER_GROUPS` (a
+  comma list) and `USER_SHELL`, one `KEY=value` per line. It is read as data,
+  never sourced. The user is created with no home of its own, because
+  `/home/<user>` is already on the disk.
+- `groups.conf` holds one `name:gid` line per group the user needs that
+  the image does not have.
