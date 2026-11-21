@@ -102,7 +102,7 @@ PENDING = {
     "ring/transport/tp_device_collective.c": {"handle": 10},
     "runtime/gemm.cuh": {"placement": 1},
     "runtime/gemm_descriptor_cache.h": {"token": 5},
-    "runtime/launch.h": {"device-include": 1, "token": 23},
+    "runtime/launch.h": {"device-include": 1},
     "runtime/spark_weightd.c": {"header": 1, "token": 135},
     "runtime/spark_weightd_attach.c": {"header": 1, "token": 27},
     "runtime/spark_weightd_kv_pool.c": {"header": 1, "token": 38},
