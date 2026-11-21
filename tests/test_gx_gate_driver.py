@@ -359,6 +359,15 @@ with tempfile.TemporaryDirectory() as directory:
 with tempfile.TemporaryDirectory() as directory:
     fleet = pathlib.Path(directory)
     path, api, served = build_lane(fleet)
+    result, events = run_lane(fleet, path, api, GX_MINUTES="0")
+    check(result.returncode != 0 and f"GX-BLOCK-PAUSED {LANE_MODEL} before chain" in result.stdout and f"GX-INCOMPLETE {LANE_MODEL}" in result.stdout and not runs(events) and
+          [line for line in events if line.startswith("lane ")][-2:] == ["lane stop ", "lane reclaim "], f"a block whose minutes are used up started a step or left its lane running: {events}", result)
+    result, events = run_lane(fleet, path, api)
+    check(result.returncode == 0 and list(runs(events)) == ORDER, f"a paused block did not go on when run again: {events}", result)
+
+with tempfile.TemporaryDirectory() as directory:
+    fleet = pathlib.Path(directory)
+    path, api, served = build_lane(fleet)
     (fleet / "active").write_text('"qwen3.8-max"')
     result, events = run_lane(fleet, path, api)
     check(result.returncode != 0 and "take the fleet hold first" in result.stdout and not any(line.startswith(("lane start", "run ", "plan")) for line in events),
@@ -367,4 +376,4 @@ with tempfile.TemporaryDirectory() as directory:
 if failures:
     print("FAIL test_gx_gate_driver:\n" + "\n".join(failures))
     sys.exit(1)
-print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change; a fresh block starts with one 8K unit and the tool's own checks, and stops there when they fail; the block notes what was active, its lane, the idle gap and each cache change with the seconds its stop and start took; the model that served before the block is activated again and must answer a real request; with GX_BACKEND=lane the gate runs a staged lane on its own nodes with production stopped, changes the cache by the lane's stop, drop-kv and start, never calls the swap controller, and leaves the lane stopped and reclaimed")
+print("PASS test_gx_gate_driver: gx_gate.sh runs each step with the cache change its plan names; a clear is one stop and one start through the controller that removes the lane's KV snapshots, its backing files and the hub API's prefix index only once no engine runs, and leaves other lanes, the pack digest and the API's other files alone; an evict removes nothing; a stopped step ends the block with receipts copied and the fleet released; a block run again does only its open steps after a cache clear, with the park step run again before a restore step; a finished state runs nothing; a running step and engines the controller did not start are refused before any change; a fresh block starts with one 8K unit and the tool's own checks, and stops there when they fail; the block notes what was active, its lane, the idle gap and each cache change with the seconds its stop and start took; the model that served before the block is activated again and must answer a real request; with GX_BACKEND=lane the gate runs a staged lane on its own nodes with production stopped, changes the cache by the lane's stop, drop-kv and start, never calls the swap controller, and leaves the lane stopped and reclaimed; with GX_MINUTES a block starts no step once its minutes are used up and goes on when run again")

@@ -239,6 +239,9 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 - State and logs are kept on the hub under `$HUB_WORK/gx/<sha>/<model>/`.
   A state is planned once: its prompts must be new to the cache. Running
   the driver again on a directory that holds a state resumes it.
+- `GX_MINUTES` starts no further step once that many minutes have passed
+  since the driver began; the block is left resumable and the fleet is
+  released as at any end.
 - `GX_PLAN` passes plan options, for example
   `--contexts 8000 --tails 1,40`.
 - Each step runs detached on the hub, so a dropped connection does not end

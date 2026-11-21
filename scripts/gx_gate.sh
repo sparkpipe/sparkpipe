@@ -11,6 +11,8 @@ GX_POLL=${GX_POLL:-20}
 GX_REST=${GX_REST:-60}
 GX_REST_OVER=${GX_REST_OVER:-60}
 GX_PREFLIGHT=${GX_PREFLIGHT:-1}
+GX_MINUTES=${GX_MINUTES:-}
+GX_BEGAN=$(date +%s)
 GX_TOOL=$GX_DIR/gx_gate.py
 GX_BEFORE=$(controller 2>/dev/null | awk '{print $2}')
 GX_BACKEND=${GX_BACKEND:-controller}
@@ -185,6 +187,10 @@ gx_model() {
     "rest_seconds=$GX_REST" "rest_over_seconds=$GX_REST_OVER"
   while read -r step change state rest; do
     [ "$state" = done ] && continue
+    if [ -n "$GX_MINUTES" ] && [ $(($(date +%s) - GX_BEGAN)) -ge $((GX_MINUTES * 60)) ]; then
+      echo "GX-BLOCK-PAUSED $id before $step: $GX_MINUTES minutes are used up; run this again to go on"
+      break
+    fi
     if [ "$first" = 1 ] && [ "$fresh" = 0 ]; then
       change=clear
       case "$step" in restore:*)
