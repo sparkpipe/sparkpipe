@@ -9,11 +9,15 @@ source_ref="$(cat "$out/inputs/source-commit")"
 cp -a "$here/files/." "$root/"
 chmod 0600 "$root/etc/netplan/01-sparkpipe.yaml"
 install -m 0600 "$out/inputs/spark-firewall.nft" "$root/etc/spark-firewall.nft"
-install -d "$root/lib/modules/$KERNEL_RELEASE/updates/sparkpipe"
-install -m 0644 "$out/modules/nvidia.ko" "$out/modules/nvidia-uvm.ko" "$root/lib/modules/$KERNEL_RELEASE/updates/sparkpipe/"
+install -d "$root/lib/modules/$KERNEL_RELEASE/updates"
+for module in $MODULE_FILES; do
+	install -m 0644 "$out/modules/$module.ko" "$root/lib/modules/$KERNEL_RELEASE/updates/$module.ko"
+done
 chroot "$root" depmod -a "$KERNEL_RELEASE"
-[ "$(chroot "$root" modinfo -k "$KERNEL_RELEASE" -n nvidia)" = "/lib/modules/$KERNEL_RELEASE/updates/sparkpipe/nvidia.ko" ] || { echo "customize_image: depmod does not resolve nvidia to the built module" >&2; exit 1; }
-[ -f "$root/lib/firmware/nvidia/$OPEN_MODULE_TAG/gsp_ga10x.bin" ] || { echo "customize_image: $FIRMWARE_PACKAGE did not install the GSP firmware for $OPEN_MODULE_TAG" >&2; exit 1; }
+for module in $MODULE_FILES; do
+	[ "$(chroot "$root" modinfo -k "$KERNEL_RELEASE" -n "$module")" = "/lib/modules/$KERNEL_RELEASE/updates/$module.ko" ] || { echo "customize_image: depmod does not resolve $module to the installed module" >&2; exit 1; }
+done
+[ -f "$root/lib/firmware/nvidia/$MODULE_VERSION/gsp_ga10x.bin" ] || { echo "customize_image: $FIRMWARE_PACKAGE did not install the GSP firmware for $MODULE_VERSION" >&2; exit 1; }
 install -d "$root/$RELEASE_ROOT_PATH" "$(dirname "$root/$AGENT_PATH")"
 cp -a "$out/inputs/release-root/." "$root/$RELEASE_ROOT_PATH/"
 git -C "$repo" show "$source_ref:tools/fleet_node_agent.sh" > "$root/$AGENT_PATH"
