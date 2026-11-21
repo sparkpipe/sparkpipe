@@ -241,11 +241,14 @@ python3 turn_floor.py parts $W/kimi-k3
 
 Every request names its cuts, as the chat layer does for a conversation. A
 session request sends `cuts`: for each earlier reply of the session, one
-token before that turn's prompt ended and where its reply ended. The
-question of the `truth` arm sends the same list. An opening and the second
-request on it send the length they share as a cut and in `keep`, so state is
-kept there. An engine that does not know the members ignores them; one that
-resumes only at the cuts a request names needs them to resume a turn at all.
+token before that turn's prompt ended and where its reply ended. The list
+rises and names a count once: after a one-token tail a reply ends one token
+before the next prompt does, and an engine that reads cuts refuses a list
+that repeats a count. The question of the `truth` arm sends the same list.
+An opening and the second request on it send the length they share as a cut
+and in `keep`, so state is kept there. An engine that does not know the
+members ignores them; one that resumes only at the cuts a request names
+needs them to resume a turn at all.
 
 Every completion's `cache` object, when the engine sends one, is kept with
 the request (`cache_matched_tokens`, `cache_resumed_tokens`,

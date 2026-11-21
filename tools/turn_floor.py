@@ -275,10 +275,10 @@ class Run:
         return piece
 
     def session_cuts(self, length):
-        return [cut for cut in self.state.get("cuts", []) if cut < length]
+        return [cut for cut in self.state.get("cuts", []) if 0 < cut < length]
 
     def remember_reply(self, prompt_tokens, reply_tokens):
-        self.state.setdefault("cuts", []).extend([prompt_tokens - 1, prompt_tokens + reply_tokens])
+        self.state["cuts"] = sorted(set(self.state.get("cuts", [])) | {prompt_tokens - 1, prompt_tokens + reply_tokens})
 
     def send(self, kind, ids, max_tokens, context=None, tail=None, priority=INTERACTIVE, speculation=None, cuts=(), keep=(), **extra):
         self.state["sequence"] += 1

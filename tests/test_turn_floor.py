@@ -28,6 +28,8 @@ EARLIER_SAVES = 5
 QUEUE_MS = 3.0
 RESTORE_MS = 120.0
 CONTEXT_LIMIT = 9000
+MAX_CUTS = 16384
+MAX_PROMPT_TOKENS = 1048576
 BOOT = 4242
 PART_SLACK_MS = 1.0
 EARLY_MS = 1.0
@@ -47,6 +49,11 @@ def near(value, expected, slack):
     return value is not None and abs(value - expected) <= slack
 
 
+def rising(counts):
+    return (isinstance(counts, list) and len(counts) <= MAX_CUTS and all(isinstance(count, int) and 0 < count <= MAX_PROMPT_TOKENS for count in counts) and
+            all(left < right for left, right in zip(counts, counts[1:])))
+
+
 class Stub:
     def __init__(self, log_path):
         self.log = open(log_path, "a")
@@ -62,6 +69,7 @@ class Stub:
         self.restored_ms = 0.0
         self.answers_state = True
         self.state_cuts = []
+        self.unordered = 0
 
     def cached(self, ids):
         best = 0
@@ -162,9 +170,9 @@ def handler(stub):
         def log_message(self, *arguments):
             pass
 
-        def reply(self, document):
+        def reply(self, document, status=200):
             data = json.dumps(document).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Connection", "close")
@@ -179,6 +187,12 @@ def handler(stub):
 
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if not all(rising(body.get(name, [])) for name in ("cuts", "keep")):
+                with stub.lock:
+                    stub.unordered += 1
+                self.reply({"error": {"message": "cuts and keep must be arrays of at most 16384 rising token counts", "type": "invalid_request_error",
+                                      "code": "invalid_option"}}, 400)
+                return
             if self.path == "/v1/cache/state":
                 if not stub.answers_state:
                     self.send_error(404)
@@ -329,6 +343,13 @@ with tempfile.TemporaryDirectory() as folder:
     recut = [json.loads(line) for line in (again / "parts.jsonl").read_text().splitlines()]
     excerpt_summary = json.loads((again / "summary.json").read_text())
     apart_ms = clocks_apart_ms()
+    session_requests, session_questions = len(stub.requests), len(stub.state_cuts)
+    short = folder / "short"
+    run_tool("run", "--endpoint", endpoint, "--tokens", str(tokens_path), "--output", str(short), "--label", "stub", "--api-log", str(log_path), "--contexts", "500",
+             "--tails", "1", "--repeats", "3", "--spec-repeats", "0", "--reply-tokens", "6", "--decode-tokens", "12", "--served-tokens", "10", "--arms", "turns,truth")
+    short_turns = [json.loads(line) for line in (short / "requests.jsonl").read_text().splitlines()]
+    short_requests, short_questions = stub.requests[session_requests:], stub.state_cuts[session_questions:]
+    del stub.requests[session_requests:]
     server.shutdown()
 
 check(summary["unmatched"] == 0, f"every request finds its own line in the engine log by prompt digest: {summary['unmatched']} unmatched")
@@ -356,6 +377,12 @@ opened = [request for request in stub.requests if request["prompt"] == CONTEXT_L
 shared, brief = CONTEXT_LIMIT - 6 - 64 - 500, CONTEXT_LIMIT - 6 - 64 - int((CONTEXT_LIMIT - 6 - 64) * 0.03)
 check([request["cuts"] for request in opened] == [[shared], [shared], [brief], [brief]] and all(request["keep"] == request["cuts"] for request in opened),
       f"an opening and the second request on it name where what they share ends, and ask for state there: {[(request['cuts'], request['keep']) for request in opened]}")
+turned = [row for row in short_turns if row["kind"] in ("grow", "turn")]
+check(stub.unordered == 0 and all(row.get("error") is None for row in short_turns) and [row["prompt_tokens"] for row in turned] == [500, 507, 514, 521] and
+      [request["cuts"] for request in short_requests] == [[], [499, 506], [499, 506, 513], [499, 506, 513, 520], [499, 506, 513, 520], [499, 506, 513, 520]] and
+      short_questions == [[499, 506, 513, 520]],
+      f"with a one-token tail a reply ends one token before the next prompt does, and a request names that count once, so its cuts still rise: "
+      f"{stub.unordered} refused, {[request['cuts'] for request in short_requests]} {short_questions}")
 asked = summary["cache_states"]
 check(len(asked) == 2 and asked[0]["event"] == "after the turns" and asked[0]["http_status"] == 200 and asked[0]["answer"]["ranks_failed"] == 0 and
       asked[0]["answer"]["held_tokens"] == asked[0]["history_tokens"] == asked[0]["answer"]["prompt_tokens"] and asked[0]["answer"]["resident_tokens"] == asked[0]["history_tokens"] and
