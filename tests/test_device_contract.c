@@ -646,6 +646,10 @@ static void TestKernelBusy(SparkDeviceQueue *queue, SparkDeviceLibrary *library,
 	CHECK(SparkDeviceFree(&out) == SPARK_STATUS_OK,"free after the launch completes");
 }
 
+#ifndef SPARK_DEVICE_TEST_PARAMETER_KERNEL
+#define SPARK_DEVICE_TEST_PARAMETER_KERNEL "SparkNvrmFirstLight"
+#endif
+
 typedef struct ParameterBlock
 {
 	uint64_t output;
@@ -666,7 +670,7 @@ static void TestParameterBlockKernels(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceLibraryLoad(&library,"/nonexistent/kernels.cubin","contract kernels") == SPARK_STATUS_NOT_FOUND && library == 0,"a missing library is refused");
 	CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_OK,"load a kernel library with its manifest");
 	CHECK(SparkDeviceKernelCreate(&missing,library,"contract_absent") == SPARK_STATUS_NOT_FOUND && missing == 0,"an absent kernel is refused");
-	CHECK(SparkDeviceKernelCreate(&kernel,library,"SparkNvrmFirstLight") == SPARK_STATUS_OK,"create a kernel by its name");
+	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_PARAMETER_KERNEL) == SPARK_STATUS_OK,"create a kernel by its name");
 	if ( kernel == 0 )
 	{
 		SparkDeviceLibraryUnload(library);
@@ -715,12 +719,13 @@ static void TestKernels(SparkDeviceQueue *queue)
 		CHECK(0,"kernel tests need an initialized device");
 		return;
 	}
-	if ( strcmp(SparkDeviceGetProperties()->backend,"nvrm") == 0 )
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) != 0u &&
+		(SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS) != 0u )
 	{
 		TestParameterBlockKernels(queue);
 		return;
 	}
-	if ( strcmp(SparkDeviceGetProperties()->backend,"metal") != 0 )
+	if ( (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES) == 0u )
 	{
 		CHECK(SparkDeviceLibraryLoad(&library,SPARK_DEVICE_TEST_LIBRARY,"contract kernels") == SPARK_STATUS_UNSUPPORTED && library == 0,
 			"a backend without device kernels refuses to load a kernel library");

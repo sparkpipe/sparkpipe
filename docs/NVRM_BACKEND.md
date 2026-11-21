@@ -345,7 +345,10 @@ the kernel's whole parameter block, packed by its C parameter types, as
 the launch's constants; the block must be exactly the kernel's parameter
 size, and bindings are refused. Each launch's descriptor and bank 0 go in
 a slot from a per-queue ring of 512, reused once the launch that held it
-has completed. The device contract's nvrm branch loads the fixture cubin,
+has completed. The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
+`SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS` property bits (Metal sets the
+first), and the device contract branches on them: its parameter-block
+branch loads the fixture cubin,
 checks the reported layout, refuses bindings and a wrong-sized block, and
 reads back a launch. The backend adopts no foreign memory or queue, and
 a queue it owns is never captured into a graph.

@@ -111,7 +111,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_buffer_bytes = memory;
 	properties->max_group_threads = NVRM_GROUP_THREADS;
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
-	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY;
+	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES |
+		SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS;
 	return(SPARK_STATUS_OK);
 }
 
