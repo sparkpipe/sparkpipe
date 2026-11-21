@@ -1759,7 +1759,7 @@ static SparkStatus SparkModelBatchHandleDecodeCompletion(
 		if ( submission->verify != 0u )
 		{
 			status = SparkModelBatchAcceptVerifiedLane(engine,request,completion,lane,draft_counts[lane]);
-			if ( status == SPARK_STATUS_OK && draft_counts[lane] != 0u )
+			if ( status == SPARK_STATUS_OK )
 				status = SparkModelBatchPublishCompletedPrefix(engine,request,request_slots[lane],
 					((request->prompt_token_count + request->generated_token_count - 1u) / engine->cache_block_token_count) * engine->cache_block_token_count);
 			if ( status != SPARK_STATUS_OK )

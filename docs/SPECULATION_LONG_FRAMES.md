@@ -58,8 +58,17 @@ document is the contract for that path. Measured results are in
   every full block below the kept length under those identities, including the
   last one when the kept length is a block multiple, and discards the pages
   past it. A rejected row never reaches an identity.
-- The hub then records floor((p + kept) / B) * B as published, so the reply's
-  blocks are reusable by the next prompt.
+- The hub then records floor((p + kept) / B) * B as published for every lane
+  of the frame, including a lane that rode a shared frame without drafts, so
+  the reply's blocks are reusable by the next prompt. A reply whose last
+  token leaves the kept length on a block multiple is therefore already
+  published, and the engine sends no end-of-reply publish for it.
+- The node treats a publish of a prefix it already holds as the sequence's
+  sealed last block, under the same identity and token count, as done
+  (`SparkKvPageCachePublishMutable`): nothing changes and the reply
+  completes. A publish under another identity still fails, and so does one
+  that keeps recurrent state, because its state has no mutable page to land
+  on.
 - There is no rewind: a lane resumes only at its next position.
 
 ## Recurrent state (K3)

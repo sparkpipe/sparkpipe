@@ -95,13 +95,13 @@ template<uint32_t THREADS, uint32_t EXPERTS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
-	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES;
-	static_assert(THREADS % LM_WARP_LANES == 0u, "whole warps rank the routes of a chunk");
+	constexpr uint32_t LANES = THREADS < LM_WARP_LANES ? THREADS : LM_WARP_LANES, WARPS = THREADS / LANES;
+	static_assert(THREADS % LANES == 0u, "whole warps rank the routes of a chunk");
 	__shared__ uint32_t count[EXPERTS];
 	__shared__ uint8_t warp_count[WARPS][EXPERTS];
 	__shared__ uint32_t staged[LM_ROUTE_STAGED_MAX];
 	const uint32_t *source = routes <= LM_ROUTE_STAGED_MAX ? staged : route_expert;
-	const uint32_t lane = threadIdx.x % LM_WARP_LANES,warp = threadIdx.x / LM_WARP_LANES;
+	const uint32_t lane = threadIdx.x % LANES,warp = threadIdx.x / LANES;
 	uint32_t index,expert,packed,earlier,same;
 	LmDependentRelease();
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
