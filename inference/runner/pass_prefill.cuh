@@ -162,7 +162,7 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 				round->status = SPARK_STATUS_IO_ERROR;
 				return;
 			}
-			LmPassSumKernel<<<peers, 256u, 0, (cudaStream_t)stream>>>(stage, width, width, round->sums);
+			LM_LAUNCH((LmPassSumKernel), peers, 256u, 0, (cudaStream_t)stream, stage, width, width, round->sums);
 			status = round->services->round(round->services->context, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u, 4u * LM_PASS_RANKS,
 				round->sums, round->sums + LM_PASS_RANKS);
 			if ( status == SPARK_STATUS_OK )
@@ -170,7 +170,7 @@ static void LmPassRound(void *context, void *stream, uint32_t operation, uint32_
 			for (uint32_t attempt = 0u; status == SPARK_STATUS_OK; attempt++)
 			{
 				uint32_t peer, bad = UINT32_MAX;
-				LmPassSumKernel<<<LM_PASS_RANKS, 256u, 0, (cudaStream_t)stream>>>(landing, width, width, round->sums + LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS);
+				LM_LAUNCH((LmPassSumKernel), LM_PASS_RANKS, 256u, 0, (cudaStream_t)stream, landing, width, width, round->sums + LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS);
 				if ( cudaMemcpyAsync(round->sums_host, round->sums, (size_t)(2u * LM_PASS_RANKS + LM_PASS_RANKS * LM_PASS_RANKS) * sizeof(uint64_t),
 						cudaMemcpyDeviceToHost, (cudaStream_t)stream) != cudaSuccess || cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
 				{
@@ -960,7 +960,7 @@ static int32_t LmPassSumBlocks(const LmPass *p, uint64_t elements, uint16_t *out
 {
 	if ( p->rows_region == 0 || elements == 0u || elements > p->rows_block_bytes / sizeof(uint16_t) || (out_bf16 == 0 && out_f32 == 0) )
 		return(LM_LAUNCH_ERR_SHAPE);
-	LmPassSumBlocksKernel<<<512u, LM_PASS_THREADS, 0, stream>>>((const uint16_t *)LmPassRowsLanding(p, 0u, elements * sizeof(uint16_t)), elements, elements, out_bf16, out_f32,
+	LM_LAUNCH((LmPassSumBlocksKernel), 512u, LM_PASS_THREADS, 0, stream, (const uint16_t *)LmPassRowsLanding(p, 0u, elements * sizeof(uint16_t)), elements, elements, out_bf16, out_f32,
 		accumulate);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
@@ -1393,7 +1393,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 		memset(p->health, 0, (size_t)(p->layers + 1u) * 2u * sizeof(uint32_t));
 		status = LmPassCheck(p, LmPassEmbed(&vocab, p->tokens, model->Hidden(), rows, stream), "embedding", 0u);
 		if ( status == SPARK_STATUS_OK )
-			LmPassHealthKernel<<<256u, 256u, 0, stream>>>(model->Hidden(), (uint64_t)rows * p->hidden, p->health);
+			LM_LAUNCH((LmPassHealthKernel), 256u, 256u, 0, stream, model->Hidden(), (uint64_t)rows * p->hidden, p->health);
 		if ( status == SPARK_STATUS_OK )
 			status = LmPassReleaseDense(p, dense_item, stream);
 		dense_item++;
@@ -1410,7 +1410,7 @@ static SparkStatus LmPassRun(LmPass *p, Model *model, const SparkStageRunnerStre
 			}
 			status = model->Layer(p, layer, dense_item++, &expert_item, rows, request->multiprocessors, stream);
 			if ( status == SPARK_STATUS_OK )
-				LmPassHealthKernel<<<256u, 256u, 0, stream>>>(model->Hidden(), (uint64_t)rows * p->hidden, p->health + 2u * (layer + 1u));
+				LM_LAUNCH((LmPassHealthKernel), 256u, 256u, 0, stream, model->Hidden(), (uint64_t)rows * p->hidden, p->health + 2u * (layer + 1u));
 			if ( status == SPARK_STATUS_OK )
 				status = LmPassReleaseDense(p, dense_item - 1u, stream);
 			balanced += p->balances[layer] != 0u ? 1u : 0u;

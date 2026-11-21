@@ -13,6 +13,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "model-families/k3/source/layer.cuh"
 #include "k3_streamed_prefill.cuh"
+#include "runtime/launch.h"
 
 #if !defined(SPARK_K3_SERVING_INDEXER) || (SPARK_K3_SERVING_INDEXER != 0 && SPARK_K3_SERVING_INDEXER != 1)
 #error "SPARK_K3_SERVING_INDEXER must name the packs this build serves: 0 for Kimi K3, 1 for Kimi K3.1 Pro (the MLA indexer)"
@@ -405,10 +406,10 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 	if ( stage == K3_RUNNER_STAGE_BEGIN )
 		return;
 	if ( with_logits != 0u )
-		K3RunnerLatentLogitsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerLatentLogitsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, b->router_logits, rows, slice, experts, ranks);
 	else if ( rows > 1u )
-		K3RunnerLatentRowsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerLatentRowsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
@@ -507,7 +508,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		const uint32_t degree = b->kv_shard.degree;
 		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
 			(K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) / degree, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
-		K3RunnerMlaDownRowsKernel<<<dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerMlaDownRowsKernel), dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream,
 			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
 		if ( cudaPeekAtLastError() != cudaSuccess )
 			K3ModelFail(state);
@@ -544,8 +545,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		uint16_t *reduce_values = b->gate_up_bf16;
 		if ( state->has_collective != 0 )
 		{
-			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
-				256u, 0, stream>>>(
+			LM_LAUNCH((K3RunnerFusedPackKernel), (gate_up_elements + 255u) / 256u,
+				256u, 0, stream,
 				0, 0, reduce_values, reduce_values, state->fused_device,
 				rows, phase, 1u, gate_up_elements);
 			SparkK3RunnerTpContext *completion_context =
@@ -590,7 +591,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			K3RunnerTpApply(pending);
 		return;
 	}
-	K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
+	LM_LAUNCH((K3RunnerFusedPackKernel), (elements + 255u) / 256u, 256u, 0, stream,
 		phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 		state->fused_device,rows,base,segments,0u);
 	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )
@@ -1197,7 +1198,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.dense_tile_prefix = state->dense_tile_prefix;
 	state->rows = step->rows;
 	state->head_last_rows = step->last_rows_only;
-	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, step->rows);
+	LM_LAUNCH((K3RunnerDenseOffsetsKernel), 1u, 1u, 0, stream, state->dense_row_offset, step->rows);
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,

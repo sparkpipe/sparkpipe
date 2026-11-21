@@ -2,6 +2,7 @@
 
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "dsv41_flash_stage_kernels.cuh"
+#include "runtime/launch.h"
 
 #define D41A_QUERIES 16u
 #define D41A_TILE 32u
@@ -537,7 +538,7 @@ static inline cudaError_t D41AttendLaunch(LmKvShardView cache, uint32_t compress
 	}
 	const uint32_t resident = LmLatentShardPrefillMultiprocessors();
 	const uint32_t grid = live < resident ? live : resident;
-	D41AttendKernel<Geometry, DIM, QTILES><<<grid, D41A_THREADS, shared, stream>>>(cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
+	LM_LAUNCH((D41AttendKernel<Geometry, DIM, QTILES>), grid, D41A_THREADS, shared, stream, cache, compressed, query, query_part_stride, sequence_of_row, length, bound,
 		selected, topk, wave_kv, ring, ring_slot_stride, ring_rows, positions, row_lane, sequence_row_begin, sequence_row_indices, recurrent_slot, sink,
 		qk_scale, output, output_part_stride, frequency, rope_offset, group_heads, codes, codes_part_stride, rows, live, row_base);
 	return cudaPeekAtLastError();

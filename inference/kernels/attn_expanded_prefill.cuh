@@ -2,6 +2,7 @@
 
 #include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/tma.cuh"
+#include "runtime/launch.h"
 
 #define LM_EXPANDED_PREFILL_COMPUTE_WARPS 8u
 #define LM_EXPANDED_PREFILL_PRODUCER_WARPS 2u
@@ -199,7 +200,7 @@ static inline cudaError_t LmLatentValueExpandLaunch(
 	}
 	if ((keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
 		return cudaErrorInvalidValue;
-	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, sources), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>), dim3(heads, (keys_per_source + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, sources), LM_LATENT_EXPAND_THREADS, shared, stream,
 		keys, key_source_stride, keys_per_source, weight_bf16, heads, values, value_source_stride, (uint64_t)heads * VALUE, VALUE);
 	return cudaPeekAtLastError();
 }
@@ -242,7 +243,7 @@ static inline cudaError_t LmLatentRopeBroadcastLaunch(
 		return cudaErrorInvalidValue;
 	if (key_count == 0u)
 		return cudaSuccess;
-	LmLatentRopeBroadcastKernel<LATENT, ROW_DIM><<<key_count, 256, 0, stream>>>(keys, key_count, heads, output, key_pitch, head_pitch, rope_offset);
+	LM_LAUNCH((LmLatentRopeBroadcastKernel<LATENT, ROW_DIM>), key_count, 256, 0, stream, keys, key_count, heads, output, key_pitch, head_pitch, rope_offset);
 	return cudaPeekAtLastError();
 }
 
@@ -273,7 +274,7 @@ static inline cudaError_t LmLatentExpandPitchedLaunch(
 	}
 	if ((key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS > 65535u)
 		return cudaErrorInvalidValue;
-	LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE><<<dim3(heads, (key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, 1u), LM_LATENT_EXPAND_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmLatentValueExpandKernel<LATENT, ROW_DIM, VALUE>), dim3(heads, (key_count + LM_LATENT_EXPAND_KEYS - 1u) / LM_LATENT_EXPAND_KEYS, 1u), LM_LATENT_EXPAND_THREADS, shared, stream,
 		keys, 0u, key_count, weight_bf16, heads, output, 0u, key_pitch, head_pitch);
 	return cudaPeekAtLastError();
 }
@@ -671,7 +672,7 @@ static inline cudaError_t LmExpandedGatherPrefillSourcesLaunch(
 			return error;
 		granted = true;
 	}
-	LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE><<<dim3((rows + LM_EXPANDED_PREFILL_ROWS - 1u) / LM_EXPANDED_PREFILL_ROWS, heads_per_rank / LM_EXPANDED_PREFILL_HEADS, sources), LM_EXPANDED_PREFILL_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmExpandedGatherPrefillKernel<Geometry, LATENT, ROPE, VALUE>), dim3((rows + LM_EXPANDED_PREFILL_ROWS - 1u) / LM_EXPANDED_PREFILL_ROWS, heads_per_rank / LM_EXPANDED_PREFILL_HEADS, sources), LM_EXPANDED_PREFILL_THREADS, shared, stream,
 		cache, values, query_bf16, heads_per_rank, sequence_of_row, context_length, row_position, qk_scale, partials, rows,
 		key_source_stride, value_source_stride, partial_source_stride);
 	return cudaPeekAtLastError();
