@@ -376,6 +376,7 @@ struct SparkModelBatchEngine
 	uint64_t emitted_token_count;
 	uint64_t rejected_submission_count_by_status[SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT];
 	uint64_t rejected_lane_count;
+	uint64_t retry_deadline_count;
 	uint64_t prefix_hit_count;
 	uint64_t prefix_miss_count;
 	uint64_t restore_hint_count;
@@ -1510,11 +1511,14 @@ static void SparkModelBatchHandleRejected(
 		else
 		{
 			if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING || status == SPARK_STATUS_EVICT_DENIED || status == SPARK_STATUS_CAPACITY_EXCEEDED )
+			{
+				engine->retry_deadline_count++;
 				fprintf(stderr,"batch_retry_deadline request=%llu restores=%u waited_ns=%llu budget_ns=%llu; failing\n",
 					(unsigned long long)request->request_id,
 					(unsigned)request->busy_restore_count,
 					(unsigned long long)(SparkMonotonicNs() - request->busy_since_ns),
 					(unsigned long long)engine->inflight_budget_ns);
+			}
 			SparkModelBatchRejectedResidency(request,submission);
 			SparkModelBatchFailRequest(engine,request,status);
 		}
@@ -5136,6 +5140,7 @@ static void SparkModelBatchCopyMeasurements(
 {
 	memcpy(view->rejected_submission_count_by_status,engine->rejected_submission_count_by_status,sizeof(view->rejected_submission_count_by_status));
 	view->rejected_lane_count = engine->rejected_lane_count;
+	view->retry_deadline_count = engine->retry_deadline_count;
 	view->prefix_hit_count = engine->prefix_hit_count;
 	view->prefix_miss_count = engine->prefix_miss_count;
 	view->prefix_hit_token_count = engine->prefix_hit_token_count;

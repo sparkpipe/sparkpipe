@@ -2671,7 +2671,7 @@ static void TestScenarioCapacityRefusedPrefill(const SparkModelResidentDeploymen
 	TestDriveUntilTerminal(engine,&state,1u,800u);
 	count = TestPrefillSpans(1u,18u,spans,16u);
 	CHECK(state.completed_events[1] == 1u && state.error_events[1] == 0u && SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK &&
-		view.rejected_submission_count_by_status[SPARK_STATUS_CAPACITY_EXCEEDED] == 1u,"capacity refusal: a refused multi-block prefill is requeued and the request completes");
+		view.rejected_submission_count_by_status[SPARK_STATUS_CAPACITY_EXCEEDED] == 1u && view.retry_deadline_count == 0u,"capacity refusal: a refused multi-block prefill is requeued and the request completes");
 	CHECK(count == 5u && memcmp(spans,expected,sizeof(expected)) == 0,"capacity refusal: the refused wave waits and goes out again with the same span, so load never moves a wave end");
 	TestSubmitPrompt(engine,2u,671u,1u,prompt,3u);
 	MockResidentClientScriptSubmitStatus(1u,SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -2690,6 +2690,8 @@ static void TestScenarioCapacityRefusedPrefill(const SparkModelResidentDeploymen
 		;
 	CHECK(state.error_events[2] == 1u && state.token_events[2] == 0u && elapsed_ns >= SPARK_MODEL_BATCH_ENGINE_MIN_INFLIGHT_BUDGET_NS && count > 2u && index == count,
 		"capacity refusal: a wave that is refused for the whole in-flight budget was sent each time with its full span, then fails its request instead of retrying forever");
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK && view.retry_deadline_count == 1u && view.rejected_submission_count_by_status[SPARK_STATUS_CAPACITY_EXCEEDED] > (uint64_t)count,
+		"capacity refusal: the engine counts each refused wave and the one request that waited out the in-flight budget");
 	SparkModelBatchEngineDestroy(engine);
 }
 

@@ -142,6 +142,7 @@ typedef struct SparkModelBatchEngineView
 	uint64_t emitted_token_count;
 	uint64_t rejected_submission_count_by_status[SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT];
 	uint64_t rejected_lane_count;
+	uint64_t retry_deadline_count;
 	uint64_t prefix_hit_count;
 	uint64_t prefix_miss_count;
 	uint64_t prefix_hit_token_count;
