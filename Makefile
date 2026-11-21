@@ -484,6 +484,7 @@ PYTHON_TESTS := \
 	tests/test_device_flavours.py \
 	tests/test_device_link_flags.py \
 	tests/test_nvrm_fixtures.py \
+	tests/test_nvrm_kernel_manifest.py \
 	tests/test_unicode_nfc.py \
 	tests/test_tokenizer_unicode_split.py \
 	tests/test_fleet_registrar.py \
