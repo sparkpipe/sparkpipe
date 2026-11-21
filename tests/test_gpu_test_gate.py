@@ -9,18 +9,113 @@ target, that each artifact it builds for a prerequisite test has a rule, and
 that its verdicts mean what the gate reports, that a base at the head's
 commit shares the head's worktree while any other base gets its own, and that
 it hands its kernel-log mark to the shared rule, tools/nvrm_kernel_log.sh, and
-takes that rule's verdict.
+takes that rule's verdict. It also checks the memory stop: a command that
+runs while available memory is under 20 GiB, or past its timeout, has its whole
+process group killed; a stop ends the gate with exit 3, a STOP line and the
+summary; and a gate killed outright still leaves every verdict it decided in
+its output.
 """
 import importlib.util
+import os
 import re
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = importlib.util.spec_from_file_location("gpu_test_gate", ROOT / "tools" / "gpu_test_gate.py")
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+
+DRIVER = """
+import importlib.util, os, signal, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("gpu_test_gate", sys.argv[1])
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+work, mode = Path(sys.argv[2]), sys.argv[3]
+checks = []
+gate.plan = lambda tree: {"python": ["first", "second", "third"], "targets": [], "build": []}
+gate.trees = lambda repository, work_dir, head, base: (work, work, [])
+gate.kernel_log_rule = lambda root: "rule"
+gate.kernel_log_mark = lambda rule: "mark"
+gate.kernel_log_check = lambda rule, mark: (True, "kernel log: no new lines")
+def available():
+    checks.append(1)
+    return 1 if mode == "stop" and len(checks) == 3 else 64 * 1024 * 1024
+def run_logged(command, tree, log, name):
+    if mode == "killed" and name == "second":
+        os.kill(os.getpid(), signal.SIGKILL)
+    return 0, 0.5
+gate.available_kib = available
+gate.run_logged = run_logged
+sys.exit(gate.main(["--base", "HEAD", "--head", "HEAD", "--work", str(work)]))
+"""
+
+
+def gone(pid):
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        if subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip().startswith("Z"):
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def check_stops(failures):
+    with tempfile.TemporaryDirectory(prefix="gpu-gate-stop-") as scratch:
+        scratch = Path(scratch)
+        family = 'sleep 60 & echo $! > child.pid; echo $$ > shell.pid; wait'
+        original = gate.available_kib
+        calls = []
+        gate.available_kib = lambda: calls.append(1) or (1 if len(calls) >= 2 else 64 * 1024 * 1024)
+        started = time.monotonic()
+        try:
+            gate.run_logged(["sh", "-c", family], scratch, scratch / "low.log", "a test")
+            failures.append("a command running under 20 GiB of available memory was not stopped")
+        except gate.Stopped as stop:
+            if str(stop) != "during a test":
+                failures.append("the stop names %r, not the command it stopped" % str(stop))
+        finally:
+            gate.available_kib = original
+        if time.monotonic() - started > 15:
+            failures.append("a command under the memory floor ran on for %.0f s instead of being killed within seconds" % (time.monotonic() - started))
+        pids = [int((scratch / name).read_text()) for name in ("shell.pid", "child.pid") if (scratch / name).is_file()]
+        if len(pids) != 2 or not all(gone(pid) for pid in pids):
+            failures.append("stopping a command under the memory floor left part of its process group running: %s" % pids)
+        if "available memory fell below 20 GiB" not in (scratch / "low.log").read_text():
+            failures.append("the stopped command's log does not say why it was killed")
+        gate.available_kib = lambda: 64 * 1024 * 1024
+        timeout = gate.TEST_TIMEOUT_SECONDS
+        gate.TEST_TIMEOUT_SECONDS = 1
+        try:
+            for name in ("shell.pid", "child.pid"):
+                (scratch / name).unlink(missing_ok=True)
+            code, seconds = gate.run_logged(["sh", "-c", family], scratch, scratch / "slow.log", "a slow test")
+            pids = [int((scratch / name).read_text()) for name in ("shell.pid", "child.pid") if (scratch / name).is_file()]
+            if code != 124 or seconds > 15 or len(pids) != 2 or not all(gone(pid) for pid in pids):
+                failures.append("a command past its timeout did not exit 124 with its whole process group killed within seconds: %s %.0f s %s" % (code, seconds, pids))
+            code, _ = gate.run_logged(["sh", "-c", "exit 7"], scratch, scratch / "quick.log", "a quick test")
+            if code != 7:
+                failures.append("a command that ends on its own did not return its exit code: %s" % code)
+        finally:
+            gate.available_kib = original
+            gate.TEST_TIMEOUT_SECONDS = timeout
+        for mode, wanted_code, wanted in (
+                ("stop", 3, ["PASS         python  first head=0 base=- 0s", "PASS         python  second head=0 base=- 0s",
+                             "STOP         available memory below 20 GiB before third; the gate ends here", "kernel log: no new lines",
+                             "gpu test gate: 2 run, 2 PASS; kernel log clean; stopped before third, 1 of 3 commands not run"]),
+                ("killed", -9, ["PASS         python  first head=0 base=- 0s"])):
+            run = subprocess.run([sys.executable, "-c", DRIVER, str(ROOT / "tools" / "gpu_test_gate.py"), str(scratch / mode), mode],
+                                 capture_output=True, text=True, timeout=60)
+            lines = [line for line in run.stdout.splitlines() if not line.startswith("base and head")]
+            if run.returncode != wanted_code or lines != wanted:
+                failures.append("a gate %s exited %d with %r, expected %d with %r" % (mode, run.returncode, lines, wanted_code, wanted))
 
 
 def main():
@@ -76,6 +171,7 @@ def main():
         head, base, builds = gate.trees(repository, Path(scratch) / "two", "HEAD", "first")
         if base == head or [label for label, _ in builds] != ["head", "base"] or gate.commit_of(base, "HEAD") != gate.commit_of(repository, "first"):
             failures.append("a base at another commit does not get its own worktree at that commit: %s %s %s" % (head, base, builds))
+    check_stops(failures)
     if gate.KERNEL_LOG_RULE != "tools/nvrm_kernel_log.sh":
         failures.append("the gate does not use the shared kernel-log rule tools/nvrm_kernel_log.sh")
     for failure in failures:
@@ -83,7 +179,9 @@ def main():
     if failures:
         print("\nFAIL (%d)" % len(failures))
         return 1
-    print("PASS the GPU test gate plans %d Python tests and %d GPU targets and classifies results as reported" % (len(selected["python"]), len(selected["targets"])))
+    print("PASS the GPU test gate plans %d Python tests and %d GPU targets, classifies results as reported, kills a command's process group "
+          "under the memory floor or past its timeout, ends a stopped run with STOP and the summary, and keeps every decided verdict when killed" % (
+              len(selected["python"]), len(selected["targets"])))
     return 0
 
 

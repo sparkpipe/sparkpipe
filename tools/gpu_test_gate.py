@@ -17,10 +17,14 @@ and head are the same commit, one worktree serves both:
 The kernel log must pass tools/nvrm_kernel_log.sh, the one kernel-log rule
 of the GPU gates: the gate takes its mark before the first build and checks it
 after the last test. That log is host-wide, so the gate runs in a GPU slot held
-for its whole run, where any new line is its own. Tests run at nice 19 and best-effort I/O priority 7 with the default
-action for every signal, and the gate stops when available memory falls below
-20 GiB. It exits 1 on a regression or a kernel-log failure, 3 when it had to
-stop, else 0.
+for its whole run, where any new line is its own. Tests run at nice 19 and
+best-effort I/O priority 7 with the default action for every signal, each in
+its own process group. While a build or a test runs, the gate reads available
+memory every second; below 20 GiB it kills that command's process group,
+prints STOP naming the command, and ends with the kernel-log check and the
+summary of what ran. Each verdict is printed as it is decided, so a gate that
+is itself killed still leaves every finished result in its output. It exits 1
+on a regression or a kernel-log failure, 3 when it had to stop, else 0.
 
 Usage:
     tools/gpu_test_gate.sh --base REV --head REV [--work DIR] [--jobs N] [--plan]
@@ -49,6 +53,7 @@ PREREQUISITE_TESTS = {
 }
 HOST_CI_REQUIREMENTS = "tools/ci/host-tests-requirements.txt"
 MEMORY_FLOOR_KIB = 20 * 1024 * 1024
+MEMORY_POLL_SECONDS = 1.0
 TEST_TIMEOUT_SECONDS = 1800
 KERNEL_LOG_RULE = "tools/nvrm_kernel_log.sh"
 MISSING_MODULE = re.compile(r"ModuleNotFoundError: No module named '([^']+)'")
@@ -126,21 +131,43 @@ def available_kib():
     raise SystemExit("no MemAvailable in /proc/meminfo")
 
 
+class Stopped(Exception):
+    pass
+
+
 def default_signals():
     for number in (signal.SIGINT, signal.SIGQUIT, signal.SIGHUP, signal.SIGPIPE, signal.SIGTERM):
         signal.signal(number, signal.SIG_DFL)
+    os.setpgid(0, 0)
     os.nice(19)
 
 
-def run_logged(command, tree, log):
+def kill_group(process):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def run_logged(command, tree, log, name):
     started = time.monotonic()
     with open(log, "w") as output:
-        try:
-            result = subprocess.run(command, cwd=tree, stdout=output, stderr=subprocess.STDOUT, preexec_fn=default_signals,
-                                    timeout=TEST_TIMEOUT_SECONDS)
-            code = result.returncode
-        except subprocess.TimeoutExpired:
-            code = 124
+        process = subprocess.Popen(command, cwd=tree, stdout=output, stderr=subprocess.STDOUT, preexec_fn=default_signals)
+        while True:
+            try:
+                code = process.wait(timeout=MEMORY_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            if available_kib() < MEMORY_FLOOR_KIB:
+                kill_group(process)
+                output.write("\ngpu test gate: available memory fell below 20 GiB; this command's process group was killed\n")
+                raise Stopped("during " + name)
+            if time.monotonic() - started > TEST_TIMEOUT_SECONDS:
+                kill_group(process)
+                code = 124
+                break
     return code, time.monotonic() - started
 
 
@@ -171,10 +198,25 @@ def trees(repository, work, head_revision, base_revision):
 
 def build(tree, extra, jobs, log):
     targets = ["all"] + make_variable(tree, "TEST_BINARIES") + make_variable(tree, "PYTHON_TEST_BINARIES") + extra
-    code, _ = run_logged(["ionice", "-c2", "-n7", "make", "-k", "-j%d" % jobs] + targets, tree, log)
+    code, _ = run_logged(["ionice", "-c2", "-n7", "make", "-k", "-j%d" % jobs] + targets, tree, log, "the build in %s" % tree)
     missing = [target for target in extra if not (Path(tree) / target).exists()]
     if code != 0 or missing:
         raise SystemExit("build in %s failed (exit %d, missing %s); see %s" % (tree, code, " ".join(missing) or "nothing", log))
+
+
+def run_one(kind, name, command, head, base, logs, pins):
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    head_code, seconds = run_logged(command, head, logs / ("head.%s.log" % stem), name)
+    base_code = None
+    if head_code != 0:
+        base_code, _ = run_logged(command, base, logs / ("base.%s.log" % stem), name + " on the base")
+    verdict = classify(head_code == 0, None if base_code is None else base_code == 0)
+    module = missing_module(logs / ("head.%s.log" % stem)) if head_code != 0 else None
+    if module is not None and verdict == "KNOWN" and module.lower() in pins:
+        verdict = "HOST-CI-ONLY"
+    print("%-12s %-7s %s head=%d base=%s %.0fs%s" % (verdict, kind, name, head_code, "-" if base_code is None else base_code, seconds,
+          " needs %s, pinned in %s" % (module, HOST_CI_REQUIREMENTS) if verdict == "HOST-CI-ONLY" else ""))
+    return verdict
 
 
 def missing_module(log):
@@ -195,6 +237,7 @@ def main(argv):
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--plan", action="store_true")
     options = parser.parse_args(argv)
+    sys.stdout.reconfigure(line_buffering=True)
     selected = plan(ROOT)
     if options.plan:
         for test in selected["python"]:
@@ -213,38 +256,30 @@ def main(argv):
     selected = plan(head)
     rule = kernel_log_rule(ROOT)
     mark = kernel_log_mark(rule)
-    for label, tree in builds:
-        build(tree, selected["build"], options.jobs, logs / ("build.%s.log" % label))
-    pins = host_ci_pins(head)
-    results = []
-    stopped = False
     commands = [("python", test, ["python3", test]) for test in selected["python"]]
     commands += [("target", target, ["make", "-s", target]) for target in selected["targets"]]
-    for kind, name, command in commands:
-        if available_kib() < MEMORY_FLOOR_KIB:
-            print("STOP available memory below 20 GiB before %s" % name)
-            stopped = True
-            break
-        stem = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
-        head_code, seconds = run_logged(command, head, logs / ("head.%s.log" % stem))
-        base_code = None
-        if head_code != 0:
-            base_code, _ = run_logged(command, base, logs / ("base.%s.log" % stem))
-        verdict = classify(head_code == 0, None if base_code is None else base_code == 0)
-        module = missing_module(logs / ("head.%s.log" % stem)) if head_code != 0 else None
-        if module is not None and verdict == "KNOWN" and module.lower() in pins:
-            verdict = "HOST-CI-ONLY"
-        results.append((verdict, name, head_code, base_code, seconds, module))
-        print("%-12s %-7s %s head=%d base=%s %.0fs%s" % (verdict, kind, name, head_code, "-" if base_code is None else base_code, seconds,
-              "" if module is None else " needs %s, pinned in %s" % (module, HOST_CI_REQUIREMENTS) if verdict == "HOST-CI-ONLY" else ""))
+    results = []
+    stopped = None
+    try:
+        for label, tree in builds:
+            build(tree, selected["build"], options.jobs, logs / ("build.%s.log" % label))
+        pins = host_ci_pins(head)
+        for kind, name, command in commands:
+            if available_kib() < MEMORY_FLOOR_KIB:
+                raise Stopped("before " + name)
+            results.append(run_one(kind, name, command, head, base, logs, pins))
+    except Stopped as stop:
+        stopped = str(stop)
+        print("%-12s available memory below 20 GiB %s; the gate ends here" % ("STOP", stopped))
     kernel_log_clean, kernel_log_report = kernel_log_check(rule, mark)
     print(kernel_log_report)
     counts = {}
-    for verdict, *_ in results:
+    for verdict in results:
         counts[verdict] = counts.get(verdict, 0) + 1
-    print("gpu test gate: %d run, %s; kernel log %s" % (
-        len(results), ", ".join("%d %s" % (counts[key], key) for key in sorted(counts)) or "nothing", "clean" if kernel_log_clean else "FAILED"))
-    if stopped:
+    print("gpu test gate: %d run, %s; kernel log %s%s" % (
+        len(results), ", ".join("%d %s" % (counts[key], key) for key in sorted(counts)) or "nothing", "clean" if kernel_log_clean else "FAILED",
+        "" if stopped is None else "; stopped %s, %d of %d commands not run" % (stopped, len(commands) - len(results), len(commands))))
+    if stopped is not None:
         return 3
     return 1 if counts.get("REGRESSION") or not kernel_log_clean else 0
 
