@@ -56,8 +56,6 @@ PENDING = {
     "include/sparkpipe/spark_tp_chain_graph.h": 23,
     "include/sparkpipe/spark_weightd_map.h": 1,
     "model-families/gemma4/source/gemma4_stage.cuh": 16,
-    "model-families/glm5_next/source/glm5_next_stage.cuh": 29,
-    "model-families/glm5_next/source/glm5_next_stage_model.cuh": 18,
     "model-families/hy4/source/hy4_stage.cuh": 14,
     "model-families/ling/source/ling_stage.cuh": 27,
     "model-families/mimo26/source/mimo26_stage.cuh": 18,
