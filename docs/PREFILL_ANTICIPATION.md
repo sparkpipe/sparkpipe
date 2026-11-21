@@ -304,7 +304,7 @@ A session is live from its first request until it has been idle for 30 minutes, 
 
 - first sight of an opening, or an opening that changed (which block);
 - session restored from NVMe;
-- session lost (expired, evicted, restart, new epoch, swap);
+- session lost (evicted, restart, new epoch, swap);
 - compaction;
 - history changed by the client, with the position;
 - a new pack profile;
