@@ -2033,6 +2033,17 @@ static SparkStatus SparkKvPageCacheRekeyState(SparkKvPageCache *cache,uint32_t f
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkKvPageCachePublishIsSealed(
+	const SparkKvPageCache *cache,
+	const SparkKvPageCacheSequence *sequence,
+	const SparkModelDriverCacheLane *lane)
+{
+	return(sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK &&
+		sequence->terminal_entry_index != SPARK_KV_PAGE_CACHE_NO_INDEX &&
+		(cache->state_store == 0 || (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS) != 0u) &&
+		SparkKvPageCacheFindEntryConst(cache,&lane->publish_identity,lane->publish_token_count) == sequence->terminal_entry_index ? 1u : 0u);
+}
+
 static SparkStatus SparkKvPageCachePublishMutable(
 	SparkKvPageCache *cache,
 	SparkKvPageCacheSequence *sequence,
@@ -2040,6 +2051,8 @@ static SparkStatus SparkKvPageCachePublishMutable(
 {
 	uint32_t entry_index,expected_parent_count,parent,stateless,rekeyed;
 	SparkStatus status;
+	if ( SparkKvPageCachePublishIsSealed(cache,sequence,lane) != 0u )
+		return(SPARK_STATUS_OK);
 	if ( sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK ||
 		lane->publish_token_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);

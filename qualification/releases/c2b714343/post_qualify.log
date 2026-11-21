@@ -1,0 +1,119 @@
+== 03:04:33 gemma-4-26b-a4b repeats
+activate gemma-4-26b-a4b: idle gemma-4-26b-a4b null
+gemma-4-26b-a4b repeat-1 b1_o256 decode 98.18 prefill None
+gemma-4-26b-a4b repeat-1 ttft6000 decode None prefill 5681.3
+gemma-4-26b-a4b repeat-2 b1_o256 decode 115.74 prefill None
+gemma-4-26b-a4b repeat-2 ttft6000 decode None prefill 5728.8
+gemma-4-26b-a4b repeat-3 b1_o256 decode 123.18 prefill None
+gemma-4-26b-a4b repeat-3 ttft6000 decode None prefill 5782.5
+== 03:05:21 kimi-k3.1-pro
+activate kimi-k3.1-pro: idle kimi-k3.1-pro null
+kimi-k3.1-pro b1_o256 decode 22.47 prefill None
+kimi-k3.1-pro ttft6000 decode None prefill 489.8
+LONG-FILL kimi-k3.1-pro 33000 tokens 67.0 s 493 tok/s, fastest 506 tok/s
+== 03:08:19 qwen3.8-27b-fp8
+activate qwen3.8-27b-fp8: idle qwen3.8-27b-fp8 null
+qwen3.8-27b-fp8 b1_o256 decode 63.23 prefill None
+qwen3.8-27b-fp8 ttft6000 decode None prefill 3082.3
+LONG-FILL qwen3.8-27b-fp8 33000 tokens 10.4 s 3166 tok/s, fastest 3174 tok/s
+arith capture 1 rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 4}
+FAIL capital: the new capture has no chain_tokens
+FAIL capital: the new capture has no speculate_tokens
+FAIL capital: the new capture has no batch_tokens
+FAIL capital: the new capture has no sampled_tokens
+FAIL capital: the new capture has no sampled_batch_tokens
+FAIL code: the new capture has no chain_tokens
+FAIL code: the new capture has no speculate_tokens
+FAIL code: the new capture has no batch_tokens
+FAIL code: the new capture has no sampled_tokens
+FAIL code: the new capture has no sampled_batch_tokens
+FAIL story: the new capture has no chain_tokens
+FAIL story: the new capture has no speculate_tokens
+FAIL story: the new capture has no batch_tokens
+FAIL story: the new capture has no sampled_tokens
+FAIL story: the new capture has no sampled_batch_tokens
+FAIL long_2k: the new capture has no chain_tokens
+FAIL long_2k: the new capture has no speculate_tokens
+FAIL long_2k: the new capture has no batch_tokens
+FAIL long_2k: the new capture has no sampled_tokens
+FAIL long_2k: the new capture has no sampled_batch_tokens
+FAIL long_8k: the new capture has no chain_tokens
+FAIL long_8k: the new capture has no speculate_tokens
+FAIL long_8k: the new capture has no batch_tokens
+FAIL long_8k: the new capture has no sampled_tokens
+FAIL long_8k: the new capture has no sampled_batch_tokens
+FAIL copy: the new capture has no chain_tokens
+FAIL copy: the new capture has no speculate_tokens
+FAIL copy: the new capture has no batch_tokens
+FAIL copy: the new capture has no sampled_tokens
+FAIL copy: the new capture has no sampled_batch_tokens
+EXACT 1/7
+arith capture 2 rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 4}
+FAIL capital: the new capture has no chain_tokens
+FAIL capital: the new capture has no speculate_tokens
+FAIL capital: the new capture has no batch_tokens
+FAIL capital: the new capture has no sampled_tokens
+FAIL capital: the new capture has no sampled_batch_tokens
+FAIL code: the new capture has no chain_tokens
+FAIL code: the new capture has no speculate_tokens
+FAIL code: the new capture has no batch_tokens
+FAIL code: the new capture has no sampled_tokens
+FAIL code: the new capture has no sampled_batch_tokens
+FAIL story: the new capture has no chain_tokens
+FAIL story: the new capture has no speculate_tokens
+FAIL story: the new capture has no batch_tokens
+FAIL story: the new capture has no sampled_tokens
+FAIL story: the new capture has no sampled_batch_tokens
+FAIL long_2k: the new capture has no chain_tokens
+FAIL long_2k: the new capture has no speculate_tokens
+FAIL long_2k: the new capture has no batch_tokens
+FAIL long_2k: the new capture has no sampled_tokens
+FAIL long_2k: the new capture has no sampled_batch_tokens
+FAIL long_8k: the new capture has no chain_tokens
+FAIL long_8k: the new capture has no speculate_tokens
+FAIL long_8k: the new capture has no batch_tokens
+FAIL long_8k: the new capture has no sampled_tokens
+FAIL long_8k: the new capture has no sampled_batch_tokens
+FAIL copy: the new capture has no chain_tokens
+FAIL copy: the new capture has no speculate_tokens
+FAIL copy: the new capture has no batch_tokens
+FAIL copy: the new capture has no sampled_tokens
+FAIL copy: the new capture has no sampled_batch_tokens
+EXACT 1/7
+arith capture 3 rc=0
+arith: exact n=32 served_max_dlp=0.0000 chain=equal speculate=equal batch=equal sampled=equal sampled_batch=equal speculation={'verify_lanes': 2, 'draft_tokens': 5, 'accepted_draft_tokens': 4}
+FAIL capital: the new capture has no chain_tokens
+FAIL capital: the new capture has no speculate_tokens
+FAIL capital: the new capture has no batch_tokens
+FAIL capital: the new capture has no sampled_tokens
+FAIL capital: the new capture has no sampled_batch_tokens
+FAIL code: the new capture has no chain_tokens
+FAIL code: the new capture has no speculate_tokens
+FAIL code: the new capture has no batch_tokens
+FAIL code: the new capture has no sampled_tokens
+FAIL code: the new capture has no sampled_batch_tokens
+FAIL story: the new capture has no chain_tokens
+FAIL story: the new capture has no speculate_tokens
+FAIL story: the new capture has no batch_tokens
+FAIL story: the new capture has no sampled_tokens
+FAIL story: the new capture has no sampled_batch_tokens
+FAIL long_2k: the new capture has no chain_tokens
+FAIL long_2k: the new capture has no speculate_tokens
+FAIL long_2k: the new capture has no batch_tokens
+FAIL long_2k: the new capture has no sampled_tokens
+FAIL long_2k: the new capture has no sampled_batch_tokens
+FAIL long_8k: the new capture has no chain_tokens
+FAIL long_8k: the new capture has no speculate_tokens
+FAIL long_8k: the new capture has no batch_tokens
+FAIL long_8k: the new capture has no sampled_tokens
+FAIL long_8k: the new capture has no sampled_batch_tokens
+FAIL copy: the new capture has no chain_tokens
+FAIL copy: the new capture has no speculate_tokens
+FAIL copy: the new capture has no batch_tokens
+FAIL copy: the new capture has no sampled_tokens
+FAIL copy: the new capture has no sampled_batch_tokens
+EXACT 1/7
+== 03:09:36 restore qwen3.8-max
+activate qwen3.8-max: idle qwen3.8-max null

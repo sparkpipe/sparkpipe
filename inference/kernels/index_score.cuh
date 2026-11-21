@@ -120,6 +120,7 @@ static __device__ __forceinline__ void LmIndexScoreStore(float accumulator[HEAD_
 	}
 }
 
+#ifdef __CUDACC__
 static __device__ __forceinline__ void LmIndexScoreCopy16(uint32_t shared, const void *source, uint32_t bytes)
 {
 	asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" :: "r"(shared), "l"(source), "r"(bytes) : "memory");
@@ -130,6 +131,8 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 	asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
 		: "=r"(value[0]), "=r"(value[1]), "=r"(value[2]), "=r"(value[3]) : "r"(address));
 }
+
+#endif
 
 template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
@@ -206,6 +209,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	}
 }
 
+#ifdef __CUDACC__
 template<uint32_t STEPS>
 static __device__ __forceinline__ void LmIndexScoreKeyFragments(const uint8_t *slot, uint32_t pair, uint32_t b[STEPS][2])
 {
@@ -388,14 +392,18 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 	}
 }
 
+#endif
+
 template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages>
 static inline cudaError_t LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const uint16_t *head_weight_bf16, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, cudaStream_t stream)
 {
 	static_assert(LM_INDEX_SCORE_SHARED_ROWS == LM_INDEX_SCORE_WARPS, "the block-slot kernel gives every warp of a block its own row");
+#ifdef __CUDACC__
 	if ( LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
 		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	else
+#endif
 		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	return(cudaPeekAtLastError());
