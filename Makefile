@@ -33,7 +33,7 @@ NVRM_FLAVOUR_GOALS := nvrm-device test-nvrm clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
-$(error SPARKPIPE_DEVICE=nvrm builds $(NVRM_FLAVOUR_GOALS); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime, see docs/NVRM_BACKEND.md)
+$(error SPARKPIPE_DEVICE=nvrm builds $(NVRM_FLAVOUR_GOALS); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime)
 endif
 endif
 MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
