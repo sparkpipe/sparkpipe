@@ -1105,11 +1105,6 @@ as recorded debt for models too large for a group.
     the turn's own priority class. The chat layer commits every reply it
     records. It could commit only replies that end in a tool call, where the
     next turn is certain.
-  - A turn with a forced tool choice stores the forced opening with the
-    reply, so the next turn's cut before the reply is not one token before
-    the earlier prompt's end. The next turn then resumes at an earlier kept
-    state and computes more, in either form. Record the forced opening's
-    length with the reply and name the cut after it.
   - The pages a reply's decode steps publish carry identities no other
     request can name. They stay in the rank page cache, unread, until
     eviction takes them. Seal them as private pages and drop them when the

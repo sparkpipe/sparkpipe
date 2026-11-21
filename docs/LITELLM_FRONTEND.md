@@ -607,9 +607,13 @@ engine's `cuts` from the prompt's structure:
   prompt's tokens begin with the opening's tokens and it is at least one
   cache block long;
 - where a context pack ends, which is where the pack's warm-up commit ended;
-- one token before each replayed reply began, and where the reply ends.
+- one token before each replayed reply began, and where the reply ends;
+- one token before the opening of a forced tool call. A forced opening is
+  stored with the reply, so the next turn's cut before the reply falls
+  there and not one token before the forced prompt's end.
 
-It lists the first two in `keep`, so the engine keeps state there. Another
+It lists the first two and the last in `keep`, so the engine keeps state
+there. Another
 conversation with the same system prompt and tools, or another request on
 the pack, then resumes at that cut instead of at the last checkpoint anchor
 before it. Cuts inside the opening (between system blocks, or between the

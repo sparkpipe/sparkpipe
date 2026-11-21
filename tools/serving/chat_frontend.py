@@ -1848,9 +1848,9 @@ def opening_cuts(model, messages, tools, kwargs, pack, ids):
     return [end for end in ends if CACHE_BLOCK_TOKENS <= end < len(ids) and ids[:end] == opening[:end]]
 
 
-def name_cuts(engine, replay, opening):
-    cuts = structure_cuts(replay, len(engine["prompt_token_ids"]), opening)
-    keep = [cut for cut in opening if cut in cuts]
+def name_cuts(engine, replay, kept):
+    cuts = structure_cuts(replay, len(engine["prompt_token_ids"]), kept)
+    keep = [cut for cut in sorted(set(kept)) if cut in cuts]
     if cuts:
         engine["cuts"] = cuts
     if keep:
@@ -2400,7 +2400,7 @@ class Frontend:
         if not tokens or len(prompt) + len(tokens) >= model.context_tokens:
             return
         plan["reply_committed"] = True
-        cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - 1})
+        cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
         pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens)
         pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0][-ENGINE_MAX_CUTS:],
                                                                plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), plan.get("request_id")))
@@ -3528,7 +3528,7 @@ class Frontend:
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
-        name_cuts(plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids))
+        name_cuts(plan["engine_body"], replay, opening_cuts(model, messages, tools, kwargs, pack, ids) + ([len(ids) - len(forced_ids) - 1] if forced_ids else []))
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member),
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay})}, pack=pack and pack[0])
         plan["trace"].update(lined)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused. A model whose settings name reply_commit commits each finished reply at once, apart from the reply: the engine gets the turn's prompt and the reply's tokens as a commit in the turn's own class that names one token before the prompt's end as a cut, and the next turn names that cut and the reply's end; without the setting, or for a reply that is not recorded for replay, no commit follows. A turn that carries a reply whose commit is at the engine waits for it and is sent afterwards, so the reply is computed once; a commit that has not reached the engine is withdrawn, and a turn of another conversation waits for neither. Conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there; control-token text inside a system prompt does not move it."""
+"""A commit computes a prompt, keeps its state and generates nothing: max_tokens 0 on the Messages shape, commit_only on the Chat Completions and Responses shapes. The chat layer plans the request as any other, sends the engine a commit, and answers one cache.commit object with the prompt, cached and committed token counts whatever the request says about streaming; a later request with the same prompt finds it cached. A commit takes no output limit or log-probs, no forced tool choice and no WebSocket, and an engine that generates tokens for a commit is refused. A model whose settings name reply_commit commits each finished reply at once, apart from the reply: the engine gets the turn's prompt and the reply's tokens as a commit in the turn's own class that names one token before the prompt's end as a cut, and the next turn names that cut and the reply's end; without the setting, or for a reply that is not recorded for replay, no commit follows. A turn that carries a reply whose commit is at the engine waits for it and is sent afterwards, so the reply is computed once; a commit that has not reached the engine is withdrawn, and a turn of another conversation waits for neither. Conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there; control-token text inside a system prompt does not move it. A turn with a forced tool choice names one token before its forced opening as a cut and asks for state there; its reply's commit names the same cuts, and the turn after it names that cut and the reply's end."""
 import asyncio
 import importlib.util
 import tempfile
@@ -147,6 +147,36 @@ async def run_reply_commit(tmp, check):
                 break
             await asyncio.sleep(0.01)
         check(not frontend.reply_commits, f"finished commits are forgotten: {len(frontend.reply_commits)}")
+        tools = [{"name": "read", "description": "Read a file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}]
+        asked = [{"role": "user", "content": "read the file a.txt"}]
+        seen = len(await commits_seen(engine, 0))
+        engine.reply("read<arg_key>path</arg_key><arg_value>a.txt</arg_value></tool_call>")
+        status, headers, text = await harness.post("/v1/messages", dict(body, tools=tools, tool_choice={"type": "any"}, messages=asked))
+        forced = next(request for request in reversed(engine.requests) if "max_tokens" in request)
+        prompt = forced["prompt_token_ids"]
+        opening = len(engine.tokens("</think><tool_call>"))
+        before = len(prompt) - opening - 1
+        check(status == 200 and harness.tokenizer.decode(prompt[-opening:], skip_special_tokens=False) == "</think><tool_call>" and
+              forced.get("cuts", [None])[-1] == before and forced.get("keep", [None])[-1] == before and len(forced["cuts"]) == 2,
+              f"a turn with a forced tool choice names one token before its forced opening as a cut and asks for state there: {forced.get('cuts')} {forced.get('keep')} {len(prompt)}")
+        found = await commits_seen(engine, seen + 1)
+        commit = found[-1] if len(found) > seen else {}
+        check(commit.get("cuts") == forced["cuts"] and commit.get("prompt_token_ids", [])[:len(prompt)] == prompt,
+              f"its reply's commit names the same cuts, with none at the forced opening's end, so its waves are the next turn's: {commit.get('cuts')} {forced.get('cuts')}")
+        reply = fixture.json.loads(text)
+        call = next((block for block in reply.get("content", []) if block.get("type") == "tool_use"), {})
+        engine.reply("The file says hello.</think>It says hello.")
+        follow = asked + [{"role": "assistant", "content": reply.get("content", [])}, {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call.get("id"), "content": "hello"}]}]
+        status, headers, text = await harness.post("/v1/messages", dict(body, tools=tools, messages=follow))
+        after = next(request for request in reversed(engine.requests) if "max_tokens" in request)
+        check(status == 200 and call.get("name") == "read" and after.get("cuts") == forced["cuts"] + [len(commit.get("prompt_token_ids", []))] and
+              after["prompt_token_ids"][:len(commit.get("prompt_token_ids", []))] == commit.get("prompt_token_ids"),
+              f"the turn after a forced tool call names that cut and the reply's end, so it resumes where the committed reply ends: {after.get('cuts')} {forced.get('cuts')}")
+        await commits_seen(engine, seen + 2)
+        for _ in range(300):
+            if not frontend.reply_commits:
+                break
+            await asyncio.sleep(0.01)
         gate = ("account:a", "m1")
         waiting = chat_frontend.ReplyCommit("alpha", gate, [5, 6, 7])
         others = [chat_frontend.ReplyCommit("alpha", gate, [5, 6, 9]), chat_frontend.ReplyCommit("alpha", ("account:b", "m1"), [5, 6, 7]), chat_frontend.ReplyCommit("beta", gate, [5, 6, 7])]
