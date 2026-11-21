@@ -656,18 +656,18 @@ static int32_t GlmAttentionProject(const GlmBuffers *b, uint32_t rows, uint32_t 
 	GlmProjectionSlice(S::kSlot, b->tp_degree, b->tp_rank, &kv_first, &kv_count);
 	width = GlmProjectionSliceWidth<S>(b->tp_degree);
 	query_max = GlmProjectionSliceMax(S::kQueryA, b->tp_degree);
-	if ( q_count != 0u && kv_count != 0u )
+	if ( q_count != 0u && kv_count != 0u && (rows <= LM_SKINNY_ROWS_WIDE || b->row_exact != 0u) )
 	{
 		const GlmLinearWeight q_a = GlmLinearRows<S>(b->weights->q_a, q_first, S::kHidden), kv_a = GlmLinearRows<S>(b->weights->kv_a, kv_first, S::kHidden);
 		const LmSkinnyDenseTarget targets[2] = {
 			{q_a.weight, b->projection_local_bf16, 0, q_count, width, 0u, GlmLinearScale<S>(q_a, S::kHidden, q_count)},
 			{kv_a.weight, b->projection_local_bf16, 0, kv_count, width, query_max, GlmLinearScale<S>(kv_a, S::kHidden, kv_count)}};
-		status = rows <= LM_SKINNY_ROWS_WIDE ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream) :
-			b->row_exact != 0u ? LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream, 1u) : LM_LAUNCH_ERR_SHAPE;
+		status = LmSkinnyDenseMulti<GlmLinearFormat<S>>(targets, 2u, b->normed_bf16, rows, S::kHidden, stream, rows > LM_SKINNY_ROWS_WIDE ? 1u : 0u);
 		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		if ( rows <= LM_SKINNY_ROWS_WIDE )
-			LmSlowPath("glm projection: the skinny pair refused a small wave", rows, S::kHidden, width);
+		LM_LAUNCH_REFUSE("%s projection: the fused q_a/kv_a launch refused %u rows of %u + %u outputs over %u inputs (output width %u, kv_a at column %u); "
+			"both slices need 16-byte aligned weights, an input that is a multiple of the format's elements and scales that cover them\n", S::Tag(), rows,
+			q_count, kv_count, S::kHidden, width, query_max);
 	}
 	status = LM_LAUNCH_OK;
 	if ( q_count != 0u )
@@ -901,6 +901,8 @@ template<class S>
 static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, SparkGpuStream stream)
 {
 	using Format = typename LmWeightCodec<S::kExpertCodec>::Format;
+	static_assert((GLM_STREAM_EXPERT_ROWS - 1u) * S::kTopK <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * S::kExperts,
+		"every wave below the stream threshold fits the grouped skinny expert kernel, whose mean rows per expert are bounded");
 	LmGemmArguments gemm;
 	int32_t status;
 	memset(&gemm, 0, sizeof(gemm));
@@ -922,16 +924,9 @@ static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t pac
 			b->route_source_token, S::kExperts, packed_rows, 0u, S::kHidden, b->expert_w1_rows, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
-	LmSlowPath("glm experts: the skinny kernels refused w1", packed_rows, S::kHidden, b->expert_w1_rows);
-	gemm.prefix_built = 1u;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix_w1;
-	gemm.source_row_map = b->route_source_token;
-	gemm.source_row_count = rows;
-	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmWeightOnlyIndirectLaunch<Format,GLM_TILE_N,GLM_TILE_STAGES,GLM_TILE_WARPS>(&gemm, b->normed_bf16, b->expert_w1_weight, packed_rows,
-		rows, S::kTopK, S::kExperts, S::kHidden, b->expert_w1_rows, sms, stream);
-	return status != LM_LAUNCH_OK ? status : GlmLaunched();
+	LM_LAUNCH_REFUSE("%s experts: the skinny kernels refused w1 for %u rows (%u routed pairs over %u experts, %u x %u); below %u rows the waves run "
+		"on them, so the expert weights need 16-byte alignment, an input that is a multiple of the codec's elements and scales that cover every expert\n",
+		S::Tag(), rows, packed_rows, S::kExperts, b->expert_w1_rows, S::kHidden, GLM_STREAM_EXPERT_ROWS);
 }
 
 template<class S>
@@ -959,14 +954,9 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 			b->route_source_token, S::kExperts, packed_rows, 1u, b->expert_intermediate, S::kHidden, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
-	LmSlowPath("glm experts: the skinny kernels refused w2", packed_rows, b->expert_intermediate, S::kHidden);
-	gemm.prefix_built = 1u;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix_w2;
-	gemm.output_bf16 = b->expert_out_bf16;
-	status = LmGemmWeightOnlyLaunch<Format,GLM_TILE_N,GLM_TILE_STAGES,GLM_TILE_WARPS>(&gemm, b->intermediate_bf16, b->expert_w2_weight, packed_rows, rows,
-		S::kTopK, S::kExperts, b->expert_intermediate, S::kHidden, sms, true, stream);
-	return status != LM_LAUNCH_OK ? status : GlmLaunched();
+	LM_LAUNCH_REFUSE("%s experts: the skinny kernels refused w2 for %u rows (%u routed pairs over %u experts, %u x %u); below %u rows the waves run "
+		"on them, so the expert weights need 16-byte alignment, an input that is a multiple of the codec's elements and scales that cover every expert\n",
+		S::Tag(), rows, packed_rows, S::kExperts, S::kHidden, b->expert_intermediate, GLM_STREAM_EXPERT_ROWS);
 }
 
 template<class S>

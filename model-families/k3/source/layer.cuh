@@ -283,28 +283,42 @@ static int32_t K3SkinnyRows(const void *weight, const uint16_t *source, uint16_t
 		output_dimension,0u,0u,stream,1u));
 }
 
+#define K3_STREAM_INPUT_MULTIPLE 64u
+#define K3_TILED_INPUT_MULTIPLE 32u
+
+static uint32_t K3ProjectStreams(uint32_t input_dimension, const uint16_t *accumulate)
+{
+	return accumulate == 0 && input_dimension % K3_STREAM_INPUT_MULTIPLE == 0u ? 1u : 0u;
+}
+
 template<class Format>
 static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint16_t *accumulate, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	LmGemmArguments gemm;
+	int32_t status;
 	static_assert(Format::kScaleGroup == 0u,
 		"K3Project carries the unquantised projections; experts go weight-only");
 	if (weight_scale != 0)
-		return(LM_LAUNCH_ERR_SHAPE);
+		LM_LAUNCH_REFUSE("k3 projection: a %u x %u projection came with a weight scale; K3 projections are unquantised and experts go weight-only\n",
+			output_dimension,input_dimension);
 	if ( accumulate == 0 && (rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u) )
 	{
-		int32_t status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,0u,stream);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		status = K3SkinnyRows(weight,source,destination,(float *)0,rows,input_dimension,output_dimension,0u,stream);
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return(status);
-		LmSlowPath("k3 projection: the skinny kernel refused a small wave",rows,input_dimension,output_dimension);
+		LM_LAUNCH_REFUSE("k3 projection: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves "
+			"run on it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n",rows,output_dimension,
+			input_dimension,LM_SKINNY_ROWS_WIDE);
 	}
 	if constexpr ( LmStreamWeight<Format>::kSupported )
-		if ( accumulate == 0 )
+		if ( K3ProjectStreams(input_dimension,accumulate) != 0u )
 		{
-			int32_t status = LmStreamGemmDense<Format>(weight,LmScaleTensorNone(),source,destination,(float *)0,rows,input_dimension,output_dimension,0u,0u,multiprocessors,stream);
+			status = LmStreamGemmDense<Format>(weight,LmScaleTensorNone(),source,destination,(float *)0,rows,input_dimension,output_dimension,0u,0u,multiprocessors,stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return(status);
-			LmSlowPath("k3 projection: the stream GEMM refused",rows,input_dimension,output_dimension);
+			LM_LAUNCH_REFUSE("k3 projection: the stream GEMM refused %u rows of a %u x %u projection; prefill waves with an input that is a multiple "
+				"of %u run on it, so the output must be even and the operands 16-byte aligned\n",rows,output_dimension,input_dimension,
+				K3_STREAM_INPUT_MULTIPLE);
 		}
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
@@ -313,10 +327,16 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
 	gemm.accumulate_bf16 = accumulate;
-	return(LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+	status = LmGemmLaunchTileK<Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 		&gemm,source,weight,rows,rows,1u,1u,
-		input_dimension,output_dimension,multiprocessors,false,stream));
+		input_dimension,output_dimension,multiprocessors,false,stream);
+	if ( status == LM_LAUNCH_ERR_SHAPE || status == LM_LAUNCH_ERR_TILE )
+		LM_LAUNCH_REFUSE("k3 projection: the tiled GEMM refused %u rows of a %u x %u projection; accumulating prefill waves and inputs that are not a "
+			"multiple of %u run on it, so the input must be a multiple of %u\n",rows,output_dimension,input_dimension,K3_STREAM_INPUT_MULTIPLE,
+			K3_TILED_INPUT_MULTIPLE);
+	return(status);
 }
+
 
 template<class Format>
 static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
@@ -1203,15 +1223,10 @@ static int32_t K3LayerMoeRoute(const K3LayerBuffers *b, uint32_t rows,
 			&gemm,b->normed_bf16,slice,rows,rows,1u,1u,
 			K3_HIDDEN,experts,multiprocessors,false,stream));
 	}
-	memset(&gemm,0,sizeof(gemm));
-	gemm.group_row_offset = b->dense_row_offset;
-	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_f32 = b->router_logits;
 	status = K3SkinnyRows(b->router_weight,b->normed_bf16,(uint16_t *)0,b->router_logits,rows,K3_HIDDEN,K3_EXPERTS,0u,stream);
 	if ( status == LM_LAUNCH_ERR_SHAPE )
-		status = LmGemmLaunch<LmBf16Format,K3_LAYER_TILE_N,LmBf16Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-			&gemm,b->normed_bf16,b->router_weight,rows,rows,1u,1u,
-			K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
+		LM_LAUNCH_REFUSE("k3 router: the skinny kernel refused %u rows of the %u x %u router; it runs every wave, so the router weight and the normed "
+			"rows need 16-byte alignment\n",rows,K3_EXPERTS,K3_HIDDEN);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	return(K3LayerMoeSelect(b,rows,packed_rows,stream));
@@ -1258,7 +1273,6 @@ static int32_t K3LayerMoeOutput(const K3LayerBuffers *b, uint32_t rows,
 		return(status);
 	return(K3LayerSharedDown<Format>(b,rows,b->intermediate_bf16,multiprocessors,stream));
 }
-
 
 template<class Format>
 static int32_t K3LayerMoeCells(const K3LayerBuffers *b, uint32_t rows,
@@ -1468,3 +1482,43 @@ static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, con
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
+static int32_t K3ProjectionShapeFits(const char *name, uint32_t input_dimension, uint32_t output_dimension)
+{
+	if ( input_dimension == 0u || output_dimension == 0u || input_dimension % K3_TILED_INPUT_MULTIPLE != 0u )
+		LM_LAUNCH_REFUSE("k3 projection %s: this rank's %u x %u slice has an input that is not a nonzero multiple of %u, so neither the skinny "
+			"kernel nor a prefill GEMM can run it; reshard the pack\n",name,output_dimension,input_dimension,K3_TILED_INPUT_MULTIPLE);
+	if ( input_dimension % K3_STREAM_INPUT_MULTIPLE == 0u && output_dimension % 2u != 0u )
+		LM_LAUNCH_REFUSE("k3 projection %s: this rank's %u x %u slice takes the stream GEMM for prefill, which needs an even output; reshard the pack\n",
+			name,output_dimension,input_dimension);
+	return(LM_LAUNCH_OK);
+}
+
+static int32_t K3ProjectionShapes(const K3LayerBuffers *b)
+{
+	static_assert(K3_HIDDEN % K3_STREAM_INPUT_MULTIPLE == 0u && K3_Q_LORA_RANK % K3_STREAM_INPUT_MULTIPLE == 0u &&
+		K3_KDA_KEY_DIM % K3_STREAM_INPUT_MULTIPLE == 0u, "the projections from the hidden row, the query latent and the KDA key run on the stream GEMM");
+	static_assert(K3_KDA_KEY_DIM % 2u == 0u && K3_Q_LORA_RANK % 2u == 0u && K3_MLA_KV_A_DIM % 2u == 0u && K3_INDEX_DIM % 2u == 0u &&
+		K3_INDEX_QUERY % 2u == 0u && K3_INDEX_HEADS % 2u == 0u, "the stream GEMM writes even outputs");
+	const struct { const char *name; uint32_t input_dimension, output_dimension; } shapes[] = {
+		{"kda_qkv_beta", K3_HIDDEN, K3_RANK_DIM(b,kda_qkvb_rows,K3_KDA_QKVB_FUSED_ROWS)},
+		{"kda_gate", K3_HIDDEN, K3_RANK_DIM(b,kda_gate_rows,K3_KDA_V_DIM)},
+		{"kda_decay_up", K3_KDA_KEY_DIM, K3_RANK_DIM(b,kda_decay_up_rows,K3_KDA_QK_DIM)},
+		{"kda_out", K3_RANK_DIM(b,kda_out_input,K3_KDA_V_DIM), K3_HIDDEN},
+		{"mla_q_up", K3_Q_LORA_RANK, K3_RANK_DIM(b,mla_q_up_rows,K3_MLA_Q_DIM)},
+		{"mla_gate", K3_HIDDEN, K3_RANK_DIM(b,mla_gate_rows,K3_MLA_OUT_DIM)},
+		{"mla_out", K3_RANK_DIM(b,mla_out_input,K3_MLA_OUT_DIM), K3_HIDDEN},
+		{"mla_q_b", K3_Q_LORA_RANK, K3_RANK_DIM(b,mla_heads_rank,K3_MLA_HEADS) * K3_MHA_QK},
+		{"shared_w1", K3_HIDDEN, K3_RANK_DIM(b,shared_w1_rows,K3_SHARED_INTERMEDIATE * 2u)},
+		{"shared_w2", K3_RANK_DIM(b,shared_w2_input,K3_SHARED_INTERMEDIATE), K3_HIDDEN},
+		{"routed_up", K3_RANK_DIM(b,routed_up_input,K3_ROUTED_EXPERT_HIDDEN), K3_HIDDEN},
+		{"routed_down", K3_HIDDEN, K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN)},
+		{"dense_gate_up", K3_HIDDEN, K3_RANK_DIM(b,dense_gate_up_rows,K3_DENSE_INTERMEDIATE * 2u)},
+		{"dense_down", K3_RANK_DIM(b,dense_down_input,K3_DENSE_INTERMEDIATE), K3_HIDDEN}};
+	for ( uint32_t index = 0u; index < sizeof(shapes) / sizeof(shapes[0]); index++ )
+	{
+		const int32_t status = K3ProjectionShapeFits(shapes[index].name,shapes[index].input_dimension,shapes[index].output_dimension);
+		if ( status != LM_LAUNCH_OK )
+			return(status);
+	}
+	return(LM_LAUNCH_OK);
+}

@@ -405,18 +405,18 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves run "
+			"on it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
+			LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows,
 		input_dimension, output_dimension, 0u, 0u, multiprocessors, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status;
-	LmSlowPath("dsv41 linear: the stream GEMM refused, naive linear", rows, input_dimension, output_dimension);
-	LM_LAUNCH((D41NaiveLinearKernel), dim3((output_dimension + 7u) / 8u, rows), 256u, 0, stream, weight, source, destination, destination_f32,
-		input_dimension, output_dimension);
-	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	LM_LAUNCH_REFUSE("dsv41 linear: the stream GEMM refused %u rows of a %u x %u projection; prefill waves run on it, so the input must be a multiple "
+		"of 64, the output even and the operands 16-byte aligned\n", rows, output_dimension, input_dimension);
 }
 
 static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimension, uint32_t row_invariant);
@@ -460,9 +460,11 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves "
+			"run on it, so the weight needs 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n", rows,
+			output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 		output_dimension, 0u, 0u, multiprocessors, stream);
@@ -495,9 +497,11 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 		const LmSkinnyDenseTarget targets[2] = { D41Target(first, first_destination, input_dimension, first_dimension),
 			D41Target(second, second_destination, input_dimension, second_dimension) };
 		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 pair: the skinny kernel refused a small wave", rows, input_dimension, first_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 pair: the fused launch refused %u rows of %u + %u outputs over %u inputs; waves of up to %u rows and row-invariant "
+			"waves run on it, so both weights need 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n",
+			rows, first_dimension, second_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = D41Linear(first, source, first_destination, rows, input_dimension, first_dimension, multiprocessors, 0u, (const D41Mx *)0,
 		stream);

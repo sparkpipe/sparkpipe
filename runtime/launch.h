@@ -2,7 +2,7 @@
 
 
 #include "inference/kernels/layout.cuh"
-#include "runtime/slow_path.h"
+#include "sparkpipe/spark_error_site.h"
 #include <stdint.h>
 #include <stdio.h>
 
@@ -16,6 +16,12 @@
 #define LM_LAUNCH_ERR_ATTRIBUTE (-45)
 #define LM_LAUNCH_ERR_LAUNCH (-46)
 #define LM_LAUNCH_ERR_OUTPUT (-47)
+
+#define LM_LAUNCH_REFUSE(...) \
+	do { (void)fprintf(stderr, __VA_ARGS__); SPARK_FAIL(LM_LAUNCH_ERR_SHAPE); } while (0)
+
+#define LM_GPU_REFUSE(...) \
+	do { (void)fprintf(stderr, __VA_ARGS__); SPARK_FAIL(SPARK_GPU_ERROR_INVALID_VALUE); } while (0)
 
 #define LM_LAUNCH_GRID_Y_MAX 65535u
 

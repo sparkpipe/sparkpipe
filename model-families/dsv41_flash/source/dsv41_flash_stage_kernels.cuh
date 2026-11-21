@@ -632,27 +632,6 @@ static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uin
 		target[(uint64_t)row * target_stride + index] = source[(uint64_t)row * source_stride + index];
 }
 
-static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ input, uint16_t *__restrict__ output,
-	float *__restrict__ output_f32, uint32_t input_dimension, uint32_t output_dimension)
-{
-	const uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, row = blockIdx.y;
-	const uint32_t neuron = blockIdx.x * (blockDim.x / 32u) + warp;
-	if ( neuron >= output_dimension )
-		return;
-	const uint16_t *w = weight + (uint64_t)neuron * input_dimension, *x = input + (uint64_t)row * input_dimension;
-	float total = 0.0f;
-	for ( uint32_t k = lane; k < input_dimension; k += 32u )
-		total += LmBf16ToFloat(w[k]) * LmBf16ToFloat(x[k]);
-	for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-		total += __shfl_down_sync(0xffffffffu, total, offset);
-	if ( lane != 0u )
-		return;
-	if ( output != 0 )
-		output[(uint64_t)row * output_dimension + neuron] = LmFloatToBf16(total);
-	if ( output_f32 != 0 )
-		output_f32[(uint64_t)row * output_dimension + neuron] = total;
-}
-
 static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
 	uint32_t query_width, uint32_t weight_width, uint32_t pack_width)
 {
