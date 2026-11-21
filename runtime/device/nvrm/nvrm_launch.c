@@ -82,7 +82,8 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 	shape->release_payload = request->release_payload;
 }
 
-SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const char *owner)
+SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	const char *owner)
 {
 	SparkNvrmLaunchShape shape;
 	SparkNvrmQmd qmd;
@@ -100,13 +101,35 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, const SparkNvrmProgram *prog
 			"the kernel needs more local memory than its program provisioned");
 		SPARK_FAIL(status);
 	}
+	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
 	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,request->arguments,request->argument_bytes,
 		request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,owner));
 	LaunchShape(gpu,program,request,&shape);
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
 	word = (uint32_t)(request->slot_address >> 8);
-	LAUNCH_TRY(SparkNvrmPush(&gpu->compute,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&word,1u,owner));
+	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&word,1u,owner));
 	word = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;
-	return(SparkNvrmPush(&gpu->compute,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&word,1u,owner));
+	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&word,1u,owner));
+}
+
+SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	uint64_t *value, const char *owner)
+{
+	SparkNvrmLaunchRequest ordered = *request;
+	const uint64_t bound = channel->local_address;
+	SparkStatus status;
+	ordered.release_address = channel->fence.address;
+	ordered.release_payload = channel->fence_value + 1u;
+	LAUNCH_TRY(SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_COMPUTE,owner));
+	status = SparkNvrmLaunchQueue(gpu,channel,program,&ordered,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmOpEnd(gpu,channel,SPARK_NVRM_ENGINE_COMPUTE,value,owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmOpAbandon(channel);
+		channel->local_address = bound;
+		SPARK_FAIL(status);
+	}
+	return(SPARK_STATUS_OK);
 }

@@ -85,15 +85,13 @@ static int Run(Bench *bench, const SparkNvrmCubinKernel *kernel, const void *arg
 	request.slot_address = bench->slots.address;
 	request.slot_bytes = bench->slot_bytes;
 	if ( SparkNvrmSemaphoreRelease(channel,bench->semaphore.address,value,1u,"bandwidth") != SPARK_STATUS_OK ||
-		SparkNvrmLaunchQueue(&bench->gpu,&bench->program,&request,"bandwidth") != SPARK_STATUS_OK ||
+		SparkNvrmLaunchQueue(&bench->gpu,channel,&bench->program,&request,"bandwidth") != SPARK_STATUS_OK ||
 		SparkNvrmSemaphoreRelease(channel,bench->semaphore.address + 16u,value,1u,"bandwidth") != SPARK_STATUS_OK ||
 		SparkNvrmSubmit(&bench->gpu,channel,"bandwidth") != SPARK_STATUS_OK )
 		return(Failed("submit a measured launch"));
 	if ( SparkNvrmWaitValue(&semaphore[2],value,BANDWIDTH_TIMEOUT_NS,"kernel_launch","bandwidth") != SPARK_STATUS_OK )
 		return(Failed("wait for a measured launch"));
 	*gpu_nanoseconds = semaphore[3] - semaphore[1];
-	if ( channel->push_used > channel->push.bytes / 2u && SparkNvrmPushRewind(channel,"bandwidth") != SPARK_STATUS_OK )
-		return(Failed("rewind the push buffer"));
 	return(0);
 }
 

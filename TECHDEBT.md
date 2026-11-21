@@ -1899,21 +1899,21 @@ and the multidev docs on 2026-09-28. Line numbers are in
   [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
   from the pinned open kernel module (580.178.04) and open-gpu-doc, the
   `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
-  version 5 packer tested on release-built kernels, and a backend whose
-  every entry still refuses with `UNSUPPORTED`. The barrier count a kernel
-  needs is not read from its cubin yet (the packer takes it as an input).
-  Device open,
-  memory, one compute channel and kernel launch exist below the backend
-  entries (`nvrm_gpu.c`, `nvrm_channel.c`, `nvrm_launch.c`) and in the
-  first-light tool, and run on GB10 (first light, the launch-shape probe,
-  memory bandwidth at par with `cudaMalloc`); the backend entries do not
-  use them yet. The push buffer does not wrap. Missing: the
-  backend entries' memory,
-  queues, events, kernel loading or launch, no command lists replacing
-  graphs, no memory shared with weightd, no TMA descriptors and no fault
-  reports. Production modules call the CUDA runtime directly (above), so
-  even a complete backend serves nothing until they move behind the device
-  layer or a GPU API of our own.
+  version 5 packer tested on release-built kernels, device open, memory
+  and kernel launch below the backend entries, and backend entries for
+  initialization, every memory space, registered and file-backed memory,
+  copy-engine copies and fills, and queues (one GPFIFO ring each, compute
+  and copy ordered on a 64-bit timeline), all passing on GB10 with memory
+  bandwidth at par with `cudaMalloc`. The barrier count a kernel needs is
+  not read from its cubin yet (the packer takes it as an input). Missing:
+  copies through pageable memory, events, waits between queues, host
+  callbacks and timing; kernel loading and launch through the backend
+  entries; command lists replacing graphs; memory shared with weightd;
+  TMA descriptors; fault reports (a hung queue is waited on forever).
+  Host-backed memory registers 4 KiB pages and reads 18% slower than
+  device memory. Production modules call the CUDA runtime directly
+  (above), so even a complete backend serves nothing until they move
+  behind the device layer or a GPU API of our own.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,

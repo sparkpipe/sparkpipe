@@ -39,7 +39,10 @@ typedef struct SparkNvrmLaunchRequest
 SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, SparkNvrmProgram *program, const char *owner);
 void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program);
 uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel);
-SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const char *owner);
+SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	const char *owner);
+SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	uint64_t *value, const char *owner);
 
 #ifdef __cplusplus
 }
