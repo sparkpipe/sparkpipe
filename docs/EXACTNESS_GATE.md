@@ -118,6 +118,11 @@ states did not come back.
 GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 ```
 
+- In a release, `scripts/release_rollout.sh gx` runs it after `qualify` for
+  the served models (`GX_MODELS`; `ONLY` limits them), keeps its hub files in
+  the release's work directory, copies receipts to the kit state's `gx`
+  directory and leaves `qwen3.8-max` active. It fails unless every model
+  passes.
 - State and logs are kept on the hub under `$HUB_WORK/gx/<sha>/<model>/`.
   A state is planned once: its prompts must be new to the cache.
 - `GX_PLAN` passes plan options, for example
