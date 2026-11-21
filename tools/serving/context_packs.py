@@ -16,7 +16,7 @@ GIT_TAILS = ("info/refs", "git-upload-pack", "git-receive-pack")
 GIT_SERVICES = ("git-upload-pack", "git-receive-pack")
 LAST_USE = ".last-use"
 HISTORY_SECONDS = 90 * 86400
-UNUSED_VERSION_SECONDS = 86400
+MAX_SESSION_PINS = 4096
 MAX_FILE_BYTES = 2 << 20
 BINARY_SCAN_BYTES = 8000
 GENERATED_SCAN_BYTES = 1024
@@ -507,7 +507,7 @@ class Workspace:
         entry = state["versions"][version]
         entry.update(warm=now, warmed=warmed)
         state["current"] = version
-        self.drop_unused(scope_dir, name, now)
+        self.drop_unused(scope_dir, name)
         self.save(scope_dir, name)
 
     def newest(self, state):
@@ -537,18 +537,21 @@ class Workspace:
         state["profiles"] = [profile] + [entry for entry in state["profiles"] if entry != profile][:MAX_PROFILES - 1]
         self.save(scope_dir, name)
 
-    def drop_unused(self, scope_dir, name, now):
+    def drop_unused(self, scope_dir, name):
         state = self.state(scope_dir, name)
         dropped = []
+        newest = sorted(state["pins"].items(), key=lambda item: (item[1]["used"], item[0]))[-MAX_SESSION_PINS:]
+        state["pins"] = {key: pin for key, pin in newest if pin["version"] in state["versions"]}
+        pinned = {pin["version"] for pin in state["pins"].values()}
+        current = state["versions"].get(state["current"])
         for version, entry in list(state["versions"].items()):
-            if version != state["current"] and now - (entry.get("used") or entry["built"]) >= UNUSED_VERSION_SECONDS:
+            if current is not None and version != state["current"] and version not in pinned and entry["built"] <= current["built"]:
                 dropped.append(version)
                 del state["versions"][version]
                 stem = version.partition("@")[2]
                 for suffix in (".ids", ".json"):
                     (self.pack_folder(scope_dir, name) / "versions" / (stem + suffix)).unlink(missing_ok=True)
                 self.arrays.pop((scope_dir, name, version), None)
-        state["pins"] = {key: pin for key, pin in state["pins"].items() if pin["version"] in state["versions"] and now - pin["used"] < UNUSED_VERSION_SECONDS}
         return dropped
 
     def delete_pack(self, scope_dir, name):

@@ -899,15 +899,27 @@ as recorded debt for models too large for a group.
   Carry the budget in the deployment (a node field read by residentd and
   passed to the binding's ledger open), proven by a run that stays under it.
 
-- The 24-hour retention outside a running model (weightd's purge thread and
-  its release of detached KV pools, the draft servers' context expiry, the
-  batch engine's slot clearing and the prefix index's record expiry) has no
-  fleet proof yet. Proof: backdate an inactive model's snapshot store while
-  another model serves and see `weightd kv purge` empty it within a minute;
-  swap a model away and see `reason=detached_retention` an hour later; see
-  `CONTEXT-EXPIRED` and `prefix index expired` on a backdated hub. The
-  retired API directories on the hub keep prefix index files that no engine
-  opens; they need deleting by hand.
+- weightd's release of detached KV pools after an hour without an owner has
+  no fleet proof yet. Proof: swap a model away and see
+  `reason=detached_retention` an hour later, and the model's cache come back
+  from its snapshot store when it returns. The retired API directories on
+  the hub keep prefix index files that no engine opens; they need deleting
+  by hand.
+
+- Nothing deletes cached request state for its age (2026-11-21), so every
+  node's KV store fills to its quota and stays there. Open with that:
+  - the quota path has fleet proof only at 8 GiB per rank (above), and now
+    carries every eviction;
+  - a store's open scan and its index now hold a full quota of files, about
+    4.1M at fleet page sizes: measure the scan time at lane start and the
+    index memory on a full node;
+  - `DELETE /v1/cache` does not reach the engine's tiers. The serving layer
+    deletes its own stores and answers `not_deleted: engine_cache` (#1789);
+  - nothing writes the working-state directive, and nothing restores a fleet
+    to the base image when a hold ends (#1789, E19);
+  - a kept session's newest turn is still unsaved until something reads it,
+    and an engine that is killed loses it (design stage 2 in
+    `docs/PREFILL_ANTICIPATION.md`).
 
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
@@ -1654,8 +1666,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - the `pack.warm` notice as a webhook, which today is only a log line;
   - `/` in pack names at the gateway;
   - repository quotas (#1798).
-- Repositories and packs expire through the chat layer's working-state
-  sweep, like the replay store. `tools/working_state_scan.py` is on the
+- Repositories and packs are deleted by the chat layer's wipe mark, like
+  the replay store. `tools/working_state_scan.py` is on the
   unmerged #1692. When it lands, add the repository areas to the scan as a
   storage place (`.last-use` per area), and follow its separate
   `storage_wiped` rule for `repos/`.
@@ -2091,7 +2103,7 @@ Metal backend and the single-Studio stage are in
     table over a fixed pool and no page store, so every request recomputes
     its prompt. Its pages must come from the common page cache with
     copy-on-write prefixes, and cached request state from the snapshot tiers
-    under the 24-hour retention rule;
+    under the retention invariant;
   - state save and restore: the model's `recurrent_copy` packs its recurrent
     state in the CUDA model's order, but no runner path exports or restores a
     sequence's KV pages and state, and decode after a restore has not been

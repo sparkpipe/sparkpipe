@@ -66,8 +66,8 @@ uint64_t SparkWeightdServerResidentBytes(const SparkWeightdServer *server)
 { (void)server; return 0u; }
 const char *SparkStatusToString(SparkStatus status)
 { (void)status; return "test-status"; }
-SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,uint64_t now_seconds,SparkKvSnapshotPurgeResult *result)
-{ (void)ledger; (void)root; (void)now_seconds; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,SparkKvSnapshotPurgeResult *result)
+{ (void)ledger; (void)root; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
 SparkStatus SparkKvLedgerDefaultPath(char *path,uint32_t capacity)
 { (void)snprintf(path,capacity,"/tmp/test-kv-ledger"); return SPARK_STATUS_OK; }
 SparkStatus SparkKvLedgerOpen(SparkKvLedger *ledger,const char *path,uint64_t quota_bytes)

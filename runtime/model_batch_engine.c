@@ -335,8 +335,6 @@ struct SparkModelBatchEngine
 	uint32_t prefix_index_loaded;
 	uint64_t prefix_index_next_save_ns;
 	uint64_t prefix_index_export_ns_maximum;
-	uint64_t prefix_expiry_next_ns;
-	uint64_t prefix_expired_count;
 	uint64_t prefix_index_loaded_record_count;
 	uint64_t prefix_index_refused_count;
 	uint64_t prefix_index_reimported_record_count;
@@ -2185,28 +2183,6 @@ static SparkStatus SparkModelBatchLoadPrefixIndex(SparkModelBatchEngine *engine)
 	engine->prefix_index_loaded = 1u;
 	engine->next_status_ns = SparkMonotonicNs() + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
 	return(SPARK_STATUS_OK);
-}
-
-static void SparkModelBatchExpirePrefixes(SparkModelBatchEngine *engine)
-{
-	struct timespec now;
-	uint32_t expired = 0u;
-	SparkStatus status;
-	if ( clock_gettime(CLOCK_REALTIME,&now) != 0 )
-		return;
-	status = SparkPrefixCacheExpire(&engine->prefix_cache,(uint64_t)now.tv_sec,&expired);
-	if ( status != SPARK_STATUS_OK )
-	{
-		fprintf(stderr,"batch engine prefix index expiry failed status=%d: the index may hold records past %llu s\n",(int)status,(unsigned long long)SPARK_KV_RETENTION_SECONDS);
-		SparkModelBatchSetFailed(engine,status);
-		return;
-	}
-	if ( expired == 0u )
-		return;
-	engine->prefix_expired_count += expired;
-	engine->prefix_index_dirty = 1u;
-	fprintf(stderr,"batch engine prefix index expired records=%u unused_for_s=%llu total_expired=%llu\n",expired,(unsigned long long)SPARK_KV_RETENTION_SECONDS,
-		(unsigned long long)engine->prefix_expired_count);
 }
 
 static void SparkModelBatchSavePrefixIndex(SparkModelBatchEngine *engine,uint64_t now_ns)
@@ -4820,11 +4796,6 @@ static void SparkModelBatchPeriodicWork(SparkModelBatchEngine *engine)
 			SparkModelBatchLogFrames(engine);
 		(void)SparkModelPipelineClientRequestStatus(engine->pipeline);
 		engine->next_status_ns = now + SPARK_MODEL_BATCH_STATUS_INTERVAL_NS;
-	}
-	if ( now >= engine->prefix_expiry_next_ns )
-	{
-		SparkModelBatchExpirePrefixes(engine);
-		engine->prefix_expiry_next_ns = now + (uint64_t)SPARK_KV_EXPIRY_SWEEP_SECONDS * UINT64_C(1000000000);
 	}
 	if ( now >= engine->prefix_index_next_save_ns && engine->prefix_index_dirty != 0u )
 	{

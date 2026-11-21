@@ -64,19 +64,16 @@ static SparkKvLedger weightd_kv_ledger;
 static void SparkWeightdKvPurgeOnce(void)
 {
     SparkKvSnapshotPurgeResult result;
-    struct timespec now;
     SparkStatus status;
-    if (clock_gettime(CLOCK_REALTIME, &now) != 0)
-        return;
     SparkKvLedgerUsage usage;
-    status = SparkKvSnapshotPurgeTree(&weightd_kv_ledger, weightd_kv_purge_root, (uint64_t)now.tv_sec, &result);
+    status = SparkKvSnapshotPurgeTree(&weightd_kv_ledger, weightd_kv_purge_root, &result);
     memset(&usage, 0, sizeof(usage));
     (void)SparkKvLedgerSample(&weightd_kv_ledger, &usage);
     if (status != SPARK_STATUS_OK || result.deleted_files != 0u || result.failed_unlinks != 0u || result.uncounted_stores != 0u)
-        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u uncounted=%u deleted_files=%llu deleted_bytes=%llu failed_unlinks=%u unused_for_s=%llu node_used=%llu of %llu\n",
+        fprintf(stderr, "weightd kv purge root=%s status=%s stores=%u busy=%u uncounted=%u deleted_temporaries=%llu deleted_bytes=%llu failed_unlinks=%u node_used=%llu of %llu\n",
             weightd_kv_purge_root, SparkStatusToString(status), result.stores, result.busy_stores, result.uncounted_stores,
             (unsigned long long)result.deleted_files, (unsigned long long)result.deleted_bytes, result.failed_unlinks,
-            (unsigned long long)SPARK_KV_RETENTION_SECONDS, (unsigned long long)usage.used_bytes, (unsigned long long)usage.quota_bytes);
+            (unsigned long long)usage.used_bytes, (unsigned long long)usage.quota_bytes);
 }
 
 static void *SparkWeightdKvPurgeThread(void *argument)
@@ -125,8 +122,8 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
         fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    fprintf(stderr, "weightd kv purge: every %u s under %s, cache files unused for %llu s are deleted\n",
-        SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root, (unsigned long long)SPARK_KV_RETENTION_SECONDS);
+    fprintf(stderr, "weightd kv purge: every %u s under %s, leftover temporaries are deleted and closed stores are counted; no cache file is deleted for its age\n",
+        SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root);
     return SPARK_STATUS_OK;
 }
 
