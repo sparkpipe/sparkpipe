@@ -228,6 +228,11 @@ class StaticFilesTest(unittest.TestCase):
 
 
 class BuildDriverTest(unittest.TestCase):
+    def test_the_entry_scripts_are_executable(self):
+        for path in ("build_image.sh", "customize_image.sh", "files/usr/lib/sparkpipe/gpu-device-nodes", "files/usr/lib/sparkpipe/host-keys"):
+            with self.subTest(path=path):
+                self.assertTrue(os.access(IMAGE / path, os.X_OK))
+
     def test_missing_inputs_are_refused_before_anything_is_built(self):
         script = str(IMAGE / "build_image.sh")
         self.assertEqual(subprocess.run(["bash", script], capture_output=True).returncode, 2)
