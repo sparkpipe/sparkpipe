@@ -300,7 +300,7 @@ systemctl() { [ "$TEST_QOS" = active ]; }
 ibdev2netdev() { echo "test port 1 ==> test-netdev (Up)"; }
 mesh_addresses() { if [ -n "$TEST_ADDRESS" ]; then echo "$TEST_ADDRESS"; else echo "test gid 3 is 0000:0000:0000:0000:0000:0000:0000:0000, not an IPv4 RoCE address" >&2; return 1; fi; }
 WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
-mlnx_qos() { [ "$*" = "-i test-netdev" ] && echo "Priority trust state: $TEST_TRUST"; }
+sparkpipe-dscp-trust() { [ "$*" = "check test-netdev" ] && [ "$TEST_TRUST" = dscp ]; }
 [() { case "$1" in -S) return 0;; -x) return "$TEST_BINARY_STATUS";; -s) return 1;; esac; builtin [ "$@"; }
 ''' + self.weightd_settings + self.ensure + '\nensure_weightd\nstatus=$?\nwait\nexit "$status"\n'
         env = dict(os.environ, TEST_DISK_SHA="changed" if changed else "running",

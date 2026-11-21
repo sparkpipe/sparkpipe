@@ -940,7 +940,7 @@ ensure_weightd() {
     }
     local mesh_netdev
     mesh_netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$MESH_INTERFACE" '$1==d {print $5; exit}')
-    mlnx_qos -i "$mesh_netdev" 2>/dev/null | grep -q 'Priority trust state: dscp' || {
+    sparkpipe-dscp-trust check "$mesh_netdev" > /dev/null 2>&1 || {
         echo "weightd: $MESH_INTERFACE (${mesh_netdev:-no netdev}) does not trust DSCP; traffic class $MESH_TRAFFIC_CLASS would be lossy; dependent startup blocked" >&2
         return 1
     }
