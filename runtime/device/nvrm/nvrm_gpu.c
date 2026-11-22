@@ -434,20 +434,22 @@ static SparkStatus GpuHostMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, con
 	return(GpuOsDescriptor(gpu,memory,owner));
 }
 
-SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner)
+SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner)
 {
 	NV_MEMORY_ALLOCATION_PARAMS made;
 	const uint32_t huge = page_bytes == SPARK_NVRM_HUGE_PAGE_BYTES;
+	if ( kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED && kind != SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"module system memory is GPU-cached, uncached or CPU write-back");
 	memset(&made,0,sizeof(made));
 	made.owner = gpu->rm.client;
-	made.type = uncached != 0u ? NVOS32_TYPE_NOTIFIER : NVOS32_TYPE_IMAGE;
+	made.type = kind == SPARK_NVRM_MEMORY_SYSTEM_UNCACHED ? NVOS32_TYPE_NOTIFIER : NVOS32_TYPE_IMAGE;
 	made.flags = NVOS32_ALLOC_FLAGS_MAP_NOT_REQUIRED | NVOS32_ALLOC_FLAGS_MEMORY_HANDLE_PROVIDED | NVOS32_ALLOC_FLAGS_ALIGNMENT_FORCE |
 		NVOS32_ALLOC_FLAGS_IGNORE_BANK_PLACEMENT;
 	made.attr = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR_PHYSICALITY,NVOS32_ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR_LOCATION,NVOS32_ATTR_LOCATION_PCI) |
-		SPARK_NVRM_VALUE(NVOS32_ATTR_COHERENCY,NVOS32_ATTR_COHERENCY_UNCACHED) |
+		SPARK_NVRM_VALUE(NVOS32_ATTR_COHERENCY,kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK ? NVOS32_ATTR_COHERENCY_WRITE_BACK : NVOS32_ATTR_COHERENCY_UNCACHED) |
 		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR_PAGE_SIZE,NVOS32_ATTR_PAGE_SIZE_HUGE) : 0u));
-	made.attr2 = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR2_GPU_CACHEABLE,uncached != 0u ? NVOS32_ATTR2_GPU_CACHEABLE_NO : NVOS32_ATTR2_GPU_CACHEABLE_YES) |
+	made.attr2 = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR2_GPU_CACHEABLE,kind == SPARK_NVRM_MEMORY_SYSTEM ? NVOS32_ATTR2_GPU_CACHEABLE_YES : NVOS32_ATTR2_GPU_CACHEABLE_NO) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR2_ZBC,NVOS32_ATTR2_ZBC_PREFER_NO_ZBC) |
 		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR2_PAGE_SIZE_HUGE,NVOS32_ATTR2_PAGE_SIZE_HUGE_2MB) : 0u));
 	made.format = GPU_MEMORY_FORMAT;
@@ -500,10 +502,16 @@ SparkStatus SparkNvrmVideoBytes(SparkNvrmGpu *gpu, uint64_t *heap_bytes, uint64_
 
 static SparkStatus GpuSystemMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
 {
-	GPU_TRY(SparkNvrmSystemAllocate(gpu,memory->bytes,memory->page_bytes,memory->kind == SPARK_NVRM_MEMORY_SYSTEM_UNCACHED,&memory->handle,owner));
+	GPU_TRY(SparkNvrmSystemAllocate(gpu,memory->bytes,memory->page_bytes,memory->kind,&memory->handle,owner));
 	GPU_TRY(GpuMapToCpu(gpu,memory->handle,memory->bytes,0u,1u,(void *)(uintptr_t)memory->address,&memory->map_fd,&memory->cpu,owner));
 	memory->host_mapped = 1u;
 	return(SPARK_STATUS_OK);
+}
+
+static uint64_t GpuPageBytes(SparkNvrmMemoryKind kind, uint64_t bytes)
+{
+	const uint64_t huge_pages = kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK ? 1u : 4u;
+	return(kind != SPARK_NVRM_MEMORY_HOST && bytes >= huge_pages * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 }
 
 SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner)
@@ -512,10 +520,11 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 	memset(memory,0,sizeof(*memory));
 	memory->kind = kind;
 	memory->map_fd = -1;
-	memory->page_bytes = kind != SPARK_NVRM_MEMORY_HOST && bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES;
+	memory->page_bytes = GpuPageBytes(kind,bytes);
 	memory->bytes = GpuRound(bytes != 0u ? bytes : 1u,memory->page_bytes);
-	if ( kind != SPARK_NVRM_MEMORY_HOST && kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED && kind != SPARK_NVRM_MEMORY_VIDEO )
-		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"the module allocates host, system, uncached system or video memory");
+	if ( kind != SPARK_NVRM_MEMORY_HOST && kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED &&
+		kind != SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK && kind != SPARK_NVRM_MEMORY_VIDEO )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"the module allocates host, system, uncached system, write-back system or video memory");
 	status = SparkNvrmVirtual(gpu,memory->bytes,memory->page_bytes,&memory->address,owner);
 	memory->virtual_reserved = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK && kind == SPARK_NVRM_MEMORY_VIDEO )

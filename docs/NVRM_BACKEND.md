@@ -271,7 +271,7 @@ reaches lives in this range, so push buffers stay below 2^40 and a GPU
 address that the CPU also maps is the same number on both sides. A range
 another mapping already holds is refused rather than replaced.
 
-Memory comes in six kinds:
+Memory comes in seven kinds:
 
 - **Host memory.** Anonymous pages the backend maps itself at the GPU
   address and registers by OS descriptor. It is CPU-cached and coherent.
@@ -284,6 +284,11 @@ Memory comes in six kinds:
   gives it a host view.
 - **Uncached system memory.** Allocated by the module, GPU-uncached, for
   notifiers.
+- **Write-back system memory.** Allocated by the module, cached write-back
+  by the CPU and uncached by the GPU, whose accesses snoop the CPU's
+  caches, so the two stay coherent. It has 2 MiB pages from 2 MiB up and
+  backs host-pinned and shared-coherent memory on a discrete GPU (see
+  [the hub's RTX 5090](#the-hubs-rtx-5090)).
 - **Video memory.** On a discrete GPU, allocated by the module in the GPU's
   own memory (`NV01_MEMORY_LOCAL_USER`), GPU-cached, with 2 MiB pages from
   8 MiB up. It has no CPU mapping; the copy engine moves data in and out
@@ -390,8 +395,8 @@ tail.
 | Space | nvrm memory | Host view | Device address |
 |---|---|---|---|
 | device-private | system memory on an integrated GPU, video memory on a discrete one; zero-filled by the copy engine | none | yes |
-| shared coherent | host memory | same address | yes |
-| host pinned | host memory | same address | yes |
+| shared coherent | host memory on an integrated GPU, write-back system memory on a discrete one | same address | yes |
+| host pinned | host memory on an integrated GPU, write-back system memory on a discrete one | same address | yes |
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
@@ -806,7 +811,7 @@ gate needs `nvcc` on the host. Without it the gate fails, naming `nvcc`.
 
 ## First light and memory bandwidth
 
-Two tools run on a GPU host with a pinned module:
+Three tools run on a GPU host with a pinned module:
 
 - **`build/nvrm_first_light`** (`make nvrm-first-light`) opens the GPU and
   prints its identity. It launches the fixture's first-light kernel 16
@@ -821,6 +826,18 @@ Two tools run on a GPU host with a pinned module:
   (`--path video`, `--path pcie`), each sampled against its source.
   `build/cuda_memory_bandwidth` measures the same kernels over
   `cudaMalloc` memory on the CUDA flavour, for the comparison.
+- **`build/device_transfers_nvrm`** (`make nvrm-device-transfers`) times
+  two workloads through the device layer alone. `step` is one drafter
+  step's transfers: a tap upload of 1, 4, 8 and 16 rows of 51,200 bytes
+  (five tapped layers of 5,120 BF16 values) from host-pinned memory and a
+  4 KiB draft download into it, each alone, both on one queue, and both
+  after the CPU writes the rows, from submit to the queue's completion.
+  `load FILE` loads a file into device-private memory through a ring of
+  host-pinned (or `--pageable`) staging buffers, page-cache or `--direct`
+  reads, and reports each phase; `--back` copies the loaded bytes back
+  into the staging, `--touch` stores once to each staging page first.
+  Every run checks what arrived. `build/device_transfers_cuda` is the same
+  program over the CUDA flavour's device library.
 
 Measured on GB10 (1 GiB buffers, 5 interleaved rounds of 20 launches,
 median of medians): module-allocated system memory, GPU cached, 2 MiB
@@ -865,3 +882,23 @@ The link's floor is 63.0 GB/s each way (32 GT/s on 16 lanes, 128b/130b
 coding). From system memory in 2 MiB pages the copy engine reaches 81% of
 it toward the GPU and 67% back. Host memory in 4 KiB pages costs 16%
 toward the GPU and 46% back.
+
+Host-pinned and shared-coherent memory therefore come from write-back
+system memory on a discrete GPU. Against host memory in 4 KiB pages, which
+backed them before (same tool, 1 GiB, 20 rounds, median):
+
+| Path | Write-back system memory, 2 MiB pages | Host memory, 4 KiB pages |
+| --- | --- | --- |
+| copy engine to video memory | 51.4 GB/s | 43.1 GB/s |
+| copy engine from video memory | 42.4 GB/s | 22.7 GB/s |
+| SM read | 49.2 GB/s | 20.3 GB/s |
+| SM copy, read plus write | 51.2 GB/s | 14.1 GB/s |
+
+A drafter step's transfers do not move (`build/device_transfers_nvrm
+step`, 5 rounds of 3,000 steps, median of the rounds' medians): its
+buffers are under 2 MiB and keep 4 KiB pages, and copies that small cost
+their submission more than their bytes. A 4 KiB draft download takes
+4.4 to 5.1 us from submit to completion, a 1-row tap upload (51,200
+bytes) 5.9 us, both on one queue 6.4 us, and 12.6 us when the CPU first
+writes the row; 16 rows (819,200 bytes) upload in 24 to 25 us, or
+20.7 us from a buffer in 2 MiB pages.

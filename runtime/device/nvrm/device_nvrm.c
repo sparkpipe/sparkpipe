@@ -201,6 +201,13 @@ static SparkStatus NvrmZero(SparkNvrmMemory *memory, const char *owner)
 	return(SparkNvrmWaitValue((const volatile uint64_t *)(void *)nvrm_gpu.compute.fence.cpu,value,SPARK_NVRM_WAIT_TIMEOUT_NS,"allocate",owner));
 }
 
+static SparkNvrmMemoryKind NvrmSpaceKind(SparkDeviceSpace space)
+{
+	if ( space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE )
+		return(nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_VIDEO);
+	return(nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_HOST : SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK);
+}
+
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm = NvrmNew(allocation,"allocate");
@@ -221,8 +228,7 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 		allocation->backend = nvrm;
 		return(SPARK_STATUS_OK);
 	}
-	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space == 0u ? SPARK_NVRM_MEMORY_HOST :
-		nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_VIDEO,&nvrm->memory,allocation->owner);
+	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,NvrmSpaceKind(allocation->space),&nvrm->memory,allocation->owner);
 	if ( status == SPARK_STATUS_OK && private_space != 0u )
 		status = NvrmZero(&nvrm->memory,allocation->owner);
 	if ( status != SPARK_STATUS_OK )
@@ -994,7 +1000,7 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(nvrm_gpu.integrated != 0u ? SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,owner) :
+	NVRM_TRY(nvrm_gpu.integrated != 0u ? SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,SPARK_NVRM_MEMORY_SYSTEM,&handle,owner) :
 		SparkNvrmVideoAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )
