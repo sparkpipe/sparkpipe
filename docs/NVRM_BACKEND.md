@@ -808,9 +808,25 @@ headers' (`crt/host_runtime.h`, `crt/device_functions.h`).
   Every `.cubin` there needs its `.manifest`, and every manifest its cubin.
   Other files, such as compiler leftovers from `--keep`, are ignored. The
   manifests are parsed on the spot (host work only, safe in a constructor).
-  A kernel name in two cubins of one module is refused. So is a missing
-  directory, an unpaired file, a directory with no cubin, or a manifest
-  that does not parse.
+  A template kernel that two translation units instantiate is in both
+  their cubins, as nvcc compiles each unit whole. Such a kernel name is
+  kept once, with the first cubin's copy, only when both copies match:
+  - the same code bytes;
+  - the same registers, stack, frame, shared memory, parameter layout,
+    barriers and cluster shape;
+  - the same parameter bank size;
+  - no relocation in either copy's code;
+  - for every other constant bank both cubins have: the same bytes and
+    no relocation in it. A relocated bank holds addresses of its own
+    cubin's variables, so the two copies would reach different storage.
+    Constant banks belong to the whole cubin, not to one kernel. A bank
+    only one of the cubins has is not read by this code, which runs in
+    both, so it is not compared.
+
+  Copies that differ refuse the module, naming the kernel, both cubins
+  and the first difference found. So does a missing directory, an
+  unpaired file, a directory with no cubin, or a manifest that does not
+  parse.
 - **Staged roots.** A lane loads each module by its staged name, so its
   kernels directory must sit beside it under that name.
   `tools/stage_lane.sh` and `tools/k3_lane.sh` copy every firmware entry
