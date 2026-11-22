@@ -36,7 +36,7 @@ PINS = {key: quoted or plain for key, quoted, plain in re.findall(r'^([A-Z0-9_]+
 def compaction_helper(base):
     text = (IMAGE / "files" / "usr" / "local" / "sbin" / "sparkpipe-compact").read_text()
     for real, fake in (("/run/sparkpipe-compact", base / "state"), ("/proc/sys/vm/compaction_proactiveness", base / "proactiveness"),
-                       ("/proc/sys/vm/min_free_kbytes", base / "reserve"), ("/proc/sys/vm/compact_memory", base / "compact"), ("/proc/buddyinfo", base / "buddyinfo")):
+                       ("/proc/sys/vm/min_free_kbytes", base / "reserve"), ("/proc/sys/vm/compact_memory", base / "compact")):
         assert text.count(real) == 1, real
         text = text.replace(real, str(fake))
     helper = base / "sparkpipe-compact"
@@ -263,14 +263,12 @@ class StaticFilesTest(unittest.TestCase):
             helper = compaction_helper(base)
             (base / "proactiveness").write_text("20\n")
             (base / "reserve").write_text("45056\n")
-            (base / "buddyinfo").write_text("Node 0, zone   Normal  10 10 10 10 10 10 10 10 10 100 4\n")
             run = lambda verb: subprocess.run([str(helper), verb], capture_output=True, text=True)
             started = time.monotonic()
             raised = run("raise")
             self.assertEqual(raised.returncode, 0)
-            self.assertGreaterEqual(time.monotonic() - started, 2.5)
-            self.assertLess(time.monotonic() - started, 25.0)
-            self.assertIn("sparkpipe-compact: raised;", raised.stdout)
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertEqual(raised.stdout, "sparkpipe-compact: raised\n")
             self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip(), (base / "compact").read_text().strip()),
                              ("90", "1048576", "1"))
             self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
