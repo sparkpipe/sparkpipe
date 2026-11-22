@@ -1593,6 +1593,16 @@ NVRM_FLAVOUR_GOALS += nvrm-memory-bandwidth
 .PHONY: nvrm-memory-bandwidth
 nvrm-memory-bandwidth: build/nvrm_memory_bandwidth
 
+build/device_transfers_nvrm: tools/device_transfers.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-device-transfers
+.PHONY: nvrm-device-transfers
+nvrm-device-transfers: build/device_transfers_nvrm
+
+build/device_transfers_cuda: tools/device_transfers.c $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP device_transfers_cuda (no CUDA device library)"; fi
+
 build/cuda_memory_bandwidth: tools/cuda_memory_bandwidth.cu tests/nvrm/fixture_kernels.cu tests/nvrm/fixture_kernels.h | build
 	@if command -v $(NVCC) > /dev/null; then $(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@; else echo "SKIP cuda_memory_bandwidth (no CUDA toolkit)"; fi
 
@@ -1818,7 +1828,7 @@ nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_
 		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
 		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps build/test_nvrm_large_transfers
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present
