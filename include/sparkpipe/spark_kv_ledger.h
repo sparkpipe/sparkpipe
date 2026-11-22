@@ -14,6 +14,7 @@ extern "C" {
 #define SPARK_KV_LEDGER_SLOTS 128u
 #define SPARK_KV_LEDGER_DIRECTORY_BYTES 512u
 #define SPARK_KV_LEDGER_NAME ".sparkpipe-kv-ledger"
+#define SPARK_KV_NODE_ROOT_VARIABLE "SPARK_KV_NODE_ROOT"
 #define SPARK_KV_NODE_QUOTA_BYTES UINT64_C(500000000000)
 #define SPARK_KV_LEDGER_KIND_SNAPSHOT 1u
 #define SPARK_KV_LEDGER_KIND_BACKING 2u
@@ -73,6 +74,7 @@ typedef struct SparkKvLedgerVictim
 
 typedef uint64_t (*SparkKvLedgerEvictOwn)(void *context,uint64_t older_than_seconds);
 
+SparkStatus SparkKvNodeRoot(char *path,uint32_t capacity);
 SparkStatus SparkKvLedgerDefaultPath(char *path,uint32_t capacity);
 SparkStatus SparkKvLedgerOpen(SparkKvLedger *ledger,const char *path,uint64_t quota_bytes);
 void SparkKvLedgerClose(SparkKvLedger *ledger);

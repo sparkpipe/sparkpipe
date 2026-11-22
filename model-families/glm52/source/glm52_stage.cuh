@@ -918,18 +918,20 @@ static int32_t GlmExpertsGateUp(const GlmBuffers *b, uint32_t rows, uint32_t pac
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
 			b->route_source_token, S::kExperts, packed_rows, S::kHidden, b->expert_w1_rows, sms, stream);
-		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ? LM_LAUNCH_ERR_LAUNCH : status;
+		return status != LM_LAUNCH_OK ? status : GlmLaunched();
 	}
-	status = rows == 1u ? LmSkinnyExperts<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
-		b->route_packed_row, packed_rows, S::kTopK, 0u, S::kHidden, b->expert_w1_rows, stream) : LM_LAUNCH_ERR_SHAPE;
-	if ( status == LM_LAUNCH_ERR_SHAPE )
+	if ( rows == 1u )
+		status = LmSkinnyExperts<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
+			b->route_packed_row, packed_rows, S::kTopK, 0u, S::kHidden, b->expert_w1_rows, stream);
+	else
 		status = LmSkinnyGroupedExperts<Format>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
 			b->route_source_token, S::kExperts, packed_rows, 0u, S::kHidden, b->expert_w1_rows, stream);
-	if ( status != LM_LAUNCH_ERR_SHAPE )
-		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
-	LM_LAUNCH_REFUSE("%s experts: the skinny kernels refused w1 for %u rows (%u routed pairs over %u experts, %u x %u); below %u rows the waves run "
-		"on them, so the expert weights need 16-byte alignment, an input that is a multiple of the codec's elements and scales that cover every expert\n",
-		S::Tag(), rows, packed_rows, S::kExperts, b->expert_w1_rows, S::kHidden, GLM_STREAM_EXPERT_ROWS);
+	if ( status == LM_LAUNCH_ERR_SHAPE )
+		LM_LAUNCH_REFUSE("%s experts: the %s skinny kernel refused w1 for %u rows (%u routed pairs over %u experts, %u x %u); one-row waves run on the "
+			"per-pair kernel and other waves below %u rows on the grouped one, so the expert weights need 16-byte alignment, an input that is a multiple "
+			"of the codec's elements and scales that cover every expert\n", S::Tag(), rows == 1u ? "per-pair" : "grouped", rows, packed_rows, S::kExperts,
+			b->expert_w1_rows, S::kHidden, GLM_STREAM_EXPERT_ROWS);
+	return status != LM_LAUNCH_OK ? status : GlmLaunched();
 }
 
 template<class S>
@@ -948,18 +950,21 @@ static int32_t GlmExpertsDown(const GlmBuffers *b, uint32_t rows, uint32_t packe
 	{
 		status = LmStreamGemmGrouped<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset, 0,
 			S::kExperts, packed_rows, b->expert_intermediate, S::kHidden, sms, stream);
-		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS ? LM_LAUNCH_ERR_LAUNCH : status;
+		return status != LM_LAUNCH_OK ? status : GlmLaunched();
 	}
-	status = LmSkinnyExperts<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert, b->route_packed_row,
-		packed_rows, S::kTopK, 1u, b->expert_intermediate, S::kHidden, stream);
-	if ( status == LM_LAUNCH_ERR_SHAPE )
+	const uint32_t pairwise = LmSkinnyExpertPairsFit(packed_rows, S::kTopK);
+	if ( pairwise != 0u )
+		status = LmSkinnyExperts<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert, b->route_packed_row,
+			packed_rows, S::kTopK, 1u, b->expert_intermediate, S::kHidden, stream);
+	else
 		status = LmSkinnyGroupedExperts<Format>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->group_row_offset,
 			b->route_source_token, S::kExperts, packed_rows, 1u, b->expert_intermediate, S::kHidden, stream);
-	if ( status != LM_LAUNCH_ERR_SHAPE )
-		return status == LM_LAUNCH_OK && SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : status == LM_LAUNCH_OK ? LM_LAUNCH_ERR_LAUNCH : status;
-	LM_LAUNCH_REFUSE("%s experts: the skinny kernels refused w2 for %u rows (%u routed pairs over %u experts, %u x %u); below %u rows the waves run "
-		"on them, so the expert weights need 16-byte alignment, an input that is a multiple of the codec's elements and scales that cover every expert\n",
-		S::Tag(), rows, packed_rows, S::kExperts, S::kHidden, b->expert_intermediate, GLM_STREAM_EXPERT_ROWS);
+	if ( status == LM_LAUNCH_ERR_SHAPE )
+		LM_LAUNCH_REFUSE("%s experts: the %s skinny kernel refused w2 for %u rows (%u routed pairs over %u experts, %u x %u); waves of up to %u rows "
+			"run on the per-pair kernel and larger ones below %u rows on the grouped one, so the expert weights need 16-byte alignment, an input "
+			"that is a multiple of the codec's elements and scales that cover every expert\n", S::Tag(), pairwise != 0u ? "per-pair" : "grouped", rows,
+			packed_rows, S::kExperts, S::kHidden, b->expert_intermediate, LM_SKINNY_ROWS, GLM_STREAM_EXPERT_ROWS);
+	return status != LM_LAUNCH_OK ? status : GlmLaunched();
 }
 
 template<class S>
