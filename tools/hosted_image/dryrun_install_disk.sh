@@ -124,6 +124,61 @@ chmod 600 "$seed/var/lib/tailscale/tailscaled.state" "$seed/var/lib/tailscale/de
 chmod 700 "$seed/var/lib/tailscale" "$seed/var/lib/tailscale/files"
 (cd "$seed/var/lib/tailscale" && find . -printf '%P %U:%G %m %s\n' | sort && find . -type f -exec sha256sum {} + | sort) > "$dir/tailscale-seed.list"
 chown -R 1000:1000 "$seed/opt/vendor"
+fsid=cd8715a1-0000-4000-8000-000000000001
+units="$seed/etc/systemd/system"
+mkdir -p "$seed"/etc/{ceph,ds4-uplink,logrotate.d,netplan,sudoers.d,sysctl.d} "$seed/var/lib/ceph/$fsid/osd.3" "$seed/var/log/ceph/$fsid" \
+	"$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin" "$seed/usr/local/sbin" "$units/ceph-$fsid@.service.d" "$units/ceph-$fsid.target.wants" \
+	"$units/ceph.target.wants" "$units/multi-user.target.wants" "$units/timers.target.wants" "$seed/home/sparkemerg/.ssh"
+printf 'root:x:0:0:root:/root:/bin/bash\nceph:x:64045:64045:Ceph storage service:/var/lib/ceph:/usr/sbin/nologin\nsparkemerg:x:1001:1002::/home/sparkemerg:/bin/bash\n' > "$seed/etc/passwd"
+printf 'root:!:20000:0:99999:7:::\nceph:!:20000::::::\nsparkemerg:$6$dryrun$hash:20000:0:99999:7:::\n' > "$seed/etc/shadow"
+printf 'root:x:0:\nceph:x:64045:\nsparkemerg:x:1002:\n' > "$seed/etc/group"
+printf 'root:*::\nceph:!::\nsparkemerg:!::\n' > "$seed/etc/gshadow"
+chmod 640 "$seed/etc/shadow" "$seed/etc/gshadow"
+printf '[global]\nfsid = %s\n' "$fsid" > "$seed/etc/ceph/ceph.conf"
+echo dryrun-client-secret > "$seed/etc/ceph/ds4warm.secret"
+chmod 600 "$seed/etc/ceph/ds4warm.secret"
+echo dryrun-keyring > "$seed/var/lib/ceph/$fsid/osd.3/keyring"
+echo '/usr/bin/podman run dryrun' > "$seed/var/lib/ceph/$fsid/osd.3/unit.run"
+echo osd-log > "$seed/var/log/ceph/$fsid/ceph-osd.3.log"
+chown -R 167:167 "$seed/var/lib/ceph/$fsid" "$seed/var/log/ceph/$fsid"
+chmod 700 "$seed/var/lib/ceph/$fsid" "$seed/var/lib/ceph/$fsid/osd.3"
+chown 64045:64045 "$seed/var/lib/ceph" "$seed/var/log/ceph"
+echo dryrun-layer > "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/ceph-osd"
+mknod "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/removed" c 0 0
+mkdir -p "$seed/var/lib/containers/storage/overlay-containers/c0/userdata"
+mkfifo "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/ctl"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/attach"
+printf '[Unit]\nDescription=Ceph %%i for %s\n' "$fsid" > "$units/ceph-$fsid@.service"
+printf '[Unit]\nRequires=ds4-extnvme-link.service\n' > "$units/ceph-$fsid@.service.d/30-ds4-extnvme-link.conf"
+printf '[Unit]\nDescription=Ceph cluster %s\n' "$fsid" > "$units/ceph-$fsid.target"
+printf '[Unit]\nDescription=All Ceph clusters and services\n' > "$units/ceph.target"
+mkdir -p "$seed/usr/lib/systemd/system"
+printf '[Unit]\nDescription=Multi-User System\n' > "$seed/usr/lib/systemd/system/multi-user.target"
+printf '[Unit]\nDescription=Timer Units\n' > "$seed/usr/lib/systemd/system/timers.target"
+systemctl --root="$seed" add-wants "ceph-$fsid.target" "ceph-$fsid@osd.3.service" > /dev/null
+systemctl --root="$seed" add-wants ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" add-wants multi-user.target ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" mask ceph-crash.service > /dev/null
+printf '[Service]\nExecStart=/usr/local/sbin/ds4-extnvme-link\n' > "$units/ds4-extnvme-link.service"
+printf '[Service]\nExecStart=/usr/local/sbin/ds4_spark_uplink.py monitor\n' > "$units/ds4-uplink-monitor.service"
+printf '[Timer]\nOnUnitActiveSec=15s\n' > "$units/ds4-uplink-monitor.timer"
+systemctl --root="$seed" add-wants timers.target ds4-uplink-monitor.timer > /dev/null
+printf '#!/bin/sh\nexit 0\n' > "$seed/usr/local/sbin/ds4-extnvme-link"
+printf '#!/usr/bin/env python3\n' > "$seed/usr/local/sbin/ds4_spark_uplink.py"
+chmod 755 "$seed/usr/local/sbin/ds4-extnvme-link" "$seed/usr/local/sbin/ds4_spark_uplink.py"
+echo '{"networks": ["dryrun"]}' > "$seed/etc/ds4-uplink/config.json"
+chmod 600 "$seed/etc/ds4-uplink/config.json"
+printf 'network:\n  version: 2\n' > "$seed/etc/netplan/90-NM-00000000-0000-4000-8000-000000000002.yaml"
+chmod 600 "$seed/etc/netplan/90-NM-00000000-0000-4000-8000-000000000002.yaml"
+echo 'vm.max_map_count = 262144' > "$seed/etc/sysctl.d/90-ceph-$fsid-osd.conf"
+printf '127.0.0.1 localhost\n10.10.100.3 node node-fabric\n' > "$seed/etc/hosts"
+echo "/var/log/ceph/$fsid/*.log {}" > "$seed/etc/logrotate.d/ceph-$fsid"
+echo 'sparkemerg ALL=(ALL) NOPASSWD: ALL' > "$seed/etc/sudoers.d/91-sparkemerg-emergency"
+chmod 440 "$seed/etc/sudoers.d/91-sparkemerg-emergency"
+echo "ssh-ed25519 AAAAdryrun emergency" > "$seed/home/sparkemerg/.ssh/authorized_keys"
+chown -R 1001:1002 "$seed/home/sparkemerg"
+(cd "$seed" && shopt -s nullglob && while IFS= read -r pattern; do for match in $pattern; do if [ -e "$match" ] || [ -L "$match" ]; then printf '%s\n' "$match"; fi; done; done < "$here/carry-fleet.txt") > "$dir/carried.list"
+[ "$(wc -l < "$dir/carried.list")" -ge 20 ] || fail "the carry list matches only $(wc -l < "$dir/carried.list") seeded paths"
 head -c 256M /dev/urandom > "$seed/home/node/sparkdata/packs/pack.bin"
 echo "ssh-ed25519 AAAAdryrun user" > "$seed/home/node/.ssh/authorized_keys"
 build="$dir/build-elf"
@@ -175,9 +230,10 @@ pass "fake identity bundle with $(find "$files" -type f | wc -l) files"
 
 install_run() {
 	local name="$1" expect="$2" path="$3" message="${4:-}" status
-	echo "dryrun: == $name: install_disk.sh, expecting exit $expect"
+	local -a extra=("${@:5}")
+	echo "dryrun: == $name: install_disk.sh ${extra[*]}, expecting exit $expect"
 	set +e
-	PATH="$path" bash "$installer" --disk "$loop" --image "$image" --identity "$bundle" --work "$dir/work-$name" 2>&1 | tee "$dir/install-$name.log"
+	PATH="$path" bash "$installer" --disk "$loop" --image "$image" --identity "$bundle" --work "$dir/work-$name" "${extra[@]}" 2>&1 | tee "$dir/install-$name.log"
 	status="${PIPESTATUS[0]}"
 	set -e
 	[ "$status" = "$expect" ] || fail "$name exited $status, expected $expect"
@@ -225,6 +281,22 @@ verify_install() {
 		grep -q "the previous root has no /var/lib/tailscale" "$dir/install-$name.log" || fail "$name did not report that the previous root had no Tailscale state"
 		pass "no Tailscale state in the previous root and none in the installed root"
 	fi
+	if [ "$name" = first ]; then
+		while IFS= read -r path; do
+			[ "$(cd "$aside/root" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" = \
+				"$(cd "$check" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" ] || fail "/$path was not carried exactly"
+			grep -qx "install_disk: carried /$path from the previous root" "$dir/install-$name.log" || fail "$name did not report carrying /$path"
+		done < "$dir/carried.list"
+		for file in passwd shadow group gshadow; do
+			[ "$(grep '^sparkemerg:' "$check/etc/$file")" = "$(grep '^sparkemerg:' "$aside/root/etc/$file")" ] || fail "the sparkemerg line of /etc/$file was not carried"
+		done
+		grep -q "carried the account sparkemerg (uid 1001, gid 1002)" "$dir/install-$name.log" || fail "$name did not report the carried account"
+		pass "carried $(wc -l < "$dir/carried.list") node paths (Ceph state and units, the private link and uplink tools, host keys, profiles) and the sparkemerg account exactly"
+	else
+		[ ! -e "$check/etc/ceph/ds4warm.secret" ] && [ ! -e "$check/var/lib/ceph/$fsid" ] && ! grep -q '^sparkemerg:' "$check/etc/passwd" || fail "$name carried node state without a carry list"
+		! grep -q "carried /" "$dir/install-$name.log" || fail "$name reported carried paths without a carry list"
+		pass "without a carry list nothing but the Tailscale state comes from the previous root"
+	fi
 	[ "$(awk '($1 == "LABEL=SPARKROOT" && $2 == "/") || ($1 == "LABEL=SPARKESP" && $2 == "/boot/efi")' "$check/etc/fstab" | wc -l)" = 2 ] || fail "fstab does not name SPARKROOT on / and SPARKESP on /boot/efi"
 	[ -z "$(foreign_owner "$check" "$dir/accounts" \( -path "$check/home" -o -path "$aside" \) -prune -o)" ] || fail "a path outside /home belongs to a uid or gid >= 1000 that the image does not define"
 	[ "$check/boot/initrd.img-$KERNEL_RELEASE" -nt "$dir/start" ] || fail "the initramfs was not rebuilt"
@@ -255,7 +327,7 @@ verify_install() {
 }
 
 install_run no-entry 1 "$PATH" "no active firmware boot entry"
-install_run first 0 "$firmware:$PATH"
+install_run first 0 "$firmware:$PATH" "" --carry "$here/carry-fleet.txt" --carry-accounts sparkemerg
 grep -q "booted by the unchanged firmware entry BootFFFE" "$dir/install-first.log" || fail "the install did not name BootFFFE as the entry that boots it"
 verify_install first carried
 
