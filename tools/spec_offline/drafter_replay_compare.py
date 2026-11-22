@@ -239,6 +239,9 @@ def main():
           f" Python draft {1e3 * np.median(replay.draft_seconds) if replay.draft_seconds else 0.0:.2f} ms median"
           f" ({'DsparkFast, CUDA graphs' if options.dspark else 'eager, without CUDA graphs'})")
     if drafted:
+        paired = np.asarray(module_accepted, dtype=np.float64) - np.asarray(python_accepted, dtype=np.float64)
+        print(f"accepted tokens: module {int(np.sum(module_accepted))} python {int(np.sum(python_accepted))}; paired difference {int(np.sum(paired)):+d}"
+              f" over {len(paired)} requests, standard error {float(np.std(paired, ddof=1) * np.sqrt(len(paired))) if len(paired) > 1 else 0.0:.1f}")
         print(f"mean accepted length against the recording: module {np.mean(module_accepted):.4f} python {np.mean(python_accepted):.4f};"
               f" accepted length distribution module {np.bincount(module_accepted, minlength=drafter.block + 1).tolist()}"
               f" python {np.bincount(python_accepted, minlength=drafter.block + 1).tolist()}")
