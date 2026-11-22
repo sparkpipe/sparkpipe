@@ -1041,9 +1041,10 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	const SparkStageRunnerConfiguration *configuration)
 {
 	const uint64_t rows = configuration->max_input_row_count, hidden = state->geometry.hidden, head_rows = state->head_capacity;
+	const uint64_t input_width = state->geometry.input_width > hidden ? state->geometry.input_width : hidden;
 	SparkStatus status;
 	state->head_tiles = (state->vocab_slice_rows + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE;
-	if ( SparkGpuMalloc(&state->hidden, rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
+	if ( SparkGpuMalloc(&state->hidden, rows * input_width * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_normed, head_rows * hidden * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_maxloc, head_rows * sizeof(uint64_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_candidate_token, head_rows * state->head_tiles * sizeof(*state->head_candidate_token)) != SPARK_GPU_SUCCESS ||
@@ -2214,13 +2215,19 @@ static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampl
 	return (((last_rows != 0u ? 2u : 0u) + (sampled != 0u ? 1u : 0u)) * STAGE_RUNNER_GRAPH_KEYS + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
 }
 
+static uint32_t StageRunnerGraphCollectiveReady(const SparkStageRunnerState *state)
+{
+	if ( state->device_collective_created != 0 )
+		return state->device_collective_deferred != 0u ? 1u : 0u;
+	return state->tp_degree == 1u ? 1u : 0u;
+}
+
 static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
 	uint32_t key, uint32_t rows, uint32_t sequences)
 {
 	const uint32_t shape = (key == 1u && rows == sequences) ||
 		(key == 2u && sequences == 1u && rows > 1u && state->model_interface->graph_key != 0) ? 1u : 0u;
-	return (state->resident != 0u || state->geometry.experts == 0u) && state->device_collective_created != 0 &&
-		state->device_collective_deferred != 0u && runner->owns_embedding != 0u &&
+	return (state->resident != 0u || state->geometry.experts == 0u) && StageRunnerGraphCollectiveReady(state) != 0u && runner->owns_embedding != 0u &&
 		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
 		rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
 }
@@ -2301,7 +2308,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	SparkGpuError error = SPARK_GPU_SUCCESS;
 	size_t nodes = 0u;
 	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, slot);
-	SparkStatus status = prefetch != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_CAPACITY_EXCEEDED;
+	SparkStatus status = prefetch == 0 ? SPARK_STATUS_CAPACITY_EXCEEDED :
+		state->device_collective_created != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK && state->queue != 0 )
 		status = SparkDeviceQueueCapture(state->queue, 1u);
 	if ( status == SPARK_STATUS_OK )
@@ -2318,7 +2326,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS ? 1u : 0u) != SPARK_GPU_SUCCESS && error == SPARK_GPU_SUCCESS )
 			error = SPARK_GPU_ERROR_MEMORY_ALLOCATION;
 	}
-	(void)SparkTpDeviceCollectiveDisarmCapture(&state->device_collective);
+	if ( state->device_collective_created != 0 )
+		(void)SparkTpDeviceCollectiveDisarmCapture(&state->device_collective);
 	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && graph != 0 )
 		error = SparkGpuGraphGetNodes(graph, 0, &nodes);
 	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && graph != 0 )
@@ -2350,8 +2359,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 
 static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, SparkGpuGraphExec exec, SparkGpuStream stream)
 {
-	SparkStatus status = SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream);
-	if ( status == SPARK_STATUS_OK )
+	SparkStatus status = state->device_collective_created != 0 ? SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream) : SPARK_STATUS_OK;
+	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveGraphCancelSeed(&state->device_collective, stream);
 	const uint64_t started = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK && SparkGpuGraphLaunch(exec, stream) != SPARK_GPU_SUCCESS )
@@ -2375,6 +2384,8 @@ static SparkStatus StageRunnerGraphSettle(SparkStageRunnerState *state, SparkGpu
 	if ( state->graph_launched == 0u )
 		return SPARK_STATUS_OK;
 	state->graph_launched = 0u;
+	if ( state->device_collective_created == 0 )
+		return SPARK_STATUS_OK;
 	status = SparkTpDeviceCollectiveGraphSettle(&state->device_collective, stream, &collective_error);
 	if ( status == SPARK_STATUS_OK && collective_error != 0ull )
 		status = SPARK_STATUS_INTERNAL_ERROR;
@@ -2510,9 +2521,10 @@ static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const Sp
 
 static SparkStatus StageRunnerStageInput(SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch, uint32_t rows, SparkGpuStream stream)
 {
-	if ( dispatch->hidden_input_bf16 == 0 )
+	const uint64_t bytes = (uint64_t)rows * (state->geometry.input_width != 0u ? state->geometry.input_width : state->geometry.hidden) * sizeof(uint16_t);
+	if ( dispatch->hidden_input_bf16 == 0 || (dispatch->hidden_input_bytes != 0u && dispatch->hidden_input_bytes < bytes) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( StageRunnerCopy(state->hidden, dispatch->hidden_input_bf16, (uint64_t)rows * state->geometry.hidden * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS )
+	if ( StageRunnerCopy(state->hidden, dispatch->hidden_input_bf16, bytes, stream) != SPARK_GPU_SUCCESS )
 		state->copy_failed = 1u;
 	if ( state->model_interface->sideband == 0 )
 		return dispatch->sideband_input == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
