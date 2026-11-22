@@ -270,6 +270,40 @@ Then it:
 It never deletes anything. Every mount it makes is undone on exit, and
 `/sys/firmware/efi/efivars` is never mounted in the chroot.
 
+#### Carrying a node's own state
+
+A fleet node keeps state that no image may hold: its Ceph daemons, private
+tools and the secrets of its networks. `--carry LIST` carries it from the
+previous root, the same way as the Tailscale state:
+
+- Each line of `LIST` is a path below `/`, with `*` allowed. It never names
+  `home`, `lost+found`, `var/lib/tailscale` or a set-aside directory.
+- Before anything changes, the installer expands the list in the previous
+  root, checks that each match holds only files, directories and links, and
+  that the root has 10 GiB free beyond their size.
+- The extraction leaves the matches out of the image, and the installer
+  copies them from `/.dgxos-<stamp>/root` with their owners, modes and
+  links, compares each copy and names it in its log. They then take the
+  image's place, so nothing of the image's is deleted either.
+- `--carry-accounts NAME,...` carries accounts the same way: each one's
+  `passwd` and `shadow` lines and its primary group, after the bundle's user.
+  A name, uid or group that the installed root already has is refused.
+
+A fleet node's list is [`carry-fleet.txt`](../tools/hosted_image/carry-fleet.txt):
+
+- its Ceph state: `/var/lib/ceph`, `/etc/ceph` with the CephFS client
+  secret, the podman store with the pinned Ceph image, cephadm's units,
+  sysctl and logrotate files, and `/var/log/ceph`;
+- the private external-NVMe link that its OSD's units require, and the
+  private uplink failover tool, with their units and configuration;
+- its NetworkManager profiles in `/etc/netplan/90-NM-*.yaml`;
+- its SSH and initramfs host keys and root's `authorized_keys`;
+- the emergency account's sudo rule.
+
+It takes `--carry-accounts sparkemerg` for the emergency account. The
+private files come only from the node's own previous root, never from the
+repository or a bundle.
+
 Rollback, from the same kind of rescue system: move every top-level entry
 of the installed root except `home`, `lost+found` and `.dgxos-<stamp>` into
 `/.hosted-<stamp>`, move the entries of `/.dgxos-<stamp>/root` back to `/`,
@@ -300,7 +334,10 @@ touches no real disk, uses no GPU, and never writes the host's firmware
 boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
 attaches it as a loop device and partitions it like a node, then seeds:
 
-- a previous system with Tailscale state in `/var/lib/tailscale`;
+- a previous system with Tailscale state in `/var/lib/tailscale`, and a
+  fleet node's state for every line of `carry-fleet.txt` (Ceph state and
+  units, the private tools, profiles, a container layer with a link) and the
+  `sparkemerg` account;
 - `/home/node` with a 256 MiB pack and a release root linked to a stub
   `libcuda.so.1`;
 - an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
@@ -322,6 +359,10 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    - labels, identity, user, groups, modes and `fstab` are as expected;
    - `/var/lib/tailscale` is the previous root's, with the same entries,
      owners, modes and checksums;
+   - with `--carry carry-fleet.txt --carry-accounts sparkemerg`, every
+     carried path is the previous root's (types, owners, modes, sizes, link
+     targets and contents) and the account's `passwd`, `shadow`, `group` and
+     `gshadow` lines are its;
    - nothing outside `/home` belongs to a uid or gid of 1000 or above that
      the image does not define;
    - the initramfs was rebuilt with the dropbear key;
@@ -332,8 +373,9 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    whole old EFI partition;
 4. the installer refusing while `/.hosted-<stamp>` exists;
 5. a second install, after the previous root's Tailscale state is
-   removed, with the same checks, except that the installed root must hold no
-   Tailscale state and the installer must say the node joins at bring-up;
+   removed and with no carry list, with the same checks, except that the
+   installed root must hold no Tailscale state, no carried state and no
+   carried account, and the installer must say the node joins at bring-up;
 6. the acceptance gate: after the set-aside directory is deleted, the
    image audit over the installed root fails on the stub-linked release
    root in `/home`, then passes once that root is removed;
