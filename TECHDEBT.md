@@ -1552,6 +1552,15 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- Fleet agent restart order. `ensure_weightd` in `tools/fleet_node_agent.sh`
+  starts a replacement weightd as soon as it finds none, while the node's
+  residentd may still run. On the nvrm flavour the engine's mesh waits spin
+  until their deadline once weightd is gone, and the new weightd's first
+  GPU work then cannot switch them out: Xid 109
+  ([`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md), compute exclusivity).
+  Fix: when no weightd owns the node and a residentd runs, drain the roots
+  (`drain_root`) and start weightd only after the last residentd exits; add
+  the case to `tests/test_weightd_supervision.py`.
 - nvrm system memory objects of 4 GiB or more in 2 MiB pages, mapped
   through the unified-memory external range, have no GPU mapping for the
   64 KiB at object offset 4 GiB - 64 KiB. A write there takes Xid 31
@@ -1586,6 +1595,33 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   RTX 5090 the copies cost 604 us of host time per ingest call, against 9 us
   on CUDA. Stage without waiting for the queue, for example through a ring
   of staging chunks that the copy engine's semaphore releases.
+- nvrm co-tenancy. Serving on nvrm needs compute exclusivity
+  ([NVRM_BACKEND.md](docs/NVRM_BACKEND.md), "Compute exclusivity while
+  serving"): another process's compute work beside a spinning mesh wait
+  takes Xid 109 and faults the engine. If a GPU must ever be shared while
+  serving, bound the SM waits and continue long ones on the host:
+  - Every SM wait on a cross-device flag in `spark_tp_mesh_kernels.cuh`
+    spins for at most 100 ms, so a context switch waits at most about
+    100 ms plus a kernel tail.
+  - A host semaphore acquire takes its payload from the push segment, and
+    programs replay their segments, while the tags change every round. So
+    each program gets one wait counter: a host release at its head resets
+    it to 0, and wait site i is followed by an acquire of counter >= i
+    (`ACQ_CIRC_GEQ`, `ACQUIRE_SWITCH_TSG_EN`, so the channel group yields
+    while it waits). On the fast path the wait does `atomicMax(counter,i)`
+    when its data is there.
+  - A wait that reaches the bound writes its site and tag into a
+    host-visible ring, leaves the error word clear and exits. A watcher
+    thread in residentd polls the same tails from the CPU and raises the
+    counter when they land. The deadline of seconds moves to the watcher,
+    which raises the same mesh fault, and a cancel raises the counter so
+    the guard kernels poison as today.
+  - Cost: each wait site becomes a chain head instead of a latched
+    dependent boundary, about 2.1-3.5 us against 0.5-0.6 us
+    (`make SPARKPIPE_DEVICE=nvrm nvrm-step-chain`, 2026-11-22), or 2-3 us a
+    wait site a step. A four-node DSV4.1 step has low hundreds of them, so
+    the fast path would lose most of the 1% speed budget; exclusivity
+    costs nothing.
 - Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
   and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
   backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
