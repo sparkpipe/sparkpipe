@@ -1346,8 +1346,10 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 - The hub's drafters still run in Python (`tools/block_draftd.py`), one
   process per lane. `build/sparkpipe_draftd` is the C replacement: one
   process per GPU, DFT3 and tap stream in C. It serves only the host replay
-  drafter so far. The engine drafters (DFlash2 for K3, the Qwen3.8-27B
-  pair, the K3.1 Pro and DSV4.1 DSparks) and weightd on the hub come next.
+  drafter so far. The engine drafters (the K3.1 Pro and DSV4.1 DSparks and
+  the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
+  weightd on the hub come next; K3's DFlash2 drafter retires with its lane
+  (#1910).
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,

@@ -172,6 +172,35 @@ batched decode, greedy or keyed sampling) that records these tap streams on a
 GB10 and writes the `--target-shard` (embed, head, final norm with its 1 + w
 folded in).
 
+## Drafter packs
+
+`tools/drafter_pack.py` cuts a drafter and the target tensors it reads into one
+named pack (`tools/spark_named_pack.py`, magic `DRPK`) for the engine drafters
+that replace `block_draftd.py`:
+
+```sh
+python3 tools/drafter_pack.py --drafter k31dspark \
+    --checkpoint /srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro-dspark-preview-6a2ef20a05ef \
+    --target /srv/workspace/sparkpipe/drafter-weights/kimi-k3.1-pro/model-00094-of-000096.safetensors \
+    --revision 6a2ef20a05ef --out DIR
+```
+
+- **Drafters:** `k31dspark` (Kimi K3.1 Pro's DSpark), `dsv41dspark` (DeepSeek
+  V4.1 1017's DSpark, whose target tensors are in its own files, so no
+  `--target`) and `qwen27bdspine` (Qwen3.8-27B's DSpine b16).
+- **Contents:** every drafter tensor byte for byte under its checkpoint name,
+  with its dtype as the kind (`bf16`, `f32`, `fp8`, `e8m0`, and `mxfp4_e2m1`
+  for the DSpark's packed experts), and the target's embedding, head and final
+  norm as `target.embed`, `target.head` and `target.norm`. Integer version
+  scalars (the DSpine's) go into the pack's config.
+- **Refusals:** a tensor that no rule packs or leaves out by name, a layer past
+  the config's count, a dtype the drafter does not pack, a missing target tensor,
+  a drafter tensor that the checkpoint's `model.safetensors.index.json` places
+  in a file that is not there (a partial download holds only the drafter's
+  files), and a source whose `.sha256` sidecar or `--expect-sha256` disagrees.
+- **Receipt:** `<pack>.sha256` and `<pack>.receipt.json`, which names every
+  source with its sha256, the left-out tensors and the scalars.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane
