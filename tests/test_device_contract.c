@@ -514,6 +514,65 @@ typedef struct ContractParams
 	uint32_t seed;
 } ContractParams;
 
+static void TestHostMemoryShare(void)
+{
+	const SparkDeviceProperties *properties = SparkDeviceGetProperties();
+	SparkDeviceMemoryHandle host = 0u, imported = 0u, device = 0u;
+	SparkDeviceAddress filled = 0u, mapped = 0u, refused = 0u;
+	SparkDeviceBuffer view, readback;
+	char expected[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	uint64_t granularity = 0u;
+	uint8_t *pattern;
+	int fd = -1;
+	if ( (properties->properties & SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE) == 0u )
+	{
+		snprintf(expected,sizeof(expected),"the %s backend has no exportable host memory",properties->backend);
+		CHECK(SparkDeviceMemoryCreateHost(&host,UINT64_C(1) << 21,"contract host share") == SPARK_STATUS_UNSUPPORTED && host == 0u &&
+			strcmp(SparkDeviceLastError()->text,expected) == 0,"without the property, host memory is refused and the refusal names the backend");
+		CHECK(SparkDeviceMemoryMap(UINT64_C(1) << 21,UINT64_C(1) << 21,9u,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ) ==
+			SPARK_STATUS_INVALID_ARGUMENT && strcmp(SparkDeviceLastError()->text,"host access maps only host memory") == 0,
+			"without the property, host access in a mapping is an invalid argument");
+		return;
+	}
+	CHECK(SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) == SPARK_STATUS_OK && granularity != 0u,"granularity");
+	pattern = malloc((size_t)granularity);
+	CHECK(pattern != 0,"pattern buffer");
+	if ( pattern == 0 )
+		return;
+	Pattern(pattern,granularity,11u);
+	CHECK(SparkDeviceMemoryCreateHost(&host,granularity + 1u,"contract host share") == SPARK_STATUS_INVALID_ARGUMENT,"host memory comes in whole granules");
+	CHECK(SparkDeviceMemoryCreateHost(&host,granularity,"contract host share") == SPARK_STATUS_OK && host != 0u,"create host memory");
+	CHECK(SparkDeviceAddressReserve(&filled,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range to fill it");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_HOST_WRITE) == SPARK_STATUS_INVALID_ARGUMENT &&
+		strcmp(SparkDeviceLastError()->text,"host write access needs host read access") == 0,"host write needs host read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_DEVICE_WRITE) == SPARK_STATUS_INVALID_ARGUMENT,"device write needs device read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,0u) == SPARK_STATUS_INVALID_ARGUMENT,"a mapping grants a read");
+	CHECK(SparkDeviceMemoryMap(filled,granularity,host,0u,SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE) == SPARK_STATUS_OK,
+		"map host memory for the CPU alone");
+	memcpy((void *)(uintptr_t)filled,pattern,(size_t)granularity);
+	CHECK(SparkDeviceMemoryExport(host,&fd) == SPARK_STATUS_OK && fd >= 0,"export host memory");
+	CHECK(SparkDeviceMemoryImport(&imported,fd,"contract host share") == SPARK_STATUS_OK && imported != 0u,"import host memory");
+	if ( fd >= 0 )
+		(void)close(fd);
+	CHECK(SparkDeviceAddressReserve(&mapped,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range for the import");
+	CHECK(SparkDeviceMemoryMap(mapped,granularity,imported,0u,SPARK_DEVICE_ACCESS_DEVICE_READ) == SPARK_STATUS_OK,"map the import device-read-only");
+	CHECK(SparkDeviceAdopt(&view,mapped,0,granularity,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"contract host share view") == SPARK_STATUS_OK,"adopt the device view");
+	CHECK(SparkDeviceAllocate(&readback,SPARK_DEVICE_SPACE_HOST_PINNED,granularity,"contract host share readback") == SPARK_STATUS_OK,"readback buffer");
+	CHECK(SparkDeviceCopySync(At(&readback,0u),At(&view,0u),granularity) == SPARK_STATUS_OK && memcmp(readback.host,pattern,(size_t)granularity) == 0,
+		"the device reads through the import what the holder wrote");
+	CHECK(SparkDeviceFree(&readback) == SPARK_STATUS_OK && SparkDeviceFree(&view) == SPARK_STATUS_OK,"free the readback and the view");
+	CHECK(SparkDeviceMemoryCreate(&device,granularity,"contract host share device") == SPARK_STATUS_OK,"create device memory");
+	CHECK(SparkDeviceAddressReserve(&refused,granularity,"contract host share") == SPARK_STATUS_OK,"reserve a range for device memory");
+	CHECK(SparkDeviceMemoryMap(refused,granularity,device,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ) == SPARK_STATUS_INVALID_ARGUMENT &&
+		strcmp(SparkDeviceLastError()->text,"host access maps only host memory") == 0,"host access to device memory is refused");
+	CHECK(SparkDeviceMemoryUnmap(mapped,granularity) == SPARK_STATUS_OK && SparkDeviceMemoryUnmap(filled,granularity) == SPARK_STATUS_OK,"unmap");
+	CHECK(SparkDeviceAddressRelease(mapped,granularity) == SPARK_STATUS_OK && SparkDeviceAddressRelease(filled,granularity) == SPARK_STATUS_OK &&
+		SparkDeviceAddressRelease(refused,granularity) == SPARK_STATUS_OK,"release the ranges");
+	CHECK(SparkDeviceMemoryRelease(imported) == SPARK_STATUS_OK && SparkDeviceMemoryRelease(host) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryRelease(device) == SPARK_STATUS_OK,"release the memory");
+	free(pattern);
+}
+
 static SparkDeviceLaunch Launch1d(uint32_t count, uint32_t width, const ContractParams *params, const SparkDeviceBinding *bindings, uint32_t binding_count)
 {
 	SparkDeviceLaunch launch;
@@ -1290,6 +1349,7 @@ int main(void)
 	TestFileAndRegister(queue);
 	TestTransforms();
 	TestPrograms(queue);
+	TestHostMemoryShare();
 	TestKernels(queue);
 	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"destroy the queue");
 	TestLifecycle();

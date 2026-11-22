@@ -3,6 +3,7 @@
 #include "inference/kernels/fused/arrival.cuh"
 #include "inference/kernels/fused/collapse_norm.cuh"
 #include "inference/kernels/hc.cuh"
+#include "inference/kernels/topk_warp.cuh"
 #include "runtime/launch.h"
 
 #define D41FusedMixNormRows 16u
@@ -97,5 +98,52 @@ static inline int32_t D41FusedOutputLaunch(const D41FusedOutputArguments *argume
 	if ( arguments == 0 || rows == 0u || rows > D41FusedOutputRows )
 		return LM_LAUNCH_ERR_SHAPE;
 	LM_LAUNCH((D41FusedOutputKernel), rows * ((D41_LOCAL_HEADS) + (1u)), 256u, 32u * sizeof(float) + D41K_LATENT * sizeof(uint16_t), stream, *arguments, rows);
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}
+
+#define D41FusedRouteRows 16u
+
+typedef struct D41FusedRouteArguments
+{
+	const float *scores;
+	const float *bias;
+	const uint8_t *group;
+	uint32_t *route_expert;
+	float *route_weight;
+	uint32_t *route_global;
+	uint32_t *group_row_offset;
+	uint32_t *route_packed_row;
+	uint32_t *route_source_token;
+	uint32_t *tile_prefix_up;
+	uint32_t *tile_prefix_down;
+	float *packed_weight;
+	uint32_t *fault;
+	uint32_t *counters;
+	uint32_t tile_m;
+	uint32_t neuron_tiles_up;
+	uint32_t neuron_tiles_down;
+} D41FusedRouteArguments;
+
+__global__ __launch_bounds__(256) void D41FusedRouteKernel(const __grid_constant__ D41FusedRouteArguments arguments, uint32_t rows)
+{
+	extern __shared__ float D41FusedRouteKernelShared[];
+	uint32_t block = blockIdx.x;
+	if ( block < rows * (1u) )
+	{
+		const uint32_t row = block / (1u);
+		LmTopkWarpsRow<D41_TOPK, true, LM_TOPK_SCORE_SQRT_SOFTPLUS>(arguments.scores, D41_EXPERTS, arguments.route_expert, arguments.route_weight, arguments.bias, (const uint16_t *)0, D41_ROUTE_SCALE, arguments.fault, row);
+		if ( LmFusedLastArrival(arguments.counters, rows * (1u)) )
+			D41RouteTail<256u, D41_LOCAL_EXPERTS + 1u>(arguments.route_expert, arguments.route_weight, arguments.route_global, rows * D41_TOPK, arguments.group, D41_LOCAL_EXPERTS, D41_EXPERTS, D41_TOPK, arguments.group_row_offset, arguments.route_packed_row, arguments.route_source_token, arguments.tile_m, arguments.neuron_tiles_up, arguments.tile_prefix_up, arguments.neuron_tiles_down, arguments.tile_prefix_down, arguments.packed_weight);
+		return;
+	}
+}
+
+static inline int32_t D41FusedRouteLaunch(const D41FusedRouteArguments *arguments, uint32_t rows, SparkGpuStream stream)
+{
+	if ( arguments == 0 || rows == 0u || rows > D41FusedRouteRows )
+		return LM_LAUNCH_ERR_SHAPE;
+	D41FusedRouteArguments launch = *arguments;
+	launch.tile_m = (uint32_t)(LmLaunchGroupedTileM(rows, D41_TOPK, D41_LOCAL_EXPERTS + 1u));
+	LM_LAUNCH((D41FusedRouteKernel), rows * ((1u)), 256u, 0u, stream, launch, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }

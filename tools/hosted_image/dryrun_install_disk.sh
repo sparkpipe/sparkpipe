@@ -26,7 +26,8 @@ done
 [ -n "$image" ] && [ -n "$dir" ] || usage
 installer="$here/install_disk.sh"
 audit="$src/tools/hosted_dependency_audit.py"
-[ -f "$installer" ] && [ -f "$audit" ] && [ -f "$here/pins.conf" ] || fail "$src lacks the installer, pins or audit"
+[ -f "$installer" ] && [ -f "$audit" ] && [ -f "$here/pins.conf" ] && [ -f "$here/owners.sh" ] || fail "$src lacks the installer, pins, ownership rule or audit"
+. "$here/owners.sh"
 [ "$(id -u)" -eq 0 ] || fail "run as root"
 [ -e /dev/loop-control ] || fail "this host has no loop device support (/dev/loop-control)"
 for tool in sgdisk losetup udevadm mkfs.vfat mkfs.ext4 e2label fatlabel blkid lsblk findmnt gcc ssh-keygen dropbearkey lsinitramfs efibootmgr python3 zstd; do
@@ -42,6 +43,8 @@ mkdir -p "$dir"
 dir="$(realpath "$dir")"
 exec > >(tee -a "$dir/dryrun.log") 2>&1
 echo "dryrun: start $(date -u +%FT%TZ) src=$src image=$image installer_sha=$(sha256sum "$installer" | cut -c1-16)"
+mkdir -p "$dir/accounts"
+tar --zstd -xf "$image/rootfs.tar.zst" -C "$dir/accounts" ./etc/passwd ./etc/group || fail "the image has no /etc/passwd and /etc/group"
 
 loop=""
 mounts=()
@@ -223,7 +226,7 @@ verify_install() {
 		pass "no Tailscale state in the previous root and none in the installed root"
 	fi
 	[ "$(awk '($1 == "LABEL=SPARKROOT" && $2 == "/") || ($1 == "LABEL=SPARKESP" && $2 == "/boot/efi")' "$check/etc/fstab" | wc -l)" = 2 ] || fail "fstab does not name SPARKROOT on / and SPARKESP on /boot/efi"
-	[ -z "$(find "$check" -xdev \( -path "$check/home" -o -path "$aside" \) -prune -o \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)" ] || fail "a path outside /home has uid or gid >= 1000"
+	[ -z "$(foreign_owner "$check" "$dir/accounts" \( -path "$check/home" -o -path "$aside" \) -prune -o)" ] || fail "a path outside /home belongs to a uid or gid >= 1000 that the image does not define"
 	[ "$check/boot/initrd.img-$KERNEL_RELEASE" -nt "$dir/start" ] || fail "the initramfs was not rebuilt"
 	lsinitramfs "$check/boot/initrd.img-$KERNEL_RELEASE" > "$dir/initramfs-$name.list"
 	grep -qx 'etc/dropbear/dropbear_ed25519_host_key' "$dir/initramfs-$name.list" || fail "the initramfs has no dropbear ed25519 host key"
