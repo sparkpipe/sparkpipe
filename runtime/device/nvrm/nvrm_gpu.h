@@ -211,6 +211,7 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
+uint32_t SparkNvrmWriteBackPageBytes(uint64_t bytes);
 int SparkNvrmModuleZeroesMemory(const char *parameters_path);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner);
 uint32_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes, uint64_t *blocks);

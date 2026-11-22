@@ -7,6 +7,10 @@
 #include "sparkpipe/spark_device.h"
 
 #define LARGE_MARGIN_BYTES (8ull << 30)
+#define BOUNDARY_BYTES (9ull << 30)
+#define BOUNDARY_WINDOW_BYTES (64ull << 10)
+#define BOUNDARY_WINDOWS 4u
+#define BOUNDARY_SLOTS_BYTES (6u * BOUNDARY_WINDOW_BYTES)
 
 static int failures;
 
@@ -177,12 +181,199 @@ static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 		CHECK(SparkDeviceFree(&host) == SPARK_STATUS_OK,"free the host-visible memory");
 }
 
+typedef struct BoundaryWindow
+{
+	uint64_t offset;
+	uint64_t bytes;
+} BoundaryWindow;
+
+static void BoundaryWindows(uint64_t bytes, BoundaryWindow windows[BOUNDARY_WINDOWS])
+{
+	windows[0].offset = 0u;
+	windows[0].bytes = BOUNDARY_WINDOW_BYTES;
+	windows[1].offset = (4ull << 30) - BOUNDARY_WINDOW_BYTES;
+	windows[1].bytes = 2u * BOUNDARY_WINDOW_BYTES;
+	windows[2].offset = (8ull << 30) - BOUNDARY_WINDOW_BYTES;
+	windows[2].bytes = 2u * BOUNDARY_WINDOW_BYTES;
+	windows[3].offset = bytes - BOUNDARY_WINDOW_BYTES;
+	windows[3].bytes = BOUNDARY_WINDOW_BYTES;
+}
+
+static uint32_t BoundaryWord(uint64_t offset, uint32_t seed)
+{
+	const uint64_t mixed = ((offset >> 2) ^ ((uint64_t)seed << 40)) * 0x9e3779b97f4a7c15ull;
+	return((uint32_t)(mixed >> 32) ^ (uint32_t)(offset >> 2));
+}
+
+static void BoundaryWrite(uint8_t *cpu, const BoundaryWindow *window, uint32_t seed)
+{
+	uint64_t offset;
+	for (offset = window->offset; offset < window->offset + window->bytes; offset += sizeof(uint32_t))
+	{
+		const uint32_t word = BoundaryWord(offset,seed);
+		memcpy(cpu + offset,&word,sizeof(word));
+	}
+}
+
+static uint64_t BoundaryFirstWrong(const uint8_t *copied, const BoundaryWindow *window, uint32_t seed, uint64_t *wrong_words)
+{
+	uint64_t offset,first = UINT64_MAX;
+	*wrong_words = 0u;
+	for (offset = 0u; offset < window->bytes; offset += sizeof(uint32_t))
+	{
+		uint32_t word;
+		memcpy(&word,copied + offset,sizeof(word));
+		if ( word != BoundaryWord(window->offset + offset,seed) )
+		{
+			first = first == UINT64_MAX ? window->offset + offset : first;
+			(*wrong_words)++;
+		}
+	}
+	return(first);
+}
+
+static void BoundaryCheck(SparkDeviceQueue *queue, const char *kind, const SparkDeviceBuffer *object, uint8_t *cpu, uint32_t seed,
+	const SparkDeviceBuffer *device, const SparkDeviceBuffer *pageable)
+{
+	BoundaryWindow windows[BOUNDARY_WINDOWS];
+	uint64_t slot = 0u;
+	uint32_t index,copied = 1u;
+	char what[256];
+	BoundaryWindows(BOUNDARY_BYTES,windows);
+	for (index = 0u; index < BOUNDARY_WINDOWS; index++)
+		BoundaryWrite(cpu,&windows[index],seed);
+	memset(pageable->host,0,(size_t)BOUNDARY_SLOTS_BYTES);
+	for (index = 0u; index < BOUNDARY_WINDOWS && copied != 0u; index++)
+	{
+		copied = SparkDeviceCopy(queue,At(device,slot),At(object,windows[index].offset),windows[index].bytes) == SPARK_STATUS_OK;
+		slot += windows[index].bytes;
+	}
+	copied = copied != 0u && SparkDeviceCopy(queue,At(pageable,0u),At(device,0u),slot) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK;
+	snprintf(what,sizeof(what),"the GPU copies the windows of 9 GiB of %s to device memory and on to pageable memory",kind);
+	CHECK(copied != 0u,what);
+	if ( copied == 0u )
+		return;
+	slot = 0u;
+	for (index = 0u; index < BOUNDARY_WINDOWS; index++)
+	{
+		uint64_t wrong = 0u;
+		const uint64_t first = BoundaryFirstWrong((const uint8_t *)pageable->host + slot,&windows[index],seed,&wrong);
+		snprintf(what,sizeof(what),"the GPU reads 9 GiB of %s at [%llu, %llu) as the CPU wrote it: %llu of %llu words differ, the first at offset %llu",kind,
+			(unsigned long long)windows[index].offset,(unsigned long long)(windows[index].offset + windows[index].bytes),(unsigned long long)wrong,
+			(unsigned long long)(windows[index].bytes / sizeof(uint32_t)),(unsigned long long)(first == UINT64_MAX ? 0u : first));
+		CHECK(wrong == 0u,what);
+		slot += windows[index].bytes;
+	}
+}
+
+static uint32_t BoundaryAllocated(SparkDeviceQueue *queue, SparkDeviceSpace space, const char *kind, uint32_t seed, const SparkDeviceBuffer *device,
+	const SparkDeviceBuffer *pageable, uint32_t needs_host)
+{
+	SparkDeviceBuffer object;
+	uint32_t checked = 0u;
+	char what[192];
+	memset(&object,0,sizeof(object));
+	snprintf(what,sizeof(what),"allocate 9 GiB of %s",kind);
+	CHECK(SparkDeviceAllocate(&object,space,BOUNDARY_BYTES,kind) == SPARK_STATUS_OK,what);
+	if ( object.bytes == 0u )
+		return(0u);
+	if ( object.host != 0 )
+	{
+		BoundaryCheck(queue,kind,&object,(uint8_t *)object.host,seed,device,pageable);
+		checked = 1u;
+	}
+	else if ( needs_host != 0u )
+	{
+		snprintf(what,sizeof(what),"9 GiB of %s has a host view",kind);
+		CHECK(0,what);
+	}
+	CHECK(SparkDeviceFree(&object) == SPARK_STATUS_OK,"free the boundary object");
+	return(checked);
+}
+
+static uint32_t BoundaryCreatedHost(SparkDeviceQueue *queue, uint32_t seed, const SparkDeviceBuffer *device, const SparkDeviceBuffer *pageable)
+{
+	SparkDeviceMemoryHandle memory = 0;
+	SparkDeviceAddress address = 0u;
+	SparkDeviceBuffer view;
+	uint32_t created,reserved = 0u,mapped = 0u,adopted = 0u;
+	memset(&view,0,sizeof(view));
+	created = SparkDeviceMemoryCreateHost(&memory,BOUNDARY_BYTES,"boundary created host") == SPARK_STATUS_OK;
+	reserved = created != 0u && SparkDeviceAddressReserve(&address,BOUNDARY_BYTES,"boundary created host") == SPARK_STATUS_OK;
+	mapped = reserved != 0u && SparkDeviceMemoryMap(address,BOUNDARY_BYTES,memory,0u,
+		SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE | SPARK_DEVICE_ACCESS_DEVICE_READ) == SPARK_STATUS_OK;
+	adopted = mapped != 0u && SparkDeviceAdopt(&view,address,0,BOUNDARY_BYTES,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"boundary created host") == SPARK_STATUS_OK;
+	CHECK(adopted != 0u,"create 9 GiB of host memory, map it with host access and adopt the mapping");
+	if ( adopted != 0u )
+	{
+		BoundaryCheck(queue,"created host memory",&view,(uint8_t *)(uintptr_t)address,seed,device,pageable);
+		CHECK(SparkDeviceFree(&view) == SPARK_STATUS_OK,"release the adopted created host memory");
+	}
+	if ( mapped != 0u )
+		CHECK(SparkDeviceMemoryUnmap(address,BOUNDARY_BYTES) == SPARK_STATUS_OK,"unmap the created host memory");
+	if ( reserved != 0u )
+		CHECK(SparkDeviceAddressRelease(address,BOUNDARY_BYTES) == SPARK_STATUS_OK,"release the created host memory's addresses");
+	if ( created != 0u )
+		CHECK(SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK,"release the created host memory");
+	return(adopted);
+}
+
+static int TestBoundaries(void)
+{
+	SparkDeviceQueue *queue = 0;
+	SparkDeviceBuffer device,pageable;
+	const SparkDeviceProperties *properties = 0;
+	const uint64_t needed = BOUNDARY_BYTES + LARGE_MARGIN_BYTES,available = Available();
+	const int before = failures;
+	uint32_t device_private = 0u;
+	memset(&device,0,sizeof(device));
+	memset(&pageable,0,sizeof(pageable));
+	if ( available < needed )
+	{
+		printf("FAIL the boundary windows need %llu GiB of available memory; the host has %llu GiB\n",(unsigned long long)(needed >> 30),
+			(unsigned long long)(available >> 30));
+		return(1);
+	}
+	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK || (properties = SparkDeviceGetProperties()) == 0 ||
+		SparkDeviceQueueCreate(&queue,"boundary windows") != SPARK_STATUS_OK )
+	{
+		printf("FAIL set up the device: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,BOUNDARY_SLOTS_BYTES,"boundary slots") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&pageable,SPARK_DEVICE_SPACE_HOST_PAGEABLE,BOUNDARY_SLOTS_BYTES,"boundary pageable") == SPARK_STATUS_OK,
+		"allocate the device memory and the pageable memory the windows go through");
+	if ( device.bytes != 0u && pageable.bytes != 0u )
+	{
+		(void)BoundaryAllocated(queue,SPARK_DEVICE_SPACE_HOST_PINNED,"host-pinned memory",0x51u,&device,&pageable,1u);
+		(void)BoundaryAllocated(queue,SPARK_DEVICE_SPACE_SHARED_COHERENT,"shared-coherent memory",0x52u,&device,&pageable,1u);
+		(void)BoundaryCreatedHost(queue,0x53u,&device,&pageable);
+		if ( (properties->properties & SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY) != 0u )
+			device_private = BoundaryAllocated(queue,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"device-private memory",0x54u,&device,&pageable,0u);
+	}
+	if ( pageable.bytes != 0u )
+		CHECK(SparkDeviceFree(&pageable) == SPARK_STATUS_OK,"free the pageable memory");
+	if ( device.bytes != 0u )
+		CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the device memory");
+	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && SparkDeviceShutdown() == SPARK_STATUS_OK,"close the device");
+	if ( failures != before )
+	{
+		printf("\nFAIL boundary windows (%d)\n",failures - before);
+		return(1);
+	}
+	printf("PASS the GPU reads 9 GiB of host-pinned, shared-coherent and created host memory%s as the CPU wrote it at [0, 64 KiB), 4 GiB and 8 GiB "
+		"+- 64 KiB and the last 64 KiB, through device memory into pageable memory\n",device_private != 0u ? ", and of device-private memory," : "");
+	return(0);
+}
+
 static int TestSizes(void)
 {
 	static const uint64_t sizes[] = {8ull << 30, (21ull << 30) / 2u, 16ull << 30};
 	SparkDeviceQueue *queue = 0;
 	uint32_t index;
 	const uint64_t needed = 2u * sizes[2] + LARGE_MARGIN_BYTES,available = Available();
+	const int before = failures;
 	if ( available < needed )
 	{
 		printf("FAIL the large transfers need %llu GiB of available memory; the host has %llu GiB\n",(unsigned long long)(needed >> 30),
@@ -197,9 +388,9 @@ static int TestSizes(void)
 	for (index = 0u; index < sizeof(sizes) / sizeof(sizes[0]); index++)
 		TestSize(queue,sizes[index]);
 	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && SparkDeviceShutdown() == SPARK_STATUS_OK,"close the device");
-	if ( failures != 0 )
+	if ( failures != before )
 	{
-		printf("\nFAIL (%d)\n",failures);
+		printf("\nFAIL (%d)\n",failures - before);
 		return(1);
 	}
 	printf("PASS fills and copies of 8, 10.5 and 16 GiB of device-private, shared-coherent, host-pinned and shared memory go through in one call each, in lines of at most 2^31 bytes, and reach every byte\n");
@@ -208,8 +399,15 @@ static int TestSizes(void)
 
 int main(int argc, char **argv)
 {
-	if ( argc == 1 || (argc == 2 && strcmp(argv[1],"sizes") == 0) )
+	if ( argc == 1 )
+	{
+		const int boundaries = TestBoundaries();
+		return(TestSizes() != 0 || boundaries != 0 ? 1 : 0);
+	}
+	if ( argc == 2 && strcmp(argv[1],"sizes") == 0 )
 		return(TestSizes());
-	printf("usage: %s [sizes]\n",argv[0]);
+	if ( argc == 2 && strcmp(argv[1],"boundaries") == 0 )
+		return(TestBoundaries());
+	printf("usage: %s [sizes|boundaries]\n",argv[0]);
 	return(2);
 }

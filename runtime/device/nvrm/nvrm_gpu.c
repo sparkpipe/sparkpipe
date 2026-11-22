@@ -461,6 +461,11 @@ uint32_t SparkNvrmSystemPageBytes(uint64_t bytes)
 	return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 }
 
+uint32_t SparkNvrmWriteBackPageBytes(uint64_t bytes)
+{
+	return(bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
+}
+
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner)
 {
 	NV_MEMORY_ALLOCATION_PARAMS made;
@@ -555,7 +560,7 @@ static uint32_t GpuPageBytes(SparkNvrmMemoryKind kind, uint64_t bytes)
 	if ( kind == SPARK_NVRM_MEMORY_VIDEO )
 		return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 	if ( kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK )
-		return(bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
+		return(SparkNvrmWriteBackPageBytes(bytes));
 	return(SparkNvrmSystemPageBytes(bytes));
 }
 

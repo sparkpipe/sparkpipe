@@ -1318,7 +1318,7 @@ SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, 
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create_host",owner,0,"host memory is created in whole 2 MiB granules"));
-	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,&handle,owner));
+	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmWriteBackPageBytes(bytes),SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,1u,memory,"memory_create_host");
 	if ( status != SPARK_STATUS_OK )
 	{
