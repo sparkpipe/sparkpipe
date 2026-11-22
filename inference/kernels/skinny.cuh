@@ -557,7 +557,7 @@ static int32_t LmSkinnyMultiprocessors(uint32_t *count)
 {
 	int device = 0, value = 0;
 	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS || SparkGpuDeviceGetAttribute(&value,SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT,device) != SPARK_GPU_SUCCESS || value <= 0 )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	*count = (uint32_t)value;
 	return(LM_LAUNCH_OK);
 }
@@ -566,7 +566,9 @@ template<class Format, uint32_t ROWS>
 static int32_t LmSkinnySplitShape(const LmSkinnyArguments *args, SparkGpuStream stream)
 {
 	LM_LAUNCH_DEPENDENT((LmSkinnySplitKernel<Format,ROWS>),args->output_dimension * LmSkinnyRowBlocks<ROWS>(args->rows),LM_SKINNY_THREADS,0u,stream,*args);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Format>
@@ -580,7 +582,7 @@ static int32_t LmSkinnySplitRows(const LmSkinnyArguments *args, SparkGpuStream s
 	if ( args->rows == 1u )
 		return(LmSkinnySplitShape<Format,1u>(args,stream));
 	if ( LmSkinnyMultiprocessors(&multiprocessors) != LM_LAUNCH_OK )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	enough = (uint64_t)multiprocessors * LM_SKINNY_SPLIT_BLOCKS_PER_SM > args->output_dimension ? (uint64_t)multiprocessors * LM_SKINNY_SPLIT_BLOCKS_PER_SM : args->output_dimension;
 	if ( (uint64_t)args->output_dimension * args->rows <= enough )
 		return(LmSkinnySplitShape<Format,1u>(args,stream));
@@ -829,7 +831,9 @@ static int32_t LmSkinnyLaunchShape(const LmSkinnyArguments *args, SparkGpuStream
 {
 	uint64_t tasks = (uint64_t)(args->route_expert != 0 ? args->pairs : 1u) * ((args->output_dimension + NPG - 1u) / NPG);
 	LM_LAUNCH_DEPENDENT((LmSkinnyKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS) * LmSkinnyRowBlocks<ROWS>(args->rows),LM_SKINNY_THREADS,0u,stream,*args);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Format, uint32_t LANES, uint32_t ROWS, uint32_t NPG>
@@ -839,9 +843,11 @@ static int32_t LmSkinnyGroupedShape(const LmSkinnyArguments *args, SparkGpuStrea
 	const uint64_t batches = (args->pairs + ROWS - 1u) / ROWS + (uint64_t)args->groups;
 	uint64_t tasks = (ROWS > LM_SKINNY_ROWS_MID && batches < args->pairs ? batches : (uint64_t)args->pairs) * per_group;
 	if ( (per_group % (32u / LANES)) != 0u || args->groups > LM_SKINNY_GROUPED_MAX_GROUPS )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH_DEPENDENT((LmSkinnyGroupedKernel<Format,LANES,ROWS,NPG>),(uint32_t)((tasks * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS),LM_SKINNY_THREADS,0u,stream,*args);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Format, uint32_t ROWS, uint32_t NPG>
@@ -862,7 +868,9 @@ static int32_t LmSkinnyMultiShape(LmSkinnyMultiArguments *multi, SparkGpuStream 
 	for ( part = 0u; part < multi->count; part++ )
 		multi->first_task[part + 1u] = multi->first_task[part] + ((multi->part[part].output_dimension + NPG - 1u) / NPG + (32u / LANES) - 1u) / (32u / LANES) * (32u / LANES);
 	LM_LAUNCH_DEPENDENT((LmSkinnyMultiKernel<Format,LANES,ROWS,NPG>),(uint32_t)(((uint64_t)multi->first_task[multi->count] * LANES + LM_SKINNY_THREADS - 1u) / LM_SKINNY_THREADS) * LmSkinnyRowBlocks<ROWS>(multi->part[0].rows),LM_SKINNY_THREADS,0u,stream,*multi);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 static uint64_t LmSkinnyFrameWarps(const LmSkinnyMultiArguments *multi, uint32_t lanes, uint32_t rows_per_task, uint32_t neurons)
@@ -883,7 +891,7 @@ static int32_t LmSkinnyFrameLaunch(LmSkinnyMultiArguments *multi, uint32_t multi
 	if ( resident == 0 && (SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&resident,LmSkinnyFrameKernel<Format,LANES,RG,NPG,MULTI>,(int)LM_SKINNY_THREADS,0) != SPARK_GPU_SUCCESS || resident <= 0) )
 	{
 		resident = 0;
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	multi->first_task[0] = 0u;
 	for ( part = 0u; part < multi->count; part++ )
@@ -891,7 +899,9 @@ static int32_t LmSkinnyFrameLaunch(LmSkinnyMultiArguments *multi, uint32_t multi
 	blocks = (uint32_t)(((uint64_t)multi->first_task[multi->count] * ((multi->part[0].rows + RG - 1u) / RG) + lane_groups - 1u) / lane_groups);
 	cap = multiprocessors * (uint32_t)resident;
 	LM_LAUNCH_DEPENDENT((LmSkinnyFrameKernel<Format,LANES,RG,NPG,MULTI>),blocks < cap ? blocks : cap,LM_SKINNY_THREADS,0u,stream,*multi);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }
 
 template<class Format, uint32_t LANES, uint32_t RG, uint32_t NPG>
@@ -907,7 +917,7 @@ static int32_t LmSkinnyFrameGroup(LmSkinnyMultiArguments *multi, SparkGpuStream 
 	uint32_t multiprocessors = 0u;
 	uint64_t enough;
 	if ( LmSkinnyMultiprocessors(&multiprocessors) != LM_LAUNCH_OK )
-		return(LM_LAUNCH_ERR_LAUNCH);
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	enough = (uint64_t)multiprocessors * LM_SKINNY_FRAME_WARPS_PER_SM;
 	if ( rows > 2u && LmSkinnyFrameWarps(multi,LANES,4u,2u) >= enough )
 		return(LmSkinnyFrameShape<Format,LANES,4u,2u>(multi,multiprocessors,stream));
@@ -1013,16 +1023,21 @@ static uint32_t LmSkinnyAligned(const void *pointer)
 	return(((uintptr_t)pointer % LM_SKINNY_CHUNK_BYTES) == 0u ? 1u : 0u);
 }
 
+static uint32_t LmSkinnyExpertPairsFit(uint32_t pairs, uint32_t top_k)
+{
+	return(pairs != 0u && top_k != 0u && pairs <= LM_SKINNY_ROWS * top_k ? 1u : 0u);
+}
+
 template<class Format>
 static int32_t LmSkinnyValidateOperands(const LmSkinnyArguments *args)
 {
 	constexpr uint32_t elements = LmSkinnyFormat<Format>::kElements;
 	if ( args->weight == 0 || args->activation == 0 || (args->output_bf16 == 0) == (args->output_f32 == 0) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( args->input_dimension == 0u || args->output_dimension == 0u || (args->input_dimension % elements) != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( LmSkinnyAligned(args->weight) == 0u || LmSkinnyAligned(args->activation) == 0u || (args->weight_group_bytes % LM_SKINNY_CHUNK_BYTES) != 0u || LmSkinnyScaleFits<Format>(args) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	return(LM_LAUNCH_OK);
 }
 
@@ -1031,11 +1046,11 @@ static int32_t LmSkinnyValidate(const LmSkinnyArguments *args, uint32_t any_rows
 {
 	uint32_t grouped = args->route_expert != 0 ? 1u : 0u;
 	if ( LmSkinnyValidateOperands<Format>(args) != LM_LAUNCH_OK )
-		return(LM_LAUNCH_ERR_SHAPE);
-	if ( args->rows == 0u || (args->rows > LM_SKINNY_ROWS_WIDE && (any_rows == 0u || grouped != 0u || args->group_row_offset != 0)) || (grouped != 0u && (args->rows != 1u || args->pairs == 0u || args->top_k == 0u || args->pairs > LM_SKINNY_ROWS * args->top_k)) )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	if ( args->rows == 0u || (args->rows > LM_SKINNY_ROWS_WIDE && (any_rows == 0u || grouped != 0u || args->group_row_offset != 0)) || (grouped != 0u && (args->rows != 1u || LmSkinnyExpertPairsFit(args->pairs,args->top_k) == 0u)) )
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	if ( args->output_column_offset > args->output_row_stride || args->output_dimension > args->output_row_stride - args->output_column_offset )
-		return(LM_LAUNCH_ERR_OUTPUT);
+		SPARK_FAIL(LM_LAUNCH_ERR_OUTPUT);
 	return(LM_LAUNCH_OK);
 }
 
@@ -1044,7 +1059,7 @@ static int32_t LmSkinnyLaunch(LmSkinnyArguments *args, SparkGpuStream stream, ui
 {
 	int32_t status;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	else
 	{
 		if ( args->output_row_stride == 0u )
@@ -1086,7 +1101,7 @@ static int32_t LmSkinnyDenseSplit(const void *weight, const uint16_t *activation
 	LmSkinnyArguments args;
 	int32_t status;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported || Format::kScaleGroup != 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	else
 	{
 		memset(&args,0,sizeof(args));
@@ -1104,7 +1119,7 @@ static int32_t LmSkinnyDenseSplit(const void *weight, const uint16_t *activation
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		if ( input_dimension / LmSkinnyFormat<Format>::kElements < LM_SKINNY_SPLIT_WARPS * LM_WARP_LANES )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		return(LmSkinnySplitRows<Format>(&args,stream));
 	}
 }
@@ -1135,7 +1150,7 @@ static int32_t LmSkinnyGroupedExpertsWith(const void *weight, LmScaleTensor scal
 {
 	LmSkinnyArguments args;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	else
 	{
 		memset(&args,0,sizeof(args));
@@ -1154,7 +1169,7 @@ static int32_t LmSkinnyGroupedExpertsWith(const void *weight, LmScaleTensor scal
 		args.output_dimension = output_dimension;
 		args.output_row_stride = output_dimension;
 		if ( LmSkinnyValidateOperands<Format>(&args) != LM_LAUNCH_OK || group_row_offset == 0 || (activation_packed == 0u && route_source_token == 0) || groups == 0u || pairs == 0u || (any_rows == 0u && pairs > LM_SKINNY_GROUPED_MAX_MEAN_ROWS * groups) )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		if ( pairs <= 2u * groups )
 			return(LmSkinnyGroupedLanes<Format,LM_SKINNY_ROWS_MID,NPG>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
 		if ( pairs > LM_SKINNY_ROWS * groups )
@@ -1185,11 +1200,11 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 	LmSkinnyMultiArguments multi;
 	uint32_t part, chunks;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	else
 	{
 		if ( targets == 0 || count == 0u || count > LM_SKINNY_MULTI_MAX )
-			return(LM_LAUNCH_ERR_SHAPE);
+			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		memset(&multi,0,sizeof(multi));
 		multi.count = count;
 		for ( part = 0u; part < count; part++ )
@@ -1206,7 +1221,7 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 			args->output_row_stride = targets[part].output_row_stride != 0u ? targets[part].output_row_stride : targets[part].output_dimension;
 			args->output_column_offset = targets[part].output_column_offset;
 			if ( LmSkinnyValidate<Format>(args,any_rows) != LM_LAUNCH_OK )
-				return(LM_LAUNCH_ERR_SHAPE);
+				SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		}
 		chunks = input_dimension / LmSkinnyFormat<Format>::kElements;
 		for ( part = 0u; part < count; part++ )
@@ -1227,6 +1242,12 @@ static int32_t LmSkinnyDenseMulti(const LmSkinnyDenseTarget *targets, uint32_t c
 #define LM_SKINNY_CELL_SHARED_TILES 8u
 #define LM_SKINNY_CELL_SHORT_BATCH 4u
 #define LM_SKINNY_CELL_SPREAD_THREADS 32u
+
+static uint32_t LmSkinnyCellShapeFits(uint32_t input_dimension, uint32_t output_dimension, uint32_t tile_k)
+{
+	return(tile_k == LM_SKINNY_CELL_TILE_K && input_dimension != 0u && (input_dimension % LM_SKINNY_CELL_TILE_K) == 0u &&
+		output_dimension != 0u && (output_dimension % LM_SKINNY_CELL_NEURONS) == 0u ? 1u : 0u);
+}
 
 typedef struct LmSkinnyCellArguments
 {
@@ -1411,12 +1432,10 @@ static int32_t LmSkinnyCellExperts(const void *weight, const uint16_t *activatio
 {
 	LmSkinnyCellArguments args;
 	uint64_t tasks;
-	if ( tile_k != LM_SKINNY_CELL_TILE_K || weight == 0 || activation == 0 || output_bf16 == 0 || group_row_offset == 0 ||
-		(activation_packed == 0u && route_source_token == 0) || groups == 0u || packed_rows == 0u ||
-		input_dimension == 0u || (input_dimension % LM_SKINNY_CELL_TILE_K) != 0u ||
-		output_dimension == 0u || (output_dimension % LM_SKINNY_CELL_NEURONS) != 0u ||
+	if ( LmSkinnyCellShapeFits(input_dimension,output_dimension,tile_k) == 0u || weight == 0 || activation == 0 || output_bf16 == 0 ||
+		group_row_offset == 0 || (activation_packed == 0u && route_source_token == 0) || groups == 0u || packed_rows == 0u ||
 		LmSkinnyAligned(weight) == 0u || LmSkinnyAligned(activation) == 0u )
-		return(LM_LAUNCH_ERR_SHAPE);
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	memset(&args,0,sizeof(args));
 	args.weight = (const uint8_t *)weight;
 	args.activation = activation;
@@ -1443,5 +1462,7 @@ static int32_t LmSkinnyCellExperts(const void *weight, const uint16_t *activatio
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<LM_SKINNY_CELL_SHORT_BATCH,true>),blocks,LM_SKINNY_THREADS,0u,stream,args);
 	else
 		LM_LAUNCH_DEPENDENT((LmSkinnyCellKernel<LM_SKINNY_CELL_BATCH,false>),blocks,LM_SKINNY_THREADS,0u,stream,args);
-	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+	return(LM_LAUNCH_OK);
 }

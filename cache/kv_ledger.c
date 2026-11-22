@@ -72,12 +72,41 @@ static uint32_t SparkKvLedgerValid(const SparkKvLedger *ledger,uint32_t slot)
 	return(ledger != 0 && ledger->open != 0u && slot < SPARK_KV_LEDGER_SLOTS ? 1u : 0u);
 }
 
+SparkStatus SparkKvNodeRoot(char *path,uint32_t capacity)
+{
+	const char *root = getenv(SPARK_KV_NODE_ROOT_VARIABLE);
+	const struct passwd *owner;
+	struct stat info;
+	if ( path == 0 || capacity == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( root != 0 )
+	{
+		if ( root[0] != '/' || lstat(root,&info) != 0 || !S_ISDIR(info.st_mode) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	else
+	{
+		owner = getpwuid(geteuid());
+		root = owner != 0 ? owner->pw_dir : 0;
+		if ( root == 0 || root[0] != '/' )
+			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	}
+	if ( strlen(root) >= capacity )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memcpy(path,root,strlen(root) + 1u);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkKvLedgerDefaultPath(char *path,uint32_t capacity)
 {
-	const struct passwd *owner = getpwuid(geteuid());
-	if ( path == 0 || owner == 0 || owner->pw_dir == 0 || owner->pw_dir[0] != '/' )
+	char root[SPARK_KV_LEDGER_DIRECTORY_BYTES];
+	SparkStatus status;
+	if ( path == 0 )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
-	if ( (size_t)snprintf(path,capacity,"%s/%s",owner->pw_dir,SPARK_KV_LEDGER_NAME) >= capacity )
+	status = SparkKvNodeRoot(root,sizeof(root));
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	if ( (size_t)snprintf(path,capacity,"%s/%s",root,SPARK_KV_LEDGER_NAME) >= capacity )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }

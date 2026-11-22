@@ -58,9 +58,9 @@ static void HostDecoders(void)
 
 static void HostCase(uint32_t input, uint32_t output)
 {
-	static uint8_t payload[HOST_EXPERTS * HOST_MAX_OUTPUT * HOST_MAX_INPUT / 2u];
+	alignas(16) static uint8_t payload[HOST_EXPERTS * HOST_MAX_OUTPUT * HOST_MAX_INPUT / 2u];
 	static uint8_t scale[HOST_EXPERTS * HOST_MAX_OUTPUT * HOST_MAX_INPUT / 32u];
-	static uint16_t activation[HOST_TOKENS * HOST_MAX_INPUT];
+	alignas(16) static uint16_t activation[HOST_TOKENS * HOST_MAX_INPUT];
 	static uint16_t pairwise[HOST_PAIRS * HOST_MAX_OUTPUT],grouped[HOST_PAIRS * HOST_MAX_OUTPUT];
 	uint32_t expert[HOST_PAIRS],packed[HOST_PAIRS],source[HOST_PAIRS],offset[HOST_EXPERTS + 1u],cursor[HOST_EXPERTS];
 	uint32_t index,pair,row,column;
@@ -119,8 +119,9 @@ static void HostCase(uint32_t input, uint32_t output)
 int main(void)
 {
 	uint8_t bad_scale[64];
-	uint16_t activation[64],output[8];
-	uint8_t weight[256];
+	alignas(16) uint16_t activation[64];
+	uint16_t output[8];
+	alignas(16) uint8_t weight[256];
 	uint32_t zero = 0u;
 	HostDecoders();
 	HostCase(1024u,64u);
