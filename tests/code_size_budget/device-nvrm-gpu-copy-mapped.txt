@@ -1,0 +1,2 @@
++359
+Copy by device address: SparkDeviceAddressLookup and SparkDeviceCopyAddresses, so the nvrm GPU front copies to and from mapped ranges on the copy engines instead of faulting in a CPU copy, with the mapping tables and copies in the nvrm, host and CUDA backends.
