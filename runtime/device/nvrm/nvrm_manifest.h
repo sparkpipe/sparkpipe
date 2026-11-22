@@ -33,6 +33,8 @@ typedef struct SparkNvrmManifestKernel
 	SparkNvrmParameter *parameters;
 	uint32_t max_threads;
 	uint32_t clustered;
+	uint32_t cluster[3];
+	uint32_t cluster_limit;
 } SparkNvrmManifestKernel;
 
 typedef struct SparkNvrmManifest

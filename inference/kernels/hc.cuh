@@ -225,11 +225,11 @@ struct LmHcSinkhornShape
 };
 
 template<uint32_t STREAMS>
-__global__ void LmHcSinkhornPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
-	uint32_t width)
+static __device__ __forceinline__ void LmHcSinkhornPartialTask(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *partials,
+	uint32_t width, uint32_t task, uint32_t row)
 {
 	using S = LmHcSinkhornShape<STREAMS>;
-	const uint32_t task = blockIdx.x, row = blockIdx.y, flat = STREAMS * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
+	const uint32_t flat = STREAMS * width, lane = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	const uint16_t *source = streams + (uint64_t)row * flat;
 	const float *weight = task < S::kMix ? fn + (uint64_t)task * flat : 0;
 	float total = 0.0f;
@@ -252,6 +252,13 @@ __global__ void LmHcSinkhornPartialKernel(const uint16_t *__restrict__ streams, 
 		total += __shfl_down_sync(0xffffffffu, total, offset);
 	if ( lane == 0u )
 		partials[((uint64_t)row * S::kTasks + task) * LM_HC_SINKHORN_WARPS + warp] = total;
+}
+
+template<uint32_t STREAMS>
+__global__ void LmHcSinkhornPartialKernel(const uint16_t *__restrict__ streams, const float *__restrict__ fn, float *__restrict__ partials,
+	uint32_t width)
+{
+	LmHcSinkhornPartialTask<STREAMS>(streams, fn, partials, width, blockIdx.x, blockIdx.y);
 }
 
 template<uint32_t STREAMS, uint32_t ROWS>
@@ -420,13 +427,12 @@ static __device__ __forceinline__ float LmHcSinkhornLineSum(float value, uint32_
 }
 
 template<uint32_t STREAMS>
-__global__ void LmHcSinkhornKernel(const float *__restrict__ partials, const float *__restrict__ scale, const float *__restrict__ base,
+static __device__ __forceinline__ void LmHcSinkhornRow(const float *partials, const float *__restrict__ scale, const float *__restrict__ base,
 	float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out, uint32_t width, float rms_epsilon, uint32_t iterations,
-	float epsilon)
+	float epsilon, uint32_t row, uint32_t lane, float *mix)
 {
 	using S = LmHcSinkhornShape<STREAMS>;
-	__shared__ float mix[S::kTasks];
-	const uint32_t row = blockIdx.x, lane = threadIdx.x, r = lane / STREAMS, c = lane % STREAMS;
+	const uint32_t r = lane / STREAMS, c = lane % STREAMS;
 	if ( lane < S::kTasks )
 	{
 		const float *part = partials + ((uint64_t)row * S::kTasks + lane) * LM_HC_SINKHORN_WARPS;
@@ -457,6 +463,15 @@ __global__ void LmHcSinkhornKernel(const float *__restrict__ partials, const flo
 	}
 	if ( lane < STREAMS * STREAMS )
 		comb_out[(uint64_t)row * STREAMS * STREAMS + lane] = comb;
+}
+
+template<uint32_t STREAMS>
+__global__ void LmHcSinkhornKernel(const float *__restrict__ partials, const float *__restrict__ scale, const float *__restrict__ base,
+	float *__restrict__ pre, float *__restrict__ post, float *__restrict__ comb_out, uint32_t width, float rms_epsilon, uint32_t iterations,
+	float epsilon)
+{
+	__shared__ float mix[LmHcSinkhornShape<STREAMS>::kTasks];
+	LmHcSinkhornRow<STREAMS>(partials, scale, base, pre, post, comb_out, width, rms_epsilon, iterations, epsilon, blockIdx.x, threadIdx.x, mix);
 }
 
 template<uint32_t STREAMS>
