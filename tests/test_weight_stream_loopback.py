@@ -1,4 +1,4 @@
-"""Run the weight-stream library loopback test (four ranks on one RoCE device: broadcasts direct on both rails, expert rotation steps and per-destination exchanges, every byte checked, then one reused landing with no barriers while a slow rank holds it: no sender may write a landing before its owner enters the call) on a host with an active RoCE v2 port."""
+"""Run the weight-stream library loopback test (four ranks on one RoCE device: broadcasts direct on both rails, expert rotation steps and per-destination exchanges, every byte checked, then one reused landing with no barriers while a slow rank holds it: no sender may write a landing before its owner enters the call) on a host with an active RoCE v2 port, three times: with the pair link on the same device, with no pair device, and with a pair device that does not exist, so one link carries every peer and every operation."""
 import os
 import pathlib
 import shutil
@@ -36,4 +36,5 @@ with tempfile.TemporaryDirectory(prefix="weight-stream-loopback-") as directory:
     binary = str(pathlib.Path(directory) / "probe")
     subprocess.run([CC, "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", "-pthread", "-D_GNU_SOURCE", "-Iinclude",
                     "tests/test_weight_stream_loopback.c", "ring/transport/weight_stream.c", "-libverbs", "-o", binary], cwd=ROOT, check=True)
-    subprocess.run([binary, device, str(GID_INDEX)], check=True, timeout=300)
+    for pair in ("same", "none", "absent-pair-device"):
+        subprocess.run([binary, device, str(GID_INDEX), pair], check=True, timeout=300)
