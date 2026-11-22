@@ -22,9 +22,11 @@ It is a measurement tool, not a test of the model's numbers.
   the same tokens to the same experts. Two builds or two variants therefore
   compare the same work.
 - **Rows and context.** `--rows` (1 to 16) decode rows, one per sequence, at
-  positions from `--position` (default 400: the window is full and the
-  compressed attention reads what a short conversation holds). The selection is
-  512 fixed compressed positions.
+  positions from `--position` (default 160: the conversations of the reference
+  trace held a 96-token prompt and up to 128 generated tokens, so the window is
+  full and the compressed attention reads what they held). The selection is
+  512 fixed compressed positions; positions past a sequence's compressed length
+  are skipped, as in the stage.
 - **Graph replay.** The 40 layers are captured into one CUDA graph, with the
   weight prefetch plan armed as the stage runner arms it, and replayed
   `--warmup` plus `--steps` times.
@@ -70,24 +72,26 @@ checks the summary on a synthetic trace.
 
 ## Measurements (2026-11-22, CUDA flavour, two GB10 hosts, 30 steps after 5)
 
-Sequences, microseconds per instance, replay against the four-node trace:
+Sequences, microseconds per instance at the default position, replay (both
+hosts) against the four-node trace:
 
 | sequence | 1 row | 8 rows |
 |---|---|---|
-| attention output (12 kernels) | 112.4-114.3 / 113.7 | 111.0-111.1 / 123.7 |
-| attention core (3) | 90.4-91.0 / 78.6 | 108.4-108.7 / 109.7 |
-| attention input (5) | 77.8-79.7 / 86.3 | 86.9-87.6 / 100.7 |
-| shared expert (5) | 43.7-44.7 / 58.0 | 55.1-56.0 / 65.0 |
-| mHC (3) | 21.3-21.7 / 26.1 | 25.0-25.1 / 31.0 |
-| router (5) | 24.3-24.4 / 28.1 | 27.0-27.3 / 31.5 |
+| attention output (12 kernels) | 112.3-115.4 / 113.7 | 110.7-112.4 / 123.7 |
+| attention core (3) | 82.5-82.7 / 78.6 | 99.4-99.7 / 109.7 |
+| attention input (5) | 78.0-80.7 / 86.3 | 87.3-88.2 / 100.7 |
+| shared expert (5) | 43.1-45.3 / 58.0 | 55.0-56.6 / 65.0 |
+| mHC (3) | 21.2-22.0 / 26.1 | 25.3-25.4 / 31.0 |
+| router (5) | 24.4-24.8 / 28.1 | 27.2-27.3 / 31.5 |
 
-- The two hosts agree within 3%. Against the four-node trace most kernels run
-  7-14% faster here; the step's boundary structure is the same: 0.48 us median
-  between kernels, 1.15 us before every dependently launched skinny or cell
-  kernel, 1.2 ms of gaps a step in 1,921 kernels. The one-row attention core is
-  slower because the replay's compressed attention reads more positions than
-  the traced conversations held.
-- **Prefetch during the window fold:** prefetching o_a and o_b (16 MiB) cuts
+- Steps of 1,921 kernels take 27.0-27.7 ms (1 row) and 68.0-69.4 ms (8 rows)
+  with the traced waits. The two hosts agree within 3%. Against the four-node
+  trace most kernels run 7-14% faster here, while the step's boundary structure
+  is the same: 0.48 us median between kernels, 1.15 us before every
+  dependently launched skinny or cell kernel, 1.2 ms of gaps a step. The tool
+  compares two builds or two variants on one host; it does not stand in for
+  the fleet's absolute numbers.
+- **Prefetch during the window fold** (position 400): prefetching o_a and o_b (16 MiB) cuts
   their GEMVs by 32% (8 rows) and 51-53% (1 row), but the fold, which is bound
   by the latency of its own reads, is slowed by 63-70% while the prefetch
   streams: the step is 0.5-1.2 ms slower at 8 rows and 0.36-0.46 ms faster at

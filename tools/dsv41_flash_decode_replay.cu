@@ -733,7 +733,7 @@ int main(int argc, char **argv)
 	options.rows = 8u;
 	options.steps = 50u;
 	options.warmup = 5u;
-	options.position = 400u;
+	options.position = 160u;
 	options.prefetch_bytes = 16ull << 20;
 	options.prefetch_threads = REPLAY_PREFETCH_THREADS;
 	for ( int index = 1; index < argc; ++index )
