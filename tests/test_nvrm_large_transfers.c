@@ -5,11 +5,8 @@
 #include <time.h>
 
 #include "sparkpipe/spark_device.h"
-#include "runtime/device/nvrm/nvrm_wait.h"
 
 #define LARGE_MARGIN_BYTES (8ull << 30)
-#define LARGE_HELD_BYTES (4ull << 30)
-#define LARGE_CHECK_BYTES (64ull << 20)
 
 static int failures;
 
@@ -84,7 +81,7 @@ static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 	memset(&device,0,sizeof(device));
 	memset(&host,0,sizeof(host));
 	start = Now();
-	snprintf(what,sizeof(what),"allocate %llu MiB of device-private memory, which the copy engine zero-fills",(unsigned long long)mib);
+	snprintf(what,sizeof(what),"allocate %llu MiB of device-private memory, which the open module zeroes",(unsigned long long)mib);
 	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,bytes,"large device") == SPARK_STATUS_OK,what);
 	allocate_ns = Now() - start;
 	snprintf(what,sizeof(what),"allocate %llu MiB of host-visible memory",(unsigned long long)mib);
@@ -115,7 +112,7 @@ static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 			what);
 		snprintf(what,sizeof(what),"the fill of all %llu MiB, copied back whole, arrives everywhere",(unsigned long long)mib);
 		CHECK(Wrong(view,0u,bytes,0xc3u) == 0u,what);
-		printf("%llu MiB: allocate with zero fill %.2f s, fill %.1f GB/s, copy %.1f GB/s\n",(unsigned long long)mib,(double)allocate_ns / 1e9,
+		printf("%llu MiB: allocate %.2f s, fill %.1f GB/s, copy %.1f GB/s\n",(unsigned long long)mib,(double)allocate_ns / 1e9,
 			Rate(bytes,fill_ns),Rate(bytes,copy_ns));
 	}
 	if ( device.bytes != 0u )
@@ -153,47 +150,10 @@ static int TestSizes(void)
 	return(0);
 }
 
-static int TestHeld(void)
-{
-	SparkDeviceBuffer device,host;
-	SparkDeviceQueue *queue = 0;
-	SparkStatus status;
-	memset(&device,0,sizeof(device));
-	memset(&host,0,sizeof(host));
-	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK )
-	{
-		printf("FAIL set up the device: %s\n",SparkDeviceLastError()->text);
-		return(1);
-	}
-	SparkNvrmWaitStallSet(0u);
-	status = SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,LARGE_HELD_BYTES,"held");
-	SparkNvrmWaitStallSet(SPARK_NVRM_WAIT_STALL_NS);
-	printf("allocation whose wait gave up: %s\n",SparkDeviceLastError()->text);
-	CHECK(status == SPARK_STATUS_IO_ERROR && device.bytes == 0u && strstr(SparkDeviceLastError()->text,"no GPU progress") != 0 &&
-		strstr(SparkDeviceLastError()->text,"stay held") != 0,
-		"a zero fill still running when its wait gives up fails the allocation, keeps the memory held and says so");
-	CHECK(SparkDeviceShutdown() == SPARK_STATUS_OK,"the device closes once the held memory's fill has finished, and releases it then");
-	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_OK && SparkDeviceQueueCreate(&queue,"after held") == SPARK_STATUS_OK &&
-		SparkDeviceAllocate(&host,SPARK_DEVICE_SPACE_SHARED_COHERENT,LARGE_CHECK_BYTES,"after held") == SPARK_STATUS_OK &&
-		SparkDeviceFill(queue,At(&host,0u),0x7eu,LARGE_CHECK_BYTES) == SPARK_STATUS_OK &&
-		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && Wrong((const uint8_t *)host.host,0u,LARGE_CHECK_BYTES,0x7eu) == 0u &&
-		SparkDeviceFree(&host) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && SparkDeviceShutdown() == SPARK_STATUS_OK,
-		"the device opens again and fills memory after the held allocation was released");
-	if ( failures != 0 )
-	{
-		printf("\nFAIL (%d)\n",failures);
-		return(1);
-	}
-	printf("PASS an allocation whose zero fill outlives its wait stays held until the fill ends, and the device works after it\n");
-	return(0);
-}
-
 int main(int argc, char **argv)
 {
 	if ( argc == 2 && strcmp(argv[1],"sizes") == 0 )
 		return(TestSizes());
-	if ( argc == 2 && strcmp(argv[1],"held") == 0 )
-		return(TestHeld());
-	printf("usage: %s sizes|held\n",argv[0]);
+	printf("usage: %s sizes\n",argv[0]);
 	return(2);
 }
