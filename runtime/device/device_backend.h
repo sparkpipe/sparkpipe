@@ -1,6 +1,7 @@
 #ifndef SPARKPIPE_DEVICE_BACKEND_H
 #define SPARKPIPE_DEVICE_BACKEND_H
 
+#include <pthread.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_device.h"
@@ -95,7 +96,9 @@ struct SparkDeviceProgram
 	uint64_t id;
 	uint64_t queue_id;
 	uint32_t native;
+	uint32_t compiled;
 	uint32_t finished;
+	pthread_t thread;
 	uint32_t broken;
 	uint32_t kernels;
 	uint32_t values;
@@ -205,6 +208,7 @@ SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program);
 SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place);
 SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program);
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program);
 SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values);
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program);
 
@@ -217,6 +221,7 @@ SparkStatus SparkDeviceProgramValues(const SparkDeviceProgram *program, const ui
 SparkStatus SparkDeviceProgramReplay(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *placed);
 uint32_t SparkDeviceBackendTensorMapOnDevice(void);
 SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner);
+void SparkDeviceProgramPatchLaunch(const SparkDeviceProgram *program, uint32_t node, const uint64_t *placed, SparkDeviceLaunch *launch, uint8_t *scratch);
 
 #ifdef __cplusplus
 }

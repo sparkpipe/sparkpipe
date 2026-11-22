@@ -17,6 +17,7 @@ extern "C" {
 #define SPARK_NVRM_LOCAL_EXTRA_BYTES 0x240u
 #define SPARK_NVRM_CLUSTER_GROUPS_MAX 8u
 #define SPARK_NVRM_LATCH_SEGMENT 32u
+#define SPARK_NVRM_LAUNCH_WORDS 4u
 
 typedef struct SparkNvrmProgram
 {
@@ -54,6 +55,8 @@ SparkStatus SparkNvrmKernelRunnable(const SparkNvrmCubinKernel *kernel, const ch
 SparkStatus SparkNvrmLaunchClusterShape(const SparkNvrmLaunchRequest *request, uint32_t cluster[3], const char *owner);
 uint32_t SparkNvrmLatchSegment(void);
 void SparkNvrmLatchSegmentSet(uint32_t launches);
+void SparkNvrmLaunchWords(uint32_t *words, uint64_t slot_address);
+SparkStatus SparkNvrmLaunchDescribe(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const char *owner);
 SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
 	const char *owner);
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

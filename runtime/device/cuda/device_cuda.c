@@ -1214,6 +1214,13 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	return(status);
 }
 
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
+}
+
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 {
 	CudaProgram *cuda = (CudaProgram *)program->backend;
