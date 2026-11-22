@@ -33,7 +33,8 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `cisco0` on port 0, [FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)); there are no
   direct pair links. A fleet now runs on one switch, with an optional second
   switch on the second port, and weightd's mesh uses whichever ports are active
-  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*). Replace the
+  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*); the lanes'
+  control endpoints and tap streams use the first port alone. Replace the
   legacy ring/single-switch/dual-switch topology modes with one schema for one
   or two all-to-all rails, and generate the four-, eight-, and sixteen-Spark
   profiles and the pinned interface, address and communicator tables from it.
@@ -60,8 +61,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
   which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
   node; release main's agent, which has that default, and drop the override.
-- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
-  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- The hub drafters take taps over the 10 GbE link to sparkf (`10.10.250.2`),
+  forwarded through sparkf, because the first port is the only network every
+  fleet has. A fleet with the second switch could stream them to the hub's
+  second-port address `10.10.201.250` at 100 Gb/s; the lane records would have
+  to choose the endpoint by port state, as weightd's mesh does.
 - spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
   run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
   another switch port to find out which end is at fault.
