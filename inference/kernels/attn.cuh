@@ -78,7 +78,7 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 
 template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT, LmRopeRounding ROUNDING = LM_ROPE_FP32>
 __global__ __launch_bounds__(THREADS, 1)
-void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
+void LmRopeOffsetPerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t head_count, uint32_t head_dimension, uint32_t rope_offset, uint32_t rope_dimension, float theta)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,half = rope_dimension / 2u,index;
 	uint64_t base;
