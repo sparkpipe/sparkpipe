@@ -1104,6 +1104,23 @@ them), naming the map and the rule, before any backend sees it.
   the toolkit reaches PTX 9.5; driver 13000 does not know that attribute.
 - **Host and Metal backends** refuse with "no tensor maps".
 
+L2 promotion, measured on GB10 (2026-11-22) with cold weights: each launch read a different weight copy, 320 MiB in
+rotation, so no launch found its weights in L2. These are the engine's tensor-map GEMMs with driver-encoded maps, L2
+promotion none against 128 bytes, median of 4 interleaved passes, in us per launch:
+
+| GEMM | none | 128 B |
+|---|---|---|
+| dense BF16, 64 rows, 4096 -> 1024 | 72.5 | 72.4 |
+| dense BF16, 200 rows, 2048 -> 640 | 35.5 | 35.3 |
+| dense BF16, 512 rows, 4096 -> 4096 | 1038.9 | 1072.5 |
+| interleaved MXFP4, 8 experts x 4 rows, 7168 -> 4096 | 803.5 | 802.1 |
+| interleaved MXFP4, 8 experts x 32 rows, 7168 -> 4096 | 1728.8 | 1728.9 |
+| interleaved MXFP4, 8 experts x 128 rows, 7168 -> 4096 | 3200.1 | 3199.9 |
+| interleaved MXFP4, 8 experts x 32 rows, 2048 -> 7168 | 864.3 | 862.4 |
+
+The differences are inside the passes' spread and go both ways, so maps without promotion cost nothing measurable at
+the shapes the engine sends through tensor maps.
+
 The proof compares outputs only, never map bytes. `tests/test_tensor_map_build_cuda.py` runs the engine's 32 tensor-map
 GEMMs (dense BF16 with K tiles 64 and 32 in rank 2 and 3, weight-only MXFP4 and FP8 with 1, 2 and 4 groups, interleaved
 MXFP4 with K tiles 32 and 128, row counts from 1 to 512 with boxes past the edge, so 128-, 64- and 32-byte swizzles and
