@@ -130,6 +130,7 @@ struct ibv_wc
     uint32_t imm_data;
 };
 
+#define IBV_PORT_DOWN 1
 #define IBV_PORT_ACTIVE 4
 #define IBV_QPT_RC 2
 #define IBV_QPS_RESET 0
@@ -231,6 +232,8 @@ void spark_stub_ibv_poll_cq_inject(int status, uint32_t count);
 int spark_stub_ibv_qp_state(uint32_t qpn);
 void spark_stub_ibv_set_qp_state(uint32_t qpn, int state);
 int spark_stub_ibv_qp_remote_qpn(uint32_t qpn);
+uint32_t spark_stub_ibv_qp_remote_address(uint32_t qpn);
+void spark_stub_ibv_set_port_state(const char *name, int state);
 
 #ifdef __cplusplus
 }
