@@ -133,6 +133,22 @@ request at a time. The host, its drafters and their store are in
 continuation of any token stream an earlier request showed it, and can
 delay, corrupt or withhold replies.
 
+`build/sparkpipe_draftd` (`node/draftd.c`) is the C draft server that
+replaces both. It is one process for every drafted lane on a GPU, so the
+lanes' drafters do not time-slice the GPU between processes.
+- **Wiring:** each lane in its JSON config has a DFT3 port
+  (`ring/transport/draft_server.c`), an optional tap stream
+  (`src/spark_tap_stream_reader.c`, which reads the tap rank's SPT2 stream
+  or a recording) and a drafter.
+- **Drafter:** today it is the host replay drafter, which can require a
+  sequence's taps before it drafts. Engine drafters come next.
+- **Crash behaviour:** if the process dies, every lane's open exchange
+  ends at once and new connections are refused. Each lane then decodes
+  without model drafts, with the engine's usual backoff, until a restart
+  brings the lanes back.
+- **Recordings:** `sparkpipe_draftd --tap-summary` prints a recording's
+  per-request summary, as `tools/spec_offline/tapstream.py` does.
+
 ### Taps
 
 A drafter that reads the target's hidden rows gets them from one rank. The
