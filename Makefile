@@ -33,7 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch nvrm-weightd clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -1165,6 +1165,34 @@ test-working-set-rollback: build/test_working_set_rollback
 
 build/test_modules:
 	mkdir -p build/test_modules
+
+NVRM_BUILD_DIR := build/nvrm
+NVRM_COMPILE_FLAGS := -DSPARKPIPE_DEVICE_NVRM $(DEVICE_NVRM_INCLUDE_FLAGS)
+NVRM_RUNTIME_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(RUNTIME_SOURCES))
+NVRM_RUNTIME_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_runtime.a
+NVRM_WEIGHTD_PROGRAMS := $(NVRM_BUILD_DIR)/sparkpipe_weightd $(NVRM_BUILD_DIR)/weightd_warm $(NVRM_BUILD_DIR)/weightdctl
+
+$(NVRM_BUILD_DIR)/obj/%.o: %.c | build
+	@mkdir -p $(@D) && $(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+
+$(NVRM_RUNTIME_LIBRARY): $(NVRM_RUNTIME_OBJECTS)
+	@mkdir -p $(@D)
+	rm -f $@ && $(AR) rcs $@ $^
+
+$(NVRM_BUILD_DIR)/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -libverbs -lmlx5 -o $@
+
+$(NVRM_BUILD_DIR)/weightd_warm: tools/weightd_warm.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+$(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+.PHONY: nvrm-weightd
+nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
 build/obj/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@

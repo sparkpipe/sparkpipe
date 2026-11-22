@@ -209,4 +209,5 @@ also runs in `make test`. It checks four things.
   `weightd_warm` and `weightdctl`, and of `sparkpipe_weightd` where the
   verbs headers exist, must show `libcudart.so.13` and nothing else. Their
   device memory goes through the device layer compiled into them, so none
-  needs `libcuda.so.1`.
+  needs `libcuda.so.1`. The nvrm builds of the same programs
+  (`build/nvrm/`) must show no finding at all.

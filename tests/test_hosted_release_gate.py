@@ -393,14 +393,16 @@ class HostOnlyBuildTest(unittest.TestCase):
             weightd = ["build/weightd_warm", "build/weightdctl"]
             if Path("/usr/include/infiniband/verbs.h").is_file():
                 weightd.append("build/sparkpipe_weightd")
+            nvrm_weightd = [path.replace("build/", "build/nvrm/", 1) for path in weightd]
             completed = subprocess.run(["make", "-C", str(source), f"-j{os.cpu_count() or 2}", f"CUDA_HOME={toolkit}",
-                                        "CC=cc -Wl,--no-as-needed", *built, *weightd], capture_output=True, text=True)
+                                        "CC=cc -Wl,--no-as-needed", *built, *weightd, *nvrm_weightd], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stdout[-4000:] + completed.stderr[-4000:])
             cwd = os.getcwd()
             os.chdir(source)
             try:
                 MODULE.stage(str(base / "host_only"), host_only)
                 MODULE.stage(str(base / "weightd"), weightd)
+                MODULE.stage(str(base / "nvrm_weightd"), nvrm_weightd)
             finally:
                 os.chdir(cwd)
             report = AUDIT.audit_root(str(base / "host_only"))
@@ -410,6 +412,9 @@ class HostOnlyBuildTest(unittest.TestCase):
             for program in weightd:
                 found = {(kind, detail) for path, kind, detail in weightd_report.found if path == program}
                 self.assertEqual(found, {("needed", "libcudart.so.13")}, program)
+            nvrm_report = AUDIT.audit_root(str(base / "nvrm_weightd"))
+            self.assertEqual(nvrm_report.scanned, len(nvrm_weightd))
+            self.assertEqual(nvrm_report.findings(), [])
 
 
 if __name__ == "__main__":

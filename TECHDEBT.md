@@ -1900,10 +1900,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
   - that device backend;
   - a build flavour that links neither library;
-  - weightd in the nvrm flavour. weightd's memory goes through the device
-    layer ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)),
-    and the RDMA transport links the flavour's device library instead of the
-    driver. The nvrm flavour does not build weightd's programs yet.
+  - weightd on nvrm on a node. weightd's memory goes through the device layer
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)), and
+    the RDMA transport links the flavour's device library instead of the
+    driver.
+    - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
+      programs with no CUDA library. They have not run on a GPU yet.
+    - The nvrm flavour does not yet build the transport, residentd or the
+      adapters.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

@@ -7,6 +7,17 @@ One process creates exportable memory and passes it to another as a file
 descriptor. Each process reserves its own address range and maps the memory
 into it.
 
+The device layer and one backend, chosen at build time, are compiled into
+`sparkpipe_weightd`, `weightd_warm` and `weightdctl`, so they ship without a
+separate device library.
+- `make` builds them with the CUDA backend.
+- `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds them with the nvrm
+  backend as `build/nvrm/sparkpipe_weightd`, `build/nvrm/weightd_warm` and
+  `build/nvrm/weightdctl`.
+
+Engines reach the same entry points through the device library their
+adapter loads. The RDMA transport links that library too.
+
 ## Entry points
 
 ```c
