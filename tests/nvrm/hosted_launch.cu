@@ -34,6 +34,21 @@ __global__ void HostedStep(uint32_t *output, uint32_t base)
 	output[index] = base + Step * index;
 }
 
+typedef struct HostedTable
+{
+	uint64_t word[16];
+} HostedTable;
+
+__global__ void HostedGridConstant(const __grid_constant__ HostedTable table, uint64_t *output)
+{
+	uint64_t address;
+	asm volatile("mov.b64 %0, %1;" : "=l"(address) : "l"((uint64_t)(uintptr_t)&table));
+	if ( threadIdx.x < 16u )
+		output[threadIdx.x] = ((const volatile uint64_t *)(uintptr_t)address)[threadIdx.x];
+	if ( threadIdx.x == 16u )
+		output[16] = address;
+}
+
 __device__ uint32_t hosted_touched;
 
 __global__ void HostedTouch(void)
@@ -62,6 +77,7 @@ static void TestLaunches(SparkGpuStream queue, SparkDeviceBuffer *table, SparkDe
 {
 	const uint64_t *values = (const uint64_t *)table->host;
 	HostedShape shape;
+	HostedTable table_value;
 	SparkGpuStream default_stream = 0;
 	uint32_t index,wrong = 0u;
 	memset(&shape,0,sizeof(shape));
@@ -85,6 +101,16 @@ static void TestLaunches(SparkGpuStream queue, SparkDeviceBuffer *table, SparkDe
 	LM_LAUNCH((HostedTouch),1,32,0,queue);
 	CHECK(SparkGpuGetLastError() == SPARK_GPU_SUCCESS && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
 		"launch a kernel that takes no arguments");
+	for (index = 0u; index < 16u; index++)
+		table_value.word[index] = 0x5eed000000000000ull + 0x1111ull * index;
+	memset(words->host,0,17u * sizeof(uint64_t));
+	LM_LAUNCH((HostedGridConstant),1,32,0,queue,table_value,(uint64_t *)words->device);
+	CHECK(SparkGpuGetLastError() == SPARK_GPU_SUCCESS && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+		"launch a kernel that reads a grid-constant parameter through its generic address");
+	wrong = ((const uint64_t *)words->host)[16] == 0u;
+	for (index = 0u; index < 16u; index++)
+		wrong += ((const uint64_t *)words->host)[index] != table_value.word[index];
+	CHECK(wrong == 0u,"a grid-constant parameter reads back through its generic address, as the TMA unit reads a tensor map parameter");
 }
 
 static void TestErrors(SparkGpuStream queue, SparkDeviceBuffer *words)

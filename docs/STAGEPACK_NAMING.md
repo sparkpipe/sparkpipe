@@ -27,6 +27,12 @@ glm53full, dsv4flash, dsv4pro, dsv41flash, qwen3flash (Qwen 3.8 Flash Next),
 qwen27b, qwenmax, k3, hy4, ling, lingfin, mimo26pro, mimo26flash. Registered
 arms: `mimo26pro.mxfp4.tp8`, `mimo26flash.mxfp4.tp4`.
 
+Drafters for speculation are one-GPU packs, topology `tp1`, cut by
+`tools/drafter_pack.py`: `k31dspark.bf16.tp1` (Kimi K3.1 Pro's DSpark),
+`dsv41dspark.mxfp4.tp1` (the DSpark inside DeepSeek V4.1 1017's checkpoint) and
+`qwen27bdspine.bf16.tp1` (Qwen3.8-27B's DSpine b16), each as
+`<arm>.rank0.sp`.
+
 weightd does not read the arm name. Its identity is the model and revision
 strings (`SPARK_WEIGHTD_IDENTITY_MODEL` and `SPARK_WEIGHTD_IDENTITY_REVISION`,
 or the driver's defaults), the pack SHA-256 (`SPARK_WEIGHTD_PACK_SHA256`), the

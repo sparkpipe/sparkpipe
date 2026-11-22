@@ -47,7 +47,8 @@ CONTROL_PORT_BASE = 18180
 
 
 def rail_ip(rank: int) -> str:
-    return f"10.10.100.{10 + rank}"
+    port = json.loads(pathlib.Path(__file__).resolve().with_name("spark_fabric.json").read_text())["first_port"]
+    return f"{port['prefix']}.{port['address_base'] + rank}"
 
 
 def main():

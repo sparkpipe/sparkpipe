@@ -69,6 +69,8 @@ SparkStatus SparkNvrmShareImport(SparkNvrmGpu *gpu, int fd, uint32_t *handle, ui
 	imported.object.data.rmObject.hDevice = gpu->device;
 	imported.object.data.rmObject.hParent = gpu->device;
 	SHARE_TRY(SparkNvrmRmControl(&gpu->rm,gpu->rm.client,NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECT_FROM_FD,&imported,(uint32_t)sizeof(imported),owner));
+	if ( imported.object.data.rmObject.hObject != 0u )
+		__atomic_add_fetch(&gpu->rm.objects,1u,__ATOMIC_ACQ_REL);
 	status = imported.object.data.rmObject.hObject != 0u ? ShareBytes(gpu,imported.object.data.rmObject.hObject,bytes,owner) :
 		SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_import",owner,0,"the module imported the descriptor without naming a handle");
 	if ( status != SPARK_STATUS_OK )

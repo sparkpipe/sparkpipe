@@ -235,6 +235,8 @@ static void Bank0Word(uint8_t *bank, uint32_t word, uint32_t value)
 
 _Static_assert(SPARK_NVRM_BANK0_WORD_BLOCK_X > BANK0_WINDOW_WORD_LOCAL + 1u && SPARK_NVRM_BANK0_WORD_GRID_Z < BANK0_WORD_LAST,
 	"the launch-shape words lie in the driver area, clear of the window and last words");
+_Static_assert(SPARK_NVRM_BANK0_WORD_PARAMETERS > BANK0_WINDOW_WORD_LOCAL + 1u && SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u < SPARK_NVRM_BANK0_WORD_BLOCK_X,
+	"the parameters' address lies in the driver area, clear of the window and launch-shape words");
 
 static const uint32_t bank0_dimension_words[6] = {SPARK_NVRM_BANK0_WORD_BLOCK_X, SPARK_NVRM_BANK0_WORD_BLOCK_Y, SPARK_NVRM_BANK0_WORD_BLOCK_Z,
 	SPARK_NVRM_BANK0_WORD_GRID_X, SPARK_NVRM_BANK0_WORD_GRID_Y, SPARK_NVRM_BANK0_WORD_GRID_Z};
@@ -243,7 +245,8 @@ int SparkNvrmBank0WordClaimed(uint32_t word)
 {
 	uint32_t index;
 	if ( word == BANK0_WINDOW_WORD_SHARED || word == BANK0_WINDOW_WORD_SHARED + 1u || word == BANK0_WINDOW_WORD_LOCAL ||
-		word == BANK0_WINDOW_WORD_LOCAL + 1u || word == BANK0_WORD_LAST )
+		word == BANK0_WINDOW_WORD_LOCAL + 1u || word == BANK0_WORD_LAST || word == SPARK_NVRM_BANK0_WORD_PARAMETERS ||
+		word == SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u )
 		return(1);
 	for (index = 0u; index < sizeof(bank0_dimension_words) / sizeof(bank0_dimension_words[0]); index++)
 		if ( bank0_dimension_words[index] == word )
@@ -252,13 +255,16 @@ int SparkNvrmBank0WordClaimed(uint32_t word)
 }
 
 SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t shared_window, uint64_t local_window,
-	const uint32_t grid[3], const uint32_t block[3], const void *arguments, uint32_t argument_bytes, uint8_t *bank, uint32_t bank_bytes,
-	const char *owner)
+	const uint32_t grid[3], const uint32_t block[3], const void *arguments, uint32_t argument_bytes, uint8_t *bank, uint64_t bank_address,
+	uint32_t bank_bytes, const char *owner)
 {
 	uint32_t index;
+	uint64_t parameters;
 	const char *problem = 0;
 	if ( kernel == 0 || bank == 0 || grid == 0 || block == 0 || (arguments == 0 && argument_bytes != 0u) )
 		problem = "needs a kernel, its launch shape, its arguments and a constant bank";
+	else if ( bank_address == 0u || (bank_address & 0x3fu) != 0u )
+		problem = "needs the GPU address of constant bank 0, aligned to 64 bytes";
 	else if ( kernel->parameter_offset < SPARK_NVRM_BANK0_DRIVER_BYTES )
 		problem = "the kernel's parameters overlap the driver words of constant bank 0";
 	else if ( argument_bytes != kernel->parameter_bytes )
@@ -276,6 +282,9 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 	Bank0Word(bank,BANK0_WINDOW_WORD_LOCAL,(uint32_t)local_window);
 	Bank0Word(bank,BANK0_WINDOW_WORD_LOCAL + 1u,(uint32_t)(local_window >> 32));
 	Bank0Word(bank,BANK0_WORD_LAST,BANK0_LAST_VALUE);
+	parameters = bank_address + kernel->parameter_offset;
+	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_PARAMETERS,(uint32_t)parameters);
+	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u,(uint32_t)(parameters >> 32));
 	for (index = 0u; index < 3u; index++)
 	{
 		Bank0Word(bank,bank0_dimension_words[index],block[index]);

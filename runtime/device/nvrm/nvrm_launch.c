@@ -226,7 +226,8 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 	}
 	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
 	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,request->arguments,request->argument_bytes,
-		request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,owner));
+		request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,
+		owner));
 	LaunchShape(gpu,program,request,&shape);
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
