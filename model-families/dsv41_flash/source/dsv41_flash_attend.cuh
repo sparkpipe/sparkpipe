@@ -22,8 +22,8 @@
 template<uint32_t DIM, uint32_t QTILES>
 static __host__ __device__ constexpr uint32_t D41AttendFixedBytes(void)
 {
-	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) + 2u * QTILES * D41A_QUERIES * D41A_SCORE_STRIDE * 4u +
-		QTILES * D41A_QUERIES * D41A_WEIGHT_STRIDE * 2u + 4u * QTILES * D41A_QUERIES * 4u + (5u + 2u * D41A_PLANS) * 8u + D41A_PLANS * D41A_PLAN_WORDS * 4u;
+	return 2u * D41A_TILE * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) + (QTILES == 1u ? D41A_QUERIES * (DIM * 2u + LM_LATENT_SHARD_ROW_PAD) : 0u) +
+		2u * QTILES * D41A_QUERIES * D41A_SCORE_STRIDE * 4u + QTILES * D41A_QUERIES * D41A_WEIGHT_STRIDE * 2u + 4u * QTILES * D41A_QUERIES * 4u + (5u + 2u * D41A_PLANS) * 8u + D41A_PLANS * D41A_PLAN_WORDS * 4u;
 }
 
 template<uint32_t DIM, uint32_t QTILES>
@@ -89,7 +89,8 @@ void D41AttendKernel(
 	static_assert(D41AttendFixedBytes<DIM, QTILES>() + 4096u <= LM_PREFILL_ATTN_SHARED_LIMIT, "the tiles exceed the shared memory an SM has");
 	extern __shared__ __align__(128) uint8_t d41a_shared[];
 	uint8_t *keys = d41a_shared;
-	float *score_parts = (float *)(keys + 2u * TILE * PITCH);
+	uint8_t *query_rows = keys + 2u * TILE * PITCH;
+	float *score_parts = (float *)(query_rows + (QTILES == 1u ? QUERIES * PITCH : 0u));
 	uint16_t *weight_high = (uint16_t *)(score_parts + 2u * QT * D41A_SCORE_STRIDE);
 	float *running_max = (float *)(weight_high + QT * D41A_WEIGHT_STRIDE);
 	float *running_sum = running_max + QT;
@@ -266,11 +267,14 @@ void D41AttendKernel(
 		}
 		return;
 	}
-	uint32_t query_frag[HALF_STEPS][4];
+	uint32_t query_frag[QTILES == 1u ? 1u : HALF_STEPS][4];
 	float accumulator[QTILES][COLUMN_FRAGS][4];
 	const uint16_t *tile_query = query + query_tile * query_part_stride;
+	const uint32_t query_base = (uint32_t)__cvta_generic_to_shared(query_rows), a_row = (matrix & 1u) * 8u + within;
 	auto fetch = [&](uint32_t row)
 	{
+		if constexpr (QTILES == 1u)
+			return;
 		const uint32_t low = lane >> 2u, high = low + 8u;
 		const uint32_t *low_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + low) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
 		const uint32_t *high_query = (const uint32_t *)(tile_query + ((uint64_t)row * QUERIES + high) * DIM) + qk_half * HALF_STEPS * 8u + (lane & 3u);
@@ -289,6 +293,13 @@ void D41AttendKernel(
 	for (block = blockIdx.x, ordinal = 0u; block < live; block += gridDim.x, ordinal++)
 	{
 		const uint32_t record = ordinal % PLANS, row = block, following = block + gridDim.x;
+		if constexpr (QTILES == 1u)
+		{
+			const uint4 *source = (const uint4 *)(tile_query + (uint64_t)block * QUERIES * DIM);
+			for (uint32_t chunk = threadIdx.x; chunk < QUERIES * CHUNKS; chunk += D41A_CONSUMERS)
+				*(uint4 *)(query_rows + (chunk / CHUNKS) * PITCH + (chunk % CHUNKS) * 16u) = source[chunk];
+			D41AttendBarrier();
+		}
 		const uint32_t *plan = plans + record * PLAN_WORDS;
 		uint32_t tiles, window_from, limit, valid, window_begin, tile_first;
 		LmMbarrierWait(&planned[record], (ordinal / PLANS) & 1u);
@@ -333,8 +344,19 @@ void D41AttendKernel(
 					LmPrefillLoadX4(tile_base + b_row * PITCH + b_chunk * 16u, b);
 					first[0] = b[0]; first[1] = b[1];
 					second[0] = b[2]; second[1] = b[3];
-					LmMmaBf16(score, query_frag[2u * pair], first);
-					LmMmaBf16(score, query_frag[2u * pair + 1u], second);
+					if constexpr (QTILES == 1u)
+					{
+						uint32_t low_step[4], high_step[4];
+						LmPrefillLoadX4(query_base + a_row * PITCH + ((qk_half * HALF_STEPS + 2u * pair) * 2u + (matrix >> 1u)) * 16u, low_step);
+						LmPrefillLoadX4(query_base + a_row * PITCH + ((qk_half * HALF_STEPS + 2u * pair + 1u) * 2u + (matrix >> 1u)) * 16u, high_step);
+						LmMmaBf16(score, low_step, first);
+						LmMmaBf16(score, high_step, second);
+					}
+					else
+					{
+						LmMmaBf16(score, query_frag[2u * pair], first);
+						LmMmaBf16(score, query_frag[2u * pair + 1u], second);
+					}
 				}
 #pragma unroll
 				for (uint32_t index = 0u; index < 4u; index++)
