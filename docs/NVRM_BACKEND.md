@@ -395,12 +395,15 @@ starts zeroed without a fill of our own. In open-gpu-kernel-modules
 - `kernel-open/nvidia/nv-vm.c:263-265` then adds `__GFP_ZERO`, which the
   2 MiB-page path at lines 520-541 uses too.
 
-The backend refuses to initialize unless `/proc/driver/nvidia/params`
-lists `InitializeSystemMemoryAllocations: 1`. Without it, fresh device
-memory would hold another allocation's data.
+Once it has opened the GPU, the backend refuses to initialize unless
+`/proc/driver/nvidia/params` lists `InitializeSystemMemoryAllocations: 1`.
+Without it, fresh device memory would hold another allocation's data. A
+host without the module still fails first on the control device it
+cannot open.
 
-Before this, the copy engine zeroed each device allocation. That made 8,
-10.5 and 16 GiB allocations take 1.08, 1.44 and 2.14 s.
+Before this, the copy engine also zeroed each device allocation. On
+spark1, 8, 10.5 and 16 GiB allocations took 0.89, 1.39 and 2.19 s with
+that fill and take 0.62, 0.78 and 1.26 s without it.
 
 System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
 pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared

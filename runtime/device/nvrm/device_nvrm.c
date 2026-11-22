@@ -162,11 +162,14 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	const long pages = sysconf(_SC_PHYS_PAGES),page = sysconf(_SC_PAGESIZE);
 	const uint64_t memory = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0u;
 	uint32_t copy_engine = 0u;
+	NVRM_TRY(SparkNvrmGpuOpen(&nvrm_gpu,configuration->ordinal,SPARK_NVRM_MEMORY_HOST,"initialize"));
 	if ( SparkNvrmModuleZeroesMemory(SPARK_NVRM_MODULE_PARAMETERS) == 0 )
+	{
+		SparkNvrmGpuClose(&nvrm_gpu);
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"initialize","",0,
 			"the open kernel module does not zero the system memory it allocates (InitializeSystemMemoryAllocations is not 1 in "
 			SPARK_NVRM_MODULE_PARAMETERS "); load it with NVreg_InitializeSystemMemoryAllocations=1"));
-	NVRM_TRY(SparkNvrmGpuOpen(&nvrm_gpu,configuration->ordinal,SPARK_NVRM_MEMORY_HOST,"initialize"));
+	}
 	{
 		SparkStatus copies = SparkNvrmCopyEngineAsync(&nvrm_gpu,&copy_engine,"initialize");
 		if ( copies == SPARK_STATUS_OK )
