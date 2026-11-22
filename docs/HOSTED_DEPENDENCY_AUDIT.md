@@ -122,8 +122,8 @@ python3 tools/hosted_release_gate.py shrink BASE
 `build/hosted_release_root` under their repository paths and checks that
 root. The default set is every file a lane root or hub API directory ships:
 
-- the node files `HOSTED_RELEASE_NODE_FILES`, which equal the kit's `NODE`
-  list;
+- the node files `HOSTED_RELEASE_NODE_FILES`: the kit's `NODE` list
+  without the CUDA device library, which only the CUDA builds load;
 - the hub API files `HOSTED_RELEASE_HUB_FILES`;
 - every CUDA serving adapter, with the `<adapter>.kernels` directory of
   cubins and kernel manifests its build installs beside it, which lane setup
@@ -200,13 +200,14 @@ The list can only shrink:
 
 `HOSTED=1 scripts/release_build.sh` runs the gate with `--deploy` on the
 build host over the node files and adapters, and on the hub over the API
-files and adapters, each with the nvrm device library and the tensor map
-build image and its manifest added, before it
+files and adapters, each with the CUDA device library taken out and the nvrm
+device library, the tensor map build image and its manifest added, before it
 writes the firmware directory. It then ships the node files from the gated
 root and names the hub's gated root (with its checksums) as the API build,
-so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. Until the debt
-list is empty every hosted kit run is refused. Without `HOSTED=1` the kit
-builds and ships exactly as before.
+so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. The debt list
+is empty, so a hosted root passes `--deploy` once every file it ships is
+built for nvrm. Without `HOSTED=1` the kit builds and ships exactly as
+before, the CUDA device library included.
 
 ## Tests
 
@@ -234,9 +235,11 @@ also runs in `make test`. It checks four things.
   ones. It stages exact paths only, and a directory only when it holds
   regular files and no links. `shrink` fails on any added file or
   finding in a scratch Git repository. The gate stages each shipped adapter
-  with its kernels directory. The release kit's `NODE` list equals
-  `HOSTED_RELEASE_NODE_FILES`, and its hosted mode gates both builds before
-  it writes the firmware directory.
+  with its kernels directory. The release kit's `NODE` list is
+  `HOSTED_RELEASE_NODE_FILES` and the CUDA device library, which its hosted
+  mode takes out of both lists, and its hosted mode gates both builds before
+  it writes the firmware directory. The committed debt list is empty and a
+  hosted root carries no CUDA device library.
 - **The host-only build**, on Linux. It builds the host-only programs from a
   copy of the sources with the stand-in toolkit and `-Wl,--no-as-needed`.
   The audit must find nothing in them, so a CUDA library on any of their

@@ -1,11 +1,4 @@
 {
   "schema_version": 1,
-  "debt": [
-    {
-      "reason": "CUDA device library: runtime/device/cuda/device_cuda.c implements spark_device.h over the CUDA runtime, and every adapter loads it from runtime_libs/.",
-      "files": {
-        "build/runtime_libs/libsparkpipe_device_cuda.so": ["needed libcudart.so.13"]
-      }
-    }
-  ]
+  "debt": []
 }
