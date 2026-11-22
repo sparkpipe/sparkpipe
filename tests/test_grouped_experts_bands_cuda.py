@@ -6,9 +6,10 @@ grouped skinny expert GEMV (Qwen3.8 Max and Flash in NVFP4 and BF16, MiMo 2.6 in
 and Flash in FP8 and BF16, Gemma 4, K-EXAONE 2, Laguna, Ling 3, Solar Open 2 and Motif in BF16), with each family's
 local experts, top-k and widths, both projections run at the last row count below and the first above each boundary
 where the kernel changes: 2, 8 and 16 routes an expert, the last being where LmLocalExpertsUp/Down leave the grouped
-skinny GEMV. Crossing a boundary must not make a call more than four times slower; every output of the grouped GEMV
-must be the same bytes as a two-row reference variant, since every variant sums each output in the same order; and
-no grouped GEMV instantiation in the binary may spill to local memory or keep a stack frame.
+skinny GEMV. Every call is timed with its weights out of L2, as in a step. Crossing a boundary must not make a call
+more than four times slower; a call may not take longer than its band's variant run on its own; every output of the
+grouped GEMV must be the same bytes as a two-row reference variant, since every variant sums each output in the same
+order; and no grouped GEMV instantiation in the binary may spill to local memory or keep a stack frame.
 """
 
 import re

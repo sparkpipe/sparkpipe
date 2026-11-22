@@ -16,6 +16,9 @@
 #define BANDS_REPEATS 3u
 #define BANDS_SLOWER 4.0f
 #define BANDS_SLACK_MS 0.3f
+#define BANDS_BAND_SLOWER 1.25f
+#define BANDS_BAND_SLACK_MS 0.02f
+#define BANDS_FLUSH_BYTES (256ull << 20)
 
 enum BandsEntry
 {
@@ -171,6 +174,28 @@ static void BandsFreeRoutes(BandsRoutes *routes)
 	BANDS_CUDA(cudaFree(routes->prefix_down));
 }
 
+enum BandsCall
+{
+	BANDS_PRODUCTION,
+	BANDS_REFERENCE,
+	BANDS_BAND_VARIANT
+};
+
+enum BandsBand
+{
+	BANDS_FEW,
+	BANDS_MID,
+	BANDS_WIDE
+};
+
+static const char *const kBandNames[3] = {"few", "mid", "wide"};
+static void *g_bands_flush = 0;
+
+static uint32_t BandsBandOf(const BandsFamily *family, uint32_t routes)
+{
+	return routes <= 2u * family->local ? BANDS_FEW : routes <= LM_SKINNY_ROWS * family->local ? BANDS_MID : BANDS_WIDE;
+}
+
 template<class Format>
 static int32_t BandsProduction(const BandsFamily *family, const BandsRoutes *routes, uint32_t down, const void *weight, LmScaleTensor scale,
 	const uint16_t *activation, uint16_t *output, int sms, cudaStream_t stream)
@@ -195,10 +220,12 @@ static int32_t BandsProduction(const BandsFamily *family, const BandsRoutes *rou
 }
 
 template<class Format>
-static int32_t BandsReference(const BandsFamily *family, const BandsRoutes *routes, uint32_t down, const void *weight, LmScaleTensor scale,
-	const uint16_t *activation, uint16_t *output, cudaStream_t stream)
+static int32_t BandsVariant(const BandsFamily *family, const BandsRoutes *routes, uint32_t down, const void *weight, LmScaleTensor scale,
+	const uint16_t *activation, uint16_t *output, BandsCall call, uint32_t band, cudaStream_t stream)
 {
+	using Shapes = LmSkinnyGroupedShapes<Format,LM_SKINNY_GROUPED_NEURONS>;
 	const uint32_t input = down != 0u ? family->inter : family->hidden, output_dimension = down != 0u ? family->hidden : family->inter;
+	const uint32_t chunks = input / LmSkinnyFormat<Format>::kElements;
 	LmSkinnyArguments args;
 	memset(&args, 0, sizeof(args));
 	args.weight = (const uint8_t *)weight;
@@ -215,12 +242,18 @@ static int32_t BandsReference(const BandsFamily *family, const BandsRoutes *rout
 	args.input_dimension = input;
 	args.output_dimension = output_dimension;
 	args.output_row_stride = output_dimension;
-	return LmSkinnyGroupedLanes<Format,2u,4u>(&args, input / LmSkinnyFormat<Format>::kElements, stream);
+	if ( call == BANDS_REFERENCE )
+		return LmSkinnyGroupedLanes<Format,2u,4u>(&args, chunks, stream);
+	if ( band == BANDS_FEW )
+		return LmSkinnyGroupedLanes<Format,Shapes::kFewRows,Shapes::kFewNeurons>(&args, chunks, stream);
+	if ( band == BANDS_WIDE )
+		return LmSkinnyGroupedLanes<Format,Shapes::kWideRows,Shapes::kWideNeurons>(&args, chunks, stream);
+	return LmSkinnyGroupedLanes<Format,Shapes::kRows,Shapes::kNeurons>(&args, chunks, stream);
 }
 
 template<class Format>
 static float BandsTime(const BandsFamily *family, const BandsRoutes *routes, uint32_t down, const void *weight, LmScaleTensor scale,
-	const uint16_t *activation, uint16_t *output, size_t output_bytes, int sms, cudaStream_t stream, uint32_t reference)
+	const uint16_t *activation, uint16_t *output, size_t output_bytes, int sms, BandsCall call, uint32_t band, cudaStream_t stream)
 {
 	cudaEvent_t start, stop;
 	float best = INFINITY;
@@ -230,9 +263,10 @@ static float BandsTime(const BandsFamily *family, const BandsRoutes *routes, uin
 	{
 		float ms = 0.0f;
 		BANDS_CUDA(cudaMemsetAsync(output, 0, output_bytes, stream));
+		BANDS_CUDA(cudaMemsetAsync(g_bands_flush, (int)repeat, BANDS_FLUSH_BYTES, stream));
 		BANDS_CUDA(cudaEventRecord(start, stream));
-		BANDS_REQUIRE((reference != 0u ? BandsReference<Format>(family, routes, down, weight, scale, activation, output, stream) :
-			BandsProduction<Format>(family, routes, down, weight, scale, activation, output, sms, stream)) == LM_LAUNCH_OK);
+		BANDS_REQUIRE((call == BANDS_PRODUCTION ? BandsProduction<Format>(family, routes, down, weight, scale, activation, output, sms, stream) :
+			BandsVariant<Format>(family, routes, down, weight, scale, activation, output, call, band, stream)) == LM_LAUNCH_OK);
 		BANDS_CUDA(cudaEventRecord(stop, stream));
 		BANDS_CUDA(cudaEventSynchronize(stop));
 		BANDS_CUDA(cudaEventElapsedTime(&ms, start, stop));
@@ -270,11 +304,13 @@ static uint32_t BandsFamilyRun(const BandsFamily *family, int sms, cudaStream_t 
 				const uint32_t rows = side == 0u ? rows_below : rows_above;
 				BandsRoutes routes = BandsBuildRoutes(family, rows, 0x40u + rows);
 				const size_t bytes = (size_t)routes.routes * output_dimension * sizeof(uint16_t);
-				const float ms = BandsTime<Format>(family, &routes, down, weight, scale, activation, output, output_bytes, sms, stream, 0u);
+				const uint32_t band = BandsBandOf(family, routes.routes);
+				const float ms = BandsTime<Format>(family, &routes, down, weight, scale, activation, output, output_bytes, sms, BANDS_PRODUCTION, band, stream);
 				const bool grouped = family->entry == BANDS_GROUPED || routes.routes <= LM_SKINNY_GROUPED_MAX_MEAN_ROWS * family->local;
+				float variant_ms = 0.0f;
 				if ( grouped )
 				{
-					(void)BandsTime<Format>(family, &routes, down, weight, scale, activation, reference, output_bytes, sms, stream, 1u);
+					(void)BandsTime<Format>(family, &routes, down, weight, scale, activation, reference, output_bytes, sms, BANDS_REFERENCE, band, stream);
 					BANDS_CUDA(cudaMemcpy(left.data(), output, bytes, cudaMemcpyDeviceToHost));
 					BANDS_CUDA(cudaMemcpy(right.data(), reference, bytes, cudaMemcpyDeviceToHost));
 					if ( memcmp(left.data(), right.data(), bytes) != 0 )
@@ -283,10 +319,17 @@ static uint32_t BandsFamilyRun(const BandsFamily *family, int sms, cudaStream_t 
 							routes.routes, family->local);
 						exit(1);
 					}
-					++checks;
+					variant_ms = BandsTime<Format>(family, &routes, down, weight, scale, activation, reference, output_bytes, sms, BANDS_BAND_VARIANT, band, stream);
+					if ( ms > BANDS_BAND_SLOWER * variant_ms + BANDS_BAND_SLACK_MS )
+					{
+						printf("FAIL %s %s: %u routes (the %s band) take %.3f ms, but the %s band's variant takes %.3f ms on its own\n", family->name,
+							down != 0u ? "down" : "up", routes.routes, kBandNames[band], ms, kBandNames[band], variant_ms);
+						exit(1);
+					}
+					checks += 2u;
 				}
-				printf("BAND %s %s routes=%u local_routes=%u bound=%u %s ms=%.3f\n", family->name, down != 0u ? "down" : "up", routes.routes, routes.local_routes,
-					bounds[bound], grouped ? "grouped" : "wide-path", ms);
+				printf("BAND %s %s routes=%u local_routes=%u bound=%u band=%s %s ms=%.3f variant_ms=%.3f\n", family->name, down != 0u ? "down" : "up", routes.routes,
+					routes.local_routes, bounds[bound], kBandNames[band], grouped ? "grouped" : "wide-path", ms, variant_ms);
 				if ( side == 0u )
 					below_ms = ms;
 				else if ( ms > BANDS_SLOWER * below_ms + BANDS_SLACK_MS )
@@ -342,6 +385,7 @@ int main(void)
 	BANDS_CUDA(cudaSetDevice(0));
 	BANDS_CUDA(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, 0));
 	BANDS_CUDA(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+	BANDS_CUDA(cudaMalloc(&g_bands_flush, BANDS_FLUSH_BYTES));
 	for ( const BandsFamily &family : nvfp4 )
 		checks += BandsFamilyRun<LmNvfp4>(&family, sms, stream);
 	for ( const BandsFamily &family : mxfp4 )

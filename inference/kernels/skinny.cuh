@@ -798,6 +798,8 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const
 	const uint4 *weights[NPG];
 	const uint16_t *activation[ROWS];
 	LmDependentWait();
+	if ( (blockIdx.x * (LM_SKINNY_THREADS / LANES)) / per_group >= (kBatched ? (args.group_row_offset[args.groups] + ROWS - 1u) / ROWS + args.groups : args.group_row_offset[args.groups]) )
+		return;
 	for ( index = threadIdx.x; index <= args.groups; index += LM_SKINNY_THREADS )
 		offset[index] = args.group_row_offset[index];
 	__syncthreads();
@@ -1175,8 +1177,11 @@ struct LmSkinnyGroupedShapes<LmNvfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
 };
 
 template<uint32_t NPG>
-struct LmSkinnyGroupedShapes<LmMxfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
+struct LmSkinnyGroupedShapes<LmMxfp4,NPG>
 {
+	static constexpr uint32_t kFewRows = LM_SKINNY_ROWS_MID, kFewNeurons = NPG;
+	static constexpr uint32_t kRows = LM_SKINNY_ROWS_MID, kNeurons = NPG;
+	static constexpr uint32_t kWideRows = LM_SKINNY_ROWS, kWideNeurons = 2u;
 };
 
 template<uint32_t NPG>
