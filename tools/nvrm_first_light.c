@@ -5,7 +5,7 @@
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
-#include "runtime/device/nvrm/nvrm_version.h"
+#include "nvrm_release.h"
 
 #define LIGHT_BLOCKS 4u
 #define LIGHT_THREADS 128u
