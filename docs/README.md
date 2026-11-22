@@ -62,6 +62,8 @@ current authority.
   model families, and the rule for sharing it.
 - [`KERNEL_PLAYBOOK.md`](KERNEL_PLAYBOOK.md): shared-kernel techniques and
   contract template.
+- [`DECODE_REPLAY.md`](DECODE_REPLAY.md): one rank's DeepSeek V4.1 Flash
+  decode step on one GPU, for measuring kernel work on it without the fleet.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV

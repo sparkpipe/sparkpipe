@@ -1,0 +1,79 @@
+{
+ "rows": {
+  "1": {
+   "kernels": 2135,
+   "replays": 5,
+   "sequences": {
+    "attention_core": {
+     "fold_us_per_instance": 60.95,
+     "gemv_us_per_instance": 0,
+     "instances": 40,
+     "us_per_instance": 78.57
+    },
+    "attention_input": {
+     "gemv_us_per_instance": 76.9,
+     "instances": 40,
+     "us_per_instance": 86.35
+    },
+    "attention_output": {
+     "gemv_us_per_instance": 95.63,
+     "instances": 40,
+     "us_per_instance": 113.71
+    },
+    "mhc": {
+     "gemv_us_per_instance": 0,
+     "instances": 80,
+     "us_per_instance": 26.14
+    },
+    "router": {
+     "gemv_us_per_instance": 9.08,
+     "instances": 40,
+     "us_per_instance": 28.12
+    },
+    "shared_expert": {
+     "gemv_us_per_instance": 52.88,
+     "instances": 40,
+     "us_per_instance": 58.0
+    }
+   }
+  },
+  "8": {
+   "kernels": 2256,
+   "replays": 235,
+   "sequences": {
+    "attention_core": {
+     "fold_us_per_instance": 88.27,
+     "gemv_us_per_instance": 0,
+     "instances": 40,
+     "us_per_instance": 109.65
+    },
+    "attention_input": {
+     "gemv_us_per_instance": 91.43,
+     "instances": 40,
+     "us_per_instance": 100.73
+    },
+    "attention_output": {
+     "gemv_us_per_instance": 105.43,
+     "instances": 40,
+     "us_per_instance": 123.69
+    },
+    "mhc": {
+     "gemv_us_per_instance": 0,
+     "instances": 80,
+     "us_per_instance": 31.03
+    },
+    "router": {
+     "gemv_us_per_instance": 12.52,
+     "instances": 40,
+     "us_per_instance": 31.51
+    },
+    "shared_expert": {
+     "gemv_us_per_instance": 59.62,
+     "instances": 40,
+     "us_per_instance": 64.97
+    }
+   }
+  }
+ },
+ "source": "rank 0 of the DeepSeek V4.1 Flash four-node lane, CUDA graphs, sums of per-position medians"
+}
