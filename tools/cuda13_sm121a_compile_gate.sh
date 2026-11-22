@@ -238,12 +238,13 @@ for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 		spill_audited+=("${repository_root}/${artifact}")
 	fi
 done
-if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" --kernel LmSkinnyGroupedKernel "${spill_audited[@]}" \
+if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" "${spill_audited[@]}" \
 	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
 	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
-	echo "a grouped expert GEMV spills registers to local memory; see logs/kernel_spill_audit.txt" >&2
+	echo "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" >&2
 	exit 10
 fi
+grep -E '^kernel spill audit' "${output_directory}/logs/kernel_spill_audit.txt"
 
 gate_phase "spill audit"
 staged_roots="$(mktemp -d)"
