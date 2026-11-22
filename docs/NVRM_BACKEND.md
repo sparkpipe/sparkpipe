@@ -810,7 +810,8 @@ headers' (`crt/host_runtime.h`, `crt/device_functions.h`).
   manifests are parsed on the spot (host work only, safe in a constructor).
   A template kernel that two translation units instantiate is in both
   their cubins, as nvcc compiles each unit whole. Such a kernel name is
-  kept once, with the first cubin's copy, only when both copies match:
+  kept once, with the copy of the cubin whose file name sorts first, only
+  when both copies match:
   - the same code bytes;
   - the same registers, stack, frame, shared memory, parameter layout,
     barriers and cluster shape;

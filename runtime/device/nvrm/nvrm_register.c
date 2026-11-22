@@ -33,6 +33,7 @@ typedef struct RegisterName
 {
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
+	const char *file;
 } RegisterName;
 
 struct SparkNvrmModule
@@ -112,6 +113,12 @@ static int RegisterNameOrder(const void *left, const void *right)
 	return(strcmp(((const RegisterName *)left)->name,((const RegisterName *)right)->name));
 }
 
+static int RegisterNameFileOrder(const void *left, const void *right)
+{
+	const int name = RegisterNameOrder(left,right);
+	return(name != 0 ? name : strcmp(((const RegisterName *)left)->file,((const RegisterName *)right)->file));
+}
+
 static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directory, const char *file)
 {
 	char path[REGISTER_PATH_BYTES],manifest_path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
@@ -151,6 +158,7 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 		}
 		memcpy(module->names[module->name_count].name,manifest.kernels[index].name,sizeof(module->names[module->name_count].name));
 		module->names[module->name_count].cubin = module->cubin_count;
+		module->names[module->name_count].file = module->cubins[module->cubin_count].path;
 		module->name_count++;
 	}
 	module->cubin_count++;
@@ -277,7 +285,7 @@ static SparkStatus RegisterScan(SparkNvrmModule *module)
 		snprintf(text,sizeof(text),"the kernel directory %.100s holds no cubin",directory);
 		return(ModuleFail(module,SPARK_STATUS_NOT_FOUND,text));
 	}
-	qsort(module->names,module->name_count,sizeof(*module->names),RegisterNameOrder);
+	qsort(module->names,module->name_count,sizeof(*module->names),RegisterNameFileOrder);
 	for (index = 0u, kept = 0u; index < module->name_count; index++)
 	{
 		if ( kept != 0u && strcmp(module->names[kept - 1u].name,module->names[index].name) == 0 )
