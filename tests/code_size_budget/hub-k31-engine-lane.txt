@@ -1,0 +1,2 @@
++259
+K3.1 Pro engine draft lane on the hub: tools/hub_draftd.sh switches the lane between block_draftd and the engine drafter, tools/lane_config.py carries the server switch, and tools/spec_soak.py drives both arms with one workload and compares their counters.
