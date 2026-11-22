@@ -14,6 +14,10 @@ and head are the same commit, one worktree serves both:
   KNOWN       fails on both; the base failure is a bug to fix, not to carry
   FIXED       passes on the head and fails on the base
 
+A test in GPU_PYTHON_PARKED stays out of the run: the gate prints it on a
+PARKED line with its reason, a TECHDEBT entry, and the test itself skips
+unless SPARK_RUN_PARKED=1 asks for it.
+
 The kernel log must pass tools/nvrm_kernel_log.sh, the one kernel-log rule
 of the GPU gates: the gate takes its mark before the first build and checks it
 after the last test. That log is host-wide, so the gate runs in a GPU slot held
@@ -47,6 +51,10 @@ GPU_MARKERS = (
     re.compile(r"--query-gpu=compute_cap"),
 )
 GPU_TARGET_EXCLUDED = ("test-metal-kernels", "test-nvrm")
+GPU_PYTHON_PARKED = {
+    "tests/test_tp_mesh_hardware_probe.py": "TECHDEBT.md, Runtime completion: its reduce-scatter can fault the GPU (Xid 31); "
+                                            "run it only on request, on spark1, with SPARK_RUN_PARKED=1",
+}
 PREREQUISITE_TESTS = {
     "tests/test_host_turn_bench.py": "build/host_turn_bench",
     "tests/test_dsv41_flash_pack_contract.py": "build/dsv41_flash_pack_synthesize",
@@ -77,7 +85,7 @@ def gpu_python_tests(tree):
     found = []
     for test in make_variable(tree, "PYTHON_TESTS"):
         path = Path(tree) / test
-        if not path.is_file():
+        if not path.is_file() or test in GPU_PYTHON_PARKED:
             continue
         text = path.read_text(errors="replace")
         if wants_device(test, text):
@@ -96,6 +104,7 @@ def plan(tree):
         "python": gpu_python_tests(tree) + sorted(PREREQUISITE_TESTS),
         "targets": gpu_make_targets(tree),
         "build": sorted(set(PREREQUISITE_TESTS.values())),
+        "parked": dict(GPU_PYTHON_PARKED),
     }
 
 
@@ -256,6 +265,8 @@ def main(argv):
             print("target %s" % target)
         for target in selected["build"]:
             print("build %s" % target)
+        for test, reason in sorted(selected["parked"].items()):
+            print("parked %s: %s" % (test, reason))
         return 0
     work = Path(options.work)
     logs = work / "logs"
@@ -264,6 +275,8 @@ def main(argv):
     if base == head:
         print("base and head are the same commit; one worktree serves both")
     selected = plan(head)
+    for test, reason in sorted(selected.get("parked", {}).items()):
+        print("%-12s python  %s: %s" % ("PARKED", test, reason))
     rule = kernel_log_rule(ROOT)
     mark = kernel_log_mark(rule)
     commands = [("python", test, ["python3", test]) for test in selected["python"]]

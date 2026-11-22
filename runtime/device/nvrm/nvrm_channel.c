@@ -211,7 +211,7 @@ void SparkNvrmCopyGroupClose(SparkNvrmGpu *gpu)
 void SparkNvrmChannelDestroy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
 {
 	if ( channel->fence.cpu != 0 && channel->handle != 0u )
-		(void)SparkNvrmWaitValue((const volatile uint64_t *)(void *)channel->fence.cpu,channel->fence_value,SPARK_NVRM_WAIT_TIMEOUT_NS,"queue_destroy","free");
+		(void)SparkNvrmWaitFence(channel,channel->fence_value,SPARK_NVRM_WAIT_TIMEOUT_NS,"queue_destroy","free");
 	if ( channel->uvm_registered != 0u )
 	{
 		UVM_UNREGISTER_CHANNEL_PARAMS registration;

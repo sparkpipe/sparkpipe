@@ -39,7 +39,7 @@ int spark_stub_mlx5_cq_live(const struct ibv_cq *cq)
 #endif
 
 #define TEST_MESH_PEERS (SPARK_WEIGHTD_MESH_RANKS_PER_BAND - 1u)
-#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303130)
+#define TEST_MESH_MAGIC UINT64_C(0x4d45534830303131)
 #define TEST_MESH_LIVE_DIR "/tmp/weightd-mesh"
 
 typedef struct TestMeshRecord
@@ -59,9 +59,17 @@ typedef struct TestMeshRecord
     uint8_t pair_gid[16];
     uint64_t wire_generation;
     uint64_t seen_generation[TEST_MESH_PEERS];
+    uint32_t pair_send_qpn[TEST_MESH_PEERS];
+    uint32_t pair_recv_qpn[TEST_MESH_PEERS];
+    uint32_t ports;
+    uint32_t switched_pair;
 } TestMeshRecord;
 
+_Static_assert(sizeof(TestMeshRecord) == sizeof(SparkWeightdMeshRecord),"the test record mirrors the daemon record");
+
 static uint32_t test_rank_mask = 0xffffu;
+static uint32_t test_record_ports = 1u;
+static uint32_t test_record_switched = 0u;
 
 #define TEST_MESH_INTERFACE "rocep1s0f1"
 
@@ -147,6 +155,29 @@ static void test_fill_record(TestMeshRecord *record, uint32_t rank,
     record->pair_gid[15] = (uint8_t)rank;
     record->boot_ns = UINT64_C(0xb000000000000000) +
         generation * UINT64_C(0x100000) + rank;
+    for (index = 0u; index < TEST_MESH_PEERS; index++)
+    {
+        record->pair_send_qpn[index] = record->send_qpn[index] + 0x100u;
+        record->pair_recv_qpn[index] = record->recv_qpn[index] + 0x100u;
+    }
+    record->ports = test_record_ports;
+    record->switched_pair = test_record_switched;
+    if (test_record_ports == 2u)
+    {
+        memcpy(record->send_qpn,record->pair_send_qpn,sizeof(record->send_qpn));
+        memcpy(record->recv_qpn,record->pair_recv_qpn,sizeof(record->recv_qpn));
+        record->rkey = record->pair_rkey;
+        record->lid = record->pair_lid;
+        memcpy(record->gid,record->pair_gid,sizeof(record->gid));
+    }
+    if (test_record_ports != 3u)
+    {
+        memset(record->pair_send_qpn,0,sizeof(record->pair_send_qpn));
+        memset(record->pair_recv_qpn,0,sizeof(record->pair_recv_qpn));
+        memset(record->pair_gid,0,sizeof(record->pair_gid));
+        record->pair_rkey = 0u;
+        record->pair_lid = 0u;
+    }
 }
 
 static int test_write_fully(int fd, const void *buffer, size_t bytes)
@@ -2184,13 +2215,21 @@ static void test_load_pace_while_serving(uint64_t pace)
 }
 
 static void test_status(SparkWeightdIpcMeshStatusResult *status);
+static int test_ready_text(char *text,size_t bytes);
+
+static uint32_t test_address(uint32_t a,uint32_t b,uint32_t c,uint32_t d)
+{
+    return a << 24 | b << 16 | c << 8 | d;
+}
 
 static void test_mesh_second_rail(uint32_t local_rank)
 {
     TestMeshRecord record;
     SparkStubIbvPostedWork work;
     SparkWeightdIpcMeshStatusResult status;
-    uint32_t rank,peer,first,second,a,b,partner = local_rank ^ 1u;
+    char log_path[320],text[512],expected[160];
+    uint32_t rank,peer,first,second,a,b,partner = local_rank ^ 1u,moved = UINT32_MAX,my_index;
+    struct ibv_qp *pair_send;
     for (a = 0u; a < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; a++)
         for (b = 0u; b < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; b++)
             if (a != b)
@@ -2200,38 +2239,219 @@ static void test_mesh_second_rail(uint32_t local_rank)
     CHECK(__builtin_popcount(SparkWeightdMeshSecondRailPeers(local_rank,0xffffu)) == 8 &&
         SparkWeightdMeshSecondRailPeers(0u,0x000fu) == 0x5u,"eight of fifteen peers ride the second rail; rank 0 of four sends to ranks 1 and 3 on it");
     test_rank_mask = 0xffffu & ~(1u << partner);
+    test_record_ports = 3u;
+    test_record_switched = 1u;
     test_clean_dir();
     (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
     for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
         if (rank != local_rank && rank != partner)
             CHECK(test_write_record(rank,9u) == 0,"second rail case writes peer records");
     SparkWeightdMeshUseSecondRail();
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-two-ports.log",SPARK_WEIGHTD_MESH_DIR);
+    test_capture_begin(log_path);
     CHECK(SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,
         test_rank_mask,"rocep1s0f0",3u,104u) == SPARK_STATUS_BUSY,"a second rail needs no partner rank in the mesh");
-    CHECK(weightd_mesh.rail_peers == SparkWeightdMeshSecondRailPeers(local_rank,test_rank_mask) &&
-        __builtin_popcount(weightd_mesh.rail_peers) == 7,"without the partner seven of fourteen peers ride the second rail");
     SparkWeightdMeshPoll();
+    test_capture_end();
     CHECK(SparkWeightdMeshReady() == 1u,"second rail mesh wires");
+    CHECK(weightd_mesh.ports == 3u && test_file_contains(log_path,"WD-MESH-PORTS rank=7 ports=rocep1s0f1+rocep1s0f0: a peer with both ports up"),
+        "two active ports are both used and the startup log names them");
+    CHECK(weightd_mesh.pair_slot_peers == SparkWeightdMeshSecondRailPeers(local_rank,test_rank_mask) &&
+        __builtin_popcount(weightd_mesh.pair_slot_peers) == 7,"without the partner seven of fourteen peers ride the second rail");
+    (void)snprintf(expected,sizeof(expected),"WD-MESH-LAYOUT-READY rank=%u ports=rocep1s0f1+rocep1s0f0 two_ports=0x%04x one_port=0x0000 degraded=0x0000",
+        local_rank,test_rank_mask & ~(1u << local_rank));
+    CHECK(test_file_count(log_path,"layout=two-ports") == 14u && test_file_count(log_path,"layout=degraded") == 0u &&
+        test_file_contains(log_path,expected),"every link reports the two-port layout and the ready summary has no degraded peer");
     for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
     {
         if (rank == local_rank || rank == partner)
             continue;
         peer = rank < local_rank ? rank : rank - 1u;
+        my_index = test_my_index(rank,local_rank);
         second = (rank + local_rank) & 1u;
         CHECK(test_read_record(rank,&record) == 0 &&
-            weightd_mesh.qp_info[peer].rkey == (second != 0u ? record.pair_rkey : record.rkey),
-            "a peer of the other parity is wired through the second rail, one of the same parity through the first");
+            weightd_mesh.qp_info[peer].rkey == (second != 0u ? record.pair_rkey : record.rkey) &&
+            spark_stub_ibv_qp_remote_qpn(weightd_mesh.send_qps[peer]->qp_num) == (int)(second != 0u ? record.pair_recv_qpn[my_index] : record.recv_qpn[my_index]) &&
+            spark_stub_ibv_qp_remote_address(weightd_mesh.send_qps[peer]->qp_num) == (second != 0u ? test_address(10u,10u,200u,rank) : test_address(10u,10u,100u,10u + rank)),
+            "a peer of the other parity is wired through the second port, one of the same parity through the first");
         first = spark_stub_ibv_posted_count();
         CHECK(SparkWeightdMeshPostWrite(rank,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
             spark_stub_ibv_posted(first,&work) == 0 &&
             work.lkey == (second != 0u ? weightd_mesh.pair_recv_mr->lkey : weightd_mesh.recv_mr->lkey),
-            "a write posts with the registration of its peer's rail");
+            "a write posts with the registration of its peer's port");
+        if (second != 0u && moved == UINT32_MAX)
+            moved = rank;
     }
     test_status(&status);
     CHECK(status.pair_rank == UINT32_MAX,"a second rail offers no pair-first routes");
+    CHECK(status.peers[moved].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS | SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK),
+        "status marks a peer on the second port without a degraded flag");
+    peer = moved < local_rank ? moved : moved - 1u;
+    my_index = test_my_index(moved,local_rank);
+    pair_send = weightd_mesh.send_qps[peer];
+    test_record_ports = 1u;
+    CHECK(test_write_record(moved,10u) == 0,"a peer restarts with only its first port up");
+    test_record_ports = 3u;
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    test_fill_record(&record,moved,10u);
+    CHECK(SparkWeightdMeshReady() == 1u && weightd_mesh.send_qps[peer] == weightd_mesh.slot_send_qps[0][peer] &&
+        ((weightd_mesh.pair_slot_peers >> peer) & 1u) == 0u &&
+        spark_stub_ibv_qp_state(pair_send->qp_num) == IBV_QPS_RESET &&
+        spark_stub_ibv_qp_remote_qpn(weightd_mesh.send_qps[peer]->qp_num) == (int)record.recv_qpn[my_index] &&
+        spark_stub_ibv_qp_remote_address(weightd_mesh.send_qps[peer]->qp_num) == test_address(10u,10u,100u,10u + moved),
+        "the peer that lost its second port moves to the first port and its second-port queue pairs are reset");
+    (void)snprintf(expected,sizeof(expected),"peer_rank=%u port=rocep1s0f1 layout=degraded ports=rocep1s0f1+rocep1s0f0/rocep1s0f1: rank %u has no rocep1s0f0 port up",moved,moved);
+    CHECK(test_file_contains(log_path,expected),"the degraded link is logged with the port the peer lacks");
+    test_status(&status);
+    CHECK(status.peers[moved].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS | SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED),
+        "status flags the link as degraded on the first port");
+    first = spark_stub_ibv_posted_count();
+    CHECK(SparkWeightdMeshPostWrite(moved,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
+        spark_stub_ibv_posted(first,&work) == 0 && work.lkey == weightd_mesh.recv_mr->lkey &&
+        work.qp_number == weightd_mesh.slot_send_qps[0][peer]->qp_num,
+        "a write to the degraded peer posts on the first port's queue pair and registration");
+    (void)snprintf(expected,sizeof(expected),"ports=rocep1s0f1+rocep1s0f0 degraded=0x%04x\n",1u << moved);
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strstr(text,expected) != 0,"the ready marker names the degraded peer");
     weightd_mesh_second_rail = 0u;
+    test_record_ports = 1u;
+    test_record_switched = 0u;
     test_rank_mask = 0xffffu;
     test_clean_dir();
+    (void)unlink(log_path);
+    (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
+}
+
+static void test_mesh_ports(uint32_t local_rank)
+{
+    TestMeshRecord record,own;
+    SparkWeightdIpcMeshStatusResult status;
+    char log_path[320],text[512],expected[200];
+    uint32_t rank,peer,my_index;
+    uint64_t started;
+    SparkStatus result;
+    test_rank_mask = 0xffffu;
+    SparkWeightdMeshUseSecondRail();
+    (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
+    (void)snprintf(log_path,sizeof(log_path),"%s/capture-ports.log",SPARK_WEIGHTD_MESH_DIR);
+    weightd_mesh_port_grace_ns = UINT64_C(300000000);
+
+    test_clean_dir();
+    for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+        if (rank != local_rank)
+            CHECK(test_write_record(rank,30u) == 0,"one switch: every peer has its first port only");
+    spark_stub_ibv_set_port_state("rocep1s0f0",IBV_PORT_DOWN);
+    started = SparkMonotonicNs();
+    test_capture_begin(log_path);
+    result = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,"rocep1s0f0",3u,104u);
+    SparkWeightdMeshPoll();
+    test_capture_end();
+    CHECK(result == SPARK_STATUS_BUSY && SparkMonotonicNs() - started >= weightd_mesh_port_grace_ns &&
+        test_file_contains(log_path,"WD-MESH-PORT interface=rocep1s0f0 sgid=3: port 1 not active") &&
+        test_file_contains(log_path,"WD-MESH-PORTS rank=7 ports=rocep1s0f1: every peer uses rocep1s0f1; not used: rocep1s0f0"),
+        "one switch: a second port that stays down past the grace is left out and the layout is logged");
+    CHECK(weightd_mesh.ports == 1u && weightd_mesh.pair_protection_domain == 0 && weightd_mesh.slot_send_qps[1][0] == 0 &&
+        test_read_record(local_rank,&own) == 0 && own.ports == 1u && own.switched_pair == 1u && own.pair_rkey == 0u && own.pair_send_qpn[0] == 0u,
+        "one switch: no second-port resources are made and the record publishes the first port alone");
+    CHECK(SparkWeightdMeshReady() == 1u && test_file_count(log_path,"layout=one-port") == 15u && test_file_count(log_path,"layout=degraded") == 0u,
+        "one switch: every peer wires on the shared port and nothing is degraded");
+    CHECK(test_ready_text(text,sizeof(text)) == 0 && strstr(text," ports=rocep1s0f1 degraded=0x0000\n") != 0,
+        "one switch: the ready marker names one port and no degraded peer");
+    rank = test_peer_rank(2u,local_rank);
+    peer = 2u;
+    test_record_ports = 3u;
+    test_record_switched = 1u;
+    CHECK(test_write_record(rank,31u) == 0,"one switch: a peer with a second port joins");
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    (void)snprintf(expected,sizeof(expected),"peer_rank=%u port=rocep1s0f1 layout=degraded ports=rocep1s0f1/rocep1s0f1+rocep1s0f0: this node, rank %u has no rocep1s0f0 port up",
+        rank,local_rank);
+    test_status(&status);
+    CHECK(SparkWeightdMeshReady() == 1u && test_file_contains(log_path,expected) &&
+        (status.peers[rank].qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED) != 0u &&
+        weightd_mesh.send_qps[peer] == weightd_mesh.slot_send_qps[0][peer],
+        "one switch: a peer that has the port this node lacks is wired on the shared port and flagged degraded");
+    test_record_ports = 1u;
+    test_record_switched = 0u;
+
+    test_clean_dir();
+    test_record_ports = 3u;
+    test_record_switched = 1u;
+    for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
+        if (rank != local_rank && rank != test_peer_rank(4u,local_rank))
+            CHECK(test_write_record(rank,32u) == 0,"first port down: the peers have both ports");
+    test_record_ports = 1u;
+    CHECK(test_write_record(test_peer_rank(4u,local_rank),32u) == 0,"first port down: one peer has the first port only");
+    test_record_ports = 3u;
+    spark_stub_ibv_set_port_state("rocep1s0f0",IBV_PORT_ACTIVE);
+    spark_stub_ibv_set_port_state(TEST_MESH_INTERFACE,IBV_PORT_DOWN);
+    test_capture_begin(log_path);
+    result = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,"rocep1s0f0",3u,104u);
+    SparkWeightdMeshPoll();
+    SparkWeightdMeshPoll();
+    test_capture_end();
+    CHECK(result == SPARK_STATUS_BUSY && weightd_mesh.ports == 2u && weightd_mesh.home_port == 1u &&
+        test_file_contains(log_path,"WD-MESH-PORTS rank=7 ports=rocep1s0f0: every peer uses rocep1s0f0; not used: rocep1s0f1") &&
+        test_read_record(local_rank,&own) == 0 && own.ports == 2u && own.gid[15] == 2u && own.pair_rkey == 0u,
+        "first port down: the second port carries the record's own address alone");
+    rank = test_peer_rank(4u,local_rank);
+    test_status(&status);
+    CHECK(SparkWeightdMeshReady() == 0u && status.peers[rank].state == SPARK_WEIGHTD_MESH_PEER_RECORD_INVALID &&
+        test_file_contains(log_path,"ports=rocep1s0f0/rocep1s0f1: no port in common"),
+        "first port down: a peer with no port in common stays unwired and keeps the mesh unready");
+    rank = test_peer_rank(5u,local_rank);
+    peer = 5u;
+    my_index = test_my_index(rank,local_rank);
+    test_fill_record(&record,rank,32u);
+    CHECK(weightd_mesh.peer_state[peer] == SPARK_WEIGHTD_MESH_PEER_WIRED && weightd_mesh.qp_info[peer].rkey == record.pair_rkey &&
+        spark_stub_ibv_qp_remote_qpn(weightd_mesh.send_qps[peer]->qp_num) == (int)record.pair_recv_qpn[my_index] &&
+        spark_stub_ibv_qp_remote_address(weightd_mesh.send_qps[peer]->qp_num) == test_address(10u,10u,200u,rank) &&
+        (status.peers[rank].qp_flags & (SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK | SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED)) ==
+            (SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK | SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED),
+        "first port down: a peer with both ports is reached on its second port and flagged degraded");
+    test_record_ports = 2u;
+    CHECK(test_write_record(test_peer_rank(4u,local_rank),33u) == 0,"first port down: the stray peer comes back on its second port");
+    test_record_ports = 3u;
+    test_capture_begin(log_path);
+    SparkWeightdMeshTryWire();
+    test_capture_end();
+    rank = test_peer_rank(4u,local_rank);
+    test_status(&status);
+    CHECK(SparkWeightdMeshReady() == 1u && (status.peers[rank].qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED) == 0u &&
+        test_file_contains(log_path,"layout=one-port ports=rocep1s0f0/rocep1s0f0"),
+        "first port down: a peer with the same single port is a one-port link, not a degraded one");
+
+    test_clean_dir();
+    spark_stub_ibv_set_port_state("rocep1s0f0",IBV_PORT_DOWN);
+    weightd_mesh_address_wait_ns = UINT64_C(600000000);
+    test_capture_begin(log_path);
+    result = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,"rocep1s0f0",3u,104u);
+    test_capture_end();
+    weightd_mesh_address_wait_ns = UINT64_C(120000000000);
+    CHECK(result == SPARK_STATUS_DRIVER_LOAD_ERROR && test_file_contains(log_path,"WD-MESH-NO-PORT rank=7") &&
+        test_file_contains(log_path,"WD-MESH-ADDRESS-DEADLINE interface=rocep1s0f0") &&
+        test_file_contains(log_path,"WD-MESH-ADDRESS-DEADLINE interface=rocep1s0f1"),
+        "no port: startup fails loudly after the address deadline and names both ports");
+    spark_stub_ibv_set_port_state(TEST_MESH_INTERFACE,IBV_PORT_ACTIVE);
+    spark_stub_ibv_set_port_state("rocep1s0f0",IBV_PORT_ACTIVE);
+
+    test_clean_dir();
+    started = SparkMonotonicNs();
+    test_capture_begin(log_path);
+    result = SparkWeightdMeshInit(local_rank,TEST_MESH_INTERFACE,3u,SPARK_WEIGHTD_MESH_DIR,test_rank_mask,"rocep9s0f9",3u,104u);
+    test_capture_end();
+    CHECK(result == SPARK_STATUS_BUSY && weightd_mesh.ports == 1u && SparkMonotonicNs() - started < weightd_mesh_port_grace_ns &&
+        test_file_contains(log_path,"WD-MESH-PORT interface=rocep9s0f9: no such RDMA device; the port is not used"),
+        "a configured port with no device is left out at once");
+
+    weightd_mesh_port_grace_ns = UINT64_C(10000000000);
+    weightd_mesh_second_rail = 0u;
+    test_record_ports = 1u;
+    test_record_switched = 0u;
+    test_clean_dir();
+    (void)unlink(log_path);
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
 
@@ -2242,7 +2462,9 @@ static void test_mesh_pair_link(uint32_t local_rank)
     uint32_t rank,partner = local_rank ^ 1u,other = local_rank == 0u ? 2u : 0u,first;
     uint32_t partner_peer = partner < local_rank ? partner : partner - 1u;
     uint32_t other_peer = other < local_rank ? other : other - 1u;
+    SparkWeightdIpcMeshStatusResult status;
     test_rank_mask = 0xffffu;
+    test_record_ports = 3u;
     test_clean_dir();
     (void)mkdir(SPARK_WEIGHTD_MESH_DIR,0755);
     for (rank = 0u; rank < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; rank++)
@@ -2277,6 +2499,13 @@ static void test_mesh_pair_link(uint32_t local_rank)
     CHECK(SparkWeightdMeshPostWrite(other,(uint64_t)(uintptr_t)weightd_mesh.recv_buffer,weightd_mesh.recv_mr->lkey,64u,0u) == SPARK_STATUS_OK &&
         spark_stub_ibv_posted(first + 1u,&work) == 0 && work.lkey == weightd_mesh.recv_mr->lkey,
         "a write to any other peer posts with the switch registration");
+    test_status(&status);
+    CHECK(status.pair_rank == partner &&
+        status.peers[partner].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS | SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK) &&
+        status.peers[other].qp_flags == (SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS | SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS) &&
+        weightd_mesh.slot_send_qps[1][other_peer] == 0 && weightd_mesh.slot_send_qps[1][partner_peer] != 0,
+        "a pair link carries the partner alone and no link is degraded");
+    test_record_ports = 1u;
     test_clean_dir();
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
 }
@@ -2347,7 +2576,7 @@ static void test_mesh_status_surface(uint32_t local_rank)
     test_status(&status);
     CHECK(status.mesh_state == SPARK_WEIGHTD_MESH_STATE_READY && status.wired_mask == 0xffffu &&
         status.ready_since_mono_ns != 0u && status.mesh_generation > generation,"status: the last record makes the mesh ready");
-    (void)snprintf(expected,sizeof(expected),"weightd-ready v1 pid=%ld boot_ns=%llu rank=%u rank_mask=0x%04x\n",
+    (void)snprintf(expected,sizeof(expected),"weightd-ready v1 pid=%ld boot_ns=%llu rank=%u rank_mask=0x%04x ports=rocep1s0f1 degraded=0x0000\n",
         (long)getpid(),(unsigned long long)own.boot_ns,local_rank,test_rank_mask);
     CHECK(test_ready_text(text,sizeof(text)) == 0 && strcmp(text,expected) == 0,"status: .ready holds the v1 line with pid and boot_ns");
     (void)snprintf(path,sizeof(path),"%s/.ready.tmp",SPARK_WEIGHTD_MESH_DIR);
@@ -2894,6 +3123,7 @@ int main(void)
     (void)rmdir(SPARK_WEIGHTD_MESH_DIR);
     test_mesh_pair_link(local_rank);
     test_mesh_second_rail(local_rank);
+    test_mesh_ports(local_rank);
     fprintf(stderr,"%s: %u checks, %u failures\n",
         "test_weightd_mesh_mock",test_checks,test_failures);
     return test_failures != 0u ? 1 : 0;
