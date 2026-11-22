@@ -890,3 +890,26 @@ memory comes from the module with 2 MiB pages. Remeasured with queues in
 place (5 interleaved rounds, median): system memory reads at 262.5 and
 copies at 228.2 GB/s against `cudaMalloc`'s 262.1 and 228.1.
 
+## Step measurements
+
+These measurement tools build one source in both flavours and print the
+two side by side. None of them is a pass/fail gate:
+
+- **`make nvrm-launch-latency`** (`tests/nvrm/launch_latency.cu`): how long
+  after a kernel's hold a launch-to-synchronize returns, for holds from 0 to
+  2 ms, with the process CPU each wait costs.
+- **`make nvrm-cross-process-copy`** (`tests/nvrm/cross_process_copy.cu`): how
+  long another process's 64 MiB copy takes while this process holds every SM
+  with one 50 ms grid or 25 grids of 2 ms, and the same from a second stream
+  of the same process.
+- **`make nvrm-step-chain`** (`tests/nvrm/step_chain.cu`): a step of N short
+  kernels back to back, with N of 16, 256, 1,600 or 2,627 (the node counts
+  of today's rows=1 decode graphs).
+  - Each kernel runs on one block or on one block per SM and holds for
+    2 us. Its blocks record the kernel's first start and last end on the
+    GPU clock.
+  - The tool reports the host time to issue the step, the wall time to
+    synchronize, the GPU span, and the GPU idle per boundary between
+    kernels.
+  - It runs eager launches, and in the CUDA flavour also one captured graph
+    of the same launches. nvrm refuses capture for now.
