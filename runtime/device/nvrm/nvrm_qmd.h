@@ -35,6 +35,7 @@ typedef struct SparkNvrmLaunchShape
 	uint32_t registers;
 	uint32_t barriers;
 	uint32_t shared_bytes;
+	uint32_t resident_shared_bytes;
 	uint32_t local_bytes;
 	uint32_t sass_version;
 	uint64_t bank_address[SPARK_NVRM_CUBIN_BANKS];

@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/spark_gpu_nvrm.h"
+#include "runtime/device/nvrm/nvrm_occupancy.h"
 
 static int failures;
 
@@ -29,8 +30,22 @@ static void *OtherThread(void *context)
 	return(0);
 }
 
+static void TestOccupancy(void)
+{
+	const SparkNvrmOccupancyLimits limits = {48u, 65536u, 32u, 100u * 1024u, 256u, 128u};
+	CHECK(SparkNvrmOccupancy(&limits,128u,32u,0u) == 12u,"128 threads at 32 registers are held to 12 blocks by 48 warps per multiprocessor");
+	CHECK(SparkNvrmOccupancy(&limits,256u,64u,0u) == 4u,"256 threads at 64 registers are held to 4 blocks by the register file");
+	CHECK(SparkNvrmOccupancy(&limits,256u,40u,0u) == 6u,"40 registers per thread round up to 1280 per warp: 51 warps fit, warps per SM still allow 6");
+	CHECK(SparkNvrmOccupancy(&limits,32u,16u,0u) == 32u,"with 32 blocks per multiprocessor allowed, single-warp blocks stop there");
+	CHECK(SparkNvrmOccupancy(&limits,128u,32u,33000u) == 3u,"33000 bytes of shared memory round to 33024 and allow 3 blocks in 100 KiB");
+	CHECK(SparkNvrmOccupancy(&limits,64u,0u,0u) == 24u,"with no register count only warps and blocks limit the occupancy");
+	CHECK(SparkNvrmOccupancy(&limits,2048u,16u,0u) == 0u && SparkNvrmOccupancy(&limits,128u,16u,110000u) == 0u && SparkNvrmOccupancy(&limits,0u,16u,0u) == 0u &&
+		SparkNvrmOccupancy(0,128u,16u,0u) == 0u,"a block larger than a multiprocessor, more shared memory than it has, an empty block or no limits give 0");
+}
+
 int main(void)
 {
+	TestOccupancy();
 	const uint32_t grid[3] = {1u, 1u, 1u},block[3] = {32u, 1u, 1u};
 	SparkGpuError seen[2] = {SPARK_GPU_ERROR_UNKNOWN, SPARK_GPU_ERROR_UNKNOWN};
 	pthread_t other;

@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/nvrm_occupancy.h"
 #include "runtime/device/nvrm/spark_gpu_nvrm.h"
 
 #define GPU_OWNER "hosted launches"
@@ -850,13 +851,13 @@ SparkGpuError SparkGpuFuncGetAttributes(SparkGpuFunctionAttributes *attributes, 
 {
 	SparkDeviceKernel *kernel = 0;
 	SparkDeviceKernelInfo info;
-	uint32_t registers = 0u,stack = 0u;
+	uint32_t registers = 0u,stack = 0u,shared = 0u;
 	if ( attributes == 0 )
 		GPU_REFUSE_IN("function_attributes",SPARK_STATUS_INVALID_ARGUMENT,"a function query needs an output");
 	GPU_TRY(GpuReady());
 	GPU_TRY(SparkNvrmRegisteredKernel(function,&kernel));
 	GPU_TRY(SparkDeviceKernelGetInfo(kernel,&info));
-	GPU_TRY(SparkNvrmKernelResources(kernel,&registers,&stack));
+	GPU_TRY(SparkNvrmKernelResources(kernel,&registers,&stack,&shared));
 	memset(attributes,0,sizeof(*attributes));
 	attributes->maxThreadsPerBlock = (int)info.max_threads;
 	attributes->numRegs = (int)registers;
@@ -868,13 +869,16 @@ SparkGpuError SparkGpuFuncGetAttributes(SparkGpuFunctionAttributes *attributes, 
 
 SparkGpuError SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, const void *function, int block_threads, size_t shared_bytes)
 {
-	const char *name = 0;
-	char text[256];
-	(void)blocks;
-	(void)block_threads;
-	(void)shared_bytes;
-	if ( SparkNvrmRegisteredName(function,&name) != SPARK_STATUS_OK )
-		name = "an unregistered function";
-	snprintf(text,sizeof(text),"%.64s: an occupancy query needs the device's per-multiprocessor limits, which the backend does not report yet",name);
-	GPU_REFUSE_IN("occupancy",SPARK_STATUS_UNSUPPORTED,text);
+	SparkNvrmOccupancyLimits limits;
+	SparkDeviceKernel *kernel = 0;
+	uint32_t registers = 0u,stack = 0u,shared = 0u;
+	if ( blocks == 0 || block_threads <= 0 || shared_bytes > UINT32_MAX )
+		GPU_REFUSE_IN("occupancy",SPARK_STATUS_INVALID_ARGUMENT,"an occupancy query needs an output, a positive block size and at most 4 GiB of shared memory");
+	GPU_TRY(GpuReady());
+	GPU_TRY(SparkNvrmRegisteredKernel(function,&kernel));
+	GPU_TRY(SparkNvrmKernelResources(kernel,&registers,&stack,&shared));
+	if ( SparkNvrmOccupancyLimitsOf(&limits) == 0 )
+		GPU_REFUSE_IN("occupancy",SPARK_STATUS_INVALID_ARGUMENT,"the device reported no per-multiprocessor limits");
+	*blocks = (int)SparkNvrmOccupancy(&limits,(uint32_t)block_threads,registers,shared + (uint32_t)shared_bytes);
+	return(SPARK_GPU_SUCCESS);
 }

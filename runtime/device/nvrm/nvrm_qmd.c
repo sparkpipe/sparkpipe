@@ -156,6 +156,9 @@ static void QmdProgram(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 static void QmdShape(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 {
 	const uint32_t config = QmdSharedConfig(shape->shared_bytes);
+	const uint32_t target = shape->resident_shared_bytes > shape->shared_bytes && QmdSharedConfig(shape->resident_shared_bytes) != 0u ?
+		QmdSharedConfig(shape->resident_shared_bytes) : QmdSharedConfig(SPARK_NVRM_SHARED_CONFIG_KIB_MAX * 1024u);
+	const uint32_t wanted = shape->resident_shared_bytes > shape->shared_bytes ? target : config;
 	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_WIDTH,shape->grid[0]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_HEIGHT,shape->grid[1]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_DEPTH,shape->grid[2]);
@@ -164,7 +167,7 @@ static void QmdShape(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 	QMD_PUT(builder,NVCEC0_QMDV05_00_CTA_THREAD_DIMENSION2,shape->block[2]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_SHARED_MEMORY_SIZE_SHIFTED7,((uint64_t)shape->shared_bytes + 127u) >> 7);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_MIN_SM_CONFIG_SHARED_MEM_SIZE,config);
-	QMD_PUT(builder,NVCEC0_QMDV05_00_TARGET_SM_CONFIG_SHARED_MEM_SIZE,config);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_TARGET_SM_CONFIG_SHARED_MEM_SIZE,wanted);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_MAX_SM_CONFIG_SHARED_MEM_SIZE,QMD_SHARED_CONFIG_MAX);
 }
 

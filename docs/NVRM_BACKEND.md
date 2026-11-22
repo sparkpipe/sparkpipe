@@ -594,7 +594,6 @@ The rest of the front maps onto the device layer:
   naming the call:
   - stream capture and every graph call, until command lists exist
     (Phase 3);
-  - the occupancy query, until the per-multiprocessor limits are reported;
   - every device attribute but the multiprocessor count;
   - `SparkGpuMemGetInfo` on a discrete GPU.
 - **Free memory on a unified GPU.** `SparkGpuMemGetInfo` reports `MemFree`
@@ -608,6 +607,27 @@ The rest of the front maps onto the device layer:
     after the call, as ours does, and both totals were `MemTotal`.
   - `MemAvailable` would add the reclaimable page cache: 17.4 GB on spark1
     at the time.
+- **Occupancy.** `SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor` takes
+  the fewest blocks allowed by each per-SM limit:
+  - **Warps.** 48, from the module (`NV2080_CTRL_GR_INFO_INDEX_MAX_WARPS_PER_SM`).
+  - **Registers.** 64K per SM, from the Blackwell Tuning Guide, allocated per
+    warp in units of 256. The module answers 0 on GB10 for its
+    register-bank indices.
+  - **Blocks.** 24 per SM, which is what the CUDA flavour reports on GB10,
+    and 24 one-warp blocks are what both flavours keep resident. The tuning
+    guide's 32 for compute capability 12.0 does not hold on this device.
+  - **Shared memory.** 100 KB per SM, from the programming guide's 12.x
+    carveouts, in units of 128 bytes, counting the 1 KB reserved per block.
+
+  The launcher sizes each grid's target shared-memory carveout for that
+  occupancy. The minimum carveout fits one block; the target fits every
+  block the other limits allow. The old rule targeted the carveout that
+  fits one block, which kept fewer blocks resident than CUDA does: 3
+  instead of 10 at 8 KB per block. `make nvrm-occupancy-ab` builds one
+  source in both flavours and fails on any difference, both in the
+  occupancy reported (169 cases) and in the residency a spinning kernel
+  measures per SM (16 cases). It needs the CUDA runtime for its CUDA half,
+  so it is not part of `make test-nvrm-gpu`.
 - **Function attributes.** `SparkGpuFuncGetAttributes` reports a registered
   kernel's thread limit, registers, static shared memory and stack.
 

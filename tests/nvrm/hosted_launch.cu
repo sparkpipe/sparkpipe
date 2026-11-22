@@ -132,8 +132,8 @@ static void TestFunctionApi(void)
 		"a registered kernel reports its thread limit and registers");
 	CHECK(SparkGpuFuncSetAttribute(HostedStep<HOSTED_STEP>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,1024) == SPARK_GPU_SUCCESS,
 		"a kernel is granted dynamic shared memory the device has");
-	CHECK(SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,HostedStep<HOSTED_STEP>,128,0) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
-		strstr(SparkDeviceLastError()->text,"occupancy") != 0,"an occupancy query is refused, naming the kernel, until the per-multiprocessor limits are reported");
+	CHECK(SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,HostedStep<HOSTED_STEP>,128,0) == SPARK_GPU_SUCCESS && blocks > 0,
+		"a registered kernel has a positive occupancy");
 	(void)SparkGpuGetLastError();
 }
 

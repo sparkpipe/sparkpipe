@@ -30,7 +30,7 @@ SparkStatus SparkNvrmRegisteredName(const void *host, const char **name);
 SparkStatus SparkNvrmRegisteredKernel(const void *host, SparkDeviceKernel **kernel);
 SparkStatus SparkNvrmRegisteredVariable(const void *host);
 SparkStatus SparkNvrmRegisteredRelease(void);
-SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes);
+SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes, uint32_t *shared_bytes);
 
 void **__cudaRegisterFatBinary(void *fat_binary);
 void __cudaRegisterFatBinaryEnd(void **handle);

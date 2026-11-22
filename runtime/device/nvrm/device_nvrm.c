@@ -13,6 +13,7 @@
 #include "runtime/device/nvrm/nvrm_host.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/nvrm_occupancy.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
 
 #define NVRM_WARP_THREADS 32u
@@ -628,14 +629,28 @@ SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes)
+SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes, uint32_t *shared_bytes)
 {
 	const NvrmKernel *nvrm = kernel != 0 ? (const NvrmKernel *)kernel->backend : 0;
-	if ( nvrm == 0 || registers == 0 || stack_bytes == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_info",0,0,"needs a live nvrm kernel and both outputs"));
+	if ( nvrm == 0 || registers == 0 || stack_bytes == 0 || shared_bytes == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_info",0,0,"needs a live nvrm kernel and every output"));
 	*registers = nvrm->kernel->registers;
 	*stack_bytes = nvrm->kernel->stack_bytes;
+	*shared_bytes = nvrm->kernel->shared_bytes;
 	return(SPARK_STATUS_OK);
+}
+
+int SparkNvrmOccupancyLimitsOf(SparkNvrmOccupancyLimits *limits)
+{
+	if ( limits == 0 || nvrm_gpu.warps_per_sm == 0u )
+		return(0);
+	limits->warps_per_sm = nvrm_gpu.warps_per_sm;
+	limits->registers_per_sm = SPARK_NVRM_OCCUPANCY_REGISTERS_PER_SM;
+	limits->blocks_per_sm = SPARK_NVRM_OCCUPANCY_BLOCKS_PER_SM;
+	limits->shared_per_sm = SPARK_NVRM_OCCUPANCY_SHARED_PER_SM;
+	limits->register_unit = SPARK_NVRM_OCCUPANCY_REGISTER_UNIT;
+	limits->shared_unit = SPARK_NVRM_OCCUPANCY_SHARED_UNIT;
+	return(1);
 }
 
 void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
