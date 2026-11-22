@@ -209,6 +209,31 @@ which could be mistaken for the qualified route.
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
     `LmFrameErrorReport` and stages row 0 instead. The frame fails and the
     context survives (`tests/test_kernel_frame_error_source.py`).
+- **Grouped variants never spill.** `LmSkinnyGroupedShapes<Format,NPG>`
+  names the rows and neurons a task takes in each band of routes per local
+  expert: at most 2, at most 8, and above 8. Most formats take 4 x `NPG`,
+  8 x `NPG` and 16 x 2. NVFP4 takes 4 x `NPG` in every band. An NVFP4 task
+  stages a 64-byte activation quad per row and two scales per weight chunk,
+  so its 8- and 16-row variants need more than 255 registers: ptxas spilled
+  376-700 bytes a thread at 8 rows and moved 7 KB a thread to local memory
+  at 16 rows x 2 neurons, read and written on every pass of the k loop.
+  Qwen3.8 Max's expert projections took 160-280 ms at 26-51 prompt rows
+  instead of about 1 ms. On one GB10 with every route local and 4 to 16
+  routes an expert, 4 x 4 is the fastest NVFP4 variant that does not spill,
+  except for the down projections at 16 routes an expert, where 16 x 1 is
+  2-6% faster (Qwen3.8 Max up projection at 16 routes an expert: 4 x 4
+  5.9 ms, 16 x 1 6.9 ms, 8 x 4 7.1 ms, 16 x 2 414 ms). The variants that
+  share `LANES` give the same bytes.
+  `tools/kernel_spill_audit.py` refuses an `LmSkinnyGroupedKernel`
+  instantiation with local memory or a stack frame in any serving adapter or
+  CUDA program (sm_121a compile gate, exit 10), and
+  `tests/test_grouped_experts_bands_cuda.py` runs every family that reaches
+  this kernel on both sides of each band boundary: the same bytes as a
+  2 x 4 reference, and no call four times slower than the one below the
+  boundary.
+  - The bands count every route of the step against the local experts. With
+    experts split across ranks most routes are not local (one in 16 for
+    Qwen3.8 at TP16), so a band can name more rows than an expert holds.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.
