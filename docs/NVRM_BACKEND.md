@@ -491,6 +491,50 @@ rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
 259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
 read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
 
+On an integrated GPU the module needs physically contiguous 2 MiB blocks
+for an object of 2 MiB pages and does not compact memory to find them:
+with fragmented memory it answers `NV_ERR_NO_MEMORY` and logs "Check
+failed: Out of memory" while gigabytes are free. So before it asks the
+module for such an object on an integrated GPU, `SparkNvrmSystemAllocate`
+waits until the free 2 MiB blocks cover the object's blocks plus the
+kernel's reserve (`SparkNvrmHugePagesReady`, `nvrm_pages.c`). A discrete
+GPU's write-back system memory does not take whole 2 MiB blocks: on the
+hub, six objects of 2050 MiB in 2 MiB pages allocated while the Normal
+zone's free 2 MiB blocks went only from 945 to 423, with no compaction, so
+the wait there would refuse what the module grants.
+
+- Free blocks are counted in `/proc/buddyinfo`'s Normal zones, the zone
+  the kernel serves the module's allocations from. Each larger block counts
+  as the 2 MiB blocks it holds, for any base page size. DMA and DMA32 keep
+  their blocks for allocations that need them, and Movable takes no kernel
+  allocation, so their blocks do not count.
+- The reserve is `vm.min_free_kbytes` in 2 MiB blocks: 22 at the boot
+  default of 45056 KiB, 512 while the node image's compaction window
+  raises it to 1 GiB ([HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md)).
+  The page allocator keeps a zone's last free pages above its watermarks,
+  which start at this reserve, so blocks inside it are not the module's.
+- When the blocks are short, the waiting thread makes them. It faults as
+  many transparent huge pages as the target in a `MADV_HUGEPAGE` mapping,
+  so the kernel takes the free 2 MiB blocks and compacts for the rest, then
+  unmaps them, which returns them all as free 2 MiB blocks
+  (`SparkNvrmHugePagesPull`). The kernel's background compaction alone backs
+  off for about 32 s after a round that frees nothing, and once made none in
+  60 s. On a GB10 with 40 GiB held in every other 4 KiB page, 2,914 of 3,000
+  faults came back as 2 MiB pages in 0.54 s, and all 71 objects of 64 MiB
+  allocated right after went ahead without waiting.
+- It checks again after each pull, and pulls at most once per 10 ms poll,
+  for at most 60 s per object. Then it refuses with `capacity_exceeded`, for
+  example "a 64 MiB object of 2 MiB pages needs 32 free 2 MiB blocks above
+  the 512-block min_free reserve; 19620 were free after 60 s". Nothing
+  falls back to smaller pages.
+- Without a readable `/proc/buddyinfo` or a Normal zone in it, the module
+  decides alone, as before.
+
+This covers every 2 MiB-page system allocation on an integrated GPU:
+shared memory (weightd's arenas) and device-private memory from 8 MiB up
+to 4 GiB. `build/test_nvrm_pages` checks the count, the target, the
+bound and the wake-up against fake kernel files.
+
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
 next generation 16 bytes into the mark, then the queue's fence, then an

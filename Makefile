@@ -1612,6 +1612,9 @@ build/test_device_nvrm: tests/test_device_nvrm.c $(DEVICE_NVRM_LIBRARY) | build
 build/test_nvrm_cubin: tests/test_nvrm_cubin.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+build/test_nvrm_pages: tests/test_nvrm_pages.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
 build/test_nvrm_qmd: tests/test_nvrm_qmd.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
@@ -1631,7 +1634,7 @@ endif
 build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
-NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault
+NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault build/test_nvrm_pages
 
 NVRM_GPU_FIXTURE := tests/fixtures/nvrm/fixture_kernels.$(CUDA_ARCH)
 NVRM_GPU_FIXTURE_FLAGS := -DSPARK_NVRM_FIXTURE_CUBIN='"$(NVRM_GPU_FIXTURE).cubin"' -DSPARK_NVRM_FIXTURE_MANIFEST='"$(NVRM_GPU_FIXTURE).manifest"'
