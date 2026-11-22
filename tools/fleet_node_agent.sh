@@ -372,16 +372,25 @@ root_json() {
 }
 
 report() {
-    local now load mem r states="" sep=',"roots":{'
+    local now load mem r states="" sep=',"roots":{' mesh_ports mesh_degraded
     now=$(date +%s)
+    read -r mesh_ports mesh_degraded <<< "$(mesh_ready_layout)"
+    if [ "$mesh_degraded" != "${MESH_DEGRADED_SEEN:-none}" ]; then
+        case "$mesh_degraded" in
+            none|0x0000) [ "${MESH_DEGRADED_SEEN:-none}" = none ] || [ "${MESH_DEGRADED_SEEN:-none}" = 0x0000 ] ||
+                echo "$(date +%T) mesh: no degraded link on ports $mesh_ports" ;;
+            *) echo "$(date +%T) mesh: DEGRADED links to ranks $mesh_degraded on ports $mesh_ports; WD-MESH-LAYOUT in ~/weightd.log names the missing port" >&2 ;;
+        esac
+        MESH_DEGRADED_SEEN=$mesh_degraded
+    fi
     load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
     mem=$(awk '/MemAvailable/ {printf "%d", int($2/1048576)}' /proc/meminfo 2>/dev/null)
     {
         printf '{"host":"%s","time":"%s","epoch":%d,"load":"%s","mem_avail_gb":%s,"headroom_gib":%s' \
             "$HOST" "$(date -Is)" "$now" "$load" "${mem:-0}" "$HEADROOM_GIB"
-        printf ',"weightd":"%s","agent":"%s","safe_mode":"%s"' \
+        printf ',"weightd":"%s","agent":"%s","safe_mode":"%s","mesh_ports":"%s","mesh_degraded":"%s"' \
             "$(sha16 "$HOME/sparkdata/weightd/sparkpipe_weightd" 2>/dev/null)" \
-            "$(sha16 "$0" 2>/dev/null)" "$(json_text "$SAFE_MODE")"
+            "$(sha16 "$0" 2>/dev/null)" "$(json_text "$SAFE_MODE")" "$(json_text "$mesh_ports")" "$(json_text "$mesh_degraded")"
         for r in $ROOT_LIST; do
             states="$states$r=$(root_state "$r");"
             printf '%s' "$sep"
@@ -476,7 +485,7 @@ unload_root() {
     return 1
 }
 
-declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT
+declare -A BACKOFF NEXT_OK DOCTOR_SINCE DOCTOR_NEXT DOCTOR_FLAPS DOCTOR_QUIET
 LAST_ANY_RESTART=0
 
 restart_ok() {
@@ -787,6 +796,8 @@ doctor_port() {
     state=$(ibv_devinfo -d "$dev" -i 1 2>/dev/null | awk '/^[[:space:]]*state:/ {print $2; exit}')
     if [ "$state" = PORT_ACTIVE ]; then
         DOCTOR_SINCE[$dev]=""
+        DOCTOR_FLAPS[$dev]=0
+        DOCTOR_QUIET[$dev]=""
         return 0
     fi
     netdev=$(ibdev2netdev 2>/dev/null | awk -v d="$dev" '$1==d {print $5; exit}')
@@ -805,8 +816,14 @@ doctor_port() {
     [ $(( now - DOCTOR_SINCE[$dev] )) -ge 60 ] || return 0
     [ $(( now - AGENT_STARTED )) -ge 300 ] || return 0
     [ "$now" -ge "${DOCTOR_NEXT[$dev]:-0}" ] || return 0
+    if [ "${DOCTOR_FLAPS[$dev]:-0}" -ge 3 ]; then
+        [ -n "${DOCTOR_QUIET[$dev]:-}" ] || echo "$(date +%T) doctor: $dev netdev=$netdev has had no carrier through 3 flaps; treating it as unplugged until it links" >&2
+        DOCTOR_QUIET[$dev]=1
+        return 0
+    fi
+    DOCTOR_FLAPS[$dev]=$(( ${DOCTOR_FLAPS[$dev]:-0} + 1 ))
     DOCTOR_NEXT[$dev]=$(( now + 300 ))
-    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev" >&2
+    echo "$(date +%T) doctor: $dev state=${state:-missing} netdev=$netdev admin-up no-carrier for $(( now - DOCTOR_SINCE[$dev] ))s; flapping $netdev (${DOCTOR_FLAPS[$dev]} of 3)" >&2
     sudo -n ip link set "$netdev" down 2>/dev/null
     sleep 2
     sudo -n ip link set "$netdev" up 2>/dev/null
@@ -839,7 +856,9 @@ janitor() {
 }
 
 mesh_address() {
-    local dev="$1" index="$2" gid hex ip netdev
+    local dev="$1" index="$2" gid hex ip netdev state
+    state=$(cat "/sys/class/infiniband/$dev/ports/1/state" 2>/dev/null)
+    [ "$state" = "4: ACTIVE" ] || { echo "$dev port 1 is ${state:-missing}, not ACTIVE" >&2; return 1; }
     gid=$(cat "/sys/class/infiniband/$dev/ports/1/gids/$index" 2>/dev/null)
     case "$gid" in
         0000:0000:0000:0000:0000:ffff:????:????) ;;
@@ -864,11 +883,24 @@ mesh_address() {
 }
 
 mesh_addresses() {
-    local switch pair
-    switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX") || return 1
-    [ -n "$MESH_PAIRED" ] || { echo "$switch"; return 0; }
-    pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX") || return 1
-    echo "$switch $pair"
+    local switch pair switch_reason="" pair_reason=""
+    switch=$(mesh_address "$MESH_INTERFACE" "$MESH_SGID_INDEX" 2>&1) || { switch_reason=$switch; switch=""; }
+    if [ -z "$MESH_PAIRED" ]; then
+        [ -n "$switch" ] || { echo "$switch_reason" >&2; return 1; }
+        echo "$switch"
+        return 0
+    fi
+    pair=$(mesh_address "$MESH_PAIR_INTERFACE" "$MESH_PAIR_SGID_INDEX" 2>&1) || { pair_reason=$pair; pair=""; }
+    [ -n "$switch$pair" ] || { echo "$switch_reason; $pair_reason" >&2; return 1; }
+    echo "${switch:--} ${pair:--}"
+}
+
+mesh_ready_layout() {
+    local line ports="" degraded=""
+    line=$(head -c 512 "${1:-/tmp/weightd-mesh/.ready}" 2>/dev/null)
+    case "$line" in *" ports="*) ports=${line##* ports=}; ports=${ports%% *} ;; esac
+    case "$line" in *" degraded="*) degraded=${line##* degraded=}; degraded=${degraded%%[!0-9a-fx]*} ;; esac
+    echo "${ports:-none} ${degraded:-none}"
 }
 
 ensure_weightd() {

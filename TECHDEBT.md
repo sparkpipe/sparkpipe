@@ -29,12 +29,16 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Dual-rail topology contract
 
-- The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
+- The fleet was two switched rails from 2026-11-06 (CRS804 on port 1,
   `cisco0` on port 0, [FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)); there are no
-  direct pair links. Replace the legacy ring/single-switch/dual-switch topology
-  modes with one schema for two all-to-all rails, and generate the four-,
-  eight-, and sixteen-Spark profiles and the pinned interface, address and
-  communicator tables from it.
+  direct pair links. A fleet now runs on one switch, with an optional second
+  switch on the second port, and weightd's mesh uses whichever ports are active
+  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*). Replace the
+  legacy ring/single-switch/dual-switch topology modes with one schema for one
+  or two all-to-all rails, and generate the four-, eight-, and sixteen-Spark
+  profiles and the pinned interface, address and communicator tables from it.
+- The streamed-prefill weight stream (`ring/transport/weight_stream.c`) still
+  needs both a fabric and a pair device; it does not yet run on one port.
 - weightd puts a whole peer on one rail: a link takes the second rail when the
   two ranks' parities differ (`SparkWeightdMeshSecondRailPeers`). At sixteen
   ranks that is eight peers against seven. A group of four has two of a rank's
@@ -1494,34 +1498,22 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   the first step of each row count, so the first request at a new batch width
   pays the capture. Prewarm them at load.
 
-- Eight launch sites still choose between two designed kernels by trying one
-  and taking the other when the first returns `LM_LAUNCH_ERR_SHAPE` or
-  `LM_LAUNCH_ERR_TILE`, instead of selecting by shape:
-  - `model-families/k3/source/layer.cuh` (3): routed expert w1 and w2 try the
-    cell kernels, then the interleaved or weight-only GEMM.
-  - `model-families/glm52/source/glm52_stage.cuh` (2) and
-    `model-families/glm5_next/source/glm5_next_stage.cuh` (2): expert w1 and w2
-    below the stream threshold try the one-row skinny kernel, then the grouped
-    one.
-  - `inference/kernels/stream_gemm.cuh` (1): scaled FP8 tries the wide kernel,
-    then the tile shapes.
-
-  The refusal there is a selection, not a fault, so the kernels keep returning
-  a bare `LM_LAUNCH_ERR_SHAPE` or `LM_LAUNCH_ERR_TILE`. Each site needs an
-  explicit shape predicate; then the losing kernel's refusal can fail through
-  `SPARK_FAIL`, as the 20 former slow-path sites do.
-
 ## Runtime completion
 
 - `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
-  process, CPU-copy daemon) has faulted three times on GB10 with Xid 31, an
-  MMU `FAULT_PTE` on a `VIRT_WRITE` from `GPCCLIENT_T1`. Each time, other
-  processes on the node were running GPU work. The cause is open.
-  - Each fault address was `0xd0000` above a 4 GiB-aligned base, outside every
-    probe allocation. The device buffers sit in 512 MiB chunks at base + 2,
-    2.5 and 3 GiB.
-  - The recorded failing case was the first tp=16 pipelined reduce-scatter
-    (segment = staging capacity + 148), run eagerly right after a graph case.
+  process, CPU-copy daemon) has faulted four times on GB10, on three hosts
+  (lenovo7 twice, spark1, lenovo8), with Xid 31, an MMU `FAULT_PTE` on a
+  `VIRT_WRITE` from `GPCCLIENT_T1`. The first three came while other processes
+  on the node were running GPU work; the fourth (lenovo8, open module
+  580.178.04, 2026-11-22 06:40:57Z, `GPCCLIENT_T1_7`) came with no other
+  compute process on the GPU, so concurrent work is not needed. The cause is
+  open.
+  - Each fault address lay above a 4 GiB-aligned base, outside every probe
+    allocation: `0xd0000` above it the first three times, `0xf5000` the fourth.
+    The device buffers sit in 512 MiB chunks at base + 2, 2.5 and 3 GiB.
+  - The recorded failing case, on spark1 and again on lenovo8, was the first
+    tp=16 pipelined reduce-scatter (segment = staging capacity + 148), run
+    eagerly right after a graph case.
   - Its only kernel with local memory is `SparkTpMeshHardwarePieceKernel`: an
     8-byte stack frame with 4 bytes of spill stores, at 128 registers under
     `__launch_bounds__(128,4)`.
@@ -1534,10 +1526,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     - 10 beside a second process running 1 ms spin kernels;
     - 10 beside a second process allocating, filling and freeing 1 GiB in a
       loop.
-  - Next: run the probe beside a weightd load test or an embedding service.
-    If that reproduces it, test the piece kernel without a stack frame: summing
-    the peers in batches of four keeps residency 4 at 110 registers with the
-    same summation order.
+  - Next: loop the whole test on spark1, every mode in order as the GPU gate
+    runs it, to measure the rate; then test the piece kernel without a stack
+    frame: summing the peers in batches of four keeps residency 4 at 110
+    registers with the same summation order.
+  - Until it is fixed, `tests/test_tp_mesh_hardware_probe.py` is parked: the
+    GPU test gate leaves it out and names it on a `PARKED` line, and the test
+    skips unless `SPARK_RUN_PARKED=1` asks for it. Run it only on request, on
+    spark1.
 - A submission that fails residentd's cache validation is retried until its
   deadline, and every attempt resets the session on all ranks: on 2026-10-14
   two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
