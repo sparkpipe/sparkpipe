@@ -472,7 +472,8 @@ static SparkStatus SparkModelResidentdValidateKvPartition(
 	}
 	if ( configuration->kv_snapshot_directory != 0 && configuration->kv_ledger_path[0] == '\0' )
 	{
-		fprintf(stderr,"model_residentd: no home directory for uid %u holds the node KV ledger %s\n",(unsigned)geteuid(),SPARK_KV_LEDGER_NAME);
+		fprintf(stderr,"model_residentd: no node KV root holds the ledger %s: %s must be the full path of an existing folder, and without it uid %u needs a home directory\n",
+			SPARK_KV_LEDGER_NAME,SPARK_KV_NODE_ROOT_VARIABLE,(unsigned)geteuid());
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	}
 	if ( configuration->kv_snapshot_directory != 0 && statvfs(configuration->kv_partition,&space) != 0 )
