@@ -490,33 +490,42 @@ next. The API closed the request 11.1 s after accepting it.
 
 ### One rank on one GB10 (2026-11-22)
 
-The instruments ran against a real rank of Qwen 3.8 27B FP8 on one GB10
-([receipts](qualification/turn-floor-20261122/README.md)). The GPU was
-shared with another service, so these are first readings, not a floor, and
-nothing here stands for a sixteen-rank lane.
+The turn floor of Qwen 3.8 27B FP8 on one rank
+([receipts](qualification/turn-floor-20261122/README.md)). Nothing here
+stands for a sixteen-rank lane.
 
-One GB10, one rank, GPU shared with another service, not a floor:
+One GB10, one rank, GPU alone:
 
-| At 8,000 tokens of context | First token | Largest part |
-| --- | ---: | --- |
-| 1 new token | 561 ms | the wave before the last token, 421 ms |
-| 40 new tokens | 552 ms | the wave before the last token, 412 ms |
-| 500 new tokens | 954 ms | the wave before the last token, 813 ms |
-| 5,000 new tokens | 5,862 ms | five prefill waves, 5,717 ms |
-| nothing new | 255 ms | the last token's wave, 252 ms |
+| New tokens | First token at 8,000 tokens of context | at 120,000 | Largest part |
+| --- | ---: | ---: | --- |
+| 1 | 547 ms | 804 ms | the request's first wave, 404 and 518 ms |
+| 40 | 551 ms | 823 ms | the request's first wave, 409 and 539 ms |
+| 500 | 967 ms | 1,628 ms | the request's first wave, 821 and 1,337 ms |
+| 5,000 | 5,853 ms | 11,241 ms | five prefill waves, 5,711 and 10,951 ms |
+| none, whole prompt cached | 254 ms | 404 ms | the last token's wave, 250 and 390 ms |
 
-A one-row wave is about 135 ms of that rank's work. A request's first wave
-costs about 250 ms more than that: 107 ms pass between its dispatch and the
-rank's work on it, and resuming a session with new tokens makes the wave
-itself about 140 ms longer. On this rank that start cost, not the new
-tokens, is the largest part of a small turn. After an engine stop and start
-the first turn waited 115 ms for the session's state and re-read no page.
+A one-row wave is 135 ms of that rank's work at 8,000 tokens and 270 ms at
+120,000. A request's first wave costs about 250 ms more at either length:
+105 ms pass between its dispatch and the rank's work on it, and resuming a
+session with new tokens makes the wave itself about 140 ms longer. On this
+rank that start cost, not the new tokens, is the largest part of a small
+turn, and every wave a rule adds to a turn adds to it.
 
-The run confirmed `POST /v1/cache/state`, the `cache` object of a completion
-and the miss ledger through a chat layer against the engine's own log, and
-found one fault: the engine reported no wait behind a background wave for a
-request that waited 538 ms at the rank. The fix is in this branch and has
-not yet run on a real rank.
+Decode ran at 7.3 tok/s plain and 18.5 as served at 8,000 tokens, 3.7 and
+10.5 at 120,000. Prefill ran at 970 tok/s on a cold 8,000-token prompt, 618
+while a session grew to 120,000, and 457 for 5,000 new tokens there. A
+second request sharing 45,500 of an opening's 46,000 tokens resumed at
+32,768, the last state checkpoint, and took 18.5 s where the first took
+56.3 s. After an engine stop and start the first turn waited 121 ms for the
+session's state and re-read no page.
+
+An earlier run the same day, with the GPU shared, checked the instruments
+against the engine's own log: `POST /v1/cache/state`, the `cache` object of
+a completion and the miss ledger through a chat layer agreed with it. The
+engine's wait behind a background wave did not: it read 0 for a request
+that waited 538 ms at the rank. It is fixed, and on the timed run it read
+142 ms for a probe sent during a background prefill and 0 for five sent
+alone.
 
 Not yet measured on the fleet: a turn on a cached session (first token
 against context and new tokens), restores from NVMe, decode against context,
