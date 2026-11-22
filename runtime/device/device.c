@@ -1,3 +1,4 @@
+#include <dlfcn.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,6 +8,14 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 
+#define DEVICE_PROPERTIES(APPLY) APPLY(UNIFIED_MEMORY) APPLY(SHARED_ADDRESS) APPLY(KERNEL_LIBRARIES) APPLY(PARAMETER_BLOCKS) APPLY(PROGRAMS) \
+	APPLY(CLUSTERS) APPLY(TENSOR_MAPS) APPLY(HOST_MEMORY_SHARE) APPLY(NO_PAGE_FALLBACK)
+#define DEVICE_PROPERTY_ONE_BIT(name) && SPARK_DEVICE_PROPERTY_##name != 0u && (SPARK_DEVICE_PROPERTY_##name & (SPARK_DEVICE_PROPERTY_##name - 1u)) == 0u
+#define DEVICE_PROPERTY_OR(name) | SPARK_DEVICE_PROPERTY_##name
+#define DEVICE_PROPERTY_SUM(name) + SPARK_DEVICE_PROPERTY_##name
+
+_Static_assert(1 DEVICE_PROPERTIES(DEVICE_PROPERTY_ONE_BIT),"every device property is a single bit");
+_Static_assert((0u DEVICE_PROPERTIES(DEVICE_PROPERTY_OR)) == (0u DEVICE_PROPERTIES(DEVICE_PROPERTY_SUM)),"no two device properties share a bit");
 #define DEVICE_RECORDING_POLL_NS 50000
 
 typedef struct SparkDeviceSlot
@@ -1932,5 +1941,167 @@ SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program)
 		DeviceProgramRelease(program);
 	}
 	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
+#define DEVICE_TENSOR_MAP_IMAGE "sparkpipe_device_kernels/tensor_map_build.cubin"
+#define DEVICE_TENSOR_MAP_KERNEL "SparkDeviceTensorMapBuild"
+#define DEVICE_TENSOR_MAP_THREADS 64u
+#define DEVICE_TENSOR_MAP_PARAMETERS 3u
+#define DEVICE_TENSOR_MAP_TIMEOUT_NS 10000000000ull
+#define DEVICE_TENSOR_MAP_DIMENSION_MAX 0xffffffffull
+#define DEVICE_TENSOR_MAP_STRIDE_LIMIT (1ull << 40)
+#define DEVICE_TENSOR_MAP_ELEMENT_STRIDE_MAX 8u
+#define DEVICE_TENSOR_MAP_ALIGN 16u
+
+static SparkStatus DeviceTensorMapRefuse(const char *owner, uint32_t index, const char *what)
+{
+	char text[128];
+	snprintf(text,sizeof(text),"tensor map %u: %s",index,what);
+	return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"tensor_map",owner,0,text));
+}
+
+static SparkStatus DeviceTensorMapCheck(const SparkDeviceTensorMapRequest *request, uint32_t index, const char *owner)
+{
+	uint32_t axis;
+	if ( request->address == 0u || (request->address % DEVICE_TENSOR_MAP_ALIGN) != 0u )
+		return(DeviceTensorMapRefuse(owner,index,"the address must be nonzero and 16-byte aligned"));
+	if ( request->rank < 2u || request->rank > SPARK_DEVICE_TENSOR_MAP_RANK_MAX )
+		return(DeviceTensorMapRefuse(owner,index,"the rank must be 2 or 3"));
+	if ( request->swizzle_bytes != 0u && request->swizzle_bytes != 32u && request->swizzle_bytes != 64u && request->swizzle_bytes != 128u )
+		return(DeviceTensorMapRefuse(owner,index,"the swizzle must be 0, 32, 64 or 128 bytes"));
+	for ( axis = 0u; axis < request->rank; axis++ )
+	{
+		if ( request->dimension[axis] == 0u || request->dimension[axis] > DEVICE_TENSOR_MAP_DIMENSION_MAX )
+			return(DeviceTensorMapRefuse(owner,index,"every dimension must be 1 to 2^32 - 1 elements"));
+		if ( request->box[axis] == 0u || request->box[axis] > SPARK_DEVICE_TENSOR_MAP_BOX_MAX )
+			return(DeviceTensorMapRefuse(owner,index,"every box edge must be 1 to 256 elements"));
+		if ( request->element_stride[axis] == 0u || request->element_stride[axis] > DEVICE_TENSOR_MAP_ELEMENT_STRIDE_MAX )
+			return(DeviceTensorMapRefuse(owner,index,"every element stride must be 1 to 8"));
+	}
+	if ( (request->box[0] % DEVICE_TENSOR_MAP_ALIGN) != 0u )
+		return(DeviceTensorMapRefuse(owner,index,"the box's inner edge must be a multiple of 16 bytes"));
+	if ( request->swizzle_bytes != 0u && request->box[0] > request->swizzle_bytes )
+		return(DeviceTensorMapRefuse(owner,index,"the box's inner edge must fit in the swizzle span"));
+	for ( axis = 0u; axis + 1u < request->rank; axis++ )
+	{
+		const uint64_t below = axis == 0u ? request->dimension[0] : request->stride_bytes[axis - 1u] * request->dimension[axis];
+		if ( (request->stride_bytes[axis] % DEVICE_TENSOR_MAP_ALIGN) != 0u || request->stride_bytes[axis] >= DEVICE_TENSOR_MAP_STRIDE_LIMIT )
+			return(DeviceTensorMapRefuse(owner,index,"every stride must be a multiple of 16 bytes below 2^40"));
+		if ( request->stride_bytes[axis] < below )
+			return(DeviceTensorMapRefuse(owner,index,"a stride must cover the dimensions below it"));
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus DeviceTensorMapImage(char *path, size_t capacity, const char *owner)
+{
+	Dl_info info;
+	const char *slash;
+	memset(&info,0,sizeof(info));
+	if ( dladdr((void *)(uintptr_t)&SparkDeviceTensorMapEncode,&info) == 0 || info.dli_fname == 0 || (slash = strrchr(info.dli_fname,'/')) == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"tensor_map",owner,0,"cannot find the device library's directory"));
+	if ( snprintf(path,capacity,"%.*s/%s",(int)(slash - info.dli_fname),info.dli_fname,DEVICE_TENSOR_MAP_IMAGE) >= (int)capacity )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"tensor_map",owner,0,"the tensor map image's path is too long"));
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus DeviceTensorMapLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceBuffer *buffer, uint64_t map_offset,
+	uint32_t count, const char *owner)
+{
+	const uint64_t values[DEVICE_TENSOR_MAP_PARAMETERS] = {buffer->device, buffer->device + map_offset, count};
+	uint8_t block[64];
+	SparkDeviceKernelInfo info;
+	SparkDeviceLaunch launch;
+	uint32_t index;
+	SparkStatus status;
+	memset(&info,0,sizeof(info));
+	status = SparkDeviceKernelGetInfo(kernel,&info);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( info.parameters == 0 || info.parameter_count != DEVICE_TENSOR_MAP_PARAMETERS || info.parameter_bytes > sizeof(block) )
+		return(SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"tensor_map",owner,0,"the tensor map image's kernel takes other parameters"));
+	memset(block,0,sizeof(block));
+	for ( index = 0u; index < DEVICE_TENSOR_MAP_PARAMETERS; index++ )
+	{
+		const SparkDeviceParameter *parameter = &info.parameters[index];
+		if ( parameter->bytes > sizeof(values[index]) || parameter->offset + parameter->bytes > info.parameter_bytes )
+			return(SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"tensor_map",owner,0,"the tensor map image's kernel takes other parameters"));
+		memcpy(block + parameter->offset,&values[index],parameter->bytes);
+	}
+	memset(&launch,0,sizeof(launch));
+	launch.groups.x = (count + DEVICE_TENSOR_MAP_THREADS - 1u) / DEVICE_TENSOR_MAP_THREADS;
+	launch.groups.y = launch.groups.z = 1u;
+	launch.threads.x = DEVICE_TENSOR_MAP_THREADS;
+	launch.threads.y = launch.threads.z = 1u;
+	launch.constants = block;
+	launch.constant_bytes = info.parameter_bytes;
+	status = SparkDeviceKernelLaunch(queue,kernel,&launch);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceQueueWait(queue,DEVICE_TENSOR_MAP_TIMEOUT_NS);
+	if ( status == SPARK_STATUS_PENDING )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"tensor_map",owner,0,"the tensor map build did not finish within 10 s");
+	return(status);
+}
+
+static SparkStatus DeviceTensorMapBuild(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	const uint64_t request_bytes = (uint64_t)count * sizeof(*requests);
+	const uint64_t map_offset = (request_bytes + SPARK_DEVICE_TENSOR_MAP_BYTES - 1u) / SPARK_DEVICE_TENSOR_MAP_BYTES * SPARK_DEVICE_TENSOR_MAP_BYTES;
+	char path[4096];
+	SparkDeviceLibrary *library = 0;
+	SparkDeviceKernel *kernel = 0;
+	SparkDeviceQueue *queue = 0;
+	SparkDeviceBuffer buffer;
+	SparkStatus status = DeviceTensorMapImage(path,sizeof(path),owner);
+	memset(&buffer,0,sizeof(buffer));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceLibraryLoad(&library,path,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceKernelCreate(&kernel,library,DEVICE_TENSOR_MAP_KERNEL);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAllocate(&buffer,SPARK_DEVICE_SPACE_SHARED_COHERENT,map_offset + (uint64_t)count * SPARK_DEVICE_TENSOR_MAP_BYTES,owner);
+	if ( status == SPARK_STATUS_OK && buffer.host == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"tensor_map",owner,0,"shared memory has no host view on this device");
+	if ( status == SPARK_STATUS_OK )
+	{
+		memcpy(buffer.host,requests,(size_t)request_bytes);
+		status = SparkDeviceQueueCreate(&queue,owner);
+	}
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceTensorMapLaunch(queue,kernel,&buffer,map_offset,count,owner);
+	if ( status == SPARK_STATUS_OK )
+		memcpy(maps,(const uint8_t *)buffer.host + map_offset,(size_t)count * SPARK_DEVICE_TENSOR_MAP_BYTES);
+	if ( queue != 0 )
+		(void)SparkDeviceQueueDestroy(queue);
+	if ( buffer.bytes != 0u )
+		(void)SparkDeviceFree(&buffer);
+	if ( kernel != 0 )
+		(void)SparkDeviceKernelDestroy(kernel);
+	if ( library != 0 )
+		(void)SparkDeviceLibraryUnload(library);
+	return(status);
+}
+
+SparkStatus SparkDeviceTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	uint32_t index,on_device = 0u;
+	SparkStatus status;
+	if ( requests == 0 || maps == 0 || count == 0u || count > SPARK_DEVICE_TENSOR_MAP_BATCH_MAX )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"tensor_map",owner,0,"needs 1 to 4096 requests and room for their maps"));
+	if ( ((uintptr_t)maps % 64u) != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"tensor_map",owner,0,"the maps must be 64-byte aligned"));
+	for ( index = 0u; index < count; index++ )
+		if ( (status = DeviceTensorMapCheck(&requests[index],index,owner)) != SPARK_STATUS_OK )
+			return(status);
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("tensor_map",owner);
+	if ( status == SPARK_STATUS_OK && (device_properties.properties & SPARK_DEVICE_PROPERTY_TENSOR_MAPS) == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"tensor_map",owner,0,"this device has no tensor maps");
+	if ( status == SPARK_STATUS_OK && (on_device = SparkDeviceBackendTensorMapOnDevice()) == 0u )
+		status = SparkDeviceBackendTensorMapEncode(requests,count,maps,owner);
+	pthread_mutex_unlock(&device_mutex);
+	if ( status == SPARK_STATUS_OK && on_device != 0u )
+		status = DeviceTensorMapBuild(requests,count,maps,owner);
 	return(status);
 }

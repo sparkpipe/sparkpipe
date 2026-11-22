@@ -2,6 +2,7 @@
 
 
 #include "inference/kernels/tensor_map.cuh"
+#include "sparkpipe/spark_device.h"
 #include <cuda.h>
 #include <stdint.h>
 #include <string.h>
@@ -40,10 +41,33 @@ static int32_t LmTensorMapSwizzleEnum(uint32_t swizzle_bytes, CUtensorMapSwizzle
 	return(LM_TM_ENCODE_ERR_SWIZZLE);
 }
 
+#if defined(SPARKPIPE_DEVICE_NVRM)
+static int32_t LmTensorMapEncodeOnDevice(void *tensor_map, const LmTensorMapPlan *plan, void *global_address)
+{
+	SparkDeviceTensorMapRequest request;
+	uint32_t axis;
+	static_assert(LM_TM_MAX_RANK <= SPARK_DEVICE_TENSOR_MAP_RANK_MAX,"the device layer takes every rank the engine plans");
+	memset(&request,0,sizeof(request));
+	request.address = (SparkDeviceAddress)(uintptr_t)global_address;
+	request.rank = plan->rank;
+	request.swizzle_bytes = plan->swizzle_bytes;
+	for ( axis = 0u; axis < plan->rank; axis++ )
+	{
+		request.dimension[axis] = plan->global_dimension[axis];
+		request.box[axis] = plan->box_dimension[axis];
+		request.element_stride[axis] = plan->element_stride[axis];
+		if ( axis + 1u < plan->rank )
+			request.stride_bytes[axis] = plan->global_stride_bytes[axis];
+	}
+	if ( SparkDeviceTensorMapEncode(&request,1u,(SparkDeviceTensorMap *)tensor_map,"tensor map") != SPARK_STATUS_OK )
+		return(LM_TM_ENCODE_ERR_DRIVER);
+	return(LM_TM_ENCODE_OK);
+}
+#endif
+
 static int32_t LmTensorMapEncode(CUtensorMap *tensor_map, const LmTensorMapPlan *plan, void *global_address)
 {
 	CUtensorMapSwizzle swizzle;
-	CUresult driver_status;
 	int32_t status;
 	if ( tensor_map == 0 || plan == 0 || global_address == 0 )
 		return(LM_TM_ENCODE_ERR_NULL);
@@ -54,8 +78,11 @@ static int32_t LmTensorMapEncode(CUtensorMap *tensor_map, const LmTensorMapPlan 
 	status = LmTensorMapSwizzleEnum(plan->swizzle_bytes,&swizzle);
 	if ( status != LM_TM_ENCODE_OK )
 		return(status);
+#if defined(SPARKPIPE_DEVICE_NVRM)
+	return(LmTensorMapEncodeOnDevice(tensor_map,plan,global_address));
+#else
 	memset(tensor_map,0,sizeof(*tensor_map));
-	driver_status = cuTensorMapEncodeTiled(
+	const CUresult driver_status = cuTensorMapEncodeTiled(
 		tensor_map,
 		CU_TENSOR_MAP_DATA_TYPE_UINT8,
 		plan->rank,
@@ -71,6 +98,7 @@ static int32_t LmTensorMapEncode(CUtensorMap *tensor_map, const LmTensorMapPlan 
 	if ( driver_status != CUDA_SUCCESS )
 		return(LM_TM_ENCODE_ERR_DRIVER);
 	return(LM_TM_ENCODE_OK);
+#endif
 }
 
 static int32_t LmTensorMapPrepare(CUtensorMap *tensor_map, const LmTensorMapRequest *request)
