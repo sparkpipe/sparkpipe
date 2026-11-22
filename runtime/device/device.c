@@ -970,6 +970,91 @@ SparkStatus SparkDeviceCopy(SparkDeviceQueue *queue, SparkDeviceRange destinatio
 	return(status);
 }
 
+static SparkDeviceAllocation *DeviceBufferHolding(SparkDeviceAddress address, uint64_t bytes, uint64_t *offset)
+{
+	const uint32_t position = device_initialized != 0u ? DeviceIndexFind(address) : 0u;
+	SparkDeviceAllocation *allocation;
+	if ( position == 0u )
+		return(0);
+	allocation = device_slots[device_index[position - 1u]].allocation;
+	if ( allocation->device == 0u || address < allocation->device || address - allocation->device >= allocation->bytes ||
+		bytes > allocation->bytes - (address - allocation->device) )
+		return(0);
+	*offset = address - allocation->device;
+	return(allocation);
+}
+
+SparkDeviceAddressKind SparkDeviceAddressLookup(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkDeviceAddressKind kind = SPARK_DEVICE_ADDRESS_OUTSIDE;
+	uint64_t offset = 0u;
+	if ( address == 0u || bytes == 0u )
+		return(SPARK_DEVICE_ADDRESS_OUTSIDE);
+	pthread_mutex_lock(&device_mutex);
+	if ( device_initialized != 0u )
+	{
+		if ( address + bytes < address )
+			kind = SPARK_DEVICE_ADDRESS_UNKNOWN;
+		else if ( DeviceBufferHolding(address,bytes,&offset) != 0 )
+			kind = SPARK_DEVICE_ADDRESS_BUFFER;
+		else if ( SparkDeviceBackendAddressMapped(address,bytes,0u) != 0u )
+			kind = SPARK_DEVICE_ADDRESS_MAPPED;
+		else if ( SparkDeviceBackendAddressOwned(address,bytes) != 0u )
+			kind = SPARK_DEVICE_ADDRESS_UNKNOWN;
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(kind);
+}
+
+static SparkStatus DeviceAddressSide(SparkDeviceQueue *queue, SparkDeviceAddress address, uint64_t bytes, uint32_t write,
+	SparkDeviceAllocation **allocation, uint64_t *at, uint32_t *mapped)
+{
+	*mapped = SparkDeviceBackendAddressMapped(address,bytes,write);
+	*allocation = *mapped != 0u ? 0 : DeviceBufferHolding(address,bytes,at);
+	if ( *mapped != 0u )
+		*at = address;
+	if ( *mapped == 0u && *allocation == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy_addresses",queue->owner,0,
+			write != 0u ? "the destination lies in no device buffer and no writable device mapping" : "the source lies in no device buffer and no device mapping"));
+	if ( write != 0u && *allocation != 0 && DeviceWritable(*allocation) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy_addresses",(*allocation)->owner,0,"destination is read only"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceCopyAddresses(SparkDeviceQueue *queue, SparkDeviceAddress destination, SparkDeviceAddress source, uint64_t bytes)
+{
+	SparkDeviceAllocation *target = 0, *origin = 0;
+	uint64_t target_at = 0u, origin_at = 0u;
+	uint32_t target_mapped = 0u, origin_mapped = 0u;
+	SparkStatus status;
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("copy_addresses",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceQueueValid(queue,"copy_addresses");
+	if ( status == SPARK_STATUS_OK && (destination == 0u || source == 0u || bytes == 0u || destination + bytes < destination || source + bytes < source) )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy_addresses",queue->owner,0,"needs two device addresses and a size");
+	if ( status == SPARK_STATUS_OK && queue->recording != 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"copy_addresses",queue->owner,0,
+			"a program records copies of buffers; adopt the mapped range to record a copy of it");
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceAddressSide(queue,destination,bytes,1u,&target,&target_at,&target_mapped);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceAddressSide(queue,source,bytes,0u,&origin,&origin_at,&origin_mapped);
+	if ( status == SPARK_STATUS_OK && target_mapped == 0u && origin_mapped == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy_addresses",queue->owner,0,"both ranges are buffers; copy the buffers");
+	if ( status == SPARK_STATUS_OK && destination < source + bytes && source < destination + bytes )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"copy_addresses",queue->owner,0,"source and destination overlap");
+	if ( status == SPARK_STATUS_OK )
+	{
+		queue->submitted++;
+		status = SparkDeviceBackendCopyMapped(queue,target,target_at,origin,origin_at,bytes);
+		if ( status != SPARK_STATUS_OK )
+			queue->submitted--;
+	}
+	pthread_mutex_unlock(&device_mutex);
+	return(status);
+}
+
 SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destination, uint8_t value, uint64_t bytes)
 {
 	SparkDeviceAllocation *target = 0;

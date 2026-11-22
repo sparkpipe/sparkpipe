@@ -1273,6 +1273,14 @@ The rest of the front maps onto the device layer:
   - Freeing waits for the device first, as `cudaFree` does.
 - **Copies and fills.**
   - A copy between memory the front knows goes on the stream's queue.
+  - A side inside a device-layer mapping (`SparkDeviceMemoryMap`, such as
+    weightd's held packs) copies by address (`SparkDeviceCopyAddresses`):
+    directly to another mapping or a device-visible buffer, and through the
+    staging buffer to or from host memory. This matches CUDA, which copies
+    any device address.
+  - An address inside the backend's device address range that no buffer and
+    no mapping holds is refused with `SPARK_GPU_ERROR_INVALID_VALUE`. Its CPU
+    side is reserved with no access, so a CPU copy there would fault.
   - Pageable host memory the device layer does not know is staged through
     an 8 MiB pinned buffer, one chunk at a time. The call returns once the
     host side may be reused: the source of a copy to the device, or the

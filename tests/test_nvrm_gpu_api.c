@@ -183,6 +183,44 @@ static void TestDevice(void)
 	CHECK(SparkGpuDeviceSynchronize() == SPARK_GPU_SUCCESS,"synchronize the device");
 }
 
+static void TestMappedCopies(SparkGpuStream stream)
+{
+	uint64_t granularity = 0u;
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceAddress reserved = 0u;
+	uint8_t *source = (uint8_t *)malloc(API_LARGE_BYTES),*target = (uint8_t *)malloc(API_LARGE_BYTES),*device = 0,*mapped = 0;
+	CHECK(source != 0 && target != 0 && SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_RECOMMENDED,&granularity) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryCreate(&memory,32u << 20,"gpu mapped copies") == SPARK_STATUS_OK &&
+		SparkDeviceAddressReserve(&reserved,(32u << 20) + granularity,"gpu mapped copies") == SPARK_STATUS_OK &&
+		SparkDeviceMemoryMap(reserved,32u << 20,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE) == SPARK_STATUS_OK &&
+		SparkGpuMalloc((void **)&device,API_LARGE_BYTES) == SPARK_GPU_SUCCESS,
+		"map 32 MiB of shared memory into a reservation one granule longer, without adopting it, and allocate device memory");
+	mapped = (uint8_t *)(uintptr_t)reserved;
+	Fill(source,API_LARGE_BYTES,17u);
+	CHECK(SparkGpuMemcpy(mapped,source,API_LARGE_BYTES,SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(device,mapped,API_LARGE_BYTES,SPARK_GPU_COPY_DEVICE_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(target,device,API_LARGE_BYTES,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,
+		"pageable host memory copies into the mapping, the mapping into device memory, and that back to the host");
+	CHECK(Wrong(target,API_LARGE_BYTES,17u) == 0u,"every byte arrives through the mapping");
+	Fill(source,API_LARGE_BYTES,23u);
+	CHECK(SparkGpuMemcpyAsync(device,source,API_LARGE_BYTES,SPARK_GPU_COPY_HOST_TO_DEVICE,stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpyAsync(mapped + 4096u,device,API_LARGE_BYTES,SPARK_GPU_COPY_DEVICE_TO_DEVICE,stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpyAsync(target,mapped + 4096u,API_LARGE_BYTES,SPARK_GPU_COPY_DEVICE_TO_HOST,stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS && Wrong(target,API_LARGE_BYTES,23u) == 0u,
+		"queued copies through the mapping at an offset arrive in order");
+	CHECK(SparkGpuMemcpy(target,mapped + (32u << 20),4096u,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_ERROR_INVALID_VALUE &&
+		SparkGpuGetLastError() == SPARK_GPU_ERROR_INVALID_VALUE,
+		"a copy from the reserved granule with nothing mapped is refused, not read by the CPU");
+	CHECK(SparkGpuMemcpy(mapped + (32u << 20),source,4096u,SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_ERROR_INVALID_VALUE &&
+		SparkGpuGetLastError() == SPARK_GPU_ERROR_INVALID_VALUE,
+		"a copy into the reserved granule with nothing mapped is refused, not written by the CPU");
+	CHECK(SparkGpuFree(device) == SPARK_GPU_SUCCESS && SparkDeviceMemoryUnmap(reserved,32u << 20) == SPARK_STATUS_OK &&
+		SparkDeviceAddressRelease(reserved,(32u << 20) + granularity) == SPARK_STATUS_OK && SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK,
+		"free, unmap and release");
+	free(source);
+	free(target);
+}
+
 int main(void)
 {
 	SparkGpuStream stream = 0;
@@ -196,6 +234,7 @@ int main(void)
 	TestMemory(stream);
 	TestPageable(stream);
 	Test2D(stream);
+	TestMappedCopies(stream);
 	TestStreamsAndEvents();
 	TestDevice();
 	CHECK(SparkGpuStreamDestroy(stream) == SPARK_GPU_SUCCESS,"destroy the stream");
@@ -205,6 +244,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS spark_gpu.h over nvrm: every space, staged pageable copies, 2D copies and fills, streams, events, host functions and device queries\n");
+	printf("PASS spark_gpu.h over nvrm: every space, staged pageable copies, 2D copies and fills, copies through device mappings, streams, events, host functions and device queries\n");
 	return(0);
 }
