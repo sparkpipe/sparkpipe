@@ -70,7 +70,6 @@ turn graphs off) exist only in `DEBUG` builds.
 | `SPARK_QWEN38_27B_LAYER_DUMP`, `SPARK_QWEN38_MAX_LAYER_DUMP`, `SPARK_QWEN38_FLASH_LAYER_DUMP` | the Qwen hybrid family's per-layer dump file |
 | `SPARK_TP_ROUND_TRACE` | one line per device collective round |
 | `SPARK_MODEL_BATCH_DECODE_AFTER_PREFILL` | `sparkpipe_model_batch` holds decode until every prefill ends |
-| `SPARK_WEIGHTD_MESH_DEVICE_PROBE` | weightd registers each pool with the NIC once to check the address range |
 
 ## Retired
 

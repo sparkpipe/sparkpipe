@@ -1,6 +1,6 @@
 #include "sparkpipe/spark_weightd_worker.h"
 #include "sparkpipe/spark_error_site.h"
-#include <cuda.h>
+#include "sparkpipe/spark_weightd_device.h"
 #include <pthread.h>
 #include <stdlib.h>
 #include <time.h>
@@ -16,7 +16,7 @@ struct SparkWeightdWorker
 	pthread_t thread;
 	pthread_mutex_t mutex;
 	pthread_cond_t changed;
-	CUcontext cuda_context;
+	SparkDeviceInstance instance;
 	SparkStatus startup;
 	uint32_t ready,stop,active,head,count;
 	SparkWeightdWork jobs[SPARK_WEIGHTD_WORK_QUEUE_CAPACITY];
@@ -27,7 +27,7 @@ static void *worker_main(void *argument)
 	SparkWeightdWorker *worker = argument;
 	SparkWeightdWork job;
 	SparkStatus status;
-	status = cuCtxSetCurrent(worker->cuda_context) == CUDA_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_TARGET_MISMATCH;
+	status = SparkDeviceThreadBind(worker->instance) == SPARK_STATUS_OK ? SPARK_STATUS_OK : SPARK_STATUS_TARGET_MISMATCH;
 	pthread_mutex_lock(&worker->mutex);
 	worker->startup = status;
 	worker->ready = 1u;
@@ -62,16 +62,16 @@ SparkStatus SparkWeightdWorkerCreate(SparkWeightdWorker **out)
 {
 	SparkWeightdWorker *worker;
 	SparkStatus status;
-	CUcontext context;
+	SparkDeviceInstance instance = 0u;
 	if ( out == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*out = 0;
-	if ( cuCtxGetCurrent(&context) != CUDA_SUCCESS || context == 0 )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK || SparkDeviceThreadInstance(&instance) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_TARGET_MISMATCH);
 	worker = calloc(1u,sizeof(*worker));
 	if ( worker == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	worker->cuda_context = context;
+	worker->instance = instance;
 	if ( pthread_mutex_init(&worker->mutex,0) != 0 )
 	{
 		free(worker);

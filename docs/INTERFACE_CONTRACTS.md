@@ -126,6 +126,52 @@ While an engine serves, the cache writes a prefix to disk (a snapshot save or a 
 - The stage KV binding gives each lane a table of one fingerprint per page the node KV quota holds, at least its logical page count and at most `SPARK_STAGE_KV_UNREAD_LIMIT` (2M fingerprints, 16 MB), so a dropped page is remembered for about as many later drops as the old store kept files, or half as many at fleet page sizes (about 120 KB a page per rank, so the 500 GB quota is 4.1M pages). It logs `kv binding unread prefixes` at load and `unread_discards=` and `unread_returns=` on its `kv binding arena` close line.
 - What this costs: the first return of a dropped prefix is recomputed; a conversation whose newest turn was dropped before the next turn recomputes that turn; an identical resend after a crash recomputes its prompt; the fingerprints live in memory, so a restart forgets them.
 
+### Prefix probe
+
+`SparkKvPageCacheProbePrefix` answers, for a prefix identity and its token
+count, what this rank has of it, and changes nothing: it marks no entry
+read, moves nothing in the LRU order, raises no priority and starts no
+restore.
+
+- `held_token_count`: the token count when the cache has an entry for the
+  prefix, else 0.
+- `resident_token_count`: tokens of the chain whose pages are on the device.
+- `saved_token_count`: tokens of the prefix, from token 0, whose page files
+  the snapshot store has now. Every count is checked against the store's
+  index (`SparkKvSnapshotStored`, `SparkKvSnapshotParent`), never taken from
+  a flag or inferred: the store cuts its oldest file first, whatever chain it
+  belongs to, so a leaf can outlive its root. For a held prefix it is the
+  deepest entry that is saved and stored together with every entry before
+  it. For a prefix the cache does not hold it is the token count when the
+  store's index leads from the prefix's last page file through every parent
+  to the first, and 0 when any link is missing. A file still being written
+  does not count.
+- `state_token_count`: the deepest entry on the chain that still has its
+  state, which is where a request for this prefix can resume. Without a
+  state store every entry is such a point. For a prefix the cache does not
+  hold it is the deepest page of a whole stored chain whose state file the
+  store has, and 0 when the chain is broken.
+- `read_token_count`: the deepest entry on the chain that a later request
+  has read, 0 when none has. Under the rule that a prefix is written only
+  after something reads it, this is the part the rank saves by itself; the
+  rest reaches the store only at close. It is 0 for a prefix the cache does
+  not hold. The three classes of `docs/PREFILL_ANTICIPATION.md` (tail, kept,
+  pinned) do not exist yet; read or unread is what a rank knows today.
+
+The probe reaches a rank as an admission with
+`SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE` and one prefix lane, the
+shape of a cache hint. The decision is accepted, takes no dispatch slot, and
+carries the five counts in its own member, `cache_probe`
+(`SparkModelDriverCacheProbe`, model-driver ABI 21); no other field of the
+decision changes its meaning for a probe. `SparkModelDriverStoreCacheProbe`
+and `SparkModelDriverLoadCacheProbe` write and read it. The adapter's `cache_probe` runs it, the rank daemon answers
+a `CACHE_PROBE` message with a `CACHE_PROBE_REPORT`, and the engine keeps the
+least of each count over the ranks (`SparkModelBatchEngineCacheStateBegin`,
+`...Poll`). An adapter without `cache_probe` answers `UNSUPPORTED` with
+zero counts, and so does a rank whose probe failed, with its status. The
+engine counts those answers in `failed_rank_count`, so a prefix no rank
+vouches for can be told from a prefix no rank has.
+
 ### Pinned lane transaction
 
 `SparkKvPageCacheBeginPinnedLaneTransaction(cache, lane, logical_pages, physical_pages, page_capacity, page_count_out, mutation_flags_out)` prepares a lane, begins its transaction and pins its full page table.

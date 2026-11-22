@@ -156,6 +156,16 @@ for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 done
 printf '%s\n' "${adapters[@]}" > "${output_directory}/adapters.txt"
 
+if ! make -C "${repository_root}" test-nvrm-launch \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/nvrm_launch_arguments.txt" 2>&1; then
+	tail -n 40 "${output_directory}/logs/nvrm_launch_arguments.txt" >&2
+	echo "the nvrm flavour's LM_LAUNCH does not convert arguments to their kernel parameter types; see logs/nvrm_launch_arguments.txt" >&2
+	exit 8
+fi
+
 hosted_release_root="${output_directory}/hosted_release_root"
 if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
 	HOSTED_RELEASE_GATE_FLAGS=--complete \

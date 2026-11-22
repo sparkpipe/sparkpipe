@@ -648,9 +648,16 @@ macro both stay on the CUDA fronts. Their implementation is
   reads and clears it, and a later successful call leaves it as it was. The
   detail is in `SparkDeviceLastError()`.
 - **`LM_LAUNCH`** keeps its form: `LM_LAUNCH((kernel), grid, block, shared,
-  stream, args...)`, which yields no value. `LmLaunchKernel` converts each
-  argument to its parameter's type, as `<<<>>>` does, and lays the
-  parameters out at their alignment and size. `SparkNvrmLaunchPacked` finds
+  stream, args...)`, which yields no value. `LmLaunchKernel` deduces the
+  parameter types from the kernel alone and takes each argument as its
+  parameter's type, so arguments convert as in a call, as `<<<>>>` does: a
+  bit-field by value, a literal 0 to a null pointer, an arithmetic value to
+  the parameter's type. The kernel must name one function, because an
+  overloaded name cannot be resolved without a call. It lays the
+  parameters out at their alignment and size.
+  `tests/nvrm/launch_arguments.cu` (`make test-nvrm-launch`, run by the
+  CUDA compile gate) records the packed block in place of a launch and
+  checks each conversion and offset, with no GPU. `SparkNvrmLaunchPacked` finds
   the registered kernel and checks the layout against the kernel's PTX
   parameter table: the count, each offset and size, and the total. A
   mismatch is refused, naming the parameter. It then launches with the

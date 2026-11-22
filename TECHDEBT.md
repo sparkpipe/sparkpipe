@@ -1513,6 +1513,31 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
+  process, CPU-copy daemon) has faulted three times on GB10 with Xid 31, an
+  MMU `FAULT_PTE` on a `VIRT_WRITE` from `GPCCLIENT_T1`. Each time, other
+  processes on the node were running GPU work. The cause is open.
+  - Each fault address was `0xd0000` above a 4 GiB-aligned base, outside every
+    probe allocation. The device buffers sit in 512 MiB chunks at base + 2,
+    2.5 and 3 GiB.
+  - The recorded failing case was the first tp=16 pipelined reduce-scatter
+    (segment = staging capacity + 148), run eagerly right after a graph case.
+  - Its only kernel with local memory is `SparkTpMeshHardwarePieceKernel`: an
+    8-byte stack frame with 4 bytes of spill stores, at 128 registers under
+    `__launch_bounds__(128,4)`.
+  - With the GPU to itself, one process at a time, 63 runs were clean:
+    - 10 of the probe as built;
+    - 10 with the piece kernel at residency 3 (168 registers, no stack frame);
+    - 10 with `cudaLimitStackSize` set explicitly to its default, 1024;
+    - 5 × 20 iterations of a tp=2 then tp=16 pipelined pair;
+    - 3 × 20 iterations of the failing graph-to-eager transition;
+    - 10 beside a second process running 1 ms spin kernels;
+    - 10 beside a second process allocating, filling and freeing 1 GiB in a
+      loop.
+  - Next: run the probe beside a weightd load test or an embedding service.
+    If that reproduces it, test the piece kernel without a stack frame: summing
+    the peers in batches of four keeps residency 4 at 110 registers with the
+    same summation order.
 - A submission that fails residentd's cache validation is retried until its
   deadline, and every attempt resets the session on all ranks: on 2026-10-14
   two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
@@ -1920,16 +1945,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink. It lists 31 files:
+  may only shrink. It lists 30 files and 42 findings:
   - the 25 serving adapters, whose kernels and stage runner run through the
-    CUDA runtime and driver API (`libcuda.so.1`, `libcudart.so.13`). The
-    hub's API also loads an adapter for its descriptor, so the hub ships
-    them too;
-  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`, because weightd's
-    memory code uses the driver API and its client calls share objects with
-    it (`runtime/spark_weightd.c`, `runtime/spark_weightd_worker.c`);
-  - the RDMA transport (`libcuda.so.1`), for those weightd client calls; it is
-    host C and links no CUDA runtime;
+    CUDA runtime (`libcudart.so.13`). Twelve of them also link the driver
+    library (`libcuda.so.1`) for the TMA tensor maps in
+    [`runtime/tensor_map.h`](runtime/tensor_map.h); the other thirteen
+    reached it only through weightd's mappings, which now go through the
+    device layer. The hub's API also loads an adapter for its descriptor, so
+    the hub ships them too;
+  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`
+    (`libcudart.so.13`). Their device memory goes through the device layer
+    compiled into them, which in the CUDA flavour is the CUDA backend over the
+    CUDA runtime. None links the driver library any more;
   - `sparkpipe_model_residentd`, whose boundary buffers and streams go
     through `spark_gpu.h` (`libcudart.so.13`);
   - the CUDA device library (`libcudart.so.13`).
@@ -1939,12 +1966,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
   - that device backend;
   - a build flavour that links neither library;
-  - weightd's memory through the device layer. The shared-memory entry
-    points exist on the CUDA and host backends
-    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
-    The nvrm backend refuses them until its part lands. weightd still calls
-    the driver directly. Converting it takes the driver library out of
-    `sparkpipe_weightd`, `weightd_warm`, `weightdctl` and the transport.
+  - weightd on nvrm on a node. weightd's memory goes through the device layer
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)), and
+    the RDMA transport links the flavour's device library instead of the
+    driver.
+    - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
+      programs with no CUDA library. They have not run on a GPU yet.
+    - The nvrm flavour does not yet build the transport, residentd or the
+      adapters.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

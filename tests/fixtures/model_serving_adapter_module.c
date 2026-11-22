@@ -667,6 +667,18 @@ static SparkStatus TestModelServingReset(void *adapter_state,uint64_t control_ge
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus TestModelServingCacheProbe(void *adapter_state,const SparkModelServingCacheIdentity *identity,uint32_t token_count,SparkModelServingCacheProbe *probe)
+{
+	if ( adapter_state == 0 || identity == 0 || probe == 0 || token_count == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	probe->held_token_count = token_count;
+	probe->resident_token_count = token_count;
+	probe->saved_token_count = 0u;
+	probe->state_token_count = token_count;
+	probe->read_token_count = 0u;
+	return(SPARK_STATUS_OK);
+}
+
 static const SparkModelServingAdapterInterface TestModelServingInterface =
 {
 	.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION,
@@ -681,7 +693,8 @@ static const SparkModelServingAdapterInterface TestModelServingInterface =
 	.progress = TestModelServingProgress,
 	.quiesce = TestModelServingQuiesce,
 	.snapshot = TestModelServingSnapshot,
-	.reset = TestModelServingReset
+	.reset = TestModelServingReset,
+	.cache_probe = TestModelServingCacheProbe
 };
 
 __attribute__((visibility("default")))
