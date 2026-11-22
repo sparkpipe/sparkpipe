@@ -12,6 +12,7 @@
 #include "runtime/device/nvrm/nvrm_host.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/nvrm_resources.h"
 #include "runtime/device/nvrm/nvrm_occupancy.h"
 #include "runtime/device/nvrm/nvrm_wait.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
@@ -1162,6 +1163,20 @@ static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes)
 	spanned = bytes != 0u && address + bytes > address && reached >= address + bytes ? 1u : 0u;
 	pthread_mutex_unlock(&nvrm_shared_lock);
 	return(spanned);
+}
+
+SparkStatus SparkNvrmResourceCountsRead(SparkNvrmResourceCounts *counts)
+{
+	if ( counts == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"resource_counts","",0,"needs an output"));
+	memset(counts,0,sizeof(*counts));
+	pthread_mutex_lock(&nvrm_shared_lock);
+	counts->shared_memory = nvrm_shared_count;
+	counts->reservations = nvrm_reservations.count;
+	counts->mappings = nvrm_mappings.count;
+	pthread_mutex_unlock(&nvrm_shared_lock);
+	counts->rm_objects = __atomic_load_n(&nvrm_gpu.rm.objects,__ATOMIC_ACQUIRE);
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
