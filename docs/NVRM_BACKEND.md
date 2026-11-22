@@ -40,8 +40,15 @@ and refuses any other when it opens the device. Two releases are pinned:
 
 | Release | Hosts |
 | --- | --- |
-| **580.178.04** | the Sparks (aarch64); the default |
+| **580.178.04** | GB10 nodes (aarch64); the default, and the release the hosted image ships |
 | **595.84** | the hub's RTX 5090 (x86_64) |
+
+A node runs the nvrm flavour only on its pinned release: a GB10 node must
+run open kernel module 580.178.04, which `/proc/driver/nvidia/version`
+names. On any other release the backend refuses at open ("the open kernel
+module is ...; this backend is built for 580.178.04 only"), so a node that
+still runs another release serves only the CUDA flavour until it is moved
+to 580.178.04.
 
 `NVRM_MODULE_RELEASE` picks the release a build is for: the Makefile's
 default, 580.178.04, or 595.84 (`make NVRM_MODULE_RELEASE=595.84 ...`). Any
@@ -1421,7 +1428,19 @@ not help (one switch per use, same binary):
   every launch, about 3 us a read, so host submission of the chain rose to
   484-565 us ([TECHDEBT.md](../TECHDEBT.md), Runtime completion).
 
-DRAFTER_SPANS
+The drafters gain less than the chain does. The call-site track's replays
+on the hub (`drafter_module_replay`, greedy, 1,399 to 4,453 proposals per
+model, 2026-11-22) gave per proposal, with drafts identical to CUDA's in
+every run:
+
+| Propose, per request | CUDA | nvrm, slots in host memory | nvrm, slots in video memory |
+| --- | --- | --- | --- |
+| DSV4.1 dspark, 136 launches | 2389 us | 6269 us | 5243 us |
+| K3.1 dspark, 99 launches | 5125 us | 6757 us | 6110 us |
+| Qwen DSpine, 131 launches | 4602 us | 6663 us | 5702 us |
+
+The rest of the gap is the kernels' own GPU time
+([TECHDEBT.md](../TECHDEBT.md), Runtime completion).
 
 ## Step measurements
 

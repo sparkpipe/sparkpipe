@@ -1533,6 +1533,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     in host memory. Then move the acquire target to video memory and
     measure with `make nvrm-chain-gap`
     ([`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md), the hub's RTX 5090).
+- nvrm drafters on the hub's RTX 5090 still take 19% (K3.1), 24% (Qwen
+  DSpine) and 119% (DSV4.1) more time per proposal than CUDA once launch
+  slots live in video memory, with identical drafts. The gap is per-kernel
+  GPU time, which the empty-kernel chain does not show. Next to measure on
+  these kernels: the code image (constant banks beyond bank 0 included) and
+  local memory in video memory, one switch per use as for the slots.
 - K3.1 drafter ingest on nvrm copies pageable host memory through the 8 MiB
   staging buffer, and each staged copy waits for its queue. On the hub's
   RTX 5090 the copies cost 604 us of host time per ingest call, against 9 us
