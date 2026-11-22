@@ -1933,16 +1933,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   may only shrink, and the kit's `--deploy` run refuses every root until
   the list is empty and the root is built for one device backend. A hosted
   root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
-  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and the 13
-  serving adapters that call no CUDA driver API under their usual paths,
-  with the nvrm device library, so they are off the list. It lists 13 files
-  and 25 findings:
-  - the 12 serving adapters that still call the CUDA driver API
-    (`libcuda.so.1`) for the TMA tensor maps in
-    [`runtime/tensor_map.h`](runtime/tensor_map.h), and run their kernels
-    and stage runner through the CUDA runtime (`libcudart.so.13`). The hub's
-    API also loads an adapter for its descriptor, so the hub ships them too;
-  - the CUDA device library (`libcudart.so.13`).
+  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and every
+  serving adapter under their usual paths, with the nvrm device library and
+  the tensor map build image the adapters' TMA maps need on nvrm, so they
+  are off the list. The hub's API also loads an adapter for its descriptor,
+  so the hub ships them too. The list names one file and one finding: the
+  CUDA device library (`libcudart.so.13`), which the kit's hosted run still
+  ships.
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
   `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
