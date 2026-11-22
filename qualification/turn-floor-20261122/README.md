@@ -70,8 +70,11 @@ at either context length:
 So a turn with one new token takes two one-row waves plus that cost: 547 ms
 at 8,000 tokens, where a one-row wave is 135 ms, and 804 ms at 120,000,
 where it is 270 ms. It is the largest part of a small turn on this rank and
-does not come from the new tokens; any rule that adds a wave to a turn adds
-to it.
+does not come from the new tokens. `docs/AGENT_TURN_BENCHMARK.md`,
+"Finding: the start cost of a request's first wave", takes it apart: it is
+the session's recurrent state, 154.9 MB on this lane, read through the state
+store when the request is admitted and written again where the request
+keeps a new state, with a SHA-256 over all of it each time.
 
 The evidence is in `qwen3.8-27b-fp8-one-gb10-alone/engine.log` (`service_ms`
 is the rank's work, `wall_ms` the time from dispatch to the wave's return):
@@ -192,3 +195,4 @@ the time from dispatch to the wave's return):
 | `qwen3.8-27b-fp8-one-gb10/ledger.jsonl` | the ledger fields of the ten requests that went through the chat layer |
 | `qwen3.8-27b-fp8-one-gb10-alone/requests.jsonl`, `engine.log`, `parts.jsonl`, `summary.json` | the same four files for the turn floor run |
 | `qwen3.8-27b-fp8-one-gb10-alone/gpu.json` | the count of GPU process list samples and the requests they would discard (none) |
+| `qwen3.8-27b-fp8-one-gb10-alone/rank-phases.log` | the rank's own lines over the run: its state size, its phase times per sixteen prefill waves and its frame times |

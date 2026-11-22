@@ -509,7 +509,10 @@ A one-row wave is 135 ms of that rank's work at 8,000 tokens and 270 ms at
 105 ms pass between its dispatch and the rank's work on it, and resuming a
 session with new tokens makes the wave itself about 140 ms longer. On this
 rank that start cost, not the new tokens, is the largest part of a small
-turn, and every wave a rule adds to a turn adds to it.
+turn. It is the session's recurrent state, 154.9 MB on a lane of one rank,
+read through the state store at admission and written where the request
+keeps a new state, with a SHA-256 over all of it each time
+(`docs/AGENT_TURN_BENCHMARK.md`).
 
 Decode ran at 7.3 tok/s plain and 18.5 as served at 8,000 tokens, 3.7 and
 10.5 at 120,000. Prefill ran at 970 tok/s on a cold 8,000-token prompt, 618
