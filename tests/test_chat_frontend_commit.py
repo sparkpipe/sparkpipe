@@ -109,8 +109,9 @@ async def run_reply_commit(tmp, check):
               f"two conversations with the same system prompt name the same opening cut, where the first message begins, and ask for state there: {first.get('cuts')} {engine.requests[0].get('keep')}")
         check(engine.resumed(first) == opened, f"by the engine's rules the second conversation resumes where the shared opening ends: {engine.resumed(first)} {opened}")
         check(commit.get("cuts") == [opened, len(prompt) - 1] and "keep" not in commit and commit.get("stream") is True and "max_tokens" not in commit and
-              commit.get("priority") == first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
-              f"the commit names the turn's cuts and one token before the turn's prompt ended, and runs in the turn's own class: {commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
+              commit.get("priority") == chat_frontend.BACKGROUND_PRIORITY and first.get("priority") == chat_frontend.INTERACTIVE_PRIORITY,
+              f"the commit names the turn's cuts and one token before the turn's prompt ended, and runs in the background class, behind every interactive turn: "
+              f"{commit.get('cuts')} {commit.get('priority')} {first.get('priority')}")
         reply = fixture.json.loads(text)
         engine.reply("The file is listed.</think>Done.")
         history = messages + [{"role": "assistant", "content": reply["content"]}, {"role": "user", "content": "list the directory"}]
@@ -233,6 +234,31 @@ async def run_reply_commit(tmp, check):
         engine.commit_hold.set()
         engine.commit_hold = None
         check(await settled(frontend), f"every commit ends: {len(frontend.reply_commits)}")
+        before = len(await commits_seen(engine, 0))
+        engine.commit_hold = asyncio.Event()
+        again = [{"role": "user", "content": "read q.txt"}]
+        engine.reply("The user wants q.txt read.</think>Reading q.")
+        status, headers, text = await harness.post("/v1/messages", dict(body, messages=again))
+        held = await commits_seen(engine, before + 1)
+        left = [pending for pending in frontend.reply_commits if len(held) > before and pending.ids == held[before]["prompt_token_ids"]]
+        engine.reply("Asked again.</think>Reading q once more.")
+        status, headers, text = await asyncio.wait_for(harness.post("/v1/messages", dict(body, messages=again)), 10)
+        await asyncio.sleep(0.05)
+        repeated = next(request for request in reversed(engine.requests) if "max_tokens" in request)
+        check(status == 200 and len(left) == 1 and left[0].task.cancelled() and left[0] not in frontend.reply_commits and
+              repeated["prompt_token_ids"] == left[0].ids[:left[0].history],
+              f"a prompt that asks the same turn again holds the commit's history but not its reply, so the commit of the reply it replaces is withdrawn: "
+              f"{status} {len(left)} {[pending.task.cancelled() for pending in left]}")
+        other = [{"role": "user", "content": "read another file"}]
+        engine.reply("Another conversation.</think>Reading it.")
+        waiting = [pending for pending in frontend.reply_commits]
+        status, headers, text = await asyncio.wait_for(harness.post("/v1/messages", dict(body, messages=other)), 10)
+        await asyncio.sleep(0.05)
+        check(status == 200 and len(waiting) == 1 and not waiting[0].task.done(),
+              f"a prompt of another conversation leaves a pending commit alone: {status} {len(waiting)} {[pending.task.done() for pending in waiting]}")
+        engine.commit_hold.set()
+        engine.commit_hold = None
+        check(await settled(frontend), f"every commit ends: {len(frontend.reply_commits)}")
         served = fixture.json.loads((ROOT / "deployment" / "hub" / "chat_frontend.json").read_text())
         check(served["models"] and not any(spec.get("reply_commit") for spec in served["models"]),
               "no served model commits its replies: the setting stays off for a model until gate GX and the turn floor have run both forms on it")
@@ -278,14 +304,19 @@ async def run_reply_commit(tmp, check):
             await asyncio.sleep(0.01)
         gate = ("account:a", "m1")
         waiting = chat_frontend.ReplyCommit("alpha", gate, [5, 6, 7])
-        others = [chat_frontend.ReplyCommit("alpha", gate, [5, 6, 9]), chat_frontend.ReplyCommit("alpha", ("account:b", "m1"), [5, 6, 7]), chat_frontend.ReplyCommit("beta", gate, [5, 6, 7])]
-        for pending in [waiting] + others:
+        replaced = chat_frontend.ReplyCommit("alpha", gate, [5, 6, 9, 9], history=2)
+        others = [chat_frontend.ReplyCommit("alpha", gate, [5, 6, 9]), chat_frontend.ReplyCommit("alpha", gate, [4, 6, 9], history=2),
+                  chat_frontend.ReplyCommit("alpha", gate, [5, 6, 7, 8, 9, 1, 2], history=6),
+                  chat_frontend.ReplyCommit("alpha", ("account:b", "m1"), [5, 6, 7]), chat_frontend.ReplyCommit("beta", gate, [5, 6, 7])]
+        for pending in [waiting, replaced] + others:
             pending.task = asyncio.ensure_future(asyncio.sleep(30))
-        frontend.reply_commits.update([waiting] + others)
+        frontend.reply_commits.update([waiting, replaced] + others)
         await frontend.reply_joined(frontend.models["alpha"], {"engine_body": {"prompt_token_ids": [5, 6, 7, 8, 9], "cuts": [2, 3]}, "gate": gate})
         await asyncio.sleep(0)
-        check(waiting.task.cancelled() and not any(pending.task.done() for pending in others),
-              f"a commit that has not reached the engine is withdrawn when its next turn arrives, and none of another reply, account or model is: {waiting.task.cancelled()} {[pending.task.done() for pending in others]}")
+        check(waiting.task.cancelled() and replaced.task.cancelled() and not any(pending.task.done() for pending in others),
+              f"a commit that has not reached the engine is withdrawn when its next turn arrives, and so is one whose history the prompt holds without its reply; "
+              f"none of a commit without a known history, of another conversation, of a longer history, of another account or of another model is: "
+              f"{waiting.task.cancelled()} {replaced.task.cancelled()} {[pending.task.done() for pending in others]}")
         for pending in others:
             pending.task.cancel()
         frontend.reply_commits.clear()
@@ -297,7 +328,7 @@ def main():
         asyncio.run(run(Path(tmp), check))
     with tempfile.TemporaryDirectory() as tmp:
         asyncio.run(run_reply_commit(Path(tmp), check))
-    return check.finish("a commit computes and keeps a prompt on every shape and generates nothing; with reply_commit each finished reply is committed at once, the next turn names its end and waits for a commit that is running, no longer than its work should take; a commit that fails, stalls or has not started never fails or holds the turn; no served model has the setting on")
+    return check.finish("a commit computes and keeps a prompt on every shape and generates nothing; with reply_commit each finished reply is committed at once, the next turn names its end and waits for a commit that is running, no longer than its work should take; a commit runs in the background class and is withdrawn when its conversation's next prompt does not extend it; a commit that fails, stalls or has not started never fails or holds the turn; no served model has the setting on")
 
 
 if __name__ == "__main__":

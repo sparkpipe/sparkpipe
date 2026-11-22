@@ -485,8 +485,8 @@ async def heartbeat(events, interval):
 
 
 class ReplyCommit:
-    def __init__(self, model, gate, ids, work=0):
-        self.model, self.gate, self.ids, self.work, self.sent, self.task = model, gate, ids, work, None, None
+    def __init__(self, model, gate, ids, work=0, history=0):
+        self.model, self.gate, self.ids, self.work, self.history, self.sent, self.task = model, gate, ids, work, history, None, None
 
 
 class LiveRequest:
@@ -2581,11 +2581,10 @@ class Frontend:
             return
         plan["reply_committed"] = True
         cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
-        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens, len(tokens) + len(plan.get("forced_ids", [])) + 1)
+        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens, len(tokens) + len(plan.get("forced_ids", [])) + 1, len(prompt))
         if len(cuts) > ENGINE_MAX_CUTS:
             return
-        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0],
-                                                               plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), plan.get("request_id")))
+        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0], BACKGROUND_PRIORITY, plan.get("request_id")))
         self.reply_commits.add(pending)
         pending.task.add_done_callback(lambda task: self.reply_commits.discard(pending))
 
@@ -2628,11 +2627,13 @@ class Frontend:
         ids = plan["engine_body"]["prompt_token_ids"]
         cuts = set(plan["engine_body"].get("cuts", ()))
         gate = plan.get("gate", (OWN_SCOPE, None))
-        for pending in [pending for pending in self.reply_commits
-                        if (pending.model, pending.gate) == (model.id, gate) and len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids]:
-            patience = self.reply_patience(model, pending)
-            if patience > 0:
-                await asyncio.wait({pending.task}, timeout=patience)
+        for pending in [pending for pending in self.reply_commits if (pending.model, pending.gate) == (model.id, gate)]:
+            if len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids:
+                patience = self.reply_patience(model, pending)
+                if patience > 0:
+                    await asyncio.wait({pending.task}, timeout=patience)
+            elif not 0 < pending.history <= len(ids) or ids[:pending.history] != pending.ids[:pending.history]:
+                continue
             if not pending.task.done():
                 pending.task.cancel()
                 await asyncio.wait({pending.task}, timeout=CANCEL_WAIT_SECONDS)

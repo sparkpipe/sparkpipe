@@ -720,12 +720,18 @@ takes no output limit, logprobs, forced tool choice or WebSocket.
 
 A model whose settings carry `"reply_commit": true` commits each reply it
 records for replay as soon as the reply ends: the turn's prompt and the
-reply's tokens without the stop token, in the turn's own priority class,
-through the sequence gate and under the account that made the turn. The next
+reply's tokens without the stop token, in the background class, through the
+sequence gate and under the account that made the turn. In that class a
+commit takes no sequence that is kept free for interactive turns, the
+engine starts no wave of it while an interactive request has work queued or
+in flight (`README.md`, "Interactive first"), and a turn that still waits
+behind a wave of it shows that wait in its `background_wait_ms`. The next
 turn then resumes where the reply ends, instead of computing the reply again
 while the user waits. A turn of the same account and member that arrives
 while its reply's commit is at the engine waits for it, so the reply is
-computed once. The wait is bounded by the commit's own work: at most twice
+computed once. A prompt that holds the commit's history (the tokens before
+its reply) without the reply, a turn asked again or a conversation that
+went on otherwise, withdraws the commit: nothing will resume at its end. The wait is bounded by the commit's own work: at most twice
 the time its tokens take at the model's measured prefill rate, and at least
 one second, counted from when the commit reached the engine. With no
 measured rate for a prompt of that size the turn does not wait. A commit

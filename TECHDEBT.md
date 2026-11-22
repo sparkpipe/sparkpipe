@@ -1124,7 +1124,7 @@ as recorded debt for models too large for a group.
     state store, so the rules about kept state are still proven on a rank
     only. The API test's adapter keeps no page cache at all.
   - A reply commit whose conversation never continues is one wasted wave, in
-    the turn's own priority class. The chat layer commits every reply it
+    the background class. The chat layer commits every reply it
     records. It could commit only replies that end in a tool call, where the
     next turn is certain.
   - A prompt that takes the streamed prefill still publishes the blocks of
