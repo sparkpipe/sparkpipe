@@ -9,8 +9,8 @@
 #define TEST_MODEL_SERVING_ADAPTER_MODULE_PATH ""
 #endif
 
-_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 21u,
-	"resident decode chaining, verify frames and block identities on lanes that do not publish require model-driver ABI 21");
+_Static_assert(SPARK_MODEL_DRIVER_ABI_VERSION == 22u,
+	"resident decode chaining, verify frames, the cache probe's own decision member and block identities on lanes that do not publish require model-driver ABI 22");
 
 static SparkStatus TestInitialize(
 	const SparkModelServingAdapterConfiguration *configuration,

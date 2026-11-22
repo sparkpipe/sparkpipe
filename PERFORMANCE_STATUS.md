@@ -494,6 +494,45 @@ Gate GX's receipts will give, for each lane:
 - the waves the ranks refused for capacity, and the requests that waited out
   the in-flight budget (`load`).
 
+## First token of a turn
+
+The first token of a request is the sum of five parts, which
+`tools/turn_floor.py` reads from the engine's own log
+([`docs/AGENT_TURN_BENCHMARK.md`](docs/AGENT_TURN_BENCHMARK.md)): the
+request reaching the engine (send), its wait for a first admitted wave
+(queue), its wait for a prefix to come back from NVMe (restore), the prefill
+waves over the new tokens, and the one-row wave of the last prompt token,
+whose result is the first token. Under the exact-reuse rules every adapter
+runs that one-row wave; before them an adapter without checkpoints (GLM 5.3
+Full) computed its last token in the last prefill wave.
+
+Measured so far: one cold request (2026-11-21, release c2b714343, 16 Sparks;
+receipt in
+[`qualification/turn-floor-20261121/`](qualification/turn-floor-20261121/)).
+
+| Qwen 3.8 Max, 20,000 tokens, nothing cached | |
+| --- | ---: |
+| First token | 31.83 s (628 tok/s over the prompt) |
+| Send, queue, restore | 1.6 ms, 0.6 ms, none |
+| Prefill, ten waves | 31.73 s; a 2,048-row wave takes 3.10-3.23 s of service (635-660 tok/s), and 3 ms pass between the waves in all |
+| The last token's wave | 101 ms (92 ms of service) |
+| Decode after it | 12.0 tok/s |
+
+The prefill waves are 99.7% of that cold prompt's first token.
+
+The engine's log of the same 33 seconds shows a second client's 5-token
+request that arrived 2.4 s into the prefill, at the same priority. Its own
+work was 155 ms for its prefill wave and 570 ms for a chain of 7 tokens.
+They returned after 975 ms and 3.75 s: each step first waited for the long
+request's wave in flight to return, 0.8 s of one and the whole 3.2 s of the
+next. The API closed the request 11.1 s after accepting it.
+
+Not yet measured on the fleet: a turn on a cached session (first token
+against context and new tokens), restores from NVMe, decode against context,
+the session and subagent openings, and the other six models. The K3
+follow-up line under "KV cache and long context" is from October and stays
+until K3 is measured again.
+
 ## How the numbers are measured
 
 - Tool: [`tools/api_serving_perf.py`](tools/api_serving_perf.py) against each

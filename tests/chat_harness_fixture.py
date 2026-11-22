@@ -88,6 +88,7 @@ class Engine:
         self.early_usage = True
         self.cache_all = False
         self.ignores_commit = False
+        self.cache = None
         self.commit_fails = False
         self.usage = []
         self.points = set()
@@ -176,6 +177,8 @@ class Engine:
                 sent = len(ids) if last else 1
                 event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": sent, "total_tokens": len(prompt) + sent,
                                   "prompt_tokens_details": {"cached_tokens": cached}}
+                if self.cache is not None:
+                    event["cache"] = self.cache(prompt, cached)
             await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt) + list(ids[:-1]))
         await response.write(b"data: [DONE]\n\n")

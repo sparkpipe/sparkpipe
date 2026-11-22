@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import time
@@ -24,6 +25,9 @@ HANDLES = "replay_handles"
 BLOCKS = "prompt_blocks"
 AFFINITY = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 SESSION_MARK = "_session_"
+ATTRIBUTION_PREFIX = "x-anthropic-billing-header:"
+OPENING_TEXT_TYPES = ("text", "input_text")
+LEADING_ROLES = ("system", "developer")
 
 
 def handle(prefix):
@@ -487,6 +491,58 @@ def metadata_session(metadata):
         return clean_affinity(found.get("session_id"))
     _, mark, session = user.rpartition(SESSION_MARK)
     return clean_affinity(session) if mark else None
+
+
+def part_digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8", "surrogatepass")).hexdigest()[:16]
+
+
+def opening_texts(content):
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [str(block.get("text") or "") for block in content if isinstance(block, dict) and block.get("type") in OPENING_TEXT_TYPES]
+    return []
+
+
+def opening(tools, attribution, system, context, prompt, first_request):
+    return {"tools": part_digest(tools or []), "attribution": part_digest(attribution) if attribution else None, "system": part_digest(system),
+            "project_context": part_digest(context), "first_request": first_request, "prompt": prompt}
+
+
+def messages_opening(body):
+    system = opening_texts(body.get("system"))
+    attribution = system[0] if system and system[0].startswith(ATTRIBUTION_PREFIX) else None
+    messages = [message for message in body.get("messages") or [] if isinstance(message, dict)]
+    texts = opening_texts(messages[0].get("content")) if messages and messages[0].get("role") == "user" else []
+    return opening(body.get("tools"), attribution, system[1:] if attribution else system, texts[:-1], texts[-1] if texts else None,
+                   not any(message.get("role") == "assistant" for message in messages))
+
+
+def responses_opening(body):
+    if body.get("previous_response_id") is not None:
+        return None
+    source = body.get("input")
+    items = [{"role": "user", "content": source}] if isinstance(source, str) else [item for item in source if isinstance(item, dict)] if isinstance(source, list) else []
+    lead = []
+    for item in items:
+        if (item.get("type") or "message") != "message" or item.get("role") == "assistant":
+            break
+        lead.append(item)
+    users = [index for index, item in enumerate(lead) if item.get("role") == "user"]
+    texts = opening_texts(lead[users[-1]].get("content")) if users else []
+    context = [[item.get("role"), opening_texts(item.get("content"))] for index, item in enumerate(lead) if not users or index != users[-1]]
+    return opening(body.get("tools"), None, [body.get("instructions") or ""], context + [texts[:-1]], texts[-1] if texts else None, len(lead) == len(items))
+
+
+def chat_opening(body):
+    messages = [message for message in body.get("messages") or [] if isinstance(message, dict)]
+    lead = 0
+    while lead < len(messages) and messages[lead].get("role") in LEADING_ROLES:
+        lead += 1
+    texts = opening_texts(messages[lead].get("content")) if lead < len(messages) and messages[lead].get("role") == "user" else []
+    return opening(body.get("tools"), None, [opening_texts(message.get("content")) for message in messages[:lead]], texts[:-1], texts[-1] if texts else None,
+                   not any(message.get("role") == "assistant" for message in messages))
 
 
 def responses_request(body):
