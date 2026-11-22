@@ -8,6 +8,7 @@
 #include "inference/kernels/mma.cuh"
 #include <math.h>
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_ATTENTION_BLOCK_WARPS 12u
 #define LM_ATTENTION_BLOCK_THREADS (LM_ATTENTION_BLOCK_WARPS * 32u)
@@ -214,7 +215,7 @@ void LmAttentionBlockPartialKernel(
 }
 
 template<uint32_t HEAD_DIM, uint32_t VALUE_DIM>
-static inline cudaError_t LmAttentionBlockPartialLaunch(
+static inline SparkGpuError LmAttentionBlockPartialLaunch(
 	const uint16_t *query_bf16,
 	uint32_t heads,
 	const uint32_t *row_position,
@@ -226,22 +227,22 @@ static inline cudaError_t LmAttentionBlockPartialLaunch(
 	float qk_scale,
 	float *send,
 	uint64_t send_stride,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmAttentionBlockSharedBytes<HEAD_DIM,VALUE_DIM>();
 	static bool granted = false;
 	if ( rows == 0u || heads == 0u || query_bf16 == 0 || row_position == 0 || slots == 0 || send == 0 || key_count == 0u ||
 		slot_pitch < (uint64_t)heads * (HEAD_DIM + VALUE_DIM) ||
 		send_stride < (uint64_t)rows * LmGqaShardRecordFloats(heads,VALUE_DIM,1u) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( !granted )
 	{
-		const cudaError_t error = cudaFuncSetAttribute((const void *)LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared);
-		if ( error != cudaSuccess )
+		const SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,(int)shared);
+		if ( error != SPARK_GPU_SUCCESS )
 			return(error);
 		granted = true;
 	}
-	LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM><<<dim3((rows + LM_ATTENTION_BLOCK_QUERIES - 1u) / LM_ATTENTION_BLOCK_QUERIES,heads),LM_ATTENTION_BLOCK_THREADS,shared,stream>>>(
+	LM_LAUNCH((LmAttentionBlockPartialKernel<HEAD_DIM,VALUE_DIM>),dim3((rows + LM_ATTENTION_BLOCK_QUERIES - 1u) / LM_ATTENTION_BLOCK_QUERIES,heads),LM_ATTENTION_BLOCK_THREADS,shared,stream,
 		query_bf16,heads,row_position,rows,slots,slot_pitch,key_first,key_count,qk_scale,send);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

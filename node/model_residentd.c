@@ -35,8 +35,6 @@
 #endif
 #include <unistd.h>
 
-#include <cuda_runtime_api.h>
-
 #include "runtime/model_continuation_lease.h"
 #include "runtime/model_resident_socket.h"
 #include "spark_filesystem.h"
@@ -46,6 +44,7 @@
 #include "sparkpipe/spark_model_resident_ipc.h"
 #include "sparkpipe/spark_pipeline_runtime.h"
 #include "weightd_spawn.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define SPARK_MODEL_RESIDENTD_TRANSPORT_POLL_CAPACITY 32u
 #define SPARK_MODEL_RESIDENTD_PROGRESS_STEPS 64u
@@ -264,8 +263,8 @@ typedef struct SparkModelResidentdRuntime
 	uint64_t adapter_op_count;
 	uint32_t adapter_op_max_per_pass;
 	SparkModelResidentdMemoryMode memory_mode;
-	cudaStream_t execution_stream;
-	cudaStream_t transport_stream;
+	SparkGpuStream execution_stream;
+	SparkGpuStream transport_stream;
 	int32_t listen_fd;
 	int32_t candidate_fd;
 	uint32_t candidate_input_bytes;
@@ -679,23 +678,23 @@ static SparkStatus SparkModelResidentdAllocateBoundary(
 	SparkModelResidentdMemoryMode memory_mode,
 	uint64_t bytes)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	if ( boundary == 0 || bytes == 0u || bytes > SIZE_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(boundary,0,sizeof(*boundary));
 	boundary->bytes = bytes;
 	if ( memory_mode == SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST )
 	{
-		error = cudaHostAlloc(&boundary->allocation,(size_t)bytes,cudaHostAllocPortable | cudaHostAllocMapped);
-		if ( error == cudaSuccess )
-			error = cudaHostGetDevicePointer(&boundary->cuda_address,boundary->allocation,0u);
+		error = SparkGpuHostAlloc(&boundary->allocation,(size_t)bytes,SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED);
+		if ( error == SPARK_GPU_SUCCESS )
+			error = SparkGpuHostGetDevicePointer(&boundary->cuda_address,boundary->allocation,0u);
 	}
 	else
 	{
-		error = cudaMalloc(&boundary->allocation,(size_t)bytes);
+		error = SparkGpuMalloc(&boundary->allocation,(size_t)bytes);
 		boundary->cuda_address = boundary->allocation;
 	}
-	if ( error != cudaSuccess )
+	if ( error != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
@@ -707,9 +706,9 @@ static void SparkModelResidentdFreeBoundary(
 	if ( boundary == 0 )
 		return;
 	if ( boundary->allocation != 0 && memory_mode == SPARK_MODEL_RESIDENTD_MEMORY_MAPPED_HOST )
-		(void)cudaFreeHost(boundary->allocation);
+		(void)SparkGpuFreeHost(boundary->allocation);
 	else if ( boundary->allocation != 0 )
-		(void)cudaFree(boundary->allocation);
+		(void)SparkGpuFree(boundary->allocation);
 	memset(boundary,0,sizeof(*boundary));
 }
 
@@ -718,24 +717,24 @@ static SparkStatus SparkModelResidentdAllocateCuda(
 	SparkModelResidentdMemoryMode memory_mode)
 {
 	SparkStatus status;
-	cudaError_t error;
+	SparkGpuError error;
 	uint32_t index;
 	int least_priority = 0,greatest_priority = 0;
 	runtime->memory_mode = memory_mode;
-	error = cudaDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
-	if ( error == cudaSuccess )
-		error = cudaStreamCreateWithPriority(&runtime->execution_stream,cudaStreamNonBlocking,greatest_priority);
-	if ( error != cudaSuccess )
+	error = SparkGpuDeviceGetStreamPriorityRange(&least_priority,&greatest_priority);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuStreamCreateWithPriority(&runtime->execution_stream,SPARK_GPU_STREAM_NON_BLOCKING,greatest_priority);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=execution rank=%u stage=%u cuda_error=%d detail=%s\n",
-			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	error = cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking);
-	if ( error != cudaSuccess )
+	error = SparkGpuStreamCreateWithFlags(&runtime->transport_stream,SPARK_GPU_STREAM_NON_BLOCKING);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr,"model_residentd cuda_stream_create stream=transport rank=%u stage=%u cuda_error=%d detail=%s\n",
-			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,cudaGetErrorString(error));
+			runtime->rank_plan.rank_index,runtime->rank_plan.stage_index,(int)error,SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	status = SPARK_STATUS_OK;
@@ -1748,9 +1747,9 @@ static SparkStatus SparkModelResidentdQuiesceAdapter(
 				SPARK_FAIL(SPARK_STATUS_BUSY);
 		}
 	}
-	if ( runtime->execution_stream != 0 && cudaStreamSynchronize(runtime->execution_stream) != cudaSuccess )
+	if ( runtime->execution_stream != 0 && SparkGpuStreamSynchronize(runtime->execution_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( runtime->transport_stream != 0 && cudaStreamSynchronize(runtime->transport_stream) != cudaSuccess )
+	if ( runtime->transport_stream != 0 && SparkGpuStreamSynchronize(runtime->transport_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return(SPARK_STATUS_OK);
 }
@@ -1792,9 +1791,9 @@ static void SparkModelResidentdDestroy(
 			SparkModelResidentdFreeBoundary(&runtime->slots[index].output,runtime->memory_mode);
 		}
 	if ( runtime->execution_stream != 0 )
-		(void)cudaStreamDestroy(runtime->execution_stream);
+		(void)SparkGpuStreamDestroy(runtime->execution_stream);
 	if ( runtime->transport_stream != 0 )
-		(void)cudaStreamDestroy(runtime->transport_stream);
+		(void)SparkGpuStreamDestroy(runtime->transport_stream);
 	if ( runtime->wake_read_fd >= 0 )
 		close(runtime->wake_read_fd);
 	if ( runtime->wake_write_fd >= 0 )

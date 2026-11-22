@@ -116,6 +116,7 @@ static void ProbeQuantize(uint64_t elements, uint32_t seed, uint32_t presquashed
 	PROBE_CUDA(cudaMalloc(&device_codes,elements));
 	PROBE_CUDA(cudaMalloc(&device_scales,elements / 32u));
 	PROBE_CUDA(cudaMemcpy(device_source,source.data(),elements * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_OK(LmMxQuantize(device_source,device_codes,device_scales,elements,stream));
 	PROBE_CUDA(cudaStreamSynchronize(stream));
 	PROBE_CUDA(cudaMemcpy(codes.data(),device_codes,elements,cudaMemcpyDeviceToHost));
@@ -192,9 +193,13 @@ static void ProbeGemm(uint32_t rows, uint32_t input, uint32_t output, uint32_t s
 	PROBE_CUDA(cudaMalloc(&device_w_scale,w_count / 32u));
 	PROBE_CUDA(cudaMalloc(&device_out,out_count * 2u));
 	PROBE_CUDA(cudaMemcpy(device_a,a.data(),a_count,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_a_scale,a_scale.data(),a_count / 32u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_w,w.data(),w_count,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_w_scale,w_scale.data(),w_count / 32u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemsetAsync(device_out,0xff,out_count * 2u,stream));
 	PROBE_OK(LmMxGemmDense(device_a,device_a_scale,device_w,device_w_scale,device_out,rows,input,output,0u,0u,probe_multiprocessors,stream));
 	PROBE_CUDA(cudaStreamSynchronize(stream));
@@ -267,7 +272,9 @@ static void ProbeGrouped(uint32_t rows, uint32_t input, uint32_t output, uint32_
 	PROBE_CUDA(cudaMalloc(&device_scales,scales.size()));
 	PROBE_CUDA(cudaMalloc(&device_out,out_count * 2u));
 	PROBE_CUDA(cudaMemcpy(device_bytes,bytes.data(),bytes.size(),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_scales,scales.data(),scales.size(),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	for (member=0u; member<count; member++)
 	{
 		activation[member] = device_bytes + member * (a_count + w_count);

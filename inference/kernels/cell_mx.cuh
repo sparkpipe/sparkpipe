@@ -1,5 +1,6 @@
 #pragma once
 #include "inference/kernels/cell_mma.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_CELL_MX_PITCH 48u
 #define LM_CELL_MX_STAGE_BYTES (LM_CELL_MMA_ROWS * LM_CELL_MX_PITCH)
@@ -244,7 +245,7 @@ static LmCellMxCodes LmCellMxPacked(const uint8_t *codes, const uint8_t *code_sc
 
 static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint32_t split, const LmCellMxCodes &mx, uint16_t *output_bf16,
 	const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed,
-	uint32_t input_dimension, uint32_t output_dimension, cudaStream_t stream)
+	uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
 {
 	LmSkinnyCellArguments args;
 	LmCellMmaSegments segments;
@@ -268,12 +269,12 @@ static int32_t LmCellMxExpertsSplit(const void *weight, const void *upper, uint3
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
 	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
 	LM_LAUNCH_DEPENDENT((LmCellMxKernel), (uint32_t)blocks, LM_CELL_MMA_THREADS, 0u, stream, args, segments, mx);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static int32_t LmCellMxExperts(const void *weight, const uint8_t *codes, const uint8_t *code_scales, uint16_t *output_bf16, const uint32_t *group_row_offset,
 	const uint32_t *route_source_token, uint32_t groups, uint32_t packed_rows, uint32_t activation_packed, uint32_t input_dimension,
-	uint32_t output_dimension, cudaStream_t stream)
+	uint32_t output_dimension, SparkGpuStream stream)
 {
 	return(LmCellMxExpertsSplit(weight, 0, 0u, LmCellMxPacked(codes, code_scales, input_dimension), output_bf16, group_row_offset, route_source_token,
 		groups, packed_rows, activation_packed, input_dimension, output_dimension, stream));

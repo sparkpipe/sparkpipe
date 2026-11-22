@@ -41,6 +41,7 @@
 #include "sparkpipe/spark_dsv41_flash_stagepack.h"
 #include "dsv41_flash_stage_kernels.cuh"
 #include "dsv41_flash_attend.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define D41_TP SPARK_DSV41_FLASH_STAGE_TP_DEGREE
 #define D41_KV_TP SPARK_DSV41_FLASH_STAGE_KV_DEGREE
@@ -300,9 +301,9 @@ struct D41ModelState : CudaStageState
 	uint16_t *exchange_quota, *exchange_quota_host, *expert_at_host;
 	uint8_t *expert_backup, *expert_group, *owner_host, *backup_host, *group_host, *backup_cells;
 	uint64_t backup_group13, backup_group2, backup_filled;
-	cudaEvent_t counts_ready;
-	cudaStream_t shared_stream;
-	cudaEvent_t shared_fork, shared_join;
+	SparkGpuEvent counts_ready;
+	SparkGpuStream shared_stream;
+	SparkGpuEvent shared_fork, shared_join;
 	uint32_t exchange_rows, exchange_live, shuffle_rows, moe_rows;
 	D41ReceivedRows<D41_TP> exchange_received, shuffle_received;
 	uint8_t *expert_owner, *expert_slot;
@@ -379,17 +380,17 @@ static uint32_t D41Blocks(uint64_t elements)
 
 static SparkStatus D41LaunchedAt(uint32_t line)
 {
-	const cudaError_t error = cudaPeekAtLastError();
-	if ( error == cudaSuccess )
+	const SparkGpuError error = SparkGpuPeekAtLastError();
+	if ( error == SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_OK;
-	fprintf(stderr, "sparkpipe_dsv41_flash: CUDA error seen at line %u: %s\n", line, cudaGetErrorString(error));
-	return SPARK_STATUS_INTERNAL_ERROR;
+	fprintf(stderr, "sparkpipe_dsv41_flash: CUDA error seen at line %u: %s\n", line, SparkGpuGetErrorString(error));
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 #define D41Launched() D41LaunchedAt(__LINE__)
 
 static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32,
-	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, cudaStream_t stream)
+	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, SparkGpuStream stream)
 {
 	if ( rows <= LM_SKINNY_ROWS_WIDE || row_invariant != 0u )
 	{
@@ -404,18 +405,18 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves run "
+			"on it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
+			LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows,
 		input_dimension, output_dimension, 0u, 0u, multiprocessors, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status;
-	LmSlowPath("dsv41 linear: the stream GEMM refused, naive linear", rows, input_dimension, output_dimension);
-	D41NaiveLinearKernel<<<dim3((output_dimension + 7u) / 8u, rows), 256u, 0, stream>>>(weight, source, destination, destination_f32,
-		input_dimension, output_dimension);
-	return cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	LM_LAUNCH_REFUSE("dsv41 linear: the stream GEMM refused %u rows of a %u x %u projection; prefill waves run on it, so the input must be a multiple "
+		"of 64, the output even and the operands 16-byte aligned\n", rows, output_dimension, input_dimension);
 }
 
 static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimension, uint32_t row_invariant);
@@ -432,14 +433,14 @@ static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimens
 }
 
 static int32_t D41LinearMx(const D41Fp8Linear *linear, const D41Mx *mx, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+	uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 {
 	return LmMxGemmDenseGrid(mx->codes, mx->scales, linear->weight, linear->scale, destination, rows, input_dimension, output_dimension, 0u, 0u,
 		multiprocessors, mx->grid != 0u ? mx->grid : multiprocessors, stream);
 }
 
 static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, cudaStream_t stream)
+	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, SparkGpuStream stream)
 {
 	const LmScaleTensor scale = LmScaleTensorBlockUe8m0(linear->scale, 1u, output_dimension, input_dimension, 1u, LM_MXFP8_GROUP);
 	if ( D41MxReady(mx, rows, input_dimension, row_invariant) != 0u )
@@ -459,9 +460,11 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves "
+			"run on it, so the weight needs 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n", rows,
+			output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 		output_dimension, 0u, 0u, multiprocessors, stream);
@@ -480,7 +483,7 @@ static LmSkinnyDenseTarget D41Target(const D41Fp8Linear *linear, uint16_t *desti
 
 static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *second, const uint16_t *source, uint16_t *first_destination,
 	uint16_t *second_destination, uint32_t rows, uint32_t input_dimension, uint32_t first_dimension, uint32_t second_dimension,
-	uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, cudaStream_t stream)
+	uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, SparkGpuStream stream)
 {
 	if ( D41MxReady(mx, rows, input_dimension, row_invariant) != 0u )
 	{
@@ -494,9 +497,11 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 		const LmSkinnyDenseTarget targets[2] = { D41Target(first, first_destination, input_dimension, first_dimension),
 			D41Target(second, second_destination, input_dimension, second_dimension) };
 		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 pair: the skinny kernel refused a small wave", rows, input_dimension, first_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 pair: the fused launch refused %u rows of %u + %u outputs over %u inputs; waves of up to %u rows and row-invariant "
+			"waves run on it, so both weights need 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n",
+			rows, first_dimension, second_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = D41Linear(first, source, first_destination, rows, input_dimension, first_dimension, multiprocessors, 0u, (const D41Mx *)0,
 		stream);
@@ -504,9 +509,9 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 		D41Linear(second, source, second_destination, rows, input_dimension, second_dimension, multiprocessors, 0u, (const D41Mx *)0, stream);
 }
 
-static void D41RmsNorm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, uint32_t width, cudaStream_t stream)
+static void D41RmsNorm(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t rows, uint32_t width, SparkGpuStream stream)
 {
-	LmFusedResidualRmsNormKernel<D41_THREADS,uint16_t><<<rows, D41_THREADS, (width + 8u) * sizeof(float), stream>>>(
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<D41_THREADS,uint16_t>), rows, D41_THREADS, (width + 8u) * sizeof(float), stream,
 		(uint16_t *)input, (const uint16_t *)0, weight, (uint16_t *)0, output, width, width, D41_EPS);
 }
 
@@ -539,13 +544,13 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 	}
 }
 
-static void D41Fp8Qdq(uint16_t *data, uint64_t elements, cudaStream_t stream)
+static void D41Fp8Qdq(uint16_t *data, uint64_t elements, SparkGpuStream stream)
 {
 	(void)SparkDsv41FlashLaunchFp8Qdq(stream, data, elements);
 }
 
 static int32_t D41LinearF32(const D41Fp8Linear *linear, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t row_invariant, cudaStream_t stream)
+	uint32_t output_dimension, uint32_t row_invariant, SparkGpuStream stream)
 {
 	LmSkinnyArguments args;
 	memset(&args, 0, sizeof(args));
@@ -559,13 +564,13 @@ static int32_t D41LinearF32(const D41Fp8Linear *linear, const uint16_t *source, 
 	return LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
 }
 
-static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t elements, cudaStream_t stream)
+static void D41Fp8QdqCopy(const uint16_t *source, uint16_t *data, uint64_t elements, SparkGpuStream stream)
 {
 	(void)SparkDsv41FlashLaunchFp8QdqCopy(stream, source, data, elements);
 }
 
 static int32_t D41QdqLinear(const D41Fp8Linear *linear, uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, cudaStream_t stream)
+	uint32_t output_dimension, uint32_t multiprocessors, uint32_t row_invariant, const D41Mx *mx, SparkGpuStream stream)
 {
 	if ( D41MxReady(mx, rows, input_dimension, row_invariant) == 0u )
 		D41Fp8Qdq(source, (uint64_t)rows * input_dimension, stream);
@@ -611,7 +616,7 @@ static uint32_t D41NormParts(uint32_t rows, uint32_t width)
 }
 
 static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint16_t *quantized, uint32_t rows, uint32_t width,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	static_assert(D41_THREADS % D41_FP8_BLOCK == 0u, "a norm block holds whole fp8 groups");
 	if ( width % D41_THREADS != 0u )
@@ -620,27 +625,27 @@ static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_
 		D41Fp8QdqCopy(output != 0 ? output : quantized, quantized, (uint64_t)rows * width, stream);
 		return;
 	}
-	D41RmsNormQdqKernel<D41_THREADS><<<dim3(rows, D41NormParts(rows, width)), D41_THREADS, (width + 8u) * sizeof(float), stream>>>(input, 0, 0, weight,
+	LM_LAUNCH((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, width)), D41_THREADS, (width + 8u) * sizeof(float), stream, input, 0, 0, weight,
 		output, quantized, width, D41_EPS);
 }
 
 static void D41CollapseNormQdq(const uint16_t *streams, const float *pre, const uint16_t *weight, uint16_t *output, uint16_t *quantized,
-	uint32_t rows, cudaStream_t stream)
+	uint32_t rows, SparkGpuStream stream)
 {
 	static_assert(D41_HIDDEN % D41_THREADS == 0u, "the hidden row splits evenly over the norm block");
-	D41RmsNormQdqKernel<D41_THREADS><<<dim3(rows, D41NormParts(rows, D41_HIDDEN)), D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream>>>(0, streams,
+	LM_LAUNCH((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, D41_HIDDEN)), D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream, 0, streams,
 		pre, weight, output, quantized, D41_HIDDEN, D41_EPS);
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
-	const uint32_t *positions, int32_t shift, const float *frequency, uint32_t inverse, const uint32_t *row_valid, cudaStream_t stream)
+	const uint32_t *positions, int32_t shift, const float *frequency, uint32_t inverse, const uint32_t *row_valid, SparkGpuStream stream)
 {
-	D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS, 0, stream>>>(data, heads, head_stride, rope_offset, positions, shift,
+	LM_LAUNCH((D41RopeRowsKernel), dim3(rows, heads), D41K_ROPE_PAIRS, 0, stream, data, heads, head_stride, rope_offset, positions, shift,
 		frequency, inverse, row_valid);
 }
 
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
-	float *pre, float *post, float *comb, uint32_t rows, cudaStream_t stream)
+	float *pre, float *post, float *comb, uint32_t rows, SparkGpuStream stream)
 {
 	if ( LmHcSinkhornMixes<D41K_HC>(streams, fn, scale, base, state->mixes, pre, post, comb, rows, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS, D41_HC_EPS,
 		stream) != LM_LAUNCH_OK )
@@ -712,10 +717,10 @@ static void CUDART_CB D41EngramAheadJoin(void *argument)
 	pthread_mutex_unlock(&ahead->lock);
 }
 
-static void D41EngramHash(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, int64_t *ids, cudaStream_t stream)
+static void D41EngramHash(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, int64_t *ids, SparkGpuStream stream)
 {
 	const D41Engram *engram = &state->engram[which];
-	LmNgramHashKernel<<<(step->rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->positions,
+	LM_LAUNCH((LmNgramHashKernel), (step->rows + 63u) / 64u, 64u, 0, stream, step->token_ids, state->token_map, step->positions,
 		state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		(const int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		engram->multipliers, engram->primes, engram->offsets, ids, step->rows, D41_ENGRAM_ORDERS, D41_ENGRAM_HEADS, state->engram_pad, -1, 0u);
@@ -730,37 +735,37 @@ static D41EngramCall *D41EngramCallOf(D41ModelState *state, uint32_t which, uint
 	return call;
 }
 
-static SparkStatus D41EngramAheadBegin(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41EngramAheadBegin(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	state->engram_ahead_step = 0u;
 	if ( state->engram_ahead.started == 0u || step->rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS )
 		return SPARK_STATUS_OK;
 	for ( uint32_t which = 0u; which < 2u; ++which )
 		D41EngramHash(state, which, step, state->engram_ahead_ids[which], stream);
-	if ( cudaLaunchHostFunc(stream, D41EngramAheadStart, D41EngramCallOf(state, 0u, step->rows)) != cudaSuccess )
+	if ( SparkGpuLaunchHostFunc(stream, D41EngramAheadStart, D41EngramCallOf(state, 0u, step->rows)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	state->engram_ahead_step = step->rows;
 	return D41Launched();
 }
 
-static void D41NgramHistory(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static void D41NgramHistory(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
-	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
+	LM_LAUNCH((LmNgramHistoryKernel), (step->sequences + 63u) / 64u, 64u, 0, stream, step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		step->sequences, D41_ENGRAM_ORDERS, step->commit, (const uint32_t *)0);
 }
 
-static SparkStatus D41EngramPlanExchange(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41EngramPlanExchange(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	uint32_t *counts_host = state->exchange_counts_host + D41_TP * D41_TP;
 	for ( uint32_t which = 0u; which < 2u; ++which )
-		D41EngramSlotsKernel<D41_TP><<<D41_TP, 1024u, 0, stream>>>(which == 0u ? state->engram_ids : state->engram_ids_next, step->rows,
+		LM_LAUNCH((D41EngramSlotsKernel<D41_TP>), D41_TP, 1024u, 0, stream, which == 0u ? state->engram_ids : state->engram_ids_next, step->rows,
 			state->own_rows, D41_ENGRAM_COLUMNS, state->engram[which].part, state->engram[which].table_rows,
 			state->engram_slot + (uint64_t)which * state->max_rows * D41_ENGRAM_COLUMNS, state->engram_counts + which * D41_TP * D41_TP);
 	if ( D41Launched() != SPARK_STATUS_OK ||
-		cudaMemcpyAsync(counts_host, state->engram_counts, 2u * D41_TP * D41_TP * sizeof(uint32_t), cudaMemcpyDeviceToHost, stream) != cudaSuccess ||
-		cudaStreamSynchronize(stream) != cudaSuccess )
+		SparkGpuMemcpyAsync(counts_host, state->engram_counts, 2u * D41_TP * D41_TP * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	for ( uint32_t which = 0u; which < 2u; ++which )
 	{
@@ -776,13 +781,13 @@ static SparkStatus D41EngramPlanExchange(D41ModelState *state, const SparkStageR
 }
 
 static SparkStatus D41EngramExchange(D41ModelState *state, uint32_t which, const int64_t *ids, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const D41Engram *engram = &state->engram[which];
 	const uint32_t own = state->own_rows, capacity = state->engram_capacity[which];
 	const uint32_t *slot = state->engram_slot + (uint64_t)which * state->max_rows * D41_ENGRAM_COLUMNS;
 	SparkStatus status;
-	D41EngramPackKernel<<<step->rows, D41_THREADS, 0, stream>>>(ids, slot, engram->payload, engram->scale, own, D41_ENGRAM_COLUMNS,
+	LM_LAUNCH((D41EngramPackKernel), step->rows, D41_THREADS, 0, stream, ids, slot, engram->payload, engram->scale, own, D41_ENGRAM_COLUMNS,
 		engram->first_row, engram->local_rows, capacity, state->engram_send);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -790,17 +795,17 @@ static SparkStatus D41EngramExchange(D41ModelState *state, uint32_t which, const
 			state->engram_send, state->engram_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41EngramUnpackKernel<<<dim3(own, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(ids, slot, state->engram_received, step->rows,
+	LM_LAUNCH((D41EngramUnpackKernel), dim3(own, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream, ids, slot, state->engram_received, step->rows,
 		state->own_first, D41_ENGRAM_COLUMNS, engram->part, engram->table_rows, capacity, state->engram_kv_local);
 	if ( D41QdqLinear(&engram->wkv_whole, state->engram_kv_local, state->engram_kv, own, D41_ENGRAM_EMBED, D41_ENGRAM_KV_ROWS,
 		step->multiprocessors, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK ||
 		SparkDsv41FlashLaunchEngramGate(stream, state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN, state->engram_kv,
-		engram->q_weight, engram->k_weight, own, D41K_HC, D41_HIDDEN, D41_EPS) != cudaSuccess )
+		engram->q_weight, engram->k_weight, own, D41K_HC, D41_HIDDEN, D41_EPS) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 
-static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows;
 	const D41Engram *engram = &state->engram[which];
@@ -822,25 +827,25 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 	}
 	if ( !D41_ENGRAM_DISK && own != 0u )
 		return D41EngramExchange(state, which, ids, step, stream);
-	cudaMemsetAsync(state->engram_embed, 0, own != 0u ? (uint64_t)own * D41_TP * D41_ENGRAM_EMBED * sizeof(uint16_t) :
+	SparkGpuMemsetAsync(state->engram_embed, 0, own != 0u ? (uint64_t)own * D41_TP * D41_ENGRAM_EMBED * sizeof(uint16_t) :
 		(uint64_t)ar_rows * ar_width * sizeof(uint16_t), stream);
 	if ( ahead != 0u )
 	{
-		if ( cudaLaunchHostFunc(stream, D41EngramAheadJoin, D41EngramCallOf(state, which, rows)) != cudaSuccess )
+		if ( SparkGpuLaunchHostFunc(stream, D41EngramAheadJoin, D41EngramCallOf(state, which, rows)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmNgramGatherFetchedE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ahead_ids[which],
+		LM_LAUNCH((LmNgramGatherFetchedE8m0Kernel), dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream, state->engram_ahead_ids[which],
 			state->engram_ahead_rows[which], engram->scale, state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS,
 			D41_ENGRAM_HEAD_DIM);
 	}
 	else if ( D41_ENGRAM_DISK )
 	{
-		if ( cudaLaunchHostFunc(stream, D41EngramFetch, D41EngramCallOf(state, which, rows)) != cudaSuccess )
+		if ( SparkGpuLaunchHostFunc(stream, D41EngramFetch, D41EngramCallOf(state, which, rows)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmNgramGatherFetchedE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(state->engram_ids, state->engram_rows, engram->scale,
+		LM_LAUNCH((LmNgramGatherFetchedE8m0Kernel), dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream, state->engram_ids, state->engram_rows, engram->scale,
 			state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS, D41_ENGRAM_HEAD_DIM);
 	}
 	else
-		LmNgramGatherE8m0Kernel<<<dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream>>>(ids, engram->payload, engram->scale,
+		LM_LAUNCH((LmNgramGatherE8m0Kernel), dim3(rows, D41_ENGRAM_COLUMNS), D41_THREADS, 0, stream, ids, engram->payload, engram->scale,
 			state->engram_embed, engram->first_row, engram->local_rows, D41_ENGRAM_COLUMNS, D41_ENGRAM_HEAD_DIM);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && own != 0u )
@@ -852,7 +857,7 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 		if ( D41QdqLinear(&engram->wkv_whole, state->engram_kv_local, state->engram_kv, own, D41_ENGRAM_EMBED, D41_ENGRAM_KV_ROWS,
 			step->multiprocessors, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK ||
 			SparkDsv41FlashLaunchEngramGate(stream, state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN, state->engram_kv,
-			engram->q_weight, engram->k_weight, own, D41K_HC, D41_HIDDEN, D41_EPS) != cudaSuccess )
+			engram->q_weight, engram->k_weight, own, D41K_HC, D41_HIDDEN, D41_EPS) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return D41Launched();
 	}
@@ -868,26 +873,26 @@ static SparkStatus D41EngramApply(D41ModelState *state, uint32_t which, const Sp
 		D41_ENGRAM_KV_LOCAL / D41_ENGRAM_KV_PARTS, state->engram_kv_local, state->engram_kv_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41GroupInputKernel<<<dim3(D41Blocks(D41_ENGRAM_KV_ROWS), rows), D41_THREADS, 0, stream>>>(state->engram_kv_gathered, state->engram_kv,
+	LM_LAUNCH((D41GroupInputKernel), dim3(D41Blocks(D41_ENGRAM_KV_ROWS), rows), D41_THREADS, 0, stream, state->engram_kv_gathered, state->engram_kv,
 		rows, D41_ENGRAM_KV_LOCAL, 0u, D41_TP);
 	if ( state->own_pad != 0u )
-		cudaMemsetAsync(state->engram_kv + (uint64_t)rows * D41_ENGRAM_KV_ROWS, 0, (uint64_t)state->own_pad * D41_ENGRAM_KV_ROWS * sizeof(uint16_t), stream);
+		SparkGpuMemsetAsync(state->engram_kv + (uint64_t)rows * D41_ENGRAM_KV_ROWS, 0, (uint64_t)state->own_pad * D41_ENGRAM_KV_ROWS * sizeof(uint16_t), stream);
 	if ( SparkDsv41FlashLaunchEngramGate(stream, state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN,
 		state->engram_kv + (uint64_t)state->own_first * D41_ENGRAM_KV_ROWS, engram->q_weight, engram->k_weight,
-		state->own_rows != 0u ? state->own_rows : rows, D41K_HC, D41_HIDDEN, D41_EPS) != cudaSuccess )
+		state->own_rows != 0u ? state->own_rows : rows, D41K_HC, D41_HIDDEN, D41_EPS) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 
 template<class Geometry>
-static void D41StoreCompressed(D41ModelState *state, uint32_t cache, const SparkStageRunnerStep *step, cudaStream_t stream)
+static void D41StoreCompressed(D41ModelState *state, uint32_t cache, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
-	D41StoreCompressedKernel<Geometry><<<step->rows, D41_THREADS, 0, stream>>>(state->latent_views[cache], state->c_latent_store,
+	LM_LAUNCH((D41StoreCompressedKernel<Geometry>), step->rows, D41_THREADS, 0, stream, state->latent_views[cache], state->c_latent_store,
 		state->idx_key, state->emit_row, step->sequence_of_row, D41_INDEX_DIM);
 }
 
 static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, ratio = D41Ratio(index), cache = D41CacheIndex(index), sms = step->multiprocessors;
 	float *compressor_state = (float *)(state->recurrent + state->ring_bytes) + (uint64_t)cache * 2u * D41_HEAD_DIM;
@@ -912,20 +917,20 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 	else if ( D41Project(layer->c_wkv, state->x, 0, state->c_kv, rows, D41_HIDDEN, D41_HEAD_DIM, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		(ratio > 1u && D41Project(layer->c_wgate, state->x, 0, state->c_score, rows, D41_HIDDEN, D41_HEAD_DIM, sms, state->row_invariant, stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41CompressorRowsKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, state->c_latent, state->emit_row,
+	LM_LAUNCH((D41CompressorRowsKernel), rows, D41_THREADS, 0, stream, state->c_kv, state->c_score, state->c_latent, state->emit_row,
 		compressor_state, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 		step->recurrent_index, ratio, state_stride, D41_HEAD_DIM);
 	if ( ratio > 1u && step->commit == 0u )
 	{
 		if ( rows > D41_VERIFY_ROWS || cache >= D41_PAIR_CACHES )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		cudaMemcpyAsync(state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_kv,
-			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), cudaMemcpyDeviceToDevice, stream);
-		cudaMemcpyAsync(state->verify_c_score + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_score,
-			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), cudaMemcpyDeviceToDevice, stream);
+		SparkGpuMemcpyAsync(state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_kv,
+			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream);
+		SparkGpuMemcpyAsync(state->verify_c_score + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM, state->c_score,
+			(uint64_t)rows * D41_HEAD_DIM * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream);
 	}
 	if ( ratio > 1u )
-		D41CompressorSaveKernel<<<rows, D41_THREADS, 0, stream>>>(state->c_kv, state->c_score, compressor_state, step->positions,
+		LM_LAUNCH((D41CompressorSaveKernel), rows, D41_THREADS, 0, stream, state->c_kv, state->c_score, compressor_state, step->positions,
 			state->row_lane, state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, ratio, state_stride, D41_HEAD_DIM,
 			step->commit, (const uint32_t *)0);
 	D41RmsNorm(state->c_latent, layer->c_norm, state->c_latent, rows, D41_HEAD_DIM, stream);
@@ -934,9 +939,9 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 	D41RmsNorm(state->idx_key, layer->idx_kn, state->idx_key, rows, D41_INDEX_DIM, stream);
 	D41Rope(state->idx_key, rows, 1u, D41_INDEX_DIM, D41_INDEX_DIM - D41_ROPE, step->positions, 1 - (int32_t)ratio,
 		state->compress_frequency, 0u, state->emit_row, stream);
-	SparkDsv41FlashFp4Pow2QdqKernel<<<(rows * (D41_INDEX_DIM / 32u) + 255u) / 256u, 256u, 0, stream>>>(state->idx_key,
+	LM_LAUNCH((SparkDsv41FlashFp4Pow2QdqKernel), (rows * (D41_INDEX_DIM / 32u) + 255u) / 256u, 256u, 0, stream, state->idx_key,
 		rows * (D41_INDEX_DIM / 32u), 32u);
-	cudaMemcpyAsync(state->c_latent_store, state->c_latent, (uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream);
+	SparkGpuMemcpyAsync(state->c_latent_store, state->c_latent, (uint64_t)rows * D41_HEAD_DIM * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream);
 	D41Rope(state->c_latent_store, rows, 1u, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 1 - (int32_t)ratio,
 		state->compress_frequency, 0u, state->emit_row, stream);
 	(void)SparkDsv41FlashLaunchKvFp4Qdq(stream, state->c_latent_store, D41_HEAD_DIM, rows, D41_HEAD_DIM);
@@ -948,17 +953,17 @@ static SparkStatus D41Compress(D41ModelState *state, const D41Layer *layer, uint
 }
 
 static SparkStatus D41CandidateBlocks(D41ModelState *state, const SparkStageRunnerStep *step, const uint32_t *bound,
-	const uint32_t *length, cudaStream_t stream)
+	const uint32_t *length, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, keep = state->local_block_keep;
 	const SparkKvShard blocks = { D41_TP, state->shard.rank, 1u };
 	SparkStatus status;
 	if ( SparkDsv41FlashLaunchShardBlockMax(stream, state->local_scores, state->step_score_stride, state->shard, step->sequence_of_row,
-			length, bound, state->block_scores, state->local_block_stride, rows) != cudaSuccess ||
+			length, bound, state->block_scores, state->local_block_stride, rows) != SPARK_GPU_SUCCESS ||
 		LmTopkExactLaunch<D41_THREADS>(state->block_scores, rows, state->local_block_stride, keep, LM_TOPK_EXACT_CHUNK,
-			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->block_local_selected, stream) != cudaSuccess ||
+			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->block_local_selected, stream) != SPARK_GPU_SUCCESS ||
 		LmIndexShardCandidatePackLaunch<D41_THREADS>(blocks, state->block_scores, state->local_block_stride, state->block_local_selected,
-			keep, rows, state->block_candidates, stream) != cudaSuccess )
+			keep, rows, state->block_candidates, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t first = 0u; first < rows; first += D41_SELECTION_CHUNK )
 	{
@@ -969,16 +974,16 @@ static SparkStatus D41CandidateBlocks(D41ModelState *state, const SparkStageRunn
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmIndexShardCandidateTopkLaunch<D41_THREADS,D41_CANDIDATE_BLOCKS>(state->block_gathered, (uint64_t)count * keep, D41_TP, keep, count,
-				state->global_block_stride, state->global_block_keep, 0u, state->block_selected, stream) != cudaSuccess ||
+				state->global_block_stride, state->global_block_keep, 0u, state->block_selected, stream) != SPARK_GPU_SUCCESS ||
 			SparkDsv41FlashLaunchShardBlockMask(stream, state->global_block_stride, state->block_selected, state->global_block_keep,
-				blocks, state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride, count) != cudaSuccess )
+				blocks, state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride, count) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	return D41Launched();
 }
 
 static SparkStatus D41IndexQuery(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	uint16_t *packed, cudaStream_t stream)
+	uint16_t *packed, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors;
 	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
@@ -988,27 +993,27 @@ static SparkStatus D41IndexQuery(D41ModelState *state, const D41Layer *layer, ui
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->idx_pack_local, rows, D41_LOCAL_INDEX_HEADS, D41_INDEX_DIM, D41_INDEX_DIM - D41_ROPE, step->positions, 0,
 		state->compress_frequency, 0u, 0, stream);
-	SparkDsv41FlashFp4Pow2QdqKernel<<<(rows * (local_width / 32u) + 255u) / 256u, 256u, 0, stream>>>(state->idx_pack_local,
+	LM_LAUNCH((SparkDsv41FlashFp4Pow2QdqKernel), (rows * (local_width / 32u) + 255u) / 256u, 256u, 0, stream, state->idx_pack_local,
 		rows * (local_width / 32u), 32u);
-	D41ScaleRowsKernel<<<D41Blocks((uint64_t)rows * D41_LOCAL_INDEX_HEADS), D41_THREADS, 0, stream>>>(state->idx_w_full,
+	LM_LAUNCH((D41ScaleRowsKernel), D41Blocks((uint64_t)rows * D41_LOCAL_INDEX_HEADS), D41_THREADS, 0, stream, state->idx_w_full,
 		(uint64_t)rows * D41_LOCAL_INDEX_HEADS, (float)(1.0 / sqrt((double)D41_INDEX_DIM) / sqrt((double)D41_INDEX_HEADS)));
-	D41IndexPackKernel<<<rows, D41_THREADS, 0, stream>>>(state->idx_pack_local, state->idx_w_full, packed, local_width,
+	LM_LAUNCH((D41IndexPackKernel), rows, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, packed, local_width,
 		D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	return D41Launched();
 }
 
 template<class Geometry>
 static SparkStatus D41Select(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const uint32_t *bound,
-	const uint32_t *length, const uint16_t *packed, uint64_t rank_stride, cudaStream_t stream)
+	const uint32_t *length, const uint16_t *packed, uint64_t rank_stride, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index);
 	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
 	SparkStatus status;
-	D41IndexUnpackKernel<<<dim3(rows, D41_TP), D41_THREADS, 0, stream>>>(packed, rank_stride, state->idx_query, state->idx_w_full,
+	LM_LAUNCH((D41IndexUnpackKernel), dim3(rows, D41_TP), D41_THREADS, 0, stream, packed, rank_stride, state->idx_query, state->idx_w_full,
 		local_width, D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	if ( LmWeightedSparseScoreLaunch<Geometry,D41_INDEX_HEADS,D41_INDEX_DIM,LmKvShardView>(state->idx_query, state->idx_w_full,
 		state->index_views[cache], step->sequence_of_row, length, bound, rows, state->step_score_stride, 1.0f, state->local_scores,
-		stream) != cudaSuccess )
+		stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->step_blocks != 0u && index == D41_CANDIDATE_SOURCE )
 	{
@@ -1018,26 +1023,26 @@ static SparkStatus D41Select(D41ModelState *state, uint32_t index, const SparkSt
 	}
 	else if ( state->step_blocks != 0u && index > D41_CANDIDATE_SOURCE &&
 		SparkDsv41FlashLaunchShardBlockApply(stream, state->local_scores, state->step_score_stride, D41_GRAIN, state->block_mask,
-			state->local_block_stride, rows) != cudaSuccess )
+			state->local_block_stride, rows) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( LmTopkExactLaunch<D41_THREADS>(state->local_scores, rows, state->step_score_stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK,
-			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->local_selected, stream) != cudaSuccess ||
+			LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, state->local_selected, stream) != SPARK_GPU_SUCCESS ||
 		LmIndexShardCandidatePackLaunch<D41_THREADS>(state->index_views[cache].shard, state->local_scores, state->step_score_stride,
-			state->local_selected, D41_INDEX_TOPK, rows, state->candidates, stream) != cudaSuccess )
+			state->local_selected, D41_INDEX_TOPK, rows, state->candidates, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows,
 		D41_INDEX_TOPK * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)), state->candidates, state->candidates_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( LmIndexShardCandidateTopkLaunch<D41_THREADS,D41_INDEX_TOPK>(state->candidates_gathered, (uint64_t)rows * D41_INDEX_TOPK, D41_TP,
-			D41_INDEX_TOPK, rows, state->global_score_stride, D41_INDEX_TOPK, 1u, state->selected, stream) != cudaSuccess )
+			D41_INDEX_TOPK, rows, state->global_score_stride, D41_INDEX_TOPK, 1u, state->selected, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 
 template<class Geometry>
 static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const uint32_t *bound,
-	const uint32_t *length, cudaStream_t stream)
+	const uint32_t *length, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index), keep = state->local_block_keep;
 	const uint32_t local_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
@@ -1045,7 +1050,7 @@ static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const Sp
 	const uint32_t own = state->own_rows, begin = state->own_first, end = own != 0u && begin + own < rows ? begin + own : rows;
 	const SparkKvShard blocks = { 1u, 0u, 1u };
 	const uint32_t unpacked = D41_ROWS && own != 0u ? own : rows, unpack_first = D41_ROWS && own != 0u ? begin : 0u;
-	D41IndexUnpackKernel<<<dim3(unpacked, D41_ROWS ? 1u : D41_TP), D41_THREADS, 0, stream>>>(state->q_gathered, (uint64_t)unpacked * D41_INDEX_PACK,
+	LM_LAUNCH((D41IndexUnpackKernel), dim3(unpacked, D41_ROWS ? 1u : D41_TP), D41_THREADS, 0, stream, state->q_gathered, (uint64_t)unpacked * D41_INDEX_PACK,
 		state->idx_query + (uint64_t)unpack_first * D41_INDEX_HEADS * D41_INDEX_DIM, state->idx_w_full + (uint64_t)unpack_first * D41_INDEX_HEADS, local_width,
 		D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 	const uint64_t fits = (uint64_t)state->select_rows * state->local_score_stride / stride;
@@ -1059,39 +1064,39 @@ static SparkStatus D41SelectWhole(D41ModelState *state, uint32_t index, const Sp
 		uint2 *candidates = state->candidates + (uint64_t)first * D41_INDEX_TOPK;
 		if ( LmWeightedSparseScoreLaunch<Geometry,D41_INDEX_HEADS,D41_INDEX_DIM,LmKvShardView>(
 			state->idx_query + (uint64_t)first * D41_INDEX_HEADS * D41_INDEX_DIM, state->idx_w_full + (uint64_t)first * D41_INDEX_HEADS,
-			state->index_views[cache], sequences, length, bounds, count, stride, 1.0f, state->local_scores, stream) != cudaSuccess )
+			state->index_views[cache], sequences, length, bounds, count, stride, 1.0f, state->local_scores, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( state->step_blocks != 0u && index == D41_CANDIDATE_SOURCE )
 		{
 			uint32_t *block_chosen = state->block_local_selected + (uint64_t)first * keep;
 			uint2 *block_candidates = state->block_candidates + (uint64_t)first * keep;
 			if ( SparkDsv41FlashLaunchShardBlockMax(stream, state->local_scores, stride, state->shard, sequences, length, bounds, state->block_scores,
-					state->local_block_stride, count) != cudaSuccess ||
+					state->local_block_stride, count) != SPARK_GPU_SUCCESS ||
 				LmTopkExactLaunch<D41_THREADS>(state->block_scores, count, state->local_block_stride, keep, LM_TOPK_EXACT_CHUNK,
-					LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, block_chosen, stream) != cudaSuccess ||
+					LM_TOPK_EXACT_CHUNKED_ROWS, state->topk_values, state->topk_positions, state->topk_entries, block_chosen, stream) != SPARK_GPU_SUCCESS ||
 				LmIndexShardCandidatePackLaunch<D41_THREADS>(blocks, state->block_scores, state->local_block_stride, block_chosen, keep, count,
-					block_candidates, stream) != cudaSuccess )
+					block_candidates, stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			for ( uint32_t inner = 0u; inner < count; inner += D41_SELECTION_CHUNK )
 			{
 				const uint32_t part = count - inner < D41_SELECTION_CHUNK ? count - inner : D41_SELECTION_CHUNK;
 				if ( LmIndexShardCandidateTopkLaunch<D41_THREADS,D41_CANDIDATE_BLOCKS>(block_candidates + (uint64_t)inner * keep, (uint64_t)part * keep, 1u,
-						keep, part, state->global_block_stride, state->global_block_keep, 0u, state->block_selected, stream) != cudaSuccess ||
+						keep, part, state->global_block_stride, state->global_block_keep, 0u, state->block_selected, stream) != SPARK_GPU_SUCCESS ||
 					SparkDsv41FlashLaunchShardBlockMask(stream, state->global_block_stride, state->block_selected, state->global_block_keep, blocks,
-						state->block_mask + (uint64_t)(first + inner) * state->local_block_stride, state->local_block_stride, part) != cudaSuccess )
+						state->block_mask + (uint64_t)(first + inner) * state->local_block_stride, state->local_block_stride, part) != SPARK_GPU_SUCCESS )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
 		}
 		else if ( state->step_blocks != 0u && index > D41_CANDIDATE_SOURCE &&
 			SparkDsv41FlashLaunchShardBlockApply(stream, state->local_scores, stride, D41_GRAIN,
-				state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride, count) != cudaSuccess )
+				state->block_mask + (uint64_t)first * state->local_block_stride, state->local_block_stride, count) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( LmTopkExactLaunch<D41_THREADS>(state->local_scores, count, stride, D41_INDEX_TOPK, LM_TOPK_EXACT_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS,
-				state->topk_values, state->topk_positions, state->topk_entries, chosen, stream) != cudaSuccess ||
+				state->topk_values, state->topk_positions, state->topk_entries, chosen, stream) != SPARK_GPU_SUCCESS ||
 			LmIndexShardCandidatePackLaunch<D41_THREADS>(state->index_views[cache].shard, state->local_scores, stride, chosen, D41_INDEX_TOPK, count,
-				candidates, stream) != cudaSuccess ||
+				candidates, stream) != SPARK_GPU_SUCCESS ||
 			LmIndexShardCandidateTopkLaunch<D41_THREADS,D41_INDEX_TOPK>(candidates, (uint64_t)count * D41_INDEX_TOPK, 1u, D41_INDEX_TOPK, count,
-				state->global_score_stride, D41_INDEX_TOPK, 1u, selected, stream) != cudaSuccess )
+				state->global_score_stride, D41_INDEX_TOPK, 1u, selected, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	if ( !D41_ROWS && own != 0u && D41Launched() == SPARK_STATUS_OK )
@@ -1116,27 +1121,27 @@ static uint32_t D41LandingClass(uint32_t cache)
 }
 
 template<class Geometry>
-static SparkStatus D41LandCache(D41ModelState *state, uint32_t cache, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41LandCache(D41ModelState *state, uint32_t cache, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t landing = D41LandingClass(cache);
 	uint8_t *send = (uint8_t *)state->q_gathered;
-	D41GatherPlanKernel<<<1u, 1u, 0, stream>>>(state->gather_plan, state->slots, step->sequence_of_row,
+	LM_LAUNCH((D41GatherPlanKernel), 1u, 1u, 0, stream, state->gather_plan, state->slots, step->sequence_of_row,
 		landing == 0u ? state->length_ratio2 : state->length_ratio1);
 	if ( D41Launched() != SPARK_STATUS_OK ||
 		LmKvShardGatherPackRangeLaunch<Geometry,D41_THREADS>(state->latent_views[cache], state->gather_plan, state->gather_plan + state->slots,
-			state->gather_plan + 2u * state->slots, 1u, 0u, state->landing_keys[landing], send, stream) != cudaSuccess )
+			state->gather_plan + 2u * state->slots, 1u, 0u, state->landing_keys[landing], send, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, state->landing_rows[landing], D41_HIDDEN, send, state->landing);
 }
 
 template<class Geometry>
 static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const uint32_t *bound,
-	const uint32_t *length, cudaStream_t stream)
+	const uint32_t *length, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index), landing = D41LandingClass(cache);
 	const uint64_t stride = D41DestinationStride(rows, D41_LOCAL_HEADS);
 	if ( LmLatentShardSplitLaunch(state->latent_views[cache].shard, state->selected, D41_INDEX_TOPK, bound, state->split_selected, state->split_offsets,
-			rows, stream) != cudaSuccess )
+			rows, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t source = 0u; source < D41_TP; ++source )
 	{
@@ -1149,7 +1154,7 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 			LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardGatherView,D41_HEAD_DIM,0u>(view, state->q_local,
 				(uint64_t)rows * D41_LOCAL_HEADS * D41_HEAD_DIM, D41_LOCAL_HEADS, D41_LOCAL_HEADS, step->sequence_of_row, length, bound, state->selected,
 				D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_received + (uint64_t)source * stride, stride,
-				D41_LOCAL_HEADS, 1u, rows, stream, state->split_selected, state->split_offsets, 1u) != cudaSuccess )
+				D41_LOCAL_HEADS, 1u, rows, stream, state->split_selected, state->split_offsets, 1u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	return D41Launched();
@@ -1157,18 +1162,18 @@ static SparkStatus D41LocalPartials(D41ModelState *state, uint32_t index, const 
 
 template<class Geometry>
 static SparkStatus D41Partials(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, const uint32_t *bound,
-	const uint32_t *length, uint64_t query_rank_stride, uint32_t record_heads, uint32_t record_copies, cudaStream_t stream)
+	const uint32_t *length, uint64_t query_rank_stride, uint32_t record_heads, uint32_t record_copies, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, cache = D41CacheIndex(index);
 	if ( LmLatentShardAttendHeadsLaunch<Geometry,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_gathered,
 		query_rank_stride, D41_LOCAL_HEADS, D41_HEADS, step->sequence_of_row, length, bound, state->selected,
 		D41_INDEX_TOPK, D41_INDEX_TOPK, 1.0f / sqrtf((float)D41_HEAD_DIM), state->records_send, D41DestinationStride(rows, record_heads), record_heads,
-		record_copies, rows, stream) != cudaSuccess )
+		record_copies, rows, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return D41Launched();
 }
 
-static SparkStatus D41OwnerOutputWeights(D41ModelState *state, cudaStream_t stream)
+static SparkStatus D41OwnerOutputWeights(D41ModelState *state, SparkGpuStream stream)
 {
 	const uint64_t slice = (uint64_t)D41_HIDDEN * D41_WO_A_ROWS, slice_scale = (uint64_t)D41_HIDDEN * (D41_WO_A_ROWS / D41_FP8_BLOCK);
 	SparkStatus status = SPARK_STATUS_OK;
@@ -1186,7 +1191,7 @@ static SparkStatus D41OwnerOutputWeights(D41ModelState *state, cudaStream_t stre
 	return status;
 }
 
-static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	const uint32_t own = state->own_rows;
 	const uint64_t block = (uint64_t)own * D41_OWNER_OUTPUT_ELEMENTS * sizeof(uint16_t), codes_bytes = (uint64_t)own * D41_WO_A_ROWS;
@@ -1195,7 +1200,7 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 	const uint8_t *received = (const uint8_t *)state->moe_received;
 	SparkStatus status;
 	if ( state->own_pad != 0u )
-		cudaMemsetAsync(state->wo_a_out + (uint64_t)rows * D41_WO_A_ROWS, 0, (uint64_t)state->own_pad * D41_WO_A_ROWS * sizeof(uint16_t), stream);
+		SparkGpuMemsetAsync(state->wo_a_out + (uint64_t)rows * D41_WO_A_ROWS, 0, (uint64_t)state->own_pad * D41_WO_A_ROWS * sizeof(uint16_t), stream);
 	for ( uint32_t owner = 0u; owner < D41_TP; ++owner )
 		if ( LmMxQuantize(state->wo_a_out + (uint64_t)owner * own * D41_WO_A_ROWS, send + owner * block, send + owner * block + codes_bytes, codes_bytes,
 			stream) != LM_LAUNCH_OK )
@@ -1214,7 +1219,7 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	D41SumSourcesKernel<<<(own * D41_HIDDEN / 2u + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream>>>(state->partial, state->own_out,
+	LM_LAUNCH((D41SumSourcesKernel), (own * D41_HIDDEN / 2u + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream, state->partial, state->own_out,
 		own * D41_HIDDEN / 2u, (uint64_t)own * D41_HIDDEN / 2u, D41_TP);
 	state->owner_reduced = 1u;
 	return D41Launched();
@@ -1228,14 +1233,14 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 static_assert(!D41_SPREAD || (D41_SPREAD_ROWS * D41_SPREAD_HEADS <= D41_LOCAL_HEADS && D41_SPREAD_ROWS <= D41_OWN_ROWS_MIN),
 	"a spread step's queries end before the index pack in q_local, and its gathered rows fit moe_gathered");
 
-static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	if ( step->commit != 0u )
 		return SPARK_STATUS_OK;
 	if ( step->rows > D41_VERIFY_ROWS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return cudaMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
-		(uint64_t)step->rows * D41_HEAD_DIM * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) == cudaSuccess ? SPARK_STATUS_OK :
+	return SparkGpuMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
+		(uint64_t)step->rows * D41_HEAD_DIM * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK :
 		SPARK_STATUS_INTERNAL_ERROR;
 }
 
@@ -1244,7 +1249,7 @@ static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerS
 	return D41_SPREAD && step->rows >= 1u && step->rows <= D41_SPREAD_ROWS && state->own_rows == 0u && state->dump == 0 ? 1u : 0u;
 }
 
-static SparkStatus D41SpreadGather(D41ModelState *state, cudaStream_t stream, uint32_t rows, uint32_t width, uint16_t *source, uint16_t *target,
+static SparkStatus D41SpreadGather(D41ModelState *state, SparkGpuStream stream, uint32_t rows, uint32_t width, uint16_t *source, uint16_t *target,
 	uint32_t first_rank, uint32_t ranks)
 {
 	SparkStatus status;
@@ -1255,7 +1260,7 @@ static SparkStatus D41SpreadGather(D41ModelState *state, cudaStream_t stream, ui
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, width, source, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41RankRowsKernel<<<dim3(D41Blocks((uint64_t)ranks * width / 8u), rows), D41_THREADS, 0, stream>>>((const uint4 *)state->moe_gathered, (uint4 *)target,
+	LM_LAUNCH((D41RankRowsKernel), dim3(D41Blocks((uint64_t)ranks * width / 8u), rows), D41_THREADS, 0, stream, (const uint4 *)state->moe_gathered, (uint4 *)target,
 		rows, width / 8u, first_rank, ranks);
 	return D41Launched();
 }
@@ -1270,7 +1275,7 @@ static D41Fp8Linear D41RowsOf(const D41Fp8Linear *linear, uint32_t first_row, ui
 }
 
 static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index), cache = D41CacheIndex(index);
 	const uint32_t heads = D41_SPREAD_HEADS, head_first = state->tp_rank * heads, width = heads * D41_HEAD_DIM;
@@ -1296,7 +1301,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, rows, D41_QLORA, stream);
-	D41KvNormRopeQdqKernel<D41_THREADS><<<rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
 		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 	if ( (indexed != 0u ? D41LinearPair(&q_part, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
 		D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
@@ -1309,7 +1314,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41IndexQuery(state, layer, index, step, packed, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
-		status = cudaMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) == cudaSuccess ?
+		status = SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ?
 			SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = cache < 3u ? D41SelectWhole<D41Ratio2Kv>(state, index, step, bound, length, stream) :
@@ -1323,21 +1328,21 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 				state->records_received, stride, heads, 1u, rows, stream) :
 			LmLatentShardAttendHeadsLaunch<D41Ratio1Kv,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_local,
 				(uint64_t)rows * width, heads, heads, step->sequence_of_row, length, bound, state->selected, D41_INDEX_TOPK, D41_INDEX_TOPK, qk_scale,
-				state->records_received, stride, heads, 1u, rows, stream)) != cudaSuccess )
+				state->records_received, stride, heads, 1u, rows, stream)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	else
 		D41InitRecords(state->records_received, stride, rows, heads, 1u, stream);
-	D41WindowFoldClusterKernel<<<dim3(D41K_WINDOW_PARTS, heads, rows), D41K_THREADS, 0, stream>>>(state->records_received, heads, state->q_local, state->window_kv, ring,
+	LM_LAUNCH((D41WindowFoldClusterKernel), dim3(D41K_WINDOW_PARTS, heads, rows), D41K_THREADS, 0, stream, state->records_received, heads, state->q_local, state->window_kv, ring,
 		step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 		state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	status = D41VerifyWindow(state, index, step, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
-	D41MergeSinkKernel<<<dim3(rows, heads), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, heads, layer->sink + head_first,
+	LM_LAUNCH((D41MergeSinkKernel), dim3(rows, heads), D41_THREADS, 0, stream, state->records_received, stride, 1u, heads, layer->sink + head_first,
 		state->attn_merged);
 	D41Rope(state->attn_merged, rows, heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	status = D41Launched();
@@ -1364,7 +1369,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 }
 
 static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index), cache = D41CacheIndex(index);
 	const float *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
@@ -1384,7 +1389,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		D41_HEAD_DIM, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, own != 0u ? own_qrq : state->qrq, projected, D41_QLORA, stream);
-	D41KvNormRopeQdqKernel<D41_THREADS><<<projected, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), projected, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
 		step->positions + state->own_first, frequency, own != 0u ? own_kv : state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 	if ( own != 0u )
 	{
@@ -1429,8 +1434,8 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41IndexQuery(state, layer, index, step, packed, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u && D41_ROWS )
-		status = cudaMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) ==
-			cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+		status = SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) ==
+			SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 	else if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_INDEX_PACK, packed, state->q_gathered);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
@@ -1457,7 +1462,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 				state->selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane,
 				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, layer->sink, qk_scale, merged, frequency, D41_HEAD_DIM - D41_ROPE,
 				D41_GROUP_WIDTH / D41_HEAD_DIM, merged_codes, rows, rows, 0u, stream)) !=
-			cudaSuccess )
+			SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	else if ( ratio > 0u )
@@ -1467,13 +1472,13 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 				qk_scale, state->records_received, stride, D41_LOCAL_HEADS, 1u, rows, stream) :
 			LmLatentShardAttendHeadsLaunch<D41Ratio1Kv,LmKvShardView,D41_HEAD_DIM,0u>(state->latent_views[cache], state->q_local,
 				query_stride, D41_LOCAL_HEADS, D41_LOCAL_HEADS, step->sequence_of_row, length, bound, state->selected, D41_INDEX_TOPK, D41_INDEX_TOPK,
-				qk_scale, state->records_received, stride, D41_LOCAL_HEADS, 1u, rows, stream)) != cudaSuccess )
+				qk_scale, state->records_received, stride, D41_LOCAL_HEADS, 1u, rows, stream)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	else
 		D41InitRecords(state->records_received, stride, rows, D41_LOCAL_HEADS, 1u, stream);
 	if ( fused == 0u )
-		D41WindowFoldWholeKernel<<<dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream>>>(state->records_received, D41_LOCAL_HEADS, state->q_local,
+		LM_LAUNCH((D41WindowFoldWholeKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
 			state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	status = D41Launched();
@@ -1482,11 +1487,11 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	status = D41VerifyWindow(state, index, step, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
 	if ( fused == 0u )
-		D41MergeSinkKernel<<<dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream>>>(state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
+		LM_LAUNCH((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, state->records_received, stride, 1u, D41_LOCAL_HEADS, layer->sink,
 			state->attn_merged);
 	if ( coded == 0u )
 		D41Rope(state->attn_merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
@@ -1513,12 +1518,12 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			continue;
 		}
-		D41ColumnsKernel<<<dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream>>>(state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH,
+		LM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream, state->attn_merged + (uint64_t)group * D41_GROUP_WIDTH,
 			local_width, state->group_input, D41_GROUP_WIDTH, D41_GROUP_WIDTH);
 		if ( D41QdqLinear(&layer->o_a[group], state->group_input, state->wo_a_group, rows, D41_GROUP_WIDTH, D41_GROUP_ROWS, sms, state->row_invariant,
 			&state->mx, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		D41ColumnsKernel<<<dim3(D41Blocks(D41_GROUP_ROWS), rows), D41_THREADS, 0, stream>>>(state->wo_a_group, D41_GROUP_ROWS,
+		LM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_ROWS), rows), D41_THREADS, 0, stream, state->wo_a_group, D41_GROUP_ROWS,
 			state->wo_a_out + (uint64_t)group * D41_GROUP_ROWS, D41_WO_A_ROWS, D41_GROUP_ROWS);
 	}
 	if ( state->own_rows != 0u && state->o_b_ready != 0u && D41MxReady(&state->mx, state->own_rows, D41_WO_A_ROWS, state->row_invariant) != 0u )
@@ -1531,7 +1536,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 }
 
 static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index), cache = D41CacheIndex(index);
 	const uint32_t own = state->own_rows, first = state->own_first, parts = D41_HEADS / D41A_QUERIES;
@@ -1553,7 +1558,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, own_qrq, own, D41_QLORA, stream);
-	D41KvNormRopeQdqKernel<D41_THREADS><<<own, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), own, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
 		step->positions + first, frequency, own_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 	if ( LmMxQuantize(own_qrq, qcodes, qscales, (uint64_t)own * D41_QLORA, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -1563,7 +1568,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 			own_kv + (uint64_t)(own - edge) * D41_HEAD_DIM, state->window_edges);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41WindowAssembleKernel<<<own + D41_TP * edge, 64u, 0, stream>>>(own_kv, state->window_edges, state->window_kv, own, edge, first);
+	LM_LAUNCH((D41WindowAssembleKernel), own + D41_TP * edge, 64u, 0, stream, own_kv, state->window_edges, state->window_kv, own, edge, first);
 	for ( uint32_t part = 0u; part < parts; ++part )
 	{
 		uint16_t *query = state->q_local + (uint64_t)part * own * part_width;
@@ -1585,11 +1590,11 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		D41Rope(state->idx_pack_local, own, D41_LOCAL_INDEX_HEADS, D41_INDEX_DIM, D41_INDEX_DIM - D41_ROPE, step->positions + first, 0,
 			state->compress_frequency, 0u, 0, stream);
-		SparkDsv41FlashFp4Pow2QdqKernel<<<(own * (index_width / 32u) + 255u) / 256u, 256u, 0, stream>>>(state->idx_pack_local, own * (index_width / 32u),
+		LM_LAUNCH((SparkDsv41FlashFp4Pow2QdqKernel), (own * (index_width / 32u) + 255u) / 256u, 256u, 0, stream, state->idx_pack_local, own * (index_width / 32u),
 			32u);
-		D41ScaleRowsKernel<<<D41Blocks((uint64_t)own * D41_LOCAL_INDEX_HEADS), D41_THREADS, 0, stream>>>(state->idx_w_full,
+		LM_LAUNCH((D41ScaleRowsKernel), D41Blocks((uint64_t)own * D41_LOCAL_INDEX_HEADS), D41_THREADS, 0, stream, state->idx_w_full,
 			(uint64_t)own * D41_LOCAL_INDEX_HEADS, (float)(1.0 / sqrt((double)D41_INDEX_DIM) / sqrt((double)D41_INDEX_HEADS)));
-		D41IndexPackKernel<<<own, D41_THREADS, 0, stream>>>(state->idx_pack_local, state->idx_w_full, state->q_gathered, index_width,
+		LM_LAUNCH((D41IndexPackKernel), own, D41_THREADS, 0, stream, state->idx_pack_local, state->idx_w_full, state->q_gathered, index_width,
 			D41_LOCAL_INDEX_HEADS, D41_INDEX_PACK);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
@@ -1612,10 +1617,10 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 			D41AttendLaunch<D41Ratio1Kv,D41_HEAD_DIM,D41_ATTEND_TILES>(state->latent_views[cache], attended, query, step->sequence_of_row + first, length,
 				bound + first, state->own_selected, D41_INDEX_TOPK, state->window_kv, ring, ring_stride, D41_RING_ROWS, step->positions, state->row_lane + first,
 				step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, sink, qk_scale, (uint16_t *)0, frequency, D41_HEAD_DIM - D41_ROPE,
-				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream, (uint64_t)own * part_width, 0u, part_bytes)) != cudaSuccess )
+				D41_GROUP_WIDTH / D41_HEAD_DIM, part_out, own, live, first, stream, (uint64_t)own * part_width, 0u, part_bytes)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
-	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, ring_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, step->commit, (const uint32_t *)0);
 	{
 		const uint8_t *group_codes[D41_LOCAL_GROUPS], *group_scales[D41_LOCAL_GROUPS], *group_weights[D41_LOCAL_GROUPS], *group_weight_scales[D41_LOCAL_GROUPS];
@@ -1644,13 +1649,13 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 }
 
 static SparkStatus D41AttentionSplit(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step, uint32_t own,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, first = state->tp_rank * own;
 	const uint32_t live = first < rows ? (rows - first < own ? rows - first : own) : 0u;
 	SparkStatus status = SPARK_STATUS_OK;
-	if ( live != 0u && cudaMemcpyAsync(state->own_out, state->xq + (uint64_t)first * D41_HIDDEN, (uint64_t)live * D41_HIDDEN * sizeof(uint16_t),
-		cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+	if ( live != 0u && SparkGpuMemcpyAsync(state->own_out, state->xq + (uint64_t)first * D41_HIDDEN, (uint64_t)live * D41_HIDDEN * sizeof(uint16_t),
+		SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	state->own_rows = own;
 	state->own_first = first;
@@ -1666,7 +1671,7 @@ static SparkStatus D41AttentionSplit(D41ModelState *state, const D41Layer *layer
 }
 
 static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uint32_t index, const SparkStageRunnerStep *step,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index);
 	const float *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
@@ -1701,7 +1706,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
-	D41KvNormRopeQdqKernel<D41_THREADS><<<rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream>>>(state->kv, layer->kv_norm,
+	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
 		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
@@ -1741,13 +1746,13 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		return status;
 	if ( local != 0u )
 		for ( uint32_t source = 0u; source < D41_TP; ++source )
-			D41WindowFoldKernel<<<dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream>>>(state->records_received + (uint64_t)source * destination_stride,
+			LM_LAUNCH((D41WindowFoldKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received + (uint64_t)source * destination_stride,
 				destination_stride, D41_LOCAL_HEADS, state->q_local, (uint64_t)rows * local_width, state->window_kv,
 				state->ring_landing + (uint64_t)source * D41_RING_LANDING_ROWS * D41_HIDDEN + (uint64_t)index * D41_RING_ELEMENTS, step->positions, state->row_lane,
 				state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, 0u, D41_RING_ROWS, D41_WINDOW, D41_TP,
 				source, 1.0f / sqrtf((float)D41_HEAD_DIM), D41_LOCAL_HEADS, 1u);
 	else
-		D41WindowFoldKernel<<<dim3(rows, D41_HEADS), D41K_THREADS, 0, stream>>>(state->records_send, destination_stride, D41_LOCAL_HEADS,
+		LM_LAUNCH((D41WindowFoldKernel), dim3(rows, D41_HEADS), D41K_THREADS, 0, stream, state->records_send, destination_stride, D41_LOCAL_HEADS,
 			state->q_gathered, query_rank_stride, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 			step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS,
 			D41_WINDOW, D41_TP, state->tp_rank,
@@ -1758,7 +1763,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 	status = D41VerifyWindow(state, index, step, stream);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
+	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_TP,
 		state->tp_rank, rows, step->commit, (const uint32_t *)0);
 	status = D41Launched();
@@ -1769,7 +1774,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		return status;
 	{
 		uint16_t *merged = pair != 0u ? state->group_input : state->attn_merged;
-		D41MergeSinkKernel<<<dim3(rows, record_heads), D41_THREADS, 0, stream>>>(state->records_received, destination_stride, D41_TP,
+		LM_LAUNCH((D41MergeSinkKernel), dim3(rows, record_heads), D41_THREADS, 0, stream, state->records_received, destination_stride, D41_TP,
 			record_heads, pair != 0u ? layer->group_sink : layer->sink, merged);
 		D41Rope(merged, rows, record_heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
 	}
@@ -1780,7 +1785,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 			state->attn_gathered);
 		if ( status == SPARK_STATUS_OK )
 		{
-			D41GroupInputKernel<<<dim3(D41Blocks(2u * local_width), rows), D41_THREADS, 0, stream>>>(state->attn_gathered, state->group_input,
+			LM_LAUNCH((D41GroupInputKernel), dim3(D41Blocks(2u * local_width), rows), D41_THREADS, 0, stream, state->attn_gathered, state->group_input,
 				rows, local_width, (state->tp_rank / 2u) * 2u, 2u);
 			status = D41Launched();
 		}
@@ -1797,10 +1802,10 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 }
 
 static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t kind, const uint16_t *rows_bf16, uint32_t rows,
-	uint32_t width, cudaStream_t stream);
+	uint32_t width, SparkGpuStream stream);
 
 static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint16_t *output, const D41ModelState *state, uint32_t rows,
-	uint32_t routes, uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t groups, cudaStream_t stream)
+	uint32_t routes, uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t groups, SparkGpuStream stream)
 {
 	const uint32_t *source = packed != 0u ? (const uint32_t *)0 : state->route_source_token;
 	if ( rows <= D41_SKINNY_EXPERT_ROWS || state->row_invariant != 0u )
@@ -1821,7 +1826,7 @@ static uint32_t D41SharedSplitStep(const D41ModelState *state, uint32_t rows)
 	return D41_ROWS && state->own_rows == 0u && (rows <= D41_SHARED_SPLIT_ROWS || state->row_invariant != 0u) && 2u * rows <= room ? 1u : 0u;
 }
 
-static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, cudaStream_t stream)
+static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint64_t stride, uint32_t sms, SparkGpuStream stream)
 {
 	for ( uint32_t source = 0u; source < (D41_SHARED_ROUTED != 0u ? D41_TP : 0u); ++source )
 	{
@@ -1835,7 +1840,7 @@ static SparkStatus D41SharedPartials(D41ModelState *state, const D41Layer *layer
 				rows, width, D41_HIDDEN_SLICE, 0u, 0u, sms, stream);
 		else
 		{
-			D41SharedDequantKernel<<<dim3(D41Blocks(width), rows), D41_THREADS, 0, stream>>>(codes, state->shared_act, rows, width);
+			LM_LAUNCH((D41SharedDequantKernel), dim3(D41Blocks(width), rows), D41_THREADS, 0, stream, codes, state->shared_act, rows, width);
 			launched = D41Linear(&layer->sh_w2_part[source], state->shared_act, partial, rows, width, D41_HIDDEN_SLICE, sms, state->row_invariant,
 				(const D41Mx *)0, stream);
 		}
@@ -1851,7 +1856,7 @@ static uint32_t D41Exchanges(const D41ModelState *state)
 		state->counts_ready != 0 && state->owner_host != 0 ? 1u : 0u;
 }
 
-static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint32_t sms, cudaStream_t stream)
+static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t rows, uint32_t sms, SparkGpuStream stream)
 {
 	const uint32_t own = state->own_rows;
 	if ( own != 0u && D41MxReady(&state->mx, rows, D41_HIDDEN, state->row_invariant) != 0u )
@@ -1865,7 +1870,7 @@ static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK ||
 				LmMxGemmDense(codes, codes + (uint64_t)own * D41_HIDDEN, layer->sh_w3.weight, layer->sh_w3.scale, state->shared_up + first, own,
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_LAUNCH;
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		}
 		return LM_LAUNCH_OK;
 	}
@@ -1873,7 +1878,7 @@ static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t
 		state->shared_width, sms, state->row_invariant, &state->mx, stream);
 }
 
-static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t own = state->own_rows, first = state->own_first;
 	const uint32_t live = first < step->rows ? (step->rows - first < own ? step->rows - first : own) : 0u;
@@ -1882,7 +1887,7 @@ static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunne
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->moe_rows != 0u )
-		D41ShuffleSumKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 8u), state->moe_rows), D41_THREADS, 0, stream>>>(state->partial, state->exchange_slot,
+		LM_LAUNCH((D41ShuffleSumKernel<D41_TP>), dim3(D41Blocks(D41_HIDDEN / 8u), state->moe_rows), D41_THREADS, 0, stream, state->partial, state->exchange_slot,
 			state->shuffle_received, state->shuffle_rows, D41_HIDDEN, state->moe_send);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -1890,14 +1895,14 @@ static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunne
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( cudaStreamWaitEvent(stream, state->shared_join, 0u) != cudaSuccess )
+	if ( SparkGpuStreamWaitEvent(stream, state->shared_join, 0u) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ShuffleFinishKernel<<<dim3(D41Blocks(D41_HIDDEN / 8u), own), D41_THREADS, 0, stream>>>(state->moe_received, state->shared_out, live, first,
+	LM_LAUNCH((D41ShuffleFinishKernel), dim3(D41Blocks(D41_HIDDEN / 8u), own), D41_THREADS, 0, stream, state->moe_received, state->shared_out, live, first,
 		D41_TP, state->shuffle_rows, D41_HIDDEN, state->own_out);
 	return D41Launched();
 }
 
-static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t index = (uint32_t)(layer - state->layers), held = index < D41_BACKUP_LAYERS && state->backup_cells != 0 ? 1u : 0u;
 	const uint32_t groups = held != 0u ? D41_HELD_EXPERTS : D41_LOCAL_EXPERTS, rows = state->exchange_live, routes = rows * D41_TOPK;
@@ -1905,7 +1910,7 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 	uint8_t *codes = (uint8_t *)state->expert_act;
 	if ( rows == 0u )
 		return D41ExchangeReturn(state, step, stream);
-	D41RouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
+	LM_LAUNCH((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 		state->expert_group + (uint64_t)index * D41_EXPERTS, D41_LOCAL_EXPERTS, groups, D41_EXPERTS);
 	if ( (held != 0u ?
 		LmRouteBuild<D41_THREADS,D41_HELD_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
@@ -1913,10 +1918,10 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 		LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
 			state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
-	D41FinalizeMapKernel<D41_TP><<<(rows + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_packed_row, state->exchange_received,
+	LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
+	LM_LAUNCH((D41FinalizeMapKernel<D41_TP>), (rows + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_packed_row, state->exchange_received,
 		state->exchange_rows, D41_TOPK, groups, rows, LM_CELL_MX_MAPPED, state->route_output_row);
-	D41RecordPlaceKernel<D41_TP><<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_source_token, routes, state->exchange_received,
+	LM_LAUNCH((D41RecordPlaceKernel<D41_TP>), (routes + 255u) / 256u, 256u, 0, stream, state->route_source_token, routes, state->exchange_received,
 		state->exchange_rows);
 	LmCellMxCodes received = LmCellMxPacked((const uint8_t *)state->moe_received, (const uint8_t *)state->moe_received + D41_HIDDEN, D41_HIDDEN);
 	received.code_stride = (uint64_t)D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t);
@@ -1928,19 +1933,19 @@ static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, 
 		LmCellMxExpertsSplit(layer->e_w13_cells, held != 0u ? layer->e_w13_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u,
 		received, gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
+	LM_LAUNCH((D41ExpertActKernel), dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream, gate_up,
 		state->packed_weight, state->group_row_offset, groups, codes, (uint16_t *)0, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( D41Launched() != SPARK_STATUS_OK ||
 		LmCellMxExpertsSplit(layer->e_w2_cells, held != 0u ? layer->e_w2_backup : (const uint8_t *)0, held != 0u ? D41_LOCAL_EXPERTS : 0u, down,
 			state->expert_slice, state->group_row_offset, (const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExchangeFinalizeKernel<D41_TP><<<dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream>>>(state->expert_slice,
+	LM_LAUNCH((D41ExchangeFinalizeKernel<D41_TP>), dim3(D41Blocks(D41_HIDDEN / 8u), rows), D41_THREADS, 0, stream, state->expert_slice,
 		state->route_packed_row, state->route_expert, state->exchange_received, state->exchange_rows, D41_TOPK, groups, D41_HIDDEN, 1u, state->moe_final);
 	const SparkStatus status = D41Launched();
 	return status != SPARK_STATUS_OK ? status : D41ExchangeReturn(state, step, stream);
 }
 
-static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	if ( D41Exchanges(state) != 0u )
 		return D41MoeExchanged(state, layer, step, stream);
@@ -1955,24 +1960,24 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	SparkStatus status;
 	if ( split != 0u )
 		D41SharedPart(state->tp_rank, D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE, &split_first, &split_width);
-	if ( D41_ROWS && split == 0u && cudaMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess )
+	if ( D41_ROWS && split == 0u && SparkGpuMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->own_rows == 0u &&
 		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess) )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 &&
-		(cudaStreamSynchronize(stream) != cudaSuccess ||
-		cudaMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) )
+		(SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	D41RouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global, routes,
+	LM_LAUNCH((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
 		state->expert_group + (uint64_t)(layer - state->layers) * D41_EXPERTS, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
 	if ( LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
 		state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+	LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	if ( D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream) !=
 		LM_LAUNCH_OK ||
 		(split != 0u ? D41LinearPair(&layer->sh_w1_split, &layer->sh_w3_split, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN,
@@ -1981,14 +1986,14 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			state->shared_up, shared_rows, D41_HIDDEN, state->shared_width, state->shared_width, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK :
 			D41SharedUp(state, layer, rows, sms, stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExpertActKernel<<<dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream>>>(gate_up,
+	LM_LAUNCH((D41ExpertActKernel), dim3(D41Blocks(D41_MOE_INTER), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream, gate_up,
 		state->packed_weight,
 		state->group_row_offset, D41_LOCAL_EXPERTS, codes, mx_down != 0u ? (uint16_t *)0 : state->expert_act, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( split != 0u )
-		D41SwigluRowsKernel<<<dim3(D41Blocks(split_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up, state->shared_act,
+		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(split_width), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up, state->shared_act,
 			split_width, D41_SWIGLU_LIMIT);
 	else if ( shared_rows != 0u )
-		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), shared_rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
+		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), shared_rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
@@ -2011,18 +2016,18 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	if ( split != 0u )
 	{
 		float *partial = (float *)state->moe_final;
-		D41MoeFinalizeF32Kernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->route_packed_row,
+		LM_LAUNCH((D41MoeFinalizeF32Kernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
 			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 2u * rows, D41_HIDDEN, partial, state->moe_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		D41SumSourcesF32Kernel<<<D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream>>>(
+		LM_LAUNCH((D41SumSourcesF32Kernel), D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream,
 			(const float *)state->moe_gathered, state->partial, (uint64_t)rows * D41_HIDDEN, D41_TP);
 		return D41Launched();
 	}
-	LmMoeLocalFinalizeKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->route_packed_row,
+	LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
 		state->route_expert, state->shared_out, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
@@ -2030,7 +2035,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	if ( state->own_rows != 0u )
 	{
 		if ( state->own_pad != 0u )
-			cudaMemsetAsync(state->moe_final + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), stream);
+			SparkGpuMemsetAsync(state->moe_final + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), stream);
 		return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, state->own_rows * D41_TP, 0u,
 			state->moe_final, state->own_out);
 	}
@@ -2039,12 +2044,12 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN, state->moe_final, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41SumSourcesKernel<<<D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream>>>(state->moe_gathered,
+	LM_LAUNCH((D41SumSourcesKernel), D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream, state->moe_gathered,
 		state->partial, (uint64_t)rows * D41_HIDDEN, D41_TP);
 	return D41Launched();
 }
 
-static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
 	const uint64_t stride = (uint64_t)rows * D41_MOE_ROW_ELEMENTS, shared_offset = (uint64_t)routes * D41_MOE_ROUTE_ELEMENTS;
@@ -2055,32 +2060,32 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	if ( state->own_rows == 0u &&
 		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess) )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->dump != 0 &&
-		(cudaStreamSynchronize(stream) != cudaSuccess ||
-		cudaMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
-		cudaMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) )
+		(SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( LmRouteBuild<D41_THREADS,D41_EXPERTS>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset, state->route_packed_row,
 		state->route_source_token, 2u * D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
 		stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+	LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 	if ( D41Experts(layer->e_w13_cells, state->xq, state->expert_gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_EXPERT_SLICE, D41_EXPERTS, stream) !=
 		LM_LAUNCH_OK ||
 		D41SharedUp(state, layer, rows, sms, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_gate, state->shared_up,
+	LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up,
 		state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	if ( D41_SHARED_ROUTED != 0u )
-		D41SharedSendKernel<<<dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream>>>(state->shared_act, state->moe_send, rows,
+		LM_LAUNCH((D41SharedSendKernel), dim3(D41Blocks(state->shared_width), rows), D41_THREADS, 0, stream, state->shared_act, state->moe_send, rows,
 			state->shared_width, D41_TP, stride);
 	else if ( D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, rows, state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx,
 		stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41MoeSendKernel<<<D41ItemGrid(D41Blocks(D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
-		D41_THREADS, 0, stream>>>(state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
+	LM_LAUNCH((D41MoeSendKernel), D41ItemGrid(D41Blocks(D41_SHARED_ROUTED != 0u ? D41_EXPERT_SLICE : D41_HIDDEN), routes + (D41_SHARED_ROUTED != 0u ? 0u : rows)),
+		D41_THREADS, 0, stream, state->expert_gate_up, state->packed_weight, state->shared_out, state->moe_send + route_base, routes,
 		D41_SHARED_ROUTED != 0u ? 0u : rows, D41_EXPERT_SLICE, D41_HIDDEN_SLICE, D41_TP, stride, D41_SWIGLU_LIMIT, D41_MOE_ROUTE_ELEMENTS, D41_MOE_CODES);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -2091,10 +2096,10 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	const uint32_t mx_down = D41_MOE_CODES != 0u && state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
 	const uint8_t *down_codes = (const uint8_t *)state->expert_act;
 	if ( mx_down != 0u )
-		D41ActAssembleCodesKernel<<<D41ItemGrid(D41Blocks(D41_MOE_INTER / 16u + D41_MOE_INTER / (2u * D41_FP8_BLOCK)), routes), D41_THREADS, 0, stream>>>(
+		LM_LAUNCH((D41ActAssembleCodesKernel), D41ItemGrid(D41Blocks(D41_MOE_INTER / 16u + D41_MOE_INTER / (2u * D41_FP8_BLOCK)), routes), D41_THREADS, 0, stream,
 			state->moe_received + route_base, (uint8_t *)state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes);
 	else
-		D41ActAssembleQdqKernel<<<D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream>>>(state->moe_received + route_base,
+		LM_LAUNCH((D41ActAssembleQdqKernel), D41ItemGrid(D41_MOE_INTER / D41_THREADS, routes), D41_THREADS, 0, stream, state->moe_received + route_base,
 			state->expert_act, D41_EXPERT_SLICE, D41_MOE_INTER, stride, routes, D41_MOE_CODES);
 	if ( (mx_down != 0u ?
 		LmCellMxExperts(layer->e_w2_cells, down_codes, down_codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset,
@@ -2108,7 +2113,7 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 		if ( status != SPARK_STATUS_OK )
 			return status;
 	}
-	D41FinalizeSliceKernel<<<dim3(D41Blocks(D41_HIDDEN_SLICE), rows), D41_THREADS, 0, stream>>>(state->expert_slice, state->moe_received,
+	LM_LAUNCH((D41FinalizeSliceKernel), dim3(D41Blocks(D41_HIDDEN_SLICE), rows), D41_THREADS, 0, stream, state->expert_slice, state->moe_received,
 		state->route_expert, state->route_packed_row, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_TP, D41_HIDDEN_SLICE, stride, shared_offset,
 		D41_SHARED_ROUTED != 0u ? state->shared_out : (const uint16_t *)0);
 	status = D41Launched();
@@ -2129,12 +2134,12 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 	if ( status == SPARK_STATUS_OK && state->own_rows != 0u )
 	{
 		if ( state->own_pad != 0u )
-			cudaMemsetAsync(state->moe_final + (uint64_t)rows * D41_HIDDEN_SLICE, 0, (uint64_t)state->own_pad * D41_HIDDEN_SLICE * sizeof(uint16_t), stream);
+			SparkGpuMemsetAsync(state->moe_final + (uint64_t)rows * D41_HIDDEN_SLICE, 0, (uint64_t)state->own_pad * D41_HIDDEN_SLICE * sizeof(uint16_t), stream);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, state->own_rows, D41_HIDDEN_SLICE, state->moe_final,
 			state->moe_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		D41SliceGatherKernel<<<dim3(D41Blocks(D41_HIDDEN), state->own_rows), D41_THREADS, 0, stream>>>(state->moe_gathered, state->own_out, state->own_rows,
+		LM_LAUNCH((D41SliceGatherKernel), dim3(D41Blocks(D41_HIDDEN), state->own_rows), D41_THREADS, 0, stream, state->moe_gathered, state->own_out, state->own_rows,
 			D41_HIDDEN_SLICE, D41_TP);
 		return D41Launched();
 	}
@@ -2143,12 +2148,12 @@ static SparkStatus D41Moe(D41ModelState *state, const D41Layer *layer, const Spa
 			rows == 1u ? state->partial : state->moe_gathered);
 	if ( status != SPARK_STATUS_OK || rows == 1u )
 		return status;
-	D41SliceGatherKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(state->moe_gathered, state->partial, rows, D41_HIDDEN_SLICE,
+	LM_LAUNCH((D41SliceGatherKernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, state->moe_gathered, state->partial, rows, D41_HIDDEN_SLICE,
 		D41_TP);
 	return D41Launched();
 }
 
-static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t own = state->own_rows, rows = step->rows, first = state->own_first;
 	const uint32_t routed = first + own <= rows ? own : rows > first ? rows - first : 0u;
@@ -2159,12 +2164,12 @@ static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, con
 		stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(routed, state->router_logits, D41_EXPERTS,
 			state->route_expert + (uint64_t)first * D41_TOPK, state->route_weight + (uint64_t)first * D41_TOPK, layer->router_bias, 0, D41_ROUTE_SCALE,
-			step->route_fault, stream) != cudaSuccess) )
+			step->route_fault, stream) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( LmMxQuantize(state->own_x, block, block + (uint64_t)own * D41_HIDDEN, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u )
-		D41FfnPackKernel<<<(routed * D41_TOPK + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream>>>(state->route_expert + (uint64_t)first * D41_TOPK,
+		LM_LAUNCH((D41FfnPackKernel), (routed * D41_TOPK + D41_THREADS - 1u) / D41_THREADS, D41_THREADS, 0, stream, state->route_expert + (uint64_t)first * D41_TOPK,
 			state->route_weight + (uint64_t)first * D41_TOPK, block, own, routed, D41_HIDDEN, D41_TOPK);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -2172,13 +2177,13 @@ static SparkStatus D41FfnGather(D41ModelState *state, const D41Layer *layer, con
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41FfnUnpackKernel<<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>((const uint8_t *)state->moe_received, state->xq,
+	LM_LAUNCH((D41FfnUnpackKernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, (const uint8_t *)state->moe_received, state->xq,
 		state->route_expert, state->route_weight, own, D41_HIDDEN, D41_TOPK, (uint64_t)own * D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t));
 	return D41Launched();
 }
 
 static SparkStatus D41FillBackupPass(D41ModelState *state, const D41Layer *layer, uint32_t copy, uint32_t first_slot, uint32_t end_slot,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t index = (uint32_t)(layer - state->layers), me = state->tp_rank;
 	const uint64_t g13 = state->backup_group13, g2 = state->backup_group2, row_bytes = (uint64_t)D41_HIDDEN * sizeof(uint16_t);
@@ -2199,8 +2204,8 @@ static SparkStatus D41FillBackupPass(D41ModelState *state, const D41Layer *layer
 		const uint32_t expert = at[me * D41_LOCAL_EXPERTS + slot], target = backup[expert];
 		uint8_t *record = send + target * peer_bytes + (uint64_t)sent[target] * expert_bytes;
 		if ( target >= D41_TP || ++sent[target] > D41_BACKUP_PAIR ||
-			cudaMemcpyAsync(record, layer->e_w13_cells + slot * g13, g13, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
-			cudaMemcpyAsync(record + g13, layer->e_w2_cells + slot * g2, g2, cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+			SparkGpuMemcpyAsync(record, layer->e_w13_cells + slot * g13, g13, SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpyAsync(record + g13, layer->e_w2_cells + slot * g2, g2, SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	}
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, peer_rows, D41_HIDDEN, state->moe_send, state->moe_received);
@@ -2215,14 +2220,14 @@ static SparkStatus D41FillBackupPass(D41ModelState *state, const D41Layer *layer
 			const uint8_t *record = received + home * peer_bytes + (uint64_t)got[home]++ * expert_bytes;
 			const uint64_t place = (uint64_t)group[expert] - D41_LOCAL_EXPERTS;
 			if ( group[expert] < low || group[expert] >= high ||
-				cudaMemcpyAsync((uint8_t *)layer->e_w13_backup + place * g13, record, g13, cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
-				cudaMemcpyAsync((uint8_t *)layer->e_w2_backup + place * g2, record + g13, g2, cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+				SparkGpuMemcpyAsync((uint8_t *)layer->e_w13_backup + place * g13, record, g13, SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS ||
+				SparkGpuMemcpyAsync((uint8_t *)layer->e_w2_backup + place * g2, record + g13, g2, SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 	return D41Launched();
 }
 
-static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, cudaStream_t stream)
+static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, SparkGpuStream stream)
 {
 	const uint32_t index = (uint32_t)(layer - state->layers);
 	for ( uint32_t copy = 0u; copy < D41_BACKUP_COPIES; ++copy )
@@ -2237,7 +2242,7 @@ static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, c
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t own = state->own_rows, rows = step->rows, first = state->own_first, sms = step->multiprocessors;
 	const uint32_t routed = first + own <= rows ? own : rows > first ? rows - first : 0u, shuffle = (own + D41_TP - 1u) / D41_TP;
@@ -2257,36 +2262,36 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	if ( routed != 0u &&
 		(D41Project(layer->router, state->own_x, 0, state->router_logits, routed, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		LmTopkRouteLaunch<D41_THREADS,D41_TOPK,true,LM_TOPK_SCORE_SQRT_SOFTPLUS>(routed, state->router_logits, D41_EXPERTS, state->route_expert,
-			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != cudaSuccess) )
+			state->route_weight, layer->router_bias, 0, D41_ROUTE_SCALE, step->route_fault, stream) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( LmMxQuantize(state->own_x, codes, scales, (uint64_t)own * D41_HIDDEN, stream) != LM_LAUNCH_OK ||
-		cudaEventRecord(state->shared_fork, stream) != cudaSuccess || cudaStreamWaitEvent(state->shared_stream, state->shared_fork, 0u) != cudaSuccess )
+		SparkGpuEventRecord(state->shared_fork, stream) != SPARK_GPU_SUCCESS || SparkGpuStreamWaitEvent(state->shared_stream, state->shared_fork, 0u) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u &&
 		(D41LinearPair(&layer->sh_w1, &layer->sh_w3, state->own_x, state->shared_gate, state->shared_up, routed, D41_HIDDEN, state->shared_width,
 			state->shared_width, sms, state->row_invariant, &side, state->shared_stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( routed != 0u )
-		D41SwigluRowsKernel<<<dim3(D41Blocks(state->shared_width), routed), D41_THREADS, 0, state->shared_stream>>>(state->shared_gate, state->shared_up,
+		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(state->shared_width), routed), D41_THREADS, 0, state->shared_stream, state->shared_gate, state->shared_up,
 			state->shared_act, state->shared_width, D41_SWIGLU_LIMIT);
 	if ( (routed != 0u && D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out, routed, state->shared_width, D41_HIDDEN, sms,
-		state->row_invariant, &side, state->shared_stream) != LM_LAUNCH_OK) || cudaEventRecord(state->shared_join, state->shared_stream) != cudaSuccess )
+		state->row_invariant, &side, state->shared_stream) != LM_LAUNCH_OK) || SparkGpuEventRecord(state->shared_join, state->shared_stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41ExchangeCountsKernel<D41_TP,D41_EXPERTS><<<1u, 1024u, 0, stream>>>(state->route_expert, routed, first, D41_TOPK, owner, held, state->exchange_count);
+	LM_LAUNCH((D41ExchangeCountsKernel<D41_TP,D41_EXPERTS>), 1u, 1024u, 0, stream, state->route_expert, routed, first, D41_TOPK, owner, held, state->exchange_count);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, (uint32_t)(counts_bytes / sizeof(uint16_t)),
 			state->exchange_count, state->exchange_counts);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	D41ExchangeTotalsKernel<D41_TP,D41_EXPERTS><<<held != 0u ? 7u : 1u, 1024u, 0, stream>>>((const uint8_t *)state->exchange_counts, counts_bytes, held,
+	LM_LAUNCH((D41ExchangeTotalsKernel<D41_TP,D41_EXPERTS>), held != 0u ? 7u : 1u, 1024u, 0, stream, (const uint8_t *)state->exchange_counts, counts_bytes, held,
 		state->exchange_totals);
 	if ( D41Launched() != SPARK_STATUS_OK ||
-		cudaMemcpyAsync(state->exchange_totals_host, state->exchange_totals, held != 0u ? sizeof(D41Totals) : sizeof(state->exchange_totals->pair),
-			cudaMemcpyDeviceToHost, stream) != cudaSuccess || cudaEventRecord(state->counts_ready, stream) != cudaSuccess )
+		SparkGpuMemcpyAsync(state->exchange_totals_host, state->exchange_totals, held != 0u ? sizeof(D41Totals) : sizeof(state->exchange_totals->pair),
+			SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS || SparkGpuEventRecord(state->counts_ready, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( routed != 0u )
-		D41ShufflePackKernel<<<routed, 256u, 0, stream>>>(codes, scales, state->route_expert, state->route_weight, first, D41_TP, shuffle, D41_HIDDEN,
+		LM_LAUNCH((D41ShufflePackKernel), routed, 256u, 0, stream, codes, scales, state->route_expert, state->route_weight, first, D41_TP, shuffle, D41_HIDDEN,
 			D41_TOPK, record_bytes, (uint8_t *)state->moe_send);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -2294,7 +2299,7 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 			state->moe_received);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( cudaEventSynchronize(state->counts_ready) != cudaSuccess )
+	if ( SparkGpuEventSynchronize(state->counts_ready) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( held != 0u )
 		offload = D41BackupPlan<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_BACKUP_COPIES>(state->exchange_totals_host,
@@ -2318,19 +2323,19 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	state->exchange_rows = capacity;
 	state->moe_rows = state->shuffle_received.first[D41_TP];
 	state->exchange_live = state->exchange_received.first[D41_TP];
-	if ( offload != 0u && cudaMemcpy2DAsync(state->exchange_quota, D41_EXPERTS * sizeof(uint16_t),
+	if ( offload != 0u && SparkGpuMemcpy2DAsync(state->exchange_quota, D41_EXPERTS * sizeof(uint16_t),
 		state->exchange_quota_host + (uint64_t)state->tp_rank * D41_EXPERTS, (uint64_t)D41_TP * D41_EXPERTS * sizeof(uint16_t), D41_EXPERTS * sizeof(uint16_t),
-		D41_BACKUP_COPIES, cudaMemcpyHostToDevice, stream) != cudaSuccess )
+		D41_BACKUP_COPIES, SPARK_GPU_COPY_HOST_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( state->moe_rows != 0u )
-		D41ShuffleUnpackKernel<D41_TP><<<dim3(2u, state->moe_rows), D41_THREADS, 0, stream>>>((const uint8_t *)state->moe_received, state->shuffle_received,
+		LM_LAUNCH((D41ShuffleUnpackKernel<D41_TP>), dim3(2u, state->moe_rows), D41_THREADS, 0, stream, (const uint8_t *)state->moe_received, state->shuffle_received,
 			shuffle, D41_HIDDEN, D41_TOPK, record_bytes, moe_codes, moe_scales, state->route_expert, state->route_weight);
-	D41ExchangeSlotsKernel<D41_TP,D41_EXPERTS,D41_TOPK,D41_BACKUP_COPIES><<<1u, D41K_SLOT_WARPS * 32u, 0, stream>>>(state->route_expert, state->moe_rows,
+	LM_LAUNCH((D41ExchangeSlotsKernel<D41_TP,D41_EXPERTS,D41_TOPK,D41_BACKUP_COPIES>), 1u, D41K_SLOT_WARPS * 32u, 0, stream, state->route_expert, state->moe_rows,
 		owner, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, offload != 0u ? state->exchange_quota : (const uint16_t *)0, capacity,
 		state->exchange_slot,
 		state->exchange_slot_count);
 	if ( state->moe_rows != 0u )
-		D41ExchangePackKernel<<<dim3(state->moe_rows, D41_TP), 256u, 0, stream>>>(moe_codes, moe_scales, state->route_expert, state->route_weight,
+		LM_LAUNCH((D41ExchangePackKernel), dim3(state->moe_rows, D41_TP), 256u, 0, stream, moe_codes, moe_scales, state->route_expert, state->route_weight,
 			state->exchange_slot, owner, D41_TP, capacity, D41_HIDDEN, D41_TOPK, D41_EXPERTS, record_bytes, (uint8_t *)state->moe_send);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -2339,19 +2344,19 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	if ( status != SPARK_STATUS_OK )
 		return status;
 	if ( state->exchange_live != 0u )
-		D41ExchangeUnpackKernel<D41_TP><<<dim3(1u, state->exchange_live), 32u, 0, stream>>>((const uint8_t *)state->moe_received, state->exchange_received,
+		LM_LAUNCH((D41ExchangeUnpackKernel<D41_TP>), dim3(1u, state->exchange_live), 32u, 0, stream, (const uint8_t *)state->moe_received, state->exchange_received,
 			capacity, D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)0, (uint8_t *)0, state->route_expert, state->route_weight);
 	return D41Launched();
 }
 
 static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t kind, const uint16_t *rows_bf16, uint32_t rows,
-	uint32_t width, cudaStream_t stream)
+	uint32_t width, SparkGpuStream stream)
 {
 	const uint32_t header[5] = { 0x58344c44u, layer, rows, kind, width };
 	if ( state->dump == 0 )
 		return SPARK_STATUS_OK;
-	if ( cudaStreamSynchronize(stream) != cudaSuccess ||
-		cudaMemcpy(state->dump_streams, rows_bf16, (size_t)rows * width * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+	if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->dump_streams, rows_bf16, (size_t)rows * width * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	fwrite(header, sizeof(header), 1u, state->dump);
 	fwrite(state->dump_streams, sizeof(uint16_t), (size_t)rows * width, state->dump);
@@ -2359,35 +2364,35 @@ static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t ki
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus D41DumpStep(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41DumpStep(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t header[3] = { 0x53344c44u, step->rows, step->sequences };
 	const uint64_t words = 3u * (uint64_t)step->rows + step->sequences + 1u + step->sequences;
 	uint32_t *host = (uint32_t *)malloc((size_t)words * sizeof(uint32_t));
 	uint32_t *cursor = host;
-	cudaError_t error = host == 0 ? cudaErrorMemoryAllocation : cudaStreamSynchronize(stream);
-	if ( error == cudaSuccess )
-		error = cudaMemcpy(cursor, step->positions, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	SparkGpuError error = host == 0 ? SPARK_GPU_ERROR_MEMORY_ALLOCATION : SparkGpuStreamSynchronize(stream);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuMemcpy(cursor, step->positions, (size_t)step->rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST);
 	cursor += step->rows;
-	if ( error == cudaSuccess )
-		error = cudaMemcpy(cursor, step->sequence_of_row, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuMemcpy(cursor, step->sequence_of_row, (size_t)step->rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST);
 	cursor += step->rows;
-	if ( error == cudaSuccess )
-		error = cudaMemcpy(cursor, step->sequence_row_indices, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuMemcpy(cursor, step->sequence_row_indices, (size_t)step->rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST);
 	cursor += step->rows;
-	if ( error == cudaSuccess )
-		error = cudaMemcpy(cursor, step->sequence_row_begin, (size_t)(step->sequences + 1u) * sizeof(uint32_t), cudaMemcpyDeviceToHost);
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuMemcpy(cursor, step->sequence_row_begin, (size_t)(step->sequences + 1u) * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST);
 	cursor += step->sequences + 1u;
-	if ( error == cudaSuccess )
-		error = cudaMemcpy(cursor, step->recurrent_index, (size_t)step->sequences * sizeof(uint32_t), cudaMemcpyDeviceToHost);
-	if ( error == cudaSuccess )
+	if ( error == SPARK_GPU_SUCCESS )
+		error = SparkGpuMemcpy(cursor, step->recurrent_index, (size_t)step->sequences * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST);
+	if ( error == SPARK_GPU_SUCCESS )
 	{
 		fwrite(header, sizeof(header), 1u, state->dump);
 		fwrite(host, sizeof(uint32_t), (size_t)words, state->dump);
 		fflush(state->dump);
 	}
 	free(host);
-	return error == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	return error == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
 static uint32_t D41PlanLanding(D41ModelState *state, uint32_t landing, uint32_t ratio, uint32_t caches, uint64_t layer_rows, uint32_t reach)
@@ -2482,7 +2487,7 @@ static void D41TailRebase(D41ModelState *state, uint32_t rows)
 }
 
 static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep *step, uint32_t first, SparkStageRunnerStep *tail,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	*tail = *step;
 	tail->rows = step->rows - first;
@@ -2495,10 +2500,10 @@ static SparkStatus D41TailStep(D41ModelState *state, const SparkStageRunnerStep 
 	tail->host_sequence_of_row = step->host_sequence_of_row != 0 ? step->host_sequence_of_row + first : 0;
 	if ( tail->rows == 0u )
 		return SPARK_STATUS_OK;
-	D41RowBeginKernel<<<1u, 1u, 0, stream>>>(state->tail_row_begin, tail->rows);
-	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio2, tail->rows, 2u);
-	D41CompressedEmitPositionKernel<<<(tail->rows + 255u) / 256u, 256u, 0, stream>>>(tail->positions, state->bound_ratio1, tail->rows, 1u);
-	LmRowLanesKernel<<<1u, 256u, 0, stream>>>(tail->sequence_row_begin, tail->sequence_row_indices, state->row_lane, state->row_ordinal);
+	LM_LAUNCH((D41RowBeginKernel), 1u, 1u, 0, stream, state->tail_row_begin, tail->rows);
+	LM_LAUNCH((D41CompressedEmitPositionKernel), (tail->rows + 255u) / 256u, 256u, 0, stream, tail->positions, state->bound_ratio2, tail->rows, 2u);
+	LM_LAUNCH((D41CompressedEmitPositionKernel), (tail->rows + 255u) / 256u, 256u, 0, stream, tail->positions, state->bound_ratio1, tail->rows, 1u);
+	LM_LAUNCH((LmRowLanesKernel), 1u, 256u, 0, stream, tail->sequence_row_begin, tail->sequence_row_indices, state->row_lane, state->row_ordinal);
 	return D41Launched();
 }
 
@@ -2515,10 +2520,10 @@ static uint32_t D41TailOwnable(const D41ModelState *state, const SparkStageRunne
 		(uint64_t)D41_TP * tail_own * (D41K_HC * D41_HIDDEN + 8u) <= (uint64_t)D41_TP * state->max_rows * D41_MOE_ROW_ELEMENTS ? 1u : 0u;
 }
 
-static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static SparkStatus D41TailCompress(D41ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const D41Layer *layer = &state->layers[D41_CANDIDATE_SOURCE];
-	LmHcCollapseKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), step->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head, state->x, D41_HIDDEN);
+	LM_LAUNCH((LmHcCollapseKernel<D41K_HC>), dim3(D41Blocks(D41_HIDDEN), step->rows), D41_THREADS, 0, stream, state->streams, state->pre_head, state->x, D41_HIDDEN);
 	D41RmsNorm(state->x, layer->attn_norm, state->x, step->rows, D41_HIDDEN, stream);
 	return D41Compress(state, layer, D41_CANDIDATE_SOURCE, step, stream);
 }
@@ -2601,7 +2606,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 		SparkStageRunnerStep tail;
 		const SparkStageRunnerStep *current;
 		uint32_t shifted;
@@ -2613,16 +2618,16 @@ struct D41Cuda : CudaStage<D41Cuda>
 
 	static SparkStatus Begin(D41ModelState *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
 	{
-		cudaStream_t stream = (cudaStream_t)stream_void;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
 		const uint32_t rows = step->rows;
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( rows == 0u || rows > state->max_rows || step->sequences > state->slots || state->kv_attached == 0u || step->token_ids == 0 )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		if ( state->dump != 0 )
 		{
-			cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
-			if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess || capturing != cudaStreamCaptureStatusNone )
-				return SPARK_STATUS_UNSUPPORTED;
+			SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
+			if ( SparkGpuStreamIsCapturing(stream, &capturing) != SPARK_GPU_SUCCESS || capturing != SPARK_GPU_CAPTURE_STATUS_NONE )
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 			status = D41DumpStep(state, step, stream);
 			if ( status != SPARK_STATUS_OK )
 				return status;
@@ -2637,18 +2642,18 @@ struct D41Cuda : CudaStage<D41Cuda>
 			*state->tap_first_row = first <= state->tail_first_position ? 0u :
 				first - state->tail_first_position < rows ? first - state->tail_first_position : rows;
 		}
-		D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio2, rows, 2u);
-		D41CompressedEmitPositionKernel<<<(rows + 255u) / 256u, 256u, 0, stream>>>(step->positions, state->bound_ratio1, rows, 1u);
-		LmRowLanesKernel<<<step->sequences, 256u, 0, stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
+		LM_LAUNCH((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio2, rows, 2u);
+		LM_LAUNCH((D41CompressedEmitPositionKernel), (rows + 255u) / 256u, 256u, 0, stream, step->positions, state->bound_ratio1, rows, 1u);
+		LM_LAUNCH((LmRowLanesKernel), step->sequences, 256u, 0, stream, step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
 			state->row_ordinal);
 		status = D41EngramAheadBegin(state, step, stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio2,
+		LM_LAUNCH((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio2,
 			state->context_slots, 2u);
-		D41CompressedLengthKernel<<<(state->context_slots + 255u) / 256u, 256u, 0, stream>>>(step->context_length, state->length_ratio1,
+		LM_LAUNCH((D41CompressedLengthKernel), (state->context_slots + 255u) / 256u, 256u, 0, stream, step->context_length, state->length_ratio1,
 			state->context_slots, 1u);
-		LmHcExpandStreamsKernel<D41_HIDDEN><<<dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream>>>(step->hidden_bf16, state->streams, rows);
+		LM_LAUNCH((LmHcExpandStreamsKernel<D41_HIDDEN>), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, step->hidden_bf16, state->streams, rows);
 		state->own_rows = (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP);
 		if ( step->commit == 0u || rows < D41_OWN_ROWS_MIN || state->own_rows * D41_TP > state->max_rows || state->dump != 0 )
 			state->own_rows = 0u;
@@ -2662,10 +2667,10 @@ struct D41Cuda : CudaStage<D41Cuda>
 				return status;
 		}
 		if ( state->own_pad != 0u )
-			cudaMemsetAsync(state->streams + (uint64_t)rows * D41K_HC * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41K_HC * D41_HIDDEN * sizeof(uint16_t), stream);
+			SparkGpuMemsetAsync(state->streams + (uint64_t)rows * D41K_HC * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41K_HC * D41_HIDDEN * sizeof(uint16_t), stream);
 		if ( state->local_attention != 0u || state->local_upper != 0u )
 		{
-			D41RingPackKernel<<<D41_LAYERS, D41_THREADS, 0, stream>>>((const uint16_t *)state->recurrent, step->recurrent_index,
+			LM_LAUNCH((D41RingPackKernel), D41_LAYERS, D41_THREADS, 0, stream, (const uint16_t *)state->recurrent, step->recurrent_index,
 				state->recurrent_bytes / sizeof(uint16_t), D41_RING_ELEMENTS, state->ring_send);
 			status = D41Launched();
 			if ( status == SPARK_STATUS_OK )
@@ -2686,7 +2691,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus WholeRows(D41ModelState *state, cudaStream_t stream)
+	static SparkStatus WholeRows(D41ModelState *state, SparkGpuStream stream)
 	{
 		const uint32_t rows = state->own_rows;
 		SparkStatus status;
@@ -2731,7 +2736,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		uint16_t *send_pre = state->moe_send + (uint64_t)D41_TP * capacity * width, *received_pre = state->moe_received + (uint64_t)D41_TP * capacity * width;
-		D41TailPackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>(state->streams, state->pre_head, state->tp_rank, rows, 0u, own, first,
+		LM_LAUNCH((D41TailPackKernel), dim3(8u, capacity, D41_TP), 256u, 0, frame.stream, state->streams, state->pre_head, state->tp_rank, rows, 0u, own, first,
 			tail_own, capacity, width, (uint4 *)state->moe_send, (uint4 *)send_pre);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
@@ -2741,11 +2746,11 @@ struct D41Cuda : CudaStage<D41Cuda>
 			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity, 8u, send_pre, received_pre);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		D41TailUnpackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>((const uint4 *)state->moe_received, (const uint4 *)received_pre,
+		LM_LAUNCH((D41TailUnpackKernel), dim3(8u, capacity, D41_TP), 256u, 0, frame.stream, (const uint4 *)state->moe_received, (const uint4 *)received_pre,
 			state->tp_rank, rows, 0u, own, first, tail_own, capacity, width, state->streams_whole, state->pre_whole);
-		if ( pad != 0u && (cudaMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
-			cudaSuccess || cudaMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
-			cudaSuccess) )
+		if ( pad != 0u && (SparkGpuMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
+			SPARK_GPU_SUCCESS || SparkGpuMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
+			SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		state->streams = state->streams_whole;
 		state->pre_head = state->pre_whole;
@@ -2778,7 +2783,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( capacity == 0u )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		uint16_t *send_pre = state->moe_send + (uint64_t)D41_TP * capacity * width, *received_pre = state->moe_received + (uint64_t)D41_TP * capacity * width;
-		D41TailPackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>(state->streams, state->pre_head, state->tp_rank, rows, source_first, own,
+		LM_LAUNCH((D41TailPackKernel), dim3(8u, capacity, D41_TP), 256u, 0, frame.stream, state->streams, state->pre_head, state->tp_rank, rows, source_first, own,
 			first, tail_own, capacity, width, (uint4 *)state->moe_send, (uint4 *)send_pre);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
@@ -2788,18 +2793,18 @@ struct D41Cuda : CudaStage<D41Cuda>
 			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity, 8u, send_pre, received_pre);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		D41TailUnpackKernel<<<dim3(8u, capacity, D41_TP), 256u, 0, frame.stream>>>((const uint4 *)state->moe_received, (const uint4 *)received_pre,
+		LM_LAUNCH((D41TailUnpackKernel), dim3(8u, capacity, D41_TP), 256u, 0, frame.stream, (const uint4 *)state->moe_received, (const uint4 *)received_pre,
 			state->tp_rank, rows, source_first, own, first, tail_own, capacity, width, state->streams_whole, state->pre_whole);
-		if ( pad != 0u && (cudaMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
-			cudaSuccess || cudaMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
-			cudaSuccess) )
+		if ( pad != 0u && (SparkGpuMemsetAsync(state->streams_whole + (uint64_t)tail_rows * width, 0, (uint64_t)pad * width * sizeof(uint16_t), frame.stream) !=
+			SPARK_GPU_SUCCESS || SparkGpuMemsetAsync(state->pre_whole + (uint64_t)tail_rows * D41K_HC, 0, (uint64_t)pad * D41K_HC * sizeof(float), frame.stream) !=
+			SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( state->step_blocks != 0u && state->block_mask != 0 )
 		{
 			const uint32_t part_bytes = D41_HIDDEN * (uint32_t)sizeof(uint16_t), parts = (state->local_block_stride + part_bytes - 1u) / part_bytes;
 			const uint32_t mask_vectors = state->local_block_stride / 16u, record_vectors = parts * part_bytes / 16u;
 			uint4 *mask_rows = (uint4 *)(state->block_mask - (uint64_t)source_first * state->local_block_stride);
-			D41TailRowsPackKernel<<<dim3(1u, capacity, D41_TP), 128u, 0, frame.stream>>>(mask_rows, mask_vectors, record_vectors, state->tp_rank, rows,
+			LM_LAUNCH((D41TailRowsPackKernel), dim3(1u, capacity, D41_TP), 128u, 0, frame.stream, mask_rows, mask_vectors, record_vectors, state->tp_rank, rows,
 				source_first, own, first, tail_own, capacity, (uint4 *)state->moe_send);
 			status = D41Launched();
 			if ( status == SPARK_STATUS_OK )
@@ -2807,7 +2812,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 					state->moe_received);
 			if ( status != SPARK_STATUS_OK )
 				return status;
-			D41TailRowsUnpackKernel<<<dim3(1u, capacity, D41_TP), 128u, 0, frame.stream>>>((const uint4 *)state->moe_received, mask_vectors, record_vectors,
+			LM_LAUNCH((D41TailRowsUnpackKernel), dim3(1u, capacity, D41_TP), 128u, 0, frame.stream, (const uint4 *)state->moe_received, mask_vectors, record_vectors,
 				state->tp_rank, rows, source_first, own, first, tail_own, capacity, mask_rows);
 		}
 		state->selected += (uint64_t)(first - source_first) * D41_INDEX_TOPK;
@@ -2877,22 +2882,22 @@ struct D41Cuda : CudaStage<D41Cuda>
 	static SparkStatus End(D41ModelState *state, Frame &frame, SparkStatus status)
 	{
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t own = state->own_rows;
 		if ( status == SPARK_STATUS_OK && own != 0u )
 		{
-			LmHcCollapseKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), own), D41_THREADS, 0, stream>>>(
+			LM_LAUNCH((LmHcCollapseKernel<D41K_HC>), dim3(D41Blocks(D41_HIDDEN), own), D41_THREADS, 0, stream,
 				state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN, state->pre_head + (uint64_t)state->own_first * D41K_HC, state->own_x,
 				D41_HIDDEN);
 			status = D41Launched();
 			if ( status == SPARK_STATUS_OK )
 				status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HIDDEN, state->own_x, state->x);
-			if ( status == SPARK_STATUS_OK && cudaMemcpyAsync(frame.current->hidden_bf16, state->x,
-					(uint64_t)frame.current->rows * D41_HIDDEN * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+			if ( status == SPARK_STATUS_OK && SparkGpuMemcpyAsync(frame.current->hidden_bf16, state->x,
+					(uint64_t)frame.current->rows * D41_HIDDEN * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 				status = SPARK_STATUS_INTERNAL_ERROR;
 		}
 		else if ( status == SPARK_STATUS_OK && frame.current->rows != 0u )
-			LmHcCollapseKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, stream>>>(state->streams, state->pre_head,
+			LM_LAUNCH((LmHcCollapseKernel<D41K_HC>), dim3(D41Blocks(D41_HIDDEN), frame.current->rows), D41_THREADS, 0, stream, state->streams, state->pre_head,
 				frame.current->hidden_bf16, D41_HIDDEN);
 		state->own_rows = 0u;
 		state->own_first = 0u;
@@ -2968,7 +2973,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 			return SPARK_STATUS_OK;
 		}
 		if ( state->own_pad != 0u )
-			cudaMemsetAsync(state->partial + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), frame.stream);
+			SparkGpuMemsetAsync(state->partial + (uint64_t)rows * D41_HIDDEN, 0, (uint64_t)state->own_pad * D41_HIDDEN * sizeof(uint16_t), frame.stream);
 		SparkStatus status = state->own_rows != 0u ?
 			CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_REDUCE_SCATTER_SUM_BF16, state->own_rows * D41_TP, 0u, state->partial,
 				state->own_out) :
@@ -2983,7 +2988,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		const bool ffn = part == D41_FFN_PART;
 		const uint64_t first = state->own_first;
 		const uint32_t own = state->own_rows;
-		LmHcPostF32SourceMajorKernel<D41K_HC><<<dim3(D41Blocks(D41_HIDDEN), own != 0u ? own : frame.current->rows), D41_THREADS, 0, frame.stream>>>(
+		LM_LAUNCH((LmHcPostF32SourceMajorKernel<D41K_HC>), dim3(D41Blocks(D41_HIDDEN), own != 0u ? own : frame.current->rows), D41_THREADS, 0, frame.stream,
 			own != 0u ? state->own_out : state->partial, (ffn ? state->post_ffn : state->post_attn) + first * D41K_HC,
 			(ffn ? state->comb_ffn : state->comb_attn) + first * D41K_HC * D41K_HC, state->streams + first * D41K_HC * D41_HIDDEN, D41_HIDDEN);
 		return SPARK_STATUS_OK;
@@ -3011,18 +3016,18 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( own == 0u )
 		{
 			if ( state->tap_slab != 0 )
-				LmStreamMeanRowsKernel<D41_THREADS><<<grid, D41_THREADS, 0, frame.stream>>>(state->streams, state->tap_slab + offset, rows, D41K_HC,
+				LM_LAUNCH((LmStreamMeanRowsKernel<D41_THREADS>), grid, D41_THREADS, 0, frame.stream, state->streams, state->tap_slab + offset, rows, D41K_HC,
 					D41_HIDDEN, state->tap_stride);
 			return D41Launched();
 		}
-		LmStreamMeanRowsKernel<D41_THREADS><<<grid, D41_THREADS, 0, frame.stream>>>(state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN,
+		LM_LAUNCH((LmStreamMeanRowsKernel<D41_THREADS>), grid, D41_THREADS, 0, frame.stream, state->streams + (uint64_t)state->own_first * D41K_HC * D41_HIDDEN,
 			state->moe_send, own, D41K_HC, D41_HIDDEN, D41_HIDDEN);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, own, D41_HIDDEN, state->moe_send,
 				state->moe_received);
-		if ( status == SPARK_STATUS_OK && state->tap_slab != 0 && cudaMemcpy2DAsync(state->tap_slab + offset, state->tap_stride * sizeof(uint16_t),
-			state->moe_received, D41_HIDDEN * sizeof(uint16_t), D41_HIDDEN * sizeof(uint16_t), rows, cudaMemcpyDeviceToDevice, frame.stream) != cudaSuccess )
+		if ( status == SPARK_STATUS_OK && state->tap_slab != 0 && SparkGpuMemcpy2DAsync(state->tap_slab + offset, state->tap_stride * sizeof(uint16_t),
+			state->moe_received, D41_HIDDEN * sizeof(uint16_t), D41_HIDDEN * sizeof(uint16_t), rows, SPARK_GPU_COPY_DEVICE_TO_DEVICE, frame.stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return status;
 	}
@@ -3034,8 +3039,8 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( state->dump != 0 )
 		{
 			const uint32_t header[4] = { 0x44344c44u, index, rows, D41_TOPK };
-			if ( cudaStreamSynchronize(frame.stream) != cudaSuccess ||
-				cudaMemcpy(state->dump_streams, state->streams, stream_bytes, cudaMemcpyDeviceToHost) != cudaSuccess )
+			if ( SparkGpuStreamSynchronize(frame.stream) != SPARK_GPU_SUCCESS ||
+				SparkGpuMemcpy(state->dump_streams, state->streams, stream_bytes, SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			fwrite(header, sizeof(header), 1u, state->dump);
 			fwrite(state->dump_streams, 1u, (size_t)stream_bytes, state->dump);
@@ -3050,21 +3055,21 @@ struct D41Cuda : CudaStage<D41Cuda>
 inline SparkStatus D41Cuda::KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_pointer)
 {
 	D41ModelState *state = (D41ModelState *)model;
-	cudaStream_t stream = (cudaStream_t)stream_pointer;
+	SparkGpuStream stream = (SparkGpuStream)stream_pointer;
 	const uint32_t rows = step->rows, state_stride = (uint32_t)(state->recurrent_bytes / sizeof(float));
 	if ( state == 0 || kept == 0 || rows > D41_VERIFY_ROWS )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for ( uint32_t index = 0u; index < D41_LAYERS; ++index )
-		D41WindowRingStoreKernel<<<rows, D41_THREADS, 0, stream>>>(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM,
+		LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM,
 			(uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM, step->positions, state->row_lane, state->row_ordinal,
 			step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, D41_KV_TP,
 			D41_KV_RANK(state), rows, 1u, kept);
 	for ( uint32_t cache = 0u; cache < D41_PAIR_CACHES; ++cache )
-		D41CompressorSaveKernel<<<rows, D41_THREADS, 0, stream>>>(state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM,
+		LM_LAUNCH((D41CompressorSaveKernel), rows, D41_THREADS, 0, stream, state->verify_c_kv + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM,
 			state->verify_c_score + (uint64_t)cache * D41_VERIFY_ROWS * D41_HEAD_DIM,
 			(float *)(state->recurrent + state->ring_bytes) + (uint64_t)cache * 2u * D41_HEAD_DIM, step->positions, state->row_lane,
 			state->row_ordinal, step->sequence_row_begin, step->recurrent_index, rows, 2u, state_stride, D41_HEAD_DIM, 1u, kept);
-	LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, state->token_map, step->sequence_row_begin,
+	LM_LAUNCH((LmNgramHistoryKernel), (step->sequences + 63u) / 64u, 64u, 0, stream, step->token_ids, state->token_map, step->sequence_row_begin,
 		step->sequence_row_indices, step->recurrent_index,
 		(int32_t *)(state->recurrent + state->ring_bytes + state->compressor_bytes), (uint32_t)(state->recurrent_bytes / sizeof(int32_t)),
 		step->sequences, D41_ENGRAM_ORDERS, 1u, kept);
@@ -3074,7 +3079,7 @@ inline SparkStatus D41Cuda::KeepRows(void *model, const SparkStageRunnerStep *st
 static SparkStatus D41Frequencies(float *table)
 {
 	if ( D41LaunchFrequencies(table, D41_ROPE_THETA, D41_COMPRESS_THETA, D41_YARN_FACTOR, D41_YARN_ORIGINAL, D41_BETA_FAST,
-		D41_BETA_SLOW) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
+		D41_BETA_SLOW) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	return SPARK_STATUS_OK;
 }
@@ -3339,8 +3344,8 @@ static SparkStatus D41OpenExpertPlacement(D41ModelState *state, const char *pack
 		free(maps);
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
-	if ( cudaMalloc(&state->expert_owner, (3u + D41_BACKUP_COPIES) * table) != cudaSuccess ||
-		cudaMemcpy(state->expert_owner, maps, (3u + D41_BACKUP_COPIES) * table, cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMalloc(&state->expert_owner, (3u + D41_BACKUP_COPIES) * table) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->expert_owner, maps, (3u + D41_BACKUP_COPIES) * table, SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 		status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	state->expert_slot = state->expert_owner + table;
 	state->expert_backup = state->expert_owner + 2u * table;
@@ -3373,8 +3378,8 @@ static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_pa
 		free(map);
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	}
-	if ( cudaMalloc(&state->token_map, D41_VOCAB * sizeof(int32_t)) != cudaSuccess ||
-		cudaMemcpy(state->token_map, map, D41_VOCAB * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMalloc(&state->token_map, D41_VOCAB * sizeof(int32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(state->token_map, map, D41_VOCAB * sizeof(int32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 	{
 		free(map);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -3389,12 +3394,12 @@ static SparkStatus D41OpenEngramTables(D41ModelState *state, const char *pack_pa
 		engram->table_rows = rows[which];
 		engram->first_row = first;
 		engram->local_rows = first >= rows[which] ? 0u : (rows[which] - first < part ? rows[which] - first : part);
-		if ( cudaMalloc(&engram->multipliers, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t)) != cudaSuccess ||
-			cudaMalloc(&engram->primes, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != cudaSuccess ||
-			cudaMalloc(&engram->offsets, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != cudaSuccess ||
-			cudaMemcpy(engram->multipliers, numbers + which * D41_ENGRAM_MULTIPLIERS, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(engram->primes, numbers + 8u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess ||
-			cudaMemcpy(engram->offsets, numbers + 56u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), cudaMemcpyHostToDevice) != cudaSuccess )
+		if ( SparkGpuMalloc(&engram->multipliers, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t)) != SPARK_GPU_SUCCESS ||
+			SparkGpuMalloc(&engram->primes, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != SPARK_GPU_SUCCESS ||
+			SparkGpuMalloc(&engram->offsets, D41_ENGRAM_COLUMNS * sizeof(int64_t)) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(engram->multipliers, numbers + which * D41_ENGRAM_MULTIPLIERS, D41_ENGRAM_MULTIPLIERS * sizeof(int64_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(engram->primes, numbers + 8u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(engram->offsets, numbers + 56u + which * D41_ENGRAM_COLUMNS, D41_ENGRAM_COLUMNS * sizeof(int64_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	return SPARK_STATUS_OK;
@@ -3459,48 +3464,48 @@ inline void D41Cuda::Release(D41ModelState *state)
 	{
 		SparkRowFileClose(state->engram_file[which]);
 		if ( state->engram_ahead_ids_host[which] != 0 )
-			(void)cudaFreeHost(state->engram_ahead_ids_host[which]);
+			(void)SparkGpuFreeHost(state->engram_ahead_ids_host[which]);
 		if ( state->engram_ahead_rows_host[which] != 0 )
-			(void)cudaFreeHost(state->engram_ahead_rows_host[which]);
+			(void)SparkGpuFreeHost(state->engram_ahead_rows_host[which]);
 	}
 	if ( state->engram_ids_host != 0 )
-		(void)cudaFreeHost(state->engram_ids_host);
+		(void)SparkGpuFreeHost(state->engram_ids_host);
 	if ( state->engram_rows_host != 0 )
-		(void)cudaFreeHost(state->engram_rows_host);
+		(void)SparkGpuFreeHost(state->engram_rows_host);
 	if ( state->engram_resident != 0 )
-		(void)cudaFree(state->engram_resident);
+		(void)SparkGpuFree(state->engram_resident);
 	free(state->engram_calls);
 	if ( state->host_error != 0 )
-		(void)cudaFreeHost(state->host_error);
+		(void)SparkGpuFreeHost(state->host_error);
 	if ( state->exchange_counts_host != 0 )
-		(void)cudaFreeHost(state->exchange_counts_host);
+		(void)SparkGpuFreeHost(state->exchange_counts_host);
 	if ( state->exchange_totals_host != 0 )
-		(void)cudaFreeHost(state->exchange_totals_host);
+		(void)SparkGpuFreeHost(state->exchange_totals_host);
 	if ( state->counts_ready != 0 )
-		(void)cudaEventDestroy(state->counts_ready);
+		(void)SparkGpuEventDestroy(state->counts_ready);
 	if ( state->backup_cells != 0 )
-		(void)cudaFree(state->backup_cells);
+		(void)SparkGpuFree(state->backup_cells);
 	free(state->owner_host);
 	free(state->expert_at_host);
 	if ( state->shared_join != 0 )
-		(void)cudaEventDestroy(state->shared_join);
+		(void)SparkGpuEventDestroy(state->shared_join);
 	if ( state->shared_fork != 0 )
-		(void)cudaEventDestroy(state->shared_fork);
+		(void)SparkGpuEventDestroy(state->shared_fork);
 	if ( state->shared_stream != 0 )
-		(void)cudaStreamDestroy(state->shared_stream);
+		(void)SparkGpuStreamDestroy(state->shared_stream);
 	if ( state->expert_owner != 0 )
-		(void)cudaFree(state->expert_owner);
+		(void)SparkGpuFree(state->expert_owner);
 	if ( state->fp8_side != 0 )
-		(void)cudaFree(state->fp8_side);
+		(void)SparkGpuFree(state->fp8_side);
 	if ( state->cells != 0 )
-		(void)cudaFree(state->cells);
-	(void)cudaFree(state->token_map);
-	(void)cudaFree(state->full_frequency);
+		(void)SparkGpuFree(state->cells);
+	(void)SparkGpuFree(state->token_map);
+	(void)SparkGpuFree(state->full_frequency);
 	for ( uint32_t which = 0u; which < 2u; ++which )
 	{
-		(void)cudaFree(state->engram[which].multipliers);
-		(void)cudaFree(state->engram[which].primes);
-		(void)cudaFree(state->engram[which].offsets);
+		(void)SparkGpuFree(state->engram[which].multipliers);
+		(void)SparkGpuFree(state->engram[which].primes);
+		(void)SparkGpuFree(state->engram[which].offsets);
 	}
 	if ( state->dump != 0 )
 		fclose(state->dump);
@@ -3577,7 +3582,7 @@ inline SparkStatus D41Cuda::Configure(D41ModelState *state, const SparkStageRunn
 		status = D41OpenExpertPlacement(state, configuration->rank_pack_path);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( cudaMalloc(&state->full_frequency, 2u * D41K_ROPE_PAIRS * sizeof(float)) != cudaSuccess )
+	if ( SparkGpuMalloc(&state->full_frequency, 2u * D41K_ROPE_PAIRS * sizeof(float)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->compress_frequency = state->full_frequency + D41K_ROPE_PAIRS;
 	status = D41Frequencies(state->full_frequency);
@@ -3690,7 +3695,7 @@ static SparkStatus D41Fp8SliceAt(D41ModelState *state, const D41PackEntry *entry
 		uint8_t *row_scale = state->fp8_side + *cursor;
 		uint8_t *weight = whole_rows != 0u ? (uint8_t *)0 : row_scale + scale_bytes;
 		uint16_t *wide = widen != 0u ? (uint16_t *)(row_scale + scale_bytes + weight_bytes) : (uint16_t *)0;
-		D41Fp8SliceKernel<<<rows, D41_THREADS>>>((const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, wide, entry->columns,
+		LM_LAUNCH((D41Fp8SliceKernel), rows, D41_THREADS, 0, 0, (const uint8_t *)payload, (const uint8_t *)scale, weight, row_scale, wide, entry->columns,
 			row_first, column_first, columns);
 		out->scale = row_scale;
 		out->weight = whole_rows != 0u ? (const uint8_t *)payload + (uint64_t)row_first * entry->columns : weight;
@@ -3766,7 +3771,7 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		{
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u carries %u attention sinks, not all %u\n", index, D41_ENTRY(ATTN_SINK, index)->columns,
 				D41_HEADS);
-			return SPARK_STATUS_SCHEMA_ERROR;
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
 		layer->group_sink = layer->sink + (uint64_t)(D41_ATTENTION_RANK(state) / 2u) * 2u * D41_LOCAL_HEADS;
 		layer->sink += (uint64_t)D41_ATTENTION_RANK(state) * D41_LOCAL_HEADS;
@@ -3845,7 +3850,7 @@ static SparkStatus D41EngramPlane(D41ModelState *state, const D41PackEntry *entr
 		{
 			const uint64_t piece = bytes - done < chunk ? bytes - done : chunk;
 			status = D41ReadFile(state->engram_path, offset + done, bounce, piece);
-			if ( status == SPARK_STATUS_OK && cudaMemcpy(target + done, bounce, (size_t)piece, cudaMemcpyHostToDevice) != cudaSuccess )
+			if ( status == SPARK_STATUS_OK && SparkGpuMemcpy(target + done, bounce, (size_t)piece, SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 				status = SPARK_STATUS_IO_ERROR;
 		}
 		free(bounce);
@@ -3925,25 +3930,25 @@ static SparkStatus D41EngramBuffers(D41ModelState *state)
 	const uint64_t rows = (uint64_t)state->max_rows * D41_ENGRAM_COLUMNS * D41_ENGRAM_HEAD_DIM;
 	state->engram_calls = (D41EngramCall *)calloc(2u * ((size_t)state->max_rows + 1u), sizeof(D41EngramCall));
 	if ( state->engram_calls == 0 ||
-		cudaHostAlloc((void **)&state->engram_ids_host, ids, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
-		cudaHostAlloc((void **)&state->engram_rows_host, rows, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+		SparkGpuHostAlloc((void **)&state->engram_ids_host, ids, SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS ||
+		SparkGpuHostAlloc((void **)&state->engram_rows_host, rows, SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memset(state->engram_ids_host, 0, ids);
 	memset(state->engram_rows_host, 0, rows);
-	if ( cudaHostGetDevicePointer((void **)&state->engram_ids, state->engram_ids_host, 0u) != cudaSuccess ||
-		cudaHostGetDevicePointer((void **)&state->engram_rows, state->engram_rows_host, 0u) != cudaSuccess )
+	if ( SparkGpuHostGetDevicePointer((void **)&state->engram_ids, state->engram_ids_host, 0u) != SPARK_GPU_SUCCESS ||
+		SparkGpuHostGetDevicePointer((void **)&state->engram_rows, state->engram_rows_host, 0u) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( state->max_rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS )
 		return SPARK_STATUS_OK;
 	for ( uint32_t which = 0u; which < 2u; ++which )
 	{
-		if ( cudaHostAlloc((void **)&state->engram_ahead_ids_host[which], ids, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess ||
-			cudaHostAlloc((void **)&state->engram_ahead_rows_host[which], rows, cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+		if ( SparkGpuHostAlloc((void **)&state->engram_ahead_ids_host[which], ids, SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS ||
+			SparkGpuHostAlloc((void **)&state->engram_ahead_rows_host[which], rows, SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		memset(state->engram_ahead_ids_host[which], 0, ids);
 		memset(state->engram_ahead_rows_host[which], 0, rows);
-		if ( cudaHostGetDevicePointer((void **)&state->engram_ahead_ids[which], state->engram_ahead_ids_host[which], 0u) != cudaSuccess ||
-			cudaHostGetDevicePointer((void **)&state->engram_ahead_rows[which], state->engram_ahead_rows_host[which], 0u) != cudaSuccess )
+		if ( SparkGpuHostGetDevicePointer((void **)&state->engram_ahead_ids[which], state->engram_ahead_ids_host[which], 0u) != SPARK_GPU_SUCCESS ||
+			SparkGpuHostGetDevicePointer((void **)&state->engram_ahead_rows[which], state->engram_ahead_rows_host[which], 0u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	pthread_mutex_init(&state->engram_ahead.lock, 0);
@@ -4009,8 +4014,8 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 				separate += bytes[m];
 		}
 	state->cells_bytes = separate;
-	if ( (separate != 0u && cudaMalloc((void **)&state->cells, separate) != cudaSuccess) ||
-		(in_place != 0u && cudaMalloc((void **)&scratch, bytes[0] > bytes[1] ? bytes[0] : bytes[1]) != cudaSuccess) )
+	if ( (separate != 0u && SparkGpuMalloc((void **)&state->cells, separate) != SPARK_GPU_SUCCESS) ||
+		(in_place != 0u && SparkGpuMalloc((void **)&scratch, bytes[0] > bytes[1] ? bytes[0] : bytes[1]) != SPARK_GPU_SUCCESS) )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the expert cells could not be allocated\n", (unsigned long long)separate);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -4027,7 +4032,7 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 			if ( target != 0 )
 			{
 				const uint64_t payload_bytes = (uint64_t)groups * rows[m] * columns[m] / 2u;
-				if ( cudaMemcpy(scratch, target, bytes[m], cudaMemcpyDeviceToDevice) != cudaSuccess ||
+				if ( SparkGpuMemcpy(scratch, target, bytes[m], SPARK_GPU_COPY_DEVICE_TO_DEVICE) != SPARK_GPU_SUCCESS ||
 					LmCellPackMxfp4(scratch, scratch + payload_bytes, target, groups, rows[m], columns[m], 0) != LM_LAUNCH_OK )
 					SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			}
@@ -4045,7 +4050,7 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 	if ( D41_BACKUP_LAYERS != 0u && whole != 0u )
 	{
 		const uint64_t g13 = bytes[0] / groups, g2 = bytes[1] / groups, layer_bytes = (uint64_t)D41_BACKUP_COPIES * D41_LOCAL_EXPERTS * (g13 + g2);
-		if ( cudaMalloc((void **)&state->backup_cells, (uint64_t)D41_BACKUP_LAYERS * layer_bytes) != cudaSuccess )
+		if ( SparkGpuMalloc((void **)&state->backup_cells, (uint64_t)D41_BACKUP_LAYERS * layer_bytes) != SPARK_GPU_SUCCESS )
 		{
 			state->backup_cells = 0;
 			fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for backup expert copies could not be allocated\n",
@@ -4061,10 +4066,10 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 		state->backup_group2 = g2;
 		state->backup_filled = 0u;
 	}
-	if ( cudaDeviceSynchronize() != cudaSuccess )
+	if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( scratch != 0 )
-		(void)cudaFree(scratch);
+		(void)SparkGpuFree(scratch);
 	fprintf(stderr, "DSV41-CELLS rank=%u experts=%s in_place_bytes=%llu separate_bytes=%llu\n", state->tp_rank, whole != 0u ? "whole" : "slices",
 		(unsigned long long)in_place, (unsigned long long)state->cells_bytes);
 	return SPARK_STATUS_OK;
@@ -4089,13 +4094,13 @@ inline SparkStatus D41Cuda::Bind(void *model, SparkWeightdLazyPack *lazy_pack, S
 		return status;
 	state->fp8_side_bytes = bytes;
 	state->engram_resident_bytes = resident;
-	if ( resident != 0u && cudaMalloc((void **)&state->engram_resident, resident) != cudaSuccess )
+	if ( resident != 0u && SparkGpuMalloc((void **)&state->engram_resident, resident) != SPARK_GPU_SUCCESS )
 	{
 		state->engram_resident = 0;
 		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the engram scales and projections could not be allocated\n", (unsigned long long)resident);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( cudaMalloc((void **)&state->fp8_side, bytes) != cudaSuccess )
+	if ( SparkGpuMalloc((void **)&state->fp8_side, bytes) != SPARK_GPU_SUCCESS )
 	{
 		state->fp8_side = 0;
 		fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for the fp8 row scales, slices and bf16 widenings could not be allocated\n", (unsigned long long)bytes);
@@ -4113,36 +4118,36 @@ inline SparkStatus D41Cuda::Bind(void *model, SparkWeightdLazyPack *lazy_pack, S
 	status = D41PackCells(state, lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( cudaHostAlloc((void **)&state->host_error, sizeof(LmKvAccessError), cudaHostAllocPortable | cudaHostAllocMapped) != cudaSuccess )
+	if ( SparkGpuHostAlloc((void **)&state->host_error, sizeof(LmKvAccessError), SPARK_GPU_HOST_ALLOC_PORTABLE | SPARK_GPU_HOST_ALLOC_MAPPED) != SPARK_GPU_SUCCESS )
 	{
 		state->host_error = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	memset(state->host_error, 0, sizeof(LmKvAccessError));
-	if ( D41_ROWS && cudaHostAlloc((void **)&state->exchange_counts_host, 3u * D41_TP * D41_TP * sizeof(uint32_t), cudaHostAllocPortable) != cudaSuccess )
+	if ( D41_ROWS && SparkGpuHostAlloc((void **)&state->exchange_counts_host, 3u * D41_TP * D41_TP * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_PORTABLE) != SPARK_GPU_SUCCESS )
 	{
 		state->exchange_counts_host = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( D41_ROWS && cudaHostAlloc((void **)&state->exchange_totals_host, sizeof(D41Totals) + (uint64_t)D41_BACKUP_COPIES * D41_TP * D41_EXPERTS * sizeof(uint16_t),
-		cudaHostAllocPortable) != cudaSuccess )
+	if ( D41_ROWS && SparkGpuHostAlloc((void **)&state->exchange_totals_host, sizeof(D41Totals) + (uint64_t)D41_BACKUP_COPIES * D41_TP * D41_EXPERTS * sizeof(uint16_t),
+		SPARK_GPU_HOST_ALLOC_PORTABLE) != SPARK_GPU_SUCCESS )
 	{
 		state->exchange_totals_host = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	state->exchange_quota_host = D41_ROWS ? (uint16_t *)(state->exchange_totals_host + 1) : 0;
-	if ( D41_ROWS && cudaEventCreateWithFlags(&state->counts_ready, cudaEventDisableTiming) != cudaSuccess )
+	if ( D41_ROWS && SparkGpuEventCreateWithFlags(&state->counts_ready, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS )
 	{
 		state->counts_ready = 0;
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( D41_ROWS && (cudaStreamCreateWithFlags(&state->shared_stream, cudaStreamNonBlocking) != cudaSuccess ||
-		cudaEventCreateWithFlags(&state->shared_fork, cudaEventDisableTiming) != cudaSuccess ||
-		cudaEventCreateWithFlags(&state->shared_join, cudaEventDisableTiming) != cudaSuccess) )
+	if ( D41_ROWS && (SparkGpuStreamCreateWithFlags(&state->shared_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+		SparkGpuEventCreateWithFlags(&state->shared_fork, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS ||
+		SparkGpuEventCreateWithFlags(&state->shared_join, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cudaHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != cudaSuccess )
+	if ( SparkGpuHostGetDevicePointer((void **)&state->kv_error, state->host_error, 0u) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( cudaDeviceSynchronize() != cudaSuccess )
+	if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 	{
 		fprintf(stderr, "sparkpipe_dsv41_flash: the %llu-byte rank state could not be allocated\n", (unsigned long long)state->arena_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -4160,9 +4165,9 @@ inline SparkStatus D41Cuda::Upload(D41ModelState *state)
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	for ( uint32_t row = 0u; row < state->max_rows; ++row )
 		init[(uint64_t)row * D41K_HC] = 1.0f;
-	const cudaError_t error = cudaMemcpy(state->pre_init, init, (size_t)state->max_rows * D41K_HC * sizeof(float), cudaMemcpyHostToDevice);
+	const SparkGpuError error = SparkGpuMemcpy(state->pre_init, init, (size_t)state->max_rows * D41K_HC * sizeof(float), SPARK_GPU_COPY_HOST_TO_DEVICE);
 	free(init);
-	if ( error != cudaSuccess )
+	if ( error != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
 }

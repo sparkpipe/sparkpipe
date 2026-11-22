@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 
 typedef struct SparkDeviceSlot
@@ -96,7 +97,7 @@ SparkStatus SparkDeviceInitialize(const SparkDeviceConfiguration *configuration)
 	status = SparkDeviceBackendInitialize(configuration != 0 ? configuration : &defaults,&device_properties);
 	if ( status == SPARK_STATUS_OK )
 	{
-		device_initialized = 1u;
+		__atomic_store_n(&device_initialized,1u,__ATOMIC_RELEASE);
 		__atomic_store_n(&device_faulted,0u,__ATOMIC_SEQ_CST);
 	}
 	pthread_mutex_unlock(&device_mutex);
@@ -133,7 +134,7 @@ SparkStatus SparkDeviceShutdown(void)
 	device_free_slots = 0;
 	device_index = 0;
 	device_slot_count = device_slot_capacity = device_free_count = device_index_count = 0u;
-	device_initialized = 0u;
+	__atomic_store_n(&device_initialized,0u,__ATOMIC_RELEASE);
 	pthread_mutex_unlock(&device_mutex);
 	return(status);
 }
@@ -604,6 +605,130 @@ uint32_t SparkDeviceSegmented(SparkDeviceRange range)
 	return(segmented);
 }
 
+static SparkStatus DeviceSharedReady(const char *operation, const char *owner)
+{
+	if ( __atomic_load_n(&device_initialized,__ATOMIC_ACQUIRE) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,operation,owner,0,"device is not initialized"));
+	if ( SparkDeviceFaulted() != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,owner,0,"device faulted earlier; every operation fails"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceThreadInstance(SparkDeviceInstance *instance)
+{
+	SparkStatus status;
+	if ( instance == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_instance","",0,"needs an output"));
+	*instance = 0u;
+	status = DeviceSharedReady("thread_instance","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendThreadInstance(instance));
+}
+
+SparkStatus SparkDeviceThreadBind(SparkDeviceInstance instance)
+{
+	SparkStatus status;
+	if ( instance == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"needs an instance that SparkDeviceThreadInstance returned"));
+	status = DeviceSharedReady("thread_bind","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendThreadBind(instance));
+}
+
+SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	SparkStatus status;
+	if ( bytes != 0 )
+		*bytes = 0u;
+	if ( bytes == 0 || (granularity != SPARK_DEVICE_GRANULARITY_MINIMUM && granularity != SPARK_DEVICE_GRANULARITY_RECOMMENDED) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_granularity","",0,"needs an output and the minimum or recommended granularity"));
+	status = DeviceSharedReady("memory_granularity","");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceBackendMemoryGranularity(granularity,bytes);
+	if ( status == SPARK_STATUS_OK && (*bytes == 0u || (*bytes & (*bytes - 1u)) != 0u) )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_granularity","",0,"the backend reported a granularity that is not a power of two");
+	return(status);
+}
+
+SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	SparkStatus status;
+	if ( memory != 0 )
+		*memory = 0u;
+	if ( memory == 0 || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"needs an output and a size"));
+	status = DeviceSharedReady("memory_create",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryCreate(memory,bytes,owner));
+}
+
+SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	SparkStatus status;
+	if ( memory == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_release","",0,"needs a memory handle"));
+	status = DeviceSharedReady("memory_release","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryRelease(memory));
+}
+
+SparkStatus SparkDeviceMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	SparkStatus status;
+	if ( fd != 0 )
+		*fd = -1;
+	if ( memory == 0u || fd == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_export","",0,"needs a memory handle and an output"));
+	status = DeviceSharedReady("memory_export","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryExport(memory,fd));
+}
+
+SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	SparkStatus status;
+	if ( memory != 0 )
+		*memory = 0u;
+	if ( memory == 0 || fd < 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_import",owner,0,"needs an output and an exported file descriptor"));
+	status = DeviceSharedReady("memory_import",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryImport(memory,fd,owner));
+}
+
+SparkStatus SparkDeviceAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	SparkStatus status;
+	if ( address != 0 )
+		*address = 0u;
+	if ( address == 0 || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_reserve",owner,0,"needs an output and a size"));
+	status = DeviceSharedReady("address_reserve",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendAddressReserve(address,bytes,owner));
+}
+
+SparkStatus SparkDeviceAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_release","",0,"needs a reserved range"));
+	status = DeviceSharedReady("address_release","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendAddressRelease(address,bytes));
+}
+
+SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	const uint32_t device_access = SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE;
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u || memory == 0u || (access & SPARK_DEVICE_ACCESS_DEVICE_READ) == 0u || (access & ~device_access) != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"needs a reserved range, a memory handle and device read or read-write access"));
+	status = DeviceSharedReady("memory_map","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryMap(address,bytes,memory,offset,access));
+}
+
+SparkStatus SparkDeviceMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_unmap","",0,"needs a mapped range"));
+	status = DeviceSharedReady("memory_unmap","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryUnmap(address,bytes));
+}
+
 static uint32_t DeviceDeviceSide(const SparkDeviceAllocation *allocation)
 {
 	return(allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE ? 1u : 0u);
@@ -770,10 +895,41 @@ SparkStatus SparkDeviceQueueCreate(SparkDeviceQueue **queue, const char *owner)
 	return(DeviceQueueOpen(queue,owner,0));
 }
 
+static SparkDeviceQueue *DeviceQueueListed(const void *native)
+{
+	SparkDeviceQueue *queue;
+	for ( queue = device_queues; queue != 0; queue = queue->next )
+		if ( (const void *)queue == native )
+			return(queue);
+	return(0);
+}
+
 SparkStatus SparkDeviceQueueAdopt(SparkDeviceQueue **queue, void *native, const char *owner)
 {
-	if ( native == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"needs the backend's own queue to adopt"));
+	SparkDeviceQueue *listed = 0;
+	SparkStatus status;
+	if ( native == 0 || queue == 0 )
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"needs an output and the backend's own queue to adopt");
+		SPARK_FAIL(refused);
+	}
+	pthread_mutex_lock(&device_mutex);
+	status = DeviceReady("queue_adopt",owner);
+	if ( status == SPARK_STATUS_OK && (listed = DeviceQueueListed(native)) != 0 )
+	{
+		if ( listed == device_sync_queue )
+			status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"queue_adopt",owner,0,"the synchronous copy queue belongs to the device");
+		else
+		{
+			listed->borrows++;
+			*queue = listed;
+		}
+	}
+	pthread_mutex_unlock(&device_mutex);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	if ( listed != 0 )
+		return(SPARK_STATUS_OK);
 	return(DeviceQueueOpen(queue,owner,native));
 }
 
@@ -812,7 +968,18 @@ SparkStatus SparkDeviceQueueCapture(SparkDeviceQueue *queue, uint32_t capturing)
 
 SparkStatus SparkDeviceQueueDestroy(SparkDeviceQueue *queue)
 {
-	SparkStatus status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
+	SparkStatus status;
+	uint32_t borrowed = 0u;
+	pthread_mutex_lock(&device_mutex);
+	if ( DeviceQueueListed(queue) != 0 && queue->borrows != 0u )
+	{
+		queue->borrows--;
+		borrowed = 1u;
+	}
+	pthread_mutex_unlock(&device_mutex);
+	if ( borrowed != 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	pthread_mutex_lock(&device_mutex);
@@ -1083,29 +1250,53 @@ SparkStatus SparkDeviceLibraryUnload(SparkDeviceLibrary *library)
 	return(status);
 }
 
+static SparkStatus DeviceKernelName(SparkDeviceLibrary *library, const char *name, char stored[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	char text[256];
+	if ( strlen(name) <= SPARK_DEVICE_KERNEL_NAME_LIMIT )
+	{
+		memcpy(stored,name,strlen(name) + 1u);
+		return(SPARK_STATUS_OK);
+	}
+	if ( DeviceLibraryLive(library) != 0 && SparkDeviceBackendKernelShortName(library,name,stored) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	snprintf(text,sizeof(text),"a kernel name of %zu bytes is over %u and names no kernel of the library: %.40s",strlen(name),SPARK_DEVICE_KERNEL_NAME_LIMIT,name);
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",0,0,text);
+		SPARK_FAIL(refused);
+	}
+}
+
 SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibrary *library, const char *name)
 {
+	char stored[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u];
 	SparkDeviceKernel *created = 0;
 	SparkStatus status;
-	if ( kernel == 0 || name == 0 || name[0] == '\0' || strlen(name) >= SPARK_DEVICE_KERNEL_NAME_BYTES )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name under 64 bytes"));
-	*kernel = 0;
+	if ( kernel != 0 )
+		*kernel = 0;
+	if ( kernel == 0 || name == 0 || name[0] == '\0' )
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name");
+		SPARK_FAIL(refused);
+	}
 	pthread_mutex_lock(&device_mutex);
-	status = DeviceReady("kernel_create",name);
+	status = DeviceReady("kernel_create",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceKernelName(library,name,stored);
 	if ( status == SPARK_STATUS_OK && DeviceLibraryLive(library) == 0 )
-		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"not a loaded library");
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",stored,0,"not a loaded library");
 	if ( status == SPARK_STATUS_OK && (created = (SparkDeviceKernel *)calloc(1u,sizeof(*created))) == 0 )
-		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel record");
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",stored,0,"out of host memory for the kernel record");
 	if ( status == SPARK_STATUS_OK )
 	{
 		created->id = device_next_kernel_id++;
 		created->library = library;
-		DeviceCopyText(created->name,sizeof(created->name),name);
-		status = SparkDeviceBackendKernelCreate(created,name);
+		memcpy(created->name,stored,sizeof(created->name));
+		status = SparkDeviceBackendKernelCreate(created,stored);
 		if ( status == SPARK_STATUS_OK && (created->info.max_threads == 0u || created->info.simd_width == 0u) )
 		{
 			SparkDeviceBackendKernelDestroy(created);
-			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",name,0,"the backend reported no thread limit for the kernel");
+			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",stored,0,"the backend reported no thread limit for the kernel");
 		}
 		if ( status != SPARK_STATUS_OK )
 			free(created);
@@ -1171,8 +1362,15 @@ static SparkStatus DeviceLaunchShape(const SparkDeviceKernel *kernel, const Spar
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more threads per group than the kernel allows"));
 	if ( (uint64_t)launch->shared_bytes + kernel->info.static_shared_bytes > device_properties.max_shared_bytes )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"more group-shared memory than the device has"));
-	if ( launch->constant_bytes > SPARK_DEVICE_MAX_CONSTANT_BYTES || (launch->constant_bytes != 0u) != (launch->constants != 0) )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"constants need a pointer and at most 4096 bytes"));
+	if ( launch->constant_bytes > device_properties.max_constant_bytes || (launch->constant_bytes != 0u) != (launch->constants != 0) )
+	{
+		char text[128];
+		snprintf(text,sizeof(text),"constants need a pointer and at most the backend's %u bytes",device_properties.max_constant_bytes);
+		{
+			const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,text);
+			SPARK_FAIL(refused);
+		}
+	}
 	if ( launch->binding_count > SPARK_DEVICE_MAX_BINDINGS || (launch->binding_count != 0u && launch->bindings == 0) )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"more than 30 bindings or a missing binding table"));
 	return(SPARK_STATUS_OK);

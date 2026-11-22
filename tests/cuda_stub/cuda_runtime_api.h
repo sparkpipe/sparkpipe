@@ -6,7 +6,21 @@
 extern "C" {
 #endif
 
+#define CUDART_VERSION 13000
+
 typedef int cudaError_t;
+
+enum cudaGetDriverEntryPointFlags
+{
+    cudaEnableDefault = 0x0
+};
+
+enum cudaDriverEntryPointQueryResult
+{
+    cudaDriverEntryPointSuccess = 0,
+    cudaDriverEntryPointSymbolNotFound = 1,
+    cudaDriverEntryPointVersionNotSufficent = 2
+};
 typedef void *cudaStream_t;
 typedef void *cudaEvent_t;
 typedef void *cudaGraph_t;
@@ -43,9 +57,28 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorNotPermitted 800
 #define cudaErrorNotSupported 801
 #define cudaErrorUnknown 999
-#define cudaDevAttrMultiProcessorCount 16
-#define cudaDevAttrManagedMemory 83
-#define cudaDevAttrPageableMemoryAccess 88
+enum cudaDeviceAttr
+{
+    cudaDevAttrMultiProcessorCount = 16,
+    cudaDevAttrManagedMemory = 83,
+    cudaDevAttrPageableMemoryAccess = 88,
+    cudaDevAttrCanUseHostPointerForRegisteredMem = 91,
+    cudaDevAttrPageableMemoryAccessUsesHostPageTables = 100
+};
+
+enum cudaFuncAttribute
+{
+    cudaFuncAttributeMaxDynamicSharedMemorySize = 8
+};
+
+enum cudaStreamCaptureStatus
+{
+    cudaStreamCaptureStatusNone = 0,
+    cudaStreamCaptureStatusActive = 1,
+    cudaStreamCaptureStatusInvalidated = 2
+};
+
+struct cudaFuncAttributes;
 #define cudaStreamDefault 0u
 #define cudaStreamNonBlocking 1u
 #define cudaEventDefault 0u
@@ -53,6 +86,7 @@ typedef enum cudaStreamCaptureMode
 #define cudaHostAllocDefault 0u
 #define cudaHostAllocPortable 1u
 #define cudaHostAllocMapped 2u
+#define cudaHostRegisterDefault 0u
 #define cudaHostRegisterPortable 1u
 #define cudaHostRegisterMapped 2u
 #define cudaHostRegisterReadOnly 8u
@@ -72,6 +106,14 @@ struct cudaDeviceProp
 };
 
 cudaError_t cudaMalloc(void **pointer, size_t bytes);
+cudaError_t cudaMallocHost(void **pointer, size_t bytes);
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes);
+cudaError_t cudaPeekAtLastError(void);
+cudaError_t cudaFuncSetAttribute(const void *function, enum cudaFuncAttribute attribute, int value);
+cudaError_t cudaFuncGetAttributes(struct cudaFuncAttributes *attributes, const void *function);
+cudaError_t cudaOccupancyMaxActiveBlocksPerMultiprocessor(int *blocks, const void *function, int block_threads, size_t shared_bytes);
+cudaError_t cudaStreamIsCapturing(cudaStream_t stream, enum cudaStreamCaptureStatus *status);
+cudaError_t cudaMemset2DAsync(void *pointer, size_t pitch, int value, size_t width, size_t height, cudaStream_t stream);
 cudaError_t cudaMallocManaged(void **pointer, size_t bytes, unsigned int flags);
 cudaError_t cudaGetDeviceCount(int *count);
 cudaError_t cudaSetDevice(int device);
@@ -287,6 +329,8 @@ cudaError_t cudaGraphExecHostNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t 
 cudaError_t cudaGetFuncBySymbol(cudaFunction_t *function,const void *symbol);
 cudaError_t cudaPointerGetAttributes(struct cudaPointerAttributes *attributes,const void *pointer);
 cudaError_t cudaGetLastError(void);
+cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,unsigned int cuda_version,unsigned long long flags,
+    enum cudaDriverEntryPointQueryResult *status);
 #include <stdint.h>
 
 void spark_stub_cuda_reset_faults(void);
@@ -301,6 +345,8 @@ uint32_t spark_stub_cuda_stream_wait_calls(void);
 cudaStream_t spark_stub_cuda_last_wait_stream(void);
 cudaEvent_t spark_stub_cuda_last_wait_event(void);
 unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream);
+void spark_stub_cuda_discrete_ordering(uint32_t enabled);
+uint32_t spark_stub_cuda_pending_ops(void);
 void spark_stub_cuda_event_pending(uint32_t pending);
 void spark_stub_cuda_event_record_failure(uint32_t failure);
 extern uint32_t cuda_stub_stream_sync_calls;

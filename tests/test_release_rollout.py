@@ -40,6 +40,17 @@ for path in "$@"; do case "$path" in -*) ;; *) echo "fake 999999999 1 ${FAKE_DF_
 }
 
 
+def release_rows():
+    text = SCRIPT.read_text()
+    models = re.search(r'^MODELS="([^"]*)"', text, re.M).group(1).split()
+    return [subprocess.run([sys.executable, str(ROOT / "tools" / "lane_config.py"), "release-row", model], capture_output=True, text=True, check=True).stdout.split()
+            for model in models]
+
+
+def kernels_of(directory):
+    return {path.name: path.read_text() for path in sorted(directory.iterdir())} if directory.is_dir() else None
+
+
 def lanes():
     text = SCRIPT.read_text()
     models = re.search(r'^MODELS="([^"]*)"', text, re.M).group(1).split()
@@ -203,8 +214,9 @@ def backup(free_kib):
     return body
 
 
-def install(fail_host, process=None):
+def install(fail_host, process=None, without_kernels=False):
     def body(work, fleet, state, model_lanes, extra, old_wd):
+        rows = release_rows()
         text = SCRIPT.read_text()
         libraries = sorted({model.get("firmware_adapter", model["adapter"]) for model in stage_lane.MODELS.values()})
         firmware = work / "fw"
@@ -219,6 +231,14 @@ def install(fail_host, process=None):
         build_directory.mkdir()
         for name in ["sparkpipe_model_api", "sparkpipe_tokenize_prompt"] + libraries:
             (build_directory / name).write_text(f"hub {name}")
+        for name in libraries:
+            for directory, origin in ((firmware, "release"), (build_directory, "hub")):
+                kernels = directory / f"{name}.kernels"
+                kernels.mkdir()
+                (kernels / "stage_runner.cubin").write_text(f"{origin} {name} cubin")
+                (kernels / "stage_runner.manifest").write_text(f"{origin} {name} manifest")
+        if without_kernels:
+            shutil.rmtree(firmware / f"{rows[0][1]}.kernels")
         (build_directory / "runtime_libs").mkdir()
         (build_directory / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("hub device library")
         for index in range(16):
@@ -227,8 +247,16 @@ def install(fail_host, process=None):
                 shutil.copytree(firmware, fleet / host / "rp-release-abcdef123")
             for lane in [lane for lane, _ in model_lanes] + extra:
                 (fleet / host / lane / "root" / "lib").mkdir(parents=True, exist_ok=True)
+            for row in rows:
+                stale = fleet / host / row[0] / "root" / "lib" / f"{row[2]}.kernels"
+                stale.mkdir(parents=True, exist_ok=True)
+                (stale / "stale.cubin").write_text("stale cubin")
         for _, api in model_lanes:
             (fleet / "rtx5090" / api / "runtime" / "lib").mkdir(parents=True, exist_ok=True)
+        for row in rows:
+            stale = fleet / "rtx5090" / row[3] / "runtime" / "lib" / f"{row[2]}.kernels"
+            stale.mkdir(parents=True, exist_ok=True)
+            (stale / "stale.cubin").write_text("stale cubin")
         holder = None
         if process is not None:
             holder = subprocess.Popen(["bash", "-c", f'exec -a "{process}" sleep 300'])
@@ -240,7 +268,14 @@ def install(fail_host, process=None):
                 holder.wait()
         installed = [index for index in range(16)
                      if (fleet / f"spark{HEX[index]}" / model_lanes[0][0] / "root" / "bin" / "sparkpipe_model_residentd").exists()]
-        if process is not None and process.startswith("./bin/"):
+        if without_kernels:
+            check(result.returncode != 0, "install exited 0 with an adapter's kernels missing from the release", result)
+            check("INSTALL-FAILED" in result.stdout, "install did not report the missing kernels", result)
+            check(installed == [], "install changed a node before finding an adapter's kernels missing", result)
+            for index in range(16):
+                stale = fleet / f"spark{HEX[index]}" / rows[0][0] / "root" / "lib" / f"{rows[0][2]}.kernels"
+                check(kernels_of(stale) == {"stale.cubin": "stale cubin"}, f"spark{HEX[index]} lost its kernels before the install refused", result)
+        elif process is not None and process.startswith("./bin/"):
             check(result.returncode != 0, "install ran while a residentd was running", result)
             check("residentds running" in result.stdout, "install did not name the running residentd", result)
             check(installed == [], "install changed a node while a residentd was running", result)
@@ -258,6 +293,14 @@ def install(fail_host, process=None):
             for _, api in model_lanes:
                 check((fleet / "rtx5090" / api / "bin" / "sparkpipe_model_api").read_text() == "hub sparkpipe_model_api",
                       f"hub {api} was not installed", result)
+            for lane, firmware_name, name, api in (row[:4] for row in rows):
+                wanted = {"stage_runner.cubin": f"release {firmware_name} cubin", "stage_runner.manifest": f"release {firmware_name} manifest"}
+                for index in range(16):
+                    got = kernels_of(fleet / f"spark{HEX[index]}" / lane / "root" / "lib" / f"{name}.kernels")
+                    check(got == wanted, f"spark{HEX[index]} {lane} lib/{name}.kernels holds {got}, not exactly the release's kernels", result)
+                hub_wanted = {"stage_runner.cubin": f"hub {firmware_name} cubin", "stage_runner.manifest": f"hub {firmware_name} manifest"}
+                got = kernels_of(fleet / "rtx5090" / api / "runtime" / "lib" / f"{name}.kernels")
+                check(got == hub_wanted, f"hub {api} runtime/lib/{name}.kernels holds {got}, not exactly the hub build's kernels", result)
     return body
 
 
@@ -413,6 +456,7 @@ fleet_case("backup puts the hub API backups on the workspace volume, not in the 
 fleet_case("backup refuses before any change when the hub workspace is short of space", backup(1048576))
 fleet_case("install puts one identical release on all 16 nodes and the hub", install(""))
 fleet_case("install fails when one node has no staged release", install("spark9"))
+fleet_case("install refuses before changing a node when the release lacks an adapter's kernels", install("", without_kernels=True))
 fleet_case("install is not blocked by a process that only names the residentd binary",
            install("", "pgrep -f bin/sparkpipe_model_residentd"))
 fleet_case("records frees each lane's current pack on all 16 nodes, then writes every lane's rendered files and installs and restarts the release's controller config", records(""))
@@ -432,4 +476,4 @@ fleet_case("restart stops and starts a serving API, waits for every rank, and co
 fleet_case("restart fails without capturing when the API does not reach every rank", restart(15, 0))
 fleet_case("restart fails when the outputs after the restart differ", restart(16, 1))
 fleet_case("restart fails when the capture after the restart fails", restart(16, 0, 3))
-print("PASS test_release_rollout: stage copies the release to the hub once and needs all 16 nodes verified; roots copies a renumbered record\'s root from the running release without KV files or logs and backup refuses until every root exists; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one); records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready; restart stops and starts a serving API with the controller's commands, waits until its health shows every rank, captures two prompts and compares them with the capture before it, and fails on an API that does not come back, a failed capture or different outputs")
+print("PASS test_release_rollout: stage copies the release to the hub once and needs all 16 nodes verified; roots copies a renumbered record\'s root from the running release without KV files or logs and backup refuses until every root exists; backup copies the hub API dirs to the workspace volume and refuses when it is short of space; install needs one identical result from all 16 and no running residentd (a command that only names the binary is not one), puts each adapter's kernels directory beside it under the lane's adapter name on every node and the hub, with the old one's files gone, and refuses before changing a node when the release lacks an adapter's kernels; records frees the cold arena of each lane's current pack on all 16 nodes before it pushes that lane's record, stops before any push when a node reports it busy, and installs and restarts the release's controller config; rollback refuses an incomplete backup before changing anything, restores every lane, hub API, weightd_warm and the controller config from a complete one, and never activates on an old weightd that is not ready; restart stops and starts a serving API with the controller's commands, waits until its health shows every rank, captures two prompts and compares them with the capture before it, and fails on an API that does not come back, a failed capture or different outputs")

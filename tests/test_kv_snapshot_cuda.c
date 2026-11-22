@@ -316,6 +316,26 @@ static int32_t CudaPrefillPrompt(CudaEngine *engine,float *logits,uint64_t *pref
 	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -10);
 }
 
+static int32_t CudaReadPrompt(CudaEngine *engine)
+{
+	SparkModelDriverCacheLane lane;
+	SparkModelDriverAdmissionRequest request;
+	memset(&lane,0,sizeof(lane));
+	lane.sequence_id = 3u;
+	lane.request_generation = 1u;
+	lane.step_generation = 1u;
+	lane.resident_sequence_slot = 1u;
+	lane.sequence_position = lane.context_token_count = CUDA_PROMPT_TOKENS;
+	lane.flags = SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX;
+	lane.prefix_token_count = CUDA_PROMPT_TOKENS;
+	CudaIdentity(&lane.prefix_identity,CUDA_PROMPT_TOKENS);
+	CudaRequest(&request,&lane,9100u,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE,0u);
+	if ( SparkKvLaneTransactionsAdmit(&engine->transactions,&request) != SPARK_STATUS_OK || engine->owners[1].page_count != CUDA_PROMPT_PAGES )
+		return(-1);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_ABORT;
+	return(SparkKvLaneTransactionsAdmit(&engine->transactions,&request) == SPARK_STATUS_OK ? 0 : -2);
+}
+
 static int32_t CudaRestorePrompt(CudaEngine *engine,float *logits,uint64_t *restore_ns)
 {
 	SparkModelDriverCacheLane lane;
@@ -396,7 +416,8 @@ int main(int argc,char **argv)
 	CHECK(SparkKvSnapshotStoreOpen(&store,directory,&ledger,1ull << 30u) == SPARK_STATUS_OK);
 	CHECK(CudaEngineOpen(&source,&store) == 0);
 	result = CudaPrefillPrompt(&source,logits_source,&prefill_ns);
-	CHECK(result == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
+	CHECK(result == 0 && source.snapshot.save_page_count == 0u);
+	CHECK(CudaReadPrompt(&source) == 0 && SparkKvPageCacheSaveDrain(&source.cache) == SPARK_STATUS_OK && SparkKvSnapshotFlush(&store) == SPARK_STATUS_OK);
 	states = CudaSavedStates(&source);
 	CHECK(states != 0u && source.snapshot.save_page_count == CUDA_PROMPT_PAGES + states && source.snapshot.save_failure_count == 0u &&
 		store.file_count == CUDA_PROMPT_PAGES + states && store.write_failure_count == 0u);

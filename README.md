@@ -580,13 +580,18 @@ objects with residency transitions. Kernels launch through the same layer:
 a backend loads a kernel library and launches kernels by name with
 buffer-range bindings, which the layer checks against the kernel's limits
 and keeps alive until the work that reads them completes
-([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)). Processes share device
+memory through the same layer: exported by file descriptor, mapped into each
+process's own address range, with no CPU view
+([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
 decompose hierarchically from that link matrix. The backends are:
 
 - CUDA (production);
+- nvrm (NVIDIA GPUs through the open kernel module, with no vendor user-space
+  library; [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md));
 - host (CI oracle);
 - Metal (Mac Studio);
 - ROCm.
@@ -631,6 +636,14 @@ missing, duplicated or misrouted rails.
 Capacity grows by adding nodes, storage and generated deployment plans,
 without changing the API, package identities, scheduler semantics or
 evidence rules.
+
+**Rented nodes.** A rented node boots SparkPipe's own minimal image. It
+contains Ubuntu with Canonical's kernel, NVIDIA's open GPU kernel module and
+its firmware, the in-tree NIC drivers and rdma-core, the node baseline, a
+release root and the node agent. It carries no NVIDIA user-space software. A
+dependency audit gates every hosted release root and image
+([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md),
+[`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)).
 
 **Hub.** One host outside the Sparks publishes release roots, collects node
 heartbeats and serves the model API. In the reference fleet it is an x86

@@ -20,7 +20,7 @@ the device collective and the KV binding in their configurations. A lane's
 mesh lane, rank map, expert pool cap and read-only arena share are stage
 config members (`device_collective.mesh_lane`, `device_collective.mesh_ranks`,
 `expert_pool_cap_bytes`, `weights_share`; [LANES.md](LANES.md)). The PP stage
-boundary transport (`ring/transport/rdma.cu`), loaded only for `HYBRID_TP_PP`
+boundary transport (`ring/transport/rdma.c`), loaded only for `HYBRID_TP_PP`
 adapters, reads the same socket handoff.
 
 `sparkpipe_model_api` reads nothing from the environment.

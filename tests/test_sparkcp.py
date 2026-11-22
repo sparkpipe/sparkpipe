@@ -404,6 +404,16 @@ class AgentLifetimeTest(Base):
         self.assertEqual(self.leftovers(),[])
         self.assertFalse((self.dir / "dst").exists())
 
+    def test_an_agent_exits_with_its_own_status_while_the_controller_holds_its_input(self):
+        agent = sparkcp.Agent("",sparkcp.fleet_nodes(),False,TOOL.read_bytes())
+        reply = agent.start({"role":"send","token":TOKEN,"sources":[str(self.dir / "absent")],"port":1,"addresses":[sparkcp.LOOPBACK]})
+        self.assertIn("error",reply)
+        status = agent.process.wait(timeout=30)
+        stderr = agent.process.stderr.read().decode(errors="replace")
+        agent.stop()
+        self.assertNotIn("Fatal Python error",stderr)
+        self.assertEqual(status,1,stderr)
+
 
 class CiscoPortTest(Base):
     def stub(self,host):

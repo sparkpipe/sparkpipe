@@ -45,6 +45,7 @@ struct SparkDeviceQueue
 {
 	uint64_t id;
 	uint64_t submitted;
+	uint32_t borrows;
 	void *backend;
 	SparkDeviceQueue *next;
 	char owner[SPARK_DEVICE_OWNER_BYTES];
@@ -77,19 +78,31 @@ struct SparkDeviceKernel
 	void *backend;
 	SparkDeviceKernel *next;
 	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
-	char name[SPARK_DEVICE_KERNEL_NAME_BYTES];
+	char name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u];
 };
 
 SparkStatus SparkDeviceRecordError(SparkStatus status, const char *operation, const char *owner, int32_t backend_code, const char *text);
 
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties);
 SparkStatus SparkDeviceBackendShutdown(void);
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance);
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance);
 
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation);
 SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *host);
 SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation);
 SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd, uint64_t offset);
 void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation);
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes);
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory);
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd);
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner);
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes);
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access);
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes);
 
 SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection direction,
 	const SparkDeviceAllocation *destination, uint64_t destination_offset,
@@ -114,6 +127,7 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path);
 void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library);
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name);
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u]);
 void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel);
 SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
 	SparkDeviceAllocation *const *allocations);

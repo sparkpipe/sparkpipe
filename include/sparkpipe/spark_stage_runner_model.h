@@ -116,6 +116,7 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t embed_alias_row;
 	uint32_t embed_gather;
 	uint32_t graph_ignores_gather;
+	uint32_t input_width;
 } SparkStageRunnerModelGeometry;
 
 typedef struct SparkStageRunnerDeviceWeights

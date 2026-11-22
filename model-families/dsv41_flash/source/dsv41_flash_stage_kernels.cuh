@@ -13,6 +13,8 @@
 #include "inference/kernels/ngram_hash.cuh"
 #include "inference/kernels/stream_gemm.cuh"
 #include "dsv41_flash_kernels.cuh"
+#include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define D41K_THREADS 256u
 #define D41K_HC 4u
@@ -39,7 +41,7 @@ static __global__ void D41FrequencyKernel(float *__restrict__ table, float theta
 	table[pair] = __fadd_rn(__fmul_rn(__fmul_rn(frequency, inverse_factor), __fsub_rn(1.0f, smooth)), __fmul_rn(frequency, smooth));
 }
 
-static inline cudaError_t D41LaunchFrequencies(float *table, double theta, double compress_theta, double factor, double original,
+static inline SparkGpuError D41LaunchFrequencies(float *table, double theta, double compress_theta, double factor, double original,
 	double beta_fast, double beta_slow)
 {
 	const double rope = 2.0 * D41K_ROPE_PAIRS;
@@ -48,10 +50,10 @@ static inline cudaError_t D41LaunchFrequencies(float *table, double theta, doubl
 	const double low = floor(low_raw) > 0.0 ? floor(low_raw) : 0.0;
 	const double high = ceil(high_raw) < rope - 1.0 ? ceil(high_raw) : rope - 1.0;
 	const double span = high - low > 1e-3 ? high - low : 1e-3;
-	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
-	D41FrequencyKernel<<<1, D41K_ROPE_PAIRS>>>(table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
+	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table, (float)theta, 1.0f / (float)factor, 0.0f, 0.0f, 0u);
+	LM_LAUNCH((D41FrequencyKernel), 1, D41K_ROPE_PAIRS, 0, 0, table + D41K_ROPE_PAIRS, (float)compress_theta, 1.0f / (float)factor, (float)low,
 		1.0f / (float)span, 1u);
-	return cudaGetLastError();
+	return SparkGpuGetLastError();
 }
 
 static __device__ __forceinline__ void D41RopeTurn(uint32_t position, int32_t shift, float inverse_frequency, uint32_t inverse, float *sine,
@@ -229,10 +231,10 @@ static __global__ void D41InitRecordsKernel(float *__restrict__ records, uint64_
 }
 
 static inline void D41InitRecords(float *records, uint64_t destination_stride, uint32_t rows, uint32_t heads_per_destination, uint32_t destinations,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	const uint32_t span = rows * heads_per_destination * D41K_RECORD, blocks = (span + D41K_THREADS - 1u) / D41K_THREADS;
-	D41InitRecordsKernel<<<blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream>>>(records, destination_stride, span, destinations);
+	LM_LAUNCH((D41InitRecordsKernel), blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);
 }
 
 static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,
@@ -628,27 +630,6 @@ static __global__ void D41ColumnsKernel(const uint16_t *__restrict__ source, uin
 	const uint32_t row = blockIdx.y;
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 		target[(uint64_t)row * target_stride + index] = source[(uint64_t)row * source_stride + index];
-}
-
-static __global__ void D41NaiveLinearKernel(const uint16_t *__restrict__ weight, const uint16_t *__restrict__ input, uint16_t *__restrict__ output,
-	float *__restrict__ output_f32, uint32_t input_dimension, uint32_t output_dimension)
-{
-	const uint32_t lane = threadIdx.x % 32u, warp = threadIdx.x / 32u, row = blockIdx.y;
-	const uint32_t neuron = blockIdx.x * (blockDim.x / 32u) + warp;
-	if ( neuron >= output_dimension )
-		return;
-	const uint16_t *w = weight + (uint64_t)neuron * input_dimension, *x = input + (uint64_t)row * input_dimension;
-	float total = 0.0f;
-	for ( uint32_t k = lane; k < input_dimension; k += 32u )
-		total += LmBf16ToFloat(w[k]) * LmBf16ToFloat(x[k]);
-	for ( uint32_t offset = 16u; offset != 0u; offset >>= 1u )
-		total += __shfl_down_sync(0xffffffffu, total, offset);
-	if ( lane != 0u )
-		return;
-	if ( output != 0 )
-		output[(uint64_t)row * output_dimension + neuron] = LmFloatToBf16(total);
-	if ( output_f32 != 0 )
-		output_f32[(uint64_t)row * output_dimension + neuron] = total;
 }
 
 static __global__ void D41IndexPackKernel(const uint16_t *__restrict__ query, const uint16_t *__restrict__ weight, uint16_t *__restrict__ packed,
