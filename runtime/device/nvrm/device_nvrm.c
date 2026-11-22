@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
@@ -54,6 +55,7 @@ typedef struct NvrmAllocation
 
 typedef struct NvrmQueue
 {
+	SparkNvrmWaitHistory history;
 	SparkNvrmChannel channel;
 	SparkNvrmChannel copy;
 	SparkNvrmChannel *last;
@@ -775,9 +777,15 @@ SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequen
 	SparkStatus status = SPARK_STATUS_OK;
 	int expired = 0;
 	SparkNvrmWaitBegin(&wait);
+	if ( NvrmCompletedSequence(nvrm) >= sequence )
+		return(SPARK_STATUS_OK);
+	wait.start = SparkMonotonicNs();
+	wait.predicted_ns = SparkNvrmWaitPredict(&nvrm->history);
 	while ( NvrmCompletedSequence(nvrm) < sequence && (expired = SparkNvrmWaitPace(&wait,timeout_ns)) == 0 )
 		if ( SparkNvrmWaitDue(&wait,SPARK_NVRM_WAIT_WATCH_NS) != 0 && (status = NvrmWatch(queue->id,&wait,"queue_wait")) != SPARK_STATUS_OK )
 			break;
+	if ( status == SPARK_STATUS_OK && expired == 0 )
+		SparkNvrmWaitLearn(&nvrm->history,&wait);
 	SparkNvrmWaitEnd(&wait);
 	if ( status == SPARK_STATUS_OK && expired != 0 )
 		status = NvrmWatch(queue->id,0,"queue_wait");

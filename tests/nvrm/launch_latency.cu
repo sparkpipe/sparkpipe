@@ -41,19 +41,25 @@ static int LatencyCompare(const void *a, const void *b)
 
 int main(int argc, char **argv)
 {
-	static const unsigned long long holds[] = {0ull, 20000ull, 90000ull, 150000ull, 400000ull, 2000000ull};
+	static unsigned long long holds[16] = {0ull, 20000ull, 90000ull, 150000ull, 400000ull, 2000000ull};
+	unsigned int hold_count = 6u;
 	static long long values[LATENCY_ROUNDS];
 	const char *flavour = argc > 1 ? argv[1] : "this flavour";
 	SparkGpuStream stream = 0;
 	unsigned int hold;
+	if ( argc > 2 )
+	{
+		for ( hold_count = 0u; hold_count + 2u < (unsigned int)argc && hold_count < 16u; hold_count++ )
+			holds[hold_count] = strtoull(argv[hold_count + 2u],0,10) * 1000ull;
+	}
 	if ( SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS )
 	{
 		printf("FAIL create a stream: %s\n",SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(1);
 	}
-	for (hold = 0u; hold < sizeof(holds) / sizeof(holds[0]); hold++)
+	for (hold = 0u; hold < hold_count; hold++)
 	{
-		const int rounds = holds[hold] >= 1000000ull ? LATENCY_ROUNDS / 10 : LATENCY_ROUNDS;
+		const int rounds = holds[hold] >= 10000000ull ? LATENCY_ROUNDS / 20 : holds[hold] >= 1000000ull ? LATENCY_ROUNDS / 10 : LATENCY_ROUNDS;
 		double sum = 0.0,cpu = 0.0;
 		int index;
 		for (index = -LATENCY_WARMUP; index < rounds; index++)

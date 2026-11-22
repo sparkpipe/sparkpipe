@@ -454,13 +454,32 @@ worker's wait for its reached gate.
   lands: 8 us of sleep plus about 3 us to wake. While sleeping, the
   waiting thread costs about a fifth of a core, where a spin would cost
   all of it.
+- **Predicted waits.** Each queue remembers how long its last four
+  finished waits took. When all four are at least 150 us (the spin
+  budget plus 50 us) and lie within an eighth of the shortest plus
+  20 us, a queue wait predicts the shortest of them.
+  - It naps toward the prediction, at most 1 ms a nap, until 50 us plus
+    2% of the prediction before it.
+  - It then spins until an eighth of the prediction plus that margin past
+    it, and past that sleeps and backs off as above. Like the first
+    100 us, that spin does not look for faults.
+  - A wait whose value has already landed returns at once and is not
+    remembered, and neither is a wait that failed or timed out.
+  - On GB10 (`nvrm_launch_latency` with holds of 150 us, 2 ms and 30 ms,
+    four interleaved rounds against the waiter without predictions), the
+    synchronize after a held launch returned 7.0 to 12.1 us past the hold
+    at the median, against 14.0 to 21.6 us, and 11.0 to 14.9 us past it
+    at the 90th percentile, against 15.2 to 35.8 us. The waiting process
+    used 54 to 55, 93 to 96 and 713 to 729 us of CPU per round, against
+    110, 295 to 298 and 3,965 to 4,624 us.
 - **Timer slack.** While it sleeps, the waiting thread's timer slack is
   1 us, and the thread's own slack is restored when the wait ends. Under
   Linux's default 50 us slack, a 20 us sleep lasts about 72 us.
 - **Timeout.** A timeout is checked at the same points and a sleep never
   runs past it. A zero timeout checks the value once.
-- **Watch.** While it sleeps, and when its timeout expires, a wait also
-  looks for faults and stalls (see [Faults and stalls](#faults-and-stalls)).
+- **Watch.** While it sleeps or naps, and when its timeout expires, a
+  wait also looks for faults and stalls (see
+  [Faults and stalls](#faults-and-stalls)).
 
 All of these are constants, not settings.
 
@@ -624,10 +643,11 @@ operation, as it does after any I/O error.
   `UNRECOGNIZED_FAULT`, and the report carries the code alone. On GB10 a
   `trap` instruction raised code 13 and a store to an unmapped address
   code 31, each about 3 ms after the launch.
-- **When a wait looks.** Inside its 100 us spin a wait never reads the
-  notifiers. Once it sleeps, it looks at once and then every 1 ms, and
-  once more when its timeout expires, so a query (zero timeout) of a
-  faulted queue fails instead of answering "not ready". A look reads four
+- **When a wait looks.** Inside its 100 us spin, and in the spin around a
+  predicted end, a wait never reads the notifiers. Once it sleeps or naps,
+  it looks at once and then every 1 ms, and once more when its timeout
+  expires, so a query (zero timeout) of a faulted queue fails instead of
+  answering "not ready". A look reads four
   notifiers: the queue's two channels and the device's compute and copy
   channels.
 - **Stalls.** A wait also fails when no channel of the process has
