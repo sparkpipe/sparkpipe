@@ -12,13 +12,14 @@
 #define TAIL_SAMPLES 256u
 
 static uint32_t failures, multiprocessors, state = 20261122u;
+static uint64_t order_samples, order_sensitive;
 
 static float Random(void)
 {
 	state ^= state << 13u;
 	state ^= state >> 17u;
 	state ^= state << 5u;
-	return ((int32_t)(state % 2049u) - 1024) / 1024.0f;
+	return (float)(state >> 8u) * 0x1p-23f - 1.0f;
 }
 
 static uint16_t Bf16(float value)
@@ -86,12 +87,19 @@ static void Reference(const char *name, const std::vector<uint16_t> &weight, con
 		const uint32_t row = (uint32_t)(((uint64_t)sample * 2654435761u) % rows), column = (uint32_t)(((uint64_t)sample * 40503u + 7u) % output_dimension);
 		const uint32_t group = group_of_row.empty() ? 0u : group_of_row[row], source = source_of_row.empty() ? row : source_of_row[row];
 		double sum = 0.0, magnitude = 0.0;
+		float forward = 0.0f, backward = 0.0f;
 		for ( uint32_t k = 0u; k < input; k++ )
 		{
 			const double product = FromBf16(weight[((size_t)group * output_dimension + column) * input + k]) * FromBf16(activation[(size_t)source * input + k]);
+			const double mirrored = FromBf16(weight[((size_t)group * output_dimension + column) * input + input - 1u - k]) *
+				FromBf16(activation[(size_t)source * input + input - 1u - k]);
 			sum += product;
 			magnitude += fabs(product);
+			forward += (float)product;
+			backward += (float)mirrored;
 		}
+		order_samples++;
+		order_sensitive += memcmp(&forward, &backward, sizeof(float)) != 0 ? 1u : 0u;
 		const double got = FromBf16(output[(size_t)row * output_dimension + column]);
 		const double bound = fabs(sum) * 0x1p-8 + magnitude * input * 0x1p-24 + 0x1p-60;
 		if ( fabs(got - sum) > bound )
@@ -268,6 +276,15 @@ int main(void)
 	Grouped<LmBf16Format>("bf16", 1000u, 12u, 224u, 512u);
 	Grouped<LmBf16Block32>("bf16 block-32", 600u, 9u, 200u, 640u);
 	Refuses(228u);
+	if ( order_sensitive * 2u < order_samples )
+	{
+		printf("FAIL the operands are too regular to tell summation orders apart: reversing the fp32 sum changes only %llu of %llu sampled outputs\n",
+			(unsigned long long)order_sensitive, (unsigned long long)order_samples);
+		failures++;
+	}
+	else
+		printf("PASS the operands tell summation orders apart: reversing the fp32 sum changes %llu of %llu sampled outputs, so a tail that summed in "
+			"another order than the zero-padded wave would differ from it\n", (unsigned long long)order_sensitive, (unsigned long long)order_samples);
 	if ( failures != 0u )
 	{
 		printf("FAIL stream K tail: %u cases\n", failures);
