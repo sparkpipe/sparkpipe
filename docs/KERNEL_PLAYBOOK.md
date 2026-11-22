@@ -857,6 +857,46 @@ plan format, the op catalogue and the generated bit-exact test are in
   the same thread mapping, so the result does not depend on how the row is
   split.
 
+## 2.10 What a dependent kernel may do before it waits (`dependent_launch.cuh`)
+
+A kernel launched with `LM_LAUNCH_DEPENDENT` may start while the kernel before
+it still runs, once that kernel has released its dependents
+(`LmDependentRelease`). Everything it does before `LmDependentWait` then runs
+beside that kernel.
+
+- **Before the wait, read only weights.** A dependent kernel may read, load
+  into registers or prefetch only data that no kernel of the step writes: the
+  weights and their scales. Weights do not change within a step. It reads
+  activations only after the wait, so it never sees a value the kernel before
+  it has not finished writing.
+- **Before the wait, write nothing global.** No store to global memory, no
+  atomic, no reduction and no counter before the wait, so the kernel never
+  overwrites what the kernel still running beside it reads.
+  `tools/dependent_wait_audit.py` checks the compiled code. In every function
+  that waits (`ACQBULK`), it refuses a global store, atomic or reduction before
+  the first wait. The sm_121a compile gate runs it on every serving adapter
+  and CUDA program. The mesh combines (`SparkTpMeshHardwareDirectKernel` and
+  its wide form) are its only exceptions: their one dependent predecessor is
+  the arrival kernel, which touches only the band and its control words.
+- **Skinny GEMVs release right after their wait.** Every skinny kernel calls
+  `LmDependentRelease` straight after `LmDependentWait`. The exception is
+  `LmSkinnyCellKernel`, which releases once its block has cached the group
+  offsets: placed straight after the wait, the release gave one of its
+  variants an 8-byte stack frame. The next dependent
+  GEMV's blocks therefore start as soon as the current one's blocks are all
+  resident. `LmSkinnyTask` prefetches its weight rows into L2 before its wait.
+  `LmSkinnyFrameKernel` loads its first weights and their scales into
+  registers before its wait. A kernel launched without the dependent attribute
+  still starts only after the kernel before it has finished.
+- **Measured** on one GB10 in the DeepSeek V4.1 Flash decode replay
+  (2026-11-22, 30 steps after 5), with DeepSeek V4.1 Flash's FP8 QDQ kernel
+  also made a dependent launch (wait, then release) so the projection after it
+  can start early. The final streams are the same bytes, and the step is
+  shorter by 0.27-0.30 ms at one row and 0.29-0.46 ms at eight. Loading every
+  task's weights into L2 before the wait instead made the eight-row step
+  1.3 ms slower: the next kernel's whole weight read then competes with the
+  running kernel's.
+
 # Part 3 — Finding kernels and their numbers
 
 - **Kernel inventory.** Generate it instead of keeping a list by hand:
