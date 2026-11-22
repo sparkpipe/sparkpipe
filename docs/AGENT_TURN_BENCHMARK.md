@@ -313,6 +313,73 @@ log that a split reads (steps, refused waves, request records, and each
 rank's store counters before, first and last in the run) and prints the
 `--log-base` that goes with the file. That is the log a receipt keeps.
 
+### Finding: the start cost of a request's first wave
+
+Measured on one rank of Qwen 3.8 27B FP8 on one GB10 with the GPU alone
+(`qualification/turn-floor-20261122/`). Nothing here is measured on a
+sixteen-rank lane.
+
+A request's first wave costs about 250 ms more than a plain one-row wave,
+at 8,000 and at 120,000 tokens of context alike. It is the largest part of
+the first token of a turn with 1 to 500 new tokens.
+
+| `engine.log` line | Request | Wave | `service_ms` | `wall_ms` |
+| ---: | --- | --- | ---: | ---: |
+| 19 | one new token at 8,016 | its first wave, one row | 278.74 | 386.68 |
+| 20 | the same request | the last token's wave | 134.35 | 135.10 |
+| 83 | whole prompt cached, 14,799 | its only wave | 144.76 | 249.98 |
+| 232 | one new token at 120,016 | its first wave, one row | 408.12 | 513.00 |
+| 233 | the same request | the last token's wave | 269.04 | 269.60 |
+| 320 | whole prompt cached, 126,799 | its only wave | 281.48 | 389.66 |
+
+It has two parts, and both are the session's recurrent state going through
+the state store:
+
+- **About 105 ms before the rank's work** (`wall_ms` above `service_ms`),
+  on every request that resumes a session, with or without new tokens.
+  The engine log shows no refused wave and no retry before these waves
+  (`batch_rejected` appears only after an engine restart), and the rank's
+  own frame line puts nothing between a wave becoming active and the
+  adapter taking it (`to_adapter_ms` 0.12 to 0.18). The time is the
+  admission that prepares the wave: it reads the session's stored state
+  into the lane (`SparkStageKvStateRead`, `SparkKvPageStoreReadback`): a
+  read from the store, a SHA-256 over the whole state and a copy.
+- **About 140 ms more of the rank's work** in the wave that ends one token
+  before the prompt's end, when the request has new tokens. There the
+  engine keeps a new state (`SparkStageKvBindingRecurrentCapture`,
+  `SparkKvPageStoreWriteback`): a copy, a SHA-256 over the whole state and
+  a write to the store. The rank's phase line shows it in the wave's finish
+  phase: `finish_ms` averages 9.0 to 9.3 over sixteen plain waves and 17.6
+  to 64.1 over sixteen waves that include such waves
+  (`rank-phases.log`).
+
+On this lane the state is 154,927,104 bytes
+(`kv binding recurrent lane_bytes=154927104`), because one rank holds all of
+it. The same operations on that many bytes, timed alone on a machine of the
+same kind, CPU only:
+
+| Operation on 154.9 MB | Time |
+| --- | ---: |
+| SHA-256, this tree's | 81 ms |
+| write to a memory file | 50 ms |
+| read from a memory file | 22 ms |
+| copy | 6 ms |
+| read, SHA-256, copy: a restore | 110 ms |
+| copy, SHA-256, write: a capture | 137 ms |
+
+That accounts for the cost: 110 and 137 ms against the 105 and 140 ms the
+waves show. The SHA-256 is 162 ms of the 247 ms. The binding counts both
+operations and their time (`SparkStageKvBindingTakeRecurrentCounters`), but
+nothing reports them, so on a lane these times are read from the waves, as
+above.
+
+What follows from it, not measured: the cost is per kept state and per
+resume, not per token and not per wave, so a rule that keeps one more state
+in a request adds one capture, and a rule that only adds a wave adds
+nothing of this kind. It scales with the bytes of state a rank holds: a
+sixteenth of this on each rank of a sixteen-rank lane of the same model, a
+quarter on a lane of four.
+
 ### On the fleet: `scripts/turn_floor_fleet.sh`
 
 The driver walks served models through the tool on the hub, from the
