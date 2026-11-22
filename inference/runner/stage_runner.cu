@@ -2531,8 +2531,12 @@ static SparkStatus StageRunnerOutputRows(SparkStageRunnerState *state, const Spa
 	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( state->geometry.head_prenormed != 0u )
-		return SparkGpuMemcpyAsync(output, state->head_hidden, (uint64_t)sequences * state->geometry.hidden * sizeof(uint16_t),
-			SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	{
+		if ( SparkGpuMemcpyAsync(output, state->head_hidden, (uint64_t)sequences * state->geometry.hidden * sizeof(uint16_t),
+			SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		return SPARK_STATUS_OK;
+	}
 	memset(&head, 0, sizeof(head));
 	head.hidden_bf16 = state->head_hidden;
 	head.normed_bf16 = output;
