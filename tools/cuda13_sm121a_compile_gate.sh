@@ -21,9 +21,10 @@ if [[ ! -f /usr/include/infiniband/verbs.h ]]; then
 	echo "CUDA gate requires libibverbs development headers" >&2
 	exit 2
 fi
+release_toolkit="13.0"
 nvcc_version="$(${nvcc_binary} --version)"
-if ! grep -Eq 'release 13\.' <<<"${nvcc_version}"; then
-	echo "CUDA gate requires CUDA 13.x" >&2
+if ! grep -Fq "release ${release_toolkit}," <<<"${nvcc_version}"; then
+	echo "CUDA gate requires CUDA ${release_toolkit}, the release build hosts' toolkit, so that the spill audit checks what ships" >&2
 	printf '%s\n' "${nvcc_version}" >&2
 	exit 2
 fi
@@ -204,6 +205,19 @@ if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
 fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
+
+spill_audited=()
+for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
+	if [[ -f "${repository_root}/${artifact}" ]]; then
+		spill_audited+=("${repository_root}/${artifact}")
+	fi
+done
+if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" --kernel LmSkinnyGroupedKernel "${spill_audited[@]}" \
+	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
+	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
+	echo "a grouped expert GEMV spills registers to local memory; see logs/kernel_spill_audit.txt" >&2
+	exit 10
+fi
 
 staged_roots="$(mktemp -d)"
 trap 'rm -rf "${staged_roots}"' EXIT

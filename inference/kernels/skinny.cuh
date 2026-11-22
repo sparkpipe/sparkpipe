@@ -802,6 +802,8 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const
 	const uint16_t *activation[ROWS];
 	LmDependentWait();
 	LmDependentRelease();
+	if ( (blockIdx.x * (LM_SKINNY_THREADS / LANES)) / per_group >= (kBatched ? (args.group_row_offset[args.groups] + ROWS - 1u) / ROWS + args.groups : args.group_row_offset[args.groups]) )
+		return;
 	for ( index = threadIdx.x; index <= args.groups; index += LM_SKINNY_THREADS )
 		offset[index] = args.group_row_offset[index];
 	__syncthreads();
@@ -1150,8 +1152,53 @@ static int32_t LmSkinnyExperts(const void *weight, LmScaleTensor scale, const ui
 }
 
 template<class Format, uint32_t NPG>
+struct LmSkinnyGroupedShapes
+{
+	static constexpr uint32_t kFewRows = LM_SKINNY_ROWS_MID, kFewNeurons = NPG;
+	static constexpr uint32_t kRows = LM_SKINNY_ROWS, kNeurons = NPG;
+	static constexpr uint32_t kWideRows = LM_SKINNY_ROWS_WIDE, kWideNeurons = 2u;
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedFourRows
+{
+	static constexpr uint32_t kFewRows = LM_SKINNY_ROWS_MID, kFewNeurons = NPG;
+	static constexpr uint32_t kRows = LM_SKINNY_ROWS_MID, kNeurons = NPG;
+	static constexpr uint32_t kWideRows = LM_SKINNY_ROWS_MID, kWideNeurons = NPG;
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedEightRows
+{
+	static constexpr uint32_t kFewRows = LM_SKINNY_ROWS_MID, kFewNeurons = NPG;
+	static constexpr uint32_t kRows = LM_SKINNY_ROWS, kNeurons = NPG;
+	static constexpr uint32_t kWideRows = LM_SKINNY_ROWS, kWideNeurons = NPG;
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedShapes<LmNvfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
+{
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedShapes<LmMxfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
+{
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedShapes<LmFp8,NPG> : LmSkinnyGroupedEightRows<NPG>
+{
+};
+
+template<uint32_t NPG>
+struct LmSkinnyGroupedShapes<LmMxfp8,NPG> : LmSkinnyGroupedEightRows<NPG>
+{
+};
+
+template<class Format, uint32_t NPG>
 static int32_t LmSkinnyGroupedExpertsWith(const void *weight, LmScaleTensor scale, const uint16_t *activation, uint16_t *output_bf16, const uint32_t *group_row_offset, const uint32_t *route_source_token, uint32_t groups, uint32_t pairs, uint32_t activation_packed, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream, uint32_t any_rows = 0u)
 {
+	using Shapes = LmSkinnyGroupedShapes<Format,NPG>;
 	LmSkinnyArguments args;
 	if constexpr ( !LmSkinnyFormat<Format>::kSupported )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
@@ -1175,10 +1222,10 @@ static int32_t LmSkinnyGroupedExpertsWith(const void *weight, LmScaleTensor scal
 		if ( LmSkinnyValidateOperands<Format>(&args) != LM_LAUNCH_OK || group_row_offset == 0 || (activation_packed == 0u && route_source_token == 0) || groups == 0u || pairs == 0u || (any_rows == 0u && pairs > LM_SKINNY_GROUPED_MAX_MEAN_ROWS * groups) )
 			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		if ( pairs <= 2u * groups )
-			return(LmSkinnyGroupedLanes<Format,LM_SKINNY_ROWS_MID,NPG>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
+			return(LmSkinnyGroupedLanes<Format,Shapes::kFewRows,Shapes::kFewNeurons>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
 		if ( pairs > LM_SKINNY_ROWS * groups )
-			return(LmSkinnyGroupedLanes<Format,LM_SKINNY_ROWS_WIDE,2u>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
-		return(LmSkinnyGroupedLanes<Format,LM_SKINNY_ROWS,NPG>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
+			return(LmSkinnyGroupedLanes<Format,Shapes::kWideRows,Shapes::kWideNeurons>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
+		return(LmSkinnyGroupedLanes<Format,Shapes::kRows,Shapes::kNeurons>(&args,input_dimension / LmSkinnyFormat<Format>::kElements,stream));
 	}
 }
 

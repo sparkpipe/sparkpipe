@@ -273,7 +273,7 @@ int main(int argc, char **argv)
 			only = argv[++index];
 		else
 		{
-			printf("usage: %s [--cubin PATH] [--mib N] [--rounds N] [--path host|system|uncached|video|pcie|all]\n",argv[0]);
+			printf("usage: %s [--cubin PATH] [--mib N] [--rounds N] [--path host|system|uncached|write-back|video|pcie|all]\n",argv[0]);
 			return(2);
 		}
 	}
@@ -310,10 +310,14 @@ int main(int argc, char **argv)
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM,"system memory allocated by the module, GPU cached",bytes,rounds);
 	if ( result == 0 && (strcmp(only,"all") == 0 || strcmp(only,"uncached") == 0) )
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM_UNCACHED,"system memory allocated by the module, GPU uncached",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"write-back") == 0) )
+		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,"system memory allocated by the module, CPU write-back, GPU uncached",bytes,rounds);
 	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"video") == 0) )
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_VIDEO,"video memory allocated by the module",bytes,rounds);
 	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
 		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_SYSTEM,"system memory allocated by the module",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
+		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,"system memory allocated by the module, CPU write-back",bytes,rounds);
 	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
 		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_HOST,"host memory registered by OS descriptor",bytes,rounds);
 	SparkNvrmMemoryRelease(&bench.gpu,&bench.sink);
