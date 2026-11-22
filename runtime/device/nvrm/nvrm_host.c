@@ -132,17 +132,17 @@ static SparkStatus HostSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, Spar
 	return(SparkNvrmOpFinishHost(gpu,channel,value,owner));
 }
 
-SparkStatus SparkNvrmHostWork(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmHostWorker *worker, const SparkNvrmHostItem *item, uint64_t *value,
-	const char *owner)
+static void HostRoom(SparkNvrmHostWorker *worker)
 {
-	SparkStatus status;
 	pthread_mutex_lock(&worker->lock);
 	while ( worker->count == SPARK_NVRM_HOST_ITEMS )
 		pthread_cond_wait(&worker->changed,&worker->lock);
 	pthread_mutex_unlock(&worker->lock);
-	status = HostSubmit(gpu,channel,worker,worker->ticket + 1u,value,owner);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_FAIL(status);
+}
+
+void SparkNvrmHostQueue(SparkNvrmHostWorker *worker, const SparkNvrmHostItem *item)
+{
+	HostRoom(worker);
 	pthread_mutex_lock(&worker->lock);
 	worker->ticket++;
 	worker->items[(worker->head + worker->count) % SPARK_NVRM_HOST_ITEMS] = *item;
@@ -150,5 +150,21 @@ SparkStatus SparkNvrmHostWork(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, Spar
 	worker->count++;
 	pthread_cond_broadcast(&worker->changed);
 	pthread_mutex_unlock(&worker->lock);
+}
+
+uint64_t SparkNvrmHostGate(const SparkNvrmHostWorker *worker, uint32_t done)
+{
+	return(worker->gates.address + (done != 0u ? HOST_DONE_OFFSET : HOST_REACHED_OFFSET));
+}
+
+SparkStatus SparkNvrmHostWork(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmHostWorker *worker, const SparkNvrmHostItem *item, uint64_t *value,
+	const char *owner)
+{
+	SparkStatus status;
+	HostRoom(worker);
+	status = HostSubmit(gpu,channel,worker,worker->ticket + 1u,value,owner);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	SparkNvrmHostQueue(worker,item);
 	return(SPARK_STATUS_OK);
 }

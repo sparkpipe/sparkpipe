@@ -256,12 +256,8 @@ SparkStatus SparkNvrmLaunchClusterShape(const SparkNvrmLaunchRequest *request, u
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
-	const char *owner)
+static SparkStatus LaunchCheck(const SparkNvrmGpu *gpu, const SparkNvrmLaunchRequest *request, uint32_t cluster[3], const char *owner)
 {
-	SparkNvrmLaunchShape shape;
-	SparkNvrmQmd qmd;
-	uint32_t word,cluster[3];
 	if ( request->kernel == 0 || request->slot == 0 || (request->slot_address & (SPARK_NVRM_QMD_ALIGN - 1u)) != 0u ||
 		request->slot_bytes < SparkNvrmLaunchSlotBytes(request->kernel) )
 	{
@@ -277,7 +273,14 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 			"the kernel needs more local memory than its program provisioned");
 		SPARK_FAIL(status);
 	}
-	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus LaunchBuild(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const uint32_t cluster[3],
+	const char *owner)
+{
+	SparkNvrmLaunchShape shape;
+	SparkNvrmQmd qmd;
 	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,cluster,request->arguments,
 		request->argument_bytes,request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,
 		request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,owner));
@@ -285,10 +288,34 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 	memcpy(shape.cluster,cluster,sizeof(shape.cluster));
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
-	word = (uint32_t)(request->slot_address >> 8);
-	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&word,1u,owner));
-	word = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;
-	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&word,1u,owner));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmLaunchDescribe(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const char *owner)
+{
+	uint32_t cluster[3];
+	LAUNCH_TRY(LaunchCheck(gpu,request,cluster,owner));
+	return(LaunchBuild(gpu,program,request,cluster,owner));
+}
+
+void SparkNvrmLaunchWords(uint32_t *words, uint64_t slot_address)
+{
+	words[0] = SparkNvrmMethodHeader(LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,1u);
+	words[1] = (uint32_t)(slot_address >> 8);
+	words[2] = SparkNvrmMethodHeader(LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,1u);
+	words[3] = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;
+}
+
+SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	const char *owner)
+{
+	uint32_t words[SPARK_NVRM_LAUNCH_WORDS],cluster[3];
+	LAUNCH_TRY(LaunchCheck(gpu,request,cluster,owner));
+	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
+	LAUNCH_TRY(LaunchBuild(gpu,program,request,cluster,owner));
+	SparkNvrmLaunchWords(words,request->slot_address);
+	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&words[1],1u,owner));
+	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&words[3],1u,owner));
 }
 
 static uint32_t launch_latch;

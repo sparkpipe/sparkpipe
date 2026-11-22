@@ -382,12 +382,38 @@ nvrm-large-transfers` runs them on the GPU (see the GPU tests).
 
 | Space | nvrm memory | Host view | Device address |
 |---|---|---|---|
-| device-private | system memory, zero-filled by the copy engine | none | yes |
+| device-private | system memory, zeroed by the open module when allocated | none | yes |
 | shared coherent | host memory | same address | yes |
 | host pinned | host memory | same address | yes |
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+The open module zeroes the system memory it allocates, so device memory
+starts zeroed without a fill of our own. In open-gpu-kernel-modules
+580.178.04:
+
+- `kernel-open/nvidia/nv-reg.h:181-203` documents
+  `InitializeSystemMemoryAllocations` as "zero out system memory
+  allocations (default)", and line 960 defaults it to 1.
+- `src/nvidia/arch/nvalloc/unix/src/osinit.c:211-218` sets
+  `PDB_PROP_SYS_INITIALIZE_SYSTEM_MEMORY_ALLOCATIONS` unless that key
+  reads 0.
+- `src/nvidia/arch/nvalloc/unix/src/os.c:1013-1022` passes the property
+  to `nv_alloc_pages` as `zeroed`.
+- `kernel-open/nvidia/nv.c:3850-3851` marks the allocation zeroed.
+- `kernel-open/nvidia/nv-vm.c:263-265` then adds `__GFP_ZERO`, which the
+  2 MiB-page path at lines 520-541 uses too.
+
+Once it has opened the GPU, the backend refuses to initialize unless
+`/proc/driver/nvidia/params` lists `InitializeSystemMemoryAllocations: 1`.
+Without it, fresh device memory would hold another allocation's data. A
+host without the module still fails first on the control device it
+cannot open.
+
+Before this, the copy engine also zeroed each device allocation. On
+spark1, 8, 10.5 and 16 GiB allocations took 0.89, 1.39 and 2.19 s with
+that fill and take 0.62, 0.78 and 1.26 s without it.
 
 System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
 pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
@@ -556,18 +582,12 @@ launch-shape probe and first light:
 - **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
   `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
   40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
-  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
-  fill takes 2.1 s. The test runs in two modes:
+  and copies at 18.0 GB/s at these sizes. It runs in one mode:
   - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
     zero-filled by the copy engine. For each size it copies the whole
     buffer to host-visible memory in one call and checks every byte, fills
     the whole buffer in one call, copies it back and checks again, and
     fills host-visible memory of the same size at an odd offset.
-  - `held`: sets the stall threshold to zero, so that a 4 GiB
-    allocation's wait gives up while its zero fill is still running. The
-    allocation must fail, keep its memory held and say so. Shutdown must
-    then release the memory once the fill ends, and the device must open
-    and fill memory again afterwards.
 
   The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
@@ -599,6 +619,53 @@ rounds and every back-to-back set is wrong, so the test sees misordering.
 Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
+
+## Programs
+
+`SparkDeviceProgramFinish` compiles a recorded program
+([device programs](DEVICE_PROGRAMS.md)) into an image, and
+`SparkDeviceProgramRun` runs the image with one submission, however many
+steps it holds.
+- **Image.** One allocation of coherent system memory holds three parts:
+  - the program's 64-bit semaphore;
+  - a descriptor and constant bank 0 for every launch, built at finish by
+    the code that builds eager launches. A launch's descriptor releases its
+    step number plus one to the semaphore when its grid ends;
+  - the push segment.
+- **Segment.** The segment first sets the semaphore to zero. Every later
+  step first acquires the semaphore at its own step number, so it starts
+  once the step before it has ended, as an eager launch starts once the
+  queue's fence has passed. Then:
+  - a launch sends its descriptor;
+  - an event record stamps the event's time and raises its generation;
+  - an event wait acquires the event's generation;
+  - a host step releases a ticket to the queue's host worker and acquires
+    the worker's answer.
+
+  A step that is no launch then releases the next step number itself.
+- **Run.** A run is one queue operation. It pushes the queue's ordering
+  acquire, and the local-memory binding if the channel lacks it. It then
+  queues three ring entries and rings the doorbell once: that head, the
+  segment, and a tail that acquires the semaphore at the step count and
+  releases the queue's next fence value.
+- **Per-run values.** Before the doorbell, a run stores the values that
+  change between runs:
+  - a patched launch gets its descriptor and bank 0 rebuilt with the
+    patched constants and grid;
+  - an event record gets the event's next generation, and an event wait
+    its current one;
+  - a host step gets the run queue's worker gates and tickets.
+
+  A program with any of these waits for its previous run to end before
+  storing them. A program of launches alone stores nothing, so its runs
+  on one queue go back to back; a run on another queue waits for the
+  previous run, because both would use the one semaphore.
+- **Not inside programs.** Finish refuses copies and fills, naming them;
+  they go on the queue before or after the run. A dependent launch runs
+  inside a program as a plainly ordered launch, with the same results;
+  latched chains inside programs are the next step.
+- **Faults.** A fault report during a run names the program, the step its
+  semaphore had reached, and that step's kernel.
 
 ## Faults and stalls
 
@@ -636,14 +703,8 @@ operation, as it does after any I/O error.
   another queue's event is not stalled while that queue runs. A single grid
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
-- **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. When the wait for an allocation's zero
-  fill gives up while the fill is still running, the allocation fails but
-  its memory stays held. Freeing memory under a running copy engine
-  makes the kernel module assert, and the GPU then needs a reset. The
-  error text names the held bytes. Shutdown releases held memory once its
-  fill has finished. If the fill never finishes, shutdown leaves the GPU
-  open for the process's exit to close. Channel waits that know no queue
+- **Internal waits.** Waits for ring space and launch slots use the same
+  watch. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
@@ -1073,5 +1134,6 @@ two side by side. None of them is a pass/fail gate:
   - The tool reports the host time to issue the step, the wall time to
     synchronize, the GPU span, and the GPU idle per boundary between
     kernels.
-  - It runs eager launches, and in the CUDA flavour also one captured graph
-    of the same launches. nvrm refuses capture for now.
+  - It runs eager launches, a device-layer program of the same launches
+    (in both flavours; on CUDA a program is a captured graph underneath),
+    and in the CUDA flavour one graph captured directly.
