@@ -41,6 +41,7 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_BIND_WRITE 2u
 #define SPARK_DEVICE_MAX_BINDINGS 30u
 #define SPARK_DEVICE_KERNEL_NAME_LIMIT 64u
+#define SPARK_DEVICE_ERROR_TEXT_BYTES 256u
 
 typedef struct SparkDeviceBuffer
 {
@@ -134,7 +135,7 @@ typedef struct SparkDeviceError
 	int32_t backend_code;
 	char operation[32];
 	char owner[48];
-	char text[128];
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
 } SparkDeviceError;
 
 SparkStatus SparkDeviceInitialize(const SparkDeviceConfiguration *configuration);
