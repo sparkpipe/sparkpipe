@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
+#include "runtime/device/nvrm/nvrm_cubin.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
 #include "runtime/device/nvrm/nvrm_names.h"
@@ -28,7 +29,7 @@ static int failures;
 static const char hosts[8];
 static uint32_t variable_shadow;
 static uint32_t managed_shadow;
-static char made_files[32][REGISTER_FILE];
+static char made_files[64][REGISTER_FILE];
 static char made_directories[16][REGISTER_FILE];
 static int made_file_count, made_directory_count;
 
@@ -64,7 +65,7 @@ static void PutFile(const char *directory, const char *name, const char *source)
 	if ( file != 0 )
 		fclose(file);
 	free(data);
-	if ( made_file_count < 32 )
+	if ( made_file_count < 64 )
 		snprintf(made_files[made_file_count++],REGISTER_FILE,"%s",path);
 }
 
@@ -75,6 +76,105 @@ static void PutPair(const char *directory, const char *stem)
 	PutFile(directory,name,SPARK_NVRM_FIXTURE_CUBIN);
 	snprintf(name,sizeof(name),"%s.manifest",stem);
 	PutFile(directory,name,SPARK_NVRM_FIXTURE_MANIFEST);
+}
+
+static void PutBytes(const char *directory, const char *name, const void *data, uint64_t bytes)
+{
+	char path[REGISTER_FILE];
+	FILE *file;
+	snprintf(path,sizeof(path),"%s/%s",directory,name);
+	file = fopen(path,"wb");
+	CHECK(data != 0 && file != 0 && fwrite(data,1u,(size_t)bytes,file) == (size_t)bytes,"write a kernel directory file");
+	if ( file != 0 )
+		fclose(file);
+	if ( made_file_count < 64 )
+		snprintf(made_files[made_file_count++],REGISTER_FILE,"%s",path);
+}
+
+static int ManifestLineKept(const char *line, size_t length, const char *kernel)
+{
+	static const char *const heads[] = {"nvcc ","flags ","source ","cubin "};
+	const char *space = memchr(line,' ',length);
+	const size_t name = strlen(kernel);
+	size_t head;
+	for ( head = 0u; head < sizeof(heads) / sizeof(heads[0]); head++ )
+		if ( strncmp(line,heads[head],strlen(heads[head])) == 0 )
+			return(1);
+	if ( space == 0 )
+		return(0);
+	space++;
+	return((size_t)(line + length - space) > name && strncmp(space,kernel,name) == 0 && (space[name] == ' ' || space[name] == '\n'));
+}
+
+static void PutManifestOf(const char *directory, const char *name, const char *kernel)
+{
+	uint64_t bytes = 0u,used = 0u;
+	char *text = (char *)SparkNvrmReadFile(SPARK_NVRM_FIXTURE_MANIFEST,&bytes),*kept = (char *)calloc(1u,(size_t)bytes + 1u);
+	const char *line = text;
+	while ( text != 0 && kept != 0 && line < text + bytes )
+	{
+		const char *end = memchr(line,'\n',(size_t)(text + bytes - line));
+		const size_t length = end != 0 ? (size_t)(end - line) + 1u : (size_t)(text + bytes - line);
+		if ( ManifestLineKept(line,length,kernel) != 0 )
+		{
+			memcpy(kept + used,line,length);
+			used += length;
+		}
+		line += length;
+	}
+	PutBytes(directory,name,kept,used);
+	free(text);
+	free(kept);
+}
+
+static void PutChangedCubin(const char *directory, const char *name, const char *kernel)
+{
+	uint64_t bytes = 0u,length = 0u;
+	uint8_t *blob = SparkNvrmReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes),*found = 0;
+	SparkNvrmCubin cubin;
+	const SparkNvrmCubinKernel *code;
+	memset(&cubin,0,sizeof(cubin));
+	if ( blob != 0 && SparkNvrmCubinParse(blob,bytes,"register",&cubin) == SPARK_STATUS_OK && (code = SparkNvrmCubinKernelNamed(&cubin,kernel)) != 0 )
+	{
+		length = code->code_bytes;
+		found = (uint8_t *)memmem(blob,(size_t)bytes,cubin.image + code->code_offset,(size_t)length);
+	}
+	CHECK(found != 0 && length >= 32u,"find a kernel's code in the fixture cubin");
+	if ( found != 0 )
+		found[length / 2u] ^= 0x01u;
+	PutBytes(directory,name,blob,bytes);
+	SparkNvrmCubinRelease(&cubin);
+	free(blob);
+}
+
+static uint64_t ElfWord(const uint8_t *at, uint32_t bytes)
+{
+	uint64_t value = 0u;
+	uint32_t index;
+	for (index = 0u; index < bytes; index++)
+		value |= (uint64_t)at[index] << (8u * index);
+	return(value);
+}
+
+static void PutUnrelocatedCubin(const char *directory, const char *name)
+{
+	uint64_t bytes = 0u,section,emptied = 0u;
+	uint8_t *blob = SparkNvrmReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes);
+	const uint64_t table = blob != 0 && bytes > 64u ? ElfWord(blob + 0x28u,8u) : 0u;
+	const uint64_t entry = blob != 0 && bytes > 64u ? ElfWord(blob + 0x3au,2u) : 0u,count = blob != 0 && bytes > 64u ? ElfWord(blob + 0x3cu,2u) : 0u;
+	for (section = 0u; table != 0u && entry >= 64u && table + (section + 1u) * entry <= bytes && section < count; section++)
+	{
+		uint8_t *header = blob + table + section * entry;
+		const uint64_t type = ElfWord(header + 4u,4u);
+		if ( type == 4u || type == 9u )
+		{
+			memset(header + 32u,0,8u);
+			emptied++;
+		}
+	}
+	CHECK(emptied != 0u,"empty the fixture cubin's relocation sections");
+	PutBytes(directory,name,blob,bytes);
+	free(blob);
 }
 
 static void ModulePaths(const char *root, const char *name, char *module, char *directory)
@@ -124,9 +224,25 @@ static void TestRefusals(const char *root)
 	CHECK(SparkNvrmRegisteredKernel(&hosts[5],&kernel) == SPARK_STATUS_NOT_FOUND && kernel == 0 && Says("has no kernel directory"),
 		"a launch through a failed module fails with the module's failure");
 	ModulePaths(root,"twice.so",module_path,directory);
+	PutUnrelocatedCubin(directory,"a.cubin");
+	PutFile(directory,"a.manifest",SPARK_NVRM_FIXTURE_MANIFEST);
+	PutUnrelocatedCubin(directory,"b.cubin");
+	PutManifestOf(directory,"b.manifest","SparkNvrmFirstLight");
+	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_OK && SparkNvrmModuleStatus(module,&failure) == SPARK_STATUS_OK &&
+		SparkNvrmModuleKernelCount(module) == FixtureKernels(),"a kernel in two cubins with the same code and attributes is kept once");
+	ModulePaths(root,"changed.so",module_path,directory);
 	PutPair(directory,"a");
-	PutPair(directory,"b");
-	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_DUPLICATE && Says("is in two cubins"),"a kernel name in two cubins of one module is refused");
+	PutChangedCubin(directory,"b.cubin","SparkNvrmFirstLight");
+	PutManifestOf(directory,"b.manifest","SparkNvrmFirstLight");
+	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_DUPLICATE &&
+		Says("kernel SparkNvrmFirstLight is in two cubins of the module, a.cubin and b.cubin, and the code differs"),
+		"a kernel in two cubins whose code differs is refused, naming both cubins");
+	ModulePaths(root,"relocated.so",module_path,directory);
+	PutPair(directory,"a");
+	PutFile(directory,"b.cubin",SPARK_NVRM_FIXTURE_CUBIN);
+	PutManifestOf(directory,"b.manifest","SparkNvrmGlobalSwap");
+	CHECK(SparkNvrmRegisterModule(module_path,&module) == SPARK_STATUS_DUPLICATE && Says("and a constant bank both copies have is relocated"),
+		"a kernel in two cubins whose shared constant bank holds relocated addresses is refused: each copy would reach other storage");
 	ModulePaths(root,"stray.so",module_path,directory);
 	PutPair(directory,"a");
 	PutFile(directory,"stray.manifest",SPARK_NVRM_FIXTURE_MANIFEST);
