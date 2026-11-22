@@ -136,6 +136,18 @@ static uint32_t nvrm_shared_capacity;
 static SparkDeviceMemoryHandle nvrm_shared_serial;
 static NvrmSpans nvrm_reservations;
 static NvrmSpans nvrm_mappings;
+
+typedef struct NvrmHeld
+{
+	SparkNvrmMemory memory;
+	uint64_t value;
+} NvrmHeld;
+
+static pthread_mutex_t nvrm_held_lock = PTHREAD_MUTEX_INITIALIZER;
+static NvrmHeld *nvrm_held;
+static uint32_t nvrm_held_count;
+
+static SparkStatus NvrmHeldSettle(void);
 static pthread_mutex_t nvrm_queues_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvrmQueue *nvrm_queues;
 
@@ -162,7 +174,13 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 {
 	const long pages = sysconf(_SC_PHYS_PAGES),page = sysconf(_SC_PAGESIZE);
 	const uint64_t memory = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0u;
-	uint32_t copy_engine = 0u;
+	uint32_t copy_engine = 0u,held;
+	pthread_mutex_lock(&nvrm_held_lock);
+	held = nvrm_held_count;
+	pthread_mutex_unlock(&nvrm_held_lock);
+	if ( held != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"initialize","",0,
+			"memory held behind a zero fill that never finished keeps the GPU open; restart the process"));
 	NVRM_TRY(SparkNvrmGpuOpen(&nvrm_gpu,configuration->ordinal,SPARK_NVRM_MEMORY_HOST,"initialize"));
 	{
 		SparkStatus copies = SparkNvrmCopyEngineAsync(&nvrm_gpu,&copy_engine,"initialize");
@@ -194,6 +212,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 SparkStatus SparkDeviceBackendShutdown(void)
 {
 	uint32_t chunk;
+	NVRM_TRY(NvrmHeldSettle());
 	for (chunk = 0u; chunk < nvrm_events.chunk_count; chunk++)
 		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm_events.chunks[chunk]);
 	memset(&nvrm_events,0,sizeof(nvrm_events));
@@ -217,17 +236,72 @@ static NvrmAllocation *NvrmNew(SparkDeviceAllocation *allocation, const char *op
 
 static SparkStatus NvrmWaitChannel(uint64_t queue_id, const SparkNvrmChannel *channel, uint64_t value, const char *operation);
 
-static SparkStatus NvrmZero(SparkNvrmMemory *memory, const char *owner)
+static SparkStatus NvrmZero(SparkNvrmMemory *memory, uint64_t *value, const char *owner)
 {
-	uint64_t value = 0u;
-	NVRM_TRY(SparkNvrmFill(&nvrm_gpu,&nvrm_gpu.compute,memory->address,0u,memory->bytes,&value,owner));
-	return(NvrmWaitChannel(0u,&nvrm_gpu.compute,value,"allocate"));
+	*value = 0u;
+	NVRM_TRY(SparkNvrmFill(&nvrm_gpu,&nvrm_gpu.compute,memory->address,0u,memory->bytes,value,owner));
+	return(NvrmWaitChannel(0u,&nvrm_gpu.compute,*value,"allocate"));
+}
+
+static void NvrmHold(const SparkNvrmMemory *memory, uint64_t value, const char *owner)
+{
+	const SparkDeviceError *last = SparkDeviceLastError();
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	NvrmHeld *grown;
+	pthread_mutex_lock(&nvrm_held_lock);
+	grown = (NvrmHeld *)realloc(nvrm_held,(size_t)(nvrm_held_count + 1u) * sizeof(*grown));
+	if ( grown != 0 )
+	{
+		nvrm_held = grown;
+		nvrm_held[nvrm_held_count].memory = *memory;
+		nvrm_held[nvrm_held_count].value = value;
+		nvrm_held_count++;
+	}
+	pthread_mutex_unlock(&nvrm_held_lock);
+	snprintf(text,sizeof(text),"%.150s; the zero fill had not finished, so its %llu bytes stay held",last->text,(unsigned long long)memory->bytes);
+	(void)SparkDeviceRecordError(last->status,"allocate",owner,last->backend_code,text);
+}
+
+static SparkStatus NvrmHeldSettle(void)
+{
+	uint32_t index,kept = 0u;
+	uint64_t kept_bytes = 0u;
+	pthread_mutex_lock(&nvrm_held_lock);
+	for (index = 0u; index < nvrm_held_count; index++)
+	{
+		NvrmHeld *held = &nvrm_held[index];
+		if ( SparkNvrmChannelCompleted(&nvrm_gpu.compute) < held->value &&
+			SparkNvrmWaitFence(&nvrm_gpu.compute,held->value,SPARK_NVRM_WAIT_TIMEOUT_NS,"shutdown","held memory") != SPARK_STATUS_OK )
+		{
+			nvrm_held[kept++] = *held;
+			kept_bytes += held->memory.bytes;
+			continue;
+		}
+		SparkNvrmMemoryRelease(&nvrm_gpu,&held->memory);
+	}
+	nvrm_held_count = kept;
+	if ( kept == 0u )
+	{
+		free(nvrm_held);
+		nvrm_held = 0;
+	}
+	pthread_mutex_unlock(&nvrm_held_lock);
+	if ( kept == 0u )
+		return(SPARK_STATUS_OK);
+	{
+		char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+		snprintf(text,sizeof(text),"%llu bytes of allocations stay held behind zero fills that never finished; the GPU stays open until the process exits",
+			(unsigned long long)kept_bytes);
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"shutdown","",0,text);
+		SPARK_FAIL(status);
+	}
 }
 
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm = NvrmNew(allocation,"allocate");
 	const uint32_t private_space = allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE;
+	uint64_t fill = 0u;
 	SparkStatus status;
 	if ( nvrm == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -247,7 +321,13 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_HOST,&nvrm->memory,
 		allocation->owner);
 	if ( status == SPARK_STATUS_OK && private_space != 0u )
-		status = NvrmZero(&nvrm->memory,allocation->owner);
+		status = NvrmZero(&nvrm->memory,&fill,allocation->owner);
+	if ( status != SPARK_STATUS_OK && fill != 0u && SparkNvrmChannelCompleted(&nvrm_gpu.compute) < fill )
+	{
+		NvrmHold(&nvrm->memory,fill,allocation->owner);
+		free(nvrm);
+		SPARK_FAIL(status);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm->memory);
@@ -456,7 +536,13 @@ static SparkStatus NvrmReportLocked(NvrmQueue *nvrm, const SparkNvrmFault *fault
 	if ( fault != 0 )
 		SparkNvrmFaultText(fault,head,sizeof(head));
 	else
-		snprintf(head,sizeof(head),"no GPU progress for %llu s",(unsigned long long)(SPARK_NVRM_WAIT_STALL_NS / 1000000000ull));
+	{
+		const uint64_t stall_ns = SparkNvrmWaitStallNs();
+		if ( stall_ns >= 1000000000ull && stall_ns % 1000000000ull == 0u )
+			snprintf(head,sizeof(head),"no GPU progress for %llu s",(unsigned long long)(stall_ns / 1000000000ull));
+		else
+			snprintf(head,sizeof(head),"no GPU progress for %llu ms",(unsigned long long)(stall_ns / 1000000ull));
+	}
 	where[0] = '\0';
 	name[0] = '\0';
 	if ( nvrm != 0 )
@@ -485,7 +571,7 @@ static SparkStatus NvrmWatch(uint64_t queue_id, SparkNvrmWait *wait, const char 
 		NvrmLocateLocked(nvrm,faulted,&fault);
 		status = NvrmReportLocked(nvrm,&fault,operation);
 	}
-	else if ( wait != 0 && SparkNvrmWaitStalled(wait,NvrmProgressLocked(),SPARK_NVRM_WAIT_STALL_NS) != 0 )
+	else if ( wait != 0 && SparkNvrmWaitStalled(wait,NvrmProgressLocked(),SparkNvrmWaitStallNs()) != 0 )
 		status = NvrmReportLocked(nvrm,0,operation);
 	pthread_mutex_unlock(&nvrm_queues_lock);
 	return(status);
@@ -1192,7 +1278,7 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,owner));
+	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),0u,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )
 	{
