@@ -48,7 +48,8 @@ typedef struct WeightStreamCall
 struct SparkWeightStream
 {
 	SparkWeightStreamConfig config;
-	uint32_t paired;
+	uint32_t links_up;
+	uint8_t link_of[SPARK_WEIGHT_STREAM_MAX_RANKS];
 	WeightStreamLink links[2];
 	SparkWeightStreamEndpoint table[SPARK_WEIGHT_STREAM_MAX_RANKS][WEIGHT_STREAM_ROW];
 	WeightStreamArrival *early;
@@ -66,21 +67,42 @@ static uint32_t WeightStreamTag(uint32_t immediate) { return immediate >> 24; }
 static uint32_t WeightStreamSource(uint32_t immediate) { return (immediate >> 19) & 0x1fu; }
 static uint32_t WeightStreamChunk(uint32_t immediate) { return immediate & (WEIGHT_STREAM_MAX_CHUNKS - 1u); }
 
-static SparkStatus WeightStreamOpenLink(WeightStreamLink *link, const char *device, uint8_t *region, uint64_t region_bytes, uint32_t gid_index)
+static void WeightStreamCloseLink(WeightStreamLink *link);
+
+static const char *WeightStreamPortProblem(struct ibv_context *context, uint32_t gid_index)
+{
+	struct ibv_port_attr attributes;
+	union ibv_gid gid;
+	static const uint8_t mapped[12] = {0u,0u,0u,0u,0u,0u,0u,0u,0u,0u,0xffu,0xffu};
+	if ( ibv_query_port(context,1,&attributes) != 0 || attributes.state != IBV_PORT_ACTIVE )
+		return "port 1 is not active";
+	if ( ibv_query_gid(context,1,(int)gid_index,&gid) != 0 || memcmp(gid.raw,mapped,sizeof(mapped)) != 0 ||
+		(gid.raw[12] | gid.raw[13] | gid.raw[14] | gid.raw[15]) == 0u )
+		return "its gid holds no IPv4 RoCE address";
+	return 0;
+}
+
+static SparkStatus WeightStreamOpenLink(WeightStreamLink *link, const char *device, uint8_t *region, uint64_t region_bytes, uint32_t gid_index, uint32_t *usable)
 {
 	struct ibv_device **devices = ibv_get_device_list(0);
+	const char *problem = "no such RDMA device";
 	int index;
 	memset(link,0,sizeof(*link));
+	*usable = 0u;
 	for (index=0; devices != 0 && devices[index] != 0 && link->context == 0; index++)
 		if ( strcmp(ibv_get_device_name(devices[index]),device) == 0 )
 			link->context = ibv_open_device(devices[index]);
 	if ( devices != 0 )
 		ibv_free_device_list(devices);
-	if ( link->context == 0 )
+	if ( link->context != 0 )
+		problem = WeightStreamPortProblem(link->context,gid_index);
+	if ( problem != 0 )
 	{
-		fprintf(stderr,"weight_stream: RDMA device %s not found\n",device);
-		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+		fprintf(stderr,"weight_stream: %s gid %u: %s; the link is not used\n",device,gid_index,problem);
+		WeightStreamCloseLink(link);
+		return SPARK_STATUS_OK;
 	}
+	*usable = 1u;
 	link->pd = ibv_alloc_pd(link->context);
 	link->cq = link->pd != 0 ? ibv_create_cq(link->context,WEIGHT_STREAM_CQ_DEPTH,0,0,0) : 0;
 	link->mr = link->cq != 0 ? ibv_reg_mr(link->pd,region,region_bytes,IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE) : 0;
@@ -183,7 +205,53 @@ static uint32_t WeightStreamPartner(const SparkWeightStream *stream)
 
 static uint32_t WeightStreamLinkOf(const SparkWeightStream *stream, uint32_t peer)
 {
-	return stream->paired != 0u && ((peer ^ stream->config.rank) & 1u) != 0u ? WEIGHT_STREAM_PAIR : WEIGHT_STREAM_FABRIC;
+	return stream->link_of[peer];
+}
+
+static uint32_t WeightStreamPeerLinks(const SparkWeightStream *stream, uint32_t peer)
+{
+	return (stream->table[peer][stream->config.rank].qpn != 0u ? 1u << WEIGHT_STREAM_FABRIC : 0u) |
+		(stream->table[peer][SPARK_WEIGHT_STREAM_MAX_RANKS + stream->config.rank].qpn != 0u ? 1u << WEIGHT_STREAM_PAIR : 0u);
+}
+
+static const char *WeightStreamLinksText(uint32_t links)
+{
+	static const char *const names[] = {"none","fabric","pair","fabric+pair"};
+	return names[links & 3u];
+}
+
+static SparkStatus WeightStreamNoLink(const SparkWeightStreamConfig *config)
+{
+	fprintf(stderr,"weight_stream: rank %u has no active link (fabric %s, pair %s)\n",config->rank,config->fabric_device,config->pair_device != 0 ? config->pair_device : "none");
+	SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+}
+
+static SparkStatus WeightStreamChooseLinks(SparkWeightStream *stream)
+{
+	const SparkWeightStreamConfig *config = &stream->config;
+	uint32_t peer,remote,common,degraded = 0u;
+	for (peer=0u; peer<config->ranks; peer++)
+	{
+		if ( peer == config->rank )
+			continue;
+		remote = WeightStreamPeerLinks(stream,peer);
+		common = stream->links_up & remote;
+		if ( common == 0u )
+		{
+			fprintf(stderr,"weight_stream: rank %u (%s) and rank %u (%s) share no link\n",config->rank,WeightStreamLinksText(stream->links_up),peer,WeightStreamLinksText(remote));
+			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+		}
+		stream->link_of[peer] = (uint8_t)(common == 3u ? (((peer ^ config->rank) & 1u) != 0u ? WEIGHT_STREAM_PAIR : WEIGHT_STREAM_FABRIC) :
+			common == (1u << WEIGHT_STREAM_PAIR) ? WEIGHT_STREAM_PAIR : WEIGHT_STREAM_FABRIC);
+		if ( remote != stream->links_up )
+		{
+			degraded |= 1u << peer;
+			fprintf(stderr,"weight_stream: rank %u (%s) reaches rank %u (%s) on its %s link only: one end lacks a link the other has up\n",config->rank,
+				WeightStreamLinksText(stream->links_up),peer,WeightStreamLinksText(remote),stream->link_of[peer] == WEIGHT_STREAM_PAIR ? "pair" : "fabric");
+		}
+	}
+	fprintf(stderr,"weight_stream: rank %u of %u on %s, degraded peers 0x%04x\n",config->rank,config->ranks,WeightStreamLinksText(stream->links_up),degraded);
+	return SPARK_STATUS_OK;
 }
 
 static const SparkWeightStreamEndpoint *WeightStreamEndpointOf(const SparkWeightStream *stream, uint32_t peer)
@@ -194,8 +262,7 @@ static const SparkWeightStreamEndpoint *WeightStreamEndpointOf(const SparkWeight
 static void WeightStreamCloseAll(SparkWeightStream *stream)
 {
 	WeightStreamCloseLink(&stream->links[WEIGHT_STREAM_FABRIC]);
-	if ( stream->paired != 0u )
-		WeightStreamCloseLink(&stream->links[WEIGHT_STREAM_PAIR]);
+	WeightStreamCloseLink(&stream->links[WEIGHT_STREAM_PAIR]);
 	free(stream->early);
 	free(stream);
 }
@@ -210,7 +277,7 @@ SparkStatus SparkWeightStreamOpen(const SparkWeightStreamConfig *config, SparkWe
 	SparkWeightStream *stream;
 	SparkWeightStreamEndpoint mine[WEIGHT_STREAM_ROW];
 	SparkStatus status;
-	uint32_t peer;
+	uint32_t peer,link,fabric_up = 0u,pair_up = 0u;
 	if ( stream_out != 0 )
 		*stream_out = 0;
 	if ( config == 0 || stream_out == 0 || config->ranks < 2u || config->ranks > SPARK_WEIGHT_STREAM_MAX_RANKS || config->rank >= config->ranks ||
@@ -221,23 +288,25 @@ SparkStatus SparkWeightStreamOpen(const SparkWeightStreamConfig *config, SparkWe
 	if ( stream == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	stream->config = *config;
-	stream->paired = config->pair_device != 0 ? 1u : 0u;
-	status = WeightStreamOpenLink(&stream->links[WEIGHT_STREAM_FABRIC],config->fabric_device,config->region,config->region_bytes,config->fabric_gid_index);
-	if ( status == SPARK_STATUS_OK && stream->paired != 0u )
-		status = WeightStreamOpenLink(&stream->links[WEIGHT_STREAM_PAIR],config->pair_device,config->region,config->region_bytes,config->pair_gid_index);
+	status = WeightStreamOpenLink(&stream->links[WEIGHT_STREAM_FABRIC],config->fabric_device,config->region,config->region_bytes,config->fabric_gid_index,&fabric_up);
+	if ( status == SPARK_STATUS_OK && config->pair_device != 0 )
+		status = WeightStreamOpenLink(&stream->links[WEIGHT_STREAM_PAIR],config->pair_device,config->region,config->region_bytes,config->pair_gid_index,&pair_up);
+	stream->links_up = fabric_up << WEIGHT_STREAM_FABRIC | pair_up << WEIGHT_STREAM_PAIR;
+	if ( status == SPARK_STATUS_OK && stream->links_up == 0u )
+		status = WeightStreamNoLink(config);
 	memset(mine,0,sizeof(mine));
 	for (peer=0u; peer<config->ranks && status == SPARK_STATUS_OK; peer++)
-		if ( peer != config->rank )
-		{
-			const uint32_t link = WeightStreamLinkOf(stream,peer);
-			status = WeightStreamCreateQp(&stream->links[link],peer,config->depth,config->region,&mine[(link == WEIGHT_STREAM_PAIR ? SPARK_WEIGHT_STREAM_MAX_RANKS : 0u) + peer]);
-		}
+		for (link=0u; link<2u && peer != config->rank && status == SPARK_STATUS_OK; link++)
+			if ( ((stream->links_up >> link) & 1u) != 0u )
+				status = WeightStreamCreateQp(&stream->links[link],peer,config->depth,config->region,&mine[(link == WEIGHT_STREAM_PAIR ? SPARK_WEIGHT_STREAM_MAX_RANKS : 0u) + peer]);
 	if ( status == SPARK_STATUS_OK )
 		status = config->gather(config->gather_context,mine,stream->table,sizeof(mine));
+	if ( status == SPARK_STATUS_OK )
+		status = WeightStreamChooseLinks(stream);
 	for (peer=0u; peer<config->ranks && status == SPARK_STATUS_OK; peer++)
 		if ( peer != config->rank )
 		{
-			const uint32_t link = WeightStreamLinkOf(stream,peer);
+			link = WeightStreamLinkOf(stream,peer);
 			status = WeightStreamConnect(stream->links[link].qps[peer],WeightStreamEndpointOf(stream,peer),link == WEIGHT_STREAM_PAIR ? config->pair_gid_index : config->fabric_gid_index,
 				config->traffic_class);
 		}
@@ -408,8 +477,10 @@ static uint64_t WeightStreamChunkLength(uint64_t total, uint32_t chunk_bytes, ui
 
 static SparkStatus WeightStreamPollAll(SparkWeightStream *stream, WeightStreamCall *call)
 {
-	SparkStatus status = WeightStreamPoll(stream,call,WEIGHT_STREAM_FABRIC);
-	if ( status == SPARK_STATUS_OK && stream->paired != 0u )
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( (stream->links_up & (1u << WEIGHT_STREAM_FABRIC)) != 0u )
+		status = WeightStreamPoll(stream,call,WEIGHT_STREAM_FABRIC);
+	if ( status == SPARK_STATUS_OK && (stream->links_up & (1u << WEIGHT_STREAM_PAIR)) != 0u )
 		status = WeightStreamPoll(stream,call,WEIGHT_STREAM_PAIR);
 	return status;
 }
@@ -523,7 +594,7 @@ SparkStatus SparkWeightStreamRotate(SparkWeightStream *stream, uint32_t step, ui
 	uint64_t half,send_base,start;
 	WeightStreamCall call;
 	SparkStatus status;
-	if ( config == 0 || block == 0 || stream->paired == 0u || bytes == 0u || (bytes % 2u) != 0u || own_offset + bytes > config->region_bytes ||
+	if ( config == 0 || block == 0 || (config->ranks % 2u) != 0u || bytes == 0u || (bytes % 2u) != 0u || own_offset + bytes > config->region_bytes ||
 		partner_offset + bytes > config->region_bytes || landing_offset + bytes > config->region_bytes || pair_landing_offset + bytes > config->region_bytes )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	ranks = config->ranks;
