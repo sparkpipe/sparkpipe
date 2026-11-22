@@ -316,6 +316,58 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     through the Python drafter with `block_draftd.py`'s context store and
     compares the answers, the drafts and each side's accepted length against
     the recording's committed stream.
+- **DeepSeek V4.1 Flash DSpark** (`modules/dsv41_dspark_draft_stage/`,
+  `build/modules/dsv41_dspark_draft_stage.so`). It binds the
+  `dsv41dspark.mxfp4.tp1` pack through weightd, finds every tensor by name in
+  the pack's manifest and refuses a checkpoint config of another shape.
+  - **Window.** Per sequence, a 128-position ring of 512-wide keys for each of
+    the three stages, as `block_draftd.py`'s `RingContext` keeps it. A tap row
+    (taps `o36`, `o37` and `o38`, 5,120 wide each) goes through the activation's
+    FP8 quantize-dequantize, `main_proj` and `main_norm`; then per stage `wkv`,
+    `kv_norm`, rope on the last 64 lanes and the quantize-dequantize, into slot
+    `position % 128`. A frame first drops every slot at or past its first
+    position and then writes its last 128 rows. A frame at position 0 starts
+    the sequence over; a frame from another engine session or request at a
+    later position retires the window, which stays as a donor. The module
+    keeps as many windows as the lane's `context_bytes` holds (at most 1,024)
+    and drops the least recently written first.
+  - **Proposals.** `AWAIT_TAPS` while the sequence has no window or the window
+    lacks the position before the anchor, checked on the host before any
+    device work. Missing window positions are copied from other windows, the
+    most recently written first, whose tokens match the committed ones. After
+    the last gap that remains, a held token that differs from the committed
+    one answers `NO_CONTEXT`. Otherwise the five-row block (the anchor and four
+    noise tokens) runs through the three stages, and the heads answer the root
+    and up to five drafts.
+  - **Block forward,** as `dspark_fast.DsparkFast` computes it: four
+    hyper-connection streams with Sinkhorn-normalized mixes
+    (`LmHcSinkhornMixes`); 64-head attention over the window and the whole
+    block with sinks, the inverse rope on the output, grouped `wo_a`, then
+    `wo_b`; a MoE of 3 of 128 routed experts and the shared expert. The routed
+    experts are MXFP4 with E8M0 scales, read in place through a per-expert
+    pointer table, each expert's weights once for every row that chose it.
+    The FP8 projections (32 x 32 E8M0 block scales, expanded per row at
+    `open`) run through `LmDenseRows<LmMxfp8>`. Every product accumulates in
+    fp32.
+  - **Heads.** The target's head in bf16 with fp32 logits, then five Markov
+    steps over the whole vocabulary (`markov_head.head` against the previous
+    token's `markov_head.embed` row). Greedy takes the best score. A sampling
+    rule keeps the 64 best under its nucleus (of the vocabulary-wide softmax)
+    and top-k, and the verifier's keyed Gumbel noise picks among them, as
+    `coupled_choice` does. The confidence head reads the hidden row and the
+    previous token's embedding.
+  - **Check.** `tools/spec_offline/dsv41_dspark_block_compare.py extract`
+    cuts an unbroken run of positions F..N of a sequence out of a tap
+    recording. `build/dsv41_dspark_block_probe` ingests it and dumps the window
+    keys, the streams after each stage, the hidden rows and logits at N and
+    the drafts under three rules. `compare --precise` checks the window
+    against `RingContext`, each stage against `DsparkFast` run from the
+    module's own input, and the drafts against `DsparkFast`'s heads on the
+    module's hidden rows. The probe also checks the donor path, and `--time`
+    times the forward and `propose`.
+  - **Replay gate.** `build/drafter_module_replay` and
+    `tools/spec_offline/drafter_replay_compare.py --dspark`, which replays
+    the schedule through `block_draftd.py`'s `RingContext` and `DsparkFast`.
 
 ## Draft farm
 

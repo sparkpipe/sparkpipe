@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Replay a tap recording through a latent block drafter as block_draftd.py serves it, and compare with a drafter module.
+"""Replay a tap recording through a Python drafter as block_draftd.py serves it, and compare with a drafter module.
 
     drafter_replay_compare.py --checkpoint DIR --target SHARD --recording FILE --module-drafts FILE [--rule SEED,INVTEMP,NUCLEUS,TOP_K]
                               [--context-bytes N] [--depth N] [--limit N] [--embed NAME --head NAME --norm NAME]
+    drafter_replay_compare.py --dspark --checkpoint DIR --recording FILE --module-drafts FILE [--rule ...] [--context-bytes N] [--depth N]
 
 `build/drafter_module_replay` drives a drafter module through the recording and writes one line per request. This
-script replays the same request schedule through the Python drafter with block_draftd.py's context store (LatentContext:
-owners, rewinds, donor prefixes, token checks) and its eager forward and heads: before each decode, verify or chain
-frame at position p > 0, a request at p with the frame's first token as the anchor; then the frame is written. It
-prints how many requests both sides answered alike, how many drafts are equal token for token, and each side's mean
-accepted length against the recording's committed stream (the last token written at each position).
+script replays the same request schedule through the Python drafter with block_draftd.py's context store: before each
+decode, verify or chain frame at position p > 0, a request at p with the frame's first token as the anchor; then the
+frame is written. A latent block drafter (K3.1 Pro DSpark) runs with LatentContext (owners, rewinds, donor prefixes,
+token checks) and its eager forward and heads. --dspark serves a checkpoint's built-in DSpark drafter (DeepSeek V4.1
+Flash) as block_draftd.py does: RingContext windows, donor fills of the window, the token check after the last gap, and
+dspark_fast.DsparkFast with its CUDA graphs. It prints how many requests both sides answered alike, how many drafts
+are equal token for token, and each side's mean accepted length against the recording's committed stream (the last
+token written at each position).
 """
 import argparse
 import sys
@@ -61,14 +65,15 @@ def accepted(drafts, stream, position):
 
 
 class Replay:
-    def __init__(self, drafter, context_bytes, rule, depth):
-        self.drafter, self.context_bytes, self.depth = drafter, context_bytes, depth
+    def __init__(self, drafter, context_bytes, rule, depth, dspark=False):
+        self.drafter, self.context_bytes, self.depth, self.dspark = drafter, context_bytes, depth, dspark
         self.contexts = OrderedDict()
         self.tokens = {}
         self.draft_seconds = []
         d = drafter
         self.columns = None
         self.rule = None
+        self.rule_values = (rule[0], float(np.float32(rule[1])), float(np.float32(rule[2])), rule[3])
         if rule[1] > 0.0:
             seed = rule[0] - (1 << 64) if rule[0] >= (1 << 63) else rule[0]
             self.rule = (torch.tensor(seed, device=d.device), torch.tensor(np.float32(rule[1]), device=d.device),
@@ -80,11 +85,47 @@ class Replay:
             self.contexts[("retired", sequence, getattr(context, "owner", None))] = self.contexts.pop(sequence)
             context = None
         if context is None or first == 0:
-            context = LatentContext(self.drafter)
+            context = self.new_context()
             context.owner = owner
             self.contexts[sequence] = context
         self.contexts.move_to_end(sequence)
         return context
+
+    def new_context(self):
+        if self.dspark:
+            from block_draftd import RingContext
+            return RingContext(self.drafter)
+        return LatentContext(self.drafter)
+
+    def draft_dspark(self, sequence, position, anchor, committed):
+        from block_draftd import dspark_rule
+        d = self.drafter
+        context = self.contexts.get(sequence)
+        if context is None or (position != 0 and not bool(context.held(np.array([position - 1]))[0])):
+            return "await", []
+        positions = np.arange(max(0, position - context.window), position)
+        held = context.held(positions)
+        if not held.all():
+            for other_sequence, other in reversed(self.contexts.items()):
+                if other_sequence == sequence:
+                    continue
+                missing = positions[~context.held(positions)]
+                if len(missing) == 0:
+                    break
+                usable = missing[other.held(missing) & (other.tokens[missing % other.window] == committed[missing])]
+                if len(usable) != 0:
+                    context.copy_from(other, usable)
+            held = context.held(positions)
+        if not held.all():
+            positions = positions[int(np.flatnonzero(~held)[-1]) + 1:]
+        if not np.array_equal(context.tokens[positions % context.window], committed[positions]):
+            return "no-context", []
+        rule = dspark_rule(d, self.rule_values) if self.rule_values[1] > 0.0 else None
+        torch.cuda.synchronize()
+        started = time.monotonic()
+        drafts, _ = d.draft(context.ring, int(anchor), position, rule)
+        self.draft_seconds.append(time.monotonic() - started)
+        return "drafts", list(drafts)[:min(self.depth, d.max_drafts)]
 
     def committed(self, key, position, anchor):
         stream = self.tokens.setdefault(key, np.zeros(0, dtype=np.uint32))
@@ -95,6 +136,8 @@ class Replay:
         return stream[:position + 1]
 
     def draft(self, sequence, position, anchor, committed):
+        if self.dspark:
+            return self.draft_dspark(sequence, position, anchor, committed)
         d = self.drafter
         context = self.contexts.get(sequence)
         if context is None or not context.covers(position):
@@ -145,7 +188,8 @@ class Replay:
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--target", default="")
+    parser.add_argument("--dspark", action="store_true")
     parser.add_argument("--recording", required=True)
     parser.add_argument("--module-drafts", required=True)
     parser.add_argument("--rule", default="0,0,0,0")
@@ -158,8 +202,13 @@ def main():
     options = parser.parse_args()
     seed, inverse_temperature, nucleus, top_k = options.rule.split(",")
     rule = (int(seed), float(inverse_temperature), float(nucleus), int(top_k))
-    drafter = open_drafter(options.checkpoint, options.target, {"embed": options.embed, "head": options.head, "norm": options.norm}, "cuda")
-    replay = Replay(drafter, options.context_bytes, rule, options.depth)
+    if options.dspark:
+        from dspark_fast import DsparkFast
+        drafter = DsparkFast(options.checkpoint, "cuda")
+        drafter.warm()
+    else:
+        drafter = open_drafter(options.checkpoint, options.target, {"embed": options.embed, "head": options.head, "norm": options.norm}, "cuda")
+    replay = Replay(drafter, options.context_bytes, rule, options.depth, options.dspark)
     module = module_answers(options.module_drafts)
     streams = committed_streams(options.recording)
     python = []
@@ -187,7 +236,8 @@ def main():
     for item in module:
         answers[item[2]] = answers.get(item[2], 0) + 1
     print(f"requests {len(module)}: answers equal {same_answer} ({answers}); both drafted {len(drafted)}, drafts equal {same_drafts};"
-          f" Python draft {1e3 * np.median(replay.draft_seconds) if replay.draft_seconds else 0.0:.2f} ms median (eager, without CUDA graphs)")
+          f" Python draft {1e3 * np.median(replay.draft_seconds) if replay.draft_seconds else 0.0:.2f} ms median"
+          f" ({'DsparkFast, CUDA graphs' if options.dspark else 'eager, without CUDA graphs'})")
     if drafted:
         print(f"mean accepted length against the recording: module {np.mean(module_accepted):.4f} python {np.mean(python_accepted):.4f};"
               f" accepted length distribution module {np.bincount(module_accepted, minlength=drafter.block + 1).tolist()}"
