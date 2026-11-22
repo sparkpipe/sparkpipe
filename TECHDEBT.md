@@ -33,12 +33,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   `cisco0` on port 0, [FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)); there are no
   direct pair links. A fleet now runs on one switch, with an optional second
   switch on the second port, and weightd's mesh uses whichever ports are active
-  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*). Replace the
+  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*); the lanes'
+  control endpoints and tap streams use the first port alone. Replace the
   legacy ring/single-switch/dual-switch topology modes with one schema for one
   or two all-to-all rails, and generate the four-, eight-, and sixteen-Spark
   profiles and the pinned interface, address and communicator tables from it.
-- The streamed-prefill weight stream (`ring/transport/weight_stream.c`) still
-  needs both a fabric and a pair device; it does not yet run on one port.
 - weightd puts a whole peer on one rail: a link takes the second rail when the
   two ranks' parities differ (`SparkWeightdMeshSecondRailPeers`). At sixteen
   ranks that is eight peers against seven. A group of four has two of a rank's
@@ -60,8 +59,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
   which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
   node; release main's agent, which has that default, and drop the override.
-- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
-  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- The hub drafters take taps over the 10 GbE link to sparkf (`10.10.250.2`),
+  forwarded through sparkf, because the first port is the only network every
+  fleet has. A fleet with the second switch could stream them to the hub's
+  second-port address `10.10.201.250` at 100 Gb/s; the lane records would have
+  to choose the endpoint by port state, as weightd's mesh does.
 - spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
   run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
   another switch port to find out which end is at fault.
@@ -1346,8 +1348,10 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 - The hub's drafters still run in Python (`tools/block_draftd.py`), one
   process per lane. `build/sparkpipe_draftd` is the C replacement: one
   process per GPU, DFT3 and tap stream in C. It serves only the host replay
-  drafter so far. The engine drafters (DFlash2 for K3, the Qwen3.8-27B
-  pair, the K3.1 Pro and DSV4.1 DSparks) and weightd on the hub come next.
+  drafter so far. The engine drafters (the K3.1 Pro and DSV4.1 DSparks and
+  the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
+  weightd on the hub come next; K3's DFlash2 drafter retires with its lane
+  (#1910).
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
@@ -1500,6 +1504,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
+  and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
+  backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
+  return `SPARK_STATUS_OK` from the Metal `SparkDeviceBackendProgramBegin`, and pass `tests/test_device_contract.c`'s
+  program sections on a Mac with Metal.
 - `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
   process, CPU-copy daemon) has faulted four times on GB10, on three hosts
   (lenovo7 twice, spark1, lenovo8), with Xid 31, an MMU `FAULT_PTE` on a

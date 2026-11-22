@@ -362,6 +362,13 @@ class NodeBaselineContractTest(unittest.TestCase):
             "IP link set dev enp1s0f1np1 mtu 9000",
             "IP address replace 10.10.100.13/24 dev enp1s0f1np1"])
 
+    def test_the_baseline_addresses_follow_the_fabric_file(self) -> None:
+        fabric = json.loads((ROOT / "tools" / "spark_fabric.json").read_text())
+        self.assertEqual((MODULE.SWITCHED_INTERFACE, MODULE.SWITCHED_PREFIX, MODULE.SWITCHED_ADDRESS_BASE),
+                         (fabric["first_port"]["interface"], fabric["first_port"]["prefix"], fabric["first_port"]["address_base"]))
+        self.assertEqual((MODULE.RAIL2_INTERFACE, MODULE.RAIL2_PREFIX),
+                         (fabric["second_port"]["interface"], fabric["second_port"]["prefix"]))
+
     def test_node_layout_installs_every_missing_root_owned_by_the_node_user(self) -> None:
         self.assertEqual(MODULE.node_layout_roots((ROOT / "tools" / "spark_node_layout.json").read_text()),["extnvme","kvcache","sparkdata","srcdata"])
         with tempfile.TemporaryDirectory() as directory:

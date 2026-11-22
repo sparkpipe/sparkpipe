@@ -29,6 +29,34 @@ def refusal_cases():
     return failures
 
 
+def goal_list_cases():
+    failures = []
+    lines = (ROOT / "Makefile").read_text().splitlines()
+    checks = [index for index, line in enumerate(lines) if line.startswith("NVRM_UNPORTED_GOALS :=")]
+    if len(checks) != 1:
+        return [f"the Makefile has {len(checks)} unported-goal checks, not one"]
+    goals = []
+    for index, line in enumerate(lines):
+        if not line.startswith("NVRM_FLAVOUR_GOALS") or line == "NVRM_FLAVOUR_GOALS :=":
+            continue
+        added = re.fullmatch(r"NVRM_FLAVOUR_GOALS \+= (\S+)", line)
+        if added is None:
+            failures.append(f"line {index + 1} names nvrm goals other than one goal beside its rule: {line}")
+            continue
+        goal = added.group(1)
+        goals.append(goal)
+        if index > checks[0]:
+            failures.append(f"{goal} is added after the unported-goal check, which then refuses it")
+        if not any(following.startswith(f"{goal}:") for following in lines[index + 1:index + 3]):
+            failures.append(f"{goal} is not added beside its own rule")
+    if "nvrm-device" not in goals or "clean" not in goals:
+        failures.append(f"the nvrm goals lack nvrm-device or clean: {goals}")
+    run = make("-n", "SPARKPIPE_DEVICE=nvrm", *goals)
+    if run.returncode != 0 or "still call the CUDA runtime" in run.stderr:
+        failures.append(f"the nvrm flavour refused its own goals {' '.join(goals)}: {run.stderr.strip()[-200:]}")
+    return failures
+
+
 def nvrm_build_cases():
     failures = []
     run = make("-n", "-B", "SPARKPIPE_DEVICE=nvrm", "nvrm-device")
@@ -72,13 +100,14 @@ def dependency_cases():
 
 
 def main():
-    failures = refusal_cases() + nvrm_build_cases() + dependency_cases()
+    failures = refusal_cases() + goal_list_cases() + nvrm_build_cases() + dependency_cases()
     for failure in failures:
         print(f"FAIL {failure}")
     if failures:
         print(f"\nFAIL ({len(failures)})")
         return 1
-    print("\nPASS SPARKPIPE_DEVICE is cuda by default, refuses other values and unported nvrm goals, and the nvrm library links no vendor library")
+    print("\nPASS SPARKPIPE_DEVICE is cuda by default, refuses other values and unported nvrm goals, accepts each nvrm goal added beside its "
+          "rule, and the nvrm library links no vendor library")
     return 0
 
 

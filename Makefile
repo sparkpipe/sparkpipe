@@ -9,7 +9,8 @@ CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 CUDA_STUB_INCLUDE_FLAGS := -Itests/cuda_stub -Imodel-families/common/include
-DEVICE_CUDA_STUB_TEST_SOURCES := runtime/device/device.c runtime/device/cuda/device_cuda.c
+DEVICE_CORE_SOURCES := runtime/device/device.c runtime/device/program.c
+DEVICE_CUDA_STUB_TEST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
 ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS)
@@ -33,13 +34,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch nvrm-weightd nvrm-fault-reports clean
-ifeq ($(SPARKPIPE_DEVICE),nvrm)
-NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
-ifneq ($(NVRM_UNPORTED_GOALS),)
-$(error SPARKPIPE_DEVICE=nvrm builds $(NVRM_FLAVOUR_GOALS); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime)
-endif
-endif
+NVRM_FLAVOUR_GOALS :=
 MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
@@ -78,11 +73,11 @@ SHARED_LIBRARY_EXT ?= so
 endif
 DEVICE_RUNTIME_DIR := build/runtime_libs
 DEVICE_HOST_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_host.$(SHARED_LIBRARY_EXT)
-DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
+DEVICE_HOST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
-DEVICE_NVRM_SOURCES := runtime/device/device.c src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
+DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
 NVRM_VENDOR := runtime/device/nvrm/vendor
 NVRM_MODULE_RELEASES := 580.178.04 595.84
 NVRM_MODULE_RELEASE ?= 580.178.04
@@ -92,7 +87,7 @@ endif
 NVRM_RELEASE_STAMP := build/nvrm_module_release
 NVRM_RELEASE_DEPENDENCIES := runtime/device/nvrm/release/$(NVRM_MODULE_RELEASE)/nvrm_release.h $(NVRM_RELEASE_STAMP)
 DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/release/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-kernel-modules/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-doc
-WEIGHTD_DEVICE_SOURCES_cuda := runtime/device/device.c runtime/device/cuda/device_cuda.c
+WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
 WEIGHTD_DEVICE_SOURCES := $(WEIGHTD_DEVICE_SOURCES_$(SPARKPIPE_DEVICE))
 DEVICE_FLAVOUR_LIBRARY_cuda := $(if $(CUDA_RUNTIME_HEADER),$(DEVICE_CUDA_LIBRARY))
@@ -394,6 +389,7 @@ TEST_NAMES := \
     test_weightd_map \
     test_expert_working_set \
     test_weightd_mesh_mock \
+    test_weight_stream_links \
     test_module_library \
     test_speculation_lookup_draft \
     test_weightd_pacer \
@@ -692,6 +688,7 @@ PYTHON_TESTS := \
 	tests/test_k3_index_exchange_cuda.py \
 	tests/test_runner_capture_flags_cuda.py \
 	tests/test_device_adopted_capture_cuda.py \
+	tests/test_device_program_cuda.py \
 	tests/test_stage_runner_sum_rule_cuda.py \
 	tests/test_stage_runner_failed_dispatch_cuda.py \
 	tests/test_stage_runner_single_gpu_cuda.py \
@@ -854,6 +851,7 @@ PYTHON_TESTS := \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
+	tests/test_drafter_pack.py \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
@@ -1210,6 +1208,7 @@ $(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_R
 	@mkdir -p $(@D)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-weightd
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
@@ -1531,9 +1530,9 @@ $(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_HOST_SOURCES) $(LDLIBS) -o $@
 
-$(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
+$(DEVICE_CUDA_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
+	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 $(STAGE_RUNNER_BINARIES): $(DEVICE_CUDA_LIBRARY)
 
 build/test_device_capture_cuda: tests/cuda/device_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
@@ -1552,23 +1551,27 @@ $(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runt
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-device
 .PHONY: nvrm-device nvrm-first-light test-nvrm
 nvrm-device: $(DEVICE_NVRM_LIBRARY)
 
 build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
 build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-first-light-static
 .PHONY: nvrm-first-light-static
 nvrm-first-light-static: build/nvrm_first_light_static
 
 build/nvrm_memory_bandwidth: tools/nvrm_memory_bandwidth.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-memory-bandwidth
 .PHONY: nvrm-memory-bandwidth
 nvrm-memory-bandwidth: build/nvrm_memory_bandwidth
 
@@ -1648,6 +1651,7 @@ build/test_nvrm_hosted_launch: tests/nvrm/hosted_launch.cu tools/nvrm_kernel_man
 	$(NVRM_HOSTED_MODULE)
 build/test_nvrm_launch_arguments: tests/nvrm/launch_arguments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
+NVRM_FLAVOUR_GOALS += test-nvrm-launch
 .PHONY: test-nvrm-launch
 test-nvrm-launch: build/test_nvrm_launch_arguments
 	./build/test_nvrm_launch_arguments
@@ -1658,6 +1662,7 @@ build/nvrm_occupancy_ab: tests/nvrm/occupancy_ab.cu tools/nvrm_kernel_manifest.p
 build/cuda_occupancy_ab: tests/nvrm/occupancy_ab.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-occupancy-ab
 .PHONY: nvrm-occupancy-ab
 nvrm-occupancy-ab: nvrm-gpu-present build/nvrm_occupancy_ab build/cuda_occupancy_ab
 	@./build/cuda_occupancy_ab > build/occupancy_ab.cuda.txt && ./build/nvrm_occupancy_ab > build/occupancy_ab.nvrm.txt && \
@@ -1670,6 +1675,7 @@ build/nvrm_launch_latency: tests/nvrm/launch_latency.cu tools/nvrm_kernel_manife
 build/cuda_launch_latency: tests/nvrm/launch_latency.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-launch-latency
 .PHONY: nvrm-launch-latency
 nvrm-launch-latency: nvrm-gpu-present build/nvrm_launch_latency build/cuda_launch_latency
 	@for pass in 1 2 3; do ./build/cuda_launch_latency cuda && ./build/nvrm_launch_latency nvrm; done
@@ -1686,6 +1692,7 @@ build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kerne
 build/cuda_cross_process_copy: tests/nvrm/cross_process_copy.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-cross-process-copy
 .PHONY: nvrm-cross-process-copy
 nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cuda_cross_process_copy
 	@./build/cuda_cross_process_copy cuda && ./build/nvrm_cross_process_copy nvrm
@@ -1693,6 +1700,7 @@ nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cu
 build/nvrm_fault_reports: tests/nvrm/fault_reports.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
+NVRM_FLAVOUR_GOALS += nvrm-fault-reports
 .PHONY: nvrm-fault-reports
 nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 	@set -e; status=0; for case in trap:13 address:31 stall:; do mode=$${case%%:*}; expected=$${case#*:}; \
@@ -1705,22 +1713,25 @@ nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
+NVRM_FLAVOUR_GOALS += nvrm-gpu-present
 .PHONY: test-nvrm-gpu nvrm-gpu-present
 nvrm-gpu-present:
 	@if [ ! -e $(NVRM_CONTROL_DEVICE) ]; then echo "FAIL test-nvrm-gpu: $(NVRM_CONTROL_DEVICE) is missing; the GPU gate runs only where the open kernel module is loaded"; exit 1; fi
 
+NVRM_FLAVOUR_GOALS += test-nvrm-gpu
 test-nvrm-gpu: nvrm-gpu-present $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
 	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; output=build/test-nvrm-gpu.output; \
 	for test_binary in $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light; do echo "RUN $$test_binary"; \
 		./$$test_binary > $$output 2>&1 || status=1; cat $$output; \
 		if grep -q '^SKIP' $$output; then echo "FAIL $$test_binary skipped part of the GPU gate"; status=1; fi; done; \
 	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
+NVRM_FLAVOUR_GOALS += test-nvrm
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
-$(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
+$(DEVICE_METAL_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit -framework CoreGraphics $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit -framework CoreGraphics $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
 
 ifneq ($(METAL_TOOLCHAIN),)
 build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
@@ -1985,6 +1996,9 @@ build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(
 
 build/device_adopted_capture_cuda: tests/cuda/device_adopted_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
 	$(NVCC) $(NVCCFLAGS) --cudart shared -I. -Iinclude tests/cuda/device_adopted_capture_cuda.cu $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -lcuda -o $@
+
+build/device_program_cuda: tests/cuda/device_program_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared -I. -Iinclude tests/cuda/device_program_cuda.cu $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
 build/runner_capture_flags_cuda: tests/cuda/runner_capture_flags_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_capture_flags_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 build/runner_verify_step_cuda: tests/cuda/runner_verify_step_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
@@ -2399,6 +2413,9 @@ build/test_weightd_map: tests/test_weightd_map.c $(DEVICE_CUDA_STUB_TEST_SOURCES
 build/test_weightd_mesh_mock: tests/test_weightd_mesh_mock.c node/weightd_mesh.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c tests/ibv_stub/infiniband/verbs.h tests/ibv_stub/sys/mman.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) -Itests/ibv_stub -DSPARK_WEIGHTD_MESH_DIR=\"/tmp/spark-weightd-mesh-mock\" $(CFLAGS) tests/test_weightd_mesh_mock.c tests/ibv_stub/verbs.c tests/cuda_stub/cuda_runtime_stub.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_weight_stream_links: tests/test_weight_stream_links.c ring/transport/weight_stream.c tests/ibv_stub/verbs.c tests/ibv_stub/infiniband/verbs.h $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) -Itests/ibv_stub $(CFLAGS) tests/test_weight_stream_links.c tests/ibv_stub/verbs.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(TEST_VALIDATOR_CHANGED) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 build/test_speculation_lookup_draft: tests/test_speculation_lookup_draft.c include/sparkpipe/spark_speculation_lookup_draft.h $(CORE_LIBRARY)
@@ -2489,6 +2506,7 @@ tree_summary:
 	@printf "deployment_sources="; printf '%s\n' $(DEPLOYMENT_SOURCES) | wc -l
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 
+NVRM_FLAVOUR_GOALS += clean
 clean:
 	rm -rf build
 
@@ -2522,3 +2540,10 @@ test_station: build/test_tiktoken_compiled  $(RUNTIME_LIBRARY)
 	python3 tests/test_spark_tiktoken_compile.py
 	python3 tests/test_kv_failure_host.py
 	python3 tests/test_frame_error_host.py
+
+ifeq ($(SPARKPIPE_DEVICE),nvrm)
+NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
+ifneq ($(NVRM_UNPORTED_GOALS),)
+$(error SPARKPIPE_DEVICE=nvrm builds $(strip $(NVRM_FLAVOUR_GOALS)); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime)
+endif
+endif
