@@ -91,13 +91,14 @@ operations use.
 
 ## Backends
 
-`SPARK_DEVICE_PROPERTY_PROGRAMS` is set by every backend that runs programs.
+`SPARK_DEVICE_PROPERTY_PROGRAMS` is set by every backend that runs programs, and a caller selects programs by it:
+where it is clear, the caller launches eagerly.
 
 | Backend | Recording | Run |
 | --- | --- | --- |
 | CUDA | stream capture on the queue's stream, local to the recording thread, so launches made with CUDA's own calls are captured as well. A patch resolves to the last kernel node captured on the stream (`cudaStreamGetCaptureInfo`), and its parameter offset and size come from `cudaFuncGetParamInfo`. Event records and waits become external event nodes. Finish ends the capture, instantiates the graph and uploads it | values that changed since the last run are written to the kernel nodes they touch (`cudaGraphExecKernelNodeSetParams`), then one `cudaGraphLaunch` |
 | host | the recorded operations | each operation replayed in order through the public calls, with patched constants in a scratch copy |
-| Metal | the recorded operations | the same replay as the host backend |
+| Metal | refused with `SPARK_STATUS_UNSUPPORTED`: the replay has not run on Metal hardware, so Metal launches eagerly | not reached |
 | nvrm | the recorded operations | refused with `SPARK_STATUS_UNSUPPORTED`. Running a program operation by operation would be a slow path, and programs run from prebuilt descriptors instead in a later change |
 
 CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
@@ -113,7 +114,7 @@ CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
 
 [`tests/test_device_contract.c`](../tests/test_device_contract.c) runs in
 `make test` against the host backend. Its nvrm build runs in
-`make test-nvrm-gpu` and its Metal build on a Mac with Metal. It covers:
+`make test-nvrm-gpu` and its Metal build on a Mac with Metal, where it checks that recording is refused. It covers:
 
 - refusals: a patch or a finish without a recording, a second recording on
   one queue, waits and synchronization while recording, a patch after a fill,

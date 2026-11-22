@@ -89,6 +89,11 @@ static void CountCallback(void *context)
 	__atomic_add_fetch((uint32_t *)context,1u,__ATOMIC_SEQ_CST);
 }
 
+static uint32_t ProgramsRecord(void)
+{
+	return(strcmp(SparkDeviceGetProperties()->backend,"metal") != 0);
+}
+
 static uint32_t ProgramsRun(void)
 {
 	return((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) != 0u);
@@ -614,6 +619,8 @@ static void TestKernelOrdering(SparkDeviceQueue *queue, SparkDeviceKernel *write
 static void TestKernelPrograms(SparkDeviceQueue *queue, SparkDeviceKernel *write)
 {
 	enum { COUNT = 5000, WIDTH = 256 };
+	if ( ProgramsRecord() == 0u )
+		return;
 	static const uint64_t values[][2] = {{11u, 5000u}, {977u, 1u}, {31337u, 4097u}};
 	SparkDeviceBuffer program_out, eager_out;
 	SparkDeviceBinding binding;
@@ -1094,6 +1101,12 @@ static void TestPrograms(SparkDeviceQueue *queue)
 	SparkDeviceEvent *mark = 0;
 	uint32_t calls = 0u, run, index, wrong = 0u;
 	uint64_t value = 0u;
+	if ( ProgramsRecord() == 0u )
+	{
+		CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"eagerly") != 0 &&
+			SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"a backend that records no programs refuses the recording, naming why, and its queue stays usable");
+		return;
+	}
 	CHECK(SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program source") == SPARK_STATUS_OK &&
 		SparkDeviceAllocate(&target,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program target") == SPARK_STATUS_OK &&
 		SparkDeviceEventCreate(&mark) == SPARK_STATUS_OK,"allocate the program's buffers and event");

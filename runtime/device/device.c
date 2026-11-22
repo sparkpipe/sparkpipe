@@ -1625,7 +1625,7 @@ SparkStatus SparkDeviceProgramRecord(SparkDeviceQueue *queue, const char *name)
 		program->queue_id = queue->id;
 		program->native = SparkDeviceBackendProgramNative();
 		DeviceCopyText(program->name,sizeof(program->name),name);
-		status = program->native != 0u ? SparkDeviceBackendProgramBegin(queue,program) : SPARK_STATUS_OK;
+		status = SparkDeviceBackendProgramBegin(queue,program);
 	}
 	if ( status == SPARK_STATUS_OK )
 		queue->recording = program;

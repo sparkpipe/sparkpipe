@@ -1496,6 +1496,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
+  and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
+  backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
+  return `SPARK_STATUS_OK` from the Metal `SparkDeviceBackendProgramBegin`, and pass `tests/test_device_contract.c`'s
+  program sections on a Mac with Metal.
 - `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
   process, CPU-copy daemon) has faulted three times on GB10 with Xid 31, an
   MMU `FAULT_PTE` on a `VIRT_WRITE` from `GPCCLIENT_T1`. Each time, other

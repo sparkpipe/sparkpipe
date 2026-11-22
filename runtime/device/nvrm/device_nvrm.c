@@ -1166,7 +1166,8 @@ SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
 SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
 {
 	(void)queue;
-	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_record",program->name,0,"the nvrm backend records programs in the device layer"));
+	(void)program;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)

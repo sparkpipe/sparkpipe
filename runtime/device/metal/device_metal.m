@@ -177,7 +177,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes :
 			(uint64_t)metal_device.recommendedMaxWorkingSetSize;
 		properties->max_buffer_bytes = (uint64_t)metal_device.maxBufferLength;
-		properties->properties = SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PROGRAMS | (metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
+		properties->properties = SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | (metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 		properties->max_group_threads = (uint32_t)metal_device.maxThreadsPerThreadgroup.width;
 		properties->max_shared_bytes = (uint32_t)metal_device.maxThreadgroupMemoryLength;
 		properties->max_constant_bytes = METAL_CONSTANT_BYTES;
@@ -1184,7 +1184,8 @@ SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
 SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
 {
 	(void)queue;
-	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_record",program->name,0,"this backend records programs in the device layer"));
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_record",program->name,0,
+		"the Metal backend records no programs: their replay has not run on Metal hardware, so Metal launches eagerly"));
 }
 
 SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)
