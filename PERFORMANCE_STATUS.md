@@ -488,6 +488,36 @@ They returned after 975 ms and 3.75 s: each step first waited for the long
 request's wave in flight to return, 0.8 s of one and the whole 3.2 s of the
 next. The API closed the request 11.1 s after accepting it.
 
+### One rank on one GB10 (2026-11-22)
+
+The instruments ran against a real rank of Qwen 3.8 27B FP8 on one GB10
+([receipts](qualification/turn-floor-20261122/README.md)). The GPU was
+shared with another service, so these are first readings, not a floor, and
+nothing here stands for a sixteen-rank lane.
+
+One GB10, one rank, GPU shared with another service, not a floor:
+
+| At 8,000 tokens of context | First token | Largest part |
+| --- | ---: | --- |
+| 1 new token | 561 ms | the wave before the last token, 421 ms |
+| 40 new tokens | 552 ms | the wave before the last token, 412 ms |
+| 500 new tokens | 954 ms | the wave before the last token, 813 ms |
+| 5,000 new tokens | 5,862 ms | five prefill waves, 5,717 ms |
+| nothing new | 255 ms | the last token's wave, 252 ms |
+
+A one-row wave is about 135 ms of that rank's work. A request's first wave
+costs about 250 ms more than that: 107 ms pass between its dispatch and the
+rank's work on it, and resuming a session with new tokens makes the wave
+itself about 140 ms longer. On this rank that start cost, not the new
+tokens, is the largest part of a small turn. After an engine stop and start
+the first turn waited 115 ms for the session's state and re-read no page.
+
+The run confirmed `POST /v1/cache/state`, the `cache` object of a completion
+and the miss ledger through a chat layer against the engine's own log, and
+found one fault: the engine reported no wait behind a background wave for a
+request that waited 538 ms at the rank. The fix is in this branch and has
+not yet run on a real rank.
+
 Not yet measured on the fleet: a turn on a cached session (first token
 against context and new tokens), restores from NVMe, decode against context,
 the session and subagent openings, and the other six models. The K3
