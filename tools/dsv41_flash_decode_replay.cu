@@ -235,10 +235,10 @@ static D41Layer ReplayLayer(uint32_t slot, uint32_t shared_width, const uint8_t 
 	const uint64_t fn = (uint64_t)LmHcSinkhornShape<D41K_HC>::kMix * D41K_HC * D41_HIDDEN * sizeof(float);
 	D41Layer layer;
 	memset(&layer, 0, sizeof(layer));
-	layer.attn_norm = (const uint16_t *)ReplayFilled(D41_HIDDEN * 2u, REPLAY_FILL_BF16, seed + 1u);
-	layer.ffn_norm = (const uint16_t *)ReplayFilled(D41_HIDDEN * 2u, REPLAY_FILL_BF16, seed + 2u);
-	layer.q_norm = (const uint16_t *)ReplayFilled(D41_QLORA * 2u, REPLAY_FILL_BF16, seed + 3u);
-	layer.kv_norm = (const uint16_t *)ReplayFilled(D41_HEAD_DIM * 2u, REPLAY_FILL_BF16, seed + 4u);
+	layer.attn_norm = (const uint16_t *)ReplayFilled(D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, seed + 1u);
+	layer.ffn_norm = (const uint16_t *)ReplayFilled(D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, seed + 2u);
+	layer.q_norm = (const uint16_t *)ReplayFilled(D41_QLORA * sizeof(uint16_t), REPLAY_FILL_BF16, seed + 3u);
+	layer.kv_norm = (const uint16_t *)ReplayFilled(D41_HEAD_DIM * sizeof(uint16_t), REPLAY_FILL_BF16, seed + 4u);
 	layer.q_a = ReplayLinear(D41_QLORA, D41_HIDDEN, seed + 10u);
 	layer.kv_a = ReplayLinear(D41_HEAD_DIM, D41_HIDDEN, seed + 12u);
 	layer.q_b = ReplayLinear(D41_LOCAL_HEADS * D41_HEAD_DIM, D41_QLORA, seed + 14u);
@@ -253,7 +253,7 @@ static D41Layer ReplayLayer(uint32_t slot, uint32_t shared_width, const uint8_t 
 	layer.hc_ffn_fn = (const float *)ReplayFilled(fn, REPLAY_FILL_F32, seed + 36u);
 	layer.hc_ffn_base = (const float *)ReplayFilled(LmHcSinkhornShape<D41K_HC>::kMix * sizeof(float), REPLAY_FILL_F32, seed + 37u);
 	layer.hc_ffn_scale = (const float *)ReplayFilled(4u * sizeof(float), REPLAY_FILL_F32, seed + 38u);
-	layer.router = (const uint16_t *)ReplayFilled((uint64_t)D41_EXPERTS * D41_HIDDEN * 2u, REPLAY_FILL_BF16, seed + 39u);
+	layer.router = (const uint16_t *)ReplayFilled((uint64_t)D41_EXPERTS * D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, seed + 39u);
 	layer.router_bias = (const float *)ReplayFilled(D41_EXPERTS * sizeof(float), REPLAY_FILL_F32, seed + 40u);
 	layer.e_w13_cells = cells13;
 	layer.e_w2_cells = cells2;
@@ -283,12 +283,12 @@ static SparkStatus ReplayRound(void *context, void *stream_pointer, uint32_t ope
 	if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16 && local == full )
 	{
 		site = 0u;
-		vectors = (uint64_t)rows * D41_HIDDEN * 2u / 16u;
+		vectors = (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t) / 16u;
 	}
 	else if ( operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER && row_elements == D41_HIDDEN )
 	{
 		site = 1u;
-		vectors = (uint64_t)rows * row_elements * 2u / 16u;
+		vectors = (uint64_t)rows * row_elements * sizeof(uint16_t) / 16u;
 	}
 	else
 	{
@@ -494,7 +494,7 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 	ReplayRequire(D41Cuda::Plan(state, arena, 0u) == arena_bytes, "the arena plan places every buffer");
 	state->arena = arena;
 	state->arena_bytes = arena_bytes;
-	ReplayFill(state->streams, (uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * 2u, REPLAY_FILL_BF16, 0x77u);
+	ReplayFill(state->streams, (uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, 0x77u);
 	ReplayFill(state->recurrent, (uint64_t)REPLAY_SLOTS * state->recurrent_bytes, REPLAY_FILL_BF16, 0x78u);
 	ReplayRequire(D41Cuda::Upload(state) == SPARK_STATUS_OK, "the stage's upload runs");
 	state->full_frequency = (float *)ReplayAllocate(2u * D41K_ROPE_PAIRS * sizeof(float));
@@ -541,7 +541,7 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 		for ( uint32_t slot = 0u; slot < D41_LAYERS; ++slot )
 			world->weights[slot] = ReplayLayer(slot, state->shared_width, pool13, pool2);
 	}
-	world->rounds.staging = (uint4 *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * 2u);
+	world->rounds.staging = (uint4 *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * sizeof(uint16_t));
 	{
 		std::vector<uint32_t> positions(rows), lengths(REPLAY_SLOTS, 1u), of_row(rows), begin(rows + 1u), indices(rows), recurrent(REPLAY_SLOTS);
 		for ( uint32_t row = 0u; row < rows; ++row )
@@ -568,7 +568,7 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 		world->step.recurrent_index = ReplayDeviceWords(recurrent);
 		world->step.token_ids = ReplayDeviceWords(std::vector<uint32_t>(rows, 7u));
 		world->step.route_fault = ReplayDeviceWords(std::vector<uint32_t>(1u, 0u));
-		world->step.hidden_bf16 = (uint16_t *)ReplayFilled((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * 2u, REPLAY_FILL_BF16, 0x700u);
+		world->step.hidden_bf16 = (uint16_t *)ReplayFilled((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * sizeof(uint16_t), REPLAY_FILL_BF16, 0x700u);
 		LM_LAUNCH((LmRowLanesKernel), rows, 256u, 0, (SparkGpuStream)0, world->step.sequence_row_begin, world->step.sequence_row_indices, state->row_lane,
 			state->row_ordinal);
 		LM_LAUNCH((D41CompressedEmitPositionKernel), 1u, 256u, 0, (SparkGpuStream)0, world->step.positions, state->bound_ratio2, rows, 2u);
@@ -583,8 +583,8 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 	world->plan.capacity = LM_WEIGHT_PREFETCH_GROUPS;
 	ReplayRequire(world->plan.host != 0, "the prefetch plan allocates");
 	world->mark_sink = (uint32_t *)ReplayAllocate(sizeof(uint32_t));
-	world->initial_streams = (uint16_t *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * 2u);
-	ReplayCuda(cudaMemcpy(world->initial_streams, state->streams, (uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * 2u, cudaMemcpyDeviceToDevice),
+	world->initial_streams = (uint16_t *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * sizeof(uint16_t));
+	ReplayCuda(cudaMemcpy(world->initial_streams, state->streams, (uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * sizeof(uint16_t), cudaMemcpyDeviceToDevice),
 		"keep the first streams");
 	if ( options->holds != 0 )
 		ReplayHolds(&world->rounds, options->holds, rows);
@@ -610,7 +610,7 @@ static cudaGraphExec_t ReplayCapture(ReplayWorld *world, SparkGpuStream stream, 
 	LmWeightPrefetchArm(&world->plan, stream);
 	ReplayCuda(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal), "begin capture");
 	LM_LAUNCH((ReplayCopyKernel), 8u, 256u, 0u, stream, (const uint4 *)world->initial_streams, (uint4 *)state->streams,
-		(uint64_t)world->step.rows * D41K_HC * D41_HIDDEN * 2u / 16u);
+		(uint64_t)world->step.rows * D41K_HC * D41_HIDDEN * sizeof(uint16_t) / 16u);
 	for ( uint32_t slot = 0u; slot < D41_LAYERS && status == SPARK_STATUS_OK; ++slot )
 	{
 		const uint32_t index = ReplayIndex(slot);
@@ -658,7 +658,7 @@ static void ReplayCheckFinite(ReplayWorld *world)
 	std::vector<uint16_t> streams((uint64_t)world->step.rows * D41K_HC * D41_HIDDEN);
 	std::vector<uint32_t> fault(1u);
 	uint64_t bad = 0u, digest = 0xcbf29ce484222325ull;
-	ReplayCuda(cudaMemcpy(streams.data(), world->state->streams, streams.size() * 2u, cudaMemcpyDeviceToHost), "read the streams");
+	ReplayCuda(cudaMemcpy(streams.data(), world->state->streams, streams.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost), "read the streams");
 	ReplayCuda(cudaMemcpy(fault.data(), world->step.route_fault, sizeof(uint32_t), cudaMemcpyDeviceToHost), "read the route fault");
 	for ( uint64_t index = 0u; index < streams.size(); ++index )
 	{
@@ -677,8 +677,8 @@ static void ReplayBoundaries(const ReplayOptions *options, SparkGpuStream stream
 	std::vector<D41Fp8Linear> copies(REPLAY_COPIES);
 	uint4 *tiny_source = (uint4 *)ReplayFilled((uint64_t)tiny_vectors * 16u, REPLAY_FILL_BF16, 0x800u);
 	uint4 *tiny_target = (uint4 *)ReplayAllocate((uint64_t)tiny_vectors * 16u);
-	uint16_t *activation = (uint16_t *)ReplayFilled((uint64_t)REPLAY_MAX_ROWS * D41_WO_A_ROWS * 2u, REPLAY_FILL_BF16, 0x801u);
-	uint16_t *output = (uint16_t *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * 2u);
+	uint16_t *activation = (uint16_t *)ReplayFilled((uint64_t)REPLAY_MAX_ROWS * D41_WO_A_ROWS * sizeof(uint16_t), REPLAY_FILL_BF16, 0x801u);
+	uint16_t *output = (uint16_t *)ReplayAllocate((uint64_t)REPLAY_MAX_ROWS * D41_HIDDEN * sizeof(uint16_t));
 	uint4 *sink = (uint4 *)ReplayAllocate(16u);
 	for ( uint32_t copy = 0u; copy < REPLAY_COPIES; ++copy )
 		copies[copy] = ReplayLinear(D41_HIDDEN, D41_WO_A_ROWS, 0x900u + 4u * copy);
