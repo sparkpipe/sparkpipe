@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """K3's load check: every projection slice of the production TP16 geometry (K3 and K3.1 Pro) fits the kernel its shape selects,
-routed_up's 224-wide slice takes the tiled GEMM for prefill by shape while inputs that are multiples of 64 take the stream GEMM, and
-a slice no kernel can run refuses at load through SPARK_FAIL with a message naming the projection and the fix."""
+every non-accumulating prefill projection takes the stream GEMM by shape, routed_up's 224-wide slice among them through the stream
+GEMM's K tail, while accumulating ones take the tiled GEMM, and a slice no kernel can run refuses at load through SPARK_FAIL with a
+message naming the projection and the fix."""
 import shutil
 import subprocess
 import sys
