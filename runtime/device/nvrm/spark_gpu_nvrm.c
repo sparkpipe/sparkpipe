@@ -589,15 +589,17 @@ SparkGpuError SparkGpuStreamCreateWithFlags(SparkGpuStream *stream, unsigned int
 SparkGpuError SparkGpuStreamCreateWithPriority(SparkGpuStream *stream, unsigned int flags, int priority)
 {
 	if ( priority != 0 )
-		GPU_REFUSE_IN("queue_create",SPARK_STATUS_UNSUPPORTED,"stream priorities are not implemented: a prioritized stream would run at the default priority");
+		GPU_REFUSE_IN("queue_create",SPARK_STATUS_UNSUPPORTED,"the device has one stream priority, 0: the range is 0 to 0");
 	return(SparkGpuStreamCreateWithFlags(stream,flags));
 }
 
 SparkGpuError SparkGpuDeviceGetStreamPriorityRange(int *least_priority, int *greatest_priority)
 {
-	(void)least_priority;
-	(void)greatest_priority;
-	GPU_REFUSE_IN("priority_range",SPARK_STATUS_UNSUPPORTED,"stream priorities are not implemented: every stream would run at one priority");
+	if ( least_priority != 0 )
+		*least_priority = 0;
+	if ( greatest_priority != 0 )
+		*greatest_priority = 0;
+	return(SPARK_GPU_SUCCESS);
 }
 
 SparkGpuError SparkGpuStreamDestroy(SparkGpuStream stream)
