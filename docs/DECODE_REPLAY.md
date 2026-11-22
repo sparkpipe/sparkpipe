@@ -16,7 +16,9 @@ It is a measurement tool, not a test of the model's numbers.
   projections with UE8M0 scales, the BF16 router, the hyper-connection mixers,
   and the routed experts in the MXFP4 cell layout (one pool of 96 experts that
   every layer shares). Values are bounded so that every step stays finite; the
-  run checks the streams and the route fault word at the end.
+  run checks the streams and the route fault word at the end and prints a
+  digest of the final streams, so two builds that must compute the same values
+  can be compared.
 - **Production initial state.** The arena starts zeroed, as the stage runner
   allocates it, and `D41Cuda::Upload` writes the first layer's collapse
   weights; the streams and the window ring start random.
@@ -70,7 +72,8 @@ warmup steps and takes, for each kernel position, the median duration and the
 median gap since the previous kernel ended. It reports six sequences by
 kernel names in order (attention output, attention core, attention input,
 shared expert, mHC, router) against `tools/dsv41_flash_decode_reference.json`,
-the same sequences on rank 0 of the four-node lane. `tests/test_dsv41_flash_decode_replay.py`
+the same sequences on rank 0 of the four-node lane, and the fused mHC kernel
+(`docs/FUSED_KERNELS.md`) as a seventh. `tests/test_dsv41_flash_decode_replay.py`
 checks the summary on a synthetic trace.
 
 ## Measurements (2026-11-22, CUDA flavour, two GB10 hosts, 30 steps after 5)
