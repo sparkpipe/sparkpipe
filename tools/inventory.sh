@@ -41,7 +41,7 @@ describe() {
 	ring/transport/hidden_transport.*) echo "hidden state between ranks" ;;
 	ring/transport/tp_collective.*) echo "tensor-parallel collectives" ;;
 	ring/transport/memlink.*) echo "shared memory link" ;;
-	ring/transport/rdma.cu) echo "RDMA backend" ;;
+	ring/transport/rdma.c) echo "RDMA backend" ;;
 	ring/transport/tcp.cu) echo "TCP backend" ;;
 	runtime/launch.h) echo "launch planning: tile height, shared bytes, grid" ;;
 	runtime/gemm.cuh) echo "the four CUDA calls a GEMM needs" ;;

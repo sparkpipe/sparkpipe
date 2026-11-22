@@ -1868,7 +1868,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`, because weightd's
     memory code uses the driver API and its client calls share objects with
     it (`runtime/spark_weightd.c`, `runtime/spark_weightd_worker.c`);
-  - the RDMA transport, for its kernels and for those weightd client calls;
+  - the RDMA transport (`libcuda.so.1`), for those weightd client calls; it is
+    host C and links no CUDA runtime;
   - `sparkpipe_model_residentd`, whose boundary buffers and streams go
     through `spark_gpu.h` (`libcudart.so.13`);
   - the CUDA device library (`libcudart.so.13`).

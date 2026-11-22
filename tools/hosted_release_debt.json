@@ -40,9 +40,9 @@
       }
     },
     {
-      "reason": "RDMA transport: its kernels (ring/transport/rdma.cu) run through the CUDA runtime, and its weightd mesh calls (SparkWeightdClientConnect, SparkWeightdClientMeshBroadcast) come from runtime/spark_weightd.c, which also holds weightd's driver-API memory code.",
+      "reason": "RDMA transport: its weightd mesh calls (SparkWeightdClientConnect, SparkWeightdClientMeshBroadcast) come from runtime/spark_weightd.c, which also holds weightd's driver-API memory code.",
       "files": {
-        "build/libhidden_transport_spark_host_rdma_verbs.so": ["needed libcuda.so.1", "needed libcudart.so.13"]
+        "build/libhidden_transport_spark_host_rdma_verbs.so": ["needed libcuda.so.1"]
       }
     },
     {

@@ -8,9 +8,20 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import stage_lane
+import importlib.util
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+AUDIT = _load("staged_kernels_audit", ROOT / "tools" / "staged_kernels_audit.py")
+AUDIT_TEST = _load("test_staged_kernels_audit", ROOT / "tests" / "test_staged_kernels_audit.py")
 
 MODEL = "glm53_full"
 ADAPTER = stage_lane.MODELS[MODEL]["adapter"]
+TRANSPORT = "libhidden_transport_spark_host_rdma_verbs.so"
 FAKE_SSH = """#!/usr/bin/env bash
 host="${@: -2:1}"
 command="${@: -1}"
@@ -55,6 +66,39 @@ def check_refusal(failures, why, code, stderr, hosts, local, missing, where):
         failures.append(f"setup {why} must refuse before any node is touched; it ran {(node_commands(hosts) + local)[:2]}")
 
 
+def check_stage_local(failures, home):
+    firmware = home / "elf-firmware"
+    for name in ("sparkpipe_model_residentd", "weightd_warm", "runtime_libs/libsparkpipe_device_cuda.so", TRANSPORT):
+        AUDIT_TEST.elf(firmware / name, [".text"])
+    AUDIT_TEST.elf(firmware / ADAPTER, [".text", ".nv_fatbin"])
+    AUDIT_TEST.kernels(firmware / f"{ADAPTER}.kernels", ["unit"])
+    environment = dict(os.environ, STAGE_MODEL=MODEL, STAGE_LANE="3", STAGE_FIRMWARE=str(firmware), STAGE_WEIGHTD_SOCKET="/unused", STAGE_MEMORY_MAX="1G")
+
+    def stage(name):
+        root = home / name
+        result = subprocess.run(["bash", str(ROOT / "tools" / "stage_lane.sh"), "stage-local", str(root)], env=environment, capture_output=True,
+                                text=True, timeout=120)
+        modules, findings = AUDIT.audit(root) if root.is_dir() else ([], ["no root"])
+        return result, {str(module) for module in modules}, findings
+
+    result, modules, findings = stage("staged-root")
+    if result.returncode != 0 or findings or modules != {f"lib/{ADAPTER}"}:
+        failures.append(f"stage-local must build the lane layout with the adapter's kernels under its staged name and a hidden transport with no "
+                        f"device code (exit {result.returncode}, {result.stderr.strip()[-200:]}, modules {modules}, findings {findings})")
+    AUDIT_TEST.elf(firmware / TRANSPORT, [".text", ".nv_fatbin"])
+    result, modules, findings = stage("device-transport-root")
+    if result.returncode != 0 or "lib/hidden_transport.so embeds device code but has no hidden_transport.so.kernels/ beside it" not in "\n".join(findings):
+        failures.append(f"the staged kernels audit must catch a hidden transport that embeds device code but ships no kernels (exit {result.returncode}, "
+                        f"findings {findings})")
+    AUDIT_TEST.elf(firmware / TRANSPORT, [".text"])
+    for child in (firmware / f"{ADAPTER}.kernels").iterdir():
+        child.unlink()
+    (firmware / f"{ADAPTER}.kernels").rmdir()
+    result, _, _ = stage("refused-root")
+    if result.returncode == 0 or f"{firmware}/{ADAPTER}.kernels is missing" not in result.stderr:
+        failures.append(f"stage-local must refuse a firmware directory without the adapter's kernels (exit {result.returncode}: {result.stderr.strip()[-200:]})")
+
+
 def main():
     failures = []
     with tempfile.TemporaryDirectory() as scratch:
@@ -95,10 +139,10 @@ def main():
         relayed = [command for command in through if command.startswith("scp -q -r -o BatchMode=yes ")]
         if through[:1] != [f"test -d {remote}/{ADAPTER}.kernels"] or len(through) != len(relayed) + 1:
             failures.append(f"setup with STAGE_FIRMWARE_HOST must look for the kernels directory on that host, once, before any copy; it ran {through[:2]}")
-        if len(relayed) != 80:
-            failures.append(f"setup with STAGE_FIRMWARE_HOST must copy the five firmware sets of every rank, the adapter's kernels directory among them, through that host; it relayed {len(relayed)}")
+        if len(relayed) != 96:
+            failures.append(f"setup with STAGE_FIRMWARE_HOST must copy the six firmware entries of every rank, the adapter's kernels directory among them, through that host; it relayed {len(relayed)}")
         wanted = {f"{remote}/{name}" for name in ("sparkpipe_model_residentd", "weightd_warm", ADAPTER, f"{ADAPTER}.kernels",
-                                                  "runtime_libs/libsparkpipe_device_cuda.so", "libhidden_transport_spark_host_rdma_verbs.so")}
+                                                  "runtime_libs/libsparkpipe_device_cuda.so", TRANSPORT)}
         named = {word for command in relayed for word in command.split() if word.startswith(remote)}
         if named != wanted:
             failures.append(f"the relayed copies must name exactly the firmware in STAGE_FIRMWARE; they missed {sorted(wanted - named)} and added {sorted(named - wanted)}")
@@ -110,11 +154,14 @@ def main():
             lib = f"/home/{host}/stage-lanes/{MODEL}/lane3/root/lib"
             prepared = [index for index, (where, command) in enumerate(order) if where == host and f"rm -rf {lib}/{ADAPTER}.kernels " in command]
             adapter = [index for index, (_, command) in enumerate(order) if command.endswith(f" {remote}/{ADAPTER} {host}:{lib}/{ADAPTER}")]
-            copied = [index for index, (_, command) in enumerate(order) if command.endswith(f" {remote}/{ADAPTER}.kernels {host}:{lib}/")]
-            if len(adapter) != 1 or len(copied) != 1:
-                failures.append(f"{host} must get the adapter once and its kernels directory once into {lib}/ through the firmware host; it got {len(adapter)} and {len(copied)}")
+            copied = [index for index, (_, command) in enumerate(order) if command.endswith(f" {remote}/{ADAPTER}.kernels {host}:{lib}/{ADAPTER}.kernels")]
+            transport = [index for index, (_, command) in enumerate(order) if command.endswith(f" {remote}/{TRANSPORT} {host}:{lib}/hidden_transport.so")]
+            if [len(adapter), len(copied), len(transport)] != [1, 1, 1]:
+                failures.append(f"{host} must get the adapter once, its kernels directory once under the adapter's staged name, and the hidden transport "
+                                f"once, through the firmware host; it got {len(adapter)}, {len(copied)} and {len(transport)}")
             elif len(prepared) != 1 or prepared[0] > copied[0]:
                 failures.append(f"{host} must have its old {ADAPTER}.kernels removed before the new one is copied, so no stale cubin or manifest survives")
+        check_stage_local(failures, home)
     for failure in failures:
         print("FAIL", failure)
     if failures:
@@ -122,7 +169,10 @@ def main():
     print("PASS stage_lane setup: an active, starting or stopping unit on any rank refuses setup before any node is touched and names the hosts; "
           "a firmware directory without the adapter's kernels directory refuses setup before any node is touched, on this machine and on STAGE_FIRMWARE_HOST; "
           "a stopped lane goes on to prepare the nodes; with STAGE_FIRMWARE_HOST every rank gets the adapter and its kernels directory, "
-          "after its old kernels directory is removed, with the rest of its firmware, all through that host and none from this machine")
+          "after its old kernels directory is removed, with the hidden transport and the rest of its firmware, all through that host and none "
+          "from this machine; stage-local builds that layout in a local root, which the staged kernels audit passes with the adapter as its only "
+          "module with device code, the audit catches a transport that embeds device code without kernels, and stage-local refuses a firmware "
+          "directory without the adapter's kernels")
 
 
 if __name__ == "__main__":

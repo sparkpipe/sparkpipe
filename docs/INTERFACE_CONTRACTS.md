@@ -357,7 +357,7 @@ For `host-rdma`, the required mask is `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOS
 - The required mask is not `SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS`. That set adds batched submission, poll descriptors, multi-lane and the remote-completion doorbell.
 - A required mask must list only bits the daemon cannot run without. Recommended bits must not be promoted into it.
 
-The host RDMA backend in `ring/transport/rdma.cu` declares, in its default build:
+The host RDMA backend in `ring/transport/rdma.c` declares, in its default build:
 
 - `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS`;
 - `SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS`;

@@ -477,6 +477,17 @@ headers' (`crt/host_runtime.h`, `crt/device_functions.h`).
   A kernel name in two cubins of one module is refused. So is a missing
   directory, an unpaired file, a directory with no cubin, or a manifest
   that does not parse.
+- **Staged roots.** A lane loads each module by its staged name, so its
+  kernels directory must sit beside it under that name.
+  `tools/stage_lane.sh` and `tools/k3_lane.sh` copy every firmware entry
+  from one table, and `stage-local ROOT` builds the same layout in a local
+  directory. `tools/staged_kernels_audit.py ROOT` reads the section headers
+  of every ELF file in a root. Each file with a `.nv_fatbin` or
+  `__nv_relfatbin` section must have complete cubin and manifest pairs
+  beside it under its own name. A kernels directory with no module of its
+  name is refused too. The CUDA compile gate stages every lane root from
+  the build and audits it. Only the serving adapter carries device code
+  there: the hidden transport is host C and has no fat binary.
 - **Failures are sticky.** A module that fails prints one line naming its
   path and the cause. It keeps the failure, and every launch of its kernels
   returns it. Later fat binaries of the same module reuse the first scan.

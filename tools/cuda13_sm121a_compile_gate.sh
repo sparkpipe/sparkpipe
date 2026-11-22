@@ -111,8 +111,6 @@ for relative_source in "${translation_units[@]}"; do
 	compile_cuda "${relative_source}" "${artifact_name}"
 done
 
-compile_cuda ring/transport/rdma.cu rdma
-
 make_variable()
 {
 	make -s --no-print-directory -C "${repository_root}" -f Makefile \
@@ -132,6 +130,9 @@ cuda_programs=(
 	build/sparkpipe_model_residentd
 	build/sparkpipe_weightd
 	build/k3_tp_context_cuda
+	build/weightd_warm
+	build/runtime_libs/libsparkpipe_device_cuda.so
+	"$(make_variable HIDDEN_TRANSPORT_SPARK_HOST_RDMA)"
 )
 if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs[@]}" \
 	NVCC="${nvcc_binary}" \
@@ -173,6 +174,29 @@ fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
 
+staged_roots="$(mktemp -d)"
+trap 'rm -rf "${staged_roots}"' EXIT
+while IFS=' ' read -r model adapter; do
+	[[ -f "${repository_root}/build/${adapter}" ]] || continue
+	STAGE_MODEL="${model}" STAGE_LANE=0 STAGE_WEIGHTD_SOCKET=/unused STAGE_MEMORY_MAX=1G STAGE_FIRMWARE="${repository_root}/build" \
+		"${repository_root}/tools/stage_lane.sh" stage-local "${staged_roots}/${model}"
+done < <(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1]); import stage_lane; [print(name, entry["adapter"]) for name, entry in sorted(stage_lane.MODELS.items())]' "${repository_root}/tools")
+K3_LANE=1 K3_FIRMWARE="${repository_root}/build" K3_WEIGHTD_SOCKET=/unused K3_MEMORY_MAX=1G K3_STATE_BUDGET_BYTES=1 \
+	"${repository_root}/tools/k3_lane.sh" stage-local "${staged_roots}/k3_lane"
+staged_failures=0
+for root in "${staged_roots}"/*; do
+	if ! python3 -I "${repository_root}/tools/staged_kernels_audit.py" "${root}" > "${output_directory}/logs/staged.$(basename "${root}").txt"; then
+		cat "${output_directory}/logs/staged.$(basename "${root}").txt" >&2
+		staged_failures=$((staged_failures + 1))
+	fi
+done
+staged_root_count="$(ls "${staged_roots}" | wc -l)"
+rm -rf "${staged_roots}"
+if [[ "${staged_failures}" -ne 0 ]]; then
+	echo "${staged_failures} staged lane roots ship a module with device code but without its kernels under its staged name" >&2
+	exit 7
+fi
+
 for object_file in "${output_directory}"/objects/*.o; do
 	object_name="$(basename "${object_file}")"
 	elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"
@@ -190,4 +214,4 @@ done
 	find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 
-echo "PASS CUDA 13 exact sm_121a compile gate (${#adapters[@]} serving adapters)"
+echo "PASS CUDA 13 exact sm_121a compile gate (${#adapters[@]} serving adapters; ${staged_root_count} staged lane roots carry every module's kernels)"
