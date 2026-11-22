@@ -92,8 +92,12 @@ Load-time kernels launched on stream 0 are followed by `SparkGpuDeviceSynchroniz
 
 ## Host-visible buffers: the next pass
 
-Pinned staging buffers that asynchronous copies read, and mapped buffers that kernels read in place, are host writes that a kernel reads. Each is safe only if the host does not rewrite it before the copy or kernel that reads it has run. These allocations are listed for the next pass, which checks each host write against the last reader on its stream:
-- **Stage runner:** the output, token and distribution staging, the lane staging, the route fault word, and the tap slab and chain.
+Pinned staging buffers that asynchronous copies read, and mapped buffers that kernels read in place, are host writes that a kernel reads. Each is safe only if the host does not rewrite it before the copy or kernel that reads it has run. Checked so far:
+- **Stage runner, dispatch staging** (the token, distribution and output staging): each dispatch uploads its inputs from pinned staging on its stream, runs, reads its outputs back on the same stream, and synchronizes that stream before it returns. So the next dispatch's host writes follow the last copy that read them.
+  - A dispatch that fails before that sync returns without it. The next dispatch could then rewrite staging that a copy queued before the failure still reads.
+
+Listed for the next pass, which checks each host write against the last reader on its stream:
+- **Stage runner:** the lane staging, the route fault word, and the tap slab and chain.
 - **Pass prefill:** the round sums, the host staging, the health words, and the registered row and pass regions.
 - **DSV4.1:** the engram ids and rows, including the ahead buffers; the KV error word; and the exchange counts and totals.
 - **GLM 5.2:** the host staging, the lane staging and the KV error words.

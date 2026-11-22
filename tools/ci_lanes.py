@@ -118,6 +118,7 @@ FAST_TESTS = (
     "tests/test_sources_exist.py",
     "tests/test_package_manifest.py",
     "tests/test_name_lengths.py",
+    "tests/test_upload_ordering_sites.py",
 )
 
 MARKDOWN = re.compile(r"""["'/]docs["'/]|[A-Za-z0-9_./-]+\.md\b|\bREADME\b|\bTECHDEBT\b""")
