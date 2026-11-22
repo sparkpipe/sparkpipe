@@ -89,6 +89,20 @@ changes only together with the snapshot. The kernel and the module package
 are one pair: a new module version means a new kernel release, new pins and
 requalification of the device backend.
 
+A fleet node also stores one of the cluster's Ceph OSDs, which cephadm runs
+in a container, and mounts the CephFS model store. The image carries what
+that needs, all from Ubuntu: `podman`, the container engine cephadm uses on
+the image (from the snapshot, without Docker's own repository), `catatonit`
+for the `--init` its daemons start with, `lvm2` for the OSD's logical
+volume, and `ceph-common`, whose `mount.ceph` reads the CephFS client
+secret. The node's cluster state comes from its previous root at the disk
+install. `ceph-common` adds the `ceph` account at the Debian-allocated
+uid 64045, so the image's ownership rule allows any uid or gid of 1000 or
+above that the image's own `/etc/passwd` and `/etc/group` define
+([`owners.sh`](../tools/hosted_image/owners.sh)). A build user's owner, which
+the image does not define, still fails the build, the disk install and the
+dry run.
+
 ## GB10 settings
 
 | File | Setting |
@@ -234,7 +248,7 @@ Then it:
    first boot, with no login. Otherwise the installer says that the node joins
    at bring-up ([TAILSCALE_JOIN.md](TAILSCALE_JOIN.md)). Then it checks that
    `/` is `0:0 755` and that no path outside `/home` belongs to a uid or gid
-   of 1000 or above.
+   of 1000 or above that the image does not define.
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
@@ -308,7 +322,8 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    - labels, identity, user, groups, modes and `fstab` are as expected;
    - `/var/lib/tailscale` is the previous root's, with the same entries,
      owners, modes and checksums;
-   - nothing outside `/home` belongs to a uid or gid of 1000 or above;
+   - nothing outside `/home` belongs to a uid or gid of 1000 or above that
+     the image does not define;
    - the initramfs was rebuilt with the dropbear key;
    - the kernel entry uses the root UUID and the GB10 arguments;
    - `EFI/ubuntu` holds the image's own signed shim and GRUB;

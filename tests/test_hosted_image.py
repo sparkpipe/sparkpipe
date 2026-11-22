@@ -261,11 +261,30 @@ class OwnershipTest(unittest.TestCase):
         self.assertIn('install_tree "$out/inputs/release-root" "$root/$RELEASE_ROOT_PATH"', self.HOOK)
 
     def test_the_hook_fails_on_any_build_user_ownership_and_on_a_root_that_is_not_root_owned_0755(self):
-        self.assertIn("-uid +999 -a ! -uid 65534", self.HOOK)
-        self.assertIn("-gid +999 -a ! -gid 65534", self.HOOK)
+        check = 'owned="$(foreign_owner "$root" "$root")"'
+        self.assertIn(check, self.HOOK)
         self.assertIn('= "0:0:755" ]', self.HOOK)
-        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index("-uid +999"))
-        self.assertGreater(self.HOOK.index("-uid +999"), self.HOOK.index("update-initramfs"))
+        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index(check))
+        self.assertGreater(self.HOOK.index(check), self.HOOK.index("update-initramfs"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the ownership rule uses GNU find's -printf")
+    def test_ownership_above_999_passes_only_for_accounts_the_image_defines(self):
+        owner, group = os.getuid(), os.getgid()
+        if owner < 1000 or group < 1000:
+            self.skipTest("the rule is about owners of 1000 or above, and this user is below")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "etc").mkdir()
+            (root / "var" / "lib" / "ceph").mkdir(parents=True)
+            (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+            (root / "etc" / "group").write_text("root:x:0:\n")
+            run = lambda: subprocess.run(["bash", "-c", f'. "{IMAGE}/owners.sh"; foreign_owner "$1" "$1"', "rule", str(root)],
+                                         capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "passwd").write_text(f"root:x:0:0:root:/root:/bin/bash\nceph:x:{owner}:{group}:Ceph:/var/lib/ceph:/usr/sbin/nologin\n")
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "group").write_text(f"root:x:0:\nceph:x:{group}:\n")
+            self.assertEqual(run(), "")
 
     @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "install -o 0 needs root on Linux")
     def test_install_tree_gives_root_ownership_and_plain_modes(self):

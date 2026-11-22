@@ -5,6 +5,7 @@ out="$2"
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 . "$here/pins.conf"
+. "$here/owners.sh"
 source_ref="$(cat "$out/inputs/source-commit")"
 install_tree() {
 	(cd "$1" && find . -type f -print) | sort | while read -r file; do
@@ -43,5 +44,5 @@ systemctl --root="$root" enable sparkpipe-host-keys.service
 rm -f "$root"/etc/ssh/ssh_host_*_key "$root"/etc/ssh/ssh_host_*_key.pub "$root"/etc/dropbear/initramfs/dropbear_*_host_key
 SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" chroot "$root" update-initramfs -u -k "$KERNEL_RELEASE" > "$out/initramfs.log" 2>&1 || { tail -20 "$out/initramfs.log" >&2; exit 1; }
 [ "$(stat -c %u:%g:%a "$root")" = "0:0:755" ] || { echo "customize_image: the image root is $(stat -c %u:%g:%a "$root"), not 0:0:755" >&2; exit 1; }
-owned="$(find "$root" -xdev \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)"
-[ -z "$owned" ] || { echo "customize_image: ${owned#"$root"} belongs to uid or gid 1000 or above; the image takes no build user's ownership" >&2; exit 1; }
+owned="$(foreign_owner "$root" "$root")"
+[ -z "$owned" ] || { echo "customize_image: ${owned#"$root"} belongs to a uid or gid of 1000 or above that the image does not define; the image takes no build user's ownership" >&2; exit 1; }
