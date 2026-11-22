@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
@@ -343,6 +344,33 @@ static void TestPageSizes(void)
 		strstr(SparkDeviceLastError()->text,"4 GiB") != 0,"an object of 2 MiB pages at 4 GiB or more is refused before the module sees it");
 }
 
+static void TestModuleZeroes(void)
+{
+	static const char *const contents[] = {"ResmanDebugLevel: 4294967295\nInitializeSystemMemoryAllocations: 1\nRmLogonRC: 1\n",
+		"InitializeSystemMemoryAllocations: 0\n", "ResmanDebugLevel: 4294967295\n"};
+	static const int expected[] = {1, 0, 0};
+	char path[] = "/tmp/spark-nvrm-params-XXXXXX";
+	const int fd = mkstemp(path);
+	uint32_t index;
+	CHECK(fd >= 0,"make a stand-in for the module's parameter file");
+	if ( fd < 0 )
+		return;
+	close(fd);
+	for (index = 0u; index < sizeof(expected) / sizeof(expected[0]); index++)
+	{
+		FILE *file = fopen(path,"w");
+		if ( file != 0 )
+		{
+			fputs(contents[index],file);
+			fclose(file);
+		}
+		CHECK(file != 0 && SparkNvrmModuleZeroesMemory(path) == expected[index],
+			"the module zeroes system memory only when its parameters list InitializeSystemMemoryAllocations: 1");
+	}
+	unlink(path);
+	CHECK(SparkNvrmModuleZeroesMemory(path) == 0 && SparkNvrmModuleZeroesMemory(0) == 0,"a missing parameter file means no zeroing");
+}
+
 static void TestMarks(void)
 {
 	static Fake fake;
@@ -636,6 +664,7 @@ int main(void)
 	TestFillSplit();
 	TestLongLines();
 	TestPageSizes();
+	TestModuleZeroes();
 	TestMarks();
 	TestAddress();
 	TestSemaphore();

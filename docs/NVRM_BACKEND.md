@@ -382,12 +382,38 @@ nvrm-large-transfers` runs them on the GPU (see the GPU tests).
 
 | Space | nvrm memory | Host view | Device address |
 |---|---|---|---|
-| device-private | system memory, zero-filled by the copy engine | none | yes |
+| device-private | system memory, zeroed by the open module when allocated | none | yes |
 | shared coherent | host memory | same address | yes |
 | host pinned | host memory | same address | yes |
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+The open module zeroes the system memory it allocates, so device memory
+starts zeroed without a fill of our own. In open-gpu-kernel-modules
+580.178.04:
+
+- `kernel-open/nvidia/nv-reg.h:181-203` documents
+  `InitializeSystemMemoryAllocations` as "zero out system memory
+  allocations (default)", and line 960 defaults it to 1.
+- `src/nvidia/arch/nvalloc/unix/src/osinit.c:211-218` sets
+  `PDB_PROP_SYS_INITIALIZE_SYSTEM_MEMORY_ALLOCATIONS` unless that key
+  reads 0.
+- `src/nvidia/arch/nvalloc/unix/src/os.c:1013-1022` passes the property
+  to `nv_alloc_pages` as `zeroed`.
+- `kernel-open/nvidia/nv.c:3850-3851` marks the allocation zeroed.
+- `kernel-open/nvidia/nv-vm.c:263-265` then adds `__GFP_ZERO`, which the
+  2 MiB-page path at lines 520-541 uses too.
+
+Once it has opened the GPU, the backend refuses to initialize unless
+`/proc/driver/nvidia/params` lists `InitializeSystemMemoryAllocations: 1`.
+Without it, fresh device memory would hold another allocation's data. A
+host without the module still fails first on the control device it
+cannot open.
+
+Before this, the copy engine also zeroed each device allocation. On
+spark1, 8, 10.5 and 16 GiB allocations took 0.89, 1.39 and 2.19 s with
+that fill and take 0.62, 0.78 and 1.26 s without it.
 
 System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
 pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
@@ -556,18 +582,12 @@ launch-shape probe and first light:
 - **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
   `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
   40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
-  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
-  fill takes 2.1 s. The test runs in two modes:
+  and copies at 18.0 GB/s at these sizes. It runs in one mode:
   - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
     zero-filled by the copy engine. For each size it copies the whole
     buffer to host-visible memory in one call and checks every byte, fills
     the whole buffer in one call, copies it back and checks again, and
     fills host-visible memory of the same size at an odd offset.
-  - `held`: sets the stall threshold to zero, so that a 4 GiB
-    allocation's wait gives up while its zero fill is still running. The
-    allocation must fail, keep its memory held and say so. Shutdown must
-    then release the memory once the fill ends, and the device must open
-    and fill memory again afterwards.
 
   The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
@@ -636,14 +656,8 @@ operation, as it does after any I/O error.
   another queue's event is not stalled while that queue runs. A single grid
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
-- **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. When the wait for an allocation's zero
-  fill gives up while the fill is still running, the allocation fails but
-  its memory stays held. Freeing memory under a running copy engine
-  makes the kernel module assert, and the GPU then needs a reset. The
-  error text names the held bytes. Shutdown releases held memory once its
-  fill has finished. If the fill never finishes, shutdown leaves the GPU
-  open for the process's exit to close. Channel waits that know no queue
+- **Internal waits.** Waits for ring space and launch slots use the same
+  watch. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
