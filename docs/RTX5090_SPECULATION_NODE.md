@@ -204,6 +204,57 @@ python3 tools/drafter_pack.py --drafter k31dspark \
   `<pack>.receipt.json`, which names every source with its sha256, the
   left-out tensors and the scalars.
 
+## Building for the 5090
+
+The node runs driver 595.84 (CUDA 13.2 at most) on glibc 2.43, and three rules
+follow from that:
+
+- **Kernels from CUDA 13.3.** glibc 2.43 declares `rsqrt` and `rsqrtf`, which
+  CUDA 13.1's headers declare differently, so 13.1's `nvcc` cannot compile any
+  `.cu` there. 13.3's can. Build the 5090's code only, SASS, with
+  `-gencode arch=compute_120a,code=sm_120a`; plain `-arch=sm_120a` refuses the
+  FP4 conversions.
+- **Every other host file and libcudart from CUDA 13.1.** The device layer asks
+  the driver for entry points by the runtime's version, and a 13.3 runtime's are
+  missing from a 13.2 driver, so weightd built against 13.3 does not start.
+  `-cudart shared` and `-L/usr/local/cuda-13.1/lib64 -lcudart` link 13.3's
+  generated host stubs to the 13.1 runtime.
+- **Checked on 2026-11-22:** our `LmFusedResidualRmsNormKernel` built by 13.3,
+  loaded as a cubin and launched through 13.3 stubs from a 13.1-runtime host
+  (runtime 13010, driver 13020), matched a double-precision CPU reference on
+  64 x 7168 rows (largest relative error 0.0039, one bf16 rounding). A cubin
+  for another architecture is refused at load with
+  `CUDA_ERROR_NO_BINARY_FOR_GPU`, never run.
+
+```sh
+make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
+    CUDA_ARCH=sm_120a CUDA_COMPUTE_ARCH=compute_120a drafter-modules
+```
+
+## Engine drafter modules
+
+`sparkpipe_draftd` loads an engine lane's drafter from a module (see
+[SPECULATION_UNIFIED_DESIGN.md](SPECULATION_UNIFIED_DESIGN.md), Draft server).
+
+- **K3.1 Pro DSpark** (`modules/k31_dspark_draft_stage/`,
+  `build/modules/k31_dspark_draft_stage.so`). It binds the
+  `k31dspark.bf16.tp1` pack through weightd and finds every tensor by name in the
+  pack's manifest.
+  - **Context.** For every tap row (the five 7168-wide taps of layers
+    75/79/83/87/91), it writes the drafter's context row in each of the five
+    layers: `context_proj` then `context_norm`, then per layer `kv_a_proj_with_mqa`,
+    `kv_a_layernorm` on the 512 compressed lanes and YaRN rope on the 64 rope
+    lanes. Rows are bf16 at their positions in 4,096-position pages of the
+    sequence, and whole sequences leave oldest first when the lane's
+    `context_bytes` is reached.
+  - **Drafts.** The module answers with the root alone; the block forward and the
+    heads come next.
+  - **Check.** `build/k31_dspark_context_probe` writes random taps through the
+    module, and `tools/spec_offline/k31_dspark_context_compare.py` recomputes
+    the rows with the Python drafter and in float64. On the 5090 the module's
+    worst row was 0.0024-0.0032 from float64 (relative L2), the Python
+    drafter's 0.0030-0.0055, at 37 and 5 rows.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane

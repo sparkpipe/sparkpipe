@@ -29,6 +29,7 @@ SITES = {
     "model-families/mimo26/source/mimo26_stage.cuh": 2,
     "model-families/motif/source/motif_stage.cuh": 1,
     "model-families/qwen38/source/qwen38_hybrid_stage.cuh": 4,
+    "modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu": 2,
     "ring/transport/tp_device_collective.c": 29,
     "runtime/spark_weightd_lazy_pack.c": 1,
 }
@@ -38,6 +39,7 @@ HOST_VISIBLE = {
     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": 1,
     "model-families/dsv41_flash/source/dsv41_flash_stage.cuh": 15,
     "model-families/glm52/source/glm52_stage.cuh": 4,
+    "modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu": 2,
     "node/model_residentd.c": 2,
     "ring/transport/tp_device_collective.c": 2,
 }
