@@ -144,6 +144,10 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     const CUmemAccessDesc *descriptors,
     size_t descriptor_count);
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes);
+CUresult cuTensorMapEncodeTiled(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address,
+    const cuuint64_t *dimension, const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle, CUtensorMapL2promotion promotion,
+    CUtensorMapFloatOOBfill fill);
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,

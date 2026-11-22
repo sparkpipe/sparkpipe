@@ -1764,6 +1764,34 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     return cuda_stub_free(reservation);
 }
 
+CUresult cuTensorMapEncodeTiled(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address,
+    const cuuint64_t *dimension, const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle, CUtensorMapL2promotion promotion,
+    CUtensorMapFloatOOBfill fill)
+{
+    cuuint32_t index;
+    (void)type;
+    (void)interleave;
+    (void)promotion;
+    (void)fill;
+    if (map == NULL || address == NULL || ((uintptr_t)address % 16u) != 0u || rank == 0u || rank > 5u ||
+        dimension == NULL || box == NULL || element_stride == NULL || (rank > 1u && stride == NULL) ||
+        (unsigned)swizzle > (unsigned)CU_TENSOR_MAP_SWIZZLE_128B)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    for (index = 0u; index < rank; index++)
+    {
+        if (dimension[index] == 0u || box[index] == 0u || box[index] > 256u || element_stride[index] == 0u ||
+            element_stride[index] > 8u || (index + 1u < rank && (stride[index] % 16u) != 0u))
+        {
+            return CUDA_ERROR_INVALID_VALUE;
+        }
+    }
+    memset(map, 0, sizeof(*map));
+    return CUDA_SUCCESS;
+}
+
 uint32_t cuda_stub_mesh_publish_calls = 0u;
 uint32_t cuda_stub_mesh_publish_null_seq_cell = 0u;
 uint32_t cuda_stub_mesh_publish_null_epoch_cell = 0u;
@@ -2316,6 +2344,7 @@ cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,
         {"cuMemMap",(void *)cuMemMap},
         {"cuMemSetAccess",(void *)cuMemSetAccess},
         {"cuMemUnmap",(void *)cuMemUnmap},
+        {"cuTensorMapEncodeTiled",(void *)cuTensorMapEncodeTiled},
     };
     size_t index;
     if (symbol == 0 || function == 0 || cuda_version == 0u || flags != 0ull)
