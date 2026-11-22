@@ -24,6 +24,7 @@ typedef struct LoopShared
 	pthread_barrier_t barrier;
 	uint8_t rows[LOOP_RANKS][2u * SPARK_WEIGHT_STREAM_MAX_RANKS * sizeof(SparkWeightStreamEndpoint)];
 	const char *device;
+	const char *pair_device;
 	uint32_t gid_index;
 } LoopShared;
 
@@ -104,7 +105,7 @@ static void *LoopRun(void *argument)
 	config.pair_gid_index = self->shared->gid_index;
 	config.traffic_class = 106u;
 	config.fabric_device = self->shared->device;
-	config.pair_device = self->shared->device;
+	config.pair_device = self->shared->pair_device;
 	config.region = region;
 	config.region_bytes = total_bytes;
 	config.gather = LoopGather;
@@ -210,13 +211,14 @@ int main(int argc, char **argv)
 	uint64_t bad = 0u,held_bad = 0u;
 	uint32_t rank;
 	int failed = 0;
-	if ( argc != 3 )
+	if ( argc != 4 )
 	{
-		fprintf(stderr,"usage: %s RDMA_DEVICE GID_INDEX\n",argv[0]);
+		fprintf(stderr,"usage: %s RDMA_DEVICE GID_INDEX PAIR_DEVICE|same|none\n",argv[0]);
 		return 2;
 	}
 	shared.device = argv[1];
 	shared.gid_index = (uint32_t)atoi(argv[2]);
+	shared.pair_device = strcmp(argv[3],"same") == 0 ? argv[1] : strcmp(argv[3],"none") == 0 ? 0 : argv[3];
 	pthread_barrier_init(&shared.barrier,0,LOOP_RANKS);
 	for (rank=0u; rank<LOOP_RANKS; rank++)
 	{

@@ -128,6 +128,7 @@ struct ibv_wc
     uint32_t wc_flags;
     uint32_t vendor_err;
     uint32_t imm_data;
+    uint32_t qp_num;
 };
 
 #define IBV_PORT_DOWN 1
@@ -233,6 +234,7 @@ int spark_stub_ibv_qp_state(uint32_t qpn);
 void spark_stub_ibv_set_qp_state(uint32_t qpn, int state);
 int spark_stub_ibv_qp_remote_qpn(uint32_t qpn);
 uint32_t spark_stub_ibv_qp_remote_address(uint32_t qpn);
+const char *ibv_wc_status_str(int status);
 void spark_stub_ibv_set_port_state(const char *name, int state);
 
 #ifdef __cplusplus
