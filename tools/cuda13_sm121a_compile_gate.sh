@@ -205,6 +205,19 @@ fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
 
+spill_audited=()
+for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
+	if [[ -f "${repository_root}/${artifact}" ]]; then
+		spill_audited+=("${repository_root}/${artifact}")
+	fi
+done
+if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" --kernel LmSkinnyGroupedKernel "${spill_audited[@]}" \
+	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
+	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
+	echo "a grouped expert GEMV spills registers to local memory; see logs/kernel_spill_audit.txt" >&2
+	exit 10
+fi
+
 staged_roots="$(mktemp -d)"
 trap 'rm -rf "${staged_roots}"' EXIT
 while IFS=' ' read -r model adapter; do

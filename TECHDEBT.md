@@ -1930,7 +1930,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink. It lists 30 files and 42 findings:
+  may only shrink, and the kit's `--deploy` run refuses every root until
+  the list is empty and the root is built for one device backend. A hosted
+  root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
+  `weightdctl`, `sparkpipe_model_residentd` and the RDMA transport under
+  their usual paths, with the nvrm device library, so they are off the
+  list. It lists 26 files and 38 findings:
   - the 25 serving adapters, whose kernels and stage runner run through the
     CUDA runtime (`libcudart.so.13`). Twelve of them also link the driver
     library (`libcuda.so.1`) for the TMA tensor maps in
@@ -1938,12 +1943,6 @@ and the multidev docs on 2026-09-28. Line numbers are in
     reached it only through weightd's mappings, which now go through the
     device layer. The hub's API also loads an adapter for its descriptor, so
     the hub ships them too;
-  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`
-    (`libcudart.so.13`). Their device memory goes through the device layer
-    compiled into them, which in the CUDA flavour is the CUDA backend over the
-    CUDA runtime. None links the driver library any more;
-  - `sparkpipe_model_residentd`, whose boundary buffers and streams go
-    through `spark_gpu.h` (`libcudart.so.13`);
   - the CUDA device library (`libcudart.so.13`).
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,

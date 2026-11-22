@@ -87,6 +87,7 @@ endif
 NVRM_RELEASE_STAMP := build/nvrm_module_release
 NVRM_RELEASE_DEPENDENCIES := runtime/device/nvrm/release/$(NVRM_MODULE_RELEASE)/nvrm_release.h $(NVRM_RELEASE_STAMP)
 DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/release/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-kernel-modules/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-doc
+NVRM_BUILD_DIR := build/nvrm
 WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
 WEIGHTD_DEVICE_SOURCES := $(WEIGHTD_DEVICE_SOURCES_$(SPARKPIPE_DEVICE))
@@ -713,6 +714,7 @@ PYTHON_TESTS := \
 	tests/test_hidden_transport_host_rdma_load.py \
 	tests/test_skinny_dependent_cuda.py \
 	tests/test_skinny_frame_rows_cuda.py \
+	tests/test_grouped_experts_bands_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_launch_refusals_cuda.py \
 	tests/test_k3_projection_shapes_cuda.py \
@@ -726,6 +728,7 @@ PYTHON_TESTS := \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
+	tests/test_kernel_spill_audit.py \
 	tests/test_stage_runner_link_rules.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_timing_reports.py \
@@ -1049,10 +1052,16 @@ HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB
 HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
 HOSTED_RELEASE_ROOT ?= build/hosted_release_root
 HOSTED_RELEASE_GATE_FLAGS ?=
+HOSTED_RELEASE_NVRM_FILES := build/sparkpipe_weightd build/weightd_warm build/weightdctl build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
+HOSTED_RELEASE_NVRM_LINKED := build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
+HOSTED_RELEASE_SOURCE = $(if $(filter $(1) $(1:.kernels=),$(HOSTED_RELEASE_NVRM_FILES)),$(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1)),$(1))
+HOSTED_RELEASE_DEVICE_LIBRARIES = $(if $(filter $(HOSTED_RELEASE_NVRM_LINKED),$(HOSTED_RELEASE_FILES)),$(filter-out $(HOSTED_RELEASE_FILES),$(DEVICE_NVRM_LIBRARY)))
+HOSTED_RELEASE_SOURCES = $(foreach file,$(HOSTED_RELEASE_FILES),$(call HOSTED_RELEASE_SOURCE,$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
+HOSTED_RELEASE_STAGED = $(foreach file,$(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS),$(if $(filter $(file),$(call HOSTED_RELEASE_SOURCE,$(file))),$(file),$(call HOSTED_RELEASE_SOURCE,$(file))=$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
 
 .PHONY: hosted-release-gate
-hosted-release-gate: $(HOSTED_RELEASE_FILES)
-	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS)
+hosted-release-gate: $(HOSTED_RELEASE_SOURCES)
+	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(strip $(HOSTED_RELEASE_STAGED))
 
 MODULE_KERNELS_FLAGS = --keep --keep-dir $@.kernels
 define nvcc_module
@@ -1201,7 +1210,6 @@ test-working-set-rollback: build/test_working_set_rollback
 build/test_modules:
 	mkdir -p build/test_modules
 
-NVRM_BUILD_DIR := build/nvrm
 NVRM_COMPILE_FLAGS := -DSPARKPIPE_DEVICE_NVRM $(DEVICE_NVRM_INCLUDE_FLAGS)
 NVRM_RUNTIME_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(RUNTIME_SOURCES))
 NVRM_RUNTIME_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_runtime.a
@@ -1232,6 +1240,28 @@ nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
 build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+NVRM_MODEL_COMMON_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(SPARKPIPE_MODEL_COMMON_SOURCES))
+NVRM_MODEL_COMMON_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_model_common.a
+NVRM_DEVICE_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_FLAVOUR_RPATH)
+NVRM_HIDDEN_TRANSPORT := $(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA))
+NVRM_NODE_PROGRAMS := $(NVRM_BUILD_DIR)/sparkpipe_model_residentd $(NVRM_HIDDEN_TRANSPORT)
+
+$(NVRM_MODEL_COMMON_LIBRARY): $(NVRM_MODEL_COMMON_OBJECTS)
+	@mkdir -p $(@D)
+	rm -f $@ && $(AR) rcs $@ $^
+
+$(NVRM_BUILD_DIR)/sparkpipe_model_residentd: node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) node/model_residentd.c node/weightd_spawn.c $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(NVRM_DEVICE_LINK) -o $@
+
+$(NVRM_HIDDEN_TRANSPORT): ring/transport/rdma.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(NVRM_RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/rdma.c ring/transport/rdma_control.c $(NVRM_RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(NVRM_DEVICE_LINK) -libverbs -ldl -lpthread -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-node
+.PHONY: nvrm-node
+nvrm-node: $(NVRM_WEIGHTD_PROGRAMS) $(NVRM_NODE_PROGRAMS)
 
 build/obj/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
@@ -2367,6 +2397,8 @@ build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu model-fa
 
 build/test_dsv41_flash_landing: tests/test_dsv41_flash_landing.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/attn_shard.cuh inference/kernels/kv_shard.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_landing (no nvcc on this host)"; fi
+build/test_grouped_experts_bands_cuda: tests/cuda/grouped_experts_bands_cuda.cu $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@; else echo "SKIP test_grouped_experts_bands_cuda (no nvcc on this host)"; fi
 build/test_dsv41_window_fold: tests/test_dsv41_window_fold.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_attend.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_window_fold (no nvcc on this host)"; fi
 build/test_dsv41_shared_split: tests/test_dsv41_shared_split.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
