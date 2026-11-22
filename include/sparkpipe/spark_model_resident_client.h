@@ -94,6 +94,15 @@ typedef struct SparkModelResidentStatusReport
 	SparkModelServingAdapterSnapshot adapter_snapshot;
 } SparkModelResidentStatusReport;
 
+typedef struct SparkModelResidentCacheProbeReport
+{
+	uint64_t generation;
+	SparkModelServingCacheIdentity identity;
+	uint32_t token_count;
+	uint32_t status;
+	SparkModelServingCacheProbe probe;
+} SparkModelResidentCacheProbeReport;
+
 #define SPARK_MODEL_RESIDENT_CLIENT_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkModelResidentClientConfiguration))
 #define SPARK_MODEL_RESIDENT_CLIENT_POLL_DESCRIPTOR_BYTES \
@@ -150,6 +159,8 @@ SparkStatus SparkModelResidentClientGetView(
 SparkStatus SparkModelResidentClientRequestStatus(SparkModelResidentClient *client);
 SparkStatus SparkModelResidentClientCacheHint(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
 SparkStatus SparkModelResidentClientGetStatus(const SparkModelResidentClient *client,SparkModelResidentStatusReport *report);
+SparkStatus SparkModelResidentClientCacheProbe(SparkModelResidentClient *client,const SparkModelServingCacheIdentity *identity,uint32_t token_count);
+SparkStatus SparkModelResidentClientGetCacheProbe(const SparkModelResidentClient *client,SparkModelResidentCacheProbeReport *report);
 
 #ifdef __cplusplus
 }
