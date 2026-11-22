@@ -754,7 +754,7 @@ static int DraftdControlClient(const char *path, const char *command, const char
 		fprintf(stderr, "sparkpipe_draftd: no control reply from %s within %d s\n", path, DRAFTD_CONTROL_WAIT_SECONDS);
 		return 1;
 	}
-	return strncmp(reply, "OK", 2u) == 0 ? 0 : 1;
+	return strncmp(reply, "OK", sizeof("OK") - 1u) == 0 ? 0 : 1;
 }
 
 static int DraftdWait(DraftdLane *lanes, uint32_t lane_count, int control_fd, uint32_t *control_ready)
