@@ -44,7 +44,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/gemma4/source/gemma4_stage.cuh` | 1 upload | Load: the YaRN table. |
 | `model-families/glm52/source/glm52_stage.cuh` | 1 upload | Load: the rope table. |
 | `model-families/glm5_next/source/glm5_next_stage_model.cuh` | 1 fill | Load. |
-| `model-families/k3/source/k3_resident_decode_stage_cuda.cu` | 10 fills | Load: the dispatch's pools, scratch and index scratch. Nine of them ignore the call's return value; see the follow-ups. |
+| `model-families/k3/source/k3_resident_decode_stage_cuda.cu` | 10 fills | Load: the dispatch's pools, scratch and index scratch. Each fill's result is checked, and a failed fill fails the dispatch's creation. |
 | `model-families/k3/source/k3_stage.cuh` | 2 fills | Load. |
 | `model-families/k3/source/k3_streamed_prefill.cuh` | 1 upload | Load: the identity chunk slots. |
 | `model-families/mimo26/source/mimo26_stage.cuh` | 2 uploads | Load. |
@@ -94,19 +94,61 @@ Load-time kernels launched on stream 0 are followed by `SparkGpuDeviceSynchroniz
   - **Controls:** the test first shows that the stub models the race (a raw pageable `cudaMemcpy` has not landed when a non-blocking stream reads) and that a pinned upload lands at once.
   - **Contract:** then it checks that `SparkGpuMemcpy` (host to device and device to device) and `SparkGpuMemset` have landed when they return.
   - It fails on main's wrapper and needs no GPU.
-- **`tests/test_upload_ordering_sites.py`** fails on any production call of an asynchronous copy, fill or event record on stream 0, on a stream default left on those wrappers, and on a synchronous copy or fill site that the table above does not count.
+- **`tests/test_upload_ordering_sites.py`** fails on any production call of an asynchronous copy, fill or event record on stream 0, on a stream default left on those wrappers, on a synchronous copy or fill site that the table above does not count, and on a host-visible buffer site that the table below does not count.
+- **`tests/cuda/stage_runner_failed_dispatch_cuda.cu`** (`tests/test_stage_runner_failed_dispatch_cuda.py`, on a GPU):
+  - Control: it first shows that an upload queued behind other work reads its pinned source when it runs, so a host write before then changes what lands.
+  - Then a dispatch whose model step fails, queued behind 200 ms of other work. The test checks that the dispatch returns only after its queued work has completed, and that rewriting the runner's token staging right after the failure leaves the failed dispatch's own tokens embedded.
+  - Without the settle in `SparkStageRunnerSubmit`, all three checks fail.
 
-## Host-visible buffers: the next pass
+## Host-visible buffers
 
-Pinned staging buffers that asynchronous copies read, and mapped buffers that kernels read in place, are host writes that a kernel reads. Each is safe only if the host does not rewrite it before the copy or kernel that reads it has run. Checked so far:
-- **Stage runner, dispatch staging** (the token, distribution and output staging): each dispatch uploads its inputs from pinned staging on its stream, runs, reads its outputs back on the same stream, and synchronizes that stream before it returns. So the next dispatch's host writes follow the last copy that read them.
-  - A dispatch that fails before that sync returns without it. The next dispatch could then rewrite staging that a copy queued before the failure still reads.
+Pinned staging that an asynchronous copy reads, mapped memory that kernels read or write in place, registered regions, and host functions on a stream. A host write must follow the last device reader of the same bytes, and a host read must follow the last device writer. `tests/test_upload_ordering_sites.py` counts the sites per file: allocations, registrations, device aliases and host functions. A new one fails until it is classified here.
 
-Listed for the next pass, which checks each host write against the last reader on its stream:
-- **Stage runner:** the lane staging, the route fault word, and the tap slab and chain.
-- **Pass prefill:** the round sums, the host staging, the health words, and the registered row and pass regions.
-- **DSV4.1:** the engram ids and rows, including the ahead buffers; the KV error word; and the exchange counts and totals.
-- **GLM 5.2:** the host staging, the lane staging and the KV error words.
-- **residentd:** the boundary allocation.
-- **Mesh collective:** the published cell and the registered receive region.
-- **TP mesh kernels:** the host pointer mapped by `spark_tp_mesh_kernels.cuh`.
+Classes:
+- **Staging per dispatch:** the host writes it once per dispatch, copies on the dispatch's streams read it, and those streams are synchronized before the dispatch returns.
+- **Readback after a wait:** a device-to-host copy into pinned memory, read after a stream sync or an event wait.
+- **Monitoring word:** mapped memory a kernel sets on a fault. The host reads it after the step has completed, and clears it only then, or never when the fault is terminal.
+- **Stream-ordered host function:** host code that `SparkGpuLaunchHostFunc` runs at its place in the stream, so its reads and writes are ordered with the kernels around it.
+- **Ring with release events:** a writer (a host thread or a NIC) reuses a buffer only after the event recorded behind its last device reader has completed.
+- **Protocol cell:** mapped or registered memory shared with peers or weightd. The mesh protocol's sequence words and fences order it, not a stream.
+
+| File | Sites | Buffers and class |
+| --- | --- | --- |
+| `inference/runner/stage_runner.cu` | 13 | See below. |
+| `inference/runner/pass_prefill.cuh` | 5 | See below. |
+| `model-families/dsv41_flash/source/dsv41_flash_stage.cuh` | 15 | See below. |
+| `model-families/glm52/source/glm52_stage.cuh` | 4 | Host staging and lane staging: staging per dispatch. `Begin` writes them once per step and uploads them on the lane's stream, inside the stage runner's dispatch. The KV error words: monitoring words, terminal. |
+| `node/model_residentd.c` | 2 | The pipeline boundary, mapped for the host-RDMA transport. It is used only by a rank with a previous or next pipeline stage, which no served lane has, and is claimed per route. |
+| `ring/transport/tp_device_collective.c` | 2 | See below. |
+| `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh` | 1 | The device alias of the collective's registered receive region: protocol cells. The mesh needs host page-table access, which GB10 has and the 5090 refuses at setup. |
+
+### The stage runner
+
+- **Token ids, the distribution rows, positions and rules, and the lane stage:** staging per dispatch.
+  - Fixed: a dispatch that failed after queuing work returned without waiting for it. The next dispatch could then rewrite staging that a queued copy had not read yet. A queued device-to-host copy could also still write a caller's logprob buffer after the call returned.
+  - `SparkStageRunnerSubmit` now synchronizes the runner's stream and its lane streams before a failed dispatch returns. That wait is bounded by the queued kernels, and a queued collective wait ends at its round timeout.
+  - With a device collective, the next dispatch's chain key already refused to start while the stream was busy, so only the caller's buffers were exposed. A TP1 runner, such as the 5090 drafters, has no collective and had no such guard.
+- **Output tokens and scores:** readback after the dispatch's stream sync.
+- **The route fault word:** a monitoring word. `SparkStageRunnerCheck` reads and clears it after the serving adapter's device wait.
+- **The tap slab and chain:** mapped, and written by kernels in place. The serving adapter sends their rows after the dispatch returned and before the next one starts, on the same thread.
+- **A caller's hidden input:** `StageRunnerCopy` synchronizes after each copy, so the input has been read when the dispatch returns. The cost is one stream wait per dispatch on a stage without the embedding, which no served lane has.
+
+### Pass prefill
+
+- **Host staging:** written after the stream sync that opens each pass, and uploaded before the pass's second sync.
+- **The health words:** zeroed after the previous pass's sync, and read after this pass's sync.
+- **The round sums:** readback after a wait.
+- **The weight window and the row region** (registered): a ring with release events. `LmPassAwaitRelease` waits on the last reader's event before the streamer reuses a slot.
+
+### DSV4.1
+
+- **Engram ids and rows:** a stream-ordered host function (`D41EngramFetch`) reads the ids the hash kernel wrote and writes the rows the gather kernel reads.
+- **The ahead ids and rows:** a worker thread fetches them between two stream-ordered host functions, `D41EngramAheadStart` and `D41EngramAheadJoin`. They are double-buffered per table, so the next step's hash kernels run only after this step's gather.
+- **The KV error word:** a monitoring word, terminal.
+- **The exchange counts:** readback after a stream sync.
+- **The exchange totals:** readback after the `counts_ready` event.
+
+### The mesh collective
+
+- **The published cell:** `ChainKey` writes the seed words only after it finds the active stream idle, and returns BUSY otherwise. Each control readback into the cell waits for its stream.
+- **The registered receive region:** protocol cells. The host writes the base cell's rank map and degree, fences, then writes the value word. Kernels and peers read the value word.

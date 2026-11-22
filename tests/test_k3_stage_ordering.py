@@ -77,7 +77,7 @@ def check_runner(failures):
     layer = body(model, "K3RunnerLayerCollective")
     if layer.count("K3ModelFail(state)") < 4:
         failures.append("a tensor-parallel layer reduce without its device collective does not fail the step")
-    submit = body(text, "SparkStageRunnerSubmit")
+    submit = body(text, "StageRunnerSubmitBody")
     begin = submit.find("StageRunnerChainBegin(state, dispatch->request_id)")
     first_work = min(i for i in (first(submit, "MemcpyAsync(state->token_ids_device"), submit.find("StageRunnerStageInput(")) if i >= 0)
     if begin < 0 or begin > first_work:
@@ -102,7 +102,7 @@ def check_runner(failures):
                         "collective runs on the lane's first band")
     seed = body(text, "StageRunnerSeedIndices")
     if not re.search(r"resident_sequence_capacity > configuration->max_active_sequence_count\s*\)"
-                     r"[^}]*return SPARK_STATUS_INVALID_ARGUMENT", seed, re.S):
+                     r"[^}]*(?:return |SPARK_FAIL\()SPARK_STATUS_INVALID_ARGUMENT", seed, re.S):
         failures.append("the runner accepts more resident sequences than it has "
                         "recurrent state slots")
 

@@ -32,6 +32,16 @@ SITES = {
     "runtime/spark_weightd.c": 4,
     "runtime/spark_weightd_spine.c": 1,
 }
+HOST_VISIBLE = {
+    "inference/runner/pass_prefill.cuh": 5,
+    "inference/runner/stage_runner.cu": 13,
+    "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": 1,
+    "model-families/dsv41_flash/source/dsv41_flash_stage.cuh": 15,
+    "model-families/glm52/source/glm52_stage.cuh": 4,
+    "node/model_residentd.c": 2,
+    "ring/transport/tp_device_collective.c": 2,
+}
+HOST_CALL = re.compile(r"\bSparkGpu(HostAlloc|MallocHost|HostRegister|MallocManaged|HostGetDevicePointer|LaunchHostFunc)\s*\(")
 CALL = re.compile(r"\bSparkGpu(" + "|".join(sorted(list(ASYNC) + list(SYNC), key=len, reverse=True)) + r")\s*\(")
 
 
@@ -95,18 +105,28 @@ def main():
     if files is None:
         failures.append("git ls-files failed")
         files = []
-    found = {}
+    found, visible = {}, {}
     for name in files:
-        sites, legacy = scan(name, (ROOT / name).read_text(errors="replace"))
+        text = (ROOT / name).read_text(errors="replace")
+        sites, legacy = scan(name, text)
         failures += legacy
         if sites:
             found[name] = sites
+        hosts = len(HOST_CALL.findall(text))
+        if hosts:
+            visible[name] = hosts
     for name in sorted(set(found) | set(SITES)):
         if found.get(name, 0) != SITES.get(name, 0):
             failures.append(f"{name} has {found.get(name, 0)} synchronous copy or fill sites, the record says {SITES.get(name, 0)}: classify the change in "
                             f"docs/UPLOAD_ORDERING.md and update SITES")
+    for name in sorted(set(visible) | set(HOST_VISIBLE)):
+        if visible.get(name, 0) != HOST_VISIBLE.get(name, 0):
+            failures.append(f"{name} has {visible.get(name, 0)} host-visible buffer sites, the record says {HOST_VISIBLE.get(name, 0)}: classify the change "
+                            f"in docs/UPLOAD_ORDERING.md and update HOST_VISIBLE")
+    if len(HOST_CALL.findall("SparkGpuHostAlloc(&a,8u,0u); SparkGpuLaunchHostFunc(s,f,a); SparkGpuHostGetDevicePointer(&d,a,0u);")) != 3:
+        failures.append("the host-visible scan does not see the three planted sites")
     doc = DOC.read_text()
-    for name in SITES:
+    for name in list(SITES) + list(HOST_VISIBLE):
         if f"`{name}`" not in doc:
             failures.append(f"docs/UPLOAD_ORDERING.md does not classify {name}")
     for failure in failures:
@@ -115,7 +135,8 @@ def main():
         print(f"\nFAIL ({len(failures)})")
         return 1
     print(f"PASS upload ordering sites: no asynchronous copy, fill or event record on the legacy stream, no default stream on those wrappers, and "
-          f"{sum(found.values())} synchronous copy and fill sites in {len(found)} files, each classified in docs/UPLOAD_ORDERING.md")
+          f"{sum(found.values())} synchronous copy and fill sites in {len(found)} files and {sum(visible.values())} host-visible buffer sites in "
+          f"{len(visible)} files, each classified in docs/UPLOAD_ORDERING.md")
     return 0
 
 
