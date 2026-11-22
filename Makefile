@@ -937,6 +937,12 @@ TEST_MODULE_ARCHIVES := \
     build/test_modules/module_affine.a
 TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
+K31_DSPARK_DRAFTER_MODULE := build/modules/k31_dspark_draft_stage.$(SHARED_LIBRARY_EXT)
+DRAFTER_DEVICE_OBJECTS := $(patsubst %.c,build/obj/drafter/%.o,$(WEIGHTD_DEVICE_SOURCES_cuda))
+DRAFTER_MODULES :=
+ifneq ($(CUDA_RUNTIME_HEADER),)
+DRAFTER_MODULES := $(K31_DSPARK_DRAFTER_MODULE)
+endif
 TEST_DRAFTER_PROBE_MODULE := build/test_modules/drafter_probe.$(SHARED_LIBRARY_EXT)
 TEST_DRAFTER_PROBE_ABI_MODULE := build/test_modules/drafter_probe_abi.$(SHARED_LIBRARY_EXT)
 TEST_HIDDEN_TRANSPORT_MODULE := \
@@ -968,13 +974,13 @@ HOST_TURN_BENCH_ADAPTER_MODULE := \
     build/test_modules/libhost_turn_bench_adapter.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
 TEST_VALIDATOR_CHANGED := build/test_module_validator_identity_changed
-.PHONY: all clean test tools hardware_tools hardware_cuda_tools hardware_handoff demo FORCE \
+.PHONY: all clean test tools drafter-modules hardware_tools hardware_cuda_tools hardware_handoff demo FORCE \
     hidden_transport_spark_host_rdma_verbs \
     tree_summary \
     architecture_audit \
     model_driver_contracts
 
-all: $(LIBRARIES) tools $(K3_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER) $(DEVICE_NVRM_LIBRARY)
+all: $(LIBRARIES) tools $(K3_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER) $(DEVICE_NVRM_LIBRARY) $(DRAFTER_MODULES)
 
 tools: $(TOOL_BINARIES)
 
@@ -2466,6 +2472,18 @@ $(TEST_DRAFTER_PROBE_MODULE): tests/fixtures/drafter_probe_module.c include/spar
 
 $(TEST_DRAFTER_PROBE_ABI_MODULE): tests/fixtures/drafter_probe_module.c include/sparkpipe/spark_drafter_module.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build/test_modules
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -DPROBE_MODULE_ABI=99u -fPIC $(SHARED_LIBRARY_FLAGS) tests/fixtures/drafter_probe_module.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/obj/drafter/%.o: %.c | build
+	@mkdir -p $(dir $@) && $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include -Imodel-families/common/include $(CFLAGS) -fPIC -c $< -o $@
+
+$(K31_DSPARK_DRAFTER_MODULE): modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu include/sparkpipe/spark_drafter_module.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@
+
+drafter-modules: $(DRAFTER_MODULES)
+
+build/k31_dspark_context_probe: tools/k31_dspark_context_probe.c include/sparkpipe/spark_drafter_module.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
 build/test_draftd_engine: tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c build/sparkpipe_draftd $(TEST_DRAFTER_PROBE_MODULE) $(TEST_DRAFTER_PROBE_ABI_MODULE) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_DRAFTD='"build/sparkpipe_draftd"' -DSPARK_TEST_PROBE_MODULE='"$(TEST_DRAFTER_PROBE_MODULE)"' -DSPARK_TEST_PROBE_ABI_MODULE='"$(TEST_DRAFTER_PROBE_ABI_MODULE)"' tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
