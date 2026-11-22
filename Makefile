@@ -51,9 +51,6 @@ DEPLOYMENT_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Ideployment/include -Ideploym
 CPPFLAGS ?= $(CORE_INCLUDE_FLAGS) $(MODEL_FAMILY_INCLUDE_FLAGS) -Ideployment/include -Ideployment/src
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
-ifeq ($(SPARKPIPE_DEVICE),cuda)
-LDFLAGS += $(SPARKPIPE_CUDA_DRIVER_LINK)
-endif
 CUDA_ARCH ?= sm_121a
 CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 NVCCFLAGS ?= -O3 -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
@@ -713,6 +710,7 @@ PYTHON_TESTS := \
 	tests/test_node_baseline_audit.py \
 	tests/test_fleet_post_reboot.py \
 	tests/test_hosted_dependency_audit.py \
+	tests/test_hosted_release_gate.py \
 	tests/test_hosted_image.py \
 	tests/test_hosted_disk_install.py \
 	tests/test_dsv41_flash_geometry.py \
@@ -985,6 +983,19 @@ $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBR
 
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
+
+HOSTED_RELEASE_NODE_FILES := build/sparkpipe_model_residentd build/weightd_warm $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch $(DEVICE_CUDA_LIBRARY)
+HOSTED_RELEASE_HUB_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt
+HOSTED_RELEASE_HOST_ONLY_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/sparkpipe_model_batch build/weightd_receipt tools/fleet_node_agent.sh
+HOSTED_RELEASE_ADAPTERS = $(sort $(foreach variable,$(filter-out %_METAL_SERVING_ADAPTER,$(filter %_SERVING_ADAPTER,$(.VARIABLES))),$($(variable))))
+HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB_FILES) $(HOSTED_RELEASE_ADAPTERS) tools/fleet_node_agent.sh)
+HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
+HOSTED_RELEASE_ROOT ?= build/hosted_release_root
+HOSTED_RELEASE_GATE_FLAGS ?=
+
+.PHONY: hosted-release-gate
+hosted-release-gate: $(HOSTED_RELEASE_FILES)
+	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS)
 
 MODULE_KERNELS_FLAGS = --keep --keep-dir $@.kernels
 define nvcc_module
@@ -1354,7 +1365,7 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu ring/transport/rdma_
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu ring/transport/rdma_control.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart $(SPARKPIPE_CUDA_DRIVER_LINK) -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)

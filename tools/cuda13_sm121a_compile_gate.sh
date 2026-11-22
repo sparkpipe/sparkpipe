@@ -155,6 +155,24 @@ for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 done
 printf '%s\n' "${adapters[@]}" > "${output_directory}/adapters.txt"
 
+hosted_release_root="${output_directory}/hosted_release_root"
+if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
+	HOSTED_RELEASE_GATE_FLAGS=--complete \
+	HOSTED_RELEASE_ROOT="${hosted_release_root}" \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/hosted_release_gate.txt" 2>&1; then
+	grep -E '^(FAIL|hosted-release-gate)' "${output_directory}/logs/hosted_release_gate.txt" >&2 || tail -n 40 "${output_directory}/logs/hosted_release_gate.txt" >&2
+	if [[ -d "${hosted_release_root}" ]]; then
+		python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
+	fi
+	echo "the hosted release root does not build or does not match tools/hosted_release_debt.json; see logs/hosted_release_gate.txt and hosted_release_findings.json" >&2
+	exit 6
+fi
+python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
+grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
+
 for object_file in "${output_directory}"/objects/*.o; do
 	object_name="$(basename "${object_file}")"
 	elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"

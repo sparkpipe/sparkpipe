@@ -7,8 +7,9 @@ test points CUDA_HOME at a scratch toolkit (a cuda_runtime.h header and
 nothing else), so the toolkit counts as installed on any host, and reads the
 expanded link variables of each flavour: the nvrm flavour names no vendor
 library in LDFLAGS, SPARKPIPE_CUDA_DRIVER_LINK or SPARKPIPE_CUDA_RUNTIME_LINK,
-and the cuda flavour still links the driver everywhere and the runtime where
-a rule asks for it.
+and the cuda flavour sets both link variables but names no vendor library in
+LDFLAGS either: a rule links the driver or the runtime only when it asks for
+SPARKPIPE_CUDA_DRIVER_LINK or SPARKPIPE_CUDA_RUNTIME_LINK.
 """
 import re
 import subprocess
@@ -56,8 +57,9 @@ def main():
         failures.append("SPARKPIPE_DEVICE=cuda: SPARKPIPE_CUDA_DRIVER_LINK is %r" % cuda["SPARKPIPE_CUDA_DRIVER_LINK"])
     if cuda["SPARKPIPE_CUDA_RUNTIME_LINK"] != "-L%s -lcudart" % lib:
         failures.append("SPARKPIPE_DEVICE=cuda: SPARKPIPE_CUDA_RUNTIME_LINK is %r" % cuda["SPARKPIPE_CUDA_RUNTIME_LINK"])
-    if "-lcuda" not in cuda["LDFLAGS"].split():
-        failures.append("SPARKPIPE_DEVICE=cuda: LDFLAGS no longer links the CUDA driver: %r" % cuda["LDFLAGS"])
+    found = VENDOR.findall(cuda["LDFLAGS"])
+    if found:
+        failures.append("SPARKPIPE_DEVICE=cuda: LDFLAGS names %s, which reaches programs with no device code" % " ".join(found))
     for failure in failures:
         print("FAIL %s" % failure)
     if failures:
