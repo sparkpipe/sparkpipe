@@ -8,6 +8,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/topk_exact.cuh"
 #include "runtime/launch.h"
 
 #include <math.h>
@@ -32,6 +33,12 @@
 #define K31_BLOCK 7u
 #define K31_VOCAB 163840u
 #define K31_QUERIES (K31_BLOCK * K31_HEADS)
+#define K31_MARKOV 512u
+#define K31_CANDIDATES 2048u
+#define K31_SAMPLED 32u
+#define K31_PICK_THREADS 1024u
+#define K31_TOPK_THREADS 512u
+#define K31_CONFIDENCE (K31_HIDDEN + K31_MARKOV)
 #define K31_PAGE_POSITIONS 4096u
 #define K31_PAGE_BYTES ((uint64_t)K31_LAYERS * K31_PAGE_POSITIONS * K31_LATENT * sizeof(uint16_t))
 #define K31_PAGES_MAX 4096u
@@ -82,6 +89,7 @@ typedef struct K31Sequence
 	uint64_t control_generation;
 	uint64_t request_id;
 	uint64_t held_end;
+	uint64_t verified;
 	uint64_t last_used;
 	uint32_t page_count;
 	uint16_t **pages;
@@ -96,6 +104,12 @@ typedef struct K31Draft
 	uint32_t run_first[K31_RUNS_MAX];
 	uint32_t run_position[K31_RUNS_MAX];
 } K31Draft;
+
+typedef struct K31Picks
+{
+	uint32_t tokens[K31_BLOCK];
+	float scores[K31_BLOCK];
+} K31Picks;
 
 typedef struct K31Forward
 {
@@ -123,6 +137,12 @@ typedef struct K31Forward
 	uint16_t *act;
 	uint16_t *mlp;
 	uint16_t *y;
+	uint16_t *logits;
+	float *logits_f32;
+	uint32_t *candidates;
+	float *markov_row;
+	K31Picks *picks;
+	K31Picks *host_picks;
 } K31Forward;
 
 typedef struct K31State
@@ -139,6 +159,11 @@ typedef struct K31State
 	const uint16_t *context_norm;
 	const uint16_t *embed;
 	const uint16_t *final_norm;
+	const uint16_t *head;
+	const uint16_t *markov_previous;
+	const uint16_t *markov_next;
+	const uint16_t *confidence_weight;
+	const uint16_t *confidence_bias;
 	K31Layer layers[K31_LAYERS];
 	K31Forward forward;
 	uint16_t *host_taps;
@@ -663,6 +688,155 @@ void K31SwigluKernel(const uint16_t *__restrict__ gate, const uint16_t *__restri
 	}
 }
 
+__global__ __launch_bounds__(K31_THREADS, 1)
+void K31WidenKernel(const uint16_t *__restrict__ input, float *__restrict__ output, uint32_t count)
+{
+	for ( uint32_t index = blockIdx.x * K31_THREADS + threadIdx.x; index < count; index += gridDim.x * K31_THREADS )
+		output[index] = LmBf16ToFloat(input[index]);
+}
+
+__global__ __launch_bounds__(K31_THREADS, 1)
+void K31MarkovRowKernel(uint32_t step, uint32_t anchor, const uint32_t *__restrict__ tokens, const uint32_t *__restrict__ candidates,
+	const float *__restrict__ logits, const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ markov_next, float *__restrict__ row)
+{
+	__shared__ float vector[K31_MARKOV];
+	const uint32_t previous = step == 0u ? anchor : tokens[step - 1u];
+	const uint32_t warp = threadIdx.x / K31_WARP, lane = threadIdx.x % K31_WARP;
+	for ( uint32_t index = threadIdx.x; index < K31_MARKOV; index += K31_THREADS )
+		vector[index] = LmBf16ToFloat(markov_previous[(uint64_t)previous * K31_MARKOV + index]);
+	__syncthreads();
+	for ( uint32_t slot = blockIdx.x * (K31_THREADS / K31_WARP) + warp; slot < K31_CANDIDATES; slot += gridDim.x * (K31_THREADS / K31_WARP) )
+	{
+		const uint32_t candidate = candidates[step * K31_CANDIDATES + slot];
+		const uint16_t *edge = markov_next + (uint64_t)candidate * K31_MARKOV;
+		float sum = 0.0f;
+		for ( uint32_t element = lane; element < K31_MARKOV; element += K31_WARP )
+			sum += LmBf16ToFloat(edge[element]) * vector[element];
+		for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+			sum += __shfl_xor_sync(0xffffffffu, sum, mask);
+		if ( lane == 0u )
+			row[slot] = logits[(uint64_t)step * K31_VOCAB + candidate] + sum;
+	}
+}
+
+static __device__ __forceinline__ unsigned long long K31RowKey(const float *row, uint32_t slot)
+{
+	return ((unsigned long long)SparkMathSampleOrdered(row[slot]) << 32u) | (unsigned long long)(0xffffffffu - slot);
+}
+
+static __device__ __forceinline__ uint32_t K31KeySlot(unsigned long long key)
+{
+	return 0xffffffffu - (uint32_t)key;
+}
+
+__global__ __launch_bounds__(K31_PICK_THREADS, 1)
+void K31MarkovPickKernel(uint32_t step, uint32_t anchor, uint32_t position, unsigned long long seed, float inverse_temperature, float nucleus,
+	uint32_t top_k, const float *__restrict__ row, const uint32_t *__restrict__ candidates, const uint16_t *__restrict__ y,
+	const uint16_t *__restrict__ markov_previous, const uint16_t *__restrict__ confidence_weight, const uint16_t *__restrict__ confidence_bias,
+	K31Picks *__restrict__ picks)
+{
+	__shared__ unsigned long long keys[K31_CANDIDATES];
+	__shared__ unsigned long long best[K31_PICK_THREADS / K31_WARP];
+	__shared__ float reduction[K31_PICK_THREADS / K31_WARP];
+	__shared__ uint32_t chosen;
+	const uint32_t previous = step == 0u ? anchor : picks->tokens[step - 1u];
+	const uint32_t warp = threadIdx.x / K31_WARP, lane = threadIdx.x % K31_WARP;
+	float dot = 0.0f;
+	if ( inverse_temperature > 0.0f )
+	{
+		for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+			keys[index] = K31RowKey(row, index);
+		__syncthreads();
+		for ( uint32_t size = 2u; size <= K31_CANDIDATES; size <<= 1u )
+			for ( uint32_t stride = size >> 1u; stride > 0u; stride >>= 1u )
+			{
+				for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+				{
+					const uint32_t other = index ^ stride;
+					if ( other > index )
+					{
+						const unsigned long long a = keys[index], b = keys[other];
+						if ( ((index & size) == 0u) ? a < b : a > b )
+						{
+							keys[index] = b;
+							keys[other] = a;
+						}
+					}
+				}
+				__syncthreads();
+			}
+		if ( warp == 0u )
+		{
+			const uint32_t slot = K31KeySlot(keys[lane]);
+			const uint32_t token = candidates[step * K31_CANDIDATES + slot];
+			const float scaled = row[slot] * inverse_temperature;
+			float peak = scaled, total, probability, running, keyed;
+			uint32_t winner;
+			unsigned long long key;
+			for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+				peak = fmaxf(peak, __shfl_xor_sync(0xffffffffu, peak, mask));
+			probability = expf(scaled - peak);
+			total = probability;
+			for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+				total += __shfl_xor_sync(0xffffffffu, total, mask);
+			probability /= total;
+			running = probability;
+			for ( uint32_t offset = 1u; offset < K31_SAMPLED; offset <<= 1u )
+			{
+				const float earlier = __shfl_up_sync(0xffffffffu, running, offset);
+				if ( lane >= offset )
+					running += earlier;
+			}
+			keyed = (((nucleus <= 0.0f) || (running - probability < nucleus)) && (top_k == 0u || lane < top_k)) || lane == 0u
+				? scaled + SparkMathGumbelNoise(seed, position + step, token) : -INFINITY;
+			key = ((unsigned long long)SparkMathSampleOrdered(keyed) << 32u) | (unsigned long long)(0xffffffffu - lane);
+			for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+			{
+				const unsigned long long other = __shfl_xor_sync(0xffffffffu, key, mask);
+				key = other > key ? other : key;
+			}
+			winner = 0xffffffffu - (uint32_t)key;
+			if ( lane == winner )
+				chosen = slot;
+		}
+	}
+	else
+	{
+		unsigned long long key = 0ull;
+		for ( uint32_t index = threadIdx.x; index < K31_CANDIDATES; index += K31_PICK_THREADS )
+		{
+			const unsigned long long candidate = K31RowKey(row, index);
+			key = candidate > key ? candidate : key;
+		}
+		for ( uint32_t mask = K31_WARP / 2u; mask > 0u; mask >>= 1u )
+		{
+			const unsigned long long other = __shfl_xor_sync(0xffffffffu, key, mask);
+			key = other > key ? other : key;
+		}
+		if ( lane == 0u )
+			best[warp] = key;
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			for ( uint32_t index = 1u; index < K31_PICK_THREADS / K31_WARP; index++ )
+				key = best[index] > key ? best[index] : key;
+			chosen = K31KeySlot(key);
+		}
+	}
+	for ( uint32_t index = threadIdx.x; index < K31_CONFIDENCE; index += K31_PICK_THREADS )
+	{
+		const float feature = index < K31_HIDDEN ? LmBf16ToFloat(y[(uint64_t)step * K31_HIDDEN + index])
+			: LmBf16ToFloat(markov_previous[(uint64_t)previous * K31_MARKOV + index - K31_HIDDEN]);
+		dot += LmBf16ToFloat(confidence_weight[index]) * feature;
+	}
+	dot = LmBlockSum<K31_PICK_THREADS>(dot, reduction);
+	if ( threadIdx.x == 0u )
+	{
+		picks->tokens[step] = candidates[step * K31_CANDIDATES + chosen];
+		picks->scores[step] = 1.0f / (1.0f + expf(-(dot + LmBf16ToFloat(confidence_bias[0]))));
+	}
+}
+
 static SparkStatus K31DeviceOpen(void)
 {
 	const SparkStatus status = SparkDeviceInitialize(0);
@@ -759,6 +933,7 @@ static SparkStatus K31Shape(K31State *state, const SparkJsonDocument *document)
 		{"hidden_size", K31_HIDDEN}, {"num_attention_heads", K31_HEADS}, {"q_lora_rank", K31_QUERY_RANK}, {"kv_lora_rank", K31_KV_RANK},
 		{"qk_nope_head_dim", K31_NOPE}, {"qk_rope_head_dim", K31_ROPE}, {"v_head_dim", K31_VALUE}, {"intermediate_size", K31_MLP},
 		{"num_hidden_layers", K31_LAYERS}, {"num_target_layers", K31_TAPS}, {"block_size", K31_BLOCK}, {"vocab_size", K31_VOCAB},
+		{"draft_vocab_size", K31_VOCAB}, {"markov_rank", K31_MARKOV},
 	};
 	const int32_t checkpoint = K31Checkpoint(document);
 	const int32_t mask = checkpoint < 0 ? -1 : SparkJsonFindObjectMember(document, checkpoint, "mask_token_id");
@@ -850,6 +1025,16 @@ static SparkStatus K31Weights(K31State *state, const char *pack_path)
 		status = K31Tensor(state, &document, payload_base, "final_norm.weight", K31_HIDDEN, &state->final_norm);
 	if ( status == SPARK_STATUS_OK )
 		status = K31Tensor(state, &document, payload_base, "target.embed", (uint64_t)K31_VOCAB * K31_HIDDEN, &state->embed);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Tensor(state, &document, payload_base, "target.head", (uint64_t)K31_VOCAB * K31_HIDDEN, &state->head);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Tensor(state, &document, payload_base, "markov_head.markov_w1.weight", (uint64_t)K31_VOCAB * K31_MARKOV, &state->markov_previous);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Tensor(state, &document, payload_base, "markov_head.markov_w2.weight", (uint64_t)K31_VOCAB * K31_MARKOV, &state->markov_next);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Tensor(state, &document, payload_base, "confidence_head.proj.weight", K31_CONFIDENCE, &state->confidence_weight);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Tensor(state, &document, payload_base, "confidence_head.proj.bias", 1u, &state->confidence_bias);
 	for ( uint32_t layer = 0u; layer < K31_LAYERS && status == SPARK_STATUS_OK; layer++ )
 	{
 		K31Layer *weights = &state->layers[layer];
@@ -905,7 +1090,11 @@ static SparkStatus K31Scratch(K31State *state)
 		!K31_DEVICE(forward->stats, (uint64_t)K31_SPLITS_MAX * K31_QUERIES * 2u) || !K31_DEVICE(forward->latent, (uint64_t)K31_QUERIES * K31_KV_RANK) ||
 		!K31_DEVICE(forward->values, K31_BLOCK * K31_HEADS * K31_VALUE) || !K31_DEVICE(forward->attention, K31_BLOCK * K31_HIDDEN) ||
 		!K31_DEVICE(forward->gate, K31_BLOCK * K31_MLP) || !K31_DEVICE(forward->up, K31_BLOCK * K31_MLP) || !K31_DEVICE(forward->act, K31_BLOCK * K31_MLP) ||
-		!K31_DEVICE(forward->mlp, K31_BLOCK * K31_HIDDEN) || !K31_DEVICE(forward->y, K31_BLOCK * K31_HIDDEN) )
+		!K31_DEVICE(forward->mlp, K31_BLOCK * K31_HIDDEN) || !K31_DEVICE(forward->y, K31_BLOCK * K31_HIDDEN) ||
+		!K31_DEVICE(forward->logits, (uint64_t)K31_BLOCK * K31_VOCAB) || !K31_DEVICE(forward->logits_f32, (uint64_t)K31_BLOCK * K31_VOCAB) ||
+		!K31_DEVICE(forward->candidates, K31_BLOCK * K31_CANDIDATES) || !K31_DEVICE(forward->markov_row, K31_CANDIDATES) ||
+		!K31_DEVICE(forward->picks, 1u) ||
+		SparkGpuMallocHost((void **)&forward->host_picks, sizeof(K31Picks)) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for ( uint32_t row = 0u; row < K31_BLOCK; row++ )
 		destinations[row] = forward->block_rows + (uint64_t)row * K31_LATENT;
@@ -1051,6 +1240,8 @@ static void K31Forget(K31Sequence *sequence, uint64_t first)
 		memset(sequence->held + first, 0, (size_t)(capacity - first));
 	if ( sequence->held_end > first )
 		sequence->held_end = first;
+	if ( sequence->verified > first )
+		sequence->verified = first;
 }
 
 static SparkStatus K31Ingest(void *opaque, const SparkTapStreamReaderFrame *frame)
@@ -1227,17 +1418,70 @@ static SparkStatus K31ForwardRun(K31State *state, const K31Sequence *sequence, u
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+static SparkStatus K31Heads(K31State *state, uint32_t anchor_token, uint64_t position, const SparkRowSampling *sampling)
+{
+	K31Forward *forward = &state->forward;
+	const SparkGpuStream stream = state->stream;
+	if ( LmDenseRows<LmBf16Format>(state->head, LmScaleTensorNone(), forward->y, forward->logits, (float *)0, K31_BLOCK, K31_HIDDEN, K31_VOCAB, 0u,
+		state->multiprocessors, stream) != LM_LAUNCH_OK )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	LM_LAUNCH((K31WidenKernel), state->multiprocessors, K31_THREADS, 0, stream, forward->logits, forward->logits_f32, K31_BLOCK * K31_VOCAB);
+	if ( LmTopkExactRowsLaunch<K31_TOPK_THREADS>(forward->logits_f32, K31_BLOCK, K31_VOCAB, K31_CANDIDATES, forward->candidates, stream) !=
+		SPARK_GPU_SUCCESS )
+		return SPARK_STATUS_INTERNAL_ERROR;
+	for ( uint32_t step = 0u; step < K31_BLOCK; step++ )
+	{
+		LM_LAUNCH((K31MarkovRowKernel), K31_CANDIDATES / (K31_THREADS / K31_WARP), K31_THREADS, 0, stream, step, anchor_token, forward->picks->tokens,
+			forward->candidates, forward->logits_f32, state->markov_previous, state->markov_next, forward->markov_row);
+		LM_LAUNCH((K31MarkovPickKernel), 1u, K31_PICK_THREADS, 0, stream, step, anchor_token, (uint32_t)position, (unsigned long long)sampling->seed,
+			sampling->inverse_temperature, sampling->nucleus, sampling->top_k, forward->markov_row, forward->candidates, forward->y, state->markov_previous,
+			state->confidence_weight, state->confidence_bias, forward->picks);
+	}
+	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(K31Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
+		return SPARK_STATUS_IO_ERROR;
+	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static uint32_t K31Covers(const K31Sequence *sequence, uint64_t position)
+{
+	if ( position == 0u )
+		return 1u;
+	return sequence != 0 && position - 1u < (uint64_t)sequence->page_count * K31_PAGE_POSITIONS && sequence->held[position - 1u] != 0u ? 1u : 0u;
+}
+
+static uint32_t K31TokensMatch(K31Sequence *sequence, const SparkDraftServerRequest *request)
+{
+	const uint64_t capacity = (uint64_t)sequence->page_count * K31_PAGE_POSITIONS;
+	const uint64_t end = request->position < capacity ? request->position : capacity;
+	uint32_t complete = end == request->position ? 1u : 0u;
+	if ( (uint64_t)request->committed_token_count < request->position )
+		return 0u;
+	for ( uint64_t at = sequence->verified; at < end; at++ )
+	{
+		if ( sequence->held[at] == 0u )
+			complete = 0u;
+		else if ( sequence->tokens[at] != request->committed_token_ids[at] )
+			return 0u;
+	}
+	if ( complete != 0u && end > sequence->verified )
+		sequence->verified = end;
+	return 1u;
+}
+
 static void K31ForwardFree(K31Forward *forward)
 {
 	void *buffers[] = {
 		forward->draft, forward->pages, forward->block_destinations, forward->residual, forward->x, forward->q_a_raw, forward->q_a, forward->q,
 		forward->latent_raw, forward->block_rows, forward->queries, forward->queries_f32, forward->partials, forward->stats, forward->latent,
-		forward->values, forward->attention, forward->gate, forward->up, forward->act, forward->mlp, forward->y,
+		forward->values, forward->attention, forward->gate, forward->up, forward->act, forward->mlp, forward->y, forward->logits, forward->logits_f32,
+		forward->candidates, forward->markov_row, forward->picks,
 	};
 	for ( uint32_t index = 0u; index < sizeof(buffers) / sizeof(buffers[0]); index++ )
 		(void)SparkGpuFree(buffers[index]);
 	if ( forward->host_draft != 0 )
 		(void)SparkGpuFreeHost(forward->host_draft);
+	if ( forward->host_picks != 0 )
+		(void)SparkGpuFreeHost(forward->host_picks);
 	if ( forward->host_pages != 0 )
 		(void)SparkGpuFreeHost((void *)forward->host_pages);
 }
@@ -1337,17 +1581,42 @@ static SparkStatus K31Open(const SparkDrafterModuleLane *lane, void **state_out,
 
 static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *request, SparkDraftBridgeNode *nodes, uint32_t capacity, uint32_t *count)
 {
-	(void)opaque;
+	K31State *state = (K31State *)opaque;
+	K31Sequence *sequence = K31SequenceFind(state, request->sequence_id, 0u);
+	const uint32_t source = request->speculator_mask & (~request->speculator_mask + 1u);
+	uint32_t drafts = request->depth < request->max_depth ? request->depth : request->max_depth;
+	SparkStatus status;
 	*count = 0u;
 	if ( capacity == 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	if ( K31Covers(sequence, request->position) == 0u )
+		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
+	if ( sequence != 0 && K31TokensMatch(sequence, request) == 0u )
+		return SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT;
+	drafts = drafts < K31_BLOCK ? drafts : K31_BLOCK;
+	drafts = drafts < capacity - 1u ? drafts : capacity - 1u;
+	status = K31ForwardRun(state, sequence, request->anchor_token_id, request->position, K31_LAYERS);
+	if ( status == SPARK_STATUS_OK )
+		status = K31Heads(state, request->anchor_token_id, request->position, &request->sampling);
+	if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	nodes[0].token_id = request->anchor_token_id;
 	nodes[0].parent_index = SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX;
 	nodes[0].depth = 0u;
-	nodes[0].source_bit = request->speculator_mask & (~request->speculator_mask + 1u);
+	nodes[0].source_bit = source;
 	nodes[0].score = 1.0f;
-	*count = 1u;
-	return SPARK_STATUS_OK;
+	for ( uint32_t draft = 0u; draft < drafts; draft++ )
+	{
+		nodes[draft + 1u].token_id = state->forward.host_picks->tokens[draft];
+		nodes[draft + 1u].parent_index = draft;
+		nodes[draft + 1u].depth = draft + 1u;
+		nodes[draft + 1u].source_bit = source;
+		nodes[draft + 1u].score = state->forward.host_picks->scores[draft];
+	}
+	*count = drafts + 1u;
+	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 
 static const SparkDrafterModuleInterface k31_interface = {

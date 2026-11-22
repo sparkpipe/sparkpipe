@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_drafter_module.h"
 
 #define PROBE_HIDDEN 7168u
@@ -16,6 +17,7 @@
 #define PROBE_FRAME_ROWS 2048u
 #define PROBE_SEQUENCE 42u
 #define PROBE_TIMED 20u
+#define PROBE_RULES 3u
 
 typedef SparkStatus (*ContextRows)(void *, uint64_t, uint32_t, uint64_t, uint32_t, uint16_t *);
 typedef SparkStatus (*BlockRows)(void *, uint64_t, uint32_t, uint64_t, uint16_t *, uint64_t *);
@@ -180,6 +182,63 @@ static int Trace(Probe *probe, const char *directory, uint32_t anchor, uint64_t 
 	return failed;
 }
 
+static const SparkRowSampling probe_rules[PROBE_RULES] = {
+	{0u, 0.0f, 0.0f, 0u, 0u},
+	{12345u, 1.0f, 0.95f, 0u, 0u},
+	{777u, 1.0f / 0.6f, 1.0f, 20u, 0u},
+};
+
+static int Drafts(Probe *probe, const char *directory, const uint32_t *tokens, uint64_t rows)
+{
+	SparkDraftServerRequest request;
+	SparkDraftBridgeNode nodes[PROBE_BLOCK + 1u];
+	uint32_t out[PROBE_RULES][2u * PROBE_BLOCK + 1u];
+	char path[600];
+	FILE *file;
+	memset(out, 0, sizeof(out));
+	for ( uint32_t rule = 0u; rule < PROBE_RULES; rule++ )
+	{
+		uint32_t count = 0u;
+		SparkStatus status;
+		memset(&request, 0, sizeof(request));
+		request.speculator_mask = 2u;
+		request.sequence_id = PROBE_SEQUENCE;
+		request.position = rows;
+		request.anchor_token_id = tokens[rows];
+		request.committed_token_ids = tokens;
+		request.committed_token_count = (uint32_t)rows + 1u;
+		request.depth = PROBE_BLOCK;
+		request.max_depth = PROBE_BLOCK;
+		request.node_capacity = PROBE_BLOCK + 1u;
+		request.sampling = probe_rules[rule];
+		status = probe->module->propose(probe->state, &request, nodes, PROBE_BLOCK + 1u, &count);
+		if ( status != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS || count != PROBE_BLOCK + 1u || nodes[0].token_id != tokens[rows] )
+		{
+			fprintf(stderr, "propose under rule %u answered status %d with %u nodes\n", rule, (int)status, count);
+			return 1;
+		}
+		out[rule][0] = count - 1u;
+		for ( uint32_t draft = 0u; draft < PROBE_BLOCK; draft++ )
+		{
+			out[rule][1u + draft] = nodes[draft + 1u].token_id;
+			memcpy(&out[rule][1u + PROBE_BLOCK + draft], &nodes[draft + 1u].score, sizeof(float));
+		}
+		printf("rule %u drafts:", rule);
+		for ( uint32_t draft = 0u; draft < PROBE_BLOCK; draft++ )
+			printf(" %u(%.3f)", nodes[draft + 1u].token_id, (double)nodes[draft + 1u].score);
+		printf("\n");
+	}
+	snprintf(path, sizeof(path), "%s/drafts.bin", directory);
+	file = fopen(path, "wb");
+	if ( file == 0 || fwrite(out, sizeof(out[0][0]), sizeof(out) / sizeof(out[0][0]), file) != sizeof(out) / sizeof(out[0][0]) )
+	{
+		if ( file != 0 )
+			fclose(file);
+		return 1;
+	}
+	return fclose(file) == 0 ? 0 : 1;
+}
+
 static int Compare(Probe *probe, const char *directory)
 {
 	const uint64_t row_elements = (uint64_t)PROBE_TAPS * PROBE_HIDDEN;
@@ -224,7 +283,7 @@ static int Compare(Probe *probe, const char *directory)
 		if ( WriteAll(directory, name, out, rows * PROBE_LATENT) != 0 )
 			return 1;
 	}
-	if ( Trace(probe, directory, tokens[rows], rows) != 0 )
+	if ( Trace(probe, directory, tokens[rows], rows) != 0 || Drafts(probe, directory, tokens, rows) != 0 )
 		return 1;
 	printf("wrote y.bin, trace0..%u.bin and %llu context rows x %u layers to %s\n", PROBE_LAYERS - 1u, (unsigned long long)rows, PROBE_LAYERS, directory);
 	free(out);
@@ -237,6 +296,41 @@ static int CompareU64(const void *a, const void *b)
 {
 	const uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b;
 	return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static int TimePropose(Probe *probe, uint64_t position, const SparkRowSampling *rule, uint64_t *elapsed)
+{
+	SparkDraftServerRequest request;
+	SparkDraftBridgeNode nodes[PROBE_BLOCK + 1u];
+	uint32_t *committed = (uint32_t *)malloc((size_t)(position + 1u) * sizeof(uint32_t)), count = 0u;
+	if ( committed == 0 )
+		return 1;
+	for ( uint64_t at = 0u; at <= position; at++ )
+		committed[at] = 1000u + (uint32_t)(at % PROBE_FRAME_ROWS);
+	memset(&request, 0, sizeof(request));
+	request.speculator_mask = 2u;
+	request.sequence_id = PROBE_SEQUENCE;
+	request.position = position;
+	request.anchor_token_id = committed[position];
+	request.committed_token_ids = committed;
+	request.committed_token_count = (uint32_t)position + 1u;
+	request.depth = PROBE_BLOCK;
+	request.max_depth = PROBE_BLOCK;
+	request.node_capacity = PROBE_BLOCK + 1u;
+	request.sampling = *rule;
+	for ( uint32_t run = 0u; run < PROBE_TIMED; run++ )
+	{
+		const uint64_t started = SparkMonotonicNs();
+		if ( probe->module->propose(probe->state, &request, nodes, PROBE_BLOCK + 1u, &count) != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS )
+		{
+			free(committed);
+			return 1;
+		}
+		elapsed[run] = SparkMonotonicNs() - started;
+	}
+	free(committed);
+	qsort(elapsed, PROBE_TIMED, sizeof(elapsed[0]), CompareU64);
+	return 0;
 }
 
 static int Time(Probe *probe, const char *list)
@@ -253,14 +347,14 @@ static int Time(Probe *probe, const char *list)
 		value = value * 1664525u + 1013904223u;
 		taps[index] = Bf16(((float)(value >> 8) / 16777216.0f - 0.5f) * 3.0f);
 	}
-	for ( uint32_t index = 0u; index < PROBE_FRAME_ROWS; index++ )
-		tokens[index] = 1000u + index;
 	while ( (item = strsep(&cursor, ",")) != 0 )
 	{
 		const uint64_t position = strtoull(item, 0, 10);
 		while ( held < position )
 		{
 			const uint32_t part = position - held < PROBE_FRAME_ROWS ? (uint32_t)(position - held) : PROBE_FRAME_ROWS;
+			for ( uint32_t index = 0u; index < part; index++ )
+				tokens[index] = 1000u + (uint32_t)((held + index) % PROBE_FRAME_ROWS);
 			if ( Ingest(probe, taps, tokens, held, part) != 0 )
 				return 1;
 			held += part;
@@ -274,6 +368,17 @@ static int Time(Probe *probe, const char *list)
 		qsort(elapsed, PROBE_TIMED, sizeof(elapsed[0]), CompareU64);
 		printf("context %8llu: block forward min %.3f ms median %.3f ms max %.3f ms (%u runs)\n", (unsigned long long)position,
 			(double)elapsed[0] / 1e6, (double)elapsed[PROBE_TIMED / 2u] / 1e6, (double)elapsed[PROBE_TIMED - 1u] / 1e6, PROBE_TIMED);
+		for ( uint32_t rule = 0u; rule < PROBE_RULES; rule += PROBE_RULES - 1u )
+		{
+			if ( TimePropose(probe, position, &probe_rules[rule], elapsed) != 0 )
+			{
+				fprintf(stderr, "propose at %llu failed\n", (unsigned long long)position);
+				return 1;
+			}
+			printf("context %8llu: propose (%s) min %.3f ms median %.3f ms max %.3f ms (%u runs)\n", (unsigned long long)position,
+				rule == 0u ? "greedy" : "sampled", (double)elapsed[0] / 1e6, (double)elapsed[PROBE_TIMED / 2u] / 1e6,
+				(double)elapsed[PROBE_TIMED - 1u] / 1e6, PROBE_TIMED);
+		}
 	}
 	free(copy);
 	free(taps);

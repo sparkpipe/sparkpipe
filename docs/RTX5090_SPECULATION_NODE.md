@@ -265,8 +265,23 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
       pages, and a gap in the held rows only shortens the context;
     - `kv_b_proj`'s value half, `o_proj`, `post_attention_layernorm`, the SwiGLU
       MLP, and the residual in fp32; then `final_norm`.
-  - **Drafts.** The module still answers with the root alone; the heads (the
-    target's head, the Markov walk and the confidence head) come next.
+  - **Heads.** The block rows go through the target's head; the 2,048 best
+    tokens of each row (exact top-k) are the candidates. Then seven steps, each
+    from the token before it (the anchor first): a candidate's score is its
+    logit plus its `markov_w2` row dotted with the previous token's `markov_w1`
+    row, in fp32. Greedy takes the best score. With a sampling rule
+    (`inverse_temperature > 0`) the 32 best are kept under the rule's nucleus
+    and top-k, and the verifier's keyed Gumbel noise
+    (`SparkMathGumbelNoise` at the slot's position) picks among them, as
+    `coupled_candidates` does. The confidence head reads the block row and the
+    previous token's `markov_w1` row.
+  - **Proposals.** `propose` answers `AWAIT_TAPS` while the context does not
+    hold the position before the anchor, checked on the host before any device
+    work; `NO_CONTEXT` when a held token differs from the committed one (each
+    position is checked once and remembered until a frame rewrites it);
+    otherwise it runs the block and the heads and answers the root and up to
+    seven drafts, the request's depth and node capacity permitting, each
+    scored by its confidence.
   - **Check.** `build/k31_dspark_context_probe` writes random taps through the
     module, and `tools/spec_offline/k31_dspark_context_compare.py` recomputes
     the rows with the Python drafter and in float64. On the 5090 the module's
@@ -278,8 +293,10 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     the block rows, the context rows and each layer's attention inputs and
     output; `compare` checks each layer's attention against the Python
     drafter's on the same inputs and the block's top tokens under the target's
-    head against the Python drafter's. `--time` times the forward on
-    synthetic context.
+    head against the Python drafter's. It also runs `propose` under a greedy
+    rule and two sampling rules and checks the drafts and confidences against
+    `K3DsparkDrafter.propose` on the module's block rows. `--time` times the
+    forward on synthetic context.
 
 ## Draft farm
 
