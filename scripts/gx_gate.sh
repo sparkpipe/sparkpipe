@@ -169,7 +169,8 @@ gx_model() {
   held=$(hub "mkdir -p $dir && { test -e $dir/state.json && echo state || echo none; }") || { echo "GX-FAILED $id: the hub does not answer"; return 1; }
   [ "$held" = state ] && fresh=0 || fresh=1
   if gx_running "$dir"; then echo "GX-FAILED $id: a step of this state still runs on the hub (pid $(hub "cat $dir/run.pid")); wait for it or stop it, then run this again"; return 1; fi
-  scp -q "$KIT/../tools/gx_gate.py" rtx5090:$GX_TOOL && scp -q "$KIT/../tools/serving/prompt_cuts.py" rtx5090:$GX_DIR/prompt_cuts.py || { echo "GX-FAILED $id: the hub did not take the tool"; return 1; }
+  scp -q "$KIT/../tools/gx_gate.py" rtx5090:$GX_TOOL && scp -q "$KIT/../tools/serving/prompt_cuts.py" rtx5090:$GX_DIR/prompt_cuts.py &&
+    scp -q "$KIT/../tools/serving/prompt_cut_margins.json" rtx5090:$GX_DIR/prompt_cut_margins.json || { echo "GX-FAILED $id: the hub did not take the tool"; return 1; }
   if [ "$GX_BACKEND" = lane ]; then
     [ "$(controller)" = "idle None None" ] && [ "$(lane_engines)" = 0 ] || { echo "GX-FAILED $id: a staged lane runs only with production stopped and no engine on any node; take the fleet hold first"; return 1; }
   else
@@ -182,7 +183,7 @@ gx_model() {
     if [ "$GX_PREFLIGHT" != 0 ]; then
       gx_preflight "$id" "$port" "$api" "$dir" "$limit" "$block" || { echo "GX-PREFLIGHT-FAILED $id: the tool's own checks failed on one 8K unit; the block was not started"; return 1; }
     fi
-    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit --block-tokens $block $plan") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
+    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit --block-tokens $block ${GX_MARGIN_LANE:+--margin-lane $GX_MARGIN_LANE} $plan") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
   else
     steps=$(hub "cd $dir && python3 $GX_TOOL steps --state state.json") || { echo "GX-FAILED $id: its state does not load: $steps"; return 1; }
     echo "gx $id resumes: $(printf '%s\n' "$steps" | awk '$3 != "done" {print $1 "=" $3 "(" $4 ")"}' | tr '\n' ' ')"

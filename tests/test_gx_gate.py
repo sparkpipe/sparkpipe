@@ -205,7 +205,7 @@ class GxGateTests(unittest.TestCase):
         self.directory.cleanup()
 
     def plan(self, *extra):
-        return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--block-tokens", "64", "--contexts", "2048,4096",
+        return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--block-tokens", "64", "--margin-lane", "qwen3.8-27b", "--contexts", "2048,4096",
                     "--kept-contexts", "1024,2048", "--drafted-contexts", "2048", "--committed-contexts", "2048", "--opening-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed",
                     "--served-tokens", "5", *extra)
 
@@ -242,6 +242,8 @@ class GxGateTests(unittest.TestCase):
         engine = FakeEngine()
         status, receipt, stopped, table = self.run_gate(engine)
         self.assertEqual((status, receipt["verdict"], stopped), (0, "PASS", []), table)
+        self.assertEqual((receipt["margin"]["lane"], receipt["margin"]["measured"], receipt["margin"]["worst"] < receipt["margin"]["margin_tokens"], receipt["block_tokens"]),
+                         ("qwen3.8-27b", True, True, 64), "the receipt carries the lane's margin record and the engine's block size")
         self.assertEqual(len(receipt["verdicts"]), 18)
         self.assertEqual({entry["case"] for entry in receipt["verdicts"]}, set(gx.CASES))
         self.assertEqual({(entry["nominal"], entry["group"]) for entry in receipt["verdicts"]}, {(1024, 2048), (2048, 2048), (4096, 4096)})
@@ -288,6 +290,16 @@ class GxGateTests(unittest.TestCase):
         timing = [body for body in engine.bodies if body.get("max_tokens") == 5]
         self.assertTrue(len(timing) == 2 and all("speculation" not in body and "logprobs" not in body and len(body["cuts"]) == 1 for body in timing), timing)
         self.assertEqual(receipt["block"], [])
+
+    def test_a_lane_without_a_margin_record_leaves_its_opening_case_incomplete(self):
+        status, receipt, stopped, table = self.run_gate(FakeEngine(), plan=("--cases", "prefix,opening", "--margin-lane", "a-lane-never-measured"))
+        self.assertEqual((status, receipt["verdict"], stopped), (2, "INCOMPLETE", []), table)
+        self.assertEqual(receipt["margin"], {"lane": "a-lane-never-measured", "measured": False})
+        opening = [entry for entry in receipt["verdicts"] if entry["case"] == "opening"]
+        self.assertTrue(opening and all((entry["reuse"], entry["restored"], entry["verdict"]) == ("PASS", "PASS", "INCOMPLETE") and entry["margin"].startswith("margin unmeasured") for entry in opening),
+                        "the opening units reuse exactly and are left INCOMPLETE with the reason")
+        self.assertTrue(all(entry["verdict"] == "PASS" and "margin" not in entry for entry in receipt["verdicts"] if entry["case"] == "prefix"), "the other cases are judged as before")
+        self.assertIn("margin unmeasured: the tokenizer of a-lane-never-measured has no record", table)
 
     def test_a_request_resumed_short_of_its_cut_is_incomplete(self):
         status, receipt, stopped, table = self.run_gate(FakeEngine(forgets_keeps=True))

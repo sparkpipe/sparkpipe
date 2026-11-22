@@ -62,6 +62,7 @@ SPREAD = 1.5
 LOG_WAIT_SECONDS = 5.0
 LIMIT = "limit"
 CUT_RULE = {}
+MARGIN_UNMEASURED = "margin unmeasured: the tokenizer of %s has no record in prompt_cut_margins.json, so this case does not show that prompts sharing a block share its cut"
 RESTORE_SETTLE_SECONDS = 1.0
 LOG_TAIL_BYTES = 16 << 20
 STORE_COUNTERS = ("save_pages", "save_ns", "save_failures", "restore_count", "restore_pages", "restore_ns", "restore_misses", "restore_failures", "store_files",
@@ -102,17 +103,29 @@ def prompt_digest(tokens):
     return hashlib.sha256(struct.pack("<%dI" % len(tokens), *tokens)).hexdigest()
 
 
-def chat_layer_cut(prefix_tokens, block):
+def cut_rule():
     here = os.path.dirname(os.path.abspath(__file__))
-    if "rule" not in CUT_RULE:
+    if "module" not in CUT_RULE:
         source = next((path for path in (os.path.join(here, "prompt_cuts.py"), os.path.join(here, "serving", "prompt_cuts.py")) if os.path.exists(path)), None)
         if source is None:
             raise GateError("prompt_cuts.py is not beside gx_gate.py: the opening case takes its cuts from the chat layer's own rule")
         spec = importlib.util.spec_from_file_location("prompt_cuts", source)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        CUT_RULE["rule"] = module.structural_cut
-    return CUT_RULE["rule"](prefix_tokens, block)
+        CUT_RULE["module"] = module
+    return CUT_RULE["module"]
+
+
+def chat_layer_cut(prefix_tokens, block):
+    return cut_rule().structural_cut(prefix_tokens, block)
+
+
+def margin_of(lane):
+    record = cut_rule().margin_record(lane)
+    if record is None:
+        return {"lane": lane, "measured": False}
+    return {"lane": lane, "measured": True, "tokenizer": record.get("tokenizer"), "samples": record.get("samples"), "worst": record.get("worst"),
+            "margin_tokens": cut_rule().MARGIN_TOKENS, "date": record.get("measured")}
 
 
 def context_tokens(case, nominal):
@@ -758,6 +771,10 @@ def judge(state):
             entry["restored_against_cold"] = compare(restore, cold)
         results = (entry["reuse"], entry["restored"])
         entry["verdict"] = "FAIL" if "FAIL" in results else "PASS" if results == ("PASS", "PASS") else "INCOMPLETE"
+        if unit["case"] == "opening" and not (state.get("margin") or {}).get("measured"):
+            entry["margin"] = MARGIN_UNMEASURED % (state.get("margin") or {}).get("lane", state["model"])
+            if entry["verdict"] == "PASS":
+                entry["verdict"] = "INCOMPLETE"
         if (state["options"].get("crowd") or 0) and unit["case"] == "prefix":
             crowd = (steps.get("crowd") or {}).get("results", {}).get(unit["id"])
             if crowd is None or chain is None or crowd["prompt_sha256"] != chain["prompt_sha256"]:
@@ -824,6 +841,7 @@ def command_plan(arguments):
         raise GateError("%s exists: a state is planned once, because its prompts must be new to the cache" % arguments.state)
     plan = build_plan(arguments)
     state = dict(plan, kind=KIND, seed=arguments.seed, model=arguments.model, release=arguments.release, context_limit=arguments.context_limit,
+                 block_tokens=arguments.block_tokens, margin=margin_of(arguments.margin_lane or arguments.model),
                  options={"max_tokens": arguments.max_tokens, "reply_tokens": arguments.reply_tokens, "logprobs": arguments.logprobs, "crowd": arguments.crowd,
                           "served_tokens": arguments.served_tokens}, steps={}, block=[])
     save(arguments.state, state)
@@ -917,6 +935,8 @@ def command_verdict(arguments):
             entry["reuse"], describe(entry.get("reuse_detail")), entry["restored"], describe(entry.get("restored_detail"))))
         for arm, error in sorted(entry.get("errors", {}).items()):
             print("  %s failed: %s" % (arm, error))
+        if "margin" in entry:
+            print("  %s" % entry["margin"])
         if entry.get("concurrent") == "DIFFERENT":
             print("  sent together it differs from sent alone: %s" % describe(entry["concurrent_detail"]))
     for skipped in state["skipped"]:
@@ -940,6 +960,7 @@ def main(argv=None):
     plan.add_argument("--model", required=True)
     plan.add_argument("--release", required=True)
     plan.add_argument("--context-limit", type=int, required=True, help="positions the deployment serves")
+    plan.add_argument("--margin-lane", help="the served lane whose tokenizer this lane runs, when --model is not its name; the opening case needs that tokenizer's margin record")
     plan.add_argument("--block-tokens", type=int, required=True, help="tokens of one cache block of the lane's engine, as its /v1/models reports; the opening case rounds its cuts to it")
     plan.add_argument("--contexts", type=contexts, default=[8000, 100000, 300000], help="prefix sizes in tokens; 'limit' is the deployment's context limit, fitted beside the tails")
     plan.add_argument("--kept-contexts", type=contexts, default=[8000, 20000])

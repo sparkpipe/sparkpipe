@@ -58,6 +58,25 @@ with tempfile.TemporaryDirectory() as directory:
         prompt_cuts.MARGIN_TOKENS = wide
     check(status == 1, "a margin that is not above the worst count fails the command")
 
+lanes = json.loads((ROOT / "deployment" / "lanes.json").read_text())["lanes"]
+table = json.loads((ROOT / "tools" / "serving" / "prompt_cut_margins.json").read_text())
+named = [lane for record in table["records"] for lane in record["lanes"]]
+check(table["margin_tokens"] == margin and named and len(named) == len(set(named)) and all(lane in lanes for lane in named),
+      f"the margin records name served lanes, each once, under the margin the cut rule uses: {named}")
+check(all(record["samples"] > 0 and 0 <= record["worst"] < margin and len({lanes[lane]["tokenizer_sha256"] for lane in record["lanes"]}) == 1 for record in table["records"]),
+      "a margin record holds a measurement under the margin, for lanes that serve one tokenizer")
+measured = prompt_cuts.margin_record("qwen3.8-27b-fp8")
+check(measured is not None and measured["worst"] < margin and prompt_cuts.margin_record("no-such-lane") is None and
+      sorted(lane for lane in lanes if prompt_cuts.margin_record(lane) is None) == sorted(lane for lane in lanes if lane not in named),
+      "a lane with a record answers with it and a lane without one answers nothing")
+with tempfile.TemporaryDirectory() as directory:
+    other = Path(directory) / "margins.json"
+    other.write_text(json.dumps(dict(table, margin_tokens=margin + 1)))
+    stale = prompt_cuts.margin_record("qwen3.8-27b-fp8", other)
+    other.write_text(json.dumps(dict(table, records=[dict(table["records"][0], worst=margin)])))
+    check(stale is None and prompt_cuts.margin_record("qwen3.8-27b-fp8", other) is None and prompt_cuts.margin_record("qwen3.8-27b-fp8", Path(directory) / "absent.json") is None,
+          "records measured for another margin, a record whose worst count reaches the margin, and a missing table all answer nothing")
+
 for failure in failures:
     print("FAIL test_prompt_cuts: " + failure)
 if failures:

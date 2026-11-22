@@ -103,6 +103,15 @@ The samples are 4,614 paragraph ends of 79 documents of this repository,
 each with the four joins. The other tokenizers are measured where their
 files are, before their lanes are gated.
 
+Each measurement is a record in `tools/serving/prompt_cut_margins.json`: the
+tokenizer, the lanes that serve it, the samples and the worst count. The
+gate's plan looks its lane up there (`--margin-lane` names the served lane
+when the gated lane goes by another name) and writes what it found into the
+receipt as `margin`. A lane without a record gets no PASS on its `opening`
+units: each is left `INCOMPLETE` with `margin unmeasured`, whatever its
+reuse showed. To add a record, run the `margin` command on the lane's
+tokenizer and enter its samples and worst count with the lanes.
+
 ## What is compared
 
 Every prompt is a run of token ids that the engine has never seen: they are
@@ -262,6 +271,7 @@ token and the largest logprob difference for each unit.
 | `LOST` | The restore arm's last prompt reported no cached tokens: the chain did not come back |
 | `DIVERGED` | The replayed session produced other replies, so its last prompt is another prompt |
 | `ERROR` | A request of the unit failed while the engine stayed whole; the receipt holds the engine's answer. A request that waited out the in-flight budget on a wave the ranks kept refusing ends this way |
+| `margin unmeasured` | An `opening` unit of a lane whose tokenizer has no margin record. Its reuse may be exact, but the case rests on the margin: without a record it does not show that two prompts with the same block share its cut |
 | `alone=no` | The API served a request the gate did not send |
 | a step not `done` | It stopped, or was never run |
 

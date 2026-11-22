@@ -13,6 +13,9 @@ This module has no dependencies: the chat layer and gate GX both take the cut fr
 
 measures the margin's evidence: for every paragraph end in the given texts, how many trailing tokens of the text before it change when the rest of the text
 follows, under each tokenizer. MARGIN_TOKENS has to stay above the largest count seen.
+
+prompt_cut_margins.json, beside this module, records each measurement: the tokenizer, the lanes it serves, the samples and the largest count seen. margin_record
+answers a lane with its record, or None when its tokenizer was never measured; gate GX leaves the opening case of such a lane INCOMPLETE.
 """
 import argparse
 import json
@@ -26,6 +29,20 @@ JOINS = ("\n\n", "\n", " ", "")
 
 def structural_cut(prefix_tokens, block=BLOCK_TOKENS, margin=MARGIN_TOKENS):
     return max(0, prefix_tokens - margin) // block * block
+
+
+def margin_record(lane, path=None):
+    source = Path(path) if path is not None else Path(__file__).resolve().with_name("prompt_cut_margins.json")
+    try:
+        table = json.loads(source.read_text())
+    except (OSError, ValueError):
+        return None
+    if table.get("margin_tokens") != MARGIN_TOKENS:
+        return None
+    for record in table.get("records", []):
+        if lane in record.get("lanes", []) and isinstance(record.get("worst"), int) and record["worst"] < MARGIN_TOKENS and record.get("samples", 0) > 0:
+            return record
+    return None
 
 
 def changed_tail(alone, joined):
