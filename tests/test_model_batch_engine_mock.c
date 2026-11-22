@@ -561,6 +561,31 @@ static void TestScenarioWaitBehindBackgroundWave(const SparkModelResidentDeploym
 		"background wave: an interactive request that could not be dispatched until a background wave returned reports that wait, which is no longer than the request took, and the background request reports none");
 	MockResidentClientSetPrefillDelay(0u);
 	SparkModelBatchEngineDestroy(engine);
+	memset(&state,0,sizeof(state));
+	one.runtime_limits.max_inflight_submission_count = 2u;
+	MockResidentClientReset();
+	engine = TestConnectRows(&one,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetSerial(1u);
+	MockResidentClientSetPrefillDelay(150000u);
+	CHECK(TestSubmitPriority(engine,1u,762u,1u,background,16u,SPARK_MODEL_BATCH_PRIORITY_BACKGROUND,&handle) == SPARK_STATUS_OK,"background wave at the ranks: the background request is admitted");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	usleep(5000);
+	clock_gettime(CLOCK_MONOTONIC,&start);
+	CHECK(TestSubmitPriority(engine,2u,763u,1u,interactive,4u,SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE,&handle) == SPARK_STATUS_OK,"background wave at the ranks: an interactive request arrives during the wave");
+	TestDriveUntilTerminal(engine,&state,2u,40000u);
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	elapsed_ns = (uint64_t)(now.tv_sec - start.tv_sec) * UINT64_C(1000000000) + (uint64_t)now.tv_nsec - (uint64_t)start.tv_nsec;
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"background wave at the ranks: both requests complete");
+	CHECK(state.background_wait_ns[2] >= UINT64_C(100000000) && state.background_wait_ns[2] <= elapsed_ns && elapsed_ns - state.background_wait_ns[2] >= UINT64_C(300000000) &&
+		state.background_wait_ns[1] == 0u,
+		"background wave at the ranks: an interactive request dispatched while background waves were still running, on ranks that serve one wave at a time, reports the time until those waves returned and none of its own waves' time, and the background request reports none");
+	MockResidentClientSetPrefillDelay(0u);
+	MockResidentClientSetSerial(0u);
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeployment *deployment,const char *runtime_root)
