@@ -243,6 +243,15 @@ static __host__ __device__ constexpr uint32_t LmStreamBlockK(void)
 		return(LmStreamWeight<Format>::kBlockK);
 }
 
+template<class Format, uint32_t TILE_M>
+static __host__ __device__ constexpr uint32_t LmStreamWarpRows(void)
+{
+	if constexpr ( LmStreamWeight<Format>::kScaled )
+		return(TILE_M > 32u ? TILE_M : 32u);
+	else
+		return(TILE_M == 128u && LmStreamBlockK<Format>() != 0u ? 64u : 32u);
+}
+
 template<class Format>
 static __host__ __device__ constexpr uint32_t LmStreamInputMultiple(void)
 {
@@ -384,7 +393,9 @@ __global__ __launch_bounds__(LM_STREAM_THREADS,1) void LmStreamGemmKernel(const 
 					}
 		}
 		if constexpr ( Weight::kScaled )
+#pragma unroll
 			for (uint32_t block = 0u; block < SCALE_BLOCKS; block++)
+#pragma unroll
 				for (j = 0u; j < NF; j++)
 				{
 					uint32_t column = work.neuron_base + warp_n * WARP_N + j * 8u + quad * 2u;
@@ -544,15 +555,15 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 	const uint64_t tile_bound = ((uint64_t)args->rows / tile_m + groups) * neuron_tiles;
 	switch ( tile_m )
 	{
-		case 16u: return(LmStreamGemmLaunchTile<Format,16u,TILE_N,TILE_K,32u,TAIL>(args,tile_bound,multiprocessors,stream));
-		case 32u: return(LmStreamGemmLaunchTile<Format,32u,TILE_N,TILE_K,32u,TAIL>(args,tile_bound,multiprocessors,stream));
+		case 16u: return(LmStreamGemmLaunchTile<Format,16u,TILE_N,TILE_K,LmStreamWarpRows<Format,16u>(),TAIL>(args,tile_bound,multiprocessors,stream));
+		case 32u: return(LmStreamGemmLaunchTile<Format,32u,TILE_N,TILE_K,LmStreamWarpRows<Format,32u>(),TAIL>(args,tile_bound,multiprocessors,stream));
 		case 64u:
 			if constexpr ( LmStreamStages<Format,64u,TILE_N,TILE_K>() >= 3u )
-				return(LmStreamGemmLaunchTile<Format,64u,TILE_N,TILE_K,32u,TAIL>(args,tile_bound,multiprocessors,stream));
+				return(LmStreamGemmLaunchTile<Format,64u,TILE_N,TILE_K,LmStreamWarpRows<Format,64u>(),TAIL>(args,tile_bound,multiprocessors,stream));
 			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
 		default:
 			if constexpr ( LmStreamStages<Format,128u,TILE_N,TILE_K>() >= 3u )
-				return(LmStreamGemmLaunchTile<Format,128u,TILE_N,TILE_K,32u,TAIL>(args,tile_bound,multiprocessors,stream));
+				return(LmStreamGemmLaunchTile<Format,128u,TILE_N,TILE_K,LmStreamWarpRows<Format,128u>(),TAIL>(args,tile_bound,multiprocessors,stream));
 			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
 	}
 }

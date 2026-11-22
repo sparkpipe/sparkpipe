@@ -24,7 +24,12 @@ if [ -n "$control" ]; then
 		node "$dev/nvidia$minor" "$control" "$minor"
 		gpus=$((gpus + 1))
 	done
-	[ "$gpus" -gt 0 ] || { echo "gpu-device-nodes: nvidiactl is registered but $proc/driver/nvidia/gpus lists no GPU" >&2; exit 1; }
+	if [ "$gpus" -eq 0 ]; then
+		case "${ACTION:-}:${SUBSYSTEM:-}:${DEVPATH:-}" in
+		bind:pci:*|add:module:/module/nvidia) ;;
+		*) echo "gpu-device-nodes: nvidiactl is registered but $proc/driver/nvidia/gpus lists no GPU" >&2; exit 1 ;;
+		esac
+	fi
 fi
 uvm=$(major nvidia-uvm)
 if [ -n "$uvm" ]; then

@@ -588,7 +588,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			LM_LAUNCH((LmDeltaRuleColumnKernel<LG_THREADS,G::kKdaDim,G::kKdaDim,float>), dim3(sequences,S::kKdaRankHeads,G::kKdaDim / LM_WARP_LANES),
 				LM_DELTA_COLUMN_THREADS, 0, stream, state_pool, (uint32_t)state->kda_state_bytes, step->recurrent_index, step->sequence_row_begin,
 				kept, state->query, state->key, state->value, ReplayRetention(state, layer), ReplayWriteGate(state, layer), state->kda_mixed,
-				S::kKdaRankHeads, 1u, sequences, 1u, step->sequence_row_indices);
+				S::kKdaRankHeads, 1u, sequences, 1u, step->sequence_row_indices, 0, 0, 0);
 		}
 		if ( step->tree != 0u )
 		{

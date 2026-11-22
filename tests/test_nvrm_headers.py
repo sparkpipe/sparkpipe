@@ -164,6 +164,17 @@ def tree_cases(generator):
         failures.append(f"the Makefile's NVRM_MODULE_RELEASES {pins} are not the generator's pins {releases}")
     if default != releases[0]:
         failures.append(f"the Makefile builds {default} by default, not the fleet's pin {releases[0]}")
+    lines = makefile.replace("\\\n", " ").split("\n")
+    inputs = next((line.split(":=", 1)[1].split() for line in lines if line.startswith("DEVICE_NVRM_INPUTS :=")), [])
+    if "$(DEVICE_NVRM_SOURCES)" not in inputs or "$(NVRM_RELEASE_DEPENDENCIES)" not in inputs:
+        failures.append("the Makefile's DEVICE_NVRM_INPUTS does not name the nvrm sources and the release dependencies")
+    for line in lines:
+        if line.startswith(("\t", "#")) or any(operator in line for operator in (":=", "?=", "+=")) or ":" not in line:
+            continue
+        target, _, prerequisites = line.partition(":")
+        if "$(DEVICE_NVRM_SOURCES)" in prerequisites.split("|", 1)[0]:
+            failures.append(f"the Makefile rule for {target.strip()} compiles the nvrm sources but lists $(DEVICE_NVRM_SOURCES), "
+                            "so a release switch leaves it stale; list $(DEVICE_NVRM_INPUTS)")
     return failures
 
 

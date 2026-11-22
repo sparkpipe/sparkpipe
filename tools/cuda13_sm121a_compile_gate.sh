@@ -4,6 +4,19 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_directory="${SPARK_CUDA_GATE_OUTPUT_DIRECTORY:-${repository_root}/build/cuda13_sm121a_gate}"
 nvcc_binary="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
+phase_wall="${SECONDS}"
+phase_cpu=0
+gate_phase()
+{
+	local stat children
+	local -a fields
+	read -r stat < "/proc/$$/stat"
+	read -r -a fields <<<"${stat##*) }"
+	children=$(( (fields[13] + fields[14]) / $(getconf CLK_TCK) ))
+	echo "gate phase: $1: $(( SECONDS - phase_wall )) s wall, $(( children - phase_cpu )) s cpu"
+	phase_wall="${SECONDS}"
+	phase_cpu="${children}"
+}
 "${repository_root}/tools/source_package_gate.sh"
 if [[ "${cuda_architecture}" != "sm_121a" ]]; then
 	echo "CUDA gate requires CUDA_ARCH=sm_121a, got ${cuda_architecture}" >&2
@@ -30,6 +43,7 @@ if ! grep -Fq "release ${release_toolkit}," <<<"${nvcc_version}"; then
 fi
 python3 "${repository_root}/tools/glm52_model_contract.py" --check
 cuda_home="$(dirname "$(dirname "$(command -v "${nvcc_binary}")")")"
+gate_phase "source package, toolkit and model contracts"
 rm -rf "${output_directory}"
 mkdir -p "${output_directory}/objects" "${output_directory}/ptx" "${output_directory}/logs"
 printf '%s\n' "${nvcc_version}" > "${output_directory}/nvcc-version.txt"
@@ -98,7 +112,9 @@ compile_cuda()
 	fi
 }
 
-compile_cuda "${output_directory}/probe.cu" probe
+compile_pids=()
+compile_cuda "${output_directory}/probe.cu" probe &
+compile_pids+=("$!")
 
 translation_units=(
 	tools/hardware/spark_cuda_characterize.cu
@@ -109,8 +125,13 @@ translation_units=(
 for relative_source in "${translation_units[@]}"; do
 	artifact_name="${relative_source//\//__}"
 	artifact_name="${artifact_name%.cu}"
-	compile_cuda "${relative_source}" "${artifact_name}"
+	compile_cuda "${relative_source}" "${artifact_name}" &
+	compile_pids+=("$!")
 done
+for compile_pid in "${compile_pids[@]}"; do
+	wait "${compile_pid}" || exit "$?"
+done
+gate_phase "exact-target translation units"
 
 make_variable()
 {
@@ -143,6 +164,7 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs
 	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
 	exit 5
 fi
+gate_phase "adapters and CUDA programs"
 read -r -a stage_runner_binaries <<<"$(make_variable STAGE_RUNNER_BINARIES)"
 if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
 	NVCC="${nvcc_binary}" \
@@ -153,6 +175,7 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
 	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
 	exit 11
 fi
+gate_phase "stage-runner binaries"
 for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	if [[ ! -f "${repository_root}/${artifact}" ]]; then
 		echo "build produced no ${artifact}" >&2
@@ -178,6 +201,7 @@ if ! python3 -I "${repository_root}/tools/dependent_wait_audit.py" "${audited[@]
 	exit 9
 fi
 
+gate_phase "target and dependent-wait audits"
 if ! make -C "${repository_root}" test-nvrm-launch \
 	NVCC="${nvcc_binary}" \
 	CUDA_ARCH=sm_121a \
@@ -188,6 +212,7 @@ if ! make -C "${repository_root}" test-nvrm-launch \
 	exit 8
 fi
 
+gate_phase "nvrm launch arguments"
 hosted_release_root="${output_directory}/hosted_release_root"
 if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
 	HOSTED_RELEASE_GATE_FLAGS=--complete \
@@ -206,19 +231,22 @@ fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
 
+gate_phase "hosted release root"
 spill_audited=()
 for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
 	if [[ -f "${repository_root}/${artifact}" ]]; then
 		spill_audited+=("${repository_root}/${artifact}")
 	fi
 done
-if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" --kernel LmSkinnyGroupedKernel "${spill_audited[@]}" \
+if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" "${spill_audited[@]}" \
 	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
 	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
-	echo "a grouped expert GEMV spills registers to local memory; see logs/kernel_spill_audit.txt" >&2
+	echo "a skinny, cell, stream GEMM or attention kernel keeps a stack frame or local memory, or the attention PENDING list in tools/kernel_spill_audit.py does not match; see logs/kernel_spill_audit.txt" >&2
 	exit 10
 fi
+grep -E '^kernel spill audit' "${output_directory}/logs/kernel_spill_audit.txt"
 
+gate_phase "spill audit"
 staged_roots="$(mktemp -d)"
 trap 'rm -rf "${staged_roots}"' EXIT
 while IFS=' ' read -r model adapter; do
@@ -242,6 +270,7 @@ if [[ "${staged_failures}" -ne 0 ]]; then
 	exit 7
 fi
 
+gate_phase "staged roots"
 for object_file in "${output_directory}"/objects/*.o; do
 	object_name="$(basename "${object_file}")"
 	elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"
@@ -259,4 +288,5 @@ done
 	find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
 )
 
+gate_phase "object targets and receipts"
 echo "PASS CUDA 13 exact sm_121a compile gate (${#adapters[@]} serving adapters; ${staged_root_count} staged lane roots carry every module's kernels)"

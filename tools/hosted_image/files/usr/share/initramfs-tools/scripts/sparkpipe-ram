@@ -13,4 +13,5 @@ mountroot()
 	umount /host || panic "cannot unmount ${ROOT}"
 	modprobe loop
 	mount -w -o loop -t "${LOOPFSTYPE:-ext4}" /run/sparkpipe-ram/root.img "${rootmnt?}" || panic "cannot mount the copy of ${LOOP} from memory"
+	: > "${rootmnt}/etc/fstab" || panic "cannot empty the fstab of the copy in memory"
 }
