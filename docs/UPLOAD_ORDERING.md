@@ -50,6 +50,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/k3/source/k3_streamed_prefill.cuh` | 1 upload | Load: the identity chunk slots. |
 | `model-families/mimo26/source/mimo26_stage.cuh` | 2 uploads | Load. |
 | `model-families/motif/source/motif_stage.cuh` | 1 upload | Load. |
+| `model-families/qwen3/source/qwen3_stage.cuh` | 1 upload | Load: the rope table. |
 | `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | 4 readbacks | Readback after sync: the layer dump syncs the stream first and launches nothing in between. |
 | `ring/transport/tp_device_collective.c` | 10 uploads, 15 readbacks, 3 fills | See below. |
 
