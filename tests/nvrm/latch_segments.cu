@@ -13,6 +13,9 @@
 #define PROGRAM_LAUNCHES 64u
 #define COMPETE_SAMPLES_MAX 200000u
 #define TRIGGER_PAIRS 32u
+#define STALE_PARENT_GROUPS 48u
+#define STALE_CHILD_GROUPS 96u
+#define STALE_PAIRS 32u
 
 __global__ void SegmentStep(uint32_t *counter, uint64_t spin_ns)
 {
@@ -59,6 +62,40 @@ __global__ void TriggerWaiting(const uint32_t *word, uint32_t *seen, uint32_t sl
 	asm volatile("griddepcontrol.wait;" ::: "memory");
 	if ( threadIdx.x == 0u && blockIdx.x == 0u )
 		seen[slot] = *(const volatile uint32_t *)word;
+}
+
+static __device__ __forceinline__ uint32_t StaleLoad(const uint32_t *word)
+{
+	uint32_t value;
+	asm volatile("ld.global.ca.u32 %0,[%1];" : "=r"(value) : "l"(word) : "memory");
+	return(value);
+}
+
+__global__ void StaleParent(uint32_t *word, uint32_t value, uint64_t spin_ns, uint32_t trigger, uint32_t *sink)
+{
+	if ( trigger != 0u )
+		asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+	if ( threadIdx.x != 0u )
+		return;
+	if ( blockIdx.x != 0u )
+	{
+		sink[blockIdx.x] = StaleLoad(word);
+		return;
+	}
+	uint64_t start,now;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+	do
+		asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+	while ( now - start < spin_ns );
+	word[0] = value;
+}
+
+__global__ void StaleChild(const uint32_t *word, uint32_t *seen, uint32_t slot, uint32_t wait)
+{
+	if ( wait != 0u )
+		asm volatile("griddepcontrol.wait;" ::: "memory");
+	if ( threadIdx.x == 0u )
+		seen[slot * STALE_CHILD_GROUPS + blockIdx.x] = StaleLoad(word);
 }
 
 static uint64_t Now(void)
@@ -282,6 +319,90 @@ static int Trigger(uint64_t runs, uint64_t spin_ns)
 	return(0);
 }
 
+static int StaleIssue(SparkGpuStream stream, uint32_t *word, uint32_t *seen, uint32_t *sink, uint64_t spin_ns)
+{
+	uint32_t pair;
+	for ( pair = 0u; pair < STALE_PAIRS; pair++ )
+	{
+		const uint32_t trigger = (pair & 1u) == 0u ? 1u : 0u,wait = (pair & 2u) != 0u ? 1u : 0u;
+		LM_LAUNCH((StaleParent),STALE_PARENT_GROUPS,32,0u,stream,word,pair + 1u,spin_ns,trigger,sink);
+		if ( wait == 0u )
+			LM_LAUNCH((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,pair,wait);
+		else if ( LM_LAUNCH_DEPENDENT((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,pair,wait) != SPARK_GPU_SUCCESS )
+			return(0);
+	}
+	return(SparkGpuGetLastError() == SPARK_GPU_SUCCESS);
+}
+
+static int Stale(uint64_t runs, uint64_t spin_ns)
+{
+	static const char *const ways[2] = {"eager","program"};
+	static uint32_t host[STALE_PAIRS * STALE_CHILD_GROUPS];
+	SparkGpuStream stream = 0;
+	SparkDeviceQueue *queue = 0;
+	SparkDeviceProgram *program = 0;
+	SparkStatus initialized = SparkDeviceInitialize(0);
+	uint32_t *word = 0,*seen = 0,*sink = 0,pair,group,way,kind;
+	uint64_t run,late[2][4],reads[2][4];
+	memset(late,0,sizeof(late));
+	memset(reads,0,sizeof(reads));
+	if ( (initialized != SPARK_STATUS_OK && initialized != SPARK_STATUS_DUPLICATE) ||
+		SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&word,sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&seen,sizeof(host)) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&sink,STALE_PARENT_GROUPS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemset(word,0,sizeof(uint32_t)) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+		SparkDeviceQueueAdopt(&queue,(void *)stream,"latch stale") != SPARK_STATUS_OK || SparkDeviceProgramRecord(queue,"latch stale") != SPARK_STATUS_OK ||
+		StaleIssue(stream,word,seen,sink,spin_ns) == 0 || SparkDeviceProgramFinish(queue,&program) != SPARK_STATUS_OK )
+	{
+		printf("FAIL set up the stale-line chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	for ( run = 0u; run < runs; run++ )
+		for ( way = 0u; way < 2u; way++ )
+		{
+			if ( SparkGpuMemset(seen,0xff,sizeof(host)) != SPARK_GPU_SUCCESS ||
+				(way == 0u ? StaleIssue(stream,word,seen,sink,spin_ns) == 0 : SparkDeviceProgramRun(program,queue,0,0u) != SPARK_STATUS_OK) ||
+				SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS || SparkGpuMemcpy(host,seen,sizeof(host),SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
+			{
+				printf("FAIL stale-line run %llu %s: %s\n",(unsigned long long)run,ways[way],SparkDeviceLastError()->text);
+				return(1);
+			}
+			for ( pair = 0u; pair < STALE_PAIRS; pair++ )
+				for ( group = 0u; group < STALE_CHILD_GROUPS; group++ )
+				{
+					kind = pair & 3u;
+					reads[way][kind]++;
+					if ( host[pair * STALE_CHILD_GROUPS + group] != pair + 1u )
+						late[way][kind]++;
+				}
+		}
+	for ( way = 0u; way < 2u; way++ )
+	{
+		printf("stale %s: %llu runs; a parent of %u groups whose other groups cache the word, then group 0 writes it %.0f us later; children of %u groups read it cached\n",
+			ways[way],(unsigned long long)runs,STALE_PARENT_GROUPS,(double)spin_ns / 1e3,STALE_CHILD_GROUPS);
+		for ( kind = 0u; kind < 4u; kind++ )
+			printf("  parent %s, %s child: %llu of %llu reads saw the value from before the parent's write\n",(kind & 1u) == 0u ? "triggers first" : "never triggers",
+				(kind & 2u) != 0u ? "waiting dependent" : "plain",(unsigned long long)late[way][kind],(unsigned long long)reads[way][kind]);
+	}
+	if ( SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK || SparkDeviceProgramDestroy(program) != SPARK_STATUS_OK ||
+		SparkDeviceQueueDestroy(queue) != SPARK_STATUS_OK )
+	{
+		printf("FAIL finish the stale-line chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	SparkGpuFree(word);
+	SparkGpuFree(seen);
+	SparkGpuFree(sink);
+	SparkGpuStreamDestroy(stream);
+	for ( way = 0u; way < 2u; way++ )
+		for ( kind = 0u; kind < 4u; kind++ )
+			if ( late[way][kind] != 0u )
+			{
+				printf("FAIL a child read a cached line from before its parent's write\n");
+				return(1);
+			}
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	const uint64_t spin_ns = argc == 5 ? strtoull(argv[4],0,10) * 1000ull : 0u;
@@ -295,6 +416,8 @@ int main(int argc, char **argv)
 		return(Compete(strtod(argv[2],0),strtod(argv[3],0)));
 	if ( argc == 4 && strcmp(argv[1],"trigger") == 0 )
 		return(Trigger(strtoull(argv[2],0,10),strtoull(argv[3],0,10) * 1000ull));
-	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | program LAUNCHES SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS | trigger RUNS SPIN_US\n",argv[0]);
+	if ( argc == 4 && strcmp(argv[1],"stale") == 0 )
+		return(Stale(strtoull(argv[2],0,10),strtoull(argv[3],0,10) * 1000ull));
+	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | program LAUNCHES SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS | trigger RUNS SPIN_US | stale RUNS SPIN_US\n",argv[0]);
 	return(2);
 }
