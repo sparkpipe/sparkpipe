@@ -345,6 +345,13 @@ active with an IPv4 RoCE address:
   is not flagged degraded; `FLEET-READY` prints the ports every node uses.
 - Compatibility: the record grew, so the magic moved to `MESH0011`; roll every
   node of a fleet in one window.
+- The streamed-prefill weight stream (`ring/transport/weight_stream.c`) applies
+  the same rule to its fabric and pair devices: it opens each device whose port
+  is active with an IPv4 RoCE gid, publishes queue pairs on every link it has
+  up in its endpoint table, and after the gather gives each peer the link both
+  ends have (the parity rule when both have both). A peer with no link in
+  common fails the open; a peer whose links differ from ours is logged as
+  degraded. Expert rotation needs an even rank count, not two devices.
 
 `tp_mesh_hardware_probe` puts up to sixteen ranks on one GPU and gives each
 rank a band of one region, so the probe and its fixture daemon build with
