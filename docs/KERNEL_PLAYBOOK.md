@@ -211,8 +211,9 @@ which could be mistaken for the qualified route.
     context survives (`tests/test_kernel_frame_error_source.py`).
 - **Grouped variants never spill.** `LmSkinnyGroupedShapes<Format,NPG>`
   names the rows and neurons a task takes in each band of routes per local
-  expert: at most 2, at most 8, and above 8. Most formats take 4 x `NPG`,
-  8 x `NPG` and 16 x 2. NVFP4 takes 4 x `NPG` in every band. An NVFP4 task
+  expert: at most 2, at most 8, and above 8. BF16 takes 4 x `NPG`, 8 x `NPG`
+  and 16 x 2. NVFP4 and MXFP4 take 4 x `NPG` in every band, and FP8 and MXFP8
+  take 8 x `NPG` above 8 routes as well as below. An NVFP4 task
   stages a 64-byte activation quad per row and two scales per weight chunk,
   so its 8- and 16-row variants need more than 255 registers: ptxas spilled
   376-700 bytes a thread at 8 rows and moved 7 KB a thread to local memory
@@ -234,6 +235,12 @@ which could be mistaken for the qualified route.
   - The bands count every route of the step against the local experts. With
     experts split across ranks most routes are not local (one in 16 for
     Qwen3.8 at TP16), so a band can name more rows than an expert holds.
+  - CI's compile gate builds with CUDA 13.3.1 (the container image in
+    `.github/workflows/cuda13-sm121a-compile.yml`), the release build hosts
+    with CUDA 13.0. Under 13.3.1, FP8's and MXFP8's 16 x 2 spill 424 bytes a
+    thread and MXFP4's 8 x 4 296 bytes, though 13.0 keeps them in registers.
+    A variant ships only if it stays in registers under both, so those
+    formats take the variants above.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.
