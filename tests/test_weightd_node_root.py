@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A weightd started with SPARK_KV_NODE_ROOT keeps its ledger in that folder and walks only that folder; a value that is not the full path of an existing
-folder stops its startup. The daemon is the real one; its device layer is the host build's."""
+folder stops its startup. The daemon is the real one; its device layer is the host build's. The release kit never sets it: a deployment has one node root."""
 import os
 import pathlib
 import socket
@@ -10,6 +10,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 DAEMON = ROOT / "build" / "sparkpipe_weightd"
+KIT = ("scripts", "deployment", "config", "tools")
 START_SECONDS = 60.0
 PURGE_SECONDS = 10.0
 
@@ -42,6 +43,10 @@ def main():
     if not os.access(DAEMON, os.X_OK):
         raise SystemExit(f"FAIL test_weightd_node_root: {DAEMON} is not built")
     failures = []
+    setters = sorted(str(path.relative_to(ROOT)) for folder in KIT for path in (ROOT / folder).rglob("*")
+                     if path.is_file() and b"SPARK_KV_NODE_ROOT" in path.read_bytes())
+    if setters:
+        failures.append(f"no script, deployment file, configuration or tool of the release kit names the setting: {setters}")
     with tempfile.TemporaryDirectory(prefix="weightd-node-root-") as work:
         work = pathlib.Path(work)
         root = work / "lane"
@@ -84,7 +89,7 @@ def main():
     if failures:
         raise SystemExit(1)
     print("PASS weightd node root: with SPARK_KV_NODE_ROOT the real weightd keeps its ledger in that folder, sweeps only stores under it and leaves a store beside it "
-          "alone; a value that is not the full path of an existing folder stops the startup")
+          "alone; a value that is not the full path of an existing folder stops the startup; nothing in the release kit sets it")
 
 
 if __name__ == "__main__":
