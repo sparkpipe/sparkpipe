@@ -33,6 +33,7 @@ typedef struct RegisterName
 {
 	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
+	const char *file;
 } RegisterName;
 
 struct SparkNvrmModule
@@ -112,6 +113,12 @@ static int RegisterNameOrder(const void *left, const void *right)
 	return(strcmp(((const RegisterName *)left)->name,((const RegisterName *)right)->name));
 }
 
+static int RegisterNameFileOrder(const void *left, const void *right)
+{
+	const int name = RegisterNameOrder(left,right);
+	return(name != 0 ? name : strcmp(((const RegisterName *)left)->file,((const RegisterName *)right)->file));
+}
+
 static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directory, const char *file)
 {
 	char path[REGISTER_PATH_BYTES],manifest_path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
@@ -151,6 +158,7 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 		}
 		memcpy(module->names[module->name_count].name,manifest.kernels[index].name,sizeof(module->names[module->name_count].name));
 		module->names[module->name_count].cubin = module->cubin_count;
+		module->names[module->name_count].file = module->cubins[module->cubin_count].path;
 		module->name_count++;
 	}
 	module->cubin_count++;
@@ -158,12 +166,93 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus RegisterCubinRead(const char *path, SparkNvrmCubin *cubin)
+{
+	uint64_t bytes = 0u;
+	uint8_t *blob = SparkNvrmReadFile(path,&bytes);
+	SparkStatus status;
+	memset(cubin,0,sizeof(*cubin));
+	if ( blob == 0 )
+		return(SPARK_STATUS_NOT_FOUND);
+	status = SparkNvrmCubinParse(blob,bytes,REGISTER_OWNER,cubin);
+	free(blob);
+	return(status);
+}
+
+static uint32_t RegisterWithin(uint64_t offset, uint64_t start, uint64_t bytes)
+{
+	return(offset >= start && offset - start < bytes ? 1u : 0u);
+}
+
+static uint32_t RegisterRelocated(const SparkNvrmCubin *cubin, uint64_t start, uint64_t bytes)
+{
+	uint32_t index;
+	for (index = 0u; index < cubin->relocation_count; index++)
+		if ( RegisterWithin(cubin->relocations[index].image_offset,start,bytes) != 0u )
+			return(1u);
+	return(0u);
+}
+
+static const char *RegisterCopiesDiffer(const SparkNvrmCubin *first, const SparkNvrmCubinKernel *a, const SparkNvrmCubin *second,
+	const SparkNvrmCubinKernel *b)
+{
+	uint32_t bank;
+	if ( a == 0 || b == 0 )
+		return("one cubin does not hold it");
+	if ( a->code_bytes != b->code_bytes || memcmp(first->image + a->code_offset,second->image + b->code_offset,(size_t)a->code_bytes) != 0 )
+		return("the code differs");
+	if ( a->registers != b->registers || a->stack_bytes != b->stack_bytes || a->frame_bytes != b->frame_bytes || a->shared_bytes != b->shared_bytes ||
+		a->parameter_offset != b->parameter_offset || a->parameter_bytes != b->parameter_bytes || a->barriers != b->barriers ||
+		a->clustered != b->clustered || memcmp(a->cluster,b->cluster,sizeof(a->cluster)) != 0 || a->cluster_limit != b->cluster_limit )
+		return("the attributes differ");
+	if ( a->bank[0].present != b->bank[0].present || a->bank[0].bytes != b->bank[0].bytes )
+		return("the parameter banks differ");
+	if ( RegisterRelocated(first,a->code_offset,a->code_bytes) != 0u || RegisterRelocated(second,b->code_offset,b->code_bytes) != 0u )
+		return("the code is relocated against its own cubin's data");
+	for (bank = 1u; bank < SPARK_NVRM_CUBIN_BANKS; bank++)
+	{
+		const SparkNvrmCubinBank *mine = &a->bank[bank],*theirs = &b->bank[bank];
+		if ( mine->present == 0u || theirs->present == 0u )
+			continue;
+		if ( mine->bytes != theirs->bytes || memcmp(first->image + mine->image_offset,second->image + theirs->image_offset,(size_t)mine->bytes) != 0 )
+			return("a constant bank both copies have differs");
+		if ( RegisterRelocated(first,mine->image_offset,mine->bytes) != 0u || RegisterRelocated(second,theirs->image_offset,theirs->bytes) != 0u )
+			return("a constant bank both copies have is relocated");
+	}
+	return(0);
+}
+
+static const char *RegisterBase(const char *path)
+{
+	const char *slash = strrchr(path,'/');
+	return(slash != 0 ? slash + 1 : path);
+}
+
+static SparkStatus RegisterSameKernel(SparkNvrmModule *module, const RegisterName *kept, const RegisterName *again)
+{
+	char text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
+	SparkNvrmCubin first,second;
+	const char *differ;
+	if ( RegisterCubinRead(module->cubins[kept->cubin].path,&first) != SPARK_STATUS_OK ||
+		RegisterCubinRead(module->cubins[again->cubin].path,&second) != SPARK_STATUS_OK )
+		differ = "a cubin does not parse";
+	else
+		differ = RegisterCopiesDiffer(&first,SparkNvrmCubinKernelNamed(&first,kept->name),&second,SparkNvrmCubinKernelNamed(&second,again->name));
+	SparkNvrmCubinRelease(&first);
+	SparkNvrmCubinRelease(&second);
+	if ( differ == 0 )
+		return(SPARK_STATUS_OK);
+	snprintf(text,sizeof(text),"kernel %.64s is in two cubins of the module, %.32s and %.32s, and %s",kept->name,
+		RegisterBase(module->cubins[kept->cubin].path),RegisterBase(module->cubins[again->cubin].path),differ);
+	return(ModuleFail(module,SPARK_STATUS_DUPLICATE,text));
+}
+
 static SparkStatus RegisterScan(SparkNvrmModule *module)
 {
 	char directory[REGISTER_PATH_BYTES],path[REGISTER_PATH_BYTES],text[SPARK_NVRM_REGISTER_FAILURE_BYTES];
 	SparkStatus status = SPARK_STATUS_OK;
 	struct dirent *entry;
-	uint32_t index;
+	uint32_t index,kept;
 	DIR *listing;
 	if ( snprintf(directory,sizeof(directory),"%s%s",module->path,SPARK_NVRM_KERNEL_DIRECTORY_SUFFIX) >= (int)sizeof(directory) )
 		return(ModuleFail(module,SPARK_STATUS_INVALID_ARGUMENT,"the module path is longer than 4096 bytes"));
@@ -196,13 +285,19 @@ static SparkStatus RegisterScan(SparkNvrmModule *module)
 		snprintf(text,sizeof(text),"the kernel directory %.100s holds no cubin",directory);
 		return(ModuleFail(module,SPARK_STATUS_NOT_FOUND,text));
 	}
-	qsort(module->names,module->name_count,sizeof(*module->names),RegisterNameOrder);
-	for (index = 1u; index < module->name_count; index++)
-		if ( strcmp(module->names[index - 1u].name,module->names[index].name) == 0 )
+	qsort(module->names,module->name_count,sizeof(*module->names),RegisterNameFileOrder);
+	for (index = 0u, kept = 0u; index < module->name_count; index++)
+	{
+		if ( kept != 0u && strcmp(module->names[kept - 1u].name,module->names[index].name) == 0 )
 		{
-			snprintf(text,sizeof(text),"kernel %.64s is in two cubins of the module",module->names[index].name);
-			return(ModuleFail(module,SPARK_STATUS_DUPLICATE,text));
+			const SparkStatus same = RegisterSameKernel(module,&module->names[kept - 1u],&module->names[index]);
+			if ( same != SPARK_STATUS_OK )
+				return(same);
+			continue;
 		}
+		module->names[kept++] = module->names[index];
+	}
+	module->name_count = kept;
 	return(SPARK_STATUS_OK);
 }
 

@@ -1,0 +1,1 @@
+%sparkpipe-compact ALL=(root) NOPASSWD: /usr/local/sbin/sparkpipe-compact raise, /usr/local/sbin/sparkpipe-compact restore

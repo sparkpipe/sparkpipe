@@ -86,6 +86,12 @@ keeps the memory and its contents.
 `SPARK_DEVICE_SPACE_DEVICE_PRIVATE` with no host pointer. Copies, fills and
 kernel bindings then use it like any other buffer. `SparkDeviceHostOf` on
 it fails.
+- The adopted range may cover parts of its reservation that are not mapped
+  yet, as a pool that maps chunks as it grows does; only the mapped parts
+  may be touched.
+- The host and nvrm backends, which keep their reservations, refuse a range
+  that is neither inside one reservation nor across adjacent mappings. CUDA's
+  adopt takes any device range.
 
 weightd copies pack bytes and the arena epoch into its own mappings with
 `SparkWeightdDeviceWrite`
@@ -129,7 +135,7 @@ thread binds to its creator's instance before it touches device memory.
 | Backend | Shared memory | Thread binding |
 | --- | --- | --- |
 | CUDA | the driver's virtual memory management, reached through `cudaGetDriverEntryPointByVersion`, so the device library links only the CUDA runtime. Pinned device allocations exported as POSIX file descriptors. Host memory is a `CU_MEM_LOCATION_TYPE_HOST_NUMA` allocation at the device's host NUMA node, offered when the device reports `CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED`; host access adds a host-NUMA access descriptor. Mappings take offset 0 only, as the driver requires | an instance is the device's primary context |
-| host | POSIX shared memory objects. Reservations are `PROT_NONE` anonymous mappings and maps are `MAP_FIXED` mappings of the object. It adopts device-private ranges of its own mappings | one instance per process |
+| host | POSIX shared memory objects. Reservations are `PROT_NONE` anonymous mappings and maps are `MAP_FIXED` mappings of the object. It adopts device-private ranges inside one of its reservations or across its mappings | one instance per process |
 | Metal | refused with `SPARK_STATUS_UNSUPPORTED` | one instance per process |
 | nvrm | device memory is module system memory, GPU-cached, in 2 MiB pages, with no CPU mapping. Host memory is the same kind of object with CPU-cached pages that the GPU does not cache, and host access maps it for the CPU at the mapping's address through the module's own CPU mapping, read-only without host write ([nvrm shared memory](NVRM_BACKEND.md#shared-memory)). Export puts the object in a fresh `/dev/nvidiactl` descriptor (`NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`); import duplicates it under this process's device (`..._IMPORT_OBJECT_FROM_FD`) and reads its size back. Reservations come from the backend's own device address range, and maps are an RM mapping plus a unified-memory external mapping at the address, with the offset asked for. The backend keeps its handle until the last unmap and the release. Both granularities are 2 MiB | one instance per process |
 

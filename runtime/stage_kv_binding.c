@@ -1025,6 +1025,17 @@ static uint64_t SparkStageKvBindingRegionOffsets(const SparkStageKvBinding *bind
 	return(cursor);
 }
 
+uint32_t SparkStageKvPoolMinimumChunks(uint32_t minimum,uint32_t chunks,uint32_t device_properties)
+{
+	return((device_properties & SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK) != 0u ? chunks : minimum);
+}
+
+static uint32_t SparkStageKvPoolMinimum(uint32_t minimum,uint32_t chunks)
+{
+	const SparkDeviceProperties *properties = SparkDeviceGetProperties();
+	return(SparkStageKvPoolMinimumChunks(minimum,chunks,properties != 0 ? properties->properties : 0u));
+}
+
 static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,uint64_t lane_entries,SparkWeightdKvPoolRequest *request,uint64_t region_offsets[SPARK_STAGE_KV_MAX_REGIONS],uint64_t **offsets_out)
 {
 	SparkStageKvPoolSlot *slots;
@@ -1074,6 +1085,7 @@ static SparkStatus SparkStageKvBindingPoolLayout(SparkStageKvBinding *binding,ui
 			minimum = index + 1u;
 	}
 	free(slots);
+	minimum = SparkStageKvPoolMinimum(minimum,count);
 	binding->kv_pool_minimum_chunks = minimum;
 	request->device_bytes = (uint64_t)count * chunk;
 	request->minimum_bytes = (uint64_t)minimum * chunk;
@@ -1264,6 +1276,7 @@ static SparkStatus SparkStageKvBindingPoolLayoutWindowed(SparkStageKvBinding *bi
 	}
 	free(slots);
 	SparkStageKvBindingWindowOffsets(binding,region_offsets,granularity,binding->shared_chunk_offsets);
+	minimum = SparkStageKvPoolMinimum(minimum,count);
 	binding->kv_pool_minimum_chunks = minimum;
 	binding->kv_reservation_bytes = cursor;
 	request->device_bytes = (uint64_t)count * chunk;

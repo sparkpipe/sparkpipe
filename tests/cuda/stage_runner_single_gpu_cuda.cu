@@ -9,6 +9,7 @@
 
 static int failures;
 static uint32_t lone_steps;
+static uint64_t lone_digest = 1469598103934665603ull;
 static uint16_t lone_seen[LONE_ROWS * LONE_INPUT_WIDTH];
 
 extern "C" {
@@ -137,10 +138,17 @@ static SparkStatus LoneInputStep(void *model, const SparkStageRunnerStep *step, 
 {
 	(void)model;
 	lone_steps++;
-	if ( cudaMemcpyAsync(lone_seen, step->hidden_bf16, (size_t)step->rows * LONE_INPUT_WIDTH * sizeof(uint16_t), cudaMemcpyDeviceToHost,
-			(cudaStream_t)stream) != cudaSuccess || cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+	if ( SparkGpuMemcpyAsync(lone_seen, step->hidden_bf16, (size_t)step->rows * LONE_INPUT_WIDTH * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_HOST,
+			(SparkGpuStream)stream) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize((SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
 	return SPARK_STATUS_OK;
+}
+
+static void LoneDigest(const void *data, size_t bytes)
+{
+	const uint8_t *byte = (const uint8_t *)data;
+	for ( size_t index = 0u; index < bytes; ++index )
+		lone_digest = (lone_digest ^ byte[index]) * 1099511628211ull;
 }
 
 static void Expect(int condition, const char *name)
@@ -168,8 +176,8 @@ static void LoneComplete(void *context, const SparkModelDriverCompletion *comple
 static uint16_t *LoneUpload(const uint16_t *host, size_t count)
 {
 	uint16_t *device = 0;
-	if ( cudaMalloc((void **)&device, count * sizeof(uint16_t)) != cudaSuccess ||
-		cudaMemcpy(device, host, count * sizeof(uint16_t), cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMalloc((void **)&device, count * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(device, host, count * sizeof(uint16_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 		return 0;
 	return device;
 }
@@ -198,7 +206,7 @@ static SparkStatus LoneHead(SparkStageRunnerState *state)
 		SparkGpuMalloc(&state->head_certified_candidates, SparkHeadCertifiedFp8CandidateBytes(rows) * state->head_capacity) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_screened_count, sizeof(uint32_t) * state->head_capacity) != SPARK_GPU_SUCCESS ||
 		SparkLmHostLaunchHeadCertifiedFp8Quantize(0, state->head_weight, state->head_certified_fp8_payload, state->head_certified_fp8_scale_f32,
-			state->head_certified_fp8_norm_f32, (uint32_t)rows, (uint32_t)dim) != SPARK_GPU_SUCCESS || cudaDeviceSynchronize() != cudaSuccess )
+			state->head_certified_fp8_norm_f32, (uint32_t)rows, (uint32_t)dim) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_INTERNAL_ERROR;
 	return SPARK_STATUS_OK;
 }
@@ -228,9 +236,9 @@ static SparkStageRunnerState *LoneState(SparkStageRunnerModelInterface *model_in
 	state->geometry.input_width = input_width;
 	runner->private_state = state;
 	runner->tp_degree = 1u;
-	if ( cudaStreamCreateWithFlags(&state->stream, cudaStreamNonBlocking) != cudaSuccess ||
+	if ( SparkGpuStreamCreateWithFlags(&state->stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
 		(runner->owns_final_head != 0u && LoneHead(state) != SPARK_STATUS_OK) ||
-		StageRunnerCreateBuffers(state, runner, &configuration) != SPARK_STATUS_OK )
+		StageRunnerCreateBuffers(state, runner, &configuration) != SPARK_STATUS_OK || StageRunnerAdoptQueue(state) != SPARK_STATUS_OK )
 		return 0;
 	return state;
 }
@@ -260,7 +268,7 @@ static void LoneGraphs(void)
 	const uint32_t first[LONE_ROWS] = {5u, 9u}, second[LONE_ROWS] = {20u, 255u}, positions[LONE_ROWS] = {3u, 7u}, sequences[LONE_ROWS] = {0u, 1u};
 	const uint32_t contexts[LONE_ROWS] = {4u, 8u};
 	uint32_t *positions_device = 0, *context_device = 0, *sequence_device = 0, slot;
-	SparkGpuGraphExec captured;
+	SparkDeviceProgram *captured;
 	memset(&model_interface, 0, sizeof(model_interface));
 	memset(&runner, 0, sizeof(runner));
 	memset(&completion, 0, sizeof(completion));
@@ -272,11 +280,12 @@ static void LoneGraphs(void)
 	Expect(state != 0, "a single-GPU runner with its own embedding and head is set up without a collective");
 	if ( state == 0 )
 		return;
-	if ( cudaMalloc((void **)&positions_device, sizeof(positions)) != cudaSuccess || cudaMalloc((void **)&context_device, sizeof(contexts)) != cudaSuccess ||
-		cudaMalloc((void **)&sequence_device, sizeof(sequences)) != cudaSuccess ||
-		cudaMemcpy(positions_device, positions, sizeof(positions), cudaMemcpyHostToDevice) != cudaSuccess ||
-		cudaMemcpy(context_device, contexts, sizeof(contexts), cudaMemcpyHostToDevice) != cudaSuccess ||
-		cudaMemcpy(sequence_device, sequences, sizeof(sequences), cudaMemcpyHostToDevice) != cudaSuccess )
+	if ( SparkGpuMalloc((void **)&positions_device, sizeof(positions)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&context_device, sizeof(contexts)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&sequence_device, sizeof(sequences)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(positions_device, positions, sizeof(positions), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(context_device, contexts, sizeof(contexts), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(sequence_device, sequences, sizeof(sequences), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 	{
 		Expect(0, "the decode rows are uploaded");
 		return;
@@ -285,15 +294,19 @@ static void LoneGraphs(void)
 	Expect(StageRunnerGraphEligible(state, &runner, 1u, LONE_ROWS, LONE_ROWS) != 0u, "a TP1 decode step without a collective is eligible for a graph");
 	Expect(LoneDecode(&runner, first, positions_device, context_device, sequence_device, &completion) == SPARK_STATUS_OK && completion.calls == 1u &&
 		completion.tokens[0] == 6u && completion.tokens[1] == 10u, "the first decode embeds, runs the model and takes the head's argmax");
-	captured = state->graph_exec[slot];
-	Expect(captured != 0 && state->graph_launches == 1u && lone_steps == 1u, "the first decode captured its graph and launched it once");
+	LoneDigest(completion.tokens, sizeof(completion.tokens));
+	LoneDigest(state->output_score_host, LONE_ROWS * sizeof(float));
+	captured = state->graph_program[slot];
+	Expect(captured != 0 && state->graph_launches == 1u && lone_steps == 1u, "the first decode recorded its program and ran it once");
 	Expect(LoneDecode(&runner, second, positions_device, context_device, sequence_device, &completion) == SPARK_STATUS_OK && completion.calls == 2u &&
-		completion.tokens[0] == 21u && completion.tokens[1] == 0u, "the second decode replays the graph on new tokens");
-	Expect(state->graph_exec[slot] == captured && state->graph_launches == 2u && lone_steps == 1u,
-		"the second decode reused the captured graph without running the model on the host again");
-	cudaFree(positions_device);
-	cudaFree(context_device);
-	cudaFree(sequence_device);
+		completion.tokens[0] == 21u && completion.tokens[1] == 0u, "the second decode runs the program on new tokens");
+	Expect(state->graph_program[slot] == captured && state->graph_launches == 2u && lone_steps == 1u,
+		"the second decode reused the recorded program without running the model on the host again");
+	LoneDigest(completion.tokens, sizeof(completion.tokens));
+	LoneDigest(state->output_score_host, LONE_ROWS * sizeof(float));
+	SparkGpuFree(positions_device);
+	SparkGpuFree(context_device);
+	SparkGpuFree(sequence_device);
 }
 
 static void LoneWideInput(void)
@@ -324,6 +337,7 @@ static void LoneWideInput(void)
 	for ( uint32_t index = 0u; index < LONE_ROWS * LONE_INPUT_WIDTH; ++index )
 		same &= lone_seen[index] == input[index] ? 1u : 0u;
 	Expect(same != 0u, "the model sees every element of the input rows, past the hidden width");
+	LoneDigest(lone_seen, sizeof(lone_seen));
 	dispatch.hidden_input_bytes = sizeof(input) - 2u;
 	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_INVALID_ARGUMENT, "input rows shorter than the input width are refused");
 }
@@ -337,6 +351,7 @@ int main(void)
 		printf("FAIL stage_runner_single_gpu_cuda: %d failures\n", failures);
 		return 1;
 	}
-	printf("PASS stage_runner_single_gpu_cuda: a TP1 runner without a collective captures a decode graph once and replays it, and its input rows may be wider than its hidden width\n");
+	printf("digest stage runner %016llx\n", (unsigned long long)lone_digest);
+	printf("PASS stage_runner_single_gpu_cuda: a TP1 runner without a collective records a decode program once and runs it again, and its input rows may be wider than its hidden width\n");
 	return 0;
 }

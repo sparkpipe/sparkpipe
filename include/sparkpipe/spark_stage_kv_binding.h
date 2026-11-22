@@ -373,6 +373,7 @@ static inline uint32_t SparkStageKvBindingAddressablePageCount(const SparkStageK
 }
 
 SparkStatus SparkStageKvBindingInitialize(SparkStageKvBinding *binding,const SparkStageKvConfiguration *configuration);
+uint32_t SparkStageKvPoolMinimumChunks(uint32_t minimum,uint32_t chunks,uint32_t device_properties);
 void SparkStageKvBindingDestroy(SparkStageKvBinding *binding);
 SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision);
 SparkStatus SparkStageKvBindingReset(SparkStageKvBinding *binding,uint64_t generation);
