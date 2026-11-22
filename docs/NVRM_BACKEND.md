@@ -582,6 +582,9 @@ launch-shape probe and first light:
   upload then a kernel. Each kernel holds for 1 ms before it writes. With the
   cross-channel wait removed, every transition reads most words out of order;
   the device contract's 400 KB kernel, copy and kernel round did not catch it.
+- **`tests/nvrm/cluster_launch.cu`** (`build/test_nvrm_cluster_launch`)
+  checks cluster numbering, shared memory read across a cluster and
+  dependent launches, and the cluster refusals (see Clusters below).
 - **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
   copy-engine fill then a kernel reading it, a kernel writing then a
   copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of
@@ -821,10 +824,103 @@ macro both stay on the CUDA fronts. Their implementation is
   parameter table: the count, each offset and size, and the total. A
   mismatch is refused, naming the parameter. It then launches with the
   packed block as the launch's constants.
-- **Not supported yet.** `LM_LAUNCH_DEPENDENT` and `LmLaunchClusterKernel`
-  are refused with `SPARK_GPU_ERROR_NOT_SUPPORTED`, naming the kernel,
-  until the launch descriptor carries programmatic dependence and clusters
-  (Phase 3).
+- **Dependent launches.** A dependent launch's blocks start once the grid
+  before it on the queue has ended, ordered by a descriptor latch instead of
+  a front-end semaphore wait.
+  - **Arrive.** Every launch arrives at a latch of its own when it ends
+    (`ARRIVE_AT_LATCH_VALID`, `ARRIVE_AT_LATCH_ID`). The id comes from one
+    counter per process, so no two launches in flight share it.
+  - **Wait.** `LM_LAUNCH_DEPENDENT` right after a launch on the same queue
+    pushes no semaphore acquire. Its descriptor waits on the earlier
+    launch's latch (`WAIT_ON_LATCH_VALID`, `WAIT_ON_LATCH_ID`) and holds its
+    blocks until that launch's blocks have ended
+    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`). It also
+    holds its own completion membar until the latch is acquired
+    (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), so its completion is never reported
+    before the earlier launch's.
+  - **Inside the kernel.** `griddepcontrol.wait` returns once the earlier
+    launch's latch is acquired, so its writes are visible.
+  - **Cost.** On a GB10 node the dependent grid started 0.23 to 0.42 µs
+    after the earlier one ended, against 2.6 to 2.9 µs through the
+    semaphore acquire.
+  - **Fallback.** After a copy, an event wait, a host step or a wait on
+    another queue, a dependent launch is ordered with the semaphore acquire
+    like any launch.
+  - **Segments.** The GPU does not switch to another process's work while
+    a latched launch is held behind a running one; it switches at a launch
+    that starts with the front-end acquire. A chain therefore goes in
+    segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`): each segment
+    starts with the front-end acquire and its other 31 launches wait on
+    latches. Another process waits at most one segment of the chain's
+    kernels. When the nvrm backend replays step programs, it must keep the
+    same bound.
+    - Measured on GB10 with 5 ms kernels queued ahead
+      (`test_nvrm_latch_segments chain-seconds 8 SEGMENT 5000` beside
+      `compete 6 1000`):
+      - In segments of 32, every launch of the second process waited one
+        segment (160.3 ms at the median, 160.4 ms at most, 32 x 5 ms),
+        with no Xid.
+      - Unbounded, the second process waited until Xid 109
+        (`CTX SWITCH TIMEOUT`) about 4 s in. That killed the chain's
+        channel, the device layer reported `GPU fault 109 (channel
+        error)`, and the second process and a plain kernel after it ran
+        normally.
+    - A chain of short kernels submitted one at a time leaves the GPU idle
+      between them, so the GPU switches even without segments: 5.48 million
+      launches of 1.46 µs in 8 s, unbounded, left a second process's 99th
+      percentile wait at 327 µs, with no Xid. The goal therefore checks
+      the bound with 5 ms kernels.
+    - On GB10 a dependent launch costs 1.58 µs in segments of 32 and
+      4.26 µs in segments of one (`make SPARKPIPE_DEVICE=nvrm
+      nvrm-latch-segments`, 100,000 launches each).
+    - Beside a chain in segments of 32, a second process's one-block
+      kernel waited 289 µs at the median and 316 µs at the 99th
+      percentile over 5 s, with no Xid.
+    - Segments of one go through the device layer's room checks without a
+      hang. The goal runs 100,000 launches that way.
+    - `SparkNvrmLatchSegmentSet` changes the length for tests.
+  - **Not used yet.** The overlap CUDA allows, where the dependent grid's
+    blocks start before the earlier grid ends, needs every dependent kernel
+    to reach `griddepcontrol.wait` before the queue's completion can be
+    trusted.
+- **Clusters.** A kernel compiled with a cluster shape (`__cluster_dims__`,
+  PTX `.reqnctapercluster`) runs in clusters of that shape on every launch,
+  as with `<<<>>>`. `LmLaunchClusterKernel` names a cluster of `cluster` by
+  1 by 1 blocks at launch for any kernel.
+  - Refused: a launch shape that differs from the compiled one, a kernel
+    that must run in clusters (`.explicitcluster`) launched without a
+    shape, a grid that is not a whole number of clusters on every axis, and
+    a cluster over 8 blocks or over the kernel's `.maxclusterrank`.
+  - The shapes come from the module manifest's `bound` lines.
+  - The launch descriptor is a GPC cluster grid
+    (`NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA`) with `GPC_CGA_WIDTH`,
+    `GPC_CGA_HEIGHT` and `GPC_CGA_DEPTH` set to the cluster shape
+    (`clcec0qmd.h`). Its `GRID_WIDTH`, `GRID_HEIGHT` and `GRID_DEPTH`
+    count clusters, not blocks. Counted in blocks, the GPU launched
+    grid x cluster blocks, some with block indices past the grid.
+  - Compiled code reads the cluster registers from constant bank 0. The
+    words were found by probing our own kernels on GB10:
+    - words 168-170: the cluster's width, height and depth
+      (`%cluster_nctaid`);
+    - words 172-174: their float reciprocals, from which the code derives
+      `%clusterid` and `%cluster_ctaid`;
+    - words 176-178: the grid in clusters (`%nclusterid`);
+    - word 179: the blocks per cluster (`%cluster_nctarank`).
+    The launcher fills them for every launch. A launch without clusters
+    reads as clusters of one block, as it does on the CUDA flavour. The
+    words are claimed, and a cluster that does not divide the grid is
+    refused.
+  - `tests/nvrm/cluster_launch.cu` (in `make test-nvrm-gpu`) launches:
+    - a kernel compiled for clusters of 2;
+    - clusters of 4 and of 8 chosen at launch;
+    - kernels compiled for clusters of 2x2x2 and 1x3x2 in 3-D grids;
+    - a 3-D grid without clusters;
+    - a dependent writer and reader.
+
+    Each block records every cluster register, and the clustered blocks
+    read a neighbour's shared memory across the cluster.
+    `make nvrm-cluster-launch` runs the same file in both flavours and
+    requires the same output bytes.
 - **Shared memory.** `LmKernelSharedMemoryOptIn` grants what the device has
   and refuses more.
 - **Release.** `SparkNvrmGpuRelease` destroys the default queue and the

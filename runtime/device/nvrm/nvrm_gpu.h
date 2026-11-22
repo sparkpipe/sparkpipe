@@ -83,6 +83,8 @@ typedef struct SparkNvrmChannel
 	uint64_t fence_value;
 	uint32_t segment_fenced;
 	SparkNvrmEngine last_engine;
+	uint32_t latch;
+	uint32_t latch_run;
 	uint64_t after_address;
 	uint64_t after_value;
 	uint64_t uvm_base;
@@ -201,6 +203,7 @@ void SparkNvrmFaultLocate(SparkNvrmGpu *gpu, const SparkNvrmChannel *channel, Sp
 const char *SparkNvrmFaultName(uint32_t code);
 void SparkNvrmFaultText(const SparkNvrmFault *fault, char *text, uint32_t capacity);
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner);
+SparkStatus SparkNvrmOpBeginLatched(SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmEngine engine, uint64_t *value, const char *owner);
 void SparkNvrmOpAbandon(SparkNvrmChannel *channel);
 SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner);

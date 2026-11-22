@@ -1742,7 +1742,39 @@ nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 		mark=$$(tools/nvrm_kernel_log.sh mark); echo "RUN a plain kernel after the $$mode fault"; ./build/nvrm_fault_reports plain || status=1; \
 		tools/nvrm_kernel_log.sh check $$mark || status=1; done; exit $$status
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
+build/test_nvrm_cluster_launch: tests/nvrm/cluster_launch.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_cluster_launch: tests/nvrm/cluster_launch.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+build/test_nvrm_latch_segments: tests/nvrm/latch_segments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+NVRM_FLAVOUR_GOALS += nvrm-latch-segments
+.PHONY: nvrm-latch-segments
+nvrm-latch-segments: nvrm-gpu-present build/test_nvrm_latch_segments
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	./build/test_nvrm_latch_segments chain 100000 1 || status=1; \
+	./build/test_nvrm_latch_segments chain 100000 32 || status=1; \
+	./build/test_nvrm_latch_segments chain-seconds 6 32 & chain=$$!; sleep 0.5; \
+	./build/test_nvrm_latch_segments compete 5 1 || status=1; wait $$chain || status=1; \
+	./build/test_nvrm_latch_segments chain 1000 32 5000 & chain=$$!; sleep 0.5; \
+	./build/test_nvrm_latch_segments compete 2 165 || status=1; wait $$chain || status=1; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; \
+	if [ $$status -eq 0 ]; then echo "PASS nvrm-latch-segments: dependent chains run in segments of one and of 32 launches, \
+a second process keeps running beside a 32-launch chain, and beside a chain of 5 ms kernels it waits at most one segment"; fi; exit $$status
+
+NVRM_FLAVOUR_GOALS += nvrm-cluster-launch
+.PHONY: nvrm-cluster-launch
+nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_cluster_launch
+	@./build/cuda_cluster_launch cuda > build/cluster_launch.cuda.txt; cuda=$$?; ./build/test_nvrm_cluster_launch nvrm > build/cluster_launch.nvrm.txt; nvrm=$$?; \
+		cat build/cluster_launch.cuda.txt build/cluster_launch.nvrm.txt; [ $$cuda -eq 0 ] && [ $$nvrm -eq 0 ] && \
+		grep '^digest' build/cluster_launch.cuda.txt > build/cluster_launch.cuda.digests && grep '^digest' build/cluster_launch.nvrm.txt > build/cluster_launch.nvrm.digests && \
+		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
+		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present

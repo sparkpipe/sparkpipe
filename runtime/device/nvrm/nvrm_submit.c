@@ -236,6 +236,15 @@ SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, 
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkNvrmOpBeginLatched(SparkNvrmChannel *channel, const char *owner)
+{
+	if ( channel->push_used != channel->push_submitted )
+		SUBMIT_REFUSE(SPARK_STATUS_BUSY,"an ordered operation starts after the previous submission");
+	if ( channel->last_engine != SPARK_NVRM_ENGINE_COMPUTE || channel->latch == 0u || channel->after_value != 0u )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a latched launch follows a launch on its channel, with no other wait pending");
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SubmitHostFence(SparkNvrmChannel *channel, const char *owner)
 {
 	SUBMIT_TRY(SubmitOrder(channel,SPARK_NVRM_ENGINE_HOST,owner));
@@ -243,6 +252,7 @@ static SparkStatus SubmitHostFence(SparkNvrmChannel *channel, const char *owner)
 	channel->fence_value++;
 	channel->segment_fenced = 1u;
 	channel->last_engine = SPARK_NVRM_ENGINE_HOST;
+	channel->latch = 0u;
 	return(SPARK_STATUS_OK);
 }
 
@@ -292,6 +302,7 @@ SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNv
 		SPARK_FAIL(status);
 	}
 	channel->last_engine = engine;
+	channel->latch = 0u;
 	channel->after_address = 0u;
 	channel->after_value = 0u;
 	if ( value != 0 )
