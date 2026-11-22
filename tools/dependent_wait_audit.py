@@ -12,13 +12,16 @@ with an atomic or a reduction, or it could overwrite what the running kernel
 still reads.
 
 The audit reads every function's SASS from the artifacts (cubins, modules or
-programs) with cuobjdump. In every function that waits (ACQBULK, the form of
+programs) with cuobjdump, one process an artifact across the machine's cores,
+and parses each function only up to its first wait. In every function that waits (ACQBULK, the form of
 griddepcontrol.wait on sm_90 and later), it refuses a global store, atomic or
 reduction that comes before the first wait. ALLOWED names the kernels whose
 stores before the wait are safe for a stated reason. The exit status is 0 when
 nothing is refused, 1 when something is, and 2 when an artifact cannot be read.
 """
 import argparse
+import concurrent.futures
+import os
 import re
 import subprocess
 import sys
@@ -27,6 +30,7 @@ FUNCTION = re.compile(r'^\s*Function : (\S+)')
 INSTRUCTION = re.compile(r'^\s*(?:/\*[0-9a-f]+\*/)?\s*(?:@!?U?P[0-9T]+\s+)?([A-Z][A-Z0-9_]*)((?:\.[A-Z0-9_]+)*)\b')
 WAIT = 'ACQBULK'
 WRITES = {'STG', 'ST', 'ATOMG', 'ATOM', 'RED', 'REDG', 'SUST', 'SURED', 'SUATOM', 'UTMASTG', 'UTMAREDG', 'UBLKCP', 'UBLKRED'}
+MARKS = ('ST', 'ATOM', 'RED', 'SU', 'UTMA', 'UBLK', WAIT)
 ALLOWED = {
     'SparkTpMeshHardwareDirectKernel': 'its only dependent predecessor is the mesh arrival kernel, which touches only the band and its control words',
     'SparkTpMeshHardwareDirectWideKernel': 'its only dependent predecessor is the mesh arrival kernel, which touches only the band and its control words',
@@ -34,18 +38,20 @@ ALLOWED = {
 
 
 def functions(listing):
-    current, found = None, {}
+    current, found, waited = None, {}, False
     for line in listing.splitlines():
-        match = FUNCTION.match(line)
-        if match is not None:
-            current = match.group(1)
-            found[current] = []
-            continue
-        if current is None:
+        if 'Function : ' in line:
+            match = FUNCTION.match(line)
+            if match is not None:
+                current, waited = match.group(1), False
+                found[current] = []
+                continue
+        if current is None or waited or not any(mark in line for mark in MARKS):
             continue
         match = INSTRUCTION.match(line)
-        if match is not None:
+        if match is not None and (match.group(1) in WRITES or match.group(1) == WAIT):
             found[current].append((match.group(1), match.group(1) + match.group(2), line.strip()))
+            waited = match.group(1) == WAIT
     return found
 
 
@@ -75,20 +81,29 @@ def refusals(found):
     return refused, checked
 
 
+def audit(artifact, cuobjdump):
+    result = subprocess.run([cuobjdump, '-sass', artifact], capture_output=True, text=True)
+    if result.returncode != 0 and 'does not contain device code' in result.stderr:
+        return None, [], 0
+    if result.returncode != 0:
+        return result.stderr.strip(), [], 0
+    found, count = refusals(functions(result.stdout))
+    return None, found, count
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('artifacts', nargs='+')
     parser.add_argument('--cuobjdump', default='cuobjdump')
     args = parser.parse_args()
     refused, checked = [], 0
-    for artifact in args.artifacts:
-        result = subprocess.run([args.cuobjdump, '-sass', artifact], capture_output=True, text=True)
-        if result.returncode != 0 and 'does not contain device code' in result.stderr:
-            continue
-        if result.returncode != 0:
-            print(f'dependent_wait_audit: cuobjdump cannot read {artifact}: {result.stderr.strip()}', file=sys.stderr)
+    workers = min(len(args.artifacts), len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count() or 1)
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(audit, args.artifacts, [args.cuobjdump] * len(args.artifacts)))
+    for artifact, (error, found, count) in zip(args.artifacts, results):
+        if error is not None:
+            print(f'dependent_wait_audit: cuobjdump cannot read {artifact}: {error}', file=sys.stderr)
             return 2
-        found, count = refusals(functions(result.stdout))
         refused += [(artifact, name, text) for name, text in found]
         checked += count
     for artifact, name, text in refused:
