@@ -473,6 +473,7 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_bulk_copy_forms.py \
 	tests/test_launch_path.py \
 	tests/test_gpu_api.py \
 	tests/test_upload_ordering_sites.py \
