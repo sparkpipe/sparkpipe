@@ -620,6 +620,53 @@ Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
 
+## Programs
+
+`SparkDeviceProgramFinish` compiles a recorded program
+([device programs](DEVICE_PROGRAMS.md)) into an image, and
+`SparkDeviceProgramRun` runs the image with one submission, however many
+steps it holds.
+- **Image.** One allocation of coherent system memory holds three parts:
+  - the program's 64-bit semaphore;
+  - a descriptor and constant bank 0 for every launch, built at finish by
+    the code that builds eager launches. A launch's descriptor releases its
+    step number plus one to the semaphore when its grid ends;
+  - the push segment.
+- **Segment.** The segment first sets the semaphore to zero. Every later
+  step first acquires the semaphore at its own step number, so it starts
+  once the step before it has ended, as an eager launch starts once the
+  queue's fence has passed. Then:
+  - a launch sends its descriptor;
+  - an event record stamps the event's time and raises its generation;
+  - an event wait acquires the event's generation;
+  - a host step releases a ticket to the queue's host worker and acquires
+    the worker's answer.
+
+  A step that is no launch then releases the next step number itself.
+- **Run.** A run is one queue operation. It pushes the queue's ordering
+  acquire, and the local-memory binding if the channel lacks it. It then
+  queues three ring entries and rings the doorbell once: that head, the
+  segment, and a tail that acquires the semaphore at the step count and
+  releases the queue's next fence value.
+- **Per-run values.** Before the doorbell, a run stores the values that
+  change between runs:
+  - a patched launch gets its descriptor and bank 0 rebuilt with the
+    patched constants and grid;
+  - an event record gets the event's next generation, and an event wait
+    its current one;
+  - a host step gets the run queue's worker gates and tickets.
+
+  A program with any of these waits for its previous run to end before
+  storing them. A program of launches alone stores nothing, so its runs
+  on one queue go back to back; a run on another queue waits for the
+  previous run, because both would use the one semaphore.
+- **Not inside programs.** Finish refuses copies and fills, naming them;
+  they go on the queue before or after the run. A dependent launch runs
+  inside a program as a plainly ordered launch, with the same results;
+  latched chains inside programs are the next step.
+- **Faults.** A fault report during a run names the program, the step its
+  semaphore had reached, and that step's kernel.
+
 ## Faults and stalls
 
 A wait never hangs on a GPU that has stopped: it fails with
@@ -1087,5 +1134,6 @@ two side by side. None of them is a pass/fail gate:
   - The tool reports the host time to issue the step, the wall time to
     synchronize, the GPU span, and the GPU idle per boundary between
     kernels.
-  - It runs eager launches, and in the CUDA flavour also one captured graph
-    of the same launches. nvrm refuses capture for now.
+  - It runs eager launches, a device-layer program of the same launches
+    (in both flavours; on CUDA a program is a captured graph underneath),
+    and in the CUDA flavour one graph captured directly.
