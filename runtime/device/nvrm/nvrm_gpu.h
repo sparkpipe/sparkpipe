@@ -93,6 +93,15 @@ typedef struct SparkNvrmChannel
 	SparkNvrmSegment segments[SPARK_NVRM_CHANNEL_ENTRIES];
 } SparkNvrmChannel;
 
+typedef struct SparkNvrmFault
+{
+	uint32_t code;
+	uint32_t engine;
+	uint32_t located;
+	uint64_t address;
+	char kind[32];
+} SparkNvrmFault;
+
 typedef struct SparkNvrmGpu
 {
 	SparkNvrmRm rm;
@@ -187,7 +196,12 @@ SparkStatus SparkNvrmSemaphoreMax(SparkNvrmChannel *channel, uint64_t address, u
 SparkStatus SparkNvrmEnsureLocalMemory(SparkNvrmGpu *gpu, uint32_t bytes_per_thread, const char *owner);
 SparkStatus SparkNvrmBindLocalMemory(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmWaitValue(const volatile uint64_t *semaphore, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner);
+SparkStatus SparkNvrmWaitFence(const SparkNvrmChannel *channel, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner);
 uint64_t SparkNvrmChannelCompleted(const SparkNvrmChannel *channel);
+uint32_t SparkNvrmChannelFault(const SparkNvrmChannel *channel, SparkNvrmFault *fault);
+void SparkNvrmFaultLocate(SparkNvrmGpu *gpu, const SparkNvrmChannel *channel, SparkNvrmFault *fault);
+const char *SparkNvrmFaultName(uint32_t code);
+void SparkNvrmFaultText(const SparkNvrmFault *fault, char *text, uint32_t capacity);
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner);
 SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmEngine engine, uint64_t *value, const char *owner);
 void SparkNvrmOpAbandon(SparkNvrmChannel *channel);

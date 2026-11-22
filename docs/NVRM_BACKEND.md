@@ -439,6 +439,8 @@ worker's wait for its reached gate.
   Linux's default 50 us slack, a 20 us sleep lasts about 72 us.
 - **Timeout.** A timeout is checked at the same points and a sleep never
   runs past it. A zero timeout checks the value once.
+- **Watch.** While it sleeps, and when its timeout expires, a wait also
+  looks for faults and stalls (see [Faults and stalls](#faults-and-stalls)).
 
 All of these are constants, not settings.
 
@@ -557,6 +559,87 @@ rounds and every back-to-back set is wrong, so the test sees misordering.
 Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
+
+## Faults and stalls
+
+A wait never hangs on a GPU that has stopped: it fails with
+`SPARK_STATUS_IO_ERROR`, and the device layer then fails every later
+operation, as it does after any I/O error.
+
+- **The error notifier.** Every channel is created with an error notifier,
+  module memory that the CPU maps. When the module recovers a channel from
+  a fault, it writes the notifier's error entry
+  (`NV_CHANNELGPFIFO_NOTIFICATION_TYPE_ERROR`): `info32` is the error code,
+  one of the codes `nverror.h` lists for the error notifier, `info16` the
+  engine, and `status` 0xffff. The module writes it into every channel of
+  the faulting channel group. A fault in one queue's grid therefore shows
+  on every queue's graphics channel and on the device's own compute
+  channel, and a copy-engine fault on every copy channel.
+- **Fault location.** For an MMU fault (code 31),
+  `NV906F_CTRL_CMD_GET_MMU_FAULT_INFO` on a channel returns the faulting
+  address and the module's name for the fault type (`FAULT_PDE` for an
+  unmapped address). The backend asks the waited queue's channels first,
+  then every other queue's. The module clears the record once it is read,
+  so only the first report carries it. For other codes the control answers
+  `UNRECOGNIZED_FAULT`, and the report carries the code alone. On GB10 a
+  `trap` instruction raised code 13 and a store to an unmapped address
+  code 31, each about 3 ms after the launch.
+- **When a wait looks.** Inside its 100 us spin a wait never reads the
+  notifiers. Once it sleeps, it looks at once and then every 1 ms, and
+  once more when its timeout expires, so a query (zero timeout) of a
+  faulted queue fails instead of answering "not ready". A look reads four
+  notifiers: the queue's two channels and the device's compute and copy
+  channels.
+- **Stalls.** A wait also fails when no channel of the process has
+  advanced its fence for 10 s: the sum of every live queue's fences and
+  the device's own is unchanged for the whole deadline. A queue waiting on
+  another queue's event is not stalled while that queue runs. A single grid
+  or host step that runs longer than 10 s with nothing else running is
+  reported as a stall.
+- **Internal waits.** Waits for ring space, launch slots and zero-filled
+  allocations use the same watch. Channel waits that know no queue
+  (push-buffer space, synchronizing a new channel, tearing one down) check
+  their own channel's notifier and keep their 10 s timeout.
+- **The report.** `SparkDeviceLastError()` holds the operation
+  (`queue_wait`, `event_wait`, or the operation that needed ring space),
+  the queue as its owner and id (`gpu stream 3`), the error code as
+  `backend_code` (0 for a stall), and a text that names the fault and
+  where the queue stopped:
+  - `GPU fault 13 (graphics engine exception); at kernel FaultsTrap; last launched FaultsPlain`
+  - `GPU fault 31 (MMU fault, FAULT_PDE at 0x7f0000001000); at kernel FaultsStore, the last one launched`
+  - `no GPU progress for 10 s; at kernel FaultsSpin, the last one launched`
+
+  "At" is the queue's first unfinished operation: a kernel by its short
+  name, else a copy, a fill, host work, an event record or an event wait.
+  "Last launched" is the newest kernel launched on the queue. An event wait
+  names the queue that recorded the event.
+
+`tests/test_nvrm_fault.c` (`make test-nvrm` and `make test`) checks, without
+a GPU, the notifier decoding, the names and texts, that only MMU faults are
+located, the watch cadence and the stall deadline.
+
+`make nvrm-fault-reports` builds `tests/nvrm/fault_reports.cu` and injects
+each fault in its own process:
+
+- **trap:** a kernel that traps, followed by three more kernels;
+- **address:** a store to an unmapped address, waited on through an event;
+- **stall:** a kernel that spins on a host flag until the stall is
+  reported, then finishes once the flag is set.
+
+For each it checks the report and that every later operation fails, and
+that the kernel log gained exactly the expected Xid (13, 31, none). A plain
+kernel must then run in a new process with a clean kernel log. The target
+logs Xids on purpose, so it is part of neither `make test-nvrm-gpu` nor the
+GPU test gate. Run it on one GPU host at a time, with nothing else on the
+GPU.
+
+`tools/nvrm_kernel_log.sh mark` prints the stamp of the kernel log's last
+line. It used to print `/proc/uptime`, but the kernel stamps its log with a
+clock that runs behind that one: on GB10 an Xid line was stamped 0.23 s
+before an uptime mark taken before the faulting process started, so a fault
+right after a mark went unseen. `check` reports the NVRM lines stamped after
+the mark and `xids` lists their Xid codes.
+`tests/test_nvrm_kernel_log.py` drives the rule with a fake `dmesg`.
 
 ## Shared memory
 
