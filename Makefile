@@ -469,6 +469,7 @@ PYTHON_TESTS := \
 	tests/test_metal_bf16_convert.py \
 	tests/test_dry_law.py \
 	tests/test_no_symlinks.py \
+	tests/test_name_lengths.py \
 	tests/test_ci_lanes.py \
 	tests/test_no_weight_links.py \
 	tests/test_device_stage_tables.py \
