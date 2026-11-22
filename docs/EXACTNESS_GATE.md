@@ -456,9 +456,10 @@ ONLY="glm-5.3 kimi-k3 kimi-k3.1-pro deepseek-v4.1-flash qwen3.8-27b" \
   GX_PLAN="--cases prefix,session --contexts 300000" scripts/release_rollout.sh gx
 ```
 
-**6. Keep the result.** Copy the receipts (`<model>.json`, `.txt`, `.log`,
-`.apilog.tgz`) into `qualification/gx-<date>/` with a README that says
-which commit, which lanes, which plan and the verdict of each. The cost of
+**6. Keep the result.** Copy the receipts (`<model>.json`, `.txt`, `.log`)
+into `qualification/gx-<date>/` with a README that says which commit, which
+lanes, which plan and the verdict of each. The `.apilog.tgz` of each lane
+stays with the operator: the repository holds no archives. The cost of
 the rules goes into `PERFORMANCE_STATUS.md`, "Exact reuse", from the
 receipt fields that section names.
 

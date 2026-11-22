@@ -131,10 +131,12 @@ it; the test is in `tests/test_kv_cache.c`.
 
 ## Files
 
-For each run: `qwen3.8-27b-fp8-one-gb10.json` (the receipt), `.txt` (the verdict lines),
-`.log` (each request), `.block.log` (the driver's steps and cache changes),
-`.gpu.log` (the process list samples) and `.apilog.tgz` (the engine API's
-log of each step). `hold.log` is the order of the three passing runs.
+For each run: `qwen3.8-27b-fp8-one-gb10.json` (the receipt), `.txt` (the
+verdict lines), `.log` (each request), `.block.log` (the driver's steps and
+cache changes) and `.gpu.log` (the process list samples). `hold.log` is the
+order of the three passing runs. The engine API's log of each step is not
+here: the repository holds no archives, and the receipt carries what the
+gate read from it.
 
 ## What this does not show
 
