@@ -360,6 +360,30 @@ activation of the model starts the engine lane. To switch back, set both to
 `block_draftd` and stop `sparkpipe-draftd-engine`, which holds the lane's tap
 and draft ports.
 
+**Soak before the switch stays.** `tools/spec_soak.py` drives the lane's API
+on the hub with a fixed workload built from this repository's files: 48
+rename edits of single files (1.5K to 5.7K prompt tokens), 16 after other
+files (about 75K tokens) and 8 after more (about 112K). Even tasks decode
+greedily; odd tasks sample with a seed fixed per task. Repeats reuse cached
+prefixes, so the engine module copies donor prefixes as it would in service.
+Run it once per arm, an hour each, on the same workload, never on user
+traffic:
+
+```sh
+python3 tools/spec_soak.py run --engine http://127.0.0.1:8481 --chat-dir /srv/workspace/sparkpipe/k31-chat \
+    --model kimi-k3.1-pro --log /srv/workspace/sparkpipe/logs/k31_pro-kv-api.log --minutes 60 --out SOAK/python \
+    --unit sparkpipe-draftd-k31
+python3 tools/spec_soak.py run ... --out SOAK/engine --unit sparkpipe-draftd-engine --unit sparkpipe-weightd-hub
+python3 tools/spec_soak.py compare SOAK/python SOAK/engine
+```
+
+`compare` sums each arm's drafter counters from the API log's
+`batch_speculation` lines (an API restart starts a new segment) and passes
+when the engine arm's accepted drafts per round are within 2% of the Python
+arm's, its `UNAVAILABLE` rate is no higher, and neither engine unit
+restarted. Deactivate and activate the model once inside the engine hour so
+the lane rebinds its pack from weightd's held copy.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane

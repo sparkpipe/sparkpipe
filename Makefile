@@ -927,6 +927,7 @@ PYTHON_TESTS := \
 	tests/test_k3_dspark_drafter.py \
 	tests/test_dspine_drafter.py \
 	tests/test_hub_draftd_names.py \
+	tests/test_spec_soak.py \
 	tests/test_local_tokenizers.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
