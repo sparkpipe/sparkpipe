@@ -11,6 +11,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/ngram_hash.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/stream_gemm.cuh"
 #include "dsv41_flash_kernels.cuh"
 #include "runtime/launch.h"
@@ -1207,10 +1208,9 @@ static __global__ __launch_bounds__(D41K_SLOT_WARPS * 32u) void D41ExchangeSlots
 		count[threadIdx.x] = target_base[threadIdx.x];
 }
 
-static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
-	uint32_t routes, const uint8_t *__restrict__ group, uint32_t local_experts, uint32_t groups, uint32_t experts)
+static __device__ __forceinline__ void D41RouteLocal(uint32_t *route_expert, float *route_weight, uint32_t *route_global, uint32_t routes,
+	const uint8_t *__restrict__ group, uint32_t local_experts, uint32_t groups, uint32_t experts, uint32_t route)
 {
-	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
 	if ( route >= routes )
 		return;
 	const uint32_t value = route_expert[route], expert = value & ~D41K_BACKUP_FLAG;
@@ -1223,6 +1223,28 @@ static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, 
 		route_expert[route] = groups;
 		route_weight[route] = 0.0f;
 	}
+}
+
+static __global__ void D41RouteLocalKernel(uint32_t *__restrict__ route_expert, float *__restrict__ route_weight, uint32_t *__restrict__ route_global,
+	uint32_t routes, const uint8_t *__restrict__ group, uint32_t local_experts, uint32_t groups, uint32_t experts)
+{
+	D41RouteLocal(route_expert, route_weight, route_global, routes, group, local_experts, groups, experts, blockIdx.x * blockDim.x + threadIdx.x);
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+static __device__ __forceinline__ void D41RouteTail(uint32_t *route_expert, float *route_weight, uint32_t *route_global, uint32_t routes,
+	const uint8_t *__restrict__ group, uint32_t local_experts, uint32_t experts, uint32_t top_k, uint32_t *group_row_offset, uint32_t *route_packed_row,
+	uint32_t *route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *tile_prefix_up, uint32_t neuron_tiles_down,
+	uint32_t *tile_prefix_down, float *packed_weight)
+{
+	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
+		D41RouteLocal(route_expert, route_weight, route_global, routes, group, local_experts, local_experts, experts, route);
+	__syncthreads();
+	LmRouteBuildBlock<THREADS, EXPERTS>(route_expert, routes, top_k, group_row_offset, route_packed_row, route_source_token, tile_m, neuron_tiles_up,
+		tile_prefix_up, neuron_tiles_down, tile_prefix_down);
+	__syncthreads();
+	for ( uint32_t route = threadIdx.x; route < routes; route += THREADS )
+		LmPackedRouteWeight(route_packed_row, route_weight, packed_weight, routes, route);
 }
 
 static __global__ void D41ExchangePackKernel(const uint8_t *__restrict__ codes, const uint8_t *__restrict__ scales,
