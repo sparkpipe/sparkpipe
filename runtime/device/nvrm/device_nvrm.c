@@ -600,6 +600,15 @@ static SparkStatus NvrmKernelLayout(NvrmKernel *nvrm, SparkDeviceKernel *kernel,
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	const NvrmLibrary *nvrm = (const NvrmLibrary *)library->backend;
+	SparkNvrmShortName(name,short_name);
+	if ( nvrm == 0 || SparkNvrmCubinKernelNamed(&nvrm->program.cubin,short_name) == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"kernel_create",short_name,0,"the kernel library has no kernel with that symbol"));
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
 {
 	const NvrmLibrary *library = (const NvrmLibrary *)kernel->library->backend;

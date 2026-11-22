@@ -990,6 +990,14 @@ void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
 	MetalReleaseObject(&library->backend);
 }
 
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	(void)library;
+	(void)name;
+	(void)short_name;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",0,0,"the Metal backend takes kernel names of at most 64 bytes"));
+}
+
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
 {
 	@autoreleasepool

@@ -188,7 +188,7 @@ The parser and the packer are tested in `make test` without a GPU:
   `tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin`, release-built from
   `tests/nvrm/fixture_kernels.cu` (first-light, parameter-layout, static
   shared, stack, 4400-byte frame, call-chain stack, 4104-byte and
-  32,764-byte parameter and 2000-byte name
+  32,764-byte parameter and 152-character mangled name
   kernels, plus two RMS-norm kernels from
   `inference/kernels/norm.cuh`). Each kernel's registers, stack and shared
   memory must equal ptxas's own report in the fixture manifest, and its
@@ -376,15 +376,37 @@ bytes, CUDA's own kernel parameter limit on compute capability 7.0 and
 later, which the backend reports as `max_constant_bytes`. Each launch's
 descriptor and bank 0 (512 bytes plus the kernel's bank 0 rounded up to
 256) go in a slot from a per-queue 4 MiB byte ring; the space is reused
-once the launch that held it has completed. A kernel name may be up to
-4096 bytes, so mangled template names are found whole; the manifest keeps
-each name on the heap. The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
+once the launch that held it has completed.
+
+Kernel names are at most 64 characters, so the runtime stores and compares
+only short names:
+
+- **A name that fits is its own short name.** A longer one, which in
+  practice is a C++ mangled template symbol, becomes its base identifier
+  (the last source name of an Itanium nested name, otherwise the name
+  itself), truncated, then `_` and the first 12 hex digits of sha256 over
+  the full name. `SparkNvrmShortName` implements the rule, and
+  `tools/nvrm_kernel_manifest.py` implements the same one.
+- **The manifest records it.** Each kernel line carries `short <name>`, and
+  the tool refuses two kernels of one unit with one short name. The
+  runtime checks every short name against its own computation for the
+  symbol, so the tool and the runtime cannot drift apart.
+- **The cubin parser** uses the full ELF names only while it parses, then
+  keeps the short names.
+- **Registration** hashes the `deviceName` nvcc passes into the same short
+  name.
+- **Creating a kernel.** `SparkDeviceKernelCreate` refuses a name longer
+  than 64, naming its length, unless the backend maps it to a kernel of
+  the library: on nvrm, the full mangled symbol of one of its kernels. That
+  name is used for the lookup and never stored.
+
+The backend sets the `SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES` and
 `SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS` property bits (Metal sets the
 first), and the device contract branches on them: its parameter-block
 branch loads the fixture cubin,
 checks the reported layout, refuses bindings and a wrong-sized block, and
 reads back a launch. It also creates, launches and destroys a kernel with
-a 2000-byte name, launches a 4104-byte and a 32,764-byte parameter block
+its 152-character mangled symbol, refuses a 65-character name that is no kernel's symbol, launches a 4104-byte and a 32,764-byte parameter block
 and reads every word back, and refuses a block 4 bytes over the limit.
 `SPARK_DEVICE_PROPERTY_SHARED_ADDRESS` is always set. The backend sets
 `SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY` only when the module reports the GPU as
@@ -505,7 +527,7 @@ lookups, a fat binary registered from the test program itself, and
 unregistering; each abort is checked in a child process. Its
 `build/test_nvrm_register_gpu` build (in `make test-nvrm-gpu`) also launches
 a registered kernel. It checks that the kernel is cached, that a
-2000-byte-named kernel resolves, and that after the release the device
+152-character mangled kernel resolves, and that after the release the device
 shuts down with no live library.
 
 ## Hosted launches

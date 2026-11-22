@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_cubin.h"
 #include "runtime/device/nvrm/nvrm_manifest.h"
+#include "runtime/device/nvrm/nvrm_names.h"
 #include "runtime/device/nvrm/nvrm_qmd.h"
 #include "tests/nvrm/fixture_kernels.h"
 
@@ -111,10 +112,15 @@ static void PutLe(uint8_t *at, uint64_t value, uint32_t width)
 
 static uint32_t ExpectedParameters(const char *name)
 {
+	char wanted[SPARK_NVRM_SHORT_NAME_BYTES],listed[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t index;
+	SparkNvrmShortName(name,wanted);
 	for (index = 0u; index < sizeof(expected_layouts) / sizeof(expected_layouts[0]); index++)
-		if ( strcmp(expected_layouts[index].name,name) == 0 )
+	{
+		SparkNvrmShortName(expected_layouts[index].name,listed);
+		if ( strcmp(listed,wanted) == 0 )
 			return(expected_layouts[index].parameter_bytes);
+	}
 	return(UINT32_MAX);
 }
 
@@ -140,6 +146,8 @@ static void TestFixture(void)
 		if ( strncmp(line,"kernel ",strlen("kernel ")) != 0 || (space = strchr(name,' ')) == 0 )
 			continue;
 		*space = '\0';
+		if ( strncmp(space + 1,"short ",strlen("short ")) != 0 || (space = strchr(space + 1 + strlen("short "),' ')) == 0 )
+			continue;
 		if ( sscanf(space + 1,"registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u",&registers,&barriers,&stack,&stores,&loads,&smem) != 6 )
 			continue;
 		tail = strstr(space + 1," cumulative ");
@@ -212,9 +220,16 @@ static void TestManifest(void)
 				call->cumulative_bytes >= SPARK_NVRM_FIXTURE_DEEP_WORDS * sizeof(uint32_t) && SparkNvrmManifestStackNeed(call) == placed->stack_bytes,
 				"a kernel that calls a function with its own frame needs its call chain's stack, which is what the cubin records");
 		}
-		CHECK(SparkNvrmManifestKernelNamed(&manifest,SPARK_NVRM_FIXTURE_LONG_TEXT) != 0 &&
-			strlen(SPARK_NVRM_FIXTURE_LONG_TEXT) == SPARK_NVRM_FIXTURE_LONG_REPEATS * strlen(SPARK_NVRM_FIXTURE_QUOTE(SPARK_NVRM_FIXTURE_LONG_FRAGMENT)),
-			"a kernel name thousands of bytes long is kept whole");
+		{
+			const SparkNvrmManifestKernel *named = SparkNvrmManifestKernelNamed(&manifest,SPARK_NVRM_FIXTURE_LONG_TEXT);
+			const SparkNvrmCubinKernel *placed = SparkNvrmCubinKernelNamed(&cubin,SPARK_NVRM_FIXTURE_LONG_TEXT);
+			char expected[SPARK_NVRM_SHORT_NAME_BYTES];
+			SparkNvrmShortName(SPARK_NVRM_FIXTURE_LONG_TEXT,expected);
+			CHECK(strlen(SPARK_NVRM_FIXTURE_LONG_TEXT) == 152u && named != 0 && placed != 0 && strcmp(named->name,expected) == 0 &&
+				strcmp(placed->name,expected) == 0 && strlen(expected) <= SPARK_DEVICE_KERNEL_NAME_LIMIT &&
+				strncmp(expected,"SparkNvrmLongTemplate_",strlen("SparkNvrmLongTemplate_")) == 0,
+				"a 152-character mangled kernel is stored under its short name, the base identifier and a digest, in the manifest and the cubin alike");
+		}
 	}
 	blob[bytes - 1u] ^= 1u;
 	CHECK(SparkNvrmManifestCheck(&manifest,blob,bytes,&cubin,"manifest") == SPARK_STATUS_TARGET_MISMATCH,"a manifest for another cubin is refused");
@@ -225,19 +240,19 @@ static void TestManifest(void)
 	SparkNvrmManifestRelease(&manifest);
 	{
 		static const char *const broken[] = {
-			"cubin 00 12\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
-			"kernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
+			"cubin 00 12\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
+			"kernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n",
 			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nparam K 0 u32 align 4 bytes 4 offset 0\n",
-			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
 			"param K 0 u32 align 3 bytes 4 offset 0\n",
-			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
 			"param K 1 u32 align 4 bytes 4 offset 0\n",
-			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
 			"bound K warpsize 32\n",
 			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nsomething else\n",
-			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 16 spill_stores 0 spill_loads 0 smem 0"
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 16 spill_stores 0 spill_loads 0 smem 0"
 			" cumulative 8\n",
-			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0"
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0"
 			" cumulative 64 extra\n",
 		};
 		uint32_t refused = 0u;
@@ -251,21 +266,34 @@ static void TestManifest(void)
 	{
 		static const char head[] = "cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel ";
 		static const char tail[] = " registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n";
-		const size_t name = SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u;
-		char *line = (char *)malloc(sizeof(head) + name + sizeof(tail));
-		CHECK(line != 0,"allocate an over-long manifest line");
+		const size_t name = 4096u;
+		char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
+		char *line = (char *)malloc(sizeof(head) + name + 8u + SPARK_NVRM_SHORT_NAME_BYTES + sizeof(tail));
+		CHECK(line != 0,"allocate a long manifest line");
 		if ( line != 0 )
 		{
-			memcpy(line,head,sizeof(head) - 1u);
-			memset(line + sizeof(head) - 1u,'K',name);
-			memcpy(line + sizeof(head) - 1u + name,tail,sizeof(tail));
-			CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR && manifest.kernels == 0,
-				"a kernel name longer than a device kernel name can be is refused");
-			memset(line + sizeof(head) - 1u + SPARK_DEVICE_KERNEL_NAME_LIMIT,' ',1u);
-			memmove(line + sizeof(head) - 1u + SPARK_DEVICE_KERNEL_NAME_LIMIT,line + sizeof(head) + SPARK_DEVICE_KERNEL_NAME_LIMIT,sizeof(tail));
-			CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_OK && manifest.kernel_count == 1u &&
-				strlen(manifest.kernels[0].name) == SPARK_DEVICE_KERNEL_NAME_LIMIT,"a kernel name at the limit parses whole");
-			SparkNvrmManifestRelease(&manifest);
+			char *symbol = (char *)malloc(name + 2u);
+			CHECK(symbol != 0,"allocate a long symbol");
+			if ( symbol != 0 )
+			{
+				memset(symbol,'K',name + 1u);
+				symbol[name + 1u] = '\0';
+				SparkNvrmShortName(symbol,short_name);
+				snprintf(line,sizeof(head) + name + 8u + SPARK_NVRM_SHORT_NAME_BYTES + sizeof(tail),"%s%s short %s%s",head,symbol,short_name,tail);
+				CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR && manifest.kernels == 0,
+					"a kernel symbol longer than a manifest takes is refused");
+				symbol[name] = '\0';
+				SparkNvrmShortName(symbol,short_name);
+				snprintf(line,sizeof(head) + name + 8u + SPARK_NVRM_SHORT_NAME_BYTES + sizeof(tail),"%s%s short %s%s",head,symbol,short_name,tail);
+				CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_OK && manifest.kernel_count == 1u &&
+					strcmp(manifest.kernels[0].name,short_name) == 0 && strlen(short_name) <= SPARK_DEVICE_KERNEL_NAME_LIMIT,
+					"a 4096-character symbol parses and is kept only as its short name");
+				SparkNvrmManifestRelease(&manifest);
+				snprintf(line,sizeof(head) + name + 8u + SPARK_NVRM_SHORT_NAME_BYTES + sizeof(tail),"%s%s short K_000000000000%s",head,symbol,tail);
+				CHECK(SparkNvrmManifestParse(line,strlen(line),"manifest",&manifest) == SPARK_STATUS_PARSE_ERROR && manifest.kernels == 0,
+					"a short name other than the runtime's for the symbol is refused");
+				free(symbol);
+			}
 			free(line);
 		}
 	}

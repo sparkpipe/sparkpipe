@@ -1126,8 +1126,26 @@ SparkStatus SparkDeviceLibraryUnload(SparkDeviceLibrary *library)
 	return(status);
 }
 
+static SparkStatus DeviceKernelName(SparkDeviceLibrary *library, const char *name, char stored[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	char text[256];
+	if ( strlen(name) <= SPARK_DEVICE_KERNEL_NAME_LIMIT )
+	{
+		memcpy(stored,name,strlen(name) + 1u);
+		return(SPARK_STATUS_OK);
+	}
+	if ( DeviceLibraryLive(library) != 0 && SparkDeviceBackendKernelShortName(library,name,stored) == SPARK_STATUS_OK )
+		return(SPARK_STATUS_OK);
+	snprintf(text,sizeof(text),"a kernel name of %zu bytes is over %u and names no kernel of the library: %.40s",strlen(name),SPARK_DEVICE_KERNEL_NAME_LIMIT,name);
+	{
+		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",0,0,text);
+		SPARK_FAIL(refused);
+	}
+}
+
 SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibrary *library, const char *name)
 {
+	char stored[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u];
 	SparkDeviceKernel *created = 0;
 	SparkStatus status;
 	if ( kernel != 0 )
@@ -1137,42 +1155,27 @@ SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibra
 		const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"needs an output and a kernel name");
 		SPARK_FAIL(refused);
 	}
-	if ( strlen(name) > SPARK_DEVICE_KERNEL_NAME_LIMIT )
-	{
-		char text[160];
-		snprintf(text,sizeof(text),"a kernel name of %zu bytes is longer than %u: %.64s",strlen(name),SPARK_DEVICE_KERNEL_NAME_LIMIT,name);
-		{
-			const SparkStatus refused = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",0,0,text);
-			SPARK_FAIL(refused);
-		}
-	}
 	pthread_mutex_lock(&device_mutex);
-	status = DeviceReady("kernel_create",name);
+	status = DeviceReady("kernel_create",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceKernelName(library,name,stored);
 	if ( status == SPARK_STATUS_OK && DeviceLibraryLive(library) == 0 )
-		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",name,0,"not a loaded library");
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_create",stored,0,"not a loaded library");
 	if ( status == SPARK_STATUS_OK && (created = (SparkDeviceKernel *)calloc(1u,sizeof(*created))) == 0 )
-		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel record");
-	if ( status == SPARK_STATUS_OK && (created->name = strdup(name)) == 0 )
-	{
-		free(created);
-		created = 0;
-		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",name,0,"out of host memory for the kernel name");
-	}
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_create",stored,0,"out of host memory for the kernel record");
 	if ( status == SPARK_STATUS_OK )
 	{
 		created->id = device_next_kernel_id++;
 		created->library = library;
-		status = SparkDeviceBackendKernelCreate(created,name);
+		memcpy(created->name,stored,sizeof(created->name));
+		status = SparkDeviceBackendKernelCreate(created,stored);
 		if ( status == SPARK_STATUS_OK && (created->info.max_threads == 0u || created->info.simd_width == 0u) )
 		{
 			SparkDeviceBackendKernelDestroy(created);
-			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",name,0,"the backend reported no thread limit for the kernel");
+			status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"kernel_create",stored,0,"the backend reported no thread limit for the kernel");
 		}
 		if ( status != SPARK_STATUS_OK )
-		{
-			free(created->name);
 			free(created);
-		}
 		else
 		{
 			library->kernels++;
@@ -1206,7 +1209,6 @@ SparkStatus SparkDeviceKernelDestroy(SparkDeviceKernel *kernel)
 		SparkDeviceBackendKernelDestroy(kernel);
 		kernel->library->kernels--;
 		kernel->id = 0u;
-		free(kernel->name);
 		free(kernel);
 	}
 	pthread_mutex_unlock(&device_mutex);

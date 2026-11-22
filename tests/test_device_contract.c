@@ -689,7 +689,7 @@ static void TestKernelBusy(SparkDeviceQueue *queue, SparkDeviceLibrary *library,
 #define SPARK_DEVICE_TEST_LONG_KERNEL ""
 #endif
 
-#define CONTRACT_LONG_NAME_BYTES 2000u
+#define CONTRACT_LONG_NAME_BYTES 152u
 #define CONTRACT_WORD_THREADS 1024u
 #define CONTRACT_LONG_ROUNDS 1100u
 #define CONTRACT_HUGE_ROUNDS 256u
@@ -746,10 +746,17 @@ static void TestLongKernelName(SparkDeviceQueue *queue, SparkDeviceLibrary *libr
 	Gate gate;
 	pthread_t opener;
 	uint32_t index, round, launched = 0u, wrong = 0u;
-	CHECK(strlen(SPARK_DEVICE_TEST_LONG_KERNEL) >= CONTRACT_LONG_NAME_BYTES,"the build names a kernel whose name is at least 2000 bytes long");
-	if ( strlen(SPARK_DEVICE_TEST_LONG_KERNEL) < CONTRACT_LONG_NAME_BYTES )
+	char caller[SPARK_DEVICE_KERNEL_NAME_LIMIT + 2u];
+	SparkDeviceKernel *refused = 0;
+	CHECK(strlen(SPARK_DEVICE_TEST_LONG_KERNEL) == CONTRACT_LONG_NAME_BYTES,"the build names a kernel whose mangled name is 152 characters long");
+	if ( strlen(SPARK_DEVICE_TEST_LONG_KERNEL) != CONTRACT_LONG_NAME_BYTES )
 		return;
-	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_LONG_KERNEL) == SPARK_STATUS_OK,"create a kernel by a 2000-byte name");
+	memset(caller,'k',SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u);
+	caller[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u] = '\0';
+	CHECK(SparkDeviceKernelCreate(&refused,library,caller) == SPARK_STATUS_INVALID_ARGUMENT && refused == 0 && strstr(SparkDeviceLastError()->text,"65 bytes") != 0,
+		"a 65-character name that is no kernel's symbol is refused, naming its length");
+	CHECK(SparkDeviceKernelCreate(&kernel,library,SPARK_DEVICE_TEST_LONG_KERNEL) == SPARK_STATUS_OK,
+		"a kernel is created by its 152-character mangled symbol, which resolves through its short name");
 	if ( kernel == 0 )
 		return;
 	CHECK(SparkDeviceKernelGetInfo(kernel,&info) == SPARK_STATUS_OK && info.parameter_bytes == 12u,"the long-named kernel reports its parameter block");

@@ -8,7 +8,7 @@ the same compile, and the compile's ptxas -v log) become <tu>.manifest:
     flags <the compile's code-generation flags>
     source <path> <sha256>
     cubin <sha256> <bytes>
-    kernel <name> registers R barriers B stack S spill_stores T spill_loads L smem M [cumulative C]
+    kernel <name> short <short> registers R barriers B stack S spill_stores T spill_loads L smem M [cumulative C]
     param <name> <index> <ptx type> align A bytes N offset O
     bound <name> <directive> <values>
 
@@ -19,6 +19,12 @@ names the kernel; a callee's block is not the kernel's. cumulative is the
 stack its whole call chain needs, recorded whenever ptxas reports it; the
 runtime sizes local memory by it. A kernel reported twice for the target
 with different numbers is refused.
+
+short is the name the runtime stores, at most 64 characters: a name that
+fits is its own short name; a longer one is its base identifier (the last
+source name of an Itanium-mangled name, else the name itself), truncated,
+then "_" and the first 12 hex digits of sha256 over the full name. Two
+kernels of one unit with one short name are refused.
 Parameters are laid out as the PTX ISA lays out .param space: in
 declaration order, each at its alignment (.align N, else its type's size).
 
@@ -50,6 +56,41 @@ REPORT_FIELDS = ("registers", "barriers", "stack", "spill_stores", "spill_loads"
 
 class ManifestError(Exception):
     pass
+
+
+SHORT_LIMIT = 64
+SHORT_DIGEST_DIGITS = 12
+SOURCE_NAME = re.compile(r"(\d+)")
+
+
+def base_identifier(name):
+    if not name.startswith("_Z"):
+        return name
+    rest = name[2:]
+    if rest.startswith("N"):
+        rest = rest[1:].lstrip("rVKRO")
+    identifier = None
+    while rest:
+        if rest.startswith("L"):
+            rest = rest[1:]
+            continue
+        digits = SOURCE_NAME.match(rest)
+        if digits is None:
+            break
+        start = len(digits.group(1))
+        length = int(digits.group(1))
+        if length == 0 or len(rest) - start < length:
+            break
+        identifier = rest[start:start + length]
+        rest = rest[start + length:]
+    return identifier if identifier is not None else name
+
+
+def short_name(name):
+    if len(name) <= SHORT_LIMIT:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:SHORT_DIGEST_DIGITS]
+    return f"{base_identifier(name)[:SHORT_LIMIT - 1 - SHORT_DIGEST_DIGITS]}_{digest}"
 
 
 def nvcc_version(nvcc):
@@ -129,6 +170,12 @@ def manifest(version, flags, source_name, source_bytes, cubin_bytes, ptx_text, l
         f"source {source_name} {hashlib.sha256(source_bytes).hexdigest()}",
         f"cubin {hashlib.sha256(cubin_bytes).hexdigest()} {len(cubin_bytes)}",
     ]
+    shorts = {}
+    for name in parameters:
+        short = short_name(name)
+        if short in shorts:
+            raise ManifestError(f"kernels {shorts[short]} and {name} share the short name {short}")
+        shorts[short] = name
     for name in sorted(parameters):
         fields = reports.get(name)
         if fields is None:
@@ -139,7 +186,7 @@ def manifest(version, flags, source_name, source_bytes, cubin_bytes, ptx_text, l
         if "cumulative" in fields and fields["cumulative"] < fields["stack"]:
             raise ManifestError(f"ptxas reported {name}'s cumulative stack {fields['cumulative']} below its own frame {fields['stack']}")
         cumulative = f" cumulative {fields['cumulative']}" if "cumulative" in fields else ""
-        lines.append(f"kernel {name} registers {fields['registers']} barriers {fields['barriers']} stack {fields['stack']} "
+        lines.append(f"kernel {name} short {short_name(name)} registers {fields['registers']} barriers {fields['barriers']} stack {fields['stack']} "
                      f"spill_stores {fields['spill_stores']} spill_loads {fields['spill_loads']} smem {fields['smem']}{cumulative}")
         layout, bounds = parameters[name]
         for index, (kind, align, size, offset) in enumerate(layout):

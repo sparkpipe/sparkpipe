@@ -69,6 +69,14 @@ ptxas info    : Used 22 registers, used 1 barriers, 64 bytes cumulative stack si
 """
 
 
+def load_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("nvrm_kernel_manifest", TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def run(directory, log, output):
     cubin = directory / "unit.cubin"
     source = directory / "unit.cu"
@@ -98,10 +106,10 @@ def main():
             "flags -O3 -arch=sm_121a",
             f"source {directory / 'unit.cu'} {source_digest}",
             f"cubin {cubin_digest} 15",
-            "kernel Alpha registers 12 barriers 0 stack 16 spill_stores 4 spill_loads 4 smem 0 cumulative 4216",
+            "kernel Alpha short Alpha registers 12 barriers 0 stack 16 spill_stores 4 spill_loads 4 smem 0 cumulative 4216",
             "param Alpha 0 u64 align 8 bytes 8 offset 0",
             "param Alpha 1 u32 align 4 bytes 4 offset 8",
-            "kernel Beta registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000 cumulative 64",
+            "kernel Beta short Beta registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000 cumulative 64",
             "param Beta 0 u8 align 1 bytes 1 offset 0",
             "param Beta 1 b8 align 8 bytes 24 offset 8",
             "param Beta 2 f32 align 4 bytes 4 offset 32",
@@ -135,6 +143,21 @@ def main():
         result = run(directory, below, refused)
         if result.returncode != 1 or "below its own frame" not in result.stdout or refused.exists():
             failures.append(f"a cumulative stack below the kernel's own frame must be refused: {result.stdout.strip()}")
+        long_name = "_ZN2lm6detail" + "40SparkNvrmManifestKernelWithAVeryLongName" + "ILj4ELj8EEEvPKfPfjjjjjjjjjjjjjjjjjjjjjjjj"
+        tool = load_tool()
+        short = tool.short_name(long_name)
+        if len(long_name) <= 64 or len(short) > 64 or not short.startswith("SparkNvrmManifestKernelWithAVeryLongName_") or \
+                short != tool.short_name(long_name) or tool.short_name("Alpha") != "Alpha":
+            failures.append(f"a long mangled name shortens to its base identifier and a digest, a short one stays: {short}")
+        clash_ptx = PTX.replace("Alpha", long_name).replace("Beta", short)
+        (directory / "unit.ptx").write_text(clash_ptx)
+        clash_log = LOG.replace("'Alpha'", "'" + long_name + "'").replace("for Alpha", "for " + long_name).replace("'Beta'", "'" + short + "'").replace(
+            "for Beta", "for " + short)
+        (directory / "clash.log").write_text(clash_log)
+        result = run(directory, directory / "clash.log", refused)
+        if result.returncode != 1 or "share the short name" not in result.stdout or refused.exists():
+            failures.append(f"two kernels with one short name must be refused: {result.stdout.strip()}")
+        (directory / "unit.ptx").write_text(PTX)
         result = run(directory, directory / "absent.log", refused)
         if result.returncode != 1 or refused.exists():
             failures.append("an unreadable log must be refused and nothing written")

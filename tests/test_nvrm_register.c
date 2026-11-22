@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/nvrm_names.h"
 #include "tests/nvrm/fixture_kernels.h"
 
 #ifndef SPARK_NVRM_FIXTURE_CUBIN
@@ -168,7 +169,12 @@ static void TestModule(const char *root)
 	CHECK(SparkNvrmRegisterFunction(module,&hosts[0],"SparkNvrmFirstLight") == SPARK_STATUS_OK &&
 		SparkNvrmRegisterFunction(module,&hosts[1],SPARK_NVRM_FIXTURE_LONG_TEXT) == SPARK_STATUS_OK,"register kernels by their names");
 	CHECK(SparkNvrmRegisteredName(&hosts[0],&name) == SPARK_STATUS_OK && strcmp(name,"SparkNvrmFirstLight") == 0,"a host function maps to its kernel name");
-	CHECK(SparkNvrmRegisteredName(&hosts[1],&name) == SPARK_STATUS_OK && strcmp(name,SPARK_NVRM_FIXTURE_LONG_TEXT) == 0,"a 2000-byte kernel name is kept whole");
+	{
+		char expected[SPARK_NVRM_SHORT_NAME_BYTES];
+		SparkNvrmShortName(SPARK_NVRM_FIXTURE_LONG_TEXT,expected);
+		CHECK(SparkNvrmRegisteredName(&hosts[1],&name) == SPARK_STATUS_OK && strcmp(name,expected) == 0 && strlen(name) <= SPARK_DEVICE_KERNEL_NAME_LIMIT,
+			"a 152-character mangled name nvcc registers is kept only as its short name");
+	}
 	CHECK(SparkNvrmRegisterFunction(module,&hosts[0],"SparkNvrmStreamFill") == SPARK_STATUS_DUPLICATE,"a host function registered twice is refused");
 	CHECK(SparkNvrmRegisterFunction(module,&hosts[2],"SparkNvrmAbsentKernel") == SPARK_STATUS_NOT_FOUND && Says("SparkNvrmAbsentKernel"),
 		"a kernel no cubin lists is refused at registration, naming it");
@@ -283,7 +289,7 @@ static void TestGpu(void)
 	for (index = 0u; index < REGISTER_THREADS; index++)
 		wrong += ((const uint32_t *)output.host)[index] != (block.value ^ index);
 	CHECK(wrong == 0u,"the registered kernel is the one that ran");
-	CHECK(SparkNvrmRegisteredKernel(&hosts[1],&fresh) == SPARK_STATUS_OK && fresh != 0,"the 2000-byte-named kernel resolves");
+	CHECK(SparkNvrmRegisteredKernel(&hosts[1],&fresh) == SPARK_STATUS_OK && fresh != 0,"the 152-character mangled kernel resolves");
 	CHECK(SparkNvrmRegisteredRelease() == SPARK_STATUS_OK && SparkNvrmRegisteredKernel(&hosts[0],&fresh) == SPARK_STATUS_OK && fresh != 0,
 		"releasing the registered kernels lets the next launch create them again");
 	CHECK(SparkDeviceFree(&output) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"free the output and the queue");

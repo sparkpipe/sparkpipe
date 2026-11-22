@@ -289,7 +289,7 @@ static SparkStatus CubinBanks(const CubinReader *reader, SparkNvrmCubinKernel *k
 		const CubinSection *section = &reader->sections[index];
 		const char *suffix = 0;
 		const uint32_t bank = CubinBankIndex(section->label,&suffix);
-		if ( bank == UINT32_MAX || (suffix != 0 && strcmp(suffix,kernel->name) != 0) )
+		if ( bank == UINT32_MAX || (suffix != 0 && strcmp(suffix,kernel->symbol) != 0) )
 			continue;
 		if ( bank >= SPARK_NVRM_CUBIN_BANKS )
 			CUBIN_REFUSE(SPARK_STATUS_UNSUPPORTED,reader,"a constant bank index is beyond the launch descriptor's banks");
@@ -310,7 +310,7 @@ static SparkStatus CubinKernel(const CubinReader *reader, const char *name, uint
 	const CubinSection *text = CubinFind(reader,".text.",name);
 	const CubinSection *shared = CubinFind(reader,".nv.shared.",name);
 	SparkStatus status;
-	kernel->name = name;
+	kernel->symbol = name;
 	if ( text == 0 || text->loaded == 0u )
 		CUBIN_REFUSE(SPARK_STATUS_PARSE_ERROR,reader,"a kernel has no loaded code section");
 	if ( shared != 0 && shared->type != ELF_SECTION_NOBITS )
@@ -366,7 +366,7 @@ static SparkNvrmCubinKernel *CubinKernelForSymbol(const CubinReader *reader, Spa
 		return(0);
 	name = CubinString(reader,reader->symbol_names,CubinRead(reader->blob + reader->symbols->offset + symbol * ELF_SYMBOL_BYTES,4u));
 	for (index = 0u; name != 0 && index < cubin->kernel_count; index++)
-		if ( strcmp(cubin->kernels[index].name,name) == 0 )
+		if ( cubin->kernels[index].symbol != 0 && strcmp(cubin->kernels[index].symbol,name) == 0 )
 			return(&cubin->kernels[index]);
 	return(0);
 }
@@ -474,22 +474,18 @@ static SparkStatus CubinRelocations(const CubinReader *reader, SparkNvrmCubin *c
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus CubinOwnNames(const CubinReader *reader, SparkNvrmCubin *cubin)
+static SparkStatus CubinShortNames(const CubinReader *reader, SparkNvrmCubin *cubin)
 {
-	size_t total = 0u,used = 0u;
-	uint32_t index;
-	for (index = 0u; index < cubin->kernel_count; index++)
-		total += strlen(cubin->kernels[index].name) + 1u;
-	cubin->names = (char *)malloc(total);
-	if ( cubin->names == 0 )
-		CUBIN_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,reader,"out of host memory for the kernel names");
+	uint32_t index,other;
 	for (index = 0u; index < cubin->kernel_count; index++)
 	{
-		const size_t length = strlen(cubin->kernels[index].name) + 1u;
-		memcpy(cubin->names + used,cubin->kernels[index].name,length);
-		cubin->kernels[index].name = cubin->names + used;
-		used += length;
+		SparkNvrmShortName(cubin->kernels[index].symbol,cubin->kernels[index].name);
+		for (other = 0u; other < index; other++)
+			if ( strcmp(cubin->kernels[other].name,cubin->kernels[index].name) == 0 )
+				CUBIN_REFUSE(SPARK_STATUS_PARSE_ERROR,reader,"two kernels of the image share one short name");
 	}
+	for (index = 0u; index < cubin->kernel_count; index++)
+		cubin->kernels[index].symbol = 0;
 	return(SPARK_STATUS_OK);
 }
 
@@ -516,7 +512,7 @@ SparkStatus SparkNvrmCubinParse(const uint8_t *blob, uint64_t bytes, const char 
 	if ( status == SPARK_STATUS_OK )
 		status = CubinRelocations(&reader,cubin);
 	if ( status == SPARK_STATUS_OK )
-		status = CubinOwnNames(&reader,cubin);
+		status = CubinShortNames(&reader,cubin);
 	free(reader.sections);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -528,9 +524,13 @@ SparkStatus SparkNvrmCubinParse(const uint8_t *blob, uint64_t bytes, const char 
 
 const SparkNvrmCubinKernel *SparkNvrmCubinKernelNamed(const SparkNvrmCubin *cubin, const char *name)
 {
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t index;
-	for (index = 0u; cubin != 0 && name != 0 && index < cubin->kernel_count; index++)
-		if ( strcmp(cubin->kernels[index].name,name) == 0 )
+	if ( cubin == 0 || name == 0 )
+		return(0);
+	SparkNvrmShortName(name,short_name);
+	for (index = 0u; index < cubin->kernel_count; index++)
+		if ( strcmp(cubin->kernels[index].name,short_name) == 0 )
 			return(&cubin->kernels[index]);
 	return(0);
 }
@@ -562,6 +562,5 @@ void SparkNvrmCubinRelease(SparkNvrmCubin *cubin)
 	free(cubin->image);
 	free(cubin->kernels);
 	free(cubin->relocations);
-	free(cubin->names);
 	memset(cubin,0,sizeof(*cubin));
 }
