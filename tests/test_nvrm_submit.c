@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "sparkpipe/spark_device.h"
+#include "runtime/device/nvrm/nvrm_image.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_rm.h"
 #include "nvstatus.h"
@@ -626,6 +627,114 @@ static void TestIntegrated(void)
 		"a GPU the module does not call an SoC is not, whatever its other identity flags");
 }
 
+static int SemaphoreAt(const uint32_t *words, uint32_t at, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation)
+{
+	uint32_t expected[SPARK_NVRM_SEMAPHORE_METHOD_WORDS];
+	SparkNvrmSemaphoreWords(expected,address,value,operation);
+	return(memcmp(words + at,expected,sizeof(expected)) == 0);
+}
+
+static int LaunchAt(const uint32_t *words, uint32_t at, uint64_t slot)
+{
+	uint32_t expected[SPARK_NVRM_LAUNCH_WORDS];
+	SparkNvrmLaunchWords(expected,slot);
+	return(memcmp(words + at,expected,sizeof(expected)) == 0);
+}
+
+static void TestImage(void)
+{
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS };
+	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull,event = 0x3000000000ull,reached = 0x4000000000ull,done = 0x4000000040ull;
+	static Fake fake;
+	SparkNvrmStep steps[6];
+	uint32_t words[128],count,at;
+	memset(steps,0,sizeof(steps));
+	memset(words,0xee,sizeof(words));
+	steps[0].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[1].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[1].slot = 0x400u;
+	steps[2].kind = SPARK_NVRM_STEP_RECORD;
+	steps[2].address = event + SPARK_NVRM_MARK_TIME_OFFSET;
+	steps[2].second_address = event;
+	steps[3].kind = SPARK_NVRM_STEP_AWAIT;
+	steps[3].address = event;
+	steps[4].kind = SPARK_NVRM_STEP_HOST;
+	steps[4].address = reached;
+	steps[4].second_address = done;
+	steps[5].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[5].slot = 0x800u;
+	count = SparkNvrmImageWords(steps,6u);
+	SparkNvrmImageWrite(words,semaphore,slots,steps,6u);
+	CHECK(count == 14u * SEMAPHORE_WORDS + 3u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu && words[count - 1u] != 0xeeeeeeeeu,
+		"a segment of three launches, a record, a wait and a host step has the words it counts, and no more");
+	CHECK(SemaphoreAt(words,0u,semaphore,0u,SPARK_NVRM_SEMAPHORE_RELEASE),"a run first sets the program's semaphore to zero");
+	at = SEMAPHORE_WORDS;
+	CHECK(LaunchAt(words,at,slots),"the first launch needs no acquire");
+	at += LAUNCH_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,1u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && LaunchAt(words,at + SEMAPHORE_WORDS,slots + 0x400u),
+		"the second launch waits for the first to release 1, then sends its own descriptor");
+	at += SEMAPHORE_WORDS + LAUNCH_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,2u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[2].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[2].payload,event + SPARK_NVRM_MARK_TIME_OFFSET,0u,SPARK_NVRM_SEMAPHORE_RELEASE_TIME) &&
+		steps[2].second == steps[2].payload + SEMAPHORE_WORDS && SemaphoreAt(words,steps[2].second,event,0u,SPARK_NVRM_SEMAPHORE_MAX) &&
+		SemaphoreAt(words,steps[2].second + SEMAPHORE_WORDS,semaphore,3u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a record waits for the launches before it, stamps the event's time, raises its generation and releases 3");
+	at = steps[2].second + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,3u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[3].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[3].payload,event,0u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt(words,steps[3].payload + SEMAPHORE_WORDS,semaphore,4u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a wait acquires the event's generation, then releases 4");
+	at = steps[3].payload + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,4u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[4].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[4].payload,reached,0u,SPARK_NVRM_SEMAPHORE_RELEASE) && steps[4].second == steps[4].payload + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[4].second,done,0u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt(words,steps[4].second + SEMAPHORE_WORDS,semaphore,5u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a host step releases its ticket to the worker, acquires the worker's answer, then releases 5");
+	at = steps[4].second + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,5u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && LaunchAt(words,at + SEMAPHORE_WORDS,slots + 0x800u) &&
+		at + SEMAPHORE_WORDS + LAUNCH_WORDS == count,"the last launch waits for the host step and ends the segment");
+	SparkNvrmImagePatch(words,steps[4].payload,0x123456789abcull);
+	SparkNvrmImagePatchAddress(words,steps[4].payload,0x4100000000ull);
+	CHECK(SparkNvrmImagePayload(words,steps[4].payload) == 0x123456789abcull &&
+		SemaphoreAt(words,steps[4].payload,0x4100000000ull,0x123456789abcull,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a run patches a step's payload and address in place");
+	FakeOpen(&fake);
+	CHECK(SparkNvrmSemaphoreAcquire(&fake.gpu.compute,semaphore,9u,"image") == SPARK_STATUS_OK &&
+		SparkNvrmSemaphoreRelease(&fake.gpu.compute,event + SPARK_NVRM_MARK_TIME_OFFSET,9u,1u,"image") == SPARK_STATUS_OK,
+		"push the same semaphores the eager path pushes");
+	SparkNvrmSemaphoreWords(words,semaphore,9u,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+	SparkNvrmSemaphoreWords(words + SEMAPHORE_WORDS,event + SPARK_NVRM_MARK_TIME_OFFSET,9u,SPARK_NVRM_SEMAPHORE_RELEASE_TIME);
+	CHECK(memcmp(fake.push,words,2u * SEMAPHORE_WORDS * sizeof(uint32_t)) == 0,"a segment's semaphores are word for word the ones the eager path pushes");
+}
+
+static void TestSegment(void)
+{
+	static Fake fake;
+	const uint64_t segment = 0x5000000000ull,done = 0x2000000000ull;
+	SparkNvrmChannel *channel;
+	FakeOpen(&fake);
+	channel = &fake.gpu.compute;
+	CHECK(SparkNvrmSubmitSegment(&fake.gpu,channel,segment,0u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment + 2u,100u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment,SPARK_NVRM_SEGMENT_WORDS_MAX + 1u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,(1ull << 40) - 64u,100u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT && GpPut(&fake) == 0u,
+		"a segment of no words, at an unaligned address, over 2^21 - 1 words or past 2^40 is refused before anything is queued");
+	CHECK(SparkNvrmSemaphoreAcquire(channel,FENCE_ADDRESS,0u,"segment") == SPARK_STATUS_OK &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment,100u,done,6u,"segment") == SPARK_STATUS_OK,"a run with a head submits");
+	CHECK(GpPut(&fake) == 3u && ControlWord64(&fake,0) == (PUSH_ADDRESS | (6ull << 42) | (1ull << 41)) &&
+		ControlWord64(&fake,1) == (segment | (100ull << 42) | (1ull << 41)) && ControlWord64(&fake,2) == ((PUSH_ADDRESS + 24u) | (12ull << 42) | (1ull << 41)),
+		"three ring entries: the head from the push buffer, the prebuilt segment, then the tail after the head");
+	CHECK(SemaphoreAt((const uint32_t *)(const void *)fake.push,6u,done,6u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt((const uint32_t *)(const void *)fake.push,12u,FENCE_ADDRESS,1u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"the tail waits for the program's last step, then releases the channel's next fence value");
+	CHECK(channel->fence_value == 1u && channel->last_engine == SPARK_NVRM_ENGINE_COMPUTE && channel->segment_count == 3u &&
+		channel->segments[1].start == channel->segments[1].end && channel->segments[2].value == 1u && fake.usermode[DOORBELL_WORD] == 0x1234abcdu,
+		"the run is one fenced operation whose three entries retire together, and the doorbell rings once for them");
+	CHECK(SparkNvrmSubmitSegment(&fake.gpu,channel,segment,100u,done,6u,"segment") == SPARK_STATUS_OK && GpPut(&fake) == 5u &&
+		ControlWord64(&fake,3) == (segment | (100ull << 42) | (1ull << 41)) && channel->fence_value == 2u,
+		"a run with nothing to order first queues the segment and its tail alone");
+}
+
 int main(void)
 {
 	TestIntegrated();
@@ -641,12 +750,14 @@ int main(void)
 	TestSemaphore();
 	TestLaunch();
 	TestDependentLaunch();
+	TestImage();
+	TestSegment();
 	TestStatus();
 	if ( failures != 0 )
 	{
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch and the device address map\n");
+	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch, program segments and their runs, and the device address map\n");
 	return(0);
 }

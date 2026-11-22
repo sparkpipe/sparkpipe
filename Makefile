@@ -1685,13 +1685,28 @@ nvrm-launch-latency: nvrm-gpu-present build/nvrm_launch_latency build/cuda_launc
 build/nvrm_step_chain: tests/nvrm/step_chain.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
-build/cuda_step_chain: tests/nvrm/step_chain.cu | build
-	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+build/cuda_step_chain: tests/nvrm/step_chain.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-step-chain
 .PHONY: nvrm-step-chain
 nvrm-step-chain: nvrm-gpu-present build/nvrm_step_chain build/cuda_step_chain
 	@./build/cuda_step_chain cuda && ./build/nvrm_step_chain nvrm
+
+build/test_nvrm_program_steps: tests/nvrm/program_steps.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_program_steps: tests/nvrm/program_steps.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-program-steps
+.PHONY: nvrm-program-steps
+nvrm-program-steps: nvrm-gpu-present build/test_nvrm_program_steps build/cuda_program_steps
+	@./build/cuda_program_steps cuda > build/program_steps.cuda.txt; cuda=$$?; ./build/test_nvrm_program_steps nvrm > build/program_steps.nvrm.txt; nvrm=$$?; \
+		cat build/program_steps.cuda.txt build/program_steps.nvrm.txt; [ $$cuda -eq 0 ] && [ $$nvrm -eq 0 ] && \
+		grep '^digest' build/program_steps.cuda.txt > build/program_steps.cuda.digests && grep '^digest' build/program_steps.nvrm.txt > build/program_steps.nvrm.digests && \
+		diff build/program_steps.cuda.digests build/program_steps.nvrm.digests && \
+		echo "PASS nvrm-program-steps: a program run over nvrm writes the bytes the same program writes as a CUDA graph"
 
 build/test_nvrm_shared_coherence: tests/nvrm/shared_coherence.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
@@ -1774,7 +1789,7 @@ nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_
 		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
 		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present
