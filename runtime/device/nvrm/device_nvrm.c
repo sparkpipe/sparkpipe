@@ -12,6 +12,7 @@
 #include "runtime/device/nvrm/nvrm_host.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
+#include "runtime/device/nvrm/nvrm_resources.h"
 #include "runtime/device/nvrm/nvrm_occupancy.h"
 #include "runtime/device/nvrm/nvrm_wait.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
@@ -1173,6 +1174,20 @@ static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes)
 	return(spanned);
 }
 
+SparkStatus SparkNvrmResourceCountsRead(SparkNvrmResourceCounts *counts)
+{
+	if ( counts == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"resource_counts","",0,"needs an output"));
+	memset(counts,0,sizeof(*counts));
+	pthread_mutex_lock(&nvrm_shared_lock);
+	counts->shared_memory = nvrm_shared_count;
+	counts->reservations = nvrm_reservations.count;
+	counts->mappings = nvrm_mappings.count;
+	pthread_mutex_unlock(&nvrm_shared_lock);
+	counts->rm_objects = __atomic_load_n(&nvrm_gpu.rm.objects,__ATOMIC_ACQUIRE);
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
 {
 	(void)granularity;
@@ -1351,4 +1366,48 @@ SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t b
 	NvrmSpansRemove(&nvrm_mappings,first,last - first);
 	pthread_mutex_unlock(&nvrm_shared_lock);
 	return(SPARK_STATUS_OK);
+}
+
+uint32_t SparkDeviceBackendProgramNative(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
+{
+	const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_run",queue->owner,0,
+		"the nvrm backend does not run programs yet, and replaying their operations one by one would be a slow path");
+	SPARK_FAIL(status);
+}
+
+SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)
+{
+	(void)queue;
+	(void)place;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_patch",program->name,0,"the nvrm backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_finish",program->name,0,"the nvrm backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values)
+{
+	(void)queue;
+	(void)values;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"the nvrm backend does not run programs yet"));
+}
+
+void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
+{
+	(void)program;
 }

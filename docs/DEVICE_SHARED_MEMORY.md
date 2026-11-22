@@ -146,8 +146,20 @@ point; every mutant must be caught as a mismatch:
 It also checks that no adopted range has a host view, and runs a thousand
 rounds of the whole lifetime: create, map, export, release while mapped,
 import, map read-only, unmap and release. Every round keeps its bytes and
-reserves the same address again, and memory and descriptors end where
-they started.
+reserves the same address again.
+
+The leak check compares exact counts taken before and after the rounds:
+
+- the nvrm backend's driver objects, shared memories, reservations and
+  mappings (`SparkNvrmResourceCountsRead`);
+- the process's pinned and locked pages (`VmPin`, `VmLck`);
+- the process's open descriptors.
+
+All of them must end where they started. A handle kept past the rounds
+must show in those counts until it is released, which shows that a
+leaking round would be caught. The host's `MemAvailable`, with 256 MiB
+of slack, is only a secondary check: other processes and the page cache
+move system memory counters, so they cannot carry the check alone.
 
 The writer in case 2 is 64 grids, which catches the mutant whichever engine
 the reader's copy runs on. When nvrm copies still ran on the graphics

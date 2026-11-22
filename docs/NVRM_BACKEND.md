@@ -197,8 +197,9 @@ It refuses a shape the hardware cannot run (no groups, more than 1024
 threads, misaligned addresses, more shared memory than a configuration
 offers) and any value that does not fit its field, naming the field.
 `SparkNvrmBank0Build` writes constant bank 0: the shared and local memory
-windows and the last driver word, then the argument block at the kernel's
-parameter offset, refusing an argument block of any other size.
+windows, the last driver word and the GPU address of the kernel's
+parameters, then the argument block at the kernel's parameter offset,
+refusing an argument block of any other size.
 
 ## Host tests
 
@@ -338,6 +339,15 @@ offsets belong to the compiler, not the hardware, so
 fills the driver words with sentinels, has a kernel store its shape, and
 requires each value to come from the word the launcher fills, then
 checks 11 launch shapes. Rerun it for every toolkit or module change.
+
+A kernel that takes the address of a parameter forms its generic address
+(PTX `cvta.param`) from the 64-bit value at words 210 and 211. The TMA
+GEMMs do this: they hand each `__grid_constant__` tensor map to the TMA
+unit by address. The launcher writes the parameters' GPU address there,
+which is bank 0's address plus the parameter offset. With the words left at
+zero, the address is 0 and the TMA unit's read of the map faults
+(Xid 31). `tests/nvrm/hosted_launch.cu` (`make test-nvrm-gpu`) reads a
+grid-constant parameter back through its generic address.
 
 A grid's release semaphore carries a 64-bit payload only with the QMD's
 `RELEASE_PAYLOAD64B` bit set; without it the upper word is dropped.

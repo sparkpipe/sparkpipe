@@ -178,6 +178,7 @@ SparkStatus SparkNvrmRmAlloc(SparkNvrmRm *rm, uint32_t parent, uint32_t class_nu
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
 	*handle = made.hObjectNew;
+	__atomic_add_fetch(&rm->objects,1u,__ATOMIC_ACQ_REL);
 	return(SPARK_STATUS_OK);
 }
 
@@ -194,6 +195,7 @@ SparkStatus SparkNvrmRmFree(SparkNvrmRm *rm, uint32_t parent, uint32_t handle, c
 		status = SparkNvrmRmStatus(release.status,"free",owner);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
+	__atomic_sub_fetch(&rm->objects,1u,__ATOMIC_ACQ_REL);
 	return(SPARK_STATUS_OK);
 }
 

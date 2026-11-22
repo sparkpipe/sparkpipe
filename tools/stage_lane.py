@@ -35,7 +35,7 @@ INFERENCE_ROOTS = ("/srv/workspace/", "/home/")
 LANES = Path(os.environ.get("SPARK_LANES") or ROOT / "deployment/lanes.json")
 WORLD = 16
 GROUP_RANKS = (1, 2, 4, 8, 16)
-CONTROL_HOST = "10.10.201.{rank}"
+FABRIC = json.loads((ROOT / "tools/spark_fabric.json").read_text())
 HEX = "0123456789abcdef"
 HOSTS = [f"spark{HEX[i]}" for i in range(WORLD)]
 MAX_ROWS = 16384
@@ -578,6 +578,11 @@ def adapter_config(model: dict, lane: int, rank: int, args) -> dict:
     }
 
 
+def fabric_address(node: int) -> str:
+    port = FABRIC["first_port"]
+    return f"{port['prefix']}.{port['address_base'] + node}"
+
+
 def deployment(model: dict, lane: int, args) -> dict:
     nodes = []
     for rank, host in enumerate(lane_hosts(model, args.first_node)):
@@ -593,7 +598,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_partition": "/",
             "kv_backing_maximum_bytes": args.kv_backing_bytes,
             "kv_snapshot_directory": os.path.join(root, "kvsnapshot"),
-            "control_endpoint": {"kind": "tcp", "host": CONTROL_HOST.format(rank=args.first_node + rank), "port": 23000 + 16 * lane + rank},
+            "control_endpoint": {"kind": "tcp", "host": fabric_address(args.first_node + rank), "port": 23000 + 16 * lane + rank},
         })
     result = {
         "schema_version": 2,
