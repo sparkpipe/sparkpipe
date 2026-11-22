@@ -1393,6 +1393,10 @@ build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/t
 build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
 
+$(call NVRM_TWIN,build/mesh_round_bench): tools/mesh_round_bench.cu $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(dir $@)
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(NVRM_NVCC_DEVICE_LINK) -ldl -o $@
+
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py
 	python3 tests/test_hardware_assumption_bindings.py
