@@ -1215,7 +1215,27 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"this backend replays programs in the device layer"));
 }
 
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
+}
+
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 {
 	(void)program;
+}
+
+uint32_t SparkDeviceBackendTensorMapOnDevice(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	(void)requests;
+	(void)count;
+	(void)maps;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"tensor_map",owner,0,"the Metal backend has no tensor maps"));
 }

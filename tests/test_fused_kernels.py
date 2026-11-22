@@ -8,11 +8,14 @@ unknown op, an op missing a parameter or given one it does not take, a binding
 to a name that is not an argument, a name that is not a C identifier of at most
 64 characters, a generated file in shared code or outside the model families
 and the tests, a perturbed input or an output that is not an argument, a tail
-without zeroed uint32_t arrival counters or one that is not per row, more than
-16 rows, a block size that is not a whole number of warps, an argument given
-twice, a model op that shadows a shared one or whose body is in shared code, a
-scalar argument given a fill, an index fill without its expression, a constant
-or scalar output, a perturbed scalar and a read-only scratch buffer.
+without zeroed uint32_t arrival counters or one that runs neither per row nor
+once per launch, more than 16 rows, a block size that is not a whole number of
+warps, an argument given twice, a model op that shadows a shared one or whose
+body is in shared code, a scalar argument given a fill or both a value and a
+launch-derived value, an index fill without its expression, a constant or
+scalar output, a perturbed scalar, a bump that is not a numeric literal, a
+read-only scratch buffer and a row-0 region that is neither a list of regions
+nor none.
 """
 import contextlib
 import copy
@@ -74,6 +77,14 @@ def scalar_perturb(plan):
     kernel["perturb"] = argument["name"]
 
 
+def derived_and_value(plan):
+    argument_of(plan, lambda argument: "derived" in argument)[1]["value"] = "0u"
+
+
+def bad_row_zero(plan):
+    argument_of(plan, lambda argument: argument.get("row_zero") == "none")[1]["row_zero"] = "all"
+
+
 def constant_scratch(plan):
     next(kernel for kernel in plan["kernels"] if kernel.get("scratch"))["scratch"][0]["type"] = "const uint16_t *"
 
@@ -87,6 +98,7 @@ REFUSALS = (
     ("is in shared code", lambda plan, kernel: plan.update(header="inference/kernels/fused/generated.cuh")),
     ("outside the model families and the tests", lambda plan, kernel: plan.update(header="tools/generated.cuh")),
     ("perturb names an input argument", lambda plan, kernel: kernel.update(perturb="missing")),
+    ("bump is a numeric literal", lambda plan, kernel: kernel.update(bump="scores[0]")),
     ("outputs name arguments", lambda plan, kernel: kernel.update(outputs=["missing"])),
     ("needs the counters argument", lambda plan, kernel: drop_counters(kernel)),
     ("counters are uint32_t * and start at zero", lambda plan, kernel: set_counter_fill(kernel, "f32")),
@@ -101,6 +113,8 @@ REFUSALS = (
     ("outputs name arguments", lambda plan, kernel: constant_output(plan)),
     ("perturb names an input argument", lambda plan, kernel: scalar_perturb(plan)),
     ("is a writable pointer with an element count", lambda plan, kernel: constant_scratch(plan)),
+    ("or a launch-derived one", lambda plan, kernel: derived_and_value(plan)),
+    ("or is none for an output of the whole launch", lambda plan, kernel: bad_row_zero(plan)),
 )
 
 

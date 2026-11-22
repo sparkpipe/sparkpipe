@@ -85,7 +85,7 @@ PENDING = {
     "include/sparkpipe/spark_module_abi.h": {"handle": 1},
     "include/sparkpipe/spark_stage_runner.h": {"handle": 2},
     "include/sparkpipe/spark_stage_runner_model.h": {"handle": 7},
-    "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 3},
+    "include/sparkpipe/spark_tp_chain_graph.h": {"handle": 2},
     "include/sparkpipe/spark_tp_device_collective.h": {"handle": 22},
     "inference/kernels/layer_kind.cuh": {"rename": 1},
     "inference/kernels/tensor_map.cuh": {"rename": 1},

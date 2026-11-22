@@ -33,7 +33,9 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS 8u
 #define SPARK_DEVICE_PROPERTY_PROGRAMS 16u
 #define SPARK_DEVICE_PROPERTY_CLUSTERS 32u
+#define SPARK_DEVICE_PROPERTY_TENSOR_MAPS 64u
 #define SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE 128u
+#define SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK 256u
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
 
@@ -52,6 +54,11 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROGRAM_TARGET_GRID_X 3u
 #define SPARK_DEVICE_PROGRAM_TARGET_GRID_Y 4u
 #define SPARK_DEVICE_PROGRAM_TARGET_GRID_Z 5u
+
+#define SPARK_DEVICE_TENSOR_MAP_BYTES 128u
+#define SPARK_DEVICE_TENSOR_MAP_RANK_MAX 3u
+#define SPARK_DEVICE_TENSOR_MAP_BOX_MAX 256u
+#define SPARK_DEVICE_TENSOR_MAP_BATCH_MAX 4096u
 
 typedef struct SparkDeviceBuffer
 {
@@ -170,6 +177,28 @@ typedef struct SparkDeviceConfiguration
 	uint64_t memory_budget_bytes;
 } SparkDeviceConfiguration;
 
+#if defined(__cplusplus)
+#define SPARK_DEVICE_TENSOR_MAP_ALIGN alignas(64)
+#else
+#define SPARK_DEVICE_TENSOR_MAP_ALIGN _Alignas(64)
+#endif
+
+typedef struct SparkDeviceTensorMap
+{
+	SPARK_DEVICE_TENSOR_MAP_ALIGN uint64_t words[SPARK_DEVICE_TENSOR_MAP_BYTES / 8u];
+} SparkDeviceTensorMap;
+
+typedef struct SparkDeviceTensorMapRequest
+{
+	SparkDeviceAddress address;
+	uint32_t rank;
+	uint32_t swizzle_bytes;
+	uint64_t dimension[SPARK_DEVICE_TENSOR_MAP_RANK_MAX];
+	uint64_t stride_bytes[SPARK_DEVICE_TENSOR_MAP_RANK_MAX - 1u];
+	uint32_t box[SPARK_DEVICE_TENSOR_MAP_RANK_MAX];
+	uint32_t element_stride[SPARK_DEVICE_TENSOR_MAP_RANK_MAX];
+} SparkDeviceTensorMapRequest;
+
 typedef struct SparkDeviceError
 {
 	SparkStatus status;
@@ -244,6 +273,7 @@ SparkStatus SparkDeviceProgramRun(SparkDeviceProgram *program, SparkDeviceQueue 
 SparkStatus SparkDeviceProgramGetInfo(const SparkDeviceProgram *program, SparkDeviceProgramInfo *info);
 SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program);
 uint64_t SparkDeviceTransformApply(const SparkDeviceTransform *transform, uint64_t value, uint32_t *fits);
+SparkStatus SparkDeviceTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner);
 
 #ifdef __cplusplus
 }

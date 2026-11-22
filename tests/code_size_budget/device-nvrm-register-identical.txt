@@ -1,0 +1,2 @@
++95
+Kernel registration keeps one copy of a kernel that several cubins carry identically, ordered by cubin file, so the Qwen3.8 27B nvrm twin registers every kernel (#2108).
