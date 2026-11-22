@@ -73,6 +73,9 @@ typedef struct CudaDriver
 	CUresult (*map)(CUdeviceptr address, size_t bytes, size_t offset, CUmemGenericAllocationHandle handle, unsigned long long flags);
 	CUresult (*set_access)(CUdeviceptr address, size_t bytes, const CUmemAccessDesc *access, size_t count);
 	CUresult (*unmap)(CUdeviceptr address, size_t bytes);
+	CUresult (*tensor_map_encode)(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address, const cuuint64_t *dimension,
+		const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride, CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle,
+		CUtensorMapL2promotion promotion, CUtensorMapFloatOOBfill fill);
 	CUresult (*device_get)(CUdevice *device, int ordinal);
 	CUresult (*device_attribute)(int *value, CUdevice_attribute attribute, CUdevice device);
 } CudaDriver;
@@ -94,6 +97,7 @@ static const struct
 	{"cuMemMap",offsetof(CudaDriver,map)},
 	{"cuMemSetAccess",offsetof(CudaDriver,set_access)},
 	{"cuMemUnmap",offsetof(CudaDriver,unmap)},
+	{"cuTensorMapEncodeTiled",offsetof(CudaDriver,tensor_map_encode)},
 	{"cuDeviceGet",offsetof(CudaDriver,device_get)},
 	{"cuDeviceGetAttribute",offsetof(CudaDriver,device_attribute)},
 };
@@ -232,7 +236,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes : (uint64_t)device.totalGlobalMem;
 	properties->max_buffer_bytes = (uint64_t)device.totalGlobalMem;
 	properties->max_constant_bytes = 0u;
-	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_PROGRAMS | (device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u) |
+	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_PROGRAMS |
+		(device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u) | (device.major >= 9 ? SPARK_DEVICE_PROPERTY_TENSOR_MAPS : 0u) |
 		(cuda_host_share != 0 ? SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE : 0u);
 	(void)managed;
 	(void)pageable;
@@ -1347,4 +1352,51 @@ void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 	free(cuda->last);
 	free(cuda);
 	program->backend = 0;
+}
+
+uint32_t SparkDeviceBackendTensorMapOnDevice(void)
+{
+	return(0u);
+}
+
+_Static_assert(sizeof(CUtensorMap) == sizeof(SparkDeviceTensorMap),"a CUDA tensor map is the device layer's 128-byte map");
+
+static CUtensorMapSwizzle CudaTensorMapSwizzle(uint32_t swizzle_bytes)
+{
+	if ( swizzle_bytes == 128u )
+		return(CU_TENSOR_MAP_SWIZZLE_128B);
+	if ( swizzle_bytes == 64u )
+		return(CU_TENSOR_MAP_SWIZZLE_64B);
+	if ( swizzle_bytes == 32u )
+		return(CU_TENSOR_MAP_SWIZZLE_32B);
+	return(CU_TENSOR_MAP_SWIZZLE_NONE);
+}
+
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	uint32_t index,axis;
+	for ( index = 0u; index < count; index++ )
+	{
+		const SparkDeviceTensorMapRequest *request = &requests[index];
+		cuuint64_t dimension[SPARK_DEVICE_TENSOR_MAP_RANK_MAX],stride[SPARK_DEVICE_TENSOR_MAP_RANK_MAX - 1u];
+		cuuint32_t box[SPARK_DEVICE_TENSOR_MAP_RANK_MAX],element_stride[SPARK_DEVICE_TENSOR_MAP_RANK_MAX];
+		CUtensorMap map;
+		SparkStatus status;
+		for ( axis = 0u; axis < SPARK_DEVICE_TENSOR_MAP_RANK_MAX; axis++ )
+		{
+			dimension[axis] = request->dimension[axis];
+			box[axis] = request->box[axis];
+			element_stride[axis] = request->element_stride[axis];
+			if ( axis + 1u < SPARK_DEVICE_TENSOR_MAP_RANK_MAX )
+				stride[axis] = request->stride_bytes[axis];
+		}
+		memset(&map,0,sizeof(map));
+		status = CudaDriverStatus(cuda_driver.tensor_map_encode(&map,CU_TENSOR_MAP_DATA_TYPE_UINT8,request->rank,(void *)(uintptr_t)request->address,dimension,
+			stride,box,element_stride,CU_TENSOR_MAP_INTERLEAVE_NONE,CudaTensorMapSwizzle(request->swizzle_bytes),CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+			CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE),"tensor_map",owner,"cuTensorMapEncodeTiled");
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+		memcpy(&maps[index],&map,sizeof(maps[index]));
+	}
+	return(SPARK_STATUS_OK);
 }

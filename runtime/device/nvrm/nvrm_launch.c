@@ -335,9 +335,73 @@ static uint32_t LaunchLatch(void)
 {
 	uint32_t latch;
 	do
-		latch = __atomic_add_fetch(&launch_latch,1u,__ATOMIC_RELAXED);
+		latch = __atomic_add_fetch(&launch_latch,1u,__ATOMIC_RELAXED) & (SPARK_NVRM_PROGRAM_LATCH_FIRST - 1u);
 	while ( latch == 0u );
 	return(latch);
+}
+
+typedef struct LatchRange
+{
+	uint32_t base;
+	uint32_t count;
+} LatchRange;
+
+static pthread_mutex_t latch_ranges_lock = PTHREAD_MUTEX_INITIALIZER;
+static LatchRange *latch_ranges;
+static uint32_t latch_range_count;
+static uint32_t latch_range_capacity;
+
+SparkStatus SparkNvrmLatchRangeTake(uint32_t count, uint32_t *base, const char *owner)
+{
+	uint64_t start = SPARK_NVRM_PROGRAM_LATCH_FIRST;
+	uint32_t index;
+	SparkStatus status = SPARK_STATUS_OK;
+	*base = 0u;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&latch_ranges_lock);
+	for (index = 0u; index < latch_range_count && start + count > latch_ranges[index].base; index++)
+		start = (uint64_t)latch_ranges[index].base + latch_ranges[index].count;
+	if ( start + count > UINT64_C(1) << 32 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",owner,0,"no range of latch ids is free for the program's launches");
+	else if ( latch_range_count == latch_range_capacity )
+	{
+		const uint32_t capacity = latch_range_capacity != 0u ? 2u * latch_range_capacity : 64u;
+		LatchRange *grown = (LatchRange *)realloc(latch_ranges,(size_t)capacity * sizeof(*grown));
+		if ( grown == 0 )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",owner,0,"out of host memory for the latch ranges");
+		else
+		{
+			latch_ranges = grown;
+			latch_range_capacity = capacity;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		memmove(latch_ranges + index + 1u,latch_ranges + index,(size_t)(latch_range_count - index) * sizeof(*latch_ranges));
+		latch_ranges[index].base = (uint32_t)start;
+		latch_ranges[index].count = count;
+		latch_range_count++;
+		*base = (uint32_t)start;
+	}
+	pthread_mutex_unlock(&latch_ranges_lock);
+	return(status);
+}
+
+void SparkNvrmLatchRangeGive(uint32_t base, uint32_t count)
+{
+	uint32_t index;
+	if ( count == 0u )
+		return;
+	pthread_mutex_lock(&latch_ranges_lock);
+	for (index = 0u; index < latch_range_count; index++)
+		if ( latch_ranges[index].base == base && latch_ranges[index].count == count )
+		{
+			memmove(latch_ranges + index,latch_ranges + index + 1u,(size_t)(latch_range_count - index - 1u) * sizeof(*latch_ranges));
+			latch_range_count--;
+			break;
+		}
+	pthread_mutex_unlock(&latch_ranges_lock);
 }
 
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

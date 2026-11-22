@@ -3,9 +3,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -29,6 +31,18 @@ STAGER = load("hosted_image_stage_baseline", IMAGE / "stage_baseline.py")
 BASELINE = STAGER.load_baseline()
 GUARD = STAGER.load_guard()
 PINS = {key: quoted or plain for key, quoted, plain in re.findall(r'^([A-Z0-9_]+)=(?:"([^"]*)"|(\S*))$', (IMAGE / "pins.conf").read_text(), re.M)}
+
+
+def compaction_helper(base):
+    text = (IMAGE / "files" / "usr" / "local" / "sbin" / "sparkpipe-compact").read_text()
+    for real, fake in (("/run/sparkpipe-compact", base / "state"), ("/proc/sys/vm/compaction_proactiveness", base / "proactiveness"),
+                       ("/proc/sys/vm/min_free_kbytes", base / "reserve"), ("/proc/sys/vm/compact_memory", base / "compact")):
+        assert text.count(real) == 1, real
+        text = text.replace(real, str(fake))
+    helper = base / "sparkpipe-compact"
+    helper.write_text(text)
+    helper.chmod(0o755)
+    return helper
 
 
 def packages(name):
@@ -239,6 +253,65 @@ class StaticFilesTest(unittest.TestCase):
         self.assertEqual(helpers, {"/usr/lib/sparkpipe/gpu-device-nodes"})
         self.assertTrue(os.access(files / "usr" / "lib" / "sparkpipe" / "gpu-device-nodes", os.X_OK))
         self.assertEqual({module for module in re.findall(r'KERNEL=="([^"]+)"', rules)}, {"nvidia", "nvidia_uvm"})
+
+    def test_boot_leaves_the_kernel_compaction_defaults(self):
+        keys = ("vm.compaction_proactiveness", "vm.min_free_kbytes")
+        for path in (IMAGE / "files").rglob("*"):
+            if path.is_file() and "sysctl" in str(path.relative_to(IMAGE / "files")):
+                for key in keys:
+                    with self.subTest(path=path, key=key):
+                        self.assertNotIn(key, path.read_text())
+        later = "\n".join([BASELINE.NO_THRASH_SYSCTL, BASELINE.RECOVERY_SYSCTL, BASELINE.DIRTY_CAP_SYSCTL])
+        for key in keys:
+            self.assertNotIn(key, later)
+
+    def test_the_compaction_helper_is_the_only_privileged_path(self):
+        files = IMAGE / "files"
+        rules = sorted(path.name for path in (files / "etc" / "sudoers.d").iterdir())
+        self.assertEqual(rules, ["90-sparkpipe-compact"])
+        lines = [line for line in (files / "etc" / "sudoers.d" / "90-sparkpipe-compact").read_text().splitlines() if line.strip()]
+        self.assertEqual(lines, ["%sparkpipe-compact ALL=(root) NOPASSWD: /usr/local/sbin/sparkpipe-compact raise, /usr/local/sbin/sparkpipe-compact restore"])
+        self.assertTrue(os.access(files / "usr" / "local" / "sbin" / "sparkpipe-compact", os.X_OK))
+        customize = (IMAGE / "customize_image.sh").read_text()
+        self.assertIn('chmod 0440 "$root/etc/sudoers.d/90-sparkpipe-compact"', customize)
+        self.assertIn('chroot "$root" visudo -c -q -f /etc/sudoers.d/90-sparkpipe-compact', customize)
+        self.assertIn('chroot "$root" groupadd --system sparkpipe-compact', customize)
+        self.assertEqual((files / "usr" / "lib" / "tmpfiles.d" / "sparkpipe-compact.conf").read_text().splitlines(),
+                         ["d /run/sparkpipe-compact 0755 root root -", "f /run/sparkpipe-compact/window 0644 root root -"])
+
+    @unittest.skipUnless(shutil.which("flock"), "the compaction helper serializes with flock")
+    def test_the_helper_raises_once_and_restores_only_when_no_window_is_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            helper = compaction_helper(base)
+            (base / "proactiveness").write_text("20\n")
+            (base / "reserve").write_text("45056\n")
+            run = lambda verb: subprocess.run([str(helper), verb], capture_output=True, text=True)
+            started = time.monotonic()
+            raised = run("raise")
+            self.assertEqual(raised.returncode, 0)
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertEqual(raised.stdout, "sparkpipe-compact: raised\n")
+            self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip(), (base / "compact").read_text().strip()),
+                             ("90", "1048576", "1"))
+            raise_text = helper.read_text()
+            self.assertLess(raise_text.index('echo 1 > "$compact"'), raise_text.index('echo 90 > "$proactiveness"'))
+            self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
+            self.assertEqual(run("raise").returncode, 0)
+            self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
+            holder = subprocess.Popen(["flock", "-s", str(base / "state" / "window"), "sleep", "30"], start_new_session=True)
+            try:
+                time.sleep(0.3)
+                self.assertEqual(run("restore").returncode, 0)
+                self.assertEqual((base / "proactiveness").read_text().strip(), "90")
+            finally:
+                os.killpg(holder.pid, signal.SIGTERM)
+                holder.wait()
+            self.assertEqual(run("restore").returncode, 0)
+            self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip()), ("20", "45056"))
+            self.assertFalse((base / "state" / "boot").exists())
+            self.assertEqual(run("restore").returncode, 0)
+            self.assertEqual(run("lower").returncode, 2)
 
     def test_the_gb10_fragment_only_appends_to_the_command_line_the_baseline_owns(self):
         grub = (IMAGE / "files" / "etc" / "default" / "grub.d" / "90-sparkpipe-gb10.cfg").read_text()
