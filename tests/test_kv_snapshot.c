@@ -5,6 +5,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1800,6 +1801,60 @@ static void SnapTestNodeQuota(const char *directory)
 	printf("kv node quota: one lane alone fills the whole node quota, a write that finds the node full takes the oldest file of whichever lane holds it (a live lane frees it on request, a closed lane's oldest file is deleted for it), a backing reservation takes room from the oldest snapshot files, a lane is refused only when the quota holds nothing evictable, and the purge records closed stores and forgets deleted ones\n");
 }
 
+static void SnapTestNodeRoot(const char *directory)
+{
+	char own[512],other[512],store[640],backing[640],missing[640],plain[640];
+	char root[SPARK_KV_LEDGER_DIRECTORY_BYTES],path[SPARK_KV_LEDGER_DIRECTORY_BYTES],expected[SPARK_KV_LEDGER_DIRECTORY_BYTES + 64u];
+	const char *refused[4] = {"","relative/folder",missing,plain};
+	const struct passwd *owner = getpwuid(geteuid());
+	const uint64_t quota = UINT64_C(1) << 20;
+	SparkKvLedger first,second;
+	SparkKvLedgerUsage usage;
+	SparkKvSnapshotPurgeResult purge;
+	uint32_t slot,index;
+	int descriptor;
+	(void)snprintf(own,sizeof(own),"%s/own",directory);
+	(void)snprintf(other,sizeof(other),"%s/other",directory);
+	(void)snprintf(store,sizeof(store),"%s/kvsnapshot",other);
+	(void)snprintf(backing,sizeof(backing),"%s/kvcache",own);
+	(void)snprintf(missing,sizeof(missing),"%s/absent",directory);
+	(void)snprintf(plain,sizeof(plain),"%s/a-file",directory);
+	CHECK(mkdir(own,0700) == 0 && mkdir(other,0700) == 0 && mkdir(store,0700) == 0 && mkdir(backing,0700) == 0);
+	descriptor = open(plain,O_WRONLY | O_CREAT,0600);
+	CHECK(descriptor >= 0 && close(descriptor) == 0);
+	CHECK(unsetenv(SPARK_KV_NODE_ROOT_VARIABLE) == 0);
+	CHECK(SparkKvNodeRoot(root,sizeof(root)) == SPARK_STATUS_OK && owner != 0 && strcmp(root,owner->pw_dir) == 0);
+	(void)snprintf(expected,sizeof(expected),"%s/%s",root,SPARK_KV_LEDGER_NAME);
+	CHECK(SparkKvLedgerDefaultPath(path,sizeof(path)) == SPARK_STATUS_OK && strcmp(path,expected) == 0);
+	CHECK(setenv(SPARK_KV_NODE_ROOT_VARIABLE,own,1) == 0 && SparkKvNodeRoot(root,sizeof(root)) == SPARK_STATUS_OK && strcmp(root,own) == 0);
+	CHECK(SparkKvNodeRoot(root,4u) == SPARK_STATUS_CAPACITY_EXCEEDED && SparkKvNodeRoot(0,sizeof(root)) == SPARK_STATUS_INVALID_ARGUMENT);
+	(void)snprintf(expected,sizeof(expected),"%s/%s",own,SPARK_KV_LEDGER_NAME);
+	CHECK(SparkKvLedgerDefaultPath(path,sizeof(path)) == SPARK_STATUS_OK && strcmp(path,expected) == 0);
+	CHECK(SparkKvLedgerOpen(&first,path,quota) == SPARK_STATUS_OK);
+	for (index=0u; index<4u; index++)
+	{
+		CHECK(setenv(SPARK_KV_NODE_ROOT_VARIABLE,refused[index],1) == 0);
+		CHECK(SparkKvNodeRoot(root,sizeof(root)) == SPARK_STATUS_INVALID_ARGUMENT && SparkKvLedgerDefaultPath(path,sizeof(path)) == SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	CHECK(setenv(SPARK_KV_NODE_ROOT_VARIABLE,other,1) == 0 && SparkKvLedgerDefaultPath(path,sizeof(path)) == SPARK_STATUS_OK);
+	CHECK(SparkKvLedgerOpen(&second,path,quota) == SPARK_STATUS_OK);
+	SnapPurgeFile(store,"aa-bb-64.kvs",3600u);
+	CHECK(SparkKvSnapshotPurgeTree(&second,other,&purge) == SPARK_STATUS_OK && purge.stores == 1u);
+	CHECK(SparkKvLedgerSample(&second,&usage) == SPARK_STATUS_OK && usage.used_bytes == 6u && usage.snapshot_slots == 1u);
+	CHECK(SparkKvSnapshotPurgeTree(&first,own,&purge) == SPARK_STATUS_OK && purge.stores == 0u);
+	CHECK(SparkKvLedgerSample(&first,&usage) == SPARK_STATUS_OK && usage.used_bytes == 0u && usage.snapshot_slots == 0u);
+	CHECK(SparkKvLedgerJoin(&first,SPARK_KV_LEDGER_KIND_BACKING,backing,&slot) == SPARK_STATUS_OK);
+	CHECK(SparkKvLedgerMakeRoom(&first,slot,quota,0u,0,0,SnapNoBytes,SnapNoOldest) == SPARK_STATUS_OK);
+	CHECK(SnapPurgeExists(store,"aa-bb-64.kvs") == 1u);
+	CHECK(SparkKvLedgerSample(&second,&usage) == SPARK_STATUS_OK && usage.used_bytes == 6u);
+	SparkKvLedgerLeave(&first,slot);
+	SparkKvLedgerClose(&first);
+	SparkKvLedgerClose(&second);
+	CHECK(unsetenv(SPARK_KV_NODE_ROOT_VARIABLE) == 0);
+	printf("kv node root: without the setting the node root is the serving user's home; with it the ledger and the purge walk belong to that folder, a value that is not the full path "
+		"of an existing folder is refused and never falls back to the home, and a lane that fills its own root's quota finds nothing of another root to cut\n");
+}
+
 int main(void)
 {
 	char directory[] = "/tmp/sparkpipe-kv-snapshot-XXXXXX",ledger[128];
@@ -1906,6 +1961,10 @@ int main(void)
 	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
 		return(2);
 	SnapTestNodeQuota(directory);
+	SnapRemoveAll(directory);
+	if ( mkdtemp(strcpy(directory,"/tmp/sparkpipe-kv-snapshot-XXXXXX")) == 0 )
+		return(2);
+	SnapTestNodeRoot(directory);
 	SnapRemoveAll(directory);
 	SparkKvLedgerClose(&snap_ledger);
 	(void)unlink(ledger);
