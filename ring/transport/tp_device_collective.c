@@ -97,6 +97,7 @@ typedef struct SparkTpDeviceCollectiveImplementation
     uint8_t *mesh_device;
     void *staging_mapping;
     uint8_t *staging_device;
+    uint32_t staging_registered;
     uint32_t hardware_wait;
     struct SparkTpDeviceCollectiveImplementation *registration_next;
     uint32_t mesh_registered;
@@ -2010,14 +2011,29 @@ static SparkStatus SparkTpDeviceCollectivePrepareHardware(
     }
     if ( implementation->staging_device != 0 )
         return SparkTpDeviceCollectivePairShare(implementation);
+    if ( implementation->staging_mapping == 0 )
     {
         SparkStatus status = SparkWeightdClientMeshStagingMap(implementation->lane_client != 0 ? implementation->lane_client : implementation->client,&implementation->staging_mapping,
             implementation->round_timeout_ns);
         if ( status != SPARK_STATUS_OK )
         {
+            implementation->staging_mapping = 0;
             fprintf(stderr,"MESH-STAGING-MAP-FAIL rank=%u status=%d: weightd advertises peer routes but the staging export failed\n",
                 implementation->tp_rank,(int)status);
             return status;
+        }
+        if ( SparkTpDeviceCollectivePageableCoherent() == 0u )
+        {
+            result = SparkGpuHostRegister(implementation->staging_mapping,(size_t)SPARK_WEIGHTD_MESH_STAGING_BYTES,
+                SPARK_GPU_HOST_REGISTER_PORTABLE | SPARK_GPU_HOST_REGISTER_MAPPED);
+            if ( result != 0 )
+            {
+                fprintf(stderr,"MESH-STAGING-REGISTER-FAIL rank=%u ptr=%p staging_bytes=%llu cuda=%d (%s): without pageable host access the staging export must be registered\n",
+                    implementation->tp_rank,implementation->staging_mapping,(unsigned long long)SPARK_WEIGHTD_MESH_STAGING_BYTES,result,
+                    SparkGpuGetErrorString(result));
+                SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+            }
+            implementation->staging_registered = 1u;
         }
     }
     result = SparkTpMeshLaunchersRegistered->hardware_prepare(implementation->staging_mapping,(void **)&implementation->staging_device);
@@ -2141,6 +2157,27 @@ SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
             SparkTpDeviceCollectiveBaseCellOffset(band_index));
     }
     return SparkTpDeviceCollectivePrepareHardware(implementation);
+}
+
+SparkStatus SparkTpDeviceCollectiveReady(SparkTpDeviceCollective *collective)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    SparkStatus status;
+    if ( collective == 0 || collective->implementation == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    if ( implementation->hardware_wait == 0u || (implementation->mesh_device != 0 && implementation->staging_device != 0) )
+        return SPARK_STATUS_OK;
+    if ( implementation->mesh_buffer == 0 )
+    {
+        if ( implementation->owned_mesh_mapping == 0 )
+            return SparkTpDeviceCollectiveAttachMesh(collective);
+        return SparkTpDeviceCollectivePrepareReceiveBf16(collective,implementation->owned_mesh_mapping,0u,0u,0u,0);
+    }
+    pthread_mutex_lock(&SparkTpDeviceCollectiveRegistrationLock);
+    status = SparkTpDeviceCollectivePrepareHardware(implementation);
+    pthread_mutex_unlock(&SparkTpDeviceCollectiveRegistrationLock);
+    return status;
 }
 
 SparkStatus SparkTpDeviceCollectiveAttach(SparkTpDeviceCollective *collective,void *mesh_region)
@@ -2713,6 +2750,8 @@ void SparkTpDeviceCollectiveDestroy(SparkTpDeviceCollective *collective)
     if (implementation->owned_mesh_mapping != 0 &&
         munmap(implementation->owned_mesh_mapping,SPARK_WEIGHTD_MESH_REGION_BYTES) != 0)
         return;
+    if (implementation->staging_registered != 0u)
+        (void)SparkGpuHostUnregister(implementation->staging_mapping);
     if (implementation->staging_mapping != 0 &&
         munmap(implementation->staging_mapping,SPARK_WEIGHTD_MESH_STAGING_BYTES) != 0)
         return;

@@ -556,6 +556,28 @@ static void StageRunnerSubmissionInit(SparkTpDeviceCollectiveSubmission *submiss
 	submission->completion_function = deferred != 0u ? 0 : StageRunnerEmbedCompletion;
 }
 
+static SparkStatus StageRunnerMeshReady(SparkStageRunnerState *state, uint32_t rank, uint32_t timeout_milli)
+{
+	const uint64_t started = SparkMonotonicNs(), limit = (uint64_t)(timeout_milli != 0u ? timeout_milli : 300000u) * 1000000ull;
+	const struct timespec pause = {0, 20000000};
+	SparkStatus status;
+	uint32_t waited = 0u;
+	while ( (status = SparkTpDeviceCollectiveReady(&state->device_collective)) == SPARK_STATUS_BUSY )
+	{
+		if ( SparkMonotonicNs() - started > limit )
+		{
+			fprintf(stderr, "MESH-ATTACH-TIMEOUT rank=%u waited_ms=%llu: the local weightd's mesh did not become ready\n", rank,
+				(unsigned long long)((SparkMonotonicNs() - started) / 1000000ull));
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
+		waited = 1u;
+		(void)nanosleep(&pause, 0);
+	}
+	if ( status == SPARK_STATUS_OK && waited != 0u )
+		fprintf(stderr, "MESH-READY rank=%u waited_ms=%llu\n", rank, (unsigned long long)((SparkMonotonicNs() - started) / 1000000ull));
+	return status;
+}
+
 static SparkStatus StageRunnerVerifyCollectives(SparkStageRunnerState *state, SparkGpuStream stream)
 {
 	SparkStatus status = SPARK_STATUS_OK;
@@ -1028,6 +1050,8 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
 		status = SparkTpDeviceCollectivePrepareReceiveBf16(&state->device_collective,
 			(void *)(uintptr_t)state->lazy_pack->attached.mesh_send_buffer_addr, 0u,0u,0u,0u);
+	if ( (status == SPARK_STATUS_OK || status == SPARK_STATUS_BUSY) && state->device_collective_deferred != 0u )
+		status = StageRunnerMeshReady(state, device_config.tp_rank, device_config.connect_timeout_milli);
 	if ( status == SPARK_STATUS_OK && state->tp_degree >= STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE )
 	{
 		state->sum_share_elements = (uint64_t)device_config.max_active_sequence_count * state->geometry.hidden / state->tp_degree;

@@ -502,6 +502,7 @@ SparkStatus SparkTpDeviceCollectiveExchangeBf16(
 
 SparkStatus SparkTpDeviceCollectiveAttachMesh(SparkTpDeviceCollective *collective);
 SparkStatus SparkTpDeviceCollectiveAttach(SparkTpDeviceCollective *collective,void *mesh_region);
+SparkStatus SparkTpDeviceCollectiveReady(SparkTpDeviceCollective *collective);
 
 SparkStatus SparkTpDeviceCollectivePrepareReceiveBf16(
     SparkTpDeviceCollective *collective,

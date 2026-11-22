@@ -51,6 +51,14 @@ see the production status below.
   only a mapping that was registered, and only when its last owner leaves.
   Still open: why CUDA refuses those pages, and a Spark measurement of the
   unregistered path against a registered one.
+- Without pageable host access (the nvrm flavour, where only registered
+  memory is mapped, and at its own host address), the collective registers
+  weightd's staging export as it does the mesh region, before preparing the
+  hardware path, and unregisters it before unmapping it. The stage runner
+  attaches and prepares the mesh at init until weightd's wait entry is ready,
+  bounded by the lane's connect timeout (`MESH-READY rank=.. waited_ms=..`,
+  or `MESH-ATTACH-TIMEOUT` and a failed init), so a rank never reports ready
+  without its mesh.
 - The fleet mesh runs on `rocep1s0f1`, GID index 3 (`MESH_INTERFACE` and
   `MESH_SGID_INDEX` in `tools/fleet_node_agent.sh`). The two-host check below
   used `rocep1s0f0`.
