@@ -39,6 +39,14 @@ _Static_assert(offsetof(SparkTpMeshRoundControl,error_word) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR * sizeof(uint64_t),"error word");
 _Static_assert(offsetof(SparkTpMeshRoundControl,diag_word) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_DIAG * sizeof(uint64_t),"diag word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,fault_phase) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE * sizeof(uint64_t),"fault phase word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,fault_hits) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_HITS * sizeof(uint64_t),"fault hits word");
+_Static_assert(offsetof(SparkTpMeshRoundControl,guard_poisons) ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_GUARD_POISONS * sizeof(uint64_t),"guard poison word");
+_Static_assert(SPARK_TP_MESH_ROUND_CONTROL_WORD_GUARD_POISONS + 1u ==
+    SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE + SPARK_TP_MESH_ROUND_CONTROL_RECORD_WORDS,"the record words are contiguous");
 _Static_assert(offsetof(SparkTpMeshRoundControl,cancel_expected) ==
     SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED * sizeof(uint64_t),
     "cancel word");
@@ -727,10 +735,25 @@ static uint32_t SparkTpDeviceCollectiveDeferred(const SparkTpDeviceCollectiveImp
     return implementation->capture_armed == 0u && implementation->hardware_wait != 0u && submission->completion_function == 0 && (submission->flags & SPARK_TP_DEVICE_COLLECTIVE_SUBMISSION_STREAM_ORDERED_COMPLETION) != 0u ? 1u : 0u;
 }
 
+static const uint64_t spark_tp_mesh_record_zero[SPARK_TP_MESH_ROUND_CONTROL_RECORD_WORDS] = {0u,0u,0u,0u,0u,0u};
+
+static void SparkTpDeviceCollectiveReportRecords(SparkTpDeviceCollectiveImplementation *implementation,volatile uint64_t *words)
+{
+    uint32_t index;
+    if ( SparkTpMeshRecordPrint(stderr,implementation->tp_rank,words) == 0u )
+        return;
+    for ( index = 0u; index < SPARK_TP_MESH_ROUND_CONTROL_RECORD_WORDS; index++ )
+        words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE + index] = 0u;
+    if ( SparkGpuMemcpy((uint8_t *)implementation->round_control + SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE * sizeof(uint64_t),
+            spark_tp_mesh_record_zero,sizeof(spark_tp_mesh_record_zero),SPARK_GPU_COPY_HOST_TO_DEVICE) != 0 )
+        fprintf(stderr,"MESH-RECORD-CLEAR-FAIL rank=%u cuda=%s\n",implementation->tp_rank,SparkGpuGetErrorString(SparkGpuGetLastError()));
+}
+
 static SparkStatus SparkTpDeviceCollectiveReadControl(SparkTpDeviceCollectiveImplementation *implementation,void *stream)
 {
     if ( SparkGpuMemcpyAsync((void *)implementation->published_host_cell,implementation->round_control,SPARK_TP_MESH_ROUND_CONTROL_BYTES,SPARK_GPU_COPY_DEVICE_TO_HOST,stream) != 0 || SparkGpuStreamSynchronize(stream) != 0 )
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+    SparkTpDeviceCollectiveReportRecords(implementation,implementation->published_host_cell);
     memcpy(&implementation->round_control_host,(const void *)implementation->published_host_cell,sizeof(implementation->round_control_host));
     implementation->publish_ack_prev = implementation->round_control_host.round_seq;
     implementation->cell_mirror = implementation->round_control_host.seq;
@@ -1115,6 +1138,7 @@ static SparkStatus SparkTpDeviceCollectiveRoundReadback(SparkTpDeviceCollectiveI
         fprintf(stderr,"MESH-READBACK-FAIL rank=%u bytes=%llu slot=%llu cuda=%s\n",implementation->tp_rank,(unsigned long long)bytes,(unsigned long long)slot_index,SparkGpuGetErrorString(SparkGpuGetLastError()));
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    SparkTpDeviceCollectiveReportRecords(implementation,implementation->published_host_cell);
     return SPARK_STATUS_OK;
 }
 
@@ -1848,6 +1872,7 @@ static SparkStatus SparkTpDeviceCollectiveEnqueueRoundsInternal(
             implementation->tp_rank,SparkGpuGetErrorString(SparkGpuGetLastError()));
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    SparkTpDeviceCollectiveReportRecords(implementation,(volatile uint64_t *)(void *)&implementation->round_control_host);
     implementation->round_ns_total +=
         SparkMonotonicNs() - started_ns;
     implementation->round_count +=
@@ -2393,6 +2418,7 @@ SparkStatus SparkTpDeviceCollectiveGraphSettle(
         *error_out = 1ull;
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
+    SparkTpDeviceCollectiveReportRecords(implementation,implementation->published_host_cell);
     cell = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ];
     implementation->publish_ack_prev = implementation->published_host_cell[SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ];
     implementation->cell_mirror = cell;

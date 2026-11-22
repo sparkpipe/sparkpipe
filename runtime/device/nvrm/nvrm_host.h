@@ -51,6 +51,8 @@ SparkStatus SparkNvrmHostOpen(SparkNvrmGpu *gpu, SparkNvrmHostWorker *worker, co
 void SparkNvrmHostClose(SparkNvrmGpu *gpu, SparkNvrmHostWorker *worker);
 SparkStatus SparkNvrmHostWork(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmHostWorker *worker, const SparkNvrmHostItem *item, uint64_t *value,
 	const char *owner);
+void SparkNvrmHostQueue(SparkNvrmHostWorker *worker, const SparkNvrmHostItem *item);
+uint64_t SparkNvrmHostGate(const SparkNvrmHostWorker *worker, uint32_t done);
 
 #ifdef __cplusplus
 }
