@@ -12,7 +12,9 @@ SPARKPIPE_CORE_SOURCES := \
     src/spark_speculation_frame.c \
     src/spark_speculation_tree_frame.c \
     src/spark_tap_stream.c \
+    src/spark_tap_stream_reader.c \
     ring/transport/draft_bridge.c \
+    ring/transport/draft_server.c \
     runtime/filesystem.c \
     runtime/json.c
 

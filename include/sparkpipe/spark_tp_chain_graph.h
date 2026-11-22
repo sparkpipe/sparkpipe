@@ -3,10 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <cuda_runtime.h>
-
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tp_device_collective.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define SPARK_TP_CHAIN_MODE_EAGER 0u
 #define SPARK_TP_CHAIN_MODE_LINEAR 1u
@@ -174,7 +173,7 @@ static inline void SparkTpChainGraphTableDestroy(SparkTpChainGraphTable *table)
 		for (bucket=0u; bucket<SPARK_TP_CHAIN_GRAPH_BUCKETS; bucket++)
 			if ( table->exec[regime][bucket] != 0 )
 			{
-				(void)cudaGraphExecDestroy((cudaGraphExec_t)table->exec[regime][bucket]);
+				(void)SparkGpuGraphExecDestroy((SparkGpuGraphExec)table->exec[regime][bucket]);
 				table->exec[regime][bucket] = 0;
 			}
 }
@@ -187,9 +186,9 @@ static inline SparkStatus SparkTpChainGraphRecord(
 	void **exec_out,
 	uint32_t *site_out)
 {
-	cudaGraph_t graph = 0;
-	cudaGraphExec_t exec = 0;
-	cudaError_t end_error;
+	SparkGpuGraph graph = 0;
+	SparkGpuGraphExec exec = 0;
+	SparkGpuError end_error;
 	uint32_t site;
 	SparkStatus status;
 	if ( collectives == 0 || stream == 0 || walk == 0 || exec_out == 0 || site_out == 0 )
@@ -199,32 +198,32 @@ static inline SparkStatus SparkTpChainGraphRecord(
 	status = SparkTpChainArm(collectives);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	if ( cudaStreamBeginCapture((cudaStream_t)stream,cudaStreamCaptureModeThreadLocal) != cudaSuccess )
+	if ( SparkGpuStreamBeginCapture((SparkGpuStream)stream,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) != SPARK_GPU_SUCCESS )
 	{
 		SparkTpChainDisarm(collectives);
 		return(SPARK_STATUS_IO_ERROR);
 	}
 	site = walk(context);
-	end_error = cudaStreamEndCapture((cudaStream_t)stream,&graph);
+	end_error = SparkGpuStreamEndCapture((SparkGpuStream)stream,&graph);
 	*site_out = site;
-	if ( site != 0u || end_error != cudaSuccess || graph == 0 )
+	if ( site != 0u || end_error != SPARK_GPU_SUCCESS || graph == 0 )
 	{
 		if ( graph != 0 )
-			(void)cudaGraphDestroy(graph);
-		(void)cudaGetLastError();
+			(void)SparkGpuGraphDestroy(graph);
+		(void)SparkGpuGetLastError();
 		SparkTpChainDisarm(collectives);
 		return(site != 0u ? SPARK_STATUS_INTERNAL_ERROR : SPARK_STATUS_IO_ERROR);
 	}
-	if ( cudaGraphInstantiate(&exec,graph,0) != cudaSuccess || cudaGraphUpload(exec,(cudaStream_t)stream) != cudaSuccess )
+	if ( SparkGpuGraphInstantiate(&exec,graph,0) != SPARK_GPU_SUCCESS || SparkGpuGraphUpload(exec,(SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 	{
 		if ( exec != 0 )
-			(void)cudaGraphExecDestroy(exec);
-		(void)cudaGraphDestroy(graph);
-		(void)cudaGetLastError();
+			(void)SparkGpuGraphExecDestroy(exec);
+		(void)SparkGpuGraphDestroy(graph);
+		(void)SparkGpuGetLastError();
 		SparkTpChainDisarm(collectives);
 		return(SPARK_STATUS_IO_ERROR);
 	}
-	(void)cudaGraphDestroy(graph);
+	(void)SparkGpuGraphDestroy(graph);
 	SparkTpChainDisarm(collectives);
 	*exec_out = exec;
 	return(SPARK_STATUS_OK);

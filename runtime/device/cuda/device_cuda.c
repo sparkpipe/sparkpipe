@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stddef.h>
 #include "sparkpipe/spark_clock.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +9,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include "runtime/device/device_backend.h"
@@ -56,6 +58,43 @@ typedef struct CudaCallback
 	uint8_t value;
 } CudaCallback;
 
+typedef struct CudaDriver
+{
+	CUresult (*context_current)(CUcontext *context);
+	CUresult (*context_set)(CUcontext context);
+	CUresult (*granularity)(size_t *granularity, const CUmemAllocationProp *properties, CUmemAllocationGranularity_flags option);
+	CUresult (*create)(CUmemGenericAllocationHandle *handle, size_t bytes, const CUmemAllocationProp *properties, unsigned long long flags);
+	CUresult (*release)(CUmemGenericAllocationHandle handle);
+	CUresult (*export_fd)(void *shareable, CUmemGenericAllocationHandle handle, CUmemAllocationHandleType type, unsigned long long flags);
+	CUresult (*import_fd)(CUmemGenericAllocationHandle *handle, void *shareable, CUmemAllocationHandleType type);
+	CUresult (*reserve)(CUdeviceptr *address, size_t bytes, size_t alignment, CUdeviceptr hint, unsigned long long flags);
+	CUresult (*address_free)(CUdeviceptr address, size_t bytes);
+	CUresult (*map)(CUdeviceptr address, size_t bytes, size_t offset, CUmemGenericAllocationHandle handle, unsigned long long flags);
+	CUresult (*set_access)(CUdeviceptr address, size_t bytes, const CUmemAccessDesc *access, size_t count);
+	CUresult (*unmap)(CUdeviceptr address, size_t bytes);
+} CudaDriver;
+
+static const struct
+{
+	const char *symbol;
+	size_t offset;
+} cuda_driver_symbols[] = {
+	{"cuCtxGetCurrent",offsetof(CudaDriver,context_current)},
+	{"cuCtxSetCurrent",offsetof(CudaDriver,context_set)},
+	{"cuMemGetAllocationGranularity",offsetof(CudaDriver,granularity)},
+	{"cuMemCreate",offsetof(CudaDriver,create)},
+	{"cuMemRelease",offsetof(CudaDriver,release)},
+	{"cuMemExportToShareableHandle",offsetof(CudaDriver,export_fd)},
+	{"cuMemImportFromShareableHandle",offsetof(CudaDriver,import_fd)},
+	{"cuMemAddressReserve",offsetof(CudaDriver,reserve)},
+	{"cuMemAddressFree",offsetof(CudaDriver,address_free)},
+	{"cuMemMap",offsetof(CudaDriver,map)},
+	{"cuMemSetAccess",offsetof(CudaDriver,set_access)},
+	{"cuMemUnmap",offsetof(CudaDriver,unmap)},
+};
+
+static CudaDriver cuda_driver;
+static CUcontext cuda_instance;
 static int cuda_ordinal;
 static int cuda_pageable_access;
 static uint64_t cuda_page_bytes;
@@ -85,6 +124,58 @@ static SparkStatus CudaStatus(cudaError_t error, const char *operation, const ch
 	return(SparkDeviceRecordError(status,operation,owner,(int32_t)error,cudaGetErrorString(error)));
 }
 
+static SparkStatus CudaDriverStatus(CUresult result, const char *operation, const char *owner, const char *call)
+{
+	char text[96];
+	SparkStatus status;
+	if ( result == CUDA_SUCCESS )
+		return(SPARK_STATUS_OK);
+	if ( result == CUDA_ERROR_OUT_OF_MEMORY )
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	else if ( result == CUDA_ERROR_INVALID_VALUE || result == CUDA_ERROR_INVALID_HANDLE || result == CUDA_ERROR_ALREADY_MAPPED ||
+		result == CUDA_ERROR_NOT_MAPPED )
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	else if ( result == CUDA_ERROR_NOT_SUPPORTED || result == CUDA_ERROR_NOT_PERMITTED )
+		status = SPARK_STATUS_UNSUPPORTED;
+	else if ( result == CUDA_ERROR_INVALID_DEVICE || result == CUDA_ERROR_INVALID_CONTEXT )
+		status = SPARK_STATUS_TARGET_MISMATCH;
+	else
+		status = SPARK_STATUS_IO_ERROR;
+	snprintf(text,sizeof(text),"%s returned %d",call,(int)result);
+	return(SparkDeviceRecordError(status,operation,owner,(int32_t)result,text));
+}
+
+static SparkStatus CudaDriverLoad(void)
+{
+	char text[96];
+	size_t index;
+	for (index=0u; index<sizeof(cuda_driver_symbols) / sizeof(cuda_driver_symbols[0]); index++)
+	{
+		void *function = 0;
+		enum cudaDriverEntryPointQueryResult found = cudaDriverEntryPointSymbolNotFound;
+		const cudaError_t error = cudaGetDriverEntryPointByVersion(cuda_driver_symbols[index].symbol,&function,CUDART_VERSION,cudaEnableDefault,&found);
+		if ( error != cudaSuccess || found != cudaDriverEntryPointSuccess || function == 0 )
+		{
+			(void)cudaGetLastError();
+			snprintf(text,sizeof(text),"the CUDA driver has no %s",cuda_driver_symbols[index].symbol);
+			return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"initialize","",(int32_t)error,text));
+		}
+		memcpy((uint8_t *)&cuda_driver + cuda_driver_symbols[index].offset,&function,sizeof(function));
+	}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus CudaInstanceLoad(void)
+{
+	SparkStatus status = CudaDriverLoad();
+	cuda_instance = 0;
+	if ( status == SPARK_STATUS_OK )
+		status = CudaDriverStatus(cuda_driver.context_current(&cuda_instance),"initialize","","cuCtxGetCurrent");
+	if ( status == SPARK_STATUS_OK && cuda_instance == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"initialize","",0,"the device has no current context after selecting it");
+	return(status);
+}
+
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties)
 {
 	struct cudaDeviceProp device;
@@ -100,6 +191,8 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	status = CudaStatus(cudaSetDevice(cuda_ordinal),"initialize","");
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStatus(cudaGetDeviceProperties(&device,cuda_ordinal),"initialize","");
+	if ( status == SPARK_STATUS_OK )
+		status = CudaInstanceLoad();
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	(void)cudaDeviceGetAttribute(&managed,cudaDevAttrManagedMemory,cuda_ordinal);
@@ -114,6 +207,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->simd_width = (uint32_t)device.warpSize;
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes : (uint64_t)device.totalGlobalMem;
 	properties->max_buffer_bytes = (uint64_t)device.totalGlobalMem;
+	properties->max_constant_bytes = 0u;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | (device.integrated != 0 ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	(void)managed;
 	(void)pageable;
@@ -123,6 +217,134 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 SparkStatus SparkDeviceBackendShutdown(void)
 {
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance)
+{
+	CUcontext context = 0;
+	SparkStatus status = CudaDriverStatus(cuda_driver.context_current(&context),"thread_instance","","cuCtxGetCurrent");
+	if ( status == SPARK_STATUS_OK && context == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"thread_instance","",0,"the calling thread is bound to no device instance");
+	if ( status == SPARK_STATUS_OK && context != cuda_instance )
+		status = SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"thread_instance","",0,"the calling thread is bound to a context outside the device layer");
+	if ( status == SPARK_STATUS_OK )
+		*instance = (SparkDeviceInstance)(uintptr_t)context;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance)
+{
+	if ( instance != (SparkDeviceInstance)(uintptr_t)cuda_instance )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"not the instance this device layer returned"));
+	return(CudaDriverStatus(cuda_driver.context_set(cuda_instance),"thread_bind","","cuCtxSetCurrent"));
+}
+
+static void CudaMemoryProperties(CUmemAllocationProp *properties)
+{
+	memset(properties,0,sizeof(*properties));
+	properties->type = CU_MEM_ALLOCATION_TYPE_PINNED;
+	properties->location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	properties->location.id = cuda_ordinal;
+	properties->requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+}
+
+static CUmemGenericAllocationHandle CudaHandle(SparkDeviceMemoryHandle memory)
+{
+	return((CUmemGenericAllocationHandle)(uintptr_t)memory);
+}
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	CUmemAllocationProp properties;
+	size_t value = 0u;
+	SparkStatus status;
+	CudaMemoryProperties(&properties);
+	status = CudaDriverStatus(cuda_driver.granularity(&value,&properties,granularity == SPARK_DEVICE_GRANULARITY_RECOMMENDED ?
+		CU_MEM_ALLOC_GRANULARITY_RECOMMENDED : CU_MEM_ALLOC_GRANULARITY_MINIMUM),"memory_granularity","","cuMemGetAllocationGranularity");
+	if ( status == SPARK_STATUS_OK )
+		*bytes = (uint64_t)value;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	CUmemAllocationProp properties;
+	CUmemGenericAllocationHandle handle = 0;
+	SparkStatus status;
+	CudaMemoryProperties(&properties);
+	status = CudaDriverStatus(cuda_driver.create(&handle,(size_t)bytes,&properties,0ull),"memory_create",owner,"cuMemCreate");
+	if ( status == SPARK_STATUS_OK && handle == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_create",owner,0,"cuMemCreate returned no handle");
+	if ( status == SPARK_STATUS_OK )
+		*memory = (SparkDeviceMemoryHandle)(uintptr_t)handle;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	return(CudaDriverStatus(cuda_driver.release(CudaHandle(memory)),"memory_release","","cuMemRelease"));
+}
+
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	int exported = -1;
+	SparkStatus status = CudaDriverStatus(cuda_driver.export_fd(&exported,CudaHandle(memory),CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0ull),
+		"memory_export","","cuMemExportToShareableHandle");
+	if ( status == SPARK_STATUS_OK && exported < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_export","",0,"cuMemExportToShareableHandle returned no file descriptor");
+	if ( status == SPARK_STATUS_OK )
+		*fd = exported;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	CUmemGenericAllocationHandle handle = 0;
+	SparkStatus status = CudaDriverStatus(cuda_driver.import_fd(&handle,(void *)(intptr_t)fd,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR),
+		"memory_import",owner,"cuMemImportFromShareableHandle");
+	if ( status == SPARK_STATUS_OK && handle == 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_import",owner,0,"cuMemImportFromShareableHandle returned no handle");
+	if ( status == SPARK_STATUS_OK )
+		*memory = (SparkDeviceMemoryHandle)(uintptr_t)handle;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	CUdeviceptr base = 0ull;
+	SparkStatus status = CudaDriverStatus(cuda_driver.reserve(&base,(size_t)bytes,0u,0ull,0ull),"address_reserve",owner,"cuMemAddressReserve");
+	if ( status == SPARK_STATUS_OK && base == 0ull )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"address_reserve",owner,0,"cuMemAddressReserve returned no address");
+	if ( status == SPARK_STATUS_OK )
+		*address = (SparkDeviceAddress)base;
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	return(CudaDriverStatus(cuda_driver.address_free((CUdeviceptr)address,(size_t)bytes),"address_release","","cuMemAddressFree"));
+}
+
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	CUmemAccessDesc descriptor;
+	SparkStatus status = CudaDriverStatus(cuda_driver.map((CUdeviceptr)address,(size_t)bytes,(size_t)offset,CudaHandle(memory),0ull),
+		"memory_map","","cuMemMap");
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&descriptor,0,sizeof(descriptor));
+	descriptor.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+	descriptor.location.id = cuda_ordinal;
+	descriptor.flags = (access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? CU_MEM_ACCESS_FLAGS_PROT_READWRITE : CU_MEM_ACCESS_FLAGS_PROT_READ;
+	status = CudaDriverStatus(cuda_driver.set_access((CUdeviceptr)address,(size_t)bytes,&descriptor,1u),"memory_map","","cuMemSetAccess");
+	if ( status != SPARK_STATUS_OK )
+		(void)cuda_driver.unmap((CUdeviceptr)address,(size_t)bytes);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	return(CudaDriverStatus(cuda_driver.unmap((CUdeviceptr)address,(size_t)bytes),"memory_unmap","","cuMemUnmap"));
 }
 
 static CudaAllocation *CudaNew(SparkDeviceAllocation *allocation, CudaMemoryKind kind, const char *operation)
@@ -670,6 +892,14 @@ SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const cha
 void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
 {
 	library->backend = 0;
+}
+
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	(void)library;
+	(void)name;
+	(void)short_name;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",0,0,"the CUDA backend takes kernel names of at most 64 bytes"));
 }
 
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)

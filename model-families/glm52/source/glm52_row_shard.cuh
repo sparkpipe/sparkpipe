@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include "inference/kernels/norm.cuh"
 #include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define GLM_ROW_SHARD_ROWS 256u
 
@@ -25,7 +26,7 @@ static inline GlmRowShare GlmRowShareOf(uint32_t rows, uint32_t degree, uint32_t
 
 template<uint32_t THREADS, bool ROUND_FIRST = false>
 static void GlmRowShareNorm(const GlmRowShare *row, const uint16_t *reduced, uint16_t *residual, const uint16_t *weight, uint32_t keep_residual,
-	uint16_t *normed, uint32_t dimension, float epsilon, cudaStream_t stream)
+	uint16_t *normed, uint32_t dimension, float epsilon, SparkGpuStream stream)
 {
 	uint16_t *own = residual + (uint64_t)row->first * dimension;
 	if ( row->count == 0u )

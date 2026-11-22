@@ -26,6 +26,7 @@
 #include "runtime/gemm.cuh"
 #include "sparkpipe/spark_rope_plan.h"
 #include "sparkpipe/spark_gemma4_family.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define GM_THREADS 256u
 
@@ -297,7 +298,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 	};
 
 	static const char *Tag(void)
@@ -322,26 +323,26 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	}
 
 	static int32_t Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
-		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
 			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return Project(weight, source, destination, (float *)0, rows, input_dimension, output_dimension, step, stream);
 	}
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return Project(weight, source, (uint16_t *)0, destination, rows, input_dimension, output_dimension, step, stream);
 	}
 
 	static int32_t ExpertProjection(const LmLocalExpertRoutes &routes, const uint16_t *weight, const uint16_t *activation, uint16_t *output, uint32_t down,
-		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t exact = step->commit == 0u ? 1u : 0u;
 		return down != 0u ? LmLocalExpertsDown<LmBf16Format>(routes, weight, LmScaleTensorNone(), activation, output, input_dimension, output_dimension, stream, exact) :
@@ -366,7 +367,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	{
 		const GemmaLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		using Kv = typename std::conditional<FULL, typename S::FullKvGeometry, typename S::SlidingKvGeometry>::type;
 		constexpr uint32_t HD = FULL ? G::kFullDim : G::kSlidingDim, KVH = FULL ? G::kFullKvHeads : G::kSlidingKvHeads;
 		constexpr uint32_t QW = FULL ? S::kFullQ : S::kSlidingQ, KVW = FULL ? S::kFullKv : S::kSlidingKv;
@@ -386,8 +387,8 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_rows, state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		GemmaGatherRowsKernel<<<dim3(Blocks(FUSED), rows), GM_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, local_rows, degree);
-		GemmaSplitKernel<<<dim3(Blocks(QW + 2u * KVW), rows), GM_THREADS, 0, stream>>>(state->attn_full, state->query, state->key, state->value, FUSED,
+		LM_LAUNCH((GemmaGatherRowsKernel), dim3(Blocks(FUSED), rows), GM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
+		LM_LAUNCH((GemmaSplitKernel), dim3(Blocks(QW + 2u * KVW), rows), GM_THREADS, 0, stream, state->attn_full, state->query, state->key, state->value, FUSED,
 			QW, KVW, FULL && G::kKeyIsValue ? 1u : 0u);
 		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), dim3(HEADS,rows), GM_THREADS, 0, stream,
 			state->query, G::kQkNormWeighted ? layer->q_norm : (const float *)0, state->query, rows, HEADS, HD, G::kNormEpsilon, G::kQueryMultiply);
@@ -405,25 +406,25 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 				state->key, step->positions, KVH, HD, FULL ? S::kFullRopeWidth : HD, FULL ? G::kFullTheta : G::kSlidingTheta,
 				FULL ? state->full_inv_freq : (const float *)0, FULL ? G::kFullRopeScale : 1.0f, 0u);
 		}
-		GemmaPackSlotKernel<<<dim3(Blocks(2u * KVW), rows), GM_THREADS, 0, stream>>>(state->key, state->value, state->slot, KVW);
+		LM_LAUNCH((GemmaPackSlotKernel), dim3(Blocks(2u * KVW), rows), GM_THREADS, 0, stream, state->key, state->value, state->slot, KVW);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<Kv,GM_THREADS>), rows, GM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
 			rows, 2u * KVW);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,HD,HD>(*view, state->query, HEADS, step->sequence_of_row, step->context_length,
-				step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u, FULL ? 0u : layer->window) != cudaSuccess )
+				step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u, FULL ? 0u : layer->window) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( LmGqaShardMergeLaunch<HD>(state->received, stride, degree, HEADS, state->tp_rank, state->merged, rows, stream) != cudaSuccess )
+		if ( LmGqaShardMergeLaunch<HD>(state->received, stride, degree, HEADS, state->tp_rank, state->merged, rows, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( G::kOutputGate )
 		{
 			if ( Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, width, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			GemmaSigmoidGateKernel<<<Blocks((uint64_t)rows * width), GM_THREADS, 0, stream>>>(state->merged, state->gate_logits, (uint64_t)rows * width);
+			LM_LAUNCH((GemmaSigmoidGateKernel), Blocks((uint64_t)rows * width), GM_THREADS, 0, stream, state->merged, state->gate_logits, (uint64_t)rows * width);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -432,7 +433,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			constexpr uint32_t GATE_ROWS = FULL ? S::kFullGateRows : S::kSlidingGateRows;
 			if ( Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, GATE_ROWS, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			GemmaHeadSoftplusGateKernel<<<dim3(width / HD, rows), 128u, 0, stream>>>(state->merged, state->gate_logits, width / HD, HD, GATE_ROWS);
+			LM_LAUNCH((GemmaHeadSoftplusGateKernel), dim3(width / HD, rows), 128u, 0, stream, state->merged, state->gate_logits, width / HD, HD, GATE_ROWS);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -445,12 +446,12 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	{
 		const GemmaLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, ffn_rows = layer->ffn_rows;
 		if ( Linear(layer->gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * ffn_rows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( G::kGeluMlp )
-			GemmaGeluTanhMulKernel<GM_THREADS><<<dim3(Blocks(ffn_rows), rows), GM_THREADS, 0, stream>>>(state->gate_up, state->intermediate, ffn_rows);
+			LM_LAUNCH((GemmaGeluTanhMulKernel<GM_THREADS>), dim3(Blocks(ffn_rows), rows), GM_THREADS, 0, stream, state->gate_up, state->intermediate, ffn_rows);
 		else if ( layer->swiglu_limit != INFINITY )
 			LM_LAUNCH((LmSiluMulGateLimitKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, state->gate_up, state->intermediate, ffn_rows,
 				layer->swiglu_limit);
@@ -462,29 +463,29 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus ExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus ExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, routes = rows * G::kTopK;
 		const uint16_t *hidden = step->hidden_bf16;
 		uint16_t *output = state->partial + (uint64_t)rows * G::kHidden;
 		LmLocalExpertRoutes expert_routes;
-		GemmaRouterInputKernel<GM_THREADS><<<rows, GM_THREADS, 0, stream>>>(hidden, layer->router_scale, state->moe_normed, G::kHidden, G::kNormEpsilon,
+		LM_LAUNCH((GemmaRouterInputKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, hidden, layer->router_scale, state->moe_normed, G::kHidden, G::kNormEpsilon,
 			(float)(1.0 / sqrt((double)G::kHidden)));
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->router_proj, state->moe_normed, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouterSoftmaxKernel<GM_THREADS,G::kExperts><<<rows, GM_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
+		LM_LAUNCH((LmRouterSoftmaxKernel<GM_THREADS,G::kExperts>), rows, GM_THREADS, 0, stream, state->router_logits, state->router_probs);
 		if ( LmTopkRouteLaunch<GM_THREADS,G::kTopK,true,LM_TOPK_SCORE_IDENTITY>(rows, state->router_probs, G::kExperts, state->route_expert,
-			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, step->route_fault, stream) != cudaSuccess )
+			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		GemmaExpertScaleKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, layer->expert_scale, routes);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((GemmaExpertScaleKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, layer->expert_scale, routes);
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<GM_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), rows, GM_THREADS, (G::kHidden + 8u) * sizeof(float), stream,
 			hidden, (const uint16_t *)0, layer->pre_ff_norm_2, (uint16_t *)0, state->moe_normed, G::kHidden, G::kHidden, G::kNormEpsilon);
 		ExpertRoutes(state, step, rows, &expert_routes);
@@ -492,17 +493,17 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			ExpertProjection(expert_routes, layer->moe_w1, state->moe_normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, state->moe_normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmGeluTanhPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmGeluTanhPackedKernel), dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, (const uint16_t *)0, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
-	static SparkStatus SigmoidExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus SigmoidExpertRows(State *state, const GemmaLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, routes = rows * G::kTopK;
 		const uint16_t *normed = state->normed;
@@ -517,31 +518,31 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		{
 			if ( Linear(layer->router_proj, normed, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			GemmaWidenKernel<<<Blocks((uint64_t)rows * G::kExperts), GM_THREADS, 0, stream>>>(state->router_logits, state->router_probs,
+			LM_LAUNCH((GemmaWidenKernel), Blocks((uint64_t)rows * G::kExperts), GM_THREADS, 0, stream, state->router_logits, state->router_probs,
 				(uint64_t)rows * G::kExperts);
 		}
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmTopkGroupLimitedLaunch<GM_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_probs, layer->expert_bias, state->route_expert,
-				state->route_weight, G::kRoutedScale, step->route_fault, stream) != cudaSuccess )
+				state->route_weight, G::kRoutedScale, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<GM_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 		ExpertRoutes(state, step, rows, &expert_routes);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter, layer->swiglu_limit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->partial, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -574,7 +575,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
 		(void)state;
-		GemmaScaleRowsKernel<<<Blocks(width), GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, width, scale);
+		LM_LAUNCH((GemmaScaleRowsKernel), Blocks(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, width, scale);
 		return SPARK_STATUS_OK;
 	}
 
@@ -595,14 +596,14 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 
 	static SparkStatus NormAdd(State *state, const Frame &frame, const float *weight)
 	{
-		GemmaPostNormAddKernel<GM_THREADS><<<frame.step->rows, GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, weight,
+		LM_LAUNCH((GemmaPostNormAddKernel<GM_THREADS>), frame.step->rows, GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, state->partial, weight,
 			(const float *)0, G::kHidden, G::kPostEpsilon);
 		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus NormAddScaled(State *state, const Frame &frame, const float *weight, const float *scalar)
 	{
-		GemmaPostNormAddKernel<GM_THREADS><<<frame.step->rows, GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, weight,
+		LM_LAUNCH((GemmaPostNormAddKernel<GM_THREADS>), frame.step->rows, GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, state->partial, weight,
 			scalar, G::kHidden, G::kPostEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -611,7 +612,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		const float *scalar)
 	{
 		const uint32_t rows = frame.step->rows;
-		GemmaMoeCombineKernel<GM_THREADS><<<rows, GM_THREADS, G::kHidden * sizeof(float), frame.stream>>>(frame.step->hidden_bf16, state->partial,
+		LM_LAUNCH((GemmaMoeCombineKernel<GM_THREADS>), rows, GM_THREADS, G::kHidden * sizeof(float), frame.stream, frame.step->hidden_bf16, state->partial,
 			state->partial + (uint64_t)rows * G::kHidden, first_norm, second_norm, norm, scalar, G::kHidden, G::kPostEpsilon);
 		return SPARK_STATUS_OK;
 	}
@@ -619,7 +620,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static SparkStatus AddRows(State *state, const Frame &frame, GemmaBranch branch)
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
-		GemmaAddRowsKernel<<<Blocks(width), GM_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, BranchRows(state, frame, branch), width);
+		LM_LAUNCH((GemmaAddRowsKernel), Blocks(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, BranchRows(state, frame, branch), width);
 		return SPARK_STATUS_OK;
 	}
 
@@ -859,7 +860,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			}
 		}
-		if ( cudaMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), cudaMemcpyHostToDevice) != cudaSuccess )
+		if ( SparkGpuMemcpy(state->full_inv_freq, inv_freq, sizeof(inv_freq), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		return SPARK_STATUS_OK;
 	}

@@ -138,6 +138,7 @@ static void SlBuffers(K3LayerBuffers *b,uint32_t rank,const uint32_t *state_inde
 	b->attnres_partial_bf16 = SlAlloc<uint16_t>((uint64_t)SL_ROWS * K3_HIDDEN);
 	b->attnres_bank_bf16 = SlAlloc<uint16_t>((uint64_t)K3_ATTNRES_MAX_SOURCES * SL_ROWS * K3_HIDDEN);
 	SL_CUDA(cudaMemcpy(dense_offsets,offsets,sizeof(offsets),cudaMemcpyHostToDevice));
+	SL_CUDA(cudaDeviceSynchronize());
 	b->dense_row_offset = dense_offsets;
 	b->dense_tile_prefix = SlAlloc<uint32_t>(2u);
 	b->kda_state_index = state_index;
@@ -293,6 +294,7 @@ int main(void)
 	K3LayerBuffers streamed;
 	cudaStream_t stream;
 	SL_CUDA(cudaMemcpy(row_begin,begin,sizeof(begin),cudaMemcpyHostToDevice));
+	SL_CUDA(cudaDeviceSynchronize());
 	for (uint32_t layer = 0u; layer < SL_LAYERS; layer++)
 	{
 		const uint32_t salt = 1000u * (layer + 1u);
@@ -427,6 +429,7 @@ int main(void)
 		double squared = 0.0,error = 0.0,worst = 0.0;
 		uint64_t nonfinite = 0u;
 		SL_CUDA(cudaMemcpy(node_begin,node_rows,sizeof(node_rows),cudaMemcpyHostToDevice));
+		SL_CUDA(cudaDeviceSynchronize());
 		for (uint32_t node = 0u; node < SL_NODES; node++)
 		{
 			SlNode *n = &sl_nodes[node];

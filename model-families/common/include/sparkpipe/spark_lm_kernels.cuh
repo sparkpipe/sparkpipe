@@ -15,6 +15,8 @@
 #include "inference/kernels/activation.cuh"
 
 #include "sparkpipe/spark_head_screen.h"
+#include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #if defined(__CUDACC__)
 #define SPARK_LM_LAUNCH(launch_statement) launch_statement
@@ -434,8 +436,8 @@ static __global__ void SparkLmHeadCertifiedReduceKernel(const float *partial_sco
 
 #include <mma.h>
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8Quantize(
-	cudaStream_t stream,const void *head_bf16,uint8_t *shadow_payload,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8Quantize(
+	SparkGpuStream stream,const void *head_bf16,uint8_t *shadow_payload,
 	float *shadow_scale_f32,float *cert_norm_f32,uint32_t candidate_count,
 	uint32_t hidden_dimension)
 {
@@ -443,15 +445,15 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8Quantize(
 	if ( head_bf16 == 0 || shadow_payload == 0 || shadow_scale_f32 == 0 ||
 		cert_norm_f32 == 0 || candidate_count == 0u || hidden_dimension == 0u ||
 		(hidden_dimension % SPARK_HEAD_CERTIFIED_FP8_GROUP_SIZE) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) /
 		SPARK_LM_CTA_WARPS;
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedFp8QuantizeKernel<<<blocks,SPARK_LM_CTA_THREADS,0u,
-			stream>>>(head_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,
+	LM_LAUNCH((SparkLmHeadCertifiedFp8QuantizeKernel), blocks,SPARK_LM_CTA_THREADS,0u,
+			stream, head_bf16,shadow_payload,shadow_scale_f32,cert_norm_f32,
 			candidate_count,hidden_dimension)
 	));
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }
 
 typedef struct SparkLmHeadCertifiedFp8Scratch
@@ -477,8 +479,8 @@ static inline SparkLmHeadCertifiedFp8Scratch SparkLmHeadCertifiedFp8ScratchView(
 	return(view);
 }
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
-	cudaStream_t stream,const void *hidden_bf16,const void *head_weight_bf16,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
+	SparkGpuStream stream,const void *hidden_bf16,const void *head_weight_bf16,
 	const uint8_t *shadow_payload,const float *shadow_scale_f32,
 	const float *cert_norm_f32,void *scratch,uint32_t *candidate_ids,
 	uint32_t *candidate_count,uint32_t *output_token_id,float *output_score,
@@ -497,40 +499,40 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8B1WithScore(
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count != 1u || vocabulary_count == 0u ||
 		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	view = SparkLmHeadCertifiedFp8ScratchView(scratch,vocabulary_count,
 		hidden_dimension);
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedHiddenNormKernel<<<norm_blocks,SPARK_LM_CTA_THREADS,0u,
-			stream>>>(hidden_bf16,view.hidden_norms,hidden_dimension)
+	LM_LAUNCH((SparkLmHeadCertifiedHiddenNormKernel), norm_blocks,SPARK_LM_CTA_THREADS,0u,
+			stream, hidden_bf16,view.hidden_norms,hidden_dimension)
 	));
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedFp8ScoreKernel<<<score_blocks,
-			SPARK_LM_HEAD_CERTIFIED_FP8_THREADS,0u,stream>>>(hidden_bf16,
+	LM_LAUNCH((SparkLmHeadCertifiedFp8ScoreKernel), score_blocks,
+			SPARK_LM_HEAD_CERTIFIED_FP8_THREADS,0u,stream, hidden_bf16,
 			shadow_payload,shadow_scale_f32,cert_norm_f32,view.hidden_norms,
 			view.coarse_scores,view.bounds,vocabulary_count,hidden_dimension)
 	));
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedScreenKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
+	LM_LAUNCH((SparkLmHeadCertifiedScreenKernel),1u,SPARK_LM_CTA_THREADS,0u,stream,
 			view.coarse_scores,view.bounds,candidate_ids,candidate_count,
 			vocabulary_count)
 	));
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedRescoreKernel<<<SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT,
-			SPARK_LM_CTA_THREADS,hidden_dimension * sizeof(float),stream>>>(
+	LM_LAUNCH((SparkLmHeadCertifiedRescoreKernel), SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT,
+			SPARK_LM_CTA_THREADS,hidden_dimension * sizeof(float),stream,
 			hidden_bf16,head_weight_bf16,candidate_ids,candidate_count,
 			view.partial_scores,view.partial_candidates,hidden_dimension)
 	));
 	SPARK_LM_LAUNCH((
-	SparkLmHeadCertifiedReduceKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
+	LM_LAUNCH((SparkLmHeadCertifiedReduceKernel),1u,SPARK_LM_CTA_THREADS,0u,stream,
 			view.partial_scores,view.partial_candidates,output_token_id,output_score,
 			candidate_offset)
 	));
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }
 
-static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
-	cudaStream_t stream,const void *hidden_bf16,const void *head_weight_bf16,
+static inline SparkGpuError SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
+	SparkGpuStream stream,const void *hidden_bf16,const void *head_weight_bf16,
 	const uint8_t *shadow_payload,const float *shadow_scale_f32,
 	const float *cert_norm_f32,void *scratch,uint32_t *candidate_ids,
 	uint32_t *candidate_count,uint32_t *output_token_id,float *output_score,
@@ -553,13 +555,13 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 		candidate_ids == 0 || candidate_count == 0 || output_token_id == 0 ||
 		output_score == 0 || row_count == 0u || vocabulary_count == 0u ||
 		hidden_dimension == 0u || (hidden_dimension % 256u) != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	for (row=0u; row<row_count; row++)
 	{
 		view = SparkLmHeadCertifiedFp8ScratchView((float *)scratch + row * row_floats,vocabulary_count,hidden_dimension);
 		SPARK_LM_LAUNCH((
-		SparkLmHeadCertifiedHiddenNormKernel<<<norm_blocks,SPARK_LM_CTA_THREADS,0u,
-				stream>>>((const uint16_t *)hidden_bf16 + (uint64_t)row * hidden_dimension,view.hidden_norms,hidden_dimension)
+		LM_LAUNCH((SparkLmHeadCertifiedHiddenNormKernel), norm_blocks,SPARK_LM_CTA_THREADS,0u,
+				stream, (const uint16_t *)hidden_bf16 + (uint64_t)row * hidden_dimension,view.hidden_norms,hidden_dimension)
 		));
 	}
 	for (first=0u; first<row_count; first+=rows)
@@ -567,8 +569,8 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 		rows = row_count - first < SPARK_LM_HEAD_CERTIFIED_FP8_ROWS ? row_count - first : SPARK_LM_HEAD_CERTIFIED_FP8_ROWS;
 		view = SparkLmHeadCertifiedFp8ScratchView((float *)scratch + first * row_floats,vocabulary_count,hidden_dimension);
 		SPARK_LM_LAUNCH((
-		SparkLmHeadCertifiedFp8ScoreRowsKernel<<<score_blocks,
-				SPARK_LM_HEAD_CERTIFIED_FP8_THREADS,0u,stream>>>((const uint16_t *)hidden_bf16 + (uint64_t)first * hidden_dimension,
+		LM_LAUNCH((SparkLmHeadCertifiedFp8ScoreRowsKernel), score_blocks,
+				SPARK_LM_HEAD_CERTIFIED_FP8_THREADS,0u,stream, (const uint16_t *)hidden_bf16 + (uint64_t)first * hidden_dimension,
 				shadow_payload,shadow_scale_f32,cert_norm_f32,view.hidden_norms,
 				view.coarse_scores,view.bounds,row_floats,rows,vocabulary_count,hidden_dimension)
 		));
@@ -579,21 +581,21 @@ static inline cudaError_t SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(
 		uint32_t *row_candidates = candidate_ids + (uint64_t)row * vocabulary_count;
 		view = SparkLmHeadCertifiedFp8ScratchView((float *)scratch + row * row_floats,vocabulary_count,hidden_dimension);
 		SPARK_LM_LAUNCH((
-		SparkLmHeadCertifiedScreenKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
+		LM_LAUNCH((SparkLmHeadCertifiedScreenKernel),1u,SPARK_LM_CTA_THREADS,0u,stream,
 				view.coarse_scores,view.bounds,row_candidates,candidate_count + row,
 				vocabulary_count)
 		));
 		SPARK_LM_LAUNCH((
-		SparkLmHeadCertifiedRescoreKernel<<<SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT,
-				SPARK_LM_CTA_THREADS,hidden_dimension * sizeof(float),stream>>>(
+		LM_LAUNCH((SparkLmHeadCertifiedRescoreKernel), SPARK_HEAD_CERTIFIED_FP8_PARTIAL_COUNT,
+				SPARK_LM_CTA_THREADS,hidden_dimension * sizeof(float),stream,
 				hidden_row,head_weight_bf16,row_candidates,candidate_count + row,
 				view.partial_scores,view.partial_candidates,hidden_dimension)
 		));
 		SPARK_LM_LAUNCH((
-		SparkLmHeadCertifiedReduceKernel<<<1u,SPARK_LM_CTA_THREADS,0u,stream>>>(
+		LM_LAUNCH((SparkLmHeadCertifiedReduceKernel),1u,SPARK_LM_CTA_THREADS,0u,stream,
 				view.partial_scores,view.partial_candidates,output_token_id + row,output_score + row,
 				candidate_offset)
 		));
 	}
-	return(cudaGetLastError());
+	return(SparkGpuGetLastError());
 }

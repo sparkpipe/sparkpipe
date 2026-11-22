@@ -1339,6 +1339,11 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
+- The hub's drafters still run in Python (`tools/block_draftd.py`), one
+  process per lane. `build/sparkpipe_draftd` is the C replacement: one
+  process per GPU, DFT3 and tap stream in C. It serves only the host replay
+  drafter so far. The engine drafters (DFlash2 for K3, the Qwen3.8-27B
+  pair, the K3.1 Pro and DSV4.1 DSparks) and weightd on the hub come next.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
@@ -1488,6 +1493,23 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   16 rows, `STAGE_RUNNER_GRAPH_ROWS` in `inference/runner/stage_runner.cu`) on
   the first step of each row count, so the first request at a new batch width
   pays the capture. Prewarm them at load.
+
+- Eight launch sites still choose between two designed kernels by trying one
+  and taking the other when the first returns `LM_LAUNCH_ERR_SHAPE` or
+  `LM_LAUNCH_ERR_TILE`, instead of selecting by shape:
+  - `model-families/k3/source/layer.cuh` (3): routed expert w1 and w2 try the
+    cell kernels, then the interleaved or weight-only GEMM.
+  - `model-families/glm52/source/glm52_stage.cuh` (2) and
+    `model-families/glm5_next/source/glm5_next_stage.cuh` (2): expert w1 and w2
+    below the stream threshold try the one-row skinny kernel, then the grouped
+    one.
+  - `inference/kernels/stream_gemm.cuh` (1): scaled FP8 tries the wide kernel,
+    then the tile shapes.
+
+  The refusal there is a selection, not a fault, so the kernels keep returning
+  a bare `LM_LAUNCH_ERR_SHAPE` or `LM_LAUNCH_ERR_TILE`. Each site needs an
+  explicit shape predicate; then the losing kernel's refusal can fail through
+  `SPARK_FAIL`, as the 20 former slow-path sites do.
 
 ## Runtime completion
 
@@ -1851,6 +1873,70 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
 ## Hardware independence
 
+- Rented nodes carry no NVIDIA user-space software: the engine, weightd and
+  the mesh run on a device backend over the open kernel module, on a node
+  image without NVIDIA's user-space packages.
+  [`tools/hosted_dependency_audit.py`](tools/hosted_dependency_audit.py)
+  ([`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)) is
+  the gate for release roots, node images and running nodes.
+  `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
+  a release root with any finding outside
+  [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
+  may only shrink. It lists 31 files:
+  - the 25 serving adapters, whose kernels and stage runner run through the
+    CUDA runtime and driver API (`libcuda.so.1`, `libcudart.so.13`). The
+    hub's API also loads an adapter for its descriptor, so the hub ships
+    them too;
+  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`, because weightd's
+    memory code uses the driver API and its client calls share objects with
+    it (`runtime/spark_weightd.c`, `runtime/spark_weightd_worker.c`);
+  - the RDMA transport (`libcuda.so.1`), for those weightd client calls; it is
+    host C and links no CUDA runtime;
+  - `sparkpipe_model_residentd`, whose boundary buffers and streams go
+    through `spark_gpu.h` (`libcudart.so.13`);
+  - the CUDA device library (`libcudart.so.13`).
+
+  `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
+  `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
+  library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
+  - that device backend;
+  - a build flavour that links neither library;
+  - weightd's memory through the device layer. The shared-memory entry
+    points exist on the CUDA and host backends
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
+    The nvrm backend refuses them until its part lands. weightd still calls
+    the driver directly. Converting it takes the driver library out of
+    `sparkpipe_weightd`, `weightd_warm`, `weightdctl` and the transport.
+- The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
+  builds and passes the audit, but no node boots it yet. Still to build:
+  - a disk install that has run on a node:
+    [`install_disk.sh`](tools/hosted_image/install_disk.sh) installs onto a
+    node's disk and keeps `/home`. Its dry run, `make hosted-disk-dryrun`,
+    passes on a partitioned disk-image file: install, rollback, the refusal
+    while a set-aside directory exists, a second install and the audit gate.
+    It has not yet installed onto a node's disk, and no disk it installed
+    has booted. It carries the node's `/var/lib/tailscale`, so a reimaged
+    node rejoins the tailnet as itself; the dry run checks the copy;
+  - a new node's first tailnet login:
+    [`tools/tailscale_join.sh`](tools/tailscale_join.sh)
+    ([`docs/TAILSCALE_JOIN.md`](docs/TAILSCALE_JOIN.md)) logs a node in
+    from an auth-key file with no browser. It has run only against fake
+    commands. It needs the tailnet's tag and a reusable, pre-approved key or
+    an OAuth client before it can run on a node;
+  - proving it on a spare Spark and on a four-node group against the
+    factory OS.
+
+  These node and hub functions call `nvidia-smi` or DGX OS tools, which the
+  image does not carry, and need replacements:
+  - the hub's GPU clock cap (`nvidia-smi -lgc`) and the post-reboot clock
+    check;
+  - the baseline audit's GPU check;
+  - the node telemetry monitor;
+  - the queue's GPU process listing;
+  - GPU persistence (the factory OS runs `nvidia-persistenced`);
+  - `mlnx_qos`, which sets RoCE trust, PFC and buffers in
+    `sparkpipe-roce-qos`, the rail 2 fabric script and the agent's mesh
+    check.
 - The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
   has buffers in the five spaces, register and map_file, queues, events and
   kernel launch, with host, CUDA and Metal backends built as one shared
@@ -1863,6 +1949,27 @@ and the multidev docs on 2026-09-28. Line numbers are in
   target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
   kernel launch (it refuses kernel libraries today) and graph capture and
   replay.
+- The nvrm backend (`runtime/device/nvrm/`,
+  [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
+  from the pinned open kernel module (580.178.04) and open-gpu-doc, the
+  `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
+  version 5 packer tested on release-built kernels, device open, memory
+  and kernel launch below the backend entries, and backend entries for
+  initialization, every memory space, registered, file-backed and
+  pageable memory, copy-engine copies and fills, queues (one GPFIFO ring
+  each, compute and copy ordered on a 64-bit timeline), events, waits
+  between queues, host callbacks and timing; the device contract passes on
+  GB10 and memory bandwidth is at par with `cudaMalloc`. The barrier count a kernel needs is
+  not read from its cubin yet (the packer takes it as an input). Kernel libraries (cubins with PTX parameter
+  manifests) load and launch through the device layer with the parameter
+  block as constants. Missing: the kernel registration entry points and
+  the hosted LM_LAUNCH template that map nvcc's host stubs to those
+  kernels; command lists replacing graphs; memory shared with weightd;
+  TMA descriptors; fault reports (a hung queue is waited on forever).
+  Host-backed memory registers 4 KiB pages and reads 18% slower than
+  device memory. Production modules call the CUDA runtime directly
+  (above), so even a complete backend serves nothing until they move
+  behind the device layer or a GPU API of our own.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,

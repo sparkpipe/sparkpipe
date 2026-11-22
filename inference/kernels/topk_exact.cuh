@@ -2,6 +2,7 @@
 
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/topk_exact_plan.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_TOPK_RADIX_BITS 8u
 #define LM_TOPK_BUCKETS (1u << LM_TOPK_RADIX_BITS)
@@ -346,7 +347,7 @@ void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_
 #include "inference/kernels/topk_exact_cluster.cuh"
 
 template<uint32_t THREADS>
-static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, cudaStream_t stream)
+static inline SparkGpuError LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, SparkGpuStream stream)
 {
 	const float *values = scores;
 	const uint32_t *positions = 0;
@@ -355,7 +356,7 @@ static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, 
 	if ( rows > chunked_rows || LmTopkExactCandidateEntries(n,k,chunk) == 0u || LmTopkExactClusterFits(rows,n,k) != 0u )
 		return(LmTopkExactRowsLaunch<THREADS>(scores,rows,n,k,out_indices,stream));
 	if ( scratch_values == 0 || scratch_positions == 0 || (uint64_t)rows * LmTopkExactCandidateEntries(n,k,chunk) * 2u > scratch_entries )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	while ( (level = LmTopkExactCandidateEntries(length,k,chunk)) != 0u )
 	{
 		float *next_values = scratch_values + (uint64_t)half * (scratch_entries / 2u);
@@ -367,5 +368,5 @@ static inline cudaError_t LmTopkExactLaunch(const float *scores, uint32_t rows, 
 		half ^= 1u;
 	}
 	LM_LAUNCH((LmTopkExactGatherKernel<THREADS>),rows,THREADS,0,stream,values,positions,length,k,out_indices);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

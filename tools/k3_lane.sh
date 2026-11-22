@@ -9,7 +9,7 @@ if [ -n "${K3_RECORD:-}" ]; then
   done
 fi
 : "${K3_LANE:?K3_LANE is the weightd mesh lane (1..3, never 0)}"
-: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
+: "${K3_FIRMWARE:?K3_FIRMWARE is a local directory holding sparkpipe_model_residentd, libk3_tp16_serving_adapter.so and its libk3_tp16_serving_adapter.so.kernels directory, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so, weightd_warm and sparkpipe_model_batch}"
 : "${K3_WEIGHTD_SOCKET:?K3_WEIGHTD_SOCKET is the running weightd socket on every node}"
 : "${K3_MEMORY_MAX:?K3_MEMORY_MAX is the residentd unit MemoryMax, e.g. 10G}"
 : "${K3_STATE_BUDGET_BYTES:?K3_STATE_BUDGET_BYTES is the per-rank KDA state + windows + MLA KV + scratch budget the runner enforces}"
@@ -24,6 +24,7 @@ HEX=0123456789abcdef
 SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
 UNIT="sp-k3-rd$K3_LANE"
 ADAPTER_FILE=libk3_tp16_serving_adapter.so
+LANE_ADAPTER=lib/libk3_serving_adapter.so
 PACK_DIR=sparkdata/k3.mxfp4.tp16/packs
 host_of() { echo "spark${HEX:$1:1}"; }
 root_of() { echo "/home/$1/k3-lanes/lane$K3_LANE/root"; }
@@ -62,8 +63,46 @@ render() {
     --weightd-socket "$K3_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
+firmware_layout() {
+  printf '%s %s\n' \
+    bin/sparkpipe_model_residentd sparkpipe_model_residentd \
+    bin/weightd_warm weightd_warm \
+    "$LANE_ADAPTER" "$ADAPTER_FILE" \
+    "$LANE_ADAPTER.kernels" "$ADAPTER_FILE.kernels" \
+    lib/runtime_libs/libsparkpipe_device_cuda.so runtime_libs/libsparkpipe_device_cuda.so \
+    lib/hidden_transport.so libhidden_transport_spark_host_rdma_verbs.so
+}
+
+firmware_kernels_check() {
+  local staged source missing=""
+  while read -r staged source; do
+    case "$source" in *.kernels) [ -d "$K3_FIRMWARE/$source" ] || missing="$missing $K3_FIRMWARE/$source" ;; esac
+  done < <(firmware_layout)
+  [ -z "$missing" ] && return 0
+  echo "k3_lane setup:$missing is missing; every rank gets each module with its kernels directory, which the module's build installs beside it" >&2
+  exit 1
+}
+
+firmware_kernels_staged() {
+  local root="$1" staged source
+  while read -r staged source; do
+    case "$source" in *.kernels) printf ' %s/%s' "$root" "$staged" ;; esac
+  done < <(firmware_layout)
+}
+
+stage_local() {
+  local root="$1" staged source
+  firmware_kernels_check
+  mkdir -p "$root/bin" "$root/lib/runtime_libs"
+  while read -r staged source; do
+    rm -rf "${root:?}/$staged"
+    cp -R "$K3_FIRMWARE/$source" "$root/$staged"
+  done < <(firmware_layout)
+}
+
 setup() {
-  local generated rank host root pack
+  local generated rank host root pack staged source
+  firmware_kernels_check
   generated="$(mktemp -d)"
   render "$generated" >/dev/null
   for rank in $(seq 0 15); do
@@ -71,11 +110,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$K3_FIRMWARE/sparkpipe_model_residentd" "$K3_FIRMWARE/weightd_warm" "$host:$root/bin/"
-      scp -q "$K3_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/libk3_serving_adapter.so"
-      scp -q "$K3_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
-      scp -q "$K3_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
+      $SSH "$host" "$(lane_weight_check "$host" "$pack" "$pack.experts" "$pack.sha256") && mkdir -p $root && find $root -type l -delete && rm -rf$(firmware_kernels_staged "$root") && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      while read -r staged source; do
+        scp -q -r "$K3_FIRMWARE/$source" "$host:$root/$staged"
+      done < <(firmware_layout)
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       $SSH "$host" "head -c 64 $pack.sha256 > $root/packs/pack.sha256"
@@ -155,6 +193,7 @@ batch() {
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   setup) setup ;;
+  stage-local) stage_local "${2:?stage-local ROOT}" ;;
   start) start ;;
   status) status ;;
   stop) stop ;;
@@ -162,5 +201,5 @@ case "${1:-}" in
   clean) clean ;;
   batch) batch "${2:?batch BATCH_JSON}" ;;
   archive) lane_archive "${2:?archive RUN_ID DESTINATION}" "${3:?archive RUN_ID DESTINATION}" ;;
-  *) echo "usage: $0 render DIR|setup|start|status|stop|reclaim|clean|batch FILE|archive RUN_ID DEST" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|setup|stage-local ROOT|start|status|stop|reclaim|clean|batch FILE|archive RUN_ID DEST" >&2; exit 2 ;;
 esac

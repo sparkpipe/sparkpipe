@@ -132,8 +132,10 @@ static void ProbeExpertsCase(uint32_t rows,cudaStream_t stream)
 	PROBE_CUDA(cudaMalloc((void **)&weight,(uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * PROBE_EXPERT_INPUT));
 	PROBE_CUDA(cudaMalloc((void **)&device_scale,scale_count * sizeof(float)));
 	PROBE_CUDA(cudaMemcpy(device_scale,unit_scale.data(),scale_count * sizeof(float),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	scale = LmScaleTensorBuild(device_scale,LM_SCALE_ENCODING_F32,PROBE_EXPERTS,PROBE_EXPERT_OUTPUT,PROBE_EXPERT_INPUT,1u,LmFp8::kScaleGroup);
 	PROBE_CUDA(cudaMemcpy(device_route,route.data(),pairs * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	ProbeFillKernel<<<256,256>>>(weight,(uint64_t)PROBE_EXPERTS * PROBE_EXPERT_OUTPUT * PROBE_EXPERT_INPUT,11u,1u);
 	ProbeFillKernel<<<64,256>>>(activation,(uint64_t)rows * PROBE_EXPERT_INPUT,5u,0u);
 	PROBE_CUDA(cudaDeviceSynchronize());

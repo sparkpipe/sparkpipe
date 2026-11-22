@@ -2,8 +2,10 @@
 
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/mma.cuh"
+#include "runtime/launch.h"
 #include <math.h>
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_PREFILL_ATTN_THREADS 256u
 #define LM_PREFILL_ATTN_WARPS 8u
@@ -609,7 +611,7 @@ __global__ void LmPrefillBlockTableKernel(
 }
 
 template<uint32_t HEADS, uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
-static inline cudaError_t LmPrefillBlockTableLaunch(
+static inline SparkGpuError LmPrefillBlockTableLaunch(
 	LmKvView cache,
 	const uint32_t *sequence_of_row,
 	uint32_t rows,
@@ -617,20 +619,20 @@ static inline cudaError_t LmPrefillBlockTableLaunch(
 	uint32_t table_blocks,
 	uint32_t *segment_ends,
 	uint32_t segment_capacity,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / HEADS;
 	static_assert(QUERIES % HEADS == 0u && ROWS_PER_BLOCK < (1u << (32u - LM_PREFILL_ATTN_COUNT_SHIFT)), "a block's row count fits its table entry");
 	if (rows == 0u || sequence_of_row == 0 || block_table == 0 || table_blocks < (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (segment_ends != 0 && segment_capacity == 0u)
-		return cudaErrorInvalidValue;
-	LmPrefillBlockTableKernel<ROWS_PER_BLOCK><<<1, 32, 0, stream>>>(cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
-	return cudaPeekAtLastError();
+		return SPARK_GPU_ERROR_INVALID_VALUE;
+	LM_LAUNCH((LmPrefillBlockTableKernel<ROWS_PER_BLOCK>), 1, 32, 0, stream, cache, sequence_of_row, rows, block_table, table_blocks, segment_ends, segment_capacity);
+	return SparkGpuPeekAtLastError();
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
-static inline cudaError_t LmLatentAttentionPrefillLaunch(
+static inline SparkGpuError LmLatentAttentionPrefillLaunch(
 	const uint16_t *query_latent_bf16,
 	const uint16_t *query_rope_bf16,
 	LmKvView cache,
@@ -642,28 +644,28 @@ static inline cudaError_t LmLatentAttentionPrefillLaunch(
 	uint32_t rows,
 	const uint32_t *block_table,
 	uint32_t table_blocks,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmPrefillAttnSharedBytes<LATENT + ROPE, QUERIES>();
 	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / 4u;
 	if (rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
 		(block_table != 0 && table_blocks == 0u))
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	if (heads == 4u)
 	{
 		static bool granted = false;
 		if (!granted)
 		{
-			cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-			if (error != cudaSuccess)
+			SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+			if (error != SPARK_GPU_SUCCESS)
 				return error;
 			granted = true;
 		}
-		LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES><<<block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+		LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, false, QUERIES>), block_table != 0 ? table_blocks : (rows + ROWS_PER_BLOCK - 1u) / ROWS_PER_BLOCK, LM_PREFILL_ATTN_THREADS, shared, stream,
 			query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, 0, 0, 0, 0u);
-		return cudaPeekAtLastError();
+		return SparkGpuPeekAtLastError();
 	}
-	return cudaErrorInvalidValue;
+	return SPARK_GPU_ERROR_INVALID_VALUE;
 }
 
 template<uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
@@ -673,7 +675,7 @@ static __host__ __device__ __forceinline__ uint64_t LmPrefillSparseUnionEntries(
 }
 
 template<class Geometry, uint32_t LATENT, uint32_t ROPE, uint32_t SELECTED, uint32_t QUERIES = LM_PREFILL_ATTN_QUERIES>
-static inline cudaError_t LmLatentAttentionSparsePrefillLaunch(
+static inline SparkGpuError LmLatentAttentionSparsePrefillLaunch(
 	const uint16_t *query_latent_bf16,
 	const uint16_t *query_rope_bf16,
 	LmKvView cache,
@@ -691,7 +693,7 @@ static inline cudaError_t LmLatentAttentionSparsePrefillLaunch(
 	uint8_t *union_masks,
 	uint32_t *union_counts,
 	uint64_t union_entries,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	constexpr uint32_t shared = LmPrefillAttnSharedBytes<LATENT + ROPE, QUERIES>();
 	constexpr uint32_t ROWS_PER_BLOCK = QUERIES / 4u;
@@ -700,22 +702,22 @@ static inline cudaError_t LmLatentAttentionSparsePrefillLaunch(
 	if (heads != 4u || rows == 0u || query_latent_bf16 == 0 || query_rope_bf16 == 0 || sequence_of_row == 0 || row_position == 0 || output_bf16 == 0 ||
 		selected_positions == 0 || selected_count == 0u || union_positions == 0 || union_masks == 0 || union_counts == 0 ||
 		(block_table != 0 && table_blocks == 0u) || (uint64_t)blocks * capacity > union_entries)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	{
 		static bool granted = false;
 		if (!granted)
 		{
-			cudaError_t error = cudaFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-			if (error != cudaSuccess)
+			SparkGpuError error = SparkGpuFuncSetAttribute((const void *)LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>, SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+			if (error != SPARK_GPU_SUCCESS)
 				return error;
 			granted = true;
 		}
 	}
 	if (selected_count != SELECTED)
-		return cudaErrorInvalidValue;
-	LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED><<<blocks, LM_PREFILL_UNION_THREADS, 0, stream>>>(
+		return SPARK_GPU_ERROR_INVALID_VALUE;
+	LM_LAUNCH((LmPrefillSparseUnionKernel<ROWS_PER_BLOCK, SELECTED>), blocks, LM_PREFILL_UNION_THREADS, 0, stream,
 		selected_positions, row_position, rows, block_table, capacity, union_positions, union_masks, union_counts);
-	LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES><<<blocks, LM_PREFILL_ATTN_THREADS, shared, stream>>>(
+	LM_LAUNCH((LmLatentAttentionPrefillKernel<Geometry, 4u, LATENT, ROPE, true, QUERIES>), blocks, LM_PREFILL_ATTN_THREADS, shared, stream,
 		query_latent_bf16, query_rope_bf16, cache, sequence_of_row, row_position, qk_scale, output_bf16, rows, block_table, union_positions, union_masks, union_counts, capacity);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }

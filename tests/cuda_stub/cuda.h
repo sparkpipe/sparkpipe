@@ -21,6 +21,12 @@ typedef struct CUmemGenericAllocationHandle_st *CUmemGenericAllocationHandle;
 #define CUDA_ERROR_INVALID_VALUE 1
 #define CUDA_ERROR_OUT_OF_MEMORY 2
 #define CUDA_ERROR_INVALID_DEVICE 101
+#define CUDA_ERROR_INVALID_CONTEXT 201
+#define CUDA_ERROR_ALREADY_MAPPED 208
+#define CUDA_ERROR_NOT_MAPPED 211
+#define CUDA_ERROR_INVALID_HANDLE 400
+#define CUDA_ERROR_NOT_PERMITTED 800
+#define CUDA_ERROR_NOT_SUPPORTED 801
 
 typedef enum CUmemAllocationType_enum
 {
