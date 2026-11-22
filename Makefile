@@ -1060,7 +1060,7 @@ $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBR
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
-HOSTED_RELEASE_NODE_FILES := build/sparkpipe_model_residentd build/weightd_warm $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch $(DEVICE_CUDA_LIBRARY)
+HOSTED_RELEASE_NODE_FILES := build/sparkpipe_model_residentd build/weightd_warm $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch
 HOSTED_RELEASE_HUB_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt
 HOSTED_RELEASE_HOST_ONLY_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/sparkpipe_model_batch build/weightd_receipt tools/fleet_node_agent.sh
 HOSTED_RELEASE_ADAPTERS = $(sort $(foreach variable,$(filter-out %_METAL_SERVING_ADAPTER,$(filter %_SERVING_ADAPTER,$(.VARIABLES))),$($(variable))))
