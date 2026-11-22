@@ -87,6 +87,7 @@ endif
 NVRM_RELEASE_STAMP := build/nvrm_module_release
 NVRM_RELEASE_DEPENDENCIES := runtime/device/nvrm/release/$(NVRM_MODULE_RELEASE)/nvrm_release.h $(NVRM_RELEASE_STAMP)
 DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/release/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-kernel-modules/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-doc
+NVRM_BUILD_DIR := build/nvrm
 WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
 WEIGHTD_DEVICE_SOURCES := $(WEIGHTD_DEVICE_SOURCES_$(SPARKPIPE_DEVICE))
@@ -1051,10 +1052,14 @@ HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB
 HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
 HOSTED_RELEASE_ROOT ?= build/hosted_release_root
 HOSTED_RELEASE_GATE_FLAGS ?=
+HOSTED_RELEASE_NVRM_FILES := build/sparkpipe_weightd build/weightd_warm build/weightdctl
+HOSTED_RELEASE_SOURCE = $(if $(filter $(1) $(1:.kernels=),$(HOSTED_RELEASE_NVRM_FILES)),$(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1)),$(1))
+HOSTED_RELEASE_SOURCES = $(foreach file,$(HOSTED_RELEASE_FILES),$(call HOSTED_RELEASE_SOURCE,$(file)))
+HOSTED_RELEASE_STAGED = $(foreach file,$(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS),$(if $(filter $(file),$(call HOSTED_RELEASE_SOURCE,$(file))),$(file),$(call HOSTED_RELEASE_SOURCE,$(file))=$(file)))
 
 .PHONY: hosted-release-gate
-hosted-release-gate: $(HOSTED_RELEASE_FILES)
-	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS)
+hosted-release-gate: $(HOSTED_RELEASE_SOURCES)
+	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_STAGED)
 
 MODULE_KERNELS_FLAGS = --keep --keep-dir $@.kernels
 define nvcc_module
@@ -1203,7 +1208,6 @@ test-working-set-rollback: build/test_working_set_rollback
 build/test_modules:
 	mkdir -p build/test_modules
 
-NVRM_BUILD_DIR := build/nvrm
 NVRM_COMPILE_FLAGS := -DSPARKPIPE_DEVICE_NVRM $(DEVICE_NVRM_INCLUDE_FLAGS)
 NVRM_RUNTIME_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(RUNTIME_SOURCES))
 NVRM_RUNTIME_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_runtime.a
