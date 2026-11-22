@@ -19,6 +19,7 @@ RUNTIME_VERBS = ("daemon-reload", "restart", "start", "stop", "try-reload-or-res
 LIVE_COMMANDS = ("sysctl", "udevadm", "modprobe", "loginctl", "hostnamectl", "update-grub")
 NODE_STEPS = ("install_packages", "install_node_identity", "install_node_layout", "install_sshd_hardening",
               "install_efi_boot_order", "rebuild_initramfs", "install_ceph_policy", "heal_time_sync")
+FABRIC_QOS_UNIT = "sparkpipe-roce-qos.service"
 
 
 def load(name, path):
@@ -102,6 +103,19 @@ class Recorder:
                 "deferred_to_node": sorted(set(self.node)), "deferred_live": self.live}
 
 
+def fabric_qos_assets(module):
+    return (f"/etc/systemd/system/{FABRIC_QOS_UNIT}", "/usr/local/sbin/sparkpipe_roce_qos.sh", module.DSCP_TRUST_RUNTIME)
+
+
+def stage_fabric_qos(module, payload):
+    assets = payload["assets"]
+    missing = [path for path in fabric_qos_assets(module) if path not in assets]
+    if missing:
+        raise module.BrickproofError(f"the payload lacks the fabric QoS assets {missing}")
+    module.install_assets({path: assets[path] for path in fabric_qos_assets(module)})
+    module.run(["systemctl", "enable", FABRIC_QOS_UNIT])
+
+
 def stage(module, payload, rootfs):
     read, write = os.pipe()
     child = os.fork()
@@ -116,6 +130,7 @@ def stage(module, payload, rootfs):
             result = module.remote_apply(payload)
             if result.get("profile") != "staged":
                 raise module.BrickproofError(f"baseline applied profile {result.get('profile')}, expected staged")
+            stage_fabric_qos(module, payload)
             document = recorder.report(payload["source_commit"])
         except Exception as error:
             document = {"error": f"{type(error).__name__}: {error}"}
