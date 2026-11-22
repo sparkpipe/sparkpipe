@@ -369,6 +369,76 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     `tools/spec_offline/drafter_replay_compare.py --dspark`, which replays
     the schedule through `block_draftd.py`'s `RingContext` and `DsparkFast`.
 
+## Engine draft server lane switch
+
+The K3.1 Pro lane can be served by `sparkpipe_draftd` with the K3.1 Pro DSpark
+engine module instead of `block_draftd.py`. The lane record's `draftd.server`
+chooses: `block_draftd` (today) or `engine`. Its `draftd.engine` names the
+engine root, the lane's name in the root's config, and the two user units.
+The lane's `hub_start` and `hub_stop` in `deployment/hub/model_swap.json`
+carry the same settings (`DRAFTD_SERVER`, `DRAFTD_ENGINE_*`,
+`DRAFTD_WEIGHTD_UNIT`), and `tests/test_model_swap_hub_services.py` keeps
+them equal to the record.
+
+With `DRAFTD_SERVER=engine`, `tools/hub_draftd.sh`:
+- `start`: starts the hub's weightd (`sparkpipe-weightd-hub`) and the engine
+  draft server (`sparkpipe-draftd-engine`) if they are not running, waits
+  for their sockets, then activates the lane through the control socket. The
+  activation binds the pack through weightd's HOLD, checks free video memory
+  against the pack and the lane's context cap, and exits 1 with the module's
+  numbers when it does not fit.
+- `stop`: deactivates the lane. Both units keep running; an inactive lane
+  answers `UNAVAILABLE` at once, so the target decodes plainly.
+- `status`: the draft server's `status` line for every lane.
+
+The engine root, `/srv/workspace/sparkpipe/draftd-engine`, is staged from
+merged main:
+- `bin/sparkpipe_draftd` and `bin/sparkpipe_weightd`, built with
+  `CUDA_HOME=/usr/local/cuda-13.1`; `modules/k31_dspark_draft_stage.so`, from
+  `make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1
+  CUDA_ARCH=sm_120a CUDA_COMPUTE_ARCH=compute_120a drafter-modules`;
+- `packs/k31dspark.bf16.tp1.rank0.sp` with its `.sha256`, `.experts` and
+  receipt, cut by `tools/drafter_pack.py --drafter k31dspark` from the
+  drafter checkpoint and the target shard the lane record names;
+- `config/draftd.json`, a copy of `deployment/hub/draftd_engine.json`. Its
+  sockets live under `run/`, beside weightd's log. weightd keeps the default
+  node KV root, the serving user's home, as the release kit never sets
+  `SPARK_KV_NODE_ROOT`; it holds no KV here, and its purge walk only counts
+  stores and deletes leftover temporaries.
+
+The hooks run the `hub_draftd.sh` in the lane's `draftd.source` directory, so
+that copy is replaced from merged main before the switch. The context cap is
+12 GiB: with the 10.07 GB pack, it leaves room for the scratch on the 32 GB
+card. To switch, set `server` to `engine` in the record and `DRAFTD_SERVER`
+in the lane's two hooks, and deploy the controller config; the next
+activation of the model starts the engine lane. To switch back, set both to
+`block_draftd` and stop `sparkpipe-draftd-engine`, which holds the lane's tap
+and draft ports.
+
+**Soak before the switch stays.** `tools/spec_soak.py` drives the lane's API
+on the hub with a fixed workload built from this repository's files: 48
+rename edits of single files (1.5K to 5.7K prompt tokens), 16 after other
+files (about 75K tokens) and 8 after more (about 112K). Even tasks decode
+greedily; odd tasks sample with a seed fixed per task. Repeats reuse cached
+prefixes, so the engine module copies donor prefixes as it would in service.
+Run it once per arm, an hour each, on the same workload, never on user
+traffic:
+
+```sh
+python3 tools/spec_soak.py run --engine http://127.0.0.1:8481 --chat-dir /srv/workspace/sparkpipe/k31-chat \
+    --model kimi-k3.1-pro --log /srv/workspace/sparkpipe/logs/k31_pro-kv-api.log --minutes 60 --out SOAK/python \
+    --unit sparkpipe-draftd-k31
+python3 tools/spec_soak.py run ... --out SOAK/engine --unit sparkpipe-draftd-engine --unit sparkpipe-weightd-hub
+python3 tools/spec_soak.py compare SOAK/python SOAK/engine
+```
+
+`compare` sums each arm's drafter counters from the API log's
+`batch_speculation` lines (an API restart starts a new segment) and passes
+when the engine arm's accepted drafts per round are within 2% of the Python
+arm's, its `UNAVAILABLE` rate is no higher, and neither engine unit
+restarted. Deactivate and activate the model once inside the engine hour so
+the lane rebinds its pack from weightd's held copy.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane

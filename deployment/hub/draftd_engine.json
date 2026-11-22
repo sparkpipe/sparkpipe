@@ -1,0 +1,28 @@
+{
+ "weightd_socket": "/srv/workspace/sparkpipe/draftd-engine/run/weightd.sock",
+ "control_socket": "/srv/workspace/sparkpipe/draftd-engine/run/draftd.sock",
+ "lanes": [
+  {
+   "name": "kimi-k3.1-pro",
+   "host": "127.0.0.1",
+   "draft_port": 7722,
+   "target_model": "kimi-k3.1-pro",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7721,
+    "model_tag": "k31_stage",
+    "hidden": 7168,
+    "entries": "o75,o79,o83,o87,o91"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/k31_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/k31dspark.bf16.tp1.rank0.sp",
+    "model": "k31dspark",
+    "revision": "6a2ef20a05ef",
+    "context_bytes": 12884901888,
+    "wait_ms": 30
+   }
+  }
+ ]
+}
