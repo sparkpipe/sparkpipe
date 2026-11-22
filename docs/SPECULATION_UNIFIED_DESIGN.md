@@ -140,8 +140,33 @@ lanes' drafters do not time-slice the GPU between processes.
   (`ring/transport/draft_server.c`), an optional tap stream
   (`src/spark_tap_stream_reader.c`, which reads the tap rank's SPT2 stream
   or a recording) and a drafter.
-- **Drafter:** today it is the host replay drafter, which can require a
-  sequence's taps before it drafts. Engine drafters come next.
+- **Drafter:** a lane's drafter is either the host replay drafter, which
+  can require a sequence's taps before it drafts, or an engine drafter.
+- **Engine drafters** are modules: shared libraries that export
+  `spark_drafter_module_interface` with the versioned, model-neutral ABI in
+  `include/sparkpipe/spark_drafter_module.h` (`open`, `ingest`, `propose`,
+  `close`). The lane names its `module`, `pack`, `model`, `revision` and
+  `context_bytes`; the config names `weightd_socket` and `control_socket`.
+  `sparkpipe_draftd` stays device-neutral and loads a lane's module with
+  `dlopen` when the lane first activates; a module of another ABI is refused
+  at load, naming both versions.
+- **Lifecycle:** an engine lane starts inactive and answers every request at
+  once with `UNAVAILABLE` and no nodes, so its target decodes plainly. The
+  hooks that start and stop a lane's model call
+  `sparkpipe_draftd --control SOCKET activate LANE` and `deactivate LANE`.
+  Activation hands the module the pack, its sha256 sidecar and the context
+  cap; the module checks free device memory against the pack plus the cap,
+  binds the pack through weightd (on a device without unified memory, HOLD
+  and a copy into the lane's own memory) and reports the bytes and the bind
+  time, or the activation is refused with the module's numbers and the
+  command exits 1. Deactivation releases the lane's device memory. Nothing is
+  evicted and nothing falls back. `status` lists every lane, active or not.
+- **Test:** `tests/test_draftd_engine.c` runs an in-process weightd and
+  `sparkpipe_draftd` with a probe module built against the CUDA stub in its
+  discrete mode (`tests/fixtures/drafter_probe_module.c`, which binds the
+  pack and drafts only the root): the inactive answer, activate, a draft,
+  deactivate, a second activate from the held copy, a refusal with the
+  memory numbers, a module of drafter ABI 99 and an unknown lane.
 - **Crash behaviour:** if the process dies, every lane's open exchange
   ends at once and new connections are refused. Each lane then decodes
   without model drafts, with the engine's usual backoff, until a restart
