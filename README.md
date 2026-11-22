@@ -387,7 +387,9 @@ startup scan reads the shards on eight threads. The node's own KV on disk,
 every lane's snapshot store and every lane's spill backing, shares one
 node-wide quota of 500 GB (`SPARK_KV_NODE_QUOTA_BYTES`) kept in a ledger file
 in the user's home, `~/.sparkpipe-kv-ledger`. No lane has a maximum of its
-own. A write that would take the node past the quota evicts the node's oldest
+own. A lane whose weightd and ranks start with `SPARK_KV_NODE_ROOT` set to a
+folder keeps its own ledger there and looks at no KV outside it: a test lane
+beside a serving one uses this so that it never cuts the serving lane's files. A write that would take the node past the quota evicts the node's oldest
 snapshot file first, whichever lane holds it: the lane's own, another running
 lane's (asked through the ledger, freed within a second), or a stopped lane's
 (deleted directly). A write is refused only when nothing evictable is left,

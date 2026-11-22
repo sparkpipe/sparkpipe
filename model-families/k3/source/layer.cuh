@@ -274,6 +274,16 @@ struct K3LayerBuffers
 #define K3_EXPERT_CELLS(b) \
 	((b)->expert_w1_output != 0u && (b)->expert_w1_output < K3_EXPERT_INTERMEDIATE * 2u)
 
+#define K3_EXPERT_CELL_REFUSE(name,rows,pairs,outputs,inputs) \
+	LM_LAUNCH_REFUSE("k3 experts: the cell kernel refused " name " for %u rows (%u routed pairs, %u x %u); a pack interleaved in %u-deep tiles runs its " \
+		"experts on it when the input is a multiple of %u and the output of %u, so the weights and activation need 16-byte alignment and the route " \
+		"tables must be bound\n",(rows),(pairs),(outputs),(inputs),LM_SKINNY_CELL_TILE_K,LM_SKINNY_CELL_TILE_K,LM_SKINNY_CELL_NEURONS)
+
+static uint32_t K3ExpertCellKernel(const K3LayerBuffers *b, uint32_t input_dimension, uint32_t output_dimension)
+{
+	return(b->expert_interleave != 0u && LmSkinnyCellShapeFits(input_dimension,output_dimension,b->expert_tile_k) != 0u ? 1u : 0u);
+}
+
 #define K3_ROUTER_SLICE(b,rows) \
 	((float *)((b)->latent_bf16 + (uint64_t)(rows) * K3_RANK_DIM(b,routed_down_rows,K3_ROUTED_EXPERT_HIDDEN)))
 
@@ -1338,10 +1348,14 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	gemm.output_bf16 = b->gate_up_bf16;
 	gemm.source_row_map = b->route_source_token;
 	gemm.source_row_count = rows;
-	status = b->expert_interleave != 0u ? LmSkinnyCellExperts(b->expert_w1_weight,b->latent_bf16,b->gate_up_bf16,
-		b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,moe_in,w1_out,b->expert_tile_k,stream) : LM_LAUNCH_ERR_SHAPE;
-	if ( status != LM_LAUNCH_ERR_SHAPE )
+	if ( K3ExpertCellKernel(b,moe_in,w1_out) != 0u )
+	{
+		status = LmSkinnyCellExperts(b->expert_w1_weight,b->latent_bf16,b->gate_up_bf16,
+			b->group_row_offset,b->route_source_token,K3_EXPERTS,packed_rows,rows,0u,moe_in,w1_out,b->expert_tile_k,stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			K3_EXPERT_CELL_REFUSE("w1",rows,packed_rows,w1_out,moe_in);
 		return(status);
+	}
 	if ( b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )
@@ -1391,9 +1405,14 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 	gemm.source_row_map = 0;
 	gemm.source_row_count = 0u;
 	const uint32_t w2_in = K3_EXPERT_INTERMEDIATE;
-	status = b->expert_interleave != 0u ? LmSkinnyCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
-		b->group_row_offset,0,K3_EXPERTS,packed_rows,rows,1u,w2_in,moe_in,b->expert_tile_k,stream) : LM_LAUNCH_ERR_SHAPE;
-	if ( status == LM_LAUNCH_ERR_SHAPE && b->expert_interleave != 0u )
+	if ( K3ExpertCellKernel(b,w2_in,moe_in) != 0u )
+	{
+		status = LmSkinnyCellExperts(b->expert_w2_weight,b->intermediate_bf16,b->gate_up_bf16,
+			b->group_row_offset,0,K3_EXPERTS,packed_rows,rows,1u,w2_in,moe_in,b->expert_tile_k,stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+			K3_EXPERT_CELL_REFUSE("w2",rows,packed_rows,moe_in,w2_in);
+	}
+	else if ( b->expert_interleave != 0u )
 	{
 		if ( b->expert_tile_k == 32u )
 			status = LmGemmWeightOnlyInterleavedLaunch<
@@ -1408,7 +1427,7 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 				K3_TOP_K,K3_EXPERTS,w2_in,moe_in,
 				multiprocessors,true,stream);
 	}
-	else if ( status == LM_LAUNCH_ERR_SHAPE )
+	else
 		status = LmGemmWeightOnlyLaunch<
 			Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 			&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,

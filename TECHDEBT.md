@@ -1494,23 +1494,6 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   the first step of each row count, so the first request at a new batch width
   pays the capture. Prewarm them at load.
 
-- Eight launch sites still choose between two designed kernels by trying one
-  and taking the other when the first returns `LM_LAUNCH_ERR_SHAPE` or
-  `LM_LAUNCH_ERR_TILE`, instead of selecting by shape:
-  - `model-families/k3/source/layer.cuh` (3): routed expert w1 and w2 try the
-    cell kernels, then the interleaved or weight-only GEMM.
-  - `model-families/glm52/source/glm52_stage.cuh` (2) and
-    `model-families/glm5_next/source/glm5_next_stage.cuh` (2): expert w1 and w2
-    below the stream threshold try the one-row skinny kernel, then the grouped
-    one.
-  - `inference/kernels/stream_gemm.cuh` (1): scaled FP8 tries the wide kernel,
-    then the tile shapes.
-
-  The refusal there is a selection, not a fault, so the kernels keep returning
-  a bare `LM_LAUNCH_ERR_SHAPE` or `LM_LAUNCH_ERR_TILE`. Each site needs an
-  explicit shape predicate; then the losing kernel's refusal can fail through
-  `SPARK_FAIL`, as the 20 former slow-path sites do.
-
 ## Runtime completion
 
 - `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
