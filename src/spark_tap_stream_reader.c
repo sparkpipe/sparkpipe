@@ -19,6 +19,7 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "the tap stream is lit
 #define TAP_READER_NS_PER_MS UINT64_C(1000000)
 #define TAP_READER_FORM_OUTPUT 1u
 #define TAP_READER_FORM_FINAL 3u
+#define TAP_READER_FINAL_NAME "final"
 
 #define TAP_READER_PHASE_IDLE 0u
 #define TAP_READER_PHASE_HELLO 1u
@@ -76,7 +77,7 @@ SparkStatus SparkTapStreamReaderParseEntries(const char *text, SparkTapStreamEnt
 		const size_t length = end != 0 ? (size_t)(end - cursor) : strlen(cursor);
 		if ( count == capacity )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( length == 5u && strncmp(cursor, "final", 5u) == 0 )
+		if ( length == sizeof(TAP_READER_FINAL_NAME) - 1u && memcmp(cursor, TAP_READER_FINAL_NAME, sizeof(TAP_READER_FINAL_NAME) - 1u) == 0 )
 		{
 			entries[count].form = TAP_READER_FORM_FINAL;
 			entries[count].layer = 0u;
