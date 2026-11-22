@@ -19,6 +19,10 @@
 #include "sparkpipe/spark_model_batch_engine.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_model_resident_deployment.h"
+#include "sparkpipe/spark_kv_cache.h"
+#include "sparkpipe/spark_kv_page_cache.h"
+#include "sparkpipe/spark_model_serving_adapter.h"
+#include "kv_device_copy_test_hook.h"
 
 #ifndef TEST_MODEL_SERVING_ADAPTER_PATH
 #define TEST_MODEL_SERVING_ADAPTER_PATH ""
@@ -55,6 +59,8 @@ static uint32_t test_checks;
 			fprintf(stderr,"FAIL %s:%d %s\n",__FILE__,__LINE__,name); \
 		} \
 	} while (0)
+
+static void TestRankCacheTakesLog(SparkModelBatchEngine *engine,const char *what);
 
 typedef struct TestBatchState
 {
@@ -410,6 +416,7 @@ static void TestScenarioHappyPath(const SparkModelResidentDeployment *deployment
 		"happy: the request completed cleanly");
 	CHECK( SparkModelBatchEngineFreeSlotTokenWords(engine) == 0u,
 		"happy: a finished request leaves no prompt or generated tokens and no lookup chain in its slot");
+	TestRankCacheTakesLog(engine,"happy path: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -1103,6 +1110,7 @@ static void TestScenarioChainPublishesAtBlockBoundary(const SparkModelResidentDe
 		memcmp(&lane.cache_publish_identity,&published.cache_publish_identity,sizeof(lane.cache_publish_identity)) != 0,"chain block: a follow-up computes the reply's block again as a prefill wave under its own identity");
 	TestDriveUntilTerminal(engine,&state,2u,400u);
 	CHECK(state.completed_events[2] == 1u && state.cached_tokens[2] == 4u,"chain block: the follow-up reports the first prompt only");
+	TestRankCacheTakesLog(engine,"chain publishes at block boundary: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -2828,6 +2836,169 @@ static void TestScenarioCapacityRefusedPrefill(const SparkModelResidentDeploymen
 	SparkModelBatchEngineDestroy(engine);
 }
 
+#define TEST_RANK_CACHE_PAGES 256u
+#define TEST_RANK_CACHE_SEQUENCES 64u
+#define TEST_RANK_CACHE_HEAD_DIM 2u
+#define TEST_RANK_CACHE_MAX_BLOCK_TOKENS 64u
+#define TEST_RANK_CACHE_NAMED_BLOCKS 16u
+
+typedef struct TestRankCache
+{
+	SparkKvCacheArena arena;
+	SparkKvCacheBlock blocks[TEST_RANK_CACHE_PAGES];
+	uint32_t resident_owners[TEST_RANK_CACHE_PAGES];
+	uint8_t device[TEST_RANK_CACHE_PAGES * TEST_RANK_CACHE_MAX_BLOCK_TOKENS * TEST_RANK_CACHE_HEAD_DIM];
+	SparkKvPageCache cache;
+	SparkTestKvDeviceCopy copies;
+	SparkKvPageCacheEntry entries[TEST_RANK_CACHE_PAGES];
+	SparkKvPageCacheSequence sequences[TEST_RANK_CACHE_SEQUENCES];
+	uint32_t hash_heads[TEST_RANK_CACHE_PAGES];
+	uint32_t entry_indices_by_logical_page[TEST_RANK_CACHE_PAGES];
+}
+TestRankCache;
+
+static SparkStatus TestRankCacheEvict(void *context,uint32_t logical_block_index,uint32_t resident_slot_index,uint64_t generation,
+	uintptr_t key_device_address,uint64_t key_bytes,uintptr_t value_device_address,uint64_t value_bytes)
+{
+	(void)context;
+	(void)logical_block_index;
+	(void)resident_slot_index;
+	(void)generation;
+	(void)key_device_address;
+	(void)key_bytes;
+	(void)value_device_address;
+	(void)value_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus TestRankCacheInitialize(TestRankCache *rank,uint32_t block_tokens)
+{
+	SparkKvCacheConfiguration arena;
+	SparkKvPageCacheConfiguration cache;
+	SparkStatus status;
+	if ( block_tokens == 0u || block_tokens > TEST_RANK_CACHE_MAX_BLOCK_TOKENS )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(rank,0,sizeof(*rank));
+	memset(&arena,0,sizeof(arena));
+	arena.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	arena.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	arena.logical_block_count = TEST_RANK_CACHE_PAGES;
+	arena.block_token_count = block_tokens;
+	arena.resident_block_capacity = TEST_RANK_CACHE_PAGES;
+	arena.layer_count = 1u;
+	arena.kv_head_count = 1u;
+	arena.head_dim = TEST_RANK_CACHE_HEAD_DIM;
+	arena.bytes_per_scalar = 1u;
+	arena.key_block_stride_bytes = block_tokens * TEST_RANK_CACHE_HEAD_DIM;
+	arena.key_device_base = rank->device;
+	arena.blocks = rank->blocks;
+	arena.resident_slot_logical_block_indices = rank->resident_owners;
+	arena.evict_function = TestRankCacheEvict;
+	arena.evict_context = rank;
+	status = SparkKvCacheArenaInitialize(&rank->arena,&arena);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	memset(&cache,0,sizeof(cache));
+	cache.abi_version = SPARK_KV_PAGE_CACHE_ABI_VERSION;
+	cache.descriptor_bytes = SPARK_KV_PAGE_CACHE_CONFIGURATION_BYTES;
+	cache.sequence_capacity = TEST_RANK_CACHE_SEQUENCES;
+	cache.entry_capacity = TEST_RANK_CACHE_PAGES;
+	cache.hash_bucket_count = TEST_RANK_CACHE_PAGES;
+	cache.kv_cache_arena = &rank->arena;
+	cache.entries = rank->entries;
+	cache.sequences = rank->sequences;
+	cache.hash_bucket_heads = rank->hash_heads;
+	cache.entry_indices_by_logical_page = rank->entry_indices_by_logical_page;
+	status = SparkKvPageCacheInitialize(&rank->cache,&cache);
+	if ( status == SPARK_STATUS_OK )
+		SparkTestKvAttachDeviceCopy(&rank->cache,&rank->copies,&rank->arena);
+	return(status);
+}
+
+static uint32_t TestRankCacheReplay(uint32_t block_tokens,uint32_t lane_count,SparkStatus *status_out,SparkModelServingLane *refused)
+{
+	static TestRankCache rank;
+	SparkModelServingCacheIdentity named[TEST_RANK_CACHE_NAMED_BLOCKS];
+	SparkModelServingSubmission submission;
+	SparkModelServingLane lane,later;
+	SparkModelDriverCacheLane cache_lane;
+	SparkStatus status;
+	uint32_t index,other,count,page,mutations,identity;
+	uint64_t reached;
+	*status_out = TestRankCacheInitialize(&rank,block_tokens);
+	if ( *status_out != SPARK_STATUS_OK )
+		return(0u);
+	for (index=0u; index<lane_count && MockResidentClientLaneLog(index,&lane) != 0u; index++)
+	{
+		if ( lane.cache_block_identity_count > TEST_RANK_CACHE_NAMED_BLOCKS )
+		{
+			*status_out = SPARK_STATUS_CAPACITY_EXCEEDED;
+			return(index);
+		}
+		for (identity=0u; identity<lane.cache_block_identity_count; identity++)
+			(void)MockResidentClientIdentityLog(lane.cache_block_identity_first + identity,&named[identity]);
+		*refused = lane;
+		lane.cache_block_identity_first = 0u;
+		memset(&submission,0,sizeof(submission));
+		submission.abi_version = SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION;
+		submission.descriptor_bytes = SPARK_MODEL_SERVING_SUBMISSION_BYTES;
+		submission.work_kind = MockResidentClientLaneWorkKind(index);
+		submission.flags = MockResidentClientLaneSubmissionFlags(index);
+		submission.active_sequence_count = 1u;
+		submission.lanes = &lane;
+		submission.cache_block_identities = named;
+		submission.cache_block_identity_count = lane.cache_block_identity_count;
+		status = SparkModelServingAdapterBuildDriverCacheLanes(&submission,&cache_lane,1u,&count);
+		if ( status == SPARK_STATUS_OK && submission.work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+		{
+			if ( rank.sequences[cache_lane.resident_sequence_slot].sequence_id == cache_lane.sequence_id )
+				status = SparkKvPageCacheReleaseLane(&rank.cache,cache_lane.resident_sequence_slot,cache_lane.sequence_id);
+		}
+		else if ( status == SPARK_STATUS_OK )
+		{
+			status = SparkKvPageCacheBeginLaneTransaction(&rank.cache,&cache_lane,&page,&mutations);
+			reached = cache_lane.context_token_count;
+			for (other=index + 1u; other<lane_count && MockResidentClientLaneLog(other,&later) != 0u; other++)
+				if ( later.sequence_id == lane.sequence_id && MockResidentClientLaneWorkKind(other) != SPARK_MODEL_SERVING_WORK_KIND_RELEASE )
+				{
+					if ( later.sequence_position > lane.sequence_position )
+						reached = later.sequence_position;
+					break;
+				}
+			if ( status == SPARK_STATUS_OK && (cache_lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u )
+				status = SparkKvPageCacheCompleteVerifyLane(&rank.cache,&cache_lane,reached);
+			else if ( status == SPARK_STATUS_OK )
+			{
+				if ( (cache_lane.flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PUBLISH) == 0u && reached > cache_lane.context_token_count )
+					cache_lane.context_token_count = (uint32_t)reached;
+				status = SparkKvPageCacheCompleteLane(&rank.cache,&cache_lane);
+			}
+		}
+		if ( status != SPARK_STATUS_OK )
+		{
+			*status_out = status;
+			return(index);
+		}
+		SparkTestKvDeviceCopySettle(&rank.copies);
+	}
+	*status_out = SPARK_STATUS_OK;
+	return(index);
+}
+
+static void TestRankCacheTakesLog(SparkModelBatchEngine *engine,const char *what)
+{
+	SparkModelServingLane lane = {0},refused = {0};
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t logged,replayed;
+	for (logged=0u; MockResidentClientLaneLog(logged,&lane) != 0u; logged++)
+		;
+	replayed = TestRankCacheReplay(SparkModelBatchEngineGetAdapterDescriptor(engine)->cache_block_token_count,logged,&status,&refused);
+	if ( status != SPARK_STATUS_OK )
+		fprintf(stderr,"%s: lane %u of %u was refused (%s) at position %llu, context %u, flags 0x%x\n",what,replayed,logged,SparkStatusToString(status),
+			(unsigned long long)refused.sequence_position,refused.context_token_count,refused.flags);
+	CHECK(status == SPARK_STATUS_OK && replayed == logged && logged != 0u,what);
+}
+
 static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *deployment,const char *runtime_root)
 {
 	TestBatchState state = {0};
@@ -2846,6 +3017,7 @@ static void TestScenarioMultiBlockPrefill(const SparkModelResidentDeployment *de
 	CHECK(state.completed_events[1] == 1u,"multi-block prefill: the prompt completes");
 	CHECK(TestPrefillChunksAreCanonical(1u,4u,18u) == 4u && TestLongestPrefillChunk(1u,18u) == 8u,"multi-block prefill: every adapter gets lanes spanning whole cache blocks up to the row budget, ending on a block boundary, one token before the prompt end or the prompt end");
 	CHECK(TestPrefillBlockIdentities(1u,prompt,4u,18u,10u,0u) == 2u,"multi-block prefill: each block boundary inside a wave carries an identity that names the prompt prefix it closes, every earlier wave end and the end of its own wave, and each published wave end names the waves that led to it");
+	TestRankCacheTakesLog(engine,"multi-block prefill: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -2937,6 +3109,7 @@ static void TestScenarioKeptCut(const SparkModelResidentDeployment *deployment,c
 		"kept cut: the same tokens without the cut reach the stride through other waves, so nothing is resumed");
 	TestDriveUntilTerminal(engine,&state,8u,800u);
 	CHECK(state.completed_events[7] == 1u && state.completed_events[8] == 1u && state.error_events[7] + state.error_events[8] == 0u,"kept cut: every request completes");
+	TestRankCacheTakesLog(engine,"kept cut: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -2997,6 +3170,7 @@ static void TestScenarioCommit(const SparkModelResidentDeployment *deployment,co
 	TestDriveUntilTerminal(engine,&state,4u,800u);
 	CHECK(state.completed_events[3] == 1u && state.completed_events[4] == 1u && state.token_events[4] == 0u && state.error_events[3] + state.error_events[4] == 0u,"commit: every request completes");
 	CHECK(state.marked_tokens[4] == 14u,"commit: a repeated commit marks its end again and reports it");
+	TestRankCacheTakesLog(engine,"commit: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3026,6 +3200,7 @@ static void TestScenarioRepeatedCommit(const SparkModelResidentDeployment *deplo
 		"repeated commit: a request that names the commit's end as a cut resumes there after the commit ran twice");
 	TestDriveUntilTerminal(engine,&state,3u,800u);
 	CHECK(state.completed_events[3] == 1u && state.cached_tokens[3] == 10u,"repeated commit: the resumed request completes");
+	TestRankCacheTakesLog(engine,"repeated commit: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3106,6 +3281,7 @@ static void TestScenarioSession(const SparkModelResidentDeployment *deployment,c
 			same &= memcmp(&a->cache_publish_identity,&b->cache_publish_identity,sizeof(a->cache_publish_identity)) == 0 ? 1u : 0u;
 	}
 	CHECK(same != 0u,"session: the waves the resumed turn ran are exactly the cold run's waves from its resume point on, with the same spans, state targets and published identities");
+	TestRankCacheTakesLog(engine,"session: a rank's page cache takes every lane of the three turns and the cold run in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3194,6 +3370,7 @@ static void TestScenarioCommittedReply(const SparkModelResidentDeployment *deplo
 			same &= memcmp(&a->cache_publish_identity,&b->cache_publish_identity,sizeof(a->cache_publish_identity)) == 0 ? 1u : 0u;
 	}
 	CHECK(same != 0u,"committed reply: the waves the third turn ran are exactly the cold run's waves from the reply's end on, with the same spans, state targets and published identities");
+	TestRankCacheTakesLog(engine,"committed reply: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3245,6 +3422,7 @@ static void TestScenarioPrivateTail(const SparkModelResidentDeployment *deployme
 		TestLaneKindCount(2u,SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH,0u,UINT32_MAX) == 0u,
 		"private tail: no decode lane publishes or names a block, across ten block boundaries of the long reply, and no publish frame is sent");
 	CHECK(state.marked_tokens[1] == 29u && state.marked_tokens[2] == 29u,"private tail: each request leaves one resume point, one token before its prompt's end");
+	TestRankCacheTakesLog(engine,"private tail: a rank's page cache takes every lane of both requests in the order the engine sent them, across the block ends the long reply crosses without publishing");
 	for (index=0u; index<40u; index++)
 		lengthy[30u + index] = state.token_ids[2][index];
 	lengthy[70] = 77u;
@@ -3256,6 +3434,7 @@ static void TestScenarioPrivateTail(const SparkModelResidentDeployment *deployme
 		"private tail: the follow-up resumes one token before the earlier prompt's end, because nothing of the reply was offered");
 	TestDriveUntilTerminal(engine,&state,3u,2000u);
 	CHECK(state.completed_events[3] == 1u && state.error_events[3] == 0u && state.cached_tokens[3] == 29u,"private tail: the follow-up completes");
+	TestRankCacheTakesLog(engine,"private tail: a rank's page cache takes the follow-up's lanes too, which resume inside a block");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3321,6 +3500,7 @@ static void TestScenarioRecurrentCheckpoints(const SparkModelResidentDeployment 
 		TestDriveUntilTerminal(engine,&state,8u,800u);
 		CHECK(state.error_events[8] == 0u && state.completed_events[8] == 1u,"recurrent checkpoints: the extension without the cut completes");
 	}
+	TestRankCacheTakesLog(engine,"recurrent checkpoints: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -3441,6 +3621,7 @@ static void TestScenarioReplyCheckpoint(const SparkModelResidentDeployment *depl
 	CHECK(TestWaitFirstRequestLane(engine,3u,&lane) != 0u && lane.cache_prefix_token_count == 12u,"reply checkpoint: the same follow-up without cuts runs other waves past the stride, so it resumes at the stride state");
 	TestDriveUntilTerminal(engine,&state,3u,800u);
 	CHECK(state.error_events[3] == 0u && state.completed_events[3] == 1u,"reply checkpoint: the follow-up without cuts completes");
+	TestRankCacheTakesLog(engine,"reply checkpoint: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -4468,6 +4649,7 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	shared = MockResidentClientTakeVerifyShared();
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,"batch verify: a drafting request and one with speculation off both complete when they share verify frames");
 	CHECK(shared != 0u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: a lane with no drafts rides shared verify frames across cache block boundaries and both emit the greedy stream");
+	TestRankCacheTakesLog(engine,"batch verify: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 
@@ -4516,6 +4698,7 @@ static void TestScenarioSharedVerifyEndsOnBlock(const SparkModelResidentDeployme
 		last.sequence_position + 1u == end && last.context_token_count == end,
 		"verify ends on block: the speculation-off request's last token comes from a shared verify frame whose kept length ends a cache block");
 	CHECK(republished == 0u,"verify ends on block: the engine records the block the verify frame sealed and sends no publish for it after the reply ends");
+	TestRankCacheTakesLog(engine,"shared verify ends on block: a rank's page cache takes every lane in the order the engine sent them");
 	SparkModelBatchEngineDestroy(engine);
 }
 

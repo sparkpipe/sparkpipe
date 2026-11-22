@@ -1115,14 +1115,14 @@ as recorded debt for models too large for a group.
     `session` and `committed` units give the time per turn of each: turn the
     setting on for the models where the committed form is faster, and record
     both in `PERFORMANCE_STATUS.md`.
-  - The engine test's adapter (`tests/test_model_batch_engine_mock.c`) accepts
-    any lane. It does not hold the rank page cache's rules, so a lane
-    sequence the rank refuses passes on the host: the gate's first block on
-    a rank found one (a private stream's lane that ends on a block's last
-    token, fixed in `cache/kv_page_cache.c`). Run every lane of the engine
-    test through a host page cache (`SparkKvPageCacheBeginLaneTransaction`,
-    `SparkKvPageCacheCompleteLane`, `SparkKvPageCacheCompleteVerifyLane`,
-    `SparkKvPageCacheReleaseLane`), so such a sequence fails there.
+  - The engine test (`tests/test_model_batch_engine_mock.c`) replays the lanes
+    of thirteen scenarios through a host page cache, in the order the engine
+    sent them, so a lane sequence the rank refuses fails there: the fault the
+    gate's first block found on a rank does. Not replayed: scenarios that
+    script a rank's refusal or loss, the draft scenarios with their own
+    drivers (lookup, tree, long verify, model drafts), and the recurrent
+    state store, so the rules about kept state are still proven on a rank
+    only. The API test's adapter keeps no page cache at all.
   - A reply commit whose conversation never continues is one wasted wave, in
     the turn's own priority class. The chat layer commits every reply it
     records. It could commit only replies that end in a tool call, where the
