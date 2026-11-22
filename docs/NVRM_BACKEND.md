@@ -463,13 +463,17 @@ rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
 259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
 read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
 
-The module needs physically contiguous 2 MiB blocks for an object of
-2 MiB pages and does not compact memory to find them: with fragmented
-memory it answers `NV_ERR_NO_MEMORY` and logs "Check failed: Out of
-memory" while gigabytes are free. So before it asks the module for such
-an object, `SparkNvrmSystemAllocate` waits until the free 2 MiB blocks
-cover the object's blocks plus the kernel's reserve
-(`SparkNvrmHugePagesReady`, `nvrm_pages.c`):
+On an integrated GPU the module needs physically contiguous 2 MiB blocks
+for an object of 2 MiB pages and does not compact memory to find them:
+with fragmented memory it answers `NV_ERR_NO_MEMORY` and logs "Check
+failed: Out of memory" while gigabytes are free. So before it asks the
+module for such an object on an integrated GPU, `SparkNvrmSystemAllocate`
+waits until the free 2 MiB blocks cover the object's blocks plus the
+kernel's reserve (`SparkNvrmHugePagesReady`, `nvrm_pages.c`). A discrete
+GPU's write-back system memory does not take whole 2 MiB blocks: on the
+hub, six objects of 2050 MiB in 2 MiB pages allocated while the Normal
+zone's free 2 MiB blocks went only from 945 to 423, with no compaction, so
+the wait there would refuse what the module grants.
 
 - Free blocks are counted in `/proc/buddyinfo`'s Normal zones, the zone
   the kernel serves the module's allocations from. Each larger block counts
@@ -498,10 +502,9 @@ cover the object's blocks plus the kernel's reserve
 - Without a readable `/proc/buddyinfo` or a Normal zone in it, the module
   decides alone, as before.
 
-This covers every 2 MiB-page system allocation: shared memory on an
-integrated GPU (weightd's arenas), device-private memory from 8 MiB up on
-an integrated GPU, and write-back system memory from 2 MiB up on a
-discrete one. `build/test_nvrm_pages` checks the count, the target, the
+This covers every 2 MiB-page system allocation on an integrated GPU:
+shared memory (weightd's arenas) and device-private memory from 8 MiB up
+to 4 GiB. `build/test_nvrm_pages` checks the count, the target, the
 bound and the wake-up against fake kernel files.
 
 Events are 32-byte marks carved from a pooled host allocation. Recording

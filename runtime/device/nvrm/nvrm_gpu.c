@@ -466,7 +466,7 @@ SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t 
 	made.size = bytes;
 	made.alignment = page_bytes;
 	made.limit = bytes - 1u;
-	if ( huge != 0u )
+	if ( huge != 0u && gpu->integrated != 0u )
 		GPU_TRY(SparkNvrmHugePagesReady(bytes,owner));
 	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->device,NV01_MEMORY_SYSTEM,&made,(uint32_t)sizeof(made),handle,owner));
 	return(SPARK_STATUS_OK);
