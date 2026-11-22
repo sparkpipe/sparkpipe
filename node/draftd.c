@@ -74,6 +74,11 @@ typedef struct DraftdLane
 	char name[64];
 	SparkDraftServer *server;
 	SparkTapStreamReader *taps;
+	SparkDraftServerConfig server_config;
+	SparkTapStreamReaderConfig tap_config;
+	char draft_host[128];
+	char tap_host[128];
+	uint32_t has_taps;
 	DraftdReplay replay;
 	uint32_t answer_pending;
 	uint64_t answer_due_ns;
@@ -341,6 +346,25 @@ static SparkStatus DraftdUInt(const SparkJsonDocument *document, int32_t object,
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus DraftdLanePortsOpen(DraftdLane *lane)
+{
+	if ( SparkDraftServerCreate(&lane->server_config, &lane->server) != SPARK_STATUS_OK )
+	{
+		lane->server = 0;
+		fprintf(stderr, "sparkpipe_draftd: lane %s: the draft server could not start on %s:%u\n", lane->name, lane->draft_host, lane->server_config.port);
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	if ( lane->has_taps != 0u && SparkTapStreamReaderCreate(&lane->tap_config, &lane->taps) != SPARK_STATUS_OK )
+	{
+		lane->taps = 0;
+		fprintf(stderr, "sparkpipe_draftd: lane %s: the tap reader could not start on %s:%u\n", lane->name, lane->tap_host, lane->tap_config.port);
+		SparkDraftServerDestroy(lane->server);
+		lane->server = 0;
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t object, DraftdLane *lane)
 {
 	static const char *const lane_members[] = {"name", "host", "draft_port", "target_model", "max_committed_tokens", "max_nodes", "io_timeout_ms",
@@ -348,12 +372,14 @@ static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t obj
 	static const char *const tap_members[] = {"host", "port", "model_tag", "hidden", "entries", "max_rows"};
 	static const char *const drafter_members[] = {"kind", "confidence", "streams", "require_taps", "delay_ms", "module", "pack", "model",
 		"revision", "context_bytes", "wait_ms"};
-	SparkDraftServerConfig server;
-	char host[128] = "127.0.0.1", kind[32] = "";
+	SparkDraftServerConfig *server = &lane->server_config;
+	char kind[32] = "";
 	const int32_t taps = SparkJsonFindObjectMember(document, object, "taps"), drafter = SparkJsonFindObjectMember(document, object, "drafter");
 	int32_t unknown = -1;
 	uint32_t port = 0u, require = 0u;
-	memset(&server, 0, sizeof(server));
+	memset(server, 0, sizeof(*server));
+	snprintf(lane->draft_host, sizeof(lane->draft_host), "%s", "127.0.0.1");
+	snprintf(lane->tap_host, sizeof(lane->tap_host), "%s", "0.0.0.0");
 	if ( SparkJsonValidateObjectMembersKnown(document, object, lane_members, sizeof(lane_members) / sizeof(lane_members[0]), &unknown) != SPARK_STATUS_OK ||
 		drafter < 0 || SparkJsonValidateObjectMembersKnown(document, drafter, drafter_members, sizeof(drafter_members) / sizeof(drafter_members[0]),
 			&unknown) != SPARK_STATUS_OK ||
@@ -363,15 +389,15 @@ static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t obj
 		fprintf(stderr, "sparkpipe_draftd: a lane has an unknown member or no \"drafter\"\n");
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	server.abi_version = SPARK_DRAFT_SERVER_ABI_VERSION;
-	server.descriptor_bytes = SPARK_DRAFT_SERVER_CONFIG_BYTES;
+	server->abi_version = SPARK_DRAFT_SERVER_ABI_VERSION;
+	server->descriptor_bytes = SPARK_DRAFT_SERVER_CONFIG_BYTES;
 	if ( DraftdCopyText(document, object, "name", lane->name, sizeof(lane->name), 1u) != SPARK_STATUS_OK ||
-		DraftdCopyText(document, object, "host", host, sizeof(host), 0u) != SPARK_STATUS_OK ||
-		DraftdCopyText(document, object, "target_model", server.target_model, sizeof(server.target_model), 1u) != SPARK_STATUS_OK ||
-		DraftdUInt(document, object, "draft_port", &server.port, 0u) != SPARK_STATUS_OK ||
-		DraftdUInt(document, object, "max_committed_tokens", &server.max_committed_tokens, DRAFTD_DEFAULT_MAX_COMMITTED) != SPARK_STATUS_OK ||
-		DraftdUInt(document, object, "max_nodes", &server.max_nodes, DRAFTD_DEFAULT_MAX_NODES) != SPARK_STATUS_OK ||
-		DraftdUInt(document, object, "io_timeout_ms", &server.io_timeout_ms, DRAFTD_DEFAULT_IO_TIMEOUT_MS) != SPARK_STATUS_OK ||
+		DraftdCopyText(document, object, "host", lane->draft_host, sizeof(lane->draft_host), 0u) != SPARK_STATUS_OK ||
+		DraftdCopyText(document, object, "target_model", server->target_model, sizeof(server->target_model), 1u) != SPARK_STATUS_OK ||
+		DraftdUInt(document, object, "draft_port", &server->port, 0u) != SPARK_STATUS_OK ||
+		DraftdUInt(document, object, "max_committed_tokens", &server->max_committed_tokens, DRAFTD_DEFAULT_MAX_COMMITTED) != SPARK_STATUS_OK ||
+		DraftdUInt(document, object, "max_nodes", &server->max_nodes, DRAFTD_DEFAULT_MAX_NODES) != SPARK_STATUS_OK ||
+		DraftdUInt(document, object, "io_timeout_ms", &server->io_timeout_ms, DRAFTD_DEFAULT_IO_TIMEOUT_MS) != SPARK_STATUS_OK ||
 		DraftdCopyText(document, drafter, "kind", kind, sizeof(kind), 1u) != SPARK_STATUS_OK ||
 		DraftdUInt(document, drafter, "streams", &lane->replay.capacity, DRAFTD_DEFAULT_STREAMS) != SPARK_STATUS_OK ||
 		DraftdUInt(document, drafter, "require_taps", &require, 0u) != SPARK_STATUS_OK ||
@@ -417,48 +443,65 @@ static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t obj
 		fprintf(stderr, "sparkpipe_draftd: lane %s requires taps but has no \"taps\" stream\n", lane->name);
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	server.host = host;
-	lane->max_nodes = server.max_nodes;
+	server->host = lane->draft_host;
+	lane->max_nodes = server->max_nodes;
 	lane->replay.streams = (DraftdStream *)calloc(lane->replay.capacity, sizeof(DraftdStream));
-	lane->answer_nodes = (SparkDraftBridgeNode *)calloc(server.max_nodes, sizeof(SparkDraftBridgeNode));
+	lane->answer_nodes = (SparkDraftBridgeNode *)calloc(server->max_nodes, sizeof(SparkDraftBridgeNode));
 	if ( lane->replay.streams == 0 || lane->answer_nodes == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( SparkDraftServerCreate(&server, &lane->server) != SPARK_STATUS_OK )
-	{
-		fprintf(stderr, "sparkpipe_draftd: lane %s: the draft server could not start on %s:%u\n", lane->name, host, server.port);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
 	if ( taps >= 0 )
 	{
-		SparkTapStreamReaderConfig reader;
-		char tap_host[128] = "0.0.0.0", entries[512] = "";
-		memset(&reader, 0, sizeof(reader));
-		reader.abi_version = SPARK_TAP_STREAM_READER_ABI_VERSION;
-		reader.descriptor_bytes = SPARK_TAP_STREAM_READER_CONFIG_BYTES;
-		reader.io_timeout_ms = server.io_timeout_ms;
-		if ( DraftdCopyText(document, taps, "host", tap_host, sizeof(tap_host), 0u) != SPARK_STATUS_OK ||
-			DraftdCopyText(document, taps, "model_tag", reader.model_tag, sizeof(reader.model_tag), 0u) != SPARK_STATUS_OK ||
+		SparkTapStreamReaderConfig *reader = &lane->tap_config;
+		char entries[512] = "";
+		memset(reader, 0, sizeof(*reader));
+		reader->abi_version = SPARK_TAP_STREAM_READER_ABI_VERSION;
+		reader->descriptor_bytes = SPARK_TAP_STREAM_READER_CONFIG_BYTES;
+		reader->io_timeout_ms = server->io_timeout_ms;
+		if ( DraftdCopyText(document, taps, "host", lane->tap_host, sizeof(lane->tap_host), 0u) != SPARK_STATUS_OK ||
+			DraftdCopyText(document, taps, "model_tag", reader->model_tag, sizeof(reader->model_tag), 0u) != SPARK_STATUS_OK ||
 			DraftdCopyText(document, taps, "entries", entries, sizeof(entries), 1u) != SPARK_STATUS_OK ||
 			DraftdUInt(document, taps, "port", &port, 0u) != SPARK_STATUS_OK ||
-			DraftdUInt(document, taps, "hidden", &reader.hidden, 0u) != SPARK_STATUS_OK ||
-			DraftdUInt(document, taps, "max_rows", &reader.max_rows, DRAFTD_DEFAULT_TAP_ROWS) != SPARK_STATUS_OK ||
-			SparkTapStreamReaderParseEntries(entries, reader.required, SPARK_TAP_STREAM_MAX_ENTRIES, &reader.required_count) != SPARK_STATUS_OK )
+			DraftdUInt(document, taps, "hidden", &reader->hidden, 0u) != SPARK_STATUS_OK ||
+			DraftdUInt(document, taps, "max_rows", &reader->max_rows, DRAFTD_DEFAULT_TAP_ROWS) != SPARK_STATUS_OK ||
+			SparkTapStreamReaderParseEntries(entries, reader->required, SPARK_TAP_STREAM_MAX_ENTRIES, &reader->required_count) != SPARK_STATUS_OK )
 		{
 			fprintf(stderr, "sparkpipe_draftd: lane %s: the \"taps\" object is not valid\n", lane->name);
 			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
-		reader.host = tap_host;
-		reader.port = port;
-		if ( SparkTapStreamReaderCreate(&reader, &lane->taps) != SPARK_STATUS_OK )
-		{
-			fprintf(stderr, "sparkpipe_draftd: lane %s: the tap reader could not start on %s:%u\n", lane->name, tap_host, port);
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-		}
+		reader->host = lane->tap_host;
+		reader->port = port;
+		lane->has_taps = 1u;
 	}
+	if ( lane->engine != 0u )
+	{
+		printf("DRAFTD-READY lane=%s draft=%u taps=%u drafter=%s listening=on-activate\n", lane->name, server->port,
+			lane->has_taps != 0u ? lane->tap_config.port : 0u, kind);
+		fflush(stdout);
+		return SPARK_STATUS_OK;
+	}
+	if ( DraftdLanePortsOpen(lane) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	printf("DRAFTD-READY lane=%s draft=%u taps=%u drafter=%s\n", lane->name, SparkDraftServerPort(lane->server), SparkTapStreamReaderPort(lane->taps),
 		kind);
 	fflush(stdout);
 	return SPARK_STATUS_OK;
+}
+
+static void DraftdLanePortsClose(DraftdLane *lane)
+{
+	if ( lane->server != 0 && lane->waiting != 0u )
+	{
+		lane->replay.unavailable++;
+		(void)SparkDraftServerAnswer(lane->server, SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE, lane->answer_nodes, 0u, 0);
+	}
+	else if ( lane->server != 0 && lane->answer_pending != 0u )
+		(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
+	lane->waiting = 0u;
+	lane->answer_pending = 0u;
+	SparkDraftServerDestroy(lane->server);
+	SparkTapStreamReaderDestroy(lane->taps);
+	lane->server = 0;
+	lane->taps = 0;
 }
 
 static void DraftdLaneClose(DraftdLane *lane)
@@ -518,6 +561,8 @@ static void DraftdLaneStep(DraftdLane *lane)
 	SparkDraftServerRequest request;
 	SparkDraftServerStats stats;
 	uint32_t ingested = 0u;
+	if ( lane->server == 0 )
+		return;
 	while ( lane->taps != 0 && SparkTapStreamReaderAdvance(lane->taps, &frame) == SPARK_STATUS_OK )
 	{
 		if ( lane->engine == 0u )
@@ -631,6 +676,13 @@ static void DraftdEngineActivate(DraftdLane *lane, char *reply, size_t reply_byt
 		snprintf(reply, reply_bytes, "REFUSED lane=%s pack %s or its .sha256 sidecar is missing or unreadable\n", lane->name, lane->pack_path);
 		return;
 	}
+	if ( DraftdLanePortsOpen(lane) != SPARK_STATUS_OK )
+	{
+		snprintf(reply, reply_bytes, "REFUSED lane=%s cannot listen on draft port %u and tap port %u; another server holds one of them\n", lane->name,
+			lane->server_config.port, lane->has_taps != 0u ? lane->tap_config.port : 0u);
+		fprintf(stderr, "sparkpipe_draftd: %s", reply);
+		return;
+	}
 	memset(&descriptor, 0, sizeof(descriptor));
 	descriptor.abi_version = SPARK_DRAFTER_MODULE_ABI_VERSION;
 	descriptor.descriptor_bytes = (uint32_t)sizeof(descriptor);
@@ -648,6 +700,7 @@ static void DraftdEngineActivate(DraftdLane *lane, char *reply, size_t reply_byt
 	lane->bind.text[sizeof(lane->bind.text) - 1u] = '\0';
 	if ( status != SPARK_STATUS_OK || state == 0 )
 	{
+		DraftdLanePortsClose(lane);
 		snprintf(reply, reply_bytes, "REFUSED lane=%s %s (%s)\n", lane->name, lane->bind.text[0] != '\0' ? lane->bind.text : "the drafter module did not bind",
 			SparkStatusToString(status));
 		fprintf(stderr, "sparkpipe_draftd: %s", reply);
@@ -655,9 +708,10 @@ static void DraftdEngineActivate(DraftdLane *lane, char *reply, size_t reply_byt
 	}
 	lane->module_state = state;
 	lane->active = 1u;
-	snprintf(reply, reply_bytes, "OK lane=%s device_bytes=%llu bind_s=%.3f first_hold=%u device_free=%llu device_total=%llu\n", lane->name,
-		(unsigned long long)lane->bind.device_bytes, (double)lane->bind.bind_ns / 1e9, lane->bind.first_hold,
-		(unsigned long long)lane->bind.device_free_bytes, (unsigned long long)lane->bind.device_total_bytes);
+	snprintf(reply, reply_bytes, "OK lane=%s device_bytes=%llu bind_s=%.3f first_hold=%u device_free=%llu device_total=%llu draft_port=%u tap_port=%u\n",
+		lane->name, (unsigned long long)lane->bind.device_bytes, (double)lane->bind.bind_ns / 1e9, lane->bind.first_hold,
+		(unsigned long long)lane->bind.device_free_bytes, (unsigned long long)lane->bind.device_total_bytes, SparkDraftServerPort(lane->server),
+		SparkTapStreamReaderPort(lane->taps));
 }
 
 static void DraftdEngineDeactivate(DraftdLane *lane, char *reply, size_t reply_bytes)
@@ -671,14 +725,16 @@ static void DraftdEngineDeactivate(DraftdLane *lane, char *reply, size_t reply_b
 	status = lane->module->close(lane->module_state);
 	lane->module_state = 0;
 	lane->active = 0u;
+	DraftdReport(lane);
+	DraftdLanePortsClose(lane);
 	if ( status != SPARK_STATUS_OK )
 	{
-		snprintf(reply, reply_bytes, "REFUSED lane=%s the drafter module did not release cleanly (%s); the lane is inactive\n", lane->name,
-			SparkStatusToString(status));
+		snprintf(reply, reply_bytes, "REFUSED lane=%s the drafter module did not release cleanly (%s); the lane is inactive and its ports are closed\n",
+			lane->name, SparkStatusToString(status));
 		fprintf(stderr, "sparkpipe_draftd: %s", reply);
 		return;
 	}
-	snprintf(reply, reply_bytes, "OK lane=%s released device_bytes=%llu\n", lane->name, (unsigned long long)lane->bind.device_bytes);
+	snprintf(reply, reply_bytes, "OK lane=%s released device_bytes=%llu and closed its ports\n", lane->name, (unsigned long long)lane->bind.device_bytes);
 	memset(&lane->bind, 0, sizeof(lane->bind));
 }
 
@@ -697,7 +753,7 @@ static void DraftdControlCommand(DraftdLane *lanes, uint32_t lane_count, char *l
 				(unsigned long long)lanes[index].replay.unavailable);
 		return;
 	}
-	for ( uint32_t index = 0u; name != 0 && index < lane_count; ++index )
+	for ( uint32_t index = 0u; name != 0 && index < lane_count && index < DRAFTD_MAX_LANES; ++index )
 		if ( strcmp(lanes[index].name, name) == 0 )
 			lane = &lanes[index];
 	if ( command == 0 || (strcmp(command, "activate") != 0 && strcmp(command, "deactivate") != 0) )

@@ -92,6 +92,49 @@ static uint32_t free_port(void)
 	return(ntohs(address.sin_port));
 }
 
+static int port_listener(uint32_t port)
+{
+	struct sockaddr_in address;
+	const int enabled = 1;
+	const int fd = socket(AF_INET,SOCK_STREAM | SOCK_CLOEXEC,0);
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = htons((uint16_t)port);
+	assert(fd >= 0 && setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&enabled,sizeof(enabled)) == 0);
+	if ( bind(fd,(struct sockaddr *)&address,sizeof(address)) != 0 || listen(fd,4) != 0 )
+	{
+		assert(close(fd) == 0);
+		return(-1);
+	}
+	return(fd);
+}
+
+static int port_free(uint32_t port)
+{
+	const int fd = port_listener(port);
+	if ( fd < 0 )
+		return(0);
+	assert(close(fd) == 0);
+	return(1);
+}
+
+static int listener_answers(int listener,uint32_t port)
+{
+	struct sockaddr_in address;
+	const int fd = socket(AF_INET,SOCK_STREAM | SOCK_CLOEXEC,0);
+	struct pollfd poller = {listener,POLLIN,0};
+	int accepted,answered;
+	memset(&address,0,sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	address.sin_port = htons((uint16_t)port);
+	assert(fd >= 0 && connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0);
+	answered = poll(&poller,1u,2000) == 1 && (accepted = accept(listener,0,0)) >= 0 && close(accepted) == 0;
+	assert(close(fd) == 0);
+	return(answered);
+}
+
 static void lane_json(char *text,size_t bytes,const char *name,uint32_t port,uint32_t tap_port,const char *module,const char *pack,uint64_t context,
 	int last)
 {
@@ -333,17 +376,18 @@ static void idle(Ask *ask,int milliseconds)
 int main(void)
 {
 	char root[] = "/tmp/draftd-engine-XXXXXX",weightd_socket[256],control_socket[256],pack[256],config[256],reply[8192];
-	char lanes[3][1600],text[6000];
+	char lanes[4][1600],text[8000];
 	TestServer state = {0};
 	SparkWeightdServerConfig server_config = {0};
 	SparkTapStreamHello hello;
-	const uint32_t probe_port = free_port(),huge_port = free_port(),abi_port = free_port(),tap_port = free_port();
+	const uint32_t probe_port = free_port(),huge_port = free_port(),abi_port = free_port(),tap_port = free_port(),held_port = free_port(),
+		held_tap_port = free_port();
 	const uint32_t first_two[2] = {11u,12u},third[1] = {13u},mismatch[4] = {11u,99u,13u,14u},other[3] = {21u,22u,23u},absent[4] = {31u,32u,33u,34u};
 	uint32_t count = 0u;
 	size_t mark;
 	double seconds = 0.0;
 	Ask held,replacement;
-	int taps = -1;
+	int taps = -1,held_draft = -1,held_taps = -1;
 	pthread_t thread;
 	pid_t draftd;
 	int output = -1,status = 0;
@@ -360,17 +404,26 @@ int main(void)
 	assert(pthread_create(&thread,0,run_server,&state) == 0);
 	lane_json(lanes[0],sizeof(lanes[0]),"probe",probe_port,tap_port,SPARK_TEST_PROBE_MODULE,pack,UINT64_C(1) << 20,0);
 	lane_json(lanes[1],sizeof(lanes[1]),"huge",huge_port,0u,SPARK_TEST_PROBE_MODULE,pack,HUGE_CONTEXT,0);
-	lane_json(lanes[2],sizeof(lanes[2]),"abi",abi_port,0u,SPARK_TEST_PROBE_ABI_MODULE,pack,UINT64_C(1) << 20,1);
-	snprintf(text,sizeof(text),"{\"weightd_socket\":\"%s\",\"control_socket\":\"%s\",\"lanes\":[%s%s%s]}",weightd_socket,control_socket,lanes[0],lanes[1],
-		lanes[2]);
+	lane_json(lanes[2],sizeof(lanes[2]),"abi",abi_port,0u,SPARK_TEST_PROBE_ABI_MODULE,pack,UINT64_C(1) << 20,0);
+	lane_json(lanes[3],sizeof(lanes[3]),"held",held_port,held_tap_port,SPARK_TEST_PROBE_MODULE,pack,UINT64_C(1) << 20,1);
+	snprintf(text,sizeof(text),"{\"weightd_socket\":\"%s\",\"control_socket\":\"%s\",\"lanes\":[%s%s%s%s]}",weightd_socket,control_socket,lanes[0],
+		lanes[1],lanes[2],lanes[3]);
 	write_file(config,text,strlen(text));
+	held_draft = port_listener(held_port);
+	held_taps = port_listener(held_tap_port);
+	assert(held_draft >= 0 && held_taps >= 0);
 	draftd = start_draftd(config,&output);
-	wait_for(output,"DRAFTD-READY lanes=3 engines=3");
-	assert(ask(probe_port,"probe-target",&count,&seconds) == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE && count == 0u && seconds < 1.0);
-	assert(control(control_socket,"status",0,reply,sizeof(reply)) == 0 && strstr(reply,"OK lanes=3") != 0 &&
-		strstr(reply,"lane=probe drafter=engine active=0") != 0 && strstr(reply,"unavailable=1") != 0);
+	wait_for(output,"DRAFTD-READY lanes=4 engines=4");
+	assert(port_free(probe_port) && port_free(tap_port) && port_free(huge_port) && port_free(abi_port));
+	assert(control(control_socket,"status",0,reply,sizeof(reply)) == 0 && strstr(reply,"OK lanes=4") != 0 &&
+		strstr(reply,"lane=probe drafter=engine active=0") != 0 && strstr(reply,"unavailable=0") != 0);
 	assert(control(control_socket,"activate","probe",reply,sizeof(reply)) == 0 && strstr(reply,"OK lane=probe device_bytes=") != 0 &&
 		strstr(reply,"first_hold=1") != 0);
+	assert(!port_free(probe_port) && !port_free(tap_port));
+	assert(listener_answers(held_draft,held_port) && listener_answers(held_taps,held_tap_port));
+	assert(control(control_socket,"activate","held",reply,sizeof(reply)) == 1 && strstr(reply,"REFUSED lane=held cannot listen on draft port") != 0);
+	assert(listener_answers(held_draft,held_port) && listener_answers(held_taps,held_tap_port));
+	assert(control(control_socket,"status",0,reply,sizeof(reply)) == 0 && strstr(reply,"lane=held drafter=engine active=0") != 0);
 	taps = tap_connect(tap_port,&hello);
 	mark = draftd_output_used;
 	held = ask_start(probe_port,"probe-target",77u,(const uint32_t[]){11u,12u,13u,14u},4u);
@@ -404,10 +457,14 @@ int main(void)
 	assert(close(taps) == 0);
 	assert(control(control_socket,"status",0,reply,sizeof(reply)) == 0 && strstr(reply,"lane=probe drafter=engine active=1") != 0);
 	assert(control(control_socket,"activate","probe",reply,sizeof(reply)) == 0 && strstr(reply,"already active") != 0);
-	assert(control(control_socket,"deactivate","probe",reply,sizeof(reply)) == 0 && strstr(reply,"OK lane=probe released") != 0);
-	assert(ask(probe_port,"probe-target",&count,&seconds) == SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE && count == 0u && seconds < 1.0);
+	assert(control(control_socket,"deactivate","probe",reply,sizeof(reply)) == 0 && strstr(reply,"OK lane=probe released") != 0 &&
+		strstr(reply,"closed its ports") != 0);
+	assert(port_free(probe_port) && port_free(tap_port));
 	assert(control(control_socket,"activate","probe",reply,sizeof(reply)) == 0 && strstr(reply,"first_hold=0") != 0);
 	assert(control(control_socket,"deactivate","probe",reply,sizeof(reply)) == 0);
+	assert(close(held_draft) == 0 && close(held_taps) == 0);
+	assert(control(control_socket,"activate","held",reply,sizeof(reply)) == 0 && strstr(reply,"OK lane=held device_bytes=") != 0);
+	assert(control(control_socket,"deactivate","held",reply,sizeof(reply)) == 0 && port_free(held_port) && port_free(held_tap_port));
 	assert(control(control_socket,"activate","huge",reply,sizeof(reply)) == 1 && strstr(reply,"REFUSED lane=huge lane huge needs ") != 0 &&
 		strstr(reply,"(pack 3146240 + context cap 1099511627776)") != 0 && strstr(reply," free (") != 0);
 	assert(control(control_socket,"activate","abi",reply,sizeof(reply)) == 1 && strstr(reply,"speaks drafter ABI 99; sparkpipe_draftd speaks 1") != 0);
@@ -419,10 +476,12 @@ int main(void)
 	state.stop = 1;
 	assert(pthread_join(thread,0) == 0);
 	SparkWeightdServerDestroy(state.server);
-	puts("PASS draftd engine lanes: an inactive lane answers unavailable at once, activate binds the pack through weightd's HOLD into the "
-		"lane's own device memory, a request waits for the taps that cover its anchor and drafts after the covering frame while its waiting "
+	puts("PASS draftd engine lanes: an inactive lane holds no port, activate opens the lane's draft and tap ports and binds the pack through "
+		"weightd's HOLD into the lane's own device memory while another process keeps holding a second lane's ports, whose activation is refused "
+		"and leaves them untouched; a request waits for the taps that cover its anchor and drafts after the covering frame while its waiting "
 		"proposals do no device work, a request without taps is answered unavailable at wait_ms, a token mismatch is answered unavailable at "
-		"once, a new connection replaces a waiting request, deactivate releases the device memory, a second activate reuses the held copy, a "
+		"once, a new connection replaces a waiting request, deactivate releases the device memory and frees the lane's ports for immediate reuse, a "
+		"second activate reuses the held copy, a "
 		"lane whose pack and context cap exceed free device memory is refused with the numbers, a module of another drafter ABI is refused, and "
 		"status reports every lane");
 	return(0);
