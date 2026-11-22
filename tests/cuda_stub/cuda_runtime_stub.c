@@ -26,6 +26,8 @@ typedef struct cuda_stub_alloc_header
     uint32_t magic;
     uint32_t tracked;
     uint64_t bytes;
+    uint32_t pinned;
+    uint32_t reserved;
 } cuda_stub_alloc_header;
 
 static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
@@ -62,7 +64,14 @@ static void cuda_stub_ledger_unlock(void)
     (void)pthread_mutex_unlock(&cuda_stub_ledger_mutex);
 }
 
+static cudaError_t cuda_stub_alloc_kind(void **pointer, size_t bytes, uint32_t pinned);
+
 static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
+{
+    return cuda_stub_alloc_kind(pointer, bytes, 1u);
+}
+
+static cudaError_t cuda_stub_alloc_kind(void **pointer, size_t bytes, uint32_t pinned)
 {
     cuda_stub_alloc_header *header;
     cudaError_t result;
@@ -82,6 +91,8 @@ static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
     }
     header->magic = CUDA_STUB_ALLOC_MAGIC;
     header->bytes = bytes;
+    header->pinned = pinned;
+    header->reserved = 0u;
     if (cuda_stub_tracked_count < CUDA_STUB_MAX_TRACKED)
     {
         header->tracked = 1u;
@@ -191,9 +202,146 @@ uint32_t spark_stub_cuda_outstanding_allocs(void)
     return outstanding;
 }
 
+static void *cuda_stub_host_registered[CUDA_STUB_MAX_TRACKED];
+static size_t cuda_stub_host_registered_bytes[CUDA_STUB_MAX_TRACKED];
+static uint32_t cuda_stub_host_registered_count;
+static int cuda_stub_discrete = -1;
+
+typedef struct cuda_stub_pending
+{
+    unsigned char *destination;
+    const unsigned char *source;
+    unsigned char *staged;
+    size_t bytes;
+    int value;
+    uint32_t fill;
+} cuda_stub_pending;
+
+static cuda_stub_pending *cuda_stub_pending_ops;
+static size_t cuda_stub_pending_count, cuda_stub_pending_capacity;
+static pthread_mutex_t cuda_stub_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *cuda_stub_streams[CUDA_STUB_MAX_TRACKED];
+static uint32_t cuda_stub_stream_count;
+
+void spark_stub_cuda_discrete_ordering(uint32_t enabled)
+{
+    cuda_stub_discrete = enabled != 0u ? 1 : 0;
+}
+
+static uint32_t cuda_stub_discrete_on(void)
+{
+    if (cuda_stub_discrete < 0)
+    {
+        const char *mode = getenv("SPARK_STUB_CUDA_DISCRETE");
+        cuda_stub_discrete = mode != 0 && mode[0] == '1' ? 1 : 0;
+    }
+    return cuda_stub_discrete > 0 ? 1u : 0u;
+}
+
+static uint32_t cuda_stub_pinned(const void *pointer)
+{
+    uintptr_t address = (uintptr_t)pointer;
+    uint32_t index, pinned = 0u;
+    cuda_stub_ledger_lock();
+    for (index = 0u; pinned == 0u && index < cuda_stub_tracked_count; index++)
+    {
+        const cuda_stub_alloc_header *header = ((const cuda_stub_alloc_header *)cuda_stub_tracked[index]) - 1;
+        uintptr_t first = (uintptr_t)cuda_stub_tracked[index];
+        if (header->pinned != 0u && address >= first && address < first + header->bytes)
+            pinned = 1u;
+    }
+    for (index = 0u; pinned == 0u && index < cuda_stub_host_registered_count; index++)
+    {
+        uintptr_t first = (uintptr_t)cuda_stub_host_registered[index];
+        if (address >= first && address < first + cuda_stub_host_registered_bytes[index])
+            pinned = 1u;
+    }
+    cuda_stub_ledger_unlock();
+    return pinned;
+}
+
+static uint32_t cuda_stub_stream_blocking(cudaStream_t stream)
+{
+    uint32_t index, blocking = 0u;
+    if (stream == 0)
+        return 1u;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_stream_count; index++)
+        if (cuda_stub_streams[index] == (void *)stream)
+            blocking = (*(unsigned int *)stream & cudaStreamNonBlocking) == 0u ? 1u : 0u;
+    cuda_stub_ledger_unlock();
+    return blocking;
+}
+
+static cudaError_t cuda_stub_pend(void *destination, const void *source, size_t bytes, int value, uint32_t fill, uint32_t stage)
+{
+    cuda_stub_pending op;
+    if (destination == 0 || (fill == 0u && source == 0 && bytes != 0u))
+        return cudaErrorMemoryAllocation;
+    op.destination = (unsigned char *)destination;
+    op.source = (const unsigned char *)source;
+    op.staged = 0;
+    op.bytes = bytes;
+    op.value = value;
+    op.fill = fill;
+    if (fill == 0u && stage != 0u)
+    {
+        op.staged = (unsigned char *)malloc(bytes != 0u ? bytes : 1u);
+        if (op.staged == 0)
+            return cudaErrorMemoryAllocation;
+        memcpy(op.staged, source, bytes);
+    }
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    if (cuda_stub_pending_count == cuda_stub_pending_capacity)
+    {
+        size_t capacity = cuda_stub_pending_capacity != 0u ? 2u * cuda_stub_pending_capacity : 64u;
+        cuda_stub_pending *grown = (cuda_stub_pending *)realloc(cuda_stub_pending_ops, capacity * sizeof(*grown));
+        if (grown == 0)
+        {
+            pthread_mutex_unlock(&cuda_stub_pending_mutex);
+            free(op.staged);
+            return cudaErrorMemoryAllocation;
+        }
+        cuda_stub_pending_ops = grown;
+        cuda_stub_pending_capacity = capacity;
+    }
+    cuda_stub_pending_ops[cuda_stub_pending_count++] = op;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+    return cudaSuccess;
+}
+
+static void cuda_stub_land(void)
+{
+    size_t index;
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    for (index = 0u; index < cuda_stub_pending_count; index++)
+    {
+        cuda_stub_pending *op = &cuda_stub_pending_ops[index];
+        if (op->fill != 0u)
+            memset(op->destination, op->value, op->bytes);
+        else
+            memmove(op->destination, op->staged != 0 ? op->staged : op->source, op->bytes);
+        free(op->staged);
+    }
+    cuda_stub_pending_count = 0u;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+}
+
+uint32_t spark_stub_cuda_pending_ops(void)
+{
+    size_t count;
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    count = cuda_stub_pending_count;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+    return (uint32_t)count;
+}
+
 cudaError_t cudaMalloc(void **pointer, size_t bytes)
 {
-    return cuda_stub_alloc(pointer, bytes);
+    cudaError_t error = cuda_stub_alloc_kind(pointer, bytes, 0u);
+    if (error == cudaSuccess && cuda_stub_discrete_on() != 0u)
+        memset(*pointer, 0xa5, bytes);
+    return error;
 }
 
 cudaError_t cudaFree(void *pointer)
@@ -207,6 +355,8 @@ cudaError_t cudaMemset(void *pointer, int value, size_t bytes)
     {
         return cudaErrorMemoryAllocation;
     }
+    if (cuda_stub_discrete_on() != 0u && cuda_stub_pinned(pointer) == 0u)
+        return cuda_stub_pend(pointer, 0, bytes, value, 1u, 0u);
     memset(pointer, value, bytes);
     return cudaSuccess;
 }
@@ -217,8 +367,17 @@ cudaError_t cudaMemsetAsync(
     size_t bytes,
     cudaStream_t stream)
 {
-    (void)stream;
-    return cudaMemset(pointer, value, bytes);
+    if (pointer == 0 && bytes != 0u)
+        return cudaErrorMemoryAllocation;
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (stream == 0)
+            return cuda_stub_pend(pointer, 0, bytes, value, 1u, 0u);
+        if (cuda_stub_stream_blocking(stream) != 0u)
+            cuda_stub_land();
+    }
+    memset(pointer, value, bytes);
+    return cudaSuccess;
 }
 
 static uint32_t cuda_stub_sync_copy_calls;
@@ -300,6 +459,14 @@ cudaError_t cudaMemcpy(
     cudaMemcpyKind kind)
 {
     cuda_stub_count_copy(0u, kind, 0);
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (kind == cudaMemcpyHostToDevice && cuda_stub_pinned(source) == 0u)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, 1u);
+        if (kind == cudaMemcpyDeviceToDevice)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, 0u);
+        cuda_stub_land();
+    }
     return cuda_stub_copy(destination, source, bytes);
 }
 
@@ -311,6 +478,13 @@ cudaError_t cudaMemcpyAsync(
     cudaStream_t stream)
 {
     cuda_stub_count_copy(1u, kind, stream);
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (stream == 0)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, kind == cudaMemcpyHostToDevice ? 1u : 0u);
+        if (cuda_stub_stream_blocking(stream) != 0u)
+            cuda_stub_land();
+    }
     return cuda_stub_copy(destination, source, bytes);
 }
 
@@ -348,7 +522,13 @@ cudaError_t cudaStreamCreate(cudaStream_t *stream)
         return cudaErrorMemoryAllocation;
     }
     *stream = calloc(1u, sizeof(unsigned int));
-    return *stream != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
+    if (*stream == 0)
+        return cudaErrorMemoryAllocation;
+    cuda_stub_ledger_lock();
+    if (cuda_stub_stream_count < CUDA_STUB_MAX_TRACKED)
+        cuda_stub_streams[cuda_stub_stream_count++] = (void *)*stream;
+    cuda_stub_ledger_unlock();
+    return cudaSuccess;
 }
 
 cudaError_t cudaStreamCreateWithFlags(
@@ -389,6 +569,15 @@ unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream)
 
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
+    uint32_t index;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_stream_count; index++)
+        if (cuda_stub_streams[index] == (void *)stream)
+        {
+            cuda_stub_streams[index] = cuda_stub_streams[--cuda_stub_stream_count];
+            break;
+        }
+    cuda_stub_ledger_unlock();
     free(stream);
     return cudaSuccess;
 }
@@ -417,6 +606,8 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
     spark_stub_cuda_sync_hook_t hook = __atomic_load_n(&cuda_stub_sync_hook, __ATOMIC_SEQ_CST);
     cuda_stub_stream_sync_calls++;
+    if (cuda_stub_discrete_on() != 0u && cuda_stub_stream_blocking(stream) != 0u)
+        cuda_stub_land();
     if (hook != 0)
         hook(__atomic_load_n(&cuda_stub_sync_hook_context, __ATOMIC_SEQ_CST), stream);
     return cudaSuccess;
@@ -436,6 +627,8 @@ cudaError_t cudaStreamWaitEvent(
 
 cudaError_t cudaDeviceSynchronize(void)
 {
+    if (cuda_stub_discrete_on() != 0u)
+        cuda_stub_land();
     return cudaSuccess;
 }
 
@@ -531,9 +724,6 @@ cudaError_t cudaEventSynchronize(cudaEvent_t event)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
-static void *cuda_stub_host_registered[CUDA_STUB_MAX_TRACKED];
-static size_t cuda_stub_host_registered_bytes[CUDA_STUB_MAX_TRACKED];
-static uint32_t cuda_stub_host_registered_count;
 uint32_t cuda_stub_host_register_calls;
 uint32_t cuda_stub_host_register_flags;
 uint32_t cuda_stub_host_unregister_calls;

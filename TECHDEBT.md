@@ -1868,6 +1868,19 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
 ## Hardware independence
 
+- Host-visible buffers are not yet checked for ordering on a discrete GPU.
+  Synchronous copies and fills now land before they return, and none runs on
+  the legacy stream ([`docs/UPLOAD_ORDERING.md`](docs/UPLOAD_ORDERING.md)).
+  What remains is pinned staging that asynchronous copies read and mapped
+  buffers that kernels read in place: each host write must follow the last
+  copy or kernel that reads the buffer on its stream. The document lists the
+  buffers: the stage runner's, pass prefill's, DSV4.1's, GLM 5.2's,
+  residentd's boundary and the collective's.
+- `SparkK3DispatchCreate` and `SparkK3DispatchEnableIndex` ignore the result
+  of nine of their ten `SparkGpuMemset` calls
+  (`model-families/k3/source/k3_resident_decode_stage_cuda.cu`), so a failed
+  fill at load goes unnoticed.
+
 - Rented nodes carry no NVIDIA user-space software: the engine, weightd and
   the mesh run on a device backend over the open kernel module, on a node
   image without NVIDIA's user-space packages.

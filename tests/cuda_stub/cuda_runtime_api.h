@@ -345,6 +345,8 @@ uint32_t spark_stub_cuda_stream_wait_calls(void);
 cudaStream_t spark_stub_cuda_last_wait_stream(void);
 cudaEvent_t spark_stub_cuda_last_wait_event(void);
 unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream);
+void spark_stub_cuda_discrete_ordering(uint32_t enabled);
+uint32_t spark_stub_cuda_pending_ops(void);
 void spark_stub_cuda_event_pending(uint32_t pending);
 void spark_stub_cuda_event_record_failure(uint32_t failure);
 extern uint32_t cuda_stub_stream_sync_calls;

@@ -157,33 +157,37 @@ static inline SparkGpuError SparkGpuFreeHost(void *pointer)
 
 static inline SparkGpuError SparkGpuMemcpy(void *destination, const void *source, size_t bytes, SparkGpuCopyKind kind)
 {
-	return cudaMemcpy(destination, source, bytes, kind);
+	const cudaError_t error = cudaMemcpy(destination, source, bytes, kind);
+	if ( error != cudaSuccess || kind == cudaMemcpyDeviceToHost )
+		return error;
+	return cudaStreamSynchronize(0);
 }
 
 static inline SparkGpuError SparkGpuMemcpyAsync(void *destination, const void *source, size_t bytes, SparkGpuCopyKind kind,
-	SparkGpuStream stream SPARK_GPU_DEFAULT(0))
+	SparkGpuStream stream)
 {
 	return cudaMemcpyAsync(destination, source, bytes, kind, stream);
 }
 
 static inline SparkGpuError SparkGpuMemcpy2DAsync(void *destination, size_t destination_pitch, const void *source, size_t source_pitch,
-	size_t width, size_t height, SparkGpuCopyKind kind, SparkGpuStream stream SPARK_GPU_DEFAULT(0))
+	size_t width, size_t height, SparkGpuCopyKind kind, SparkGpuStream stream)
 {
 	return cudaMemcpy2DAsync(destination, destination_pitch, source, source_pitch, width, height, kind, stream);
 }
 
 static inline SparkGpuError SparkGpuMemset(void *destination, int value, size_t bytes)
 {
-	return cudaMemset(destination, value, bytes);
+	const cudaError_t error = cudaMemset(destination, value, bytes);
+	return error != cudaSuccess ? error : cudaStreamSynchronize(0);
 }
 
-static inline SparkGpuError SparkGpuMemsetAsync(void *destination, int value, size_t bytes, SparkGpuStream stream SPARK_GPU_DEFAULT(0))
+static inline SparkGpuError SparkGpuMemsetAsync(void *destination, int value, size_t bytes, SparkGpuStream stream)
 {
 	return cudaMemsetAsync(destination, value, bytes, stream);
 }
 
 static inline SparkGpuError SparkGpuMemset2DAsync(void *destination, size_t pitch, int value, size_t width, size_t height,
-	SparkGpuStream stream SPARK_GPU_DEFAULT(0))
+	SparkGpuStream stream)
 {
 	return cudaMemset2DAsync(destination, pitch, value, width, height, stream);
 }
@@ -253,7 +257,7 @@ static inline SparkGpuError SparkGpuEventDestroy(SparkGpuEvent event)
 	return cudaEventDestroy(event);
 }
 
-static inline SparkGpuError SparkGpuEventRecord(SparkGpuEvent event, SparkGpuStream stream SPARK_GPU_DEFAULT(0))
+static inline SparkGpuError SparkGpuEventRecord(SparkGpuEvent event, SparkGpuStream stream)
 {
 	return cudaEventRecord(event, stream);
 }

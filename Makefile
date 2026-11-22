@@ -308,6 +308,7 @@ TEST_NAMES := \
     test_model_batch_engine_mock_debug \
     test_model_pipeline_client_mock \
     test_tp_device_collective_mock \
+    test_upload_ordering \
     test_tp_mesh_pipeline_boundaries \
     test_tp_chain_graph \
     test_pass_plan \
@@ -461,6 +462,7 @@ PYTHON_TESTS := \
 	tests/test_device_neutral.py \
 	tests/test_launch_path.py \
 	tests/test_gpu_api.py \
+	tests/test_upload_ordering_sites.py \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_shared_memory_cuda.py \
 	tests/test_device_capture_cuda.py \
@@ -1865,6 +1867,9 @@ build/test_pass_plan: tests/test_pass_plan.c include/sparkpipe/spark_pass_plan.h
 
 build/test_tp_mesh_pipeline_boundaries: tests/test_tp_mesh_pipeline_boundaries.c model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h include/sparkpipe/spark_weightd.h | build
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_mesh_pipeline_boundaries.c $(LDFLAGS) -o $@
+
+build/test_upload_ordering: tests/test_upload_ordering.c tests/cuda_stub/cuda_runtime_stub.c tests/cuda_stub/cuda_runtime_api.h runtime/device/cuda/spark_gpu_cuda.h include/sparkpipe/spark_gpu.h
+	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_upload_ordering.c tests/cuda_stub/cuda_runtime_stub.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_tp_device_collective_mock: tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) include/sparkpipe/spark_weightd.h include/sparkpipe/spark_tp_device_collective.h model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h
 	$(CC) $(CPPFLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) tests/test_tp_device_collective_mock.c ring/transport/tp_device_collective.c tests/cuda_stub/cuda_runtime_stub.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
