@@ -33,7 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -1555,14 +1555,29 @@ build/test_nvrm_gpu_api: tests/test_nvrm_gpu_api.c runtime/device/nvrm/spark_gpu
 
 NVRM_HOSTED_HEADERS := runtime/device/nvrm/launch_nvrm.h runtime/device/nvrm/spark_gpu_nvrm.h include/sparkpipe/spark_gpu.h runtime/launch.h
 
+define NVRM_HOSTED_MODULE
+@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): it compiles a module with nvcc -cudart none"; exit 1; }
+mkdir -p $@.kernels $@.keep
+$(NVCC) $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir $@.keep -c $< -o $@.o > $@.ptxas.log 2>&1 || { cat $@.ptxas.log; exit 1; }
+cp $@.keep/$(basename $(notdir $<)).cubin $@.kernels/$(basename $(notdir $<)).cubin
+python3 -I tools/nvrm_kernel_manifest.py --cubin $@.kernels/$(basename $(notdir $<)).cubin --ptx $@.keep/$(basename $(notdir $<)).ptx --ptxas-log $@.ptxas.log --nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $@.kernels/$(basename $(notdir $<)).manifest
+$(CXX) $@.o -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+endef
+
 build/test_nvrm_hosted_launch: tests/nvrm/hosted_launch.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
-	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): the hosted launch test compiles a module with nvcc -cudart none"; exit 1; }
-	mkdir -p $@.kernels $@.keep
-	$(NVCC) $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir $@.keep -c $< -o $@.o > $@.ptxas.log 2>&1 || { cat $@.ptxas.log; exit 1; }
-	cp $@.keep/hosted_launch.cubin $@.kernels/hosted_launch.cubin
-	python3 -I tools/nvrm_kernel_manifest.py --cubin $@.kernels/hosted_launch.cubin --ptx $@.keep/hosted_launch.ptx --ptxas-log $@.ptxas.log \
-		--nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $@.kernels/hosted_launch.manifest
-	$(CXX) $@.o -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+	$(NVRM_HOSTED_MODULE)
+
+build/nvrm_occupancy_ab: tests/nvrm/occupancy_ab.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_occupancy_ab: tests/nvrm/occupancy_ab.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+.PHONY: nvrm-occupancy-ab
+nvrm-occupancy-ab: nvrm-gpu-present build/nvrm_occupancy_ab build/cuda_occupancy_ab
+	@./build/cuda_occupancy_ab > build/occupancy_ab.cuda.txt && ./build/nvrm_occupancy_ab > build/occupancy_ab.nvrm.txt && \
+		diff build/occupancy_ab.cuda.txt build/occupancy_ab.nvrm.txt && \
+		echo "PASS occupancy over nvrm equals the CUDA flavour's on $$(grep -c '^occupancy' build/occupancy_ab.cuda.txt) cases"
 
 NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api
 NVRM_CONTROL_DEVICE := /dev/nvidiactl

@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
+#include "runtime/device/nvrm/nvrm_occupancy.h"
 #include "classes/compute/clcec0.h"
 
 #define LAUNCH_COMPUTE_SUBCHANNEL 1u
@@ -156,6 +157,24 @@ uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel)
 	return(SPARK_NVRM_LAUNCH_QMD_BYTES + (uint32_t)((kernel->bank[0].bytes + SPARK_NVRM_BANK_ALIGN - 1u) / SPARK_NVRM_BANK_ALIGN * SPARK_NVRM_BANK_ALIGN));
 }
 
+static uint32_t LaunchResidentShared(const SparkNvrmGpu *gpu, const SparkNvrmCubinKernel *kernel, const SparkNvrmLaunchRequest *request, uint32_t shared)
+{
+	SparkNvrmOccupancyLimits limits;
+	const uint64_t threads = (uint64_t)request->block[0] * request->block[1] * request->block[2];
+	uint64_t resident;
+	if ( shared == 0u || threads == 0u || threads > UINT32_MAX )
+		return(shared);
+	limits.warps_per_sm = gpu->warps_per_sm;
+	limits.registers_per_sm = SPARK_NVRM_OCCUPANCY_REGISTERS_PER_SM;
+	limits.blocks_per_sm = SPARK_NVRM_OCCUPANCY_BLOCKS_PER_SM;
+	limits.shared_per_sm = SPARK_NVRM_OCCUPANCY_SHARED_PER_SM;
+	limits.register_unit = SPARK_NVRM_OCCUPANCY_REGISTER_UNIT;
+	limits.shared_unit = SPARK_NVRM_OCCUPANCY_SHARED_UNIT;
+	resident = (uint64_t)SparkNvrmOccupancy(&limits,(uint32_t)threads,kernel->registers,0u) *
+		((shared + SPARK_NVRM_OCCUPANCY_SHARED_UNIT - 1u) / SPARK_NVRM_OCCUPANCY_SHARED_UNIT * SPARK_NVRM_OCCUPANCY_SHARED_UNIT);
+	return(resident < SPARK_NVRM_OCCUPANCY_SHARED_PER_SM ? (uint32_t)resident : SPARK_NVRM_OCCUPANCY_SHARED_PER_SM);
+}
+
 static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, SparkNvrmLaunchShape *shape)
 {
 	const SparkNvrmCubinKernel *kernel = request->kernel;
@@ -168,6 +187,7 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 	shape->registers = kernel->registers;
 	shape->barriers = kernel->barriers > LAUNCH_BARRIERS ? kernel->barriers : LAUNCH_BARRIERS;
 	shape->shared_bytes = kernel->shared_bytes + request->dynamic_shared_bytes;
+	shape->resident_shared_bytes = LaunchResidentShared(gpu,kernel,request,shape->shared_bytes);
 	shape->local_bytes = gpu->local_bytes_per_thread;
 	shape->sass_version = gpu->sass_version;
 	shape->bank_address[0] = request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES;
