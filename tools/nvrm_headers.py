@@ -42,6 +42,7 @@ MODULE = {
         "src/common/sdk/nvidia/inc/nvtypes.h",
         "src/common/sdk/nvidia/inc/nvstatus.h",
         "src/common/sdk/nvidia/inc/nvos.h",
+        "src/common/sdk/nvidia/inc/nverror.h",
         "src/common/sdk/nvidia/inc/class/cl0000.h",
         "src/common/sdk/nvidia/inc/class/cl0005.h",
         "src/common/sdk/nvidia/inc/class/cl003e.h",

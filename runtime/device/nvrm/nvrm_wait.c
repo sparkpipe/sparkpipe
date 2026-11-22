@@ -51,6 +51,26 @@ int SparkNvrmWaitPace(SparkNvrmWait *wait, uint64_t timeout_ns)
 	return(0);
 }
 
+int SparkNvrmWaitDue(SparkNvrmWait *wait, uint64_t every_ns)
+{
+	if ( wait->sleep_ns == 0u || (wait->watched != 0u && wait->elapsed - wait->watched < every_ns) )
+		return(0);
+	wait->watched = wait->elapsed;
+	return(1);
+}
+
+int SparkNvrmWaitStalled(SparkNvrmWait *wait, uint64_t progress, uint64_t stall_ns)
+{
+	if ( wait->tracking == 0u || progress != wait->progress )
+	{
+		wait->tracking = 1u;
+		wait->progress = progress;
+		wait->progress_at = wait->elapsed;
+		return(0);
+	}
+	return(wait->elapsed - wait->progress_at >= stall_ns ? 1 : 0);
+}
+
 void SparkNvrmWaitEnd(SparkNvrmWait *wait)
 {
 #if defined(__linux__)

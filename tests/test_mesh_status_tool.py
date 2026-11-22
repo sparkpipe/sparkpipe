@@ -30,8 +30,8 @@ def status_frame(request_id, generation, state=2, rank=0, rank_mask=0x000F, wire
     body += struct.pack("<QQQQQ", generation, 777, 5, 10_000_000_000, 9_000_000_000)
     body += struct.pack("<12Q", *range(12))
     for index in range(16):
-        peer = (peers or {}).get(index, (6 if (wired >> index) & 1 else 2, 0))
-        body += struct.pack("<QQQQQIIIIII", 777, 777, 1_000_000_000, 0, 0, peer[0], peer[1], 3, 0, 0, 0)
+        peer = (peers or {}).get(index, (6 if (wired >> index) & 1 else 2, 0, 3))
+        body += struct.pack("<QQQQQIIIIII", 777, 777, 1_000_000_000, 0, 0, peer[0], peer[1], peer[2], 0, 0, 0)
     for index in range(16):
         lane = (lanes or {}).get(index, (0, 0, 0, 0))
         packed = sum(rank_index << (4 * position) for position, rank_index in enumerate(range(16)) if (lane[1] >> rank_index) & 1)
@@ -95,7 +95,7 @@ def run(arguments, timeout=30):
     return subprocess.run([str(TOOL)] + arguments, capture_output=True, text=True, timeout=timeout)
 
 
-def answering(state=2, wired=0x000F, compat=1, lanes=None, generations=None):
+def answering(state=2, wired=0x000F, compat=1, lanes=None, generations=None, peers=None):
     def respond(daemon, kind, request_id, generation):
         if kind == 1:
             if generations:
@@ -108,7 +108,7 @@ def answering(state=2, wired=0x000F, compat=1, lanes=None, generations=None):
             if generations and daemon.queries >= len(generations):
                 return status_frame(request_id, generation, state=2, wired=0x000F, lanes=lanes)
             return status_frame(request_id, generation, state=state, wired=wired,
-                                layout=max(1, compat), compat=compat, lanes=lanes)
+                                layout=max(1, compat), compat=compat, lanes=lanes, peers=peers)
         return None
     return respond
 
@@ -157,6 +157,22 @@ with tempfile.TemporaryDirectory(prefix="mesh-status-") as work:
     assert report["counters"]["lane_resets"] == 11 and report["peers"][4]["state"] == "no_record", report
     result = run(["--socket", path, "--timeout", "2", "--wait-lane-peers", "0x10"])
     assert result.returncode == 2 and "outside the daemon rank_mask" in result.stderr, result
+    daemon.close()
+    os.unlink(path)
+
+    daemon = FakeDaemon(path, answering(peers={2: (6, 0, 3 | 4 | 8), 3: (6, 0, 3 | 4)}))
+    result = run(["--socket", path, "--timeout", "2", "--wait-lane-peers", "0xf"])
+    lines = result.stderr.splitlines()
+    assert result.returncode == 9 and lines[0].startswith("MESH-STATUS-DEGRADED rank=0 mask=0x000f wired=0x000f degraded=0x0004:"), result
+    assert "MESH-STATUS-DEGRADED-PEER rank=2 port=second" in lines and "MESH-STATUS-READY" not in result.stdout, result
+    result = run(["--socket", path, "--timeout", "2", "--wait-lane-peers", "0xb"])
+    assert result.returncode == 0 and result.stdout.startswith("MESH-STATUS-READY rank=0 mask=0x000b"), result
+    result = run(["--socket", path, "--timeout", "2"])
+    report = json.loads(result.stdout)
+    assert result.returncode == 0 and report["degraded_mask"] == "0x0004", report
+    assert report["peers"][2]["degraded"] is True and report["peers"][2]["second_port"] is True, report
+    assert report["peers"][3]["degraded"] is False and report["peers"][3]["second_port"] is True, report
+    assert report["peers"][1]["degraded"] is False and report["peers"][1]["second_port"] is False, report
     daemon.close()
     os.unlink(path)
 
@@ -263,4 +279,4 @@ with tempfile.TemporaryDirectory(prefix="mesh-status-") as work:
     assert process.returncode == 0, (output, errors)
     assert not os.path.exists(real), "a clean stop removes the socket it bound"
 
-print("PASS mesh status tool: exit codes 0-8 against a real weightd and crafted frames; JSON report; mixed-version and restart handling")
+print("PASS mesh status tool: exit codes 0-9 against a real weightd and crafted frames; JSON report; degraded links; mixed-version and restart handling")
