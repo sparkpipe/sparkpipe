@@ -27,6 +27,7 @@ ssh -o BatchMode=yes rtx5090 "grep -n -E ' error|Error ' $HUB_WORK/logs/api-$SHA
 HUB_FILES="build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/runtime_libs/libsparkpipe_device_cuda.so"
 FW_DIR=build
 if [ "${HOSTED:-0}" = 1 ]; then
+  NODE="$NODE build/runtime_libs/libsparkpipe_device_nvrm.so"
   ssh -o BatchMode=yes $HOST "cd ~/build-rp/fw-$SHA-src && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the node files of $SHA; nothing is written to $OUT" >&2; exit 1; }
   ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the hub API files of $SHA; nothing is written to $OUT" >&2; exit 1; }
   FW_DIR=build/hosted_release_root/build

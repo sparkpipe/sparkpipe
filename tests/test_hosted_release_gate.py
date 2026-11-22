@@ -119,16 +119,20 @@ class DebtListTest(unittest.TestCase):
         shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
         nvrm = make_words("HOSTED_RELEASE_NVRM_FILES", "SHARED_LIBRARY_EXT=so")
         listed = {path for group in self.document["debt"] for path in group["files"]}
-        self.assertEqual({"build/sparkpipe_weightd", "build/weightd_warm", "build/weightdctl"} - set(nvrm), set())
+        self.assertEqual({"build/sparkpipe_weightd", "build/weightd_warm", "build/weightdctl", "build/sparkpipe_model_residentd",
+                          make_words("HIDDEN_TRANSPORT_SPARK_HOST_RDMA", "SHARED_LIBRARY_EXT=so")[0]} - set(nvrm), set())
         self.assertEqual(set(nvrm) - shipped, set())
         self.assertEqual(set(nvrm) & listed, set())
+        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")
         chosen = nvrm + ["tools/fleet_node_agent.sh"]
         self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
-                         [path.replace("build/", "build/nvrm/", 1) for path in nvrm] + ["tools/fleet_node_agent.sh"])
-        recipe = subprocess.run(["make", "-s", "-n", "-C", str(ROOT), "hosted-release-gate", "HOSTED_RELEASE_FILES=" + " ".join(chosen),
+                         [path.replace("build/", "build/nvrm/", 1) for path in nvrm] + ["tools/fleet_node_agent.sh"] + library)
+        self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=build/weightdctl"),
+                         ["build/nvrm/weightdctl"])
+        recipe = subprocess.run(["make", "-s", "-n", "-C", str(ROOT), "hosted-release-gate", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen),
                                  "HOSTED_RELEASE_ADAPTERS=build/weightdctl"], capture_output=True, text=True, check=True).stdout
         staged = " ".join([f"{path.replace('build/', 'build/nvrm/', 1)}={path}" for path in nvrm] + ["tools/fleet_node_agent.sh",
-                          "build/nvrm/weightdctl.kernels=build/weightdctl.kernels"])
+                          "build/nvrm/weightdctl.kernels=build/weightdctl.kernels"] + library)
         self.assertIn(f"--stage {staged}\n", recipe)
 
     def test_host_only_programs_are_shipped_and_never_debt(self):
@@ -441,7 +445,8 @@ class ReleaseKitTest(unittest.TestCase):
         block = re.search(r'^FW_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
         self.assertIsNotNone(block)
         lines = block.group(1).splitlines()
-        self.assertEqual(len(lines), 3)
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(lines.pop(0).strip(), 'NODE="$NODE ' + make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")[0] + '"')
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[0])
         hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)
