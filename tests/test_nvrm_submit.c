@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
@@ -343,6 +344,33 @@ static void TestPageSizes(void)
 		strstr(SparkDeviceLastError()->text,"4 GiB") != 0,"an object of 2 MiB pages at 4 GiB or more is refused before the module sees it");
 }
 
+static void TestModuleZeroes(void)
+{
+	static const char *const contents[] = {"ResmanDebugLevel: 4294967295\nInitializeSystemMemoryAllocations: 1\nRmLogonRC: 1\n",
+		"InitializeSystemMemoryAllocations: 0\n", "ResmanDebugLevel: 4294967295\n"};
+	static const int expected[] = {1, 0, 0};
+	char path[] = "/tmp/spark-nvrm-params-XXXXXX";
+	const int fd = mkstemp(path);
+	uint32_t index;
+	CHECK(fd >= 0,"make a stand-in for the module's parameter file");
+	if ( fd < 0 )
+		return;
+	close(fd);
+	for (index = 0u; index < sizeof(expected) / sizeof(expected[0]); index++)
+	{
+		FILE *file = fopen(path,"w");
+		if ( file != 0 )
+		{
+			fputs(contents[index],file);
+			fclose(file);
+		}
+		CHECK(file != 0 && SparkNvrmModuleZeroesMemory(path) == expected[index],
+			"the module zeroes system memory only when its parameters list InitializeSystemMemoryAllocations: 1");
+	}
+	unlink(path);
+	CHECK(SparkNvrmModuleZeroesMemory(path) == 0 && SparkNvrmModuleZeroesMemory(0) == 0,"a missing parameter file means no zeroing");
+}
+
 static void TestMarks(void)
 {
 	static Fake fake;
@@ -506,6 +534,103 @@ static void TestLaunch(void)
 	free(blob);
 }
 
+#define LATCH_FIELD(slot, field) QmdField((slot),1 ? field,0 ? field)
+
+static SparkStatus DependentLaunch(Fake *fake, SparkNvrmProgram *program, SparkNvrmLaunchRequest *request, uint8_t *slot, uint64_t address,
+	uint32_t dependent, uint64_t *start)
+{
+	uint64_t value = 0u;
+	*start = fake->gpu.compute.push_used;
+	request->slot = slot;
+	request->slot_address = address;
+	request->dependent = dependent;
+	return(SparkNvrmLaunch(&fake->gpu,&fake->gpu.compute,program,request,&value,"dependent"));
+}
+
+static void TestDependentLaunch(void)
+{
+	static Fake fake;
+	static uint8_t slots[4][4096];
+	const uint32_t acquire = (1u << 29) | (5u << 16) | (0x5cu >> 2),pcas = (1u << 29) | (1u << 16) | (1u << 13) | (0x02b4u >> 2);
+	SparkNvrmProgram program;
+	SparkNvrmLaunchRequest request;
+	uint64_t bytes = 0u,output = 0x1000500000ull,start = 0u,copied = 0u;
+	uint8_t *blob = ReadFile(SPARK_NVRM_FIXTURE_CUBIN,&bytes),arguments[12];
+	uint32_t first = 0u;
+	FakeOpen(&fake);
+	memset(&program,0,sizeof(program));
+	CHECK(blob != 0 && SparkNvrmCubinParse(blob,bytes,"dependent",&program.cubin) == SPARK_STATUS_OK,"the fixture parses");
+	if ( blob == 0 )
+		return;
+	program.code.address = 0x1000600000ull;
+	memcpy(arguments,&output,8u);
+	memset(arguments + 8u,0,4u);
+	memset(&request,0,sizeof(request));
+	request.kernel = SparkNvrmCubinKernelNamed(&program.cubin,"SparkNvrmFirstLight");
+	request.grid[0] = 4u;
+	request.grid[1] = request.grid[2] = 1u;
+	request.block[0] = 128u;
+	request.block[1] = request.block[2] = 1u;
+	request.arguments = arguments;
+	request.argument_bytes = sizeof(arguments);
+	request.slot_bytes = request.kernel != 0 ? SparkNvrmLaunchSlotBytes(request.kernel) : 0u;
+	if ( request.kernel == 0 )
+	{
+		CHECK(0,"the fixture holds the first-light kernel");
+		return;
+	}
+	CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,1u,&start) == SPARK_STATUS_OK &&
+		LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID) == 1u && LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u &&
+		(first = (uint32_t)LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID)) != 0u && fake.gpu.compute.latch == first,
+		"the first launch on a channel arrives at a latch of its own and waits on none, dependent or not");
+	CHECK(DependentLaunch(&fake,&program,&request,slots[1],0x1000701000ull,1u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == pcas &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u && LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == first &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) != first && fake.gpu.compute.latch == LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID),
+		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch and holds its blocks and membar");
+	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
+		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch keeps the front-end acquire");
+	CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000001000ull,0x3000002000ull,4096u,&copied,"dependent") == SPARK_STATUS_OK &&
+		fake.gpu.compute.latch == 0u,"a copy ends the latch chain");
+	CHECK(DependentLaunch(&fake,&program,&request,slots[3],0x1000703000ull,1u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
+		LATCH_FIELD(slots[3],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a dependent launch after a copy waits with the acquire instead");
+	CHECK(SparkNvrmOpBeginLatched(&fake.gpu.compute,"dependent") == SPARK_STATUS_OK,"a latched start is allowed right after a launch");
+	fake.gpu.compute.after_value = 5u;
+	CHECK(SparkNvrmOpBeginLatched(&fake.gpu.compute,"dependent") == SPARK_STATUS_INVALID_ARGUMENT,"but not with a wait on another channel pending");
+	fake.gpu.compute.after_value = 0u;
+	{
+		uint32_t index,latched = 0u,acquired = 0u,pattern_holds = 1u;
+		CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,0u,&start) == SPARK_STATUS_OK,"a plain launch starts a segment");
+		for (index = 1u; index <= 40u; index++)
+		{
+			const uint32_t expect_latch = index != SPARK_NVRM_LATCH_SEGMENT ? 1u : 0u;
+			fake.fence[0] = fake.gpu.compute.fence_value;
+			if ( DependentLaunch(&fake,&program,&request,slots[index % 4u],0x1000700000ull + 0x1000ull * (index % 4u),1u,&start) != SPARK_STATUS_OK )
+			{
+				pattern_holds = 0u;
+				break;
+			}
+			if ( LATCH_FIELD(slots[index % 4u],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) != expect_latch ||
+				(expect_latch == 0u && PushWord(&fake,(uint32_t)(start / 4u)) != acquire) )
+				pattern_holds = 0u;
+			latched += expect_latch;
+			acquired += 1u - expect_latch;
+		}
+		CHECK(pattern_holds != 0u && latched == 39u && acquired == 1u,
+			"a chain of dependent launches goes in segments of 32: each starts with a front-end acquire and its other 31 launches wait on latches");
+		SparkNvrmLatchSegmentSet(1u);
+		fake.fence[0] = fake.gpu.compute.fence_value;
+		CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,1u,&start) == SPARK_STATUS_OK &&
+			LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u && PushWord(&fake,(uint32_t)(start / 4u)) == acquire,
+			"with segments of one launch, every dependent launch takes the front-end acquire");
+		SparkNvrmLatchSegmentSet(0u);
+		CHECK(SparkNvrmLatchSegment() == SPARK_NVRM_LATCH_SEGMENT,"a segment of zero launches restores the default of 32");
+	}
+	SparkNvrmCubinRelease(&program.cubin);
+	free(blob);
+}
+
 static void TestStatus(void)
 {
 	CHECK(strcmp(SparkNvrmRmStatusText(NV_ERR_NO_MEMORY),"NV_ERR_NO_MEMORY") == 0 && strcmp(SparkNvrmRmStatusText(NV_OK),"NV_OK") == 0,
@@ -539,16 +664,18 @@ int main(void)
 	TestFillSplit();
 	TestLongLines();
 	TestPageSizes();
+	TestModuleZeroes();
 	TestMarks();
 	TestAddress();
 	TestSemaphore();
 	TestLaunch();
+	TestDependentLaunch();
 	TestStatus();
 	if ( failures != 0 )
 	{
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots and the device address map\n");
+	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch and the device address map\n");
 	return(0);
 }

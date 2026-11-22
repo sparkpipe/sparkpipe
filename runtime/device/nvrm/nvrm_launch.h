@@ -15,6 +15,8 @@ extern "C" {
 #define SPARK_NVRM_PROGRAM_PAD 4096u
 #define SPARK_NVRM_LAUNCH_QMD_BYTES 512u
 #define SPARK_NVRM_LOCAL_EXTRA_BYTES 0x240u
+#define SPARK_NVRM_CLUSTER_GROUPS_MAX 8u
+#define SPARK_NVRM_LATCH_SEGMENT 32u
 
 typedef struct SparkNvrmProgram
 {
@@ -36,6 +38,10 @@ typedef struct SparkNvrmLaunchRequest
 	uint32_t slot_bytes;
 	uint64_t release_address;
 	uint64_t release_payload;
+	uint32_t cluster[3];
+	uint32_t dependent;
+	uint32_t latch_arrive;
+	uint32_t latch_wait;
 } SparkNvrmLaunchRequest;
 
 SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,
@@ -45,6 +51,9 @@ void SparkNvrmProgramRelease(SparkNvrmGpu *gpu, SparkNvrmProgram *program);
 uint8_t *SparkNvrmReadFile(const char *path, uint64_t *bytes);
 uint32_t SparkNvrmLaunchSlotBytes(const SparkNvrmCubinKernel *kernel);
 SparkStatus SparkNvrmKernelRunnable(const SparkNvrmCubinKernel *kernel, const char *owner);
+SparkStatus SparkNvrmLaunchClusterShape(const SparkNvrmLaunchRequest *request, uint32_t cluster[3], const char *owner);
+uint32_t SparkNvrmLatchSegment(void);
+void SparkNvrmLatchSegmentSet(uint32_t launches);
 SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
 	const char *owner);
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

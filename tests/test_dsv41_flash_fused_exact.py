@@ -3,9 +3,10 @@
 
 Builds build/test_dsv41_flash_fused_exact (generated from model-families/dsv41_flash/fusion/decode.json by
 tools/fused_kernels.py) and runs it on an sm_121 device. For 1 to 16 rows, with ordinary and edge-valued inputs,
-every output of each fused kernel (the mix partials, pre, post and comb, the collapsed and normed rows and their
-FP8 codes) must be the same bytes as the unfused launches write; a row's outputs must not depend on how many rows
-run; a changed input must change them; and a CUDA graph replaying the fused kernel three times must give the same
+every output of each fused kernel must be the same bytes as the unfused launches write: for the hyper-connection
+block the mix partials, pre, post and comb, the collapsed and normed rows and their FP8 codes; for the attention
+output block each group's quantized input and the window ring. A row's outputs must not depend on how many rows
+run, a changed input must change them, and a CUDA graph replaying a fused kernel three times must give the same
 bytes, so its arrival counters return to zero.
 """
 

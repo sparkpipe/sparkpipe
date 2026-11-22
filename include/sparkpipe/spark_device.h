@@ -32,6 +32,7 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES 4u
 #define SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS 8u
 #define SPARK_DEVICE_PROPERTY_PROGRAMS 16u
+#define SPARK_DEVICE_PROPERTY_CLUSTERS 32u
 #define SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK 128u
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
@@ -126,6 +127,8 @@ typedef struct SparkDeviceLaunch
 	const void *constants;
 	const SparkDeviceBinding *bindings;
 	uint32_t binding_count;
+	SparkDeviceGrid cluster;
+	uint32_t dependent;
 } SparkDeviceLaunch;
 
 typedef struct SparkDeviceParameter

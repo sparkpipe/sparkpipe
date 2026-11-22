@@ -13,6 +13,7 @@ extern "C" {
 #define SPARK_NVRM_HUGE_PAGE_BYTES (2u << 20)
 #define SPARK_NVRM_BIG_PAGE_BYTES (64u << 10)
 #define SPARK_NVRM_HUGE_OBJECT_LIMIT (4ull << 30)
+#define SPARK_NVRM_MODULE_PARAMETERS "/proc/driver/nvidia/params"
 #define SPARK_NVRM_CHANNEL_ENTRIES 1024u
 #define SPARK_NVRM_PUSH_BYTES (1u << 20)
 #define SPARK_NVRM_LOCAL_RETIRED 16u
@@ -83,6 +84,8 @@ typedef struct SparkNvrmChannel
 	uint64_t fence_value;
 	uint32_t segment_fenced;
 	SparkNvrmEngine last_engine;
+	uint32_t latch;
+	uint32_t latch_run;
 	uint64_t after_address;
 	uint64_t after_value;
 	uint64_t uvm_base;
@@ -181,6 +184,7 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
+int SparkNvrmModuleZeroesMemory(const char *parameters_path);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner);
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner);
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle);
@@ -201,6 +205,7 @@ void SparkNvrmFaultLocate(SparkNvrmGpu *gpu, const SparkNvrmChannel *channel, Sp
 const char *SparkNvrmFaultName(uint32_t code);
 void SparkNvrmFaultText(const SparkNvrmFault *fault, char *text, uint32_t capacity);
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner);
+SparkStatus SparkNvrmOpBeginLatched(SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmEngine engine, uint64_t *value, const char *owner);
 void SparkNvrmOpAbandon(SparkNvrmChannel *channel);
 SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner);
