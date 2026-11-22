@@ -66,6 +66,7 @@ typedef struct SparkNvrmMemory
 typedef struct SparkNvrmChannel
 {
 	uint32_t handle;
+	uint32_t group;
 	uint32_t compute_object;
 	uint32_t copy_object;
 	uint32_t token;
@@ -80,6 +81,8 @@ typedef struct SparkNvrmChannel
 	uint64_t fence_value;
 	uint32_t segment_fenced;
 	SparkNvrmEngine last_engine;
+	uint64_t after_address;
+	uint64_t after_value;
 	uint64_t uvm_base;
 	uint32_t uvm_registered;
 	uint64_t local_address;
@@ -105,6 +108,11 @@ typedef struct SparkNvrmGpu
 	uint32_t channel_group;
 	uint32_t channel_group_scheduled;
 	uint32_t context_share;
+	uint32_t copy_group;
+	uint32_t copy_group_scheduled;
+	uint32_t copy_share;
+	uint32_t copy_engine;
+	SparkNvrmChannel copy;
 	uint32_t usermode;
 	volatile uint32_t *usermode_page;
 	uint8_t uuid[16];
@@ -150,6 +158,12 @@ SparkStatus SparkNvrmChannelOpen(SparkNvrmGpu *gpu, SparkNvrmMemoryKind control_
 void SparkNvrmChannelClose(SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmMemoryKind control_kind, const char *owner);
 void SparkNvrmChannelDestroy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel);
+void SparkNvrmChannelAfter(SparkNvrmChannel *channel, const SparkNvrmChannel *other);
+SparkStatus SparkNvrmCopyEngineAsync(SparkNvrmGpu *gpu, uint32_t *engine, const char *owner);
+SparkStatus SparkNvrmCopyEngines(SparkNvrmGpu *gpu, uint32_t *engines, uint32_t capacity, uint32_t *count, const char *owner);
+SparkStatus SparkNvrmCopyGroupOpen(SparkNvrmGpu *gpu, uint32_t engine, const char *owner);
+void SparkNvrmCopyGroupClose(SparkNvrmGpu *gpu);
+SparkStatus SparkNvrmCopyChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmChannelSync(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t timeout_ns, const char *owner);
 void SparkNvrmGpuClose(SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);

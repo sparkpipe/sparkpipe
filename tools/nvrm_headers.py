@@ -68,6 +68,7 @@ MODULE = {
         "src/common/sdk/nvidia/inc/ctrl/ctrl0041.h",
         "src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080fifo.h",
         "src/common/sdk/nvidia/inc/ctrl/ctrl0080/ctrl0080gpu.h",
+        "src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080ce.h",
         "src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080event.h",
         "src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fb.h",
         "src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fifo.h",

@@ -317,15 +317,41 @@ A grid's release semaphore carries a 64-bit payload only with the QMD's
 
 ## Queues, copies and fills
 
-A queue is one channel: one GPFIFO ring with compute on subchannel 1 and
-the copy engine on subchannel 4, and the channel's fence as the queue's
-timeline. Each copy, fill or launch is one submission that the engine
-doing the work ends by releasing the next fence value: the copy engine
-with its own 64-bit semaphore release after the transfers, a grid with
-its QMD release. Before work on another engine than the previous
-operation's, the queue waits until the fence reaches that operation's
-value. Back-to-back copy-engine work needs no wait, because each
-transfer is non-pipelined.
+A queue is two channels, each with its own GPFIFO ring and fence:
+
+- **Graphics channel.** It sits in the process's graphics channel group,
+  with compute on subchannel 1. Launches, host steps and event records
+  and waits run here.
+- **Copy channel.** It sits in the process's copy channel group, on the
+  first copy engine whose capabilities do not mark it as the graphics
+  engine's own (`NV2080_CTRL_CMD_CE_GET_CAPS_V2`, the GRCE bit), with the
+  copy class on subchannel 4. Copies and fills run here.
+
+The copy engine is separate hardware with its own runlist, so a copy
+overlaps graphics work, including a running grid in another process. On
+the graphics channel's own copy subchannel, the copy waited for another
+process's grid to end: 46 ms behind a 50 ms grid, against 1.1 ms alone.
+The copy group needs no context share, and the module refuses a copy
+channel that has one, but each copy channel is still registered with
+unified memory. A GPU with no copy engine outside the graphics engine is refused
+at initialization.
+
+Each copy, fill or launch is one submission that the engine doing the work
+ends by releasing its channel's next fence value: the copy engine with its
+own 64-bit semaphore release after the transfers, a grid with its QMD
+release. The queue stays totally ordered:
+
+- **Across channels.** When an operation goes to the other channel than
+  the queue's previous one, it first acquires that channel's fence at the
+  previous operation's value, unless the host has already seen it there.
+- **Within the graphics channel,** a change of engine waits for the
+  channel's own fence.
+- **Within the copy channel,** back-to-back copy-engine work needs no wait,
+  because each transfer is non-pipelined.
+- **Completion.** Each device-layer sequence records the channel and value
+  of its last operation. A sequence is complete when that channel's fence
+  reaches the value, which by the ordering means every earlier operation
+  is complete too.
 
 Copies and fills go in lines of at most 2^31 bytes. A fill writes the
 byte from the copy engine's remap constant: four bytes per element over
@@ -478,6 +504,13 @@ launch-shape probe and first light:
   pass: spaces, copies, events, waits between queues, host callbacks, busy
   buffers and events, holds longer than a GPU watchdog, 20000 event
   record-and-destroy rounds, timing, file mappings and registration.
+- **`tests/nvrm/queue_channels.cu`** (`build/test_nvrm_queue_channels`) checks
+  the order across a queue's two channels through `spark_gpu.h`. It runs 32
+  rounds on 64 MiB buffers, with no host wait inside a round: a kernel then a
+  copy-engine readback, a copy-engine fill then a kernel reading it, and an
+  upload then a kernel. Each kernel holds for 1 ms before it writes. With the
+  cross-channel wait removed, every transition reads most words out of order;
+  the device contract's 400 KB kernel, copy and kernel round did not catch it.
 - **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
   copy-engine fill then a kernel reading it, a kernel writing then a
   copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of

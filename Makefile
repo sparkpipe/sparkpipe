@@ -33,7 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency clean
+NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -1603,15 +1603,22 @@ nvrm-launch-latency: nvrm-gpu-present build/nvrm_launch_latency build/cuda_launc
 	@for pass in 1 2 3; do ./build/cuda_launch_latency cuda && ./build/nvrm_launch_latency nvrm; done
 
 build/test_nvrm_shared_coherence: tests/nvrm/shared_coherence.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
-	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): the coherence test compiles a module with nvcc -cudart none"; exit 1; }
-	mkdir -p $@.kernels $@.keep
-	$(NVCC) $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir $@.keep -c $< -o $@.o > $@.ptxas.log 2>&1 || { cat $@.ptxas.log; exit 1; }
-	cp $@.keep/shared_coherence.cubin $@.kernels/shared_coherence.cubin
-	python3 -I tools/nvrm_kernel_manifest.py --cubin $@.kernels/shared_coherence.cubin --ptx $@.keep/shared_coherence.ptx --ptxas-log $@.ptxas.log \
-		--nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $@.kernels/shared_coherence.manifest
-	$(CXX) $@.o -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+	$(NVRM_HOSTED_MODULE)
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence
+build/test_nvrm_queue_channels: tests/nvrm/queue_channels.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_cross_process_copy: tests/nvrm/cross_process_copy.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+.PHONY: nvrm-cross-process-copy
+nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cuda_cross_process_copy
+	@./build/cuda_cross_process_copy cuda && ./build/nvrm_cross_process_copy nvrm
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 .PHONY: test-nvrm-gpu nvrm-gpu-present
