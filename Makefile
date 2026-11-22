@@ -78,7 +78,15 @@ DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_L
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
-DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/vendor/open-gpu-kernel-modules -Iruntime/device/nvrm/vendor/open-gpu-doc
+NVRM_VENDOR := runtime/device/nvrm/vendor
+NVRM_MODULE_RELEASES := 580.178.04 595.84
+NVRM_MODULE_RELEASE ?= 580.178.04
+ifneq ($(words $(filter $(NVRM_MODULE_RELEASE),$(NVRM_MODULE_RELEASES))),1)
+$(error NVRM_MODULE_RELEASE=$(NVRM_MODULE_RELEASE) is not a pinned open kernel module release; the pins are $(NVRM_MODULE_RELEASES))
+endif
+NVRM_RELEASE_STAMP := build/nvrm_module_release
+NVRM_RELEASE_DEPENDENCIES := runtime/device/nvrm/release/$(NVRM_MODULE_RELEASE)/nvrm_release.h $(NVRM_RELEASE_STAMP)
+DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/release/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-kernel-modules/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-doc
 NVRM_BUILD_DIR := build/nvrm
 WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
@@ -1584,7 +1592,10 @@ build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBR
 build/test_device_shared_memory_cuda: tests/test_device_shared_memory.c $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_shared_memory_cuda (no CUDA device library)"; fi
 
-$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+$(NVRM_RELEASE_STAMP): FORCE | build
+	@if [ "$$(cat $@ 2>/dev/null)" != "$(NVRM_MODULE_RELEASE)" ]; then echo "$(NVRM_MODULE_RELEASE)" > $@; fi
+
+$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
@@ -1598,7 +1609,7 @@ build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
-build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-first-light-static
@@ -1637,7 +1648,7 @@ ifeq ($(UNAME_S),Linux)
 NVRM_OPEN_ORDER_FLAGS := -DSPARK_NVRM_FAKE_MODULE -Wl,--wrap=open -Wl,--wrap=ioctl
 NVRM_OPEN_ORDER_SOURCES := $(DEVICE_NVRM_SOURCES)
 endif
-build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
 NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault

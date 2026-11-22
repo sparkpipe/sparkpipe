@@ -69,7 +69,7 @@ def closure_cases(generator):
             "kernel/plain.h": "int unlicensed;\n",
             "kernel/missing.h": f"/* {MIT} */\n#include \"absent.h\"\n",
         })
-        upstream = {"name": "case", "include": ("sdk", "kernel"), "headers": ("sdk/top.h", "kernel/entry.h")}
+        upstream = {"name": "case", "include": ("sdk", "kernel"), "headers": ("sdk/top.h", "kernel/entry.h"), "output": generator.VENDOR / "case"}
         files, copyrights = generator.outputs_for(upstream, root)
         names = sorted(str(path.relative_to(generator.VENDOR / "case")) for path in files)
         if names != ["ctrl/a.h", "ctrl/a_base.h", "entry.h", "top.h", "types.h"]:
@@ -108,16 +108,17 @@ def closure_cases(generator):
 
 def notice_cases(generator):
     failures = []
-    prefix = f"Files: {generator.VENDOR}/case/"
-    upstream = {"name": "case"}
-    entry = f"{prefix}a.h\nUpstream: https://u\nCommit: {'1' * 40}\nLicense: MIT\n\nnew text\n"
-    appended = generator.updated_notice("head\n\nFiles: x\nUpstream: https://x\n", upstream, entry)
-    if appended != "head\n\nFiles: x\nUpstream: https://x\n\n" + entry:
-        failures.append("a missing entry was not appended")
-    old = f"head\n\n{prefix}old.h\nUpstream: https://u\nCommit: {'0' * 40}\nLicense: MIT\n\nold text\n\nFiles: later\nLicense: MIT\n"
-    replaced = generator.updated_notice(old, upstream, entry)
-    if replaced != "head\n\n" + entry + "\nFiles: later\nLicense: MIT\n":
-        failures.append(f"an existing entry was not replaced in place: {replaced!r}")
+    owned = f"Files: {generator.VENDOR}/"
+    first = f"{owned}1.0/case/a.h\nUpstream: https://u\nCommit: {'1' * 40}\nLicense: MIT\n\nfirst text\n\n"
+    second = f"{owned}doc/b.h\nUpstream: https://d\nCommit: {'2' * 40}\nLicense: MIT\n\nsecond text\n\n"
+    appended = generator.updated_notice("head\n\nFiles: x\nUpstream: https://x\n", [first, second])
+    if appended != "head\n\nFiles: x\nUpstream: https://x\n\n" + first + second:
+        failures.append(f"missing entries were not appended: {appended!r}")
+    old = (f"head\n\n{owned}case/old.h\n{owned}case/older.h\nUpstream: https://u\nCommit: {'0' * 40}\nLicense: MIT\n\nold text\n\n"
+           f"{owned}doc/b.h\nUpstream: https://d\nCommit: {'0' * 40}\nLicense: MIT\n\nold doc\n\nFiles: later\nLicense: MIT\n")
+    replaced = generator.updated_notice(old, [first, second])
+    if replaced != "head\n\n" + first + second + "Files: later\nLicense: MIT\n":
+        failures.append(f"existing entries, under an old path too, were not replaced in place: {replaced!r}")
     return failures
 
 
@@ -127,23 +128,42 @@ def tree_cases(generator):
     vendor = ROOT / generator.VENDOR
     present = {path.relative_to(ROOT).as_posix() for path in vendor.rglob("*") if path.is_file()}
     for upstream in generator.UPSTREAMS:
-        prefix = f"Files: {generator.VENDOR}/{upstream['name']}/"
+        prefix = f"Files: {upstream['output']}/"
+        label = f"{upstream['name']} {upstream['tag'] or upstream['commit'][:12]}"
         listed = {line[len("Files: "):] for line in notice.split("\n") if line.startswith(prefix)}
-        tree = {path for path in present if path.startswith(f"{generator.VENDOR}/{upstream['name']}/")}
+        tree = {path for path in present if path.startswith(f"{upstream['output']}/")}
         if not tree:
-            failures.append(f"{upstream['name']}: no generated headers in the tree")
+            failures.append(f"{label}: no generated headers in the tree")
         if listed != tree:
-            failures.append(f"{upstream['name']}: NOTICE lists {len(listed)} files, the tree holds {len(tree)}")
+            failures.append(f"{label}: NOTICE lists {len(listed)} files, the tree holds {len(tree)}")
         block = notice[notice.index(prefix):] if prefix in notice else ""
         commit = next((line for line in block.split("\n") if line.startswith("Commit: ")), "")
         if commit != f"Commit: {upstream['commit']}":
-            failures.append(f"{upstream['name']}: NOTICE commit {commit!r} is not the pin {upstream['commit']}")
+            failures.append(f"{label}: NOTICE commit {commit!r} is not the pin {upstream['commit']}")
     stray = sorted(path for path in present if PurePosixPath(path).suffix != ".h")
     if stray:
         failures.append(f"non-header files under {generator.VENDOR}: {stray}")
-    header = ROOT / generator.VERSION_HEADER
-    if not header.is_file() or header.read_text(encoding="utf-8") != generator.version_header():
-        failures.append(f"{generator.VERSION_HEADER} does not name the pinned module version {generator.MODULE['tag']}")
+    releases = [module["tag"] for module in generator.MODULES]
+    module_root = generator.VENDOR / generator.MODULE["name"]
+    trees = {path.split("/")[len(module_root.parts)] for path in present if path.startswith(f"{module_root}/")}
+    if trees != set(releases):
+        failures.append(f"{module_root} holds the trees {sorted(trees)}, not one per pinned release {releases}")
+    headers = ROOT / generator.RELEASE_HEADERS
+    found = sorted(path.parent.name for path in headers.glob(f"*/{generator.RELEASE_HEADER_NAME}"))
+    if found != sorted(releases):
+        failures.append(f"{generator.RELEASE_HEADERS} has release headers for {found}, not for the pins {releases}")
+    for release in releases:
+        header = headers / release / generator.RELEASE_HEADER_NAME
+        text = header.read_text(encoding="utf-8") if header.is_file() else ""
+        if text.count(f'#define SPARK_NVRM_MODULE_VERSION "{release}"\n') != 1 or text.count("SPARK_NVRM_MODULE_VERSION") != 1:
+            failures.append(f"{generator.RELEASE_HEADERS}/{release}/{generator.RELEASE_HEADER_NAME} does not name the pinned module release {release} once")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    pins = next((line.split(":=", 1)[1].split() for line in makefile.split("\n") if line.startswith("NVRM_MODULE_RELEASES :=")), None)
+    default = next((line.split("?=", 1)[1].strip() for line in makefile.split("\n") if line.startswith("NVRM_MODULE_RELEASE ?=")), None)
+    if pins != releases:
+        failures.append(f"the Makefile's NVRM_MODULE_RELEASES {pins} are not the generator's pins {releases}")
+    if default != releases[0]:
+        failures.append(f"the Makefile builds {default} by default, not the fleet's pin {releases[0]}")
     return failures
 
 
@@ -161,7 +181,8 @@ def main():
     if failures:
         print(f"\nFAIL ({len(failures)})")
         return 1
-    print(f"\nPASS nvrm headers come from {generator.MODULE['tag']} and open-gpu-doc {generator.DOC['commit'][:12]}, each listed in NOTICE")
+    releases = ", ".join(module["tag"] for module in generator.MODULES)
+    print(f"\nPASS nvrm headers come from {releases} and open-gpu-doc {generator.DOC['commit'][:12]}, each listed in NOTICE")
     return 0
 
 
