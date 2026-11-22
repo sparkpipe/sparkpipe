@@ -77,6 +77,8 @@ DEVICE_HOST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
+DEVICE_KERNEL_DIR := $(DEVICE_RUNTIME_DIR)/sparkpipe_device_kernels
+DEVICE_TENSOR_MAP_IMAGE := $(DEVICE_KERNEL_DIR)/tensor_map_build.cubin
 DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
 NVRM_VENDOR := runtime/device/nvrm/vendor
 NVRM_MODULE_RELEASES := 580.178.04 595.84
@@ -97,6 +99,7 @@ DEVICE_FLAVOUR_LIBRARY := $(DEVICE_FLAVOUR_LIBRARY_$(SPARKPIPE_DEVICE))
 DEVICE_FLAVOUR_RPATH := -Wl,-rpath,'$$ORIGIN/runtime_libs'
 DEVICE_FLAVOUR_LINK := $(if $(DEVICE_FLAVOUR_LIBRARY),-L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_$(SPARKPIPE_DEVICE) $(DEVICE_FLAVOUR_RPATH))
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+DEVICE_NVRM_INPUTS := $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES)
 DEVICE_CUDA_NVCC_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
 	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal \
@@ -490,6 +493,7 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_device_property_bits.py \
 	tests/test_bulk_copy_forms.py \
 	tests/test_launch_path.py \
 	tests/test_gpu_api.py \
@@ -497,6 +501,7 @@ PYTHON_TESTS := \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_shared_memory_cuda.py \
 	tests/test_device_capture_cuda.py \
+	tests/test_tensor_map_build_cuda.py \
 	tests/test_device_contract_metal.py \
 	tests/test_metal_kernels.py \
 	tests/test_metal_bf16_convert.py \
@@ -1055,7 +1060,7 @@ $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBR
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
-HOSTED_RELEASE_NODE_FILES := build/sparkpipe_model_residentd build/weightd_warm $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch $(DEVICE_CUDA_LIBRARY)
+HOSTED_RELEASE_NODE_FILES := build/sparkpipe_model_residentd build/weightd_warm $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) build/sparkpipe_weightd build/weightd_receipt build/weightdctl build/sparkpipe_model_batch
 HOSTED_RELEASE_HUB_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt
 HOSTED_RELEASE_HOST_ONLY_FILES := build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/sparkpipe_model_batch build/weightd_receipt tools/fleet_node_agent.sh
 HOSTED_RELEASE_ADAPTERS = $(sort $(foreach variable,$(filter-out %_METAL_SERVING_ADAPTER,$(filter %_SERVING_ADAPTER,$(.VARIABLES))),$($(variable))))
@@ -1063,11 +1068,12 @@ HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB
 HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
 HOSTED_RELEASE_ROOT ?= build/hosted_release_root
 HOSTED_RELEASE_GATE_FLAGS ?=
-NVRM_SERVING_ADAPTER_SOURCES := $(AXK2_TP16_SERVING_ADAPTER) $(DSV41_FLASH_TP16_SERVING_ADAPTER) $(GEMMA4_31B_TP16_SERVING_ADAPTER) $(GLM53_FULL_BF16_TP16_SERVING_ADAPTER) $(GLM53_FULL_TP16_SERVING_ADAPTER) $(HY4_TP16_SERVING_ADAPTER) $(MIMO26_FLASH_TP16_SERVING_ADAPTER) $(MIMO26_PRO_TP16_SERVING_ADAPTER) $(MUSE_TP16_SERVING_ADAPTER) $(QWEN38_27B_BF16_TP16_SERVING_ADAPTER) $(QWEN38_27B_TP16_SERVING_ADAPTER) $(QWEN38_FLASH_TP16_SERVING_ADAPTER) $(QWEN38_MAX_TP16_SERVING_ADAPTER)
+NVRM_SERVING_ADAPTER_SOURCES := $(AXK2_TP16_SERVING_ADAPTER) $(DSV41_FLASH_TP16_SERVING_ADAPTER) $(GEMMA4_31B_TP16_SERVING_ADAPTER) $(GLM53_FULL_BF16_TP16_SERVING_ADAPTER) $(GLM53_FULL_TP16_SERVING_ADAPTER) $(HY4_TP16_SERVING_ADAPTER) $(MIMO26_FLASH_TP16_SERVING_ADAPTER) $(MIMO26_PRO_TP16_SERVING_ADAPTER) $(MUSE_TP16_SERVING_ADAPTER) $(QWEN38_27B_BF16_TP16_SERVING_ADAPTER) $(QWEN38_27B_TP16_SERVING_ADAPTER) $(QWEN38_FLASH_TP16_SERVING_ADAPTER) $(QWEN38_MAX_TP16_SERVING_ADAPTER) $(GEMMA4_26B_TP16_SERVING_ADAPTER) $(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER) $(GLM53_FLASH_TP16_SERVING_ADAPTER) $(K31_PRO_TP16_SERVING_ADAPTER) $(K3_TP16_SERVING_ADAPTER) $(KEXAONE2_TP16_SERVING_ADAPTER) $(LAGUNA_TP16_SERVING_ADAPTER) $(LING3_FIN_TP16_SERVING_ADAPTER) $(LING3_FLASH_TP16_SERVING_ADAPTER) $(MOTIF3_TP16_SERVING_ADAPTER) $(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER) $(SOLAR_OPEN2_TP16_SERVING_ADAPTER)
 HOSTED_RELEASE_NVRM_FILES := build/sparkpipe_weightd build/weightd_warm build/weightdctl build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) $(NVRM_SERVING_ADAPTER_SOURCES)
 HOSTED_RELEASE_NVRM_LINKED := build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) $(NVRM_SERVING_ADAPTER_SOURCES)
 HOSTED_RELEASE_SOURCE = $(if $(filter $(1) $(1:.kernels=),$(HOSTED_RELEASE_NVRM_FILES)),$(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1)),$(1))
-HOSTED_RELEASE_DEVICE_LIBRARIES = $(if $(filter $(HOSTED_RELEASE_NVRM_LINKED),$(HOSTED_RELEASE_FILES)),$(filter-out $(HOSTED_RELEASE_FILES),$(DEVICE_NVRM_LIBRARY)))
+DEVICE_NVRM_RUNTIME_FILES := $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) $(DEVICE_KERNEL_DIR)/tensor_map_build.manifest
+HOSTED_RELEASE_DEVICE_LIBRARIES = $(if $(filter $(HOSTED_RELEASE_NVRM_LINKED),$(HOSTED_RELEASE_FILES)),$(filter-out $(HOSTED_RELEASE_FILES),$(DEVICE_NVRM_RUNTIME_FILES)))
 HOSTED_RELEASE_SOURCES = $(foreach file,$(HOSTED_RELEASE_FILES),$(call HOSTED_RELEASE_SOURCE,$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
 HOSTED_RELEASE_STAGED = $(foreach file,$(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS),$(if $(filter $(file),$(call HOSTED_RELEASE_SOURCE,$(file))),$(file),$(call HOSTED_RELEASE_SOURCE,$(file))=$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
 
@@ -1237,24 +1243,24 @@ $(NVRM_RUNTIME_LIBRARY): $(NVRM_RUNTIME_OBJECTS)
 	@mkdir -p $(@D)
 	rm -f $@ && $(AR) rcs $@ $^
 
-$(NVRM_BUILD_DIR)/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -libverbs -lmlx5 -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -libverbs -lmlx5 -o $@
 
-$(NVRM_BUILD_DIR)/weightd_warm: tools/weightd_warm.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/weightd_warm: tools/weightd_warm.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-weightd
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
-build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
 NVRM_MODEL_COMMON_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(SPARKPIPE_MODEL_COMMON_SOURCES))
 NVRM_MODEL_COMMON_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_model_common.a
@@ -1613,6 +1619,9 @@ $(DEVICE_CUDA_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 $(STAGE_RUNNER_BINARIES): $(DEVICE_CUDA_LIBRARY)
 
+build/test_tensor_map_build_cuda: tests/cuda/tensor_map_build_cuda.cu runtime/device/nvrm/tensor_map_build.cuh runtime/gemm.cuh runtime/tensor_map.h $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ] && command -v $(NVCC) > /dev/null; then $(NVCC) -std=c++17 $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs' -L$(CUDA_HOME)/lib64 -lcuda -o $@; else echo "SKIP test_tensor_map_build_cuda (no CUDA toolkit)"; fi
+
 build/test_device_capture_cuda: tests/cuda/device_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ] && command -v $(NVCC) > /dev/null; then $(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs' -o $@; else echo "SKIP test_device_capture_cuda (no CUDA toolkit)"; fi
 
@@ -1625,7 +1634,7 @@ build/test_device_shared_memory_cuda: tests/test_device_shared_memory.c $(DEVICE
 $(NVRM_RELEASE_STAMP): FORCE | build
 	@if [ "$$(cat $@ 2>/dev/null)" != "$(NVRM_MODULE_RELEASE)" ]; then echo "$(NVRM_MODULE_RELEASE)" > $@; fi
 
-$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_INPUTS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
@@ -1633,13 +1642,25 @@ NVRM_FLAVOUR_GOALS += nvrm-device
 .PHONY: nvrm-device nvrm-first-light test-nvrm
 nvrm-device: $(DEVICE_NVRM_LIBRARY)
 
+$(DEVICE_TENSOR_MAP_IMAGE): runtime/device/nvrm/tensor_map_build.cu runtime/device/nvrm/tensor_map_build.cuh include/sparkpipe/spark_device.h tools/nvrm_kernel_manifest.py | build
+	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): the device layer builds tensor maps with this kernel"; exit 1; }
+	@mkdir -p $(dir $@) build/tensor_map_build.keep
+	$(NVCC) $(NVCCFLAGS) -cudart none $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir build/tensor_map_build.keep -cubin $< -o $@ > build/tensor_map_build.ptxas.log 2>&1 || { cat build/tensor_map_build.ptxas.log; exit 1; }
+	python3 -I tools/nvrm_kernel_manifest.py --cubin $@ --ptx build/tensor_map_build.keep/tensor_map_build.ptx --ptxas-log build/tensor_map_build.ptxas.log --nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $(DEVICE_KERNEL_DIR)/tensor_map_build.manifest
+
+NVRM_FLAVOUR_GOALS += nvrm-device-kernels
+.PHONY: nvrm-device-kernels
+nvrm-device-kernels: $(DEVICE_TENSOR_MAP_IMAGE)
+
+$(DEVICE_KERNEL_DIR)/tensor_map_build.manifest: $(DEVICE_TENSOR_MAP_IMAGE) ;
+
 build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
-build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_INPUTS) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-first-light-static
@@ -1691,7 +1712,7 @@ ifeq ($(UNAME_S),Linux)
 NVRM_OPEN_ORDER_FLAGS := -DSPARK_NVRM_FAKE_MODULE -Wl,--wrap=open -Wl,--wrap=ioctl
 NVRM_OPEN_ORDER_SOURCES := $(DEVICE_NVRM_SOURCES)
 endif
-build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_INPUTS) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
 NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault build/test_nvrm_pages
@@ -1721,7 +1742,7 @@ build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY
 build/test_device_shared_memory_nvrm: tests/test_device_shared_memory.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(NVRM_GPU_FIXTURE).cubin"' \
 		-include tests/nvrm/fixture_kernels.h -DSPARK_DEVICE_TEST_LONG_KERNEL=SPARK_NVRM_FIXTURE_LONG_TEXT $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
@@ -1834,6 +1855,35 @@ nvrm-mesh-records: nvrm-gpu-present build/test_nvrm_mesh_records build/cuda_mesh
 	if [ "$$(tr '\n' '|' < build/mesh_records.cuda.txt)" != "$(MESH_RECORDS_EXPECTED)|" ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour printed:"; cat build/mesh_records.cuda.txt; exit 1; fi; \
 	if ! cmp -s build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; then echo "FAIL nvrm-mesh-records: the flavours printed different records"; diff build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; exit 1; fi; \
 	echo "PASS nvrm-mesh-records: each record line once with its values, identical on both flavours"
+
+build/test_nvrm_tensor_map_gemm: tests/nvrm/tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_tensor_map_gemm: tests/nvrm/tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -L$(CUDA_HOME)/lib64 -lcuda -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-tensor-maps
+.PHONY: nvrm-tensor-maps
+nvrm-tensor-maps: nvrm-gpu-present build/test_nvrm_tensor_map_gemm build/cuda_tensor_map_gemm
+	@./build/cuda_tensor_map_gemm cuda > build/tensor_map_gemm.cuda.txt; cuda=$$?; ./build/test_nvrm_tensor_map_gemm nvrm > build/tensor_map_gemm.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-tensor-maps: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if ! cmp -s build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-tensor-maps: GEMM outputs differ between driver-encoded maps (CUDA flavour) and GPU-built maps (nvrm flavour)"; diff build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt | head -20; exit 1; fi; \
+	echo "PASS nvrm-tensor-maps: $$(grep -c ' ok$$' build/tensor_map_gemm.nvrm.txt) GEMMs bit-identical between the flavours, $$(grep -c ' refused ' build/tensor_map_gemm.nvrm.txt) identical refusals"
+
+build/test_nvrm_adapter_tensor_map_gemm: tests/nvrm/adapter_tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_adapter_tensor_map_gemm: tests/nvrm/adapter_tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -L$(CUDA_HOME)/lib64 -lcuda -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-adapter-tensor-maps
+.PHONY: nvrm-adapter-tensor-maps
+nvrm-adapter-tensor-maps: nvrm-gpu-present build/test_nvrm_adapter_tensor_map_gemm build/cuda_adapter_tensor_map_gemm
+	@./build/cuda_adapter_tensor_map_gemm cuda > build/adapter_tensor_map_gemm.cuda.txt; cuda=$$?; ./build/test_nvrm_adapter_tensor_map_gemm nvrm > build/adapter_tensor_map_gemm.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-adapter-tensor-maps: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if grep -q ' refused ' build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-adapter-tensor-maps: a launcher refused an adapter shape"; grep -h ' refused ' build/adapter_tensor_map_gemm.cuda.txt | head -5; exit 1; fi; \
+	if ! cmp -s build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-adapter-tensor-maps: GEMM outputs differ between driver-encoded maps (CUDA flavour) and GPU-built maps (nvrm flavour)"; diff build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt | head -20; exit 1; fi; \
+	echo "PASS nvrm-adapter-tensor-maps: $$(grep -c ' ok$$' build/adapter_tensor_map_gemm.nvrm.txt) adapter GEMMs bit-identical between the flavours"
 
 build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
@@ -2206,10 +2256,10 @@ build/k3_tp_context_cuda: tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_d
 build/k3_index_exchange_cuda: tests/cuda/k3_index_exchange_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_stage.cuh model-families/k3/source/k3_streamed_prefill.cuh model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DEVICE_CUDA_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_index_exchange_cuda.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs $(DEVICE_CUDA_NVCC_LINK) -o $@
 
-$(K3_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+$(K3_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(K3_TP16_SERVING_ADAPTER)): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -libverbs); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(K31_PRO_TP16_SERVING_ADAPTER): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(K31_PRO_TP16_CONTRACT) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+$(K31_PRO_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(K31_PRO_TP16_SERVING_ADAPTER)): modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_serving_adapter.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h ring/transport/weight_stream.c ring/transport/pack_window.c include/sparkpipe/spark_weight_stream.h include/sparkpipe/spark_pack_window.h include/sparkpipe/spark_pass_plan.h inference/runner/pass_prefill.cuh $(wildcard model-families/k3/source/*.cu model-families/k3/source/*.cuh model-families/k3/source/*.h inference/kernels/*.cuh inference/kernels/*.h modules/k3_resident_decode_stage/source/*.c modules/k3_resident_decode_stage/source/*.h modules/k3_resident_decode_stage/include/sparkpipe/*.h model-families/k3/src/*.c model-families/k3/include/sparkpipe/*.h) $(K31_PRO_TP16_CONTRACT) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DSPARK_K3_SERVING_INDEXER=1 -DK31_PRO_CONTRACT_SHA256=\"$(K31_PRO_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) modules/k3_resident_decode_stage/source/spark_k3_serving_adapter.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c ring/transport/weight_stream.c ring/transport/pack_window.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK) -libverbs); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 QWEN38_27B_ADAPTER_DEPS := $(QWEN38_27B_TP16_SOURCES) $(QWEN38_27B_TP16_CONTRACT) modules/qwen38_27b_resident_decode_stage/include/sparkpipe/spark_qwen38_27b_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -2258,7 +2308,7 @@ endef
 $(QWEN38_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(QWEN38_FLASH_TP16_SERVING_ADAPTER)): $(QWEN38_FLASH_TP16_SOURCES) $(QWEN38_FLASH_TP16_CONTRACT) modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call QWEN38_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_NVFP4_E2M1,SPARK_WEIGHT_CODEC_FP8_E4M3,qwen38_flash-tp16,qwen38_flash_stage)
 
-$(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER): $(QWEN38_FLASH_TP16_SOURCES) $(QWEN38_FLASH_TP16_CONTRACT) modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(QWEN38_FLASH_BF16_TP16_SERVING_ADAPTER)): $(QWEN38_FLASH_TP16_SOURCES) $(QWEN38_FLASH_TP16_CONTRACT) modules/qwen38_flash_resident_decode_stage/include/sparkpipe/spark_qwen38_flash_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call QWEN38_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,SPARK_WEIGHT_CODEC_BF16,qwen38_flash-bf16-tp16,qwen38_flash_bf16_stage)
 
 $(GEMMA4_31B_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GEMMA4_31B_TP16_SERVING_ADAPTER)): $(GEMMA4_31B_TP16_SOURCES) $(GEMMA4_31B_TP16_CONTRACT) modules/gemma4_31b_resident_decode_stage/include/sparkpipe/spark_gemma4_31b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -2270,19 +2320,19 @@ define GLM53_FLASH_ADAPTER_RECIPE
 @if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DGLM53_FLASH_TP16_CONTRACT_SHA256=\"$(GLM53_FLASH_TP16_CONTRACT_SHA256)\" -DGLM53_FLASH_EXPERT_CODEC=$(1) -DGLM53_FLASH_ADAPTER_ID=\"$(2)\" -DGLM53_FLASH_MODULE_TAG=\"$(3)\" -DGLM53_FLASH_MODEL_ID=\"$(4)\" -DGLM53_FLASH_MODEL_REVISION=\"$(5)\" -I. -Iinclude -Isrc -Imodules/glm53_flash_tp16_resident_decode_stage/include -Imodel-families/glm5_next/source -Imodel-families/glm5_next/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GLM53_FLASH_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
-$(GLM53_FLASH_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GLM53_FLASH_TP16_SERVING_ADAPTER)): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_FP8_E4M3,glm53_flash-tp16,glm53_flash_stage,zai-org/GLM-5.3-Flash,84c6a6aa9497188e15a635ba793b0f95a79b1033)
 
-$(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GLM53_FLASH_BF16_TP16_SERVING_ADAPTER)): $(GLM53_FLASH_TP16_SOURCES) $(GLM53_FLASH_TP16_CONTRACT) modules/glm53_flash_tp16_resident_decode_stage/include/sparkpipe/spark_glm53_flash_tp16_stage_model.h model-families/glm5_next/source/glm5_next_stage.cuh model-families/glm5_next/source/glm5_next_stage_model.cuh model-families/glm5_next/include/sparkpipe/spark_glm5_next_family.h model-families/glm5_next/include/sparkpipe/spark_glm5_next_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call GLM53_FLASH_ADAPTER_RECIPE,SPARK_WEIGHT_CODEC_BF16,glm53_flash-bf16-tp16,glm53_flash_bf16_stage,zai-org/GLM-5.3-Flash-BF16,f12e0fe1f6b2ea274c11a569582edfd99d993c5e)
 
-$(MOTIF3_TP16_SERVING_ADAPTER): $(MOTIF3_TP16_SOURCES) $(MOTIF3_TP16_CONTRACT) modules/motif3_tp16_resident_decode_stage/include/sparkpipe/spark_motif3_tp16_stage_model.h model-families/motif/source/motif_stage.cuh model-families/motif/include/sparkpipe/spark_motif_family.h model-families/motif/include/sparkpipe/spark_motif_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(MOTIF3_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(MOTIF3_TP16_SERVING_ADAPTER)): $(MOTIF3_TP16_SOURCES) $(MOTIF3_TP16_CONTRACT) modules/motif3_tp16_resident_decode_stage/include/sparkpipe/spark_motif3_tp16_stage_model.h model-families/motif/source/motif_stage.cuh model-families/motif/include/sparkpipe/spark_motif_family.h model-families/motif/include/sparkpipe/spark_motif_model.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DMOTIF3_TP16_CONTRACT_SHA256=\"$(MOTIF3_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/motif3_tp16_resident_decode_stage/include -Imodel-families/motif/source -Imodel-families/motif/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(MOTIF3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(LAGUNA_TP16_SERVING_ADAPTER): $(LAGUNA_TP16_SOURCES) $(LAGUNA_TP16_CONTRACT) modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(LAGUNA_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(LAGUNA_TP16_SERVING_ADAPTER)): $(LAGUNA_TP16_SOURCES) $(LAGUNA_TP16_CONTRACT) modules/laguna_tp16_resident_decode_stage/include/sparkpipe/spark_laguna_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DLAGUNA_TP16_CONTRACT_SHA256=\"$(LAGUNA_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/laguna_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LAGUNA_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(KEXAONE2_TP16_SERVING_ADAPTER): $(KEXAONE2_TP16_SOURCES) $(KEXAONE2_TP16_CONTRACT) modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(KEXAONE2_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(KEXAONE2_TP16_SERVING_ADAPTER)): $(KEXAONE2_TP16_SOURCES) $(KEXAONE2_TP16_CONTRACT) modules/kexaone2_tp16_resident_decode_stage/include/sparkpipe/spark_kexaone2_tp16_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DKEXAONE2_TP16_CONTRACT_SHA256=\"$(KEXAONE2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/kexaone2_tp16_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(KEXAONE2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 $(MIMO26_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(MIMO26_FLASH_TP16_SERVING_ADAPTER)): $(MIMO26_FLASH_TP16_SOURCES) $(MIMO26_FLASH_TP16_CONTRACT) modules/mimo26_flash_tp16_resident_decode_stage/include/sparkpipe/spark_mimo26_flash_tp16_stage_model.h model-families/mimo26/source/mimo26_stage.cuh model-families/mimo26/include/sparkpipe/spark_mimo26_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
@@ -2309,20 +2359,20 @@ $(AXK2_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(AXK2_TP16_SERVING_ADAPTER)): $(A
 	@test -n "$(AXK2_TP16_REVISION)" || { echo "axk2: $(AXK2_TP16_CONTRACT) names no revision" >&2; exit 1; }
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DAXK2_CONTRACT_SHA256=\"$(AXK2_TP16_CONTRACT_SHA256)\" -DAXK2_MODEL_REVISION=\"$(AXK2_TP16_REVISION)\" -I. -Iinclude -Isrc -Imodules/axk2_tp16_resident_decode_stage/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(AXK2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
-$(GEMMA4_26B_TP16_SERVING_ADAPTER): $(GEMMA4_26B_TP16_SOURCES) $(GEMMA4_26B_TP16_CONTRACT) modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(GEMMA4_26B_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(GEMMA4_26B_TP16_SERVING_ADAPTER)): $(GEMMA4_26B_TP16_SOURCES) $(GEMMA4_26B_TP16_CONTRACT) modules/gemma4_26b_resident_decode_stage/include/sparkpipe/spark_gemma4_26b_stage_model.h model-families/gemma4/source/gemma4_stage.cuh model-families/gemma4/include/sparkpipe/spark_gemma4_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DGEMMA4_26B_CONTRACT_SHA256=\"$(GEMMA4_26B_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/gemma4_26b_resident_decode_stage/include -Imodel-families/gemma4/source -Imodel-families/gemma4/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(GEMMA4_26B_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 define LING3_TP16_LINK
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,$(1) -I. -Iinclude -Isrc -Imodules/ling3_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(LING3_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 endef
 
-$(LING3_FLASH_TP16_SERVING_ADAPTER): $(LING3_FLASH_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(LING3_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(LING3_FLASH_TP16_SERVING_ADAPTER)): $(LING3_FLASH_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call LING3_TP16_LINK,-DLING3_CONTRACT_SHA256=\"$(LING3_FLASH_TP16_CONTRACT_SHA256)\")
 
-$(LING3_FIN_TP16_SERVING_ADAPTER): $(LING3_FIN_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(LING3_FIN_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(LING3_FIN_TP16_SERVING_ADAPTER)): $(LING3_FIN_TP16_CONTRACT) $(LING3_TP16_SOURCES) modules/ling3_resident_decode_stage/include/sparkpipe/spark_ling3_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	$(call LING3_TP16_LINK,-DLING3_FIN=1 -DLING3_CONTRACT_SHA256=\"$(LING3_FIN_TP16_CONTRACT_SHA256)\")
 
-$(SOLAR_OPEN2_TP16_SERVING_ADAPTER): $(SOLAR_OPEN2_TP16_CONTRACT) $(SOLAR_OPEN2_TP16_SOURCES) modules/solar_open2_tp16_resident_decode_stage/include/sparkpipe/spark_solar_open2_tp16_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+$(SOLAR_OPEN2_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(SOLAR_OPEN2_TP16_SERVING_ADAPTER)): $(SOLAR_OPEN2_TP16_CONTRACT) $(SOLAR_OPEN2_TP16_SOURCES) modules/solar_open2_tp16_resident_decode_stage/include/sparkpipe/spark_solar_open2_tp16_stage_model.h model-families/ling/source/ling_stage.cuh model-families/ling/include/sparkpipe/spark_ling_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DSOLAR_OPEN2_CONTRACT_SHA256=\"$(SOLAR_OPEN2_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodel-families/ling/source -Imodel-families/ling/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(SOLAR_OPEN2_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(ADAPTER_LIBRARIES) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(ADAPTER_DEVICE_LINK)); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
 DSV41_FLASH_ADAPTER_DEPS := $(DSV41_FLASH_TP16_SOURCES) $(DSV41_FLASH_TP16_CONTRACT) modules/dsv41_flash_resident_decode_stage/include/sparkpipe/spark_dsv41_flash_stage_model.h model-families/dsv41_flash/source/dsv41_flash_stage.cuh model-families/dsv41_flash/source/dsv41_flash_fused.cuh model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_stagepack.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) model-families/dsv41_flash/include/sparkpipe/spark_dsv41_flash_family.h include/sparkpipe/spark_row_file.h

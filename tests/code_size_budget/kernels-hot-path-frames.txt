@@ -1,0 +1,2 @@
++178
+Kernel spill audit by family: every frame reported, skinny/cell/stream GEMM/attention frames refused, the 27 attention frames in a shrink-only PENDING list, --kernel kept for module rules; stream GEMM warp rows per format (HY4 MXFP8 1.28-2.25x, no 128 B array).

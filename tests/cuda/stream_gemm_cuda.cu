@@ -512,6 +512,80 @@ static void ProbeTileInvariance(const ProbeMatrix *matrix,uint32_t rows,uint32_t
 	cudaFree(device_activation); cudaFree(device_output); cudaFree(device_offset); cudaFree(device_source);
 }
 
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARP_ROWS>
+static int32_t ProbeMxTile(const LmStreamGemmArguments *args,cudaStream_t stream)
+{
+	return(LmStreamGemmLaunchTile<LmMxfp8,TILE_M,TILE_N,TILE_K,WARP_ROWS>(args,((uint64_t)args->rows / TILE_M + 1u) * ((args->output_dimension + TILE_N - 1u) / TILE_N),PROBE_TILE_SMS,stream));
+}
+
+static int32_t ProbeMxTileRun(const LmStreamGemmArguments *args,uint32_t variant,cudaStream_t stream)
+{
+	switch ( variant )
+	{
+		case 0u: return(ProbeMxTile<16u,128u,128u,32u>(args,stream));
+		case 1u: return(LmStreamGemmLaunch<LmMxfp8>(args,PROBE_TILE_SMS,stream));
+		case 2u: return(ProbeMxTile<32u,128u,128u,32u>(args,stream));
+		default: return(ProbeMxTile<64u,128u,128u,LmStreamWarpRows<LmMxfp8,64u>()>(args,stream));
+	}
+}
+
+static void ProbeMxTileInvariance(uint32_t input,uint32_t output,uint32_t rows,const char *name,cudaStream_t stream)
+{
+	std::vector<uint8_t> weight((uint64_t)output * input),scale((uint64_t)output * (input / LM_MXFP8_GROUP));
+	std::vector<uint16_t> activation((uint64_t)rows * input),expected((uint64_t)rows * output),actual((uint64_t)rows * output);
+	LmStreamGemmArguments args;
+	uint8_t *device_weight,*device_scale;
+	uint16_t *device_activation,*device_output;
+	uint64_t element,differ,z;
+	uint32_t variant;
+	for (element=0u; element<weight.size(); element++)
+	{
+		z = ProbeHash(element ^ 0x6d78u) & 0xffu;
+		weight[element] = (uint8_t)((z & 0x7fu) == 0x7fu ? z - 1u : z);
+	}
+	for (element=0u; element<scale.size(); element++)
+		scale[element] = (uint8_t)(120u + ProbeHash(element ^ 0x3c5au) % 14u);
+	for (element=0u; element<activation.size(); element++)
+		activation[element] = ProbeBf16((float)((double)(ProbeHash(element ^ 0x9e38u) % 200001u) / 100000.0 - 1.0));
+	PROBE_CUDA(cudaMalloc((void **)&device_weight,weight.size()));
+	PROBE_CUDA(cudaMalloc((void **)&device_scale,scale.size()));
+	PROBE_CUDA(cudaMalloc((void **)&device_activation,activation.size() * 2u));
+	PROBE_CUDA(cudaMalloc((void **)&device_output,expected.size() * 2u));
+	PROBE_CUDA(cudaMemcpy(device_weight,weight.data(),weight.size(),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(device_scale,scale.data(),scale.size(),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
+	PROBE_CUDA(cudaMemcpy(device_activation,activation.data(),activation.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
+	memset(&args,0,sizeof(args));
+	args.activation = device_activation;
+	args.weight = device_weight;
+	args.output_bf16 = device_output;
+	args.scale = LmScaleTensorBuild(device_scale,LM_SCALE_ENCODING_UE8M0,1u,output,input,1u,LM_MXFP8_GROUP);
+	args.rows = rows;
+	args.groups = 1u;
+	args.input_dimension = input;
+	args.output_dimension = output;
+	args.output_row_stride = output;
+	for (variant=0u; variant<4u; variant++)
+	{
+		PROBE_CUDA(cudaMemsetAsync(device_output,0xff,expected.size() * 2u,stream));
+		PROBE_OK(ProbeMxTileRun(&args,variant,stream));
+		PROBE_CUDA(cudaStreamSynchronize(stream));
+		PROBE_CUDA(cudaMemcpy(variant == 0u ? expected.data() : actual.data(),device_output,expected.size() * 2u,cudaMemcpyDeviceToHost));
+		if ( variant == 0u )
+			continue;
+		for (element=0u,differ=0u; element<expected.size(); element++)
+			differ += expected[element] != actual[element] ? 1u : 0u;
+		if ( differ != 0u )
+		{
+			printf("FAIL mxfp8 tile invariance %s K%u N%u rows%u variant %u: %llu of %zu outputs differ from the 16-row tile\n",name,input,output,rows,variant,(unsigned long long)differ,expected.size());
+			probe_failures++;
+		}
+	}
+	cudaFree(device_weight); cudaFree(device_scale); cudaFree(device_activation); cudaFree(device_output);
+}
+
 int main(int argc,char **argv)
 {
 	static const uint32_t rows[] = { 1u, 2u, 4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u };
@@ -544,6 +618,8 @@ int main(int argc,char **argv)
 	ProbeTileInvariance(&up,1024u,1u,16u,stream);
 	ProbeTileInvariance(&up,256u,1u,16u,stream);
 	ProbeTileInvariance(&down,2048u,1u,1u,stream);
+	ProbeMxTileInvariance(128u,6144u,1024u,"shared_down",stream);
+	ProbeMxTileInvariance(1152u,6144u,256u,"dense_down",stream);
 	cudaFree(up.device_weight); cudaFree(up.device_scale); cudaFree(down.device_weight); cudaFree(down.device_scale);
 	PROBE_CUDA(cudaStreamDestroy(stream));
 	if ( probe_failures != 0 )
@@ -551,6 +627,6 @@ int main(int argc,char **argv)
 		printf("FAIL %d checks\n",probe_failures);
 		return 1;
 	}
-	printf("PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within %.1f bf16 ulp of the fp64 reference at every row count and are row-invariant; the serving CUDA-core expert dispatch meets the same bound; FP8 outputs are bit-identical across stream tile shapes and the launcher\n",PROBE_ULP_LIMIT);
+	printf("PASS stream GEMM: grouped FP8 experts and dense BF16 projections stay within %.1f bf16 ulp of the fp64 reference at every row count and are row-invariant; the serving CUDA-core expert dispatch meets the same bound; FP8 and MXFP8 outputs are bit-identical across stream tile shapes, warp rows and the launcher\n",PROBE_ULP_LIMIT);
 	return 0;
 }

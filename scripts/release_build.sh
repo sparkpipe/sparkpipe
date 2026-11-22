@@ -28,8 +28,10 @@ HUB_FILES="build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/runti
 FW_DIR=build
 API_DIR=build
 if [ "${HOSTED:-0}" = 1 ]; then
-  NODE="$NODE build/runtime_libs/libsparkpipe_device_nvrm.so"
-  HUB_FILES="$HUB_FILES build/runtime_libs/libsparkpipe_device_nvrm.so"
+  NVRM_RUNTIME="build/runtime_libs/libsparkpipe_device_nvrm.so build/runtime_libs/sparkpipe_device_kernels/tensor_map_build.cubin build/runtime_libs/sparkpipe_device_kernels/tensor_map_build.manifest"
+  CUDA_DEVICE="build/runtime_libs/libsparkpipe_device_cuda.so"
+  NODE="${NODE% $CUDA_DEVICE} $NVRM_RUNTIME"
+  HUB_FILES="${HUB_FILES% $CUDA_DEVICE} $NVRM_RUNTIME"
   ssh -o BatchMode=yes $HOST "cd ~/build-rp/fw-$SHA-src && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the node files of $SHA; nothing is written to $OUT" >&2; exit 1; }
   ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the hub API files of $SHA; nothing is written to $OUT" >&2; exit 1; }
   ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA/build/hosted_release_root/build && sha256sum sparkpipe_model_api sparkpipe_tokenize_prompt *.so runtime_libs/*.so | cut -c1-16,65- > ../../../SHA16" < /dev/null || exit 1

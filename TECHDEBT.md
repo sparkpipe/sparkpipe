@@ -269,6 +269,29 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Steady-state decode hot path
 
+- The attention kernels keep the stack frames recorded in `PENDING`
+  (`tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
+  `D41AttendKernel` at two query tiles (DSV4.1's row-parallel attention)
+  keeps its 168-byte spill on purpose. Its ten warps (eight consumers, a
+  planner and an issuer) cap ptxas at 168 registers, against the 242 it
+  needs. Measured cold on one GB10 (CUDA 13.0, 2026-11-23, bytes identical):
+  - reloading the query fragments every tile removes the spill, but runs at
+    0.72-0.93x at 1-16 rows a rank (decode) and about even at 32-256 rows;
+  - keeping half the fragments in registers still needs about 210 registers;
+  - two one-tile launches run at 0.65-0.87x on the compressed layers (38 of
+    40), though 1.1-1.25x faster on the two window-only layers.
+
+  So the spill is the cheapest measured option at decode while the block
+  keeps its 53,760 registers and leaves room for the collectives beside it.
+  `LmLatentShardPrefillKernel` (14 entries, six families) runs the same ten
+  warps and keeps its query fragments in registers for the whole row (72
+  registers at 576 dimensions). Its 32 queries (about 37 KB) do not fit in
+  the roughly 15 KB of shared memory left beside its double-buffered key
+  rows. Reloading the fragments every step only shrinks its frames (ptxas,
+  DSV4.1, CUDA 13.0: 40 to 24 bytes, still spilling, and 32 to 8 bytes) at
+  the same 168 registers. A cold timing of the latent prefill across the
+  six families comes before any change. The other entries wait for their
+  own measurement.
 - Accept each hot-path change independently: exact token parity first, then
   at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
   candidates until the preceding candidate beats the current GLM 5.3 Flash
@@ -1930,19 +1953,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink, and the kit's `--deploy` run refuses every root until
-  the list is empty and the root is built for one device backend. A hosted
-  root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
-  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and the 13
-  serving adapters that call no CUDA driver API under their usual paths,
-  with the nvrm device library, so they are off the list. It lists 13 files
-  and 25 findings:
-  - the 12 serving adapters that still call the CUDA driver API
-    (`libcuda.so.1`) for the TMA tensor maps in
-    [`runtime/tensor_map.h`](runtime/tensor_map.h), and run their kernels
-    and stage runner through the CUDA runtime (`libcudart.so.13`). The hub's
-    API also loads an adapter for its descriptor, so the hub ships them too;
-  - the CUDA device library (`libcudart.so.13`).
+  may only shrink and is empty, and the kit's `--deploy` run refuses a root
+  that mixes device backends. A hosted root ships the nvrm builds of
+  `sparkpipe_weightd`, `weightd_warm`, `weightdctl`,
+  `sparkpipe_model_residentd`, the RDMA transport and every serving adapter
+  under their usual paths, with the nvrm device library and the tensor map
+  build image the adapters' TMA maps need, and no CUDA library. The hub's
+  API also loads an adapter for its descriptor, so the hub ships them too.
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
   `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
@@ -1955,8 +1972,11 @@ and the multidev docs on 2026-09-28. Line numbers are in
     driver.
     - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
       programs with no CUDA library. They have not run on a GPU yet.
-    - The nvrm flavour does not yet build the transport, residentd or the
-      adapters.
+    - The nvrm flavour builds residentd, the transport and every adapter.
+      Every adapter's model kernel image loads on nvrm, but the stage
+      runner's still calls device `printf`, which only the CUDA driver
+      provides, and the stage runner's graph capture has no nvrm equivalent
+      yet, so no adapter serves on nvrm.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

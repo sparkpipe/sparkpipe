@@ -1401,3 +1401,59 @@ two side by side. None of them is a pass/fail gate:
   - It runs eager launches, a device-layer program of the same launches
     (in both flavours; on CUDA a program is a captured graph underneath),
     and in the CUDA flavour one graph captured directly.
+
+## Tensor maps
+
+The engine's TMA GEMMs (`LmGemmKernel` and its launchers in `runtime/gemm.cuh`) read their operands through 128-byte
+tensor maps. `SparkDeviceTensorMapEncode` builds a batch of them (at most 4,096 a call) from requests that carry only
+the fields the engine sets: a 16-byte aligned address, rank 2 or 3, each dimension, the strides in bytes, the box,
+the element strides and the swizzle span (0, 32, 64 or 128 bytes). Elements are bytes, there is no interleave, and
+reads past the tensor's edge return zeros. The device layer refuses a request that breaks a rule the engine's map
+planner already keeps (alignment, box edges of 1 to 256 elements with an inner edge of whole 16-byte chunks that fits
+the swizzle span, element strides of 1 to 8, strides that are multiples of 16 below 2^40 and cover the dimension below
+them), naming the map and the rule, before any backend sees it.
+
+- **CUDA backend.** `cuTensorMapEncodeTiled` encodes each map on the host, through the driver entry point the backend
+  already resolves at initialization, with L2 promotion of 128 bytes as before. `runtime/tensor_map.h` keeps calling it
+  directly on this flavour.
+- **nvrm backend.** There is no host encoder. The device layer loads `sparkpipe_device_kernels/tensor_map_build.cubin`
+  (built by `make nvrm-device-kernels` beside the device library), copies the requests into shared memory and runs
+  `SparkDeviceTensorMapBuild`, one thread a map: it zeroes the 128 bytes, writes every field with
+  `tensormap.replace` (`global_address`, `rank`, and per axis `global_dim`, `box_dim`, `element_stride` and
+  `global_stride`, then `elemtype` u8, `interleave_layout` none, `fill_mode` zero and `swizzle_mode`) and fences the
+  tensor-map proxy. The maps come back to the caller's host memory, so kernels take them by value as before.
+  `runtime/tensor_map.h` sends the engine's maps there on the nvrm flavour. No field sets L2 promotion, so these maps
+  promote nothing. Decode steps never read through a tensor map; prefill waves do, and that cost is measured apart. The
+  descriptor's tensor allocation size (PTX ISA 9.5 `.alloc_class`) is left at Small, the only class a PTX 9.0 toolkit
+  (CUDA 13.0) can express: a 4 KiB out-of-bounds window that is always safe. Large (a 128 KiB window for allocations of
+  at least `CU_DEVICE_ATTRIBUTE_TENSOR_MAP_LARGE_TENSOR_MIN_SIZE`) is a speed option to measure at prefill shapes once
+  the toolkit reaches PTX 9.5; driver 13000 does not know that attribute.
+- **Host and Metal backends** refuse with "no tensor maps".
+
+L2 promotion, measured on GB10 (2026-11-22) with cold weights: each launch read a different weight copy, 320 MiB in
+rotation, so no launch found its weights in L2. These are the engine's tensor-map GEMMs with driver-encoded maps, L2
+promotion none against 128 bytes, median of 4 interleaved passes, in us per launch:
+
+| GEMM | none | 128 B |
+|---|---|---|
+| dense BF16, 64 rows, 4096 -> 1024 | 72.5 | 72.4 |
+| dense BF16, 200 rows, 2048 -> 640 | 35.5 | 35.3 |
+| dense BF16, 512 rows, 4096 -> 4096 | 1038.9 | 1072.5 |
+| interleaved MXFP4, 8 experts x 4 rows, 7168 -> 4096 | 803.5 | 802.1 |
+| interleaved MXFP4, 8 experts x 32 rows, 7168 -> 4096 | 1728.8 | 1728.9 |
+| interleaved MXFP4, 8 experts x 128 rows, 7168 -> 4096 | 3200.1 | 3199.9 |
+| interleaved MXFP4, 8 experts x 32 rows, 2048 -> 7168 | 864.3 | 862.4 |
+
+The differences are inside the passes' spread and go both ways, so maps without promotion cost nothing measurable at
+the shapes the engine sends through tensor maps.
+
+The proof compares outputs only, never map bytes. `tests/test_tensor_map_build_cuda.py` runs the engine's 32 tensor-map
+GEMMs (dense BF16 with K tiles 64 and 32 in rank 2 and 3, weight-only MXFP4 and FP8 with 1, 2 and 4 groups, interleaved
+MXFP4 with K tiles 32 and 128, row counts from 1 to 512 with boxes past the edge, so 128-, 64- and 32-byte swizzles and
+unswizzled 16-byte boxes) three times on the CUDA flavour: with driver-encoded maps, with maps from the GPU builder, and
+with GPU-built maps whose strides were written one ordinal up. The first two must match bit for bit, including 8
+identical refusals of formats the planner does not take; the third must change every output. `make
+SPARKPIPE_DEVICE=nvrm nvrm-tensor-maps` builds the same GEMMs for both flavours and requires the nvrm flavour (maps
+built on the GPU through the device layer) to match the CUDA flavour (maps from the driver) bit for bit.
+`tests/test_device_contract.c` checks every refusal on every backend, and that a device with tensor maps encodes a
+batch while one without refuses.

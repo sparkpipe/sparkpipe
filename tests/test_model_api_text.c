@@ -34,6 +34,7 @@
 #endif
 
 #define TEST_RANK_COUNT 3u
+#define TEST_API_STOP_BOUND_SECONDS 20u
 #define TEST_API_MAX_SEQUENCE_POSITIONS 64u
 #define TEST_API_TURN_END_TOKEN 4202u
 
@@ -1168,6 +1169,108 @@ static void TestApiEngineStopCompletes(void)
 	printf("test_model_api_text: requested stop tokens OK (the engine stops on a request's own stop tokens as on its end-of-sequence tokens, so the reply completes in the engine and can be resumed)\n");
 }
 
+static pid_t TestApiRequestInBackground(uint32_t port)
+{
+	pid_t child;
+	child = TestChildGuardFork();
+	assert(child >= 0);
+	if ( child == 0 )
+	{
+		static const char body[] = "{\"prompt_token_ids\":[11,12],\"max_tokens\":64}";
+		struct sockaddr_in address;
+		char request[512],reply[4096];
+		int fd,length;
+		fd = socket(AF_INET,SOCK_STREAM,0);
+		memset(&address,0,sizeof(address));
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(0x7f000001u);
+		address.sin_port = htons((uint16_t)port);
+		length = snprintf(request,sizeof(request),"POST /v1/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+			"Content-Length: %zu\r\nConnection: close\r\n\r\n%s",sizeof(body) - 1u,body);
+		if ( fd >= 0 && length > 0 && connect(fd,(struct sockaddr *)&address,sizeof(address)) == 0 && send(fd,request,(size_t)length,MSG_NOSIGNAL) == length )
+			while ( recv(fd,reply,sizeof(reply),0) > 0 )
+				;
+		_exit(0);
+	}
+	return(child);
+}
+
+static double TestApiSecondsSince(const struct timespec *started)
+{
+	struct timespec now;
+	assert(clock_gettime(CLOCK_MONOTONIC,&now) == 0);
+	return((double)(now.tv_sec - started->tv_sec) + (double)(now.tv_nsec - started->tv_nsec) / 1e9);
+}
+
+static void TestApiStopBoundedWithRanksGone(void)
+{
+	TestApiStack stack;
+	struct timespec started,delay;
+	pid_t requests[2],done;
+	int32_t child_status;
+	uint32_t rank,index;
+	double seconds;
+	char *log_data;
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
+	stack.api_stderr_path = "build/test_model_api_text_stop_bound_stderr.log";
+	unlink(stack.api_stderr_path);
+	TestApiStartStack(&stack,0);
+	TestApiStartApi(&stack);
+	assert(kill(stack.residents[1],SIGSTOP) == 0);
+	for (index=0u; index<2u; index++)
+		requests[index] = TestApiRequestInBackground(stack.api_port);
+	delay.tv_sec = 1;
+	delay.tv_nsec = 0;
+	nanosleep(&delay,0);
+	for (rank=0u; rank<TEST_RANK_COUNT; rank++)
+	{
+		if ( rank == 1u )
+			continue;
+		assert(kill(stack.residents[rank],SIGKILL) == 0);
+		assert(waitpid(stack.residents[rank],&child_status,0) == stack.residents[rank]);
+		unlink(stack.paths[rank]);
+	}
+	nanosleep(&delay,0);
+	assert(clock_gettime(CLOCK_MONOTONIC,&started) == 0);
+	assert(kill(stack.api_child,SIGTERM) == 0);
+	delay.tv_sec = 0;
+	delay.tv_nsec = 100000000;
+	for (;;)
+	{
+		done = waitpid(stack.api_child,&child_status,WNOHANG);
+		assert(done == 0 || done == stack.api_child);
+		seconds = TestApiSecondsSince(&started);
+		if ( done == stack.api_child )
+			break;
+		if ( seconds > TEST_API_STOP_BOUND_SECONDS )
+		{
+			assert(kill(stack.api_child,SIGKILL) == 0);
+			assert(waitpid(stack.api_child,&child_status,0) == stack.api_child);
+			assert(0 && "model_api did not exit within the stop bound after one SIGTERM with a silent rank and two ranks gone");
+		}
+		nanosleep(&delay,0);
+	}
+	stack.api_child = 0;
+	assert(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+	log_data = TestApiReadFile(stack.api_stderr_path);
+	assert(log_data != 0 && strstr(log_data,"api_exit reason=signal") != 0);
+	free(log_data);
+	assert(kill(stack.residents[1],SIGKILL) == 0);
+	assert(kill(stack.residents[1],SIGCONT) == 0);
+	assert(waitpid(stack.residents[1],&child_status,0) == stack.residents[1]);
+	unlink(stack.paths[1]);
+	for (index=0u; index<2u; index++)
+	{
+		(void)kill(requests[index],SIGKILL);
+		assert(waitpid(requests[index],&child_status,0) == requests[index]);
+	}
+	unlink(stack.deployment_path);
+	printf("test_model_api_text: bounded stop OK (one SIGTERM with a silent rank, two ranks gone and two requests open exits cleanly in %.1f s, inside %u s)\n",
+		seconds,TEST_API_STOP_BOUND_SECONDS);
+}
+
 static void TestApiChatDeclaredStops(TestApiStack *stack)
 {
 	char response[65536];
@@ -1574,6 +1677,7 @@ int main(void)
 
 	TestApiStartsBeforeEngines();
 	TestApiEngineStopCompletes();
+	TestApiStopBoundedWithRanksGone();
 	TestApiRefusedStartup("build/definitely_missing_tokenizer_asset.json","missing tokenizer asset");
 	TestApiChatTemplate = TestApiChatTemplateNonSpecialStopJson;
 	TestApiRefusedStartup("build/test_tokenizer_sidecar_api_hf.json",

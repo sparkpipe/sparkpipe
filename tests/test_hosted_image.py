@@ -207,14 +207,15 @@ class DeviceNodeTest(unittest.TestCase):
         mknod.chmod(0o755)
         self.environment = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
 
-    def run_helper(self, devices, gpus):
+    def run_helper(self, devices, gpus, event=None):
         (self.proc / "driver" / "nvidia" / "gpus").mkdir(parents=True, exist_ok=True)
         (self.proc / "devices").write_text("Character devices:\n" + devices)
         for bus, text in gpus.items():
             (self.proc / "driver" / "nvidia" / "gpus" / bus).mkdir()
             (self.proc / "driver" / "nvidia" / "gpus" / bus / "information").write_text(text)
+        environment = dict(self.environment, **dict(zip(("ACTION", "SUBSYSTEM", "DEVPATH"), event))) if event else self.environment
         return subprocess.run(["sh", str(IMAGE / "files" / "usr" / "lib" / "sparkpipe" / "gpu-device-nodes"), str(self.proc), str(self.dev)],
-                              capture_output=True, text=True, env=self.environment)
+                              capture_output=True, text=True, env=environment)
 
     def nodes(self):
         return {path.name: path.read_text().strip() for path in self.dev.iterdir()}
@@ -224,6 +225,20 @@ class DeviceNodeTest(unittest.TestCase):
                                     {"000f:01:00.0": "Model: \t\t NVIDIA GB10\nDevice Minor: \t 0\n"})
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(self.nodes(), {"nvidiactl": "c 195 255", "nvidia0": "c 195 0", "nvidia-uvm": "c 509 0"})
+
+    def test_an_event_before_the_gpu_is_listed_makes_the_control_node_and_succeeds(self):
+        for event in (("bind", "pci", "/devices/platform/NVDA8000:00/pci000f:00/000f:00:00.0/000f:01:00.0"), ("add", "module", "/module/nvidia")):
+            with self.subTest(event=event):
+                for path in self.dev.iterdir():
+                    path.unlink()
+                shutil.rmtree(self.proc, ignore_errors=True)
+                completed = self.run_helper("195 nvidiactl\n", {}, event)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                self.assertEqual(self.nodes(), {"nvidiactl": "c 195 255"})
+        shutil.rmtree(self.proc)
+        completed = self.run_helper("195 nvidiactl\n509 nvidia-uvm\n", {}, ("add", "module", "/module/nvidia_uvm"))
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("lists no GPU", completed.stderr)
 
     def test_nothing_registered_creates_nothing_and_a_partial_module_fails(self):
         self.assertEqual(self.run_helper("1 mem\n", {}).returncode, 0)
@@ -244,6 +259,11 @@ class StaticFilesTest(unittest.TestCase):
                                         for name, version in packages("image-packages.txt")))
             report = AUDIT.audit_image(str(rootfs), None, [])
         self.assertEqual(report.findings(), [])
+
+    def test_the_image_has_the_disk_checks_and_a_locale(self):
+        pinned = dict(packages("image-packages.txt"))
+        self.assertEqual({name for name in ("psmisc", "lsof") if name in pinned}, {"psmisc", "lsof"})
+        self.assertEqual((IMAGE / "files" / "etc" / "default" / "locale").read_text(), "LANG=C.UTF-8\n")
 
     def test_gpu_modules_load_and_their_device_nodes_are_made_by_the_shipped_helper(self):
         files = IMAGE / "files"
@@ -326,7 +346,21 @@ class StaticFilesTest(unittest.TestCase):
 class RamRootTest(unittest.TestCase):
     SCRIPT = IMAGE / "files" / "usr" / "share" / "initramfs-tools" / "scripts" / "sparkpipe-ram"
 
-    def mountroot(self, root="UUID=host", loop="/home/node/rescue/SPARKROOT.ext4", fail=""):
+    GENERATOR = Path("/usr/lib/systemd/system-generators/systemd-fstab-generator")
+
+    def image_fstab(self):
+        line = next(line for line in (IMAGE / "customize_image.sh").read_text().splitlines() if line.endswith('> "$root/etc/fstab"'))
+        return subprocess.run(["sh", "-c", line.rsplit(" > ", 1)[0]], capture_output=True, text=True, check=True).stdout
+
+    def generate(self, fstab, directory):
+        units = Path(directory)
+        for kind in ("normal", "early", "late"):
+            (units / kind).mkdir(parents=True)
+        environment = dict(os.environ, SYSTEMD_FSTAB=str(fstab), SYSTEMD_PROC_CMDLINE="rw", SYSTEMD_LOG_LEVEL="err")
+        subprocess.run([str(self.GENERATOR), str(units / "normal"), str(units / "early"), str(units / "late")], env=environment, check=True)
+        return {str(path.relative_to(units)): ("" if path.is_symlink() else path.read_text()) for path in units.rglob("*") if path.is_file() or path.is_symlink()}
+
+    def mountroot(self, root="UUID=host", loop="/home/node/rescue/SPARKROOT.ext4", fail="", copy=None):
         stubs = """
 calls=""
 call() { calls="$calls|$*"; }
@@ -344,11 +378,16 @@ panic() { call panic "$*"; printf '%s\\n' "$calls"; exit 3; }
             if loop:
                 (host / loop.lstrip("/")).parent.mkdir(parents=True)
                 (host / loop.lstrip("/")).write_text("image")
+            if copy is None:
+                copy = Path(directory, "copy")
+                (copy / "etc").mkdir(parents=True)
+                (copy / "etc" / "fstab").write_text(self.image_fstab())
             script = self.SCRIPT.read_text().replace(". /scripts/local\n", "").replace("/host", str(host))
-            program = stubs + script + '\nrootmnt=/root\nmountroot\nprintf "%s\\n" "$calls"\n'
+            program = stubs + script + f'\nrootmnt={copy}\nmountroot\nprintf "%s\\n" "$calls"\n'
             environment = dict(os.environ, ROOT=root, LOOP=loop, LOOPFSTYPE="ext4", FAIL=fail)
             result = subprocess.run(["sh", "-c", program], capture_output=True, text=True, env=environment)
-            return subprocess.CompletedProcess(result.args, result.returncode, result.stdout.replace(str(host), "/host"), result.stderr)
+            return subprocess.CompletedProcess(result.args, result.returncode,
+                                               result.stdout.replace(str(host), "/host").replace(str(copy), "/root"), result.stderr)
 
     def test_the_image_copy_runs_from_memory_and_the_disk_is_unmounted_before_the_root_mounts(self):
         self.assertTrue(self.SCRIPT.read_text().startswith(". /scripts/local\n"))
@@ -359,6 +398,30 @@ panic() { call panic "$*"; printf '%s\\n' "$calls"; exit 3; }
                                  "mount -t tmpfs -o mode=0700 sparkpipe-ram /run/sparkpipe-ram",
                                  "cp /host/home/node/rescue/SPARKROOT.ext4 /run/sparkpipe-ram/root.img", "umount /host", "modprobe loop",
                                  "mount -w -o loop -t ext4 /run/sparkpipe-ram/root.img /root"])
+
+    def test_the_copy_in_memory_keeps_no_fstab_entry(self):
+        self.assertIn("LABEL=SPARKESP\t/boot/efi", self.image_fstab())
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory)
+            (copy / "etc").mkdir()
+            (copy / "etc" / "fstab").write_text(self.image_fstab())
+            result = self.mountroot(copy=copy)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((copy / "etc" / "fstab").read_text(), "")
+
+    @unittest.skipUnless(GENERATOR.is_file(), "no systemd-fstab-generator on this host")
+    def test_a_disk_with_the_image_labels_stays_unmounted_from_the_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory, "copy")
+            (copy / "etc").mkdir(parents=True)
+            (copy / "etc" / "fstab").write_text(self.image_fstab())
+            installed = self.generate(copy / "etc" / "fstab", Path(directory, "installed"))
+            self.assertIn("What=/dev/disk/by-label/SPARKESP", installed["normal/boot-efi.mount"])
+            self.assertIn("What=/dev/disk/by-label/SPARKROOT", installed["normal/-.mount"])
+            self.assertEqual(self.mountroot(copy=copy).returncode, 0)
+            rescue = self.generate(copy / "etc" / "fstab", Path(directory, "rescue"))
+            self.assertEqual([name for name in rescue if name.endswith(".mount")], [])
+            self.assertEqual([name for name, text in rescue.items() if "SPARK" in name + text], [])
 
     def test_a_missing_input_or_a_failed_copy_stops_before_the_root_is_mounted(self):
         result = self.mountroot(loop="")
