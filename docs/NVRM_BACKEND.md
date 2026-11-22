@@ -391,6 +391,20 @@ pieces does not avoid it, and two 4 GiB objects back to back each have
 it. Objects in 64 KiB or 4 KiB pages map whole, and so do 2 MiB-page
 objects below 4 GiB.
 
+The cause is not known; the rule rests on these measurements. Our calls
+pass 64-bit sizes and offsets. The open-gpu-kernel-modules 580.178.04
+paths they reach also read 64-bit clean:
+
+- `kernel-open/nvidia-uvm/uvm_map_external.c`, `map_rm_pt_range`, lines
+  280-347;
+- `src/nvidia/src/kernel/rmapi/nv_gpu_ops.c`,
+  `nvGpuOpsBuildExternalAllocPtes`, lines 3841-4300;
+- `src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c`,
+  `memdescGetPtePhysAddrsForGpu`, lines 3001-3050.
+
+If the cause is found and fixed, 2 MiB pages can come back for large
+objects. `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` is the check.
+
 `SparkNvrmSystemAllocate` refuses a 2 MiB-page object of 4 GiB or more.
 On GB10 the page size costs nothing measurable. In three interleaved
 rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
