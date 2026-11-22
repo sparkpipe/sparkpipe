@@ -14,6 +14,7 @@ ASYNC = {"MemcpyAsync": 5, "Memcpy2DAsync": 8, "MemsetAsync": 4, "Memset2DAsync"
 SYNC = ("Memcpy", "Memset")
 LEGACY = {"0", "0u", "NULL", "nullptr", "(SparkGpuStream)0"}
 SITES = {
+    "include/sparkpipe/spark_weightd_device.h": 1,
     "inference/kernels/weight_prefetch.cuh": 1,
     "inference/runner/pass_prefill.cuh": 1,
     "inference/runner/stage_model_cuda.cuh": 2,
@@ -29,8 +30,6 @@ SITES = {
     "model-families/motif/source/motif_stage.cuh": 1,
     "model-families/qwen38/source/qwen38_hybrid_stage.cuh": 4,
     "ring/transport/tp_device_collective.c": 28,
-    "runtime/spark_weightd.c": 4,
-    "runtime/spark_weightd_spine.c": 1,
 }
 HOST_VISIBLE = {
     "inference/runner/pass_prefill.cuh": 5,

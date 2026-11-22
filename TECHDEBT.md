@@ -2017,16 +2017,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink. It lists 31 files:
+  may only shrink. It lists 30 files and 42 findings:
   - the 25 serving adapters, whose kernels and stage runner run through the
-    CUDA runtime and driver API (`libcuda.so.1`, `libcudart.so.13`). The
-    hub's API also loads an adapter for its descriptor, so the hub ships
-    them too;
-  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`, because weightd's
-    memory code uses the driver API and its client calls share objects with
-    it (`runtime/spark_weightd.c`, `runtime/spark_weightd_worker.c`);
-  - the RDMA transport (`libcuda.so.1`), for those weightd client calls; it is
-    host C and links no CUDA runtime;
+    CUDA runtime (`libcudart.so.13`). Twelve of them also link the driver
+    library (`libcuda.so.1`) for the TMA tensor maps in
+    [`runtime/tensor_map.h`](runtime/tensor_map.h); the other thirteen
+    reached it only through weightd's mappings, which now go through the
+    device layer. The hub's API also loads an adapter for its descriptor, so
+    the hub ships them too;
+  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`
+    (`libcudart.so.13`). Their device memory goes through the device layer
+    compiled into them, which in the CUDA flavour is the CUDA backend over the
+    CUDA runtime. None links the driver library any more;
   - `sparkpipe_model_residentd`, whose boundary buffers and streams go
     through `spark_gpu.h` (`libcudart.so.13`);
   - the CUDA device library (`libcudart.so.13`).
@@ -2036,12 +2038,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
   library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
   - that device backend;
   - a build flavour that links neither library;
-  - weightd's memory through the device layer. The shared-memory entry
-    points exist on the CUDA and host backends
-    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
-    The nvrm backend refuses them until its part lands. weightd still calls
-    the driver directly. Converting it takes the driver library out of
-    `sparkpipe_weightd`, `weightd_warm`, `weightdctl` and the transport.
+  - weightd on nvrm on a node. weightd's memory goes through the device layer
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)), and
+    the RDMA transport links the flavour's device library instead of the
+    driver.
+    - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
+      programs with no CUDA library. They have not run on a GPU yet.
+    - The nvrm flavour does not yet build the transport, residentd or the
+      adapters.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

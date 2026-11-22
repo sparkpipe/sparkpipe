@@ -36,6 +36,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 
 | File | Sites | Class |
 |---|---|---|
+| `include/sparkpipe/spark_weightd_device.h` | 1 upload | Serving write: `SparkWeightdDeviceWrite`, weightd's one write into its own mappings. `runtime/spark_weightd.c` calls it for the verify sink, the staged range loads, the lease sink and the arena epoch bump, and `runtime/spark_weightd_spine.c` for spine spans copied into a lease. Their consumers are engine processes that learn of the data from weightd's reply after the call returns. All come from pageable or staging memory, so they were cross-process races on a discrete GPU, and the contract closes them. |
 | `inference/kernels/weight_prefetch.cuh` | 1 upload | Serving write after idle: the prefetch plan is published after a graph capture ends and before the graph's first launch. |
 | `inference/runner/pass_prefill.cuh` | 1 fill | Load: the pass's buffers at allocation. |
 | `inference/runner/stage_model_cuda.cuh` | 2 fills | Load. |
@@ -51,8 +52,6 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/motif/source/motif_stage.cuh` | 1 upload | Load. |
 | `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | 4 readbacks | Readback after sync: the layer dump syncs the stream first and launches nothing in between. |
 | `ring/transport/tp_device_collective.c` | 10 uploads, 15 readbacks, 3 fills | See below. |
-| `runtime/spark_weightd.c` | 4 uploads | Serving write: the verify sink, the staged range loads and the lease sink. Their consumers are engine processes that learn of the data from weightd's reply after the call returns. The arena epoch bump is published the same way. All come from pageable or staging memory, so they were cross-process races on a discrete GPU, and the contract closes them. |
-| `runtime/spark_weightd_spine.c` | 1 upload | Same as weightd: spine spans copied into a lease before the reply. |
 
 ### The mesh collective
 
