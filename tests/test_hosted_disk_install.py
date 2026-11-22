@@ -27,9 +27,9 @@ class InstallDiskInputsTest(unittest.TestCase):
         self.manifest(f"source_commit abc\nrootfs_sha256 {self.digest}\naudit PASS\n")
         self.identity = base / "identity"
         (self.identity / "files" / "etc").mkdir(parents=True)
-        (self.identity / "files" / "etc" / "hostname").write_text("spark1\n")
-        (self.identity / "user.conf").write_text("USER_NAME=spark1\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo,adm,codexadmin\nUSER_SHELL=/bin/bash\n")
-        (self.identity / "groups.conf").write_text("codexadmin:1001\n")
+        (self.identity / "files" / "etc" / "hostname").write_text("node\n")
+        (self.identity / "user.conf").write_text("USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo,adm,admins\nUSER_SHELL=/bin/bash\n")
+        (self.identity / "groups.conf").write_text("admins:1001\n")
         self.work = base / "work"
 
     def manifest(self, text):
@@ -60,11 +60,11 @@ class InstallDiskInputsTest(unittest.TestCase):
         self.refused("holds no rootfs.tar.zst and MANIFEST")
 
     def test_an_incomplete_or_unsafe_identity_bundle_is_refused(self):
-        (self.identity / "user.conf").write_text("USER_NAME=spark1\nUSER_UID=x\n")
+        (self.identity / "user.conf").write_text("USER_NAME=node\nUSER_UID=x\n")
         self.refused("user.conf needs")
-        (self.identity / "user.conf").write_text("USER_NAME=spark1\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo;id\nUSER_SHELL=/bin/bash\n")
+        (self.identity / "user.conf").write_text("USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo;id\nUSER_SHELL=/bin/bash\n")
         self.refused("USER_GROUPS must be a comma list")
-        (self.identity / "user.conf").write_text("USER_NAME=spark1\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo\nUSER_SHELL=/bin/bash\n")
+        (self.identity / "user.conf").write_text("USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo\nUSER_SHELL=/bin/bash\n")
         (self.identity / "files" / "etc" / "link").symlink_to("hostname")
         self.refused("may hold only files and directories")
         (self.identity / "files" / "etc" / "link").unlink()
@@ -76,14 +76,14 @@ class InstallDiskInputsTest(unittest.TestCase):
         dropbear.mkdir(parents=True)
         (dropbear / "dropbear_ed25519_host_key").write_text("key")
         self.refused("is not a block device")
-        (self.identity / "groups.conf").write_text("codexadmin:1001\nbad name:x\n")
+        (self.identity / "groups.conf").write_text("admins:1001\nbad name:x\n")
         self.refused("line 'bad name:x' is not name:gid")
         (self.identity / "groups.conf").unlink()
         self.refused("needs files/, user.conf and groups.conf")
 
     def test_the_bundle_is_read_as_data_and_never_executed(self):
         marker = Path(self.directory.name) / "executed"
-        (self.identity / "user.conf").write_text(f"USER_NAME=spark1\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo\nUSER_SHELL=/bin/bash\ntouch {marker}\n")
+        (self.identity / "user.conf").write_text(f"USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo\nUSER_SHELL=/bin/bash\ntouch {marker}\n")
         self.refused("is not a block device")
         self.assertFalse(marker.exists())
 
