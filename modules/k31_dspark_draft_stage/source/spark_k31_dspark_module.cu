@@ -286,8 +286,8 @@ void K31QueryKernel(const uint16_t *__restrict__ q, const uint16_t *__restrict__
 	{
 		const uint32_t row = threadIdx.x / (K31_ROPE / 2u), pair = threadIdx.x % (K31_ROPE / 2u);
 		const uint16_t *rope = q + (uint64_t)row * K31_HEADS * K31_QK + head * K31_QK + K31_NOPE;
-		const float angle = (float)positions[row] * inverse[pair];
-		const float cosine = cosf(angle) * gain, sine = sinf(angle) * gain;
+		float cosine, sine;
+		K31Rotation(positions[row], inverse[pair], gain, &cosine, &sine);
 		const float even = LmBf16ToFloat(rope[2u * pair]), odd = LmBf16ToFloat(rope[2u * pair + 1u]);
 		const float first = even * cosine - odd * sine, second = even * sine + odd * cosine;
 		const uint64_t at = ((uint64_t)row * K31_HEADS + head) * K31_LATENT + K31_KV_RANK + 2u * pair;
