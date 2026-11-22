@@ -1623,6 +1623,31 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
+  process, CPU-copy daemon) has faulted three times on GB10 with Xid 31, an
+  MMU `FAULT_PTE` on a `VIRT_WRITE` from `GPCCLIENT_T1`. Each time, other
+  processes on the node were running GPU work. The cause is open.
+  - Each fault address was `0xd0000` above a 4 GiB-aligned base, outside every
+    probe allocation. The device buffers sit in 512 MiB chunks at base + 2,
+    2.5 and 3 GiB.
+  - The recorded failing case was the first tp=16 pipelined reduce-scatter
+    (segment = staging capacity + 148), run eagerly right after a graph case.
+  - Its only kernel with local memory is `SparkTpMeshHardwarePieceKernel`: an
+    8-byte stack frame with 4 bytes of spill stores, at 128 registers under
+    `__launch_bounds__(128,4)`.
+  - With the GPU to itself, one process at a time, 63 runs were clean:
+    - 10 of the probe as built;
+    - 10 with the piece kernel at residency 3 (168 registers, no stack frame);
+    - 10 with `cudaLimitStackSize` set explicitly to its default, 1024;
+    - 5 × 20 iterations of a tp=2 then tp=16 pipelined pair;
+    - 3 × 20 iterations of the failing graph-to-eager transition;
+    - 10 beside a second process running 1 ms spin kernels;
+    - 10 beside a second process allocating, filling and freeing 1 GiB in a
+      loop.
+  - Next: run the probe beside a weightd load test or an embedding service.
+    If that reproduces it, test the piece kernel without a stack frame: summing
+    the peers in batches of four keeps residency 4 at 110 registers with the
+    same summation order.
 - A submission that fails residentd's cache validation is retried until its
   deadline, and every attempt resets the session on all ranks: on 2026-10-14
   two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
