@@ -905,6 +905,7 @@ PYTHON_TESTS := \
 	tests/test_local_tokenizers.py \
 	tests/test_no_build_defaults.py \
 	tests/test_tp_cupti_trace_report.py \
+	tests/test_dsv41_flash_decode_replay.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
 	tests/test_mesh_status_tool.py \
@@ -2108,6 +2109,14 @@ build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT): $(DSV41_FLASH_AD
 
 build/libdsv41_flash_rows16_serving_adapter.$(SHARED_LIBRARY_EXT): $(DSV41_FLASH_ADAPTER_DEPS) | build
 	$(call DSV41_FLASH_LINK,16u,dsv41_flash-rows16,dsv41_flash_rows16_stage,-DDSV41_FLASH_ROWS=1)
+
+DSV41_DECODE_REPLAY_SOURCES := tools/dsv41_flash_decode_replay.cu runtime/json.c runtime/filesystem.c src/spark_status.c
+
+build/dsv41_flash_decode_replay: $(DSV41_DECODE_REPLAY_SOURCES) $(DSV41_FLASH_ADAPTER_DEPS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -DDSV41_FLASH_TP_DEGREE=4u -DDSV41_FLASH_ADAPTER_ID=\"dsv41_flash-tp4\" -DDSV41_FLASH_MODULE_TAG=\"dsv41_flash_tp4_stage\" \
+		-DDSV41_FLASH_CONTRACT_SHA256=\"$(DSV41_FLASH_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/dsv41_flash_resident_decode_stage/include \
+		-Imodel-families/dsv41_flash/source -Imodel-families/dsv41_flash/include -Imodel-families/common/include -Xcompiler -pthread \
+		$(DSV41_DECODE_REPLAY_SOURCES) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 
 build/test_model_resident_reconnect: tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_resident_reconnect.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
