@@ -480,11 +480,12 @@ SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
 	HostAllocation *host;
 	uint32_t mapped;
 	pthread_mutex_lock(&host_shared_mutex);
-	mapped = allocation->host == 0 && allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE ? HostMappingsSpan(allocation->device,allocation->bytes) : 0u;
+	mapped = allocation->host == 0 && allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE &&
+		(HostMappingsSpan(allocation->device,allocation->bytes) != 0u || HostRangeAt(&host_reservations,allocation->device,allocation->bytes,0u) >= 0) ? 1u : 0u;
 	pthread_mutex_unlock(&host_shared_mutex);
 	if ( mapped == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,
-			"the host backend adopts only device-private ranges of shared memory it mapped"));
+			"the host backend adopts only device-private ranges inside one of its reservations or across its mappings"));
 	host = (HostAllocation *)calloc(1u,sizeof(*host));
 	if ( host == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"adopt",allocation->owner,ENOMEM,"out of host memory"));
