@@ -1595,6 +1595,15 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   RTX 5090 the copies cost 604 us of host time per ingest call, against 9 us
   on CUDA. Stage without waiting for the queue, for example through a ring
   of staging chunks that the copy engine's semaphore releases.
+- nvrm memory of 4 GiB or more in 2 GiB pieces of 2 MiB pages (branch
+  `device/nvrm-large-pieces`, held, not landed). On GB10 it streams large
+  buffers as fast as CUDA: 24 GiB at 236.8-237.4 GB/s against 226.5-227.6 on
+  main and 236.5-240.2 on CUDA, and 51.5 GiB read-only at 239.4-240.7 against
+  226.1-227.4 and 235.9-236.2. But it costs the Qwen3.8-27B BF16 TP1 decode
+  about 1.7 points against CUDA, for a reason not found yet: nvrm against
+  CUDA at p50 is +4.6 to +5.0% with pieces and +3.1 to +3.2% without, with
+  identical outputs (spark1, 2026-11-22). It lands only once that cost is
+  explained and gone.
 - nvrm co-tenancy. Serving on nvrm needs compute exclusivity
   ([NVRM_BACKEND.md](docs/NVRM_BACKEND.md), "Compute exclusivity while
   serving"): another process's compute work beside a spinning mesh wait
