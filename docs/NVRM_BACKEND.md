@@ -1097,7 +1097,11 @@ them), naming the map and the rule, before any backend sees it.
   `global_stride`, then `elemtype` u8, `interleave_layout` none, `fill_mode` zero and `swizzle_mode`) and fences the
   tensor-map proxy. The maps come back to the caller's host memory, so kernels take them by value as before.
   `runtime/tensor_map.h` sends the engine's maps there on the nvrm flavour. No field sets L2 promotion, so these maps
-  promote nothing. Decode steps never read through a tensor map; prefill waves do, and that cost is measured apart.
+  promote nothing. Decode steps never read through a tensor map; prefill waves do, and that cost is measured apart. The
+  descriptor's tensor allocation size (PTX ISA 9.5 `.alloc_class`) is left at Small, the only class a PTX 9.0 toolkit
+  (CUDA 13.0) can express: a 4 KiB out-of-bounds window that is always safe. Large (a 128 KiB window for allocations of
+  at least `CU_DEVICE_ATTRIBUTE_TENSOR_MAP_LARGE_TENSOR_MIN_SIZE`) is a speed option to measure at prefill shapes once
+  the toolkit reaches PTX 9.5; driver 13000 does not know that attribute.
 - **Host and Metal backends** refuse with "no tensor maps".
 
 The proof compares outputs only, never map bytes. `tests/test_tensor_map_build_cuda.py` runs the engine's 32 tensor-map
