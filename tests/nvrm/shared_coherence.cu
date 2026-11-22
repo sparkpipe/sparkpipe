@@ -285,16 +285,8 @@ static int CaseRun(const char *self, SparkDeviceQueue *queue, int test, int muta
 
 static uint64_t MemoryFree(void)
 {
-	char line[128];
-	unsigned long long kilobytes = 0u;
-	FILE *meminfo = fopen("/proc/meminfo","r");
-	if ( meminfo == 0 )
-		return(0u);
-	while ( fgets(line,sizeof(line),meminfo) != 0 )
-		if ( sscanf(line,"MemFree: %llu kB",&kilobytes) == 1 )
-			break;
-	fclose(meminfo);
-	return((uint64_t)kilobytes * 1024u);
+	size_t free_bytes = 0u,total_bytes = 0u;
+	return(SparkGpuMemGetInfo(&free_bytes,&total_bytes) == SPARK_GPU_SUCCESS ? (uint64_t)free_bytes : 0u);
 }
 
 static uint32_t OpenDescriptors(void)
@@ -345,7 +337,7 @@ static void TestRounds(SparkDeviceQueue *queue)
 	for (round = 0u; round < COHERENCE_ROUNDS; round++)
 		good += (uint32_t)Round(queue,&probe,&back,&first);
 	after = MemoryFree();
-	printf("rounds: %u of %u kept their bytes after release while mapped; MemFree %llu -> %llu MiB; descriptors %u -> %u\n",good,COHERENCE_ROUNDS,
+	printf("rounds: %u of %u kept their bytes after release while mapped; free device memory %llu -> %llu MiB; descriptors %u -> %u\n",good,COHERENCE_ROUNDS,
 		(unsigned long long)(before >> 20),(unsigned long long)(after >> 20),descriptors,OpenDescriptors());
 	CHECK(good == COHERENCE_ROUNDS,"every round's memory keeps its bytes after its handle is released while mapped, an import of it sees them, "
 		"and each round reserves the same address again");

@@ -138,13 +138,15 @@ static void NvrmName(SparkDeviceProperties *properties)
 SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configuration, SparkDeviceProperties *properties)
 {
 	const long pages = sysconf(_SC_PHYS_PAGES),page = sysconf(_SC_PAGESIZE);
-	const uint64_t memory = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0u;
+	uint64_t memory = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0u,video_free = 0u;
 	uint32_t copy_engine = 0u;
 	NVRM_TRY(SparkNvrmGpuOpen(&nvrm_gpu,configuration->ordinal,SPARK_NVRM_MEMORY_HOST,"initialize"));
 	{
 		SparkStatus copies = SparkNvrmCopyEngineAsync(&nvrm_gpu,&copy_engine,"initialize");
 		if ( copies == SPARK_STATUS_OK )
 			copies = SparkNvrmCopyGroupOpen(&nvrm_gpu,copy_engine,"initialize");
+		if ( copies == SPARK_STATUS_OK && nvrm_gpu.integrated == 0u )
+			copies = SparkNvrmVideoBytes(&nvrm_gpu,&memory,&video_free,"initialize");
 		if ( copies != SPARK_STATUS_OK )
 		{
 			SparkNvrmCopyGroupClose(&nvrm_gpu);
@@ -156,7 +158,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	snprintf(properties->target,sizeof(properties->target),"nvrm.arch%03x.impl%x.sm%03x",nvrm_gpu.architecture,nvrm_gpu.implementation,nvrm_gpu.sm_version);
 	NvrmName(properties);
 	properties->page_bytes = page > 0 ? (uint32_t)page : SPARK_NVRM_PAGE_BYTES;
-	properties->compute_units = nvrm_gpu.gpcs * nvrm_gpu.tpcs_per_gpc * nvrm_gpu.sms_per_tpc;
+	properties->compute_units = nvrm_gpu.sm_count;
 	properties->simd_width = NVRM_WARP_THREADS;
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes : memory;
 	properties->max_buffer_bytes = memory;
@@ -219,8 +221,8 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 		allocation->backend = nvrm;
 		return(SPARK_STATUS_OK);
 	}
-	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_HOST,&nvrm->memory,
-		allocation->owner);
+	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space == 0u ? SPARK_NVRM_MEMORY_HOST :
+		nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_VIDEO,&nvrm->memory,allocation->owner);
 	if ( status == SPARK_STATUS_OK && private_space != 0u )
 		status = NvrmZero(&nvrm->memory,allocation->owner);
 	if ( status != SPARK_STATUS_OK )
@@ -745,6 +747,13 @@ int SparkNvrmOccupancyLimitsOf(SparkNvrmOccupancyLimits *limits)
 	return(1);
 }
 
+SparkStatus SparkNvrmVideoMemoryInfo(uint64_t *free_bytes, uint64_t *total_bytes)
+{
+	if ( nvrm_gpu.integrated != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_info",0,0,"an integrated GPU has no video memory"));
+	return(SparkNvrmVideoBytes(&nvrm_gpu,total_bytes,free_bytes,"memory_info"));
+}
+
 void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel)
 {
 	NvrmKernel *nvrm = (NvrmKernel *)kernel->backend;
@@ -985,7 +994,8 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,owner));
+	NVRM_TRY(nvrm_gpu.integrated != 0u ? SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,owner) :
+		SparkNvrmVideoAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )
 	{

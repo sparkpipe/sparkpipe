@@ -24,7 +24,8 @@ typedef enum SparkNvrmMemoryKind
 	SPARK_NVRM_MEMORY_SYSTEM = 2,
 	SPARK_NVRM_MEMORY_SYSTEM_UNCACHED = 3,
 	SPARK_NVRM_MEMORY_USER = 4,
-	SPARK_NVRM_MEMORY_USER_READ_ONLY = 5
+	SPARK_NVRM_MEMORY_USER_READ_ONLY = 5,
+	SPARK_NVRM_MEMORY_VIDEO = 6
 } SparkNvrmMemoryKind;
 
 typedef enum SparkNvrmEngine
@@ -125,6 +126,7 @@ typedef struct SparkNvrmGpu
 	uint32_t gpcs;
 	uint32_t tpcs_per_gpc;
 	uint32_t sms_per_tpc;
+	uint32_t sm_count;
 	uint32_t warps_per_sm;
 	uint32_t sm_version;
 	uint32_t sass_version;
@@ -170,6 +172,8 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner);
+SparkStatus SparkNvrmVideoAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t *handle, const char *owner);
+SparkStatus SparkNvrmVideoBytes(SparkNvrmGpu *gpu, uint64_t *heap_bytes, uint64_t *free_bytes, const char *owner);
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner);
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle);
 SparkStatus SparkNvrmShareExport(SparkNvrmGpu *gpu, uint32_t handle, int *fd, const char *owner);

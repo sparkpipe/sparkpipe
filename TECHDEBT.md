@@ -1968,7 +1968,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   kernels; command lists replacing graphs; memory shared with weightd;
   TMA descriptors; fault reports (a hung queue is waited on forever).
   Host-backed memory registers 4 KiB pages and reads 18% slower than
-  device memory. Production modules call the CUDA runtime directly
+  device memory. On the hub's RTX 5090 the backend runs the whole GPU gate
+  with device-private and shared memory in video memory, but host-pinned
+  and shared-coherent memory are still host memory in 4 KiB pages: the
+  copy engine moves 22.6 GB/s from video memory into it against 42.2 GB/s
+  into system memory in 2 MiB pages (the link's floor is 63.0 GB/s). A
+  CPU-cached, snooped system memory kind in 2 MiB pages for those spaces
+  is still to measure there. Production modules call the CUDA runtime directly
   (above), so even a complete backend serves nothing until they move
   behind the device layer or a GPU API of our own.
 - The stage-runner model interface
