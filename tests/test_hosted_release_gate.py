@@ -123,6 +123,15 @@ class DebtListTest(unittest.TestCase):
                           make_words("HIDDEN_TRANSPORT_SPARK_HOST_RDMA", "SHARED_LIBRARY_EXT=so")[0]} - set(nvrm), set())
         self.assertEqual(set(nvrm) - shipped, set())
         self.assertEqual(set(nvrm) & listed, set())
+        adapters = set(make_words("HOSTED_RELEASE_ADAPTERS", "SHARED_LIBRARY_EXT=so"))
+        staged = set(make_words("HOSTED_RELEASE_STAGED", "SHARED_LIBRARY_EXT=so"))
+        self.assertEqual(len(set(nvrm) & adapters), 13)
+        for adapter in sorted(set(nvrm) & adapters):
+            with self.subTest(adapter):
+                twin = adapter.replace("build/", "build/nvrm/", 1)
+                self.assertIn(f"{twin}={adapter}", staged)
+                self.assertIn(f"{twin}.kernels={adapter}.kernels", staged)
+        self.assertEqual(adapters - set(nvrm), {path for group in self.document["debt"] for path in group["files"] if path in adapters})
         library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")
         chosen = nvrm + ["tools/fleet_node_agent.sh"]
         self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
@@ -442,11 +451,13 @@ class ReleaseKitTest(unittest.TestCase):
 
     def test_hosted_mode_gates_both_builds_for_deployment_and_ships_the_gated_root(self):
         text = RELEASE_BUILD.read_text()
-        block = re.search(r'^FW_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
+        block = re.search(r'^FW_DIR=build\nAPI_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
         self.assertIsNotNone(block)
         lines = block.group(1).splitlines()
-        self.assertEqual(len(lines), 4)
-        self.assertEqual(lines.pop(0).strip(), 'NODE="$NODE ' + make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")[0] + '"')
+        self.assertEqual(len(lines), 7)
+        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
+        self.assertEqual(lines.pop(0).strip(), f'NODE="$NODE {library}"')
+        self.assertEqual(lines.pop(0).strip(), f'HUB_FILES="$HUB_FILES {library}"')
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[0])
         hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)
@@ -455,7 +466,11 @@ class ReleaseKitTest(unittest.TestCase):
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[1])
         for line in lines[:2]:
             self.assertTrue(line.rstrip().endswith("exit 1; }"))
-        self.assertEqual(lines[2].strip(), "FW_DIR=" + make_words("HOSTED_RELEASE_ROOT")[0] + "/build")
+        root = make_words("HOSTED_RELEASE_ROOT")[0]
+        self.assertIn(f'"cd $HUB_WORK/api-build-$SHA/{root}/build && sha256sum ', lines[2])
+        self.assertEqual(lines[3].strip(), f"FW_DIR={root}/build")
+        self.assertEqual(lines[4].strip(), f"API_DIR={root}/build")
+        self.assertIn("echo APIB $HUB_WORK/api-build-$SHA/$API_DIR", text)
         self.assertLess(block.start(), text.index("rm -rf $OUT"))
         shipped = [line for line in text.splitlines() if line.startswith(("MISSING=", "rm -rf $OUT"))]
         self.assertEqual(len(shipped), 2)

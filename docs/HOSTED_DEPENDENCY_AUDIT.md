@@ -141,10 +141,14 @@ nvrm build. `HOSTED_RELEASE_NVRM_FILES` names those files by the path the
 release ships; the gate builds them in `build/nvrm/` and stages each one
 under the shipped path (`--stage build/nvrm/weightdctl=build/weightdctl`,
 and the same for an adapter's kernels directory). Today that is weightd, its
-two tools, `sparkpipe_model_residentd` and the RDMA transport. weightd's
-programs carry the backend; residentd and the transport load
-`runtime_libs/libsparkpipe_device_nvrm.so`, which the root then ships beside
-them. A pair refuses a target that is not an exact path, a source staged
+two tools, `sparkpipe_model_residentd`, the RDMA transport and the 13 serving
+adapters that call no CUDA driver API (`NVRM_SERVING_ADAPTER_SOURCES`). An
+adapter's nvrm build shares its CUDA rule: the same recipe builds a second
+target in `build/nvrm/`, with the nvrm runtime and model-common libraries,
+`-cudart none -DSPARKPIPE_DEVICE_NVRM` and the nvrm device library instead
+of the CUDA ones. weightd's programs carry the backend; residentd, the
+transport and the adapters load `runtime_libs/libsparkpipe_device_nvrm.so`,
+which the root then ships beside them. A pair refuses a target that is not an exact path, a source staged
 onto itself and a target staged twice.
 
 `--deploy` is the mode for a root that will run. It also refuses the root
@@ -190,9 +194,10 @@ The list can only shrink:
   the findings in the debt list's format.
 
 `HOSTED=1 scripts/release_build.sh` runs the gate with `--deploy` on the
-build host over the node files (with the nvrm device library added) and
-adapters, and on the hub over the API files and adapters, before it writes
-the firmware directory, and then ships the node files from the gated root,
+build host over the node files and adapters, and on the hub over the API
+files and adapters, each with the nvrm device library added, before it
+writes the firmware directory. It then ships the node files from the gated
+root and names the hub's gated root (with its checksums) as the API build,
 so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. Until the debt
 list is empty every hosted kit run is refused. Without `HOSTED=1` the kit
 builds and ships exactly as before.
