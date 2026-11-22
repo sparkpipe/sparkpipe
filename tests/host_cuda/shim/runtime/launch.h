@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include "sparkpipe/spark_error_site.h"
+#include "include/sparkpipe/spark_error_site.h"
 #include <stdio.h>
 
 #define LM_LAUNCH_OK 0

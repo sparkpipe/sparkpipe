@@ -2,7 +2,7 @@
 
 
 #include "inference/kernels/layout.cuh"
-#include "sparkpipe/spark_error_site.h"
+#include "include/sparkpipe/spark_error_site.h"
 #include <stdint.h>
 #include <stdio.h>
 
