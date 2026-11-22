@@ -41,7 +41,8 @@ typedef enum SparkNvrmMemoryKind
 	SPARK_NVRM_MEMORY_USER = 4,
 	SPARK_NVRM_MEMORY_USER_READ_ONLY = 5,
 	SPARK_NVRM_MEMORY_VIDEO = 6,
-	SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK = 7
+	SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK = 7,
+	SPARK_NVRM_MEMORY_VIDEO_MAPPED = 8
 } SparkNvrmMemoryKind;
 
 typedef enum SparkNvrmEngine
@@ -218,6 +219,7 @@ uint64_t SparkNvrmHugePagesPull(uint64_t blocks);
 SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t bytes, const char *owner);
 SparkStatus SparkNvrmHugePagesReady(uint64_t bytes, const char *owner);
 SparkStatus SparkNvrmVideoAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t *handle, const char *owner);
+SparkNvrmMemoryKind SparkNvrmLaunchControlKind(const SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmVideoBytes(SparkNvrmGpu *gpu, uint64_t *heap_bytes, uint64_t *free_bytes, const char *owner);
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner);
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle);

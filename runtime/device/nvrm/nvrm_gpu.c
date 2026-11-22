@@ -538,9 +538,23 @@ static SparkStatus GpuSystemMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, c
 	return(SPARK_STATUS_OK);
 }
 
+SparkNvrmMemoryKind SparkNvrmLaunchControlKind(const SparkNvrmGpu *gpu)
+{
+	return(gpu->integrated != 0u ? SPARK_NVRM_MEMORY_HOST : SPARK_NVRM_MEMORY_VIDEO_MAPPED);
+}
+
+static SparkStatus GpuVideoCpu(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
+{
+	GPU_TRY(GpuMapToCpu(gpu,memory->handle,memory->bytes,SPARK_NVRM_VALUE(NVOS33_FLAGS_CACHING_TYPE,NVOS33_FLAGS_CACHING_TYPE_WRITECOMBINED),0u,
+		(void *)(uintptr_t)memory->address,&memory->map_fd,&memory->cpu,owner));
+	memory->host_mapped = 1u;
+	memset(memory->cpu,0,(size_t)memory->bytes);
+	return(SPARK_STATUS_OK);
+}
+
 static uint32_t GpuPageBytes(SparkNvrmMemoryKind kind, uint64_t bytes)
 {
-	if ( kind == SPARK_NVRM_MEMORY_HOST )
+	if ( kind == SPARK_NVRM_MEMORY_HOST || kind == SPARK_NVRM_MEMORY_VIDEO_MAPPED )
 		return(SPARK_NVRM_PAGE_BYTES);
 	if ( kind == SPARK_NVRM_MEMORY_VIDEO )
 		return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
@@ -558,12 +572,16 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 	memory->page_bytes = GpuPageBytes(kind,bytes);
 	memory->bytes = GpuRound(bytes != 0u ? bytes : 1u,memory->page_bytes);
 	if ( kind != SPARK_NVRM_MEMORY_HOST && kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED &&
-		kind != SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK && kind != SPARK_NVRM_MEMORY_VIDEO )
+		kind != SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK && kind != SPARK_NVRM_MEMORY_VIDEO && kind != SPARK_NVRM_MEMORY_VIDEO_MAPPED )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"the module allocates host, system, uncached system, write-back system or video memory");
 	status = SparkNvrmVirtual(gpu,memory->bytes,memory->page_bytes,&memory->address,owner);
 	memory->virtual_reserved = status == SPARK_STATUS_OK ? 1u : 0u;
-	if ( status == SPARK_STATUS_OK && kind == SPARK_NVRM_MEMORY_VIDEO )
+	if ( status == SPARK_STATUS_OK && (kind == SPARK_NVRM_MEMORY_VIDEO || kind == SPARK_NVRM_MEMORY_VIDEO_MAPPED) )
+	{
 		status = SparkNvrmVideoAllocate(gpu,memory->bytes,memory->page_bytes,&memory->handle,owner);
+		if ( status == SPARK_STATUS_OK && kind == SPARK_NVRM_MEMORY_VIDEO_MAPPED )
+			status = GpuVideoCpu(gpu,memory,owner);
+	}
 	else if ( status == SPARK_STATUS_OK )
 		status = kind == SPARK_NVRM_MEMORY_HOST ? GpuHostMemory(gpu,memory,owner) : GpuSystemMemory(gpu,memory,owner);
 	if ( status == SPARK_STATUS_OK )
