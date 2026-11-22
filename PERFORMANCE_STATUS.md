@@ -517,6 +517,27 @@ What the rules add, counted in tokens and waves, not in time:
 - A prompt that shares a block of its head with an earlier prompt resumes at
   that block's cut, at most 71 tokens before the block's text ends.
 
+What the cuts cost the chat layer, on the Qwen 3.8 tokenizer. Measured on a
+workstation that ran other work, not on the hub, so the ratios hold and the
+milliseconds do not:
+
+| Request | Render and tokenize | Cuts |
+| --- | ---: | ---: |
+| the first request of a 35,000-token opening with two block ends | 62 to 96 ms | 108 to 153 ms, once for an opening |
+| the same opening again | 51 to 70 ms | 2 to 3 ms |
+| a 92,800-token turn with 14 replies rendered from text | 147 to 185 ms | 4 to 5 ms |
+| that history the first time a chat layer process sees it | 141 to 212 ms | 135 to 145 ms, once |
+
+An opening's block cuts tokenize the text through each block end by itself,
+once; the chat layer remembers the last 64 openings of a model. The cuts of
+replies rendered from text read the prompt's own render and remember the
+token count at each reply boundary by the text before it, so a turn
+tokenizes only what the turn before had not counted. The render arm of
+`tools/agent_turn_bench.py` on later turns, five repeats, with the rules
+against main: 86, 115 and 174 ms against 87, 109 and 198 ms at 48,500,
+62,000 and 96,900 tokens, and 105, 139 and 203 ms against 100, 125 and
+185 ms in a second run.
+
 Gate GX's receipts will give, for each lane:
 
 - cold prefill at 8K, 100K and 300K with the rules' wave ends;

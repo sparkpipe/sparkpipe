@@ -677,6 +677,15 @@ engine's `cuts` from the prompt's structure:
   stored with the reply, so the next turn's cut before the reply falls
   there and not one token before the forced prompt's end.
 
+Finding the cuts costs the chat layer two things, each once. An opening's
+block cuts tokenize the text through every block end by itself; the result
+is kept for the last 64 openings of a model, so only an opening's first
+request pays. The cuts of replies rendered from text are read off the
+turn's own render, and the token count at each reply boundary is kept by
+the text before it, so a turn tokenizes only what the turn before had not
+counted; a chat layer process that sees a long history for the first time
+counts it once. `PERFORMANCE_STATUS.md` ("Exact reuse") has the times.
+
 A request names at most 16,384 cuts. Past that the oldest stay and newer
 ones are not named, so the first waves are the same from turn to turn and
 only the tail after the last named cut is computed again; `/health` counts

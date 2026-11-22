@@ -52,7 +52,37 @@ async def run(tmp, check):
 
         longer = history + [said("They are Ada, Bo and Cy."), user("Who is the oldest?")]
         engine.reply("Age.</think>Bo.")
-        status, _, text = await harness.post("/v1/messages", dict(body, messages=longer))
+        model = harness.frontend.models["alpha"]
+        renderer, vocabulary, walk = model.renderer, model.renderer.cache.vocabulary, chat_frontend.SpanWalk
+        rendered, counted, pieces_of, encode, count_of = [], [], renderer.pieces, vocabulary.encode, walk.count
+        inside = []
+
+        def counted_pieces(messages, tools, kwargs):
+            rendered.append(sum(1 for message in messages if message.get("role") == "assistant"))
+            return pieces_of(messages, tools, kwargs)
+
+        def counted_encode(piece, special):
+            if inside:
+                counted.append(len(piece))
+            return encode(piece, special)
+
+        def counted_count(self, position):
+            inside.append(position)
+            try:
+                return count_of(self, position)
+            finally:
+                inside.pop()
+
+        renderer.pieces, vocabulary.encode, walk.count = counted_pieces, counted_encode, counted_count
+        try:
+            status, _, text = await harness.post("/v1/messages", dict(body, messages=longer))
+        finally:
+            renderer.pieces, vocabulary.encode, walk.count = pieces_of, encode, count_of
+        check(rendered.count(2) == 1, f"a turn renders its conversation once: the reply cuts read the prompt's own pieces, not a second render: {rendered}")
+        latest = engine.requests[-1]["prompt_token_ids"]
+        whole, remembered = (len(harness.tokenizer.decode(latest[:size], skip_special_tokens=False)) for size in (len(latest), ended))
+        check(0 < sum(counted) <= whole - remembered,
+              f"the reply cuts tokenize only the text after the last reply they already counted: {sum(counted)} characters of {whole}, {remembered} of them counted by the turn before")
         three = engine.requests[-1]
         second = len(prompt)
         check(status == 200 and three["cuts"][:3] == two["cuts"] and three["cuts"][3:] == [second - 1, reply_end(harness, three["prompt_token_ids"], second)] and

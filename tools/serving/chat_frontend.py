@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import base64
+import bisect
 import codecs
 import contextlib
 import copy
@@ -131,6 +132,7 @@ REPLAY_SENTINEL = "\ue000SPARKPIPE-REPLAY-{}\ue001"
 REPLAY_MARK = re.compile("\ue000SPARKPIPE-REPLAY-([0-9]+)\ue001")
 GENERATION_PROBE = "\ue000SPARKPIPE-PROBE\ue001"
 GENERATION_CACHE = 64
+TURN_COUNT_CACHE = 1 << 15
 DIRECTIVE_CHECK_SECONDS = 1.0
 RECORD_PRUNE_SECONDS = 60.0
 OWN_SCOPE = "own"
@@ -1013,6 +1015,7 @@ class WarmGate:
 class Model:
     block_tokens = CACHE_BLOCK_TOKENS
     engine_block = None
+    rendered = None
 
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
@@ -1086,10 +1089,11 @@ class Model:
     def render(self, messages, tools, kwargs, pack=None):
         context = dict(self.template_defaults)
         context.update(kwargs)
-        if pack is None:
-            return self.renderer.render(messages, tools, context, self.context_tokens - 1)
         text, pieces = self.renderer.pieces(messages, tools, context)
-        return encode_pieces(self.renderer.cache, text, context_packs.splice(text, pieces, pack), self.context_tokens - 1)
+        pieces = list(context_packs.splice(text, pieces, pack) if pack is not None else pieces)
+        text, ids = encode_pieces(self.renderer.cache, text, pieces, self.context_tokens - 1)
+        self.rendered = (ids, text, pieces)
+        return text, ids
 
     def pack_prefix(self, version, ids, tools, kwargs):
         context = dict(self.template_defaults)
@@ -1229,29 +1233,86 @@ class Model:
             return []
         opening = list(self.vocabulary.encode(self.generation_prompt(tools, kwargs), True))
         stops = set(self.stop_token_ids)
-        context = dict(self.template_defaults)
-        context.update(kwargs)
         try:
-            text, pieces = self.renderer.pieces(messages, tools, context)
-            if pack is not None:
-                pieces = context_packs.splice(text, pieces, pack)
-            spans = template_spans(pieces)
-            cuts, cursor, count = [], 0, 0
+            if self.rendered is not None and self.rendered[0] is ids:
+                text, pieces = self.rendered[1], self.rendered[2]
+            else:
+                context = dict(self.template_defaults)
+                context.update(kwargs)
+                text, pieces = self.renderer.pieces(messages, tools, context)
+                pieces = list(context_packs.splice(text, pieces, pack) if pack is not None else pieces)
+            walk = SpanWalk(self, text, pieces, self.__dict__.setdefault("turn_counts", OrderedDict()))
+            cuts, cursor = [], 0
             for _ in range(turns):
-                start = find_in(spans, text, header, cursor, len(text))
-                close = min((position for position in (find_in(spans, text, stop, start + len(header), len(text)) for stop in self.stop_strings) if position >= 0),
-                            default=-1) if start >= 0 else -1
+                start = walk.find(header, cursor)
+                close = min((position for position in (walk.find(stop, start + len(header), False) for stop in self.stop_strings) if position >= 0), default=-1) if start >= 0 else -1
                 if close < 0:
                     break
-                count += len(encode_span(self, pieces, cursor, start))
-                begin = count + len(opening) - 1
-                count += len(encode_span(self, pieces, start, close))
+                begin = walk.count(start) + len(opening) - 1
+                count = walk.count(close)
                 cursor = close
                 if begin < count < len(ids) and ids[count] in stops and list(ids[begin - len(opening) + 1:begin]) == opening[:-1]:
                     cuts += [begin, count]
         except RequestError:
             return []
         return cuts
+
+
+class SpanWalk:
+    def __init__(self, model, text, pieces, known):
+        self.model, self.text, self.pieces, self.known = model, text, pieces, known
+        self.offsets, offset = [], 0
+        for piece, _ in pieces:
+            self.offsets.append(offset)
+            offset += len(piece)
+        self.special = [index for index, (_, special) in enumerate(pieces) if special is True]
+        self.searched, self.piece, self.at, self.tokens = 0, 0, 0, 0
+        self.digest = hashlib.sha256(json.dumps([(self.offsets[index], len(special)) for index, (_, special) in enumerate(pieces) if not isinstance(special, bool)]).encode())
+        self.hashed = 0
+
+    def find(self, needle, begin, forward=True):
+        searched = self.searched
+        while searched < len(self.special) and self.offsets[self.special[searched]] + len(self.pieces[self.special[searched]][0]) <= begin:
+            searched += 1
+        if forward:
+            self.searched = searched
+        for index in self.special[searched:]:
+            start = self.offsets[index]
+            found = self.text.find(needle, max(start, begin), start + len(self.pieces[index][0]))
+            if found >= 0:
+                return found
+        return -1
+
+    def count(self, position):
+        self.digest.update(self.text[self.hashed:position].encode())
+        self.hashed = position
+        key = self.digest.copy().digest()
+        known = self.known.get(key)
+        if known is not None:
+            self.known.move_to_end(key)
+            self.piece = bisect.bisect_right(self.offsets, position) - 1
+            if self.piece >= 0 and position == self.offsets[self.piece] + len(self.pieces[self.piece][0]):
+                self.piece += 1
+            self.at, self.tokens = position, known
+            return known
+        while self.at < position:
+            piece, special = self.pieces[self.piece]
+            start = self.offsets[self.piece]
+            end = start + len(piece)
+            high = min(position, end)
+            if not isinstance(special, bool):
+                if (self.at, high) != (start, end):
+                    raise RequestError(400, "invalid_messages", "a replayed turn overlaps the pack")
+                self.tokens += len(special)
+            else:
+                self.tokens += len(self.model.renderer.cache.encode(piece[self.at - start:high - start], special, self.model.context_tokens))
+            self.at = high
+            if high == end:
+                self.piece += 1
+        self.known[key] = self.tokens
+        while len(self.known) > TURN_COUNT_CACHE:
+            self.known.popitem(last=False)
+        return self.tokens
 
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')

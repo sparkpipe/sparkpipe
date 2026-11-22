@@ -906,6 +906,7 @@ def render(arguments):
                         raise SystemExit(f"agent_turn_bench: count_tokens answered {status}: {json.dumps(reply)[:300]}")
                 record = {"phase": "render", "shape": shape, "context": context, "prompt_tokens": tokens, "body_bytes": size, "label": arguments.label,
                           "render_ms": rounded(percentile(times, 0.5), 1), "render_ms_min": rounded(min(times), 1), "render_ms_max": rounded(max(times), 1),
+                          "render_ms_first": rounded(times[0], 1),
                           "repeats": len(times), "error": None}
                 recorder.write(record)
                 print(json.dumps(record), flush=True)
