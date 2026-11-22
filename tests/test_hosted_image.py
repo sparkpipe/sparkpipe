@@ -227,6 +227,53 @@ class StaticFilesTest(unittest.TestCase):
         self.assertFalse([token for token in tokens if token.startswith(("console=", "ip=", "fsck."))])
 
 
+class RamRootTest(unittest.TestCase):
+    SCRIPT = IMAGE / "files" / "usr" / "share" / "initramfs-tools" / "scripts" / "sparkpipe-ram"
+
+    def mountroot(self, root="UUID=host", loop="/home/node/rescue/SPARKROOT.ext4", fail=""):
+        stubs = """
+calls=""
+call() { calls="$calls|$*"; }
+local_device_setup() { call setup "$1"; DEV=/dev/nvme0n1p2; }
+get_fstype() { echo ext4; }
+mkdir() { call mkdir "$@"; }
+mount() { call mount "$@"; [ "$FAIL" != mount ] || return 1; }
+cp() { call cp "$@"; [ "$FAIL" != cp ] || return 1; }
+umount() { call umount "$@"; }
+modprobe() { call modprobe "$@"; }
+panic() { call panic "$*"; printf '%s\\n' "$calls"; exit 3; }
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            host = Path(directory, "host")
+            if loop:
+                (host / loop.lstrip("/")).parent.mkdir(parents=True)
+                (host / loop.lstrip("/")).write_text("image")
+            script = self.SCRIPT.read_text().replace(". /scripts/local\n", "").replace("/host", str(host))
+            program = stubs + script + '\nrootmnt=/root\nmountroot\nprintf "%s\\n" "$calls"\n'
+            environment = dict(os.environ, ROOT=root, LOOP=loop, LOOPFSTYPE="ext4", FAIL=fail)
+            result = subprocess.run(["sh", "-c", program], capture_output=True, text=True, env=environment)
+            return subprocess.CompletedProcess(result.args, result.returncode, result.stdout.replace(str(host), "/host"), result.stderr)
+
+    def test_the_image_copy_runs_from_memory_and_the_disk_is_unmounted_before_the_root_mounts(self):
+        self.assertTrue(self.SCRIPT.read_text().startswith(". /scripts/local\n"))
+        result = self.mountroot()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = result.stdout.strip().split("|")[1:]
+        self.assertEqual(calls, ["setup UUID=host", "mkdir -p /host /run/sparkpipe-ram", "mount -r -t ext4 /dev/nvme0n1p2 /host",
+                                 "mount -t tmpfs -o mode=0700 sparkpipe-ram /run/sparkpipe-ram",
+                                 "cp /host/home/node/rescue/SPARKROOT.ext4 /run/sparkpipe-ram/root.img", "umount /host", "modprobe loop",
+                                 "mount -w -o loop -t ext4 /run/sparkpipe-ram/root.img /root"])
+
+    def test_a_missing_input_or_a_failed_copy_stops_before_the_root_is_mounted(self):
+        result = self.mountroot(loop="")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic sparkpipe-ram needs root=", result.stdout)
+        result = self.mountroot(fail="cp")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic cannot copy", result.stdout)
+        self.assertNotIn("-o loop", result.stdout)
+
+
 class SelfUpdateTest(unittest.TestCase):
     UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service")
 
