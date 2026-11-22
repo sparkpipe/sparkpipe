@@ -1705,6 +1705,21 @@ build/test_nvrm_cluster_launch: tests/nvrm/cluster_launch.cu tools/nvrm_kernel_m
 build/cuda_cluster_launch: tests/nvrm/cluster_launch.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+build/test_nvrm_latch_segments: tests/nvrm/latch_segments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+NVRM_FLAVOUR_GOALS += nvrm-latch-segments
+.PHONY: nvrm-latch-segments
+nvrm-latch-segments: nvrm-gpu-present build/test_nvrm_latch_segments
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	./build/test_nvrm_latch_segments chain 100000 1 || status=1; \
+	./build/test_nvrm_latch_segments chain 100000 32 || status=1; \
+	./build/test_nvrm_latch_segments chain-seconds 6 32 & chain=$$!; sleep 0.5; \
+	./build/test_nvrm_latch_segments compete 5 1 || status=1; wait $$chain || status=1; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; \
+	if [ $$status -eq 0 ]; then echo "PASS nvrm-latch-segments: dependent chains run in segments of one and of 32 launches, \
+and a second process keeps running beside a 32-launch chain"; fi; exit $$status
+
 NVRM_FLAVOUR_GOALS += nvrm-cluster-launch
 .PHONY: nvrm-cluster-launch
 nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_cluster_launch

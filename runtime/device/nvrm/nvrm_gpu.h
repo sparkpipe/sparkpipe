@@ -82,6 +82,7 @@ typedef struct SparkNvrmChannel
 	uint32_t segment_fenced;
 	SparkNvrmEngine last_engine;
 	uint32_t latch;
+	uint32_t latch_run;
 	uint64_t after_address;
 	uint64_t after_value;
 	uint64_t uvm_base;

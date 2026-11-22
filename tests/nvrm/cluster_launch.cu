@@ -12,6 +12,8 @@
 #define DEPENDENT_THREADS 128u
 #define DEPENDENT_WORDS (DEPENDENT_GROUPS * DEPENDENT_THREADS)
 #define DEPENDENT_SPIN_NS 100000ull
+#define SHAPE_WORDS 16u
+#define SHAPE_MAX_GROUPS 64u
 
 static int failures;
 
@@ -66,6 +68,48 @@ __global__ void __cluster_dims__(2, 1, 1) ClusterCompiled(uint32_t *out)
 __global__ void ClusterAtLaunch(uint32_t *out)
 {
 	ClusterRecord(out);
+}
+
+static __device__ void ShapeRecord(uint32_t *out)
+{
+	uint32_t v[SHAPE_WORDS];
+	asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(v[0]));
+	asm volatile("mov.u32 %0, %%cluster_nctarank;" : "=r"(v[1]));
+	asm volatile("mov.u32 %0, %%clusterid.x;" : "=r"(v[2]));
+	asm volatile("mov.u32 %0, %%clusterid.y;" : "=r"(v[3]));
+	asm volatile("mov.u32 %0, %%clusterid.z;" : "=r"(v[4]));
+	asm volatile("mov.u32 %0, %%nclusterid.x;" : "=r"(v[5]));
+	asm volatile("mov.u32 %0, %%nclusterid.y;" : "=r"(v[6]));
+	asm volatile("mov.u32 %0, %%nclusterid.z;" : "=r"(v[7]));
+	asm volatile("mov.u32 %0, %%cluster_ctaid.x;" : "=r"(v[8]));
+	asm volatile("mov.u32 %0, %%cluster_ctaid.y;" : "=r"(v[9]));
+	asm volatile("mov.u32 %0, %%cluster_ctaid.z;" : "=r"(v[10]));
+	asm volatile("mov.u32 %0, %%cluster_nctaid.x;" : "=r"(v[11]));
+	asm volatile("mov.u32 %0, %%cluster_nctaid.y;" : "=r"(v[12]));
+	asm volatile("mov.u32 %0, %%cluster_nctaid.z;" : "=r"(v[13]));
+	v[14] = blockIdx.x | (blockIdx.y << 10) | (blockIdx.z << 20);
+	v[15] = 0x600du;
+	if ( threadIdx.x == 0u )
+	{
+		uint32_t *row = out + (blockIdx.x + gridDim.x * (blockIdx.y + gridDim.y * blockIdx.z)) * SHAPE_WORDS;
+		for ( uint32_t index = 0u; index < SHAPE_WORDS; index++ )
+			row[index] = v[index];
+	}
+}
+
+__global__ void __cluster_dims__(2, 2, 2) ShapeCube(uint32_t *out)
+{
+	ShapeRecord(out);
+}
+
+__global__ void __cluster_dims__(1, 3, 2) ShapeColumn(uint32_t *out)
+{
+	ShapeRecord(out);
+}
+
+__global__ void ShapeSingle(uint32_t *out)
+{
+	ShapeRecord(out);
 }
 
 __global__ void DependentFirst(uint32_t *data, unsigned long long spin)
@@ -130,6 +174,46 @@ static void TestClusters(SparkGpuStream stream, uint32_t *rows, uint32_t *host)
 	ClusterCheck("dependent clusters of 8 in a grid of 16",host,16u,8u);
 }
 
+static void ShapeCheck(const char *what, const uint32_t *rows, const uint32_t grid[3], const uint32_t cluster[3])
+{
+	const uint32_t groups = grid[0] * grid[1] * grid[2];
+	uint32_t x,y,z,wrong = 0u;
+	for ( z = 0u; z < grid[2]; z++ )
+		for ( y = 0u; y < grid[1]; y++ )
+			for ( x = 0u; x < grid[0]; x++ )
+			{
+				const uint32_t *row = rows + (x + grid[0] * (y + grid[1] * z)) * SHAPE_WORDS;
+				const uint32_t cx = cluster[0],cy = cluster[1],cz = cluster[2];
+				const uint32_t expected[SHAPE_WORDS] = {(x % cx) + cx * ((y % cy) + cy * (z % cz)), cx * cy * cz, x / cx, y / cy, z / cz,
+					grid[0] / cx, grid[1] / cy, grid[2] / cz, x % cx, y % cy, z % cz, cx, cy, cz, x | (y << 10) | (z << 20), 0x600du};
+				wrong += memcmp(row,expected,sizeof(expected)) != 0 ? 1u : 0u;
+			}
+	CHECK(wrong == 0u,what);
+	printf("digest %s %016llx\n",what,(unsigned long long)Digest(rows,(uint64_t)groups * SHAPE_WORDS * sizeof(uint32_t)));
+}
+
+static void TestShapes(SparkGpuStream stream, uint32_t *rows, uint32_t *host)
+{
+	const uint64_t bytes = (uint64_t)SHAPE_MAX_GROUPS * SHAPE_WORDS * sizeof(uint32_t);
+	const uint32_t cube_grid[3] = {4u, 4u, 4u},cube[3] = {2u, 2u, 2u},column_grid[3] = {2u, 6u, 4u},column[3] = {1u, 3u, 2u};
+	const uint32_t single_grid[3] = {3u, 2u, 2u},single[3] = {1u, 1u, 1u};
+	CHECK(SparkGpuMemset(rows,0xee,bytes) == SPARK_GPU_SUCCESS,"clear the shape rows");
+	LM_LAUNCH((ShapeCube),dim3(4u,4u,4u),CLUSTER_THREADS,0u,stream,rows);
+	CHECK(SparkGpuGetLastError() == SPARK_GPU_SUCCESS && SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(host,rows,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"launch clusters of 2x2x2 in a grid of 4x4x4");
+	ShapeCheck("clusters of 2x2x2 in a grid of 4x4x4",host,cube_grid,cube);
+	CHECK(SparkGpuMemset(rows,0xee,bytes) == SPARK_GPU_SUCCESS,"clear the shape rows again");
+	LM_LAUNCH((ShapeColumn),dim3(2u,6u,4u),CLUSTER_THREADS,0u,stream,rows);
+	CHECK(SparkGpuGetLastError() == SPARK_GPU_SUCCESS && SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(host,rows,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"launch clusters of 1x3x2 in a grid of 2x6x4");
+	ShapeCheck("clusters of 1x3x2 in a grid of 2x6x4",host,column_grid,column);
+	CHECK(SparkGpuMemset(rows,0xee,bytes) == SPARK_GPU_SUCCESS,"clear the shape rows a third time");
+	LM_LAUNCH((ShapeSingle),dim3(3u,2u,2u),CLUSTER_THREADS,0u,stream,rows);
+	CHECK(SparkGpuGetLastError() == SPARK_GPU_SUCCESS && SparkGpuStreamSynchronize(stream) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(host,rows,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"launch a grid of 3x2x2 without clusters");
+	ShapeCheck("a grid of 3x2x2 without clusters reads clusters of one block",host,single_grid,single);
+}
+
 static void TestDependent(SparkGpuStream stream, uint32_t *data, uint32_t *out, uint32_t *host)
 {
 	uint32_t round,index,wrong = 0u;
@@ -168,22 +252,24 @@ static void TestRefusals(SparkGpuStream stream, uint32_t *rows)
 int main(int argc, char **argv)
 {
 	SparkGpuStream stream = 0;
-	uint32_t *rows = 0,*data = 0,*out = 0;
+	uint32_t *rows = 0,*data = 0,*out = 0,*shapes = 0;
 	static uint32_t host[DEPENDENT_WORDS];
 	const char *flavour = argc > 1 ? argv[1] : "this flavour";
 	if ( SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&rows,(uint64_t)CLUSTER_MAX_GROUPS * CLUSTER_WORDS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&shapes,(uint64_t)SHAPE_MAX_GROUPS * SHAPE_WORDS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&data,DEPENDENT_WORDS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&out,DEPENDENT_WORDS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 	{
 		printf("FAIL set up the stream and buffers: %s\n",SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(1);
 	}
 	TestClusters(stream,rows,host);
+	TestShapes(stream,shapes,host);
 	TestDependent(stream,data,out,host);
 #ifdef SPARKPIPE_DEVICE_NVRM
 	TestRefusals(stream,rows);
 #endif
-	CHECK(SparkGpuFree(rows) == SPARK_GPU_SUCCESS && SparkGpuFree(data) == SPARK_GPU_SUCCESS && SparkGpuFree(out) == SPARK_GPU_SUCCESS &&
+	CHECK(SparkGpuFree(rows) == SPARK_GPU_SUCCESS && SparkGpuFree(shapes) == SPARK_GPU_SUCCESS && SparkGpuFree(data) == SPARK_GPU_SUCCESS && SparkGpuFree(out) == SPARK_GPU_SUCCESS &&
 		SparkGpuStreamDestroy(stream) == SPARK_GPU_SUCCESS,"release the buffers and the stream");
 	if ( failures != 0 )
 	{

@@ -485,6 +485,34 @@ static void TestDependentLaunch(void)
 	fake.gpu.compute.after_value = 5u;
 	CHECK(SparkNvrmOpBeginLatched(&fake.gpu.compute,"dependent") == SPARK_STATUS_INVALID_ARGUMENT,"but not with a wait on another channel pending");
 	fake.gpu.compute.after_value = 0u;
+	{
+		uint32_t index,latched = 0u,acquired = 0u,pattern_holds = 1u;
+		CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,0u,&start) == SPARK_STATUS_OK,"a plain launch starts a segment");
+		for (index = 1u; index <= 40u; index++)
+		{
+			const uint32_t expect_latch = index != SPARK_NVRM_LATCH_SEGMENT ? 1u : 0u;
+			fake.fence[0] = fake.gpu.compute.fence_value;
+			if ( DependentLaunch(&fake,&program,&request,slots[index % 4u],0x1000700000ull + 0x1000ull * (index % 4u),1u,&start) != SPARK_STATUS_OK )
+			{
+				pattern_holds = 0u;
+				break;
+			}
+			if ( LATCH_FIELD(slots[index % 4u],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) != expect_latch ||
+				(expect_latch == 0u && PushWord(&fake,(uint32_t)(start / 4u)) != acquire) )
+				pattern_holds = 0u;
+			latched += expect_latch;
+			acquired += 1u - expect_latch;
+		}
+		CHECK(pattern_holds != 0u && latched == 39u && acquired == 1u,
+			"a chain of dependent launches goes in segments of 32: each starts with a front-end acquire and its other 31 launches wait on latches");
+		SparkNvrmLatchSegmentSet(1u);
+		fake.fence[0] = fake.gpu.compute.fence_value;
+		CHECK(DependentLaunch(&fake,&program,&request,slots[0],0x1000700000ull,1u,&start) == SPARK_STATUS_OK &&
+			LATCH_FIELD(slots[0],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u && PushWord(&fake,(uint32_t)(start / 4u)) == acquire,
+			"with segments of one launch, every dependent launch takes the front-end acquire");
+		SparkNvrmLatchSegmentSet(0u);
+		CHECK(SparkNvrmLatchSegment() == SPARK_NVRM_LATCH_SEGMENT,"a segment of zero launches restores the default of 32");
+	}
 	SparkNvrmCubinRelease(&program.cubin);
 	free(blob);
 }

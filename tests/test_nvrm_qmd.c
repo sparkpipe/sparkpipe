@@ -163,7 +163,8 @@ static void TestCluster(const SparkNvrmCubinKernel *kernel)
 	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"cluster") == SPARK_STATUS_OK &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_QMD_TYPE) == NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA && FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_WIDTH) == 2u &&
 		FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_HEIGHT) == 2u && FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_DEPTH) == 1u &&
-		FIELD(&qmd,NVCEC0_QMDV05_00_GRID_WIDTH) == 8u,"a cluster launch is a GPC cluster grid with the cluster's width, height and depth");
+		FIELD(&qmd,NVCEC0_QMDV05_00_GRID_WIDTH) == 4u && FIELD(&qmd,NVCEC0_QMDV05_00_GRID_HEIGHT) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_GRID_DEPTH) == 1u,
+		"a cluster launch is a GPC cluster grid with the cluster's width, height and depth, and its grid counted in clusters");
 	shape.grid[0] = 7u;
 	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"cluster") == SPARK_STATUS_INVALID_ARGUMENT &&
 		strstr(SparkDeviceLastError()->text,"whole number of clusters") != 0,"a grid that is not a whole number of clusters is refused");
@@ -337,7 +338,7 @@ static void TestBank0(const SparkNvrmCubinKernel *kernel)
 	if ( bank == 0 )
 		return;
 	memset(bank,0xee,bytes);
-	CHECK(kernel->parameter_bytes == 12u && SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_OK,
+	CHECK(kernel->parameter_bytes == 12u && SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_OK,
 		"constant bank 0 builds for the first-light kernel");
 	words = (uint32_t *)(void *)bank;
 	CHECK(words[188] == 0x00000000u && words[189] == 0x7294u && words[190] == 0x00000000u && words[191] == 0x7293u && words[223] == 0xfffdc0u,
@@ -347,23 +348,40 @@ static void TestBank0(const SparkNvrmCubinKernel *kernel)
 		"the launch shape lands in the words the compiled code reads it from");
 	CHECK(words[SPARK_NVRM_BANK0_WORD_PARAMETERS] == 0x00200580u && words[SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u] == 0x7d00u,
 		"the parameters' GPU address, bank 0's address plus the parameter offset, lands where a parameter's generic address is formed");
+	CHECK(words[168] == 1u && words[169] == 1u && words[170] == 1u && words[172] == 0x3f800000u && words[173] == 0x3f800000u &&
+		words[174] == 0x3f800000u && words[176] == 7u && words[177] == 5u && words[178] == 3u && words[179] == 1u,
+		"a launch without clusters fills the cluster words as clusters of one block: sizes 1, reciprocals 1.0, the grid in clusters and one rank");
 	CHECK(words[0] == 0u && words[187] == 0u && words[192] == 0u && words[209] == 0u && words[212] == 0u && words[215] == 0u && words[219] == 0u,
 		"the other driver words are zero");
 	CHECK(SparkNvrmBank0WordClaimed(216u) && SparkNvrmBank0WordClaimed(222u) && SparkNvrmBank0WordClaimed(188u) && SparkNvrmBank0WordClaimed(223u) &&
 		SparkNvrmBank0WordClaimed(210u) && SparkNvrmBank0WordClaimed(211u) && !SparkNvrmBank0WordClaimed(209u) && !SparkNvrmBank0WordClaimed(212u) &&
-		!SparkNvrmBank0WordClaimed(219u) && !SparkNvrmBank0WordClaimed(0u),"exactly the window, parameter address, last and launch-shape words are claimed");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,0u,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT &&
-		SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,bank_address + 8u,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+		SparkNvrmBank0WordClaimed(168u) && SparkNvrmBank0WordClaimed(170u) && SparkNvrmBank0WordClaimed(172u) && SparkNvrmBank0WordClaimed(174u) &&
+		SparkNvrmBank0WordClaimed(176u) && SparkNvrmBank0WordClaimed(179u) && !SparkNvrmBank0WordClaimed(171u) && !SparkNvrmBank0WordClaimed(175u) &&
+		!SparkNvrmBank0WordClaimed(167u) && !SparkNvrmBank0WordClaimed(180u) && !SparkNvrmBank0WordClaimed(219u) && !SparkNvrmBank0WordClaimed(0u),
+		"exactly the cluster, window, parameter address, last and launch-shape words are claimed");
+	{
+		const uint32_t cluster_grid[3] = {8u, 6u, 3u},cluster[3] = {2u, 3u, 1u},uneven[3] = {3u, 3u, 1u};
+		CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,cluster_grid,block,cluster,&arguments,12u,bank,bank_address,bytes,"bank") ==
+			SPARK_STATUS_OK && words[168] == 2u && words[169] == 3u && words[170] == 1u && words[172] == 0x3f000000u && words[173] == 0x3eaaaaabu &&
+			words[174] == 0x3f800000u && words[176] == 4u && words[177] == 2u && words[178] == 3u && words[179] == 6u,
+			"a cluster launch fills the cluster sizes, their float reciprocals, the grid in clusters and the blocks per cluster");
+		CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,cluster_grid,block,uneven,&arguments,12u,bank,bank_address,bytes,"bank") ==
+			SPARK_STATUS_INVALID_ARGUMENT,"a cluster that does not divide the grid is refused");
+		CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_OK,
+			"rebuild the plain bank for the checks that follow");
+	}
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,12u,bank,0u,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,12u,bank,bank_address + 8u,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"a bank without its 64-byte aligned GPU address is refused");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,0,block,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,0,block,0,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"a bank without a launch shape is refused");
 	CHECK(memcmp(bank + SPARK_NVRM_BANK0_DRIVER_BYTES,&arguments,12u) == 0,"the arguments follow the driver words at the kernel's parameter offset");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,8u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,8u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"an argument block of the wrong size is refused");
-	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,&arguments,12u,bank,bank_address,bytes - 1u,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(kernel,shared_window,local_window,grid,block,0,&arguments,12u,bank,bank_address,bytes - 1u,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"a constant bank smaller than the parameters is refused");
 	overlapping.parameter_offset = 0x160u;
-	CHECK(SparkNvrmBank0Build(&overlapping,shared_window,local_window,grid,block,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
+	CHECK(SparkNvrmBank0Build(&overlapping,shared_window,local_window,grid,block,0,&arguments,12u,bank,bank_address,bytes,"bank") == SPARK_STATUS_INVALID_ARGUMENT,
 		"parameters overlapping the driver words are refused");
 	free(bank);
 }

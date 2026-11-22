@@ -278,9 +278,9 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 		SPARK_FAIL(status);
 	}
 	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
-	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,request->arguments,request->argument_bytes,
-		request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,
-		owner));
+	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,cluster,request->arguments,
+		request->argument_bytes,request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,
+		request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,owner));
 	LaunchShape(gpu,program,request,&shape);
 	memcpy(shape.cluster,cluster,sizeof(shape.cluster));
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
@@ -292,6 +292,17 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 }
 
 static uint32_t launch_latch;
+static uint32_t launch_latch_segment = SPARK_NVRM_LATCH_SEGMENT;
+
+uint32_t SparkNvrmLatchSegment(void)
+{
+	return(__atomic_load_n(&launch_latch_segment,__ATOMIC_RELAXED));
+}
+
+void SparkNvrmLatchSegmentSet(uint32_t launches)
+{
+	__atomic_store_n(&launch_latch_segment,launches != 0u ? launches : SPARK_NVRM_LATCH_SEGMENT,__ATOMIC_RELAXED);
+}
 
 static uint32_t LaunchLatch(void)
 {
@@ -308,7 +319,7 @@ SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const 
 	SparkNvrmLaunchRequest ordered = *request;
 	const uint64_t bound = channel->local_address;
 	const uint32_t latched = request->dependent != 0u && channel->last_engine == SPARK_NVRM_ENGINE_COMPUTE && channel->latch != 0u &&
-		channel->after_value == 0u ? 1u : 0u;
+		channel->after_value == 0u && channel->latch_run + 1u < SparkNvrmLatchSegment() ? 1u : 0u;
 	SparkStatus status;
 	ordered.release_address = channel->fence.address;
 	ordered.release_payload = channel->fence_value + 1u;
@@ -325,5 +336,6 @@ SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const 
 		SPARK_FAIL(status);
 	}
 	channel->latch = ordered.latch_arrive;
+	channel->latch_run = latched != 0u ? channel->latch_run + 1u : 0u;
 	return(SPARK_STATUS_OK);
 }

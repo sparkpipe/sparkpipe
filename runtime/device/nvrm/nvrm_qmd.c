@@ -162,9 +162,10 @@ static void QmdShape(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 	const uint32_t target = shape->resident_shared_bytes > shape->shared_bytes && QmdSharedConfig(shape->resident_shared_bytes) != 0u ?
 		QmdSharedConfig(shape->resident_shared_bytes) : QmdSharedConfig(SPARK_NVRM_SHARED_CONFIG_KIB_MAX * 1024u);
 	const uint32_t wanted = shape->resident_shared_bytes > shape->shared_bytes ? target : config;
-	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_WIDTH,shape->grid[0]);
-	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_HEIGHT,shape->grid[1]);
-	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_DEPTH,shape->grid[2]);
+	const uint32_t clustered = shape->cluster[0] != 0u ? 1u : 0u;
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_WIDTH,clustered != 0u ? shape->grid[0] / shape->cluster[0] : shape->grid[0]);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_HEIGHT,clustered != 0u ? shape->grid[1] / shape->cluster[1] : shape->grid[1]);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GRID_DEPTH,clustered != 0u ? shape->grid[2] / shape->cluster[2] : shape->grid[2]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_CTA_THREAD_DIMENSION0,shape->block[0]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_CTA_THREAD_DIMENSION1,shape->block[1]);
 	QMD_PUT(builder,NVCEC0_QMDV05_00_CTA_THREAD_DIMENSION2,shape->block[2]);
@@ -257,6 +258,14 @@ SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *q
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t Bank0Reciprocal(uint32_t size)
+{
+	const float reciprocal = 1.0f / (float)size;
+	uint32_t bits;
+	memcpy(&bits,&reciprocal,sizeof(bits));
+	return(bits);
+}
+
 static void Bank0Word(uint8_t *bank, uint32_t word, uint32_t value)
 {
 	uint32_t index;
@@ -269,6 +278,19 @@ _Static_assert(SPARK_NVRM_BANK0_WORD_BLOCK_X > BANK0_WINDOW_WORD_LOCAL + 1u && S
 _Static_assert(SPARK_NVRM_BANK0_WORD_PARAMETERS > BANK0_WINDOW_WORD_LOCAL + 1u && SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u < SPARK_NVRM_BANK0_WORD_BLOCK_X,
 	"the parameters' address lies in the driver area, clear of the window and launch-shape words");
 
+_Static_assert(SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + 2u < SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL &&
+	SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + 2u < SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT &&
+	SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + 2u < SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS && SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS < BANK0_WINDOW_WORD_SHARED,
+	"the cluster words lie in the driver area below the window words");
+
+static uint32_t Bank0ClusterWord(uint32_t word)
+{
+	return((word >= SPARK_NVRM_BANK0_WORD_CLUSTER_DIM && word < SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + 3u) ||
+		(word >= SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL && word < SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + 3u) ||
+		(word >= SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT && word < SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + 3u) || word == SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS ?
+		1u : 0u);
+}
+
 static const uint32_t bank0_dimension_words[6] = {SPARK_NVRM_BANK0_WORD_BLOCK_X, SPARK_NVRM_BANK0_WORD_BLOCK_Y, SPARK_NVRM_BANK0_WORD_BLOCK_Z,
 	SPARK_NVRM_BANK0_WORD_GRID_X, SPARK_NVRM_BANK0_WORD_GRID_Y, SPARK_NVRM_BANK0_WORD_GRID_Z};
 
@@ -277,7 +299,7 @@ int SparkNvrmBank0WordClaimed(uint32_t word)
 	uint32_t index;
 	if ( word == BANK0_WINDOW_WORD_SHARED || word == BANK0_WINDOW_WORD_SHARED + 1u || word == BANK0_WINDOW_WORD_LOCAL ||
 		word == BANK0_WINDOW_WORD_LOCAL + 1u || word == BANK0_WORD_LAST || word == SPARK_NVRM_BANK0_WORD_PARAMETERS ||
-		word == SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u )
+		word == SPARK_NVRM_BANK0_WORD_PARAMETERS + 1u || Bank0ClusterWord(word) != 0u )
 		return(1);
 	for (index = 0u; index < sizeof(bank0_dimension_words) / sizeof(bank0_dimension_words[0]); index++)
 		if ( bank0_dimension_words[index] == word )
@@ -286,9 +308,11 @@ int SparkNvrmBank0WordClaimed(uint32_t word)
 }
 
 SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t shared_window, uint64_t local_window,
-	const uint32_t grid[3], const uint32_t block[3], const void *arguments, uint32_t argument_bytes, uint8_t *bank, uint64_t bank_address,
-	uint32_t bank_bytes, const char *owner)
+	const uint32_t grid[3], const uint32_t block[3], const uint32_t cluster[3], const void *arguments, uint32_t argument_bytes, uint8_t *bank,
+	uint64_t bank_address, uint32_t bank_bytes, const char *owner)
 {
+	const uint32_t single[3] = {1u, 1u, 1u};
+	const uint32_t *shape = cluster != 0 && cluster[0] != 0u ? cluster : single;
 	uint32_t index;
 	uint64_t parameters;
 	const char *problem = 0;
@@ -296,6 +320,8 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 		problem = "needs a kernel, its launch shape, its arguments and a constant bank";
 	else if ( bank_address == 0u || (bank_address & 0x3fu) != 0u )
 		problem = "needs the GPU address of constant bank 0, aligned to 64 bytes";
+	else if ( shape[0] == 0u || shape[1] == 0u || shape[2] == 0u || grid[0] % shape[0] != 0u || grid[1] % shape[1] != 0u || grid[2] % shape[2] != 0u )
+		problem = "a cluster has three nonzero sizes that divide the grid";
 	else if ( kernel->parameter_offset < SPARK_NVRM_BANK0_DRIVER_BYTES )
 		problem = "the kernel's parameters overlap the driver words of constant bank 0";
 	else if ( argument_bytes != kernel->parameter_bytes )
@@ -320,7 +346,11 @@ SparkStatus SparkNvrmBank0Build(const SparkNvrmCubinKernel *kernel, uint64_t sha
 	{
 		Bank0Word(bank,bank0_dimension_words[index],block[index]);
 		Bank0Word(bank,bank0_dimension_words[3u + index],grid[index]);
+		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_DIM + index,shape[index]);
+		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RECIPROCAL + index,Bank0Reciprocal(shape[index]));
+		Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_COUNT + index,grid[index] / shape[index]);
 	}
+	Bank0Word(bank,SPARK_NVRM_BANK0_WORD_CLUSTER_RANKS,shape[0] * shape[1] * shape[2]);
 	if ( argument_bytes != 0u )
 		memcpy(bank + kernel->parameter_offset,arguments,argument_bytes);
 	return(SPARK_STATUS_OK);
