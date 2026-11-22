@@ -1929,6 +1929,25 @@ static void SparkModelBatchRecordBackgroundWait(SparkModelBatchEngine *engine,co
 			waiting->background_wait_ns += now - from;
 		waiting->background_wait_until_ns = now;
 	}
+	for (index=0u; index<engine->submission_capacity; index++)
+	{
+		const SparkModelBatchSubmissionState *behind = &engine->submissions[index];
+		const uint32_t *behind_slots;
+		if ( behind->active == 0u || behind == submission || behind->dispatched_ns < submission->dispatched_ns ||
+			(behind->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL && behind->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE) )
+			continue;
+		behind_slots = SparkModelBatchSubmissionRequestSlots(engine,behind);
+		for (lane=0u; lane<behind->lane_count; lane++)
+		{
+			SparkModelBatchRequestState *waiting = &engine->requests[behind_slots[lane]];
+			if ( SparkModelBatchInteractive(waiting) == 0u || waiting->generated_token_count != 0u )
+				continue;
+			from = waiting->background_wait_until_ns > behind->dispatched_ns ? waiting->background_wait_until_ns : behind->dispatched_ns;
+			if ( now > from )
+				waiting->background_wait_ns += now - from;
+			waiting->background_wait_until_ns = now;
+		}
+	}
 }
 
 static void SparkModelBatchCompletion(

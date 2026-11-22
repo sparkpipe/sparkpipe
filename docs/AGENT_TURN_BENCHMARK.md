@@ -500,8 +500,11 @@ resumed turn. What to read in `summary.json` and `parts.jsonl` afterwards:
   the pages restored is a fault of the probe.
 - The resumed turn: `cache_restore_ms`, which the engine reports, against
   `restore_ms`, which the split reads from the refused waves in the log.
-- The probes behind the wave: `cache_background_wait_ms` against their
-  `queue_ms`.
+- The probes behind the wave: `cache_background_wait_ms` against the log.
+  A probe dispatched while the background wave is still running waits at
+  the ranks, so its wait shows as `first_step_ms` above
+  `first_step_service_ms`, beyond the same difference for a probe sent
+  alone; a probe that could not be dispatched shows it in `queue_ms`.
 - Every turn: `cache_matched_tokens` and `cache_resumed_tokens` against the
   `cached_tokens` of its usage.
 

@@ -126,6 +126,8 @@ static uint32_t mock_script[MOCK_SCRIPT_TOKENS];
 static uint32_t mock_script_count;
 static uint32_t mock_step_delay_us;
 static uint32_t mock_prefill_delay_us;
+static uint32_t mock_serial;
+static uint64_t mock_serial_busy_until_ns;
 static uint32_t mock_verify_row_sevenths = 1u;
 static uint32_t mock_verify_submissions;
 static uint32_t mock_verify_rows;
@@ -626,6 +628,12 @@ static uint64_t MockResidentClientNowNs(void)
 	return((uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec);
 }
 
+static uint64_t MockResidentClientSerialStart(void)
+{
+	uint64_t now = MockResidentClientNowNs();
+	return(mock_serial != 0u && mock_serial_busy_until_ns > now ? mock_serial_busy_until_ns : now);
+}
+
 static SparkStatus MockResidentClientEnqueue(
 	SparkModelResidentClient *client,
 	const SparkModelServingSubmission *submission,
@@ -707,13 +715,15 @@ static SparkStatus MockResidentClientEnqueue(
 	{
 		const uint64_t us = (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) != 0u ?
 			(uint64_t)mock_step_delay_us * (7u + (submission->row_count - 1u) * mock_verify_row_sevenths) / 7u : (uint64_t)mock_step_delay_us * submission->tokens_per_sequence;
-		slot->ready_ns = MockResidentClientNowNs() + us * 1000u;
+		slot->ready_ns = MockResidentClientSerialStart() + us * 1000u;
 		slot->service_ns = us * 1000u;
+		mock_serial_busy_until_ns = slot->ready_ns;
 	}
 	if ( mock_prefill_delay_us != 0u && submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL && (submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_DEFER) == 0u )
 	{
-		slot->ready_ns = MockResidentClientNowNs() + (uint64_t)mock_prefill_delay_us * 1000u;
+		slot->ready_ns = MockResidentClientSerialStart() + (uint64_t)mock_prefill_delay_us * 1000u;
 		slot->service_ns = (uint64_t)mock_prefill_delay_us * 1000u;
+		mock_serial_busy_until_ns = slot->ready_ns;
 	}
 	slot->committed = kind == MOCK_CALL_CONTINUE || kind == MOCK_CALL_SUBMIT;
 	slot->requires_decision = kind == MOCK_CALL_PREPARE;
@@ -1077,6 +1087,12 @@ static void MockScriptCompletion(const MockInflight *saved,SparkModelServingComp
 void MockResidentClientSetStepDelay(uint32_t microseconds)
 {
 	mock_step_delay_us = microseconds;
+}
+
+void MockResidentClientSetSerial(uint32_t serial)
+{
+	mock_serial = serial;
+	mock_serial_busy_until_ns = 0u;
 }
 
 void MockResidentClientSetPrefillDelay(uint32_t microseconds)
