@@ -146,9 +146,9 @@ static SparkStatus K31LoadManifest(const char *pack_path, SparkJsonDocument *doc
 		(void)fclose(file);
 		return SPARK_STATUS_IO_ERROR;
 	}
-	memcpy(&magic, header, 4u);
-	memcpy(&version, header + 4u, 4u);
-	memcpy(&bytes, header + 8u, 8u);
+	memcpy(&magic, header, sizeof(magic));
+	memcpy(&version, header + sizeof(magic), sizeof(version));
+	memcpy(&bytes, header + sizeof(magic) + sizeof(version), sizeof(bytes));
 	if ( magic != K31_PACK_MAGIC || version != K31_PACK_VERSION || bytes == 0u || bytes > (UINT64_C(64) << 20) )
 	{
 		(void)fclose(file);

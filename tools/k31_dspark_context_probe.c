@@ -6,12 +6,14 @@
 #include <sys/stat.h>
 #include "sparkpipe/spark_drafter_module.h"
 
+#define K31_PROBE_LATENT (512u + 64u)
+
 typedef SparkStatus (*ContextRows)(void *, uint64_t, uint32_t, uint64_t, uint32_t, uint16_t *);
 
 static uint16_t Bf16(float value)
 {
 	uint32_t bits;
-	memcpy(&bits, &value, 4u);
+	memcpy(&bits, &value, sizeof(bits));
 	return (uint16_t)((bits + 0x7fffu + ((bits >> 16) & 1u)) >> 16);
 }
 
@@ -33,7 +35,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 	const uint32_t rows = (uint32_t)atoi(argv[5]);
-	uint16_t *tap_rows = malloc((size_t)rows * taps * hidden * 2u), *out = malloc((size_t)rows * 576u * 2u);
+	uint16_t *tap_rows = malloc((size_t)rows * taps * hidden * sizeof(uint16_t)), *out = malloc((size_t)rows * K31_PROBE_LATENT * sizeof(uint16_t));
 	void *library = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
 	SparkDrafterModuleGetInterface get = library != 0 ? (SparkDrafterModuleGetInterface)dlsym(library, SPARK_DRAFTER_MODULE_INTERFACE_SYMBOL) : 0;
 	ContextRows context_rows = library != 0 ? (ContextRows)dlsym(library, "spark_k31_dspark_context_rows") : 0;
@@ -95,7 +97,7 @@ int main(int argc, char **argv)
 	}
 	snprintf(path, sizeof(path), "%s/taps.bin", argv[4]);
 	file = fopen(path, "wb");
-	fwrite(tap_rows, 2u, (size_t)rows * taps * hidden, file);
+	fwrite(tap_rows, sizeof(*tap_rows), (size_t)rows * taps * hidden, file);
 	fclose(file);
 	for ( uint32_t layer = 0u; layer < 5u; layer++ )
 	{
@@ -106,7 +108,7 @@ int main(int argc, char **argv)
 		}
 		snprintf(path, sizeof(path), "%s/rows%u.bin", argv[4], layer);
 		file = fopen(path, "wb");
-		fwrite(out, 2u, (size_t)rows * 576u, file);
+		fwrite(out, sizeof(*out), (size_t)rows * K31_PROBE_LATENT, file);
 		fclose(file);
 	}
 	printf("wrote %u rows x 5 layers to %s\n", rows, argv[4]);

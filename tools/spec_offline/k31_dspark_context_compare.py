@@ -4,7 +4,7 @@
     k31_dspark_context_compare.py --checkpoint DIR --target SHARD --out DIR --rows N [--first P]
 
 `build/k31_dspark_context_probe` writes taps.bin (N rows of five 7168-wide bf16 taps) and rows0..4.bin (the module's
-576-wide bf16 context rows per layer, positions P..P+N-1). This recomputes the rows with K3DsparkDrafter.context and in
+bf16 context rows per layer, kv_lora_rank + qk_rope_head_dim wide, positions P..P+N-1). This recomputes the rows with K3DsparkDrafter.context and in
 float64 from the same weights, and prints per layer the worst row's relative L2 error of the module and of the Python
 drafter against float64. The module passes when its error is no larger than bf16 rounding (below 0.01) on every layer.
 """
@@ -36,7 +36,8 @@ def main():
     parser.add_argument("--first", default=100, type=int)
     options = parser.parse_args()
     drafter = K3DsparkDrafter(options.checkpoint, options.target, NAMES, "cuda")
-    taps = bf16_file(options.out / "taps.bin", (options.rows, 5 * 7168)).cuda()
+    width = drafter.kv_rank + drafter.rope_dim
+    taps = bf16_file(options.out / "taps.bin", (options.rows, len(drafter.layer_ids) * drafter.fc.shape[0])).cuda()
     positions = torch.arange(options.first, options.first + options.rows, device="cuda")
     worst = 0.0
     with torch.no_grad():
@@ -44,9 +45,9 @@ def main():
         features = rms(taps.double() @ drafter.fc.double().t(), drafter.hidden_norm, drafter.eps).double()
         for index, layer in enumerate(drafter.layers):
             latent = features @ layer["self_attn.kv_a_proj_with_mqa"].double().t()
-            truth = torch.cat((rms(latent[:, :512], layer["self_attn.kv_a_layernorm"], drafter.eps).double(),
-                               rotate_pairs(latent[:, 512:].float(), positions, drafter.inverse, drafter.rotary_gain).double()), -1).cpu()
-            module = bf16_file(options.out / f"rows{index}.bin", (options.rows, 576)).double()
+            truth = torch.cat((rms(latent[:, :drafter.kv_rank], layer["self_attn.kv_a_layernorm"], drafter.eps).double(),
+                               rotate_pairs(latent[:, drafter.kv_rank:].float(), positions, drafter.inverse, drafter.rotary_gain).double()), -1).cpu()
+            module = bf16_file(options.out / f"rows{index}.bin", (options.rows, width)).double()
             python = reference[index].double().cpu()
             module_error = ((module - truth).norm(dim=-1) / truth.norm(dim=-1)).max().item()
             python_error = ((python - truth).norm(dim=-1) / truth.norm(dim=-1)).max().item()
