@@ -1198,7 +1198,8 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
         return;
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 1u,"later deferred rounds keep counting");
-    CHECK(SparkTpDeviceCollectiveChainKey(&collective,902u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"a new chain drops the previous chain's deferred count");
+    syncs = cuda_stub_work_stream_sync_calls;
+    CHECK(SparkTpDeviceCollectiveChainKey(&collective,902u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_work_stream_sync_calls == syncs,"a new chain drops the previous chain's deferred count without waiting for the work stream");
     TestDeferredVerify(&collective,control);
     CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records as before");
     syncs = cuda_stub_stream_sync_calls;
