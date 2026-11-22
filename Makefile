@@ -1201,6 +1201,9 @@ $(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_R
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
+build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
 build/obj/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
@@ -1672,7 +1675,7 @@ build/cuda_cross_process_copy: tests/nvrm/cross_process_copy.cu | build
 nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cuda_cross_process_copy
 	@./build/cuda_cross_process_copy cuda && ./build/nvrm_cross_process_copy nvrm
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_weightd_attach
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 .PHONY: test-nvrm-gpu nvrm-gpu-present
