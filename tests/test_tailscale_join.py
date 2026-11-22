@@ -130,6 +130,13 @@ class TailscaleJoinTest(unittest.TestCase):
         self.assertIn(f"--target {self.key_dir.parent}", self.recorded("findmnt.log"))
         self.assert_key_never_shown(result)
 
+    def test_a_key_file_without_a_trailing_newline_is_one_token_and_arrives_unchanged(self):
+        self.write_key(KEY)
+        result = self.join()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.recorded("key-seen.log"), "same 600 700\n")
+        self.assert_key_never_shown(result)
+
     def test_without_an_operator_or_tags_those_flags_are_left_out_and_the_key_decides_the_tags(self):
         result = self.join(tags=())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
