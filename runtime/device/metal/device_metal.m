@@ -36,6 +36,7 @@ typedef struct MetalAllocation
 
 #define METAL_COMMIT_OPERATIONS 64u
 #define METAL_ERROR_BYTES 128u
+#define METAL_CONSTANT_BYTES 4096u
 
 typedef struct MetalEvent
 {
@@ -176,9 +177,10 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 		properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes :
 			(uint64_t)metal_device.recommendedMaxWorkingSetSize;
 		properties->max_buffer_bytes = (uint64_t)metal_device.maxBufferLength;
-		properties->properties = metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u;
+		properties->properties = SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | (metal_device.hasUnifiedMemory ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 		properties->max_group_threads = (uint32_t)metal_device.maxThreadsPerThreadgroup.width;
 		properties->max_shared_bytes = (uint32_t)metal_device.maxThreadgroupMemoryLength;
+		properties->max_constant_bytes = METAL_CONSTANT_BYTES;
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -988,6 +990,14 @@ void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library)
 	MetalReleaseObject(&library->backend);
 }
 
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u])
+{
+	(void)library;
+	(void)name;
+	(void)short_name;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_create",0,0,"the Metal backend takes kernel names of at most 64 bytes"));
+}
+
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name)
 {
 	@autoreleasepool
@@ -1080,4 +1090,82 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"event_elapsed","",0,"the stop event completed before the start event"));
 	*nanoseconds = end - begin;
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance)
+{
+	*instance = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance)
+{
+	if ( instance != 1u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"not the instance this device layer returned"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	(void)granularity;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_granularity","",0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	(void)memory;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_create",owner,0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	(void)memory;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_release","",0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	(void)memory;
+	(void)fd;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_export","",0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	(void)memory;
+	(void)fd;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_import",owner,0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"address_reserve",owner,0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"address_release","",0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	(void)address;
+	(void)bytes;
+	(void)memory;
+	(void)offset;
+	(void)access;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_map","",0,"the Metal backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_unmap","",0,"the Metal backend has no shared device memory yet"));
 }

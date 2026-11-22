@@ -114,7 +114,7 @@ def main():
             ("layer.cuh", layer, "K3LayerKda"),
             ("slice.cuh", slice_, "K3FoldAccepted")):
         if not re.search(
-                r"kda_state_bf16 != 0u \)\s*\n\s*return\(LM_LAUNCH_ERR_SHAPE\)",
+                r"kda_state_bf16 != 0u \)\s*\n\s*(?:return\(LM_LAUNCH_ERR_SHAPE\)|SPARK_FAIL\(LM_LAUNCH_ERR_SHAPE\))",
                 text):
             print(f"  FAIL {name}: {where} does not fail closed on the "
                   f"bf16-state flag; the delta kernel addresses the pool as "
@@ -134,10 +134,10 @@ def main():
 
     for name in ("layer.cuh", "slice.cuh", "bind.cu", "unity.cu"):
         text = re.sub(r"//[^\n]*", "", (K3 / name).read_text())
-        for call in ("cudaMemcpy", "cudaMalloc", "cudaFree",
-                     "cudaStreamSynchronize", "cudaDeviceSynchronize",
-                     "cudaMemcpyAsync"):
-            if call in text:
+        for call in ("Memcpy", "Malloc", "Free", "StreamSynchronize",
+                     "DeviceSynchronize", "MemcpyAsync"):
+            call = next((prefix + call for prefix in ("cuda", "SparkGpu") if prefix + call in text), None)
+            if call is not None:
                 print(f"  FAIL {name} names {call}; the layer path only "
                       f"enqueues launches, the runner owns memory and "
                       f"completion")

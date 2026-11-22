@@ -28,7 +28,7 @@ status() {
             "$(cat /sys/class/net/$door/operstate)" \
             "$(cat /sys/class/net/$door/mtu)" \
             "$(ethtool -g "$door" 2>/dev/null | awk '/^Current/{c=1} c && !f && /^RX:/{print $2; f=1}')" \
-            "$(mlnx_qos -i "$door" 2>/dev/null | grep -o 'trust state: [a-z]*' | tr ' ' '_')" \
+            "trust_state:_$(sparkpipe-dscp-trust check "$door" > /dev/null 2>&1 && echo dscp || echo pcp)" \
             "$(ip -4 -br addr show "$door" | awk '{print $3}')" \
             "$( [ -n "$rdma" ] && cat /sys/class/infiniband/$rdma/ports/1/gids/3 2>/dev/null)"
     done
@@ -48,7 +48,10 @@ set_mtu() {
 }
 
 set_trust() {
-    mlnx_qos -i "$1" | grep -q "Priority trust state: $2" || mlnx_qos -i "$1" --trust "$2" > /dev/null
+    case "$2" in
+        dscp) sparkpipe-dscp-trust check "$1" > /dev/null 2>&1 || sparkpipe-dscp-trust set "$1" > /dev/null ;;
+        pcp) sparkpipe-dscp-trust clear "$1" > /dev/null ;;
+    esac
 }
 
 set_only_address() {
@@ -81,7 +84,7 @@ up_switch_b() {
         [ "$(cat /sys/class/infiniband/$rdma/ports/1/state 2>/dev/null | cut -d: -f1)" = 4 ] && [ "${gid#0000:0000:0000:0000:0000:ffff:}" != "$gid" ] && break
         sleep 1
     done
-    mlnx_qos -i "$SWITCH_B" | grep -q 'Priority trust state: dscp' || { echo "trust not dscp on $SWITCH_B" >&2; exit 1; }
+    sparkpipe-dscp-trust check "$SWITCH_B" > /dev/null || { echo "trust not dscp on $SWITCH_B" >&2; exit 1; }
     [ "$(cat /sys/class/infiniband/$rdma/ports/1/state | cut -d: -f1)" = 4 ] || { echo "$rdma not ACTIVE" >&2; exit 1; }
     [ "${gid#0000:0000:0000:0000:0000:ffff:}" != "$gid" ] || { echo "$rdma gid 3 is not IPv4 RoCE: $gid" >&2; exit 1; }
     [ "$(current_rings "$SWITCH_B" RX)" = "$rings" ] || { echo "$SWITCH_B rx rings are not $rings" >&2; exit 1; }

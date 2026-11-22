@@ -9,6 +9,7 @@
 #include "inference/kernels/kernel_math.cuh"
 #include "inference/kernels/mma.cuh"
 #include "inference/kernels/norm.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_HC_SITE_STREAMS 4u
 #define LM_HC_SITE_MIX ((2u + LM_HC_SITE_STREAMS) * LM_HC_SITE_STREAMS)
@@ -221,16 +222,16 @@ __global__ void __cluster_dims__(LM_HC_SITE_CLUSTER, 1, 1) __launch_bounds__(LM_
 }
 
 template<uint32_t HIDDEN, class P, uint32_t ROWS>
-static cudaError_t LmHcSiteLaunch(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre, float *post,
-	float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, cudaStream_t stream)
+static SparkGpuError LmHcSiteLaunch(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre, float *post,
+	float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, SparkGpuStream stream)
 {
 	return LM_LAUNCH_DEPENDENT((LmHcSiteKernel<HIDDEN, P, ROWS>), (rows + ROWS - 1u) / ROWS * LM_HC_SITE_CLUSTER, LM_HC_SITE_THREADS, 0, stream, streams,
 		fn, scale, base, mixes, pre, post, comb, collapsed, snapshot, rows);
 }
 
 template<uint32_t HIDDEN, class P>
-static cudaError_t LmHcSite(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre, float *post,
-	float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, cudaStream_t stream)
+static SparkGpuError LmHcSite(const uint16_t *streams, const float *fn, const float *scale, const float *base, float *mixes, float *pre, float *post,
+	float *comb, uint16_t *collapsed, uint16_t *snapshot, uint32_t rows, SparkGpuStream stream)
 {
 	return (rows >= LM_HC_SITE_ROWS ? LmHcSiteLaunch<HIDDEN, P, LM_HC_SITE_ROWS> : LmHcSiteLaunch<HIDDEN, P, 1u>)(streams, fn, scale, base, mixes, pre, post,
 		comb, collapsed, snapshot, rows, stream);

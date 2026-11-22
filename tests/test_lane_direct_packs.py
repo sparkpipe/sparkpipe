@@ -44,10 +44,11 @@ sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, HOME=os.p
 FAKE_SCP = r'''#!/usr/bin/env python3
 import os, shutil, sys
 fake = os.environ["FAKE_FLEET"]
-args = [a for a in sys.argv[1:] if a != "-q"]
+args = [a for a in sys.argv[1:] if not a.startswith("-")]
 target = args[-1].split(":", 1)[1].replace("/home/", fake + "/home/")
 for source in args[:-1]:
-    shutil.copy(source, os.path.join(target, os.path.basename(source)) if target.endswith("/") else target)
+    destination = os.path.join(target, os.path.basename(source)) if target.endswith("/") else target
+    shutil.copytree(source, destination) if os.path.isdir(source) else shutil.copy(source, destination)
 '''
 FAKE_REMOTE = r'''#!/usr/bin/env python3
 import os, subprocess, sys
@@ -124,6 +125,11 @@ class DirectPacks(unittest.TestCase):
             (firmware / name).write_text(name)
         (firmware / "runtime_libs").mkdir()
         (firmware / "runtime_libs" / "libsparkpipe_device_cuda.so").write_text("device")
+        for adapter in ("libk3_tp16_serving_adapter.so", stage_lane.MODELS["dsv41_flash"]["adapter"]):
+            kernels = firmware / (adapter + ".kernels")
+            kernels.mkdir()
+            (kernels / "stage_runner.cubin").write_text("cubin of " + adapter)
+            (kernels / "stage_runner.manifest").write_text("manifest of " + adapter)
         environment = {"PATH": f"{binary}:{os.environ['PATH']}", "HOME": str(fake), "TMPDIR": scratch, "FAKE_FLEET": str(fake)}
         return fake, firmware, environment
 
@@ -169,6 +175,47 @@ class DirectPacks(unittest.TestCase):
                         self.assertEqual((local / "packs/pack.sha256").read_text(), DIGEST)
                         self.assertFalse((local / "spine_budget").exists())
             self.assertEqual(old.read_text(), "old run\n")
+
+    def test_setup_stages_every_adapter_with_its_kernels(self):
+        model = stage_lane.MODELS["dsv41_flash"]
+        k3 = stage_lane.MODELS["k3"]
+        staged = {"deepseek-v4.1-flash": (model["adapter"], "lib/" + model["adapter"]),
+                  "kimi-k3": ("libk3_tp16_serving_adapter.so", "lib/libk3_serving_adapter.so")}
+        roots = {record_id: lane_config.record(record_id)["runtime_root"] for record_id in staged}
+        with tempfile.TemporaryDirectory() as scratch:
+            fake, firmware, environment = self.fleet(scratch)
+            for rank, host in enumerate(stage_lane.HOSTS):
+                self.weights(fake, stage_lane.rank_weight_files(model, rank))
+                self.weights(fake, stage_lane.rank_weight_files(k3, rank))
+            for record_id, (_, lane_name) in staged.items():
+                place(fake, roots[record_id].format(host="spark5") + "/" + lane_name + ".kernels/old.cubin", b"stale")
+            for name, run in (("stage_lane", self.stage_setup), ("k3_lane", self.k3_setup)):
+                result = run(fake, firmware, environment)
+                self.assertEqual(result.returncode, 0, f"{name}: {result.stderr[-600:]}")
+            for record_id, (source, lane_name) in staged.items():
+                wanted = {path.name: path.read_text() for path in (firmware / (source + ".kernels")).iterdir()}
+                for host in stage_lane.HOSTS:
+                    local = Path(fake.as_posix() + roots[record_id].format(host=host))
+                    kernels = local / (lane_name + ".kernels")
+                    with self.subTest(record=record_id, host=host):
+                        self.assertEqual((local / lane_name).read_text(), source)
+                        self.assertEqual({path.name: path.read_text() for path in kernels.iterdir()} if kernels.is_dir() else {}, wanted)
+        for record_id, (source, _) in staged.items():
+            with tempfile.TemporaryDirectory() as scratch:
+                fake, firmware, environment = self.fleet(scratch)
+                for rank, host in enumerate(stage_lane.HOSTS):
+                    self.weights(fake, stage_lane.rank_weight_files(model, rank))
+                    self.weights(fake, stage_lane.rank_weight_files(k3, rank))
+                missing = firmware / (source + ".kernels")
+                for path in missing.iterdir():
+                    path.unlink()
+                missing.rmdir()
+                run = self.k3_setup if record_id == "kimi-k3" else self.stage_setup
+                result = run(fake, firmware, environment)
+                with self.subTest(record=record_id, kernels="missing"):
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{missing} is missing", result.stderr)
+                    self.assertEqual([host for host in stage_lane.HOSTS if any((fake / "home" / host).glob("*-lanes"))], [])
 
     def test_setup_refuses_a_linked_or_missing_weight_file(self):
         model = stage_lane.MODELS["dsv41_flash"]

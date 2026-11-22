@@ -5,6 +5,7 @@
 
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/topk.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_INDEX_SHARD_CANDIDATE_BYTES 8u
 #define LM_INDEX_SHARD_NO_POSITION 0xffffffffu
@@ -160,28 +161,28 @@ void LmIndexShardCandidateTopkKernel(const uint2 *__restrict__ gathered, uint64_
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmIndexShardCandidatePackLaunch(SparkKvShard shard, const float *local_scores, uint32_t score_stride, const uint32_t *local_selected, uint32_t keep, uint32_t rows, uint2 *candidates, cudaStream_t stream)
+static inline SparkGpuError LmIndexShardCandidatePackLaunch(SparkKvShard shard, const float *local_scores, uint32_t score_stride, const uint32_t *local_selected, uint32_t keep, uint32_t rows, uint2 *candidates, SparkGpuStream stream)
 {
 	if (local_scores == 0 || local_selected == 0 || candidates == 0 || rows == 0u || keep == 0u || score_stride == 0u || shard.degree == 0u || shard.grain == 0u)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmIndexShardCandidatePackKernel<THREADS>), rows, THREADS, 0, stream, shard, local_scores, score_stride, local_selected, keep, candidates);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmIndexShardCandidateScatterLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, uint32_t degree, uint32_t keep, uint32_t rows, uint32_t score_stride, float *scores, cudaStream_t stream)
+static inline SparkGpuError LmIndexShardCandidateScatterLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, uint32_t degree, uint32_t keep, uint32_t rows, uint32_t score_stride, float *scores, SparkGpuStream stream)
 {
 	if (gathered == 0 || scores == 0 || rows == 0u || keep == 0u || score_stride == 0u || degree == 0u || degree > SPARK_KV_SHARD_MAX_DEGREE || rank_stride_candidates < (uint64_t)rows * keep)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmIndexShardCandidateScatterKernel<THREADS>), rows, THREADS, 0, stream, gathered, rank_stride_candidates, degree, keep, score_stride, scores);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 template<uint32_t THREADS, uint32_t CAPACITY>
-static inline cudaError_t LmIndexShardCandidateTopkLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, uint32_t degree, uint32_t keep, uint32_t rows, uint32_t positions, uint32_t k, uint32_t fill, uint32_t *selected, cudaStream_t stream)
+static inline SparkGpuError LmIndexShardCandidateTopkLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, uint32_t degree, uint32_t keep, uint32_t rows, uint32_t positions, uint32_t k, uint32_t fill, uint32_t *selected, SparkGpuStream stream)
 {
 	if (gathered == 0 || selected == 0 || rows == 0u || keep == 0u || k == 0u || k > CAPACITY || positions == 0u || degree == 0u || degree > SPARK_KV_SHARD_MAX_DEGREE || rank_stride_candidates < (uint64_t)rows * keep)
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmIndexShardCandidateTopkKernel<THREADS,CAPACITY>), rows, THREADS, 0, stream, gathered, rank_stride_candidates, degree, keep, positions, k, fill, selected);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 #endif

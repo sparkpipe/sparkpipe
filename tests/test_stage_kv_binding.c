@@ -1217,6 +1217,8 @@ static void TestAdoptedPagesKeepTheirAge(void)
 	printf("adopted pages keep their age: pages last used 400 days ago are sealed into the weightd pool and come back with their age; none is dropped for being old\n");
 }
 
+static void WaitSavesIdle(void);
+
 static void TestRestartAdoptsDevicePages(void)
 {
 	SparkModelDriverKvStoreCounters counters;
@@ -1229,9 +1231,13 @@ static void TestRestartAdoptsDevicePages(void)
 	assert(nftw(SNAPSHOT_DIRECTORY,RemoveSnapshotEntry,16,FTW_DEPTH | FTW_PHYS) == 0);
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
 	assert(BINDING.kv_pool.reattached == 1u && BINDING.kv_pool.pool_generation == generation && BINDING.kv_pool_adopted_pages == 2u);
-	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
 	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
-	assert(counters.restore_page_count == 0u && counters.store_file_count == 0u);
+	assert(counters.store_file_count == 0u);
+	assert(RestorePrefix(2u,1u,8u,0x71u,pages,2u) == SPARK_STATUS_OK);
+	WaitSavesIdle();
+	assert(SparkKvSnapshotFlush(&BINDING.snapshot_store) == SPARK_STATUS_OK);
+	SparkStageKvBindingKvStoreCounters(&BINDING,&counters);
+	assert(counters.restore_page_count == 0u && counters.store_file_count == 2u);
 	assert(counters.pool_reattached == 1u && counters.pool_adopted_pages == 2u && counters.pool_generation == generation && counters.pool_device_bytes == (uint64_t)BINDING.kv_pool.mapped_count * BINDING.kv_pool.chunk_bytes);
 	Unload();
 	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);

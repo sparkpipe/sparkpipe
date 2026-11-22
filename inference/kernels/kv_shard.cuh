@@ -4,6 +4,7 @@
 
 #include "inference/kernels/kv.cuh"
 #include "sparkpipe/spark_kv_shard.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_KV_ACCESS_ERROR_SHARD_NOT_OWNED LM_FRAME_ERROR_SHARD_NOT_OWNED
 #define LM_KV_SHARD_UNPACK_BLOCKS 4096u
@@ -294,7 +295,7 @@ void LmKvShardGatherTableKernel(const uint32_t *__restrict__ sequences, const ui
 }
 
 template<uint32_t SLOT_BYTES, uint32_t PAGE_SLOTS, uint32_t THREADS>
-static inline cudaError_t LmKvShardGatherUnpackLaunch(
+static inline SparkGpuError LmKvShardGatherUnpackLaunch(
 	SparkKvShard shard,
 	const uint8_t *gathered,
 	uint64_t chunk_bytes,
@@ -308,16 +309,16 @@ static inline cudaError_t LmKvShardGatherUnpackLaunch(
 	uint32_t page_table_stride,
 	uint32_t *page_table,
 	uint8_t *pages,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( gathered == 0 || sequences == 0 || key_offset == 0 || key_context == 0 || page_base == 0 || pages == 0 ||
 		sequence_count == 0u || most_context == 0u || page_table_stride == 0u || SparkKvShardValid(shard,PAGE_SLOTS) == 0u ||
 		chunk_bytes == 0u || chunk_bytes % SLOT_BYTES != 0u || section_offset % SLOT_BYTES != 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( page_table != 0 )
 		LM_LAUNCH((LmKvShardGatherTableKernel<PAGE_SLOTS, THREADS>), sequence_count, THREADS, 0, stream, sequences, key_context, page_base, page_table_stride, page_table);
 	LM_LAUNCH((LmKvShardGatherUnpackKernel<SLOT_BYTES, PAGE_SLOTS, THREADS>), dim3(most_context < LM_KV_SHARD_UNPACK_BLOCKS ? most_context : LM_KV_SHARD_UNPACK_BLOCKS, sequence_count), THREADS, 0, stream, shard, gathered, chunk_bytes, section_offset, sequences, key_offset, key_context, page_base, pages);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<uint32_t THREADS>
@@ -348,42 +349,42 @@ void LmKvRowsRemapKernel(const uint32_t *__restrict__ position_of_row, uint32_t 
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmKvShardRemapLaunch(
+static inline SparkGpuError LmKvShardRemapLaunch(
 	SparkKvShard shard,
 	SparkKvShardSectionLayout layout,
 	const uint32_t *old_bound,
 	uint32_t capacity,
 	uint32_t *table,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	uint32_t blocks = (capacity + THREADS - 1u) / THREADS;
 	if ( old_bound == 0 || table == 0 || capacity == 0u || shard.degree == 0u || shard.grain == 0u ||
 		(layout.keys != 0u && (layout.chunk_bytes == 0u || layout.slot_bytes == 0u || layout.chunk_bytes % layout.slot_bytes != 0u)) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( layout.keys == 0u )
 		layout.chunk_bytes = layout.slot_bytes = 1u;
 	LM_LAUNCH((LmKvShardRemapKernel<THREADS>), blocks < LM_KV_SHARD_UNPACK_BLOCKS ? blocks : LM_KV_SHARD_UNPACK_BLOCKS, THREADS, 0, stream, shard, layout, old_bound, capacity, table);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmKvRowsRemapLaunch(
+static inline SparkGpuError LmKvRowsRemapLaunch(
 	const uint32_t *position_of_row,
 	uint32_t row_count,
 	uint32_t tail_slot,
 	uint32_t capacity,
 	uint32_t *table,
 	LmKvAccessError *error,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( position_of_row == 0 || table == 0 || row_count == 0u || capacity == 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmKvRowsRemapKernel<THREADS>), (row_count + THREADS - 1u) / THREADS, THREADS, 0, stream, position_of_row, row_count, tail_slot, capacity, table, error);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<class Geometry, uint32_t THREADS>
-static inline cudaError_t LmKvShardGatherPackLaunch(
+static inline SparkGpuError LmKvShardGatherPackLaunch(
 	LmKvShardView view,
 	const uint32_t *sequences,
 	const uint32_t *key_offset,
@@ -391,17 +392,17 @@ static inline cudaError_t LmKvShardGatherPackLaunch(
 	uint32_t sequence_count,
 	uint32_t most_keys,
 	uint8_t *keys,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || most_keys == 0u ||
 		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(most_keys, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, 0u, LM_KV_SHARD_KEYS_ALL, keys);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
 template<class Geometry, uint32_t THREADS>
-static inline cudaError_t LmKvShardGatherPackRangeLaunch(
+static inline SparkGpuError LmKvShardGatherPackRangeLaunch(
 	LmKvShardView view,
 	const uint32_t *sequences,
 	const uint32_t *key_offset,
@@ -410,12 +411,12 @@ static inline cudaError_t LmKvShardGatherPackRangeLaunch(
 	uint32_t key_begin,
 	uint32_t key_end,
 	uint8_t *keys,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( sequences == 0 || key_offset == 0 || key_context == 0 || keys == 0 || sequence_count == 0u || key_end <= key_begin ||
 		SparkKvShardValid(view.shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(view.pages) )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmKvShardGatherPackKernel<Geometry, THREADS>), dim3(key_end - key_begin, sequence_count), THREADS, 0, stream, view, sequences, key_offset, key_context, key_begin, key_end, keys);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 #endif

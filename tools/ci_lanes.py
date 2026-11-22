@@ -111,10 +111,14 @@ FAST_TESTS = (
     "tests/test_hardware_probe_coverage.py",
     "tests/test_dry_law.py",
     "tests/test_device_neutral.py",
+    "tests/test_launch_path.py",
+    "tests/test_gpu_api.py",
     "tests/test_no_symlinks.py",
     "tests/test_unlinked_components.py",
     "tests/test_sources_exist.py",
     "tests/test_package_manifest.py",
+    "tests/test_name_lengths.py",
+    "tests/test_upload_ordering_sites.py",
 )
 
 MARKDOWN = re.compile(r"""["'/]docs["'/]|[A-Za-z0-9_./-]+\.md\b|\bREADME\b|\bTECHDEBT\b""")

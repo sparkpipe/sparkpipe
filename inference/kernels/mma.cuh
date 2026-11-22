@@ -8,10 +8,13 @@
 
 #define LM_WARP_LANES 32u
 
-#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 1210)
-#define LM_SM121_NATIVE_COMPUTE_PTX 1
+#if defined(__CUDA_ARCH__)
+#if __CUDA_ARCH__ != 1200 && __CUDA_ARCH__ != 1210
+#error "inference/kernels/mma.cuh: the block-scaled MMA (mma.sync.aligned.m16n8k32 kind::mxf8f6f4.block_scale.scale_vec::1X with ue8m0 scales) exists only on sm_120a and sm_121a; build for one of them"
+#endif
+#define LM_BLOCK_SCALED_MMA_PTX 1
 #else
-#define LM_SM121_NATIVE_COMPUTE_PTX 0
+#define LM_BLOCK_SCALED_MMA_PTX 0
 #endif
 
 
@@ -65,7 +68,7 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf4(
 	uint32_t scale_a,
 	uint32_t scale_b)
 {
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
@@ -92,7 +95,7 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf8(
 	uint32_t scale_a,
 	uint32_t scale_b)
 {
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3}, "
@@ -121,7 +124,7 @@ static __device__ __forceinline__ void LmMmaMxf8Block(
 	uint32_t scale_b,
 	uint16_t byte_b)
 {
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "
@@ -153,7 +156,7 @@ static __device__ __forceinline__ void LmMmaMxf8Mxf4Block(
 	uint32_t scale_b)
 {
 	static_assert(BYTE_A < 4u, "a scale word holds four 32-wide blocks");
-#if LM_SM121_NATIVE_COMPUTE_PTX
+#if LM_BLOCK_SCALED_MMA_PTX
 	asm volatile("mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4"
 		".block_scale.scale_vec::1X.f32.e4m3.e2m1.f32.ue8m0 "
 		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13}, "

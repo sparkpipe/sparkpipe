@@ -27,7 +27,7 @@ sources=()
 for argument in "$@"; do case "$argument" in -*) ;; *) sources+=("$argument") ;; esac; done
 unset 'sources[${#sources[@]}-1]'
 for source in "${sources[@]}"; do
-  cp "$source" "$target"
+  cp -R "$source" "$target"
 done
 """
 SYSTEMD_RUN = """#!/usr/bin/env bash
@@ -55,6 +55,9 @@ def main():
         for name in ("sparkpipe_model_residentd", "weightd_warm", "libhidden_transport_spark_host_rdma_verbs.so", model["adapter"]):
             write(firmware / name, "binary\n")
         write(firmware / "runtime_libs" / "libsparkpipe_device_cuda.so", "binary\n")
+        kernels = {"stage_runner.cubin": "cubin\n", "stage_runner.manifest": "manifest\n"}
+        for name, body in kernels.items():
+            write(firmware / f"{model['adapter']}.kernels" / name, body)
         digests, sizes = {}, {}
         for rank in range(16):
             host = f"spark{HEX[rank]}"
@@ -65,6 +68,7 @@ def main():
             digests[rank] = f"{rank:02x}" * 32
             (pack.parent / f"{pack.name}.sha256").write_text(f"{digests[rank]}  {pack.name}\n")
             (pack.parent / f"{pack.name}.experts").write_bytes(b"\0" * 64)
+            write(fake / "home" / host / "stage-lanes" / MODEL / f"lane{LANE}" / "root" / "lib" / f"{model['adapter']}.kernels" / "old.cubin", "stale\n")
             for name in model.get("pack_siblings", ()):
                 (pack.parent / name).write_bytes(b"x")
         environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", FAKE_ROOT=str(fake), STAGE_MODEL=MODEL, STAGE_LANE=str(LANE),
@@ -75,6 +79,10 @@ def main():
         for rank in range(16):
             host = f"spark{HEX[rank]}"
             root = fake / "home" / host / "stage-lanes" / MODEL / f"lane{LANE}" / "root"
+            installed = root / "lib" / f"{model['adapter']}.kernels"
+            found = {path.name: path.read_text() for path in installed.iterdir()} if installed.is_dir() else {}
+            if not (root / "lib" / model["adapter"]).is_file() or found != kernels:
+                failures.append(f"{host}: lib/ must hold the adapter and exactly its kernels directory from STAGE_FIRMWARE, with no stale file; it holds {sorted(found)}")
             adapter = root / "config" / "adapter.json"
             if not adapter.exists():
                 failures.append(f"{host}: setup wrote no config/adapter.json")
@@ -105,7 +113,8 @@ def main():
         print("FAIL", failure)
     if failures:
         return 1
-    print("PASS stage_lane dense setup: a dense lane's packs/ holds exactly one digest, packs/pack.sha256, "
+    print("PASS stage_lane dense setup: every rank's lib/ holds the adapter and exactly its kernels directory, with an old one's files gone; "
+          "a dense lane's packs/ holds exactly one digest, packs/pack.sha256, "
           "which is the pack's own; the stage config names the lane's mesh lane, and lane.sh start keeps that digest and hands residentd no SPARK_ input")
     return 0
 

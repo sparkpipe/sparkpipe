@@ -2,6 +2,8 @@
 
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/skinny.cuh"
+#include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 static __global__ void LmCellPackMxfp4Kernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ scales,
 	uint8_t *__restrict__ cells, uint32_t output_dimension, uint32_t input_dimension, uint64_t chunks)
@@ -39,7 +41,7 @@ static uint64_t LmCellPackBytes(uint32_t groups, uint32_t output_dimension, uint
 }
 
 static int32_t LmCellPackMxfp4(const void *payload, const void *scales, void *cells, uint32_t groups, uint32_t output_dimension,
-	uint32_t input_dimension, cudaStream_t stream)
+	uint32_t input_dimension, SparkGpuStream stream)
 {
 	uint64_t chunks;
 	if ( payload == 0 || scales == 0 || cells == 0 || groups == 0u || output_dimension == 0u || input_dimension == 0u ||
@@ -47,7 +49,7 @@ static int32_t LmCellPackMxfp4(const void *payload, const void *scales, void *ce
 		LmSkinnyAligned(cells) == 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
 	chunks = LmCellPackBytes(groups, output_dimension, input_dimension) / LM_SKINNY_CHUNK_BYTES;
-	LmCellPackMxfp4Kernel<<<(uint32_t)((chunks + 255u) / 256u), 256u, 0, stream>>>((const uint8_t *)payload, (const uint8_t *)scales,
+	LM_LAUNCH((LmCellPackMxfp4Kernel), (uint32_t)((chunks + 255u) / 256u), 256u, 0, stream, (const uint8_t *)payload, (const uint8_t *)scales,
 		(uint8_t *)cells, output_dimension, input_dimension, chunks);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

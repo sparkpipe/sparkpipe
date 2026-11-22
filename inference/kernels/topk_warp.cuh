@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/topk.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_TOPK_WARP_PER_LANE 16u
 
@@ -138,15 +139,15 @@ __global__ __launch_bounds__(LM_TOPK_WARPS * LM_WARP_LANES) void LmTopkWarpsKern
 }
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-static cudaError_t LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, uint32_t *fault, cudaStream_t stream)
+static SparkGpuError LmTopkRouteLaunch(uint32_t rows, const float *scores, uint32_t n, uint32_t *out_indices, float *out_values, const float *selection_bias, const uint16_t *logits_bf16, float mixture_scale, uint32_t *fault, SparkGpuStream stream)
 {
 	if ( fault == 0 || n < K )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	if ( n <= LM_TOPK_WARP_PER_LANE * LM_WARP_LANES )
 		LM_LAUNCH((LmTopkWarpKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	else if ( n <= LM_TOPK_WARPS * LM_TOPK_WARPS_PER_LANE * LM_WARP_LANES )
 		LM_LAUNCH((LmTopkWarpsKernel<K,RENORMALISE,SCORE_TRANSFORM>),rows,LM_TOPK_WARPS * LM_WARP_LANES,0u,stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
 	else
 		LM_LAUNCH((LmTopkSmallKernel<THREADS,K,RENORMALISE,1u,1u,SCORE_TRANSFORM>),rows,THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream,scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

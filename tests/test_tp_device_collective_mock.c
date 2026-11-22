@@ -1172,7 +1172,7 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
     SparkTpDeviceCollective collective = {0};
     SparkTpDeviceCollectiveSubmission submission;
     uint16_t local[256] = {0},output[512] = {0};
-    uint32_t syncs,launches;
+    uint32_t syncs,launches,copies;
     SparkTpMeshRoundControl *control;
     memset((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),0,sizeof(SparkWeightdMeshWaitRequest));
     ((SparkWeightdMeshWaitRequest *)((uint8_t *)mesh + SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u)))->capabilities = SPARK_WEIGHTD_MESH_CAPABILITIES;
@@ -1198,7 +1198,9 @@ static void TestDeferredRounds(SparkTpDeviceCollectiveConfig config,void *mesh)
         return;
     control->rounds_done = 1u;
     CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && control->rounds_done == 1u,"later deferred rounds keep counting");
+    copies = spark_stub_cuda_sync_copy_calls();
     CHECK(SparkTpDeviceCollectiveChainKey(&collective,902u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveVerifyDeferred(&collective,(void *)1) == SPARK_STATUS_OK && cuda_stub_stream_sync_calls == syncs,"a new chain drops the previous chain's deferred count");
+    CHECK(spark_stub_cuda_sync_copy_calls() == copies,"a new chain seeds its epoch with copies ordered on the active stream, not synchronous copies that wait for the device");
     TestDeferredVerify(&collective,control);
     CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK && SparkTpDeviceCollectiveEnqueue(&collective,&submission,1u) == SPARK_STATUS_OK && SparkTpDeviceCollectiveDisarmCapture(&collective) == SPARK_STATUS_OK,"a captured round records as before");
     syncs = cuda_stub_stream_sync_calls;
