@@ -254,6 +254,10 @@ static void TestManifest(void)
 			" cumulative 8\n",
 			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0"
 			" cumulative 64 extra\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"bound K reqnctapercluster 0 1 1\n",
+			"cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel K short K registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n"
+			"bound K maxclusterrank\n",
 		};
 		uint32_t refused = 0u;
 		for (index = 0u; index < sizeof(broken) / sizeof(broken[0]); index++)
@@ -261,7 +265,21 @@ static void TestManifest(void)
 				manifest.kernels == 0;
 		CHECK(refused == sizeof(broken) / sizeof(broken[0]),
 			"a manifest without its cubin, a parameter before its kernel or out of order, a bad alignment, an unknown bound or line, a cumulative stack below the "
-			"frame or trailing words are refused");
+			"frame, trailing words, an empty cluster size or a cluster rank bound without its size are refused");
+	}
+	{
+		static const char clusters[] = "cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\n"
+			"kernel A short A registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\nbound A reqnctapercluster 4 2 1\n"
+			"kernel B short B registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\nbound B explicitcluster\nbound B maxclusterrank 4\n"
+			"kernel C short C registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\nbound C reqnctapercluster 2\n"
+			"kernel D short D registers 1 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0\n";
+		CHECK(SparkNvrmManifestParse(clusters,strlen(clusters),"manifest",&manifest) == SPARK_STATUS_OK && manifest.kernel_count == 4u &&
+			manifest.kernels[0].clustered == 1u && manifest.kernels[0].cluster[0] == 4u && manifest.kernels[0].cluster[1] == 2u &&
+			manifest.kernels[0].cluster[2] == 1u && manifest.kernels[1].clustered == 1u && manifest.kernels[1].cluster[0] == 0u &&
+			manifest.kernels[1].cluster_limit == 4u && manifest.kernels[2].cluster[0] == 2u && manifest.kernels[2].cluster[1] == 1u &&
+			manifest.kernels[2].cluster[2] == 1u && manifest.kernels[3].clustered == 0u && manifest.kernels[3].cluster[0] == 0u,
+			"cluster bounds keep a compiled cluster shape, its missing axes as 1, an explicit cluster without a shape and a cluster rank bound");
+		SparkNvrmManifestRelease(&manifest);
 	}
 	{
 		static const char head[] = "cubin 333ac825ff31bb2f8e6e9f0e93e7768578f6cfbe05826078b5beb98fbb8b11f0 1\nkernel ";

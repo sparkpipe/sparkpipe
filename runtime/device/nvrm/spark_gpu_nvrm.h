@@ -131,7 +131,10 @@ SparkGpuError SparkNvrmGpuDefaultStream(SparkGpuStream *stream);
 SparkGpuError SparkNvrmGpuRelease(void);
 SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
 	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
-SparkGpuError SparkNvrmLaunchUnsupported(const void *function, const char *what);
+SparkGpuError SparkNvrmLaunchDependent(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
+	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
+SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent,
+	size_t shared_bytes, SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes);
 SparkGpuError SparkNvrmSharedMemoryOptIn(const void *function, uint32_t shared_bytes);
 
 #ifdef __cplusplus

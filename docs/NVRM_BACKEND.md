@@ -368,6 +368,16 @@ byte from the copy engine's remap constant: four bytes per element over
 the aligned middle, one byte per element over an unaligned head and
 tail.
 
+The line limit counts bytes, not elements. `LINE_LENGTH_IN` is a 32-bit
+count (`clcab5.h`): bytes for a copy, remap elements for a fill. The copy
+engine utilities in NVIDIA's open kernel modules never put more than
+2^32 - 1 bytes in one line. Lines used to be cut at 2^31 elements, so a
+fill of 8 GiB or more became one line of 2^31 four-byte elements
+(8 GiB). Its fence never arrived. A fill line now holds at most 2^29
+elements. `tests/test_nvrm_submit.c` checks the lines pushed for fills
+and copies of 8, 10.5 and 16 GiB. `make SPARKPIPE_DEVICE=nvrm
+nvrm-large-transfers` runs them on the GPU (see the GPU tests).
+
 `device_nvrm.c` maps the device layer onto this:
 
 | Space | nvrm memory | Host view | Device address |
@@ -378,6 +388,38 @@ tail.
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
+pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
+memory both follow this rule.
+
+An object of 4 GiB or more in 2 MiB pages, mapped through the
+unified-memory external range, has no GPU mapping for the 64 KiB at
+object offset 4 GiB - 64 KiB. A write there takes Xid 31, `FAULT_PTE`.
+The hole follows the object, not the address. Mapping the object in
+pieces does not avoid it, and two 4 GiB objects back to back each have
+it. Objects in 64 KiB or 4 KiB pages map whole, and so do 2 MiB-page
+objects below 4 GiB.
+
+The cause is not known; the rule rests on these measurements. Our calls
+pass 64-bit sizes and offsets. The open-gpu-kernel-modules 580.178.04
+paths they reach also read 64-bit clean:
+
+- `kernel-open/nvidia-uvm/uvm_map_external.c`, `map_rm_pt_range`, lines
+  280-347;
+- `src/nvidia/src/kernel/rmapi/nv_gpu_ops.c`,
+  `nvGpuOpsBuildExternalAllocPtes`, lines 3841-4300;
+- `src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c`,
+  `memdescGetPtePhysAddrsForGpu`, lines 3001-3050.
+
+If the cause is found and fixed, 2 MiB pages can come back for large
+objects. `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` is the check.
+
+`SparkNvrmSystemAllocate` refuses a 2 MiB-page object of 4 GiB or more.
+On GB10 the page size costs nothing measurable. In three interleaved
+rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
+259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
+read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
 
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
@@ -511,6 +553,23 @@ launch-shape probe and first light:
   unaligned offset, pageable copies through the bounce buffer and pageable
   fills, 64 queues opened and closed in turn, two queues copying at once,
   and reopening after a shutdown.
+- **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
+  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
+  40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
+  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
+  fill takes 2.1 s. The test runs in two modes:
+  - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
+    zero-filled by the copy engine. For each size it copies the whole
+    buffer to host-visible memory in one call and checks every byte, fills
+    the whole buffer in one call, copies it back and checks again, and
+    fills host-visible memory of the same size at an odd offset.
+  - `held`: sets the stall threshold to zero, so that a 4 GiB
+    allocation's wait gives up while its zero fill is still running. The
+    allocation must fail, keep its memory held and say so. Shutdown must
+    then release the memory once the fill ends, and the device must open
+    and fill memory again afterwards.
+
+  The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
   the backend-neutral device contract the host, Metal and CUDA backends
   pass: spaces, copies, events, waits between queues, host callbacks, busy
@@ -523,6 +582,9 @@ launch-shape probe and first light:
   upload then a kernel. Each kernel holds for 1 ms before it writes. With the
   cross-channel wait removed, every transition reads most words out of order;
   the device contract's 400 KB kernel, copy and kernel round did not catch it.
+- **`tests/nvrm/cluster_launch.cu`** (`build/test_nvrm_cluster_launch`)
+  checks cluster numbering, shared memory read across a cluster and
+  dependent launches, and the cluster refusals (see Clusters below).
 - **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
   copy-engine fill then a kernel reading it, a kernel writing then a
   copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of
@@ -575,7 +637,13 @@ operation, as it does after any I/O error.
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
 - **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. Channel waits that know no queue
+  allocations use the same watch. When the wait for an allocation's zero
+  fill gives up while the fill is still running, the allocation fails but
+  its memory stays held. Freeing memory under a running copy engine
+  makes the kernel module assert, and the GPU then needs a reset. The
+  error text names the held bytes. Shutdown releases held memory once its
+  fill has finished. If the fill never finishes, shutdown leaves the GPU
+  open for the process's exit to close. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
@@ -625,7 +693,8 @@ The device layer's shared memory entry points
 ([DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)) map onto the module
 like this:
 
-- **Create.** Module system memory in 2 MiB pages, GPU-cached, allocated
+- **Create.** Module system memory, GPU-cached, in 2 MiB pages below 4 GiB
+  and 64 KiB pages from 4 GiB on (see the memory spaces above), allocated
   without the CPU mapping the device's own system memory gets
   (`SparkNvrmSystemAllocate`).
 - **Export.** Opens a fresh `/dev/nvidiactl` descriptor and attaches the
@@ -755,10 +824,103 @@ macro both stay on the CUDA fronts. Their implementation is
   parameter table: the count, each offset and size, and the total. A
   mismatch is refused, naming the parameter. It then launches with the
   packed block as the launch's constants.
-- **Not supported yet.** `LM_LAUNCH_DEPENDENT` and `LmLaunchClusterKernel`
-  are refused with `SPARK_GPU_ERROR_NOT_SUPPORTED`, naming the kernel,
-  until the launch descriptor carries programmatic dependence and clusters
-  (Phase 3).
+- **Dependent launches.** A dependent launch's blocks start once the grid
+  before it on the queue has ended, ordered by a descriptor latch instead of
+  a front-end semaphore wait.
+  - **Arrive.** Every launch arrives at a latch of its own when it ends
+    (`ARRIVE_AT_LATCH_VALID`, `ARRIVE_AT_LATCH_ID`). The id comes from one
+    counter per process, so no two launches in flight share it.
+  - **Wait.** `LM_LAUNCH_DEPENDENT` right after a launch on the same queue
+    pushes no semaphore acquire. Its descriptor waits on the earlier
+    launch's latch (`WAIT_ON_LATCH_VALID`, `WAIT_ON_LATCH_ID`) and holds its
+    blocks until that launch's blocks have ended
+    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`). It also
+    holds its own completion membar until the latch is acquired
+    (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), so its completion is never reported
+    before the earlier launch's.
+  - **Inside the kernel.** `griddepcontrol.wait` returns once the earlier
+    launch's latch is acquired, so its writes are visible.
+  - **Cost.** On a GB10 node the dependent grid started 0.23 to 0.42 µs
+    after the earlier one ended, against 2.6 to 2.9 µs through the
+    semaphore acquire.
+  - **Fallback.** After a copy, an event wait, a host step or a wait on
+    another queue, a dependent launch is ordered with the semaphore acquire
+    like any launch.
+  - **Segments.** The GPU does not switch to another process's work while
+    a latched launch is held behind a running one; it switches at a launch
+    that starts with the front-end acquire. A chain therefore goes in
+    segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`): each segment
+    starts with the front-end acquire and its other 31 launches wait on
+    latches. Another process waits at most one segment of the chain's
+    kernels. When the nvrm backend replays step programs, it must keep the
+    same bound.
+    - Measured on GB10 with 5 ms kernels queued ahead
+      (`test_nvrm_latch_segments chain-seconds 8 SEGMENT 5000` beside
+      `compete 6 1000`):
+      - In segments of 32, every launch of the second process waited one
+        segment (160.3 ms at the median, 160.4 ms at most, 32 x 5 ms),
+        with no Xid.
+      - Unbounded, the second process waited until Xid 109
+        (`CTX SWITCH TIMEOUT`) about 4 s in. That killed the chain's
+        channel, the device layer reported `GPU fault 109 (channel
+        error)`, and the second process and a plain kernel after it ran
+        normally.
+    - A chain of short kernels submitted one at a time leaves the GPU idle
+      between them, so the GPU switches even without segments: 5.48 million
+      launches of 1.46 µs in 8 s, unbounded, left a second process's 99th
+      percentile wait at 327 µs, with no Xid. The goal therefore checks
+      the bound with 5 ms kernels.
+    - On GB10 a dependent launch costs 1.58 µs in segments of 32 and
+      4.26 µs in segments of one (`make SPARKPIPE_DEVICE=nvrm
+      nvrm-latch-segments`, 100,000 launches each).
+    - Beside a chain in segments of 32, a second process's one-block
+      kernel waited 289 µs at the median and 316 µs at the 99th
+      percentile over 5 s, with no Xid.
+    - Segments of one go through the device layer's room checks without a
+      hang. The goal runs 100,000 launches that way.
+    - `SparkNvrmLatchSegmentSet` changes the length for tests.
+  - **Not used yet.** The overlap CUDA allows, where the dependent grid's
+    blocks start before the earlier grid ends, needs every dependent kernel
+    to reach `griddepcontrol.wait` before the queue's completion can be
+    trusted.
+- **Clusters.** A kernel compiled with a cluster shape (`__cluster_dims__`,
+  PTX `.reqnctapercluster`) runs in clusters of that shape on every launch,
+  as with `<<<>>>`. `LmLaunchClusterKernel` names a cluster of `cluster` by
+  1 by 1 blocks at launch for any kernel.
+  - Refused: a launch shape that differs from the compiled one, a kernel
+    that must run in clusters (`.explicitcluster`) launched without a
+    shape, a grid that is not a whole number of clusters on every axis, and
+    a cluster over 8 blocks or over the kernel's `.maxclusterrank`.
+  - The shapes come from the module manifest's `bound` lines.
+  - The launch descriptor is a GPC cluster grid
+    (`NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA`) with `GPC_CGA_WIDTH`,
+    `GPC_CGA_HEIGHT` and `GPC_CGA_DEPTH` set to the cluster shape
+    (`clcec0qmd.h`). Its `GRID_WIDTH`, `GRID_HEIGHT` and `GRID_DEPTH`
+    count clusters, not blocks. Counted in blocks, the GPU launched
+    grid x cluster blocks, some with block indices past the grid.
+  - Compiled code reads the cluster registers from constant bank 0. The
+    words were found by probing our own kernels on GB10:
+    - words 168-170: the cluster's width, height and depth
+      (`%cluster_nctaid`);
+    - words 172-174: their float reciprocals, from which the code derives
+      `%clusterid` and `%cluster_ctaid`;
+    - words 176-178: the grid in clusters (`%nclusterid`);
+    - word 179: the blocks per cluster (`%cluster_nctarank`).
+    The launcher fills them for every launch. A launch without clusters
+    reads as clusters of one block, as it does on the CUDA flavour. The
+    words are claimed, and a cluster that does not divide the grid is
+    refused.
+  - `tests/nvrm/cluster_launch.cu` (in `make test-nvrm-gpu`) launches:
+    - a kernel compiled for clusters of 2;
+    - clusters of 4 and of 8 chosen at launch;
+    - kernels compiled for clusters of 2x2x2 and 1x3x2 in 3-D grids;
+    - a 3-D grid without clusters;
+    - a dependent writer and reader.
+
+    Each block records every cluster register, and the clustered blocks
+    read a neighbour's shared memory across the cluster.
+    `make nvrm-cluster-launch` runs the same file in both flavours and
+    requires the same output bytes.
 - **Shared memory.** `LmKernelSharedMemoryOptIn` grants what the device has
   and refuses more.
 - **Release.** `SparkNvrmGpuRelease` destroys the default queue and the
@@ -890,3 +1052,26 @@ memory comes from the module with 2 MiB pages. Remeasured with queues in
 place (5 interleaved rounds, median): system memory reads at 262.5 and
 copies at 228.2 GB/s against `cudaMalloc`'s 262.1 and 228.1.
 
+## Step measurements
+
+These measurement tools build one source in both flavours and print the
+two side by side. None of them is a pass/fail gate:
+
+- **`make nvrm-launch-latency`** (`tests/nvrm/launch_latency.cu`): how long
+  after a kernel's hold a launch-to-synchronize returns, for holds from 0 to
+  2 ms, with the process CPU each wait costs.
+- **`make nvrm-cross-process-copy`** (`tests/nvrm/cross_process_copy.cu`): how
+  long another process's 64 MiB copy takes while this process holds every SM
+  with one 50 ms grid or 25 grids of 2 ms, and the same from a second stream
+  of the same process.
+- **`make nvrm-step-chain`** (`tests/nvrm/step_chain.cu`): a step of N short
+  kernels back to back, with N of 16, 256, 1,600 or 2,627 (the node counts
+  of today's rows=1 decode graphs).
+  - Each kernel runs on one block or on one block per SM and holds for
+    2 us. Its blocks record the kernel's first start and last end on the
+    GPU clock.
+  - The tool reports the host time to issue the step, the wall time to
+    synchronize, the GPU span, and the GPU idle per boundary between
+    kernels.
+  - It runs eager launches, and in the CUDA flavour also one captured graph
+    of the same launches. nvrm refuses capture for now.
