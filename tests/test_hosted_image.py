@@ -3,9 +3,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -29,6 +31,18 @@ STAGER = load("hosted_image_stage_baseline", IMAGE / "stage_baseline.py")
 BASELINE = STAGER.load_baseline()
 GUARD = STAGER.load_guard()
 PINS = {key: quoted or plain for key, quoted, plain in re.findall(r'^([A-Z0-9_]+)=(?:"([^"]*)"|(\S*))$', (IMAGE / "pins.conf").read_text(), re.M)}
+
+
+def compaction_helper(base):
+    text = (IMAGE / "files" / "usr" / "local" / "sbin" / "sparkpipe-compact").read_text()
+    for real, fake in (("/run/sparkpipe-compact", base / "state"), ("/proc/sys/vm/compaction_proactiveness", base / "proactiveness"),
+                       ("/proc/sys/vm/min_free_kbytes", base / "reserve"), ("/proc/sys/vm/compact_memory", base / "compact")):
+        assert text.count(real) == 1, real
+        text = text.replace(real, str(fake))
+    helper = base / "sparkpipe-compact"
+    helper.write_text(text)
+    helper.chmod(0o755)
+    return helper
 
 
 def packages(name):
@@ -139,6 +153,29 @@ class StagerTest(unittest.TestCase):
             self.assertIn(path, writes)
         self.assertEqual(writes["/etc/default/earlyoom"], (BASELINE.EARLYOOM_DEFAULT, 0o644))
 
+    def test_the_image_ships_the_fabric_qos_script_its_helper_and_its_enabled_unit(self):
+        sources = {destination: source for destination, (source, _) in BASELINE.ASSET_SOURCES.items()}
+        expected = {"/etc/systemd/system/sparkpipe-roce-qos.service": ("tools/fabric/sparkpipe-roce-qos.service", 0o644),
+                    "/usr/local/sbin/sparkpipe_roce_qos.sh": ("tools/fabric/sparkpipe_roce_qos.sh", 0o755),
+                    "/usr/local/sbin/sparkpipe-dscp-trust": ("tools/fabric/sparkpipe_dscp_trust.sh", 0o755)}
+        self.assertEqual(set(STAGER.fabric_qos_assets(BASELINE)), set(expected))
+        for destination, (source, mode) in expected.items():
+            self.assertEqual(sources[destination], source)
+            self.assertEqual(BASELINE.ASSET_SOURCES[destination][1], mode)
+            self.assertNotIn("mlnx", (ROOT / source).read_text().lower())
+        payload = {"assets": {path: {"text": f"{path}\n", "mode": mode} for path, (_, mode) in expected.items()}}
+        writes, commands = {}, []
+        with mock.patch.object(BASELINE, "atomic_write", side_effect=lambda path, text, mode: writes.__setitem__(str(path), (text, mode)) or True), \
+                mock.patch.object(BASELINE, "run", side_effect=lambda argv, **keywords: commands.append(STAGER.classify(BASELINE, argv))):
+            STAGER.stage_fabric_qos(BASELINE, payload)
+        self.assertEqual(writes, {path: (f"{path}\n", mode) for path, (_, mode) in expected.items()})
+        self.assertEqual(commands, [("image", ["systemctl", "--root=/", "enable", "sparkpipe-roce-qos.service"])])
+        with self.assertRaises(BASELINE.BrickproofError):
+            STAGER.stage_fabric_qos(BASELINE, {"assets": {}})
+        unit = (ROOT / "tools" / "fabric" / "sparkpipe-roce-qos.service").read_text()
+        self.assertIn("ExecStart=/usr/local/sbin/sparkpipe_roce_qos.sh", unit)
+        self.assertIn("WantedBy=sys-subsystem-net-devices-enp1s0f1np1.device", unit)
+
     def test_a_command_the_stager_cannot_place_fails(self):
         for argv in (["apt-get", "install", "-y", "x"], ["systemctl", "isolate", "rescue.target"], ["/usr/local/sbin/new-tool"]):
             with self.subTest(argv=argv), self.assertRaises(BASELINE.BrickproofError):
@@ -217,6 +254,65 @@ class StaticFilesTest(unittest.TestCase):
         self.assertTrue(os.access(files / "usr" / "lib" / "sparkpipe" / "gpu-device-nodes", os.X_OK))
         self.assertEqual({module for module in re.findall(r'KERNEL=="([^"]+)"', rules)}, {"nvidia", "nvidia_uvm"})
 
+    def test_boot_leaves_the_kernel_compaction_defaults(self):
+        keys = ("vm.compaction_proactiveness", "vm.min_free_kbytes")
+        for path in (IMAGE / "files").rglob("*"):
+            if path.is_file() and "sysctl" in str(path.relative_to(IMAGE / "files")):
+                for key in keys:
+                    with self.subTest(path=path, key=key):
+                        self.assertNotIn(key, path.read_text())
+        later = "\n".join([BASELINE.NO_THRASH_SYSCTL, BASELINE.RECOVERY_SYSCTL, BASELINE.DIRTY_CAP_SYSCTL])
+        for key in keys:
+            self.assertNotIn(key, later)
+
+    def test_the_compaction_helper_is_the_only_privileged_path(self):
+        files = IMAGE / "files"
+        rules = sorted(path.name for path in (files / "etc" / "sudoers.d").iterdir())
+        self.assertEqual(rules, ["90-sparkpipe-compact"])
+        lines = [line for line in (files / "etc" / "sudoers.d" / "90-sparkpipe-compact").read_text().splitlines() if line.strip()]
+        self.assertEqual(lines, ["%sparkpipe-compact ALL=(root) NOPASSWD: /usr/local/sbin/sparkpipe-compact raise, /usr/local/sbin/sparkpipe-compact restore"])
+        self.assertTrue(os.access(files / "usr" / "local" / "sbin" / "sparkpipe-compact", os.X_OK))
+        customize = (IMAGE / "customize_image.sh").read_text()
+        self.assertIn('chmod 0440 "$root/etc/sudoers.d/90-sparkpipe-compact"', customize)
+        self.assertIn('chroot "$root" visudo -c -q -f /etc/sudoers.d/90-sparkpipe-compact', customize)
+        self.assertIn('chroot "$root" groupadd --system sparkpipe-compact', customize)
+        self.assertEqual((files / "usr" / "lib" / "tmpfiles.d" / "sparkpipe-compact.conf").read_text().splitlines(),
+                         ["d /run/sparkpipe-compact 0755 root root -", "f /run/sparkpipe-compact/window 0644 root root -"])
+
+    @unittest.skipUnless(shutil.which("flock"), "the compaction helper serializes with flock")
+    def test_the_helper_raises_once_and_restores_only_when_no_window_is_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            helper = compaction_helper(base)
+            (base / "proactiveness").write_text("20\n")
+            (base / "reserve").write_text("45056\n")
+            run = lambda verb: subprocess.run([str(helper), verb], capture_output=True, text=True)
+            started = time.monotonic()
+            raised = run("raise")
+            self.assertEqual(raised.returncode, 0)
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertEqual(raised.stdout, "sparkpipe-compact: raised\n")
+            self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip(), (base / "compact").read_text().strip()),
+                             ("90", "1048576", "1"))
+            raise_text = helper.read_text()
+            self.assertLess(raise_text.index('echo 1 > "$compact"'), raise_text.index('echo 90 > "$proactiveness"'))
+            self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
+            self.assertEqual(run("raise").returncode, 0)
+            self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
+            holder = subprocess.Popen(["flock", "-s", str(base / "state" / "window"), "sleep", "30"], start_new_session=True)
+            try:
+                time.sleep(0.3)
+                self.assertEqual(run("restore").returncode, 0)
+                self.assertEqual((base / "proactiveness").read_text().strip(), "90")
+            finally:
+                os.killpg(holder.pid, signal.SIGTERM)
+                holder.wait()
+            self.assertEqual(run("restore").returncode, 0)
+            self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip()), ("20", "45056"))
+            self.assertFalse((base / "state" / "boot").exists())
+            self.assertEqual(run("restore").returncode, 0)
+            self.assertEqual(run("lower").returncode, 2)
+
     def test_the_gb10_fragment_only_appends_to_the_command_line_the_baseline_owns(self):
         grub = (IMAGE / "files" / "etc" / "default" / "grub.d" / "90-sparkpipe-gb10.cfg").read_text()
         assignments = dict(re.findall(r'^([A-Z_]+)=(.*)$', grub, re.M))
@@ -227,8 +323,56 @@ class StaticFilesTest(unittest.TestCase):
         self.assertFalse([token for token in tokens if token.startswith(("console=", "ip=", "fsck."))])
 
 
+class RamRootTest(unittest.TestCase):
+    SCRIPT = IMAGE / "files" / "usr" / "share" / "initramfs-tools" / "scripts" / "sparkpipe-ram"
+
+    def mountroot(self, root="UUID=host", loop="/home/node/rescue/SPARKROOT.ext4", fail=""):
+        stubs = """
+calls=""
+call() { calls="$calls|$*"; }
+local_device_setup() { call setup "$1"; DEV=/dev/nvme0n1p2; }
+get_fstype() { echo ext4; }
+mkdir() { call mkdir "$@"; }
+mount() { call mount "$@"; [ "$FAIL" != mount ] || return 1; }
+cp() { call cp "$@"; [ "$FAIL" != cp ] || return 1; }
+umount() { call umount "$@"; }
+modprobe() { call modprobe "$@"; }
+panic() { call panic "$*"; printf '%s\\n' "$calls"; exit 3; }
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            host = Path(directory, "host")
+            if loop:
+                (host / loop.lstrip("/")).parent.mkdir(parents=True)
+                (host / loop.lstrip("/")).write_text("image")
+            script = self.SCRIPT.read_text().replace(". /scripts/local\n", "").replace("/host", str(host))
+            program = stubs + script + '\nrootmnt=/root\nmountroot\nprintf "%s\\n" "$calls"\n'
+            environment = dict(os.environ, ROOT=root, LOOP=loop, LOOPFSTYPE="ext4", FAIL=fail)
+            result = subprocess.run(["sh", "-c", program], capture_output=True, text=True, env=environment)
+            return subprocess.CompletedProcess(result.args, result.returncode, result.stdout.replace(str(host), "/host"), result.stderr)
+
+    def test_the_image_copy_runs_from_memory_and_the_disk_is_unmounted_before_the_root_mounts(self):
+        self.assertTrue(self.SCRIPT.read_text().startswith(". /scripts/local\n"))
+        result = self.mountroot()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = result.stdout.strip().split("|")[1:]
+        self.assertEqual(calls, ["setup UUID=host", "mkdir -p /host /run/sparkpipe-ram", "mount -r -t ext4 /dev/nvme0n1p2 /host",
+                                 "mount -t tmpfs -o mode=0700 sparkpipe-ram /run/sparkpipe-ram",
+                                 "cp /host/home/node/rescue/SPARKROOT.ext4 /run/sparkpipe-ram/root.img", "umount /host", "modprobe loop",
+                                 "mount -w -o loop -t ext4 /run/sparkpipe-ram/root.img /root"])
+
+    def test_a_missing_input_or_a_failed_copy_stops_before_the_root_is_mounted(self):
+        result = self.mountroot(loop="")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic sparkpipe-ram needs root=", result.stdout)
+        result = self.mountroot(fail="cp")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic cannot copy", result.stdout)
+        self.assertNotIn("-o loop", result.stdout)
+
+
 class SelfUpdateTest(unittest.TestCase):
-    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service")
+    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service",
+             "podman-auto-update.timer", "podman-auto-update.service", "podman.socket", "podman.service")
 
     def test_the_image_masks_every_update_and_news_unit_and_carries_no_unattended_upgrades(self):
         self.assertEqual((IMAGE / "masked-units.txt").read_text().split(), list(self.UNITS))
@@ -243,8 +387,9 @@ class SelfUpdateTest(unittest.TestCase):
             units.mkdir(parents=True)
             (root / "etc" / "systemd" / "system").mkdir(parents=True)
             for unit in self.UNITS:
-                kind = "Timer" if unit.endswith(".timer") else "Service"
-                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + ("OnCalendar=daily\n[Install]\nWantedBy=timers.target\n" if kind == "Timer" else "ExecStart=/bin/true\n"))
+                kind = {"timer": "Timer", "socket": "Socket"}.get(unit.rsplit(".", 1)[1], "Service")
+                body = {"Timer": "OnCalendar=daily\n[Install]\nWantedBy=timers.target\n", "Socket": "ListenStream=/run/test.sock\n[Install]\nWantedBy=sockets.target\n"}
+                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + body.get(kind, "ExecStart=/bin/true\n"))
             completed = subprocess.run(["bash", str(IMAGE / "mask_units.sh"), str(root)], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             for unit in self.UNITS:
@@ -261,11 +406,30 @@ class OwnershipTest(unittest.TestCase):
         self.assertIn('install_tree "$out/inputs/release-root" "$root/$RELEASE_ROOT_PATH"', self.HOOK)
 
     def test_the_hook_fails_on_any_build_user_ownership_and_on_a_root_that_is_not_root_owned_0755(self):
-        self.assertIn("-uid +999 -a ! -uid 65534", self.HOOK)
-        self.assertIn("-gid +999 -a ! -gid 65534", self.HOOK)
+        check = 'owned="$(foreign_owner "$root" "$root")"'
+        self.assertIn(check, self.HOOK)
         self.assertIn('= "0:0:755" ]', self.HOOK)
-        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index("-uid +999"))
-        self.assertGreater(self.HOOK.index("-uid +999"), self.HOOK.index("update-initramfs"))
+        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index(check))
+        self.assertGreater(self.HOOK.index(check), self.HOOK.index("update-initramfs"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the ownership rule uses GNU find's -printf")
+    def test_ownership_above_999_passes_only_for_accounts_the_image_defines(self):
+        owner, group = os.getuid(), os.getgid()
+        if owner < 1000 or group < 1000:
+            self.skipTest("the rule is about owners of 1000 or above, and this user is below")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "etc").mkdir()
+            (root / "var" / "lib" / "ceph").mkdir(parents=True)
+            (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+            (root / "etc" / "group").write_text("root:x:0:\n")
+            run = lambda: subprocess.run(["bash", "-c", f'. "{IMAGE}/owners.sh"; foreign_owner "$1" "$1"', "rule", str(root)],
+                                         capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "passwd").write_text(f"root:x:0:0:root:/root:/bin/bash\nceph:x:{owner}:{group}:Ceph:/var/lib/ceph:/usr/sbin/nologin\n")
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "group").write_text(f"root:x:0:\nceph:x:{group}:\n")
+            self.assertEqual(run(), "")
 
     @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "install -o 0 needs root on Linux")
     def test_install_tree_gives_root_ownership_and_plain_modes(self):

@@ -49,3 +49,7 @@ python3.12-dev=3.12.3-1ubuntu0.17
 libnng-dev=1.7.2-1build2
 libmbedtls-dev=2.28.8-1
 libexpat1-dev=2.6.1-2ubuntu0.6
+catatonit=0.1.7-1
+ceph-common=19.2.3-0ubuntu0.24.04.3
+lvm2=2.03.16-3ubuntu3.2
+podman=4.9.3+ds1-1ubuntu0.2

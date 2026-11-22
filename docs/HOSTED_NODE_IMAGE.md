@@ -89,6 +89,20 @@ changes only together with the snapshot. The kernel and the module package
 are one pair: a new module version means a new kernel release, new pins and
 requalification of the device backend.
 
+A fleet node also stores one of the cluster's Ceph OSDs, which cephadm runs
+in a container, and mounts the CephFS model store. The image carries what
+that needs, all from Ubuntu: `podman`, the container engine cephadm uses on
+the image (from the snapshot, without Docker's own repository), `catatonit`
+for the `--init` its daemons start with, `lvm2` for the OSD's logical
+volume, and `ceph-common`, whose `mount.ceph` reads the CephFS client
+secret. The node's cluster state comes from its previous root at the disk
+install. `ceph-common` adds the `ceph` account at the Debian-allocated
+uid 64045, so the image's ownership rule allows any uid or gid of 1000 or
+above that the image's own `/etc/passwd` and `/etc/group` define
+([`owners.sh`](../tools/hosted_image/owners.sh)). A build user's owner, which
+the image does not define, still fails the build, the disk install and the
+dry run.
+
 ## GB10 settings
 
 | File | Setting |
@@ -97,6 +111,7 @@ requalification of the device backend.
 | `etc/modprobe.d/sparkpipe-gb10.conf` | nouveau and nova never load; the RTL8127 management port binds `r8127`; `cppc_cpufreq auto_sel_mode=1`; `sbsa_gwdt action=1` |
 | `etc/modules-load.d/sparkpipe-gpu.conf` | `nvidia` and `nvidia_uvm` load at boot |
 | `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address |
+| `usr/local/sbin/sparkpipe-compact`, `etc/sudoers.d/90-sparkpipe-compact`, `usr/lib/tmpfiles.d/sparkpipe-compact.conf` | the compaction window around a model's activation; see [Contiguous memory](#contiguous-memory) |
 | `etc/security/limits.d/90-sparkpipe.conf` | unlimited locked memory for RDMA registration, 500,000 open files (soft and hard) |
 | `etc/systemd/sleep.conf.d/90-sparkpipe-no-suspend.conf` | no suspend or hibernation |
 | `etc/netplan/01-sparkpipe.yaml` | NetworkManager manages the interfaces; bring-up adds the fleet profiles |
@@ -104,6 +119,88 @@ requalification of the device backend.
 The command line, module options, sysctls and limits are the ones a Spark
 runs under the factory OS (DGX OS 7.5.0), read from its configuration and
 `/proc/cmdline`.
+
+### Contiguous memory
+
+The nvrm backend allocates device memory in 2 MiB pages through the open
+kernel module. In the measurement below, the module's allocations failed
+with `NV_ERR_NO_MEMORY` as soon as the free 2 MiB blocks ran out, with more
+than 70 GiB still free in smaller pieces: they did not wait for the kernel
+to compact. On a GB10 Spark with 115 GiB available, a process held 40 GiB in
+every other 4 KiB page of 80 GiB (anonymous, movable memory), and then
+802 allocations of 64 MiB (50 GiB) in 2 MiB pages ran while it held them:
+
+| Settings | Free 2 MiB blocks just before the allocation | Allocated |
+| --- | --- | --- |
+| kernel defaults (proactiveness 20, `min_free_kbytes` 45166) | 6,800 | 205 of 802, then no memory |
+| `min_free_kbytes` 1 GiB | 7,569 | 229 of 802, then no memory |
+| defaults and one `compact_memory` write | 13,866 | 439 of 802, then no memory |
+| proactiveness 90 | 21,965 | 682 of 802, then no memory |
+| proactiveness 90 and `min_free_kbytes` 1 GiB, twice | 27,182 and 26,738 | 802 of 802 in 1.1 s, both times |
+
+Kept on while a model serves, those two settings cost decode time. Qwen3.8-27B
+on one GB10, with 16 GiB held in every other 4 KiB page of 32 GiB: throughput
+and the median step stay within 0.5%, but about 5.5% of steps run about 60 ms
+slow (p99 +5.7%), because background compaction keeps working on what it
+cannot move. In a 16-rank step the slowest rank sets the pace.
+
+So the image boots with the kernel's defaults and raises both settings only
+while a model activates, when the large allocations happen:
+
+- [`sparkpipe-compact`](../tools/hosted_image/files/usr/local/sbin/sparkpipe-compact)
+  `raise` records the boot values in `/run/sparkpipe-compact/boot`, writes
+  `compact_memory`, then sets proactiveness 90 and `min_free_kbytes` 1 GiB,
+  and returns. `compact_memory` goes first because raising proactiveness
+  wakes the kernel's background compaction: with the holder below, a
+  `compact_memory` written after the raise returned within 0.03 to 0.4 s
+  with almost no new blocks in 3 of 5 trials, while written first it ran
+  about 5 s and left 36,600 to 37,300 free 2 MiB blocks in 4 of 5. Nothing
+  guesses when compaction is done: each nvrm allocation of 2 MiB pages
+  waits until the free 2 MiB blocks cover it and the raised reserve, and
+  makes missing blocks itself, for up to 60 s
+  ([NVRM_BACKEND.md](NVRM_BACKEND.md)). `restore` puts the
+  recorded values back, but only when no activation holds
+  `/run/sparkpipe-compact/window` (each holds a shared lock on it), so
+  activations that overlap share one window.
+- [`90-sparkpipe-compact`](../tools/hosted_image/files/etc/sudoers.d/90-sparkpipe-compact)
+  lets the `sparkpipe-compact` group run exactly those two commands as root,
+  and nothing else; the fleet user joins the group at bring-up.
+- The fleet agent ([`fleet_node_agent.sh`](../tools/fleet_node_agent.sh)) opens
+  the window in `start_root`, the one place every residentd start passes
+  through, before it launches residentd: a watcher in its own session takes
+  the shared lock, raises, and restores when residentd reports ready, when it
+  is no longer running, or after 900 s, from an `EXIT` trap. If the raise
+  fails, the root does not start and the agent says why. Each loop of the
+  agent also restores a window no watcher holds, so a killed watcher leaves
+  the settings raised only until the agent's next loop. A node without the
+  helper opens no window.
+
+The activation phase, from `raise` to the last of the 802 objects, with
+40 GiB held in 80 GiB:
+
+| Holder | Phase per trial (s) | NVRM kernel-log lines |
+| --- | --- | --- |
+| every other 4 KiB page | 6.59, 6.58, 6.77, 6.74, 100.1 | 0 |
+| a random half of the 4 KiB pages | 6.68, 6.80, 6.92, 34.90, 6.75 | 0 |
+
+Every trial allocated all 802 objects. The two slow ones are a kernel
+limit, which the window accepts rather than works around:
+- In those trials `compact_memory` stopped early: after 0.02 and 1.57 s,
+  leaving 16,333 and 22,624 free blocks instead of about 37,000.
+- Compaction tracepoints show such a run ending with status `contended`
+  once its free scanner finds no target pages, and the background
+  compaction backs off for about 32 s after it. Until it runs again,
+  direct compaction, the allocations' own pull included, makes nothing,
+  and objects wait up to 24 s each.
+- A second `compact_memory` does not help. Written 2, 4 and 6 s after a
+  raise that stopped early, it returned within 0.05 s and added at most one
+  block, in both such trials out of eight. So the helper has no verb for
+  it.
+- The holder is about 25 times harsher than a real activation. A real
+  activation needs few 2 MiB blocks: Qwen3.8-27B's only object of 2 MiB
+  pages is its 1.9 GB state arena, about 950 blocks, which the pull makes
+  in well under a second. Its weights take 64 KiB pages and its KV chunks
+  4 KiB pages.
 
 ## GPU device nodes
 
@@ -142,7 +239,18 @@ the image gets the same bytes `apply` writes.
   - the DMA guard: its install step's service and timer, written by the
     guard's own `unit_text` with the baseline's notify address, timer
     enabled, so the guard arms 60 s after every boot;
-  - `multi-user.target` as the default.
+  - `multi-user.target` as the default;
+  - the lossless RoCE settings on `enp1s0f1np1`, which a staged baseline
+    leaves out and the stager adds:
+    [`sparkpipe_roce_qos.sh`](../tools/fabric/sparkpipe_roce_qos.sh) as
+    `/usr/local/sbin/sparkpipe_roce_qos.sh`, its unit
+    `sparkpipe-roce-qos.service`, enabled and bound to the port, and the
+    DSCP trust helper
+    [`sparkpipe_dscp_trust.sh`](../tools/fabric/sparkpipe_dscp_trust.sh) as
+    `/usr/local/sbin/sparkpipe-dscp-trust`. They set DSCP trust (the 64-entry
+    DSCP>>3 map), PFC on priority 3 and prio-buffer 3:1 with iproute2's
+    `dcb` and `ethtool`. Nothing from `mlnx_qos` or other MLNX tools is in
+    the image.
 - **Left to the live node:** `sysctl --system`, `udevadm`, `modprobe`,
   `update-grub` (the disk install generates the GRUB menu), runtime
   `systemctl` verbs and linger.
@@ -158,8 +266,9 @@ what was left.
 ## An image node never updates itself
 
 A rented node changes only by a new image, never during a rental. The image
-masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`)
-and `motd-news`, which fetches news from Ubuntu
+masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`),
+`motd-news`, which fetches news from Ubuntu, and podman's auto-update timer
+and its root API socket and service, which cephadm does not use
 ([`masked-units.txt`](../tools/hosted_image/masked-units.txt),
 [`mask_units.sh`](../tools/hosted_image/mask_units.sh)). It carries no
 `unattended-upgrades`, and the build fails if a dependency brings it in.
@@ -177,6 +286,15 @@ command line must say `rw`, not `ro`. With `ro`, the initramfs attaches
 the loop device read-only, so `/` can never be remounted read-write, and
 the units that write state (logind, timesyncd, the DMA guard's boot record)
 fail.
+
+With `boot=sparkpipe-ram` added, the image runs from memory instead
+([`sparkpipe-ram`](../tools/hosted_image/files/usr/share/initramfs-tools/scripts/sparkpipe-ram)).
+The initramfs mounts the file system named by `root=` read-only, copies the
+`loop=` file into a tmpfs, unmounts that file system and mounts the copy as
+`/`. Nothing on the disk is then mounted, open or mapped, so a
+[disk install](#disk-install) can run from the copy against that same disk.
+The copy takes as much memory as the file's size, and changes made while it
+runs are lost at the next boot.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
@@ -234,7 +352,7 @@ Then it:
    first boot, with no login. Otherwise the installer says that the node joins
    at bring-up ([TAILSCALE_JOIN.md](TAILSCALE_JOIN.md)). Then it checks that
    `/` is `0:0 755` and that no path outside `/home` belongs to a uid or gid
-   of 1000 or above.
+   of 1000 or above that the image does not define.
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
@@ -255,6 +373,44 @@ Then it:
 
 It never deletes anything. Every mount it makes is undone on exit, and
 `/sys/firmware/efi/efivars` is never mounted in the chroot.
+
+#### Carrying a node's own state
+
+A fleet node keeps state that no image may hold: its Ceph daemons, private
+tools and the secrets of its networks. `--carry LIST` carries it from the
+previous root, the same way as the Tailscale state:
+
+- Each line of `LIST` is a path below `/`, with `*` allowed. It never names
+  `home`, `lost+found`, `var/lib/tailscale` or a set-aside directory.
+- Before anything changes, the installer expands the list in the previous
+  root and checks that the root has 10 GiB free beyond the matches' size.
+- The extraction leaves the matches out of the image, and the installer
+  copies them from `/.dgxos-<stamp>/root` with their owners, modes, links,
+  extended attributes and special files: podman's layers hold whiteouts as
+  character devices `0:0`, and a container's run directory holds pipes and a
+  socket. It compares each copy by its listing (type, owners, mode, size,
+  link target, device numbers) and the checksum of every regular file, never
+  reading a pipe, and names it in its log. The copies then take the image's
+  place, so nothing of the image's is deleted either.
+- `--carry-accounts NAME,...` carries accounts the same way: each one's
+  `passwd` and `shadow` lines and its primary group, after the bundle's user.
+  A name, uid or group that the installed root already has is refused.
+
+A fleet node's list is [`carry-fleet.txt`](../tools/hosted_image/carry-fleet.txt):
+
+- its Ceph state: `/var/lib/ceph`, `/etc/ceph` with the CephFS client
+  secret, the podman store with the pinned Ceph image, cephadm's units,
+  sysctl and logrotate files, and `/var/log/ceph`;
+- the private external-NVMe link that its OSD's units require, and the
+  private uplink failover tool, with their units and configuration;
+- its NetworkManager profiles in `/etc/netplan/90-NM-*.yaml` and its
+  `/etc/hosts`, which names the fleet's nodes;
+- its SSH and initramfs host keys and root's `authorized_keys`;
+- the emergency account's sudo rule.
+
+It takes `--carry-accounts sparkemerg` for the emergency account. The
+private files come only from the node's own previous root, never from the
+repository or a bundle.
 
 Rollback, from the same kind of rescue system: move every top-level entry
 of the installed root except `home`, `lost+found` and `.dgxos-<stamp>` into
@@ -286,7 +442,11 @@ touches no real disk, uses no GPU, and never writes the host's firmware
 boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
 attaches it as a loop device and partitions it like a node, then seeds:
 
-- a previous system with Tailscale state in `/var/lib/tailscale`;
+- a previous system with Tailscale state in `/var/lib/tailscale`, and a
+  fleet node's state for every line of `carry-fleet.txt` (Ceph state and
+  units with their wants links and a mask, the private tools, profiles, a container layer with a
+  whiteout, a container run directory with a pipe and a socket) and the
+  `sparkemerg` account;
 - `/home/node` with a 256 MiB pack and a release root linked to a stub
   `libcuda.so.1`;
 - an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
@@ -308,7 +468,12 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    - labels, identity, user, groups, modes and `fstab` are as expected;
    - `/var/lib/tailscale` is the previous root's, with the same entries,
      owners, modes and checksums;
-   - nothing outside `/home` belongs to a uid or gid of 1000 or above;
+   - with `--carry carry-fleet.txt --carry-accounts sparkemerg`, every
+     carried path is the previous root's (types, owners, modes, sizes, link
+     targets and contents) and the account's `passwd`, `shadow`, `group` and
+     `gshadow` lines are its;
+   - nothing outside `/home` belongs to a uid or gid of 1000 or above that
+     the image does not define;
    - the initramfs was rebuilt with the dropbear key;
    - the kernel entry uses the root UUID and the GB10 arguments;
    - `EFI/ubuntu` holds the image's own signed shim and GRUB;
@@ -317,8 +482,9 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    whole old EFI partition;
 4. the installer refusing while `/.hosted-<stamp>` exists;
 5. a second install, after the previous root's Tailscale state is
-   removed, with the same checks, except that the installed root must hold no
-   Tailscale state and the installer must say the node joins at bring-up;
+   removed and with no carry list, with the same checks, except that the
+   installed root must hold no Tailscale state, no carried state and no
+   carried account, and the installer must say the node joins at bring-up;
 6. the acceptance gate: after the set-aside directory is deleted, the
    image audit over the installed root fails on the stub-linked release
    root in `/home`, then passes once that root is removed;
@@ -344,7 +510,9 @@ The identity bundle is a directory with three parts:
   present, `sparkpipe-host-keys.service` does not run, so nothing else would
   create the initramfs keys.
 - `user.conf` holds `USER_NAME`, `USER_UID`, `USER_GID`, `USER_GROUPS` (a
-  comma list) and `USER_SHELL`, one `KEY=value` per line. It is read as data,
+  comma list) and `USER_SHELL`, one `KEY=value` per line. On a fleet node
+  `USER_GROUPS` includes `sparkpipe-compact`, so the agent can open the
+  [compaction window](#contiguous-memory). It is read as data,
   never sourced. The user is created with no home of its own, because
   `/home/<user>` is already on the disk.
 - `groups.conf` holds one `name:gid` line per group the user needs that

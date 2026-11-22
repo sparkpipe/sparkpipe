@@ -5,11 +5,8 @@
 #include <time.h>
 
 #include "sparkpipe/spark_device.h"
-#include "runtime/device/nvrm/nvrm_wait.h"
 
 #define LARGE_MARGIN_BYTES (8ull << 30)
-#define LARGE_HELD_BYTES (4ull << 30)
-#define LARGE_CHECK_BYTES (64ull << 20)
 
 static int failures;
 
@@ -74,6 +71,57 @@ static double Rate(uint64_t bytes, uint64_t ns)
 	return(ns != 0u ? (double)bytes / (double)ns : 0.0);
 }
 
+static void TestPinned(SparkDeviceQueue *queue, uint64_t bytes)
+{
+	SparkDeviceBuffer pinned;
+	const uint64_t mib = bytes >> 20;
+	char what[192];
+	memset(&pinned,0,sizeof(pinned));
+	snprintf(what,sizeof(what),"allocate %llu MiB of host-pinned memory",(unsigned long long)mib);
+	CHECK(SparkDeviceAllocate(&pinned,SPARK_DEVICE_SPACE_HOST_PINNED,bytes,"large pinned") == SPARK_STATUS_OK,what);
+	if ( pinned.bytes == 0u )
+		return;
+	memset(pinned.host,0,(size_t)bytes);
+	snprintf(what,sizeof(what),"fill all %llu MiB of host-pinned memory in one call",(unsigned long long)mib);
+	CHECK(SparkDeviceFill(queue,At(&pinned,0u),0x6du,bytes) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,what);
+	snprintf(what,sizeof(what),"the fill of all %llu MiB of host-pinned memory reaches every byte",(unsigned long long)mib);
+	CHECK(Wrong((const uint8_t *)pinned.host,0u,bytes,0x6du) == 0u,what);
+	CHECK(SparkDeviceFree(&pinned) == SPARK_STATUS_OK,"free the host-pinned memory");
+}
+
+static void TestShared(SparkDeviceQueue *queue, const SparkDeviceBuffer *host, uint64_t bytes)
+{
+	SparkDeviceMemoryHandle memory = 0;
+	SparkDeviceAddress address = 0u;
+	SparkDeviceBuffer shared;
+	const uint64_t mib = bytes >> 20;
+	uint32_t created,reserved = 0u,mapped = 0u,adopted = 0u;
+	char what[192];
+	memset(&shared,0,sizeof(shared));
+	snprintf(what,sizeof(what),"create, map and adopt %llu MiB of shared memory",(unsigned long long)mib);
+	created = SparkDeviceMemoryCreate(&memory,bytes,"large shared") == SPARK_STATUS_OK;
+	reserved = created != 0u && SparkDeviceAddressReserve(&address,bytes,"large shared") == SPARK_STATUS_OK;
+	mapped = reserved != 0u && SparkDeviceMemoryMap(address,bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE) == SPARK_STATUS_OK;
+	adopted = mapped != 0u && SparkDeviceAdopt(&shared,address,0,bytes,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"large shared") == SPARK_STATUS_OK;
+	CHECK(adopted != 0u,what);
+	if ( adopted != 0u )
+	{
+		memset(host->host,0,(size_t)bytes);
+		snprintf(what,sizeof(what),"fill all %llu MiB of shared memory and copy it to host-visible memory",(unsigned long long)mib);
+		CHECK(SparkDeviceFill(queue,At(&shared,0u),0x95u,bytes) == SPARK_STATUS_OK && SparkDeviceCopy(queue,At(host,0u),At(&shared,0u),bytes) == SPARK_STATUS_OK &&
+			SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,what);
+		snprintf(what,sizeof(what),"the fill of all %llu MiB of shared memory arrives everywhere",(unsigned long long)mib);
+		CHECK(Wrong((const uint8_t *)host->host,0u,bytes,0x95u) == 0u,what);
+		CHECK(SparkDeviceFree(&shared) == SPARK_STATUS_OK,"release the adopted shared memory");
+	}
+	if ( mapped != 0u )
+		CHECK(SparkDeviceMemoryUnmap(address,bytes) == SPARK_STATUS_OK,"unmap the shared memory");
+	if ( reserved != 0u )
+		CHECK(SparkDeviceAddressRelease(address,bytes) == SPARK_STATUS_OK,"release the shared memory's addresses");
+	if ( created != 0u )
+		CHECK(SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK,"release the shared memory");
+}
+
 static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 {
 	SparkDeviceBuffer device,host;
@@ -84,7 +132,7 @@ static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 	memset(&device,0,sizeof(device));
 	memset(&host,0,sizeof(host));
 	start = Now();
-	snprintf(what,sizeof(what),"allocate %llu MiB of device-private memory, which the copy engine zero-fills",(unsigned long long)mib);
+	snprintf(what,sizeof(what),"allocate %llu MiB of device-private memory, which the open module zeroes",(unsigned long long)mib);
 	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,bytes,"large device") == SPARK_STATUS_OK,what);
 	allocate_ns = Now() - start;
 	snprintf(what,sizeof(what),"allocate %llu MiB of host-visible memory",(unsigned long long)mib);
@@ -115,11 +163,16 @@ static void TestSize(SparkDeviceQueue *queue, uint64_t bytes)
 			what);
 		snprintf(what,sizeof(what),"the fill of all %llu MiB, copied back whole, arrives everywhere",(unsigned long long)mib);
 		CHECK(Wrong(view,0u,bytes,0xc3u) == 0u,what);
-		printf("%llu MiB: allocate with zero fill %.2f s, fill %.1f GB/s, copy %.1f GB/s\n",(unsigned long long)mib,(double)allocate_ns / 1e9,
+		printf("%llu MiB: allocate %.2f s, fill %.1f GB/s, copy %.1f GB/s\n",(unsigned long long)mib,(double)allocate_ns / 1e9,
 			Rate(bytes,fill_ns),Rate(bytes,copy_ns));
 	}
 	if ( device.bytes != 0u )
 		CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the device-private memory");
+	if ( view != 0 )
+	{
+		TestPinned(queue,bytes);
+		TestShared(queue,&host,bytes);
+	}
 	if ( host.bytes != 0u )
 		CHECK(SparkDeviceFree(&host) == SPARK_STATUS_OK,"free the host-visible memory");
 }
@@ -149,51 +202,14 @@ static int TestSizes(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS fills and copies of 8, 10.5 and 16 GiB go through in one call each, in lines of at most 2^31 bytes, and reach every byte\n");
-	return(0);
-}
-
-static int TestHeld(void)
-{
-	SparkDeviceBuffer device,host;
-	SparkDeviceQueue *queue = 0;
-	SparkStatus status;
-	memset(&device,0,sizeof(device));
-	memset(&host,0,sizeof(host));
-	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK )
-	{
-		printf("FAIL set up the device: %s\n",SparkDeviceLastError()->text);
-		return(1);
-	}
-	SparkNvrmWaitStallSet(0u);
-	status = SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,LARGE_HELD_BYTES,"held");
-	SparkNvrmWaitStallSet(SPARK_NVRM_WAIT_STALL_NS);
-	printf("allocation whose wait gave up: %s\n",SparkDeviceLastError()->text);
-	CHECK(status == SPARK_STATUS_IO_ERROR && device.bytes == 0u && strstr(SparkDeviceLastError()->text,"no GPU progress") != 0 &&
-		strstr(SparkDeviceLastError()->text,"stay held") != 0,
-		"a zero fill still running when its wait gives up fails the allocation, keeps the memory held and says so");
-	CHECK(SparkDeviceShutdown() == SPARK_STATUS_OK,"the device closes once the held memory's fill has finished, and releases it then");
-	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_OK && SparkDeviceQueueCreate(&queue,"after held") == SPARK_STATUS_OK &&
-		SparkDeviceAllocate(&host,SPARK_DEVICE_SPACE_SHARED_COHERENT,LARGE_CHECK_BYTES,"after held") == SPARK_STATUS_OK &&
-		SparkDeviceFill(queue,At(&host,0u),0x7eu,LARGE_CHECK_BYTES) == SPARK_STATUS_OK &&
-		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && Wrong((const uint8_t *)host.host,0u,LARGE_CHECK_BYTES,0x7eu) == 0u &&
-		SparkDeviceFree(&host) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK && SparkDeviceShutdown() == SPARK_STATUS_OK,
-		"the device opens again and fills memory after the held allocation was released");
-	if ( failures != 0 )
-	{
-		printf("\nFAIL (%d)\n",failures);
-		return(1);
-	}
-	printf("PASS an allocation whose zero fill outlives its wait stays held until the fill ends, and the device works after it\n");
+	printf("PASS fills and copies of 8, 10.5 and 16 GiB of device-private, shared-coherent, host-pinned and shared memory go through in one call each, in lines of at most 2^31 bytes, and reach every byte\n");
 	return(0);
 }
 
 int main(int argc, char **argv)
 {
-	if ( argc == 2 && strcmp(argv[1],"sizes") == 0 )
+	if ( argc == 1 || (argc == 2 && strcmp(argv[1],"sizes") == 0) )
 		return(TestSizes());
-	if ( argc == 2 && strcmp(argv[1],"held") == 0 )
-		return(TestHeld());
-	printf("usage: %s sizes|held\n",argv[0]);
+	printf("usage: %s [sizes]\n",argv[0]);
 	return(2);
 }

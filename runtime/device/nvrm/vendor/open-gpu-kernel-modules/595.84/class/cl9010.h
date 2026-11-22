@@ -1,0 +1,17 @@
+#pragma once
+
+#include <nvtypes.h>
+
+#include "class/cl9010_callback.h"
+
+#define NV9010_VBLANK_CALLBACK (0x9010U)
+
+#define NV_VBLANK_CALLBACK_ALLOCATION_PARAMETERS_MESSAGE_ID (0x9010U)
+
+typedef struct NV_VBLANK_CALLBACK_ALLOCATION_PARAMETERS {
+    NV_DECLARE_ALIGNED(NvP64 pProc, 8);
+
+    NvV32 LogicalHead;
+    NV_DECLARE_ALIGNED(NvP64 pParm1, 8);
+    NV_DECLARE_ALIGNED(NvP64 pParm2, 8);
+} NV_VBLANK_CALLBACK_ALLOCATION_PARAMETERS;

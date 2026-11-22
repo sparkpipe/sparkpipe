@@ -82,13 +82,59 @@
     16
    ],
    "threads": 256
+  },
+  {
+   "launcher": "D41FusedRouteLaunch",
+   "name": "D41FusedRouteKernel",
+   "outputs": [
+    "route_expert",
+    "route_weight",
+    "route_global",
+    "group_row_offset",
+    "route_packed_row",
+    "route_source_token",
+    "tile_prefix_up",
+    "tile_prefix_down",
+    "packed_weight",
+    "fault"
+   ],
+   "patchable": {
+    "rows": "parameter 1, and the grid width rows * (sum of blocks per row)",
+    "tile_m": "LmLaunchGroupedTileM(rows, D41_TOPK, D41_LOCAL_EXPERTS + 1u)"
+   },
+   "replaces": [
+    "LmTopkWarpKernel",
+    "D41RouteLocalKernel",
+    "LmRouteBuildKernel",
+    "LmPackedRouteWeightKernel"
+   ],
+   "roles": [
+    {
+     "blocks_per_row": "1u",
+     "body": "LmTopkWarpsRow",
+     "op": "topk_route_row",
+     "replaces": "LmTopkWarpKernel and LmTopkWarpsKernel: one row's top-k routes and weights, on LM_TOPK_WARPS warps",
+     "tail": {
+      "body": "D41RouteTail",
+      "op": "d41_route_tail",
+      "replaces": "D41RouteLocalKernel, LmRouteBuildKernel and LmPackedRouteWeightKernel",
+      "sync": "last arrival of the launch"
+     }
+    }
+   ],
+   "rows": [
+    1,
+    16
+   ],
+   "threads": 256
   }
  ],
  "op_sources": [
   "inference/kernels/fused/collapse_norm.cuh",
   "inference/kernels/hc.cuh",
+  "inference/kernels/topk_warp.cuh",
   "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
  ],
- "plan_sha256": "c73595a49d6cc8356ed547bcd6d0d93ba75f18704ef7ffefa875848b8033e69b",
+ "plan_sha256": "e2893764994139de7bcfcbc1bc35a10e8f34b208a7cf2c02aded9790213a74c3",
  "test": "tests/cuda/dsv41_flash_fused_exact.cu"
 }

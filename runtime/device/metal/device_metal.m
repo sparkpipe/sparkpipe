@@ -1139,6 +1139,13 @@ SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int 
 	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_import",owner,0,"the Metal backend has no shared device memory yet"));
 }
 
+SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	(void)memory;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_create_host",owner,0,"the metal backend has no exportable host memory"));
+}
+
 SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
 {
 	(void)address;
@@ -1206,6 +1213,13 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	(void)queue;
 	(void)values;
 	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"this backend replays programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
 }
 
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)

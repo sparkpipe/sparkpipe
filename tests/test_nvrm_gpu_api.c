@@ -136,9 +136,11 @@ static void TestStreamsAndEvents(void)
 	float milliseconds = -1.0f;
 	CHECK(SparkGpuStreamCreateWithFlags(&blocking,0u) == SPARK_GPU_ERROR_NOT_SUPPORTED && SparkGpuGetLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED,
 		"a blocking stream is refused: there is no legacy default stream to synchronise it with");
-	CHECK(SparkGpuDeviceGetStreamPriorityRange(&least,&greatest) == SPARK_GPU_ERROR_NOT_SUPPORTED && strstr(SparkDeviceLastError()->text,"priorit") != 0 &&
-		SparkGpuStreamCreateWithPriority(&blocking,SPARK_GPU_STREAM_NON_BLOCKING,-1) == SPARK_GPU_ERROR_NOT_SUPPORTED && SparkGpuGetLastError() ==
-		SPARK_GPU_ERROR_NOT_SUPPORTED,"stream priorities are refused, the range and a prioritized stream alike, rather than ignored");
+	CHECK(SparkGpuDeviceGetStreamPriorityRange(&least,&greatest) == SPARK_GPU_SUCCESS && least == 0 && greatest == 0,
+		"the device reports one stream priority: the range is 0 to 0");
+	CHECK(SparkGpuStreamCreateWithPriority(&blocking,SPARK_GPU_STREAM_NON_BLOCKING,-1) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
+		strstr(SparkDeviceLastError()->text,"one stream priority") != 0 && SparkGpuGetLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED,
+		"a priority outside the range is refused rather than ignored");
 	CHECK(SparkGpuStreamCreateWithFlags(&first,SPARK_GPU_STREAM_NON_BLOCKING) == SPARK_GPU_SUCCESS &&
 		SparkGpuStreamCreateWithPriority(&second,SPARK_GPU_STREAM_NON_BLOCKING,0) == SPARK_GPU_SUCCESS,"create two non-blocking streams, one at the default priority");
 	CHECK(SparkGpuEventCreate(&start) == SPARK_GPU_SUCCESS && SparkGpuEventCreate(&stop) == SPARK_GPU_SUCCESS &&

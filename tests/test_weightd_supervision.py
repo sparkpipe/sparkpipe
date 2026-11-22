@@ -504,6 +504,7 @@ install_core() { :; }
 self_update() { :; }
 node_doctor() { :; }
 janitor() { :; }
+compact_sweep() { echo SWEEP; }
 ensure_weightd() { return "$TEST_WEIGHTD_STATUS"; }
 sync_root() { echo ROOT_SYNC; }
 mesh_push() { echo MESH; }
@@ -521,8 +522,8 @@ sleep() { exit 0; }
                     capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stderr), (0, ""))
                 self.assertEqual(result.stdout.splitlines(),
-                    ["ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
-                    if ready else ["REPORT"])
+                    ["SWEEP", "ROOT_SYNC", "ROOT_START", "WARMUP", "REPORT"]
+                    if ready else ["SWEEP", "REPORT"])
 
     def serving_gate(self, function, **values):
         script = r'''

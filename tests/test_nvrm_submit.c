@@ -4,8 +4,10 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
+#include "runtime/device/nvrm/nvrm_image.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_rm.h"
 #include "nvstatus.h"
@@ -339,8 +341,35 @@ static void TestPageSizes(void)
 		SparkNvrmSystemPageBytes((4ull << 30) - (2ull << 20)) == SPARK_NVRM_HUGE_PAGE_BYTES && SparkNvrmSystemPageBytes(4ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES &&
 		SparkNvrmSystemPageBytes(16ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES,
 		"system memory takes 2 MiB pages from 8 MiB to below 4 GiB and 64 KiB pages from 4 GiB on");
-	CHECK(SparkNvrmSystemAllocate(&fake.gpu,4ull << 30,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,"pages") == SPARK_STATUS_INVALID_ARGUMENT && handle == 0u &&
+	CHECK(SparkNvrmSystemAllocate(&fake.gpu,4ull << 30,SPARK_NVRM_HUGE_PAGE_BYTES,SPARK_NVRM_MEMORY_SYSTEM,&handle,"pages") == SPARK_STATUS_INVALID_ARGUMENT && handle == 0u &&
 		strstr(SparkDeviceLastError()->text,"4 GiB") != 0,"an object of 2 MiB pages at 4 GiB or more is refused before the module sees it");
+}
+
+static void TestModuleZeroes(void)
+{
+	static const char *const contents[] = {"ResmanDebugLevel: 4294967295\nInitializeSystemMemoryAllocations: 1\nRmLogonRC: 1\n",
+		"InitializeSystemMemoryAllocations: 0\n", "ResmanDebugLevel: 4294967295\n"};
+	static const int expected[] = {1, 0, 0};
+	char path[] = "/tmp/spark-nvrm-params-XXXXXX";
+	const int fd = mkstemp(path);
+	uint32_t index;
+	CHECK(fd >= 0,"make a stand-in for the module's parameter file");
+	if ( fd < 0 )
+		return;
+	close(fd);
+	for (index = 0u; index < sizeof(expected) / sizeof(expected[0]); index++)
+	{
+		FILE *file = fopen(path,"w");
+		if ( file != 0 )
+		{
+			fputs(contents[index],file);
+			fclose(file);
+		}
+		CHECK(file != 0 && SparkNvrmModuleZeroesMemory(path) == expected[index],
+			"the module zeroes system memory only when its parameters list InitializeSystemMemoryAllocations: 1");
+	}
+	unlink(path);
+	CHECK(SparkNvrmModuleZeroesMemory(path) == 0 && SparkNvrmModuleZeroesMemory(0) == 0,"a missing parameter file means no zeroing");
 }
 
 static void TestMarks(void)
@@ -559,8 +588,11 @@ static void TestDependentLaunch(void)
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u && LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == first &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE) == 1u && first < SPARK_NVRM_PROGRAM_LATCH_FIRST &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) != first && fake.gpu.compute.latch == LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID),
-		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch and holds its blocks and membar");
+		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch, holds its blocks and membar, and invalidates the "
+		"data caches when it acquires the latch; eager latch ids stay below the programs' half");
 	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
 		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch keeps the front-end acquire");
 	CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000001000ull,0x3000002000ull,4096u,&copied,"dependent") == SPARK_STATUS_OK &&
@@ -626,6 +658,199 @@ static void TestIntegrated(void)
 		"a GPU the module does not call an SoC is not, whatever its other identity flags");
 }
 
+static int SemaphoreAt(const uint32_t *words, uint32_t at, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation)
+{
+	uint32_t expected[SPARK_NVRM_SEMAPHORE_METHOD_WORDS];
+	SparkNvrmSemaphoreWords(expected,address,value,operation);
+	return(memcmp(words + at,expected,sizeof(expected)) == 0);
+}
+
+static int LaunchAt(const uint32_t *words, uint32_t at, uint64_t slot)
+{
+	uint32_t expected[SPARK_NVRM_LAUNCH_WORDS];
+	SparkNvrmLaunchWords(expected,slot);
+	return(memcmp(words + at,expected,sizeof(expected)) == 0);
+}
+
+static void TestImage(void)
+{
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS };
+	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull,event = 0x3000000000ull,reached = 0x4000000000ull,done = 0x4000000040ull;
+	static Fake fake;
+	SparkNvrmStep steps[6];
+	uint32_t words[128],count,at;
+	memset(steps,0,sizeof(steps));
+	memset(words,0xee,sizeof(words));
+	steps[0].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[1].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[1].slot = 0x400u;
+	steps[2].kind = SPARK_NVRM_STEP_RECORD;
+	steps[2].address = event + SPARK_NVRM_MARK_TIME_OFFSET;
+	steps[2].second_address = event;
+	steps[3].kind = SPARK_NVRM_STEP_AWAIT;
+	steps[3].address = event;
+	steps[4].kind = SPARK_NVRM_STEP_HOST;
+	steps[4].address = reached;
+	steps[4].second_address = done;
+	steps[5].kind = SPARK_NVRM_STEP_LAUNCH;
+	steps[5].slot = 0x800u;
+	count = SparkNvrmImageWords(steps,6u);
+	SparkNvrmImageWrite(words,semaphore,slots,steps,6u);
+	CHECK(count == 14u * SEMAPHORE_WORDS + 3u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu && words[count - 1u] != 0xeeeeeeeeu,
+		"a segment of three launches, a record, a wait and a host step has the words it counts, and no more");
+	CHECK(SemaphoreAt(words,0u,semaphore,0u,SPARK_NVRM_SEMAPHORE_RELEASE),"a run first sets the program's semaphore to zero");
+	at = SEMAPHORE_WORDS;
+	CHECK(LaunchAt(words,at,slots),"the first launch needs no acquire");
+	at += LAUNCH_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,1u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && LaunchAt(words,at + SEMAPHORE_WORDS,slots + 0x400u),
+		"the second launch waits for the first to release 1, then sends its own descriptor");
+	at += SEMAPHORE_WORDS + LAUNCH_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,2u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[2].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[2].payload,event + SPARK_NVRM_MARK_TIME_OFFSET,0u,SPARK_NVRM_SEMAPHORE_RELEASE_TIME) &&
+		steps[2].second == steps[2].payload + SEMAPHORE_WORDS && SemaphoreAt(words,steps[2].second,event,0u,SPARK_NVRM_SEMAPHORE_MAX) &&
+		SemaphoreAt(words,steps[2].second + SEMAPHORE_WORDS,semaphore,3u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a record waits for the launches before it, stamps the event's time, raises its generation and releases 3");
+	at = steps[2].second + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,3u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[3].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[3].payload,event,0u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt(words,steps[3].payload + SEMAPHORE_WORDS,semaphore,4u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a wait acquires the event's generation, then releases 4");
+	at = steps[3].payload + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,4u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[4].payload == at + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[4].payload,reached,0u,SPARK_NVRM_SEMAPHORE_RELEASE) && steps[4].second == steps[4].payload + SEMAPHORE_WORDS &&
+		SemaphoreAt(words,steps[4].second,done,0u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt(words,steps[4].second + SEMAPHORE_WORDS,semaphore,5u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a host step releases its ticket to the worker, acquires the worker's answer, then releases 5");
+	at = steps[4].second + 2u * SEMAPHORE_WORDS;
+	CHECK(SemaphoreAt(words,at,semaphore,5u,SPARK_NVRM_SEMAPHORE_ACQUIRE) && LaunchAt(words,at + SEMAPHORE_WORDS,slots + 0x800u) &&
+		at + SEMAPHORE_WORDS + LAUNCH_WORDS == count,"the last launch waits for the host step and ends the segment");
+	SparkNvrmImagePatch(words,steps[4].payload,0x123456789abcull);
+	SparkNvrmImagePatchAddress(words,steps[4].payload,0x4100000000ull);
+	CHECK(SparkNvrmImagePayload(words,steps[4].payload) == 0x123456789abcull &&
+		SemaphoreAt(words,steps[4].payload,0x4100000000ull,0x123456789abcull,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"a run patches a step's payload and address in place");
+	FakeOpen(&fake);
+	CHECK(SparkNvrmSemaphoreAcquire(&fake.gpu.compute,semaphore,9u,"image") == SPARK_STATUS_OK &&
+		SparkNvrmSemaphoreRelease(&fake.gpu.compute,event + SPARK_NVRM_MARK_TIME_OFFSET,9u,1u,"image") == SPARK_STATUS_OK,
+		"push the same semaphores the eager path pushes");
+	SparkNvrmSemaphoreWords(words,semaphore,9u,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+	SparkNvrmSemaphoreWords(words + SEMAPHORE_WORDS,event + SPARK_NVRM_MARK_TIME_OFFSET,9u,SPARK_NVRM_SEMAPHORE_RELEASE_TIME);
+	CHECK(memcmp(fake.push,words,2u * SEMAPHORE_WORDS * sizeof(uint32_t)) == 0,"a segment's semaphores are word for word the ones the eager path pushes");
+}
+
+static void TestImageChain(void)
+{
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS, STEPS = 74, HOST = 70, PLAIN = 10, LATER_PLAIN = 50 };
+	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull;
+	static SparkNvrmStep steps[STEPS];
+	static uint32_t words[1024];
+	uint32_t index,count,at,chained = 0u,marked = 1u,laid = 1u;
+	memset(steps,0,sizeof(steps));
+	memset(words,0xee,sizeof(words));
+	for ( index = 0u; index < STEPS; index++ )
+	{
+		steps[index].kind = index == HOST ? SPARK_NVRM_STEP_HOST : SPARK_NVRM_STEP_LAUNCH;
+		steps[index].dependent = index == PLAIN || index == LATER_PLAIN || index == HOST ? 0u : 1u;
+		steps[index].slot = 0x400ull * index;
+		steps[index].address = 0x4000000000ull;
+		steps[index].second_address = 0x4000000040ull;
+	}
+	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
+	for ( index = 0u; index < STEPS; index++ )
+	{
+		const uint32_t head = index == 0u || index == PLAIN || index == 42u || index == LATER_PLAIN || index == HOST || index == HOST + 1u ? 1u : 0u;
+		chained += steps[index].chained;
+		if ( steps[index].chained != 1u - head )
+			marked = 0u;
+	}
+	CHECK(marked != 0u && chained == 68u,
+		"back-to-back dependent launches chain in segments of 32; a plain launch heads a chain, and a host step ends a chain and the launch after it starts one");
+	count = SparkNvrmImageWords(steps,STEPS);
+	SparkNvrmImageWrite(words,semaphore,slots,steps,STEPS);
+	CHECK(count == 9u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
+		"every launch is in the segment, and only the reset, four chain heads and the host step push semaphores");
+	for ( index = 0u, at = SEMAPHORE_WORDS; index < STEPS && laid != 0u; index++ )
+	{
+		if ( index == HOST )
+		{
+			laid = SemaphoreAt(words,at,semaphore,HOST,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[HOST].payload == at + SEMAPHORE_WORDS &&
+				SemaphoreAt(words,steps[HOST].second + SEMAPHORE_WORDS,semaphore,HOST + 1u,SPARK_NVRM_SEMAPHORE_RELEASE);
+			at = steps[HOST].second + 2u * SEMAPHORE_WORDS;
+			continue;
+		}
+		if ( index != 0u && steps[index].chained == 0u )
+		{
+			laid = SemaphoreAt(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+			at += SEMAPHORE_WORDS;
+		}
+		laid = laid && LaunchAt(words,at,slots + 0x400ull * index);
+		at += LAUNCH_WORDS;
+	}
+	CHECK(laid != 0u && at == count,
+		"a chained launch follows the launch before it with no acquire; a chain's head acquires the step before it, and the host step waits for the last chain");
+	for ( index = 0u; index < STEPS; index++ )
+		steps[index].chained = 0u;
+	SparkNvrmImageChain(steps,STEPS,1u);
+	for ( index = 0u, chained = 0u; index < STEPS; index++ )
+		chained += steps[index].chained;
+	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
+		"in segments of one launch nothing chains, and every launch after the first takes the acquire");
+	for ( index = 0u; index < STEPS; index++ )
+		steps[index].dependent = 0u;
+	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
+	for ( index = 0u, chained = 0u; index < STEPS; index++ )
+		chained += steps[index].chained;
+	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
+		"plain launches never chain: each waits for the launch before it to end, as a plain kernel boundary does");
+}
+
+static void TestLatchRanges(void)
+{
+	uint32_t first = 0u,second = 0u,reused = 0u,later = 0u,huge = 1u;
+	CHECK(SparkNvrmLatchRangeTake(10u,&first,"ranges") == SPARK_STATUS_OK && first >= SPARK_NVRM_PROGRAM_LATCH_FIRST &&
+		SparkNvrmLatchRangeTake(5u,&second,"ranges") == SPARK_STATUS_OK && second == first + 10u,
+		"programs take latch ids from the top half, one range after another");
+	SparkNvrmLatchRangeGive(first,10u);
+	CHECK(SparkNvrmLatchRangeTake(4u,&reused,"ranges") == SPARK_STATUS_OK && reused == first &&
+		SparkNvrmLatchRangeTake(7u,&later,"ranges") == SPARK_STATUS_OK && later == second + 5u,
+		"a range given back is taken again by a program it fits, and a larger one goes past the ranges in use");
+	CHECK(SparkNvrmLatchRangeTake(SPARK_NVRM_PROGRAM_LATCH_FIRST,&huge,"ranges") == SPARK_STATUS_CAPACITY_EXCEEDED && huge == 0u,
+		"a program larger than the free ids is refused");
+	SparkNvrmLatchRangeGive(reused,4u);
+	SparkNvrmLatchRangeGive(second,5u);
+	SparkNvrmLatchRangeGive(later,7u);
+	CHECK(SparkNvrmLatchRangeTake(3u,&first,"ranges") == SPARK_STATUS_OK && first == SPARK_NVRM_PROGRAM_LATCH_FIRST,"every range given back frees its ids");
+	SparkNvrmLatchRangeGive(first,3u);
+}
+
+static void TestSegment(void)
+{
+	static Fake fake;
+	const uint64_t segment = 0x5000000000ull,done = 0x2000000000ull;
+	SparkNvrmChannel *channel;
+	FakeOpen(&fake);
+	channel = &fake.gpu.compute;
+	CHECK(SparkNvrmSubmitSegment(&fake.gpu,channel,segment,0u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment + 2u,100u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment,SPARK_NVRM_SEGMENT_WORDS_MAX + 1u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,(1ull << 40) - 64u,100u,done,6u,"segment") == SPARK_STATUS_INVALID_ARGUMENT && GpPut(&fake) == 0u,
+		"a segment of no words, at an unaligned address, over 2^21 - 1 words or past 2^40 is refused before anything is queued");
+	CHECK(SparkNvrmSemaphoreAcquire(channel,FENCE_ADDRESS,0u,"segment") == SPARK_STATUS_OK &&
+		SparkNvrmSubmitSegment(&fake.gpu,channel,segment,100u,done,6u,"segment") == SPARK_STATUS_OK,"a run with a head submits");
+	CHECK(GpPut(&fake) == 3u && ControlWord64(&fake,0) == (PUSH_ADDRESS | (6ull << 42) | (1ull << 41)) &&
+		ControlWord64(&fake,1) == (segment | (100ull << 42) | (1ull << 41)) && ControlWord64(&fake,2) == ((PUSH_ADDRESS + 24u) | (12ull << 42) | (1ull << 41)),
+		"three ring entries: the head from the push buffer, the prebuilt segment, then the tail after the head");
+	CHECK(SemaphoreAt((const uint32_t *)(const void *)fake.push,6u,done,6u,SPARK_NVRM_SEMAPHORE_ACQUIRE) &&
+		SemaphoreAt((const uint32_t *)(const void *)fake.push,12u,FENCE_ADDRESS,1u,SPARK_NVRM_SEMAPHORE_RELEASE),
+		"the tail waits for the program's last step, then releases the channel's next fence value");
+	CHECK(channel->fence_value == 1u && channel->last_engine == SPARK_NVRM_ENGINE_COMPUTE && channel->segment_count == 3u &&
+		channel->segments[1].start == channel->segments[1].end && channel->segments[2].value == 1u && fake.usermode[DOORBELL_WORD] == 0x1234abcdu,
+		"the run is one fenced operation whose three entries retire together, and the doorbell rings once for them");
+	CHECK(SparkNvrmSubmitSegment(&fake.gpu,channel,segment,100u,done,6u,"segment") == SPARK_STATUS_OK && GpPut(&fake) == 5u &&
+		ControlWord64(&fake,3) == (segment | (100ull << 42) | (1ull << 41)) && channel->fence_value == 2u,
+		"a run with nothing to order first queues the segment and its tail alone");
+}
+
 int main(void)
 {
 	TestIntegrated();
@@ -636,17 +861,22 @@ int main(void)
 	TestFillSplit();
 	TestLongLines();
 	TestPageSizes();
+	TestModuleZeroes();
 	TestMarks();
 	TestAddress();
 	TestSemaphore();
 	TestLaunch();
 	TestDependentLaunch();
+	TestImage();
+	TestImageChain();
+	TestLatchRanges();
+	TestSegment();
 	TestStatus();
 	if ( failures != 0 )
 	{
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch and the device address map\n");
+	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch, program segments, chains and runs, and the device address map\n");
 	return(0);
 }

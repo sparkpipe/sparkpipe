@@ -39,16 +39,24 @@ model's directory) and its kernels. Each kernel gives:
 - its arguments. A pointer has an element count (a C expression in `rows`)
   and a test fill: random BF16 or FP32 values, zeros, or a C expression of the
   element's `index`. A scalar (`uint32_t`, `int32_t`, `uint64_t`, `float`) has
-  a value expression. An output that a launch writes only in part (a ring
-  slot, say) is marked `partial`, and an output whose row 0 is not the first
-  elements lists row 0's `[offset, count]` regions in `row_zero`;
+  either a value expression or a `derived` expression in `rows`, which the
+  launcher evaluates at each launch; the manifest lists derived scalars as
+  patchable. An output that a launch writes only in part (a ring slot, say)
+  is marked `partial`. An output whose row 0 is not its first elements lists
+  row 0's `[offset, count]` regions in `row_zero`, and an output of the whole
+  launch (offsets over all rows, say) has `row_zero` none;
 - scratch buffers that only the reference calls use;
 - its roles: an op from the catalogue, the blocks the role gives each row (a C
   expression), and the binding of each of the op's parameters to a C
-  expression over `arguments.<name>`. A role may end in a tail, an op that the
-  row's last arriving block of that role runs;
+  expression over `arguments.<name>`. A role may end in a tail, an op that
+  the last arriving block of that role runs, either for its row (`scope`
+  row) or once for the whole launch (`scope` launch);
 - the reference calls (the unfused launches), the outputs the test compares,
-  the input it perturbs and the kernels it replaces.
+  the input it perturbs and the kernels it replaces. The test writes the
+  type's default (1.5 for a float) into the perturbed input's first element;
+  `bump` gives another literal when that one would not change the outputs, as
+  for the router's scores, where 1.5 does not put expert 0 among a row's top
+  six.
 
 The grid is `rows` times the sum of the roles' blocks per row. A block belongs
 to the role whose range holds its index, with its row and its item within the
@@ -65,11 +73,14 @@ name that is not a C identifier of at most 64 characters, an output file in
 shared code (`include/`, `runtime/`, `inference/`, `node/`, `cache/`,
 `serving/`, `src/`, `common/`, `model-families/common/`) or outside
 `model-families/` and `tests/`, an output or a perturbed input that is not an
-argument, a tail without zeroed `uint32_t` counters or one that is not per
-row, more than 16 rows, a block size that is not whole warps, a name given
-twice, a model op that shadows a shared op or whose body is in shared code, a
-scalar given a fill, an index fill without its expression, a constant or
-scalar output, a perturbed scalar, or a read-only scratch buffer.
+argument, a tail without zeroed `uint32_t` counters or one that runs neither
+per row nor once per launch, more than 16 rows, a block size that is not whole
+warps, a name given twice, a model op that shadows a shared op or whose body
+is in shared code, a scalar given a fill or both a value and a derived value,
+an index fill without its expression, a constant or scalar output, a perturbed
+scalar, a bump that is not a numeric literal, a read-only scratch buffer, or a
+row-0 region that is neither a list nor none.
+
 
 ## Op catalogue
 
@@ -78,6 +89,7 @@ scalar output, a perturbed scalar, or a read-only scratch buffer.
 | `hc_sinkhorn_partials` | `LmHcSinkhornPartialTask` (`inference/kernels/hc.cuh`) | `LmHcSinkhornPartialKernel`: the per-warp partial dot products of one mix (or the sum of squares) over a row's flattened streams |
 | `hc_sinkhorn_row` (a tail, one warp) | `LmHcSinkhornRow` (`hc.cuh`) | `LmHcSinkhornKernel`: the partials summed in warp order, the pre and post weights and the Sinkhorn combination |
 | `hc_collapse_norm` | `LmHcCollapseNormRow` (`inference/kernels/fused/collapse_norm.cuh`) | a row's streams collapsed with the pre weights, RMS-normed with the whole row's sum, and one slice of it written in BF16 and through a family's quantizer |
+| `topk_route_row` | `LmTopkWarpsRow` (`inference/kernels/topk_warp.cuh`) | `LmTopkWarpsKernel`: one row's top-k routes on `LM_TOPK_WARPS` warps, with the route fault and the renormalised weights. The keys are unique, so it selects the same routes as `LmTopkWarpKernel` in the same order, and the weights use the same sum. |
 
 The kernels that run these bodies keep their names, launches and code: each is
 a wrapper that calls its body with its block indices. The bodies are shared
@@ -138,6 +150,27 @@ The stage takes this path (`D41OutputFuses`) when all of these hold:
 
 A layer's attention output block then launches 5 kernels instead of 13: the
 fused kernel, the two o_a projections, the quantization of `wo_a_out` and o_b.
+
+## DeepSeek V4.1 Flash decode: the router block
+
+`D41FusedRouteKernel` takes everything between the router's GEMV and the
+experts:
+
+- the top six of 384 experts, `LmTopkWarpKernel`;
+- the mapping to the rank's local experts, `D41RouteLocalKernel`;
+- the expert-grouped route table, `LmRouteBuildKernel`;
+- the packed route weights, `LmPackedRouteWeightKernel`.
+
+Each row has one block. The block's eight warps score the row's candidates
+and select its routes (`LmTopkWarpsRow`); one warp per row did this before.
+The last block of the launch then runs the local mapping, the route table
+and the packed weights for all rows (`D41RouteTail`, from the bodies
+`D41RouteLocal`, `LmRouteBuildBlock` and `LmPackedRouteWeight`). The route
+table's tile size depends on the row count, so the launcher derives it
+(`tile_m`).
+
+The stage takes this path when no rows are owned, dumps are off and there
+are 1 to 16 rows (`D41RoutesFuse`). Four kernels become one.
 
 ## Tests
 

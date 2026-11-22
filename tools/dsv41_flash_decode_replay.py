@@ -34,6 +34,7 @@ SEQUENCES = {
     'mhc': ['LmHcSinkhornPartialKernel', 'LmHcSinkhornKernel', 'D41RmsNormQdqKernel'],
     'mhc_fused': ['D41FusedMixNormKernel'],
     'attention_output_fused': ['D41FusedOutputKernel', SKINNY, SKINNY, 'SparkDsv41FlashFp8QdqKernel', SKINNY],
+    'router_fused': [SKINNY, 'D41FusedRouteKernel'],
     'router': [SKINNY, 'LmTopkWarpKernel', 'D41RouteLocalKernel', 'LmRouteBuildKernel', 'LmPackedRouteWeightKernel'],
 }
 

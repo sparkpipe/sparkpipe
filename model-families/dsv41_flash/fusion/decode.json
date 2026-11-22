@@ -2,7 +2,8 @@
  "header": "model-families/dsv41_flash/source/dsv41_flash_fused.cuh",
  "test": "tests/cuda/dsv41_flash_fused_exact.cu",
  "manifest": "model-families/dsv41_flash/fusion/decode.manifest.json",
- "includes": ["inference/kernels/fused/arrival.cuh", "inference/kernels/fused/collapse_norm.cuh", "inference/kernels/hc.cuh", "runtime/launch.h"],
+ "includes": ["inference/kernels/fused/arrival.cuh", "inference/kernels/fused/collapse_norm.cuh", "inference/kernels/hc.cuh", "inference/kernels/topk_warp.cuh",
+  "runtime/launch.h"],
  "test_includes": ["sparkpipe/spark_dsv41_flash_stage_model.h", "dsv41_flash_stage.cuh"],
  "ops": {
   "d41_output_head": {
@@ -11,6 +12,16 @@
    "replaces": "D41MergeSinkKernel, D41RopeRowsKernel (inverse), and for each output group D41ColumnsKernel and SparkDsv41FlashFp8QdqKernel",
    "parameters": ["partials", "source_stride", "heads", "sink", "positions", "frequency", "group_input", "group_heads"],
    "call": "D41OutputHead<{threads}>({partials}, {source_stride}, {heads}, {sink}, {positions}, {frequency}, {group_input}, {group_heads}, rows, row, item, {shared});",
+   "lanes": 0
+  },
+  "d41_route_tail": {
+   "body": "D41RouteTail",
+   "source": "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh",
+   "replaces": "D41RouteLocalKernel, LmRouteBuildKernel and LmPackedRouteWeightKernel",
+   "parameters": ["experts_held", "route_expert", "route_weight", "route_global", "routes", "group", "local_experts", "experts", "top_k",
+    "group_row_offset", "route_packed_row", "route_source_token", "tile_m", "neuron_tiles_up", "tile_prefix_up", "neuron_tiles_down",
+    "tile_prefix_down", "packed_weight"],
+   "call": "D41RouteTail<{threads}, {experts_held}>({route_expert}, {route_weight}, {route_global}, {routes}, {group}, {local_experts}, {experts}, {top_k}, {group_row_offset}, {route_packed_row}, {route_source_token}, {tile_m}, {neuron_tiles_up}, {tile_prefix_up}, {neuron_tiles_down}, {tile_prefix_down}, {packed_weight});",
    "lanes": 0
   },
   "d41_ring_store": {
@@ -135,6 +146,64 @@
    ],
    "outputs": ["group_input", "ring"],
    "perturb": "records"
+  },
+  {
+   "name": "D41FusedRouteKernel",
+   "launcher": "D41FusedRouteLaunch",
+   "arguments_type": "D41FusedRouteArguments",
+   "rows_constant": "D41FusedRouteRows",
+   "threads": 256,
+   "rows_max": 16,
+   "shared_bytes": "0u",
+   "replaces": ["LmTopkWarpKernel", "D41RouteLocalKernel", "LmRouteBuildKernel", "LmPackedRouteWeightKernel"],
+   "arguments": [
+    {"name": "scores", "type": "const float *", "elements": "rows * D41_EXPERTS", "fill": "f32"},
+    {"name": "bias", "type": "const float *", "elements": "D41_EXPERTS", "fill": "f32"},
+    {"name": "group", "type": "const uint8_t *", "elements": "D41_EXPERTS", "fill": "index", "expression": "index % 4u == 0u ? index / 4u : 0xffu"},
+    {"name": "route_expert", "type": "uint32_t *", "elements": "rows * D41_TOPK", "fill": "zero"},
+    {"name": "route_weight", "type": "float *", "elements": "rows * D41_TOPK", "fill": "zero"},
+    {"name": "route_global", "type": "uint32_t *", "elements": "rows * D41_TOPK", "fill": "zero"},
+    {"name": "group_row_offset", "type": "uint32_t *", "elements": "D41_LOCAL_EXPERTS + 2u", "fill": "zero", "row_zero": "none"},
+    {"name": "route_packed_row", "type": "uint32_t *", "elements": "rows * D41_TOPK", "fill": "zero", "row_zero": "none"},
+    {"name": "route_source_token", "type": "uint32_t *", "elements": "rows * D41_TOPK", "fill": "zero", "row_zero": "none"},
+    {"name": "tile_prefix_up", "type": "uint32_t *", "elements": "D41_LOCAL_EXPERTS + 2u", "fill": "zero", "row_zero": "none"},
+    {"name": "tile_prefix_down", "type": "uint32_t *", "elements": "D41_LOCAL_EXPERTS + 2u", "fill": "zero", "row_zero": "none"},
+    {"name": "packed_weight", "type": "float *", "elements": "rows * D41_TOPK", "fill": "zero", "row_zero": "none"},
+    {"name": "fault", "type": "uint32_t *", "elements": "1u", "fill": "zero", "partial": true, "row_zero": "none"},
+    {"name": "counters", "type": "uint32_t *", "elements": "1u", "fill": "zero"},
+    {"name": "tile_m", "type": "uint32_t", "derived": "LmLaunchGroupedTileM(rows, D41_TOPK, D41_LOCAL_EXPERTS + 1u)"},
+    {"name": "neuron_tiles_up", "type": "uint32_t", "value": "(2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N"},
+    {"name": "neuron_tiles_down", "type": "uint32_t", "value": "(D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N"}
+   ],
+   "roles": [
+    {
+     "op": "topk_route_row",
+     "blocks_per_row": "1u",
+     "bind": {"k": "D41_TOPK", "renormalise": "true", "transform": "LM_TOPK_SCORE_SQRT_SOFTPLUS", "scores": "arguments.scores", "n": "D41_EXPERTS",
+      "indices": "arguments.route_expert", "values": "arguments.route_weight", "bias": "arguments.bias", "logits": "(const uint16_t *)0",
+      "scale": "D41_ROUTE_SCALE", "fault": "arguments.fault"},
+     "tail": {
+      "op": "d41_route_tail",
+      "scope": "launch",
+      "bind": {"experts_held": "D41_LOCAL_EXPERTS + 1u", "route_expert": "arguments.route_expert", "route_weight": "arguments.route_weight",
+       "route_global": "arguments.route_global", "routes": "rows * D41_TOPK", "group": "arguments.group", "local_experts": "D41_LOCAL_EXPERTS",
+       "experts": "D41_EXPERTS", "top_k": "D41_TOPK", "group_row_offset": "arguments.group_row_offset", "route_packed_row": "arguments.route_packed_row",
+       "route_source_token": "arguments.route_source_token", "tile_m": "arguments.tile_m", "neuron_tiles_up": "arguments.neuron_tiles_up",
+       "tile_prefix_up": "arguments.tile_prefix_up", "neuron_tiles_down": "arguments.neuron_tiles_down", "tile_prefix_down": "arguments.tile_prefix_down",
+       "packed_weight": "arguments.packed_weight"}
+     }
+    }
+   ],
+   "reference": [
+    "FUSED_REQUIRE((LmTopkRouteLaunch<D41_THREADS, D41_TOPK, true, LM_TOPK_SCORE_SQRT_SOFTPLUS>(rows, scores, D41_EXPERTS, route_expert, route_weight, bias, 0, D41_ROUTE_SCALE, fault, stream)) == SPARK_GPU_SUCCESS);",
+    "LM_LAUNCH((D41RouteLocalKernel), (rows * D41_TOPK + 255u) / 256u, 256u, 0, stream, route_expert, route_weight, route_global, rows * D41_TOPK, group, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);",
+    "FUSED_REQUIRE((LmRouteBuild<D41_THREADS, D41_LOCAL_EXPERTS + 1u>(route_expert, rows, rows * D41_TOPK, D41_TOPK, group_row_offset, route_packed_row, route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, tile_prefix_up, tile_prefix_down, stream)) == LM_LAUNCH_OK);",
+    "LM_LAUNCH((LmPackedRouteWeightKernel), (rows * D41_TOPK + 255u) / 256u, 256u, 0, stream, route_packed_row, route_weight, packed_weight, rows * D41_TOPK);"
+   ],
+   "outputs": ["route_expert", "route_weight", "route_global", "group_row_offset", "route_packed_row", "route_source_token", "tile_prefix_up",
+    "tile_prefix_down", "packed_weight", "fault"],
+   "perturb": "scores",
+   "bump": "64.0f"
   }
  ]
 }

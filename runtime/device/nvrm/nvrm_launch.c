@@ -256,12 +256,8 @@ SparkStatus SparkNvrmLaunchClusterShape(const SparkNvrmLaunchRequest *request, u
 	return(SPARK_STATUS_OK);
 }
 
-SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
-	const char *owner)
+static SparkStatus LaunchCheck(const SparkNvrmGpu *gpu, const SparkNvrmLaunchRequest *request, uint32_t cluster[3], const char *owner)
 {
-	SparkNvrmLaunchShape shape;
-	SparkNvrmQmd qmd;
-	uint32_t word,cluster[3];
 	if ( request->kernel == 0 || request->slot == 0 || (request->slot_address & (SPARK_NVRM_QMD_ALIGN - 1u)) != 0u ||
 		request->slot_bytes < SparkNvrmLaunchSlotBytes(request->kernel) )
 	{
@@ -277,7 +273,14 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 			"the kernel needs more local memory than its program provisioned");
 		SPARK_FAIL(status);
 	}
-	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus LaunchBuild(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const uint32_t cluster[3],
+	const char *owner)
+{
+	SparkNvrmLaunchShape shape;
+	SparkNvrmQmd qmd;
 	LAUNCH_TRY(SparkNvrmBank0Build(request->kernel,gpu->shared_window,gpu->local_window,request->grid,request->block,cluster,request->arguments,
 		request->argument_bytes,request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,
 		request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,owner));
@@ -285,10 +288,34 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 	memcpy(shape.cluster,cluster,sizeof(shape.cluster));
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
-	word = (uint32_t)(request->slot_address >> 8);
-	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&word,1u,owner));
-	word = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;
-	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&word,1u,owner));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmLaunchDescribe(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request, const char *owner)
+{
+	uint32_t cluster[3];
+	LAUNCH_TRY(LaunchCheck(gpu,request,cluster,owner));
+	return(LaunchBuild(gpu,program,request,cluster,owner));
+}
+
+void SparkNvrmLaunchWords(uint32_t *words, uint64_t slot_address)
+{
+	words[0] = SparkNvrmMethodHeader(LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,1u);
+	words[1] = (uint32_t)(slot_address >> 8);
+	words[2] = SparkNvrmMethodHeader(LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,1u);
+	words[3] = NVCEC0_SEND_SIGNALING_PCAS2_B_PCAS_ACTION_PREFETCH_SCHEDULE;
+}
+
+SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
+	const char *owner)
+{
+	uint32_t words[SPARK_NVRM_LAUNCH_WORDS],cluster[3];
+	LAUNCH_TRY(LaunchCheck(gpu,request,cluster,owner));
+	LAUNCH_TRY(SparkNvrmBindLocalMemory(gpu,channel,owner));
+	LAUNCH_TRY(LaunchBuild(gpu,program,request,cluster,owner));
+	SparkNvrmLaunchWords(words,request->slot_address);
+	LAUNCH_TRY(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_PCAS_A,&words[1],1u,owner));
+	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&words[3],1u,owner));
 }
 
 static uint32_t launch_latch;
@@ -308,9 +335,73 @@ static uint32_t LaunchLatch(void)
 {
 	uint32_t latch;
 	do
-		latch = __atomic_add_fetch(&launch_latch,1u,__ATOMIC_RELAXED);
+		latch = __atomic_add_fetch(&launch_latch,1u,__ATOMIC_RELAXED) & (SPARK_NVRM_PROGRAM_LATCH_FIRST - 1u);
 	while ( latch == 0u );
 	return(latch);
+}
+
+typedef struct LatchRange
+{
+	uint32_t base;
+	uint32_t count;
+} LatchRange;
+
+static pthread_mutex_t latch_ranges_lock = PTHREAD_MUTEX_INITIALIZER;
+static LatchRange *latch_ranges;
+static uint32_t latch_range_count;
+static uint32_t latch_range_capacity;
+
+SparkStatus SparkNvrmLatchRangeTake(uint32_t count, uint32_t *base, const char *owner)
+{
+	uint64_t start = SPARK_NVRM_PROGRAM_LATCH_FIRST;
+	uint32_t index;
+	SparkStatus status = SPARK_STATUS_OK;
+	*base = 0u;
+	if ( count == 0u )
+		return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&latch_ranges_lock);
+	for (index = 0u; index < latch_range_count && start + count > latch_ranges[index].base; index++)
+		start = (uint64_t)latch_ranges[index].base + latch_ranges[index].count;
+	if ( start + count > UINT64_C(1) << 32 )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",owner,0,"no range of latch ids is free for the program's launches");
+	else if ( latch_range_count == latch_range_capacity )
+	{
+		const uint32_t capacity = latch_range_capacity != 0u ? 2u * latch_range_capacity : 64u;
+		LatchRange *grown = (LatchRange *)realloc(latch_ranges,(size_t)capacity * sizeof(*grown));
+		if ( grown == 0 )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",owner,0,"out of host memory for the latch ranges");
+		else
+		{
+			latch_ranges = grown;
+			latch_range_capacity = capacity;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		memmove(latch_ranges + index + 1u,latch_ranges + index,(size_t)(latch_range_count - index) * sizeof(*latch_ranges));
+		latch_ranges[index].base = (uint32_t)start;
+		latch_ranges[index].count = count;
+		latch_range_count++;
+		*base = (uint32_t)start;
+	}
+	pthread_mutex_unlock(&latch_ranges_lock);
+	return(status);
+}
+
+void SparkNvrmLatchRangeGive(uint32_t base, uint32_t count)
+{
+	uint32_t index;
+	if ( count == 0u )
+		return;
+	pthread_mutex_lock(&latch_ranges_lock);
+	for (index = 0u; index < latch_range_count; index++)
+		if ( latch_ranges[index].base == base && latch_ranges[index].count == count )
+		{
+			memmove(latch_ranges + index,latch_ranges + index + 1u,(size_t)(latch_range_count - index - 1u) * sizeof(*latch_ranges));
+			latch_range_count--;
+			break;
+		}
+	pthread_mutex_unlock(&latch_ranges_lock);
 }
 
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,

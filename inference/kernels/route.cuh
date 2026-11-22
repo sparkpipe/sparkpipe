@@ -93,8 +93,7 @@ static __device__ __forceinline__ void LmRouteBuildPrefix(uint32_t *count, uint3
 }
 
 template<uint32_t THREADS, uint32_t EXPERTS>
-__global__ __launch_bounds__(THREADS, 1)
-void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
 	constexpr uint32_t LANES = THREADS < LM_WARP_LANES ? THREADS : LM_WARP_LANES, WARPS = THREADS / LANES;
 	static_assert(THREADS % LANES == 0u, "whole warps rank the routes of a chunk");
@@ -104,7 +103,6 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 	const uint32_t *source = routes <= LM_ROUTE_STAGED_MAX ? staged : route_expert;
 	const uint32_t lane = threadIdx.x % LANES,warp = threadIdx.x / LANES;
 	uint32_t index,expert,packed,earlier,same;
-	LmDependentRelease();
 	for (index = threadIdx.x; index < EXPERTS; index += THREADS)
 		count[index] = 0u;
 	for (index = threadIdx.x; index < WARPS * EXPERTS; index += THREADS)
@@ -153,6 +151,15 @@ void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t rout
 		}
 		__syncthreads();
 	}
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+{
+	LmDependentRelease();
+	LmRouteBuildBlock<THREADS,EXPERTS>(route_expert,routes,top_k,group_row_offset,route_packed_row,route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
+		neuron_tiles_down,tile_prefix_down);
 }
 
 
