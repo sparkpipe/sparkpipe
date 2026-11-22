@@ -10,9 +10,9 @@ This runs the real K3LayerLatentMoe with only the GEMMs and the skinny dense
 launches replaced by recorders, so each projection is recorded on the kernel its
 wave takes: the two-row waves here run the router and the dense projections on
 the skinny kernel, behind its real validator, and the experts on the GEMM. It
-runs three times: with the non-interleaved expert stream, and with the pack V2
-interleaved stream (the production layout) at tile_k 128 and at tile_k 32
-(the TP16 repack granularity). Each run is asked the audit's questions:
+runs with the non-interleaved expert stream and with the pack V2 interleaved
+stream (the production layout) at tile_k 128, and each run is asked the
+audit's questions:
 
   the shared expert must not write the buffer the routed branch wrote
   the routed result must survive into hidden alone, the shared half folds
@@ -24,6 +24,11 @@ interleaved stream (the production layout) at tile_k 128 and at tile_k 32
   and the flag off must reach the plain ones
   only the two routed-expert GEMMs take the 4-bit weight format, and every
   GEMM reads BF16 activations: the checkpoint quantises weights only
+
+A pack interleaved at tile_k 32 (the TP16 repack granularity) runs its experts
+on the cell kernel, chosen by that layout. This harness binds no expert
+weights, so that run must stop at the cell kernel's refusal of w1, naming the
+cell kernel, and no GEMM may run in its place.
 """
 import re
 import subprocess
@@ -35,7 +40,9 @@ from host_cuda_compiler import host_cuda_cxx
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "tests" / "host_cuda" / "k3_layer_host.cu"
-CONFIGS = [(0, 128), (1, 128), (1, 32)]
+CONFIGS = [(0, 128), (1, 128)]
+CELL_CONFIG = (1, 32)
+CELL_REFUSAL = "k3 experts: the cell kernel refused w1"
 
 
 def parse(block):
@@ -153,14 +160,28 @@ def main():
         gemms, values = parse(block)
         failures += check_config(label, interleave, tile_k, gemms, values)
 
+    label = f"interleave {CELL_CONFIG[0]} tile_k {CELL_CONFIG[1]}"
+    block = blocks.get(CELL_CONFIG)
+    if block is None:
+        failures.append(f"{label}: the harness did not run it")
+    else:
+        gemms, _ = parse(block)
+        if "launch refused" not in block or CELL_REFUSAL not in run.stderr:
+            failures.append(f"{label}: the experts did not stop at the cell "
+                            f"kernel's refusal of the unbound weights")
+        if any(g["grouped"] for g in gemms):
+            failures.append(f"{label}: an expert GEMM ran in the cell "
+                            f"kernel's place")
+
     for failure in failures:
         print(f"  FAIL {failure}")
     if failures:
         print(f"\nFAIL ({len(failures)})")
         return 1
     print("\nthe routed branch survives, the shared expert adds, the experts "
-          "see every route, and the interleave flag reaches the interleaved "
-          "GEMMs at the pack's tile_k")
+          "see every route, the interleave flag reaches the interleaved "
+          "GEMMs at the pack's tile_k, and a pack interleaved at tile_k 32 "
+          "runs its experts on the cell kernel alone")
     return 0
 
 

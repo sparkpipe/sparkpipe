@@ -68,6 +68,8 @@ const char *SparkStatusToString(SparkStatus status)
 { (void)status; return "test-status"; }
 SparkStatus SparkKvSnapshotPurgeTree(SparkKvLedger *ledger,const char *root,SparkKvSnapshotPurgeResult *result)
 { (void)ledger; (void)root; memset(result,0,sizeof(*result)); return SPARK_STATUS_OK; }
+SparkStatus SparkKvNodeRoot(char *path,uint32_t capacity)
+{ if ( getenv("TEST_NODE_ROOT_REFUSED") != 0 ) return SPARK_STATUS_INVALID_ARGUMENT; (void)snprintf(path,capacity,"/tmp/test-kv-root"); return SPARK_STATUS_OK; }
 SparkStatus SparkKvLedgerDefaultPath(char *path,uint32_t capacity)
 { (void)snprintf(path,capacity,"/tmp/test-kv-ledger"); return SPARK_STATUS_OK; }
 SparkStatus SparkKvLedgerOpen(SparkKvLedger *ledger,const char *path,uint64_t quota_bytes)
@@ -86,6 +88,9 @@ SparkStatus SparkKvLedgerSample(SparkKvLedger *ledger,SparkKvLedgerUsage *usage)
     assert result.returncode == 0, result
     assert markers(result.stdout) == ["SERVER-UNBOUND", "MESH-INIT", "SERVER-LISTEN", "SERVER-RUN", "MESH-STOP", "SERVER-DESTROY"], result
     assert result.stdout.index("spark_weightd ready") > result.stdout.index("SERVER-LISTEN"), result
+    assert "weightd kv purge: every 60 s under /tmp/test-kv-root," in result.stderr, result
+    refused = subprocess.run(arguments, env={"TEST_MESH_INIT_OK": "1", "TEST_THREAD_OK": "1", "TEST_NODE_ROOT_REFUSED": "1"}, capture_output=True, text=True)
+    assert refused.returncode == 1 and "no node KV root" in refused.stderr and "SPARK_KV_NODE_ROOT" in refused.stderr and "ready" not in refused.stdout, refused
     result = subprocess.run(arguments, env={}, capture_output=True, text=True)
     assert result.returncode == 1 and "init=test-status" in result.stderr, result
     assert markers(result.stdout) == ["SERVER-UNBOUND", "MESH-INIT", "SERVER-DESTROY"], result
