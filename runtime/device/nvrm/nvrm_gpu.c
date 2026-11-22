@@ -193,7 +193,7 @@ static SparkStatus GpuGraphicsInfo(SparkNvrmGpu *gpu, const char *owner)
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus GpuMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t bytes, uint32_t flags, uint32_t system, void *target,
+static SparkStatus GpuMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t offset, uint64_t bytes, uint32_t flags, uint32_t system, void *target,
 	int *fd, uint8_t **cpu, const char *owner)
 {
 	nv_ioctl_nvos33_parameters_with_fd map;
@@ -214,6 +214,7 @@ static SparkStatus GpuMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t byte
 	map.params.hClient = gpu->rm.client;
 	map.params.hDevice = gpu->device;
 	map.params.hMemory = handle;
+	map.params.offset = offset;
 	map.params.length = bytes;
 	map.params.flags = flags;
 	status = SparkNvrmRmIoctl(gpu->rm.control,NV_ESC_RM_MAP_MEMORY,&map,(uint32_t)sizeof(map),"map",owner);
@@ -221,7 +222,8 @@ static SparkStatus GpuMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t byte
 		status = SparkNvrmRmStatus(map.params.status,"map",owner);
 	if ( status == SPARK_STATUS_OK )
 	{
-		mapped = mmap(target,(size_t)bytes,PROT_READ | PROT_WRITE,MAP_SHARED | (target != 0 ? MAP_FIXED : 0),map_fd,0);
+		mapped = mmap(target,(size_t)bytes,PROT_READ | (SPARK_NVRM_FIELD(flags,NVOS33_FLAGS_ACCESS) == NVOS33_FLAGS_ACCESS_READ_ONLY ? 0 : PROT_WRITE),
+			MAP_SHARED | (target != 0 ? MAP_FIXED : 0),map_fd,0);
 		if ( mapped == MAP_FAILED )
 			status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"map",owner,errno,"cannot map device memory into the process");
 		else
@@ -288,7 +290,7 @@ static SparkStatus GpuAddressSpace(SparkNvrmGpu *gpu, const char *owner)
 	virtual_memory.limit = GPU_VIRTUAL_LIMIT;
 	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->device,NV01_MEMORY_VIRTUAL,&virtual_memory,(uint32_t)sizeof(virtual_memory),&gpu->virtual_memory,owner));
 	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->subdevice,gpu->usermode_class,0,0u,&gpu->usermode,owner));
-	GPU_TRY(GpuMapToCpu(gpu,gpu->usermode,NVC361_NV_USERMODE__SIZE,0u,0u,0,&gpu->usermode_fd,&page,owner));
+	GPU_TRY(GpuMapToCpu(gpu,gpu->usermode,0u,NVC361_NV_USERMODE__SIZE,0u,0u,0,&gpu->usermode_fd,&page,owner));
 	gpu->usermode_page = (volatile uint32_t *)(void *)page;
 	memset(&vaspace,0,sizeof(vaspace));
 	vaspace.vaBase = GPU_VASPACE_BASE;
@@ -459,6 +461,11 @@ uint32_t SparkNvrmSystemPageBytes(uint64_t bytes)
 	return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 }
 
+uint32_t SparkNvrmWriteBackPageBytes(uint64_t bytes)
+{
+	return(bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
+}
+
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner)
 {
 	NV_MEMORY_ALLOCATION_PARAMS made;
@@ -488,6 +495,14 @@ SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t 
 		GPU_TRY(SparkNvrmHugePagesReady(bytes,owner));
 	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->device,NV01_MEMORY_SYSTEM,&made,(uint32_t)sizeof(made),handle,owner));
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmSystemMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t offset, uint64_t bytes, uint32_t read_only, void *target, int *fd,
+	const char *owner)
+{
+	uint8_t *cpu = 0;
+	return(GpuMapToCpu(gpu,handle,offset,bytes,read_only != 0u ? SPARK_NVRM_VALUE(NVOS33_FLAGS_ACCESS,NVOS33_FLAGS_ACCESS_READ_ONLY) : 0u,1u,target,fd,&cpu,
+		owner));
 }
 
 SparkStatus SparkNvrmVideoAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t *handle, const char *owner)
@@ -533,7 +548,7 @@ SparkStatus SparkNvrmVideoBytes(SparkNvrmGpu *gpu, uint64_t *heap_bytes, uint64_
 static SparkStatus GpuSystemMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)
 {
 	GPU_TRY(SparkNvrmSystemAllocate(gpu,memory->bytes,memory->page_bytes,memory->kind,&memory->handle,owner));
-	GPU_TRY(GpuMapToCpu(gpu,memory->handle,memory->bytes,0u,1u,(void *)(uintptr_t)memory->address,&memory->map_fd,&memory->cpu,owner));
+	GPU_TRY(GpuMapToCpu(gpu,memory->handle,0u,memory->bytes,0u,1u,(void *)(uintptr_t)memory->address,&memory->map_fd,&memory->cpu,owner));
 	memory->host_mapped = 1u;
 	return(SPARK_STATUS_OK);
 }
@@ -545,7 +560,7 @@ static uint32_t GpuPageBytes(SparkNvrmMemoryKind kind, uint64_t bytes)
 	if ( kind == SPARK_NVRM_MEMORY_VIDEO )
 		return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 	if ( kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK )
-		return(bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
+		return(SparkNvrmWriteBackPageBytes(bytes));
 	return(SparkNvrmSystemPageBytes(bytes));
 }
 

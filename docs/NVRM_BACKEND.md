@@ -287,9 +287,11 @@ Memory comes in seven kinds:
   notifiers.
 - **Write-back system memory.** Allocated by the module, cached write-back
   by the CPU and uncached by the GPU, whose accesses snoop the CPU's
-  caches, so the two stay coherent. It has 2 MiB pages from 2 MiB up and
+  caches, so the two stay coherent. It has 2 MiB pages from 2 MiB to below
+  4 GiB and 4 KiB pages from 4 GiB on (`SparkNvrmWriteBackPageBytes`). It
   backs host-pinned and shared-coherent memory on a discrete GPU (see
-  [the hub's RTX 5090](#the-hubs-rtx-5090)).
+  [the hub's RTX 5090](#the-hubs-rtx-5090)) and created host memory on
+  both.
 - **Video memory.** On a discrete GPU, allocated by the module in the GPU's
   own memory (`NV01_MEMORY_LOCAL_USER`), GPU-cached, with 2 MiB pages from
   8 MiB up. It has no CPU mapping; the copy engine moves data in and out
@@ -454,8 +456,9 @@ memory keeps 2 MiB pages from 8 MiB at every size: the hole below was
 measured in GB10 system memory, and the hub's gate passed with those pages.
 Fresh video memory is zero without a fill: on the hub, 26 GiB filled with
 0xab, freed and allocated again came back all zero.
-Its write-back system memory (host-pinned and shared-coherent) takes 2 MiB
-pages from 2 MiB up to 4 GiB and 4 KiB pages from 4 GiB on. On the hub's
+Its write-back system memory (host-pinned, shared-coherent and created host
+memory) takes 2 MiB pages from 2 MiB up to 4 GiB and 4 KiB pages from 4 GiB
+on (`SparkNvrmWriteBackPageBytes`). On the hub's
 RTX 5090 under 595.84, a write-back object of 4 GiB or more in 64 KiB or
 2 MiB pages loses 4 KiB at its end for every whole 4 GiB it holds: copy-engine
 fills and copies of 4098 MiB, 6 GiB, 8 GiB and 16 GiB left the last 4, 4,
@@ -709,6 +712,17 @@ launch-shape probe and first light:
   - fills host-pinned memory of the same size and checks every byte;
   - fills shared memory of the same size (created, mapped and adopted),
     copies it to host-visible memory and checks every byte.
+
+  Before the sizes, it writes a pattern with the CPU into 9 GiB of
+  host-pinned, shared-coherent and created host memory, and on an
+  integrated GPU into device-private memory with a host view, at
+  [0, 64 KiB), 4 GiB and 8 GiB +- 64 KiB and the last 64 KiB. The GPU
+  copies each window to device memory and on to pageable memory, and the
+  test checks every word, so a page the GPU maps elsewhere than the CPU
+  fails it. Created host memory is mapped with host access and read
+  through an adopted view of the mapping. This part needs 17 GiB of
+  available memory; `build/test_nvrm_large_transfers boundaries` runs it
+  alone.
   On a discrete GPU this covers video memory, write-back system memory in
   both its spaces, and shared video memory.
 
@@ -939,6 +953,14 @@ like this:
   memory gets (`SparkNvrmSystemAllocate`). On a discrete GPU, video memory
   in 2 MiB pages (`SparkNvrmVideoAllocate`), exported, imported and mapped
   the same way.
+- **Create host memory** (`SparkDeviceMemoryCreateHost`). The same
+  module system memory object with CPU-cached pages
+  (`NVOS32_ATTR_COHERENCY_WRITE_BACK`, the write-back system memory kind) that the GPU does not cache
+  (`NVOS32_ATTR2_GPU_CACHEABLE_NO`), in the write-back page sizes of
+  host-pinned memory: 2 MiB pages from 2 MiB to below 4 GiB and 4 KiB
+  pages from 4 GiB on (`SparkNvrmWriteBackPageBytes`). The backend
+  marks it as host memory it created; an import of it is not. The backend
+  sets `SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE`.
 - **Export.** Opens a fresh `/dev/nvidiactl` descriptor and attaches the
   object to it with `NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`. The
   module keeps the exported object alive even after the exporting client
@@ -954,8 +976,35 @@ like this:
   for, then the unified-memory external mapping, read-only or read-write.
   Each step that fails undoes the steps before it, so a failed map leaves
   nothing mapped.
+- **Host access.** Only on host memory this process created; any other
+  handle is refused with `host access maps only host memory`. The CPU
+  mapping comes first (`SparkNvrmSystemMapToCpu`): `NV_ESC_RM_MAP_MEMORY`
+  on a fresh `/dev/nvidiactl` descriptor with the offset and length asked
+  for, then `mmap` of that descriptor over the reserved CPU range at the
+  same address, read-only without host write. Device access then maps
+  the same address as above, so the CPU and the GPU use one address.
 - **Unmap** (`SparkNvrmGpuUnmap`). Frees the external range and the RM
-  mapping of each whole mapping in the span.
+  mapping of each whole mapping in the span, puts the no-access CPU
+  reservation back over a CPU mapping, and closes its descriptor.
+
+Host memory rests on these open-gpu-kernel-modules 580.178.04 paths:
+
+- `src/nvidia/src/kernel/mem_mgr/system_mem.c`, `sysmemConstruct_IMPL`,
+  lines 254-269: the object's CPU caching comes from
+  `NVOS32_ATTR_COHERENCY` (`memSetSysmemCacheAttrib`).
+- `src/nvidia/arch/nvalloc/unix/src/escape.c`, `NV_ESC_RM_MAP_MEMORY`,
+  lines 513-540: the module ignores a caching type from user space, so
+  the mapping keeps the object's, and binds the mapping to the
+  descriptor passed in.
+- `src/nvidia/arch/nvalloc/unix/src/osapi.c`, `rm_create_mmap_context`
+  and `RmGetAllocPrivate`, lines 2394-2548: a CPU mapping is made only
+  for the client's own process, and of system memory.
+- `kernel-open/nvidia/nv-mmap.c`, `nvidia_mmap_helper`, lines 697-731:
+  system memory is mapped with the object's cache type.
+- `src/nvidia/arch/nvalloc/unix/src/os.c`,
+  `cliresCtrlCmdOsUnixExportObjectToFd_IMPL` (line 2282) and
+  `cliresCtrlCmdOsUnixImportObjectFromFd_IMPL` (line 2538): export and
+  import take any memory object, host memory as device memory.
 
 The backend counts each object's mappings and frees the object only after
 its last unmap and its release. Unified memory also duplicates the object

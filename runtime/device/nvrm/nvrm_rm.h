@@ -12,6 +12,8 @@ extern "C" {
 #define SPARK_NVRM_HIGH(range) (1 ? range)
 #define SPARK_NVRM_VALUE(range, value) \
 	((((uint64_t)(value)) & ((2ull << (SPARK_NVRM_HIGH(range) - SPARK_NVRM_LOW(range))) - 1u)) << SPARK_NVRM_LOW(range))
+#define SPARK_NVRM_FIELD(word, range) \
+	((((uint64_t)(word)) >> SPARK_NVRM_LOW(range)) & ((2ull << (SPARK_NVRM_HIGH(range) - SPARK_NVRM_LOW(range))) - 1u))
 
 typedef struct SparkNvrmRm
 {

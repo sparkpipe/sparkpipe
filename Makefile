@@ -1741,7 +1741,7 @@ NVRM_FLAVOUR_GOALS += nvrm-large-transfers
 .PHONY: nvrm-large-transfers
 nvrm-large-transfers: nvrm-gpu-present build/test_nvrm_large_transfers
 	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
-	./build/test_nvrm_large_transfers sizes || status=1; \
+	./build/test_nvrm_large_transfers || status=1; \
 	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
 
 build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY) | build
