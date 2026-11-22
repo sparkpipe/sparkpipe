@@ -91,6 +91,7 @@ typedef struct K31Sequence
 	uint64_t held_end;
 	uint64_t verified;
 	uint64_t last_used;
+	uint32_t retired;
 	uint32_t page_count;
 	uint16_t **pages;
 	uint8_t *held;
@@ -1124,7 +1125,7 @@ static K31Sequence *K31SequenceFind(K31State *state, uint64_t id, uint32_t creat
 	for ( uint32_t index = 0u; index < K31_SEQUENCES_MAX; index++ )
 	{
 		K31Sequence *sequence = &state->sequences[index];
-		if ( sequence->pages != 0 && sequence->id == id )
+		if ( sequence->pages != 0 && sequence->retired == 0u && sequence->id == id )
 		{
 			sequence->last_used = ++state->clock;
 			return sequence;
@@ -1149,19 +1150,19 @@ static K31Sequence *K31SequenceFind(K31State *state, uint64_t id, uint32_t creat
 	return empty;
 }
 
-static K31Sequence *K31SequenceOldestBut(K31State *state, const K31Sequence *keep)
+static K31Sequence *K31SequenceOldestBut(K31State *state, const K31Sequence *keep, const K31Sequence *donor)
 {
 	K31Sequence *oldest = 0;
 	for ( uint32_t index = 0u; index < K31_SEQUENCES_MAX; index++ )
 	{
 		K31Sequence *sequence = &state->sequences[index];
-		if ( sequence->pages != 0 && sequence != keep && (oldest == 0 || sequence->last_used < oldest->last_used) )
+		if ( sequence->pages != 0 && sequence != keep && sequence != donor && (oldest == 0 || sequence->last_used < oldest->last_used) )
 			oldest = sequence;
 	}
 	return oldest;
 }
 
-static SparkStatus K31SequencePages(K31State *state, K31Sequence *sequence, uint64_t end)
+static SparkStatus K31SequencePages(K31State *state, K31Sequence *sequence, uint64_t end, const K31Sequence *donor)
 {
 	const uint64_t needed = (end + K31_PAGE_POSITIONS - 1u) / K31_PAGE_POSITIONS;
 	const uint64_t had = (uint64_t)sequence->page_count * K31_PAGE_POSITIONS;
@@ -1185,7 +1186,7 @@ static SparkStatus K31SequencePages(K31State *state, K31Sequence *sequence, uint
 	{
 		while ( (state->pages_used + 1u) * K31_PAGE_BYTES > state->context_bytes )
 		{
-			K31Sequence *oldest = K31SequenceOldestBut(state, sequence);
+			K31Sequence *oldest = K31SequenceOldestBut(state, sequence, donor);
 			if ( oldest == 0 )
 				return SPARK_STATUS_CAPACITY_EXCEEDED;
 			K31SequenceFree(state, oldest);
@@ -1259,13 +1260,25 @@ static SparkStatus K31Ingest(void *opaque, const SparkTapStreamReaderFrame *fram
 	for ( uint32_t tap = 0u; tap < K31_TAPS; tap++ )
 		if ( ((uint64_t)frame->required_index[tap] + 1u) * K31_HIDDEN > frame->row_elements )
 			return SPARK_STATUS_SCHEMA_ERROR;
-	sequence = K31SequenceFind(state, frame->header.sequence_id, 1u);
+	sequence = K31SequenceFind(state, frame->header.sequence_id, 0u);
+	if ( sequence != 0 && first != 0u &&
+		(sequence->control_generation != frame->header.control_generation || sequence->request_id != frame->header.request_id) )
+	{
+		sequence->retired = 1u;
+		sequence = 0;
+	}
 	if ( sequence == 0 )
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	status = K31SequencePages(state, sequence, end);
+	{
+		sequence = K31SequenceFind(state, frame->header.sequence_id, 1u);
+		if ( sequence == 0 )
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		sequence->control_generation = frame->header.control_generation;
+		sequence->request_id = frame->header.request_id;
+	}
+	status = K31SequencePages(state, sequence, end, 0);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( first == 0u || sequence->control_generation != frame->header.control_generation || sequence->request_id != frame->header.request_id )
+	if ( first == 0u )
 	{
 		K31Forget(sequence, 0u);
 		sequence->control_generation = frame->header.control_generation;
@@ -1449,6 +1462,81 @@ static uint32_t K31Covers(const K31Sequence *sequence, uint64_t position)
 	return sequence != 0 && position - 1u < (uint64_t)sequence->page_count * K31_PAGE_POSITIONS && sequence->held[position - 1u] != 0u ? 1u : 0u;
 }
 
+static uint32_t K31Complete(const K31Sequence *sequence, uint64_t position)
+{
+	return position <= (uint64_t)sequence->page_count * K31_PAGE_POSITIONS && memchr(sequence->held, 0, (size_t)position) == 0 ? 1u : 0u;
+}
+
+static SparkStatus K31CopyRows(K31State *state, K31Sequence *sequence, const K31Sequence *donor, uint64_t first, uint64_t end)
+{
+	while ( first < end )
+	{
+		const uint64_t page_end = (first / K31_PAGE_POSITIONS + 1u) * K31_PAGE_POSITIONS, stop = end < page_end ? end : page_end;
+		for ( uint32_t layer = 0u; layer < K31_LAYERS; layer++ )
+			if ( SparkGpuMemcpyAsync(K31Row(sequence, layer, first), K31Row(donor, layer, first), (size_t)(stop - first) * K31_ROW_BYTES,
+				SPARK_GPU_COPY_DEVICE_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
+				return SPARK_STATUS_IO_ERROR;
+		memset(sequence->held + first, 1, (size_t)(stop - first));
+		memcpy(sequence->tokens + first, donor->tokens + first, (size_t)(stop - first) * sizeof(uint32_t));
+		first = stop;
+	}
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K31CopyPrefix(K31State *state, K31Sequence *sequence, const K31Sequence *donor, const SparkDraftServerRequest *request)
+{
+	const uint64_t donor_capacity = (uint64_t)donor->page_count * K31_PAGE_POSITIONS;
+	const uint64_t shared = request->position < donor_capacity ? request->position : donor_capacity;
+	uint64_t prefix = 0u, at = 0u;
+	SparkStatus status;
+	while ( prefix < shared && donor->tokens[prefix] == request->committed_token_ids[prefix] )
+		prefix++;
+	if ( prefix == 0u )
+		return SPARK_STATUS_OK;
+	status = K31SequencePages(state, sequence, prefix, donor);
+	while ( status == SPARK_STATUS_OK && at < prefix )
+	{
+		uint64_t stop;
+		if ( donor->held[at] == 0u || sequence->held[at] != 0u )
+		{
+			at++;
+			continue;
+		}
+		stop = at + 1u;
+		while ( stop < prefix && donor->held[stop] != 0u && sequence->held[stop] == 0u )
+			stop++;
+		status = K31CopyRows(state, sequence, donor, at, stop);
+		at = stop;
+	}
+	return status;
+}
+
+static SparkStatus K31FillFromDonors(K31State *state, K31Sequence *sequence, const SparkDraftServerRequest *request)
+{
+	static_assert(K31_SEQUENCES_MAX <= 64u, "one bit per sequence marks the donors tried");
+	uint64_t tried = 0u;
+	SparkStatus status = SPARK_STATUS_OK;
+	while ( status == SPARK_STATUS_OK && K31Complete(sequence, request->position) == 0u )
+	{
+		K31Sequence *donor = 0;
+		uint32_t chosen = K31_SEQUENCES_MAX;
+		for ( uint32_t index = 0u; index < K31_SEQUENCES_MAX; index++ )
+		{
+			K31Sequence *other = &state->sequences[index];
+			if ( other->pages != 0 && other != sequence && ((tried >> index) & 1u) == 0u && (donor == 0 || other->last_used > donor->last_used) )
+			{
+				donor = other;
+				chosen = index;
+			}
+		}
+		if ( donor == 0 )
+			break;
+		tried |= UINT64_C(1) << chosen;
+		status = K31CopyPrefix(state, sequence, donor, request);
+	}
+	return status;
+}
+
 static uint32_t K31TokensMatch(K31Sequence *sequence, const SparkDraftServerRequest *request)
 {
 	const uint64_t capacity = (uint64_t)sequence->page_count * K31_PAGE_POSITIONS;
@@ -1591,6 +1679,8 @@ static SparkStatus K31Propose(void *opaque, const SparkDraftServerRequest *reque
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( K31Covers(sequence, request->position) == 0u )
 		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
+	if ( sequence != 0 && K31Complete(sequence, request->position) == 0u && K31FillFromDonors(state, sequence, request) != SPARK_STATUS_OK )
+		return SPARK_STATUS_IO_ERROR;
 	if ( sequence != 0 && K31TokensMatch(sequence, request) == 0u )
 		return SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT;
 	drafts = drafts < K31_BLOCK ? drafts : K31_BLOCK;
