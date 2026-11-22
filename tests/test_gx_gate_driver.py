@@ -31,7 +31,7 @@ case "$*" in
   *8440/status*) printf '{"state": "idle", "active": %s, "error": null, "history": [{"seconds": 1.0}]}\\n' "$(cat "$FAKE_FLEET/active")" ;;
   *8440/activate*) model="$(printf '%s' "$*" | sed 's/.*"model":"\\([^"]*\\)".*/\\1/')"; printf '"%s"' "$model" > "$FAKE_FLEET/active"; echo "activate $model" >> "$FAKE_FLEET/events.log" ;;
   *8440/deactivate*) printf null > "$FAKE_FLEET/active"; echo deactivate >> "$FAKE_FLEET/events.log" ;;
-  */v1/models*) echo '{"data": [{"max_model_len": 262144}]}' ;;
+  */v1/models*) echo '{"data": [{"max_model_len": 262144, "block_tokens": 64}]}' ;;
   */health*) echo '{"status":"ok","served":0,"tokenizer":true,"ranks":4,"connected_ranks":4,"missing_rank":-1}' ;;
   */v1/completions*) echo "request $(printf '%s' "$*" | sed 's/.*127\\.0\\.0\\.1:\\([0-9]*\\).*/\\1/')" >> "$FAKE_FLEET/events.log"; [ -e "$FAKE_FLEET/silent" ] || echo '{"tokens":[4203],"usage":{}}' ;;
   *) exit 22 ;;
@@ -178,7 +178,7 @@ with tempfile.TemporaryDirectory() as directory:
     seen = runs(events)
     check(result.returncode == 0 and f"GX-PASS {MODEL}" in result.stdout, "a passing gate does not exit 0 with GX-PASS", result)
     check([line.split()[1] for line in events if line.startswith("run ")] == ORDER, f"the steps did not run in plan order: {events}", result)
-    check(any(line.startswith("plan ") and "--context-limit 262144" in line and "--release testsha" in line and f"--model {MODEL}" in line for line in events), f"the plan does not carry the API's context length, the release and the model: {events}")
+    check(any(line.startswith("plan ") and "--context-limit 262144" in line and "--block-tokens 64" in line and "--release testsha" in line and f"--model {MODEL}" in line for line in events), f"the plan does not carry the API's context length, the release and the model: {events}")
     check("snapshots=16 backing=16 index=1" in seen.get("chain", ""), f"the chain step ran on a changed cache: {seen.get('chain')}")
     for step in ("park:8000", "cold:1"):
         check("snapshots=0 backing=0 index=0" in seen.get(step, ""), f"{step} follows a clear but found KV files or the prefix index: {seen.get(step)}")

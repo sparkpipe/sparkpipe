@@ -660,7 +660,11 @@ engine's `cuts` from the prompt's structure:
   at or before the tokens of the prompt's text through the block, tokenized
   by itself, less 8 tokens (`tools/serving/prompt_cuts.py`). Two prompts
   with the same block get the same cut. A block's cut within one cache
-  block of the opening's end is left out;
+  block of the opening's end is left out. A cache block is the model's
+  `block_tokens` (64 unless the model's entry says otherwise; DeepSeek V4.1
+  Flash caches in blocks of 256). Before the first request to an engine the
+  chat layer reads the engine's `/v1/models`: a model whose engine reports
+  another block size, or none, is refused with a 503 until the two agree;
 - where a context pack ends, which is where the pack's warm-up commit ended;
 - one token before each earlier reply began, and where the reply ends. A
   replayed reply's cuts come from its record. A history rendered from text,

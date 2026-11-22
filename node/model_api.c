@@ -2091,8 +2091,8 @@ static void *api_connection(void *arg)
 			(void)snprintf(b, sizeof(b),
 				"{\"object\":\"list\",\"data\":[{\"id\":\"%s\","
 				"\"object\":\"model\",\"owned_by\":\"sparkpipe\","
-				"\"max_model_len\":%u,\"served\":%llu}]}",
-				id, __atomic_load_n(&S.context_limit, __ATOMIC_ACQUIRE), (unsigned long long)S.served);
+				"\"max_model_len\":%u,\"block_tokens\":%u,\"served\":%llu}]}",
+				id, __atomic_load_n(&S.context_limit, __ATOMIC_ACQUIRE), adapter->cache_block_token_count, (unsigned long long)S.served);
 			send_response(fd, 200, b);
 		}
 	}

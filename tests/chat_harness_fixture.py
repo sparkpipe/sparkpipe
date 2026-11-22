@@ -79,6 +79,8 @@ def common_prefix(left, right):
 class Engine:
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
+        self.block_tokens = 64
+        self.model_reads = 0
         self.replies = []
         self.requests = []
         self.committed = []
@@ -188,6 +190,13 @@ class Engine:
     async def health(self, request):
         return web.json_response({"status": "ok"})
 
+    async def models(self, request):
+        self.model_reads += 1
+        entry = {"id": "engine", "object": "model", "max_model_len": 1 << 20}
+        if self.block_tokens is not None:
+            entry["block_tokens"] = self.block_tokens
+        return web.json_response({"object": "list", "data": [entry]})
+
 
 class Controller:
     def __init__(self, active, models):
@@ -228,6 +237,7 @@ class Harness:
         engine_app = web.Application()
         engine_app.router.add_post("/v1/completions", self.engine.completions)
         engine_app.router.add_get("/health", self.engine.health)
+        engine_app.router.add_get("/v1/models", self.engine.models)
         self.engine_runner, engine_base = await serve(engine_app)
         self.controller = Controller(self.active, self.model_ids)
         control_app = web.Application()

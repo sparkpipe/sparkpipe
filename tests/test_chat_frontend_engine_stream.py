@@ -37,10 +37,16 @@ class Engine:
         return response
 
 
+async def engine_models(request):
+    return web.json_response({"object": "list", "data": [{"id": "engine", "object": "model", "max_model_len": 1 << 20, "block_tokens": 64}]})
+
+
 class Model:
     def __init__(self, base):
         self.id = "fake"
         self.engine = base
+        self.block_tokens = 64
+        self.engine_block = None
 
 
 async def collect(frontend, model):
@@ -54,6 +60,7 @@ async def run(failures):
     engine = Engine()
     app = web.Application()
     app.router.add_post("/v1/completions", engine.completions)
+    app.router.add_get("/v1/models", engine_models)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)

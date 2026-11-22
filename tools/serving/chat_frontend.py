@@ -1011,6 +1011,9 @@ class WarmGate:
 
 
 class Model:
+    block_tokens = CACHE_BLOCK_TOKENS
+    engine_block = None
+
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
@@ -1058,9 +1061,13 @@ class Model:
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
             raise SystemExit(f"chat_frontend: {self.id} needs sequences, the engine's sequences at once (deployment/lanes.json)")
         self.sequences = SequenceGate(sequences)
-        self.resume_tokens = spec.get("resume_tokens", CACHE_BLOCK_TOKENS)
-        if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % CACHE_BLOCK_TOKENS:
-            raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {CACHE_BLOCK_TOKENS}: the positions a cached prefix resumes from")
+        self.block_tokens = spec.get("block_tokens", CACHE_BLOCK_TOKENS)
+        if isinstance(self.block_tokens, bool) or not isinstance(self.block_tokens, int) or self.block_tokens < 1:
+            raise SystemExit(f"chat_frontend: {self.id} block_tokens must be a positive integer: the tokens of one cache block of the model's engine")
+        self.engine_block = None
+        self.resume_tokens = spec.get("resume_tokens", self.block_tokens)
+        if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % self.block_tokens:
+            raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {self.block_tokens}: the positions a cached prefix resumes from")
         self.images = spec.get("images", False) is True
         self.reply_commit = spec.get("reply_commit", False)
         if not isinstance(self.reply_commit, bool):
@@ -1167,8 +1174,8 @@ class Model:
         for index, (offset, exact, kept) in enumerate(bounds):
             count = counts[index]
             later = next((counts[other] for other in range(index + 1, len(bounds)) if bounds[other][1]), None)
-            cut = count if exact else prompt_cuts.structural_cut(count)
-            if cut > floor and (exact or later is None or later - count >= prompt_cuts.BLOCK_TOKENS):
+            cut = count if exact else prompt_cuts.structural_cut(count, self.block_tokens)
+            if cut > floor and (exact or later is None or later - count >= self.block_tokens):
                 named.append((cut, kept, exact))
             floor = max(floor, count)
         return opening, named
@@ -1990,7 +1997,7 @@ def opening_cuts(model, messages, marks, tools, kwargs, pack, ids, tools_kept=Fa
     head = array("I", ids[:len(opening)])
     cuts, keep = [], []
     for cut, kept, exact in named:
-        if not CACHE_BLOCK_TOKENS <= cut < len(ids) or (exact and head[:cut] != opening[:cut]):
+        if not model.block_tokens <= cut < len(ids) or (exact and head[:cut] != opening[:cut]):
             continue
         cuts.append(cut)
         if kept:
@@ -2704,7 +2711,7 @@ class Frontend:
         session, agent = plan.get("affinity") or (None, None)
         usage = timing.get("engine_usage") or result.get("usage") or {}
         mains = [(scope, session, agent, kind) for kind in MAIN_CLASSES] if session is not None else []
-        facts = {"model": model.id, "block_tokens": CACHE_BLOCK_TOKENS, "resume_tokens": model.resume_tokens, "scope": scope,
+        facts = {"model": model.id, "block_tokens": model.block_tokens, "resume_tokens": model.resume_tokens, "scope": scope,
                  "session": (scope, session, agent, client.get("class")) if session is not None else None, "shape": plan.get("shape", "chat"),
                  "session_fallbacks": mains if client.get("class") == miss_ledger.COMPACTION_CLASS else (), "prompt_tokens": plan["prompt_tokens"],
                  "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0), "engine": timing.get("engine_cache"),
@@ -3001,14 +3008,14 @@ class Frontend:
     def prefix_ledger(self, model):
         if self.prefixes is None:
             self.prefixes = {}
-        return self.prefixes.setdefault(model.id, PrefixLedger())
+        return self.prefixes.setdefault(model.id, PrefixLedger(model.block_tokens))
 
     def public_body_limit(self):
         context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
         return max(PUBLIC_BODY_MIN_BYTES, PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES)
 
     def public_prefix_ledger(self, scope, model):
-        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
+        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(model.block_tokens, PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         messages, tools, kwargs, trace = self.plan_input(model, body, None)
@@ -3121,10 +3128,31 @@ class Frontend:
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
+    async def engine_block(self, model):
+        if model.engine_block == model.block_tokens:
+            return
+        async with self.session.get(model.engine + "/v1/models", timeout=aiohttp.ClientTimeout(total=10)) as response:
+            text = await response.text()
+            if response.status != 200:
+                raise self.engine_refusal(model, response.status, text)
+        try:
+            reported = json.loads(text)["data"][0].get("block_tokens")
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+            reported = None
+        if isinstance(reported, bool) or not isinstance(reported, int) or reported != model.block_tokens:
+            self.engine_detail(model, "block_tokens", 503, text)
+            said = f"caches in blocks of {reported} tokens" if isinstance(reported, int) and not isinstance(reported, bool) else "does not say how many tokens its cache block holds"
+            raise RequestError(503, "engine_block_mismatch", f"the {model.id} engine {said} and the chat layer names its cuts on blocks of {model.block_tokens}; "
+                               f"it is not served until both agree")
+        model.engine_block = reported
+
     async def engine_events(self, model, engine_body):
         try:
+            await self.engine_block(model)
             async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
                 if response.status != 200:
+                    if response.status >= 500:
+                        model.engine_block = None
                     raise self.engine_refusal(model, response.status, await response.text())
                 async for raw in response.content:
                     line = raw.decode("utf-8", "replace").strip()
@@ -3141,6 +3169,7 @@ class Frontend:
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            model.engine_block = None
             self.engine_detail(model, "unreachable", 503, f"{model.engine}: {type(error).__name__}: {error}")
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine is unreachable; try again")
 

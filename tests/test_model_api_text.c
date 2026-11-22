@@ -35,6 +35,7 @@
 
 #define TEST_RANK_COUNT 3u
 #define TEST_API_MAX_SEQUENCE_POSITIONS 64u
+#define TEST_API_BLOCK_TOKENS 4u
 #define TEST_API_TURN_END_TOKEN 4202u
 
 static const char TestApiChatTemplateJson[] =
@@ -1604,10 +1605,12 @@ static void TestApiModelList(TestApiStack *stack)
 	char response[4096];
 	TestApiHttpCall(stack->api_port,"GET","/v1/models",0,response,sizeof(response));
 	const char *length = strstr(response,"\"max_model_len\":");
+	const char *block = strstr(response,"\"block_tokens\":");
 	assert(TestApiResponseStatus(response) == 200);
 	assert(strstr(response,"\"id\":\"test/model\"") != 0);
 	assert(length != 0 && strtoul(length + strlen("\"max_model_len\":"),0,10) > 0u);
-	printf("test_model_api_text: /v1/models names the served adapter's model and its context\n");
+	assert(block != 0 && strtoul(block + strlen("\"block_tokens\":"),0,10) == TEST_API_BLOCK_TOKENS);
+	printf("test_model_api_text: /v1/models names the served adapter's model, its context and the tokens of one cache block\n");
 }
 
 static void TestApiIdleWake(TestApiStack *stack)

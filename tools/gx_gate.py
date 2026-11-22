@@ -102,7 +102,7 @@ def prompt_digest(tokens):
     return hashlib.sha256(struct.pack("<%dI" % len(tokens), *tokens)).hexdigest()
 
 
-def chat_layer_cut(prefix_tokens):
+def chat_layer_cut(prefix_tokens, block):
     here = os.path.dirname(os.path.abspath(__file__))
     if "rule" not in CUT_RULE:
         source = next((path for path in (os.path.join(here, "prompt_cuts.py"), os.path.join(here, "serving", "prompt_cuts.py")) if os.path.exists(path)), None)
@@ -112,7 +112,7 @@ def chat_layer_cut(prefix_tokens):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         CUT_RULE["rule"] = module.structural_cut
-    return CUT_RULE["rule"](prefix_tokens)
+    return CUT_RULE["rule"](prefix_tokens, block)
 
 
 def context_tokens(case, nominal):
@@ -127,7 +127,7 @@ def head_blocks(unit):
 
 
 def head_cuts(unit):
-    return sorted({cut for cut in (chat_layer_cut(end) for end in head_blocks(unit)) if cut > 0} | {unit["context"]})
+    return sorted({cut for cut in (chat_layer_cut(end, unit["block"]) for end in head_blocks(unit)) if cut > 0} | {unit["context"]})
 
 
 def head_keeps(unit):
@@ -154,7 +154,8 @@ def build_plan(arguments):
                 continue
             kept.append(fitted)
             for tail in tails:
-                units.append({"id": "%s/%d/%d" % (case, nominal, tail), "case": case, "nominal": nominal, "context": context_tokens(case, fitted), "tail": tail})
+                units.append({"id": "%s/%d/%d" % (case, nominal, tail), "case": case, "nominal": nominal, "context": context_tokens(case, fitted), "tail": tail,
+                              "block": arguments.block_tokens})
     if not units:
         raise GateError("the plan holds no unit")
     for unit in units:
@@ -241,7 +242,7 @@ def turn_cuts(unit, replies):
 
 def resume_cut(unit, replies):
     if unit["case"] == "opening":
-        return chat_layer_cut(head_blocks(unit)[1])
+        return chat_layer_cut(head_blocks(unit)[1], unit["block"])
     if unit["case"] in PREFIX_CASES:
         return unit["context"]
     if unit["case"] == "committed":
@@ -939,6 +940,7 @@ def main(argv=None):
     plan.add_argument("--model", required=True)
     plan.add_argument("--release", required=True)
     plan.add_argument("--context-limit", type=int, required=True, help="positions the deployment serves")
+    plan.add_argument("--block-tokens", type=int, required=True, help="tokens of one cache block of the lane's engine, as its /v1/models reports; the opening case rounds its cuts to it")
     plan.add_argument("--contexts", type=contexts, default=[8000, 100000, 300000], help="prefix sizes in tokens; 'limit' is the deployment's context limit, fitted beside the tails")
     plan.add_argument("--kept-contexts", type=contexts, default=[8000, 20000])
     plan.add_argument("--drafted-contexts", type=contexts, default=[8000])

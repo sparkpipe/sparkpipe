@@ -36,6 +36,10 @@ class Vocabulary:
         return lambda token: PIECES[token]
 
 
+async def engine_models(request):
+    return web.json_response({"object": "list", "data": [{"id": "engine", "object": "model", "max_model_len": 1 << 20, "block_tokens": 64}]})
+
+
 class TaggedModel:
     id = "fake"
     reasoning = {"start": O + "think" + S, "end": C + "think" + S}
@@ -49,6 +53,8 @@ class TaggedModel:
 
     def __init__(self, engine):
         self.engine = engine
+        self.block_tokens = 64
+        self.engine_block = None
 
     def logprob(self, pair):
         return {"token": str(pair[0]), "logprob": pair[1]}
@@ -99,6 +105,7 @@ async def run(failures):
     engine = Engine()
     app = web.Application()
     app.router.add_post("/v1/completions", engine.completions)
+    app.router.add_get("/v1/models", engine_models)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)

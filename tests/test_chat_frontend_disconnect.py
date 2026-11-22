@@ -43,10 +43,16 @@ class Vocabulary:
         return lambda token: ""
 
 
+async def engine_models(request):
+    return web.json_response({"object": "list", "data": [{"id": "engine", "object": "model", "max_model_len": 1 << 20, "block_tokens": 64}]})
+
+
 class Model:
     def __init__(self, engine):
         self.id = "queued"
         self.engine = engine
+        self.block_tokens = 64
+        self.engine_block = None
         self.vocabulary = Vocabulary()
         self.stop_token_ids = []
         self.sequences = chat_frontend.SequenceGate(QUEUED)
@@ -72,6 +78,7 @@ async def run(tmp, failures):
     engine = Engine()
     upstream = web.Application()
     upstream.router.add_post("/v1/completions", engine.completions)
+    upstream.router.add_get("/v1/models", engine_models)
     engine_runner, engine_base = await serve(upstream, handler_cancellation=True)
     frontend = chat_frontend.Frontend({"models": []}, tmp)
     model = Model(engine_base)

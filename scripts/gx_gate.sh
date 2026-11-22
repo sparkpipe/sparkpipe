@@ -125,9 +125,9 @@ gx_alive() {
 }
 
 gx_preflight() {
-  local id=$1 port=$2 api=$3 dir=$4 limit=$5 pre=$4/preflight
+  local id=$1 port=$2 api=$3 dir=$4 limit=$5 block=$6 pre=$4/preflight
   stamp "gx $id preflight"
-  hub "rm -rf $pre && mkdir -p $pre && cd $pre && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit --cases prefix --contexts 8000 --tails 40" > /dev/null || return 1
+  hub "rm -rf $pre && mkdir -p $pre && cd $pre && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit --block-tokens $block --cases prefix --contexts 8000 --tails 40" > /dev/null || return 1
   gx_step "$id" chain "$port" "$api" "$pre" < /dev/null || return 1
   gx_change "$id" clear < /dev/null || return 1
   gx_step "$id" cold:40 "$port" "$api" "$pre" < /dev/null || return 1
@@ -178,10 +178,11 @@ gx_model() {
   if [ "$fresh" = 1 ]; then
     gx_up "$id" || { echo "GX-ACTIVATE-FAILED $id"; return 1; }
     limit=$(hub "curl -s -m 10 http://127.0.0.1:$port/v1/models" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["max_model_len"])') || { echo "GX-FAILED $id: its API names no context length"; return 1; }
+    block=$(hub "curl -s -m 10 http://127.0.0.1:$port/v1/models" | python3 -c 'import json,sys; print(int(json.load(sys.stdin)["data"][0]["block_tokens"]))') || { echo "GX-FAILED $id: its API names no cache block size"; return 1; }
     if [ "$GX_PREFLIGHT" != 0 ]; then
-      gx_preflight "$id" "$port" "$api" "$dir" "$limit" || { echo "GX-PREFLIGHT-FAILED $id: the tool's own checks failed on one 8K unit; the block was not started"; return 1; }
+      gx_preflight "$id" "$port" "$api" "$dir" "$limit" "$block" || { echo "GX-PREFLIGHT-FAILED $id: the tool's own checks failed on one 8K unit; the block was not started"; return 1; }
     fi
-    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit $plan") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
+    steps=$(hub "cd $dir && python3 $GX_TOOL plan --state state.json --model $id --release $GX_RELEASE --context-limit $limit --block-tokens $block $plan") || { echo "GX-FAILED $id: no plan: $steps"; return 1; }
   else
     steps=$(hub "cd $dir && python3 $GX_TOOL steps --state state.json") || { echo "GX-FAILED $id: its state does not load: $steps"; return 1; }
     echo "gx $id resumes: $(printf '%s\n' "$steps" | awk '$3 != "done" {print $1 "=" $3 "(" $4 ")"}' | tr '\n' ' ')"

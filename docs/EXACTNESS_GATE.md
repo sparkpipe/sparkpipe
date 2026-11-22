@@ -81,7 +81,9 @@ not yet batch-invariant (`TECHDEBT.md`). The gate runs alone.
 ### The margin of a block's cut
 
 A block's cut lies 8 tokens before the tokens of the text through the
-block, rounded down to 64. The margin has to exceed the number of trailing
+block, rounded down to the engine's cache block (64 tokens on every served
+adapter but DeepSeek V4.1 Flash, where it is 256; the engine's `/v1/models`
+reports it as `block_tokens`, and the gate's plan takes it from there). The margin has to exceed the number of trailing
 tokens that change when more text follows the block; otherwise two prompts
 with the same block share less at that block. They never differ: the cut
 only decides where a wave ends.

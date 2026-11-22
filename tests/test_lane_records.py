@@ -137,6 +137,8 @@ def main():
                     failures.append(f"{record_id}: deployment/hub/model_swap.json {key} names {named}, not the record's root {root}")
         if record_id in chat and chat[record_id].get("context_tokens") != context:
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json context_tokens {chat[record_id].get('context_tokens')} differs from the engine's {context}")
+        if record_id in chat and chat[record_id].get("block_tokens", stage_lane.KV_BLOCK_TOKENS) != block:
+            failures.append(f"{record_id}: deployment/hub/chat_frontend.json block_tokens {chat[record_id].get('block_tokens', stage_lane.KV_BLOCK_TOKENS)} differs from the engine's cache block of {block} tokens")
         if record_id in chat and chat[record_id].get("sequences") != record.get("sequences"):
             failures.append(f"{record_id}: deployment/hub/chat_frontend.json sequences {chat[record_id].get('sequences')} differs from the lane's {record.get('sequences')}")
         label = f"{context // 1048576}M" if context % 1048576 == 0 else f"{context // 1024}K"

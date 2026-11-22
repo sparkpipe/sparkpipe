@@ -141,10 +141,45 @@ async def run(tmp, check):
                   f"so the next turn still resumes one token before the first prompt's end: {engine.resumed(two)} of {len(one['prompt_token_ids'])}")
 
 
+async def run_block_size(tmp, check):
+    body = {"model": "alpha", "max_tokens": 16, "tools": TOOLS, "system": system(RULES, PROJECT, HABITS), "messages": asks(DOCUMENT, NOTES, QUESTION)}
+    async with fixture.Harness(tmp / "differs") as harness:
+        engine = harness.engine
+        for reported, what in ((32, "another block size"), (None, "no block size")):
+            engine.block_tokens = reported
+            engine.reply("Reading.</think>It says many things.")
+            status, _, text = await harness.post("/v1/messages", body)
+            said = (json.loads(text).get("error") or {}).get("message", "") if status != 200 else ""
+            check(status == 503 and "blocks of 64" in said and ("blocks of 32" in said) == (reported == 32) and engine.requests == [],
+                  f"an engine that reports {what} is not served, the refusal names both sizes, and no request reaches it: status {status}, {said!r}, {len(engine.requests)} requests")
+        reads = engine.model_reads
+        engine.block_tokens = 64
+        status, _, text = await harness.post("/v1/messages", body)
+        check(status == 200 and len(engine.requests) == 1 and engine.model_reads == reads + 1, f"once the engine reports the chat layer's block size the model is served: status {status}")
+        engine.reply("Reading.</think>It says many things.")
+        status, _, text = await harness.post("/v1/messages", body)
+        check(status == 200 and engine.model_reads == reads + 1, f"and the block size is not asked again while the engine answers: {engine.model_reads - reads} reads")
+    async with fixture.Harness(tmp / "small") as harness:
+        engine, model = harness.engine, harness.frontend.models["alpha"]
+        engine.block_tokens = model.block_tokens = model.resume_tokens = 32
+        engine.reply("Reading.</think>It says many things.")
+        status, _, text = await harness.post("/v1/messages", body)
+        sent = engine.requests[-1]
+        prompt, cuts = sent["prompt_token_ids"], sent.get("cuts") or []
+        blocks = []
+        for block in (RULES, PROJECT, DOCUMENT, NOTES):
+            rendered = harness.tokenizer.decode(prompt, skip_special_tokens=False)
+            alone = len(harness.tokenizer.encode(rendered[:rendered.index(block) + len(block)], add_special_tokens=False).ids)
+            blocks.append((alone, prompt_cuts.structural_cut(alone, 32)))
+        check(status == 200 and all(cut in cuts and cut % 32 == 0 and 0 <= alone - MARGIN - cut < 32 for alone, cut in blocks) and any(cut % 64 for _, cut in blocks),
+              f"a model whose engine caches in blocks of 32 tokens gets its blocks' cuts on that grid: {blocks} in {cuts}")
+
+
 def main():
     check = fixture.Checks("test_chat_frontend_block_cuts")
     with tempfile.TemporaryDirectory() as tmp:
         asyncio.run(run(Path(tmp), check))
+        asyncio.run(run_block_size(Path(tmp), check))
     return check.finish("a prompt names a cut where each block of its head ends, and prompts that share a block resume there")
 
 

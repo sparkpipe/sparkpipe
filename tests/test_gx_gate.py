@@ -205,7 +205,7 @@ class GxGateTests(unittest.TestCase):
         self.directory.cleanup()
 
     def plan(self, *extra):
-        return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--contexts", "2048,4096",
+        return call("plan", "--state", self.state, "--model", "fake", "--release", "test", "--context-limit", "20000", "--block-tokens", "64", "--contexts", "2048,4096",
                     "--kept-contexts", "1024,2048", "--drafted-contexts", "2048", "--committed-contexts", "2048", "--opening-contexts", "2048", "--tails", "1,40", "--max-tokens", "6", "--reply-tokens", "8", "--small-context", "2100", "--seed", "fixed",
                     "--served-tokens", "5", *extra)
 
@@ -615,7 +615,7 @@ class GxGateTests(unittest.TestCase):
             Path(self.state).unlink()
 
     def test_contexts_are_fitted_to_the_deployment(self):
-        arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed"]
+        arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed", "--block-tokens", "64"]
         status, listing = call(*arguments, "--context-limit", "32768")
         self.assertEqual(status, 0, listing)
         self.assertEqual([line.split()[0] for line in listing.splitlines()], ["chain", "park:100000", "restore:100000", "cold:1", "cold:40", "cold:500", "cold:5000"])
@@ -654,6 +654,15 @@ class GxGateTests(unittest.TestCase):
 
     def test_a_head_takes_its_cuts_from_the_chat_layer_s_rule(self):
         arguments = ["plan", "--state", self.state, "--model", "fake", "--release", "test", "--seed", "fixed", "--context-limit", "1048576", "--cases", "opening", "--tails", "1"]
+        status, listing = call(*arguments, "--block-tokens", "256")
+        self.assertEqual(status, 0, listing)
+        unit = json.loads(Path(self.state).read_text())["units"][0]
+        self.assertEqual((gx.head_blocks(unit), gx.head_cuts(unit), gx.resume_cut(unit, None)), ((2005, 6015), [1792, 5888, 8021], 5888),
+                         "a lane whose engine caches in blocks of 256 tokens gets its head's cuts on that grid")
+        Path(self.state).unlink()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gx.main(arguments)
+        arguments += ["--block-tokens", "64"]
         status, listing = call(*arguments)
         self.assertEqual(status, 0, listing)
         unit = json.loads(Path(self.state).read_text())["units"][0]
