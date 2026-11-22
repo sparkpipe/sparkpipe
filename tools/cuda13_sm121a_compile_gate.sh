@@ -21,9 +21,10 @@ if [[ ! -f /usr/include/infiniband/verbs.h ]]; then
 	echo "CUDA gate requires libibverbs development headers" >&2
 	exit 2
 fi
+release_toolkit="13.0"
 nvcc_version="$(${nvcc_binary} --version)"
-if ! grep -Eq 'release 13\.' <<<"${nvcc_version}"; then
-	echo "CUDA gate requires CUDA 13.x" >&2
+if ! grep -Fq "release ${release_toolkit}," <<<"${nvcc_version}"; then
+	echo "CUDA gate requires CUDA ${release_toolkit}, the release build hosts' toolkit, so that the spill audit checks what ships" >&2
 	printf '%s\n' "${nvcc_version}" >&2
 	exit 2
 fi

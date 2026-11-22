@@ -715,6 +715,7 @@ PYTHON_TESTS := \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
+	tests/test_cuda_gate_toolkit.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_timing_reports.py \
 	tests/test_glm5_next_bench_wrap.py \
