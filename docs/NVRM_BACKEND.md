@@ -627,7 +627,16 @@ and reads every word back, and refuses a block 4 bytes over the limit.
 an SoC: bit `NV0000_CTRL_GPU_ID_INFO_SOC` of the identity's `gpuFlags`,
 from `NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2`. GB10 reports it. A discrete GPU
 does not, so on one the backend makes no claim of host-coherent memory,
-as the CUDA backend does from its integrated flag. The backend adopts no
+as the CUDA backend does from its integrated flag. The backend also sets
+`SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK`: its large allocations take 2 MiB
+pages with no fallback to smaller ones, so they fail once the kernel's free
+2 MiB blocks run out. A long-lived pool on such a backend is taken whole
+while a model activates: the stage KV binding asks weightd for every chunk
+of its pool as the pool's minimum, so the activation fails loudly, naming
+the chunks and their size, when weightd cannot grant them, and serving
+never maps another chunk (see the compaction window in
+[HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md#contiguous-memory)).
+The backend adopts no
 foreign memory or queue. Adopting one of the device's own live queues works
 on every backend: the device layer finds the handle in its own list of
 queues by comparing pointers, never by reading through the handle, and
