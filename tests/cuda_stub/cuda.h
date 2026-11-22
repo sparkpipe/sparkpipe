@@ -16,6 +16,30 @@ typedef unsigned long long CUdeviceptr;
 typedef struct CUfunc_st *CUfunction;
 CUresult cuFuncGetParamInfo(CUfunction function,size_t index,size_t *offset,size_t *size);
 typedef struct CUmemGenericAllocationHandle_st *CUmemGenericAllocationHandle;
+typedef unsigned int cuuint32_t;
+typedef unsigned long long cuuint64_t;
+#ifdef __cplusplus
+typedef struct CUtensorMap_st { alignas(64) cuuint64_t opaque[16]; } CUtensorMap;
+#else
+typedef struct CUtensorMap_st { _Alignas(64) cuuint64_t opaque[16]; } CUtensorMap;
+#endif
+typedef enum CUtensorMapDataType_enum { CU_TENSOR_MAP_DATA_TYPE_UINT8 = 0 } CUtensorMapDataType;
+typedef enum CUtensorMapInterleave_enum { CU_TENSOR_MAP_INTERLEAVE_NONE = 0 } CUtensorMapInterleave;
+typedef enum CUtensorMapSwizzle_enum
+{
+	CU_TENSOR_MAP_SWIZZLE_NONE = 0,
+	CU_TENSOR_MAP_SWIZZLE_32B = 1,
+	CU_TENSOR_MAP_SWIZZLE_64B = 2,
+	CU_TENSOR_MAP_SWIZZLE_128B = 3
+} CUtensorMapSwizzle;
+typedef enum CUtensorMapL2promotion_enum
+{
+	CU_TENSOR_MAP_L2_PROMOTION_NONE = 0,
+	CU_TENSOR_MAP_L2_PROMOTION_L2_64B = 1,
+	CU_TENSOR_MAP_L2_PROMOTION_L2_128B = 2,
+	CU_TENSOR_MAP_L2_PROMOTION_L2_256B = 3
+} CUtensorMapL2promotion;
+typedef enum CUtensorMapFloatOOBfill_enum { CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE = 0 } CUtensorMapFloatOOBfill;
 
 #define CUDA_SUCCESS 0
 #define CUDA_ERROR_INVALID_VALUE 1
@@ -130,6 +154,10 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     const CUmemAccessDesc *descriptors,
     size_t descriptor_count);
 CUresult cuMemUnmap(CUdeviceptr pointer, size_t bytes);
+CUresult cuTensorMapEncodeTiled(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address,
+    const cuuint64_t *dimension, const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle, CUtensorMapL2promotion promotion,
+    CUtensorMapFloatOOBfill fill);
 CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
