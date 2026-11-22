@@ -4,6 +4,7 @@ etc/dropbear/initramfs/dropbear_ed25519_host_key
 etc/dropbear/initramfs/dropbear_rsa_host_key
 etc/ds4-node-rank
 etc/ds4-uplink
+etc/hosts
 etc/logrotate.d/ceph-*
 etc/netplan/90-NM-*.yaml
 etc/ssh/ssh_host_*

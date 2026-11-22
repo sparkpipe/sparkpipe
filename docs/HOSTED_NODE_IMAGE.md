@@ -297,7 +297,8 @@ A fleet node's list is [`carry-fleet.txt`](../tools/hosted_image/carry-fleet.txt
   sysctl and logrotate files, and `/var/log/ceph`;
 - the private external-NVMe link that its OSD's units require, and the
   private uplink failover tool, with their units and configuration;
-- its NetworkManager profiles in `/etc/netplan/90-NM-*.yaml`;
+- its NetworkManager profiles in `/etc/netplan/90-NM-*.yaml` and its
+  `/etc/hosts`, which names the fleet's nodes;
 - its SSH and initramfs host keys and root's `authorized_keys`;
 - the emergency account's sudo rule.
 
