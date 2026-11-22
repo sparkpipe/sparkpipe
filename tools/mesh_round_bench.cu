@@ -188,7 +188,16 @@ int main(int count,char **arguments)
     bench_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
     void *mapping = 0;
     bench_status(SparkWeightdClientMeshMap(owner,&mapping,BENCH_WAIT_NS),"mesh-map");
-    bench_status(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mapping,0u,0u,0u,0),"mesh-prepare");
+    {
+        const uint64_t until = bench_now_ns() + BENCH_WAIT_NS;
+        SparkStatus prepared = SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mapping,0u,0u,0u,0);
+        while (prepared == SPARK_STATUS_BUSY && bench_now_ns() < until)
+        {
+            usleep(20000u);
+            prepared = SparkTpDeviceCollectiveReady(&collective);
+        }
+        bench_status(prepared,"mesh-prepare");
+    }
     printf("BENCH-READY rank=%u lane=%u operation=%u rows=%u row_elements=%u rounds=%u\n",rank,lane,operation,rows,row_elements,rounds);
     fflush(stdout);
     bench_start_at(start_ms);
