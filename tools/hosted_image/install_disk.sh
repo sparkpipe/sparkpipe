@@ -127,7 +127,6 @@ for pattern in "${carry_patterns[@]}"; do
 	while IFS= read -r path; do
 		[ -n "$path" ] || continue
 		! reserved_path "$path" || fail "the carry list matches /$path"
-		[ -z "$(find "$target/$path" ! -type f ! -type d ! -type l -print -quit)" ] || fail "$root's /$path holds something other than files, directories and links"
 		carried+=("$path")
 	done < <(cd "$target" && shopt -s nullglob && for match in $pattern; do if [ -e "$match" ] || [ -L "$match" ]; then printf '%s\n' "$match"; fi; done)
 done
@@ -167,14 +166,14 @@ else
 	echo "install_disk: the previous root has no /$tailscale_state, so the node joins the tailnet at bring-up"
 fi
 carry_listing() {
-	(cd "$1" && find "$2" -printf '%y %U:%G %m %s %l %p\n' | sort)
+	(cd "$1" && find "$2" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$2" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$2" -type f -exec sha256sum {} + | sort)
 }
 skip=(\( -path "$target/home" -o -path "$aside")
 for path in "${carried[@]}"; do
 	[ ! -e "$target/$path" ] && [ ! -L "$target/$path" ] || fail "the image wrote /$path although the extraction excluded it"
 	mkdir -p "$target/$(dirname "$path")"
 	cp -a "$aside/root/$path" "$target/$path"
-	[ "$(carry_listing "$aside/root" "$path")" = "$(carry_listing "$target" "$path")" ] && diff -r --no-dereference "$aside/root/$path" "$target/$path" > /dev/null || fail "the carried /$path differs from /.dgxos-$stamp/root/$path"
+	[ "$(carry_listing "$aside/root" "$path")" = "$(carry_listing "$target" "$path")" ] || fail "the carried /$path differs from /.dgxos-$stamp/root/$path"
 	skip+=(-o -path "$target/$path")
 	echo "install_disk: carried /$path from the previous root"
 done

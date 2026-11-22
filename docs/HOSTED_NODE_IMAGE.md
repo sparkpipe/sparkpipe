@@ -280,12 +280,15 @@ previous root, the same way as the Tailscale state:
 - Each line of `LIST` is a path below `/`, with `*` allowed. It never names
   `home`, `lost+found`, `var/lib/tailscale` or a set-aside directory.
 - Before anything changes, the installer expands the list in the previous
-  root, checks that each match holds only files, directories and links, and
-  that the root has 10 GiB free beyond their size.
+  root and checks that the root has 10 GiB free beyond the matches' size.
 - The extraction leaves the matches out of the image, and the installer
-  copies them from `/.dgxos-<stamp>/root` with their owners, modes and
-  links, compares each copy and names it in its log. They then take the
-  image's place, so nothing of the image's is deleted either.
+  copies them from `/.dgxos-<stamp>/root` with their owners, modes, links,
+  extended attributes and special files: podman's layers hold whiteouts as
+  character devices `0:0`, and a container's run directory holds pipes and a
+  socket. It compares each copy by its listing (type, owners, mode, size,
+  link target, device numbers) and the checksum of every regular file, never
+  reading a pipe, and names it in its log. The copies then take the image's
+  place, so nothing of the image's is deleted either.
 - `--carry-accounts NAME,...` carries accounts the same way: each one's
   `passwd` and `shadow` lines and its primary group, after the bundle's user.
   A name, uid or group that the installed root already has is refused.
@@ -338,7 +341,8 @@ attaches it as a loop device and partitions it like a node, then seeds:
 
 - a previous system with Tailscale state in `/var/lib/tailscale`, and a
   fleet node's state for every line of `carry-fleet.txt` (Ceph state and
-  units, the private tools, profiles, a container layer with a link) and the
+  units, the private tools, profiles, a container layer with a link and a
+  whiteout, a container run directory with a pipe and a socket) and the
   `sparkemerg` account;
 - `/home/node` with a 256 MiB pack and a release root linked to a stub
   `libcuda.so.1`;

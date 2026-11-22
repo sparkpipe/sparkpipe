@@ -144,6 +144,10 @@ chown -R 167:167 "$seed/var/lib/ceph/$fsid" "$seed/var/log/ceph/$fsid"
 chmod 700 "$seed/var/lib/ceph/$fsid" "$seed/var/lib/ceph/$fsid/osd.3"
 chown 64045:64045 "$seed/var/lib/ceph" "$seed/var/log/ceph"
 echo dryrun-layer > "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/ceph-osd"
+mknod "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/removed" c 0 0
+mkdir -p "$seed/var/lib/containers/storage/overlay-containers/c0/userdata"
+mkfifo "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/ctl"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/attach"
 ln -s l0 "$seed/var/lib/containers/storage/overlay/top"
 printf '[Unit]\nDescription=Ceph %%i for %s\n' "$fsid" > "$units/ceph-$fsid@.service"
 printf '[Unit]\nRequires=ds4-extnvme-link.service\n' > "$units/ceph-$fsid@.service.d/30-ds4-extnvme-link.conf"
@@ -278,8 +282,8 @@ verify_install() {
 	fi
 	if [ "$name" = first ]; then
 		while IFS= read -r path; do
-			[ "$(cd "$aside/root" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort)" = "$(cd "$check" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort)" ] && \
-				diff -r --no-dereference "$aside/root/$path" "$check/$path" > /dev/null || fail "/$path was not carried exactly"
+			[ "$(cd "$aside/root" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" = \
+				"$(cd "$check" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" ] || fail "/$path was not carried exactly"
 			grep -qx "install_disk: carried /$path from the previous root" "$dir/install-$name.log" || fail "$name did not report carrying /$path"
 		done < "$dir/carried.list"
 		for file in passwd shadow group gshadow; do
