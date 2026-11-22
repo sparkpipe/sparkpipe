@@ -711,6 +711,12 @@ like this:
   and 64 KiB pages from 4 GiB on (see the memory spaces above), allocated
   without the CPU mapping the device's own system memory gets
   (`SparkNvrmSystemAllocate`).
+- **Create host memory** (`SparkDeviceMemoryCreateHost`). The same
+  module system memory object with CPU-cached pages
+  (`NVOS32_ATTR_COHERENCY_CACHED`) that the GPU does not cache
+  (`NVOS32_ATTR2_GPU_CACHEABLE_NO`), in the same page sizes. The backend
+  marks it as host memory it created; an import of it is not. The backend
+  sets `SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE`.
 - **Export.** Opens a fresh `/dev/nvidiactl` descriptor and attaches the
   object to it with `NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`. The
   module keeps the exported object alive even after the exporting client
@@ -726,8 +732,35 @@ like this:
   for, then the unified-memory external mapping, read-only or read-write.
   Each step that fails undoes the steps before it, so a failed map leaves
   nothing mapped.
+- **Host access.** Only on host memory this process created; any other
+  handle is refused with `host access maps only host memory`. The CPU
+  mapping comes first (`SparkNvrmSystemMapToCpu`): `NV_ESC_RM_MAP_MEMORY`
+  on a fresh `/dev/nvidiactl` descriptor with the offset and length asked
+  for, then `mmap` of that descriptor over the reserved CPU range at the
+  same address, read-only without host write. Device access then maps
+  the same address as above, so the CPU and the GPU use one address.
 - **Unmap** (`SparkNvrmGpuUnmap`). Frees the external range and the RM
-  mapping of each whole mapping in the span.
+  mapping of each whole mapping in the span, puts the no-access CPU
+  reservation back over a CPU mapping, and closes its descriptor.
+
+Host memory rests on these open-gpu-kernel-modules 580.178.04 paths:
+
+- `src/nvidia/src/kernel/mem_mgr/system_mem.c`, `sysmemConstruct_IMPL`,
+  lines 254-269: the object's CPU caching comes from
+  `NVOS32_ATTR_COHERENCY` (`memSetSysmemCacheAttrib`).
+- `src/nvidia/arch/nvalloc/unix/src/escape.c`, `NV_ESC_RM_MAP_MEMORY`,
+  lines 513-540: the module ignores a caching type from user space, so
+  the mapping keeps the object's, and binds the mapping to the
+  descriptor passed in.
+- `src/nvidia/arch/nvalloc/unix/src/osapi.c`, `rm_create_mmap_context`
+  and `RmGetAllocPrivate`, lines 2394-2548: a CPU mapping is made only
+  for the client's own process, and of system memory.
+- `kernel-open/nvidia/nv-mmap.c`, `nvidia_mmap_helper`, lines 697-731:
+  system memory is mapped with the object's cache type.
+- `src/nvidia/arch/nvalloc/unix/src/os.c`,
+  `cliresCtrlCmdOsUnixExportObjectToFd_IMPL` (line 2282) and
+  `cliresCtrlCmdOsUnixImportObjectFromFd_IMPL` (line 2538): export and
+  import take any memory object, host memory as device memory.
 
 The backend counts each object's mappings and frees the object only after
 its last unmap and its release. Unified memory also duplicates the object

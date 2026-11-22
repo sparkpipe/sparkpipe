@@ -180,12 +180,21 @@ void SparkNvrmCopyGroupClose(SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmCopyChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmChannelSync(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t timeout_ns, const char *owner);
 void SparkNvrmGpuClose(SparkNvrmGpu *gpu);
+typedef enum SparkNvrmSystemCaching
+{
+	SPARK_NVRM_SYSTEM_GPU_CACHED = 0,
+	SPARK_NVRM_SYSTEM_UNCACHED = 1,
+	SPARK_NVRM_SYSTEM_CPU_CACHED = 2
+} SparkNvrmSystemCaching;
+
 SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
 int SparkNvrmModuleZeroesMemory(const char *parameters_path);
-SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner);
+SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmSystemCaching caching, uint32_t *handle, const char *owner);
+SparkStatus SparkNvrmSystemMapToCpu(SparkNvrmGpu *gpu, uint32_t handle, uint64_t offset, uint64_t bytes, uint32_t read_only, void *target, int *fd,
+	const char *owner);
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner);
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle);
 SparkStatus SparkNvrmShareExport(SparkNvrmGpu *gpu, uint32_t handle, int *fd, const char *owner);

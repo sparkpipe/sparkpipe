@@ -111,6 +111,7 @@ typedef struct NvrmShared
 	uint64_t maps;
 	uint32_t handle;
 	uint32_t held;
+	uint32_t host;
 } NvrmShared;
 
 typedef struct NvrmSpan
@@ -118,6 +119,8 @@ typedef struct NvrmSpan
 	uint64_t address;
 	uint64_t bytes;
 	SparkDeviceMemoryHandle memory;
+	int cpu_fd;
+	uint32_t device;
 } NvrmSpan;
 
 typedef struct NvrmSpans
@@ -194,6 +197,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
+		SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE |
 		SPARK_DEVICE_PROPERTY_CLUSTERS |
 		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
@@ -1082,6 +1086,8 @@ static void NvrmSpansInsert(NvrmSpans *spans, uint32_t index, uint64_t address, 
 	spans->items[index].address = address;
 	spans->items[index].bytes = bytes;
 	spans->items[index].memory = memory;
+	spans->items[index].cpu_fd = -1;
+	spans->items[index].device = 0u;
 	spans->count++;
 }
 
@@ -1100,7 +1106,7 @@ static NvrmShared *NvrmSharedFind(SparkDeviceMemoryHandle memory)
 	return(0);
 }
 
-static SparkStatus NvrmSharedAdd(uint32_t handle, uint64_t bytes, SparkDeviceMemoryHandle *memory, const char *operation)
+static SparkStatus NvrmSharedAdd(uint32_t handle, uint64_t bytes, uint32_t host, SparkDeviceMemoryHandle *memory, const char *operation)
 {
 	SparkStatus status = SPARK_STATUS_OK;
 	pthread_mutex_lock(&nvrm_shared_lock);
@@ -1124,6 +1130,7 @@ static SparkStatus NvrmSharedAdd(uint32_t handle, uint64_t bytes, SparkDeviceMem
 		shared->handle = handle;
 		shared->bytes = bytes;
 		shared->held = 1u;
+		shared->host = host;
 		*memory = shared->id;
 	}
 	pthread_mutex_unlock(&nvrm_shared_lock);
@@ -1193,8 +1200,8 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),0u,&handle,owner));
-	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
+	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),SPARK_NVRM_SYSTEM_GPU_CACHED,&handle,owner));
+	status = NvrmSharedAdd(handle,bytes,0u,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )
 	{
 		(void)SparkNvrmRmFree(&nvrm_gpu.rm,nvrm_gpu.device,handle,"free");
@@ -1237,7 +1244,7 @@ SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int 
 	uint64_t bytes = 0u;
 	SparkStatus status;
 	NVRM_TRY(SparkNvrmShareImport(&nvrm_gpu,fd,&handle,&bytes,owner));
-	status = NvrmSharedAligned(bytes) != 0u && bytes != 0u ? NvrmSharedAdd(handle,bytes,memory,"memory_import") :
+	status = NvrmSharedAligned(bytes) != 0u && bytes != 0u ? NvrmSharedAdd(handle,bytes,0u,memory,"memory_import") :
 		SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_import",owner,0,"the descriptor's memory is not a whole number of 2 MiB pages");
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1249,9 +1256,18 @@ SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int 
 
 SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
 {
-	(void)memory;
-	(void)bytes;
-	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_create_host",owner,0,"the nvrm backend has no exportable host memory"));
+	uint32_t handle = 0u;
+	SparkStatus status;
+	if ( NvrmSharedAligned(bytes) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create_host",owner,0,"host memory is created in whole 2 MiB granules"));
+	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),SPARK_NVRM_SYSTEM_CPU_CACHED,&handle,owner));
+	status = NvrmSharedAdd(handle,bytes,1u,memory,"memory_create_host");
+	if ( status != SPARK_STATUS_OK )
+	{
+		(void)SparkNvrmRmFree(&nvrm_gpu.rm,nvrm_gpu.device,handle,"free");
+		SPARK_FAIL(status);
+	}
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
@@ -1319,18 +1335,39 @@ static SparkStatus NvrmMapCheck(SparkDeviceAddress address, uint64_t bytes, cons
 	return(NvrmSpansRoom(&nvrm_mappings,1u,"memory_map"));
 }
 
+static void NvrmCpuUnmap(uint64_t address, uint64_t bytes, int fd)
+{
+	SparkNvrmReserveCpu(&nvrm_gpu,address,bytes);
+	close(fd);
+}
+
 SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
 {
+	const uint32_t host = (access & (SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE)) != 0u ? 1u : 0u;
+	const uint32_t device = (access & SPARK_DEVICE_ACCESS_DEVICE_READ) != 0u ? 1u : 0u;
 	NvrmShared *shared;
 	SparkStatus status;
+	int cpu_fd = -1;
 	pthread_mutex_lock(&nvrm_shared_lock);
 	shared = NvrmSharedFind(memory);
 	status = NvrmMapCheck(address,bytes,shared,offset);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && host != 0u && shared->host == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"host access maps only host memory");
+	if ( status == SPARK_STATUS_OK && host != 0u )
+		status = SparkNvrmSystemMapToCpu(&nvrm_gpu,shared->handle,offset,bytes,(access & SPARK_DEVICE_ACCESS_HOST_WRITE) == 0u ? 1u : 0u,
+			(void *)(uintptr_t)address,&cpu_fd,"memory_map");
+	if ( status == SPARK_STATUS_OK && device != 0u )
+	{
 		status = SparkNvrmGpuMap(&nvrm_gpu,address,bytes,shared->handle,offset,(access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) == 0u ? 1u : 0u,"memory_map");
+		if ( status != SPARK_STATUS_OK && cpu_fd >= 0 )
+			NvrmCpuUnmap(address,bytes,cpu_fd);
+	}
 	if ( status == SPARK_STATUS_OK )
 	{
-		NvrmSpansInsert(&nvrm_mappings,NvrmSpansFirstEnding(&nvrm_mappings,address),address,bytes,memory);
+		const uint32_t index = NvrmSpansFirstEnding(&nvrm_mappings,address);
+		NvrmSpansInsert(&nvrm_mappings,index,address,bytes,memory);
+		nvrm_mappings.items[index].cpu_fd = cpu_fd;
+		nvrm_mappings.items[index].device = device;
 		shared->maps++;
 	}
 	pthread_mutex_unlock(&nvrm_shared_lock);
@@ -1354,10 +1391,14 @@ SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t b
 	}
 	for (uint32_t index = first; index < last; index++)
 	{
-		NvrmShared *shared = NvrmSharedFind(nvrm_mappings.items[index].memory);
+		const NvrmSpan *span = &nvrm_mappings.items[index];
+		NvrmShared *shared = NvrmSharedFind(span->memory);
 		if ( shared == 0 )
 			continue;
-		SparkNvrmGpuUnmap(&nvrm_gpu,nvrm_mappings.items[index].address,nvrm_mappings.items[index].bytes,shared->handle);
+		if ( span->device != 0u )
+			SparkNvrmGpuUnmap(&nvrm_gpu,span->address,span->bytes,shared->handle);
+		if ( span->cpu_fd >= 0 )
+			NvrmCpuUnmap(span->address,span->bytes,span->cpu_fd);
 		shared->maps--;
 		NvrmSharedSettle(shared);
 	}
