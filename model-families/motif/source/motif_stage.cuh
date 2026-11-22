@@ -234,7 +234,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
-			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
+				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);
@@ -257,7 +258,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
 			if ( status != LM_LAUNCH_ERR_SHAPE )
 				return status;
-			LmSlowPath("motif linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
+				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 		}
 		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
 			0u, 0u, multiprocessors, stream);
@@ -269,7 +271,9 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	{
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<MO_THREADS, float, ROUND_FIRST>), rows, MO_THREADS, (dimension + 8u) * sizeof(float), stream, input,
 			(const uint16_t *)0, weight, (uint16_t *)0, output, dimension, stride, MO_EPS);
-		return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+		if ( !(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS) )
+			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
+		return LM_LAUNCH_OK;
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)

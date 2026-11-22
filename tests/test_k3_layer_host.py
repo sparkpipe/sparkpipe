@@ -6,8 +6,11 @@ An external audit found six P0s in K3 and its closing observation was the
 useful one: they live in the paths those harnesses do not execute. Three were
 dataflow, and no per-kernel test can see dataflow.
 
-This runs the real K3LayerLatentMoe with only the GEMM replaced by a recorder,
-three times: with the non-interleaved expert stream, and with the pack V2
+This runs the real K3LayerLatentMoe with only the GEMMs and the skinny dense
+launches replaced by recorders, so each projection is recorded on the kernel its
+wave takes: the two-row waves here run the router and the dense projections on
+the skinny kernel, behind its real validator, and the experts on the GEMM. It
+runs three times: with the non-interleaved expert stream, and with the pack V2
 interleaved stream (the production layout) at tile_k 128 and at tile_k 32
 (the TP16 repack granularity). Each run is asked the audit's questions:
 

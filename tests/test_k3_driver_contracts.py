@@ -114,7 +114,7 @@ def main():
             ("layer.cuh", layer, "K3LayerKda"),
             ("slice.cuh", slice_, "K3FoldAccepted")):
         if not re.search(
-                r"kda_state_bf16 != 0u \)\s*\n\s*return\(LM_LAUNCH_ERR_SHAPE\)",
+                r"kda_state_bf16 != 0u \)\s*\n\s*(?:return\(LM_LAUNCH_ERR_SHAPE\)|SPARK_FAIL\(LM_LAUNCH_ERR_SHAPE\))",
                 text):
             print(f"  FAIL {name}: {where} does not fail closed on the "
                   f"bf16-state flag; the delta kernel addresses the pool as "

@@ -384,7 +384,7 @@ static SparkStatus D41LaunchedAt(uint32_t line)
 	if ( error == SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_OK;
 	fprintf(stderr, "sparkpipe_dsv41_flash: CUDA error seen at line %u: %s\n", line, SparkGpuGetErrorString(error));
-	return SPARK_STATUS_INTERNAL_ERROR;
+	SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 }
 
 #define D41Launched() D41LaunchedAt(__LINE__)
@@ -405,18 +405,18 @@ static int32_t D41Project(const uint16_t *weight, const uint16_t *source, uint16
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves run "
+			"on it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
+			LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows,
 		input_dimension, output_dimension, 0u, 0u, multiprocessors, stream);
 	if ( status != LM_LAUNCH_ERR_SHAPE )
 		return status;
-	LmSlowPath("dsv41 linear: the stream GEMM refused, naive linear", rows, input_dimension, output_dimension);
-	LM_LAUNCH((D41NaiveLinearKernel), dim3((output_dimension + 7u) / 8u, rows), 256u, 0, stream, weight, source, destination, destination_f32,
-		input_dimension, output_dimension);
-	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+	LM_LAUNCH_REFUSE("dsv41 linear: the stream GEMM refused %u rows of a %u x %u projection; prefill waves run on it, so the input must be a multiple "
+		"of 64, the output even and the operands 16-byte aligned\n", rows, output_dimension, input_dimension);
 }
 
 static uint32_t D41MxReady(const D41Mx *mx, uint32_t rows, uint32_t input_dimension, uint32_t row_invariant);
@@ -460,9 +460,11 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 		args.input_dimension = input_dimension;
 		args.output_dimension = output_dimension;
 		const int32_t status = LmSkinnyLaunch<LmMxfp8>(&args, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 linear: the skinny kernel refused a small wave", rows, input_dimension, output_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves "
+			"run on it, so the weight needs 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n", rows,
+			output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 		output_dimension, 0u, 0u, multiprocessors, stream);
@@ -495,9 +497,11 @@ static int32_t D41LinearPair(const D41Fp8Linear *first, const D41Fp8Linear *seco
 		const LmSkinnyDenseTarget targets[2] = { D41Target(first, first_destination, input_dimension, first_dimension),
 			D41Target(second, second_destination, input_dimension, second_dimension) };
 		const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_invariant);
-		if ( status != LM_LAUNCH_ERR_SHAPE || rows > LM_SKINNY_ROWS_WIDE )
+		if ( status != LM_LAUNCH_ERR_SHAPE )
 			return status;
-		LmSlowPath("dsv41 fp8 pair: the skinny kernel refused a small wave", rows, input_dimension, first_dimension);
+		LM_LAUNCH_REFUSE("dsv41 fp8 pair: the fused launch refused %u rows of %u + %u outputs over %u inputs; waves of up to %u rows and row-invariant "
+			"waves run on it, so both weights need 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n",
+			rows, first_dimension, second_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
 	const int32_t status = D41Linear(first, source, first_destination, rows, input_dimension, first_dimension, multiprocessors, 0u, (const D41Mx *)0,
 		stream);
@@ -1866,7 +1870,7 @@ static int32_t D41SharedUp(D41ModelState *state, const D41Layer *layer, uint32_t
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK ||
 				LmMxGemmDense(codes, codes + (uint64_t)own * D41_HIDDEN, layer->sh_w3.weight, layer->sh_w3.scale, state->shared_up + first, own,
 				D41_HIDDEN, state->shared_width, 0u, 0u, sms, stream) != LM_LAUNCH_OK )
-				return LM_LAUNCH_ERR_LAUNCH;
+				SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 		}
 		return LM_LAUNCH_OK;
 	}
@@ -2623,7 +2627,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		{
 			SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
 			if ( SparkGpuStreamIsCapturing(stream, &capturing) != SPARK_GPU_SUCCESS || capturing != SPARK_GPU_CAPTURE_STATUS_NONE )
-				return SPARK_STATUS_UNSUPPORTED;
+				SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 			status = D41DumpStep(state, step, stream);
 			if ( status != SPARK_STATUS_OK )
 				return status;
@@ -3767,7 +3771,7 @@ static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *laz
 		{
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u carries %u attention sinks, not all %u\n", index, D41_ENTRY(ATTN_SINK, index)->columns,
 				D41_HEADS);
-			return SPARK_STATUS_SCHEMA_ERROR;
+			SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 		}
 		layer->group_sink = layer->sink + (uint64_t)(D41_ATTENTION_RANK(state) / 2u) * 2u * D41_LOCAL_HEADS;
 		layer->sink += (uint64_t)D41_ATTENTION_RANK(state) * D41_LOCAL_HEADS;
