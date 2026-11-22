@@ -19,10 +19,15 @@ The drafted case did not run: the time on the machine ended.
 
 The node files of the three passing runs were built from this branch at
 `c8b8286cf` (the rules merged with stage 0 at `a794ef3d7`) with one commit on
-top: `5ef8180ce` of the stacked node KV root PR, which lets a lane keep its
-KV ledger in its own folder. The receipts name that build by a local merge
+top: `5ef8180ce` of the node KV root PR, which lets a lane keep its KV
+ledger in its own folder. The receipts name that build by a local merge
 commit, `b18810e38`. Its tree is `c4bb124ea16eed5965064bed5b3208c589bd500f`,
 and `git merge 5ef8180ce` on `c8b8286cf` gives the same tree.
+
+The branch took the node KV root PR and stage 0's later commits after the
+runs. Two of those commits change how the engine measures a request's wait
+behind a background wave (`runtime/model_batch_engine.c`); the gate has not
+run on a tree that has them.
 
 ## Main block
 

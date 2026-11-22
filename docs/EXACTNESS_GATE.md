@@ -22,7 +22,15 @@ gives a session the fleet and the release steps are in
 fleet host, and take the hold before the first fleet command of
 [First runs](#first-runs).
 
-Status: not yet measured on the fleet. No lane has been gated.
+A gate lane on a machine that holds another owner's KV would share that
+owner's node ledger and quota, and a write of the lane could evict the
+other store's oldest files. Such a lane starts its weightd and its ranks
+with `SPARK_KV_NODE_ROOT` set to a folder of its own (`README.md`, "KV cache
+and model state"), so its ledger and its files are its own. The one-rank
+run did.
+
+Status: not yet measured on the fleet. No fleet lane has been gated. One
+rank of one model has ([First runs](#first-runs)).
 
 ## How the engine keeps it
 
