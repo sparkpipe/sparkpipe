@@ -1034,7 +1034,7 @@ static SparkStatus NvrmSlot(NvrmQueue *nvrm, uint32_t bytes, const char *owner, 
 {
 	const uint64_t completed = SparkNvrmChannelCompleted(&nvrm->channel);
 	if ( nvrm->slots.bytes == 0u )
-		NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_SLOT_RING_BYTES,SPARK_NVRM_MEMORY_HOST,&nvrm->slots,owner));
+		NVRM_TRY(SparkNvrmMemoryAllocate(&nvrm_gpu,NVRM_SLOT_RING_BYTES,SparkNvrmLaunchControlKind(&nvrm_gpu),&nvrm->slots,owner));
 	while ( nvrm->slot_count != 0u && nvrm->slot_records[nvrm->slot_first].value <= completed )
 	{
 		nvrm->slot_first = (nvrm->slot_first + 1u) % NVRM_SLOT_RECORDS;
@@ -1712,7 +1712,7 @@ SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDevic
 	if ( status == SPARK_STATUS_OK && image->words > SPARK_NVRM_SEGMENT_WORDS_MAX )
 		status = NvrmImageRefuse(program,"the program's segment is over the 2^21 - 1 words one submission holds");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkNvrmMemoryAllocate(&nvrm_gpu,image->segment + (uint64_t)image->words * sizeof(uint32_t),SPARK_NVRM_MEMORY_HOST,&image->memory,
+		status = SparkNvrmMemoryAllocate(&nvrm_gpu,image->segment + (uint64_t)image->words * sizeof(uint32_t),SparkNvrmLaunchControlKind(&nvrm_gpu),&image->memory,
 			program->name);
 	for ( index = 0u; status == SPARK_STATUS_OK && index < image->step_count; index++ )
 	{

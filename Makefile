@@ -1821,6 +1821,17 @@ build/nvrm_step_chain: tests/nvrm/step_chain.cu tools/nvrm_kernel_manifest.py $(
 build/cuda_step_chain: tests/nvrm/step_chain.cu $(DEVICE_CUDA_LIBRARY) | build
 	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
 
+build/nvrm_chain_gap: tests/nvrm/chain_gap.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_chain_gap: tests/nvrm/chain_gap.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-chain-gap
+.PHONY: nvrm-chain-gap
+nvrm-chain-gap: nvrm-gpu-present build/nvrm_chain_gap build/cuda_chain_gap
+	@./build/cuda_chain_gap cuda && ./build/nvrm_chain_gap nvrm
+
 NVRM_FLAVOUR_GOALS += nvrm-step-chain
 .PHONY: nvrm-step-chain
 nvrm-step-chain: nvrm-gpu-present build/nvrm_step_chain build/cuda_step_chain

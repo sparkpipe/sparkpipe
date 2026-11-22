@@ -40,8 +40,15 @@ and refuses any other when it opens the device. Two releases are pinned:
 
 | Release | Hosts |
 | --- | --- |
-| **580.178.04** | the Sparks (aarch64); the default |
+| **580.178.04** | GB10 nodes (aarch64); the default, and the release the hosted image ships |
 | **595.84** | the hub's RTX 5090 (x86_64) |
+
+A node runs the nvrm flavour only on its pinned release: a GB10 node must
+run open kernel module 580.178.04, which `/proc/driver/nvidia/version`
+names. On any other release the backend refuses at open ("the open kernel
+module is ...; this backend is built for 580.178.04 only"), so a node that
+still runs another release serves only the CUDA flavour until it is moved
+to 580.178.04.
 
 `NVRM_MODULE_RELEASE` picks the release a build is for: the Makefile's
 default, 580.178.04, or 595.84 (`make NVRM_MODULE_RELEASE=595.84 ...`). Any
@@ -310,6 +317,13 @@ per-thread local memory a program needs. `nvrm_copy.c` queues copy-engine
 copies and fills. `nvrm_launch.c` loads a cubin into host memory,
 relocates it, and queues a launch: the QMD and constant bank 0 in a
 256-byte aligned slot, then `SEND_PCAS_A` and the scheduling method.
+Slots come from a 4 MiB ring per queue. On an integrated GPU the ring is
+host memory. On a discrete GPU it is video memory that the CPU writes
+through a write-combined BAR1 mapping (`SPARK_NVRM_MEMORY_VIDEO_MAPPED`),
+so the front end and every SM read the QMD and constant bank 0 locally
+instead of over PCIe ([the hub's RTX 5090](#the-hubs-rtx-5090)). The store
+fence before the doorbell, `mfence` on x86 and `dsb st` on Arm, also
+drains the write-combining buffers.
 
 `tests/test_nvrm_submit.c` checks, without a GPU, that methods, ring
 entries, GPPut, the doorbell, push-buffer reuse, ordered copies and
@@ -763,7 +777,9 @@ which is what the class headers document.
 ([device programs](DEVICE_PROGRAMS.md)) into an image, and
 `SparkDeviceProgramRun` runs the image with one submission, however many
 steps it holds.
-- **Image.** One allocation of coherent system memory holds three parts:
+- **Image.** One allocation holds three parts. Like the launch slots, it
+  is host memory on an integrated GPU and BAR1-mapped video memory on a
+  discrete one:
   - the program's 64-bit semaphore;
   - a descriptor and constant bank 0 for every launch, built at finish by
     the code that builds eager launches. A launch's descriptor releases its
@@ -1438,6 +1454,55 @@ their submission more than their bytes. A 4 KiB draft download takes
 bytes) 5.9 us, both on one queue 6.4 us, and 12.6 us when the CPU first
 writes the row; 16 rows (819,200 bytes) upload in 24 to 25 us, or
 20.7 us from a buffer in 2 MiB pages.
+
+### Launch slots in video memory
+
+Each launch's QMD and constant bank 0 sat in host memory until
+2026-11-22. On the RTX 5090 the front end fetched every QMD, and every SM
+its kernel's constant bank 0, across PCIe: a launch cost about 3 us more
+than on CUDA, and spreading a kernel over many blocks cost about 7 us more.
+Video memory for the slot ring and for recorded program images removes
+both. `make NVRM_MODULE_RELEASE=595.84 CUDA_ARCH=sm_120a nvrm-chain-gap`
+(`tests/nvrm/chain_gap.cu`) chains 136 empty kernels, plain and as
+dependent launches, on 1 and 170 blocks, and reports the median over 300
+chains of the gap from one kernel's last block ending to the next
+kernel's first block starting, and the GPU span of the chain. It fails if
+a kernel did not run or started before the kernel ahead of it ended.
+
+| 136 kernels, hold 0 | CUDA | nvrm, slots in host memory | nvrm, slots in video memory |
+| --- | --- | --- | --- |
+| plain, gap | 1.06-1.14 us | 4.09-4.18 us | 1.97-2.00 us |
+| plain, span on 1 / 170 blocks | 162.3 / 156.6 us | 572.7 / 1514.7 us | 278.7 / 278.8 us |
+| dependent, gap | 1.02-1.07 us | 1.14-1.22 us | 0.72-0.74 us |
+| dependent, span on 1 / 170 blocks | 152.8 / 151.6 us | 173.5 / 1121.4 us | 108.2 / 109.9 us |
+| host submission of the chain | 154-164 us | 77-82 us | 107-113 us |
+
+With kernels that run 5 or 20 us, dependent launches leave 0.39-0.46 us
+between kernels on nvrm and 0.42-0.43 us on CUDA; plain launches leave
+2.5-3.2 us on nvrm and 0.58-0.63 us on CUDA, which is the plain launch's
+acquire of the channel fence in host memory. The CPU's write-combined
+stores cost the host about 0.2 us a launch.
+The other launch control memory stays where it was, because moving it did
+not help (one switch per use, same binary):
+- kernel code in video memory changed nothing;
+- the push buffer in video memory changed nothing;
+- the channel fence in video memory made the host read it through BAR1 on
+  every launch, about 3 us a read, so host submission of the chain rose to
+  484-565 us ([TECHDEBT.md](../TECHDEBT.md), Runtime completion).
+
+The drafters gain less than the chain does. The call-site track's replays
+on the hub (`drafter_module_replay`, greedy, 1,399 to 4,453 proposals per
+model, 2026-11-22) gave per proposal, with drafts identical to CUDA's in
+every run:
+
+| Propose, per request | CUDA | nvrm, slots in host memory | nvrm, slots in video memory |
+| --- | --- | --- | --- |
+| DSV4.1 dspark, 136 launches | 2389 us | 6269 us | 5243 us |
+| K3.1 dspark, 99 launches | 5125 us | 6757 us | 6110 us |
+| Qwen DSpine, 131 launches | 4602 us | 6663 us | 5702 us |
+
+The rest of the gap is the kernels' own GPU time
+([TECHDEBT.md](../TECHDEBT.md), Runtime completion).
 
 ## Step measurements
 
