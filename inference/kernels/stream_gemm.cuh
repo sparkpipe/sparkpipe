@@ -557,23 +557,48 @@ static int32_t LmStreamGemmLaunchShape(const LmStreamGemmArguments *args, uint32
 	}
 }
 
-template<class Format>
-static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t multiprocessors, SparkGpuStream stream)
+#define LM_STREAM_WIDE_TILE_NONE 0u
+#define LM_STREAM_WIDE_TILE_128X128 1u
+#define LM_STREAM_WIDE_TILE_64X256 2u
+#define LM_STREAM_WIDE_TILE_64X128 3u
+#define LM_STREAM_WIDE_TILE_32X256 4u
+
+static uint32_t LmStreamGemmWideTile(const LmStreamGemmArguments *args, uint32_t multiprocessors)
 {
 	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
 	const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
 	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
 	if ( args->rows < LM_STREAM_WIDE_ROWS || groups > 1u )
-		return(LM_LAUNCH_ERR_TILE);
+		return(LM_STREAM_WIDE_TILE_NONE);
 	if ( mean_rows > 64u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 127u) / 128u * narrow >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_128X128);
 	if ( mean_rows > 32u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 63u) / 64u * wide >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_64X256);
 	if ( mean_rows > 32u && args->output_dimension % 128u == 0u && ((uint64_t)args->rows + 63u) / 64u * narrow >= (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+		return(LM_STREAM_WIDE_TILE_64X128);
 	if ( mean_rows > 16u && args->output_dimension % 256u == 0u && ((uint64_t)args->rows + 31u) / 32u * wide >= 2u * (uint64_t)multiprocessors )
-		return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
-	return(LM_LAUNCH_ERR_TILE);
+		return(LM_STREAM_WIDE_TILE_32X256);
+	return(LM_STREAM_WIDE_TILE_NONE);
+}
+
+template<class Format>
+static int32_t LmStreamGemmLaunchWide(const LmStreamGemmArguments *args, uint32_t tile, uint32_t multiprocessors, SparkGpuStream stream)
+{
+	const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+	const uint64_t wide = args->output_dimension / 256u,narrow = args->output_dimension / 128u;
+	switch ( tile )
+	{
+		case LM_STREAM_WIDE_TILE_128X128:
+			return(LmStreamGemmLaunchTile<Format,128u,128u,128u,128u>(args,((uint64_t)args->rows / 128u + groups) * narrow,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_64X256:
+			return(LmStreamGemmLaunchTile<Format,64u,256u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * wide,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_64X128:
+			return(LmStreamGemmLaunchTile<Format,64u,128u,128u,64u>(args,((uint64_t)args->rows / 64u + groups) * narrow,multiprocessors,stream));
+		case LM_STREAM_WIDE_TILE_32X256:
+			return(LmStreamGemmLaunchTile<Format,32u,256u,128u,32u>(args,((uint64_t)args->rows / 32u + groups) * wide,multiprocessors,stream));
+		default:
+			SPARK_FAIL(LM_LAUNCH_ERR_TILE);
+	}
 }
 
 template<class Format>
@@ -586,9 +611,9 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 	{
 		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u && LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 )
 		{
-			status = LmStreamGemmLaunchWide<Format>(args,multiprocessors,stream);
-			if ( status != LM_LAUNCH_ERR_TILE )
-				return(status);
+			const uint32_t tile = LmStreamGemmWideTile(args,multiprocessors);
+			if ( tile != LM_STREAM_WIDE_TILE_NONE )
+				return(LmStreamGemmLaunchWide<Format>(args,tile,multiprocessors,stream));
 		}
 		if ( args->input_dimension % 256u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
