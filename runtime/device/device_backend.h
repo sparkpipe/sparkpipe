@@ -78,7 +78,7 @@ struct SparkDeviceKernel
 	void *backend;
 	SparkDeviceKernel *next;
 	SparkDeviceStamp stamps[SPARK_DEVICE_STAMPS];
-	char *name;
+	char name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u];
 };
 
 SparkStatus SparkDeviceRecordError(SparkStatus status, const char *operation, const char *owner, int32_t backend_code, const char *text);
@@ -115,6 +115,7 @@ SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceE
 SparkStatus SparkDeviceBackendLibraryLoad(SparkDeviceLibrary *library, const char *path);
 void SparkDeviceBackendLibraryUnload(SparkDeviceLibrary *library);
 SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char *name);
+SparkStatus SparkDeviceBackendKernelShortName(SparkDeviceLibrary *library, const char *name, char short_name[SPARK_DEVICE_KERNEL_NAME_LIMIT + 1u]);
 void SparkDeviceBackendKernelDestroy(SparkDeviceKernel *kernel);
 SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
 	SparkDeviceAllocation *const *allocations);

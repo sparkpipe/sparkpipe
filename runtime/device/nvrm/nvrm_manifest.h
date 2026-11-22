@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_status.h"
 #include "runtime/device/nvrm/nvrm_cubin.h"
+#include "runtime/device/nvrm/nvrm_names.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,7 +21,7 @@ typedef struct SparkNvrmParameter
 
 typedef struct SparkNvrmManifestKernel
 {
-	char *name;
+	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t registers;
 	uint32_t barriers;
 	uint32_t stack_bytes;

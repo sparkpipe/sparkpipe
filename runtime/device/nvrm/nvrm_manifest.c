@@ -7,7 +7,8 @@
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_manifest.h"
 
-#define MANIFEST_LINE_BYTES (SPARK_DEVICE_KERNEL_NAME_LIMIT + 1024u)
+#define MANIFEST_SYMBOL_BYTES 4096u
+#define MANIFEST_LINE_BYTES (MANIFEST_SYMBOL_BYTES + 1024u)
 #define MANIFEST_TABLE 16u
 #define MANIFEST_AXES 3u
 
@@ -43,14 +44,19 @@ static SparkStatus ManifestGrow(void **table, uint32_t *capacity, uint32_t count
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus ManifestName(const char *line, const char *keyword, const char *owner, const char **name, size_t *length)
+static SparkStatus ManifestName(const char *line, const char *keyword, const char *owner, const char **name, size_t *length,
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES])
 {
+	char symbol[MANIFEST_SYMBOL_BYTES + 1u];
 	const char *at = line + strlen(keyword);
 	const char *end = strchr(at,' ');
 	if ( end == 0 || end == at )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"the line needs a kernel name"));
-	if ( (size_t)(end - at) > SPARK_DEVICE_KERNEL_NAME_LIMIT )
-		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"the kernel name is longer than a device kernel name can be"));
+	if ( (size_t)(end - at) > MANIFEST_SYMBOL_BYTES )
+		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"the kernel symbol is longer than a manifest takes"));
+	memcpy(symbol,at,(size_t)(end - at));
+	symbol[end - at] = '\0';
+	SparkNvrmShortName(symbol,short_name);
 	*name = at;
 	*length = (size_t)(end - at);
 	return(SPARK_STATUS_OK);
@@ -59,16 +65,19 @@ static SparkStatus ManifestName(const char *line, const char *keyword, const cha
 static SparkStatus ManifestKernel(SparkNvrmManifest *manifest, const char *line, const char *owner)
 {
 	SparkNvrmManifestKernel *kernel;
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES],listed[SPARK_NVRM_SHORT_NAME_BYTES + 1u];
 	const char *name = 0;
-	char *copy;
 	size_t length = 0u;
 	unsigned registers,barriers,stack,stores,loads,shared,cumulative = 0u;
-	int consumed = 0,tail = 0;
+	int consumed = 0,tail = 0,named = 0;
 	uint32_t reported = 0u;
-	MANIFEST_TRY(ManifestName(line,"kernel ",owner,&name,&length));
-	if ( sscanf(name + length," registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u%n",&registers,&barriers,&stack,&stores,&loads,&shared,
-		&consumed) != 6 )
+	MANIFEST_TRY(ManifestName(line,"kernel ",owner,&name,&length,short_name));
+	if ( sscanf(name + length," short %65s%n",listed,&named) != 1 || strcmp(listed,short_name) != 0 )
+		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel line names its short name, which must be the runtime's for the symbol"));
+	if ( sscanf(name + length + named," registers %u barriers %u stack %u spill_stores %u spill_loads %u smem %u%n",&registers,&barriers,&stack,&stores,&loads,
+		&shared,&consumed) != 6 )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel line needs its name and the compiler's seven numbers"));
+	consumed += named;
 	if ( name[length + (size_t)consumed] != '\0' )
 	{
 		if ( sscanf(name + length + consumed," cumulative %u%n",&cumulative,&tail) != 1 || name[length + (size_t)consumed + (size_t)tail] != '\0' )
@@ -77,26 +86,12 @@ static SparkStatus ManifestKernel(SparkNvrmManifest *manifest, const char *line,
 			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a kernel's cumulative stack is below its own frame"));
 		reported = 1u;
 	}
-	if ( (copy = (char *)malloc(length + 1u)) == 0 )
-		return(ManifestRefuse(SPARK_STATUS_CAPACITY_EXCEEDED,owner,line,"out of host memory for the kernel name"));
-	memcpy(copy,name,length);
-	copy[length] = '\0';
-	if ( SparkNvrmManifestKernelNamed(manifest,copy) != 0 )
-	{
-		free(copy);
-		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"the kernel is listed twice"));
-	}
-	{
-		const SparkStatus status = ManifestGrow((void **)&manifest->kernels,&manifest->kernel_capacity,manifest->kernel_count,sizeof(*manifest->kernels),owner);
-		if ( status != SPARK_STATUS_OK )
-		{
-			free(copy);
-			SPARK_FAIL(status);
-		}
-	}
+	if ( SparkNvrmManifestKernelNamed(manifest,short_name) != 0 )
+		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"two kernels of the manifest share one short name"));
+	MANIFEST_TRY(ManifestGrow((void **)&manifest->kernels,&manifest->kernel_capacity,manifest->kernel_count,sizeof(*manifest->kernels),owner));
 	kernel = &manifest->kernels[manifest->kernel_count++];
 	memset(kernel,0,sizeof(*kernel));
-	kernel->name = copy;
+	memcpy(kernel->name,short_name,sizeof(kernel->name));
 	kernel->registers = registers;
 	kernel->barriers = barriers;
 	kernel->stack_bytes = stack;
@@ -106,24 +101,25 @@ static SparkStatus ManifestKernel(SparkNvrmManifest *manifest, const char *line,
 	return(SPARK_STATUS_OK);
 }
 
-static SparkNvrmManifestKernel *ManifestCurrent(SparkNvrmManifest *manifest, const char *name, size_t length)
+static SparkNvrmManifestKernel *ManifestCurrent(SparkNvrmManifest *manifest, const char *short_name)
 {
 	SparkNvrmManifestKernel *kernel = manifest->kernel_count != 0u ? &manifest->kernels[manifest->kernel_count - 1u] : 0;
-	return(kernel != 0 && strlen(kernel->name) == length && memcmp(kernel->name,name,length) == 0 ? kernel : 0);
+	return(kernel != 0 && strcmp(kernel->name,short_name) == 0 ? kernel : 0);
 }
 
 static SparkStatus ManifestParameter(SparkNvrmManifest *manifest, const char *line, const char *owner)
 {
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
 	SparkNvrmManifestKernel *kernel;
 	SparkNvrmParameter *parameter;
 	const char *name = 0;
 	char kind[16];
 	size_t length = 0u;
 	unsigned index,align,bytes,offset;
-	MANIFEST_TRY(ManifestName(line,"param ",owner,&name,&length));
+	MANIFEST_TRY(ManifestName(line,"param ",owner,&name,&length,short_name));
 	if ( sscanf(name + length," %u %15s align %u bytes %u offset %u",&index,kind,&align,&bytes,&offset) != 5 )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a parameter line needs its kernel, index, type, alignment, size and offset"));
-	kernel = ManifestCurrent(manifest,name,length);
+	kernel = ManifestCurrent(manifest,short_name);
 	if ( kernel == 0 || index != kernel->parameter_count )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"parameters follow their kernel's line in declaration order"));
 	if ( align == 0u || (align & (align - 1u)) != 0u || offset % align != 0u || bytes == 0u || offset < SparkNvrmManifestParameterEnd(kernel) )
@@ -138,14 +134,15 @@ static SparkStatus ManifestParameter(SparkNvrmManifest *manifest, const char *li
 
 static SparkStatus ManifestBound(SparkNvrmManifest *manifest, const char *line, const char *owner)
 {
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
 	SparkNvrmManifestKernel *kernel;
 	const char *name = 0;
 	char directive[32];
 	size_t length = 0u;
 	unsigned values[MANIFEST_AXES] = {1u, 1u, 1u};
 	int consumed = 0;
-	MANIFEST_TRY(ManifestName(line,"bound ",owner,&name,&length));
-	if ( sscanf(name + length," %31s%n",directive,&consumed) != 1 || (kernel = ManifestCurrent(manifest,name,length)) == 0 )
+	MANIFEST_TRY(ManifestName(line,"bound ",owner,&name,&length,short_name));
+	if ( sscanf(name + length," %31s%n",directive,&consumed) != 1 || (kernel = ManifestCurrent(manifest,short_name)) == 0 )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a bound line follows its kernel's line"));
 	if ( strcmp(directive,"maxntid") == 0 || strcmp(directive,"reqntid") == 0 )
 	{
@@ -223,9 +220,11 @@ SparkStatus SparkNvrmManifestParse(const char *text, uint64_t bytes, const char 
 
 const SparkNvrmManifestKernel *SparkNvrmManifestKernelNamed(const SparkNvrmManifest *manifest, const char *name)
 {
+	char short_name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t index;
+	SparkNvrmShortName(name,short_name);
 	for (index = 0u; index < manifest->kernel_count; index++)
-		if ( strcmp(manifest->kernels[index].name,name) == 0 )
+		if ( strcmp(manifest->kernels[index].name,short_name) == 0 )
 			return(&manifest->kernels[index]);
 	return(0);
 }
@@ -267,10 +266,7 @@ void SparkNvrmManifestRelease(SparkNvrmManifest *manifest)
 {
 	uint32_t index;
 	for (index = 0u; index < manifest->kernel_count; index++)
-	{
-		free(manifest->kernels[index].name);
 		free(manifest->kernels[index].parameters);
-	}
 	free(manifest->kernels);
 	memset(manifest,0,sizeof(*manifest));
 }

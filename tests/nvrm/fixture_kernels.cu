@@ -47,10 +47,21 @@ extern "C" __global__ void SparkNvrmHugeParameter(uint32_t *output, SparkNvrmFix
 		output[index] = block.words[index];
 }
 
-extern "C" __global__ void SPARK_NVRM_FIXTURE_LONG_NAME(uint32_t *output, uint32_t value)
+namespace spark_nvrm_fixture_long_names
+{
+struct SparkNvrmFixtureValue { uint32_t value; };
+struct SparkNvrmFixtureTagAlpha {};
+struct SparkNvrmFixtureTagBravo {};
+
+template<typename Value, typename First, typename Second>
+__global__ void SparkNvrmLongTemplate(uint32_t *output, Value value)
 {
 	const uint32_t index = blockIdx.x * blockDim.x + threadIdx.x;
-	output[index] = value + index;
+	output[index] = value.value + index;
+}
+
+template __global__ void SparkNvrmLongTemplate<SparkNvrmFixtureValue, SparkNvrmFixtureTagAlpha, SparkNvrmFixtureTagBravo>(uint32_t *output,
+	SparkNvrmFixtureValue value);
 }
 
 template __global__ void LmBf16RmsNormKernel<256u>(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t dimension,

@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "runtime/device/nvrm/nvrm_names.h"
+
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -27,7 +29,8 @@ typedef struct SparkNvrmCubinBank
 
 typedef struct SparkNvrmCubinKernel
 {
-	const char *name;
+	char name[SPARK_NVRM_SHORT_NAME_BYTES];
+	const char *symbol;
 	uint64_t code_offset;
 	uint64_t code_bytes;
 	uint32_t registers;
@@ -55,7 +58,6 @@ typedef struct SparkNvrmCubin
 	uint32_t kernel_count;
 	SparkNvrmCubinRelocation *relocations;
 	uint32_t relocation_count;
-	char *names;
 } SparkNvrmCubin;
 
 SparkStatus SparkNvrmCubinParse(const uint8_t *blob, uint64_t bytes, const char *owner, SparkNvrmCubin *cubin);

@@ -13,6 +13,7 @@
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_manifest.h"
+#include "runtime/device/nvrm/nvrm_names.h"
 #include "runtime/device/nvrm/nvrm_register.h"
 
 #define REGISTER_PATH_BYTES 4096u
@@ -30,7 +31,7 @@ typedef struct RegisterCubin
 
 typedef struct RegisterName
 {
-	char *name;
+	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
 } RegisterName;
 
@@ -53,7 +54,7 @@ typedef struct RegisterEntry
 {
 	const void *host;
 	SparkNvrmModule *module;
-	char *name;
+	char name[SPARK_NVRM_SHORT_NAME_BYTES];
 	uint32_t cubin;
 	uint32_t variable;
 	SparkDeviceKernel *kernel;
@@ -148,9 +149,8 @@ static SparkStatus RegisterCubinAdd(SparkNvrmModule *module, const char *directo
 			SparkNvrmManifestRelease(&manifest);
 			return(ModuleFail(module,SPARK_STATUS_CAPACITY_EXCEEDED,"out of host memory for the kernel registry"));
 		}
-		module->names[module->name_count].name = manifest.kernels[index].name;
+		memcpy(module->names[module->name_count].name,manifest.kernels[index].name,sizeof(module->names[module->name_count].name));
 		module->names[module->name_count].cubin = module->cubin_count;
-		manifest.kernels[index].name = 0;
 		module->name_count++;
 	}
 	module->cubin_count++;
@@ -316,17 +316,14 @@ static SparkStatus RegisterEntryAdd(SparkNvrmModule *module, const void *host, c
 		snprintf(text,sizeof(text),"the host address of %.64s is registered twice",name);
 		return(RegisterRefuse(SPARK_STATUS_DUPLICATE,"kernel_register",REGISTER_OWNER,text));
 	}
-	if ( (entry = (RegisterEntry *)calloc(1u,sizeof(*entry))) == 0 || (entry->name = strdup(name)) == 0 )
-	{
-		free(entry);
+	if ( (entry = (RegisterEntry *)calloc(1u,sizeof(*entry))) == 0 )
 		return(RegisterRefuse(SPARK_STATUS_CAPACITY_EXCEEDED,"kernel_register",REGISTER_OWNER,"out of host memory for the kernel registry"));
-	}
+	SparkNvrmShortName(name,entry->name);
 	entry->host = host;
 	entry->module = module;
 	entry->variable = variable;
 	if ( RegisterInsert(entry) != SPARK_STATUS_OK )
 	{
-		free(entry->name);
 		free(entry);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
@@ -345,7 +342,7 @@ SparkStatus SparkNvrmRegisterFunction(SparkNvrmModule *module, const void *host,
 	status = RegisterEntryAdd(module,host,name,0u,&entry);
 	if ( status == SPARK_STATUS_OK && module->status == SPARK_STATUS_OK )
 	{
-		key.name = (char *)name;
+		SparkNvrmShortName(name,key.name);
 		key.cubin = 0u;
 		found = (const RegisterName *)bsearch(&key,module->names,module->name_count,sizeof(*module->names),RegisterNameOrder);
 		if ( found != 0 )
@@ -503,10 +500,7 @@ static void RegisterForget(SparkNvrmModule *module)
 		if ( kept[slot] != 0 )
 		{
 			if ( kept[slot]->module == module )
-			{
-				free(kept[slot]->name);
 				free(kept[slot]);
-			}
 			else if ( RegisterInsert(kept[slot]) != SPARK_STATUS_OK )
 				fprintf(stderr,"nvrm: out of host memory keeping the kernel registry while a module unloads\n");
 		}
