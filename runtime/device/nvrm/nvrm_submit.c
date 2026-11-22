@@ -62,6 +62,31 @@ SparkStatus SparkNvrmWaitValue(const volatile uint64_t *semaphore, uint64_t valu
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkNvrmWaitFence(const SparkNvrmChannel *channel, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner)
+{
+	SparkNvrmWait wait;
+	SparkNvrmFault fault;
+	uint32_t faulted = 0u;
+	int expired = 0;
+	SparkNvrmWaitBegin(&wait);
+	while ( SparkNvrmChannelCompleted(channel) < value && (expired = SparkNvrmWaitPace(&wait,timeout_ns)) == 0 )
+		if ( SparkNvrmWaitDue(&wait,SPARK_NVRM_WAIT_WATCH_NS) != 0 && (faulted = SparkNvrmChannelFault(channel,&fault)) != 0u )
+			break;
+	SparkNvrmWaitEnd(&wait);
+	if ( faulted == 0u && expired != 0 )
+		faulted = SparkNvrmChannelFault(channel,&fault);
+	if ( faulted != 0u )
+	{
+		char text[128];
+		SparkNvrmFaultText(&fault,text,sizeof(text));
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,owner,(int32_t)fault.code,text);
+		SPARK_FAIL(status);
+	}
+	if ( expired != 0 )
+		return(SparkNvrmWaitValue((const volatile uint64_t *)(void *)channel->fence.cpu,value,0u,operation,owner));
+	return(SPARK_STATUS_OK);
+}
+
 static void SubmitRetire(SparkNvrmChannel *channel)
 {
 	const uint64_t completed = SparkNvrmChannelCompleted(channel);
@@ -75,7 +100,7 @@ static void SubmitRetire(SparkNvrmChannel *channel)
 static SparkStatus SubmitRetireOldest(SparkNvrmChannel *channel, const char *owner)
 {
 	const SparkNvrmSegment *oldest = &channel->segments[channel->segment_head];
-	SUBMIT_TRY(SparkNvrmWaitValue((const volatile uint64_t *)(void *)channel->fence.cpu,oldest->value,SPARK_NVRM_WAIT_TIMEOUT_NS,"submit",owner));
+	SUBMIT_TRY(SparkNvrmWaitFence(channel,oldest->value,SPARK_NVRM_WAIT_TIMEOUT_NS,"submit",owner));
 	channel->segment_head = (channel->segment_head + 1u) % SPARK_NVRM_CHANNEL_ENTRIES;
 	channel->segment_count--;
 	return(SPARK_STATUS_OK);
@@ -278,7 +303,7 @@ SparkStatus SparkNvrmChannelSync(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, u
 {
 	SUBMIT_TRY(SubmitHostFence(channel,owner));
 	SUBMIT_TRY(SparkNvrmSubmit(gpu,channel,owner));
-	return(SparkNvrmWaitValue((const volatile uint64_t *)(void *)channel->fence.cpu,channel->fence_value,timeout_ns,"synchronize",owner));
+	return(SparkNvrmWaitFence(channel,channel->fence_value,timeout_ns,"synchronize",owner));
 }
 
 SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner)

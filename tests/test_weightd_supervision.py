@@ -434,18 +434,45 @@ WEIGHTD_ADDRESSES="$TEST_PUBLISHED"
                          " --kv-reserve-bytes 8589934592 --mesh-rank 0"
                          " --mesh-rank-mask 0xffff --mesh-interface test --mesh-sgid-index 3 --mesh-traffic-class 106\n" % ((home,) * 4))
 
-    def test_mesh_addresses_need_the_pair_port_only_on_linked_ranks(self):
+    def test_mesh_addresses_need_one_active_port(self):
         source = (ROOT / "tools/fleet_node_agent.sh").read_text()
         addresses = "mesh_addresses() {" + source.split("\nmesh_addresses() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         harness = ("set -u\nMESH_INTERFACE=switch MESH_SGID_INDEX=3 MESH_PAIR_INTERFACE=pair MESH_PAIR_SGID_INDEX=3\n"
-                   'mesh_address() { [ "$1" = pair ] && [ "$TEST_PAIR" = missing ] && { echo "pair gid 3 is missing" >&2; return 1; }; echo "$1-ip"; }\n'
+                   'mesh_address() { [ "$1" = pair ] && [ "$TEST_PAIR" = missing ] && { echo "pair port 1 is 1: DOWN, not ACTIVE" >&2; return 1; }; '
+                   '[ "$1" = switch ] && [ "$TEST_SWITCH" = missing ] && { echo "switch port 1 is 1: DOWN, not ACTIVE" >&2; return 1; }; echo "$1-ip"; }\n'
                    + addresses + 'MESH_PAIRED=$TEST_PAIRED\nmesh_addresses\n')
-        for paired, pair, expected in (("1", "present", (0, "switch-ip pair-ip\n")), ("1", "missing", (1, "")),
-                                       ("", "present", (0, "switch-ip\n")), ("", "missing", (0, "switch-ip\n"))):
-            with self.subTest(paired=paired, pair=pair):
-                result = subprocess.run(["bash", "-c", harness], env=dict(os.environ, TEST_PAIRED=paired, TEST_PAIR=pair),
+        for paired, switch, pair, expected in (("1", "present", "present", (0, "switch-ip pair-ip\n")),
+                                               ("1", "present", "missing", (0, "switch-ip -\n")),
+                                               ("1", "missing", "present", (0, "- pair-ip\n")),
+                                               ("1", "missing", "missing", (1, "")),
+                                               ("", "present", "present", (0, "switch-ip\n")),
+                                               ("", "present", "missing", (0, "switch-ip\n")),
+                                               ("", "missing", "present", (1, ""))):
+            with self.subTest(paired=paired, switch=switch, pair=pair):
+                result = subprocess.run(["bash", "-c", harness], env=dict(os.environ, TEST_PAIRED=paired, TEST_SWITCH=switch, TEST_PAIR=pair),
                                         capture_output=True, text=True)
                 self.assertEqual((result.returncode, result.stdout), expected, result.stderr)
+                if expected[0] != 0:
+                    self.assertIn("switch port 1 is 1: DOWN, not ACTIVE", result.stderr)
+
+    def test_the_heartbeat_reads_ports_and_degraded_links_from_the_ready_marker(self):
+        source = (ROOT / "tools/fleet_node_agent.sh").read_text()
+        layout = "mesh_ready_layout() {" + source.split("\nmesh_ready_layout() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / ".ready"
+            for text, expected in (("weightd-ready v1 pid=7 boot_ns=9 rank=4 rank_mask=0xffff ports=rocep1s0f1+roceP2p1s0f0 degraded=0x0030\n",
+                                    "rocep1s0f1+roceP2p1s0f0 0x0030\n"),
+                                   ("weightd-ready v1 pid=7 boot_ns=9 rank=4 rank_mask=0xffff ports=rocep1s0f1 degraded=0x0000\n", "rocep1s0f1 0x0000\n"),
+                                   ("weightd-ready v1 pid=7 boot_ns=9 rank=4 rank_mask=0xffff\n", "none none\n"),
+                                   (None, "none none\n")):
+                with self.subTest(text=text):
+                    if text is None:
+                        marker.unlink()
+                    else:
+                        marker.write_text(text)
+                    result = subprocess.run(["bash", "-c", "set -u\n" + layout + 'mesh_ready_layout "$MARKER"\n'],
+                                            env=dict(os.environ, MARKER=str(marker)), capture_output=True, text=True)
+                    self.assertEqual((result.returncode, result.stdout), (0, expected), result.stderr)
 
     def test_weightd_runs_in_its_own_unit_with_flags_not_the_node_environment(self):
         result = self.agent(owner="shell", extra_env={"SPARK_WEIGHTD_DEVICE_BYTES_MAX": "123", "SPARK_WEIGHTD_KV_RESERVE_BYTES": "1", "G5_WARMUP": "0"})
