@@ -497,6 +497,7 @@ Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_escape.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_uvm_user_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nv_vgpu_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvcfg_sdk.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nverror.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvgputypes.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvimpshared.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/580.178.04/nvlimits.h
@@ -526,6 +527,7 @@ distributed under the following license:
 Copyright (c) 1993-2006 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2025, NVIDIA CORPORATION. All rights reserved.
 Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2001, Nvidia Corporation. All rights reserved.
 Copyright (c) 2001-2001 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
@@ -674,6 +676,7 @@ Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_escape.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_uvm_user_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nv_vgpu_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvcfg_sdk.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nverror.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvgputypes.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvimpshared.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/595.84/nvlimits.h
@@ -703,6 +706,7 @@ distributed under the following license:
 Copyright (c) 1993-2006 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2026, NVIDIA CORPORATION. All rights reserved.
 Copyright (c) 1999-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2001-2001 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2001-2001, NVIDIA CORPORATION. All rights reserved.

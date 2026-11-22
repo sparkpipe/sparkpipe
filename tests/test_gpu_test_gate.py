@@ -129,8 +129,19 @@ def main():
             continue
         text = path.read_text(errors="replace")
         asks = test.endswith("_cuda.py") or re.search(r"^\s*(?:from|import)\s+gpu_test_runner\b", text, re.M) or "query-gpu=" + "compute_cap" in text
-        if asks and test not in selected["python"]:
+        if asks and test not in selected["python"] and test not in gate.GPU_PYTHON_PARKED:
             failures.append("%s asks for an sm_121 device but the gate does not run it" % test)
+    for test, reason in sorted(gate.GPU_PYTHON_PARKED.items()):
+        if test not in python_tests:
+            failures.append("parked test %s is gone from make test; drop it from the parked list" % test)
+        if test in selected["python"] or selected["parked"].get(test) != reason:
+            failures.append("the gate runs parked test %s or does not report it as parked" % test)
+        if not reason.startswith("TECHDEBT.md"):
+            failures.append("parked test %s names no TECHDEBT entry as its reason" % test)
+        environment = {key: value for key, value in os.environ.items() if key != "SPARK_RUN_PARKED"}
+        run = subprocess.run([sys.executable, str(ROOT / test)], capture_output=True, text=True, timeout=60, env=environment)
+        if run.returncode != 0 or not run.stdout.startswith("SKIP ") or "TECHDEBT.md" not in run.stdout:
+            failures.append("parked test %s runs without SPARK_RUN_PARKED=1: exit %d %r" % (test, run.returncode, run.stdout[:200]))
     for test in selected["python"]:
         text = (ROOT / test).read_text(errors="replace")
         if test not in gate.PREREQUISITE_TESTS and not gate.wants_device(test, text):

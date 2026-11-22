@@ -19,6 +19,7 @@
 #define MESH_STATUS_EXIT_ABSENT 6
 #define MESH_STATUS_EXIT_DISABLED 7
 #define MESH_STATUS_EXIT_UNRESPONSIVE 8
+#define MESH_STATUS_EXIT_DEGRADED 9
 #define MESH_STATUS_POLL_NS UINT64_C(250000000)
 #define MESH_STATUS_ATTEMPT_NS UINT64_C(2000000000)
 #define MESH_STATUS_ATTEMPT_MIN_NS UINT64_C(100000000)
@@ -76,6 +77,17 @@ static const char *MeshStatusBusyText(uint32_t reason)
     return reason < sizeof(mesh_status_busy_names) / sizeof(mesh_status_busy_names[0]) ? mesh_status_busy_names[reason] : "unknown";
 }
 
+static uint32_t MeshStatusDegraded(const SparkWeightdIpcMeshStatusResult *result,uint32_t mask)
+{
+    uint32_t rank,degraded = 0u;
+    for (rank=0u; rank<SPARK_WEIGHTD_MESH_RANKS; rank++)
+        if ( (mask & (1u << rank)) != 0u && rank != result->local_rank &&
+             result->peers[rank].state == SPARK_WEIGHTD_MESH_PEER_WIRED &&
+             (result->peers[rank].qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED) != 0u )
+            degraded |= 1u << rank;
+    return degraded;
+}
+
 static void MeshStatusPrintJson(const SparkWeightdIpcMeshStatusResult *result)
 {
     char text[32];
@@ -89,6 +101,7 @@ static void MeshStatusPrintJson(const SparkWeightdIpcMeshStatusResult *result)
         printf("\"pair_rank\":null,");
     else
         printf("\"pair_rank\":%u,",result->pair_rank);
+    printf("\"degraded_mask\":\"0x%04x\",",MeshStatusDegraded(result,0xffffu));
     printf("\"daemon_generation\":%llu,\"boot_ns\":%llu,\"mesh_generation\":%llu,\"now_mono_ns\":%llu,\"ready_since_mono_ns\":%llu,\"counters\":{",
         (unsigned long long)result->daemon_generation,(unsigned long long)result->boot_ns,
         (unsigned long long)result->mesh_generation,(unsigned long long)result->now_mono_ns,
@@ -100,9 +113,12 @@ static void MeshStatusPrintJson(const SparkWeightdIpcMeshStatusResult *result)
     {
         const SparkWeightdMeshPeerStatus *peer = &result->peers[index];
         MeshStatusPeerText(peer->state,text,sizeof(text));
-        printf("%s{\"rank\":%u,\"state\":\"%s\",\"record_status\":\"%s\",\"qp_flags\":%u,\"wired_boot_ns\":%llu,\"record_boot_ns\":%llu,"
+        printf("%s{\"rank\":%u,\"state\":\"%s\",\"record_status\":\"%s\",\"qp_flags\":%u,\"second_port\":%s,\"degraded\":%s,"
+            "\"wired_boot_ns\":%llu,\"record_boot_ns\":%llu,"
             "\"since_mono_ns\":%llu,\"last_ok_mono_ns\":%llu,\"last_err_mono_ns\":%llu,\"send_pending\":%u,\"rpc_pending\":%u,\"cq_err_since_ok\":%u}",
             index != 0u ? "," : "",index,text,SparkStatusToString((SparkStatus)peer->record_status),peer->qp_flags,
+            (peer->qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK) != 0u ? "true" : "false",
+            (peer->qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED) != 0u ? "true" : "false",
             (unsigned long long)peer->wired_boot_ns,(unsigned long long)peer->record_boot_ns,(unsigned long long)peer->since_mono_ns,
             (unsigned long long)peer->last_ok_mono_ns,(unsigned long long)peer->last_err_mono_ns,peer->send_pending,peer->rpc_pending,
             peer->cq_err_since_ok);
@@ -223,6 +239,17 @@ static int MeshStatusWait(const char *socket_path,uint64_t timeout_ns,uint32_t m
                 fprintf(stderr,"MESH-STATUS-LANE-CONFLICT lane=%u physical_mask=0x%04x requested=0x%04x\n",
                     lane,result.lanes[lane].physical_mask,mask);
                 return MESH_STATUS_EXIT_LANE_CONFLICT;
+            }
+            if ( MeshStatusMet(&result,mask,lane) != 0 && MeshStatusDegraded(&result,mask) != 0u )
+            {
+                uint32_t degraded = MeshStatusDegraded(&result,mask),rank;
+                fprintf(stderr,"MESH-STATUS-DEGRADED rank=%u mask=0x%04x wired=0x%04x degraded=0x%04x: these links share one port because one end has a port up that the other lacks; WD-MESH-LAYOUT in the weightd log names it\n",
+                    result.local_rank,mask,result.wired_mask,degraded);
+                for (rank=0u; rank<SPARK_WEIGHTD_MESH_RANKS; rank++)
+                    if ( (degraded & (1u << rank)) != 0u )
+                        fprintf(stderr,"MESH-STATUS-DEGRADED-PEER rank=%u port=%s\n",rank,
+                            (result.peers[rank].qp_flags & SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK) != 0u ? "second" : "first");
+                return MESH_STATUS_EXIT_DEGRADED;
             }
             if ( MeshStatusMet(&result,mask,lane) != 0 )
             {
