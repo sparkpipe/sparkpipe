@@ -349,7 +349,10 @@ merged main:
   receipt, cut by `tools/drafter_pack.py --drafter k31dspark` from the
   drafter checkpoint and the target shard the lane record names;
 - `config/draftd.json`, a copy of `deployment/hub/draftd_engine.json`. Its
-  sockets live under `run/`, beside weightd's KV root and log.
+  sockets live under `run/`, beside weightd's log. weightd keeps the default
+  node KV root, the serving user's home, as the release kit never sets
+  `SPARK_KV_NODE_ROOT`; it holds no KV here, and its purge walk only counts
+  stores and deletes leftover temporaries.
 
 The hooks run the `hub_draftd.sh` in the lane's `draftd.source` directory, so
 that copy is replaced from merged main before the switch. The context cap is

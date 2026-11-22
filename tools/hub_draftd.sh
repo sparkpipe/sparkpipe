@@ -35,11 +35,11 @@ engine_check() {
 }
 engine_start() {
 	engine_check
-	mkdir -p "$ENGINE_ROOT/run/kv" "$(dirname "$LOG")" "$(dirname "$CONTROL")" "$(dirname "$WEIGHTD_SOCKET")"
+	mkdir -p "$ENGINE_ROOT/run" "$(dirname "$LOG")" "$(dirname "$CONTROL")" "$(dirname "$WEIGHTD_SOCKET")"
 	if ! systemctl --user is-active -q "$WEIGHTD_UNIT"; then
 		systemctl --user reset-failed "$WEIGHTD_UNIT" 2>/dev/null || true
 		systemd-run --user --unit="$WEIGHTD_UNIT" -p Restart=on-failure -p RestartSec=10 -E LD_LIBRARY_PATH="$CUDA_RUNTIME" \
-			-E SPARK_KV_NODE_ROOT="$ENGINE_ROOT/run/kv" --working-directory="$ENGINE_ROOT" bash -c \
+			--working-directory="$ENGINE_ROOT" bash -c \
 			"exec ./bin/sparkpipe_weightd --socket '$WEIGHTD_SOCKET' --device-bytes-max 1073741824 >> '$ENGINE_ROOT/run/weightd.log' 2>&1"
 	fi
 	engine_wait "$WEIGHTD_SOCKET" 60 || { echo "hub_draftd: weightd did not open $WEIGHTD_SOCKET; see $ENGINE_ROOT/run/weightd.log" >&2; exit 1; }
