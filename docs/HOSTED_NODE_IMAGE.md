@@ -204,6 +204,15 @@ the loop device read-only, so `/` can never be remounted read-write, and
 the units that write state (logind, timesyncd, the DMA guard's boot record)
 fail.
 
+With `boot=sparkpipe-ram` added, the image runs from memory instead
+([`sparkpipe-ram`](../tools/hosted_image/files/usr/share/initramfs-tools/scripts/sparkpipe-ram)).
+The initramfs mounts the file system named by `root=` read-only, copies the
+`loop=` file into a tmpfs, unmounts that file system and mounts the copy as
+`/`. Nothing on the disk is then mounted, open or mapped, so a
+[disk install](#disk-install) can run from the copy against that same disk.
+The copy takes as much memory as the file's size, and changes made while it
+runs are lost at the next boot.
+
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
 does not stop the boot); the [disk install](#disk-install) creates both. The
