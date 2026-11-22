@@ -361,7 +361,10 @@ of the prompt the engine's prefix index knows), `resumed_tokens` (where the
 request resumed, the same number as `usage.prompt_tokens_details.cached_tokens`),
 `restore_ms` (time from a wave the ranks answered pending, because they were
 restoring the prefix, to the wave they admitted), `background_wait_ms` (time
-the request could not be dispatched while a background wave was in flight),
+before its first token that the request spent behind a background wave:
+before it could be dispatched, and after it at the ranks, which is the part
+of each of its waves' time beyond the ranks' own work on the wave, as they
+report it, up to the time a background wave was running),
 `boot` (this API process) and `artifact` (the first 16 hex digits of the
 adapter's artifact digest). `matched_tokens` minus `resumed_tokens` is what
 the engine recomputes because it can resume only at a state point. The

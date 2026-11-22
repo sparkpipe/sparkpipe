@@ -192,6 +192,8 @@ typedef struct SparkModelBatchSubmissionState
 	float trace_frame_ns;
 	float trace_gap_ns;
 	float trace_draft_wait_ns;
+	uint64_t behind_ns;
+	uint64_t behind_until_ns;
 } SparkModelBatchSubmissionState;
 
 typedef struct SparkModelBatchDraftAsk
@@ -2044,16 +2046,63 @@ static void SparkModelBatchRecordAdmittedLanes(SparkModelBatchEngine *engine,con
 	}
 }
 
-static void SparkModelBatchRecordBackgroundWait(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
+static uint32_t SparkModelBatchWaveKind(const SparkModelBatchSubmissionState *submission)
+{
+	return(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE ? 1u : 0u);
+}
+
+static uint32_t SparkModelBatchWaveInteractive(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
 {
 	const uint32_t *request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
-	uint64_t now = SparkMonotonicNs(),from;
-	uint32_t lane,index;
-	if ( submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL && submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_DECODE )
-		return;
+	uint32_t lane;
 	for (lane=0u; lane<submission->lane_count; lane++)
 		if ( SparkModelBatchInteractive(&engine->requests[request_slots[lane]]) != 0u )
-			return;
+			return(1u);
+	return(0u);
+}
+
+static void SparkModelBatchBehindUntil(SparkModelBatchSubmissionState *submission,uint64_t now)
+{
+	uint64_t from = submission->behind_until_ns > submission->dispatched_ns ? submission->behind_until_ns : submission->dispatched_ns;
+	if ( now > from )
+		submission->behind_ns += now - from;
+	submission->behind_until_ns = now;
+}
+
+static void SparkModelBatchCreditBehind(SparkModelBatchEngine *engine,SparkModelBatchSubmissionState *submission,const SparkModelServingCompletion *completion)
+{
+	const uint32_t *request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
+	uint64_t now = SparkMonotonicNs(),wall,idle;
+	uint32_t lane,index;
+	if ( SparkModelBatchWaveKind(submission) == 0u || SparkModelBatchWaveInteractive(engine,submission) == 0u )
+		return;
+	for (index=0u; index<engine->submission_capacity; index++)
+	{
+		const SparkModelBatchSubmissionState *wave = &engine->submissions[index];
+		if ( wave->active == 0u || wave == submission || wave->dispatched_ns > submission->dispatched_ns || SparkModelBatchWaveKind(wave) == 0u ||
+			SparkModelBatchWaveInteractive(engine,wave) != 0u )
+			continue;
+		SparkModelBatchBehindUntil(submission,now);
+		break;
+	}
+	wall = now > submission->dispatched_ns ? now - submission->dispatched_ns : 0u;
+	idle = wall > completion->service_time_ns ? wall - completion->service_time_ns : 0u;
+	if ( submission->behind_ns < idle )
+		idle = submission->behind_ns;
+	for (lane=0u; idle != 0u && lane<submission->lane_count; lane++)
+	{
+		SparkModelBatchRequestState *request = &engine->requests[request_slots[lane]];
+		if ( SparkModelBatchInteractive(request) != 0u && request->generated_token_count == 0u )
+			request->background_wait_ns += idle;
+	}
+}
+
+static void SparkModelBatchRecordBackgroundWait(SparkModelBatchEngine *engine,const SparkModelBatchSubmissionState *submission)
+{
+	uint64_t now = SparkMonotonicNs(),from;
+	uint32_t index;
+	if ( SparkModelBatchWaveKind(submission) == 0u || SparkModelBatchWaveInteractive(engine,submission) != 0u )
+		return;
 	for (index=SparkModelBatchNextLive(engine,0u); index<engine->request_capacity; index=SparkModelBatchNextLive(engine,index + 1u))
 	{
 		SparkModelBatchRequestState *waiting = &engine->requests[index];
@@ -2064,6 +2113,12 @@ static void SparkModelBatchRecordBackgroundWait(SparkModelBatchEngine *engine,co
 		if ( now > from )
 			waiting->background_wait_ns += now - from;
 		waiting->background_wait_until_ns = now;
+	}
+	for (index=0u; index<engine->submission_capacity; index++)
+	{
+		SparkModelBatchSubmissionState *behind = &engine->submissions[index];
+		if ( behind->active != 0u && behind != submission && behind->dispatched_ns >= submission->dispatched_ns && SparkModelBatchWaveKind(behind) != 0u )
+			SparkModelBatchBehindUntil(behind,now);
 	}
 }
 
@@ -2092,6 +2147,7 @@ static void SparkModelBatchCompletion(
 	}
 	status = (SparkStatus)completion->status;
 	SparkModelBatchRecordBackgroundWait(engine,submission);
+	SparkModelBatchCreditBehind(engine,submission,completion);
 	if ( submission->admitted == 0u || status != SPARK_STATUS_OK )
 	{
 		status = submission->admitted == 0u ? (SparkStatus)submission->result_status : status;
