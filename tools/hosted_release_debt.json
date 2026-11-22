@@ -19,38 +19,6 @@
       }
     },
     {
-      "reason": "Serving adapter: the model's kernels and the TP16 stage runner, loaded and launched through the CUDA runtime. Its weightd mappings go through the device layer, so it no longer links the CUDA driver library. The hub's sparkpipe_model_api also loads the adapter to read its descriptor, so the hub API directory ships it too.",
-      "files": {
-        "build/libaxk2_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libdsv41_flash_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libgemma4_31b_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libglm53_full_bf16_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libglm53_full_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libhy4_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libmimo26_flash_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libmimo26_pro_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libmuse_glimmer_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libqwen38_27b_bf16_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libqwen38_27b_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libqwen38_flash_tp16_serving_adapter.so": ["needed libcudart.so.13"],
-        "build/libqwen38_max_tp16_serving_adapter.so": ["needed libcudart.so.13"]
-      }
-    },
-    {
-      "reason": "weightd and its client tools reach device memory through the device layer compiled into each program. In the CUDA flavour that is the CUDA backend over the CUDA runtime (runtime/device/cuda/device_cuda.c), plus the spark_gpu.h copies and events weightd makes.",
-      "files": {
-        "build/sparkpipe_weightd": ["needed libcudart.so.13"],
-        "build/weightd_warm": ["needed libcudart.so.13"],
-        "build/weightdctl": ["needed libcudart.so.13"]
-      }
-    },
-    {
-      "reason": "sparkpipe_model_residentd allocates its stage boundary buffers (device memory, or pinned host memory mapped into the device) and creates its streams through spark_gpu.h, whose CUDA implementation calls the CUDA runtime.",
-      "files": {
-        "build/sparkpipe_model_residentd": ["needed libcudart.so.13"]
-      }
-    },
-    {
       "reason": "CUDA device library: runtime/device/cuda/device_cuda.c implements spark_device.h over the CUDA runtime, and every adapter loads it from runtime_libs/.",
       "files": {
         "build/runtime_libs/libsparkpipe_device_cuda.so": ["needed libcudart.so.13"]

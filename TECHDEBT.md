@@ -1924,20 +1924,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink. It lists 30 files and 42 findings:
-  - the 25 serving adapters, whose kernels and stage runner run through the
-    CUDA runtime (`libcudart.so.13`). Twelve of them also link the driver
-    library (`libcuda.so.1`) for the TMA tensor maps in
-    [`runtime/tensor_map.h`](runtime/tensor_map.h); the other thirteen
-    reached it only through weightd's mappings, which now go through the
-    device layer. The hub's API also loads an adapter for its descriptor, so
-    the hub ships them too;
-  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`
-    (`libcudart.so.13`). Their device memory goes through the device layer
-    compiled into them, which in the CUDA flavour is the CUDA backend over the
-    CUDA runtime. None links the driver library any more;
-  - `sparkpipe_model_residentd`, whose boundary buffers and streams go
-    through `spark_gpu.h` (`libcudart.so.13`);
+  may only shrink, and the kit's `--deploy` run refuses every root until
+  the list is empty and the root is built for one device backend. A hosted
+  root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
+  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and the 13
+  serving adapters that call no CUDA driver API under their usual paths,
+  with the nvrm device library, so they are off the list. It lists 13 files
+  and 25 findings:
+  - the 12 serving adapters that still call the CUDA driver API
+    (`libcuda.so.1`) for the TMA tensor maps in
+    [`runtime/tensor_map.h`](runtime/tensor_map.h), and run their kernels
+    and stage runner through the CUDA runtime (`libcudart.so.13`). The hub's
+    API also loads an adapter for its descriptor, so the hub ships them too;
   - the CUDA device library (`libcudart.so.13`).
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,

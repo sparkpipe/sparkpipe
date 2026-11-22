@@ -136,6 +136,31 @@ adapter it names. `--stage` takes exact paths only: a file, or a directory
 whose entries are all regular files or directories. It refuses symbolic
 links and a directory with no files.
 
+A hosted release ships SparkPipe's own device backend where a file has an
+nvrm build. `HOSTED_RELEASE_NVRM_FILES` names those files by the path the
+release ships; the gate builds them in `build/nvrm/` and stages each one
+under the shipped path (`--stage build/nvrm/weightdctl=build/weightdctl`,
+and the same for an adapter's kernels directory). Today that is weightd, its
+two tools, `sparkpipe_model_residentd`, the RDMA transport and the 13 serving
+adapters that call no CUDA driver API (`NVRM_SERVING_ADAPTER_SOURCES`). An
+adapter's nvrm build shares its CUDA rule: the same recipe builds a second
+target in `build/nvrm/`, with the nvrm runtime and model-common libraries,
+`-cudart none -DSPARKPIPE_DEVICE_NVRM` and the nvrm device library instead
+of the CUDA ones. weightd's programs carry the backend; residentd, the
+transport and the adapters load `runtime_libs/libsparkpipe_device_nvrm.so`,
+which the root then ships beside them. A pair refuses a target that is not an exact path, a source staged
+onto itself and a target staged twice.
+
+`--deploy` is the mode for a root that will run. It also refuses the root
+while the debt list names any file, and while the root mixes device
+backends: device-layer memory does not cross from one backend to the other,
+so weightd, its tools, residentd and the adapters only serve when all are
+built for the same one. A file counts as built for the CUDA backend when it
+needs a CUDA library or `libsparkpipe_device_cuda.so`, and for the nvrm
+backend when it needs `libsparkpipe_device_nvrm.so` or carries the backend
+itself (its control device path). Each refusal names its file. Staging and
+the CI and test runs use the gate without `--deploy`.
+
 The debt list groups files by the reason they need an NVIDIA library. Each
 file is named by its exact path, with no patterns or directories, and each
 finding by its kind and detail, for example `needed libcuda.so.1`. The gate
@@ -168,10 +193,14 @@ The list can only shrink:
 - the receipts of the compile job include `hosted_release_findings.json`,
   the findings in the debt list's format.
 
-`HOSTED=1 scripts/release_build.sh` runs the gate on the build host over the
-node files and adapters, and on the hub over the API files and adapters,
-before it writes the firmware directory. A refusal stops the kit with
-nothing written. Without `HOSTED=1` the kit builds as before.
+`HOSTED=1 scripts/release_build.sh` runs the gate with `--deploy` on the
+build host over the node files and adapters, and on the hub over the API
+files and adapters, each with the nvrm device library added, before it
+writes the firmware directory. It then ships the node files from the gated
+root and names the hub's gated root (with its checksums) as the API build,
+so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. Until the debt
+list is empty every hosted kit run is refused. Without `HOSTED=1` the kit
+builds and ships exactly as before.
 
 ## Tests
 
