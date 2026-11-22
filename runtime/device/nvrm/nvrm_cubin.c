@@ -404,6 +404,20 @@ static SparkStatus CubinFunctionRecords(const CubinReader *reader, SparkNvrmCubi
 	return(SPARK_STATUS_OK);
 }
 
+#define CUBIN_DRIVER_CALL_PREFIX "__cuda_syscall"
+
+static SparkStatus CubinOutsideSymbol(const CubinReader *reader, const char *name)
+{
+	char text[128];
+	if ( name != 0 && strncmp(name,CUBIN_DRIVER_CALL_PREFIX,sizeof(CUBIN_DRIVER_CALL_PREFIX) - 1u) == 0 )
+		snprintf(text,sizeof(text),"%.48s is a CUDA driver routine; give cp.async.bulk loads a .shared::cta destination",name);
+	else if ( name != 0 && strcmp(name,"vprintf") == 0 )
+		snprintf(text,sizeof(text),"vprintf is the CUDA driver's device printf; report through an error record instead");
+	else
+		snprintf(text,sizeof(text),"a relocation names %.48s, a symbol outside the loaded sections",name != 0 && name[0] != '\0' ? name : "a nameless symbol");
+	CUBIN_REFUSE(SPARK_STATUS_UNSUPPORTED,reader,text);
+}
+
 static SparkStatus CubinRelocation(const CubinReader *reader, const CubinSection *table, const CubinSection *target, uint64_t entry,
 	SparkNvrmCubinRelocation *relocation)
 {
@@ -418,7 +432,7 @@ static SparkStatus CubinRelocation(const CubinReader *reader, const CubinSection
 	symbol_at = reader->blob + reader->symbols->offset + symbol * ELF_SYMBOL_BYTES;
 	defined = (uint32_t)CubinRead(symbol_at + 6u,2u);
 	if ( defined == 0u || defined >= reader->count || reader->sections[defined].loaded == 0u )
-		CUBIN_REFUSE(SPARK_STATUS_UNSUPPORTED,reader,"a relocation names a symbol outside the loaded sections");
+		return(CubinOutsideSymbol(reader,CubinString(reader,reader->symbol_names,CubinRead(symbol_at,4u))));
 	relocation->target = (uint64_t)((int64_t)(reader->sections[defined].placed + CubinRead(symbol_at + 8u,8u)) + addend);
 	if ( type == RELOCATION_ADDRESS64 && offset <= target->bytes && target->bytes - offset >= 8u )
 	{

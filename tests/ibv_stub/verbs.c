@@ -17,7 +17,15 @@ typedef struct SparkStubIbvDevice
 {
     struct ibv_device pub;
     char name[32];
+    int port_state;
+    uint8_t host;
 } SparkStubIbvDevice;
+
+typedef struct SparkStubIbvContext
+{
+    struct ibv_context pub;
+    SparkStubIbvDevice *device;
+} SparkStubIbvContext;
 
 typedef struct SparkStubIbvQp
 {
@@ -25,6 +33,7 @@ typedef struct SparkStubIbvQp
     int state;
     uint32_t remote_qpn;
     int live;
+    uint8_t remote_gid[16];
     struct ibv_cq *send_cq;
     uint8_t *send_queue;
     uint32_t record[2];
@@ -82,6 +91,10 @@ static void spark_stub_ibv_init_devices(void)
         sizeof(spark_stub_ibv_device_storage[1]));
     memcpy(spark_stub_ibv_device_storage[0].name,"rocep1s0f0",10u);
     memcpy(spark_stub_ibv_device_storage[1].name,"rocep1s0f1",10u);
+    spark_stub_ibv_device_storage[0].port_state = IBV_PORT_ACTIVE;
+    spark_stub_ibv_device_storage[1].port_state = IBV_PORT_ACTIVE;
+    spark_stub_ibv_device_storage[0].host = 2u;
+    spark_stub_ibv_device_storage[1].host = 1u;
     spark_stub_ibv_device_list[0] = &spark_stub_ibv_device_storage[0].pub;
     spark_stub_ibv_device_list[1] = &spark_stub_ibv_device_storage[1].pub;
     spark_stub_ibv_device_list[2] = 0;
@@ -129,16 +142,34 @@ const char *ibv_get_device_name(struct ibv_device *device)
     return stub_device->name;
 }
 
+static SparkStubIbvDevice *spark_stub_ibv_device_of(struct ibv_context *context)
+{
+    return context != 0 ? ((SparkStubIbvContext *)(void *)((char *)context - offsetof(SparkStubIbvContext,pub)))->device : 0;
+}
+
 struct ibv_context *ibv_open_device(struct ibv_device *device)
 {
-    (void)device;
-    return (struct ibv_context *)calloc(1u,sizeof(struct ibv_context));
+    SparkStubIbvContext *context = (SparkStubIbvContext *)calloc(1u,sizeof(*context));
+    if (context == 0)
+        return 0;
+    context->device = device != 0 ? (SparkStubIbvDevice *)(void *)((char *)device - offsetof(SparkStubIbvDevice,pub)) : 0;
+    return &context->pub;
 }
 
 int ibv_close_device(struct ibv_context *context)
 {
-    free(context);
+    if (context != 0)
+        free((char *)context - offsetof(SparkStubIbvContext,pub));
     return 0;
+}
+
+void spark_stub_ibv_set_port_state(const char *name, int state)
+{
+    uint32_t index;
+    spark_stub_ibv_init_devices();
+    for (index = 0u; index < SPARK_STUB_IBV_DEVICES; index++)
+        if (strcmp(spark_stub_ibv_device_storage[index].name,name) == 0)
+            spark_stub_ibv_device_storage[index].port_state = state;
 }
 
 struct ibv_pd *ibv_alloc_pd(struct ibv_context *context)
@@ -156,14 +187,14 @@ int ibv_dealloc_pd(struct ibv_pd *pd)
 int ibv_query_port(struct ibv_context *context, uint8_t port,
     struct ibv_port_attr *attributes)
 {
-    (void)context;
+    SparkStubIbvDevice *device = spark_stub_ibv_device_of(context);
     if (port != 1u || attributes == 0)
     {
         errno = EINVAL;
         return -1;
     }
     memset(attributes,0,sizeof(*attributes));
-    attributes->state = IBV_PORT_ACTIVE;
+    attributes->state = device != 0 ? device->port_state : IBV_PORT_ACTIVE;
     attributes->lid = SPARK_STUB_IBV_LID;
     attributes->active_mtu = IBV_MTU_4096;
     return 0;
@@ -172,7 +203,7 @@ int ibv_query_port(struct ibv_context *context, uint8_t port,
 int ibv_query_gid(struct ibv_context *context, uint8_t port, int index,
     union ibv_gid *gid)
 {
-    (void)context;
+    SparkStubIbvDevice *device = spark_stub_ibv_device_of(context);
     if (port != 1u || gid == 0)
     {
         errno = EINVAL;
@@ -190,7 +221,7 @@ int ibv_query_gid(struct ibv_context *context, uint8_t port, int index,
     gid->raw[12] = 10u;
     gid->raw[13] = (uint8_t)(100 + index);
     gid->raw[14] = 0u;
-    gid->raw[15] = 1u;
+    gid->raw[15] = device != 0 ? device->host : 1u;
     return 0;
 }
 
@@ -283,6 +314,7 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
         spark_stub_mlx5_scan();
         stub_qp->state = IBV_QPS_RESET;
         stub_qp->remote_qpn = 0u;
+        memset(stub_qp->remote_gid,0,sizeof(stub_qp->remote_gid));
         stub_qp->record[0] = stub_qp->record[1] = 0u;
         stub_qp->parsed = 0u;
         return 0;
@@ -316,6 +348,8 @@ int ibv_modify_qp(struct ibv_qp *qp, struct ibv_qp_attr *attributes,
         }
         if ((mask & IBV_QP_DEST_QPN) != 0)
             stub_qp->remote_qpn = attributes->dest_qp_num;
+        if ((mask & IBV_QP_AV) != 0)
+            memcpy(stub_qp->remote_gid,attributes->ah_attr.grh.dgid.raw,sizeof(stub_qp->remote_gid));
         if ((mask & IBV_QP_AV) != 0)
             spark_stub_ibv_rtr_class = spark_stub_ibv_rtr_class == UINT32_MAX - 1u ||
                 spark_stub_ibv_rtr_class == attributes->ah_attr.grh.traffic_class ?
@@ -723,4 +757,12 @@ int spark_stub_ibv_qp_remote_qpn(uint32_t qpn)
 {
     SparkStubIbvQp *qp = spark_stub_ibv_qp_find(qpn);
     return qp != 0 ? (int)qp->remote_qpn : -1;
+}
+
+uint32_t spark_stub_ibv_qp_remote_address(uint32_t qpn)
+{
+    SparkStubIbvQp *qp = spark_stub_ibv_qp_find(qpn);
+    if (qp == 0)
+        return 0u;
+    return (uint32_t)qp->remote_gid[12] << 24 | (uint32_t)qp->remote_gid[13] << 16 | (uint32_t)qp->remote_gid[14] << 8 | (uint32_t)qp->remote_gid[15];
 }
