@@ -1699,6 +1699,25 @@ build/test_nvrm_shared_coherence: tests/nvrm/shared_coherence.cu tools/nvrm_kern
 build/test_nvrm_queue_channels: tests/nvrm/queue_channels.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
+MESH_RECORDS_HEADERS := model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h
+MESH_RECORDS_EXPECTED := MESH-ROUNDLOOP-TIMEOUT rank=0 phase=ship-ack want=4660 got=4608|MESH-ROUNDLOOP-TIMEOUT rank=0 hits=2|MESH-GUARD-POISON rank=0|MESH-GUARD-POISON rank=0 hits=2
+
+build/test_nvrm_mesh_records: CORE_INCLUDE_FLAGS += -Imodel-families/common/include
+build/test_nvrm_mesh_records: tests/nvrm/mesh_records.cu $(MESH_RECORDS_HEADERS) tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_mesh_records: tests/nvrm/mesh_records.cu $(MESH_RECORDS_HEADERS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include $< -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-mesh-records
+.PHONY: nvrm-mesh-records
+nvrm-mesh-records: nvrm-gpu-present build/test_nvrm_mesh_records build/cuda_mesh_records
+	@./build/cuda_mesh_records cuda > build/mesh_records.cuda.txt; cuda=$$?; ./build/test_nvrm_mesh_records nvrm > build/mesh_records.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if [ "$$(tr '\n' '|' < build/mesh_records.cuda.txt)" != "$(MESH_RECORDS_EXPECTED)|" ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour printed:"; cat build/mesh_records.cuda.txt; exit 1; fi; \
+	if ! cmp -s build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; then echo "FAIL nvrm-mesh-records: the flavours printed different records"; diff build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; exit 1; fi; \
+	echo "PASS nvrm-mesh-records: each record line once with its values, identical on both flavours"
+
 build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
