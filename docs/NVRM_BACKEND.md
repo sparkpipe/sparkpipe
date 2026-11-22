@@ -595,16 +595,24 @@ launch-shape probe and first light:
   unaligned offset, pageable copies through the bounce buffer and pageable
   fills, 64 queues opened and closed in turn, two queues copying at once,
   and reopening after a shutdown.
-- **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
-  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
-  40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
-  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
-  fill takes 2.1 s. The test runs in two modes:
+- **`tests/test_nvrm_large_transfers.c`** is part of the gate, so a
+  change to the page rules cannot lose bytes silently. It needs 40 GiB of
+  available memory, and the gate fails without it.
+  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` runs it alone. On GB10
+  the copy engine fills at 18.6 GB/s and copies at 18.0 GB/s at these
+  sizes. Allocating 16 GiB with its zero fill takes 2.1 s. The test runs in
+  two modes, both under the gate:
   - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
-    zero-filled by the copy engine. For each size it copies the whole
-    buffer to host-visible memory in one call and checks every byte, fills
-    the whole buffer in one call, copies it back and checks again, and
-    fills host-visible memory of the same size at an odd offset.
+    zero-filled by the copy engine. For each size it:
+    - copies the whole buffer to host-visible memory in one call and
+      checks every byte;
+    - fills the whole buffer in one call, copies it back and checks again;
+    - fills host-visible memory of the same size at an odd offset;
+    - fills host-pinned memory of the same size and checks every byte;
+    - fills shared memory of the same size (created, mapped and adopted),
+      copies it to host-visible memory and checks every byte.
+    On a discrete GPU this covers video memory, write-back system memory in
+    both its spaces, and shared video memory.
   - `held`: sets the stall threshold to zero, so that a 4 GiB
     allocation's wait gives up while its zero fill is still running. The
     allocation must fail, keep its memory held and say so. Shutdown must
