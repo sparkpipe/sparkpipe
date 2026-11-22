@@ -158,7 +158,14 @@
     "context_bytes": 8589934592,
     "restart": "on-failure",
     "log": "/srv/workspace/sparkpipe/logs/draftd-q27.log",
-    "lifecycle": "model"
+    "lifecycle": "model",
+    "server": "block_draftd",
+    "engine": {
+     "root": "/srv/workspace/sparkpipe/draftd-engine-q27",
+     "lane": "qwen3.8-27b",
+     "unit": "sparkpipe-draftd-engine-q27",
+     "weightd_unit": "sparkpipe-weightd-hub"
+    }
    },
    "taps": {
     "entries": "o1,o16,o31,o46,o61,final",
@@ -218,7 +225,14 @@
     "context_bytes": 8589934592,
     "restart": "no",
     "log": "/srv/workspace/sparkpipe/logs/draftd-dsv41.log",
-    "lifecycle": "model"
+    "lifecycle": "model",
+    "server": "block_draftd",
+    "engine": {
+     "root": "/srv/workspace/sparkpipe/draftd-engine-dsv41",
+     "lane": "deepseek-v4.1-flash",
+     "unit": "sparkpipe-draftd-engine-dsv41",
+     "weightd_unit": "sparkpipe-weightd-hub"
+    }
    }
   },
   "qwen3.8-max": {

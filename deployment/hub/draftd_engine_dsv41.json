@@ -1,0 +1,28 @@
+{
+ "weightd_socket": "/srv/workspace/sparkpipe/draftd-engine/run/weightd.sock",
+ "control_socket": "/srv/workspace/sparkpipe/draftd-engine-dsv41/run/draftd.sock",
+ "lanes": [
+  {
+   "name": "deepseek-v4.1-flash",
+   "host": "127.0.0.1",
+   "draft_port": 7712,
+   "target_model": "deepseek-v4.1-flash",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7711,
+    "model_tag": "dsv41_flash_stage",
+    "hidden": 5120,
+    "entries": "o36,o37,o38"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine-dsv41/modules/dsv41_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine-dsv41/packs/dsv41dspark.mxfp4.tp1.rank0.sp",
+    "model": "dsv41dspark",
+    "revision": "1017",
+    "context_bytes": 1073741824,
+    "wait_ms": 30
+   }
+  }
+ ]
+}

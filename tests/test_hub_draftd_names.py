@@ -83,17 +83,51 @@ def script_names():
 SOCKET = "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])"
 
 
+ENGINE_LANES = ("kimi-k3.1-pro", "qwen3.8-27b", "deepseek-v4.1-flash")
+
+
 def record_server():
-    _, environment = lane_config.draftd_environment("kimi-k3.1-pro")
-    assert environment["DRAFTD_SERVER"] == "block_draftd" and environment["DRAFTD_ENGINE_LANE"] == "kimi-k3.1-pro", environment
-    assert lane_config.served_unit(environment) == environment["DRAFTD_UNIT"]
-    assert lane_config.served_unit(dict(environment, DRAFTD_SERVER="engine")) == environment["DRAFTD_ENGINE_UNIT"]
-    _, plain = lane_config.draftd_environment("qwen3.8-27b")
+    roots, units = set(), set()
+    for record_id in ENGINE_LANES:
+        _, environment = lane_config.draftd_environment(record_id)
+        assert environment["DRAFTD_SERVER"] == "block_draftd" and environment["DRAFTD_ENGINE_LANE"] == record_id, environment
+        assert lane_config.served_unit(environment) == environment["DRAFTD_UNIT"]
+        assert lane_config.served_unit(dict(environment, DRAFTD_SERVER="engine")) == environment["DRAFTD_ENGINE_UNIT"]
+        assert environment["DRAFTD_WEIGHTD_UNIT"] == "sparkpipe-weightd-hub", environment
+        roots.add(environment["DRAFTD_ENGINE_ROOT"])
+        units.add(environment["DRAFTD_ENGINE_UNIT"])
+    assert len(roots) == len(units) == len(ENGINE_LANES), "each engine lane needs its own root and unit, so one lane's switch leaves the others' ports alone"
+    _, plain = lane_config.draftd_environment("kimi-k3")
     assert "DRAFTD_SERVER" not in plain and lane_config.served_unit(plain) == plain["DRAFTD_UNIT"], plain
     lane = json.loads((ROOT / "deployment/lanes.json").read_text())["lanes"]["kimi-k3.1-pro"]
     refused(dict(lane, draftd=dict(lane["draftd"], server="vllm")), "draftd server is block_draftd or engine")
     refused(dict(lane, draftd={key: value for key, value in dict(lane["draftd"], server="engine").items() if key != "engine"}), "needs the record's draftd.engine")
     refused(dict(lane, draftd=dict(lane["draftd"], engine=dict(lane["draftd"]["engine"], root="/mnt/cold/engine"))), "is not on the hub's local NVMe")
+
+
+def engine_configs():
+    lanes = json.loads((ROOT / "deployment/lanes.json").read_text())["lanes"]
+    swap = {spec["id"]: spec for spec in json.loads((ROOT / "deployment/hub/model_swap.json").read_text())["models"]}
+    roots = {lanes[record_id]["draftd"]["engine"]["root"]: record_id for record_id in ENGINE_LANES}
+    sockets, served = set(), []
+    for path in sorted((ROOT / "deployment/hub").glob("draftd_engine*.json")):
+        config = json.loads(path.read_text())
+        root = next((root for root in roots if config["control_socket"].startswith(root + "/")), None)
+        assert root is not None, f"{path.name}: its control socket lies in no lane record's engine root"
+        record_id = roots[root]
+        record = lanes[record_id]
+        assert [lane["name"] for lane in config["lanes"]] == [record["draftd"]["engine"]["lane"]], f"{path.name}: one root serves its one lane"
+        lane = config["lanes"][0]
+        tap_host, tap_port = record["taps"]["stream"].rsplit(":", 1)
+        assert lane["draft_port"] == record["draft_server"]["port"] and lane["target_model"] == record["draft_server"]["target_model"], path.name
+        assert lane["taps"]["host"] == tap_host and lane["taps"]["port"] == int(tap_port), path.name
+        assert set(lane["taps"]["entries"].split(",")) <= set(record["taps"]["entries"].split(",")), path.name
+        assert lane["taps"]["model_tag"] == swap[record_id]["kv_label"], f"{path.name}: the taps' model tag is the stage's KV label"
+        assert lane["drafter"]["kind"] == "engine" and all(lane["drafter"][key].startswith(root + "/") for key in ("module", "pack")), path.name
+        sockets.add(config["weightd_socket"])
+        served.append(record_id)
+    assert sorted(served) == sorted(ENGINE_LANES), f"engine configs serve {served}"
+    assert len(sockets) == 1, f"the engine roots share the hub's one weightd, not {sorted(sockets)}"
 
 
 def script_engine():
@@ -142,10 +176,12 @@ def script_engine():
 def main():
     record_names()
     record_server()
+    engine_configs()
     script_names()
     script_engine()
     print("PASS draftd target names render from the lane record into the drift flags and the unit's draftd flags, and a partial set is refused; "
-          "the K3.1 Pro record carries the server switch and the engine settings, and hub_draftd.sh with DRAFTD_SERVER=engine starts the hub's "
+          "the K3.1 Pro, Qwen3.8-27B and DeepSeek V4.1 Flash records carry the server switch and their own engine roots, each "
+          "engine config serves its record's one lane on the record's ports and taps and all share one weightd, and hub_draftd.sh with DRAFTD_SERVER=engine starts the hub's "
           "weightd and the engine draft server once, activates the lane through the control socket, deactivates it on stop, and refuses an "
           "unknown server or an unstaged engine root")
 
