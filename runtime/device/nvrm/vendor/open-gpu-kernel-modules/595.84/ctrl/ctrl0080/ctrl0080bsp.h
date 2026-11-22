@@ -1,0 +1,26 @@
+#pragma once
+
+#include <nvtypes.h>
+
+#include "ctrl/ctrl0080/ctrl0080base.h"
+
+#define NV0080_CTRL_CMD_BSP_GET_CAPS (0x801c01)
+
+#define NV0080_CTRL_BSP_GET_CAPS_PARAMS_MESSAGE_ID (0x1U)
+
+typedef struct NV0080_CTRL_BSP_GET_CAPS_PARAMS {
+    NvU32 capsTblSize;
+    NV_DECLARE_ALIGNED(NvP64 capsTbl, 8);
+    NvU32 instanceId;
+} NV0080_CTRL_BSP_GET_CAPS_PARAMS;
+
+#define NV0080_CTRL_BSP_CAPS_TBL_SIZE   8
+
+#define NV0080_CTRL_CMD_BSP_GET_CAPS_V2 (0x801c02)
+
+#define NV0080_CTRL_BSP_GET_CAPS_PARAMS_V2_MESSAGE_ID (0x2U)
+
+typedef struct NV0080_CTRL_BSP_GET_CAPS_PARAMS_V2 {
+    NvU8  capsTbl[NV0080_CTRL_BSP_CAPS_TBL_SIZE];
+    NvU32 instanceId;
+} NV0080_CTRL_BSP_GET_CAPS_PARAMS_V2;
