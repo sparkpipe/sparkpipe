@@ -16,9 +16,9 @@ filesystem and on its release root.
 ## Build
 
 ```bash
-sudo tools/hosted_image/build_image.sh --out ~/nvfree/image/build-N \
+sudo tools/hosted_image/build_image.sh --out BUILD_DIR \
   --source-ref HEAD --release-root RELEASE_ROOT \
-  --firewall-ruleset spark-firewall.nft
+  --firewall-ruleset FIREWALL_RULESET
 ```
 
 It runs as root on an arm64 Ubuntu host from a clean checkout at
@@ -276,7 +276,7 @@ boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
 attaches it as a loop device and partitions it like a node, then seeds:
 
 - a previous system;
-- `/home/spark1` with a 256 MiB pack and a release root linked to a stub
+- `/home/node` with a 256 MiB pack and a release root linked to a stub
   `libcuda.so.1`;
 - an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
   directory;

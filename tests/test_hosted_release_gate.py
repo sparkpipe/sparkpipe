@@ -365,7 +365,9 @@ class ReleaseKitTest(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO'", lines[0])
-        self.assertIn("ssh -o BatchMode=yes rtx5090", lines[1])
+        hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)
+        self.assertIsNotNone(hub)
+        self.assertIn(f'ssh -o BatchMode=yes {hub.group(1)} "cd $HUB_WORK/api-build-$SHA ', lines[1])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO'", lines[1])
         for line in lines:
             self.assertTrue(line.rstrip().endswith("exit 1; }"))
