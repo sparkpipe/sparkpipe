@@ -578,7 +578,7 @@ static int32_t GlmIndexerQuery(const GlmBuffers *b, uint32_t rows, uint32_t sms,
 		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, S::kRope, S::kRopeTheta, b->rope_table, 1.0f, 0u);
 	else
-		LM_LAUNCH((LmRopePerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
+		LM_LAUNCH((LmRopeOffsetPerHeadKernel<GLM_THREADS,S::kIndexPairing,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,S::kIndexHeads), GLM_THREADS, 0, stream,
 			b->index_query_bf16, b->positions, S::kIndexHeads, S::kIndexDim, 0u, S::kRope, S::kRopeTheta);
 	return GlmLaunched();
 }

@@ -1716,7 +1716,7 @@ static __global__ void D41SumSourcesF32Kernel(const float *__restrict__ gathered
 	}
 }
 
-static __global__ void D41SumSourcesKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
+static __global__ void D41SumGatheredKernel(const uint16_t *__restrict__ gathered, uint16_t *__restrict__ output, uint64_t elements, uint32_t degree)
 {
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
 	{
