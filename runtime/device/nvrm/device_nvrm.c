@@ -3,10 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <time.h>
 #include <unistd.h>
 
-#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
@@ -14,13 +12,13 @@
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
 #include "runtime/device/nvrm/nvrm_occupancy.h"
+#include "runtime/device/nvrm/nvrm_wait.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
 
 #define NVRM_WARP_THREADS 32u
 #define NVRM_GROUP_THREADS 1024u
 #define NVRM_GROUP_SHARED_BYTES 101376u
 #define NVRM_PARAMETER_BYTES 32764u
-#define NVRM_POLL_NS 20000L
 #define NVRM_SEQUENCES 4096u
 #define NVRM_SLOT_RING_BYTES (4ull << 20)
 #define NVRM_SLOT_RECORDS 1024u
@@ -419,15 +417,13 @@ void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
 SparkStatus SparkDeviceBackendQueueWait(SparkDeviceQueue *queue, uint64_t sequence, uint64_t timeout_ns)
 {
 	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
-	const uint64_t start = SparkMonotonicNs();
-	while ( NvrmCompletedSequence(nvrm) < sequence )
-	{
-		struct timespec pause = {0, NVRM_POLL_NS};
-		if ( timeout_ns != SPARK_DEVICE_WAIT_FOREVER && SparkMonotonicNs() - start >= timeout_ns )
-			return(SPARK_STATUS_PENDING);
-		nanosleep(&pause,0);
-	}
-	return(SPARK_STATUS_OK);
+	SparkNvrmWait wait;
+	int expired = 0;
+	SparkNvrmWaitBegin(&wait);
+	while ( NvrmCompletedSequence(nvrm) < sequence && (expired = SparkNvrmWaitPace(&wait,timeout_ns)) == 0 )
+		;
+	SparkNvrmWaitEnd(&wait);
+	return(expired != 0 ? SPARK_STATUS_PENDING : SPARK_STATUS_OK);
 }
 
 uint64_t SparkDeviceBackendQueueCompleted(SparkDeviceQueue *queue)
@@ -533,15 +529,14 @@ static uint64_t NvrmEventReached(const NvrmEvent *nvrm)
 SparkStatus SparkDeviceBackendEventWait(SparkDeviceEvent *event, uint64_t timeout_ns)
 {
 	const NvrmEvent *nvrm = (const NvrmEvent *)event->backend;
-	const uint64_t generation = nvrm->generation,start = SparkMonotonicNs();
-	while ( NvrmEventReached(nvrm) < generation )
-	{
-		struct timespec pause = {0, NVRM_POLL_NS};
-		if ( timeout_ns != SPARK_DEVICE_WAIT_FOREVER && SparkMonotonicNs() - start >= timeout_ns )
-			return(SPARK_STATUS_PENDING);
-		nanosleep(&pause,0);
-	}
-	return(SPARK_STATUS_OK);
+	const uint64_t generation = nvrm->generation;
+	SparkNvrmWait wait;
+	int expired = 0;
+	SparkNvrmWaitBegin(&wait);
+	while ( NvrmEventReached(nvrm) < generation && (expired = SparkNvrmWaitPace(&wait,timeout_ns)) == 0 )
+		;
+	SparkNvrmWaitEnd(&wait);
+	return(expired != 0 ? SPARK_STATUS_PENDING : SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendEventElapsed(SparkDeviceEvent *start, SparkDeviceEvent *stop, uint64_t *nanoseconds)

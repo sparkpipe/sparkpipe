@@ -364,6 +364,26 @@ bounce buffer per queue when the device side has no host view. Because
 one device-layer call can take several submissions, the backend maps
 device-layer sequence numbers to fence values through a ring.
 
+Every host wait on the GPU goes through one waiter
+(`runtime/device/nvrm/nvrm_wait.c`). This covers queue and event waits,
+the fence waits behind ring space and synchronization, and the host
+worker's wait for its reached gate.
+- **Spin.** The waiter spins on the value for 100 us, reading the clock
+  every 64 polls. A launch's whole round trip on GB10 is about 6 us, so
+  short waits finish inside the spin.
+- **Sleep.** Past the budget it sleeps 2 us, doubling to an 8 us
+  ceiling. A long wait then finishes at most about 11 us after the value
+  lands: 8 us of sleep plus about 3 us to wake. While sleeping, the
+  waiting thread costs about a fifth of a core, where a spin would cost
+  all of it.
+- **Timer slack.** While it sleeps, the waiting thread's timer slack is
+  1 us, and the thread's own slack is restored when the wait ends. Under
+  Linux's default 50 us slack, a 20 us sleep lasts about 72 us.
+- **Timeout.** A timeout is checked at the same points and a sleep never
+  runs past it. A zero timeout checks the value once.
+
+All of these are constants, not settings.
+
 Kernel libraries are cubins with their manifests
 (`SparkDeviceLibraryLoad` on the `.cubin` path). `SparkDeviceKernelCreate`
 finds a kernel by name and reports its thread limit (the PTX bound, else

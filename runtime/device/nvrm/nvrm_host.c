@@ -1,15 +1,13 @@
 #include <errno.h>
 #include <string.h>
-#include <time.h>
 
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_host.h"
+#include "runtime/device/nvrm/nvrm_wait.h"
 
 #define HOST_REACHED_OFFSET 0u
 #define HOST_DONE_OFFSET 64u
-#define HOST_SPIN_POLLS 4096u
-#define HOST_POLL_NS 20000L
 
 #define HOST_TRY(call) \
 	do { \
@@ -35,17 +33,20 @@ static void HostRunItem(const SparkNvrmHostItem *item)
 
 static uint32_t HostReached(SparkNvrmHostWorker *worker, uint64_t ticket)
 {
-	uint32_t polls = 0u;
+	SparkNvrmWait wait;
+	uint32_t reached = 1u;
+	SparkNvrmWaitBegin(&wait);
 	while ( __atomic_load_n(HostGate(worker,HOST_REACHED_OFFSET),__ATOMIC_ACQUIRE) < ticket )
 	{
-		struct timespec pause = {0, HOST_POLL_NS};
 		if ( __atomic_load_n(&worker->stopping,__ATOMIC_ACQUIRE) != 0u )
-			return(0u);
-		if ( ++polls < HOST_SPIN_POLLS )
-			continue;
-		nanosleep(&pause,0);
+		{
+			reached = 0u;
+			break;
+		}
+		(void)SparkNvrmWaitPace(&wait,SPARK_DEVICE_WAIT_FOREVER);
 	}
-	return(1u);
+	SparkNvrmWaitEnd(&wait);
+	return(reached);
 }
 
 static void *HostRun(void *argument)
