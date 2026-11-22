@@ -251,9 +251,9 @@ which could be mistaken for the qualified route.
   local routes have work: at TP16 one route in 16. After its wait, a block
   whose first item lies past the last batch (`group_row_offset[groups]`
   local routes, plus a partial batch per expert when tasks are batched)
-  returns before it loads the offsets or scans them. At TP16 this made the
-  expert projections of MiMo 2.6, HY4 and the BF16 families 4% faster at the
-  median and up to 12% faster.
+  returns before it loads the offsets or scans them. Cold at TP16 this made
+  the expert projections 9-12% faster at the median for Qwen3.8, 11-17% for
+  MiMo 2.6 and 2-4% for HY4 and the BF16 families.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.
