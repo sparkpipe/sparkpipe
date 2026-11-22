@@ -756,9 +756,9 @@ steps it holds.
     step number plus one to the semaphore when its grid ends;
   - the push segment.
 - **Segment.** The segment first sets the semaphore to zero. Every later
-  step first acquires the semaphore at its own step number, so it starts
-  once the step before it has ended, as an eager launch starts once the
-  queue's fence has passed. Then:
+  step in the segment first acquires the semaphore at its own step number,
+  so it starts once the step before it has ended, as an eager launch
+  starts once the queue's fence has passed. Then:
   - a launch sends its descriptor;
   - an event record stamps the event's time and raises its generation;
   - an event wait acquires the event's generation;
@@ -766,6 +766,46 @@ steps it holds.
     the worker's answer.
 
   A step that is no launch then releases the next step number itself.
+- **Chains.** A dependent launch (`LM_LAUNCH_DEPENDENT`) right after a
+  launch is chained: the segment sends its descriptor right after the
+  earlier one, with no front-end acquire, and the descriptor orders it in
+  hardware, as an eager dependent launch is ordered (see below).
+  - Every launch of the program arrives at a latch of its own when it ends
+    (`ARRIVE_AT_LATCH_ID`). A chained launch waits on the latch of the
+    launch before it (`WAIT_ON_LATCH_ID`), holds its blocks until that
+    launch's blocks have ended
+    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`), holds
+    its completion membar until the latch is acquired
+    (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), and invalidates the shader and
+    texture data caches when it acquires the latch
+    (`LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE`,
+    `LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE`).
+  - Only a kernel that calls `griddepcontrol.wait` before it reads the
+    earlier grid's writes may be chained, which is what CUDA asks of a
+    programmatic dependent launch. The latch alone does not keep a plain
+    kernel from reading a line its multiprocessor cached before the
+    earlier grid wrote it. `test_nvrm_latch_segments stale 200 20`
+    measured it on GB10: the parent's other blocks cache a word, block 0
+    writes it 20 µs later, and children of 96 blocks read it cached.
+    Chained plain children read the value from before the write in 282
+    of 153,600 reads when the parent triggers its dependents first and in
+    142 of 153,600 when it never does; children that call
+    `griddepcontrol.wait` never did. A plain launch is therefore never
+    chained: it takes the acquire and starts once the launch before it
+    has ended and the front end has flushed, as a plain kernel boundary
+    does on CUDA. Eager plain launches already took the acquire.
+  - Latch ids. Finish takes a range of ids for the program, one per step,
+    from the upper half of the 32-bit id space, and destroy gives it back.
+    Live programs never share an id, and eager launches take their ids
+    from the lower half, so a program's descriptors, which keep their ids
+    for every run, never meet an eager launch's id.
+  - A chain holds at most 32 launches (`SPARK_NVRM_LATCH_SEGMENT`, the
+    bound latched dependent launches keep, so another process waits at
+    most one chain). The next launch heads a new chain and takes the
+    acquire, as do a plain launch and the launch after an event or host
+    step.
+  - Every launch still releases its step number plus one, so the run's
+    tail and fault reports see the semaphore as before.
 - **Run.** A run is one queue operation. It pushes the queue's ordering
   acquire, and the local-memory binding if the channel lacks it. It then
   queues three ring entries and rings the doorbell once: that head, the
@@ -785,8 +825,10 @@ steps it holds.
   previous run, because both would use the one semaphore.
 - **Not inside programs.** Finish refuses copies and fills, naming them;
   they go on the queue before or after the run. A dependent launch runs
-  inside a program as a plainly ordered launch, with the same results;
-  latched chains inside programs are the next step.
+  inside a program as a chained launch: its blocks start after the
+  earlier grid has ended, so `griddepcontrol.wait` returns at once, with
+  the same results. Starting its blocks before the earlier grid ends, as
+  CUDA allows, is a later step.
 - **Faults.** A fault report during a run names the program, the step its
   semaphore had reached, and that step's kernel.
 
@@ -1036,7 +1078,8 @@ macro both stay on the CUDA fronts. Their implementation is
   a front-end semaphore wait.
   - **Arrive.** Every launch arrives at a latch of its own when it ends
     (`ARRIVE_AT_LATCH_VALID`, `ARRIVE_AT_LATCH_ID`). The id comes from one
-    counter per process, so no two launches in flight share it.
+    counter per process over the lower half of the id space, so no two
+    launches in flight share it and none meets a program's ids.
   - **Wait.** `LM_LAUNCH_DEPENDENT` right after a launch on the same queue
     pushes no semaphore acquire. Its descriptor waits on the earlier
     launch's latch (`WAIT_ON_LATCH_VALID`, `WAIT_ON_LATCH_ID`) and holds its
@@ -1044,7 +1087,8 @@ macro both stay on the CUDA fronts. Their implementation is
     (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`). It also
     holds its own completion membar until the latch is acquired
     (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), so its completion is never reported
-    before the earlier launch's.
+    before the earlier launch's, and invalidates the shader and texture
+    data caches when it acquires the latch.
   - **Inside the kernel.** `griddepcontrol.wait` returns once the earlier
     launch's latch is acquired, so its writes are visible.
   - **Cost.** On a GB10 node the dependent grid started 0.23 to 0.42 µs
@@ -1059,8 +1103,8 @@ macro both stay on the CUDA fronts. Their implementation is
     segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`): each segment
     starts with the front-end acquire and its other 31 launches wait on
     latches. Another process waits at most one segment of the chain's
-    kernels. When the nvrm backend replays step programs, it must keep the
-    same bound.
+    kernels. Chains inside device programs keep the same bound
+    ([programs](#programs)).
     - Measured on GB10 with 5 ms kernels queued ahead
       (`test_nvrm_latch_segments chain-seconds 8 SEGMENT 5000` beside
       `compete 6 1000`):
