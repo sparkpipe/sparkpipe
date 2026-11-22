@@ -2,6 +2,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/pins.conf"
+. "$here/owners.sh"
 
 usage() {
 	echo "usage: install_disk.sh --disk DEVICE --image BUILD_DIR --identity BUNDLE_DIR --work DIR" >&2
@@ -128,8 +129,8 @@ else
 	echo "install_disk: the previous root has no /$tailscale_state, so the node joins the tailnet at bring-up"
 fi
 [ "$(stat -c %u:%g:%a "$target")" = "0:0:755" ] || fail "the installed root is $(stat -c %u:%g:%a "$target"), not 0:0:755"
-owned="$(find "$target" -xdev \( -path "$target/home" -o -path "$aside" \) -prune -o \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)"
-[ -z "$owned" ] || fail "${owned#"$target"} belongs to uid or gid 1000 or above"
+owned="$(foreign_owner "$target" "$target" \( -path "$target/home" -o -path "$aside" \) -prune -o)"
+[ -z "$owned" ] || fail "${owned#"$target"} belongs to a uid or gid of 1000 or above that the image does not define"
 
 e2label "$root" SPARKROOT
 fatlabel "$esp" SPARKESP
