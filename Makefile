@@ -78,7 +78,15 @@ DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_L
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
-DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/vendor/open-gpu-kernel-modules -Iruntime/device/nvrm/vendor/open-gpu-doc
+NVRM_VENDOR := runtime/device/nvrm/vendor
+NVRM_MODULE_RELEASES := 580.178.04 595.84
+NVRM_MODULE_RELEASE ?= 580.178.04
+ifneq ($(words $(filter $(NVRM_MODULE_RELEASE),$(NVRM_MODULE_RELEASES))),1)
+$(error NVRM_MODULE_RELEASE=$(NVRM_MODULE_RELEASE) is not a pinned open kernel module release; the pins are $(NVRM_MODULE_RELEASES))
+endif
+NVRM_RELEASE_STAMP := build/nvrm_module_release
+NVRM_RELEASE_DEPENDENCIES := runtime/device/nvrm/release/$(NVRM_MODULE_RELEASE)/nvrm_release.h $(NVRM_RELEASE_STAMP)
+DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/release/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-kernel-modules/$(NVRM_MODULE_RELEASE) -I$(NVRM_VENDOR)/open-gpu-doc
 WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
 WEIGHTD_DEVICE_SOURCES := $(WEIGHTD_DEVICE_SOURCES_$(SPARKPIPE_DEVICE))
@@ -244,6 +252,7 @@ MIMO26_PRO_TP16_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>
 MIMO26_PRO_TP16_SOURCES := modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/mimo26_pro_tp16_resident_decode_stage/source/spark_mimo26_pro_tp16_stage_model.cu
 STAGE_RUNNER_BINARIES := \
 	$(K3_TP16_SERVING_ADAPTER) \
+	$(K31_PRO_TP16_SERVING_ADAPTER) \
 	$(QWEN38_27B_TP16_SERVING_ADAPTER) \
 	$(DSV41_FLASH_TP16_SERVING_ADAPTER) \
 	$(QWEN38_27B_BF16_TP16_SERVING_ADAPTER) \
@@ -267,7 +276,15 @@ STAGE_RUNNER_BINARIES := \
 	$(KEXAONE2_TP16_SERVING_ADAPTER) \
 	$(MIMO26_FLASH_TP16_SERVING_ADAPTER) \
 	$(MIMO26_PRO_TP16_SERVING_ADAPTER) \
-	build/runner_capture_flags_cuda build/runner_verify_step_cuda build/stage_runner_sum_rule_cuda build/stage_runner_failed_dispatch_cuda build/stage_runner_single_gpu_cuda
+	build/runner_capture_flags_cuda build/runner_verify_step_cuda build/stage_runner_sum_rule_cuda build/stage_runner_failed_dispatch_cuda build/stage_runner_single_gpu_cuda \
+	build/test_gemma4_verify_frames build/test_ling_verify_frames build/test_qwen38_verify_frames build/test_qwen38_verify_frames_bf16 \
+	build/test_glm52_verify_frames build/test_glm52_verify_frames_bf16 build/test_hy4_verify_frames build/test_mimo26_verify_frames \
+	build/dsv41_flash_decode_replay build/test_dsv41_flash_fused_exact build/k3_tp_context_cuda build/k3_index_exchange_cuda \
+	build/libqwen38_27b_tp8_serving_adapter.$(SHARED_LIBRARY_EXT) build/libqwen38_27b_bf16_tp8_serving_adapter.$(SHARED_LIBRARY_EXT) \
+	build/libqwen38_27b_tp4_serving_adapter.$(SHARED_LIBRARY_EXT) build/libqwen38_27b_bf16_tp4_serving_adapter.$(SHARED_LIBRARY_EXT) \
+	build/libqwen38_27b_tp2_serving_adapter.$(SHARED_LIBRARY_EXT) build/libqwen38_27b_bf16_tp2_serving_adapter.$(SHARED_LIBRARY_EXT) \
+	build/libqwen38_27b_tp1_serving_adapter.$(SHARED_LIBRARY_EXT) build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT) \
+	build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT) build/libdsv41_flash_rows16_serving_adapter.$(SHARED_LIBRARY_EXT)
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -709,6 +726,7 @@ PYTHON_TESTS := \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
 	tests/test_kernel_spill_audit.py \
+	tests/test_stage_runner_link_rules.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_timing_reports.py \
 	tests/test_glm5_next_bench_wrap.py \
@@ -911,6 +929,7 @@ PYTHON_TESTS := \
 	tests/test_tp_cupti_trace_report.py \
 	tests/test_dsv41_flash_decode_replay.py \
 	tests/test_fused_kernels.py \
+	tests/test_dependent_wait_audit.py \
 	tests/test_weightd_map_fd_ownership.py \
 	tests/test_weightd_mesh_source.py \
 	tests/test_mesh_status_tool.py \
@@ -1541,7 +1560,10 @@ build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBR
 build/test_device_shared_memory_cuda: tests/test_device_shared_memory.c $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_shared_memory_cuda (no CUDA device library)"; fi
 
-$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+$(NVRM_RELEASE_STAMP): FORCE | build
+	@if [ "$$(cat $@ 2>/dev/null)" != "$(NVRM_MODULE_RELEASE)" ]; then echo "$(NVRM_MODULE_RELEASE)" > $@; fi
+
+$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
@@ -1555,7 +1577,7 @@ build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
-build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-first-light-static
@@ -1594,7 +1616,7 @@ ifeq ($(UNAME_S),Linux)
 NVRM_OPEN_ORDER_FLAGS := -DSPARK_NVRM_FAKE_MODULE -Wl,--wrap=open -Wl,--wrap=ioctl
 NVRM_OPEN_ORDER_SOURCES := $(DEVICE_NVRM_SOURCES)
 endif
-build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
+build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
 NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault
@@ -1604,6 +1626,16 @@ build/test_nvrm_launch_dimensions: tests/test_nvrm_launch_dimensions.c $(DEVICE_
 
 build/test_nvrm_memory: tests/test_nvrm_memory.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_nvrm_large_transfers: tests/test_nvrm_large_transfers.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-large-transfers
+.PHONY: nvrm-large-transfers
+nvrm-large-transfers: nvrm-gpu-present build/test_nvrm_large_transfers
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	./build/test_nvrm_large_transfers sizes || status=1; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
 
 build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1674,11 +1706,56 @@ NVRM_FLAVOUR_GOALS += nvrm-launch-latency
 nvrm-launch-latency: nvrm-gpu-present build/nvrm_launch_latency build/cuda_launch_latency
 	@for pass in 1 2 3; do ./build/cuda_launch_latency cuda && ./build/nvrm_launch_latency nvrm; done
 
+build/nvrm_step_chain: tests/nvrm/step_chain.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_step_chain: tests/nvrm/step_chain.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-step-chain
+.PHONY: nvrm-step-chain
+nvrm-step-chain: nvrm-gpu-present build/nvrm_step_chain build/cuda_step_chain
+	@./build/cuda_step_chain cuda && ./build/nvrm_step_chain nvrm
+
+build/test_nvrm_program_steps: tests/nvrm/program_steps.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_program_steps: tests/nvrm/program_steps.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-program-steps
+.PHONY: nvrm-program-steps
+nvrm-program-steps: nvrm-gpu-present build/test_nvrm_program_steps build/cuda_program_steps
+	@./build/cuda_program_steps cuda > build/program_steps.cuda.txt; cuda=$$?; ./build/test_nvrm_program_steps nvrm > build/program_steps.nvrm.txt; nvrm=$$?; \
+		cat build/program_steps.cuda.txt build/program_steps.nvrm.txt; [ $$cuda -eq 0 ] && [ $$nvrm -eq 0 ] && \
+		grep '^digest' build/program_steps.cuda.txt > build/program_steps.cuda.digests && grep '^digest' build/program_steps.nvrm.txt > build/program_steps.nvrm.digests && \
+		diff build/program_steps.cuda.digests build/program_steps.nvrm.digests && \
+		echo "PASS nvrm-program-steps: a program run over nvrm writes the bytes the same program writes as a CUDA graph"
+
 build/test_nvrm_shared_coherence: tests/nvrm/shared_coherence.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
 build/test_nvrm_queue_channels: tests/nvrm/queue_channels.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
+
+MESH_RECORDS_HEADERS := model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh model-families/common/include/sparkpipe/spark_tp_mesh_round_control.h
+MESH_RECORDS_EXPECTED := MESH-ROUNDLOOP-TIMEOUT rank=0 phase=ship-ack want=4660 got=4608|MESH-ROUNDLOOP-TIMEOUT rank=0 hits=2|MESH-GUARD-POISON rank=0|MESH-GUARD-POISON rank=0 hits=2
+
+build/test_nvrm_mesh_records: CORE_INCLUDE_FLAGS += -Imodel-families/common/include
+build/test_nvrm_mesh_records: tests/nvrm/mesh_records.cu $(MESH_RECORDS_HEADERS) tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_mesh_records: tests/nvrm/mesh_records.cu $(MESH_RECORDS_HEADERS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include $< -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-mesh-records
+.PHONY: nvrm-mesh-records
+nvrm-mesh-records: nvrm-gpu-present build/test_nvrm_mesh_records build/cuda_mesh_records
+	@./build/cuda_mesh_records cuda > build/mesh_records.cuda.txt; cuda=$$?; ./build/test_nvrm_mesh_records nvrm > build/mesh_records.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if [ "$$(tr '\n' '|' < build/mesh_records.cuda.txt)" != "$(MESH_RECORDS_EXPECTED)|" ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour printed:"; cat build/mesh_records.cuda.txt; exit 1; fi; \
+	if ! cmp -s build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; then echo "FAIL nvrm-mesh-records: the flavours printed different records"; diff build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; exit 1; fi; \
+	echo "PASS nvrm-mesh-records: each record line once with its values, identical on both flavours"
 
 build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
@@ -1704,7 +1781,39 @@ nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 		mark=$$(tools/nvrm_kernel_log.sh mark); echo "RUN a plain kernel after the $$mode fault"; ./build/nvrm_fault_reports plain || status=1; \
 		tools/nvrm_kernel_log.sh check $$mark || status=1; done; exit $$status
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
+build/test_nvrm_cluster_launch: tests/nvrm/cluster_launch.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_cluster_launch: tests/nvrm/cluster_launch.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+build/test_nvrm_latch_segments: tests/nvrm/latch_segments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+NVRM_FLAVOUR_GOALS += nvrm-latch-segments
+.PHONY: nvrm-latch-segments
+nvrm-latch-segments: nvrm-gpu-present build/test_nvrm_latch_segments
+	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; \
+	./build/test_nvrm_latch_segments chain 100000 1 || status=1; \
+	./build/test_nvrm_latch_segments chain 100000 32 || status=1; \
+	./build/test_nvrm_latch_segments chain-seconds 6 32 & chain=$$!; sleep 0.5; \
+	./build/test_nvrm_latch_segments compete 5 1 || status=1; wait $$chain || status=1; \
+	./build/test_nvrm_latch_segments chain 1000 32 5000 & chain=$$!; sleep 0.5; \
+	./build/test_nvrm_latch_segments compete 2 165 || status=1; wait $$chain || status=1; \
+	tools/nvrm_kernel_log.sh check $$mark || status=1; \
+	if [ $$status -eq 0 ]; then echo "PASS nvrm-latch-segments: dependent chains run in segments of one and of 32 launches, \
+a second process keeps running beside a 32-launch chain, and beside a chain of 5 ms kernels it waits at most one segment"; fi; exit $$status
+
+NVRM_FLAVOUR_GOALS += nvrm-cluster-launch
+.PHONY: nvrm-cluster-launch
+nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_cluster_launch
+	@./build/cuda_cluster_launch cuda > build/cluster_launch.cuda.txt; cuda=$$?; ./build/test_nvrm_cluster_launch nvrm > build/cluster_launch.nvrm.txt; nvrm=$$?; \
+		cat build/cluster_launch.cuda.txt build/cluster_launch.nvrm.txt; [ $$cuda -eq 0 ] && [ $$nvrm -eq 0 ] && \
+		grep '^digest' build/cluster_launch.cuda.txt > build/cluster_launch.cuda.digests && grep '^digest' build/cluster_launch.nvrm.txt > build/cluster_launch.nvrm.digests && \
+		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
+		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present
@@ -2249,19 +2358,19 @@ build/test_dsv41_hc_mix: tests/test_dsv41_hc_mix.cu inference/kernels/hc.cuh mod
 build/test_skinny_rows: tests/test_skinny_rows.cu inference/kernels/skinny.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_skinny_rows (no nvcc on this host)"; fi
 build/test_gemma4_verify_frames: tests/test_gemma4_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/gemma4/source/gemma4_stage.cuh $(wildcard modules/gemma4_31b_resident_decode_stage/source/*.cu modules/gemma4_26b_resident_decode_stage/source/*.cu modules/muse_glimmer_tp16_resident_decode_stage/source/*.cu modules/laguna_tp16_resident_decode_stage/source/*.cu modules/kexaone2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/gemma4/include -Imodel-families/gemma4/source -Imodules/gemma4_31b_resident_decode_stage/include -Imodules/gemma4_26b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include -Imodules/laguna_tp16_resident_decode_stage/include -Imodules/kexaone2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_gemma4_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/gemma4/include -Imodel-families/gemma4/source -Imodules/gemma4_31b_resident_decode_stage/include -Imodules/gemma4_26b_resident_decode_stage/include -Imodules/muse_glimmer_tp16_resident_decode_stage/include -Imodules/laguna_tp16_resident_decode_stage/include -Imodules/kexaone2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_gemma4_verify_frames (no nvcc on this host)"; fi
 build/test_ling_verify_frames: tests/test_ling_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/ling/source/ling_stage.cuh $(wildcard modules/solar_open2_tp16_resident_decode_stage/source/*.cu modules/ling3_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/ling/include -Imodel-families/ling/source -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodules/ling3_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_ling_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/ling/include -Imodel-families/ling/source -Imodules/solar_open2_tp16_resident_decode_stage/include -Imodules/ling3_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_ling_verify_frames (no nvcc on this host)"; fi
 build/test_qwen38_verify_frames: tests/test_qwen38_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/qwen38/source/qwen38_hybrid_stage.cuh $(wildcard modules/qwen38_27b_resident_decode_stage/source/*.cu modules/qwen38_max_resident_decode_stage/source/*.cu modules/qwen38_flash_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_NVFP4_E2M1 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_NVFP4_E2M1 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames (no nvcc on this host)"; fi
 build/test_qwen38_verify_frames_bf16: tests/test_qwen38_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/qwen38/source/qwen38_hybrid_stage.cuh $(wildcard modules/qwen38_27b_resident_decode_stage/source/*.cu modules/qwen38_max_resident_decode_stage/source/*.cu modules/qwen38_flash_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames_bf16 (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DQWEN38_27B_TP_DEGREE=16u -DQWEN38_FLASH_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -DQWEN38_FLASH_PLE_TABLE_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodules/qwen38_27b_resident_decode_stage/include -Imodules/qwen38_max_resident_decode_stage/include -Imodules/qwen38_flash_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_qwen38_verify_frames_bf16 (no nvcc on this host)"; fi
 build/test_glm52_verify_frames: tests/test_glm52_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/glm52/source/glm52_stage.cuh $(wildcard modules/glm53_full_tp16_resident_decode_stage/source/*.cu modules/axk2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DGLM53_FULL_LINEAR_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -DGLM53_FULL_EXPERT_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DGLM53_FULL_LINEAR_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -DGLM53_FULL_EXPERT_CODEC=SPARK_WEIGHT_CODEC_FP8_E4M3 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames (no nvcc on this host)"; fi
 build/test_glm52_verify_frames_bf16: tests/test_glm52_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/glm52/source/glm52_stage.cuh $(wildcard modules/glm53_full_tp16_resident_decode_stage/source/*.cu modules/axk2_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DGLM53_FULL_LINEAR_CODEC=SPARK_WEIGHT_CODEC_BF16 -DGLM53_FULL_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames_bf16 (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -DGLM53_FULL_LINEAR_CODEC=SPARK_WEIGHT_CODEC_BF16 -DGLM53_FULL_EXPERT_CODEC=SPARK_WEIGHT_CODEC_BF16 -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/source -Imodel-families/glm52/include -Imodules/glm53_full_tp16_resident_decode_stage/include -Imodules/axk2_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_glm52_verify_frames_bf16 (no nvcc on this host)"; fi
 build/test_hy4_verify_frames: tests/test_hy4_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/hy4/source/hy4_stage.cuh $(wildcard modules/hy4_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/hy4/include -Imodel-families/hy4/source -Imodules/hy4_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_hy4_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/hy4/include -Imodel-families/hy4/source -Imodules/hy4_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_hy4_verify_frames (no nvcc on this host)"; fi
 build/test_exact_grouped_experts: tests/test_exact_grouped_experts.cu tests/cuda/verify_frames_common.cuh inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_exact_grouped_experts (no nvcc on this host)"; fi
 build/test_exact_dense_rows: tests/test_exact_dense_rows.cu tests/cuda/verify_frames_common.cuh inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh $(CUDA_HEADER_DEPS) | build
@@ -2271,7 +2380,7 @@ build/exact_dense_rows_bench: tools/exact_dense_rows_bench.cu inference/kernels/
 build/exact_grouped_experts_bench: tools/exact_grouped_experts_bench.cu inference/kernels/skinny.cuh inference/kernels/weight_codec.cuh model-families/glm52/include/sparkpipe/spark_glm52_model.h $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include -Imodel-families/glm52/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@
 build/test_mimo26_verify_frames: tests/test_mimo26_verify_frames.cu tests/cuda/verify_frames_common.cuh model-families/mimo26/source/mimo26_stage.cuh $(wildcard modules/mimo26_flash_tp16_resident_decode_stage/source/*.cu modules/mimo26_pro_tp16_resident_decode_stage/source/*.cu) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/mimo26/include -Imodel-families/mimo26/source -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodules/mimo26_pro_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_mimo26_verify_frames (no nvcc on this host)"; fi
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/mimo26/include -Imodel-families/mimo26/source -Imodules/mimo26_flash_tp16_resident_decode_stage/include -Imodules/mimo26_pro_tp16_resident_decode_stage/include $< runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@; else echo "SKIP test_mimo26_verify_frames (no nvcc on this host)"; fi
 
 build/test_dsv41_flash_rope_parity: tests/test_dsv41_flash_rope_parity.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_rope_parity (no nvcc on this host)"; fi

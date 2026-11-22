@@ -52,3 +52,50 @@ static inline int32_t D41FusedMixNormLaunch(const D41FusedMixNormArguments *argu
 	LM_LAUNCH((D41FusedMixNormKernel), rows * ((LmHcSinkhornShape<D41K_HC>::kTasks) + (D41_HIDDEN / D41_THREADS)), 256u, (D41_HIDDEN + 8u) * sizeof(float), stream, *arguments, rows);
 	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
 }
+
+#define D41FusedOutputRows 16u
+
+typedef struct D41FusedOutputArguments
+{
+	const float *records;
+	uint64_t source_stride;
+	const float *sink;
+	const uint32_t *positions;
+	const float *frequency;
+	uint16_t *group_input;
+	const uint16_t *window_kv;
+	uint16_t *ring;
+	const uint32_t *row_lane;
+	const uint32_t *row_ordinal;
+	const uint32_t *sequence_row_begin;
+	const uint32_t *recurrent_index;
+	uint64_t ring_slot_stride;
+	uint32_t commit;
+} D41FusedOutputArguments;
+
+__global__ __launch_bounds__(256) void D41FusedOutputKernel(const __grid_constant__ D41FusedOutputArguments arguments, uint32_t rows)
+{
+	extern __shared__ float D41FusedOutputKernelShared[];
+	uint32_t block = blockIdx.x;
+	if ( block < rows * (D41_LOCAL_HEADS) )
+	{
+		const uint32_t row = block / (D41_LOCAL_HEADS), item = block % (D41_LOCAL_HEADS);
+		D41OutputHead<256u>(arguments.records, arguments.source_stride, D41_LOCAL_HEADS, arguments.sink, arguments.positions, arguments.frequency, arguments.group_input, D41_GROUP_WIDTH / D41_HEAD_DIM, rows, row, item, D41FusedOutputKernelShared);
+		return;
+	}
+	block -= rows * (D41_LOCAL_HEADS);
+	if ( block < rows * (1u) )
+	{
+		const uint32_t row = block / (1u);
+		D41WindowRingStoreRow(arguments.window_kv, arguments.ring, arguments.positions, arguments.row_lane, arguments.row_ordinal, arguments.sequence_row_begin, arguments.recurrent_index, arguments.ring_slot_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, arguments.commit, (const uint32_t *)0, row);
+		return;
+	}
+}
+
+static inline int32_t D41FusedOutputLaunch(const D41FusedOutputArguments *arguments, uint32_t rows, SparkGpuStream stream)
+{
+	if ( arguments == 0 || rows == 0u || rows > D41FusedOutputRows )
+		return LM_LAUNCH_ERR_SHAPE;
+	LM_LAUNCH((D41FusedOutputKernel), rows * ((D41_LOCAL_HEADS) + (1u)), 256u, 32u * sizeof(float) + D41K_LATENT * sizeof(uint16_t), stream, *arguments, rows);
+	return SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;
+}

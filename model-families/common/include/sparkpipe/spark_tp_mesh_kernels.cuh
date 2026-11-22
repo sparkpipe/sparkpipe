@@ -195,6 +195,18 @@ __global__ void SparkTpMeshSeqPadKernel(
 	(void)atomicAdd((unsigned long long *)seq_cell,1ull);
 }
 
+static __device__ __forceinline__ void SparkTpMeshFaultRecord(SparkTpMeshRoundControl *control, uint64_t phase, uint64_t peer, uint64_t want,
+	uint64_t seen)
+{
+	atomicAdd((unsigned long long *)&control->fault_hits,1ull);
+	if ( atomicCAS((unsigned long long *)&control->fault_phase,0ull,(unsigned long long)phase) == 0ull )
+	{
+		control->fault_peer = peer;
+		control->fault_want = want;
+		control->fault_seen = seen;
+	}
+}
+
 __global__ void SparkTpMeshGuardKernel(
     volatile unsigned long long *error_word,
     unsigned long long *output)
@@ -203,8 +215,9 @@ __global__ void SparkTpMeshGuardKernel(
 		return;
 	if ( *error_word != 0ull )
 	{
+		SparkTpMeshRoundControl *control = (SparkTpMeshRoundControl *)((uintptr_t)error_word - offsetof(SparkTpMeshRoundControl,error_word));
 		output[0] = 0xFFFFFFFFFFFFFFFFull;
-		printf("MESH-GUARD-POISON\\n");
+		atomicAdd((unsigned long long *)&control->guard_poisons,1ull);
 	}
 }
 
@@ -387,12 +400,12 @@ __global__ void SparkTpMeshRoundLoopKernel(
 				     ( spins >= spin_cap ||
 				       SparkTpGlobalTimerNs() >= stop_at ) )
 				{
+					const uint64_t shipped = *shipped_cell;
 					control->diag_word = (0xa5ull << 56ull) |
 					    ((prev_tag & 0xffffull) << 16ull) |
-					    (*shipped_cell & 0xffffull);
+					    (shipped & 0xffffull);
+					SparkTpMeshFaultRecord(control,SPARK_TP_MESH_FAULT_SHIP_ACK,rank,prev_tag,shipped);
 					control->error_word = prev_tag;
-					printf("MESH-ROUNDLOOP-TIMEOUT rank=%u phase=ship-ack want=%llu got=%llu\\n",
-						rank,(unsigned long long)prev_tag,(unsigned long long)*shipped_cell);
 					s_decision = SPARK_TP_MESH_ROUND_LOOP_DECISION_TIMEOUT;
 					break;
 				}
@@ -466,18 +479,16 @@ __global__ void SparkTpMeshRoundLoopKernel(
 					     ( spins >= spin_cap ||
 					       SparkTpGlobalTimerNs() >= stop_at ) )
 					{
+						const uint64_t ended = *end_word;
 						control->diag_word =
 						    ((unsigned long long)peer_rank << 56ull) |
 						    ((cursor & 0xffull) << 48ull) |
 						    ((unsigned long long)
 							(s_slot / slot_bytes) << 32ull) |
 						    ((s_tag & 0xffffull) << 16ull) |
-						    (*end_word & 0xffffull);
+						    (ended & 0xffffull);
+						SparkTpMeshFaultRecord(control,SPARK_TP_MESH_FAULT_PEER_WAIT,peer_rank,(uint32_t)s_tag,(uint32_t)ended);
 						control->error_word = s_tag;
-						printf("MESH-ROUNDLOOP-TIMEOUT rank=%u phase=peer-wait peer=%u want=%u got=%u\\n",
-						    rank,peer_rank,
-						    (uint32_t)s_tag,
-						    (uint32_t)*end_word);
 						s_decision =
 						    SPARK_TP_MESH_ROUND_LOOP_DECISION_TIMEOUT;
 						break;

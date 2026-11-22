@@ -45,12 +45,50 @@
     16
    ],
    "threads": 256
+  },
+  {
+   "launcher": "D41FusedOutputLaunch",
+   "name": "D41FusedOutputKernel",
+   "outputs": [
+    "group_input",
+    "ring"
+   ],
+   "patchable": {
+    "rows": "parameter 1, and the grid width rows * (sum of blocks per row)"
+   },
+   "replaces": [
+    "D41WindowRingStoreKernel",
+    "D41MergeSinkKernel",
+    "D41RopeRowsKernel",
+    "D41ColumnsKernel",
+    "SparkDsv41FlashFp8QdqKernel"
+   ],
+   "roles": [
+    {
+     "blocks_per_row": "D41_LOCAL_HEADS",
+     "body": "D41OutputHead",
+     "op": "d41_output_head",
+     "replaces": "D41MergeSinkKernel, D41RopeRowsKernel (inverse), and for each output group D41ColumnsKernel and SparkDsv41FlashFp8QdqKernel"
+    },
+    {
+     "blocks_per_row": "1u",
+     "body": "D41WindowRingStoreRow",
+     "op": "d41_ring_store",
+     "replaces": "D41WindowRingStoreKernel"
+    }
+   ],
+   "rows": [
+    1,
+    16
+   ],
+   "threads": 256
   }
  ],
  "op_sources": [
   "inference/kernels/fused/collapse_norm.cuh",
-  "inference/kernels/hc.cuh"
+  "inference/kernels/hc.cuh",
+  "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
  ],
- "plan_sha256": "89f79b0dfe46c59b43d69ca665f76a4260fafda43ce8319801d37716a97efae8",
+ "plan_sha256": "c73595a49d6cc8356ed547bcd6d0d93ba75f18704ef7ffefa875848b8033e69b",
  "test": "tests/cuda/dsv41_flash_fused_exact.cu"
 }

@@ -150,7 +150,21 @@ static SparkStatus ManifestBound(SparkNvrmManifest *manifest, const char *line, 
 			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a thread bound needs one to three nonzero sizes"));
 		kernel->max_threads = values[0] * values[1] * values[2];
 	}
-	else if ( strcmp(directive,"reqnctapercluster") == 0 || strcmp(directive,"explicitcluster") == 0 || strcmp(directive,"maxclusterrank") == 0 )
+	else if ( strcmp(directive,"reqnctapercluster") == 0 )
+	{
+		if ( sscanf(name + length + consumed,"%u %u %u",&values[0],&values[1],&values[2]) < 1 || values[0] == 0u || values[1] == 0u || values[2] == 0u )
+			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a cluster shape needs one to three nonzero sizes"));
+		memcpy(kernel->cluster,values,sizeof(kernel->cluster));
+		kernel->clustered = 1u;
+	}
+	else if ( strcmp(directive,"maxclusterrank") == 0 )
+	{
+		if ( sscanf(name + length + consumed,"%u",&values[0]) != 1 || values[0] == 0u )
+			return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"a cluster rank bound needs a nonzero size"));
+		kernel->cluster_limit = values[0];
+		kernel->clustered = 1u;
+	}
+	else if ( strcmp(directive,"explicitcluster") == 0 )
 		kernel->clustered = 1u;
 	else if ( strcmp(directive,"minnctapersm") != 0 && strcmp(directive,"maxnreg") != 0 )
 		return(ManifestRefuse(SPARK_STATUS_PARSE_ERROR,owner,line,"the bound is not a PTX launch-bound or cluster directive"));

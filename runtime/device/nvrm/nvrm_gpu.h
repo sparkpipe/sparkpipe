@@ -11,6 +11,9 @@ extern "C" {
 
 #define SPARK_NVRM_PAGE_BYTES 4096u
 #define SPARK_NVRM_HUGE_PAGE_BYTES (2u << 20)
+#define SPARK_NVRM_BIG_PAGE_BYTES (64u << 10)
+#define SPARK_NVRM_HUGE_OBJECT_LIMIT (4ull << 30)
+#define SPARK_NVRM_MODULE_PARAMETERS "/proc/driver/nvidia/params"
 #define SPARK_NVRM_CHANNEL_ENTRIES 1024u
 #define SPARK_NVRM_PUSH_BYTES (1u << 20)
 #define SPARK_NVRM_LOCAL_RETIRED 16u
@@ -63,6 +66,18 @@ typedef struct SparkNvrmMemory
 	int map_fd;
 } SparkNvrmMemory;
 
+#define SPARK_NVRM_SEMAPHORE_METHOD_WORDS 6u
+#define SPARK_NVRM_SEMAPHORE_PAYLOAD_WORD 3u
+#define SPARK_NVRM_SEGMENT_WORDS_MAX ((1u << 21) - 1u)
+
+typedef enum SparkNvrmSemaphoreOperation
+{
+	SPARK_NVRM_SEMAPHORE_ACQUIRE = 1,
+	SPARK_NVRM_SEMAPHORE_RELEASE = 2,
+	SPARK_NVRM_SEMAPHORE_RELEASE_TIME = 3,
+	SPARK_NVRM_SEMAPHORE_MAX = 4
+} SparkNvrmSemaphoreOperation;
+
 typedef struct SparkNvrmChannel
 {
 	uint32_t handle;
@@ -81,6 +96,8 @@ typedef struct SparkNvrmChannel
 	uint64_t fence_value;
 	uint32_t segment_fenced;
 	SparkNvrmEngine last_engine;
+	uint32_t latch;
+	uint32_t latch_run;
 	uint64_t after_address;
 	uint64_t after_value;
 	uint64_t uvm_base;
@@ -178,13 +195,19 @@ void SparkNvrmGpuClose(SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
+uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
+int SparkNvrmModuleZeroesMemory(const char *parameters_path);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner);
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner);
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle);
 SparkStatus SparkNvrmShareExport(SparkNvrmGpu *gpu, uint32_t handle, int *fd, const char *owner);
 SparkStatus SparkNvrmShareImport(SparkNvrmGpu *gpu, int fd, uint32_t *handle, uint64_t *bytes, const char *owner);
+uint32_t SparkNvrmMethodHeader(uint32_t subchannel, uint32_t method, uint32_t count);
+void SparkNvrmSemaphoreWords(uint32_t *words, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation);
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner);
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);
+SparkStatus SparkNvrmSubmitSegment(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t words, uint64_t done_address,
+	uint64_t done_value, const char *owner);
 SparkStatus SparkNvrmSemaphoreRelease(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t timestamp, const char *owner);
 SparkStatus SparkNvrmSemaphoreAcquire(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner);
 SparkStatus SparkNvrmSemaphoreMax(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner);
@@ -198,6 +221,7 @@ void SparkNvrmFaultLocate(SparkNvrmGpu *gpu, const SparkNvrmChannel *channel, Sp
 const char *SparkNvrmFaultName(uint32_t code);
 void SparkNvrmFaultText(const SparkNvrmFault *fault, char *text, uint32_t capacity);
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner);
+SparkStatus SparkNvrmOpBeginLatched(SparkNvrmChannel *channel, const char *owner);
 SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmEngine engine, uint64_t *value, const char *owner);
 void SparkNvrmOpAbandon(SparkNvrmChannel *channel);
 SparkStatus SparkNvrmOpFinishHost(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t *value, const char *owner);

@@ -72,8 +72,9 @@ warmup steps and takes, for each kernel position, the median duration and the
 median gap since the previous kernel ended. It reports six sequences by
 kernel names in order (attention output, attention core, attention input,
 shared expert, mHC, router) against `tools/dsv41_flash_decode_reference.json`,
-the same sequences on rank 0 of the four-node lane, and the fused mHC kernel
-(`docs/FUSED_KERNELS.md`) as a seventh. `tests/test_dsv41_flash_decode_replay.py`
+the same sequences on rank 0 of the four-node lane, and the sequences of the
+fused kernels (`docs/FUSED_KERNELS.md`): the mHC kernel, and the attention
+output kernel with the projections that follow it. `tests/test_dsv41_flash_decode_replay.py`
 checks the summary on a synthetic trace.
 
 ## Measurements (2026-11-22, CUDA flavour, two GB10 hosts, 30 steps after 5)

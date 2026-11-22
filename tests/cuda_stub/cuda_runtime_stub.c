@@ -1770,6 +1770,17 @@ uint32_t cuda_stub_mesh_publish_null_epoch_cell = 0u;
 
 static uint64_t cuda_stub_roundloop_now_ns(void);
 
+static void cuda_stub_mesh_fault_record(SparkTpMeshRoundControl *control,uint64_t phase,uint64_t peer,uint64_t want,uint64_t seen)
+{
+    control->fault_hits++;
+    if ( control->fault_phase != SPARK_TP_MESH_FAULT_NONE )
+        return;
+    control->fault_phase = phase;
+    control->fault_peer = peer;
+    control->fault_want = want;
+    control->fault_seen = seen;
+}
+
 cudaError_t SparkTpLaunchMeshGuard(cudaStream_t stream,
     volatile void *error_word,void *output)
 {
@@ -1777,7 +1788,11 @@ cudaError_t SparkTpLaunchMeshGuard(cudaStream_t stream,
     if ( error_word == NULL || output == NULL )
         return cudaErrorInvalidValue;
     if ( *(volatile uint64_t *)error_word != 0u )
+    {
+        SparkTpMeshRoundControl *control = (SparkTpMeshRoundControl *)(void *)((uintptr_t)error_word - offsetof(SparkTpMeshRoundControl,error_word));
         *(uint64_t *)output = UINT64_MAX;
+        control->guard_poisons++;
+    }
     return cudaSuccess;
 }
 
@@ -2110,13 +2125,12 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
                 }
                 if (cuda_stub_roundloop_now_ns() >= stop_at)
                 {
+                    const uint64_t seen = *shipped;
                     control->diag_word = (UINT64_C(0xa5) << 56) |
                         ((prev_tag & 0xffffull) << 16) |
-                        (*shipped & 0xffffull);
+                        (seen & 0xffffull);
+                    cuda_stub_mesh_fault_record(control,SPARK_TP_MESH_FAULT_SHIP_ACK,rank,prev_tag,seen);
                     control->error_word = prev_tag;
-                    fprintf(stderr,
-                        "MESH-ROUNDLOOP-TIMEOUT rank=%u phase=ship-ack want=%llu got=%llu\n",
-                        rank, (unsigned long long)prev_tag, (unsigned long long)*shipped);
                     failed = 1u;
                     break;
                 }
@@ -2156,15 +2170,14 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
                 }
                 if (cuda_stub_roundloop_now_ns() >= stop_at)
                 {
+                    const uint64_t ended = *end_word;
                     control->diag_word = ((uint64_t)peer_rank << 56) |
                         ((cursor & 0xffull) << 48) |
                         (parity << 32) |
                         ((tag & 0xffffull) << 16) |
-                        (*end_word & 0xffffull);
+                        (ended & 0xffffull);
+                    cuda_stub_mesh_fault_record(control,SPARK_TP_MESH_FAULT_PEER_WAIT,peer_rank,(uint32_t)tag,(uint32_t)ended);
                     control->error_word = tag;
-                    fprintf(stderr,
-                        "MESH-ROUNDLOOP-TIMEOUT rank=%u phase=peer-wait peer=%u want=%u got=%u\n",
-                        rank, peer_rank, (uint32_t)tag, (uint32_t)*end_word);
                     failed = 1u;
                     break;
                 }

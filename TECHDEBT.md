@@ -1504,6 +1504,18 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- nvrm system memory objects of 4 GiB or more in 2 MiB pages, mapped
+  through the unified-memory external range, have no GPU mapping for the
+  64 KiB at object offset 4 GiB - 64 KiB. A write there takes Xid 31
+  (`FAULT_PTE`). This was found on GB10 with open module 580.178.04.
+  - #2084 works around it: such objects take 64 KiB pages, which cost
+    nothing measurable on GB10.
+  - The cause is not known. Our calls pass 64-bit sizes, and the open
+    paths read 64-bit clean; `docs/NVRM_BACKEND.md` names the files and
+    lines.
+  - Once the cause is found, 2 MiB pages can come back for large objects.
+    `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` checks 8, 10.5 and
+    16 GiB.
 - Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
   and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
   backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
@@ -1985,7 +1997,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   replay.
 - The nvrm backend (`runtime/device/nvrm/`,
   [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
-  from the pinned open kernel module (580.178.04) and open-gpu-doc, the
+  from the pinned open kernel module releases (580.178.04 for the Sparks,
+  595.84 for the hub's RTX 5090) and open-gpu-doc, the
   `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
   version 5 packer tested on release-built kernels, device open, memory
   and kernel launch below the backend entries, and backend entries for
