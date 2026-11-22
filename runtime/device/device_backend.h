@@ -215,6 +215,8 @@ uint64_t SparkDeviceProgramDigest(const SparkDeviceProgram *program);
 void SparkDeviceProgramFree(SparkDeviceProgram *program);
 SparkStatus SparkDeviceProgramValues(const SparkDeviceProgram *program, const uint64_t *values, uint64_t *placed, const char *owner);
 SparkStatus SparkDeviceProgramReplay(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *placed);
+uint32_t SparkDeviceBackendTensorMapOnDevice(void);
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner);
 
 #ifdef __cplusplus
 }
