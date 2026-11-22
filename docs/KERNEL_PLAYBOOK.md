@@ -812,7 +812,9 @@ any two would change a served model's bits.
     eps, a column normalisation, then `iterations - 1` row and column
     normalisations, each `+ eps`. The collapse runs separately, in
     `LmHcCollapseKernel` or fused into the consumer through
-    `LmHcCollapseElement`.
+    `LmHcCollapseElement`. The two kernels are wrappers around
+    `LmHcSinkhornPartialTask` and `LmHcSinkhornRow`, which a generated fused
+    kernel runs as two of its roles (section 2.9).
   - `LmHcMix<THREADS, STREAMS, MIXES, WIDTH>` (HY4): no combination. It
     writes the pre weights `sigmoid(u) + eps` and, with `2 * STREAMS` mixes,
     the post weights `magnitude * sigmoid(u) + eps`, and it collapses the
@@ -833,6 +835,27 @@ any two would change a served model's bits.
   DeepSeek V4.1 Flash layer test and `build/libdsv41_flash_kernels.so` live
   in `tests/cuda/dsv41_flash_hc_reference.cuh`. Their block sums differ from
   every production variant, and no production stage launches them.
+
+## 2.9 Fused kernels (`inference/kernels/fused/`)
+
+`tools/fused_kernels.py` writes a family's fused kernels from a plan; the
+plan format, the op catalogue and the generated bit-exact test are in
+`docs/FUSED_KERNELS.md`. The shared pieces a fused kernel is built from:
+
+- **Bodies, not kernels.** An op is the body of an existing kernel as a
+  `__device__` function that takes its row and its item as arguments, and the
+  kernel becomes a wrapper that passes its block indices. A fused block runs
+  exactly the arithmetic the kernel ran.
+- **`LmFusedLastArrival(counter, arrivals)`**: each block fences, syncs and
+  adds one to the counter; the block that completes the count resets the
+  counter to zero and fences again before it goes on. A tail that reads what
+  the other blocks wrote runs only there, so no block waits for another.
+- **`LmHcCollapseNormRow<THREADS, STREAMS, Lane>`**: the collapse of a row's
+  streams with the pre weights (or a plain input row), its RMS scale from the
+  whole row's block sum, and one slice of the normed row written in BF16 and
+  through `Lane::Apply`. Every block of a row recomputes the whole sum with
+  the same thread mapping, so the result does not depend on how the row is
+  split.
 
 # Part 3 — Finding kernels and their numbers
 

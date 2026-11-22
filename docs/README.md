@@ -64,6 +64,9 @@ current authority.
   contract template.
 - [`DECODE_REPLAY.md`](DECODE_REPLAY.md): one rank's DeepSeek V4.1 Flash
   decode step on one GPU, for measuring kernel work on it without the fleet.
+- [`FUSED_KERNELS.md`](FUSED_KERNELS.md): the fused kernel generator, its
+  plans and op catalogue, the bit-exact test it writes, and the fused
+  hyper-connection block of the DeepSeek V4.1 Flash decode step.
 - [`STAGEPACK_NAMING.md`](STAGEPACK_NAMING.md): pack directory and
   runtime-root naming; `tools/stagepack_naming.json` is the machine source.
 - [`DATAFILE_NAMING.md`](DATAFILE_NAMING.md): serving recipe datafile and KV

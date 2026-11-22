@@ -657,12 +657,15 @@ static void ReplayCheckFinite(ReplayWorld *world)
 {
 	std::vector<uint16_t> streams((uint64_t)world->step.rows * D41K_HC * D41_HIDDEN);
 	std::vector<uint32_t> fault(1u);
-	uint64_t bad = 0u;
+	uint64_t bad = 0u, digest = 0xcbf29ce484222325ull;
 	ReplayCuda(cudaMemcpy(streams.data(), world->state->streams, streams.size() * 2u, cudaMemcpyDeviceToHost), "read the streams");
 	ReplayCuda(cudaMemcpy(fault.data(), world->step.route_fault, sizeof(uint32_t), cudaMemcpyDeviceToHost), "read the route fault");
 	for ( uint64_t index = 0u; index < streams.size(); ++index )
+	{
 		bad += (streams[index] & 0x7f80u) == 0x7f80u ? 1u : 0u;
-	printf("REPLAY finite streams_nonfinite=%llu route_fault=%u\n", (unsigned long long)bad, fault[0]);
+		digest = (digest ^ streams[index]) * 0x100000001b3ull;
+	}
+	printf("REPLAY finite streams_nonfinite=%llu route_fault=%u streams_digest=%016llx\n", (unsigned long long)bad, fault[0], (unsigned long long)digest);
 }
 
 static void ReplayBoundaries(const ReplayOptions *options, SparkGpuStream stream, uint32_t multiprocessors)
