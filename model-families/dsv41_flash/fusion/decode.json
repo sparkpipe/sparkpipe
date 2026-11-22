@@ -4,6 +4,25 @@
  "manifest": "model-families/dsv41_flash/fusion/decode.manifest.json",
  "includes": ["inference/kernels/fused/arrival.cuh", "inference/kernels/fused/collapse_norm.cuh", "inference/kernels/hc.cuh", "runtime/launch.h"],
  "test_includes": ["sparkpipe/spark_dsv41_flash_stage_model.h", "dsv41_flash_stage.cuh"],
+ "ops": {
+  "d41_output_head": {
+   "body": "D41OutputHead",
+   "source": "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh",
+   "replaces": "D41MergeSinkKernel, D41RopeRowsKernel (inverse), and for each output group D41ColumnsKernel and SparkDsv41FlashFp8QdqKernel",
+   "parameters": ["partials", "source_stride", "heads", "sink", "positions", "frequency", "group_input", "group_heads"],
+   "call": "D41OutputHead<{threads}>({partials}, {source_stride}, {heads}, {sink}, {positions}, {frequency}, {group_input}, {group_heads}, rows, row, item, {shared});",
+   "lanes": 0
+  },
+  "d41_ring_store": {
+   "body": "D41WindowRingStoreRow",
+   "source": "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh",
+   "replaces": "D41WindowRingStoreKernel",
+   "parameters": ["wave_kv", "ring", "positions", "row_lane", "row_ordinal", "sequence_row_begin", "recurrent_slot", "ring_slot_stride", "ring_rows",
+    "window", "degree", "rank", "commit", "lane_count"],
+   "call": "D41WindowRingStoreRow({wave_kv}, {ring}, {positions}, {row_lane}, {row_ordinal}, {sequence_row_begin}, {recurrent_slot}, {ring_slot_stride}, {ring_rows}, {window}, {degree}, {rank}, rows, {commit}, {lane_count}, row);",
+   "lanes": 0
+  }
+ },
  "kernels": [
   {
    "name": "D41FusedMixNormKernel",
@@ -56,6 +75,66 @@
    ],
    "outputs": ["partials", "pre", "post", "comb", "x", "xq"],
    "perturb": "streams"
+  },
+  {
+   "name": "D41FusedOutputKernel",
+   "launcher": "D41FusedOutputLaunch",
+   "arguments_type": "D41FusedOutputArguments",
+   "rows_constant": "D41FusedOutputRows",
+   "threads": 256,
+   "rows_max": 16,
+   "shared_bytes": "32u * sizeof(float) + D41K_LATENT * sizeof(uint16_t)",
+   "replaces": ["D41WindowRingStoreKernel", "D41MergeSinkKernel", "D41RopeRowsKernel", "D41ColumnsKernel", "SparkDsv41FlashFp8QdqKernel"],
+   "arguments": [
+    {"name": "records", "type": "const float *", "elements": "rows * D41_LOCAL_HEADS * D41K_RECORD", "fill": "index",
+     "expression": "index % D41K_RECORD == 1u ? 1.0f + (float)(FusedMix(index) % 1024u) / 256.0f : ((float)(FusedMix(index) % 4096u) - 2048.0f) / 512.0f"},
+    {"name": "source_stride", "type": "uint64_t", "value": "D41DestinationStride(rows, D41_LOCAL_HEADS)"},
+    {"name": "sink", "type": "const float *", "elements": "D41_LOCAL_HEADS", "fill": "f32"},
+    {"name": "positions", "type": "const uint32_t *", "elements": "rows", "fill": "index", "expression": "160u + 37u * index"},
+    {"name": "frequency", "type": "const float *", "elements": "D41K_ROPE_PAIRS", "fill": "f32"},
+    {"name": "group_input", "type": "uint16_t *", "elements": "rows * D41_LOCAL_HEADS * D41_HEAD_DIM", "fill": "zero",
+     "row_zero": [["0u", "D41_GROUP_WIDTH"], ["rows * D41_GROUP_WIDTH", "D41_GROUP_WIDTH"]]},
+    {"name": "window_kv", "type": "const uint16_t *", "elements": "rows * D41_HEAD_DIM", "fill": "bf16"},
+    {"name": "ring", "type": "uint16_t *", "elements": "rows * D41_RING_ROWS * D41_HEAD_DIM", "fill": "zero", "partial": true},
+    {"name": "row_lane", "type": "const uint32_t *", "elements": "rows", "fill": "index", "expression": "index"},
+    {"name": "row_ordinal", "type": "const uint32_t *", "elements": "rows", "fill": "index", "expression": "0u"},
+    {"name": "sequence_row_begin", "type": "const uint32_t *", "elements": "rows + 1u", "fill": "index", "expression": "index"},
+    {"name": "recurrent_index", "type": "const uint32_t *", "elements": "rows", "fill": "index", "expression": "index"},
+    {"name": "ring_slot_stride", "type": "uint64_t", "value": "(uint64_t)D41_RING_ROWS * D41_HEAD_DIM"},
+    {"name": "commit", "type": "uint32_t", "value": "1u"}
+   ],
+   "scratch": [
+    {"name": "merged", "type": "uint16_t *", "elements": "rows * D41_LOCAL_HEADS * D41_HEAD_DIM"}
+   ],
+   "roles": [
+    {
+     "op": "d41_output_head",
+     "blocks_per_row": "D41_LOCAL_HEADS",
+     "bind": {"partials": "arguments.records", "source_stride": "arguments.source_stride", "heads": "D41_LOCAL_HEADS", "sink": "arguments.sink",
+      "positions": "arguments.positions", "frequency": "arguments.frequency", "group_input": "arguments.group_input",
+      "group_heads": "D41_GROUP_WIDTH / D41_HEAD_DIM"}
+    },
+    {
+     "op": "d41_ring_store",
+     "blocks_per_row": "1u",
+     "bind": {"wave_kv": "arguments.window_kv", "ring": "arguments.ring", "positions": "arguments.positions", "row_lane": "arguments.row_lane",
+      "row_ordinal": "arguments.row_ordinal", "sequence_row_begin": "arguments.sequence_row_begin", "recurrent_slot": "arguments.recurrent_index",
+      "ring_slot_stride": "arguments.ring_slot_stride", "ring_rows": "D41_RING_ROWS", "window": "D41_WINDOW", "degree": "1u", "rank": "0u",
+      "commit": "arguments.commit", "lane_count": "(const uint32_t *)0"}
+    }
+   ],
+   "reference": [
+    "LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, window_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_index, ring_slot_stride, D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows, commit, (const uint32_t *)0);",
+    "LM_LAUNCH((D41MergeSinkKernel), dim3(rows, D41_LOCAL_HEADS), D41_THREADS, 0, stream, records, source_stride, 1u, D41_LOCAL_HEADS, sink, merged);",
+    "D41Rope(merged, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, positions, 0, frequency, 1u, 0, stream);",
+    "for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )",
+    "{",
+    "\tLM_LAUNCH((D41ColumnsKernel), dim3(D41Blocks(D41_GROUP_WIDTH), rows), D41_THREADS, 0, stream, merged + (uint64_t)group * D41_GROUP_WIDTH, D41_LOCAL_HEADS * D41_HEAD_DIM, group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, D41_GROUP_WIDTH, D41_GROUP_WIDTH);",
+    "\tD41Fp8Qdq(group_input + (uint64_t)group * rows * D41_GROUP_WIDTH, (uint64_t)rows * D41_GROUP_WIDTH, stream);",
+    "}"
+   ],
+   "outputs": ["group_input", "ring"],
+   "perturb": "records"
   }
  ]
 }

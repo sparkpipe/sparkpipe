@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "sparkpipe/spark_kv_shard.h"
 #include "runtime/launch.h"
@@ -537,6 +538,8 @@ static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, 
 {
 	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;
 	const uint32_t element = threadIdx.x % SPARK_DSV41_FLASH_FP8_BLOCK;
+	LmDependentWait();
+	LmDependentRelease();
 	if ( group >= group_count )
 		return;
 	data_bf16[(uint64_t)group * SPARK_DSV41_FLASH_FP8_BLOCK + element] =
@@ -549,7 +552,7 @@ static inline SparkGpuError SparkDsv41FlashLaunchFp8QdqCopy(SparkGpuStream strea
 	if ( source_bf16 == 0 || data_bf16 == 0 || element_count == 0u || element_count % SPARK_DSV41_FLASH_FP8_BLOCK != 0u )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	groups = (uint32_t)(element_count / SPARK_DSV41_FLASH_FP8_BLOCK);
-	LM_LAUNCH((SparkDsv41FlashFp8QdqKernel),(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream,source_bf16,data_bf16,groups);
+	(void)LM_LAUNCH_DEPENDENT((SparkDsv41FlashFp8QdqKernel),(groups + 7u) / 8u,8u * SPARK_DSV41_FLASH_FP8_BLOCK,0,stream,source_bf16,data_bf16,groups);
 	return(SparkGpuGetLastError());
 }
 

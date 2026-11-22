@@ -51,7 +51,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/mimo26/source/mimo26_stage.cuh` | 2 uploads | Load. |
 | `model-families/motif/source/motif_stage.cuh` | 1 upload | Load. |
 | `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | 4 readbacks | Readback after sync: the layer dump syncs the stream first and launches nothing in between. |
-| `ring/transport/tp_device_collective.c` | 10 uploads, 15 readbacks, 3 fills | See below. |
+| `ring/transport/tp_device_collective.c` | 11 uploads, 15 readbacks, 3 fills | See below. |
 
 ### The mesh collective
 
@@ -74,10 +74,15 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 - **Readbacks after sync:** the rounds loop's control readback (1827), `GraphPreLaunch` (2292), and the timing readback (2676, 2679), each after a stream sync or terminal check.
 - **Monitoring reads:** the wait-kernel timeout report (1024, 1025), `DeviceRoundsDone`, `GraphProgress`, the stuck, arrival and diag dumps, and `GraphError`.
 - **`ClearGraphError`:** one upload of zero into the error word. No production code calls it.
+- **`ReportRecords`:** one upload of six zero words that clears the fault record (`fault_phase` to `guard_poisons`) after the host has printed it.
+  - It runs only when the record holds a round-loop timeout or a guard poison. A healthy round leaves the record empty, and nothing is written.
+  - Every caller has just read the block back after a stream sync: the round loop's completion, the control read after rounds, the per-round readback and the capture end. No kernel of the collective runs, so the clear cannot race a later timeout's claim.
+  - It runs before the caller checks the round's error word and returns that error, so the next round starts with an empty record and its first fault claims it. When the readback itself fails, there is no record to print or clear.
+  - Class: readback after sync, on the fault path.
 
 ## Per-step cost
 
-No path that runs on every decode step or verify frame issues a synchronous upload, device copy or fill. The per-step writes are `SeedEpoch` and the rounds loop, now ordered in their stream. The remaining synchronous sites run at load, at a graph capture (once per row count), or in weightd's load and eviction paths. The synchronous readbacks keep their old cost, since a device-to-host copy was already synchronous. `test_tp_device_collective_mock` checks that a new chain issues no synchronous copy and no stream sync.
+No path that runs on every decode step or verify frame issues a synchronous upload, device copy or fill. The per-step writes are `SeedEpoch` and the rounds loop, now ordered in their stream. The remaining synchronous sites run at load, at a graph capture (once per row count), in weightd's load and eviction paths, or after a fault record was printed. The synchronous readbacks keep their old cost, since a device-to-host copy was already synchronous. `test_tp_device_collective_mock` checks that a new chain issues no synchronous copy and no stream sync.
 
 ## Kernels on the legacy stream
 

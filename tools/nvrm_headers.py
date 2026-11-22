@@ -2,18 +2,22 @@
 """Generate the nvrm device backend's resource-manager, class and QMD headers.
 
 The nvrm backend drives the GPU through the open kernel module's ioctl
-interface. Its structures and constants come from two pinned upstream trees:
-the open kernel module at one release tag (the ioctls, the resource-manager
-SDK, the class numbers and the host and GPFIFO formats) and open-gpu-doc at
-one commit (the compute and copy-engine methods and the QMD layout). This
-tool copies the listed headers and every header they include, with their
-comments removed, into runtime/device/nvrm/vendor/, rewrites their NOTICE
-entries and writes the module version the backend accepts at open.
+interface. Its structures and constants come from pinned upstream trees: the
+open kernel module at each pinned release tag (the ioctls, the
+resource-manager SDK, the class numbers and the host and GPFIFO formats) and
+open-gpu-doc at one commit (the compute and copy-engine methods and the QMD
+layout). The ioctl structures change between module releases, so each pinned
+release gets its own tree, runtime/device/nvrm/vendor/open-gpu-kernel-modules/
+<release>/; runtime/device/nvrm/release/<release>/nvrm_release.h names the
+release a backend built from it accepts at open. This tool copies the listed
+headers and every header they include, with their comments removed, into
+runtime/device/nvrm/vendor/ and rewrites their NOTICE entries.
 
-    python3 -I tools/nvrm_headers.py --module DIR --doc DIR [--check]
+    python3 -I tools/nvrm_headers.py --module DIR [--module DIR ...] --doc DIR [--check]
 
-DIR is a checkout of the pinned commit; the tool refuses any other commit.
---check renders into memory and fails when the tree differs.
+Each --module DIR is a checkout of one pinned release, and every pinned
+release needs one; the tool refuses any other commit. --check renders into
+memory and fails when the tree differs.
 """
 import argparse
 import re
@@ -24,14 +28,17 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
 VENDOR = PurePosixPath("runtime/device/nvrm/vendor")
-VERSION_HEADER = PurePosixPath("runtime/device/nvrm/nvrm_version.h")
+RELEASE_HEADERS = PurePosixPath("runtime/device/nvrm/release")
+RELEASE_HEADER_NAME = "nvrm_release.h"
 NOTICE = ROOT / "NOTICE"
 
 MODULE = {
     "name": "open-gpu-kernel-modules",
     "upstream": "https://github.com/NVIDIA/open-gpu-kernel-modules",
-    "tag": "580.178.04",
-    "commit": "c8e699821c23e4335bf23330a54a23d15cfb95e9",
+    "releases": (
+        ("580.178.04", "c8e699821c23e4335bf23330a54a23d15cfb95e9"),
+        ("595.84", "722ae84526a09ed672fbe75448e2909834ba4cce"),
+    ),
     "include": (
         "src/common/sdk/nvidia/inc",
         "src/nvidia/arch/nvalloc/unix/include",
@@ -94,6 +101,7 @@ DOC = {
     "upstream": "https://github.com/NVIDIA/open-gpu-doc",
     "tag": None,
     "commit": "9fdf5c4062007929d9f4e6cbad9c9771fe61b880",
+    "output": VENDOR / "open-gpu-doc",
     "include": (".",),
     "external": ("nvtypes.h",),
     "headers": (
@@ -103,7 +111,9 @@ DOC = {
     ),
 }
 
-UPSTREAMS = (MODULE, DOC)
+MODULES = tuple({**{key: value for key, value in MODULE.items() if key != "releases"}, "tag": tag, "commit": commit,
+                 "output": VENDOR / MODULE["name"] / tag} for tag, commit in MODULE["releases"])
+UPSTREAMS = MODULES + (DOC,)
 INCLUDE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*([<"])([^>"\n]+)[>"]', re.M)
 DISABLED = re.compile(r"^[ \t]*#[ \t]*if[ \t]+0[ \t]*$")
 CONDITIONAL_OPEN = re.compile(r"^[ \t]*#[ \t]*if(?:n?def)?\b")
@@ -292,7 +302,7 @@ def outputs_for(upstream, directory):
         if not any(marker in text for marker in MIT_MARKERS):
             raise GenerationError(f"{upstream['name']} {relative}: carries no MIT notice")
         copyrights.update(" ".join(notice.split()) for notice in COPYRIGHT.findall(text))
-        output = VENDOR / upstream["name"] / relative.relative_to(owning_root(upstream, relative))
+        output = upstream["output"] / relative.relative_to(owning_root(upstream, relative))
         rendered = render(text, f"{upstream['name']}/{relative}")
         if output in files and files[output][1] != rendered:
             raise GenerationError(f"{upstream['name']} {relative} and {files[output][0]}: differ but both provide {output}")
@@ -301,7 +311,7 @@ def outputs_for(upstream, directory):
 
 
 def license_text(directory, upstream):
-    source = "COPYING" if upstream is MODULE else "LICENSE.md"
+    source = "COPYING" if upstream["name"] == MODULE["name"] else "LICENSE.md"
     text = (directory / source).read_text(encoding="utf-8")
     start = text.index("Permission is hereby granted")
     end = text.index("DEALINGS IN THE SOFTWARE.", start) + len("DEALINGS IN THE SOFTWARE.")
@@ -310,10 +320,10 @@ def license_text(directory, upstream):
 
 def notice_entry(upstream, files, copyrights, directory):
     version = f"release {upstream['tag']}, commit {upstream['commit']}" if upstream["tag"] else f"commit {upstream['commit']}"
-    roots = ", ".join(upstream["include"]) if upstream is MODULE else "the repository root"
+    roots = ", ".join(upstream["include"]) if upstream["name"] == MODULE["name"] else "the repository root"
     lines = [f"Files: {path}" for path in sorted(str(path) for path in files)]
     lines += [f"Upstream: {upstream['upstream']}", f"Commit: {upstream['commit']}", "License: MIT", ""]
-    prose = (f"The files under {VENDOR}/{upstream['name']}/ are headers of {upstream['name']} "
+    prose = (f"The files under {upstream['output']}/ are headers of {upstream['name']} "
              f"({upstream['upstream']}, {version}), generated by tools/nvrm_headers.py. "
              f"Each keeps its path relative to its include root ({roots}). "
              "Changes: the source comments are removed, and a default a build could override is fixed at its upstream value. "
@@ -324,39 +334,61 @@ def notice_entry(upstream, files, copyrights, directory):
     return "\n".join(lines) + "\n"
 
 
-def updated_notice(text, upstream, entry):
-    prefix = f"Files: {VENDOR}/{upstream['name']}/"
+def updated_notice(text, entries):
+    owned = f"Files: {VENDOR}/"
     lines = text.split("\n")
-    start = next((index for index, line in enumerate(lines) if line.startswith(prefix)), None)
-    if start is None:
-        return text.rstrip("\n") + "\n\n" + entry
-    end = next((index for index in range(start + 1, len(lines)) if lines[index].startswith("Files: ") and not lines[index].startswith(prefix)), len(lines))
-    before = "\n".join(lines[:start]).rstrip("\n")
-    after = "\n".join(lines[end:])
-    joined = before + "\n\n" + entry
-    if after.strip():
-        joined += "\n" + after
-    return joined
-
-
-def version_header():
-    return "#pragma once\n\n#define SPARK_NVRM_MODULE_VERSION \"" + MODULE["tag"] + "\"\n"
+    kept = []
+    position = None
+    index = 0
+    while index < len(lines):
+        if lines[index].startswith(owned) and (index == 0 or not lines[index - 1].startswith("Files: ")):
+            end = next((later for later in range(index + 1, len(lines))
+                        if lines[later].startswith("Files: ") and not lines[later].startswith(owned) and not lines[later - 1].startswith("Files: ")),
+                       len(lines))
+            if position is None:
+                position = len(kept)
+            index = end
+            continue
+        kept.append(lines[index])
+        index += 1
+    block = "".join(entries)
+    if position is None:
+        return "\n".join(kept).rstrip("\n") + "\n\n" + block
+    after = "\n".join(kept[position:])
+    return "\n".join(kept[:position]).rstrip("\n") + "\n\n" + block + (after if after.strip() else "")
 
 
 def generate(directories):
     files = {}
-    notice = NOTICE.read_text(encoding="utf-8")
+    entries = []
     for upstream in UPSTREAMS:
-        directory = directories[upstream["name"]]
+        directory = directories[upstream["output"]]
         check_checkout(upstream, directory)
         rendered, copyrights = outputs_for(upstream, directory)
         for name in upstream.get("external", ()):
-            if VENDOR / MODULE["name"] / name not in files:
-                raise GenerationError(f"{upstream['name']} includes {name}, which {MODULE['name']} does not provide")
+            for module in MODULES:
+                if module["output"] / name not in files:
+                    raise GenerationError(f"{upstream['name']} includes {name}, which {module['name']} {module['tag']} does not provide")
         files.update({path: text for path, (_, text) in rendered.items()})
-        notice = updated_notice(notice, upstream, notice_entry(upstream, rendered, copyrights, directory))
-    files[VERSION_HEADER] = version_header()
-    return files, notice
+        entries.append(notice_entry(upstream, rendered, copyrights, directory))
+    return files, updated_notice(NOTICE.read_text(encoding="utf-8"), entries)
+
+
+def module_checkouts(paths):
+    found = {}
+    for path in paths:
+        directory = path.resolve()
+        version = re.search(r"^NVIDIA_VERSION = (\S+)$", (directory / "version.mk").read_text(), re.M) if (directory / "version.mk").is_file() else None
+        module = next((module for module in MODULES if version is not None and module["tag"] == version.group(1)), None)
+        if module is None:
+            raise GenerationError(f"{directory} is not a checkout of a pinned release ({', '.join(module['tag'] for module in MODULES)})")
+        if module["output"] in found:
+            raise GenerationError(f"two checkouts of release {module['tag']}: {found[module['output']]} and {directory}")
+        found[module["output"]] = directory
+    missing = [module["tag"] for module in MODULES if module["output"] not in found]
+    if missing:
+        raise GenerationError(f"no checkout of the pinned release {', '.join(missing)}")
+    return found
 
 
 def tracked_vendor_files():
@@ -390,13 +422,16 @@ def write(files, notice):
 
 
 def main(argv):
+    releases = ", ".join(module["tag"] for module in MODULES)
     parser = argparse.ArgumentParser(description="generate the nvrm backend headers from the pinned upstream trees")
-    parser.add_argument("--module", required=True, type=Path, help=f"{MODULE['upstream']} at {MODULE['tag']}")
+    parser.add_argument("--module", required=True, type=Path, action="append", help=f"{MODULE['upstream']} at one of {releases}")
     parser.add_argument("--doc", required=True, type=Path, help=f"{DOC['upstream']} at {DOC['commit']}")
     parser.add_argument("--check", action="store_true", help="fail when the tree differs from the generated headers")
     arguments = parser.parse_args(argv)
     try:
-        files, notice = generate({MODULE["name"]: arguments.module.resolve(), DOC["name"]: arguments.doc.resolve()})
+        directories = module_checkouts(arguments.module)
+        directories[DOC["output"]] = arguments.doc.resolve()
+        files, notice = generate(directories)
     except (GenerationError, OSError, UnicodeDecodeError) as error:
         print(f"FAIL {error}")
         return 1
@@ -406,10 +441,10 @@ def main(argv):
             print(f"FAIL {line}")
         if found:
             return 1
-        print(f"PASS {len(files)} nvrm headers match {MODULE['tag']} and open-gpu-doc {DOC['commit'][:12]}")
+        print(f"PASS {len(files)} nvrm headers match {releases} and open-gpu-doc {DOC['commit'][:12]}")
         return 0
     write(files, notice)
-    print(f"wrote {len(files)} nvrm headers from {MODULE['tag']} and open-gpu-doc {DOC['commit'][:12]}")
+    print(f"wrote {len(files)} nvrm headers from {releases} and open-gpu-doc {DOC['commit'][:12]}")
     return 0
 
 

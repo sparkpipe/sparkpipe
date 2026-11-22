@@ -33,6 +33,7 @@ SEQUENCES = {
     'shared_expert': [SKINNY, 'D41ExpertActKernel', 'D41SwigluRowsKernel', 'SparkDsv41FlashFp8QdqKernel', SKINNY],
     'mhc': ['LmHcSinkhornPartialKernel', 'LmHcSinkhornKernel', 'D41RmsNormQdqKernel'],
     'mhc_fused': ['D41FusedMixNormKernel'],
+    'attention_output_fused': ['D41FusedOutputKernel', SKINNY, SKINNY, 'SparkDsv41FlashFp8QdqKernel', SKINNY],
     'router': [SKINNY, 'LmTopkWarpKernel', 'D41RouteLocalKernel', 'LmRouteBuildKernel', 'LmPackedRouteWeightKernel'],
 }
 

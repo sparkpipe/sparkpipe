@@ -26,9 +26,14 @@ instead of running. The operations are kernel launches, copies, fills, host
 callbacks, event records and event waits.
 - A queue records one program at a time. A second `SparkDeviceProgramRecord`
   on it returns `SPARK_STATUS_BUSY`.
-- While a queue records, these are refused with `SPARK_STATUS_BUSY`:
-  waiting on it or querying it, `SparkDeviceSynchronize`, starting a capture
-  on it, destroying it and running a program on it.
+- While a queue records, the recording thread is refused with
+  `SPARK_STATUS_BUSY` when it waits on the queue or queries it, calls
+  `SparkDeviceSynchronize`, starts a capture on it, destroys it or runs a
+  program on it.
+- Another thread's wait on the recording queue, and its
+  `SparkDeviceSynchronize`, wait until the recording ends, within their
+  timeout, and its query answers `SPARK_STATUS_PENDING`. That is how an
+  adopted queue's owner keeps other threads off a stream it is capturing.
 - Operations on other queues run as usual and are not part of the program.
 - An operation refused while recording breaks the program. Finish then
   refuses it with `SPARK_STATUS_INVALID_ARGUMENT`, so an incomplete program
@@ -99,7 +104,9 @@ where it is clear, the caller launches eagerly.
 | CUDA | stream capture on the queue's stream, local to the recording thread, so launches made with CUDA's own calls are captured as well. A patch resolves to the last kernel node captured on the stream (`cudaStreamGetCaptureInfo`), and its parameter offset and size come from `cudaFuncGetParamInfo`. Event records and waits become external event nodes. Finish ends the capture, instantiates the graph and uploads it | values that changed since the last run are written to the kernel nodes they touch (`cudaGraphExecKernelNodeSetParams`), then one `cudaGraphLaunch` |
 | host | the recorded operations | each operation replayed in order through the public calls, with patched constants in a scratch copy |
 | Metal | refused with `SPARK_STATUS_UNSUPPORTED`: the replay has not run on Metal hardware, so Metal launches eagerly | not reached |
-| nvrm | the recorded operations | refused with `SPARK_STATUS_UNSUPPORTED`. Running a program operation by operation would be a slow path, and programs run from prebuilt descriptors instead in a later change |
+| nvrm | the recorded operations. Finish compiles them into an image: a persistent descriptor and constant bank 0 for every launch, and a prebuilt push segment that runs the steps in order ([nvrm programs](NVRM_BACKEND.md#programs)) | one submission: the queue's ordering acquire, the segment, and a tail that releases the queue's fence. Values, event payloads and host tickets are stored into the image first |
+
+nvrm refuses copies and fills inside a program at finish, naming them: they go on the queue before or after the run.
 
 CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
 - a patch on a kernel node that passes its arguments as one packed buffer
@@ -119,15 +126,20 @@ CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
 - refusals: a patch or a finish without a recording, a second recording on
   one queue, waits and synchronization while recording, a patch after a fill,
   and a recording with a refused operation refused at finish;
+- other threads' waits: a queue wait and a device synchronize started on
+  other threads during a recording return only after it finishes, and a
+  query answers pending;
 - a program of a fill, a copy, a host callback, an event record and a wait
-  on it, run three times and compared byte for byte. Recording runs nothing;
+  on it, run three times and compared byte for byte. Recording runs nothing.
+  On nvrm, finish refuses that program, naming copies and fills, and a
+  program of the host callback, the event record and the wait runs three
+  times instead;
 - buffers and events kept while a recording or a program uses them;
 - transforms: no transform, a ceiling division, an affine form, all five
   terms together, and a negative intermediate that does not fit;
 - a kernel program with constant and group-count patches, run with three
   value sets and compared byte for byte with the same launches made eagerly,
-  and the kernel kept while the program lives;
-- on nvrm, every run refused with `SPARK_STATUS_UNSUPPORTED`.
+  and the kernel kept while the program lives.
 
 [`tests/cuda/device_program_cuda.cu`](../tests/cuda/device_program_cuda.cu),
 run by

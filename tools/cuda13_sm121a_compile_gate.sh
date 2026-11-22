@@ -142,6 +142,16 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs
 	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
 	exit 5
 fi
+read -r -a stage_runner_binaries <<<"$(make_variable STAGE_RUNNER_BINARIES)"
+if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/stage_runner_binaries.txt" 2>&1; then
+	grep -E 'undefined reference|error' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
+	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
+	exit 11
+fi
 for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	if [[ ! -f "${repository_root}/${artifact}" ]]; then
 		echo "build produced no ${artifact}" >&2
@@ -155,6 +165,17 @@ for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	printf '%s\n' "${elf_listing}" > "${output_directory}/logs/$(basename "${artifact}").elf.txt"
 done
 printf '%s\n' "${adapters[@]}" > "${output_directory}/adapters.txt"
+audited=()
+for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
+	if [[ -f "${repository_root}/${artifact}" ]]; then
+		audited+=("${repository_root}/${artifact}")
+	fi
+done
+if ! python3 -I "${repository_root}/tools/dependent_wait_audit.py" "${audited[@]}" > "${output_directory}/logs/dependent_wait_audit.txt" 2>&1; then
+	grep -E '^(REFUSED|dependent)' "${output_directory}/logs/dependent_wait_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/dependent_wait_audit.txt" >&2
+	echo "a kernel stores to global memory before it waits for the kernel it depends on; see logs/dependent_wait_audit.txt" >&2
+	exit 9
+fi
 
 if ! make -C "${repository_root}" test-nvrm-launch \
 	NVCC="${nvcc_binary}" \

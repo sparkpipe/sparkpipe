@@ -15,7 +15,7 @@
 #include "nv_escape.h"
 #include "nvos.h"
 #include "nv-unix-nvos-params-wrappers.h"
-#include "uvm_linux_ioctl.h"
+#include "nvrm_release.h"
 #include "class/cl003e.h"
 #include "class/cl0070.h"
 #include "class/cl0071.h"
@@ -313,7 +313,7 @@ static void GpuRangeFree(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
 	UVM_FREE_PARAMS release;
 	memset(&release,0,sizeof(release));
 	release.base = address;
-	release.length = bytes;
+	SPARK_NVRM_UVM_FREE_LENGTH(release,bytes);
 	(void)ioctl(gpu->rm.uvm,UVM_FREE,&release);
 }
 
@@ -426,10 +426,37 @@ static SparkStatus GpuHostMemory(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, con
 	return(GpuOsDescriptor(gpu,memory,owner));
 }
 
+int SparkNvrmModuleZeroesMemory(const char *parameters_path)
+{
+	char line[160];
+	unsigned int value = 0u;
+	int found = 0;
+	FILE *parameters = parameters_path != 0 ? fopen(parameters_path,"r") : 0;
+	if ( parameters == 0 )
+		return(0);
+	while ( fgets(line,sizeof(line),parameters) != 0 )
+		if ( sscanf(line,"InitializeSystemMemoryAllocations: %u",&value) == 1 )
+		{
+			found = 1;
+			break;
+		}
+	fclose(parameters);
+	return(found != 0 && value == 1u ? 1 : 0);
+}
+
+uint32_t SparkNvrmSystemPageBytes(uint64_t bytes)
+{
+	if ( bytes >= SPARK_NVRM_HUGE_OBJECT_LIMIT )
+		return(SPARK_NVRM_BIG_PAGE_BYTES);
+	return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
+}
+
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t uncached, uint32_t *handle, const char *owner)
 {
 	NV_MEMORY_ALLOCATION_PARAMS made;
-	const uint32_t huge = page_bytes == SPARK_NVRM_HUGE_PAGE_BYTES;
+	const uint32_t huge = page_bytes == SPARK_NVRM_HUGE_PAGE_BYTES,big = page_bytes == SPARK_NVRM_BIG_PAGE_BYTES;
+	if ( huge != 0u && bytes >= SPARK_NVRM_HUGE_OBJECT_LIMIT )
+		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"an object of 2 MiB pages stays below 4 GiB: at 4 GiB or more its mapping misses the 64 KiB at 4 GiB - 64 KiB");
 	memset(&made,0,sizeof(made));
 	made.owner = gpu->rm.client;
 	made.type = uncached != 0u ? NVOS32_TYPE_NOTIFIER : NVOS32_TYPE_IMAGE;
@@ -438,7 +465,8 @@ SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t 
 	made.attr = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR_PHYSICALITY,NVOS32_ATTR_PHYSICALITY_ALLOW_NONCONTIGUOUS) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR_LOCATION,NVOS32_ATTR_LOCATION_PCI) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR_COHERENCY,NVOS32_ATTR_COHERENCY_UNCACHED) |
-		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR_PAGE_SIZE,NVOS32_ATTR_PAGE_SIZE_HUGE) : 0u));
+		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR_PAGE_SIZE,NVOS32_ATTR_PAGE_SIZE_HUGE) : 0u) |
+		(big != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR_PAGE_SIZE,NVOS32_ATTR_PAGE_SIZE_BIG) : 0u));
 	made.attr2 = (NvU32)(SPARK_NVRM_VALUE(NVOS32_ATTR2_GPU_CACHEABLE,uncached != 0u ? NVOS32_ATTR2_GPU_CACHEABLE_NO : NVOS32_ATTR2_GPU_CACHEABLE_YES) |
 		SPARK_NVRM_VALUE(NVOS32_ATTR2_ZBC,NVOS32_ATTR2_ZBC_PREFER_NO_ZBC) |
 		(huge != 0u ? SPARK_NVRM_VALUE(NVOS32_ATTR2_PAGE_SIZE_HUGE,NVOS32_ATTR2_PAGE_SIZE_HUGE_2MB) : 0u));
@@ -464,7 +492,7 @@ SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrm
 	memset(memory,0,sizeof(*memory));
 	memory->kind = kind;
 	memory->map_fd = -1;
-	memory->page_bytes = kind != SPARK_NVRM_MEMORY_HOST && bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES;
+	memory->page_bytes = kind != SPARK_NVRM_MEMORY_HOST ? SparkNvrmSystemPageBytes(bytes) : SPARK_NVRM_PAGE_BYTES;
 	memory->bytes = GpuRound(bytes != 0u ? bytes : 1u,memory->page_bytes);
 	if ( kind != SPARK_NVRM_MEMORY_HOST && kind != SPARK_NVRM_MEMORY_SYSTEM && kind != SPARK_NVRM_MEMORY_SYSTEM_UNCACHED )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"allocate",owner,"the module allocates host, system or uncached system memory");
@@ -515,7 +543,7 @@ void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory)
 		UVM_FREE_PARAMS release;
 		memset(&release,0,sizeof(release));
 		release.base = memory->address;
-		release.length = memory->bytes;
+		SPARK_NVRM_UVM_FREE_LENGTH(release,memory->bytes);
 		(void)ioctl(gpu->rm.uvm,UVM_FREE,&release);
 	}
 	if ( memory->host_mapped != 0u )

@@ -9,8 +9,10 @@ to a name that is not an argument, a name that is not a C identifier of at most
 64 characters, a generated file in shared code or outside the model families
 and the tests, a perturbed input or an output that is not an argument, a tail
 without zeroed uint32_t arrival counters or one that is not per row, more than
-16 rows, a block size that is not a whole number of warps, and an argument
-given twice.
+16 rows, a block size that is not a whole number of warps, an argument given
+twice, a model op that shadows a shared one or whose body is in shared code, a
+scalar argument given a fill, an index fill without its expression, a constant
+or scalar output, a perturbed scalar and a read-only scratch buffer.
 """
 import contextlib
 import copy
@@ -42,6 +44,40 @@ def set_counter_fill(kernel, fill):
     next(argument for argument in kernel["arguments"] if argument["name"] == "counters")["fill"] = fill
 
 
+def argument_of(plan, kind):
+    for kernel in plan["kernels"]:
+        for argument in kernel["arguments"]:
+            if kind(argument):
+                return kernel, argument
+    raise AssertionError("no committed plan has the argument this refusal needs")
+
+
+def model_op(plan):
+    return next(iter(plan["ops"].values()))
+
+
+def scalar_fill(plan):
+    argument_of(plan, lambda argument: "value" in argument)[1]["fill"] = "zero"
+
+
+def index_without_expression(plan):
+    argument_of(plan, lambda argument: argument.get("fill") == "index")[1].pop("expression")
+
+
+def constant_output(plan):
+    kernel, argument = argument_of(plan, lambda argument: argument.get("type", "").startswith("const "))
+    kernel["outputs"] = [argument["name"]]
+
+
+def scalar_perturb(plan):
+    kernel, argument = argument_of(plan, lambda argument: "value" in argument)
+    kernel["perturb"] = argument["name"]
+
+
+def constant_scratch(plan):
+    next(kernel for kernel in plan["kernels"] if kernel.get("scratch"))["scratch"][0]["type"] = "const uint16_t *"
+
+
 REFUSALS = (
     ("unknown op", lambda plan, kernel: kernel["roles"][0].update(op="no_such_op")),
     ("needs fn", lambda plan, kernel: kernel["roles"][0]["bind"].pop("fn")),
@@ -58,6 +94,13 @@ REFUSALS = (
     ("rows_max is 1 to 16", lambda plan, kernel: kernel.update(rows_max=17)),
     ("threads is a multiple of 32", lambda plan, kernel: kernel.update(threads=100)),
     ("twice", lambda plan, kernel: kernel["arguments"].append(dict(kernel["arguments"][0]))),
+    ("is in the shared catalogue already", lambda plan, kernel: plan["ops"].update(hc_sinkhorn_row=model_op(plan))),
+    ("declares only its model's own ops", lambda plan, kernel: model_op(plan).update(source="inference/kernels/hc.cuh")),
+    ("takes a value expression only", lambda plan, kernel: scalar_fill(plan)),
+    ("is filled from an expression of its index", lambda plan, kernel: index_without_expression(plan)),
+    ("outputs name arguments", lambda plan, kernel: constant_output(plan)),
+    ("perturb names an input argument", lambda plan, kernel: scalar_perturb(plan)),
+    ("is a writable pointer with an element count", lambda plan, kernel: constant_scratch(plan)),
 )
 
 

@@ -485,6 +485,7 @@ static __device__ __forceinline__ void LmSkinnyTask(const LmSkinnyArguments &arg
 	const uint16_t *activation[ROWS];
 	LmSkinnyPrefetchDense<Format,NPG>(args,first == 0u ? live : 0u,sub,neuron,chunks);
 	LmDependentWait();
+	LmDependentRelease();
 	LmSkinnyResolve(args,pair,&group,&source,&target);
 	LmSkinnyWeightRows<Format,NPG>(args,group,neuron,rows);
 	LmSkinnyClear<NPG,ROWS>(accumulator);
@@ -526,6 +527,7 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnySplitKernel(const _
 	if ( sub == 0u && row == 0u )
 		LmPrefetchL2(rows[0],(last - first) * LM_SKINNY_CHUNK_BYTES);
 	LmDependentWait();
+	LmDependentRelease();
 	#pragma unroll
 	for ( r = 0u; r < ROWS; r++ )
 		activation[r] = args.activation + (uint64_t)(row + (r < count ? r : 0u)) * args.input_dimension + (uint64_t)first * elements;
@@ -702,10 +704,11 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS,LM_SKINNY_FRAME_MIN_BLOCKS) void 
 	uint4 weight[U][NPG], next_weight[U][NPG];
 	float low[U][NPG], high[U][NPG], next_low[U][NPG], next_high[U][NPG], accumulator[NPG][RG];
 	part = LmSkinnyFramePart<MULTI>(multi,task / groups);
-	LmDependentWait();
-	LmSkinnyClear<NPG,RG>(accumulator);
 	if ( task < tasks )
 		LmSkinnyFrameLoad<Format,LANES,U,NPG>(multi.part[part],(task / groups - multi.first_task[part]) * NPG,sub,chunks,weight,low,high);
+	LmDependentWait();
+	LmDependentRelease();
+	LmSkinnyClear<NPG,RG>(accumulator);
 	while ( base < tasks )
 	{
 		const uint32_t next_it = it + 1u < iterations ? it + 1u : 0u, next_task = next_it == 0u ? task + stride : task;
@@ -798,6 +801,7 @@ __global__ __launch_bounds__(LM_SKINNY_THREADS) void LmSkinnyGroupedKernel(const
 	const uint4 *weights[NPG];
 	const uint16_t *activation[ROWS];
 	LmDependentWait();
+	LmDependentRelease();
 	for ( index = threadIdx.x; index <= args.groups; index += LM_SKINNY_THREADS )
 		offset[index] = args.group_row_offset[index];
 	__syncthreads();
@@ -1419,6 +1423,7 @@ __global__ __launch_bounds__(THREADS) void LmSkinnyCellKernel(const __grid_const
 			cached[index] = args.group_row_offset[index];
 		__syncthreads();
 	}
+	LmDependentRelease();
 	if ( task >= args.packed_rows * args.cells )
 		return;
 	row = task / args.cells;
