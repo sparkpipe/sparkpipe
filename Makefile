@@ -1395,7 +1395,7 @@ build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE
 
 $(call NVRM_TWIN,build/mesh_round_bench): tools/mesh_round_bench.cu $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
 	@mkdir -p $(dir $@)
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(NVRM_NVCC_DEVICE_LINK) -ldl -o $@
+	$(call nvcc_module,-std=c++17 -cudart none -DSPARKPIPE_DEVICE_NVRM $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(NVRM_NVCC_DEVICE_LINK) -ldl)
 
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py
