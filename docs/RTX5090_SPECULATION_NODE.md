@@ -368,6 +368,57 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
   - **Replay gate.** `build/drafter_module_replay` and
     `tools/spec_offline/drafter_replay_compare.py --dspark`, which replays
     the schedule through `block_draftd.py`'s `RingContext` and `DsparkFast`.
+- **Qwen3.8-27B DSpine** (`modules/qwen38_dspine_draft_stage/`,
+  `build/modules/qwen38_dspine_draft_stage.so`). It binds the
+  `qwen27bdspine.bf16.tp1` pack through weightd, finds every tensor by name in
+  the pack's manifest and refuses a checkpoint config of another shape.
+  - **Window.** Per sequence and layer, keys and values (8 heads of 128, bf16)
+    for 8,176 positions plus the 16 block columns, as `block_draftd.py`'s
+    `Context` keeps them at `--window 8176`. A tap row (taps `o1`, `o16`,
+    `o31`, `o46` and `o61`, 5,120 wide each) goes through `fc` and
+    `hidden_norm`; then per layer `k_proj`, `k_norm` and rope, and `v_proj`,
+    into slot `position % 8176`. A frame drops every slot at or past its first
+    position and writes its last 8,176 rows. A frame at position 0 starts the
+    sequence over; a frame from another engine session or request at a later
+    position retires the window, which stays as a donor. The module keeps as
+    many windows as the lane's `context_bytes` holds (167,772,160 bytes each,
+    at most 256) and drops the least recently written first.
+  - **Proposals.** As for DeepSeek V4.1 Flash: `AWAIT_TAPS` from a host check,
+    donor fills of the missing window positions, and `NO_CONTEXT` when a held
+    token after the last gap differs from the committed one. Otherwise the
+    16-row block (the anchor and 15 mask tokens) runs through the five layers,
+    and the heads answer the root and up to 15 drafts.
+  - **Block forward,** as `DraftGraph` runs `DSpineDrafter`: per layer
+    `input_layernorm`, the projections, `q_norm` and `k_norm` per head and
+    rope; the block's keys and values go into the 16 block columns, after the
+    window when it is contiguous or with a mask over the whole ring otherwise
+    (`Context.span`). Attention covers the window and then the block causally:
+    a tensor-core kernel (bf16 operands, fp32 sums and softmax) over 256-key
+    splits, merged in fp32 with the block's own keys. Then `o_proj`,
+    `post_attention_layernorm` and the SwiGLU MLP, with a bf16 residual at
+    every add, and the code bridge, which adds `rms(u) W_l (g * m)` from the
+    predicted code of the row before. Projections with 4,096 outputs or more
+    run on the tensor-core stream GEMM in one 16-row tile; the narrower ones
+    run on the skinny kernel.
+  - **Heads.** The target's head on the final-norm rows, with fp32 logits. The
+    64 best tokens of each row (exact top-k) are re-ranked by the bridge's
+    normed row to 16 candidates. The greedy tables, built on the device at
+    `open` from the head and the codebook (0.76 GB), give the serial chain
+    from the anchor. A sampling rule walks the FP32 refined table over the 16
+    candidates with the verifier's keyed Gumbel noise, as `coupled_candidates`
+    does. The score is the chosen token's softmax mass.
+  - **Check.** `tools/spec_offline/qwen38_dspine_block_compare.py extract`
+    cuts an unbroken run of positions out of a tap recording (`synthetic`
+    writes random taps). `build/qwen38_dspine_block_probe` ingests it and dumps
+    the window, each layer's output, the final rows, the candidates and the
+    drafts under three rules. `compare --precise` checks the window against
+    `Context`, each layer against `DSpineDrafter` run from the module's own
+    input, and the drafts against its heads on the module's rows. The probe
+    also checks the donor path, and `--time` times the forward and `propose`.
+  - **Replay gate.** `build/drafter_module_replay` and
+    `tools/spec_offline/drafter_replay_compare.py --window 8176`, which
+    replays the schedule through `block_draftd.py`'s `Context` and
+    `DraftGraph`.
 
 ## Engine draft server lane switch
 

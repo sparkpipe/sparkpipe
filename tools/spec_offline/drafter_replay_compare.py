@@ -4,6 +4,7 @@
     drafter_replay_compare.py --checkpoint DIR --target SHARD --recording FILE --module-drafts FILE [--rule SEED,INVTEMP,NUCLEUS,TOP_K]
                               [--context-bytes N] [--depth N] [--limit N] [--embed NAME --head NAME --norm NAME]
     drafter_replay_compare.py --dspark --checkpoint DIR --recording FILE --module-drafts FILE [--rule ...] [--context-bytes N] [--depth N]
+    drafter_replay_compare.py --window N --checkpoint DIR --target SHARD --recording FILE --module-drafts FILE [--rule ...] [...]
 
 `build/drafter_module_replay` drives a drafter module through the recording and writes one line per request. This
 script replays the same request schedule through the Python drafter with block_draftd.py's context store: before each
@@ -11,7 +12,9 @@ decode, verify or chain frame at position p > 0, a request at p with the frame's
 frame is written. A latent block drafter (K3.1 Pro DSpark) runs with LatentContext (owners, rewinds, donor prefixes,
 token checks) and its eager forward and heads. --dspark serves a checkpoint's built-in DSpark drafter (DeepSeek V4.1
 Flash) as block_draftd.py does: RingContext windows, donor fills of the window, the token check after the last gap, and
-dspark_fast.DsparkFast with its CUDA graphs. It prints how many requests both sides answered alike, how many drafts
+dspark_fast.DsparkFast with its CUDA graphs. A block drafter (Qwen3.8-27B DSpine) runs as block_draftd.py serves it with
+--window N: a Context of N positions per sequence, the same donor fills and token check, Context.span and DraftGraph with
+its CUDA graphs. It prints how many requests both sides answered alike, how many drafts
 are equal token for token, and each side's mean accepted length against the recording's committed stream (the last
 token written at each position).
 """
@@ -26,9 +29,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from block_drafter import open_drafter  # noqa: E402
+from block_drafter import DraftGraph, open_drafter  # noqa: E402
 from context_retention import evict_contexts  # noqa: E402
-from latent_block_drafter import LatentContext  # noqa: E402
+from latent_block_drafter import LatentBlockDrafter, LatentContext  # noqa: E402
 from tapstream import frames  # noqa: E402
 
 ANSWERING_FLAGS = 2 | 4 | 8
@@ -65,8 +68,9 @@ def accepted(drafts, stream, position):
 
 
 class Replay:
-    def __init__(self, drafter, context_bytes, rule, depth, dspark=False):
-        self.drafter, self.context_bytes, self.depth, self.dspark = drafter, context_bytes, depth, dspark
+    def __init__(self, drafter, context_bytes, rule, depth, dspark=False, window=0):
+        self.drafter, self.context_bytes, self.depth, self.dspark, self.window = drafter, context_bytes, depth, dspark, window
+        self.graph = DraftGraph(drafter) if window else None
         self.contexts = OrderedDict()
         self.tokens = {}
         self.draft_seconds = []
@@ -95,10 +99,12 @@ class Replay:
         if self.dspark:
             from block_draftd import RingContext
             return RingContext(self.drafter)
+        if self.window:
+            from block_draftd import Context
+            return Context(self.drafter, self.window)
         return LatentContext(self.drafter)
 
-    def draft_dspark(self, sequence, position, anchor, committed):
-        from block_draftd import dspark_rule
+    def draft_window(self, sequence, position, anchor, committed):
         d = self.drafter
         context = self.contexts.get(sequence)
         if context is None or (position != 0 and not bool(context.held(np.array([position - 1]))[0])):
@@ -120,12 +126,18 @@ class Replay:
             positions = positions[int(np.flatnonzero(~held)[-1]) + 1:]
         if not np.array_equal(context.tokens[positions % context.window], committed[positions]):
             return "no-context", []
-        rule = dspark_rule(d, self.rule_values) if self.rule_values[1] > 0.0 else None
         torch.cuda.synchronize()
         started = time.monotonic()
-        drafts, _ = d.draft(context.ring, int(anchor), position, rule)
+        if self.dspark:
+            from block_draftd import dspark_rule
+            drafts, _ = d.draft(context.ring, int(anchor), position, dspark_rule(d, self.rule_values) if self.rule_values[1] > 0.0 else None)
+            drafts = list(drafts)[:min(self.depth, d.max_drafts)]
+        else:
+            start, block_at, valid = context.span(positions)
+            drafts, _ = self.graph.draft(int(anchor), position, context.keys, context.values, start, block_at, valid, min(self.depth, d.block),
+                                         self.rule_values if self.rule_values[1] > 0.0 else None)
         self.draft_seconds.append(time.monotonic() - started)
-        return "drafts", list(drafts)[:min(self.depth, d.max_drafts)]
+        return "drafts", list(drafts)
 
     def committed(self, key, position, anchor):
         stream = self.tokens.setdefault(key, np.zeros(0, dtype=np.uint32))
@@ -136,8 +148,8 @@ class Replay:
         return stream[:position + 1]
 
     def draft(self, sequence, position, anchor, committed):
-        if self.dspark:
-            return self.draft_dspark(sequence, position, anchor, committed)
+        if self.dspark or self.window:
+            return self.draft_window(sequence, position, anchor, committed)
         d = self.drafter
         context = self.contexts.get(sequence)
         if context is None or not context.covers(position):
@@ -190,6 +202,7 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--target", default="")
     parser.add_argument("--dspark", action="store_true")
+    parser.add_argument("--window", type=int, default=0, help="positions a block drafter's context keeps, as block_draftd.py --window")
     parser.add_argument("--recording", required=True)
     parser.add_argument("--module-drafts", required=True)
     parser.add_argument("--rule", default="0,0,0,0")
@@ -208,7 +221,9 @@ def main():
         drafter.warm()
     else:
         drafter = open_drafter(options.checkpoint, options.target, {"embed": options.embed, "head": options.head, "norm": options.norm}, "cuda")
-    replay = Replay(drafter, options.context_bytes, rule, options.depth, options.dspark)
+        if isinstance(drafter, LatentBlockDrafter) == (options.window > 0):
+            parser.error("--window applies to block drafters, and a block drafter needs it")
+    replay = Replay(drafter, options.context_bytes, rule, options.depth, options.dspark, options.window)
     module = module_answers(options.module_drafts)
     streams = committed_streams(options.recording)
     python = []
@@ -237,7 +252,7 @@ def main():
         answers[item[2]] = answers.get(item[2], 0) + 1
     print(f"requests {len(module)}: answers equal {same_answer} ({answers}); both drafted {len(drafted)}, drafts equal {same_drafts};"
           f" Python draft {1e3 * np.median(replay.draft_seconds) if replay.draft_seconds else 0.0:.2f} ms median"
-          f" ({'DsparkFast, CUDA graphs' if options.dspark else 'eager, without CUDA graphs'})")
+          f" ({'DsparkFast, CUDA graphs' if options.dspark else 'DraftGraph, CUDA graphs' if options.window else 'eager, without CUDA graphs'})")
     if drafted:
         paired = np.asarray(module_accepted, dtype=np.float64) - np.asarray(python_accepted, dtype=np.float64)
         print(f"accepted tokens: module {int(np.sum(module_accepted))} python {int(np.sum(python_accepted))}; paired difference {int(np.sum(paired)):+d}"
