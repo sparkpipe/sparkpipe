@@ -487,6 +487,7 @@ static SparkStatus SparkKvPageCacheSavePush(SparkKvPageCache *cache,uint32_t ter
 static uint32_t SparkKvPageCacheEntryUnsaved(const SparkKvPageCache *cache,uint32_t entry_index);
 static uint32_t SparkKvPageCachePageIsProtected(const uint32_t *pages,uint32_t count,uint32_t page);
 static void SparkKvPageCacheForgetSavedState(SparkKvPageCache *cache,uint32_t entry_index);
+static SparkStatus SparkKvPageCacheSealMutable(SparkKvPageCache *cache,SparkKvPageCacheSequence *sequence,uint32_t count);
 
 static uint32_t SparkKvPageCacheDiscardIsSafe(const SparkKvPageCache *cache,uint32_t entry_index)
 {
@@ -1192,6 +1193,12 @@ static uint32_t SparkKvPageCacheSpanBlocks(const SparkKvPageCache *cache,const S
 	return((lane->context_token_count - 1u) / block - (uint32_t)lane->sequence_position / block + 1u);
 }
 
+static uint32_t SparkKvPageCacheMutableFull(const SparkKvPageCache *cache,const SparkKvPageCacheSequence *sequence,uint64_t position)
+{
+	return(sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK &&
+		position == (uint64_t)sequence->mutable_first_token_index + (uint64_t)sequence->mutable_page_count * cache->kv_cache_arena->block_token_count ? 1u : 0u);
+}
+
 static SparkStatus SparkKvPageCacheAppendMutablePage(
 	const SparkKvPageCache *cache,
 	const SparkKvPageCacheSequence *sequence,
@@ -1292,7 +1299,7 @@ SparkStatus SparkKvPageCacheGetLaneMutablePageDemand(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	sequence = &cache->sequences[lane->resident_sequence_slot];
 	if ( sequence->sequence_id == lane->sequence_id &&
-		sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK )
+		sequence->mutable_logical_page_index != SPARK_KV_CACHE_NO_BLOCK && SparkKvPageCacheMutableFull(cache,sequence,lane->sequence_position) == 0u )
 	{
 		if ( sequence->mutable_first_token_index != first_token || sequence->mutable_page_count > blocks )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1764,6 +1771,13 @@ static SparkStatus SparkKvPageCacheBeginLaneInternal(
 		cache->kv_cache_arena->block_token_count) *
 		cache->kv_cache_arena->block_token_count;
 	blocks = SparkKvPageCacheSpanBlocks(cache,lane);
+	if ( SparkKvPageCacheMutableFull(cache,sequence,lane->sequence_position) != 0u )
+	{
+		sequence->mutable_block_identity_count = 0u;
+		status = SparkKvPageCacheSealMutable(cache,sequence,sequence->mutable_page_count);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+	}
 	held = sequence->mutable_page_count;
 	if ( blocks > SPARK_KV_PAGE_CACHE_MAX_MUTABLE_PAGES || held > blocks ||
 		((lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_VERIFY) != 0u ?

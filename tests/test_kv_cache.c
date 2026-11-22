@@ -2765,6 +2765,66 @@ static uint32_t SparkTestKvPageValidEntries(const SparkKvPageCache *cache)
 	return(count);
 }
 
+static void SparkTestKvPageCacheUnpublishedBlockEnd(void)
+{
+	SparkTestKvPageFixture fixture;
+	SparkModelDriverCacheLane lane;
+	const SparkKvPageCacheEntry *entries;
+	SparkKvPageCacheSequence *sequence;
+	uint32_t pages[8u],count,page,full_page,mutation_flags,demand,terminal;
+	SparkTestKvPageInitialize(&fixture);
+	entries = fixture.cache.entries;
+	sequence = &fixture.cache.sequences[0u];
+	SparkTestKvPageLane(&lane,1u,0u,0u,3u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,1u,0u,3u,4u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	full_page = sequence->mutable_logical_page_index;
+	assert(full_page != SPARK_KV_CACHE_NO_BLOCK && sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == 0u &&
+		sequence->next_token_position == 4u && sequence->terminal_entry_index == SPARK_KV_PAGE_CACHE_NO_INDEX);
+	SparkTestKvPageLane(&lane,1u,0u,4u,5u);
+	assert(SparkKvPageCacheGetLaneMutablePageDemand(&fixture.cache,&lane,&demand) == SPARK_STATUS_OK && demand == 1u);
+	assert(SparkKvPageCacheBeginLaneTransaction(&fixture.cache,&lane,&page,&mutation_flags) == SPARK_STATUS_OK);
+	assert(mutation_flags == SPARK_KV_PAGE_CACHE_MUTATION_ALLOCATED_MUTABLE && page != full_page);
+	terminal = sequence->terminal_entry_index;
+	assert(terminal != SPARK_KV_PAGE_CACHE_NO_INDEX && entries[terminal].token_count == 4u && entries[terminal].logical_page_index == full_page &&
+		(entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u);
+	assert(sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == 4u);
+	assert(SparkKvPageCacheRollbackLaneTransaction(&fixture.cache,&lane,mutation_flags) == SPARK_STATUS_OK);
+	assert(sequence->terminal_entry_index == terminal && sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK && sequence->next_token_position == 4u);
+	SparkTestKvPageLane(&lane,1u,0u,4u,12u);
+	assert(SparkKvPageCacheGetLaneMutablePageDemand(&fixture.cache,&lane,&demand) == SPARK_STATUS_OK && demand == 2u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheBuildLaneTable(&fixture.cache,0u,1u,pages,8u,&count) == SPARK_STATUS_OK && count == 3u && pages[0u] == full_page);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	assert(sequence->mutable_page_count == 1u && sequence->mutable_first_token_index == 8u && sequence->next_token_position == 12u &&
+		SparkTestKvPageValidEntries(&fixture.cache) == 2u);
+	SparkTestKvPageLane(&lane,1u,0u,12u,13u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	terminal = sequence->terminal_entry_index;
+	assert(entries[terminal].token_count == 12u && (entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) != 0u &&
+		sequence->mutable_first_token_index == 12u && sequence->next_token_position == 13u && SparkTestKvPageValidEntries(&fixture.cache) == 3u);
+	assert(SparkKvPageCacheBuildLaneTable(&fixture.cache,0u,1u,pages,8u,&count) == SPARK_STATUS_OK && count == 4u);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,1u) == SPARK_STATUS_OK);
+	assert(SparkTestKvPageValidEntries(&fixture.cache) == 0u);
+	SparkTestKvPageLane(&lane,2u,0u,0u,4u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	SparkTestKvPageLane(&lane,2u,0u,4u,4u);
+	SparkTestKvPagePublish(&lane,4u,79u);
+	(void)SparkTestKvPageBegin(&fixture,&lane);
+	assert(SparkKvPageCacheCompleteLane(&fixture.cache,&lane) == SPARK_STATUS_OK);
+	terminal = sequence->terminal_entry_index;
+	assert(entries[terminal].token_count == 4u && (entries[terminal].flags & SPARK_KV_PAGE_CACHE_ENTRY_FLAG_PRIVATE) == 0u &&
+		sequence->mutable_logical_page_index == SPARK_KV_CACHE_NO_BLOCK);
+	assert(SparkKvPageCacheReleaseLane(&fixture.cache,0u,2u) == SPARK_STATUS_OK);
+	assert(SparkTestKvPageValidEntries(&fixture.cache) == 1u);
+	printf("kv page cache: a lane that ends on a block's last token without publishing leaves the block open for a publish that names it; the next lane with rows seals it without a name, and the sequence's unnamed blocks leave at release: ok\n");
+}
+
 static void SparkTestKvPageCachePrivateTailLeavesAtRelease(void)
 {
 	SparkTestKvPageFixture fixture;
@@ -3871,6 +3931,7 @@ int main(void)
 	SparkTestKvPageCacheSpanKeepsLivePagesResident();
 	SparkTestKvPageCacheSpanBlockIdentities();
 	SparkTestKvPageCacheUnpublishedSpanIdentities();
+	SparkTestKvPageCacheUnpublishedBlockEnd();
 	SparkTestKvPageCachePrivateTailLeavesAtRelease();
 	SparkTestKvPageCacheReclaimsLogicalPageWhenPoolIsFull();
 	SparkTestKvPageCacheUnreadPrefixIsDropped();
