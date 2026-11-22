@@ -1247,6 +1247,9 @@ NVRM_FLAVOUR_GOALS += nvrm-weightd
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
+build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
 NVRM_MODEL_COMMON_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(SPARKPIPE_MODEL_COMMON_SOURCES))
 NVRM_MODEL_COMMON_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_model_common.a
 NVRM_DEVICE_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_FLAVOUR_RPATH)
@@ -1870,7 +1873,7 @@ nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_
 		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
 		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps build/test_nvrm_large_transfers
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch build/test_nvrm_program_steps build/test_nvrm_large_transfers build/test_nvrm_weightd_attach
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present
