@@ -309,6 +309,24 @@ Memory comes in seven kinds:
 - **Read-only user memory.** The same for a file mapping
   (`SparkDeviceMapFile`): pinned without write access, and mapped into
   the GPU read-only.
+- **Registered at its own address.** Both kinds are mapped into the GPU at
+  their host address, so a registered pointer is its own device pointer, as
+  with CUDA on GB10. Code that hands kernels the host address of registered
+  memory, such as weightd's mesh region and staging export, works unchanged.
+  - The backend reserves, with no CPU access, every range a host mapping
+    must not use: its own device range, GSP's split address range
+    (`[0x1_0000_0000, 0x1_2000_0000)`, where the module's GSP firmware maps its
+    own buffers in every client address space) and the shader local and
+    shared memory windows (4 GiB each at the addresses the channels set).
+    Each channel's RM resources sit in a span of the device range that the
+    backend hands to unified memory when it registers the channel.
+  - A registration that overlaps one of those ranges, or a live
+    registration, is refused, and the refusal names both ranges. If a range
+    could not be reserved at open because something already mapped it, open
+    says so and the overlap is still refused.
+  - Contract, as with CUDA: unregister a range before the CPU unmaps or
+    remaps it. The GPU mapping holds the pinned pages, not whatever the
+    address points to later.
 
 `nvrm_submit.c` writes push-buffer methods, GPFIFO entries, GPPut and the
 doorbell, host semaphore releases and acquires, and waits on a semaphore

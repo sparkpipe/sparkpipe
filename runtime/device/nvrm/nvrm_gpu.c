@@ -577,8 +577,9 @@ SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes,
 	memory->cpu = (uint8_t *)first;
 	memory->page_bytes = SPARK_NVRM_PAGE_BYTES;
 	memory->bytes = GpuRound((uintptr_t)host - first + bytes,SPARK_NVRM_PAGE_BYTES);
-	status = SparkNvrmVirtual(gpu,memory->bytes,SPARK_NVRM_PAGE_BYTES,&memory->address,owner);
-	memory->virtual_reserved = status == SPARK_STATUS_OK ? 1u : 0u;
+	memory->address = (uint64_t)first;
+	status = SparkNvrmIdentityTake(gpu,memory->address,memory->bytes,owner);
+	memory->identity = status == SPARK_STATUS_OK ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = GpuOsDescriptor(gpu,memory,owner);
 	if ( status == SPARK_STATUS_OK )
@@ -609,6 +610,8 @@ void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory)
 		(void)SparkNvrmRmFree(&gpu->rm,gpu->device,memory->handle,"free");
 	if ( memory->virtual_reserved != 0u )
 		SparkNvrmVirtualRelease(gpu,memory->address,memory->bytes);
+	if ( memory->identity != 0u )
+		SparkNvrmIdentityGive(gpu,memory->address,memory->bytes);
 	memset(memory,0,sizeof(*memory));
 	memory->map_fd = -1;
 }
