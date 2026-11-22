@@ -1879,9 +1879,12 @@ and the multidev docs on 2026-09-28. Line numbers are in
   library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
   - that device backend;
   - a build flavour that links neither library;
-  - moving weightd's client calls out of the objects that hold its device
-    code, which would take the driver library out of `weightd_warm`,
-    `weightdctl` and the transport.
+  - weightd's memory through the device layer. The shared-memory entry
+    points exist on the CUDA and host backends
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
+    The nvrm backend refuses them until its part lands. weightd still calls
+    the driver directly. Converting it takes the driver library out of
+    `sparkpipe_weightd`, `weightd_warm`, `weightdctl` and the transport.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

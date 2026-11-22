@@ -397,7 +397,7 @@ TEST_NAMES := \
 
 ifneq ($(UNAME_S),Darwin)
 TEST_NAMES += test_stage_kv_shared_prefix
-TEST_NAMES += test_device_contract test_device_instance
+TEST_NAMES += test_device_contract test_device_instance test_device_shared_memory
 endif
 TEST_NAMES += test_device_serving_runner
 TEST_NAMES += test_device_nvrm test_nvrm_cubin test_nvrm_qmd test_nvrm_submit test_nvrm_open_order test_nvrm_register test_nvrm_gpu_front
@@ -462,6 +462,7 @@ PYTHON_TESTS := \
 	tests/test_launch_path.py \
 	tests/test_gpu_api.py \
 	tests/test_device_contract_cuda.py \
+	tests/test_device_shared_memory_cuda.py \
 	tests/test_device_capture_cuda.py \
 	tests/test_device_contract_metal.py \
 	tests/test_metal_kernels.py \
@@ -1474,6 +1475,9 @@ build/test_device_capture_cuda: tests/cuda/device_capture_cuda.cu $(DEVICE_CUDA_
 build/test_device_contract_cuda: tests/test_device_contract.c $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_contract_cuda (no CUDA device library)"; fi
 
+build/test_device_shared_memory_cuda: tests/test_device_shared_memory.c $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ]; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@; else echo "SKIP test_device_shared_memory_cuda (no CUDA device library)"; fi
+
 $(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
@@ -1781,6 +1785,9 @@ build/logit_compare: tools/logit_compare.c tools/token_prompts.c runtime/json.c 
 
 build/test_device_contract: tests/test_device_contract.c $(DEVICE_HOST_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(METAL_TEST_KERNEL_LIBRARY)"' $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+build/test_device_shared_memory: tests/test_device_shared_memory.c $(DEVICE_HOST_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_host $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
 build/test_device_serving_runner: tests/test_device_serving_runner.c inference/runner/device_serving_runner.c $(DEVICE_RUNNER_HEADERS) $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) $(CORE_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_RUNNER_INCLUDE_FLAGS) $(CFLAGS) tests/test_device_serving_runner.c inference/runner/device_serving_runner.c $(DEVICE_HOST_SOURCES) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lm -o $@
