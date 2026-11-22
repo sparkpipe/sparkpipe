@@ -23,12 +23,17 @@ static __global__ void LmRouteLocalKernel(uint32_t *__restrict__ route_expert, f
 	}
 }
 
+static __device__ __forceinline__ void LmPackedRouteWeight(const uint32_t *route_packed_row, const float *route_weight, float *packed_weight,
+	uint32_t routes, uint32_t route)
+{
+	if ( route < routes )
+		packed_weight[route_packed_row[route]] = route_weight[route];
+}
+
 static __global__ void LmPackedRouteWeightKernel(const uint32_t *__restrict__ route_packed_row, const float *__restrict__ route_weight,
 	float *__restrict__ packed_weight, uint32_t routes)
 {
-	const uint32_t route = blockIdx.x * blockDim.x + threadIdx.x;
-	if ( route < routes )
-		packed_weight[route_packed_row[route]] = route_weight[route];
+	LmPackedRouteWeight(route_packed_row, route_weight, packed_weight, routes, blockIdx.x * blockDim.x + threadIdx.x);
 }
 
 static __device__ __forceinline__ uint16_t LmSwigluPackedValue(uint16_t gate, uint16_t up, float weight, float limit)

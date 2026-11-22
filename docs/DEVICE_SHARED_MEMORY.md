@@ -23,6 +23,7 @@ adapter loads. The RDMA transport links that library too.
 ```c
 SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes);
 SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory);
 SparkStatus SparkDeviceMemoryExport(SparkDeviceMemoryHandle memory, int *fd);
 SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner);
@@ -46,12 +47,32 @@ exported. It is not mapped anywhere until `SparkDeviceMemoryMap` maps it.
 - `SparkDeviceMemoryImport` turns a descriptor from another process into a
   handle; the caller still owns and closes the descriptor.
 
+**Host memory.** `SparkDeviceMemoryCreateHost` allocates pinned system memory
+near the device that exports, imports, maps and releases like device memory.
+- It exists only where the backend sets
+  `SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE`; elsewhere the device layer refuses
+  it, before any backend sees the call, with `SPARK_STATUS_UNSUPPORTED` and
+  `the <backend> backend has no exportable host memory`.
+- Its size is a multiple of the minimum granularity.
+- A process that holds host memory for others (weightd's held packs, see
+  [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md)) maps it with host access to fill it;
+  an importer maps it device-read-only and copies from it with the copy
+  engines, with no CPU copy.
+
 **Addresses and mappings.** `SparkDeviceAddressReserve` reserves a range at
 an address the backend chooses; nothing is requested at a fixed address.
 - `SparkDeviceMemoryMap` maps `bytes` of the memory, from `offset`, at an
   address inside one reservation.
-- `access` is `SPARK_DEVICE_ACCESS_DEVICE_READ`, optionally with
-  `SPARK_DEVICE_ACCESS_DEVICE_WRITE`. Host access bits are refused.
+- `access` grants `SPARK_DEVICE_ACCESS_DEVICE_READ` or
+  `SPARK_DEVICE_ACCESS_HOST_READ`, or both. `SPARK_DEVICE_ACCESS_DEVICE_WRITE`
+  requires device read and `SPARK_DEVICE_ACCESS_HOST_WRITE` requires host read
+  (`host write access needs host read access`).
+- Host access needs the host memory share property and a handle that
+  `SparkDeviceMemoryCreateHost` returned in this process. Any other handle,
+  imported host memory included, and any handle on a backend without the
+  property, is an invalid argument: `host access maps only host memory`. The
+  backend keeps the handles it created and never asks the driver about a
+  handle it does not know.
 - A failed map leaves nothing mapped.
 - `SparkDeviceMemoryUnmap` takes one or more whole, adjacent mappings. It
   refuses part of a mapping.
@@ -107,10 +128,10 @@ thread binds to its creator's instance before it touches device memory.
 
 | Backend | Shared memory | Thread binding |
 | --- | --- | --- |
-| CUDA | the driver's virtual memory management, reached through `cudaGetDriverEntryPointByVersion`, so the device library links only the CUDA runtime. Pinned device allocations exported as POSIX file descriptors. Mappings take offset 0 only, as the driver requires | an instance is the device's primary context |
+| CUDA | the driver's virtual memory management, reached through `cudaGetDriverEntryPointByVersion`, so the device library links only the CUDA runtime. Pinned device allocations exported as POSIX file descriptors. Host memory is a `CU_MEM_LOCATION_TYPE_HOST_NUMA` allocation at the device's host NUMA node, offered when the device reports `CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED`; host access adds a host-NUMA access descriptor. Mappings take offset 0 only, as the driver requires | an instance is the device's primary context |
 | host | POSIX shared memory objects. Reservations are `PROT_NONE` anonymous mappings and maps are `MAP_FIXED` mappings of the object. It adopts device-private ranges of its own mappings | one instance per process |
 | Metal | refused with `SPARK_STATUS_UNSUPPORTED` | one instance per process |
-| nvrm | module system memory, GPU-cached, in 2 MiB pages, with no CPU mapping. Export puts the object in a fresh `/dev/nvidiactl` descriptor (`NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`); import duplicates it under this process's device (`..._IMPORT_OBJECT_FROM_FD`) and reads its size back. Reservations come from the backend's own device address range, and maps are an RM mapping plus a unified-memory external mapping at the address, with the offset asked for. The backend keeps its handle until the last unmap and the release. Both granularities are 2 MiB | one instance per process |
+| nvrm | no host memory share yet (a system-memory object exported through the same NV0000 path, with a CPU mapping when host access is asked for, is the runtime track's next item). Device memory: module system memory, GPU-cached, in 2 MiB pages, with no CPU mapping. Export puts the object in a fresh `/dev/nvidiactl` descriptor (`NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`); import duplicates it under this process's device (`..._IMPORT_OBJECT_FROM_FD`) and reads its size back. Reservations come from the backend's own device address range, and maps are an RM mapping plus a unified-memory external mapping at the address, with the offset asked for. The backend keeps its handle until the last unmap and the release. Both granularities are 2 MiB | one instance per process |
 
 ## Tests
 
@@ -128,6 +149,12 @@ runs in `make test` against the host backend. It covers:
   partial unmap, and unmapped by one call;
 - a second thread binding to the instance, and refusing a value the device
   layer did not return.
+
+[`tests/test_device_contract.c`](../tests/test_device_contract.c) checks host
+memory on every backend: without the property, the refusal and its text; with
+it, creation in whole granules, a CPU-only mapping filled by the holder, export,
+import, a device-read-only mapping the device reads back, and the access
+refusals above.
 
 The nvrm build of the same test (`build/test_device_shared_memory_nvrm`) and
 [`tests/nvrm/shared_coherence.cu`](../tests/nvrm/shared_coherence.cu) run in
