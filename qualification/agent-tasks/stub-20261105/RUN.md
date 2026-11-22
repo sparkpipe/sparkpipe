@@ -76,6 +76,13 @@ All four match the script. Each SWE-bench run directory holds:
 Each Terminal-Bench directory is Harbor's job directory: the trial
 `result.json`, the agent's logs and the verifier's output.
 
+Codex names its session log `rollout-<start time>-<thread id>.jsonl`.
+`stub-cx-tb21` keeps it as
+`fix-git__mFJ7mJz/agent/sessions/2026/11/05/rollout-01a1aa09-dcbb-7cf0-8b83-7e86e96b7127.jsonl`,
+without the start time (`2026-11-05T04-48-55`), because no name in the
+repository may be longer than 64 characters (`tests/test_name_lengths.py`).
+The thread id is the one that `codex.txt` and `trajectory.json` record.
+
 Two of `stub-cx-tb21`'s Harbor logs are kept on the hub, not in the
 repository: its `job.log` and `fix-git__mFJ7mJz/trial.log`.
 - **Where:** `/srv/workspace/sparkpipe/agent-tasks/stub-20261105/terminal-bench-2-1/stub-cx-tb21/`.
