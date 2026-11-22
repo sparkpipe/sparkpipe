@@ -21,6 +21,9 @@ WEIGHTD_KV_RESERVE_BYTES=8589934592
 WEIGHTD_LEGACY_NOTED=""
 WEIGHTD_UPDATE_NOTED=""
 HEARTBEAT_PERIOD=60
+COMPACT_HELPER="${SPARK_COMPACT_HELPER:-/usr/local/sbin/sparkpipe-compact}"
+COMPACT_STATE="${SPARK_COMPACT_STATE:-/run/sparkpipe-compact}"
+COMPACT_SECONDS="${SPARK_COMPACT_SECONDS:-900}"
 MANIFEST_VERIFY_PERIOD=600
 LAST_REPORT_AT=0
 RANK=""
@@ -533,6 +536,58 @@ start_layout_root() {
     return 0
 }
 
+compact_watch() {
+    local rr="$1" seconds="$2" waited=0 seen=0
+    exec 8<"$COMPACT_STATE/window" || exit 1
+    flock -s 8 || exit 1
+    trap 'flock -u 8; exec 8<&-; sudo -n "$COMPACT_HELPER" restore' EXIT
+    sudo -n "$COMPACT_HELPER" raise || exit 1
+    : > "$rr/.compact-raised"
+    echo "$(date +%T) compaction raised for $rr"
+    while [ "$waited" -lt "$seconds" ]; do
+        if grep -q 'model_residentd ready' "$rr/residentd.log" 2>/dev/null; then
+            echo "$(date +%T) residentd ready after ${waited}s; restoring"
+            exit 0
+        fi
+        if [ -n "$(match_pids sparkpipe_model_residentd "$rr")" ]; then
+            seen=1
+        elif [ "$seen" = 1 ] || [ "$waited" -ge 30 ]; then
+            echo "$(date +%T) residentd is not running after ${waited}s; restoring"
+            exit 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    echo "$(date +%T) residentd not ready after ${seconds}s; restoring"
+}
+
+compact_open() {
+    local name="$1" rr="$2" i
+    [ -x "$COMPACT_HELPER" ] || return 0
+    rm -f "$rr/.compact-raised"
+    COMPACT_HELPER="$COMPACT_HELPER" COMPACT_STATE="$COMPACT_STATE" setsid bash -c \
+        "$(declare -f compact_watch match_pids); compact_watch \"\$@\"" compact-watch "$rr" "$COMPACT_SECONDS" \
+        > "$rr/compact.log" 2>&1 < /dev/null &
+    for i in $(seq 1 100); do
+        [ -f "$rr/.compact-raised" ] && return 0
+        sleep 0.1
+    done
+    note_root "$name" failed-start "the compaction window did not open: $(tail -1 "$rr/compact.log" 2>/dev/null)"
+    return 1
+}
+
+compact_sweep() {
+    [ -x "$COMPACT_HELPER" ] && [ -f "$COMPACT_STATE/boot" ] || return 0
+    exec 7<"$COMPACT_STATE/window" || return 0
+    if flock -n -x 7; then
+        flock -u 7
+        exec 7<&-
+        sudo -n "$COMPACT_HELPER" restore
+    else
+        exec 7<&-
+    fi
+}
+
 start_root() {
     local name="$1" rr
     rr=$(root_path "$name")
@@ -552,6 +607,7 @@ start_root() {
         note_root "$name" failed-start "an expert pool cap is the stage config's expert_pool_cap_bytes; G5_EXPERT_POOL_BYTES and G5_EXPERT_POOL_CAP_BYTES are not read"
         return 1
     fi
+    compact_open "$name" "$rr" || return 1
     if [ "$RC_LAYOUT" = 1 ]; then
         start_layout_root "$name" "$rr" || return 1
     else
@@ -1120,6 +1176,7 @@ while true; do
     for r in $ROOT_LIST; do ensure_root "$r"; done
     for r in $ROOT_LIST; do prune_logs "$HOME/sparkdata/$r"; done
     warmup_hook
+    compact_sweep
     report_if_changed
     sleep 1
 done

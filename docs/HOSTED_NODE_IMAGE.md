@@ -96,14 +96,15 @@ requalification of the device backend.
 | `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Appends to `GRUB_CMDLINE_LINUX`: the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=0`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init`, no crash kernel, and `panic=60`, so a failed boot, the initramfs included, reboots instead of waiting at a shell. GRUB runs on the console and the serial line. `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DEFAULT` belong to the baseline's GRUB policy: the serial console `ttyS0` at 921600, no boot-time fsck and the node's recovery address |
 | `etc/modprobe.d/sparkpipe-gb10.conf` | nouveau and nova never load; the RTL8127 management port binds `r8127`; `cppc_cpufreq auto_sel_mode=1`; `sbsa_gwdt action=1` |
 | `etc/modules-load.d/sparkpipe-gpu.conf` | `nvidia` and `nvidia_uvm` load at boot |
-| `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address. `vm.compaction_proactiveness=90` and `vm.min_free_kbytes=1048576`: the kernel compacts memory in the background and keeps 1 GiB free, so free 2 MiB blocks are ready when the nvrm backend allocates device memory, which it does in 2 MiB pages with no 4 KiB fallback (see [Contiguous memory](#contiguous-memory)) |
+| `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address |
+| `usr/local/sbin/sparkpipe-compact`, `etc/sudoers.d/90-sparkpipe-compact`, `usr/lib/tmpfiles.d/sparkpipe-compact.conf` | the compaction window around a model's activation; see [Contiguous memory](#contiguous-memory) |
 | `etc/security/limits.d/90-sparkpipe.conf` | unlimited locked memory for RDMA registration, 500,000 open files (soft and hard) |
 | `etc/systemd/sleep.conf.d/90-sparkpipe-no-suspend.conf` | no suspend or hibernation |
 | `etc/netplan/01-sparkpipe.yaml` | NetworkManager manages the interfaces; bring-up adds the fleet profiles |
 
 The command line, module options, sysctls and limits are the ones a Spark
 runs under the factory OS (DGX OS 7.5.0), read from its configuration and
-`/proc/cmdline`, except the two compaction settings below.
+`/proc/cmdline`.
 
 ### Contiguous memory
 
@@ -123,9 +124,33 @@ every other 4 KiB page of 80 GiB (anonymous, movable memory), and then
 | proactiveness 90 | 21,965 | 682 of 802, then no memory |
 | proactiveness 90 and `min_free_kbytes` 1 GiB, twice | 27,182 and 26,738 | 802 of 802 in 1.1 s, both times |
 
-With both settings the kernel keeps enough free 2 MiB blocks in the
-background for the whole allocation; with either alone it does not. The
-image sets both.
+Kept on while a model serves, those two settings cost decode time. Qwen3.8-27B
+on one GB10, with 16 GiB held in every other 4 KiB page of 32 GiB: throughput
+and the median step stay within 0.5%, but about 5.5% of steps run about 60 ms
+slow (p99 +5.7%), because background compaction keeps working on what it
+cannot move. In a 16-rank step the slowest rank sets the pace.
+
+So the image boots with the kernel's defaults and raises both settings only
+while a model activates, when the large allocations happen:
+
+- [`sparkpipe-compact`](../tools/hosted_image/files/usr/local/sbin/sparkpipe-compact)
+  `raise` records the boot values in `/run/sparkpipe-compact/boot`, sets
+  proactiveness 90 and `min_free_kbytes` 1 GiB, and writes `compact_memory`.
+  `restore` puts the recorded values back, but only when no activation holds
+  `/run/sparkpipe-compact/window` (each holds a shared lock on it), so
+  activations that overlap share one window.
+- [`90-sparkpipe-compact`](../tools/hosted_image/files/etc/sudoers.d/90-sparkpipe-compact)
+  lets the `sparkpipe-compact` group run exactly those two commands as root,
+  and nothing else; the fleet user joins the group at bring-up.
+- The fleet agent ([`fleet_node_agent.sh`](../tools/fleet_node_agent.sh)) opens
+  the window in `start_root`, the one place every residentd start passes
+  through, before it launches residentd: a watcher in its own session takes
+  the shared lock, raises, and restores when residentd reports ready, when it
+  is no longer running, or after 900 s, from an `EXIT` trap. If the raise
+  fails, the root does not start and the agent says why. Each loop of the
+  agent also restores a window no watcher holds, so a killed watcher leaves
+  the settings raised only until the agent's next loop. A node without the
+  helper opens no window.
 
 ## GPU device nodes
 
@@ -366,7 +391,9 @@ The identity bundle is a directory with three parts:
   present, `sparkpipe-host-keys.service` does not run, so nothing else would
   create the initramfs keys.
 - `user.conf` holds `USER_NAME`, `USER_UID`, `USER_GID`, `USER_GROUPS` (a
-  comma list) and `USER_SHELL`, one `KEY=value` per line. It is read as data,
+  comma list) and `USER_SHELL`, one `KEY=value` per line. On a fleet node
+  `USER_GROUPS` includes `sparkpipe-compact`, so the agent can open the
+  [compaction window](#contiguous-memory). It is read as data,
   never sourced. The user is created with no home of its own, because
   `/home/<user>` is already on the disk.
 - `groups.conf` holds one `name:gid` line per group the user needs that

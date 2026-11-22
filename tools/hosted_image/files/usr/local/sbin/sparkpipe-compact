@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+state=/run/sparkpipe-compact
+window="$state/window"
+saved="$state/boot"
+proactiveness=/proc/sys/vm/compaction_proactiveness
+reserve=/proc/sys/vm/min_free_kbytes
+compact=/proc/sys/vm/compact_memory
+umask 022
+mkdir -p "$state"
+[ -e "$window" ] || : > "$window"
+exec 9>"$state/serial"
+flock 9
+case "${1:-}" in
+raise)
+	[ -f "$saved" ] || printf '%s %s\n' "$(cat "$proactiveness")" "$(cat "$reserve")" > "$saved"
+	echo 90 > "$proactiveness"
+	echo 1048576 > "$reserve"
+	echo 1 > "$compact"
+	;;
+restore)
+	[ -f "$saved" ] || exit 0
+	exec 8<"$window"
+	flock -n -x 8 || exit 0
+	read -r boot_proactiveness boot_reserve < "$saved"
+	echo "$boot_proactiveness" > "$proactiveness"
+	echo "$boot_reserve" > "$reserve"
+	rm -f "$saved"
+	;;
+*)
+	echo "usage: sparkpipe-compact raise|restore" >&2
+	exit 2
+	;;
+esac
