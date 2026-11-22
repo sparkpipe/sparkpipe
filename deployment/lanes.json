@@ -161,9 +161,9 @@
     "lifecycle": "model",
     "server": "block_draftd",
     "engine": {
-     "root": "/srv/workspace/sparkpipe/draftd-engine-q27",
+     "root": "/srv/workspace/sparkpipe/draftd-engine",
      "lane": "qwen3.8-27b",
-     "unit": "sparkpipe-draftd-engine-q27",
+     "unit": "sparkpipe-draftd-engine",
      "weightd_unit": "sparkpipe-weightd-hub"
     }
    },
@@ -228,9 +228,9 @@
     "lifecycle": "model",
     "server": "block_draftd",
     "engine": {
-     "root": "/srv/workspace/sparkpipe/draftd-engine-dsv41",
+     "root": "/srv/workspace/sparkpipe/draftd-engine",
      "lane": "deepseek-v4.1-flash",
-     "unit": "sparkpipe-draftd-engine-dsv41",
+     "unit": "sparkpipe-draftd-engine",
      "weightd_unit": "sparkpipe-weightd-hub"
     }
    }

@@ -150,17 +150,24 @@ lanes' drafters do not time-slice the GPU between processes.
   `sparkpipe_draftd` stays device-neutral and loads a lane's module with
   `dlopen` when the lane first activates; a module of another ABI is refused
   at load, naming both versions.
-- **Lifecycle:** an engine lane starts inactive and answers every request at
-  once with `UNAVAILABLE` and no nodes, so its target decodes plainly. The
-  hooks that start and stop a lane's model call
+- **Lifecycle:** an engine lane starts inactive and holds no port: its draft
+  port and tap port open only while it is active. One server can therefore
+  list lanes that another server, such as `block_draftd.py`, still serves.
+  The target's requests to an inactive lane fail to connect, so it decodes
+  plainly. The hooks that start and stop a lane's model call
   `sparkpipe_draftd --control SOCKET activate LANE` and `deactivate LANE`.
-  Activation hands the module the pack, its sha256 sidecar and the context
-  cap; the module checks free device memory against the pack plus the cap,
-  binds the pack through weightd (on a device without unified memory, HOLD
-  and a copy into the lane's own memory) and reports the bytes and the bind
-  time, or the activation is refused with the module's numbers and the
-  command exits 1. Deactivation releases the lane's device memory. Nothing is
-  evicted and nothing falls back. `status` lists every lane, active or not.
+  - Activation opens the lane's ports and hands the module the pack, its
+    sha256 sidecar and the context cap. The module checks free device memory
+    against the pack plus the cap, binds the pack through weightd (on a
+    device without unified memory, HOLD and a copy into the lane's own
+    memory), and reports the bytes and the bind time.
+  - Activation is refused, and the command exits 1, when a port is held by
+    another process (that process's ports are left alone) or with the
+    module's numbers when the pack does not fit.
+  - Deactivation answers a waiting request `UNAVAILABLE`, releases the lane's
+    device memory and closes its ports, which can be bound again at once.
+  - Nothing is evicted and nothing falls back. `status` lists every lane,
+    active or not.
 - **Proposals:** an active lane hands each tap frame to the module's
   `ingest` and each request to its `propose`, which answers one of three
   ways (named in the header):
@@ -186,13 +193,20 @@ lanes' drafters do not time-slice the GPU between processes.
   `sparkpipe_draftd` with a probe module built against the CUDA stub in its
   discrete mode (`tests/fixtures/drafter_probe_module.c`, which binds the
   pack, keeps the positions and tokens its tap frames hold, and drafts one
-  token after the root with a device read as its forward work): the inactive
-  answer, activate, a request that waits for taps and drafts after the
-  covering frame (the waiting proposals do no device work), a request that
-  waits in vain and is answered `UNAVAILABLE` at `wait_ms`, a token mismatch
-  answered `UNAVAILABLE` at once, a waiting request replaced by a new
-  connection, deactivate, a second activate from the held copy, a refusal with
-  the memory numbers, a module of drafter ABI 99 and an unknown lane.
+  token after the root with a device read as its forward work):
+  - inactive lanes hold no port;
+  - activate opens the lane's ports while the test process holds a second
+    lane's ports, whose activation is refused and leaves them untouched;
+  - a request that waits for taps and drafts after the covering frame (the
+    waiting proposals do no device work);
+  - a request that waits in vain and is answered `UNAVAILABLE` at `wait_ms`,
+    and a token mismatch answered `UNAVAILABLE` at once;
+  - a waiting request replaced by a new connection;
+  - deactivate, after which the lane's ports bind again at once;
+  - a second activate from the held copy, and the second lane's activation
+    once its ports are free;
+  - a refusal with the memory numbers, a module of drafter ABI 99 and an
+    unknown lane.
 - **Crash behaviour:** if the process dies, every lane's open exchange
   ends at once and new connections are refused. Each lane then decodes
   without model drafts, with the engine's usual backoff, until a restart
