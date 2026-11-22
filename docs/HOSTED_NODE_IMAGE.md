@@ -172,8 +172,9 @@ what was left.
 ## An image node never updates itself
 
 A rented node changes only by a new image, never during a rental. The image
-masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`)
-and `motd-news`, which fetches news from Ubuntu
+masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`),
+`motd-news`, which fetches news from Ubuntu, and podman's auto-update timer
+and its root API socket and service, which cephadm does not use
 ([`masked-units.txt`](../tools/hosted_image/masked-units.txt),
 [`mask_units.sh`](../tools/hosted_image/mask_units.sh)). It carries no
 `unattended-upgrades`, and the build fails if a dependency brings it in.

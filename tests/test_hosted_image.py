@@ -228,7 +228,8 @@ class StaticFilesTest(unittest.TestCase):
 
 
 class SelfUpdateTest(unittest.TestCase):
-    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service")
+    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service",
+             "podman-auto-update.timer", "podman-auto-update.service", "podman.socket", "podman.service")
 
     def test_the_image_masks_every_update_and_news_unit_and_carries_no_unattended_upgrades(self):
         self.assertEqual((IMAGE / "masked-units.txt").read_text().split(), list(self.UNITS))
@@ -243,8 +244,9 @@ class SelfUpdateTest(unittest.TestCase):
             units.mkdir(parents=True)
             (root / "etc" / "systemd" / "system").mkdir(parents=True)
             for unit in self.UNITS:
-                kind = "Timer" if unit.endswith(".timer") else "Service"
-                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + ("OnCalendar=daily\n[Install]\nWantedBy=timers.target\n" if kind == "Timer" else "ExecStart=/bin/true\n"))
+                kind = {"timer": "Timer", "socket": "Socket"}.get(unit.rsplit(".", 1)[1], "Service")
+                body = {"Timer": "OnCalendar=daily\n[Install]\nWantedBy=timers.target\n", "Socket": "ListenStream=/run/test.sock\n[Install]\nWantedBy=sockets.target\n"}
+                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + body.get(kind, "ExecStart=/bin/true\n"))
             completed = subprocess.run(["bash", str(IMAGE / "mask_units.sh"), str(root)], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             for unit in self.UNITS:
