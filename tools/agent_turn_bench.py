@@ -31,6 +31,23 @@ RESPONSES_OUTPUT_EVENTS = frozenset({"response.reasoning_summary_text.delta", "r
                                      "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"})
 RESPONSES_ACTION_EVENTS = frozenset({"response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta"})
 CALL_ITEMS = {"function_call": "function_call_output", "custom_tool_call": "custom_tool_call_output"}
+LEDGER_FIELDS = ("cause", "cause_block", "cause_position", "lost_reason", "matched_tokens", "resumed_tokens", "recomputed_tokens", "tail_tokens", "miss_tokens",
+                 "opening_tokens", "lost_tokens", "seen_tokens", "restore_ms", "background_wait_ms", "model_wait_ms", "engine_reported")
+OPENING_TOKENS = 46000
+SUBAGENT_TOKENS = 37000
+SUBAGENT_TOOLS = 5
+RESUME_TAIL_TOKENS = 300
+FLOOR_PHASES = ("floor", "floor_grow")
+COLD_EVENTS = ("opening", "subagent", "resume")
+OPENING_TASK = "Read the project instructions above and say in two sentences what this repository is for."
+SUBAGENT_TEXT = """You are a read-only search agent. You look through the repository to answer one question from the agent that started you, and you report back in a few sentences. You never edit files.
+
+- Read excerpts, not whole files, unless the question needs the whole file.
+- Search by name first, then by content.
+- Report the file paths and line numbers that answer the question, and say what you did not check.
+
+Repository documentation follows.
+"""
 
 SYSTEM_TEXT = """You are an interactive coding agent working in the user's repository from a terminal. You help with software engineering: reading and explaining code, fixing bugs, adding features, refactoring, running tests and reviewing changes.
 
@@ -239,11 +256,16 @@ class Corpus:
 
 
 class Preamble:
-    def __init__(self, corpus, tokens, ratio, count):
-        bare = count({"system": SYSTEM_TEXT, "tools": MESSAGES_TOOLS, "messages": [{"role": "user", "content": "x"}]})
+    def __init__(self, corpus, tokens, ratio, count, nonce=None, text=SYSTEM_TEXT, tools=None):
+        mark = f"Run {nonce}. " if nonce else ""
+        self.messages_tools = [dict(tool, description=mark + tool["description"]) if index == 0 else tool
+                               for index, tool in enumerate(MESSAGES_TOOLS if tools is None else MESSAGES_TOOLS[:tools])]
+        self.responses_tools = [dict(tool, description=mark + tool["description"]) if index == 0 else tool
+                                for index, tool in enumerate(RESPONSES_TOOLS if tools is None else RESPONSES_TOOLS[:tools])]
+        bare = count({"system": text, "tools": self.messages_tools, "messages": [{"role": "user", "content": "x"}]})
         documents = corpus.documents(max(0, int((tokens - bare) * ratio)))
-        self.system = [{"type": "text", "text": SYSTEM_TEXT + "\n" + documents, "cache_control": {"type": "ephemeral"}}]
-        self.instructions = CODEX_INSTRUCTIONS + "\n" + documents
+        self.system = [{"type": "text", "text": mark + text + "\n" + documents, "cache_control": {"type": "ephemeral"}}]
+        self.instructions = mark + (CODEX_INSTRUCTIONS if text is SYSTEM_TEXT else text) + "\n" + documents
 
 
 def anthropic_tool(tool):
@@ -276,13 +298,14 @@ def counting_messages(items):
 
 
 class Session:
-    def __init__(self, index, shape, corpus, preamble, seed, result_range, arm=0):
+    def __init__(self, index, shape, corpus, preamble, seed, result_range, arm=0, task=None, extra_headers=None):
         self.index = index
         self.shape = shape
         self.corpus = corpus
         self.preamble = preamble
         self.seed = seed
         self.result_range = result_range
+        self.extra_headers = dict(extra_headers or {})
         rng = random.Random(f"{seed}:session:{index}")
         self.id = str(uuid.UUID(int=random.Random(f"{seed}:id:{index}:{arm}").getrandbits(128)))
         self.items = []
@@ -292,8 +315,7 @@ class Session:
         self.done = False
         files = "\n".join(f"{number + 1}. {corpus.pick(rng)}" for number in range(FILE_LIST_LENGTH))
         tool = "Read" if shape == "messages" else "exec_command"
-        task = TASK_TEXT.format(tool=tool, files=files)
-        self.add_user(task)
+        self.add_user(TASK_TEXT.format(tool=tool, files=files) if task is None else task)
 
     def add_user(self, text):
         if self.shape == "messages":
@@ -321,8 +343,8 @@ class Session:
 
     def count_body(self):
         if self.shape == "messages":
-            return {"system": self.preamble.system, "tools": MESSAGES_TOOLS, "messages": self.items}
-        return {"system": self.preamble.instructions, "tools": [anthropic_tool(tool) for tool in RESPONSES_TOOLS], "messages": counting_messages(self.items)}
+            return {"system": self.preamble.system, "tools": self.preamble.messages_tools, "messages": self.items}
+        return {"system": self.preamble.instructions, "tools": [anthropic_tool(tool) for tool in self.preamble.responses_tools], "messages": counting_messages(self.items)}
 
     def fill(self, target_tokens, ratio, count):
         rng = random.Random(f"{self.seed}:fill:{self.index}")
@@ -338,12 +360,12 @@ class Session:
 
     def body(self, model, max_tokens, effort):
         if self.shape == "messages":
-            body = {"model": model, "max_tokens": max_tokens, "system": self.preamble.system, "tools": MESSAGES_TOOLS, "messages": self.items,
+            body = {"model": model, "max_tokens": max_tokens, "system": self.preamble.system, "tools": self.preamble.messages_tools, "messages": self.items,
                     "stream": True, "metadata": {"user_id": "bench_" + self.id}}
             if effort:
                 body["output_config"] = {"effort": effort}
             return body
-        body = {"model": model, "instructions": self.preamble.instructions, "input": self.items, "tools": RESPONSES_TOOLS, "tool_choice": "auto",
+        body = {"model": model, "instructions": self.preamble.instructions, "input": self.items, "tools": self.preamble.responses_tools, "tool_choice": "auto",
                 "parallel_tool_calls": False, "store": False, "stream": True, "include": ["reasoning.encrypted_content"],
                 "prompt_cache_key": self.id, "max_output_tokens": max_tokens}
         if effort:
@@ -352,14 +374,15 @@ class Session:
 
     def headers(self):
         if self.shape == "messages":
-            return {"anthropic-version": ANTHROPIC_VERSION, "X-Claude-Code-Session-Id": self.id}
-        return {"session_id": self.id, "originator": "codex_cli_rs"}
+            return dict({"anthropic-version": ANTHROPIC_VERSION, "X-Claude-Code-Session-Id": self.id}, **self.extra_headers)
+        return dict({"session_id": self.id, "originator": "codex_cli_rs"}, **self.extra_headers)
 
     def path(self):
         return "/v1/messages" if self.shape == "messages" else "/v1/responses"
 
-    def absorb(self, result, rng, ratio):
-        name, text = self.corpus.chunk(rng, self.result_characters(rng, ratio))
+    def absorb(self, result, rng, ratio, characters=None):
+        name, text = self.corpus.chunk(rng, self.result_characters(rng, ratio) if characters is None else characters)
+        text = text if characters is None else text[:characters]
         if self.shape == "messages":
             blocks = result.get("blocks") or []
             calls = [block for block in blocks if block.get("type") == "tool_use"]
@@ -607,6 +630,7 @@ def turn_record(session, result, phase, arm, origin, target_tokens):
               "decode_tps": telemetry.get("decode_tps"), "draft_accept": telemetry.get("draft_accept"), "request": telemetry.get("request"),
               "stop": result.get("stop"), "tool_calls": result.get("tool_calls"), "target_tokens": target_tokens, "body_bytes": result.get("bytes"),
               "error": result.get("error"), "assistant": result.get("assistant")}
+    record.update({field: telemetry[field] for field in LEDGER_FIELDS if field in telemetry})
     return record
 
 
@@ -748,6 +772,186 @@ def run_arm(client, sessions, arguments, recorder, ratio, arm, watch_factory=Non
         arm_record["memory"] = watch.stop()
     recorder.write(arm_record)
     return arm_record
+
+
+def timed_turn(client, session, arguments, recorder, phase, origin, max_tokens, **fields):
+    result = client.stream(session.path(), session.body(arguments.model, max_tokens, arguments.effort), session.headers(), session.shape)
+    record = turn_record(session, result, phase, 0, origin, fields.get("context"))
+    record.update(fields, label=arguments.label)
+    session.turns += 1
+    if record["prompt_tokens"] is not None:
+        session.prompt_tokens = record["prompt_tokens"]
+    recorder.write(record)
+    print(json.dumps({key: record.get(key) for key in ("phase", "shape", "context", "tail", "event", "prompt_tokens", "cached_tokens", "prefill_tokens", "ttft_s",
+                                                         "turn_s", "cause", "error")}), flush=True)
+    if result.get("error") is not None:
+        raise SystemExit(f"agent_turn_bench: the {phase} request failed: {json.dumps(result['error'])[:300]}")
+    return result
+
+
+def session_file(output, shape):
+    return Path(output) / f"session-{shape}.json"
+
+
+def floor_session(setup, arguments, shape, nonce):
+    preamble = Preamble(setup.corpus, arguments.preamble_tokens, setup.ratio, setup.count, nonce)
+    return Session(0, shape, setup.corpus, preamble, arguments.seed, arguments.result_tokens,
+                   extra_headers={"x-claude-code-request-class": "main", "x-claude-code-agent-id": "agent-" + shape} if shape == "messages" else None)
+
+
+def run_floor(client, setup, arguments, recorder, shape):
+    session = floor_session(setup, arguments, shape, arguments.nonce)
+    origin = time.monotonic()
+    rng = random.Random(f"{arguments.seed}:floor:{shape}")
+    result = None
+    for context in arguments.contexts:
+        if result is not None:
+            session.absorb(result, rng, setup.ratio, int(arguments.tails[0] * setup.ratio))
+        session.fill(context, setup.ratio, setup.count)
+        result = timed_turn(client, session, arguments, recorder, "floor_grow", origin, arguments.reply_tokens, context=context, tail=None)
+        for repeat in range(arguments.repeats):
+            for tail in arguments.tails:
+                session.absorb(result, rng, setup.ratio, int(tail * setup.ratio))
+                result = timed_turn(client, session, arguments, recorder, "floor", origin, arguments.reply_tokens, context=context, tail=tail, repeat=repeat)
+        session_file(arguments.output, shape).write_text(json.dumps({"items": session.items, "id": session.id, "context": context, "nonce": arguments.nonce,
+                                                                      "last": result_tail(result)}))
+
+
+def result_tail(result):
+    return {"blocks": result.get("blocks"), "output": result.get("output")}
+
+
+def cold_opening(client, setup, arguments, recorder, shape, origin):
+    preamble = Preamble(setup.corpus, arguments.opening_tokens, setup.ratio, setup.count, arguments.nonce)
+    for position, phase in enumerate(("cold_opening", "cold_opening_second")):
+        session = Session(position, shape, setup.corpus, preamble, f"{arguments.seed}:{arguments.nonce}:opening", arguments.result_tokens, position,
+                          task=OPENING_TASK if position == 0 else OPENING_TASK + " Then list its top-level directories.",
+                          extra_headers={"x-claude-code-request-class": "main"} if shape == "messages" else None)
+        timed_turn(client, session, arguments, recorder, phase, origin, arguments.reply_tokens, context=arguments.opening_tokens, event="opening")
+
+
+def cold_subagent(client, setup, arguments, recorder, shape, origin):
+    preamble = Preamble(setup.corpus, arguments.subagent_tokens, setup.ratio, setup.count, arguments.nonce + "-agent", SUBAGENT_TEXT, SUBAGENT_TOOLS)
+    for position, phase in enumerate(("cold_subagent", "cold_subagent_second")):
+        brief = f"Find where {setup.corpus.pick(random.Random(f'{arguments.seed}:{arguments.nonce}:brief:{position}'))} is used and report the callers."
+        session = Session(position, shape, setup.corpus, preamble, f"{arguments.seed}:{arguments.nonce}:subagent", arguments.result_tokens, position, task=brief,
+                          extra_headers={"x-claude-code-request-class": "subagent", "x-claude-code-agent-type": "Explore",
+                                         "x-claude-code-agent-id": f"explore-{arguments.nonce}-{position}"} if shape == "messages" else None)
+        timed_turn(client, session, arguments, recorder, phase, origin, arguments.reply_tokens, context=arguments.subagent_tokens, event="subagent")
+
+
+def cold_resume(client, setup, arguments, recorder, shape, origin):
+    path = session_file(arguments.output, shape)
+    if not path.exists():
+        raise SystemExit(f"agent_turn_bench: {path} is missing; run floor with the same --output first")
+    saved = json.loads(path.read_text())
+    session = floor_session(setup, arguments, shape, saved.get("nonce"))
+    session.items, session.id = saved["items"], saved["id"]
+    rng = random.Random(f"{arguments.seed}:resume:{shape}:{arguments.event}")
+    session.absorb(saved["last"], rng, setup.ratio, int(RESUME_TAIL_TOKENS * setup.ratio))
+    result = timed_turn(client, session, arguments, recorder, "cold_resume", origin, arguments.reply_tokens, context=saved["context"], tail=RESUME_TAIL_TOKENS,
+                        event=arguments.event)
+    path.write_text(json.dumps({"items": session.items, "id": session.id, "context": saved["context"], "nonce": saved.get("nonce"), "last": result_tail(result)}))
+
+
+def floor(arguments):
+    output = Path(arguments.output)
+    output.mkdir(parents=True, exist_ok=True)
+    setup = Setup(arguments)
+    recorder = Recorder(output / "turns.jsonl")
+    recorder.write(run_header(arguments, setup, "floor"))
+    try:
+        for shape in setup.shapes:
+            run_floor(setup.client, setup, arguments, recorder, shape)
+    finally:
+        recorder.close()
+    print(floor_markdown(summarize_floor(load_records([output]))), flush=True)
+
+
+def cold(arguments):
+    output = Path(arguments.output)
+    output.mkdir(parents=True, exist_ok=True)
+    setup = Setup(arguments)
+    recorder = Recorder(output / "turns.jsonl")
+    recorder.write(run_header(arguments, setup, "cold"))
+    origin = time.monotonic()
+    try:
+        for shape in setup.shapes:
+            for event in arguments.events:
+                {"opening": cold_opening, "subagent": cold_subagent, "resume": cold_resume}[event](setup.client, setup, arguments, recorder, shape, origin)
+    finally:
+        recorder.close()
+    print(floor_markdown(summarize_floor(load_records([output]))), flush=True)
+
+
+def render(arguments):
+    output = Path(arguments.output)
+    output.mkdir(parents=True, exist_ok=True)
+    setup = Setup(arguments)
+    recorder = Recorder(output / "turns.jsonl")
+    recorder.write(run_header(arguments, setup, "render"))
+    try:
+        for shape in setup.shapes:
+            session = floor_session(setup, arguments, shape, arguments.nonce)
+            for context in arguments.contexts:
+                tokens = session.fill(context, setup.ratio, setup.count)
+                body = dict(session.count_body(), model=arguments.model)
+                size = len(json.dumps(body).encode())
+                times = []
+                for _ in range(arguments.repeats):
+                    started = time.monotonic()
+                    status, reply = setup.client.post_json("/v1/messages/count_tokens", body)
+                    times.append((time.monotonic() - started) * 1000)
+                    if status != 200:
+                        raise SystemExit(f"agent_turn_bench: count_tokens answered {status}: {json.dumps(reply)[:300]}")
+                record = {"phase": "render", "shape": shape, "context": context, "prompt_tokens": tokens, "body_bytes": size, "label": arguments.label,
+                          "render_ms": rounded(percentile(times, 0.5), 1), "render_ms_min": rounded(min(times), 1), "render_ms_max": rounded(max(times), 1),
+                          "repeats": len(times), "error": None}
+                recorder.write(record)
+                print(json.dumps(record), flush=True)
+    finally:
+        recorder.close()
+
+
+def run_header(arguments, setup, command):
+    return {"phase": "run", "command": command, "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "endpoint": arguments.endpoint, "model": arguments.model,
+            "model_entry": setup.entry, "public_key": setup.key is not None, "characters_per_token": round(setup.ratio, 4), "shapes": setup.shapes,
+            "effort": arguments.effort, "seed": arguments.seed, "label": arguments.label, "corpus_files": len(setup.corpus.files),
+            "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "argv": sys.argv[1:]}
+
+
+def summarize_floor(records):
+    groups = {}
+    for record in records:
+        if record.get("phase") in FLOOR_PHASES or str(record.get("phase", "")).startswith("cold_"):
+            key = (record.get("label") or "", record["phase"], record.get("event"), record.get("shape"), record.get("context"), record.get("tail"))
+            groups.setdefault(key, []).append(record)
+    rows = []
+    for (label, phase, event, shape, context, tail), group in groups.items():
+        ok = [record for record in group if record.get("error") is None]
+        causes = sorted({record["cause"] for record in ok if record.get("cause")})
+        rows.append({"label": label, "phase": phase, "event": event, "shape": shape, "context": context, "tail": tail, "turns": len(group), "turns_ok": len(ok),
+                     "prompt_tokens": rounded(percentile([record["prompt_tokens"] for record in ok], 0.5), 0),
+                     "prefill_tokens": rounded(percentile([record["prefill_tokens"] for record in ok], 0.5), 0),
+                     "ttft_s": rounded(percentile([record["ttft_s"] for record in ok], 0.5), 3),
+                     "ttft_s_max": rounded(max((record["ttft_s"] for record in ok if record["ttft_s"] is not None), default=None), 3),
+                     "server_ttft_ms": rounded(percentile([record["server_ttft_ms"] for record in ok], 0.5), 0),
+                     "queue_ms": rounded(percentile([record["queue_ms"] for record in ok], 0.5), 0),
+                     "prefill_ms": rounded(percentile([record["prefill_ms"] for record in ok], 0.5), 0),
+                     "miss_tokens": rounded(percentile([record.get("miss_tokens") for record in ok], 0.5), 0),
+                     "restore_ms": rounded(percentile([record.get("restore_ms") for record in ok], 0.5), 0), "causes": causes})
+    return rows
+
+
+def floor_markdown(rows):
+    lines = ["| Request | Shape | Context | New tokens | First token p50 | Server first token | Queue | Prefill, ms | Missed tokens | Cause |",
+             "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"]
+    for row in rows:
+        name = row["phase"] + (f" ({row['event']})" if row.get("event") and row["phase"] == "cold_resume" else "") + (f" tail {row['tail']}" if row.get("tail") else "")
+        lines.append(f"| {name} | {row['shape']} | {cell(row['prompt_tokens'])} | {cell(row['prefill_tokens'])} | {cell(row['ttft_s'], ' s')} | "
+                     f"{cell(row['server_ttft_ms'], ' ms')} | {cell(row['queue_ms'], ' ms')} | {cell(row['prefill_ms'])} | {cell(row['miss_tokens'])} | "
+                     f"{', '.join(row['causes']) or '–'} |")
+    return "\n".join(lines)
 
 
 def overlap(begin, end, low, high):
@@ -900,7 +1104,7 @@ class Setup:
         if any(shape not in SHAPES for shape in self.shapes):
             raise SystemExit(f"agent_turn_bench: shapes are {', '.join(SHAPES)}")
         arguments.start_high = arguments.context_high - arguments.turns * arguments.result_tokens[1] - arguments.max_tokens * arguments.turns
-        if arguments.start_high < arguments.context_low:
+        if arguments.start_high < arguments.context_low and arguments.command in ("run", "plan"):
             raise SystemExit("agent_turn_bench: the context range is too narrow for the turns and result sizes")
         self.corpus = Corpus.load(arguments.corpus)
         self.count = Counter(self.client, arguments.model)
@@ -961,11 +1165,16 @@ def run(arguments):
 
 
 def report(arguments):
-    summary = summarize(load_records(arguments.paths))
+    records = load_records(arguments.paths)
+    summary = summarize(records)
+    rows = summarize_floor(records)
     if arguments.json:
-        print(json.dumps(summary, indent=1))
-    else:
+        print(json.dumps(dict(summary, floor=rows), indent=1))
+        return
+    if summary["arms"]:
         print(markdown(summary))
+    if rows:
+        print(floor_markdown(rows))
 
 
 def session_arguments(runner):
@@ -1005,6 +1214,21 @@ def build_parser():
     session_arguments(planner)
     planner.add_argument("--prefill-rate", type=float, default=0.0)
     planner.add_argument("--output")
+    for name in ("floor", "cold", "render"):
+        timer = commands.add_parser(name)
+        session_arguments(timer)
+        timer.add_argument("--output", required=True)
+        timer.add_argument("--reply-tokens", type=int, default=64)
+        timer.add_argument("--nonce", default=None)
+        if name != "cold":
+            timer.add_argument("--contexts", type=lambda text: [int(value) for value in text.split(",")], default=[20000, 50000, 135000, 300000])
+            timer.add_argument("--tails", type=lambda text: [int(value) for value in text.split(",")], default=[50, 300, 2400])
+            timer.add_argument("--repeats", type=int, default=3 if name == "floor" else 5)
+        else:
+            timer.add_argument("--events", type=lambda text: text.split(","), default=["opening", "subagent"])
+            timer.add_argument("--event", default=None)
+            timer.add_argument("--opening-tokens", type=int, default=OPENING_TOKENS)
+            timer.add_argument("--subagent-tokens", type=int, default=SUBAGENT_TOKENS)
     reporter = commands.add_parser("report")
     reporter.add_argument("paths", nargs="+")
     reporter.add_argument("--json", action="store_true")
@@ -1013,7 +1237,12 @@ def build_parser():
 
 def main():
     arguments = build_parser().parse_args()
-    {"run": run, "plan": plan, "report": report}[arguments.command](arguments)
+    if arguments.command == "cold":
+        unknown = [event for event in arguments.events if event not in COLD_EVENTS]
+        if unknown or ("resume" in arguments.events and not arguments.event):
+            raise SystemExit(f"agent_turn_bench: cold events are {', '.join(COLD_EVENTS)}, and resume needs --event, what happened to the session since floor")
+        arguments.nonce = arguments.nonce or uuid.uuid4().hex[:12]
+    {"run": run, "plan": plan, "report": report, "floor": floor, "cold": cold, "render": render}[arguments.command](arguments)
 
 
 if __name__ == "__main__":
