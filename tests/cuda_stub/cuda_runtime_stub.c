@@ -697,6 +697,12 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream, unsigned int flags)
+{
+    (void)flags;
+    return cudaEventRecord(event, stream);
+}
+
 cudaError_t cudaEventQuery(cudaEvent_t event)
 {
     cuda_stub_event_queries++;
@@ -877,6 +883,80 @@ cudaError_t cudaGraphDestroy(cudaGraph_t graph)
 {
     free(graph);
     return cudaSuccess;
+}
+
+cudaError_t cudaStreamGetCaptureInfo(cudaStream_t stream,enum cudaStreamCaptureStatus *status,unsigned long long *id,cudaGraph_t *graph,
+    const cudaGraphNode_t **dependencies,const cudaGraphEdgeData **edges,size_t *count)
+{
+    (void)stream;
+    (void)id;
+    (void)graph;
+    (void)edges;
+    if (status != 0)
+    {
+        *status = cuda_capture_depth != 0u ? cudaStreamCaptureStatusActive : cudaStreamCaptureStatusNone;
+    }
+    if (dependencies != 0)
+    {
+        *dependencies = 0;
+    }
+    if (count != 0)
+    {
+        *count = 0u;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaFuncGetParamInfo(const void *function,size_t index,size_t *offset,size_t *bytes)
+{
+    (void)function;
+    (void)index;
+    (void)offset;
+    (void)bytes;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaFuncGetName(const char **name,const void *function)
+{
+    (void)function;
+    if (name != 0)
+    {
+        *name = "stub";
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaGraphGetNodes(cudaGraph_t graph,cudaGraphNode_t *nodes,size_t *count)
+{
+    (void)graph;
+    (void)nodes;
+    if (count != 0)
+    {
+        *count = 0u;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaGraphNodeGetType(cudaGraphNode_t node,enum cudaGraphNodeType *type)
+{
+    (void)node;
+    (void)type;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaGraphKernelNodeGetParams(cudaGraphNode_t node,struct cudaKernelNodeParams *params)
+{
+    (void)node;
+    (void)params;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaGraphExecKernelNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaKernelNodeParams *params)
+{
+    (void)exec;
+    (void)node;
+    (void)params;
+    return cudaErrorInvalidValue;
 }
 
 cudaError_t cudaHostAlloc(

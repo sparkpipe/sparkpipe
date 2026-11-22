@@ -57,6 +57,8 @@ typedef enum cudaStreamCaptureMode
 #define cudaErrorNotPermitted 800
 #define cudaErrorNotSupported 801
 #define cudaErrorUnknown 999
+#define cudaEventRecordExternal 0x01
+#define cudaEventWaitExternal 0x01
 enum cudaDeviceAttr
 {
     cudaDevAttrMultiProcessorCount = 16,
@@ -172,6 +174,7 @@ cudaError_t cudaEventCreate(cudaEvent_t *event);
 cudaError_t cudaEventCreateWithFlags(cudaEvent_t *event, unsigned int flags);
 cudaError_t cudaEventDestroy(cudaEvent_t event);
 cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream);
+cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream, unsigned int flags);
 cudaError_t cudaEventQuery(cudaEvent_t event);
 cudaError_t cudaEventElapsedTime(float *milliseconds, cudaEvent_t start,
     cudaEvent_t stop);
@@ -315,6 +318,11 @@ struct cudaPointerAttributes
 };
 
 cudaError_t cudaGraphGetNodes(cudaGraph_t graph,cudaGraphNode_t *nodes,size_t *count);
+typedef struct cudaGraphEdgeData_st cudaGraphEdgeData;
+cudaError_t cudaStreamGetCaptureInfo(cudaStream_t stream,enum cudaStreamCaptureStatus *status,unsigned long long *id,cudaGraph_t *graph,
+    const cudaGraphNode_t **dependencies,const cudaGraphEdgeData **edges,size_t *count);
+cudaError_t cudaFuncGetParamInfo(const void *function,size_t index,size_t *offset,size_t *bytes);
+cudaError_t cudaFuncGetName(const char **name,const void *function);
 cudaError_t cudaGraphNodeGetType(cudaGraphNode_t node,enum cudaGraphNodeType *type);
 cudaError_t cudaGraphKernelNodeGetParams(cudaGraphNode_t node,struct cudaKernelNodeParams *params);
 cudaError_t cudaGraphMemcpyNodeGetParams(cudaGraphNode_t node,struct cudaMemcpy3DParms *params);
