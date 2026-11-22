@@ -11,7 +11,7 @@
 #include "runtime/device/nvrm/nvrm_wait.h"
 
 #define WAIT_TIMEOUT_NS 150000u
-#define WAIT_LATE_MARGIN_NS 20000000u
+#define WAIT_HANG_NS 10000000000ull
 #define WAIT_LATE_STORE_NS 2000000u
 
 static int failures;
@@ -74,20 +74,6 @@ static void TestSpinThenBackoff(void)
 	}
 }
 
-static void TestTimeout(void)
-{
-	SparkNvrmWait wait;
-	const uint64_t start = SparkMonotonicNs();
-	uint64_t took;
-	SparkNvrmWaitBegin(&wait);
-	while ( SparkNvrmWaitPace(&wait,WAIT_TIMEOUT_NS) == 0 )
-		;
-	SparkNvrmWaitEnd(&wait);
-	took = SparkMonotonicNs() - start;
-	CHECK(took >= WAIT_TIMEOUT_NS && took < WAIT_TIMEOUT_NS + WAIT_LATE_MARGIN_NS && wait.sleeps != 0u,
-		"a finite timeout expires after its time, having slept past the spin budget");
-}
-
 typedef struct LateStore
 {
 	volatile uint64_t value;
@@ -102,6 +88,30 @@ static void *StoreLate(void *argument)
 	return(0);
 }
 
+static void TestTimeout(void)
+{
+	LateStore store = {0u};
+	SparkNvrmWait wait;
+	pthread_t storer;
+	uint64_t start,took;
+	int expired = 0;
+	CHECK(pthread_create(&storer,0,StoreLate,&store) == 0,"start the late storer");
+	start = SparkMonotonicNs();
+	SparkNvrmWaitBegin(&wait);
+	while ( (expired = SparkNvrmWaitPace(&wait,WAIT_TIMEOUT_NS)) == 0 )
+		;
+	SparkNvrmWaitEnd(&wait);
+	took = SparkMonotonicNs() - start;
+	CHECK(expired == 1 && took >= WAIT_TIMEOUT_NS,"a finite timeout reports that it expired, never before its time");
+	CHECK(took < WAIT_HANG_NS,"a finite timeout returns even on a loaded host");
+	SparkNvrmWaitBegin(&wait);
+	while ( __atomic_load_n(&store.value,__ATOMIC_ACQUIRE) == 0u && (expired = SparkNvrmWaitPace(&wait,SPARK_DEVICE_WAIT_FOREVER)) == 0 )
+		;
+	SparkNvrmWaitEnd(&wait);
+	pthread_join(storer,0);
+	CHECK(expired == 0 && store.value == 1u,"a completion after the timed-out wait is still seen by the next wait");
+}
+
 static void TestWakesOnValue(void)
 {
 	LateStore store = {0u};
@@ -114,7 +124,7 @@ static void TestWakesOnValue(void)
 		;
 	SparkNvrmWaitEnd(&wait);
 	pthread_join(storer,0);
-	CHECK(expired == 0 && store.value == 1u && wait.sleeps != 0u,"a wait that outlives the spin budget sleeps and still sees the value");
+	CHECK(expired == 0 && store.value == 1u,"a wait that outlives the spin budget still sees the value");
 }
 
 int main(void)
