@@ -1,12 +1,11 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
-#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
+#include "runtime/device/nvrm/nvrm_wait.h"
 #include "class/clc361.h"
 #include "class/clc56f.h"
 #include "class/clc96f.h"
@@ -15,7 +14,6 @@
 #define SUBMIT_METHOD_COUNT_MAX 8191u
 #define SUBMIT_ENTRY_LEVEL_BIT 41u
 #define SUBMIT_ENTRY_LENGTH_SHIFT 42u
-#define SUBMIT_SPIN_POLLS 4096u
 #define SUBMIT_SEMAPHORE_WORDS 5u
 
 #define SUBMIT_TRY(call) \
@@ -47,22 +45,19 @@ uint64_t SparkNvrmChannelCompleted(const SparkNvrmChannel *channel)
 
 SparkStatus SparkNvrmWaitValue(const volatile uint64_t *semaphore, uint64_t value, uint64_t timeout_ns, const char *operation, const char *owner)
 {
-	const uint64_t deadline = SparkMonotonicNs() + timeout_ns;
-	uint32_t polls = 0u;
-	while ( __atomic_load_n(semaphore,__ATOMIC_ACQUIRE) < value )
+	SparkNvrmWait wait;
+	int expired = 0;
+	SparkNvrmWaitBegin(&wait);
+	while ( __atomic_load_n(semaphore,__ATOMIC_ACQUIRE) < value && (expired = SparkNvrmWaitPace(&wait,timeout_ns)) == 0 )
+		;
+	SparkNvrmWaitEnd(&wait);
+	if ( expired != 0 )
 	{
-		struct timespec pause = {0, 20000};
-		if ( ++polls < SUBMIT_SPIN_POLLS )
-			continue;
-		if ( SparkMonotonicNs() >= deadline )
-		{
-			char text[96];
-			snprintf(text,sizeof(text),"the GPU did not reach %llu (at %llu) in time",(unsigned long long)value,
-				(unsigned long long)__atomic_load_n(semaphore,__ATOMIC_ACQUIRE));
-			const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,owner,0,text);
-			SPARK_FAIL(status);
-		}
-		nanosleep(&pause,0);
+		char text[96];
+		snprintf(text,sizeof(text),"the GPU did not reach %llu (at %llu) in time",(unsigned long long)value,
+			(unsigned long long)__atomic_load_n(semaphore,__ATOMIC_ACQUIRE));
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,owner,0,text);
+		SPARK_FAIL(status);
 	}
 	return(SPARK_STATUS_OK);
 }
