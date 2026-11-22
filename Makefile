@@ -1796,6 +1796,21 @@ nvrm-tensor-maps: nvrm-gpu-present build/test_nvrm_tensor_map_gemm build/cuda_te
 	if ! cmp -s build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-tensor-maps: GEMM outputs differ between driver-encoded maps (CUDA flavour) and GPU-built maps (nvrm flavour)"; diff build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt | head -20; exit 1; fi; \
 	echo "PASS nvrm-tensor-maps: $$(grep -c ' ok$$' build/tensor_map_gemm.nvrm.txt) GEMMs bit-identical between the flavours, $$(grep -c ' refused ' build/tensor_map_gemm.nvrm.txt) identical refusals"
 
+build/test_nvrm_adapter_tensor_map_gemm: tests/nvrm/adapter_tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_adapter_tensor_map_gemm: tests/nvrm/adapter_tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -L$(CUDA_HOME)/lib64 -lcuda -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-adapter-tensor-maps
+.PHONY: nvrm-adapter-tensor-maps
+nvrm-adapter-tensor-maps: nvrm-gpu-present build/test_nvrm_adapter_tensor_map_gemm build/cuda_adapter_tensor_map_gemm
+	@./build/cuda_adapter_tensor_map_gemm cuda > build/adapter_tensor_map_gemm.cuda.txt; cuda=$$?; ./build/test_nvrm_adapter_tensor_map_gemm nvrm > build/adapter_tensor_map_gemm.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-adapter-tensor-maps: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if grep -q ' refused ' build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-adapter-tensor-maps: a launcher refused an adapter shape"; grep -h ' refused ' build/adapter_tensor_map_gemm.cuda.txt | head -5; exit 1; fi; \
+	if ! cmp -s build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-adapter-tensor-maps: GEMM outputs differ between driver-encoded maps (CUDA flavour) and GPU-built maps (nvrm flavour)"; diff build/adapter_tensor_map_gemm.cuda.txt build/adapter_tensor_map_gemm.nvrm.txt | head -20; exit 1; fi; \
+	echo "PASS nvrm-adapter-tensor-maps: $$(grep -c ' ok$$' build/adapter_tensor_map_gemm.nvrm.txt) adapter GEMMs bit-identical between the flavours"
+
 build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
