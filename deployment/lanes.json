@@ -105,7 +105,14 @@
     "context_bytes": 17179869184,
     "restart": "on-failure",
     "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log",
-    "lifecycle": "model"
+    "lifecycle": "model",
+    "server": "block_draftd",
+    "engine": {
+     "root": "/srv/workspace/sparkpipe/draftd-engine",
+     "lane": "kimi-k3.1-pro",
+     "unit": "sparkpipe-draftd-engine",
+     "weightd_unit": "sparkpipe-weightd-hub"
+    }
    },
    "taps": {
     "entries": "o75,o79,o83,o87,o91,final",

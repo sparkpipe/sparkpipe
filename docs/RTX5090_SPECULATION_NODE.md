@@ -317,6 +317,49 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     compares the answers, the drafts and each side's accepted length against
     the recording's committed stream.
 
+## Engine draft server lane switch
+
+The K3.1 Pro lane can be served by `sparkpipe_draftd` with the K3.1 Pro DSpark
+engine module instead of `block_draftd.py`. The lane record's `draftd.server`
+chooses: `block_draftd` (today) or `engine`. Its `draftd.engine` names the
+engine root, the lane's name in the root's config, and the two user units.
+The lane's `hub_start` and `hub_stop` in `deployment/hub/model_swap.json`
+carry the same settings (`DRAFTD_SERVER`, `DRAFTD_ENGINE_*`,
+`DRAFTD_WEIGHTD_UNIT`), and `tests/test_model_swap_hub_services.py` keeps
+them equal to the record.
+
+With `DRAFTD_SERVER=engine`, `tools/hub_draftd.sh`:
+- `start`: starts the hub's weightd (`sparkpipe-weightd-hub`) and the engine
+  draft server (`sparkpipe-draftd-engine`) if they are not running, waits
+  for their sockets, then activates the lane through the control socket. The
+  activation binds the pack through weightd's HOLD, checks free video memory
+  against the pack and the lane's context cap, and exits 1 with the module's
+  numbers when it does not fit.
+- `stop`: deactivates the lane. Both units keep running; an inactive lane
+  answers `UNAVAILABLE` at once, so the target decodes plainly.
+- `status`: the draft server's `status` line for every lane.
+
+The engine root, `/srv/workspace/sparkpipe/draftd-engine`, is staged from
+merged main:
+- `bin/sparkpipe_draftd` and `bin/sparkpipe_weightd`, built with
+  `CUDA_HOME=/usr/local/cuda-13.1`; `modules/k31_dspark_draft_stage.so`, from
+  `make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1
+  CUDA_ARCH=sm_120a CUDA_COMPUTE_ARCH=compute_120a drafter-modules`;
+- `packs/k31dspark.bf16.tp1.rank0.sp` with its `.sha256`, `.experts` and
+  receipt, cut by `tools/drafter_pack.py --drafter k31dspark` from the
+  drafter checkpoint and the target shard the lane record names;
+- `config/draftd.json`, a copy of `deployment/hub/draftd_engine.json`. Its
+  sockets live under `run/`, beside weightd's KV root and log.
+
+The hooks run the `hub_draftd.sh` in the lane's `draftd.source` directory, so
+that copy is replaced from merged main before the switch. The context cap is
+12 GiB: with the 10.07 GB pack, it leaves room for the scratch on the 32 GB
+card. To switch, set `server` to `engine` in the record and `DRAFTD_SERVER`
+in the lane's two hooks, and deploy the controller config; the next
+activation of the model starts the engine lane. To switch back, set both to
+`block_draftd` and stop `sparkpipe-draftd-engine`, which holds the lane's tap
+and draft ports.
+
 ## Draft farm
 
 Each drafted lane asks its own `block_draftd.py` process, named by the lane

@@ -80,10 +80,74 @@ def script_names():
         assert not record.exists(), "a partial set of target names still started draftd"
 
 
+SOCKET = "import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])"
+
+
+def record_server():
+    _, environment = lane_config.draftd_environment("kimi-k3.1-pro")
+    assert environment["DRAFTD_SERVER"] == "block_draftd" and environment["DRAFTD_ENGINE_LANE"] == "kimi-k3.1-pro", environment
+    assert lane_config.served_unit(environment) == environment["DRAFTD_UNIT"]
+    assert lane_config.served_unit(dict(environment, DRAFTD_SERVER="engine")) == environment["DRAFTD_ENGINE_UNIT"]
+    _, plain = lane_config.draftd_environment("qwen3.8-27b")
+    assert "DRAFTD_SERVER" not in plain and lane_config.served_unit(plain) == plain["DRAFTD_UNIT"], plain
+    lane = json.loads((ROOT / "deployment/lanes.json").read_text())["lanes"]["kimi-k3.1-pro"]
+    refused(dict(lane, draftd=dict(lane["draftd"], server="vllm")), "draftd server is block_draftd or engine")
+    refused(dict(lane, draftd={key: value for key, value in dict(lane["draftd"], server="engine").items() if key != "engine"}), "needs the record's draftd.engine")
+    refused(dict(lane, draftd=dict(lane["draftd"], engine=dict(lane["draftd"]["engine"], root="/mnt/cold/engine"))), "is not on the hub's local NVMe")
+
+
+def script_engine():
+    home = os.environ.get("HOME", "")
+    if not home.startswith("/home/"):
+        print("hub_draftd.sh engine server: skipped, the script serves paths under /srv/workspace or /home and HOME is " + home)
+        return
+    with tempfile.TemporaryDirectory(dir=home) as work:
+        work = Path(work)
+        root, bin_dir, calls = work / "engine", work / "bin", work / "calls"
+        (root / "bin").mkdir(parents=True)
+        (root / "config").mkdir()
+        bin_dir.mkdir()
+        (root / "config" / "draftd.json").write_text(json.dumps({"weightd_socket": str(root / "run/weightd.sock"),
+                                                                 "control_socket": str(root / "run/draftd.sock"), "lanes": []}))
+        (root / "bin" / "sparkpipe_weightd").write_text("#!/bin/sh\n")
+        (root / "bin" / "sparkpipe_draftd").write_text(f"#!/bin/sh\necho \"draftd $*\" >> {calls}\necho \"OK lane=$4\"\n")
+        (bin_dir / "systemd-run").write_text(
+            f"#!/bin/sh\necho \"systemd-run $*\" >> {calls}\n"
+            f"case \"$*\" in *--unit=probe-weightd*) python3 -c \"{SOCKET}\" {root}/run/weightd.sock;; "
+            f"*--unit=probe-engine*) python3 -c \"{SOCKET}\" {root}/run/draftd.sock;; esac\n")
+        (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 1\n")
+        (bin_dir / "ss").write_text("#!/bin/sh\ntrue\n")
+        for path in (root / "bin" / "sparkpipe_weightd", root / "bin" / "sparkpipe_draftd", bin_dir / "systemd-run", bin_dir / "systemctl", bin_dir / "ss"):
+            path.chmod(0o755)
+        environment = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}", DRAFTD_SERVER="engine", DRAFTD_ENGINE_ROOT=str(root),
+                           DRAFTD_ENGINE_LANE="probe-lane", DRAFTD_ENGINE_UNIT="probe-engine", DRAFTD_WEIGHTD_UNIT="probe-weightd",
+                           DRAFTD_LOG=str(work / "draftd.log"), DRAFTD_TAP_PORT="7731", DRAFTD_DRAFT_PORT="7732")
+        script = str(ROOT / "tools/hub_draftd.sh")
+        started = subprocess.run(["bash", script, "start", str(work)], env=environment, capture_output=True, text=True, timeout=120)
+        assert started.returncode == 0 and "OK lane=probe-lane" in started.stdout, started.stdout + started.stderr
+        log = calls.read_text().splitlines()
+        assert [line.split()[1] for line in log] == ["--user", "--user", "--control"], log
+        assert "--unit=probe-weightd" in log[0] and "sparkpipe_weightd --socket" in log[0], log
+        assert "--unit=probe-engine" in log[1] and "sparkpipe_draftd --config config/draftd.json" in log[1], log
+        assert log[2] == f"draftd --control {root}/run/draftd.sock activate probe-lane", log
+        stopped = subprocess.run(["bash", script, "stop"], env=environment, capture_output=True, text=True, timeout=60)
+        assert stopped.returncode == 0 and calls.read_text().splitlines()[-1] == f"draftd --control {root}/run/draftd.sock deactivate probe-lane", stopped.stdout
+        bogus = subprocess.run(["bash", script, "start", str(work)], env=dict(environment, DRAFTD_SERVER="vllm"), capture_output=True, text=True, timeout=60)
+        assert bogus.returncode != 0 and "is block_draftd or engine" in bogus.stderr, bogus.stderr
+        (root / "config" / "draftd.json").unlink()
+        unstaged = subprocess.run(["bash", script, "start", str(work)], env=environment, capture_output=True, text=True, timeout=60)
+        assert unstaged.returncode != 0 and "lacks config/draftd.json" in unstaged.stderr, unstaged.stderr
+
+
 def main():
     record_names()
+    record_server()
     script_names()
-    print("PASS draftd target names render from the lane record into the drift flags and the unit's draftd flags, and a partial set is refused")
+    script_engine()
+    print("PASS draftd target names render from the lane record into the drift flags and the unit's draftd flags, and a partial set is refused; "
+          "the K3.1 Pro record carries the server switch and the engine settings, and hub_draftd.sh with DRAFTD_SERVER=engine starts the hub's "
+          "weightd and the engine draft server once, activates the lane through the control socket, deactivates it on stop, and refuses an "
+          "unknown server or an unstaged engine root")
 
 
 if __name__ == "__main__":
