@@ -590,6 +590,19 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
             link.symlink_to(unit)
             self.assertEqual(MODULE.persistent_unit_links(unit.name,root),[link])
 
+    def test_receipts_written_in_the_same_second_stay_separate(self) -> None:
+        moment = MODULE.datetime.datetime(2026,11,22,10,35,50,tzinfo=MODULE.datetime.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(MODULE.tempfile,"tempdir",directory), mock.patch.object(MODULE.datetime,"datetime",wraps=MODULE.datetime.datetime) as clock:
+            clock.now.return_value = moment
+            first = MODULE.write_receipt("apply",[{"node":"spark23","failures":[]}])
+            second = MODULE.write_receipt("apply",[{"node":"spark28","failures":[]}])
+            self.assertNotEqual(first,second)
+            self.assertEqual(first.parent,Path(directory))
+            self.assertTrue(first.name.startswith("ds4_spark_brickproof_apply_20261122T103550Z_"))
+            self.assertEqual(json.loads(first.read_text())["nodes"][0]["node"],"spark23")
+            self.assertEqual(json.loads(second.read_text())["nodes"][0]["node"],"spark28")
+            self.assertEqual(first.stat().st_mode & 0o777,0o644)
+
 
 if __name__ == "__main__":
     unittest.main()

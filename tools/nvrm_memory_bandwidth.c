@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
@@ -46,6 +47,25 @@ static int CompareTimes(const void *left, const void *right)
 	return(a < b ? -1 : a > b);
 }
 
+static uint64_t NowNanoseconds(void)
+{
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	return((uint64_t)now.tv_sec * 1000000000u + (uint64_t)now.tv_nsec);
+}
+
+static int EngineCopy(Bench *bench, uint64_t destination, uint64_t source, uint64_t bytes, uint64_t *nanoseconds)
+{
+	const uint64_t started = NowNanoseconds();
+	uint64_t value = 0u;
+	if ( SparkNvrmCopy(&bench->gpu,&bench->gpu.compute,destination,source,bytes,&value,"bandwidth") != SPARK_STATUS_OK )
+		return(Failed("queue a copy-engine copy"));
+	if ( SparkNvrmWaitValue((const volatile uint64_t *)(void *)bench->gpu.compute.fence.cpu,value,BANDWIDTH_TIMEOUT_NS,"copy","bandwidth") != SPARK_STATUS_OK )
+		return(Failed("wait for a copy-engine copy"));
+	*nanoseconds = NowNanoseconds() - started;
+	return(0);
+}
+
 static int Run(Bench *bench, const SparkNvrmCubinKernel *kernel, const void *arguments, uint32_t bytes, uint64_t *gpu_nanoseconds)
 {
 	SparkNvrmChannel *channel = &bench->gpu.compute;
@@ -74,6 +94,13 @@ static int Run(Bench *bench, const SparkNvrmCubinKernel *kernel, const void *arg
 	return(0);
 }
 
+static void Report(const char *label, uint64_t *times, uint32_t rounds, uint64_t moved)
+{
+	qsort(times,rounds,sizeof(times[0]),CompareTimes);
+	printf("  %-5s median %8.2f GB/s  best %8.2f GB/s  (%u rounds, %.3f ms median)\n",label,(double)moved / (double)times[rounds / 2u],
+		(double)moved / (double)times[0],rounds,(double)times[rounds / 2u] / 1e6);
+}
+
 static int Measure(Bench *bench, const char *label, const SparkNvrmCubinKernel *kernel, const void *arguments, uint32_t bytes,
 	uint64_t moved, uint32_t rounds)
 {
@@ -85,10 +112,92 @@ static int Measure(Bench *bench, const char *label, const SparkNvrmCubinKernel *
 	for (round = 0u; round < rounds; round++)
 		if ( Run(bench,kernel,arguments,bytes,&times[round]) != 0 )
 			return(1);
-	qsort(times,rounds,sizeof(times[0]),CompareTimes);
-	printf("  %-5s median %8.2f GB/s  best %8.2f GB/s  (%u rounds, %.3f ms median)\n",label,(double)moved / (double)times[rounds / 2u],
-		(double)moved / (double)times[0],rounds,(double)times[rounds / 2u] / 1e6);
+	Report(label,times,rounds,moved);
 	return(0);
+}
+
+static int Sampled(const SparkNvrmMemory *expected, const SparkNvrmMemory *seen, uint64_t count, const char *what)
+{
+	uint32_t index;
+	for (index = 0u; index < BANDWIDTH_SAMPLES; index++)
+	{
+		const uint64_t at = ((uint64_t)index * 2654435761u) % count;
+		if ( memcmp(expected->cpu + at * BANDWIDTH_ELEMENT_BYTES,seen->cpu + at * BANDWIDTH_ELEMENT_BYTES,BANDWIDTH_ELEMENT_BYTES) != 0 )
+		{
+			printf("FAIL %s differs from its source at element %llu\n",what,(unsigned long long)at);
+			return(1);
+		}
+	}
+	return(0);
+}
+
+static int MeasurePcie(Bench *bench, SparkNvrmMemoryKind kind, const char *name, uint64_t bytes, uint32_t rounds)
+{
+	SparkNvrmMemory host,back,video;
+	uint64_t to_video[BANDWIDTH_ROUNDS_MAX],to_host[BANDWIDTH_ROUNDS_MAX],index;
+	uint32_t round;
+	int result = 0;
+	printf("copy engine between %s and video memory, %llu MiB per copy\n",name,(unsigned long long)(bytes >> 20));
+	if ( SparkNvrmMemoryAllocate(&bench->gpu,bytes,kind,&host,"pcie host") != SPARK_STATUS_OK )
+		return(Failed("allocate the host side"));
+	if ( SparkNvrmMemoryAllocate(&bench->gpu,bytes,kind,&back,"pcie back") != SPARK_STATUS_OK )
+	{
+		SparkNvrmMemoryRelease(&bench->gpu,&host);
+		return(Failed("allocate the host return"));
+	}
+	if ( SparkNvrmMemoryAllocate(&bench->gpu,bytes,SPARK_NVRM_MEMORY_VIDEO,&video,"pcie video") != SPARK_STATUS_OK )
+	{
+		SparkNvrmMemoryRelease(&bench->gpu,&back);
+		SparkNvrmMemoryRelease(&bench->gpu,&host);
+		return(Failed("allocate the video side"));
+	}
+	printf("  host pages %u bytes, video pages %u bytes\n",host.page_bytes,video.page_bytes);
+	for (index = 0u; index < bytes / sizeof(uint64_t); index++)
+		((uint64_t *)(void *)host.cpu)[index] = index * 0x9e3779b97f4a7c15ull;
+	for (round = 0u; result == 0 && round < 2u; round++)
+		result = EngineCopy(bench,video.address,host.address,bytes,&to_video[0]) || EngineCopy(bench,back.address,video.address,bytes,&to_host[0]);
+	for (round = 0u; result == 0 && round < rounds; round++)
+		result = EngineCopy(bench,video.address,host.address,bytes,&to_video[round]) || EngineCopy(bench,back.address,video.address,bytes,&to_host[round]);
+	if ( result == 0 )
+	{
+		Report("to video",to_video,rounds,bytes);
+		Report("to host",to_host,rounds,bytes);
+		result = Sampled(&host,&back,bytes / BANDWIDTH_ELEMENT_BYTES,"the round trip through video memory");
+	}
+	SparkNvrmMemoryRelease(&bench->gpu,&video);
+	SparkNvrmMemoryRelease(&bench->gpu,&back);
+	SparkNvrmMemoryRelease(&bench->gpu,&host);
+	return(result);
+}
+
+static int VerifyVideo(Bench *bench, const SparkNvrmMemory *source, const SparkNvrmMemory *destination, uint64_t bytes, uint32_t value)
+{
+	SparkNvrmMemory from,to;
+	uint64_t nanoseconds = 0u;
+	uint32_t index,first;
+	int result;
+	if ( SparkNvrmMemoryAllocate(&bench->gpu,bytes,SPARK_NVRM_MEMORY_HOST,&from,"verify source") != SPARK_STATUS_OK )
+		return(Failed("allocate the host copy of the source"));
+	if ( SparkNvrmMemoryAllocate(&bench->gpu,bytes,SPARK_NVRM_MEMORY_HOST,&to,"verify destination") != SPARK_STATUS_OK )
+	{
+		SparkNvrmMemoryRelease(&bench->gpu,&from);
+		return(Failed("allocate the host copy of the destination"));
+	}
+	result = EngineCopy(bench,from.address,source->address,bytes,&nanoseconds) || EngineCopy(bench,to.address,destination->address,bytes,&nanoseconds);
+	if ( result == 0 )
+		result = Sampled(&from,&to,bytes / BANDWIDTH_ELEMENT_BYTES,"the copy");
+	for (index = 0u; result == 0 && index < BANDWIDTH_SAMPLES; index++)
+	{
+		memcpy(&first,from.cpu + (((uint64_t)index * 2654435761u) % (bytes / BANDWIDTH_ELEMENT_BYTES)) * BANDWIDTH_ELEMENT_BYTES,sizeof(first));
+		if ( first != value )
+		{
+			printf("FAIL the fill did not reach video memory\n");
+			result = 1;
+		}
+	}
+	SparkNvrmMemoryRelease(&bench->gpu,&to);
+	SparkNvrmMemoryRelease(&bench->gpu,&from);
+	return(result);
 }
 
 static int MeasurePath(Bench *bench, SparkNvrmMemoryKind kind, const char *name, uint64_t bytes, uint32_t rounds)
@@ -126,7 +235,9 @@ static int MeasurePath(Bench *bench, SparkNvrmMemoryKind kind, const char *name,
 		result = Measure(bench,"read",bench->read,&read,(uint32_t)sizeof(read),bytes,rounds);
 	if ( result == 0 )
 		result = Measure(bench,"copy",bench->copy,&copy,(uint32_t)sizeof(copy),2u * bytes,rounds);
-	for (index = 0u; result == 0 && index < BANDWIDTH_SAMPLES; index++)
+	if ( result == 0 && kind == SPARK_NVRM_MEMORY_VIDEO )
+		result = VerifyVideo(bench,&source,&destination,bytes,value);
+	for (index = 0u; result == 0 && kind != SPARK_NVRM_MEMORY_VIDEO && index < BANDWIDTH_SAMPLES; index++)
 	{
 		const uint64_t at = ((uint64_t)index * 2654435761u) % count;
 		const uint8_t *from = source.cpu + at * BANDWIDTH_ELEMENT_BYTES,*to = destination.cpu + at * BANDWIDTH_ELEMENT_BYTES;
@@ -162,7 +273,7 @@ int main(int argc, char **argv)
 			only = argv[++index];
 		else
 		{
-			printf("usage: %s [--cubin PATH] [--mib N] [--rounds N] [--path host|system|uncached|all]\n",argv[0]);
+			printf("usage: %s [--cubin PATH] [--mib N] [--rounds N] [--path host|system|uncached|write-back|video|pcie|all]\n",argv[0]);
 			return(2);
 		}
 	}
@@ -186,12 +297,12 @@ int main(int argc, char **argv)
 	bench.slot_bytes = SparkNvrmLaunchSlotBytes(bench.read);
 	bench.slot_bytes = SparkNvrmLaunchSlotBytes(bench.copy) > bench.slot_bytes ? SparkNvrmLaunchSlotBytes(bench.copy) : bench.slot_bytes;
 	bench.slot_bytes = SparkNvrmLaunchSlotBytes(bench.fill) > bench.slot_bytes ? SparkNvrmLaunchSlotBytes(bench.fill) : bench.slot_bytes;
-	bench.blocks = bench.gpu.gpcs * bench.gpu.tpcs_per_gpc * bench.gpu.sms_per_tpc * BANDWIDTH_BLOCKS_PER_SM;
+	bench.blocks = bench.gpu.sm_count * BANDWIDTH_BLOCKS_PER_SM;
 	if ( SparkNvrmMemoryAllocate(&bench.gpu,bench.slot_bytes,SPARK_NVRM_MEMORY_HOST,&bench.slots,"slots") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&bench.gpu,SPARK_NVRM_PAGE_BYTES,SPARK_NVRM_MEMORY_HOST,&bench.semaphore,"semaphore") != SPARK_STATUS_OK ||
 		SparkNvrmMemoryAllocate(&bench.gpu,SPARK_NVRM_PAGE_BYTES,SPARK_NVRM_MEMORY_HOST,&bench.sink,"sink") != SPARK_STATUS_OK )
 		return(Failed("allocate the launch memory"));
-	printf("nvrm memory bandwidth: %u SMs, %u blocks of %u threads\n",bench.gpu.gpcs * bench.gpu.tpcs_per_gpc * bench.gpu.sms_per_tpc,bench.blocks,
+	printf("nvrm memory bandwidth: %u SMs, %u blocks of %u threads\n",bench.gpu.sm_count,bench.blocks,
 		BANDWIDTH_THREADS);
 	if ( result == 0 && (strcmp(only,"all") == 0 || strcmp(only,"host") == 0) )
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_HOST,"host memory registered by OS descriptor",bytes,rounds);
@@ -199,6 +310,16 @@ int main(int argc, char **argv)
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM,"system memory allocated by the module, GPU cached",bytes,rounds);
 	if ( result == 0 && (strcmp(only,"all") == 0 || strcmp(only,"uncached") == 0) )
 		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM_UNCACHED,"system memory allocated by the module, GPU uncached",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"write-back") == 0) )
+		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,"system memory allocated by the module, CPU write-back, GPU uncached",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"video") == 0) )
+		result = MeasurePath(&bench,SPARK_NVRM_MEMORY_VIDEO,"video memory allocated by the module",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
+		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_SYSTEM,"system memory allocated by the module",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
+		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK,"system memory allocated by the module, CPU write-back",bytes,rounds);
+	if ( result == 0 && ((strcmp(only,"all") == 0 && bench.gpu.integrated == 0u) || strcmp(only,"pcie") == 0) )
+		result = MeasurePcie(&bench,SPARK_NVRM_MEMORY_HOST,"host memory registered by OS descriptor",bytes,rounds);
 	SparkNvrmMemoryRelease(&bench.gpu,&bench.sink);
 	SparkNvrmMemoryRelease(&bench.gpu,&bench.semaphore);
 	SparkNvrmMemoryRelease(&bench.gpu,&bench.slots);

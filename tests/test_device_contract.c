@@ -99,6 +99,11 @@ static uint32_t ProgramsRun(void)
 	return((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) != 0u);
 }
 
+static uint32_t ProgramsHoldCopies(void)
+{
+	return(strcmp(SparkDeviceGetProperties()->backend,"nvrm") != 0);
+}
+
 static int ChildFaults(SparkDeviceAddress address)
 {
 	pid_t child = fork();
@@ -1151,6 +1156,80 @@ static void TestProgramRefusals(SparkDeviceQueue *queue, SparkDeviceBuffer *targ
 	CHECK(SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"the queue answers again once its recording ends");
 }
 
+static void TestProgramsWithoutCopies(SparkDeviceQueue *queue, SparkDeviceBuffer *source, SparkDeviceBuffer *target, SparkDeviceEvent *mark,
+	uint32_t *calls)
+{
+	enum { RUNS = 3 };
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	uint32_t run;
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_UNSUPPORTED && program == 0 &&
+		strstr(SparkDeviceLastError()->text,"copies and fills") != 0 && SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,
+		"a backend whose programs hold no copies or fills refuses them at finish, naming them, and its queue stays usable");
+	CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_OK && SparkDeviceQueueHostCallback(queue,CountCallback,calls) == SPARK_STATUS_OK &&
+		SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK && SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK &&
+		SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"record the host callback, the event and the wait alone");
+	CHECK(__atomic_load_n(calls,__ATOMIC_SEQ_CST) == 0u && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK && info.nodes == 3u &&
+		info.kernels == 0u && info.values == 0u,"recording runs nothing, and the program holds the three operations");
+	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_BUSY,"a live program keeps its event");
+	for ( run = 0u; run < RUNS; run++ )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the program");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceEventQuery(mark) == SPARK_STATUS_OK &&
+		__atomic_load_n(calls,__ATOMIC_SEQ_CST) == RUNS,"each run calls the host callback once, and the event it records completes");
+	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the program");
+	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_OK && SparkDeviceFree(source) == SPARK_STATUS_OK && SparkDeviceFree(target) == SPARK_STATUS_OK,
+		"free the program's buffers and event");
+}
+
+typedef struct RecordingWait
+{
+	SparkDeviceQueue *queue;
+	uint32_t kind;
+	uint32_t done;
+	SparkStatus status;
+} RecordingWait;
+
+static void *RecordingWaitMain(void *argument)
+{
+	RecordingWait *wait = (RecordingWait *)argument;
+	if ( wait->kind == 0u )
+		wait->status = SparkDeviceQueueWait(wait->queue,SPARK_DEVICE_WAIT_FOREVER);
+	else if ( wait->kind == 1u )
+		wait->status = SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER);
+	else
+		wait->status = SparkDeviceQueueQuery(wait->queue);
+	__atomic_store_n(&wait->done,1u,__ATOMIC_RELEASE);
+	return(0);
+}
+
+static void TestRecordingWaits(SparkDeviceQueue *queue)
+{
+	enum { WAITERS = 3 };
+	const struct timespec pause = {0, 20000000};
+	RecordingWait waits[WAITERS];
+	pthread_t threads[WAITERS];
+	SparkDeviceProgram *program = 0;
+	uint32_t index,started = 0u;
+	CHECK(SparkDeviceProgramRecord(queue,"contract waits") == SPARK_STATUS_OK,"start a recording for other threads to wait on");
+	memset(waits,0,sizeof(waits));
+	for ( index = 0u; index < WAITERS; index++ )
+	{
+		waits[index].queue = queue;
+		waits[index].kind = index;
+		started += pthread_create(&threads[index],0,RecordingWaitMain,&waits[index]) == 0 ? 1u : 0u;
+	}
+	nanosleep(&pause,0);
+	CHECK(started == WAITERS && __atomic_load_n(&waits[0].done,__ATOMIC_ACQUIRE) == 0u && __atomic_load_n(&waits[1].done,__ATOMIC_ACQUIRE) == 0u,
+		"another thread's wait on the recording queue and its device synchronize wait while the queue records");
+	CHECK(__atomic_load_n(&waits[2].done,__ATOMIC_ACQUIRE) == 1u && waits[2].status == SPARK_STATUS_PENDING,
+		"another thread's query of the recording queue answers pending");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the recording");
+	for ( index = 0u; index < started; index++ )
+		pthread_join(threads[index],0);
+	CHECK(waits[0].status == SPARK_STATUS_OK && waits[1].status == SPARK_STATUS_OK,"the waiting threads return once the recording ends");
+	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the empty program");
+}
+
 static void TestPrograms(SparkDeviceQueue *queue)
 {
 	enum { BYTES = 4096, RUNS = 3 };
@@ -1170,6 +1249,7 @@ static void TestPrograms(SparkDeviceQueue *queue)
 		SparkDeviceAllocate(&target,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program target") == SPARK_STATUS_OK &&
 		SparkDeviceEventCreate(&mark) == SPARK_STATUS_OK,"allocate the program's buffers and event");
 	TestProgramRefusals(queue,&target);
+	TestRecordingWaits(queue);
 	Pattern((uint8_t *)source.host,BYTES,11u);
 	memset(target.host,0xee,BYTES);
 	CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_OK,"start recording");
@@ -1178,6 +1258,11 @@ static void TestPrograms(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_BUSY,"a buffer the recording uses is not freed under it");
 	CHECK(SparkDeviceQueueHostCallback(queue,CountCallback,&calls) == SPARK_STATUS_OK && SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK &&
 		SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK,"record a host callback, an event and a wait on it");
+	if ( ProgramsHoldCopies() == 0u )
+	{
+		TestProgramsWithoutCopies(queue,&source,&target,mark,&calls);
+		return;
+	}
 	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the program");
 	CHECK(((const uint8_t *)target.host)[0] == 0xee && ((const uint8_t *)target.host)[BYTES - 1u] == 0xee && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == 0u,
 		"recording runs nothing");

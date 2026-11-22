@@ -5,7 +5,7 @@
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
-#include "runtime/device/nvrm/nvrm_version.h"
+#include "nvrm_release.h"
 
 #define LIGHT_BLOCKS 4u
 #define LIGHT_THREADS 128u
@@ -35,8 +35,8 @@ static void Describe(const SparkNvrmGpu *gpu)
 	printf("module %s, GPU minor %u instance %u, architecture %#x implementation %#x\n",gpu->rm.loaded_version,gpu->minor,gpu->instance,
 		gpu->architecture,gpu->implementation);
 	printf("classes: compute %#x channel %#x copy %#x usermode %#x\n",gpu->compute_class,gpu->gpfifo_class,gpu->copy_class,gpu->usermode_class);
-	printf("%u GPCs x %u TPCs x %u SMs, %u warps per SM, SM version %#x, instruction set version %#x\nuuid ",gpu->gpcs,gpu->tpcs_per_gpc,
-		gpu->sms_per_tpc,gpu->warps_per_sm,gpu->sm_version,gpu->sass_version);
+	printf("%u GPCs x %u TPCs x %u SMs, %u SMs enabled, %u warps per SM, SM version %#x, instruction set version %#x\nuuid ",gpu->gpcs,
+		gpu->tpcs_per_gpc,gpu->sms_per_tpc,gpu->sm_count,gpu->warps_per_sm,gpu->sm_version,gpu->sass_version);
 	for (index = 0u; index < 16u; index++)
 		printf("%02x",gpu->uuid[index]);
 	printf("\n");
