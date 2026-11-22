@@ -43,9 +43,9 @@ FAMILIES = (
 REFUSED = ('skinny', 'cell', 'stream GEMM', 'attention')
 PENDING_FAMILY = 'attention'
 PENDING = {
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj128ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 80,
+    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj128ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 40,
     '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj128ELb1EELj512ELj2EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 168,
-    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj256ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 80,
+    '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj256ELb1EELj512ELj1EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 40,
     '_Z15D41AttendKernelI12LmKvGeometryILj1280ELj256ELb1EELj512ELj2EEv13LmKvShardViewjPKtmPKjS6_S6_S6_jS4_S4_mjS6_S6_S6_S6_S6_PKffPtmS8_jjPhmjjj': 168,
     '_Z21LmGqaShardTiledKernelI12LmKvGeometryILj16384ELj64ELb1EE13LmKvShardViewLj16ELj256ELj256EEvT0_PKtjPKjS7_S7_fPfmjS7_jjjS7_S7_': 8,
     '_Z21LmGqaShardTiledKernelI12LmKvGeometryILj2048ELj64ELb1EE13LmKvShardViewLj2ELj256ELj256EEvT0_PKtjPKjS7_S7_fPfmjS7_jjjS7_S7_': 8,

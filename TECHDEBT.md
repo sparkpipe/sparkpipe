@@ -283,6 +283,10 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
   So the spill is the cheapest measured option at decode while the block
   keeps its 53,760 registers and leaves room for the collectives beside it.
+  At one query tile the kernel stages the query in shared memory once a row
+  and reads it with ldmatrix, which has room only there (16 KB); its frame
+  is the 40-byte table of the precise sine and cosine slow path that the
+  RoPE epilogue calls, which runs only for huge angles.
   `LmLatentShardPrefillKernel` (14 entries, six families) runs the same ten
   warps and keeps its query fragments in registers for the whole row (72
   registers at 576 dimensions). Its 32 queries (about 37 KB) do not fit in
