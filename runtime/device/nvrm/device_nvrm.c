@@ -160,6 +160,7 @@ static pthread_mutex_t nvrm_queues_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvrmQueue *nvrm_queues;
 
 static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes);
+static uint32_t NvrmReservationHolds(uint64_t address, uint64_t bytes);
 static void NvrmSharedClose(void);
 
 #define NVRM_TRY(call) \
@@ -306,9 +307,10 @@ SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *
 SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm;
-	if ( allocation->host != 0 || allocation->space != SPARK_DEVICE_SPACE_DEVICE_PRIVATE || NvrmMappingsSpan(allocation->device,allocation->bytes) == 0u )
+	if ( allocation->host != 0 || allocation->space != SPARK_DEVICE_SPACE_DEVICE_PRIVATE ||
+		(NvrmMappingsSpan(allocation->device,allocation->bytes) == 0u && NvrmReservationHolds(allocation->device,allocation->bytes) == 0u) )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,
-			"the nvrm backend adopts only device-private ranges of shared memory it mapped"));
+			"the nvrm backend adopts only device-private ranges inside one of its reservations or across its mappings"));
 	nvrm = NvrmNew(allocation,"adopt");
 	if ( nvrm == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -1206,6 +1208,17 @@ static void NvrmSharedClose(void)
 	nvrm_shared_capacity = 0u;
 	memset(&nvrm_reservations,0,sizeof(nvrm_reservations));
 	memset(&nvrm_mappings,0,sizeof(nvrm_mappings));
+}
+
+static uint32_t NvrmReservationHolds(uint64_t address, uint64_t bytes)
+{
+	uint32_t index,held;
+	pthread_mutex_lock(&nvrm_shared_lock);
+	index = NvrmSpansFirstEnding(&nvrm_reservations,address);
+	held = bytes != 0u && address + bytes > address && index < nvrm_reservations.count && nvrm_reservations.items[index].address <= address &&
+		address + bytes <= nvrm_reservations.items[index].address + nvrm_reservations.items[index].bytes ? 1u : 0u;
+	pthread_mutex_unlock(&nvrm_shared_lock);
+	return(held);
 }
 
 static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes)

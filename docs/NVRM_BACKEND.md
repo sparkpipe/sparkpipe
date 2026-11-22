@@ -887,9 +887,12 @@ its last unmap and its release. Unified memory also duplicates the object
 for each external mapping, so a mapping never outlives its memory. One
 mutex guards the shared tables, and another guards the address allocator,
 because weightd maps and unmaps from worker threads without the device
-mutex. Adopting a device-private range inside one or more adjacent
-mappings makes a buffer with no host pointer, for copies, fills and kernel
-bindings.
+mutex. Adopting a device-private range makes a buffer with no host pointer,
+for copies, fills and kernel bindings. The range lies inside one
+reservation, mapped or not, or across adjacent mappings. A pool reserves its
+whole range and maps chunks as it grows, as the KV binding's weightd pool
+does, so its view covers chunks not yet mapped. As on CUDA, only the mapped
+part may be touched; the rest faults on the GPU.
 
 ## Kernel registration
 
