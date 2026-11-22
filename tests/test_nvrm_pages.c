@@ -135,6 +135,7 @@ static void TestWait(void)
 	source.page_bytes = 4096u;
 	source.poll_ns = SPARK_NVRM_HUGE_POLL_NS;
 	source.wait_ns = 1000000000u;
+	source.pull = 0u;
 	PagesNormal(files.buddyinfo,544u);
 	start = SparkMonotonicNs();
 	Check(SparkNvrmHugePagesWait(&source,64u << 20,"pages") == SPARK_STATUS_OK && SparkMonotonicNs() - start < SPARK_NVRM_HUGE_POLL_NS,
@@ -170,15 +171,25 @@ static void TestWait(void)
 	PagesClose(&files);
 }
 
+static void TestPull(void)
+{
+#if defined(__linux__)
+	Check(SparkNvrmHugePagesPull(4u) == 4u && SparkNvrmHugePagesPull(0u) == 0u,"the pull faults the 2 MiB blocks it is asked for in a huge-page mapping and releases them");
+#else
+	Check(SparkNvrmHugePagesPull(4u) == 0u,"without huge-page advice the pull makes nothing");
+#endif
+}
+
 int main(void)
 {
 	TestCount();
 	TestWait();
+	TestPull();
 	if ( pages_failures != 0u )
 	{
 		printf("FAIL (%u)\n",pages_failures);
 		return(1);
 	}
-	printf("PASS the free 2 MiB blocks come from the Normal zones' buddy lists, and an object of 2 MiB pages waits until they cover it and the min_free reserve, then goes ahead or is refused at the bound\n");
+	printf("PASS the free 2 MiB blocks come from the Normal zones' buddy lists, an object of 2 MiB pages waits until they cover it and the min_free reserve, then goes ahead or is refused at the bound, and the pull faults and releases huge pages\n");
 	return(0);
 }

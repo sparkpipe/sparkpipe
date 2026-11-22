@@ -4,6 +4,9 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 #include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_device.h"
@@ -96,6 +99,32 @@ static uint64_t PagesReserve(const char *path, char *text)
 	return((strtoull(text,0,10) * 1024u + SPARK_NVRM_HUGE_PAGE_BYTES - 1u) / SPARK_NVRM_HUGE_PAGE_BYTES);
 }
 
+uint64_t SparkNvrmHugePagesPull(uint64_t blocks)
+{
+#if defined(MADV_HUGEPAGE)
+	const uint64_t huge = SPARK_NVRM_HUGE_PAGE_BYTES;
+	const size_t bytes = (size_t)((blocks + 1u) * huge);
+	volatile uint8_t *base;
+	uint8_t *raw;
+	uint64_t index;
+	if ( blocks == 0u )
+		return(0u);
+	raw = (uint8_t *)mmap(0,bytes,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,-1,0);
+	if ( raw == MAP_FAILED )
+		return(0u);
+	base = (volatile uint8_t *)(((uintptr_t)raw + huge - 1u) & ~(uintptr_t)(huge - 1u));
+	if ( madvise((void *)(uintptr_t)base,(size_t)(blocks * huge),MADV_HUGEPAGE) != 0 )
+		blocks = 0u;
+	for (index = 0u; index < blocks; index++)
+		base[index * huge] = 1u;
+	(void)munmap(raw,bytes);
+	return(blocks);
+#else
+	(void)blocks;
+	return(0u);
+#endif
+}
+
 SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t bytes, const char *owner)
 {
 	const long system_page = sysconf(_SC_PAGESIZE);
@@ -106,6 +135,7 @@ SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t b
 	char *text = (char *)malloc(PAGES_TEXT_BYTES);
 	char reason[256];
 	uint64_t blocks = 0u,reserve = 0u;
+	uint32_t pulled = 0u;
 	if ( text == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,0,"out of host memory to read the free page lists"));
 	for (;;)
@@ -123,6 +153,13 @@ SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t b
 		}
 		if ( SparkMonotonicNs() - start >= source->wait_ns )
 			break;
+		if ( source->pull != 0u && pulled == 0u )
+		{
+			(void)SparkNvrmHugePagesPull(needed + reserve);
+			pulled = 1u;
+			continue;
+		}
+		pulled = 0u;
 		(void)nanosleep(&step,0);
 	}
 	free(text);
@@ -134,6 +171,6 @@ SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t b
 
 SparkStatus SparkNvrmHugePagesReady(uint64_t bytes, const char *owner)
 {
-	static const SparkNvrmHugeSource kernel = { "/proc/buddyinfo","/proc/sys/vm/min_free_kbytes",0u,SPARK_NVRM_HUGE_WAIT_NS,SPARK_NVRM_HUGE_POLL_NS };
+	static const SparkNvrmHugeSource kernel = { "/proc/buddyinfo","/proc/sys/vm/min_free_kbytes",0u,SPARK_NVRM_HUGE_WAIT_NS,SPARK_NVRM_HUGE_POLL_NS,1u };
 	return(SparkNvrmHugePagesWait(&kernel,bytes,owner));
 }

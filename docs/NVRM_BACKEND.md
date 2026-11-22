@@ -475,8 +475,17 @@ cover the object's blocks plus the kernel's reserve
   raises it to 1 GiB ([HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md)).
   The page allocator keeps a zone's last free pages above its watermarks,
   which start at this reserve, so blocks inside it are not the module's.
-- It polls every 10 ms, for at most 60 s per object, while the kernel's
-  compaction frees blocks. Then it refuses with `capacity_exceeded`, for
+- When the blocks are short, the waiting thread makes them. It faults as
+  many transparent huge pages as the target in a `MADV_HUGEPAGE` mapping,
+  so the kernel takes the free 2 MiB blocks and compacts for the rest, then
+  unmaps them, which returns them all as free 2 MiB blocks
+  (`SparkNvrmHugePagesPull`). The kernel's background compaction alone backs
+  off for about 32 s after a round that frees nothing, and once made none in
+  60 s. On a GB10 with 40 GiB held in every other 4 KiB page, 2,914 of 3,000
+  faults came back as 2 MiB pages in 0.54 s, and all 71 objects of 64 MiB
+  allocated right after went ahead without waiting.
+- It checks again after each pull, and pulls at most once per 10 ms poll,
+  for at most 60 s per object. Then it refuses with `capacity_exceeded`, for
   example "a 64 MiB object of 2 MiB pages needs 32 free 2 MiB blocks above
   the 512-block min_free reserve; 19620 were free after 60 s". Nothing
   falls back to smaller pages.
