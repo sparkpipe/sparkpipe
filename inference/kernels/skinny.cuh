@@ -1177,11 +1177,8 @@ struct LmSkinnyGroupedShapes<LmNvfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
 };
 
 template<uint32_t NPG>
-struct LmSkinnyGroupedShapes<LmMxfp4,NPG>
+struct LmSkinnyGroupedShapes<LmMxfp4,NPG> : LmSkinnyGroupedFourRows<NPG>
 {
-	static constexpr uint32_t kFewRows = LM_SKINNY_ROWS_MID, kFewNeurons = NPG;
-	static constexpr uint32_t kRows = LM_SKINNY_ROWS_MID, kNeurons = NPG;
-	static constexpr uint32_t kWideRows = LM_SKINNY_ROWS, kWideNeurons = 2u;
 };
 
 template<uint32_t NPG>

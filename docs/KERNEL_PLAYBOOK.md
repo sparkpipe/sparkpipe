@@ -212,9 +212,8 @@ which could be mistaken for the qualified route.
 - **Grouped variants never spill.** `LmSkinnyGroupedShapes<Format,NPG>`
   names the rows and neurons a task takes in each band of routes per local
   expert: at most 2, at most 8, and above 8. BF16 takes 4 x `NPG`, 8 x `NPG`
-  and 16 x 2. NVFP4 takes 4 x `NPG` in every band, MXFP4 4 x `NPG` up to 8
-  routes and 8 x 2 above, and FP8 and MXFP8 8 x `NPG` above 8 routes as well
-  as below. An NVFP4 task
+  and 16 x 2. NVFP4 and MXFP4 take 4 x `NPG` in every band, and FP8 and MXFP8
+  take 8 x `NPG` above 8 routes as well as below. An NVFP4 task
   stages a 64-byte activation quad per row and two scales per weight chunk,
   so its 8- and 16-row variants need more than 255 registers: ptxas spilled
   376-700 bytes a thread at 8 rows and moved 7 KB a thread to local memory
@@ -247,11 +246,6 @@ which could be mistaken for the qualified route.
     thread and MXFP4's 8 x 4 296 bytes, though 13.0 keeps them in registers.
     A variant ships only if it stays in registers under both, so those
     formats take the variants above.
-  - MXFP4 takes 8 x 2 above 8 routes because, cold at TP16, it is 1.56-1.99
-    times as fast as 16 x 2 there, and a MoE layer (two up projections and a
-    down) is 0-12% faster on it than on 4 x 4: the down projections gain
-    8-28%, the up projections move by -13% to +5%. Between 2 and 8 routes
-    4 x 4 stays, being 5-24% faster than 8 x 2 at the low end of that band.
 - **Blocks past the last batch return at once.** The grid of
   `LmSkinnyGroupedKernel` is sized from every route of the step, but only the
   local routes have work: at TP16 one route in 16. After its wait, a block
