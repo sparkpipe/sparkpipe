@@ -1930,20 +1930,18 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink. It lists 30 files and 42 findings:
-  - the 25 serving adapters, whose kernels and stage runner run through the
-    CUDA runtime (`libcudart.so.13`). Twelve of them also link the driver
-    library (`libcuda.so.1`) for the TMA tensor maps in
-    [`runtime/tensor_map.h`](runtime/tensor_map.h); the other thirteen
-    reached it only through weightd's mappings, which now go through the
-    device layer. The hub's API also loads an adapter for its descriptor, so
-    the hub ships them too;
-  - `sparkpipe_weightd`, `weightd_warm` and `weightdctl`
-    (`libcudart.so.13`). Their device memory goes through the device layer
-    compiled into them, which in the CUDA flavour is the CUDA backend over the
-    CUDA runtime. None links the driver library any more;
-  - `sparkpipe_model_residentd`, whose boundary buffers and streams go
-    through `spark_gpu.h` (`libcudart.so.13`);
+  may only shrink, and the kit's `--deploy` run refuses every root until
+  the list is empty and the root is built for one device backend. A hosted
+  root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
+  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and the 13
+  serving adapters that call no CUDA driver API under their usual paths,
+  with the nvrm device library, so they are off the list. It lists 13 files
+  and 25 findings:
+  - the 12 serving adapters that still call the CUDA driver API
+    (`libcuda.so.1`) for the TMA tensor maps in
+    [`runtime/tensor_map.h`](runtime/tensor_map.h), and run their kernels
+    and stage runner through the CUDA runtime (`libcudart.so.13`). The hub's
+    API also loads an adapter for its descriptor, so the hub ships them too;
   - the CUDA device library (`libcudart.so.13`).
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
@@ -2021,12 +2019,31 @@ and the multidev docs on 2026-09-28. Line numbers are in
   TMA descriptors; fault reports (a hung queue is waited on forever).
   Host-backed memory registers 4 KiB pages and reads 18% slower than
   device memory. On the hub's RTX 5090 the backend runs the whole GPU gate
-  with device-private and shared memory in video memory, but host-pinned
-  and shared-coherent memory are still host memory in 4 KiB pages: the
-  copy engine moves 22.6 GB/s from video memory into it against 42.2 GB/s
-  into system memory in 2 MiB pages (the link's floor is 63.0 GB/s). A
-  CPU-cached, snooped system memory kind in 2 MiB pages for those spaces
-  is still to measure there. Production modules call the CUDA runtime directly
+  with device-private and shared memory in video memory, and host-pinned
+  and shared-coherent memory in write-back system memory with 2 MiB pages
+  from 2 MiB up, which the copy engine fills from video memory at
+  42.4 GB/s against 22.7 GB/s for host memory in 4 KiB pages (the link's
+  floor is 63.0 GB/s). That kind has three costs:
+  - The module maps its memory into the process with every 4 KiB page
+    present but clean (`vm_insert_page` when the process maps it), so the
+    CPU sets a page's dirty bit on the first store to it: about 0.24 us a
+    page, with no page fault (`ru_minflt` does not move). A fresh buffer's
+    first CPU pass therefore writes at about half speed (`memcpy` 11.5
+    against 21.5 GB/s in 2 MiB pages, 7.5 against 18.4 in 4 KiB pages;
+    `pread` into it 7.1 against 11.1), and later passes at full speed.
+    Every kind the module maps for the CPU pays this whatever its page
+    size or caching. Host memory does not, because the module pins it with
+    write faults, which leave each page dirty; anonymous shared memory
+    populated by reads pays the same. One store to each page (16 ms for
+    256 MiB) moves the cost but does not remove it.
+  - Allocations under 2 MiB keep 4 KiB pages. A drafter step's transfers
+    (up to 16 rows of taps, 819,200 bytes) time as before; from 2 MiB
+    pages the 16-row upload would take 20.7 us instead of 25.0.
+  - Each allocation keeps a descriptor of the control device open for its
+    CPU mapping, and the module allocates the memory without charging the
+    process's memory cgroup, so a lane's memory limit does not count its
+    host-pinned or shared-coherent buffers on a discrete GPU.
+  Production modules call the CUDA runtime directly
   (above), so even a complete backend serves nothing until they move
   behind the device layer or a GPU API of our own.
 - nvrm stream priorities. The nvrm GPU front reports one stream priority:

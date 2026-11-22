@@ -209,6 +209,51 @@ which could be mistaken for the qualified route.
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
     `LmFrameErrorReport` and stages row 0 instead. The frame fails and the
     context survives (`tests/test_kernel_frame_error_source.py`).
+- **Grouped variants never spill.** `LmSkinnyGroupedShapes<Format,NPG>`
+  names the rows and neurons a task takes in each band of routes per local
+  expert: at most 2, at most 8, and above 8. BF16 takes 4 x `NPG`, 8 x `NPG`
+  and 16 x 2. NVFP4 and MXFP4 take 4 x `NPG` in every band, and FP8 and MXFP8
+  take 8 x `NPG` above 8 routes as well as below. An NVFP4 task
+  stages a 64-byte activation quad per row and two scales per weight chunk,
+  so its 8- and 16-row variants need more than 255 registers: ptxas spilled
+  376-700 bytes a thread at 8 rows and moved 7 KB a thread to local memory
+  at 16 rows x 2 neurons, read and written on every pass of the k loop.
+  Qwen3.8 Max's expert projections took 160-280 ms at 26-51 prompt rows
+  instead of about 1 ms. On one GB10 with every route local and 4 to 16
+  routes an expert, 4 x 4 is the fastest NVFP4 variant that does not spill,
+  except for the down projections at 16 routes an expert, where 16 x 1 is
+  2-6% faster (Qwen3.8 Max up projection at 16 routes an expert: 4 x 4
+  5.9 ms, 16 x 1 6.9 ms, 8 x 4 7.1 ms, 16 x 2 414 ms). The variants that
+  share `LANES` give the same bytes.
+  `tools/kernel_spill_audit.py` refuses an `LmSkinnyGroupedKernel`
+  instantiation with local memory or a stack frame in any serving adapter or
+  CUDA program (sm_121a compile gate, exit 10), and
+  `tests/test_grouped_experts_bands_cuda.py` runs every family that reaches
+  this kernel on both sides of each band boundary, with an L2 flush before
+  every timed call: the same bytes as a 2 x 4 reference, no call four times
+  slower than the one below the boundary, and no call slower than its band's
+  variant run on its own.
+  - The bands count every route of the step against the local experts. With
+    experts split across ranks most routes are not local (one in 16 for
+    Qwen3.8 at TP16), so a band can name more rows than an expert holds.
+    Measured cold, banding on routes per routed expert instead made MiMo 2.6
+    faster at 17-48 rows but HY4 and the BF16 down projections up to 30%
+    slower, because their batched tasks are cheap at low load and launch far
+    fewer blocks than 4 x 4 does, so the bands stay per local expert.
+  - CI's compile gate builds with CUDA 13.3.1 (the container image in
+    `.github/workflows/cuda13-sm121a-compile.yml`), the release build hosts
+    with CUDA 13.0. Under 13.3.1, FP8's and MXFP8's 16 x 2 spill 424 bytes a
+    thread and MXFP4's 8 x 4 296 bytes, though 13.0 keeps them in registers.
+    A variant ships only if it stays in registers under both, so those
+    formats take the variants above.
+- **Blocks past the last batch return at once.** The grid of
+  `LmSkinnyGroupedKernel` is sized from every route of the step, but only the
+  local routes have work: at TP16 one route in 16. After its wait, a block
+  whose first item lies past the last batch (`group_row_offset[groups]`
+  local routes, plus a partial batch per expert when tasks are batched)
+  returns before it loads the offsets or scans them. Cold at TP16 this made
+  the expert projections 9-12% faster at the median for Qwen3.8, 11-17% for
+  MiMo 2.6 and 2-4% for HY4 and the BF16 families.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.

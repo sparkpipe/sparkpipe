@@ -216,7 +216,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
-		SPARK_DEVICE_PROPERTY_CLUSTERS | SPARK_DEVICE_PROPERTY_PROGRAMS |
+		SPARK_DEVICE_PROPERTY_CLUSTERS | SPARK_DEVICE_PROPERTY_PROGRAMS | SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK |
 		SPARK_DEVICE_PROPERTY_TENSOR_MAPS |
 		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
@@ -246,6 +246,13 @@ static NvrmAllocation *NvrmNew(SparkDeviceAllocation *allocation, const char *op
 	return(nvrm);
 }
 
+static SparkNvrmMemoryKind NvrmSpaceKind(SparkDeviceSpace space)
+{
+	if ( space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE )
+		return(nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_VIDEO);
+	return(nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_HOST : SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK);
+}
+
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm = NvrmNew(allocation,"allocate");
@@ -266,8 +273,7 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 		allocation->backend = nvrm;
 		return(SPARK_STATUS_OK);
 	}
-	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space == 0u ? SPARK_NVRM_MEMORY_HOST :
-		nvrm_gpu.integrated != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_VIDEO,&nvrm->memory,allocation->owner);
+	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,NvrmSpaceKind(allocation->space),&nvrm->memory,allocation->owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm->memory);
@@ -1246,7 +1252,7 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(nvrm_gpu.integrated != 0u ? SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),0u,&handle,owner) :
+	NVRM_TRY(nvrm_gpu.integrated != 0u ? SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),SPARK_NVRM_MEMORY_SYSTEM,&handle,owner) :
 		SparkNvrmVideoAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )

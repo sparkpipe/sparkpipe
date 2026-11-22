@@ -272,7 +272,7 @@ reaches lives in this range, so push buffers stay below 2^40 and a GPU
 address that the CPU also maps is the same number on both sides. A range
 another mapping already holds is refused rather than replaced.
 
-Memory comes in six kinds:
+Memory comes in seven kinds:
 
 - **Host memory.** Anonymous pages the backend maps itself at the GPU
   address and registers by OS descriptor. It is CPU-cached and coherent.
@@ -285,6 +285,11 @@ Memory comes in six kinds:
   gives it a host view.
 - **Uncached system memory.** Allocated by the module, GPU-uncached, for
   notifiers.
+- **Write-back system memory.** Allocated by the module, cached write-back
+  by the CPU and uncached by the GPU, whose accesses snoop the CPU's
+  caches, so the two stay coherent. It has 2 MiB pages from 2 MiB up and
+  backs host-pinned and shared-coherent memory on a discrete GPU (see
+  [the hub's RTX 5090](#the-hubs-rtx-5090)).
 - **Video memory.** On a discrete GPU, allocated by the module in the GPU's
   own memory (`NV01_MEMORY_LOCAL_USER`), GPU-cached, with 2 MiB pages from
   8 MiB up. It has no CPU mapping; the copy engine moves data in and out
@@ -410,8 +415,8 @@ nvrm-large-transfers` runs them on the GPU (see the GPU tests).
 | Space | nvrm memory | Host view | Device address |
 |---|---|---|---|
 | device-private | system memory on an integrated GPU, zeroed by the open module when allocated; video memory on a discrete one, which the module also hands out zeroed | none | yes |
-| shared coherent | host memory | same address | yes |
-| host pinned | host memory | same address | yes |
+| shared coherent | host memory on an integrated GPU, write-back system memory on a discrete one | same address | yes |
+| host pinned | host memory on an integrated GPU, write-back system memory on a discrete one | same address | yes |
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
@@ -449,6 +454,14 @@ memory keeps 2 MiB pages from 8 MiB at every size: the hole below was
 measured in GB10 system memory, and the hub's gate passed with those pages.
 Fresh video memory is zero without a fill: on the hub, 26 GiB filled with
 0xab, freed and allocated again came back all zero.
+Its write-back system memory (host-pinned and shared-coherent) takes 2 MiB
+pages from 2 MiB up to 4 GiB and 4 KiB pages from 4 GiB on. On the hub's
+RTX 5090 under 595.84, a write-back object of 4 GiB or more in 64 KiB or
+2 MiB pages loses 4 KiB at its end for every whole 4 GiB it holds: copy-engine
+fills and copies of 4098 MiB, 6 GiB, 8 GiB and 16 GiB left the last 4, 4,
+8 and 16 KiB unwritten, with no fault and nothing in the kernel log. In
+4 KiB pages every byte arrives (`nvrm-large-transfers` at 8, 10.5 and
+16 GiB), and video memory in 2 MiB pages is right at every size.
 
 An object of 4 GiB or more in 2 MiB pages, mapped through the
 unified-memory external range, has no GPU mapping for the 64 KiB at
@@ -477,6 +490,50 @@ On GB10 the page size costs nothing measurable. In three interleaved
 rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
 259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
 read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
+
+On an integrated GPU the module needs physically contiguous 2 MiB blocks
+for an object of 2 MiB pages and does not compact memory to find them:
+with fragmented memory it answers `NV_ERR_NO_MEMORY` and logs "Check
+failed: Out of memory" while gigabytes are free. So before it asks the
+module for such an object on an integrated GPU, `SparkNvrmSystemAllocate`
+waits until the free 2 MiB blocks cover the object's blocks plus the
+kernel's reserve (`SparkNvrmHugePagesReady`, `nvrm_pages.c`). A discrete
+GPU's write-back system memory does not take whole 2 MiB blocks: on the
+hub, six objects of 2050 MiB in 2 MiB pages allocated while the Normal
+zone's free 2 MiB blocks went only from 945 to 423, with no compaction, so
+the wait there would refuse what the module grants.
+
+- Free blocks are counted in `/proc/buddyinfo`'s Normal zones, the zone
+  the kernel serves the module's allocations from. Each larger block counts
+  as the 2 MiB blocks it holds, for any base page size. DMA and DMA32 keep
+  their blocks for allocations that need them, and Movable takes no kernel
+  allocation, so their blocks do not count.
+- The reserve is `vm.min_free_kbytes` in 2 MiB blocks: 22 at the boot
+  default of 45056 KiB, 512 while the node image's compaction window
+  raises it to 1 GiB ([HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md)).
+  The page allocator keeps a zone's last free pages above its watermarks,
+  which start at this reserve, so blocks inside it are not the module's.
+- When the blocks are short, the waiting thread makes them. It faults as
+  many transparent huge pages as the target in a `MADV_HUGEPAGE` mapping,
+  so the kernel takes the free 2 MiB blocks and compacts for the rest, then
+  unmaps them, which returns them all as free 2 MiB blocks
+  (`SparkNvrmHugePagesPull`). The kernel's background compaction alone backs
+  off for about 32 s after a round that frees nothing, and once made none in
+  60 s. On a GB10 with 40 GiB held in every other 4 KiB page, 2,914 of 3,000
+  faults came back as 2 MiB pages in 0.54 s, and all 71 objects of 64 MiB
+  allocated right after went ahead without waiting.
+- It checks again after each pull, and pulls at most once per 10 ms poll,
+  for at most 60 s per object. Then it refuses with `capacity_exceeded`, for
+  example "a 64 MiB object of 2 MiB pages needs 32 free 2 MiB blocks above
+  the 512-block min_free reserve; 19620 were free after 60 s". Nothing
+  falls back to smaller pages.
+- Without a readable `/proc/buddyinfo` or a Normal zone in it, the module
+  decides alone, as before.
+
+This covers every 2 MiB-page system allocation on an integrated GPU:
+shared memory (weightd's arenas) and device-private memory from 8 MiB up
+to 4 GiB. `build/test_nvrm_pages` checks the count, the target, the
+bound and the wake-up against fake kernel files.
 
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
@@ -570,7 +627,16 @@ and reads every word back, and refuses a block 4 bytes over the limit.
 an SoC: bit `NV0000_CTRL_GPU_ID_INFO_SOC` of the identity's `gpuFlags`,
 from `NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2`. GB10 reports it. A discrete GPU
 does not, so on one the backend makes no claim of host-coherent memory,
-as the CUDA backend does from its integrated flag. The backend adopts no
+as the CUDA backend does from its integrated flag. The backend also sets
+`SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK`: its large allocations take 2 MiB
+pages with no fallback to smaller ones, so they fail once the kernel's free
+2 MiB blocks run out. A long-lived pool on such a backend is taken whole
+while a model activates: the stage KV binding asks weightd for every chunk
+of its pool as the pool's minimum, so the activation fails loudly, naming
+the chunks and their size, when weightd cannot grant them, and serving
+never maps another chunk (see the compaction window in
+[HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md#contiguous-memory)).
+The backend adopts no
 foreign memory or queue. Adopting one of the device's own live queues works
 on every backend: the device layer finds the handle in its own list of
 queues by comparing pointers, never by reading through the handle, and
@@ -610,15 +676,22 @@ launch-shape probe and first light:
   unaligned offset, pageable copies through the bounce buffer and pageable
   fills, 64 queues opened and closed in turn, two queues copying at once,
   and reopening after a shutdown.
-- **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
-  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
-  40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
-  and copies at 18.0 GB/s at these sizes. It runs in one mode:
-  - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
-    zero-filled by the copy engine. For each size it copies the whole
-    buffer to host-visible memory in one call and checks every byte, fills
-    the whole buffer in one call, copies it back and checks again, and
-    fills host-visible memory of the same size at an odd offset.
+- **`tests/test_nvrm_large_transfers.c`** is part of the gate, so a
+  change to the page rules cannot lose bytes silently. It needs 40 GiB of
+  available memory, and the gate fails without it.
+  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` runs it alone. On GB10
+  the copy engine fills at 18.6 GB/s and copies at 18.0 GB/s at these
+  sizes. For each of 8, 10.5 and 16 GiB of device-private memory, which
+  comes zeroed, it:
+  - copies the whole buffer to host-visible memory in one call and checks
+    every byte;
+  - fills the whole buffer in one call, copies it back and checks again;
+  - fills host-visible memory of the same size at an odd offset;
+  - fills host-pinned memory of the same size and checks every byte;
+  - fills shared memory of the same size (created, mapped and adopted),
+    copies it to host-visible memory and checks every byte.
+  On a discrete GPU this covers video memory, write-back system memory in
+  both its spaces, and shared video memory.
 
   The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
@@ -1128,7 +1201,7 @@ gate needs `nvcc` on the host. Without it the gate fails, naming `nvcc`.
 
 ## First light and memory bandwidth
 
-Two tools run on a GPU host with a pinned module:
+Three tools run on a GPU host with a pinned module:
 
 - **`build/nvrm_first_light`** (`make nvrm-first-light`) opens the GPU and
   prints its identity. It launches the fixture's first-light kernel 16
@@ -1143,6 +1216,18 @@ Two tools run on a GPU host with a pinned module:
   (`--path video`, `--path pcie`), each sampled against its source.
   `build/cuda_memory_bandwidth` measures the same kernels over
   `cudaMalloc` memory on the CUDA flavour, for the comparison.
+- **`build/device_transfers_nvrm`** (`make nvrm-device-transfers`) times
+  two workloads through the device layer alone. `step` is one drafter
+  step's transfers: a tap upload of 1, 4, 8 and 16 rows of 51,200 bytes
+  (five tapped layers of 5,120 BF16 values) from host-pinned memory and a
+  4 KiB draft download into it, each alone, both on one queue, and both
+  after the CPU writes the rows, from submit to the queue's completion.
+  `load FILE` loads a file into device-private memory through a ring of
+  host-pinned (or `--pageable`) staging buffers, page-cache or `--direct`
+  reads, and reports each phase; `--back` copies the loaded bytes back
+  into the staging, `--touch` stores once to each staging page first.
+  Every run checks what arrived. `build/device_transfers_cuda` is the same
+  program over the CUDA flavour's device library.
 
 Measured on GB10 (1 GiB buffers, 5 interleaved rounds of 20 launches,
 median of medians): module-allocated system memory, GPU cached, 2 MiB
@@ -1187,6 +1272,26 @@ The link's floor is 63.0 GB/s each way (32 GT/s on 16 lanes, 128b/130b
 coding). From system memory in 2 MiB pages the copy engine reaches 81% of
 it toward the GPU and 67% back. Host memory in 4 KiB pages costs 16%
 toward the GPU and 46% back.
+
+Host-pinned and shared-coherent memory therefore come from write-back
+system memory on a discrete GPU. Against host memory in 4 KiB pages, which
+backed them before (same tool, 1 GiB, 20 rounds, median):
+
+| Path | Write-back system memory, 2 MiB pages | Host memory, 4 KiB pages |
+| --- | --- | --- |
+| copy engine to video memory | 51.4 GB/s | 43.1 GB/s |
+| copy engine from video memory | 42.4 GB/s | 22.7 GB/s |
+| SM read | 49.2 GB/s | 20.3 GB/s |
+| SM copy, read plus write | 51.2 GB/s | 14.1 GB/s |
+
+A drafter step's transfers do not move (`build/device_transfers_nvrm
+step`, 5 rounds of 3,000 steps, median of the rounds' medians): its
+buffers are under 2 MiB and keep 4 KiB pages, and copies that small cost
+their submission more than their bytes. A 4 KiB draft download takes
+4.4 to 5.1 us from submit to completion, a 1-row tap upload (51,200
+bytes) 5.9 us, both on one queue 6.4 us, and 12.6 us when the CPU first
+writes the row; 16 rows (819,200 bytes) upload in 24 to 25 us, or
+20.7 us from a buffer in 2 MiB pages.
 
 ## Step measurements
 

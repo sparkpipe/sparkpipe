@@ -16,6 +16,9 @@ install_tree() {
 [ -z "$(find "$here/files" "$out/inputs/release-root" ! -type f ! -type d -print -quit)" ] || { echo "customize_image: the image files and the release root may hold only files and directories" >&2; exit 1; }
 install_tree "$here/files" "$root"
 chmod 0600 "$root/etc/netplan/01-sparkpipe.yaml"
+chmod 0440 "$root/etc/sudoers.d/90-sparkpipe-compact"
+chroot "$root" visudo -c -q -f /etc/sudoers.d/90-sparkpipe-compact || { echo "customize_image: /etc/sudoers.d/90-sparkpipe-compact does not parse" >&2; exit 1; }
+chroot "$root" getent group sparkpipe-compact > /dev/null || chroot "$root" groupadd --system sparkpipe-compact
 install -m 0600 "$out/inputs/spark-firewall.nft" "$root/etc/spark-firewall.nft"
 install -d "$root/lib/modules/$KERNEL_RELEASE/updates"
 for module in $MODULE_FILES; do
