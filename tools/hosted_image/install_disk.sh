@@ -5,7 +5,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/owners.sh"
 
 usage() {
-	echo "usage: install_disk.sh --disk DEVICE --image BUILD_DIR --identity BUNDLE_DIR --work DIR" >&2
+	echo "usage: install_disk.sh --disk DEVICE --image BUILD_DIR --identity BUNDLE_DIR --work DIR [--carry LIST] [--carry-accounts NAME,...]" >&2
 	exit 2
 }
 
@@ -14,17 +14,38 @@ fail() {
 	exit 1
 }
 
-disk="" image="" identity="" work=""
+disk="" image="" identity="" work="" carry="" accounts=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--disk) disk="$2"; shift 2 ;;
 		--image) image="$2"; shift 2 ;;
 		--identity) identity="$2"; shift 2 ;;
 		--work) work="$2"; shift 2 ;;
+		--carry) carry="$2"; shift 2 ;;
+		--carry-accounts) accounts="$2"; shift 2 ;;
 		*) usage ;;
 	esac
 done
 [ -n "$disk" ] && [ -n "$image" ] && [ -n "$identity" ] && [ -n "$work" ] || usage
+tailscale_state=var/lib/tailscale
+reserved_path() {
+	case "$1" in
+		home|home/*|lost+found|lost+found/*|.dgxos-*|.hosted-*|"$tailscale_state"|"$tailscale_state"/*) return 0 ;;
+	esac
+	return 1
+}
+carry_patterns=()
+if [ -n "$carry" ]; then
+	[ -f "$carry" ] || fail "$carry is not a carry list"
+	while IFS= read -r pattern; do
+		[ -n "$pattern" ] || continue
+		[[ "$pattern" =~ ^[A-Za-z0-9_.@*-]+(/[A-Za-z0-9_.@*-]+)*$ ]] && [[ "/$pattern/" != */../* ]] && [[ "/$pattern/" != */./* ]] || fail "$carry line '$pattern' is not a path relative to the root"
+		! reserved_path "$pattern" || fail "$carry may not name /$pattern"
+		carry_patterns+=("$pattern")
+	done < "$carry"
+fi
+[[ "$accounts" =~ ^([a-z_][a-z0-9_-]*(,[a-z_][a-z0-9_-]*)*)?$ ]] || fail "--carry-accounts takes a comma list of account names"
+IFS=, read -r -a carry_accounts <<< "$accounts"
 [ -f "$image/rootfs.tar.zst" ] && [ -f "$image/MANIFEST" ] || fail "$image holds no rootfs.tar.zst and MANIFEST"
 grep -qx "audit PASS" "$image/MANIFEST" || fail "$image/MANIFEST does not record a passing dependency audit"
 expected="$(sed -n 's/^rootfs_sha256 //p' "$image/MANIFEST")"
@@ -97,11 +118,23 @@ mount_at "$root" "$target"
 [ "$(findmnt -rn -o TARGET | awk -v top="$target" '$0 == top || index($0, top "/") == 1')" = "$target" ] || fail "something else is mounted under $target"
 [ "$(df --output=avail -B1G "$target" | tail -1 | tr -d ' ')" -ge 10 ] || fail "$root has less than 10 GiB free"
 [ -z "$(find "$target" -mindepth 1 -maxdepth 1 \( -name '.dgxos-*' -o -name '.hosted-*' \) -print -quit)" ] || fail "$root holds a previous aside directory; finish its acceptance or rollback first"
-tailscale_state=var/lib/tailscale
 if [ -e "$target/$tailscale_state" ] || [ -L "$target/$tailscale_state" ]; then
 	[ -d "$target/$tailscale_state" ] && [ ! -L "$target/$tailscale_state" ] || fail "$root's /$tailscale_state is not a directory"
 	[ -z "$(find "$target/$tailscale_state" ! -type f ! -type d -print -quit)" ] || fail "$root's /$tailscale_state may hold only files and directories"
 fi
+carried=()
+for pattern in "${carry_patterns[@]}"; do
+	while IFS= read -r path; do
+		[ -n "$path" ] || continue
+		! reserved_path "$path" || fail "the carry list matches /$path"
+		carried+=("$path")
+	done < <(cd "$target" && shopt -s nullglob && for match in $pattern; do if [ -e "$match" ] || [ -L "$match" ]; then printf '%s\n' "$match"; fi; done)
+done
+carried_kib="$( [ ${#carried[@]} -eq 0 ] || (cd "$target" && du -sk --apparent-size "${carried[@]}" | awk '{total += $1} END {print total}') )"
+[ "$(df --output=avail -B1K "$target" | tail -1 | tr -d ' ')" -ge $(( ${carried_kib:-0} + 10485760 )) ] || fail "$root lacks 10 GiB free beyond the ${carried_kib:-0} KiB the carry list copies"
+for name in "${carry_accounts[@]}"; do
+	grep -q "^$name:" "$target/etc/passwd" && grep -q "^$name:" "$target/etc/shadow" || fail "$root has no account $name to carry"
+done
 mount_at -o ro "$esp" "$work/esp"
 [ -s "$work/esp/EFI/ubuntu/shimaa64.efi" ] || fail "$esp has no EFI/ubuntu/shimaa64.efi for the firmware boot entry to load"
 esp_before="$(foreign_esp_entries "$work/esp")"
@@ -119,7 +152,11 @@ diff -r "$work/esp/EFI/ubuntu" "$aside/esp/EFI/ubuntu" > /dev/null || fail "the 
 unmount_last
 echo "install_disk: copied EFI/ubuntu from $esp into /.dgxos-$stamp/esp"
 
-tar --zstd -xpf "$image/rootfs.tar.zst" --numeric-owner --xattrs --xattrs-include='*' --exclude=./home -C "$target"
+excluded=(--exclude=./home)
+for path in "${carried[@]}"; do
+	excluded+=("--exclude=./$path")
+done
+tar --zstd -xpf "$image/rootfs.tar.zst" --numeric-owner --xattrs --xattrs-include='*' "${excluded[@]}" -C "$target"
 [ ! -e "$target/$tailscale_state" ] || [ -z "$(ls -A "$target/$tailscale_state")" ] || fail "the image carries Tailscale state in /$tailscale_state"
 if [ -d "$aside/root/$tailscale_state" ]; then
 	cp -a "$aside/root/$tailscale_state" "$target/${tailscale_state%/*}/"
@@ -128,8 +165,21 @@ if [ -d "$aside/root/$tailscale_state" ]; then
 else
 	echo "install_disk: the previous root has no /$tailscale_state, so the node joins the tailnet at bring-up"
 fi
+carry_listing() {
+	(cd "$1" && find "$2" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$2" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$2" -type f -exec sha256sum {} + | sort)
+}
+skip=(\( -path "$target/home" -o -path "$aside")
+for path in "${carried[@]}"; do
+	[ ! -e "$target/$path" ] && [ ! -L "$target/$path" ] || fail "the image wrote /$path although the extraction excluded it"
+	mkdir -p "$target/$(dirname "$path")"
+	cp -a "$aside/root/$path" "$target/$path"
+	[ "$(carry_listing "$aside/root" "$path")" = "$(carry_listing "$target" "$path")" ] || fail "the carried /$path differs from /.dgxos-$stamp/root/$path"
+	skip+=(-o -path "$target/$path")
+	echo "install_disk: carried /$path from the previous root"
+done
+skip+=(\) -prune -o)
 [ "$(stat -c %u:%g:%a "$target")" = "0:0:755" ] || fail "the installed root is $(stat -c %u:%g:%a "$target"), not 0:0:755"
-owned="$(foreign_owner "$target" "$target" \( -path "$target/home" -o -path "$aside" \) -prune -o)"
+owned="$(foreign_owner "$target" "$target" "${skip[@]}")"
 [ -z "$owned" ] || fail "${owned#"$target"} belongs to a uid or gid of 1000 or above that the image does not define"
 
 e2label "$root" SPARKROOT
@@ -141,6 +191,22 @@ while IFS=: read -r name gid; do
 done < "$identity/groups.conf"
 grep -q "^$USER_NAME:" "$target/etc/group" || groupadd --root "$target" -g "$USER_GID" "$USER_NAME"
 useradd --root "$target" -u "$USER_UID" -g "$USER_GID" ${USER_GROUPS:+-G "$USER_GROUPS"} -d "/home/$USER_NAME" -M -s "$USER_SHELL" "$USER_NAME"
+for name in "${carry_accounts[@]}"; do
+	user="$(grep "^$name:" "$aside/root/etc/passwd")"
+	IFS=: read -r _ _ uid gid _ <<< "$user"
+	! grep -q "^$name:" "$target/etc/passwd" || fail "the installed root already has an account $name"
+	! cut -d: -f3 "$target/etc/passwd" | grep -qx "$uid" || fail "uid $uid of $name is taken in the installed root"
+	group="$(awk -F: -v gid="$gid" '$3 == gid' "$aside/root/etc/group")"
+	[ -n "$group" ] || fail "the previous root has no group $gid for $name"
+	if ! cut -d: -f3 "$target/etc/group" | grep -qx "$gid"; then
+		! grep -q "^${group%%:*}:" "$target/etc/group" || fail "the installed root has a group ${group%%:*} with another gid"
+		printf '%s\n' "$group" >> "$target/etc/group"
+		grep "^${group%%:*}:" "$aside/root/etc/gshadow" >> "$target/etc/gshadow" || printf '%s:!::\n' "${group%%:*}" >> "$target/etc/gshadow"
+	fi
+	printf '%s\n' "$user" >> "$target/etc/passwd"
+	grep "^$name:" "$aside/root/etc/shadow" >> "$target/etc/shadow"
+	echo "install_disk: carried the account $name (uid $uid, gid $gid) from the previous root"
+done
 (cd "$identity/files" && find . -mindepth 1 -type d -print) | sort | while read -r directory; do
 	[ -d "$target/${directory#./}" ] || install -d -o 0 -g 0 -m "$(stat -c %a "$identity/files/$directory")" "$target/${directory#./}"
 done

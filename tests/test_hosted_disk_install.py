@@ -35,12 +35,12 @@ class InstallDiskInputsTest(unittest.TestCase):
     def manifest(self, text):
         (self.image / "MANIFEST").write_text(text)
 
-    def install(self, disk="/nonexistent/disk"):
+    def install(self, disk="/nonexistent/disk", extra=()):
         return subprocess.run(["bash", str(SCRIPT), "--disk", disk, "--image", str(self.image), "--identity", str(self.identity),
-                               "--work", str(self.work)], capture_output=True, text=True)
+                               "--work", str(self.work), *extra], capture_output=True, text=True)
 
-    def refused(self, message, disk="/nonexistent/disk"):
-        result = self.install(disk)
+    def refused(self, message, disk="/nonexistent/disk", extra=()):
+        result = self.install(disk, extra)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(message, result.stderr)
         self.assertFalse(self.work.exists())
@@ -86,6 +86,32 @@ class InstallDiskInputsTest(unittest.TestCase):
         state.mkdir(parents=True)
         (state / "tailscaled.state").write_text("{}")
         self.refused("carries var/lib/tailscale; the node's Tailscale state comes from its previous root")
+
+    def test_a_carry_list_names_paths_below_the_root_and_never_home_or_tailscale_state(self):
+        listing = Path(self.directory.name) / "carry.txt"
+        for line, message in (("/etc/ceph", "is not a path relative to the root"), ("etc/../home", "is not a path relative to the root"),
+                              ("etc/ceph;rm", "is not a path relative to the root"), ("home", "may not name /home"),
+                              ("home/node/.ssh", "may not name /home/node/.ssh"), ("var/lib/tailscale", "may not name /var/lib/tailscale"),
+                              (".dgxos-1", "may not name /.dgxos-1")):
+            listing.write_text(f"etc/ceph\n{line}\n")
+            self.refused(message, extra=("--carry", str(listing)))
+        listing.write_text("etc/ceph\nvar/lib/ceph\netc/systemd/system/ceph-*\n")
+        self.refused("is not a block device", extra=("--carry", str(listing)))
+        self.refused("is not a carry list", extra=("--carry", str(listing) + ".missing"))
+
+    def test_carried_accounts_are_a_comma_list_of_names(self):
+        self.refused("--carry-accounts takes a comma list of account names", extra=("--carry-accounts", "sparkemerg;id"))
+        self.refused("is not a block device", extra=("--carry-accounts", "sparkemerg,ops"))
+
+    def test_the_fleet_carry_list_is_valid_and_carries_the_node_state_it_needs(self):
+        lines = (ROOT / "tools" / "hosted_image" / "carry-fleet.txt").read_text().splitlines()
+        self.assertEqual(len(lines), len(set(lines)))
+        for line in lines:
+            self.assertRegex(line, r"^[A-Za-z0-9_.@*-]+(/[A-Za-z0-9_.@*-]+)*$")
+            self.assertFalse(line.startswith(("home", "var/lib/tailscale", "lost+found")))
+        for needed in ("var/lib/ceph", "etc/ceph", "var/lib/containers", "etc/systemd/system/ceph-*", "usr/local/sbin/ds4-extnvme-link",
+                       "etc/systemd/system/ds4-extnvme-link.service", "etc/ssh/ssh_host_*", "etc/netplan/90-NM-*.yaml"):
+            self.assertIn(needed, lines)
 
     def test_the_bundle_is_read_as_data_and_never_executed(self):
         marker = Path(self.directory.name) / "executed"

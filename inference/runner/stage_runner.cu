@@ -354,7 +354,8 @@ typedef struct SparkStageRunnerState
 	uint16_t *distribution_normed;
 	float *distribution_logits;
 	float *distribution_gathered;
-	SparkGpuGraphExec graph_exec[STAGE_RUNNER_GRAPH_SLOTS];
+	SparkDeviceProgram *graph_program[STAGE_RUNNER_GRAPH_SLOTS];
+	uint32_t programs;
 	SparkStageRunnerStep graph_input[STAGE_RUNNER_GRAPH_SLOTS];
 	LmWeightPrefetchPlan graph_prefetch[STAGE_RUNNER_GRAPH_SLOTS];
 	uint64_t capture_ns;
@@ -1180,14 +1181,26 @@ static SparkStatus StageRunnerStartupMark(SparkStageRunnerState *state, const ch
 static SparkStatus StageRunnerAdoptQueue(SparkStageRunnerState *state)
 {
 	SparkStatus status = SparkDeviceInitialize(0);
+	const SparkDeviceProperties *properties;
 	if ( status == SPARK_STATUS_DUPLICATE )
 		status = SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceQueueAdopt(&state->queue, (void *)state->stream, "stage runner");
 	if ( status != SPARK_STATUS_OK )
+	{
 		fprintf(stderr, "sparkpipe_stage_runner: the device API cannot adopt the execution stream: %s %s\n",
 			SparkDeviceLastError()->operation, SparkDeviceLastError()->text);
-	return status;
+		return status;
+	}
+	properties = SparkDeviceGetProperties();
+	state->programs = strcmp(properties->backend, "metal") != 0 ? 1u : 0u;
+	if ( state->programs != 0u && (properties->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) == 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: fatal: the %s device backend runs no programs, so decode steps would launch eagerly, which only "
+			"the metal backend does by choice\n", properties->backend);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	}
+	return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStageRunnerConfiguration *configuration,
@@ -2227,7 +2240,8 @@ static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, con
 {
 	const uint32_t shape = (key == 1u && rows == sequences) ||
 		(key == 2u && sequences == 1u && rows > 1u && state->model_interface->graph_key != 0) ? 1u : 0u;
-	return (state->resident != 0u || state->geometry.experts == 0u) && StageRunnerGraphCollectiveReady(state) != 0u && runner->owns_embedding != 0u &&
+	return state->programs != 0u && (state->resident != 0u || state->geometry.experts == 0u) && StageRunnerGraphCollectiveReady(state) != 0u &&
+		runner->owns_embedding != 0u &&
 		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
 		rows <= STAGE_RUNNER_GRAPH_ROWS ? 1u : 0u;
 }
@@ -2260,14 +2274,23 @@ static void StageRunnerTapFree(SparkStageRunnerState *state)
 	state->tap_final_entry = UINT32_MAX;
 }
 
+static void StageRunnerProgramDrop(SparkStageRunnerState *state, uint32_t slot)
+{
+	if ( state->graph_program[slot] == 0 )
+		return;
+	if ( (state->queue != 0 && SparkDeviceQueueWait(state->queue, SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK) ||
+		SparkDeviceProgramDestroy(state->graph_program[slot]) != SPARK_STATUS_OK )
+	{
+		fprintf(stderr, "STAGE-PROGRAM-DESTROY-FAILED slot=%u %s: fatal, a decode program is still in use\n", slot, SparkDeviceLastError()->text);
+		abort();
+	}
+	state->graph_program[slot] = 0;
+}
+
 static void StageRunnerGraphDrop(SparkStageRunnerState *state)
 {
 	for ( uint32_t index = 0u; index < STAGE_RUNNER_GRAPH_SLOTS; ++index )
-	{
-		if ( state->graph_exec[index] != 0 )
-			(void)SparkGpuGraphExecDestroy(state->graph_exec[index]);
-		state->graph_exec[index] = 0;
-	}
+		StageRunnerProgramDrop(state, index);
 }
 
 static LmWeightPrefetchPlan *StageRunnerGraphPrefetch(SparkStageRunnerState *state, uint32_t slot)
@@ -2303,48 +2326,38 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 {
 	const uint64_t started = SparkMonotonicNs();
 	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state), in->last_rows_only);
-	SparkGpuGraph graph = 0;
-	SparkGpuGraphExec exec = 0;
-	SparkGpuError error = SPARK_GPU_SUCCESS;
-	size_t nodes = 0u;
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkStatus finished = SPARK_STATUS_OK;
 	LmWeightPrefetchPlan *prefetch = StageRunnerGraphPrefetch(state, slot);
 	SparkStatus status = prefetch == 0 ? SPARK_STATUS_CAPACITY_EXCEEDED :
 		state->device_collective_created != 0 ? SparkTpDeviceCollectiveArmCapture(&state->device_collective) : SPARK_STATUS_OK;
-	if ( status == SPARK_STATUS_OK && state->queue != 0 )
-		status = SparkDeviceQueueCapture(state->queue, 1u);
+	memset(&info, 0, sizeof(info));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceProgramRecord(state->queue, "stage runner decode step");
 	if ( status == SPARK_STATUS_OK )
 	{
 		LmWeightPrefetchArm(prefetch, stream);
-		error = SparkGpuStreamBeginCapture(stream, SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL);
-		if ( error == SPARK_GPU_SUCCESS )
-		{
-			status = StageRunnerStepBody(state, runner, in, 0u, stream);
-			error = SparkGpuStreamEndCapture(stream, &graph);
-		}
-		if ( state->queue != 0 )
-			(void)SparkDeviceQueueCapture(state->queue, 0u);
-		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS ? 1u : 0u) != SPARK_GPU_SUCCESS && error == SPARK_GPU_SUCCESS )
-			error = SPARK_GPU_ERROR_MEMORY_ALLOCATION;
+		status = StageRunnerStepBody(state, runner, in, 0u, stream);
+		finished = SparkDeviceProgramFinish(state->queue, &program);
+		if ( status == SPARK_STATUS_OK )
+			status = finished;
+		if ( LmWeightPrefetchDisarm(prefetch, status == SPARK_STATUS_OK ? 1u : 0u) != SPARK_GPU_SUCCESS && status == SPARK_STATUS_OK )
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	}
 	if ( state->device_collective_created != 0 )
 		(void)SparkTpDeviceCollectiveDisarmCapture(&state->device_collective);
-	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && graph != 0 )
-		error = SparkGpuGraphGetNodes(graph, 0, &nodes);
-	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && graph != 0 )
-		error = SparkGpuGraphInstantiate(&exec, graph, 0);
-	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && exec != 0 )
-		error = SparkGpuGraphUpload(exec, stream);
-	if ( graph != 0 )
-		(void)SparkGpuGraphDestroy(graph);
-	if ( status == SPARK_STATUS_OK && error == SPARK_GPU_SUCCESS && exec != 0 )
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceProgramGetInfo(program, &info);
+	if ( status == SPARK_STATUS_OK )
 		StageRunnerMemoryMark(state, "graph", rows);
-	if ( status != SPARK_STATUS_OK || error != SPARK_GPU_SUCCESS || exec == 0 || prefetch->dropped != 0u )
+	if ( status != SPARK_STATUS_OK || program == 0 || prefetch->dropped != 0u )
 	{
-		fprintf(stderr, "STAGE-GRAPH-CAPTURE-FAILED key=%u rows=%u status=%d cuda=%s prefetch_dropped=%u: fatal, a decode row count has no complete graph\n",
-			in->graph_key, rows, (int)status, SparkGpuGetErrorString(error), prefetch != 0 ? prefetch->dropped : 0u);
+		fprintf(stderr, "STAGE-PROGRAM-RECORD-FAILED key=%u rows=%u status=%d device=%s prefetch_dropped=%u: fatal, a decode row count has no complete program\n",
+			in->graph_key, rows, (int)status, SparkDeviceLastError()->text, prefetch != 0 ? prefetch->dropped : 0u);
 		abort();
 	}
-	state->graph_exec[slot] = exec;
+	state->graph_program[slot] = program;
 	StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &state->graph_input[slot]);
 	state->graph_token_out[slot] = state->step_dispatch->output_token_ids;
 	state->graph_score_out[slot] = state->step_dispatch->output_scores;
@@ -2353,23 +2366,23 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	uint64_t prefetch_bytes = 0u;
 	for ( uint32_t group = 0u; group < prefetch->groups; ++group )
 		prefetch_bytes += prefetch->host[group].total;
-	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%llu capture_ms=%.1f prefetch_groups=%u prefetch_mib=%.1f prefetch_dropped=%u\n", in->graph_key, rows,
-		(unsigned long long)nodes, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, (double)prefetch_bytes / 1048576.0, prefetch->dropped);
+	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%u kernels=%u capture_ms=%.1f prefetch_groups=%u prefetch_mib=%.1f prefetch_dropped=%u\n", in->graph_key,
+		rows, info.nodes, info.kernels, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, (double)prefetch_bytes / 1048576.0, prefetch->dropped);
 }
 
-static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, SparkGpuGraphExec exec, SparkGpuStream stream)
+static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, SparkDeviceProgram *program, SparkGpuStream stream)
 {
 	SparkStatus status = state->device_collective_created != 0 ? SparkTpDeviceCollectiveGraphPreLaunch(&state->device_collective, stream) : SPARK_STATUS_OK;
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
 		status = SparkTpDeviceCollectiveGraphCancelSeed(&state->device_collective, stream);
 	const uint64_t started = SparkMonotonicNs();
-	if ( status == SPARK_STATUS_OK && SparkGpuGraphLaunch(exec, stream) != SPARK_GPU_SUCCESS )
-		status = SPARK_STATUS_IO_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceProgramRun(program, state->queue, 0, 0u);
 	state->timing_graph_ns += SparkMonotonicNs() - started;
 	state->timing_graph_steps++;
 	if ( status != SPARK_STATUS_OK )
 	{
-		fprintf(stderr, "STAGE-GRAPH-LAUNCH-FAILED status=%d\n", (int)status);
+		fprintf(stderr, "STAGE-GRAPH-LAUNCH-FAILED status=%d %s\n", (int)status, SparkDeviceLastError()->text);
 		return status;
 	}
 	state->graph_launched = 1u;
@@ -2472,17 +2485,14 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	{
 		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
 		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
-		if ( state->graph_exec[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
+		if ( state->graph_program[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
 			state->graph_token_out[slot] != dispatch->output_token_ids || state->graph_score_out[slot] != dispatch->output_scores ||
 			state->graph_distribution_count[slot] != dispatch->distribution_count) )
-		{
-			(void)SparkGpuGraphExecDestroy(state->graph_exec[slot]);
-			state->graph_exec[slot] = 0;
-		}
-		if ( state->graph_exec[slot] == 0 )
+			StageRunnerProgramDrop(state, slot);
+		if ( state->graph_program[slot] == 0 )
 			StageRunnerGraphCapture(state, runner, in, stream);
-		if ( state->graph_exec[slot] != 0 )
-			return StageRunnerGraphLaunch(state, state->graph_exec[slot], stream);
+		if ( state->graph_program[slot] != 0 )
+			return StageRunnerGraphLaunch(state, state->graph_program[slot], stream);
 	}
 	if ( in->graph_key != 0u && state->resident == 0u && state->geometry.experts != 0u )
 	{
@@ -3293,11 +3303,11 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 	if ( runner == 0 || runner->private_state == 0 )
 		return;
 	state = (SparkStageRunnerState *)runner->private_state;
+	StageRunnerGraphDrop(state);
 	if ( state->queue != 0 )
 		(void)SparkDeviceQueueDestroy(state->queue);
 	state->queue = 0;
 	StageRunnerDestroyLanes(state);
-	StageRunnerGraphDrop(state);
 	StageRunnerGraphPrefetchFree(state);
 	StageRunnerTapFree(state);
 	SparkStageRunnerStrayReport(state);

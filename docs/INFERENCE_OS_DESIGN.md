@@ -222,20 +222,25 @@ is recorded in the code itself:
   events, never on a CUDA stream or event, and never open-codes a cudaMemcpy
   between an untagged "host pointer" and "device pointer";
   `tests/test_device_neutral.py` keeps device headers and calls out of it.
-- **Leave adopted queues to their owner.** The CUDA stage runner captures
-  its decode graphs on the stream it adopted, while the KV binding's
-  threads copy, free and record events on their own queues. A query of a
-  capturing stream invalidates the capture and the rank aborts with
-  `STAGE-GRAPH-CAPTURE-FAILED`. So the device layer asks the device about an
-  adopted queue only when a caller waits on or queries that queue. When it
-  picks a stamp slot or checks whether a buffer, event or kernel is busy, it
-  reads the completion that the owner's own waits recorded. A queue takes a
-  free stamp slot before it reuses another queue's settled one. For the
-  length of each capture the runner marks its queue
-  (`SparkDeviceQueueCapture`). Any thread's wait on a marked queue, including
-  `SparkDeviceSynchronize`, polls without touching the stream until the mark
-  clears, then waits as usual. The KV pool thread's shrink therefore drains
-  the device after a capture instead of breaking it. Its unmapping, and the
+- **Leave adopted queues to their owner.** The stage runner records its
+  decode steps as device programs ([device programs](DEVICE_PROGRAMS.md))
+  on the queue it adopted, while the KV binding's threads copy, free and
+  record events on their own queues. On CUDA a program is a stream
+  capture, and a query of a capturing stream invalidates it; the rank
+  then aborts with `STAGE-PROGRAM-RECORD-FAILED`. While a queue records,
+  another thread's wait on it or device synchronize waits until the
+  recording ends, and its query answers pending. The device layer asks the
+  device about an adopted queue only when a caller waits on or queries that
+  queue. When it picks a stamp slot or checks whether a buffer, event or
+  kernel is busy, it reads the completion that the owner's own waits
+  recorded, so the runner waits on its queue before it destroys a program.
+  A queue takes a free stamp slot before it reuses another queue's settled
+  one. A caller that captures an adopted stream itself marks the queue for
+  the length of the capture (`SparkDeviceQueueCapture`). Any thread's wait
+  on a marked queue, including `SparkDeviceSynchronize`, polls without
+  touching the stream until the mark clears, then waits as usual. The KV
+  pool thread's shrink therefore drains the device after a recording or a
+  capture instead of breaking it. Its unmapping, and the
   grow's mapping, leave a capture intact.
   `tests/test_device_adopted_capture_cuda.py` and
   `tests/test_device_capture_cuda.py` check these rules. Queues the device
