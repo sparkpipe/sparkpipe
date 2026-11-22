@@ -427,7 +427,13 @@ memory both follow this rule on an integrated GPU. A discrete GPU's video
 memory keeps 2 MiB pages from 8 MiB at every size: the hole below was
 measured in GB10 system memory, and the hub's gate passed with those pages.
 Its write-back system memory (host-pinned and shared-coherent) takes 2 MiB
-pages from 2 MiB up to 4 GiB and 64 KiB pages from 4 GiB on.
+pages from 2 MiB up to 4 GiB and 4 KiB pages from 4 GiB on. On the hub's
+RTX 5090 under 595.84, a write-back object of 4 GiB or more in 64 KiB or
+2 MiB pages loses 4 KiB at its end for every whole 4 GiB it holds: copy-engine
+fills and copies of 4098 MiB, 6 GiB, 8 GiB and 16 GiB left the last 4, 4,
+8 and 16 KiB unwritten, with no fault and nothing in the kernel log. In
+4 KiB pages every byte arrives (`nvrm-large-transfers` at 8, 10.5 and
+16 GiB), and video memory in 2 MiB pages is right at every size.
 
 An object of 4 GiB or more in 2 MiB pages, mapped through the
 unified-memory external range, has no GPU mapping for the 64 KiB at
