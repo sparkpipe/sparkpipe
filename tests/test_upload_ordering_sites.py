@@ -30,6 +30,7 @@ SITES = {
     "model-families/motif/source/motif_stage.cuh": 1,
     "model-families/qwen38/source/qwen38_hybrid_stage.cuh": 4,
     "ring/transport/tp_device_collective.c": 29,
+    "runtime/spark_weightd_lazy_pack.c": 1,
 }
 HOST_VISIBLE = {
     "inference/runner/pass_prefill.cuh": 5,

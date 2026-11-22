@@ -302,6 +302,13 @@ SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int 
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	(void)memory;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_create_host",owner,0,"the host backend has no exportable host memory"));
+}
+
 SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
 {
 	void *base;

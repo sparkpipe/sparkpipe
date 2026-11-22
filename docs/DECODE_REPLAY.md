@@ -105,6 +105,15 @@ hosts) against the four-node trace:
   streams: the step is 0.5-1.2 ms slower at 8 rows and 0.36-0.46 ms faster at
   1 row. With 8 MiB the GEMVs gain 15-26% and the fold loses 31-35%. Eight
   prefetch threads behave as 32.
+- **Window fold at one row**: the four-rank step folds its window in
+  `D41WindowFoldClusterKernel` (eight blocks a head share the scores, each
+  folds 64 elements of the latent) at one row, and in
+  `D41WindowFoldWholeKernel` (one block a row and head) at more. Both give
+  the same bits (`tests/test_dsv41_window_fold.py`, and the replay's final
+  streams at 1, 8 and 16 rows with either kernel forced), so the choice by
+  row count changes no output. On one GB10 the cluster fold takes 51.7 us a
+  layer at one row against 66.9 us, but 386 us against 79 us at eight rows
+  and 782 us against 122 us at sixteen.
 - **Boundaries:** in the two-kernel chains every gap is 0.00-0.16 us, against
   0.48 and 1.15 us for the same kernels in the step, so most of a boundary's
   cost in the step comes from the surrounding graph rather than from the pair.

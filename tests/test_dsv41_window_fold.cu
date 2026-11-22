@@ -411,6 +411,9 @@ int main(void)
 		{6u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
 		{2u, 8u, 8u, 8u, 1u, 0u, 0u, WINDOW * LATENT, 3u},
 		{300u, 16u, 16u, 16u, 1u, 0u, 5u, WINDOW * LATENT, 3u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 9999u, WINDOW * LATENT, 3u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 1u},
+		{1u, 16u, 16u, 16u, 1u, 0u, 70000u, WINDOW * LATENT, 3u},
 	};
 	uint32_t failures = 0u;
 	for ( const Case &c : cases )
