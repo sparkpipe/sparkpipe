@@ -40,7 +40,6 @@
 #define GPU_LOW_BYTES 0xf000000000ull
 #define GPU_VASPACE_BASE 0x1000ull
 #define GPU_VASPACE_BYTES 0x1fffffb000000ull
-#define GPU_VIRTUAL_LIMIT 0x1ffffffffffffull
 #define GPU_HOST_HANDLE_BASE 0x1000u
 #define GPU_SHARED_WINDOW 0x729400000000ull
 #define GPU_LOCAL_WINDOW 0x729300000000ull
@@ -283,12 +282,8 @@ static SparkStatus GpuUnifiedMemory(SparkNvrmGpu *gpu, const char *owner)
 
 static SparkStatus GpuAddressSpace(SparkNvrmGpu *gpu, const char *owner)
 {
-	NV_MEMORY_VIRTUAL_ALLOCATION_PARAMS virtual_memory;
 	NV_VASPACE_ALLOCATION_PARAMETERS vaspace;
 	uint8_t *page = 0;
-	memset(&virtual_memory,0,sizeof(virtual_memory));
-	virtual_memory.limit = GPU_VIRTUAL_LIMIT;
-	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->device,NV01_MEMORY_VIRTUAL,&virtual_memory,(uint32_t)sizeof(virtual_memory),&gpu->virtual_memory,owner));
 	GPU_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->subdevice,gpu->usermode_class,0,0u,&gpu->usermode,owner));
 	GPU_TRY(GpuMapToCpu(gpu,gpu->usermode,0u,NVC361_NV_USERMODE__SIZE,0u,0u,0,&gpu->usermode_fd,&page,owner));
 	gpu->usermode_page = (volatile uint32_t *)(void *)page;
@@ -303,19 +298,6 @@ static SparkStatus GpuAddressSpace(SparkNvrmGpu *gpu, const char *owner)
 static uint32_t GpuReadOnly(const SparkNvrmMemory *memory)
 {
 	return(memory->kind == SPARK_NVRM_MEMORY_USER_READ_ONLY ? 1u : 0u);
-}
-
-static void GpuDmaUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle)
-{
-	NVOS47_PARAMETERS dma;
-	memset(&dma,0,sizeof(dma));
-	dma.hClient = gpu->rm.client;
-	dma.hDevice = gpu->device;
-	dma.hDma = gpu->virtual_memory;
-	dma.hMemory = handle;
-	dma.dmaOffset = address;
-	dma.size = bytes;
-	(void)SparkNvrmRmIoctl(gpu->rm.control,NV_ESC_RM_UNMAP_MEMORY_DMA,&dma,(uint32_t)sizeof(dma),"free","free");
 }
 
 static void GpuRangeFree(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
@@ -352,38 +334,12 @@ static SparkStatus GpuExternalMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t 
 SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle, uint64_t offset, uint32_t read_only, const char *owner)
 {
 	UVM_CREATE_EXTERNAL_RANGE_PARAMS range;
-	NVOS46_PARAMETERS dma;
 	SparkStatus status;
 	memset(&range,0,sizeof(range));
 	range.base = address;
 	range.length = bytes;
 	GPU_TRY(SparkNvrmRmUvm(&gpu->rm,-1,UVM_CREATE_EXTERNAL_RANGE,&range,(uint32_t)sizeof(range),&range.rmStatus,"allocate",owner));
-	memset(&dma,0,sizeof(dma));
-	dma.hClient = gpu->rm.client;
-	dma.hDevice = gpu->device;
-	dma.hDma = gpu->virtual_memory;
-	dma.hMemory = handle;
-	dma.offset = offset;
-	dma.length = bytes;
-	dma.flags = (NvV32)(SPARK_NVRM_VALUE(NVOS46_FLAGS_PAGE_SIZE,NVOS46_FLAGS_PAGE_SIZE_4KB) |
-		SPARK_NVRM_VALUE(NVOS46_FLAGS_CACHE_SNOOP,NVOS46_FLAGS_CACHE_SNOOP_ENABLE) |
-		SPARK_NVRM_VALUE(NVOS46_FLAGS_DMA_OFFSET_FIXED,NVOS46_FLAGS_DMA_OFFSET_FIXED_TRUE) |
-		SPARK_NVRM_VALUE(NVOS46_FLAGS_ACCESS,read_only != 0u ? NVOS46_FLAGS_ACCESS_READ_ONLY : NVOS46_FLAGS_ACCESS_READ_WRITE));
-	dma.dmaOffset = address;
-	status = SparkNvrmRmIoctl(gpu->rm.control,NV_ESC_RM_MAP_MEMORY_DMA,&dma,(uint32_t)sizeof(dma),"allocate",owner);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkNvrmRmStatus(dma.status,"allocate",owner);
-	if ( status == SPARK_STATUS_OK && dma.dmaOffset != address )
-	{
-		GpuDmaUnmap(gpu,dma.dmaOffset,bytes,handle);
-		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"allocate",owner,0,"the module mapped the memory at another address than the one asked for");
-	}
-	else if ( status == SPARK_STATUS_OK )
-	{
-		status = GpuExternalMap(gpu,address,bytes,handle,offset,read_only,owner);
-		if ( status != SPARK_STATUS_OK )
-			GpuDmaUnmap(gpu,address,bytes,handle);
-	}
+	status = GpuExternalMap(gpu,address,bytes,handle,offset,read_only,owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		GpuRangeFree(gpu,address,bytes);
@@ -394,8 +350,8 @@ SparkStatus SparkNvrmGpuMap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes,
 
 void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint32_t handle)
 {
+	(void)handle;
 	GpuRangeFree(gpu,address,bytes);
-	GpuDmaUnmap(gpu,address,bytes,handle);
 }
 
 static SparkStatus GpuUvmMap(SparkNvrmGpu *gpu, SparkNvrmMemory *memory, const char *owner)

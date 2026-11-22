@@ -144,7 +144,6 @@ typedef struct SparkNvrmGpu
 	uint32_t integrated;
 	uint32_t device;
 	uint32_t subdevice;
-	uint32_t virtual_memory;
 	uint32_t vaspace;
 	uint32_t channel_group;
 	uint32_t channel_group_scheduled;
