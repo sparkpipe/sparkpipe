@@ -29,6 +29,7 @@
 #define DRAFTD_DEFAULT_MAX_COMMITTED 1048576u
 #define DRAFTD_DEFAULT_TAP_ROWS 2048u
 #define DRAFTD_DEFAULT_STREAMS 256u
+#define DRAFTD_DEFAULT_WAIT_MS 30u
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
 #endif
@@ -65,6 +66,7 @@ typedef struct DraftdReplay
 	uint64_t drafted;
 	uint64_t unknown;
 	uint64_t unavailable;
+	uint64_t waited;
 } DraftdReplay;
 
 typedef struct DraftdLane
@@ -82,6 +84,10 @@ typedef struct DraftdLane
 	uint64_t requests_reported;
 	uint32_t engine;
 	uint32_t active;
+	uint32_t wait_ms;
+	uint32_t waiting;
+	uint64_t waiting_deadline_ns;
+	SparkDraftServerRequest waiting_request;
 	char module_path[DRAFTD_PATH_BYTES];
 	char pack_path[DRAFTD_PATH_BYTES];
 	char model[64];
@@ -200,6 +206,42 @@ static void DraftdIngest(DraftdReplay *replay, const SparkTapStreamReaderFrame *
 		replay->seen[index].end = end;
 }
 
+static uint32_t DraftdEnginePropose(DraftdLane *lane, const SparkDraftServerRequest *request)
+{
+	DraftdReplay *replay = &lane->replay;
+	uint32_t count = 0u;
+	SparkStatus status;
+	lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK;
+	lane->answer_count = 0u;
+	if ( lane->active == 0u )
+	{
+		replay->unavailable++;
+		lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE;
+		return 1u;
+	}
+	status = lane->module->propose(lane->module_state, request, lane->answer_nodes, request->node_capacity < lane->max_nodes ?
+		request->node_capacity : lane->max_nodes, &count);
+	if ( status == SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS )
+		return 0u;
+	if ( status == SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT )
+	{
+		replay->unavailable++;
+		lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE;
+		return 1u;
+	}
+	if ( status != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS )
+	{
+		lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_INTERNAL;
+		return 1u;
+	}
+	if ( count > 1u )
+		replay->drafted++;
+	else
+		replay->unknown++;
+	lane->answer_count = count;
+	return 1u;
+}
+
 static void DraftdPropose(DraftdLane *lane, const SparkDraftServerRequest *request)
 {
 	DraftdReplay *replay = &lane->replay;
@@ -208,28 +250,6 @@ static void DraftdPropose(DraftdLane *lane, const SparkDraftServerRequest *reque
 	const DraftdStream *following;
 	uint32_t count = 1u, depth;
 	lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_OK;
-	if ( lane->engine != 0u )
-	{
-		lane->answer_count = 0u;
-		if ( lane->active == 0u )
-		{
-			replay->unavailable++;
-			lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE;
-			return;
-		}
-		if ( lane->module->propose(lane->module_state, request, lane->answer_nodes, request->node_capacity < lane->max_nodes ?
-			request->node_capacity : lane->max_nodes, &count) != SPARK_STATUS_OK )
-		{
-			lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_INTERNAL;
-			return;
-		}
-		if ( count > 1u )
-			replay->drafted++;
-		else
-			replay->unknown++;
-		lane->answer_count = count;
-		return;
-	}
 	if ( replay->require_taps != 0u && DraftdTapEnd(replay, request->sequence_id) < request->position )
 	{
 		replay->unavailable++;
@@ -277,11 +297,11 @@ static void DraftdReport(const DraftdLane *lane)
 	SparkDraftServerGetStats(lane->server, &server);
 	SparkTapStreamReaderGetStats(lane->taps, &taps);
 	printf("DRAFTD-STATS lane=%s connections=%llu requests=%llu bad=%llu answered=%llu dropped=%llu drafted=%llu unknown=%llu unavailable=%llu "
-		"tap_streams=%llu tap_refused=%llu tap_frames=%llu tap_rows=%llu\n", lane->name, (unsigned long long)server.connections,
+		"waited=%llu tap_streams=%llu tap_refused=%llu tap_frames=%llu tap_rows=%llu\n", lane->name, (unsigned long long)server.connections,
 		(unsigned long long)server.requests, (unsigned long long)server.bad_requests, (unsigned long long)server.answered,
 		(unsigned long long)server.dropped, (unsigned long long)lane->replay.drafted, (unsigned long long)lane->replay.unknown,
-		(unsigned long long)lane->replay.unavailable, (unsigned long long)taps.streams, (unsigned long long)taps.refused,
-		(unsigned long long)taps.frames, (unsigned long long)taps.rows);
+		(unsigned long long)lane->replay.unavailable, (unsigned long long)lane->replay.waited, (unsigned long long)taps.streams,
+		(unsigned long long)taps.refused, (unsigned long long)taps.frames, (unsigned long long)taps.rows);
 	fflush(stdout);
 }
 
@@ -327,7 +347,7 @@ static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t obj
 		"taps", "drafter"};
 	static const char *const tap_members[] = {"host", "port", "model_tag", "hidden", "entries", "max_rows"};
 	static const char *const drafter_members[] = {"kind", "confidence", "streams", "require_taps", "delay_ms", "module", "pack", "model",
-		"revision", "context_bytes"};
+		"revision", "context_bytes", "wait_ms"};
 	SparkDraftServerConfig server;
 	char host[128] = "127.0.0.1", kind[32] = "";
 	const int32_t taps = SparkJsonFindObjectMember(document, object, "taps"), drafter = SparkJsonFindObjectMember(document, object, "drafter");
@@ -355,7 +375,8 @@ static SparkStatus DraftdLaneOpen(const SparkJsonDocument *document, int32_t obj
 		DraftdCopyText(document, drafter, "kind", kind, sizeof(kind), 1u) != SPARK_STATUS_OK ||
 		DraftdUInt(document, drafter, "streams", &lane->replay.capacity, DRAFTD_DEFAULT_STREAMS) != SPARK_STATUS_OK ||
 		DraftdUInt(document, drafter, "require_taps", &require, 0u) != SPARK_STATUS_OK ||
-		DraftdUInt(document, drafter, "delay_ms", &lane->replay.delay_ms, 0u) != SPARK_STATUS_OK )
+		DraftdUInt(document, drafter, "delay_ms", &lane->replay.delay_ms, 0u) != SPARK_STATUS_OK ||
+		DraftdUInt(document, drafter, "wait_ms", &lane->wait_ms, DRAFTD_DEFAULT_WAIT_MS) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	lane->replay.confidence = 0.9f;
 	if ( SparkJsonFindObjectMember(document, drafter, "confidence") >= 0 &&
@@ -457,34 +478,82 @@ static void DraftdLaneClose(DraftdLane *lane)
 	lane->module_library = 0;
 }
 
+static uint32_t DraftdConnectionWaiting(const DraftdLane *lane)
+{
+	int fds[SPARK_DRAFT_SERVER_POLL_FDS];
+	uint32_t events[SPARK_DRAFT_SERVER_POLL_FDS];
+	uint64_t deadline = 0u;
+	struct pollfd poller;
+	if ( SparkDraftServerPollFds(lane->server, fds, events, &deadline) == 0u )
+		return 0u;
+	poller.fd = fds[0];
+	poller.events = POLLIN;
+	poller.revents = 0;
+	return poll(&poller, 1u, 0) > 0 && (poller.revents & POLLIN) != 0 ? 1u : 0u;
+}
+
+static void DraftdEngineWaitStep(DraftdLane *lane, uint32_t ingested)
+{
+	uint32_t answered = 0u;
+	if ( lane->waiting == 0u )
+		return;
+	if ( lane->active != 0u && ingested != 0u && DraftdConnectionWaiting(lane) == 0u && SparkMonotonicNs() < lane->waiting_deadline_ns )
+		answered = DraftdEnginePropose(lane, &lane->waiting_request);
+	if ( answered == 0u && (lane->active == 0u || DraftdConnectionWaiting(lane) != 0u || SparkMonotonicNs() >= lane->waiting_deadline_ns) )
+	{
+		lane->replay.unavailable++;
+		lane->answer_status = SPARK_DRAFT_BRIDGE_SERVER_STATUS_UNAVAILABLE;
+		lane->answer_count = 0u;
+		answered = 1u;
+	}
+	if ( answered == 0u )
+		return;
+	lane->waiting = 0u;
+	(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
+}
+
 static void DraftdLaneStep(DraftdLane *lane)
 {
 	SparkTapStreamReaderFrame frame;
 	SparkDraftServerRequest request;
 	SparkDraftServerStats stats;
+	uint32_t ingested = 0u;
 	while ( lane->taps != 0 && SparkTapStreamReaderAdvance(lane->taps, &frame) == SPARK_STATUS_OK )
 	{
 		if ( lane->engine == 0u )
 			DraftdIngest(&lane->replay, &frame);
 		else if ( lane->active != 0u && lane->module->ingest(lane->module_state, &frame) != SPARK_STATUS_OK )
 			fprintf(stderr, "sparkpipe_draftd: lane %s: the drafter module refused a tap frame\n", lane->name);
+		else if ( lane->active != 0u )
+			ingested = 1u;
 	}
 	if ( lane->answer_pending != 0u && SparkMonotonicNs() >= lane->answer_due_ns )
 	{
 		lane->answer_pending = 0u;
 		(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
 	}
-	if ( lane->answer_pending == 0u && SparkDraftServerAdvance(lane->server, &request) == SPARK_STATUS_OK )
+	DraftdEngineWaitStep(lane, ingested);
+	while ( lane->answer_pending == 0u && lane->waiting == 0u && SparkDraftServerAdvance(lane->server, &request) == SPARK_STATUS_OK )
 	{
-		DraftdPropose(lane, &request);
-		if ( lane->replay.delay_ms != 0u )
+		if ( lane->engine != 0u && DraftdEnginePropose(lane, &request) == 0u )
 		{
-			lane->answer_pending = 1u;
-			lane->answer_due_ns = SparkMonotonicNs() + (uint64_t)lane->replay.delay_ms * DRAFTD_NS_PER_MS;
+			lane->replay.waited++;
+			lane->waiting = 1u;
+			lane->waiting_request = request;
+			lane->waiting_deadline_ns = SparkMonotonicNs() + (uint64_t)lane->wait_ms * DRAFTD_NS_PER_MS;
 		}
 		else
-			(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
-		(void)SparkDraftServerAdvance(lane->server, &request);
+		{
+			if ( lane->engine == 0u )
+				DraftdPropose(lane, &request);
+			if ( lane->replay.delay_ms != 0u )
+			{
+				lane->answer_pending = 1u;
+				lane->answer_due_ns = SparkMonotonicNs() + (uint64_t)lane->replay.delay_ms * DRAFTD_NS_PER_MS;
+			}
+			else
+				(void)SparkDraftServerAnswer(lane->server, lane->answer_status, lane->answer_nodes, lane->answer_count, 0);
+		}
 	}
 	SparkDraftServerGetStats(lane->server, &stats);
 	if ( stats.requests >= lane->requests_reported + DRAFTD_REPORT_EVERY )
@@ -786,6 +855,8 @@ static int DraftdWait(DraftdLane *lanes, uint32_t lane_count, int control_fd, ui
 			wake = deadline;
 		if ( lanes[index].answer_pending != 0u && lanes[index].answer_due_ns < wake )
 			wake = lanes[index].answer_due_ns;
+		if ( lanes[index].waiting != 0u && lanes[index].waiting_deadline_ns < wake )
+			wake = lanes[index].waiting_deadline_ns;
 		deadline = 0u;
 		found = SparkTapStreamReaderPollFds(lanes[index].taps, lane_fds, events, &deadline);
 		for ( uint32_t fd = 0u; fd < found; ++fd )

@@ -13,11 +13,17 @@
 #define PROBE_MODULE_ABI SPARK_DRAFTER_MODULE_ABI_VERSION
 #endif
 
+#define PROBE_TOKENS 64u
+
 typedef struct ProbeState
 {
 	SparkWeightdLazyPack *pack;
 	uint64_t frames;
 	uint64_t proposals;
+	uint64_t forwards;
+	uint64_t sequence_id;
+	uint64_t held_end;
+	uint32_t tokens[PROBE_TOKENS];
 } ProbeState;
 
 static SparkStatus ProbeOpen(const SparkDrafterModuleLane *lane, void **state_out, SparkDrafterModuleBind *bind)
@@ -80,26 +86,65 @@ static SparkStatus ProbeOpen(const SparkDrafterModuleLane *lane, void **state_ou
 static SparkStatus ProbeIngest(void *opaque, const SparkTapStreamReaderFrame *frame)
 {
 	ProbeState *state = (ProbeState *)opaque;
-	(void)frame;
+	const uint64_t first = frame->header.first_position;
 	state->frames++;
+	if ( first == 0u || frame->header.sequence_id != state->sequence_id )
+	{
+		state->sequence_id = frame->header.sequence_id;
+		state->held_end = 0u;
+	}
+	if ( first > state->held_end )
+		return SPARK_STATUS_OK;
+	for ( uint32_t row = 0u; row < frame->header.row_count; row++ )
+		if ( first + row < PROBE_TOKENS && frame->tokens != 0 )
+			state->tokens[first + row] = frame->tokens[row];
+	state->held_end = first + frame->header.row_count;
 	return SPARK_STATUS_OK;
+}
+
+static void ProbeLog(const ProbeState *state, const char *answer, const SparkDraftServerRequest *request)
+{
+	printf("PROBE-PROPOSE answer=%s sequence=%llu position=%llu forwards=%llu\n", answer, (unsigned long long)request->sequence_id,
+		(unsigned long long)request->position, (unsigned long long)state->forwards);
+	fflush(stdout);
 }
 
 static SparkStatus ProbePropose(void *opaque, const SparkDraftServerRequest *request, SparkDraftBridgeNode *nodes, uint32_t capacity,
 	uint32_t *count)
 {
 	ProbeState *state = (ProbeState *)opaque;
+	uint8_t first_byte = 0u;
 	*count = 0u;
-	if ( capacity == 0u )
+	if ( capacity < 2u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	state->proposals++;
+	if ( request->position != 0u && (request->sequence_id != state->sequence_id || request->position > state->held_end) )
+	{
+		ProbeLog(state, "await", request);
+		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
+	}
+	for ( uint64_t position = 0u; position < request->position && position < PROBE_TOKENS; position++ )
+		if ( state->tokens[position] != request->committed_token_ids[position] )
+		{
+			ProbeLog(state, "no-context", request);
+			return SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT;
+		}
+	if ( SparkGpuMemcpy(&first_byte, state->pack->spine, sizeof(first_byte), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
+		return SPARK_STATUS_IO_ERROR;
+	state->forwards++;
+	ProbeLog(state, "drafts", request);
 	nodes[0].token_id = request->anchor_token_id;
 	nodes[0].parent_index = SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX;
 	nodes[0].depth = 0u;
 	nodes[0].source_bit = request->speculator_mask & (~request->speculator_mask + 1u);
 	nodes[0].score = 1.0f;
-	*count = 1u;
-	return SPARK_STATUS_OK;
+	nodes[1] = nodes[0];
+	nodes[1].token_id = request->anchor_token_id + 1u + first_byte;
+	nodes[1].parent_index = 0u;
+	nodes[1].depth = 1u;
+	nodes[1].score = 0.5f;
+	*count = 2u;
+	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 
 static SparkStatus ProbeClose(void *opaque)

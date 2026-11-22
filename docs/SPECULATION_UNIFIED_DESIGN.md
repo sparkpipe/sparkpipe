@@ -161,12 +161,38 @@ lanes' drafters do not time-slice the GPU between processes.
   time, or the activation is refused with the module's numbers and the
   command exits 1. Deactivation releases the lane's device memory. Nothing is
   evicted and nothing falls back. `status` lists every lane, active or not.
+- **Proposals:** an active lane hands each tap frame to the module's
+  `ingest` and each request to its `propose`, which answers one of three
+  ways (named in the header):
+  - `SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS` (`OK`): the nodes, the root first.
+  - `SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS` (`PENDING`): the lane's context
+    does not yet hold the position before the anchor. A module decides this
+    from its held positions alone, before any forward work, so asking again
+    costs no device time. `sparkpipe_draftd` holds the request and calls
+    `propose` again after each frame the lane ingests. At the lane's
+    `wait_ms` (default 30, as `block_draftd.py`'s `--wait-ms`) it answers
+    `UNAVAILABLE`.
+  - `SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT` (`NOT_FOUND`): the module has no
+    usable context for the request, for instance its held tokens differ from
+    the committed ones. The answer is `UNAVAILABLE` at once.
+  - Any other status is answered `INTERNAL`.
+
+  A lane serves one connection and one request at a time, and a client sends
+  its next request only after the answer, so a request that waits for taps
+  holds the lane. If a new connection arrives meanwhile, the waiting request
+  is answered `UNAVAILABLE` at once and the new connection is served, as
+  `block_draftd.py` does when a newer request replaces a waiting one.
 - **Test:** `tests/test_draftd_engine.c` runs an in-process weightd and
   `sparkpipe_draftd` with a probe module built against the CUDA stub in its
   discrete mode (`tests/fixtures/drafter_probe_module.c`, which binds the
-  pack and drafts only the root): the inactive answer, activate, a draft,
-  deactivate, a second activate from the held copy, a refusal with the
-  memory numbers, a module of drafter ABI 99 and an unknown lane.
+  pack, keeps the positions and tokens its tap frames hold, and drafts one
+  token after the root with a device read as its forward work): the inactive
+  answer, activate, a request that waits for taps and drafts after the
+  covering frame (the waiting proposals do no device work), a request that
+  waits in vain and is answered `UNAVAILABLE` at `wait_ms`, a token mismatch
+  answered `UNAVAILABLE` at once, a waiting request replaced by a new
+  connection, deactivate, a second activate from the held copy, a refusal with
+  the memory numbers, a module of drafter ABI 99 and an unknown lane.
 - **Crash behaviour:** if the process dies, every lane's open exchange
   ends at once and new connections are refused. Each lane then decodes
   without model drafts, with the engine's usual backoff, until a restart
