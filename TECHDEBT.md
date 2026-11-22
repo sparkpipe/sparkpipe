@@ -1522,6 +1522,22 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - Once the cause is found, 2 MiB pages can come back for large objects.
     `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` checks 8, 10.5 and
     16 GiB.
+- nvrm on a discrete GPU keeps each channel's fence in host memory. A plain
+  launch's host acquire polls it across PCIe, so plain launches on the hub's
+  RTX 5090 still leave 2.0 us between chained kernels, against CUDA's 1.0 to
+  1.1 us (dependent launches: 0.70 us).
+  - Moving the fence to BAR1-mapped video memory costs more than it saves
+    today: `NvrmSlot` reads the fence on every launch, about 3 us through
+    BAR1, and host submission of 136 launches rose from 79 to 484-565 us.
+  - First read the fence only when the slot ring needs room, or keep a copy
+    in host memory. Then move the acquire target to video memory and
+    measure with `make nvrm-chain-gap`
+    ([`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md), the hub's RTX 5090).
+- K3.1 drafter ingest on nvrm copies pageable host memory through the 8 MiB
+  staging buffer, and each staged copy waits for its queue. On the hub's
+  RTX 5090 the copies cost 604 us of host time per ingest call, against 9 us
+  on CUDA. Stage without waiting for the queue, for example through a ring
+  of staging chunks that the copy engine's semaphore releases.
 - Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
   and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
   backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
