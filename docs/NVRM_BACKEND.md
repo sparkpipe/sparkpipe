@@ -451,6 +451,42 @@ Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
 
+## Shared memory
+
+The device layer's shared memory entry points
+([DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)) map onto the module
+like this:
+
+- **Create.** Module system memory in 2 MiB pages, GPU-cached, allocated
+  without the CPU mapping the device's own system memory gets
+  (`SparkNvrmSystemAllocate`).
+- **Export.** Opens a fresh `/dev/nvidiactl` descriptor and attaches the
+  object to it with `NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`. The
+  module keeps the exported object alive even after the exporting client
+  is gone.
+- **Import.** `NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECT_FROM_FD` duplicates the
+  object under this process's device, and the module picks the handle.
+  The size comes back from `NV0041_CTRL_CMD_GET_SURFACE_INFO` and must be a
+  whole number of 2 MiB pages.
+- **Reserve.** A span of the backend's own device address range, 2 MiB
+  aligned. The CPU side of that range stays reserved with no access.
+- **Map** (`SparkNvrmGpuMap`). A unified-memory external range, an RM
+  mapping of the object at the address with the offset and length asked
+  for, then the unified-memory external mapping, read-only or read-write.
+  Each step that fails undoes the steps before it, so a failed map leaves
+  nothing mapped.
+- **Unmap** (`SparkNvrmGpuUnmap`). Frees the external range and the RM
+  mapping of each whole mapping in the span.
+
+The backend counts each object's mappings and frees the object only after
+its last unmap and its release. Unified memory also duplicates the object
+for each external mapping, so a mapping never outlives its memory. One
+mutex guards the shared tables, and another guards the address allocator,
+because weightd maps and unmaps from worker threads without the device
+mutex. Adopting a device-private range inside one or more adjacent
+mappings makes a buffer with no host pointer, for copies, fills and kernel
+bindings.
+
 ## Kernel registration
 
 `runtime/device/nvrm/nvrm_register.c` defines the registration entry points

@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -20,6 +21,8 @@
 		const SparkStatus address_status = SparkDeviceRecordError((code),"allocate",(owner),0,(text)); \
 		SPARK_FAIL(address_status); \
 	} while (0)
+
+static pthread_mutex_t address_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static SparkStatus AddressRoom(SparkNvrmGpu *gpu, uint32_t needed, const char *owner)
 {
@@ -111,7 +114,7 @@ static void AddressCarve(SparkNvrmGpu *gpu, uint32_t index, uint64_t start, uint
 		AddressRemove(gpu,index);
 }
 
-SparkStatus SparkNvrmVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, uint64_t *address, const char *owner)
+static SparkStatus AddressVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, uint64_t *address, const char *owner)
 {
 	SparkStatus room;
 	uint32_t index;
@@ -134,7 +137,16 @@ SparkStatus SparkNvrmVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, 
 	ADDRESS_REFUSE(SPARK_STATUS_CAPACITY_EXCEEDED,owner,"the device address range has no free span of that size");
 }
 
-void SparkNvrmVirtualRelease(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
+SparkStatus SparkNvrmVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, uint64_t *address, const char *owner)
+{
+	SparkStatus status;
+	pthread_mutex_lock(&address_lock);
+	status = AddressVirtual(gpu,bytes,align,address,owner);
+	pthread_mutex_unlock(&address_lock);
+	return(status);
+}
+
+static void AddressRelease(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
 {
 	uint32_t index = 0u;
 	SparkNvrmRange *before,*after;
@@ -160,6 +172,13 @@ void SparkNvrmVirtualRelease(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes
 	}
 	else
 		AddressInsert(gpu,index,address,bytes);
+}
+
+void SparkNvrmVirtualRelease(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
+{
+	pthread_mutex_lock(&address_lock);
+	AddressRelease(gpu,address,bytes);
+	pthread_mutex_unlock(&address_lock);
 }
 
 void SparkNvrmReserveCpu(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)

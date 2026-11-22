@@ -1535,6 +1535,9 @@ build/test_nvrm_memory: tests/test_nvrm_memory.c $(DEVICE_NVRM_LIBRARY) | build
 build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+build/test_device_shared_memory_nvrm: tests/test_device_shared_memory.c $(DEVICE_NVRM_LIBRARY) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
 build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin"' \
 		-include tests/nvrm/fixture_kernels.h -DSPARK_DEVICE_TEST_LONG_KERNEL=SPARK_NVRM_FIXTURE_LONG_TEXT $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1565,7 +1568,16 @@ build/test_nvrm_hosted_launch: tests/nvrm/hosted_launch.cu tools/nvrm_kernel_man
 		--nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $@.kernels/hosted_launch.manifest
 	$(CXX) $@.o -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api
+build/test_nvrm_shared_coherence: tests/nvrm/shared_coherence.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): the coherence test compiles a module with nvcc -cudart none"; exit 1; }
+	mkdir -p $@.kernels $@.keep
+	$(NVCC) $(NVCCFLAGS) -cudart none -DSPARKPIPE_DEVICE_NVRM $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir $@.keep -c $< -o $@.o > $@.ptxas.log 2>&1 || { cat $@.ptxas.log; exit 1; }
+	cp $@.keep/shared_coherence.cubin $@.kernels/shared_coherence.cubin
+	python3 -I tools/nvrm_kernel_manifest.py --cubin $@.kernels/shared_coherence.cubin --ptx $@.keep/shared_coherence.ptx --ptxas-log $@.ptxas.log \
+		--nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $@.kernels/shared_coherence.manifest
+	$(CXX) $@.o -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 .PHONY: test-nvrm-gpu nvrm-gpu-present
