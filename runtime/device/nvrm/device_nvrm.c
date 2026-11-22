@@ -1263,7 +1263,7 @@ SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint
 	SparkStatus status;
 	if ( NvrmSharedAligned(bytes) == 0u )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"a shared allocation is a multiple of 2 MiB"));
-	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,owner));
+	NVRM_TRY(SparkNvrmSystemAllocate(&nvrm_gpu,bytes,SparkNvrmSystemPageBytes(bytes),0u,&handle,owner));
 	status = NvrmSharedAdd(handle,bytes,memory,"memory_create");
 	if ( status != SPARK_STATUS_OK )
 	{

@@ -330,6 +330,19 @@ static void TestLongLines(void)
 	}
 }
 
+static void TestPageSizes(void)
+{
+	static Fake fake;
+	uint32_t handle = 0u;
+	FakeOpen(&fake);
+	CHECK(SparkNvrmSystemPageBytes(4ull << 20) == SPARK_NVRM_PAGE_BYTES && SparkNvrmSystemPageBytes(8ull << 20) == SPARK_NVRM_HUGE_PAGE_BYTES &&
+		SparkNvrmSystemPageBytes((4ull << 30) - (2ull << 20)) == SPARK_NVRM_HUGE_PAGE_BYTES && SparkNvrmSystemPageBytes(4ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES &&
+		SparkNvrmSystemPageBytes(16ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES,
+		"system memory takes 2 MiB pages from 8 MiB to below 4 GiB and 64 KiB pages from 4 GiB on");
+	CHECK(SparkNvrmSystemAllocate(&fake.gpu,4ull << 30,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,"pages") == SPARK_STATUS_INVALID_ARGUMENT && handle == 0u &&
+		strstr(SparkDeviceLastError()->text,"4 GiB") != 0,"an object of 2 MiB pages at 4 GiB or more is refused before the module sees it");
+}
+
 static void TestMarks(void)
 {
 	static Fake fake;
@@ -525,6 +538,7 @@ int main(void)
 	TestOrdering();
 	TestFillSplit();
 	TestLongLines();
+	TestPageSizes();
 	TestMarks();
 	TestAddress();
 	TestSemaphore();
