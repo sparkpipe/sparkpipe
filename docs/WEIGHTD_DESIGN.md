@@ -1314,6 +1314,58 @@ both mappings; `--reclaim-pack` freed exactly that arena. A deliberate write
 through the read-only mapping was not run on a node serving production,
 because it would raise a GPU fault on that node.
 
+### Held packs on a discrete GPU
+
+On a device without unified memory (no `SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY`,
+the 5090 node) no video memory is shared between processes. weightd keeps each
+pack in host memory instead, and every consumer copies it into its own video
+memory once.
+
+- **HOLD (IPC kinds 61 and 62).** `SparkWeightdClientHold` sends the identity
+  and pack path. The first HOLD of an identity opens the pack, admits its bytes
+  against node memory, creates a `memfd` (`MFD_ALLOW_SEALING`), streams the
+  pack into it through the same receipt or full-digest verification as a cold
+  attach, drops the writable mapping and seals the memfd against writes,
+  growth and shrinking. A later HOLD of the same identity reuses the held copy
+  and never reads the pack. The reply carries a duplicate of the memfd
+  (`SCM_RIGHTS`), the bytes, the held copy's generation and load time,
+  `first_hold` and the number of held packs.
+- **Lifetime.** A held pack stays until weightd exits, so a consumer restart
+  copies again from weightd's host memory, never from the disk. At most
+  `SPARK_WEIGHTD_HELD_PACK_COUNT_MAX` (8) packs are held; a ninth identity is
+  `CAPACITY_EXCEEDED`. A wrong digest holds nothing.
+- **Consumer.** `SparkWeightdLazyPackCreate` asks the device first. With
+  unified memory it attaches lazily as before; without, it takes the held path:
+  it refuses a manifest with expert ranges (`UNSUPPORTED`; a pack binds whole,
+  as its spine) and a `read_only` pack, sends HOLD, checks the memfd is sealed
+  and of the pack's size, maps it read-only, allocates the private spine and
+  copies the spine spans through a 256 MiB pinned staging buffer, then unmaps.
+  `WD-SPINE-HELD spans= bytes= first_hold= held= hold_s= copy_s=` reports it.
+  The sealed memfd cannot be registered for DMA (registration pins pages
+  writable), hence the staging copy.
+- **Older weightd.** A weightd without HOLD closes the connection on kind 61.
+  The client then fails with `weightd hold: no reply to kind 61 (HOLD)` and
+  never reads the pack itself.
+- **Frames.** `SparkWeightdIpcHold` is 1,344 bytes and
+  `SparkWeightdIpcHoldResult` 64; the existing kinds and frames are unchanged,
+  so the ABI stays 17.
+- **On the 5090 node** (2026-11-22, CUDA flavour, a user-process weightd on its
+  own socket, latch port and KV root): the first HOLD of each drafter pack took
+  22-26 s, nearly all of it the full sha256 (0.4 GB/s; the receipt it records
+  makes later holds skip it), and the copy into video memory 0.9-1.1 s
+  (about 9.5 GB/s). A rebind, as after a consumer restart, took 1.0-1.3 s with
+  `first_hold=0`. 100 slices of each device copy equalled the file. Build there
+  against a CUDA toolkit no newer than the driver's (595.84 serves CUDA 13.2;
+  `/usr/local/cuda-13.1`): the device layer loads driver entry points by the
+  runtime's version, and a 13.3 build's are missing, so weightd fails to start.
+- **Test.** `tests/test_weightd_held_pack.c` runs a server and the CUDA stub as
+  a discrete GPU (`SPARK_STUB_CUDA_DISCRETE` mode reports `integrated` 0): a
+  bind copies the bytes and a rebind after the pack file is overwritten still
+  returns the held bytes with `first_hold=0`; the memfd refuses a writable
+  mapping and truncation; a wrong digest holds nothing; expert ranges are
+  refused; and a stand-in weightd that closes on kind 61 makes the bind fail
+  with the message above.
+
 ### Working-set recording
 
 After every successful ACQUIRE the daemon adds the new keys to `PACK.wset`,
@@ -1426,7 +1478,8 @@ sizing; 0 means no cap), attaches lazily with that pool (or shared when
 `read_only` is 1, see "Read-only arena sharing"), creates the consumer map,
 places the spine and starts a worker thread.
 A missing or invalid manifest fails the call like any other failure, before
-the attach. The plan is kept in `pack->pool`.
+the attach. The plan is kept in `pack->pool`. On a device without unified
+memory it takes the held path instead (see "Held packs on a discrete GPU").
 
 Every input is explicit:
 

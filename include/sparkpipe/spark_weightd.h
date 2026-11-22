@@ -95,6 +95,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD 61u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD_RESULT 62u
 
 #include "sparkpipe/spark_weightd_mesh_lanes.h"
 #define SPARK_WEIGHTD_MESH_STATUS_LANES 16u
@@ -1052,6 +1054,31 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
     sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 14");
 #endif
 
+#define SPARK_WEIGHTD_HELD_PACK_COUNT_MAX 8u
+
+typedef struct SparkWeightdIpcHold
+{
+    SparkWeightdIpcHeader header;
+    SparkWeightdIdentity identity;
+    char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+} SparkWeightdIpcHold;
+
+typedef struct SparkWeightdIpcHoldResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t held_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t status;
+    uint32_t first_hold;
+    uint32_t held_count;
+    uint32_t fd_staged;
+} SparkWeightdIpcHoldResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcHold) == 1344u && sizeof(SparkWeightdIpcHoldResult) == 64u,"hold frames are fixed for ABI 17");
+#endif
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -1069,6 +1096,8 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazyResult))
 #define SPARK_WEIGHTD_IPC_ENSURE_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsure))
 #define SPARK_WEIGHTD_IPC_ENSURE_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsureResult))
+#define SPARK_WEIGHTD_IPC_HOLD_BYTES ((uint32_t)sizeof(SparkWeightdIpcHold))
+#define SPARK_WEIGHTD_IPC_HOLD_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcHoldResult))
 
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity);
 
@@ -1470,6 +1499,23 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
 SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
     const SparkWeightdLazyAttachRequest *request,
     SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdHoldResult
+{
+    SparkStatus status;
+    uint64_t held_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t first_hold;
+    uint32_t held_count;
+    int fd;
+} SparkWeightdHoldResult;
+
+SparkStatus SparkWeightdClientHold(SparkWeightdClient *client,
+    const SparkWeightdIdentity *identity,
+    const char *pack_path,
+    SparkWeightdHoldResult *result,
     uint64_t timeout_nanoseconds);
 
 

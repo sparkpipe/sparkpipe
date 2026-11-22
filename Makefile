@@ -367,6 +367,7 @@ TEST_NAMES := \
     test_weightd_lease \
     test_weightd_pool_bytes \
     test_weightd_working_set \
+    test_weightd_held_pack \
     test_weightd_lease_sets \
     test_weightd_dense_manifest \
     test_weightd_churn \
@@ -2456,6 +2457,9 @@ build/test_weightd_dense_manifest: tests/test_weightd_dense_manifest.c $(DEVICE_
 
 build/test_weightd_working_set: tests/test_weightd_working_set.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+build/test_weightd_held_pack: tests/test_weightd_held_pack.c tests/test_stderr_capture.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) -o $@
 
 build/test_weightd_lease_sets: tests/test_weightd_lease_sets.c tests/test_stderr_capture.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) -o $@

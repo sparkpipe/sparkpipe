@@ -1043,7 +1043,7 @@ cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int devic
     properties->multiProcessorCount = 48;
     properties->major = 12;
     properties->minor = 1;
-    properties->integrated = 1;
+    properties->integrated = cuda_stub_discrete_on() != 0u ? 0 : 1;
     return cudaSuccess;
 }
 
