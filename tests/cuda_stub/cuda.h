@@ -134,8 +134,6 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
     size_t bytes);
-CUresult cuMemGetAllocationPropertiesFromHandle(CUmemAllocationProp *prop,
-    CUmemGenericAllocationHandle handle);
 
 CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     const void *bytes,

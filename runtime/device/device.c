@@ -750,7 +750,7 @@ SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, Spa
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"needs a reserved range, a memory handle and device read or read-write access"));
 	status = DeviceSharedReady("memory_map","");
 	if ( status == SPARK_STATUS_OK && (access & host_access) != 0u && (device_properties.properties & SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE) == 0u )
-		status = DeviceHostShareRefused("memory_map","");
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"host access maps only host memory");
 	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryMap(address,bytes,memory,offset,access));
 }
 

@@ -1647,16 +1647,6 @@ CUresult cuDeviceGetAttribute(int *value, CUdevice_attribute attribute, CUdevice
     return CUDA_SUCCESS;
 }
 
-CUresult cuMemGetAllocationPropertiesFromHandle(CUmemAllocationProp *prop,
-    CUmemGenericAllocationHandle handle)
-{
-    const cuda_stub_vmm_phys *phys = (const cuda_stub_vmm_phys *)handle;
-    if (prop == 0 || phys == 0 || phys->magic != CUDA_STUB_VMM_MAGIC)
-        return CUDA_ERROR_INVALID_VALUE;
-    *prop = phys->prop;
-    return CUDA_SUCCESS;
-}
-
 CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
     size_t bytes)
 {
@@ -2360,7 +2350,6 @@ cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,
         {"cuMemMap",(void *)cuMemMap},
         {"cuMemSetAccess",(void *)cuMemSetAccess},
         {"cuMemUnmap",(void *)cuMemUnmap},
-        {"cuMemGetAllocationPropertiesFromHandle",(void *)cuMemGetAllocationPropertiesFromHandle},
         {"cuDeviceGet",(void *)cuDeviceGet},
         {"cuDeviceGetAttribute",(void *)cuDeviceGetAttribute},
     };

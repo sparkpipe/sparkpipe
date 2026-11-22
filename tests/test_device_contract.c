@@ -524,6 +524,9 @@ static void TestHostMemoryShare(void)
 		snprintf(expected,sizeof(expected),"the %s backend has no exportable host memory",properties->backend);
 		CHECK(SparkDeviceMemoryCreateHost(&host,UINT64_C(1) << 21,"contract host share") == SPARK_STATUS_UNSUPPORTED && host == 0u &&
 			strcmp(SparkDeviceLastError()->text,expected) == 0,"without the property, host memory is refused and the refusal names the backend");
+		CHECK(SparkDeviceMemoryMap(UINT64_C(1) << 21,UINT64_C(1) << 21,9u,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ) ==
+			SPARK_STATUS_INVALID_ARGUMENT && strcmp(SparkDeviceLastError()->text,"host access maps only host memory") == 0,
+			"without the property, host access in a mapping is an invalid argument");
 		return;
 	}
 	CHECK(SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) == SPARK_STATUS_OK && granularity != 0u,"granularity");

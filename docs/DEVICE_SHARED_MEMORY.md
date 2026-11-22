@@ -67,10 +67,12 @@ an address the backend chooses; nothing is requested at a fixed address.
   `SPARK_DEVICE_ACCESS_HOST_READ`, or both. `SPARK_DEVICE_ACCESS_DEVICE_WRITE`
   requires device read and `SPARK_DEVICE_ACCESS_HOST_WRITE` requires host read
   (`host write access needs host read access`).
-- Host access needs the host memory share property and a handle of host
-  memory, created here or imported; on device memory it is refused with
-  `host access maps only host memory`. The CUDA backend reads an imported
-  handle's location from the driver (`cuMemGetAllocationPropertiesFromHandle`).
+- Host access needs the host memory share property and a handle that
+  `SparkDeviceMemoryCreateHost` returned in this process. Any other handle,
+  imported host memory included, and any handle on a backend without the
+  property, is an invalid argument: `host access maps only host memory`. The
+  backend keeps the handles it created and never asks the driver about a
+  handle it does not know.
 - A failed map leaves nothing mapped.
 - `SparkDeviceMemoryUnmap` takes one or more whole, adjacent mappings. It
   refuses part of a mapping.
