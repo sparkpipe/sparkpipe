@@ -261,7 +261,7 @@ SparkStatus SparkDeviceProgramValues(const SparkDeviceProgram *program, const ui
 	return(SPARK_STATUS_OK);
 }
 
-static void ProgramPatchLaunch(const SparkDeviceProgram *program, uint32_t node, const uint64_t *placed, SparkDeviceLaunch *launch, uint8_t *scratch)
+void SparkDeviceProgramPatchLaunch(const SparkDeviceProgram *program, uint32_t node, const uint64_t *placed, SparkDeviceLaunch *launch, uint8_t *scratch)
 {
 	uint32_t index;
 	for ( index = 0u; index < program->place_count; index++ )
@@ -308,7 +308,7 @@ SparkStatus SparkDeviceProgramReplay(SparkDeviceProgram *program, SparkDeviceQue
 			break;
 		case SPARK_DEVICE_NODE_LAUNCH:
 			launch = node->launch;
-			ProgramPatchLaunch(program,index,placed,&launch,scratch);
+			SparkDeviceProgramPatchLaunch(program,index,placed,&launch,scratch);
 			status = SparkDeviceKernelLaunch(queue,node->kernel,&launch);
 			break;
 		case SPARK_DEVICE_NODE_HOST:
