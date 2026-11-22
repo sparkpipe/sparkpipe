@@ -1,0 +1,2 @@
++161
+nvrm maps registered memory at its host address with reserved keep-out ranges and overlap refusals, maps through the unified-memory external range only, and the TP mesh collective registers the staging export and attaches the mesh before a rank reports ready; mesh_round_bench builds for both flavours.
