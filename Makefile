@@ -1250,7 +1250,7 @@ nvrm-node: $(NVRM_WEIGHTD_PROGRAMS) $(NVRM_NODE_PROGRAMS)
 
 NVRM_TWIN = $(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1))
 NVRM_NVCC_DEVICE_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
-NVRM_SERVING_ADAPTERS := $(call NVRM_TWIN,$(NVRM_SERVING_ADAPTER_SOURCES) build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT))
+NVRM_SERVING_ADAPTERS := $(call NVRM_TWIN,$(NVRM_SERVING_ADAPTER_SOURCES) build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT) build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT))
 $(NVRM_SERVING_ADAPTERS): ADAPTER_LIBRARIES = $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY)
 $(NVRM_SERVING_ADAPTERS): ADAPTER_DEVICE_LINK = $(NVRM_NVCC_DEVICE_LINK)
 $(NVRM_SERVING_ADAPTERS): ADAPTER_NVCC_FLAGS = -cudart none -DSPARKPIPE_DEVICE_NVRM
@@ -2281,7 +2281,7 @@ endef
 $(DSV41_FLASH_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(DSV41_FLASH_TP16_SERVING_ADAPTER)): $(DSV41_FLASH_ADAPTER_DEPS) | build
 	$(call DSV41_FLASH_LINK,16u,dsv41_flash-tp16,dsv41_flash_stage)
 
-build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT): $(DSV41_FLASH_ADAPTER_DEPS) | build
+build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT) $(call NVRM_TWIN,build/libdsv41_flash_tp4_serving_adapter.$(SHARED_LIBRARY_EXT)): $(DSV41_FLASH_ADAPTER_DEPS) | build
 	$(call DSV41_FLASH_LINK,4u,dsv41_flash-tp4,dsv41_flash_tp4_stage)
 
 build/libdsv41_flash_rows16_serving_adapter.$(SHARED_LIBRARY_EXT): $(DSV41_FLASH_ADAPTER_DEPS) | build
