@@ -15,7 +15,10 @@ DEBT_RELATIVE = "tools/hosted_release_debt.json"
 DEBT_PATH = os.path.join(REPOSITORY, DEBT_RELATIVE)
 DEBT_KINDS = ("needed", "soname", "library-string", "tool-string", "library-file", "tool-file",
               "toolkit-file", "runpath", "pytorch-cuda", "triton")
-PATTERN_CHARACTERS = frozenset("*?[]{}")
+PATTERN_CHARACTERS = frozenset("*?[]{}=")
+CUDA_DEVICE_LIBRARY = "libsparkpipe_device_cuda.so"
+NVRM_DEVICE_LIBRARY = "libsparkpipe_device_nvrm.so"
+NVRM_MARKER = b"/dev/nvidiactl"
 
 
 def load_audit():
@@ -147,21 +150,73 @@ def staged_files(source):
     fail(f"{source} was not built")
 
 
+def staged_pairs(source):
+    origin, separator, target = source.partition("=")
+    if not separator:
+        target = origin
+    elif not exact_path(target) or origin == target:
+        fail(f"{source!r} does not stage a path under another exact path")
+    return [(path, target + path[len(origin):]) for path in staged_files(origin)]
+
+
 def stage(root, sources):
     if not sources:
         fail("nothing to stage")
-    sources = [path for source in sources for path in staged_files(source)]
+    pairs = [pair for source in sources for pair in staged_pairs(source)]
+    targets = [target for _, target in pairs]
+    repeated = sorted({target for target in targets if targets.count(target) > 1})
+    if repeated:
+        fail(f"{', '.join(repeated)} would be staged more than once")
     if os.path.lexists(root):
         if not os.path.isdir(root) or os.path.islink(root):
             fail(f"{root} exists and is not a staging directory")
         shutil.rmtree(root)
-    for source in sources:
-        target = os.path.join(root, source)
+    for source, path in pairs:
+        target = os.path.join(root, path)
         os.makedirs(os.path.dirname(target), exist_ok=True)
         shutil.copy2(source, target)
 
 
-def check(root, debt, complete):
+def file_flavour(path):
+    audit = load_audit()
+    with open(path, "rb") as source:
+        if source.read(4) != b"\x7fELF":
+            return None
+        try:
+            needed, soname, _ = audit.elf_dynamic(source)
+        except audit.ElfError:
+            return None
+        names = set(needed) | {soname}
+        if CUDA_DEVICE_LIBRARY in names or any(audit.forbidden_library(name) for name in names):
+            return "cuda"
+        if NVRM_DEVICE_LIBRARY in names:
+            return "nvrm"
+        source.seek(0)
+        tail = b""
+        while True:
+            chunk = source.read(1 << 22)
+            if not chunk:
+                return None
+            if NVRM_MARKER in tail + chunk:
+                return "nvrm"
+            tail = chunk[-len(NVRM_MARKER):]
+
+
+def deploy_failures(root, debt):
+    failures = [f"FAIL deploy {path}: {DEBT_RELATIVE} still lists it, and a root that ships debt is not deployed"
+                for path in sorted({path for group in debt["debt"] for path in group["files"]})]
+    flavours = {}
+    for path in sorted(root_files(root)):
+        flavour = file_flavour(os.path.join(root, path))
+        if flavour is not None:
+            flavours[path] = flavour
+    if len(set(flavours.values())) > 1:
+        failures += [f"FAIL deploy {path}: built for the {flavour} device backend in a root that mixes "
+                     f"{' and '.join(sorted(set(flavours.values())))}" for path, flavour in flavours.items()]
+    return failures
+
+
+def check(root, debt, complete, deploy=False):
     report = load_audit().audit_root(root)
     allowed = set(debt_entries(debt))
     present = root_files(root)
@@ -176,6 +231,8 @@ def check(root, debt, complete):
             failures.append(f"FAIL stale {path}: {finding} is gone; remove it from {DEBT_RELATIVE}")
         elif complete:
             failures.append(f"FAIL missing {path}: {DEBT_RELATIVE} lists it but the root does not ship it")
+    if deploy:
+        failures += deploy_failures(root, debt)
     for line in failures:
         print(line)
     print(f"hosted-release-gate {root}: {'FAIL' if failures else 'PASS'} ({report.scanned} scanned, "
@@ -228,6 +285,7 @@ def parse_args(argv):
     commands = parser.add_subparsers(dest="command", required=True)
     check_parser = commands.add_parser("check")
     check_parser.add_argument("--complete", action="store_true")
+    check_parser.add_argument("--deploy", action="store_true")
     check_parser.add_argument("--debt", default=DEBT_PATH)
     check_parser.add_argument("--stage", nargs="+", metavar="PATH")
     check_parser.add_argument("root")
@@ -258,7 +316,7 @@ def main(argv):
         report = load_audit().audit_root(arguments.root)
         print(json.dumps(findings_document(report, debt), indent=2))
         return 0
-    return 1 if check(arguments.root, debt, arguments.complete) else 0
+    return 1 if check(arguments.root, debt, arguments.complete, arguments.deploy) else 0
 
 
 if __name__ == "__main__":

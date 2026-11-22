@@ -84,10 +84,10 @@ def debt(files, reason="Fixture reason that names why the file needs the library
     return {"schema_version": 1, "debt": [{"reason": reason, "files": files}]}
 
 
-def run_check(root, document, complete=False):
+def run_check(root, document, complete=False, deploy=False):
     output = io.StringIO()
     with contextlib.redirect_stdout(output):
-        failures = MODULE.check(str(root), document, complete)
+        failures = MODULE.check(str(root), document, complete, deploy)
     return failures, output.getvalue()
 
 
@@ -114,6 +114,22 @@ class DebtListTest(unittest.TestCase):
         recipe = subprocess.run(["make", "-s", "-n", "-C", str(ROOT), "hosted-release-gate", "HOSTED_RELEASE_FILES=tools/fleet_node_agent.sh",
                                  "HOSTED_RELEASE_ADAPTERS=tools/fleet_node_agent.sh"], capture_output=True, text=True, check=True).stdout
         self.assertIn("--stage tools/fleet_node_agent.sh tools/fleet_node_agent.sh.kernels\n", recipe)
+
+    def test_nvrm_builds_stage_under_the_paths_the_release_ships(self):
+        shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
+        nvrm = make_words("HOSTED_RELEASE_NVRM_FILES", "SHARED_LIBRARY_EXT=so")
+        listed = {path for group in self.document["debt"] for path in group["files"]}
+        self.assertEqual({"build/sparkpipe_weightd", "build/weightd_warm", "build/weightdctl"} - set(nvrm), set())
+        self.assertEqual(set(nvrm) - shipped, set())
+        self.assertEqual(set(nvrm) & listed, set())
+        chosen = nvrm + ["tools/fleet_node_agent.sh"]
+        self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
+                         [path.replace("build/", "build/nvrm/", 1) for path in nvrm] + ["tools/fleet_node_agent.sh"])
+        recipe = subprocess.run(["make", "-s", "-n", "-C", str(ROOT), "hosted-release-gate", "HOSTED_RELEASE_FILES=" + " ".join(chosen),
+                                 "HOSTED_RELEASE_ADAPTERS=build/weightdctl"], capture_output=True, text=True, check=True).stdout
+        staged = " ".join([f"{path.replace('build/', 'build/nvrm/', 1)}={path}" for path in nvrm] + ["tools/fleet_node_agent.sh",
+                          "build/nvrm/weightdctl.kernels=build/weightdctl.kernels"])
+        self.assertIn(f"--stage {staged}\n", recipe)
 
     def test_host_only_programs_are_shipped_and_never_debt(self):
         shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
@@ -271,6 +287,63 @@ class GateTest(unittest.TestCase):
         finally:
             os.chdir(cwd)
 
+    def test_stage_puts_a_source_under_another_exact_path(self):
+        project = self.base / "project"
+        write(project / "build" / "nvrm" / "tool", "#!/bin/sh\necho nvrm\n")
+        write(project / "build" / "tool", "#!/bin/sh\necho cuda\n")
+        write(project / "build" / "nvrm" / "libmodule.so.kernels" / "unit.cubin", "image\n", 0o644)
+        cwd = os.getcwd()
+        os.chdir(project)
+        try:
+            MODULE.stage("staged", ["build/nvrm/tool=build/tool", "build/nvrm/libmodule.so.kernels=build/libmodule.so.kernels"])
+            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "build/libmodule.so.kernels/unit.cubin"})
+            self.assertEqual(Path("staged/build/tool").read_text(), "#!/bin/sh\necho nvrm\n")
+            refused = (["build/nvrm/tool=build/nvrm/tool"], ["build/nvrm/tool=/usr/bin/tool"], ["build/nvrm/tool=build/*"],
+                       ["build/nvrm/tool=build/tool=x"], ["build/nvrm/tool=build/tool", "build/tool"],
+                       ["build/nvrm/tool=build/tool", "build/nvrm/tool=build/tool"], ["build/absent=build/tool"])
+            for sources in refused:
+                with self.subTest(sources):
+                    with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                        MODULE.stage("staged", sources)
+                    self.assertEqual(raised.exception.code, 2)
+            self.assertEqual(MODULE.root_files("staged"), {"build/tool", "build/libmodule.so.kernels/unit.cubin"})
+        finally:
+            os.chdir(cwd)
+
+    def test_deploy_refuses_a_root_while_the_debt_list_names_any_file(self):
+        listed = debt({"bin/probe.sh": ["tool-string nvidia-smi"]})
+        self.assertEqual(run_check(self.root, listed)[0], [])
+        failures, output = run_check(self.root, listed, deploy=True)
+        self.assertEqual(failures, [f"FAIL deploy bin/probe.sh: {MODULE.DEBT_RELATIVE} still lists it, and a root that ships debt is not deployed"])
+        self.assertIn(": FAIL", output)
+        clean = self.base / "clean"
+        write(clean / "bin" / "clean.sh", "#!/bin/sh\necho ready\n")
+        self.assertEqual(run_check(clean, {"schema_version": 1, "debt": []}, complete=True, deploy=True)[0], [])
+
+    @needs_elf
+    def test_deploy_refuses_a_root_that_mixes_device_backends(self):
+        libraries = self.base / "libraries"
+        libraries.mkdir()
+        source = write(libraries / "device.c", "int spark_device_fixture(void) { return 1; }\n", 0o644)
+        subprocess.run(["cc", "-shared", "-fPIC", "-Wl,-soname,libsparkpipe_device_cuda.so", str(source),
+                        "-o", str(libraries / "libsparkpipe_device_cuda.so")], check=True)
+        program = write(self.base / "program.c", "int main(void) { return 0; }\n", 0o644)
+        control = write(self.base / "control.c", 'const char *volatile spark_control = "/dev/nvidiactl";\n'
+                        "int main(void) { return spark_control[0] == 0; }\n", 0o644)
+        root = self.base / "mixed"
+        (root / "build").mkdir(parents=True)
+        subprocess.run(["cc", str(program), "-o", str(root / "build" / "cuda_engine"), "-Wl,--no-as-needed", f"-L{libraries}",
+                        "-lsparkpipe_device_cuda"], check=True)
+        subprocess.run(["cc", str(control), "-o", str(root / "build" / "nvrm_engine")], check=True)
+        write(root / "build" / "agent.sh", "#!/bin/sh\nls /dev/nvidiactl\n")
+        empty = {"schema_version": 1, "debt": []}
+        self.assertEqual(run_check(root, empty)[0], [])
+        failures, _ = run_check(root, empty, deploy=True)
+        self.assertEqual(failures, ["FAIL deploy build/cuda_engine: built for the cuda device backend in a root that mixes cuda and nvrm",
+                                    "FAIL deploy build/nvrm_engine: built for the nvrm device backend in a root that mixes cuda and nvrm"])
+        (root / "build" / "cuda_engine").unlink()
+        self.assertEqual(run_check(root, empty, deploy=True)[0], [])
+
     def test_command_line_stages_checks_and_exits_with_the_verdict(self):
         project = self.base / "project"
         write(project / "build" / "tool", "#!/bin/sh\nnvidia-smi\n")
@@ -284,6 +357,11 @@ class GateTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 1)
         self.assertIn("FAIL new tool-string build/tool: nvidia-smi", completed.stdout)
         self.assertIn("FAIL missing build/other", completed.stdout)
+        listed.write_text(json.dumps(debt({"build/tool": ["tool-string nvidia-smi"]})))
+        completed = subprocess.run(command[:3] + ["--deploy"] + command[3:], cwd=project, capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("FAIL deploy build/tool:", completed.stdout)
+        listed.write_text(json.dumps(debt({"build/other": ["tool-string nvidia-smi"]})))
         findings = subprocess.run([sys.executable, str(GATE), "findings", "--debt", str(listed), "root"],
                                   cwd=project, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(findings.stdout)["debt"], [{"reason": "", "files": {"build/tool": ["tool-string nvidia-smi"]}}])
@@ -358,21 +436,26 @@ class ReleaseKitTest(unittest.TestCase):
         self.assertIsNotNone(hub)
         self.assertEqual(set(hub.group(1).split()), set(make_words("HOSTED_RELEASE_HUB_FILES")) | {"build/runtime_libs/libsparkpipe_device_cuda.so"})
 
-    def test_hosted_mode_gates_both_builds_before_it_writes_the_firmware_directory(self):
+    def test_hosted_mode_gates_both_builds_for_deployment_and_ships_the_gated_root(self):
         text = RELEASE_BUILD.read_text()
-        block = re.search(r'^if \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
+        block = re.search(r'^FW_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
         self.assertIsNotNone(block)
         lines = block.group(1).splitlines()
-        self.assertEqual(len(lines), 2)
+        self.assertEqual(len(lines), 3)
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
-        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO'", lines[0])
+        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[0])
         hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)
         self.assertIsNotNone(hub)
         self.assertIn(f'ssh -o BatchMode=yes {hub.group(1)} "cd $HUB_WORK/api-build-$SHA ', lines[1])
-        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO'", lines[1])
-        for line in lines:
+        self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[1])
+        for line in lines[:2]:
             self.assertTrue(line.rstrip().endswith("exit 1; }"))
+        self.assertEqual(lines[2].strip(), "FW_DIR=" + make_words("HOSTED_RELEASE_ROOT")[0] + "/build")
         self.assertLess(block.start(), text.index("rm -rf $OUT"))
+        shipped = [line for line in text.splitlines() if line.startswith(("MISSING=", "rm -rf $OUT"))]
+        self.assertEqual(len(shipped), 2)
+        for line in shipped:
+            self.assertIn('"cd ~/build-rp/fw-$SHA-src/$FW_DIR && ', line)
 
 
 @unittest.skipUnless(ELF_HOST and sys.platform.startswith("linux") and shutil.which("make"), "builds ELF programs with GNU make on Linux")
