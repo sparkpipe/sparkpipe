@@ -507,6 +507,7 @@ PYTHON_TESTS := \
 	tests/test_family_defines_single_source.py \
 	tests/test_no_source_comments.py \
 	tests/test_ci_supply_chain.py \
+	tests/test_cuda_gate_toolkit.py \
 	tests/test_third_party_notices.py \
 	tests/test_nvrm_headers.py \
 	tests/test_device_flavours.py \
@@ -724,7 +725,6 @@ PYTHON_TESTS := \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
-	tests/test_cuda_gate_toolkit.py \
 	tests/test_stage_runner_link_rules.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_timing_reports.py \
