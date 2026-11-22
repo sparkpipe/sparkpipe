@@ -99,6 +99,7 @@ DEVICE_FLAVOUR_LIBRARY := $(DEVICE_FLAVOUR_LIBRARY_$(SPARKPIPE_DEVICE))
 DEVICE_FLAVOUR_RPATH := -Wl,-rpath,'$$ORIGIN/runtime_libs'
 DEVICE_FLAVOUR_LINK := $(if $(DEVICE_FLAVOUR_LIBRARY),-L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_$(SPARKPIPE_DEVICE) $(DEVICE_FLAVOUR_RPATH))
 DEVICE_HEADERS := include/sparkpipe/spark_device.h runtime/device/device_backend.h
+DEVICE_NVRM_INPUTS := $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES)
 DEVICE_CUDA_NVCC_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
 METAL_KERNEL_UNITS := inference/kernels/metal/norm.metal inference/kernels/metal/gemv.metal inference/kernels/metal/gemm.metal \
 	inference/kernels/metal/recurrent.metal inference/kernels/metal/attention.metal inference/kernels/metal/elementwise.metal \
@@ -1241,24 +1242,24 @@ $(NVRM_RUNTIME_LIBRARY): $(NVRM_RUNTIME_OBJECTS)
 	@mkdir -p $(@D)
 	rm -f $@ && $(AR) rcs $@ $^
 
-$(NVRM_BUILD_DIR)/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/sparkpipe_weightd: node/weightd.c node/weightd_mesh.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -libverbs -lmlx5 -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -libverbs -lmlx5 -o $@
 
-$(NVRM_BUILD_DIR)/weightd_warm: tools/weightd_warm.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/weightd_warm: tools/weightd_warm.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+$(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-weightd
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
-build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_SOURCES) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+build/test_nvrm_weightd_attach: tests/nvrm/weightd_attach.c $(DEVICE_NVRM_INPUTS) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) $(LDLIBS) -o $@
 
 NVRM_MODEL_COMMON_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(SPARKPIPE_MODEL_COMMON_SOURCES))
 NVRM_MODEL_COMMON_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_model_common.a
@@ -1632,7 +1633,7 @@ build/test_device_shared_memory_cuda: tests/test_device_shared_memory.c $(DEVICE
 $(NVRM_RELEASE_STAMP): FORCE | build
 	@if [ "$$(cat $@ 2>/dev/null)" != "$(NVRM_MODULE_RELEASE)" ]; then echo "$(NVRM_MODULE_RELEASE)" > $@; fi
 
-$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+$(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_INPUTS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
@@ -1656,7 +1657,7 @@ build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
-build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_INPUTS) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
 NVRM_FLAVOUR_GOALS += nvrm-first-light-static
@@ -1708,7 +1709,7 @@ ifeq ($(UNAME_S),Linux)
 NVRM_OPEN_ORDER_FLAGS := -DSPARK_NVRM_FAKE_MODULE -Wl,--wrap=open -Wl,--wrap=ioctl
 NVRM_OPEN_ORDER_SOURCES := $(DEVICE_NVRM_SOURCES)
 endif
-build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) $(NVRM_RELEASE_DEPENDENCIES) | build
+build/test_nvrm_open_order: tests/test_nvrm_open_order.c $(DEVICE_NVRM_INPUTS) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $(NVRM_OPEN_ORDER_FLAGS) $< $(NVRM_OPEN_ORDER_SOURCES) -pthread -o $@
 
 NVRM_TEST_BINARIES := build/test_device_nvrm build/test_nvrm_cubin build/test_nvrm_qmd build/test_nvrm_submit build/test_nvrm_open_order build/test_nvrm_register build/test_nvrm_gpu_front build/test_nvrm_wait build/test_nvrm_fault build/test_nvrm_pages
