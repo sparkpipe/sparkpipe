@@ -131,10 +131,11 @@ import, map read-only, unmap and release. Every round keeps its bytes and
 reserves the same address again, and memory and descriptors end where
 they started.
 
-The writer in case 2 is 64 grids and not one because of scheduling. A
-running grid is not preempted for another process's copy. With one 30 ms
-grid, the reader's copy queued behind the writer even without the completion
-point, so that mutant went uncaught.
+The writer in case 2 is 64 grids, which catches the mutant whichever engine
+the reader's copy runs on. When nvrm copies still ran on the graphics
+channel, a reader's copy queued behind another process's single 30 ms grid
+even without the completion point. Copies now run on their own copy engine
+([NVRM_BACKEND.md](NVRM_BACKEND.md), queues).
 
 [`tests/test_device_shared_memory_cuda.py`](../tests/test_device_shared_memory_cuda.py)
 runs the same binary against the CUDA backend on a CUDA host.

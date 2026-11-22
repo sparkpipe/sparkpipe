@@ -469,6 +469,7 @@ Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl0080/ctrl0080
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl0080/ctrl0080gr.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl0080/ctrl0080msenc.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl2080/ctrl2080base.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl2080/ctrl2080ce.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl2080/ctrl2080event.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl2080/ctrl2080fb.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/ctrl/ctrl2080/ctrl2080fifo.h
@@ -560,6 +561,7 @@ Copyright (c) 2014-2015 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2014-2019 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2014-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2014-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 2014-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2014-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2015-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2015-2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

@@ -186,12 +186,23 @@ static SparkStatus SubmitOrder(SparkNvrmChannel *channel, SparkNvrmEngine engine
 	return(SparkNvrmSemaphoreAcquire(channel,channel->fence.address,channel->fence_value,owner));
 }
 
+void SparkNvrmChannelAfter(SparkNvrmChannel *channel, const SparkNvrmChannel *other)
+{
+	if ( SparkNvrmChannelCompleted(other) >= other->fence_value )
+		return;
+	channel->after_address = other->fence.address;
+	channel->after_value = other->fence_value;
+}
+
 SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, const char *owner)
 {
-	SparkStatus status;
+	SparkStatus status = SPARK_STATUS_OK;
 	if ( channel->push_used != channel->push_submitted )
 		SUBMIT_REFUSE(SPARK_STATUS_BUSY,"an ordered operation starts after the previous submission");
-	status = SubmitOrder(channel,engine,owner);
+	if ( channel->after_value != 0u )
+		status = SparkNvrmSemaphoreAcquire(channel,channel->after_address,channel->after_value,owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SubmitOrder(channel,engine,owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmOpAbandon(channel);
@@ -256,6 +267,8 @@ SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNv
 		SPARK_FAIL(status);
 	}
 	channel->last_engine = engine;
+	channel->after_address = 0u;
+	channel->after_value = 0u;
 	if ( value != 0 )
 		*value = channel->fence_value;
 	return(SPARK_STATUS_OK);

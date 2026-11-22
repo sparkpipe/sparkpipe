@@ -11,6 +11,8 @@
 #include "class/cla06c.h"
 #include "class/clc96f.h"
 #include "ctrl/ctrla06c.h"
+#include "ctrl/ctrl2080/ctrl2080gpu.h"
+#include "ctrl/ctrl2080/ctrl2080ce.h"
 #include "ctrl/ctrlc36f.h"
 #include "classes/compute/clcec0.h"
 
@@ -38,7 +40,7 @@ static uint64_t ChannelRound(uint64_t value, uint64_t unit)
 	return((value + unit - 1u) / unit * unit);
 }
 
-static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
+static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint32_t group, uint32_t share, uint32_t compute, const char *owner)
 {
 	NV_CHANNEL_ALLOC_PARAMS made;
 	NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS token;
@@ -48,11 +50,13 @@ static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, 
 	made.hObjectBuffer = channel->control.handle;
 	made.gpFifoOffset = channel->control.address;
 	made.gpFifoEntries = channel->entries;
-	made.hContextShare = gpu->context_share;
+	made.hContextShare = share;
 	made.hUserdMemory[0] = channel->control.handle;
 	made.userdOffset[0] = (uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE;
-	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->channel_group,gpu->gpfifo_class,&made,(uint32_t)sizeof(made),&channel->handle,owner));
-	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,channel->handle,gpu->compute_class,0,0u,&channel->compute_object,owner));
+	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,group,gpu->gpfifo_class,&made,(uint32_t)sizeof(made),&channel->handle,owner));
+	channel->group = group;
+	if ( compute != 0u )
+		CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,channel->handle,gpu->compute_class,0,0u,&channel->compute_object,owner));
 	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,channel->handle,gpu->copy_class,0,0u,&channel->copy_object,owner));
 	memset(&token,0,sizeof(token));
 	token.workSubmitToken = UINT32_MAX;
@@ -71,6 +75,14 @@ static SparkStatus ChannelObjects(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, 
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus ChannelCopyBind(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
+{
+	uint32_t words[1];
+	words[0] = gpu->copy_class;
+	CHANNEL_TRY(SparkNvrmPush(channel,CHANNEL_COPY_SUBCHANNEL,NVCEC0_SET_OBJECT,words,1u,owner));
+	return(SparkNvrmChannelSync(gpu,channel,SPARK_NVRM_WAIT_TIMEOUT_NS,owner));
+}
+
 static SparkStatus ChannelBind(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
 {
 	uint32_t words[2];
@@ -87,7 +99,7 @@ static SparkStatus ChannelBind(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, con
 	return(SparkNvrmChannelSync(gpu,channel,SPARK_NVRM_WAIT_TIMEOUT_NS,owner));
 }
 
-SparkStatus SparkNvrmChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmMemoryKind control_kind, const char *owner)
+static SparkStatus ChannelCreateIn(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmMemoryKind control_kind, uint32_t compute, const char *owner)
 {
 	SparkStatus status;
 	memset(channel,0,sizeof(*channel));
@@ -104,15 +116,96 @@ SparkStatus SparkNvrmChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel,
 	if ( status == SPARK_STATUS_OK )
 		status = SparkNvrmMemoryAllocate(gpu,CHANNEL_FENCE_BYTES,SPARK_NVRM_MEMORY_HOST,&channel->fence,owner);
 	if ( status == SPARK_STATUS_OK )
-		status = ChannelObjects(gpu,channel,owner);
-	if ( status == SPARK_STATUS_OK && gpu->channel_group_scheduled != 0u )
+		status = ChannelObjects(gpu,channel,compute != 0u ? gpu->channel_group : gpu->copy_group,compute != 0u ? gpu->context_share : gpu->copy_share,compute,owner);
+	if ( status == SPARK_STATUS_OK && compute != 0u && gpu->channel_group_scheduled != 0u )
 		status = ChannelBind(gpu,channel,owner);
+	if ( status == SPARK_STATUS_OK && compute == 0u && gpu->copy_group_scheduled != 0u )
+		status = ChannelCopyBind(gpu,channel,owner);
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmChannelDestroy(gpu,channel);
 		SPARK_FAIL(status);
 	}
 	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNvrmMemoryKind control_kind, const char *owner)
+{
+	return(ChannelCreateIn(gpu,channel,control_kind,1u,owner));
+}
+
+SparkStatus SparkNvrmCopyEngines(SparkNvrmGpu *gpu, uint32_t *engines, uint32_t capacity, uint32_t *count, const char *owner)
+{
+	NV2080_CTRL_GPU_GET_ENGINES_V2_PARAMS list;
+	uint32_t index;
+	memset(&list,0,sizeof(list));
+	CHANNEL_TRY(SparkNvrmRmControl(&gpu->rm,gpu->subdevice,NV2080_CTRL_CMD_GPU_GET_ENGINES_V2,&list,(uint32_t)sizeof(list),owner));
+	*count = 0u;
+	for (index = 0u; index < list.engineCount && index < NV2080_GPU_MAX_ENGINES_LIST_SIZE; index++)
+		if ( NV2080_ENGINE_TYPE_IS_COPY(list.engineList[index]) && *count < capacity )
+			engines[(*count)++] = list.engineList[index];
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmCopyEngineAsync(SparkNvrmGpu *gpu, uint32_t *engine, const char *owner)
+{
+	uint32_t engines[NV2080_ENGINE_TYPE_COPY_SIZE],count = 0u,index;
+	CHANNEL_TRY(SparkNvrmCopyEngines(gpu,engines,NV2080_ENGINE_TYPE_COPY_SIZE,&count,owner));
+	for (index = 0u; index < count; index++)
+	{
+		NV2080_CTRL_CE_GET_CAPS_V2_PARAMS caps;
+		memset(&caps,0,sizeof(caps));
+		caps.ceEngineType = engines[index];
+		CHANNEL_TRY(SparkNvrmRmControl(&gpu->rm,gpu->subdevice,NV2080_CTRL_CMD_CE_GET_CAPS_V2,&caps,(uint32_t)sizeof(caps),owner));
+		if ( NV2080_CTRL_CE_GET_CAP(caps.capsTbl,NV2080_CTRL_CE_CAPS_CE_GRCE) == 0u )
+		{
+			*engine = engines[index];
+			return(SPARK_STATUS_OK);
+		}
+	}
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"initialize",owner,0,
+			"the GPU has no copy engine outside the graphics engine, so copies would wait behind other processes' grids");
+		SPARK_FAIL(status);
+	}
+}
+
+SparkStatus SparkNvrmCopyGroupOpen(SparkNvrmGpu *gpu, uint32_t engine, const char *owner)
+{
+	NV_CHANNEL_GROUP_ALLOCATION_PARAMETERS group;
+	memset(&group,0,sizeof(group));
+	group.engineType = engine;
+	group.hVASpace = gpu->vaspace;
+	CHANNEL_TRY(SparkNvrmRmAlloc(&gpu->rm,gpu->device,KEPLER_CHANNEL_GROUP_A,&group,(uint32_t)sizeof(group),&gpu->copy_group,owner));
+	gpu->copy_engine = engine;
+	return(SparkNvrmCopyChannelCreate(gpu,&gpu->copy,owner));
+}
+
+SparkStatus SparkNvrmCopyChannelCreate(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
+{
+	NVA06C_CTRL_GPFIFO_SCHEDULE_PARAMS schedule;
+	CHANNEL_TRY(ChannelCreateIn(gpu,channel,SPARK_NVRM_MEMORY_HOST,0u,owner));
+	if ( gpu->copy_group_scheduled != 0u )
+		return(SPARK_STATUS_OK);
+	memset(&schedule,0,sizeof(schedule));
+	schedule.bEnable = 1u;
+	CHANNEL_TRY(SparkNvrmRmControl(&gpu->rm,gpu->copy_group,NVA06C_CTRL_CMD_GPFIFO_SCHEDULE,&schedule,(uint32_t)sizeof(schedule),owner));
+	gpu->copy_group_scheduled = 1u;
+	return(ChannelCopyBind(gpu,channel,owner));
+}
+
+void SparkNvrmCopyGroupClose(SparkNvrmGpu *gpu)
+{
+	if ( gpu->copy.handle != 0u || gpu->copy.control.bytes != 0u )
+		SparkNvrmChannelDestroy(gpu,&gpu->copy);
+	if ( gpu->copy_share != 0u )
+		(void)SparkNvrmRmFree(&gpu->rm,gpu->copy_group,gpu->copy_share,"free");
+	if ( gpu->copy_group != 0u )
+		(void)SparkNvrmRmFree(&gpu->rm,gpu->device,gpu->copy_group,"free");
+	gpu->copy_share = 0u;
+	gpu->copy_group = 0u;
+	gpu->copy_group_scheduled = 0u;
+	gpu->copy_engine = 0u;
 }
 
 void SparkNvrmChannelDestroy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
@@ -133,7 +226,7 @@ void SparkNvrmChannelDestroy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
 	if ( channel->compute_object != 0u )
 		(void)SparkNvrmRmFree(&gpu->rm,channel->handle,channel->compute_object,"free");
 	if ( channel->handle != 0u )
-		(void)SparkNvrmRmFree(&gpu->rm,gpu->channel_group,channel->handle,"free");
+		(void)SparkNvrmRmFree(&gpu->rm,channel->group,channel->handle,"free");
 	if ( channel->uvm_base != 0u )
 		SparkNvrmVirtualRelease(gpu,channel->uvm_base,CHANNEL_UVM_BYTES);
 	if ( channel->fence.bytes != 0u )
