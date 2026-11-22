@@ -52,6 +52,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/motif/source/motif_stage.cuh` | 1 upload | Load. |
 | `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | 4 readbacks | Readback after sync: the layer dump syncs the stream first and launches nothing in between. |
 | `ring/transport/tp_device_collective.c` | 11 uploads, 15 readbacks, 3 fills | See below. |
+| `runtime/spark_weightd_lazy_pack.c` | 1 device copy | Load: on a device without unified memory, the bind copies a held pack from its device-read-only import into the spine it has just allocated, in 1 GiB pieces, and returns only after the copies land. No stream has work on that spine before the bind returns. |
 
 ### The mesh collective
 
