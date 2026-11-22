@@ -33,13 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch nvrm-weightd nvrm-fault-reports clean
-ifeq ($(SPARKPIPE_DEVICE),nvrm)
-NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
-ifneq ($(NVRM_UNPORTED_GOALS),)
-$(error SPARKPIPE_DEVICE=nvrm builds $(NVRM_FLAVOUR_GOALS); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime)
-endif
-endif
+NVRM_FLAVOUR_GOALS :=
 MODEL_COMMON_INCLUDE_FLAGS += -Imodel-families/common/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
@@ -1201,6 +1195,7 @@ $(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_R
 	@mkdir -p $(@D)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-weightd
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
 
@@ -1540,23 +1535,27 @@ $(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runt
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_NVRM_SOURCES) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-device
 .PHONY: nvrm-device nvrm-first-light test-nvrm
 nvrm-device: $(DEVICE_NVRM_LIBRARY)
 
 build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-first-light
 nvrm-first-light: build/nvrm_first_light
 
 build/nvrm_first_light_static: tools/nvrm_first_light.c $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runtime/device/nvrm/*.h) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) -static $< $(DEVICE_NVRM_SOURCES) -pthread -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-first-light-static
 .PHONY: nvrm-first-light-static
 nvrm-first-light-static: build/nvrm_first_light_static
 
 build/nvrm_memory_bandwidth: tools/nvrm_memory_bandwidth.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-memory-bandwidth
 .PHONY: nvrm-memory-bandwidth
 nvrm-memory-bandwidth: build/nvrm_memory_bandwidth
 
@@ -1636,6 +1635,7 @@ build/test_nvrm_hosted_launch: tests/nvrm/hosted_launch.cu tools/nvrm_kernel_man
 	$(NVRM_HOSTED_MODULE)
 build/test_nvrm_launch_arguments: tests/nvrm/launch_arguments.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
+NVRM_FLAVOUR_GOALS += test-nvrm-launch
 .PHONY: test-nvrm-launch
 test-nvrm-launch: build/test_nvrm_launch_arguments
 	./build/test_nvrm_launch_arguments
@@ -1646,6 +1646,7 @@ build/nvrm_occupancy_ab: tests/nvrm/occupancy_ab.cu tools/nvrm_kernel_manifest.p
 build/cuda_occupancy_ab: tests/nvrm/occupancy_ab.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-occupancy-ab
 .PHONY: nvrm-occupancy-ab
 nvrm-occupancy-ab: nvrm-gpu-present build/nvrm_occupancy_ab build/cuda_occupancy_ab
 	@./build/cuda_occupancy_ab > build/occupancy_ab.cuda.txt && ./build/nvrm_occupancy_ab > build/occupancy_ab.nvrm.txt && \
@@ -1658,6 +1659,7 @@ build/nvrm_launch_latency: tests/nvrm/launch_latency.cu tools/nvrm_kernel_manife
 build/cuda_launch_latency: tests/nvrm/launch_latency.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-launch-latency
 .PHONY: nvrm-launch-latency
 nvrm-launch-latency: nvrm-gpu-present build/nvrm_launch_latency build/cuda_launch_latency
 	@for pass in 1 2 3; do ./build/cuda_launch_latency cuda && ./build/nvrm_launch_latency nvrm; done
@@ -1674,6 +1676,7 @@ build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kerne
 build/cuda_cross_process_copy: tests/nvrm/cross_process_copy.cu | build
 	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
 
+NVRM_FLAVOUR_GOALS += nvrm-cross-process-copy
 .PHONY: nvrm-cross-process-copy
 nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cuda_cross_process_copy
 	@./build/cuda_cross_process_copy cuda && ./build/nvrm_cross_process_copy nvrm
@@ -1681,6 +1684,7 @@ nvrm-cross-process-copy: nvrm-gpu-present build/nvrm_cross_process_copy build/cu
 build/nvrm_fault_reports: tests/nvrm/fault_reports.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
 
+NVRM_FLAVOUR_GOALS += nvrm-fault-reports
 .PHONY: nvrm-fault-reports
 nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 	@set -e; status=0; for case in trap:13 address:31 stall:; do mode=$${case%%:*}; expected=$${case#*:}; \
@@ -1693,16 +1697,19 @@ nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
+NVRM_FLAVOUR_GOALS += nvrm-gpu-present
 .PHONY: test-nvrm-gpu nvrm-gpu-present
 nvrm-gpu-present:
 	@if [ ! -e $(NVRM_CONTROL_DEVICE) ]; then echo "FAIL test-nvrm-gpu: $(NVRM_CONTROL_DEVICE) is missing; the GPU gate runs only where the open kernel module is loaded"; exit 1; fi
 
+NVRM_FLAVOUR_GOALS += test-nvrm-gpu
 test-nvrm-gpu: nvrm-gpu-present $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
 	@set -e; mark=$$(tools/nvrm_kernel_log.sh mark); status=0; output=build/test-nvrm-gpu.output; \
 	for test_binary in $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light; do echo "RUN $$test_binary"; \
 		./$$test_binary > $$output 2>&1 || status=1; cat $$output; \
 		if grep -q '^SKIP' $$output; then echo "FAIL $$test_binary skipped part of the GPU gate"; status=1; fi; done; \
 	tools/nvrm_kernel_log.sh check $$mark || status=1; exit $$status
+NVRM_FLAVOUR_GOALS += test-nvrm
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
@@ -2477,6 +2484,7 @@ tree_summary:
 	@printf "deployment_sources="; printf '%s\n' $(DEPLOYMENT_SOURCES) | wc -l
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 
+NVRM_FLAVOUR_GOALS += clean
 clean:
 	rm -rf build
 
@@ -2510,3 +2518,10 @@ test_station: build/test_tiktoken_compiled  $(RUNTIME_LIBRARY)
 	python3 tests/test_spark_tiktoken_compile.py
 	python3 tests/test_kv_failure_host.py
 	python3 tests/test_frame_error_host.py
+
+ifeq ($(SPARKPIPE_DEVICE),nvrm)
+NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
+ifneq ($(NVRM_UNPORTED_GOALS),)
+$(error SPARKPIPE_DEVICE=nvrm builds $(strip $(NVRM_FLAVOUR_GOALS)); $(NVRM_UNPORTED_GOALS) still call the CUDA runtime)
+endif
+endif
