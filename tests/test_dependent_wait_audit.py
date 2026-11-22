@@ -8,7 +8,11 @@ copies into shared memory and every write after the wait. A function that
 never waits is not checked, a kernel on the allowed list is checked but not
 refused, mangled names are reduced to the kernel's own name, and the CUDA
 sm_121a compile gate runs the audit on every serving adapter and CUDA program
-it builds.
+it builds. "Before the first wait" means before it in the listing, whatever
+branches lie around it: a write between two waits is accepted, a write ahead of
+the wait is refused even where a branch could skip it, a write after it is
+accepted even where a branch could jump over the wait, and each function of a
+listing is checked from its own start.
 """
 import importlib.util
 import sys
@@ -45,6 +49,19 @@ def check(failures):
         found, _ = refused("_Z4WritePKfPf", prologue[:3] + [write] + tail)
         if len(found) != 1 or write.split()[-1] not in found[0]:
             failures.append("a write before the wait was not refused: %s" % write)
+    found, _ = refused("_Z9TwoWaitsPf", prologue[:3] + ["ACQBULK", "STG.E desc[UR4][R4.64], R9", "ACQBULK", "STG.E desc[UR4][R6.64], R10", "EXIT"])
+    if found:
+        failures.append("a write between the first wait and a later one was refused: %s" % found)
+    found, _ = refused("_Z10BranchOverPf", ["@P0 BRA 0x30", "ACQBULK", "STG.E desc[UR4][R4.64], R9", "EXIT"])
+    if found:
+        failures.append("a write after the wait in the listing was refused because a branch can jump over the wait: %s" % found)
+    found, _ = refused("_Z11BranchUnderPf", ["@P0 BRA 0x20", "STG.E desc[UR4][R4.64], R9", "ACQBULK", "EXIT"])
+    if len(found) != 1:
+        failures.append("a write before the wait in the listing was not refused because a branch can skip it: %s" % found)
+    two = listing("_Z5FirstPf", ["ACQBULK", "STG.E desc[UR4][R4.64], R9", "EXIT"]) + listing("_Z6SecondPf", ["STG.E desc[UR4][R6.64], R10", "ACQBULK", "EXIT"])
+    found, checked = audit.refusals(audit.functions(two))
+    if checked != 2 or [name for name, _ in found] != ["_Z6SecondPf"]:
+        failures.append("the second function of a listing was not checked from its own start: %s" % found)
     found, checked = refused("_Z7NoWaitPf", ["STG.E desc[UR4][R4.64], R9", "EXIT"])
     if found or checked != 0:
         failures.append("a function that never waits was checked")
