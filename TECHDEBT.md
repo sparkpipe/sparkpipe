@@ -37,8 +37,6 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
   legacy ring/single-switch/dual-switch topology modes with one schema for one
   or two all-to-all rails, and generate the four-, eight-, and sixteen-Spark
   profiles and the pinned interface, address and communicator tables from it.
-- The streamed-prefill weight stream (`ring/transport/weight_stream.c`) still
-  needs both a fabric and a pair device; it does not yet run on one port.
 - weightd puts a whole peer on one rail: a link takes the second rail when the
   two ranks' parities differ (`SparkWeightdMeshSecondRailPeers`). At sixteen
   ranks that is eight peers against seven. A group of four has two of a rank's
