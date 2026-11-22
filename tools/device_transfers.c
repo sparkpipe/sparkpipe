@@ -19,6 +19,7 @@
 #define TRANSFER_SAMPLES 64u
 #define TRANSFER_SAMPLE_BYTES 4096u
 #define TRANSFER_DIRECT_ALIGNMENT 4096u
+#define TRANSFER_STEP_TIMINGS 4u
 
 typedef struct StepTimes
 {
@@ -126,7 +127,7 @@ static int MeasureStep(SparkDeviceQueue *queue, uint32_t rows, uint64_t row_byte
 	StepTimes times;
 	const uint64_t tap_bytes = (uint64_t)rows * row_bytes;
 	uint8_t *source = (uint8_t *)malloc((size_t)tap_bytes);
-	uint64_t *storage = (uint64_t *)calloc((size_t)rounds * 4u,sizeof(uint64_t)),index;
+	uint64_t *storage = (uint64_t *)calloc((size_t)rounds * TRANSFER_STEP_TIMINGS,sizeof(uint64_t)),index;
 	uint32_t round;
 	int result = 0;
 	memset(buffers,0,sizeof(buffers));
