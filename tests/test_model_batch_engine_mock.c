@@ -586,6 +586,24 @@ static void TestScenarioWaitBehindBackgroundWave(const SparkModelResidentDeploym
 	MockResidentClientSetPrefillDelay(0u);
 	MockResidentClientSetSerial(0u);
 	SparkModelBatchEngineDestroy(engine);
+	memset(&state,0,sizeof(state));
+	MockResidentClientReset();
+	engine = TestConnectRows(&one,&state,runtime_root,16u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetPrefillDelay(150000u);
+	CHECK(TestSubmitPriority(engine,1u,764u,1u,background,16u,SPARK_MODEL_BATCH_PRIORITY_BACKGROUND,&handle) == SPARK_STATUS_OK,"background wave beside it: the background request is admitted");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	usleep(5000);
+	CHECK(TestSubmitPriority(engine,2u,765u,1u,interactive,4u,SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE,&handle) == SPARK_STATUS_OK,"background wave beside it: an interactive request arrives during the wave");
+	TestDriveUntilTerminal(engine,&state,2u,40000u);
+	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u,"background wave beside it: both requests complete");
+	CHECK(state.background_wait_ns[2] <= UINT64_C(50000000) && state.background_wait_ns[1] == 0u,
+		"background wave beside it: on ranks that serve the two waves side by side, a request whose waves took no longer than the ranks' own work on them reports no wait behind the background wave");
+	MockResidentClientSetPrefillDelay(0u);
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestScenarioPrefixIndexSurvivesRestart(const SparkModelResidentDeployment *deployment,const char *runtime_root)
