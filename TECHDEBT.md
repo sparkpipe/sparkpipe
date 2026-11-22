@@ -283,8 +283,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
   So the spill is the cheapest measured option at decode while the block
   keeps its 53,760 registers and leaves room for the collectives beside it.
-  `LmLatentShardPrefillKernel` (14 entries) runs the same ten warps; the
-  other entries wait for their own measurement.
+  `LmLatentShardPrefillKernel` (14 entries, six families) runs the same ten
+  warps and keeps its query fragments in registers for the whole row (72
+  registers at 576 dimensions). Its 32 queries (about 37 KB) do not fit in
+  the roughly 15 KB of shared memory left beside its double-buffered key
+  rows. Reloading the fragments every step only shrinks its frames (ptxas,
+  DSV4.1, CUDA 13.0: 40 to 24 bytes, still spilling, and 32 to 8 bytes) at
+  the same 168 registers. A cold timing of the latent prefill across the
+  six families comes before any change. The other entries wait for their
+  own measurement.
 - Accept each hot-path change independently: exact token parity first, then
   at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
   candidates until the preceding candidate beats the current GLM 5.3 Flash
