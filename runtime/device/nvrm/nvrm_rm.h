@@ -18,6 +18,7 @@ typedef struct SparkNvrmRm
 	int control;
 	int uvm;
 	uint32_t client;
+	uint64_t objects;
 	char loaded_version[64];
 } SparkNvrmRm;
 

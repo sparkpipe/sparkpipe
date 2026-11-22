@@ -9,6 +9,7 @@
 #include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_gpu.h"
 #include "runtime/launch.h"
+#include "runtime/device/nvrm/nvrm_resources.h"
 
 #define COHERENCE_BYTES (1ull << 30)
 #define COHERENCE_WORDS (COHERENCE_BYTES / sizeof(uint64_t))
@@ -283,10 +284,18 @@ static int CaseRun(const char *self, SparkDeviceQueue *queue, int test, int muta
 	return(outcome);
 }
 
-static uint64_t MemoryFree(void)
+static uint64_t ProcKilobytes(const char *path, const char *format)
 {
-	size_t free_bytes = 0u,total_bytes = 0u;
-	return(SparkGpuMemGetInfo(&free_bytes,&total_bytes) == SPARK_GPU_SUCCESS ? (uint64_t)free_bytes : 0u);
+	char line[128];
+	unsigned long long kilobytes = UINT64_MAX;
+	FILE *file = fopen(path,"r");
+	if ( file == 0 )
+		return(UINT64_MAX);
+	while ( fgets(line,sizeof(line),file) != 0 )
+		if ( sscanf(line,format,&kilobytes) == 1 )
+			break;
+	fclose(file);
+	return((uint64_t)kilobytes);
 }
 
 static uint32_t OpenDescriptors(void)
@@ -299,6 +308,38 @@ static uint32_t OpenDescriptors(void)
 		count++;
 	closedir(directory);
 	return(count);
+}
+
+typedef struct CoherenceHeld
+{
+	SparkNvrmResourceCounts backend;
+	uint64_t pinned_kib;
+	uint64_t locked_kib;
+	uint32_t descriptors;
+} CoherenceHeld;
+
+static int Held(CoherenceHeld *held)
+{
+	memset(held,0,sizeof(*held));
+	held->pinned_kib = ProcKilobytes("/proc/self/status","VmPin: %llu kB");
+	held->locked_kib = ProcKilobytes("/proc/self/status","VmLck: %llu kB");
+	held->descriptors = OpenDescriptors();
+	return(SparkNvrmResourceCountsRead(&held->backend) == SPARK_STATUS_OK && held->pinned_kib != UINT64_MAX && held->locked_kib != UINT64_MAX &&
+		held->descriptors != 0u);
+}
+
+static int HeldSame(const CoherenceHeld *before, const CoherenceHeld *after)
+{
+	return(before->backend.rm_objects == after->backend.rm_objects && before->backend.shared_memory == after->backend.shared_memory &&
+		before->backend.reservations == after->backend.reservations && before->backend.mappings == after->backend.mappings &&
+		before->pinned_kib == after->pinned_kib && before->locked_kib == after->locked_kib && before->descriptors == after->descriptors);
+}
+
+static void HeldPrint(const char *when, const CoherenceHeld *held)
+{
+	printf("%s: %llu driver objects, %u shared memories, %u reservations, %u mappings, VmPin %llu kB, VmLck %llu kB, %u descriptors\n",when,
+		(unsigned long long)held->backend.rm_objects,held->backend.shared_memory,held->backend.reservations,held->backend.mappings,
+		(unsigned long long)held->pinned_kib,(unsigned long long)held->locked_kib,held->descriptors);
 }
 
 static int Round(SparkDeviceQueue *queue, const SparkDeviceBuffer *probe, SparkDeviceBuffer *back, SparkDeviceAddress *first)
@@ -328,21 +369,33 @@ static void TestRounds(SparkDeviceQueue *queue)
 {
 	SparkDeviceBuffer probe,back;
 	SparkDeviceAddress first = 0u;
-	uint64_t before,after;
-	uint32_t descriptors,round,good = 0u;
+	SparkDeviceMemoryHandle kept = 0u;
+	CoherenceHeld before,after,keeping;
+	uint64_t available_before,available_after;
+	uint32_t round,good = 0u;
 	CHECK(PatternBuffer(&probe,SPARK_DEVICE_SPACE_HOST_PINNED,COHERENCE_ROUND_PROBE,5u,"probe") &&
 		SparkDeviceAllocate(&back,SPARK_DEVICE_SPACE_HOST_PINNED,COHERENCE_ROUND_PROBE,"probe back") == SPARK_STATUS_OK,"allocate the round probes");
-	descriptors = OpenDescriptors();
-	before = MemoryFree();
+	CHECK(Held(&before),"read the backend's objects, reservations and mappings and the process's pinned pages, locked pages and descriptors");
+	available_before = ProcKilobytes("/proc/meminfo","MemAvailable: %llu kB");
 	for (round = 0u; round < COHERENCE_ROUNDS; round++)
 		good += (uint32_t)Round(queue,&probe,&back,&first);
-	after = MemoryFree();
-	printf("rounds: %u of %u kept their bytes after release while mapped; free device memory %llu -> %llu MiB; descriptors %u -> %u\n",good,COHERENCE_ROUNDS,
-		(unsigned long long)(before >> 20),(unsigned long long)(after >> 20),descriptors,OpenDescriptors());
+	available_after = ProcKilobytes("/proc/meminfo","MemAvailable: %llu kB");
+	CHECK(Held(&after),"read the counts again after the rounds");
+	printf("rounds: %u of %u kept their bytes after release while mapped; MemAvailable %llu -> %llu MiB\n",good,COHERENCE_ROUNDS,
+		(unsigned long long)(available_before >> 10),(unsigned long long)(available_after >> 10));
+	HeldPrint("before the rounds",&before);
+	HeldPrint("after the rounds",&after);
 	CHECK(good == COHERENCE_ROUNDS,"every round's memory keeps its bytes after its handle is released while mapped, an import of it sees them, "
 		"and each round reserves the same address again");
-	CHECK(after + COHERENCE_LEAK_SLACK >= before && OpenDescriptors() == descriptors,
-		"a thousand rounds of create, map, export, release, import, map, unmap and release leave memory and descriptors where they were");
+	CHECK(HeldSame(&before,&after),"a thousand rounds of create, map, export, release, import, map, unmap and release leave the backend's driver "
+		"objects, shared memories, reservations and mappings, and the process's pinned pages, locked pages and descriptors, where they were");
+	CHECK(available_after != UINT64_MAX && available_before != UINT64_MAX &&
+		(available_after << 10) + COHERENCE_LEAK_SLACK >= (available_before << 10),
+		"the host's available memory ends within the slack of where it started (secondary: other processes move it)");
+	CHECK(SparkDeviceMemoryCreate(&kept,COHERENCE_ROUND_BYTES,"kept") == SPARK_STATUS_OK && Held(&keeping) &&
+		keeping.backend.rm_objects == after.backend.rm_objects + 1u && keeping.backend.shared_memory == after.backend.shared_memory + 1u &&
+		SparkDeviceMemoryRelease(kept) == SPARK_STATUS_OK && Held(&keeping) && HeldSame(&after,&keeping),
+		"a handle kept past a round shows in the backend's counts until it is released, so a round that leaked one would fail the check");
 	CHECK(SparkDeviceFree(&probe) == SPARK_STATUS_OK && SparkDeviceFree(&back) == SPARK_STATUS_OK,"free the round probes");
 }
 

@@ -583,7 +583,10 @@ and keeps alive until the work that reads them completes
 ([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)). Processes share device
 memory through the same layer: exported by file descriptor, mapped into each
 process's own address range, with no CPU view
-([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
+([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)). A queue
+can record a step as a program that runs again with one call, with per-step
+values patched into marked places
+([`docs/DEVICE_PROGRAMS.md`](docs/DEVICE_PROGRAMS.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
