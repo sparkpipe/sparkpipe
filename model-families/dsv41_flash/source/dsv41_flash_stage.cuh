@@ -2044,7 +2044,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_HIDDEN, state->moe_final, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((D41SumSourcesKernel), D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream, state->moe_gathered,
+	LM_LAUNCH((D41SumGatheredKernel), D41Blocks(rows * D41_HIDDEN) < 1024u ? D41Blocks(rows * D41_HIDDEN) : 1024u, D41_THREADS, 0, stream, state->moe_gathered,
 		state->partial, (uint64_t)rows * D41_HIDDEN, D41_TP);
 	return D41Launched();
 }
