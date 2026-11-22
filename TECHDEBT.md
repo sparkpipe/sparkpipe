@@ -1099,8 +1099,10 @@ as recorded debt for models too large for a group.
 
 - **Exact reuse (gate GX, `docs/EXACTNESS_GATE.md`), open items.**
   - Gate GX has not run on the fleet. The engine rules are proven on the
-    host tests only (`tests/test_model_batch_engine_mock.c`, the API test and
-    `tests/test_gx_gate.py`). Run the first runs of `docs/EXACTNESS_GATE.md`
+    host tests (`tests/test_model_batch_engine_mock.c`, the API test and
+    `tests/test_gx_gate.py`) and on one rank of one model, where the gate
+    passed (`qualification/gx-20261122/`). Its `drafted` case has not run on
+    a rank. Run the first runs of `docs/EXACTNESS_GATE.md`
     on a release candidate, every lane included, and record the cost of the
     rules in `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends,
     and time per turn with the previous reply computed again.

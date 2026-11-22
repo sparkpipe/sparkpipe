@@ -1,0 +1,8 @@
+da69daa458586e9a
+check forced to exit 1: driver exit=1 preflight steps run: chain cold:40 ; GX-PREFLIGHT-FAILED lines=1; block planned=no; block steps run: none
+    check: forced to fail
+    2026-11-22T03:57:08Z GX-PREFLIGHT-FAILED: the tool's own checks failed on one 8K unit; the block was not started
+check forced to exit 0: driver exit=0 preflight steps run: chain cold:40 ; GX-PREFLIGHT-FAILED lines=0; block planned=yes; block steps run: chain cold:40 
+    check: forced to pass
+    2026-11-22T03:57:08Z GX-PASS qwen3.8-27b-fp8-one-gb10
+PROOF-OK: a failed preflight check stops the block before its plan; a passed one lets the block run

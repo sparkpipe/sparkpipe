@@ -1,0 +1,80 @@
+2026-11-22T04:14:47Z cache clear before plan
+20261122T041447Z engine stopped; snapshot files: 156; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=9 unsaved_entries=0 ineligible_entries=0 used_bytes=1102950400 files=155 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_bytes
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=17213423616 busy=0
+20261122T041447Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T041447Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T041448Z residentd pid=63342 log=/var/tmp/gx-1rank/logs/residentd-20261122T041447Z.log
+20261122T041456Z residentd ready after 7s
+20261122T041456Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T041457Z model_api pid=63489 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":189958741,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T04:14:57Z step chain
+2026-11-22T04:20:41Z step chain ended rc=0; on the GPU beside the lane and the embeddings: none; NVRM or Xid lines in its window: 0
+2026-11-22T04:20:41Z cache clear before park:32000
+20261122T042041Z stop model_api pid=63489
+20261122T042041Z stop residentd pid=63342
+20261122T042049Z engine stopped; snapshot files: 2782; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=664 unsaved_entries=0 ineligible_entries=0 used_bytes=18458726400 files=2781 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=17213423616 busy=0
+20261122T042049Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T042049Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T042050Z residentd pid=65335 log=/var/tmp/gx-1rank/logs/residentd-20261122T042049Z.log
+20261122T042058Z residentd ready after 7s
+20261122T042058Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T042100Z model_api pid=65478 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":190321313,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T04:21:00Z step park:32000
+2026-11-22T04:25:12Z step park:32000 ended rc=0; on the GPU beside the lane and the embeddings: none; NVRM or Xid lines in its window: 0
+2026-11-22T04:25:12Z cache evict before restore:32000
+20261122T042512Z stop model_api pid=65478
+20261122T042512Z stop residentd pid=65335
+20261122T042524Z engine stopped; snapshot files: 2136; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=1032 unsaved_entries=0 ineligible_entries=0 used_bytes=13184102400 files=2135 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=17213423616 busy=0
+20261122T042524Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T042525Z residentd pid=66704 log=/var/tmp/gx-1rank/logs/residentd-20261122T042524Z.log
+20261122T042533Z residentd ready after 7s
+20261122T042534Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T042535Z model_api pid=66853 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":190596326,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T04:25:35Z step restore:32000
+2026-11-22T04:27:28Z step restore:32000 ended rc=0; on the GPU beside the lane and the embeddings: none; NVRM or Xid lines in its window: 0
+2026-11-22T04:27:28Z cache clear before cold:40
+20261122T042728Z stop model_api pid=66853
+20261122T042729Z stop residentd pid=66704
+20261122T042737Z engine stopped; snapshot files: 2782; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=629 unsaved_entries=0 ineligible_entries=0 used_bytes=18458726400 files=2781 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=17213423616 busy=0
+20261122T042737Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T042737Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T042738Z residentd pid=67437 log=/var/tmp/gx-1rank/logs/residentd-20261122T042737Z.log
+20261122T042747Z residentd ready after 7s
+20261122T042747Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T042748Z model_api pid=67578 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":190729336,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T04:27:48Z step cold:40
+2026-11-22T04:30:07Z step cold:40 ended rc=0; on the GPU beside the lane and the embeddings: none; NVRM or Xid lines in its window: 0
+2026-11-22T04:30:07Z cache clear before cold:5000
+20261122T043007Z stop model_api pid=67578
+20261122T043007Z stop residentd pid=67437
+20261122T043018Z engine stopped; snapshot files: 1639; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=1626 unsaved_entries=0 ineligible_entries=0 used_bytes=8685772800 files=1638 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=17213423616 busy=0
+20261122T043019Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T043019Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T043020Z residentd pid=68268 log=/var/tmp/gx-1rank/logs/residentd-20261122T043019Z.log
+20261122T043028Z residentd ready after 7s
+20261122T043028Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T043029Z model_api pid=68417 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":190890913,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T04:30:29Z step cold:5000
+2026-11-22T04:34:10Z step cold:5000 ended rc=0; on the GPU beside the lane and the embeddings: none; NVRM or Xid lines in its window: 0
+prefix/8000/40         context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/8000/5000       context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/40        context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/5000      context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/40           context=6913    cut=6913    cached chain/restore/cold=6913/6913/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/5000         context=6913    cut=6913    cached chain/restore/cold=6913/6913/0 reuse=PASS (equal) restored=PASS (equal)
+opening/8000/40        context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+opening/8000/5000      context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+session/8000/40        context=8021    cut=8132    cached chain/restore/cold=8132/8132/0 reuse=PASS (equal) restored=PASS (equal)
+session/8000/5000      context=8021    cut=18052   cached chain/restore/cold=18052/18052/0 reuse=PASS (equal) restored=PASS (equal)
+session/32000/40       context=32021   cut=32132   cached chain/restore/cold=32132/32132/0 reuse=PASS (equal) restored=PASS (equal)
+session/32000/5000     context=32021   cut=42052   cached chain/restore/cold=42052/42052/0 reuse=PASS (equal) restored=PASS (equal)
+committed/8000/40      context=8021    cut=8165    cached chain/restore/cold=8165/8165/0 reuse=PASS (equal) restored=PASS (equal)
+committed/8000/5000    context=8021    cut=18085   cached chain/restore/cold=18085/18085/0 reuse=PASS (equal) restored=PASS (equal)
+waves refused for capacity=0 requests that waited out the in-flight budget=0
+alone=yes
+verdict=PASS
+2026-11-22T04:34:10Z GX-PASS qwen3.8-27b-fp8-one-gb10

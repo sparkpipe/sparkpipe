@@ -462,6 +462,44 @@ were measured before the exact-reuse rules
 ([`docs/EXACTNESS_GATE.md`](docs/EXACTNESS_GATE.md)) and have not been
 measured with them.
 
+Gate GX has passed on one rank: Qwen 3.8 27B FP8 on one GB10, requests as
+token ids through the engine API, 2026-11-22
+([receipts](qualification/gx-20261122/README.md)). Twenty-eight units in two
+blocks gave the cold run's tokens and logprobs, in a reusing run and again
+after eviction and restore from disk, with the cached tokens equal to the
+resume cut each time. Nothing here stands for a fleet lane.
+
+One GB10, one rank, no other process on the GPU:
+
+| First token of | Reusing | After eviction and restore | Cold |
+| --- | ---: | ---: | ---: |
+| 1 new token after an 8,000-token prefix | 262 ms | 959 ms | 8,686 ms |
+| 500 new tokens after it | 973 ms | 987 ms | 9,314 ms |
+| 5,000 new tokens after it | 6,236 ms | 6,009 ms | 14,468 ms |
+| 1 new token after a 32,000-token prefix | 296 ms | 2,045 ms | 37,664 ms |
+| 500 new tokens after it | 1,141 ms | 1,125 ms | 38,511 ms |
+| 5,000 new tokens after it | 7,471 ms | 7,433 ms | 45,102 ms |
+| a second conversation that shares the first two blocks of an 8,000-token head | 2,764 ms | 3,245 ms | 9,052 ms |
+| a session's third turn, 1 new token, the previous 32-token reply computed again | 716 ms | 1,185 ms | 9,107 ms |
+| a session's third turn, 1 new token, each reply committed when it ended | 262 ms | 861 ms | 9,084 ms |
+| a session's third turn, 500 new tokens, the previous 32-token reply computed again | 1,166 ms | 1,444 ms | 10,882 ms |
+| a session's third turn, 500 new tokens, each reply committed when it ended | 992 ms | 1,277 ms | 11,167 ms |
+
+The second conversation shared 6,015 tokens with the first and resumed at
+5,952, the cut of the block they share, so it computed 2,070 tokens. On the
+engine before the rules, the turn floor's second session shared 45,500 of
+46,000 tokens and resumed at 32,768, the last state checkpoint, so it
+computed 13,232 (the section below). The two runs differ in size; what they
+have in common is where the resume point lies: at the shared block's cut
+with the rules, at the last checkpoint without them.
+
+The two reply forms are both exact. The committed sessions are other
+conversations than the recomputed ones, and in the one-token committed
+session the second reply was one token long, so the rows compare the forms,
+not one turn run twice. A commit took 0.4 to 0.5 s after its reply ended.
+The gate's `session` and `committed` units give the same numbers for a
+lane.
+
 What the rules add, counted in tokens and waves, not in time:
 
 - A follow-up turn computes the previous reply again as prefill: the reply's

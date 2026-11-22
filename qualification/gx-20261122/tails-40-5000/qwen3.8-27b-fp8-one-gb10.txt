@@ -1,0 +1,17 @@
+prefix/8000/40         context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/8000/5000       context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/40        context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/5000      context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/40           context=6913    cut=6913    cached chain/restore/cold=6913/6913/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/5000         context=6913    cut=6913    cached chain/restore/cold=6913/6913/0 reuse=PASS (equal) restored=PASS (equal)
+opening/8000/40        context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+opening/8000/5000      context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+session/8000/40        context=8021    cut=8132    cached chain/restore/cold=8132/8132/0 reuse=PASS (equal) restored=PASS (equal)
+session/8000/5000      context=8021    cut=18052   cached chain/restore/cold=18052/18052/0 reuse=PASS (equal) restored=PASS (equal)
+session/32000/40       context=32021   cut=32132   cached chain/restore/cold=32132/32132/0 reuse=PASS (equal) restored=PASS (equal)
+session/32000/5000     context=32021   cut=42052   cached chain/restore/cold=42052/42052/0 reuse=PASS (equal) restored=PASS (equal)
+committed/8000/40      context=8021    cut=8165    cached chain/restore/cold=8165/8165/0 reuse=PASS (equal) restored=PASS (equal)
+committed/8000/5000    context=8021    cut=18085   cached chain/restore/cold=18085/18085/0 reuse=PASS (equal) restored=PASS (equal)
+waves refused for capacity=0 requests that waited out the in-flight budget=0
+alone=yes
+verdict=PASS

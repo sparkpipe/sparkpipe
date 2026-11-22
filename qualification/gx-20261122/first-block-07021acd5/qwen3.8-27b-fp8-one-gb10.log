@@ -1,0 +1,81 @@
+2026-11-22T03:19:30Z chain prefix/8000/warm prompt=8021 cached=0 out=0 8.3s
+2026-11-22T03:19:32Z chain prefix/8000/1 prompt=8022 cached=8021 out=16 2.5s
+2026-11-22T03:19:36Z chain prefix/8000/500 prompt=8521 cached=8021 out=16 3.2s
+2026-11-22T03:19:43Z chain kept/8000/warm prompt=6921 cached=0 out=1 7.8s
+2026-11-22T03:19:46Z chain kept/8000/1 prompt=6914 cached=6913 out=16 2.5s
+2026-11-22T03:19:49Z chain kept/8000/500 prompt=7413 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:19:58Z chain opening/8000/warm prompt=8029 cached=0 out=1 9.1s
+2026-11-22T03:20:03Z chain opening/8000/1 prompt=8022 cached=5952 out=16 5.0s
+2026-11-22T03:20:08Z chain opening/8000/500 prompt=8521 cached=5952 out=16 5.7s
+2026-11-22T03:20:11Z chain prefix/8000/served prompt=8521 cached=8520 out=32 2.4s
+2026-11-22T03:20:23Z chain session/8000/1/turn1 prompt=8022 cached=0 out=32 12.6s
+2026-11-22T03:20:25Z chain session/8000/1/turn2 prompt=8055 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:20:30Z chain session/8000/500/turn1 prompt=8521 cached=8021 out=32 5.0s
+2026-11-22T03:20:35Z chain session/8000/500/turn2 prompt=9053 cached=8520 out=32 5.2s
+2026-11-22T03:20:39Z chain session/8000/500 prompt=9585 cached=9052 out=16 3.4s
+2026-11-22T03:20:51Z chain committed/8000/1/turn1 prompt=8022 cached=0 out=32 12.6s
+2026-11-22T03:20:52Z chain committed/8000/1/commit1 prompt=8054 cached=8021 out=0 0.5s
+2026-11-22T03:20:53Z chain committed/8000/1/turn2 prompt=8055 cached=8054 out=1 1.2s
+2026-11-22T03:20:53Z chain committed/8000/1/commit2 prompt=8056 cached=8054 out=0 0.4s
+2026-11-22T03:20:55Z chain committed/8000/1 prompt=8057 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:21:00Z chain committed/8000/500/turn1 prompt=8521 cached=8021 out=32 5.0s
+2026-11-22T03:21:00Z chain committed/8000/500/commit1 prompt=8553 cached=8520 out=0 0.4s
+2026-11-22T03:21:05Z chain committed/8000/500/turn2 prompt=9053 cached=8553 out=32 5.0s
+2026-11-22T03:21:06Z chain committed/8000/500/commit2 prompt=9085 cached=9052 out=0 0.4s
+2026-11-22T03:21:09Z chain committed/8000/500 prompt=9585 cached=9085 out=16 3.2s
+2026-11-22T03:21:46Z chain prefix/32000/warm prompt=32021 cached=0 out=0 37.0s
+2026-11-22T03:21:49Z chain prefix/32000/1 prompt=32022 cached=32021 out=16 3.0s
+2026-11-22T03:21:52Z chain prefix/32000/500 prompt=32521 cached=32021 out=16 3.8s
+2026-11-22T03:21:55Z chain prefix/32000/served prompt=32521 cached=32520 out=32 2.4s
+2026-11-22T03:22:33Z chain session/32000/1/turn1 prompt=32022 cached=0 out=3 38.3s
+2026-11-22T03:22:39Z chain session/32000/1/turn2 prompt=32026 cached=32021 out=32 5.5s
+2026-11-22T03:22:40Z chain session/32000/1 prompt=32059 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:22:46Z chain session/32000/500/turn1 prompt=32521 cached=32021 out=32 6.0s
+2026-11-22T03:22:53Z chain session/32000/500/turn2 prompt=33053 cached=32520 out=32 6.7s
+2026-11-22T03:22:57Z chain session/32000/500 prompt=33585 cached=33052 out=16 4.0s
+2026-11-22T03:25:58Z park:32000 session/8000/1/turn1 prompt=8022 cached=0 out=32 12.5s
+2026-11-22T03:26:00Z park:32000 session/8000/1/turn2 prompt=8055 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:26:04Z park:32000 session/8000/500/turn1 prompt=8521 cached=8021 out=32 5.0s
+2026-11-22T03:26:10Z park:32000 session/8000/500/turn2 prompt=9053 cached=8520 out=32 5.2s
+2026-11-22T03:26:22Z park:32000 committed/8000/1/turn1 prompt=8022 cached=0 out=32 12.5s
+2026-11-22T03:26:23Z park:32000 committed/8000/1/commit1 prompt=8054 cached=8021 out=0 0.5s
+2026-11-22T03:26:24Z park:32000 committed/8000/1/turn2 prompt=8055 cached=8054 out=1 1.2s
+2026-11-22T03:26:24Z park:32000 committed/8000/1/commit2 prompt=8056 cached=8054 out=0 0.4s
+2026-11-22T03:26:29Z park:32000 committed/8000/500/turn1 prompt=8521 cached=8021 out=32 5.0s
+2026-11-22T03:26:30Z park:32000 committed/8000/500/commit1 prompt=8553 cached=8520 out=0 0.4s
+2026-11-22T03:26:35Z park:32000 committed/8000/500/turn2 prompt=9053 cached=8553 out=32 5.0s
+2026-11-22T03:26:35Z park:32000 committed/8000/500/commit2 prompt=9085 cached=9052 out=0 0.4s
+2026-11-22T03:27:13Z park:32000 session/32000/1/turn1 prompt=32022 cached=0 out=3 38.3s
+2026-11-22T03:27:19Z park:32000 session/32000/1/turn2 prompt=32026 cached=32021 out=32 5.5s
+2026-11-22T03:27:25Z park:32000 session/32000/500/turn1 prompt=32521 cached=32021 out=32 6.0s
+2026-11-22T03:27:32Z park:32000 session/32000/500/turn2 prompt=33053 cached=32520 out=32 6.7s
+2026-11-22T03:27:40Z park:32000 prefix/8000/warm prompt=8021 cached=0 out=0 8.4s
+2026-11-22T03:27:48Z park:32000 kept/8000/warm prompt=6921 cached=0 out=1 7.8s
+2026-11-22T03:27:57Z park:32000 opening/8000/warm prompt=8029 cached=0 out=1 9.2s
+2026-11-22T03:28:34Z park:32000 prefix/32000/warm prompt=32021 cached=0 out=0 37.2s
+2026-11-22T03:28:56Z restore:32000 prefix/8000/1 prompt=8022 cached=8021 out=16 3.2s
+2026-11-22T03:29:01Z restore:32000 prefix/8000/500 prompt=8521 cached=8021 out=16 3.2s
+2026-11-22T03:29:05Z restore:32000 kept/8000/1 prompt=6914 cached=6913 out=16 3.1s
+2026-11-22T03:29:08Z restore:32000 kept/8000/500 prompt=7413 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:29:14Z restore:32000 opening/8000/1 prompt=8022 cached=5952 out=16 5.5s
+2026-11-22T03:29:20Z restore:32000 opening/8000/500 prompt=8521 cached=5952 out=16 5.7s
+2026-11-22T03:29:26Z restore:32000 session/8000/500 prompt=9585 cached=9052 out=16 4.1s
+2026-11-22T03:29:29Z restore:32000 committed/8000/1 prompt=8057 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:29:32Z restore:32000 committed/8000/500 prompt=9585 cached=9085 out=16 3.5s
+2026-11-22T03:29:38Z restore:32000 prefix/32000/1 prompt=32022 cached=32021 out=16 4.6s
+2026-11-22T03:29:43Z restore:32000 prefix/32000/500 prompt=32521 cached=32021 out=16 3.8s
+2026-11-22T03:29:47Z restore:32000 session/32000/1 prompt=32059 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:29:51Z restore:32000 session/32000/500 prompt=33585 cached=33052 out=16 4.3s
+2026-11-22T03:30:19Z cold:1 prefix/8000/1 prompt=8022 cached=0 out=16 10.9s
+2026-11-22T03:30:59Z cold:1 prefix/32000/1 prompt=32022 cached=0 out=16 40.3s
+2026-11-22T03:31:09Z cold:1 kept/8000/1 prompt=6914 cached=0 out=16 9.8s
+2026-11-22T03:31:20Z cold:1 opening/8000/1 prompt=8022 cached=0 out=16 11.2s
+2026-11-22T03:32:00Z cold:1 session/32000/1 prompt=32059 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:32:10Z cold:1 committed/8000/1 prompt=8057 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:32:44Z cold:500 prefix/8000/500 prompt=8521 cached=0 out=16 11.6s
+2026-11-22T03:33:25Z cold:500 prefix/32000/500 prompt=32521 cached=0 out=16 41.2s
+2026-11-22T03:33:35Z cold:500 kept/8000/500 prompt=7413 FAILED the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+2026-11-22T03:33:47Z cold:500 opening/8000/500 prompt=8521 cached=0 out=16 12.1s
+2026-11-22T03:34:01Z cold:500 session/8000/500 prompt=9585 cached=0 out=16 13.1s
+2026-11-22T03:34:44Z cold:500 session/32000/500 prompt=33585 cached=0 out=16 43.6s
+2026-11-22T03:34:57Z cold:500 committed/8000/500 prompt=9585 cached=0 out=16 13.1s

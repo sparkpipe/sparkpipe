@@ -359,8 +359,11 @@ GX_RELEASE=<sha> GX_OUT=qualification/<dir> scripts/gx_gate.sh MODEL...
 
 ## First runs
 
-The gate has not yet run on a real engine. These are the runs that come
-first, in order, with their commands. `<sha>` is the nine-character commit
+The gate has run on one rank (Qwen 3.8 27B FP8 on one GB10): two blocks of
+fourteen units passed, after its first block found a fault in the rank's
+page cache ([receipts](../qualification/gx-20261122/README.md)). It has not
+run on the fleet. These are the runs that come first there, in order, with
+their commands. `<sha>` is the nine-character commit
 of the candidate. Every command runs from a checkout of it, in a shell that
 has read the kit library, which defines `hub` and `HUB_WORK`. From step 2 on
 they run under the hold.
