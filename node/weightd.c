@@ -11,12 +11,12 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <pwd.h>
 #include <time.h>
 
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_kv_snapshot.h"
+#include "sparkpipe/spark_error_site.h"
 
 SparkStatus SparkWeightdMeshInit(uint32_t rank, const char *interface_name,
     uint32_t sgid_index, const char *mesh_dir, uint32_t rank_mask,
@@ -96,14 +96,13 @@ static void *SparkWeightdKvPurgeThread(void *argument)
 static SparkStatus SparkWeightdKvPurgeStart(void)
 {
     static pthread_t purge_thread;
-    const struct passwd *owner = getpwuid(geteuid());
-    if (owner == 0 || owner->pw_dir == 0 || owner->pw_dir[0] != '/' ||
-        strlen(owner->pw_dir) >= sizeof(weightd_kv_purge_root))
+    SparkStatus root_status = SparkKvNodeRoot(weightd_kv_purge_root, sizeof(weightd_kv_purge_root));
+    if (root_status != SPARK_STATUS_OK)
     {
-        fprintf(stderr, "weightd kv purge: no home directory for uid %u; startup failed\n", (unsigned)geteuid());
-        return SPARK_STATUS_NOT_FOUND;
+        fprintf(stderr, "weightd kv purge: no node KV root (status=%s): %s must be the full path of an existing folder, and without it uid %u needs a home directory; startup failed\n",
+            SparkStatusToString(root_status), SPARK_KV_NODE_ROOT_VARIABLE, (unsigned)geteuid());
+        SPARK_RETURN(root_status);
     }
-    memcpy(weightd_kv_purge_root, owner->pw_dir, strlen(owner->pw_dir) + 1u);
     {
         char ledger_path[SPARK_KV_LEDGER_DIRECTORY_BYTES];
         SparkStatus status = SparkKvLedgerDefaultPath(ledger_path, sizeof(ledger_path));
@@ -112,7 +111,7 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
         if (status != SPARK_STATUS_OK)
         {
             fprintf(stderr, "weightd kv purge: the node KV ledger does not open (status=%s); startup failed\n", SparkStatusToString(status));
-            return status;
+            SPARK_RETURN(status);
         }
         fprintf(stderr, "weightd kv ledger %s: node quota %llu bytes for the node's own KV on disk, shared by every lane\n", ledger_path,
             (unsigned long long)SPARK_KV_NODE_QUOTA_BYTES);
@@ -120,7 +119,7 @@ static SparkStatus SparkWeightdKvPurgeStart(void)
     if (pthread_create(&purge_thread, 0, SparkWeightdKvPurgeThread, 0) != 0)
     {
         fprintf(stderr, "weightd kv purge: thread create failed; startup failed\n");
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     fprintf(stderr, "weightd kv purge: every %u s under %s, leftover temporaries are deleted and closed stores are counted; no cache file is deleted for its age\n",
         SPARK_KV_PURGE_SECONDS, weightd_kv_purge_root);
@@ -133,7 +132,7 @@ static SparkStatus SparkWeightdStartThreads(int mesh_enabled)
     if (mesh_enabled && pthread_create(&mesh_thread, 0, SparkWeightdMeshThread, 0) != 0)
     {
         fprintf(stderr, "weightd-mesh: thread create failed; startup failed\n");
-        return SPARK_STATUS_INTERNAL_ERROR;
+        SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
     }
     return SparkWeightdKvPurgeStart();
 }
@@ -226,12 +225,12 @@ static SparkStatus SparkWeightdLatch(const char *flag_value)
              text[0] == '-' || value == 0ul || value > UINT16_MAX )
         {
             fprintf(stderr,"weightd: invalid latch port '%s' (--latch-port or SPARK_WEIGHTD_LATCH_PORT)\n",text);
-            return(SPARK_STATUS_INVALID_ARGUMENT);
+            SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
         }
         latch_port = (uint16_t)value;
     }
     if ( SparkWeightdLatchAcquire(latch_port) < 0 )
-        return(SPARK_STATUS_IO_ERROR);
+        SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     return(SPARK_STATUS_OK);
 }
 
