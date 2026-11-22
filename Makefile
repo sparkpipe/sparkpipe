@@ -264,7 +264,7 @@ STAGE_RUNNER_BINARIES := \
 	$(KEXAONE2_TP16_SERVING_ADAPTER) \
 	$(MIMO26_FLASH_TP16_SERVING_ADAPTER) \
 	$(MIMO26_PRO_TP16_SERVING_ADAPTER) \
-	build/runner_capture_flags_cuda build/runner_verify_step_cuda build/stage_runner_sum_rule_cuda build/stage_runner_failed_dispatch_cuda
+	build/runner_capture_flags_cuda build/runner_verify_step_cuda build/stage_runner_sum_rule_cuda build/stage_runner_failed_dispatch_cuda build/stage_runner_single_gpu_cuda
 
 TOOL_NAMES := \
     sparkpipe_module_publish \
@@ -670,6 +670,7 @@ PYTHON_TESTS := \
 	tests/test_device_adopted_capture_cuda.py \
 	tests/test_stage_runner_sum_rule_cuda.py \
 	tests/test_stage_runner_failed_dispatch_cuda.py \
+	tests/test_stage_runner_single_gpu_cuda.py \
 	tests/test_runner_verify_step_cuda.py \
 	tests/test_glm_attach_kv_cuda.py \
 	tests/test_glm_row_shard_host.py \
@@ -1908,6 +1909,9 @@ build/stage_runner_sum_rule_cuda: tests/cuda/stage_runner_sum_rule_cuda.cu infer
 
 build/stage_runner_failed_dispatch_cuda: tests/cuda/stage_runner_failed_dispatch_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_failed_dispatch_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
+
+build/stage_runner_single_gpu_cuda: tests/cuda/stage_runner_single_gpu_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/stage_runner_single_gpu_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 
 build/k3_tp_context_cuda: tests/cuda/k3_tp_context_cuda.cu modules/k3_resident_decode_stage/source/spark_k3_stage_model.cu model-families/k3/source/k3_stage.cuh model-families/k3/source/k3_streamed_prefill.cuh model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu $(K3_PACK_BIND_SOURCES) ring/transport/weight_stream.c ring/transport/pack_window.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -DSPARK_K3_SERVING_INDEXER=0 -I. -Iinclude -Isrc -Imodules/k3_resident_decode_stage/include -Imodel-families/common/include -Imodel-families/k3/include tests/cuda/k3_tp_context_cuda.cu model-families/k3/source/k3_resident_decode_stage_cuda.cu model-families/k3/source/bind.cu model-families/k3/source/unity.cu model-families/k3/src/spark_k3_pack_load.c model-families/k3/src/spark_k3_bind.c model-families/k3/src/spark_k3_resident_decode_stage_module.c runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda ring/transport/weight_stream.c ring/transport/pack_window.c -libverbs -o $@
