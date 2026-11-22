@@ -100,8 +100,15 @@ class DebtListTest(unittest.TestCase):
         self.assertEqual(MODULE.debt_errors(self.document), [])
         shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
         listed = {path for group in self.document["debt"] for path in group["files"]}
-        self.assertTrue(listed)
         self.assertEqual(listed - shipped, set())
+        self.assertEqual(self.document["debt"], [])
+
+    def test_a_hosted_root_ships_no_cuda_device_library(self):
+        shipped = set(make_words("HOSTED_RELEASE_FILES", "SHARED_LIBRARY_EXT=so"))
+        sources = set(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so"))
+        cuda = make_words("DEVICE_CUDA_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
+        self.assertNotIn(cuda, shipped | sources)
+        self.assertEqual(set(make_words("DEVICE_NVRM_RUNTIME_FILES", "SHARED_LIBRARY_EXT=so")) - sources, set())
 
     def test_the_gate_stages_each_shipped_adapter_with_its_kernels_directory(self):
         adapters = make_words("HOSTED_RELEASE_ADAPTERS", "SHARED_LIBRARY_EXT=so")
@@ -125,14 +132,14 @@ class DebtListTest(unittest.TestCase):
         self.assertEqual(set(nvrm) & listed, set())
         adapters = set(make_words("HOSTED_RELEASE_ADAPTERS", "SHARED_LIBRARY_EXT=so"))
         staged = set(make_words("HOSTED_RELEASE_STAGED", "SHARED_LIBRARY_EXT=so"))
-        self.assertEqual(len(set(nvrm) & adapters), 13)
+        self.assertEqual(set(nvrm) & adapters, adapters)
         for adapter in sorted(set(nvrm) & adapters):
             with self.subTest(adapter):
                 twin = adapter.replace("build/", "build/nvrm/", 1)
                 self.assertIn(f"{twin}={adapter}", staged)
                 self.assertIn(f"{twin}.kernels={adapter}.kernels", staged)
         self.assertEqual(adapters - set(nvrm), {path for group in self.document["debt"] for path in group["files"] if path in adapters})
-        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")
+        library = make_words("DEVICE_NVRM_RUNTIME_FILES", "SHARED_LIBRARY_EXT=so")
         chosen = nvrm + ["tools/fleet_node_agent.sh"]
         self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
                          [path.replace("build/", "build/nvrm/", 1) for path in nvrm] + ["tools/fleet_node_agent.sh"] + library)
@@ -444,7 +451,8 @@ class ReleaseKitTest(unittest.TestCase):
         text = RELEASE_BUILD.read_text()
         node = re.search(r'^NODE="([^"]+)"$', text, re.M)
         self.assertIsNotNone(node)
-        self.assertEqual(node.group(1).split(), make_words("HOSTED_RELEASE_NODE_FILES", "SHARED_LIBRARY_EXT=so"))
+        cuda = make_words("DEVICE_CUDA_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
+        self.assertEqual(node.group(1).split(), make_words("HOSTED_RELEASE_NODE_FILES", "SHARED_LIBRARY_EXT=so") + [cuda])
         hub = re.search(r'^HUB_FILES="([^"]+)"$', text, re.M)
         self.assertIsNotNone(hub)
         self.assertEqual(set(hub.group(1).split()), set(make_words("HOSTED_RELEASE_HUB_FILES")) | {"build/runtime_libs/libsparkpipe_device_cuda.so"})
@@ -454,10 +462,24 @@ class ReleaseKitTest(unittest.TestCase):
         block = re.search(r'^FW_DIR=build\nAPI_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
         self.assertIsNotNone(block)
         lines = block.group(1).splitlines()
-        self.assertEqual(len(lines), 7)
-        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
-        self.assertEqual(lines.pop(0).strip(), f'NODE="$NODE {library}"')
-        self.assertEqual(lines.pop(0).strip(), f'HUB_FILES="$HUB_FILES {library}"')
+        self.assertEqual(len(lines), 9)
+        runtime = " ".join(make_words("DEVICE_NVRM_RUNTIME_FILES", "SHARED_LIBRARY_EXT=so"))
+        cuda = make_words("DEVICE_CUDA_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
+        self.assertEqual(lines.pop(0).strip(), f'NVRM_RUNTIME="{runtime}"')
+        self.assertEqual(lines.pop(0).strip(), f'CUDA_DEVICE="{cuda}"')
+        self.assertEqual(lines.pop(0).strip(), 'NODE="${NODE% $CUDA_DEVICE} $NVRM_RUNTIME"')
+        self.assertEqual(lines.pop(0).strip(), 'HUB_FILES="${HUB_FILES% $CUDA_DEVICE} $NVRM_RUNTIME"')
+        node = re.search(r'^NODE="([^"]+)"$', text, re.M).group(1)
+        hub = re.search(r'^HUB_FILES="([^"]+)"$', text, re.M).group(1)
+        for files in (node, hub):
+            self.assertTrue(files.endswith(f" {cuda}"))
+            self.assertEqual(files.split().count(cuda), 1)
+        hosted = subprocess.run(["bash", "-c", 'CUDA_DEVICE="$1"; NVRM_RUNTIME="$2"; NODE="$3"; HUB_FILES="$4"; '
+                                 'NODE="${NODE% $CUDA_DEVICE} $NVRM_RUNTIME"; HUB_FILES="${HUB_FILES% $CUDA_DEVICE} $NVRM_RUNTIME"; '
+                                 'printf "%s\\n%s\\n" "$NODE" "$HUB_FILES"', "kit", cuda, runtime, node, hub],
+                                capture_output=True, text=True, check=True).stdout.splitlines()
+        self.assertEqual(hosted[0].split(), make_words("HOSTED_RELEASE_NODE_FILES", "SHARED_LIBRARY_EXT=so") + runtime.split())
+        self.assertEqual(hosted[1].split(), hub.split()[:-1] + runtime.split())
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[0])
         hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)

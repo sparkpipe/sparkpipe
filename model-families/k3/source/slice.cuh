@@ -749,7 +749,7 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 			buffers->key_bf16,rank_heads,slab_rows,K3_RMS_EPSILON);
 		if constexpr ( LM_WARP_LANES == 32u )
 			LM_LAUNCH((LmDeltaRuleColumnKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / LM_WARP_LANES), LM_DELTA_COLUMN_THREADS, 0, stream,
-				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices);
+				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices,0,0,0);
 		else
 			LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM,float,K3_KDA_DELTA_COLUMNS>), dim3(sequences,rank_heads,K3_KDA_VALUE_DIM / K3_KDA_DELTA_COLUMNS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_DELTA_COLUMNS * sizeof(float)), stream,
 				buffers->kda_state_pool,slot_bytes,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16,buffers->value_bf16,buffers->replay_retention,buffers->replay_write_gate,buffers->attention_out_bf16,rank_heads,1u,sequences,1u,verify_row_indices);

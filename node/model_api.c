@@ -48,6 +48,7 @@
 #define API_SEQUENCE_SAVE_MS 60000u
 #define API_HEALTH_REFRESH_MS 1000u
 #define API_STOP_DRAIN_MS 10000u
+#define API_STOP_BOUND_SECONDS 15u
 #define API_CACHE_STATE_WAIT_MS 5000u
 #define API_CACHE_STATE_SLICE_MS 50u
 #define API_CACHE_STATE_GRACE_MS 1000u
@@ -272,8 +273,19 @@ static void api_term_signal(int signal_number)
 		_exit(0);
 	}
 	api_stop_requested = 1;
+	alarm(API_STOP_BOUND_SECONDS);
 	written = write(S.wake_fds[1], &value, sizeof(value));
 	(void)written;
+}
+
+static void api_stop_bound_signal(int signal_number)
+{
+	const char line[] = "model_api api_exit reason=signal drained=0 bound=1: the worker was still inside an engine call when the stop bound expired\n";
+	ssize_t written;
+	(void)signal_number;
+	written = write(2, line, sizeof(line) - 1u);
+	(void)written;
+	_exit(0);
 }
 
 static const char *api_finish_reason(const ApiRequest *req)
@@ -2320,6 +2332,7 @@ int main(int argc, char **argv)
 			"will be rejected (prompt and prompt_token_ids accepted)\n");
 	signal(SIGPIPE, SIG_IGN);
 	fprintf(stderr, "model_api: open files limit %llu\n", (unsigned long long)api_raise_open_files());
+	signal(SIGALRM, api_stop_bound_signal);
 	signal(SIGTERM, api_term_signal);
 	signal(SIGINT, api_term_signal);
 	pthread_mutex_init(&S.queue_mutex, 0);

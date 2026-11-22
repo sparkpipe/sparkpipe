@@ -1930,19 +1930,13 @@ and the multidev docs on 2026-09-28. Line numbers are in
   `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
   a release root with any finding outside
   [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
-  may only shrink, and the kit's `--deploy` run refuses every root until
-  the list is empty and the root is built for one device backend. A hosted
-  root ships the nvrm builds of `sparkpipe_weightd`, `weightd_warm`,
-  `weightdctl`, `sparkpipe_model_residentd`, the RDMA transport and the 13
-  serving adapters that call no CUDA driver API under their usual paths,
-  with the nvrm device library, so they are off the list. It lists 13 files
-  and 25 findings:
-  - the 12 serving adapters that still call the CUDA driver API
-    (`libcuda.so.1`) for the TMA tensor maps in
-    [`runtime/tensor_map.h`](runtime/tensor_map.h), and run their kernels
-    and stage runner through the CUDA runtime (`libcudart.so.13`). The hub's
-    API also loads an adapter for its descriptor, so the hub ships them too;
-  - the CUDA device library (`libcudart.so.13`).
+  may only shrink and is empty, and the kit's `--deploy` run refuses a root
+  that mixes device backends. A hosted root ships the nvrm builds of
+  `sparkpipe_weightd`, `weightd_warm`, `weightdctl`,
+  `sparkpipe_model_residentd`, the RDMA transport and every serving adapter
+  under their usual paths, with the nvrm device library and the tensor map
+  build image the adapters' TMA maps need, and no CUDA library. The hub's
+  API also loads an adapter for its descriptor, so the hub ships them too.
 
   `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
   `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
@@ -1955,8 +1949,11 @@ and the multidev docs on 2026-09-28. Line numbers are in
     driver.
     - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
       programs with no CUDA library. They have not run on a GPU yet.
-    - The nvrm flavour does not yet build the transport, residentd or the
-      adapters.
+    - The nvrm flavour builds residentd, the transport and every adapter.
+      Every adapter's model kernel image loads on nvrm, but the stage
+      runner's still calls device `printf`, which only the CUDA driver
+      provides, and the stage runner's graph capture has no nvrm equivalent
+      yet, so no adapter serves on nvrm.
 - The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
   builds and passes the audit, but no node boots it yet. Still to build:
   - a disk install that has run on a node:

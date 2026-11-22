@@ -122,8 +122,8 @@ python3 tools/hosted_release_gate.py shrink BASE
 `build/hosted_release_root` under their repository paths and checks that
 root. The default set is every file a lane root or hub API directory ships:
 
-- the node files `HOSTED_RELEASE_NODE_FILES`, which equal the kit's `NODE`
-  list;
+- the node files `HOSTED_RELEASE_NODE_FILES`: the kit's `NODE` list
+  without the CUDA device library, which only the CUDA builds load;
 - the hub API files `HOSTED_RELEASE_HUB_FILES`;
 - every CUDA serving adapter, with the `<adapter>.kernels` directory of
   cubins and kernel manifests its build installs beside it, which lane setup
@@ -141,14 +141,19 @@ nvrm build. `HOSTED_RELEASE_NVRM_FILES` names those files by the path the
 release ships; the gate builds them in `build/nvrm/` and stages each one
 under the shipped path (`--stage build/nvrm/weightdctl=build/weightdctl`,
 and the same for an adapter's kernels directory). Today that is weightd, its
-two tools, `sparkpipe_model_residentd`, the RDMA transport and the 13 serving
-adapters that call no CUDA driver API (`NVRM_SERVING_ADAPTER_SOURCES`). An
+two tools, `sparkpipe_model_residentd`, the RDMA transport and every serving
+adapter (`NVRM_SERVING_ADAPTER_SOURCES`). An
 adapter's nvrm build shares its CUDA rule: the same recipe builds a second
 target in `build/nvrm/`, with the nvrm runtime and model-common libraries,
 `-cudart none -DSPARKPIPE_DEVICE_NVRM` and the nvrm device library instead
 of the CUDA ones. weightd's programs carry the backend; residentd, the
 transport and the adapters load `runtime_libs/libsparkpipe_device_nvrm.so`,
-which the root then ships beside them. A pair refuses a target that is not an exact path, a source staged
+which the root then ships beside them. The adapters whose GEMMs load
+through TMA encode their tensor maps through the device layer
+(`SparkDeviceTensorMapEncode`), which on nvrm builds each map on the GPU
+with `runtime_libs/sparkpipe_device_kernels/tensor_map_build.cubin`, so the
+root ships that image and its manifest with the library
+(`DEVICE_NVRM_RUNTIME_FILES`). A pair refuses a target that is not an exact path, a source staged
 onto itself and a target staged twice.
 
 `--deploy` is the mode for a root that will run. It also refuses the root
@@ -195,12 +200,14 @@ The list can only shrink:
 
 `HOSTED=1 scripts/release_build.sh` runs the gate with `--deploy` on the
 build host over the node files and adapters, and on the hub over the API
-files and adapters, each with the nvrm device library added, before it
+files and adapters, each with the CUDA device library taken out and the nvrm
+device library, the tensor map build image and its manifest added, before it
 writes the firmware directory. It then ships the node files from the gated
 root and names the hub's gated root (with its checksums) as the API build,
-so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. Until the debt
-list is empty every hosted kit run is refused. Without `HOSTED=1` the kit
-builds and ships exactly as before.
+so nvrm builds go out under their shipped paths. A refusal stops the kit with nothing written. The debt list
+is empty, so a hosted root passes `--deploy` once every file it ships is
+built for nvrm. Without `HOSTED=1` the kit builds and ships exactly as
+before, the CUDA device library included.
 
 ## Tests
 
@@ -228,9 +235,11 @@ also runs in `make test`. It checks four things.
   ones. It stages exact paths only, and a directory only when it holds
   regular files and no links. `shrink` fails on any added file or
   finding in a scratch Git repository. The gate stages each shipped adapter
-  with its kernels directory. The release kit's `NODE` list equals
-  `HOSTED_RELEASE_NODE_FILES`, and its hosted mode gates both builds before
-  it writes the firmware directory.
+  with its kernels directory. The release kit's `NODE` list is
+  `HOSTED_RELEASE_NODE_FILES` and the CUDA device library, which its hosted
+  mode takes out of both lists, and its hosted mode gates both builds before
+  it writes the firmware directory. The committed debt list is empty and a
+  hosted root carries no CUDA device library.
 - **The host-only build**, on Linux. It builds the host-only programs from a
   copy of the sources with the stand-in toolkit and `-Wl,--no-as-needed`.
   The audit must find nothing in them, so a CUDA library on any of their
