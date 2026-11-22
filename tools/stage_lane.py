@@ -94,6 +94,25 @@ def qwen38_27b_fp8_group(ranks: int, api_port: int) -> dict:
         "recurrent_bytes": QWEN38_27B["recurrent_bytes"] * WORLD // ranks,
     }
 
+QWEN3_EMBEDDING_8B = {
+    "swap_id": "qwen3-embedding-8b",
+    "ranks": 1,
+    "api_port": 8490,
+    "kv_label": "qwen3_embedding_8b_tp1_stage",
+    "node_memory_bytes": 18 << 30,
+    "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/qwen3-embedding-8b/tokenizer.json",
+    "pack": "sparkdata/qwen3_embedding_8b.bf16.tp1/packs/qwen3_embedding_8b.tp1.rank{rank:02d}.pack",
+    "adapter": "libqwen3_embedding_8b_bf16_tp1_serving_adapter.so",
+    "program": "qwen3_embedding_8b",
+    "node_target": "cuda.sm121.qwen3_embedding_8b.stage_runner.linear_bf16.kv_bf16",
+    "contract": "model_contracts/qwen3_embedding_8b_authoritative.json",
+    "eos_token_ids": [151643],
+    "tokenizer_vocabulary": 151665,
+    "hidden": 4096,
+    "kv_page_bytes": 36 * 64 * 4096,
+    "recurrent_bytes": 0,
+}
+
 DSV41_FLASH = {
     "swap_id": "deepseek-v4.1-flash",
     "api_port": 8463,
@@ -497,6 +516,7 @@ MODELS = {
     "qwen38_27b_fp8_tp4": qwen38_27b_fp8_group(4, 8484),
     "qwen38_27b_fp8_tp2": qwen38_27b_fp8_group(2, 8485),
     "qwen38_27b_fp8_tp1": qwen38_27b_fp8_group(1, 8486),
+    "qwen3_embedding_8b": QWEN3_EMBEDDING_8B,
 }
 for model_name, model_fields in MODELS.items():
     if not model_fields.get("tokenizer_json", "/home/").startswith(INFERENCE_ROOTS):
@@ -517,6 +537,15 @@ def text_prompt_prefix(directory: Path) -> list[int]:
         return directory_prefix(directory)
     except (TokenizerPrefixError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
         raise SystemExit(f"raw text prompt prefix of {directory}: {error}")
+
+
+def text_prompt_suffix(directory: Path) -> list[int]:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from tokenizer_text_prefix import TokenizerPrefixError, directory_suffix
+    try:
+        return directory_suffix(directory)
+    except (TokenizerPrefixError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"raw text prompt suffix of {directory}: {error}")
 
 
 def lane_ranks(model: dict) -> int:
@@ -615,7 +644,7 @@ def deployment(model: dict, lane: int, args) -> dict:
             "kv_physical_page_capacity": args.kv_physical_pages,
             "output_vocabulary": model["tokenizer_vocabulary"],
         },
-        "chat_template": chat_template(model),
+        **({"chat_template": chat_template(model)} if "chat_template" in model else {}),
         "nodes": nodes,
     }
     if args.tokenizer_sha256 and not args.record:
@@ -626,6 +655,9 @@ def deployment(model: dict, lane: int, args) -> dict:
         prefix = text_prompt_prefix(args.tokenizer_dir)
         if prefix:
             result["tokenizer"]["text_prompt_prefix_token_ids"] = prefix
+        suffix = text_prompt_suffix(args.tokenizer_dir)
+        if suffix:
+            result["tokenizer"]["text_prompt_suffix_token_ids"] = suffix
     return result
 
 

@@ -355,7 +355,9 @@ static SparkStatus SparkModelServingAdapterValidateRows(
 	{
 		if ( (submission->lanes[lane].flags & ~SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS) != 0u ||
 			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_RELEASE && submission->lanes[lane].flags != 0u) ||
-			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && lane < submission->active_sequence_count && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u) )
+			(submission->work_kind == SPARK_MODEL_SERVING_WORK_KIND_DECODE && lane < submission->active_sequence_count && (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u) ||
+			((submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW) != 0u &&
+			 (submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN) == 0u)) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		if ( lane >= submission->active_sequence_count )
 		{
@@ -618,6 +620,13 @@ static SparkStatus SparkModelServingAdapterValidateSubmissionShape(
 	status = SparkModelServingAdapterValidateSampling(descriptor,submission);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
+	if ( SparkModelServingSubmissionRowLaneCount(submission) != 0u )
+	{
+		if ( (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT) == 0u )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		if ( (uint64_t)SparkModelServingSubmissionRowLaneCount(submission) * descriptor->boundary_element_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( SparkModelServingWorkKindUsesRows(submission->work_kind) == 0u )
 	{
 		if ( submission->tokens_per_sequence != 0u )
@@ -813,7 +822,7 @@ static SparkStatus SparkModelServingAdapterValidateCompletionShape(
 	const SparkModelServingAdapterDescriptor *descriptor,
 	const SparkModelServingCompletion *completion)
 {
-	uint32_t has_tokens,has_extension;
+	uint32_t has_tokens,has_extension,has_rows;
 	if ( completion == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( completion->abi_version != SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION || completion->descriptor_bytes != SPARK_MODEL_SERVING_COMPLETION_BYTES )
@@ -827,6 +836,12 @@ static SparkStatus SparkModelServingAdapterValidateCompletionShape(
 	if ( completion->logprob_stride > SPARK_SAMPLING_MAX_LOGPROBS || completion->logprob_entry_count > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES ||
 		completion->logprob_entry_count != completion->token_count * completion->logprob_stride ||
 		(completion->logprob_stride != 0u && (descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	has_rows = (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES) != 0u;
+	if ( has_rows != (completion->row_value_count != 0u) || has_rows != (completion->row_value_stride != 0u) ||
+		completion->row_value_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES ||
+		(has_rows != 0u && (completion->row_value_stride != descriptor->boundary_element_count || completion->row_value_count % completion->row_value_stride != 0u ||
+			(descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT) == 0u)) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( completion->status != SPARK_STATUS_OK && (completion->completion_flags != 0u || completion->accepted_token_count != 0u || completion->logprob_stride != 0u) )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
@@ -954,12 +969,13 @@ void SparkModelServingCompletionReset(SparkModelServingCompletion *completion)
 	memset(completion->token_ids,0,(size_t)SparkModelServingCompletionBound(completion->token_count,SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT) * sizeof(completion->token_ids[0]));
 	memset(completion->logprobs,0,(size_t)SparkModelServingCompletionBound(completion->logprob_entry_count,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES) * sizeof(completion->logprobs[0]));
 	memset(completion->model_extension,0,SparkModelServingCompletionBound(completion->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
+	memset(completion->row_values,0,(size_t)SparkModelServingCompletionBound(completion->row_value_count,SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES) * sizeof(completion->row_values[0]));
 	memset(completion,0,offsetof(SparkModelServingCompletion,token_ids));
 	completion->logprob_stride = 0u;
 	completion->logprob_entry_count = 0u;
 	completion->model_extension_kind = 0u;
 	completion->model_extension_bytes = 0u;
-	memset(&completion->queue_delay_ns,0,sizeof(*completion) - offsetof(SparkModelServingCompletion,queue_delay_ns));
+	memset(&completion->queue_delay_ns,0,SPARK_MODEL_SERVING_COMPLETION_HEAD_BYTES - offsetof(SparkModelServingCompletion,queue_delay_ns));
 }
 
 void SparkModelServingCompletionCopy(
@@ -977,7 +993,8 @@ void SparkModelServingCompletionCopy(
 	destination->model_extension_kind = source->model_extension_kind;
 	destination->model_extension_bytes = source->model_extension_bytes;
 	memcpy(destination->model_extension,source->model_extension,SparkModelServingCompletionBound(source->model_extension_bytes,SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES));
-	memcpy(&destination->queue_delay_ns,&source->queue_delay_ns,sizeof(*source) - offsetof(SparkModelServingCompletion,queue_delay_ns));
+	memcpy(&destination->queue_delay_ns,&source->queue_delay_ns,SPARK_MODEL_SERVING_COMPLETION_HEAD_BYTES - offsetof(SparkModelServingCompletion,queue_delay_ns));
+	memcpy(destination->row_values,source->row_values,(size_t)SparkModelServingCompletionBound(source->row_value_count,SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES) * sizeof(source->row_values[0]));
 }
 
 SparkStatus SparkModelServingAdapterLoadInterfaceFromSharedObject(

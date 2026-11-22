@@ -26,6 +26,13 @@ whether the fleet still matches.
 | `text_prompt_prefix_token_ids` | the token ids the publisher tokenizer puts before a raw text prompt, as Hugging Face and vLLM do for `/v1/completions` (`tools/tokenizer_text_prefix.py`); `[]` for none. Gemma 4 and Laguna start with BOS `[2]`, Muse Glimmer with `[200000]` |
 | `draft_server` | the hub drafter the API asks for drafts |
 
+A deployment's `tokenizer` block may also carry
+`text_prompt_suffix_token_ids`: the token ids the publisher tokenizer puts
+after a raw text (`tools/tokenizer_text_prefix.py --suffix`). The API's
+`/v1/embeddings` ends a text input with them, as Qwen3-Embedding's tokenizer
+ends a text with `<|endoftext|>`. No lane record carries the field yet:
+`tools/stage_lane.py` writes it for a lane rendered with `--tokenizer-dir`.
+
 `weightd` at the top holds the device ceiling and KV reserve every node's
 weightd runs with.
 

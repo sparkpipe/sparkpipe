@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 8u
+#define SPARK_STAGE_RUNNER_MODEL_ABI_VERSION 9u
 #define SPARK_STAGE_RUNNER_NO_ROW 0xffffffffu
 #define SPARK_STAGE_RUNNER_ROUND_ALL 0u
 #define SPARK_STAGE_RUNNER_ROUND_BEGIN 1u
@@ -117,6 +117,7 @@ typedef struct SparkStageRunnerModelGeometry
 	uint32_t embed_gather;
 	uint32_t graph_ignores_gather;
 	uint32_t input_width;
+	uint32_t headless;
 } SparkStageRunnerModelGeometry;
 
 typedef struct SparkStageRunnerDeviceWeights

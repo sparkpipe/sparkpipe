@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "model_id": "Qwen/Qwen3-Embedding-8B",
+  "revision": "1d8ad4ca9b3dd8059ad90a75d4983776a23d44af",
+  "source": "https://huggingface.co/Qwen/Qwen3-Embedding-8B",
+  "architecture": "Qwen3 dense decoder (pre-norm RMSNorm, grouped-query attention with per-head query and key norms and full rotary embedding, gated SiLU FFN), no vocabulary head: the output is the final-norm row of a text's last token",
+  "sources": {
+    "checkpoint_config": "config.json at the pinned revision, read 2026-11-22",
+    "geometry_note": "Qwen3ForCausalLM weights without lm_head: 36 layers, hidden 4096, 32 query heads over 8 key heads of 128, FFN 12288, vocab 151665, rope theta 1e6 over the whole head, rms_norm_eps 1e-6",
+    "known_gaps": [
+      "one rank only: the 151665-row vocabulary does not split evenly and the stage is built for TP1",
+      "BF16 weights only; the publisher ships no FP8 checkpoint"
+    ],
+    "precision_policy": "weights and activations BF16 with FP32 accumulation; the residual sum is rounded to BF16 before a norm, every norm rounds the normalised value to BF16 before its BF16 gain, and rotary terms and the SiLU are rounded before their products, as the publisher's bfloat16 modules do; attention scores and softmax weights are FP32 and only the attention output is rounded to BF16",
+    "rope_frequencies": "FP32, each the correctly rounded value of 1 / theta^(2i/128); torch's vector power can return a neighbouring FP32 value for an entry",
+    "pooling": "the tokenizer appends <|endoftext|> (151643) to a text; the embedding is the final-norm BF16 row at that token, divided by its L2 norm in FP64 and rounded to FP32"
+  },
+  "model": {
+    "hidden_dimension": 4096,
+    "layer_count": 36,
+    "vocabulary_size": 151665,
+    "rms_norm_epsilon": 1e-06,
+    "dense_intermediate_dimension": 12288,
+    "maximum_context_tokens": 32768,
+    "tied_embeddings": false,
+    "vocabulary_head": false,
+    "embedding_dimension": 4096
+  },
+  "attention": {
+    "query_head_count": 32,
+    "kv_head_count": 8,
+    "head_dimension": 128,
+    "rope_dimension": 128,
+    "rope_theta": 1000000.0,
+    "rope_convention": "rotate_half_whole_head",
+    "output_gate": false
+  },
+  "precision": {
+    "weight_format": "bf16",
+    "activation_format": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "cache": {
+    "kv_element_bits": 16,
+    "kv_page_slots": 64
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}

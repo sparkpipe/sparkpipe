@@ -177,7 +177,8 @@ static SparkStatus SparkModelResidentClientAllocate(
 	SparkStatus status;
 	status = SparkModelResidentIpcCalculateSubmitCapacity(&configuration->runtime_limits,&output_bytes);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(configuration->adapter_descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&input_bytes);
+		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(configuration->adapter_descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,
+			SparkModelServingAdapterRowValueCapacity(configuration->adapter_descriptor),&input_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	client = (SparkModelResidentClient *)calloc(1u,sizeof(*client));

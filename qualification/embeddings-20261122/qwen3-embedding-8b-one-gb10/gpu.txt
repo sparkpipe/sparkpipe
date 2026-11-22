@@ -1,0 +1,15 @@
+after the agreement, ranking, invariance and first speed run:
+weightd=2582730 residentd=2582753 api=2582882
+health: {"status":"ok","served":1467,"tokenizer":true,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":43951,"kv_write_alert_rank":-1,"kv_capacity_tokens":32768,"kv_capacity_max_tokens":32768}
+3831532, $HOME/.venvs/embed/bin/python, 14873 MiB
+2582730, /var/tmp/emb-1rank/fw/sparkpipe_weightd, 4788 MiB
+2582753, /var/tmp/emb-1rank/root/bin/sparkpipe_model_residentd, 15002 MiB
+MemAvailable 77 GiB
+
+before the stop:
+weightd=2582730 residentd=2582753 api=2582882
+health: {"status":"ok","served":3551,"tokenizer":true,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":13152,"kv_write_alert_rank":-1,"kv_capacity_tokens":32768,"kv_capacity_max_tokens":32768}
+3831532, $HOME/.venvs/embed/bin/python, 14873 MiB
+2582730, /var/tmp/emb-1rank/fw/sparkpipe_weightd, 4788 MiB
+2582753, /var/tmp/emb-1rank/root/bin/sparkpipe_model_residentd, 15002 MiB
+MemAvailable 77 GiB

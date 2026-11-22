@@ -41,7 +41,7 @@
 #define STAGE_SERVING_TAP_SEND_BUFFER_BYTES (64 << 20)
 #define STAGE_SERVING_VERIFY_BUCKETS 4u
 #define STAGE_SERVING_PROGRAM_ID 1u
-#define STAGE_SERVING_BUFFERS 28u
+#define STAGE_SERVING_BUFFERS 30u
 
 typedef struct SparkStageServingState
 {
@@ -108,6 +108,8 @@ typedef struct SparkStageServingState
 	SparkDeviceBuffer output_tokens;
 	SparkDeviceBuffer output_scores;
 	SparkDeviceBuffer tokens_host;
+	SparkDeviceBuffer output_rows;
+	SparkDeviceBuffer rows_host;
 	SparkStageKvBinding kv;
 	SparkModelDriverCacheLane cache_lanes[SPARK_STAGE_SERVING_MAX_LANES];
 	SparkModelDriverCacheLane prefetch_lanes[SPARK_STAGE_SERVING_MAX_LANES];
@@ -1136,6 +1138,8 @@ static void StageServingBufferPlan(SparkStageServingState *state, SparkStageServ
 		{ &state->output_tokens, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->tokens_host, SPARK_DEVICE_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
+		{ &state->output_rows, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, lanes * state->model->hidden * sizeof(uint16_t) },
+		{ &state->rows_host, SPARK_DEVICE_SPACE_HOST_PINNED, lanes * state->model->hidden * sizeof(uint16_t) },
 	};
 	memcpy(plan, plans, sizeof(plans));
 }
@@ -1305,6 +1309,14 @@ static SparkStatus StageServingValidateSubmission(void *adapter_state,
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( submission->row_sequence_ids == 0 || submission->lanes == 0 || submission->lane_count < submission->active_sequence_count )
 		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	if ( SparkModelServingSubmissionRowLaneCount(submission) != 0u && (state->model->row_output == 0u ||
+		(uint64_t)SparkModelServingSubmissionRowLaneCount(submission) * state->model->hidden > SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES) )
+	{
+		fprintf(stderr, "%s adapter: refused %u lanes that return their final row: %s\n", state->model->module_tag,
+			SparkModelServingSubmissionRowLaneCount(submission), state->model->row_output == 0u ? "this model returns no rows" :
+			"one completion carries at most 65536 values");
+		SPARK_FAIL(state->model->row_output == 0u ? SPARK_STATUS_UNSUPPORTED : SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
 	if ( submission->row_count > state->max_shared_rows &&
 		(submission->work_kind != SPARK_MODEL_SERVING_WORK_KIND_PREFILL || submission->active_sequence_count != 1u) )
 	{
@@ -1318,7 +1330,7 @@ static SparkStatus StageServingValidateSubmission(void *adapter_state,
 static void StageServingCompletionHeader(const SparkModelServingSubmission *submission,
 	uint32_t accepted_token_count, SparkModelServingCompletion *completion)
 {
-	memset(completion, 0, sizeof(*completion));
+	memset(completion, 0, SPARK_MODEL_SERVING_COMPLETION_HEAD_BYTES);
 	completion->abi_version = submission->abi_version;
 	completion->descriptor_bytes = SPARK_MODEL_SERVING_COMPLETION_BYTES;
 	completion->submission_id = submission->submission_id;
@@ -1702,6 +1714,33 @@ static void StageServingDispatch(const SparkStageServingState *state, const Spar
 	}
 }
 
+static SparkStatus StageServingReadRows(SparkStageServingState *state, SparkDeviceQueue *queue, uint32_t active)
+{
+	const SparkDeviceRange host = { &state->rows_host, 0u }, output = { &state->output_rows, 0u };
+	const uint64_t bytes = (uint64_t)active * state->model->hidden * sizeof(uint16_t);
+	if ( bytes > state->rows_host.bytes )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( SparkDeviceCopy(queue, host, output, bytes) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	return SPARK_STATUS_OK;
+}
+
+static void StageServingCompleteRows(const SparkStageServingState *state, const SparkModelServingSubmission *submission, uint32_t active,
+	SparkModelServingCompletion *completion)
+{
+	const uint16_t *rows = (const uint16_t *)StageServingAddress(&state->rows_host);
+	const uint32_t hidden = state->model->hidden;
+	for ( uint32_t lane = 0u; lane < active; ++lane )
+	{
+		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW) == 0u )
+			continue;
+		memcpy(&completion->row_values[completion->row_value_count], rows + (uint64_t)lane * hidden, (size_t)hidden * sizeof(uint16_t));
+		completion->row_value_count += hidden;
+		completion->row_value_stride = hidden;
+		completion->completion_flags |= SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES;
+	}
+}
+
 static SparkStatus StageServingReadTokens(SparkStageServingState *state, SparkDeviceQueue *queue, uint32_t rows, uint32_t steps)
 {
 	const SparkDeviceRange tokens = { &state->tokens_host, 0u }, output = { &state->output_tokens, 0u };
@@ -1771,6 +1810,8 @@ static SparkStatus StageServingComplete(SparkStageServingState *state, const Spa
 				&distribution_logprobs[(uint64_t)entry * SPARK_SAMPLING_MAX_LOGPROBS],
 				(uint64_t)distribution_rules[entry].logprobs * sizeof(SparkSamplingLogprob));
 	}
+	if ( state->runner.owns_final_head != 0u && kept == 0 && SparkModelServingSubmissionRowLaneCount(submission) != 0u )
+		StageServingCompleteRows(state, submission, active, &completion);
 	state->completion_function(state->completion_context, &completion);
 	return SPARK_STATUS_OK;
 }
@@ -1877,6 +1918,11 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		dispatch.distribution_positions = distribution_positions;
 		dispatch.distribution_rules = distribution_rules;
 		dispatch.distribution_logprobs = logprob_stride != 0u ? distribution_logprobs : 0;
+		if ( SparkModelServingSubmissionRowLaneCount(submission) != 0u )
+		{
+			dispatch.output_rows_bf16 = StageServingAddress(&state->output_rows);
+			dispatch.output_rows_bytes = (uint64_t)active * state->model->hidden * sizeof(uint16_t);
+		}
 		marks[1] = SparkMonotonicNs();
 		status = SparkStageRunnerSubmit(&state->runner, &dispatch);
 	}
@@ -1890,6 +1936,8 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = SparkStageKvBindingRecurrentCapture(&state->kv, row_slots, active, queue);
 	if ( status == SPARK_STATUS_OK && state->runner.owns_final_head != 0u )
 		status = StageServingReadTokens(state, queue, rows, steps);
+	if ( status == SPARK_STATUS_OK && dispatch.output_rows_bf16 != 0 )
+		status = StageServingReadRows(state, queue, active);
 	marks[3] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK )
 		status = StageServingDeviceWait(state, queue, "step");
@@ -2109,7 +2157,8 @@ static uint32_t StageServingModelValid(const SparkStageServingModel *model)
 		model->collective_sequences != 0 && model->tp_degree != 0u && model->tp_degree <= SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT &&
 		model->layer_count != 0u && model->hidden != 0u && model->cache_block_token_count != 0u &&
 		model->max_rows != 0u && model->max_rows <= SPARK_STAGE_SERVING_MAX_ROWS && model->verify_rows <= model->max_rows &&
-		model->speculative_tokens < SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE;
+		model->speculative_tokens < SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE && model->row_output <= 1u &&
+		model->rows_only <= model->row_output && (model->rows_only == 0u || (model->verify_rows == 0u && model->speculative_tokens == 0u));
 }
 
 static void StageServingDescribe(const SparkStageServingModel *model, SparkModelServingAdapterDescriptor *descriptor)
@@ -2133,7 +2182,9 @@ static void StageServingDescribe(const SparkStageServingModel *model, SparkModel
 		SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS |
 		(model->speculative_tokens != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION : 0u) |
 		(model->verify_rows != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY : 0u) |
-		(model->tree_slot_grain != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY : 0u);
+		(model->tree_slot_grain != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY : 0u) |
+		(model->row_output != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT : 0u) |
+		(model->rows_only != 0u ? SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY : 0u);
 	descriptor->stage_count = model->tp_degree;
 	descriptor->layer_count = model->layer_count;
 	descriptor->boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16;

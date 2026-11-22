@@ -1597,6 +1597,54 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Serving API
 
+- Embeddings (`POST /v1/embeddings`, the memory host method `embed`,
+  Qwen3-Embedding-8B on one rank) are built and measured on one GB10
+  ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#embeddings)). Before a
+  fleet serves them:
+  - **Evidence.** One run on one GB10, 256 texts of at most 1,871 tokens,
+    most of them English prose. No retrieval benchmark has run through the
+    engine, and no text longer than the lane's 2,048 positions.
+  - **Placement.** The model is one rank on one node, beside the fleet's chat
+    model. A lane record has no form for that: one model holds the fleet, a
+    record's `ranks` picks a group of nodes, and the swap controller stops
+    every other record's lane. The node that carries it gives up 16.4 GB of
+    device memory at start and 20.8 GB with the embedding lane's KV pool
+    full (measured: 15.4 GB of weights, 0.4 GB of state, up to 4.8 GB of KV
+    for 16 sequences of 2,048 positions). That comes out of the chat model's
+    KV pool on that node, and the largest chat models leave no such room:
+    `tools/stage_lane.py` budgets 97.5 to 100 GiB of a node's 119.6 GiB for
+    Kimi K3 and GLM 5.3 Full. Beside those the embedding model needs a
+    smaller KV pool, an FP8 build of its weights measured under
+    [`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md) (the publisher ships
+    none), or a node of its own.
+  - **Release.** `scripts/release_build.sh` builds the adapters the lane
+    records name, so the embedding adapter is built by hand today, for
+    aarch64 and for the hub's API. `scripts/release_rollout.sh` qualifies a
+    model by its tokens; an embedding lane needs its own capture, a fixed set
+    of texts whose vectors must come back bit-equal after a release.
+  - **Chat layer and door.** `deployment/hub/chat_frontend.json` has no
+    `embeddings` entry, `/v1/models` does not list embedding models, the
+    chat layer writes no request record for an embeddings call, and LiteLLM
+    has no route for it.
+  - **Cache.** An embedding request publishes its prompt blocks like a chat
+    prompt, so the same text embedded again resumes from them and returns
+    the bits of the first time (measured on 256 texts). The price is the KV
+    pool and, for every token of a text that is embedded twice, 147 KB of
+    snapshot file: 9.9 GB in the measured run. An embedding lane that
+    publishes nothing would need neither; it is not built, and whether a
+    lane should publish is not decided.
+  - **Length.** An input longer than the lane's positions is refused. The
+    measured lane serves 2,048 positions; the model takes
+    32K, and each position of this model costs 147 KB of KV (36 attention
+    layers).
+  - **Metal.** The device runner refuses final rows, and the dense Qwen3
+    family has no device stage, so a Mac Studio serves no embeddings.
+  - **Ranks.** The stage is built for one rank. The 151,665-row vocabulary
+    does not split evenly, and nothing asks for more ranks.
+  - **ABI.** This change takes serving adapter 41, batch engine 18, resident
+    IPC 31, stage runner 7 and runner model 9. A change that lands first
+    with any of these numbers leaves this one to take the next.
+
 - Client setup (#1788), before launch:
   - The SparkPipe plugin for Claude Code, which setup installs, is not built. The site describes it.
     - `sparkpipe setup claude-code` writes the settings, the stream idle timeout and the MCP entry.

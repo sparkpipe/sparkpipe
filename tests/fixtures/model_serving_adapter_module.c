@@ -19,7 +19,8 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_RESIDENT_DECODE_CHAIN | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_PREFIX_REUSE | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT)
 #if defined(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.without-prefix-reuse.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -58,6 +59,11 @@
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATION)
 #define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 2u
 #define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 12u
+#elif defined(TEST_MODEL_SERVING_WIDE_ROWS)
+#define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.wide-rows.v1"
+#define TEST_MODEL_SERVING_CAPABILITIES TEST_MODEL_SERVING_DEFAULT_CAPABILITIES
+#define TEST_MODEL_SERVING_SPECULATIVE_TOKEN_COUNT 0u
+#define TEST_MODEL_SERVING_BOUNDARY_ELEMENTS 16384u
 #elif defined(TEST_MODEL_SERVING_SPECULATIVE_DEFERRED_CHECKPOINTS)
 #define TEST_MODEL_SERVING_ADAPTER_ID "test.model.serving.adapter.speculative-deferred.v1"
 #define TEST_MODEL_SERVING_CAPABILITIES \
@@ -74,6 +80,9 @@
 #endif
 #ifndef TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT
 #define TEST_MODEL_SERVING_CACHE_CHECKPOINT_TOKEN_COUNT 0u
+#endif
+#ifndef TEST_MODEL_SERVING_BOUNDARY_ELEMENTS
+#define TEST_MODEL_SERVING_BOUNDARY_ELEMENTS 64u
 #endif
 
 typedef struct TestModelServingPrepared
@@ -124,7 +133,7 @@ static const SparkModelServingAdapterDescriptor TestModelServingDescriptor =
 	.stage_count = 3u,
 	.layer_count = 7u,
 	.boundary_format = SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16,
-	.boundary_element_count = 64u,
+	.boundary_element_count = TEST_MODEL_SERVING_BOUNDARY_ELEMENTS,
 	.boundary_element_bytes = 2u,
 	.linear_weight_codec = SPARK_WEIGHT_CODEC_BF16,
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_INT8,
@@ -271,6 +280,15 @@ static SparkStatus TestModelServingValidateSubmission(
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t TestModelServingLastToken(const SparkModelServingSubmission *submission,uint32_t lane)
+{
+	uint32_t row,token = 0u;
+	for (row=0u; row<submission->row_count; row++)
+		if ( submission->row_lane_indices[row] == lane )
+			token = submission->token_ids[row];
+	return(token);
+}
+
 static void TestModelServingBuildCompletion(
 	const TestModelServingState *state,
 	const SparkModelServingSubmission *submission,
@@ -358,6 +376,23 @@ static void TestModelServingBuildCompletion(
 		step = token_index % completion->logprob_stride;
 		completion->logprobs[token_index].token = step == 0u ? completion->token_ids[token_index / completion->logprob_stride] : 1000u + step;
 		completion->logprobs[token_index].logprob = -0.25f * (float)(step + 1u);
+	}
+	for (lane=0u; lane<submission->active_sequence_count; lane++)
+	{
+		const float first = (float)(TestModelServingLastToken(submission,lane) % 8u + 1u),one = 1.0f;
+		uint32_t bits,element;
+		uint16_t *row;
+		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW) == 0u )
+			continue;
+		row = &completion->row_values[completion->row_value_count];
+		memcpy(&bits,&one,sizeof(bits));
+		for (element=0u; element<TestModelServingDescriptor.boundary_element_count; element++)
+			row[element] = (uint16_t)(bits >> 16);
+		memcpy(&bits,&first,sizeof(bits));
+		row[0] = (uint16_t)(bits >> 16);
+		completion->completion_flags |= SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES;
+		completion->row_value_stride = TestModelServingDescriptor.boundary_element_count;
+		completion->row_value_count += TestModelServingDescriptor.boundary_element_count;
 	}
 }
 

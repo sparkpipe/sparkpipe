@@ -126,7 +126,7 @@ def main():
             "-I.", "-Iinclude", "-Isrc", "-Imodel-families/common/include",
             str(source), "build/libsparkpipe_runtime.a",
             "build/libsparkpipe_model_common.a", "build/libsparkpipe_core.a",
-            "-ldl", "-lpthread", "-o", str(binary),
+            "-ldl", "-lpthread", "-lm", "-o", str(binary),
         ], cwd=ROOT, check=True)
         result = subprocess.run([str(binary), str(ROUNDS)], cwd=ROOT, timeout=90, capture_output=True, text=True)
         if result.returncode:

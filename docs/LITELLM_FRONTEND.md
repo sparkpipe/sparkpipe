@@ -232,8 +232,23 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is the served adapter's model id (for example `google/gemma-4-26B-A4B-it`); 503 with the bring-up state until every rank is ready |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
+| `POST /v1/embeddings` | `input`: a text, a list of texts, a list of token ids, or a list of such lists (1 to 256 entries); optional `encoding_format` (`float`, the default, or `base64`), `dimensions`, `priority`, `deadline_ms` | `{"object":"list","data":[{"object":"embedding","index":i,"embedding":...}],"model":...,"usage":{"prompt_tokens":N,"total_tokens":N}}`, one embedding per input in input order |
 | `POST /v1/cache/state` | `prompt_token_ids`, or `identity` (the 64 hex digits of a prefix's SHA-256) with `token_count` | `cache.state`: what the engine and every rank hold for that prefix (below) |
 | anything else | — | `404 {"error":"not found"}` |
+
+An embedding is the model's final-norm row at an input's last token, divided
+by its L2 norm: the engine returns the row in BF16 and the API divides in
+FP64 and rounds to FP32. `dimensions` keeps the first that many values before
+the division. `base64` is the little-endian FP32 values. A text needs the
+tokenizer sidecar and is encoded with the deployment's
+`text_prompt_prefix_token_ids` before it and its
+`text_prompt_suffix_token_ids` after it, as the publisher's tokenizer wraps a
+raw text; a list of token ids is embedded as it is. An input that does not
+fit the deployment's positions is refused, never cut short. Only a
+deployment whose adapter returns final rows serves the call (today the
+Qwen3-Embedding-8B stage); any other answers `400 embeddings_unsupported`.
+A deployment whose model has no vocabulary head answers `/v1/completions`
+and `/v1/chat/completions` with `400 completions_unsupported`.
 
 Reply text is always valid UTF-8. When the emitted tokens leave a byte
 sequence incomplete or invalid (a reply cut inside a character, a
@@ -492,7 +507,7 @@ public models:
   `invalid_api_key` (`invalid_key` in the Anthropic and Responses bodies).
   `/health/liveliness` and `/api/hello` need no key.
 - Public requests may use only `/v1/models`, `/v1/chat/completions`,
-  `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`,
+  `/v1/messages`, `/v1/messages/count_tokens`, `/v1/responses`, `/v1/embeddings`,
   `/v1/tokenize`, `/v1/detokenize`, `/v1/models/aliases`, `/v1/codex/models`,
   `DELETE /v1/cache`, `/v1/sparkpipe/status`, `/api/hello` and
   `/health/liveliness`; every
@@ -599,6 +614,7 @@ user unit; the chat layer reaches it over localhost through the memory protocol
 | `POST /v1/responses` | OpenAI Responses, streamed or not: `message`, `reasoning`, `function_call`, `function_call_output` and custom tool items; `instructions` and `developer` messages render as system turns; function tools, and custom tools as a function with one string `input`; other tool types are left out. `previous_response_id` rebuilds the conversation from stored responses (`store` defaults to true); `prompt_cache_key` is the affinity key. `text.format` other than text answers 400 until grammar-constrained sampling lands |
 | `POST /v1/chat/completions` | Unchanged, plus replay, aliases, the residency rule, keep-alives and telemetry on keyed requests |
 | `POST /v1/tokenize`, `POST /v1/detokenize` | `text`, or `messages` and `tools` rendered with the template and replay, to token ids; and back |
+| `POST /v1/embeddings` | OpenAI embeddings for the chat layer's embedding models (`embeddings` in its config: `id`, `model_dir`, `engine`, `context_tokens`, `dimensions`, optional `batch_inputs`, 64 by default). `input` is a text, a list of texts, a list of token ids or a list of such lists, 1 to 2,048 entries; `model` may be left out when one embedding model is served; `encoding_format` is `float` or `base64`; `dimensions` keeps the first values. A text is encoded by the model's own tokenizer with its special tokens; the inputs go to the engine's `/v1/embeddings` in batches and the vectors come back in input order. An input as long as the model's context is 400 `context_length_exceeded` |
 | `GET/PUT /v1/models/aliases` | The account's alias table: at most 64 entries, each a name or pattern of at most 128 characters with at most four `*` |
 | `GET /v1/models` | Resident models first, each with `resident`, `context_window`, `max_output_tokens`, `sequences` and the Anthropic list fields, plus the alias table |
 | `GET /v1/codex/models` | The same models as Codex's own catalogue (`model_catalog_url`), below |

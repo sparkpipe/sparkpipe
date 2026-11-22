@@ -154,6 +154,7 @@ typedef struct SparkModelBatchRequestState
 	SparkModelBatchRequestHandle handle;
 	uint32_t defer_end;
 	uint32_t defer_decided;
+	uint32_t output_row;
 } SparkModelBatchRequestState;
 
 typedef struct SparkModelBatchCacheDemand
@@ -255,6 +256,8 @@ struct SparkModelBatchEngine
 	uint64_t model_draft_frames;
 	uint64_t model_draft_tokens;
 	uint64_t model_draft_accepted;
+	const uint16_t *emit_row_values;
+	uint32_t emit_row_value_count;
 	uint64_t model_extension_frames;
 	uint64_t model_extension_tokens;
 	uint64_t model_extension_accepted;
@@ -758,6 +761,11 @@ static void SparkModelBatchEmit(
 	event.logprob_count = logprob_count;
 	if ( logprob_count != 0u )
 		memcpy(event.logprobs,logprobs,(size_t)logprob_count * sizeof(event.logprobs[0]));
+	if ( kind == SPARK_MODEL_BATCH_EVENT_TOKEN && engine->emit_row_values != 0 )
+	{
+		event.row_values = engine->emit_row_values;
+		event.row_value_count = engine->emit_row_value_count;
+	}
 	engine->event_function(engine->event_context,&event);
 }
 
@@ -1471,7 +1479,7 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 	const SparkModelServingCompletion *completion)
 {
 	uint32_t *request_slots,*prefill_counts;
-	uint32_t lane;
+	uint32_t lane,row = 0u;
 	request_slots = SparkModelBatchSubmissionRequestSlots(engine,submission);
 	prefill_counts = SparkModelBatchSubmissionPrefillCounts(engine,submission);
 	for (lane=0u; lane<submission->lane_count; lane++)
@@ -1493,7 +1501,16 @@ static SparkStatus SparkModelBatchHandlePrefillCompletion(
 		}
 		else
 		{
+			if ( request->output_row != 0u )
+			{
+				engine->emit_row_values = SparkModelServingCompletionRow(completion,row++);
+				engine->emit_row_value_count = completion->row_value_stride;
+				if ( engine->emit_row_values == 0 )
+					SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+			}
 			status = SparkModelBatchAcceptToken(engine,request,completion,lane);
+			engine->emit_row_values = 0;
+			engine->emit_row_value_count = 0u;
 			if ( status != SPARK_STATUS_OK )
 				SPARK_RETURN(status);
 		}
@@ -2533,6 +2550,13 @@ static SparkStatus SparkModelBatchValidateSubmit(
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->logprobs != 0u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS) == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( request->output_row > 1u || (request->output_row != 0u && request->output_token_budget != 1u) )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( request->output_row != 0u && ((engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT) == 0u ||
+		engine->adapter_descriptor->boundary_element_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	if ( request->output_row == 0u && (engine->adapter_descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY) != 0u )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->prompt_token_count > engine->context_tokens || request->output_token_budget > engine->context_tokens - request->prompt_token_count )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	if ( SparkModelBatchSchedulerRequestFitsPageCapacity(
@@ -2573,6 +2597,7 @@ SparkStatus SparkModelBatchEngineSubmit(
 	state->deadline_ns = request->deadline_ns;
 	state->sampling = SparkSamplingRuleWith(request->temperature,request->seed,request->top_p,request->top_k,request->logprobs);
 	state->drafts_disabled = request->drafts_disabled != 0u ? 1u : 0u;
+	state->output_row = request->output_row;
 	state->cache_point_count = 0u;
 	for (uint32_t point=0u; point<request->cache_point_count && engine->adapter_descriptor->cache_checkpoint_token_count != 0u &&
 		request->cache_points[point] < request->prompt_token_count; point++)
@@ -3042,6 +3067,14 @@ static uint32_t SparkModelBatchLogprobStride(
 	return(stride);
 }
 
+static uint32_t SparkModelBatchRowRequestCount(const SparkModelBatchEngine *engine,uint32_t lane_count)
+{
+	uint32_t lane,count = 0u;
+	for (lane=0u; lane<lane_count; lane++)
+		count += engine->requests[engine->scratch_request_slots[lane]].output_row != 0u ? 1u : 0u;
+	return(count);
+}
+
 static uint32_t SparkModelBatchNeedsSingleStep(
 	const SparkModelBatchEngine *engine,
 	uint32_t selected)
@@ -3108,6 +3141,9 @@ static uint32_t SparkModelBatchSelectRequestPass(
 			engine->max_prefill_rows - *prefill_span_budget + SparkModelBatchCanonicalPrefillSpan(engine,request) > engine->max_shared_prefill_rows )
 			continue;
 		if ( (uint64_t)(selected + 1u) * (request->sampling.logprobs > stride ? request->sampling.logprobs : stride) > SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES )
+			continue;
+		if ( request->output_row != 0u && (uint64_t)(SparkModelBatchRowRequestCount(engine,selected) + 1u) * engine->adapter_descriptor->boundary_element_count >
+			SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES )
 			continue;
 		resident_bound = request->resident_sequence_slot !=
 			SPARK_MODEL_SERVING_NO_RESIDENT_SEQUENCE_SLOT ? 1u : 0u;
@@ -3445,7 +3481,8 @@ static void SparkModelBatchBuildPrefillRows(
 		slot = engine->scratch_request_slots[lane];
 		request = &engine->requests[slot];
 		tokens = SparkModelBatchRequestTokens(engine,slot);
-		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count],request->computed_prompt_token_count + engine->scratch_prefill_counts[lane] == request->prompt_token_count ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN : 0u,SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
+		SparkModelBatchInitializeLane(engine,&engine->scratch_lanes[lane],slot,request->computed_prompt_token_count,request->computed_prompt_token_count + engine->scratch_prefill_counts[lane],tokens[request->computed_prompt_token_count],request->computed_prompt_token_count + engine->scratch_prefill_counts[lane] != request->prompt_token_count ? 0u :
+			SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | (request->output_row != 0u ? SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW : 0u),SPARK_MODEL_SERVING_WORK_KIND_PREFILL);
 		if ( engine->scratch_prefill_counts[lane] > maximum )
 			maximum = engine->scratch_prefill_counts[lane];
 	}

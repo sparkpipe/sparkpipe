@@ -81,12 +81,24 @@ A `model` is `{"id", "context_tokens", "reasoning": {"start", "end", "close"} or
 | `cut_ids` | model, messages, tools, kwargs, sentinel | ids (or null) |
 | `count` | model, text | tokens |
 | `complete` | model, ids, max_tokens, reasoning_open, kind, trace | text |
+| `embed` | texts, model (or absent), dimensions (or absent) | model, dimensions, tokens, vectors |
 
 `complete` runs at background priority through the same sequence gate as every other request.
+
+**embed** turns texts into vectors with an embedding model the fleet serves itself:
+- `texts` is a list of 1 to 2,048 entries. Each entry is a text, or a list of token ids that is embedded as it is.
+- `model` names one of the chat layer's embedding models (`embeddings` in its config). It may be left out when the chat layer serves exactly one.
+- `dimensions` keeps the first that many numbers of each vector before it is brought to unit length. It may be left out for the model's full width.
+- The answer names the `model` that made the vectors and their `dimensions`, counts the `tokens` it read, and holds one vector per text, in the order of the texts. A vector is the base64 text of its numbers as little-endian 32-bit floats, and has unit length.
+- A text is encoded as the model's own tokenizer encodes a raw text, with the tokens it puts before and after it. A text as long as the model's context is refused with 400 `context_length_exceeded`; nothing is cut short.
+- `embed` runs at background priority on the embedding model's engine.
+- A chat layer without an embedding model leaves `embed` out of the `host_methods` it sends in `hello` and answers it 404 `unsupported`.
 
 Within a protocol, methods only add. A caller that meets 404 `unsupported` treats the feature as absent.
 
 ## Tests
+`tests/test_chat_frontend_embeddings.py` checks `embed` and the chat layer's `POST /v1/embeddings` against a fake engine.
+
 `tests/test_memory_connector.py` drives the connector against a fake program and checks:
 - the raw fallback, and the retry after it;
 - the token both ways;

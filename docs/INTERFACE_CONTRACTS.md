@@ -334,6 +334,47 @@ copies `rows x input_width` elements of a dispatch's `hidden_input_bf16`.
 A dispatch whose `hidden_input_bytes` is shorter than that is refused.
 `tests/cuda/stage_runner_single_gpu_cuda.cu` checks both behaviours.
 
+### Final rows
+
+`SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT` (`0x400000`) says the
+adapter returns a lane's final row: the model's final-norm hidden state at
+the lane's last row, in BF16, `boundary_element_count` values wide.
+
+- A prefill lane asks for it with `SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW`,
+  which is valid only beside `SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN`.
+  Any other work kind with the flag is `INVALID_ARGUMENT`, and an adapter
+  without the capability answers `UNSUPPORTED`.
+- The completion sets `SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES` and
+  carries the rows of the flagged lanes in lane order: `row_value_stride`
+  values each, `row_value_count` in all, in `row_values`.
+  `SparkModelServingCompletionRow` returns one of them.
+- One completion carries at most
+  `SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES` (65,536) values. A submission
+  with more flagged lanes than fit is `CAPACITY_EXCEEDED`; the batch engine
+  never builds one, and takes the remaining requests in a later wave.
+- `row_values` is the last member of the completion.
+  `SPARK_MODEL_SERVING_COMPLETION_HEAD_BYTES` is everything before it: a
+  producer that fills a fresh completion clears the head and writes only the
+  values it counts, and `SparkModelServingCompletionCopy` and
+  `SparkModelServingCompletionReset` touch only `row_value_count` values.
+- The resident IPC carries the rows after the logprobs, and the pipeline
+  client delivers the final rank's.
+- `SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY` (`0x800000`) marks a
+  model without a vocabulary head. Its output token is always 0 and means
+  nothing, so the batch engine refuses a request that does not ask for its
+  row (`UNSUPPORTED`).
+
+A request asks the batch engine with `output_row` in
+`SparkModelBatchSubmitRequest` (with an output budget of one token). Its
+token event carries `row_values` and `row_value_count`, which are valid
+during the event call. The stage runner computes the rows when a dispatch
+names `output_rows_bf16`: it gathers each sequence's last row, applies the
+model's final norm and writes `active_sequence_count x hidden` values there.
+A model whose geometry says `headless` has no head weights; the runner
+writes token 0 for its rows.
+`tests/test_model_api_text.c` runs the whole path through the API and the
+resident daemon, and `tests/test_model_resident_ipc.c` the wire form.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats

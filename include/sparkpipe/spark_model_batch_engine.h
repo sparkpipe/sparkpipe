@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 17u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 18u
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
@@ -64,6 +64,8 @@ typedef struct SparkModelBatchEvent
 	uint32_t matched_prompt_token_count;
 	uint32_t logprob_count;
 	SparkSamplingLogprob logprobs[SPARK_SAMPLING_MAX_LOGPROBS];
+	uint32_t row_value_count;
+	const uint16_t *row_values;
 } SparkModelBatchEvent;
 
 typedef void (*SparkModelBatchEventFunction)(
@@ -116,6 +118,7 @@ typedef struct SparkModelBatchSubmitRequest
 	const uint32_t *stop_token_ids;
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t output_row;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView

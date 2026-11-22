@@ -804,6 +804,7 @@ PYTHON_TESTS := \
 	tests/test_ceph_canary.py \
 	tests/test_open_webui_fleet_tool.py \
 	tests/test_memory_connector.py \
+	tests/test_chat_frontend_embeddings.py \
 	tests/test_chat_memory_frontend.py \
 	tests/test_chat_frontend_trace.py \
 	tests/test_chat_frontend_citations.py \
@@ -949,6 +950,8 @@ TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE := \
     build/test_modules/libmodel_serving_adapter_speculative_long_verify_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE := \
     build/test_modules/libmodel_serving_adapter_recurrent_checkpoints_module.$(SHARED_LIBRARY_EXT)
+TEST_MODEL_SERVING_WIDE_ROWS_MODULE := \
+    build/test_modules/libmodel_serving_adapter_wide_rows_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_VARIANT_MODULES := \
     $(TEST_MODEL_SERVING_WITHOUT_PREFIX_REUSE_MODULE) \
     $(TEST_MODEL_SERVING_SPECULATIVE_INLINE_MODULE) \
@@ -1415,7 +1418,7 @@ build/sparkpipe_registrar: tools/sparkpipe_registrar.c | build
 	$(CC) $(CFLAGS) -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE tools/sparkpipe_registrar.c $(LDFLAGS) -o $@
 
 build/sparkpipe_model_api: node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) node/model_api.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -lm -o $@
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(DEVICE_FLAVOUR_LIBRARY)
 	@if [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
@@ -1472,6 +1475,9 @@ $(TEST_MODEL_SERVING_SPECULATIVE_LONG_VERIFY_MODULE): tests/fixtures/model_servi
 
 $(TEST_MODEL_SERVING_RECURRENT_CHECKPOINTS_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_RECURRENT_CHECKPOINTS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_MODEL_SERVING_WIDE_ROWS_MODULE): tests/fixtures/model_serving_adapter_module.c include/sparkpipe/spark_model_serving_adapter.h $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build/test_modules
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_SERVING_WIDE_ROWS $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE): tests/fixtures/model_resident_transport_module.c include/sparkpipe/spark_hidden_transport.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
@@ -2035,6 +2041,14 @@ build/libqwen38_27b_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAP
 build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
 	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,1u,qwen38_27b-bf16-tp1,qwen38_27b_tp1_stage)
 
+QWEN3_EMBEDDING_8B_CONTRACT := model_contracts/qwen3_embedding_8b_authoritative.json
+QWEN3_EMBEDDING_8B_CONTRACT_SHA256 ?= $(shell if command -v sha256sum >/dev/null 2>&1; then sha256sum "$(QWEN3_EMBEDDING_8B_CONTRACT)"; else shasum -a 256 "$(QWEN3_EMBEDDING_8B_CONTRACT)"; fi | awk '{print $$1}')
+QWEN3_EMBEDDING_SOURCES := modules/qwen3_embedding_stage/source/spark_qwen3_embedding_stage_serving.c inference/runner/stage_serving_adapter.c inference/runner/stage_runner.cu modules/qwen3_embedding_stage/source/spark_qwen3_embedding_stage_model.cu
+QWEN3_EMBEDDING_8B_TP1_SERVING_ADAPTER := build/libqwen3_embedding_8b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT)
+
+$(QWEN3_EMBEDDING_8B_TP1_SERVING_ADAPTER): $(QWEN3_EMBEDDING_SOURCES) $(QWEN3_EMBEDDING_8B_CONTRACT) modules/qwen3_embedding_stage/include/sparkpipe/spark_qwen3_embedding_stage_model.h model-families/qwen3/source/qwen3_stage.cuh model-families/qwen3/include/sparkpipe/spark_qwen3_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DQWEN3_EMBEDDING_TP_DEGREE=1u -DQWEN3_EMBEDDING_CONTRACT_SHA256=\"$(QWEN3_EMBEDDING_8B_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen3_embedding_stage/include -Imodel-families/qwen3/source -Imodel-families/qwen3/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN3_EMBEDDING_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
+
 $(QWEN38_MAX_TP16_SERVING_ADAPTER): $(QWEN38_MAX_TP16_SOURCES) $(QWEN38_MAX_TP16_CONTRACT) modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(call nvcc_module,-DQWEN38_MAX_CONTRACT_SHA256=\"$(QWEN38_MAX_TP16_CONTRACT_SHA256)\" -I. -Iinclude -Isrc -Imodules/qwen38_max_resident_decode_stage/include -Imodel-families/qwen38/source -Imodel-families/qwen38/include -Imodel-families/common/include -Xcompiler -fPIC $(SHARED_LIBRARY_FLAGS) $(QWEN38_MAX_TP16_SOURCES) runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda); else echo "SKIP $@ (nvcc unavailable on this host; spark-gated artifact)"; fi
 
@@ -2259,8 +2273,8 @@ build/test_tiktoken_compiled: tests/test_tiktoken_compiled.c $(MODEL_COMMON_LIBR
 build/test_tokenizer_sidecar: tests/test_tokenizer_sidecar.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_model_api_text: tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_SERVING_WIDE_ROWS_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_SERVING_WIDE_ROWS_PATH=\"$(TEST_MODEL_SERVING_WIDE_ROWS_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_model_api_text.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_system_loopback: tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c tests/fixtures/model_serving_adapter_config.json build/sparkpipe_model_api build/sparkpipe_model_residentd $(TEST_MODEL_SERVING_ADAPTER_MODULE) $(TEST_MODEL_RESIDENT_TRANSPORT_MODULE) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -DTEST_MODEL_API_PATH=\"build/sparkpipe_model_api\" -DTEST_MODEL_RESIDENTD_PATH=\"build/sparkpipe_model_residentd\" -DTEST_MODEL_SERVING_ADAPTER_PATH=\"$(TEST_MODEL_SERVING_ADAPTER_MODULE)\" -DTEST_MODEL_RESIDENT_TRANSPORT_PATH=\"$(TEST_MODEL_RESIDENT_TRANSPORT_MODULE)\" $(CFLAGS) tests/test_system_loopback.c tests/fixtures/model_resident_deployment_fixture.c tests/fixtures/test_child_guard.c tests/fixtures/test_tcp_port.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

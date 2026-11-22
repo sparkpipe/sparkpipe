@@ -36,6 +36,7 @@
 #define API_TOKEN_TEXT_BYTES	12u
 
 #define API_MAX_INFLIGHT 16u
+#define API_MAX_EMBEDDING_INPUTS 256u
 
 #define API_WAIT_SLICE_MS 10u
 #define API_STREAM_BATCH_TOKENS 64u
@@ -120,6 +121,9 @@ typedef struct ApiRequest
 	uint32_t cache_point_count;
 	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
 	SparkSamplingLogprob *logprobs;
+	uint32_t output_row;
+	uint32_t row_value_count;
+	uint16_t *row_values;
 	pthread_mutex_t mutex;
 	pthread_cond_t cond;
 	struct ApiRequest *next;
@@ -166,6 +170,8 @@ static int HaveQuantArm;
 static const SparkModelResidentChatTemplate *ChatTemplate;
 static uint32_t TextPromptPrefix[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_PREFIX_COUNT];
 static uint32_t TextPromptPrefixCount;
+static uint32_t TextPromptSuffix[SPARK_MODEL_RESIDENT_DEPLOYMENT_MAX_TEXT_PROMPT_SUFFIX_COUNT];
+static uint32_t TextPromptSuffixCount;
 static uint32_t ChatStopTokens[SPARK_MODEL_RESIDENT_CHAT_TEMPLATE_MAX_STOP_MARKERS];
 static uint32_t ChatStopTokenCount;
 static char ApiBootTag[32];
@@ -314,6 +320,7 @@ static void api_request_destroy(ApiRequest *req)
 	free(req->token_ready_ns);
 	free(req->tokens_json);
 	free(req->logprobs);
+	free(req->row_values);
 	free(req);
 }
 
@@ -363,6 +370,12 @@ static void api_event(void *ctx, const SparkModelBatchEvent *ev)
 		r->stale_prefix_recompute_count = ev->stale_prefix_recompute_count;
 		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_ACCEPTED )
 			r->accepted_ns = ev->monotonic_ns;
+		if ( ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN && r->output_row != 0u && r->row_values == 0 && ev->row_values != 0 && ev->row_value_count != 0u &&
+			(r->row_values = malloc((size_t)ev->row_value_count * sizeof(uint16_t))) != 0 )
+		{
+			memcpy(r->row_values,ev->row_values,(size_t)ev->row_value_count * sizeof(uint16_t));
+			r->row_value_count = ev->row_value_count;
+		}
 		if (ev->kind == SPARK_MODEL_BATCH_EVENT_TOKEN)
 		{
 			const int is_stop = (ev->flags & SPARK_MODEL_BATCH_EVENT_FLAG_STOP_TOKEN) != 0u;
@@ -531,6 +544,7 @@ static uint32_t api_submit(ApiRequest *r)
 	sub.top_k = r->top_k;
 	sub.logprobs = r->logprob_count;
 	sub.drafts_disabled = r->drafts_disabled;
+	sub.output_row = r->output_row;
 	sub.cache_point_count = r->cache_point_count;
 	memcpy(sub.cache_points,r->cache_points,sizeof(sub.cache_points));
 	sub.stop_token_count = r->stop_token_count;
@@ -1550,6 +1564,12 @@ static int api_parse_chat_thinking(const SparkJsonDocument *doc, int32_t root, b
 		SparkJsonGetBoolean(doc,SparkJsonFindObjectMember(doc,kwargs,"enable_thinking"),thinking) == SPARK_STATUS_OK;
 }
 
+static uint32_t api_adapter_capabilities(void)
+{
+	const SparkModelServingAdapterDescriptor *adapter = S.engine != 0 ? SparkModelBatchEngineGetAdapterDescriptor(S.engine) : 0;
+	return adapter != 0 ? adapter->capability_flags : 0u;
+}
+
 static void handle_completion(int fd, char *body, uint32_t body_len,
 	int chat_format)
 {
@@ -1565,6 +1585,12 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	char *prompt_text = 0;
 	uint32_t prompt_text_bytes = 0;
 	ApiRequest *req;
+	if ( (api_adapter_capabilities() & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY) != 0u )
+	{
+		send_response(fd, 400, "{\"error\":{\"message\":\"this deployment's model has no vocabulary head and writes no text; "
+			"send its inputs to /v1/embeddings\",\"type\":\"invalid_request_error\",\"code\":\"completions_unsupported\"}}");
+		return;
+	}
 	if (SparkJsonParseText(body, body_len, &doc) != SPARK_STATUS_OK)
 	{
 		send_response(fd, 400, "{\"error\":\"invalid json\"}");
@@ -1849,6 +1875,392 @@ static void handle_completion(int fd, char *body, uint32_t body_len,
 	api_release_request(req);
 }
 
+static float api_bf16_value(uint16_t bits)
+{
+	const uint32_t wide = (uint32_t)bits << 16;
+	float value;
+	memcpy(&value,&wide,sizeof(value));
+	return value;
+}
+
+static size_t api_base64(const uint8_t *data, size_t bytes, char *out)
+{
+	static const char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	size_t in = 0u,length = 0u;
+	for (; in + 2u < bytes; in += 3u)
+	{
+		const uint32_t word = ((uint32_t)data[in] << 16) | ((uint32_t)data[in + 1u] << 8) | data[in + 2u];
+		out[length++] = digits[word >> 18];
+		out[length++] = digits[(word >> 12) & 63u];
+		out[length++] = digits[(word >> 6) & 63u];
+		out[length++] = digits[word & 63u];
+	}
+	if ( in < bytes )
+	{
+		const uint32_t word = ((uint32_t)data[in] << 16) | (in + 1u < bytes ? (uint32_t)data[in + 1u] << 8 : 0u);
+		out[length++] = digits[word >> 18];
+		out[length++] = digits[(word >> 12) & 63u];
+		out[length++] = in + 1u < bytes ? digits[(word >> 6) & 63u] : '=';
+		out[length++] = '=';
+	}
+	return length;
+}
+
+static void api_embedding_error(int fd, int code, const char *message, const char *error_code)
+{
+	char body[384];
+	(void)snprintf(body,sizeof(body),"{\"error\":{\"message\":\"%s\",\"type\":\"invalid_request_error\",\"code\":\"%s\"}}",message,error_code);
+	send_response(fd,code,body);
+}
+
+static uint32_t api_embedding_tokens(SparkJsonDocument *doc, int32_t element, uint32_t **tokens_out)
+{
+	uint32_t *tokens = 0,count = 0u;
+	*tokens_out = 0;
+	if ( SparkJsonTokenIsType(doc,element,SPARK_JSON_TOKEN_STRING) )
+	{
+		SparkTokenizerWorkspace workspace;
+		SparkTokenizerEncoding encoding;
+		char *text = 0;
+		uint32_t bytes;
+		SparkStatus status;
+		if ( !HaveSidecar || SparkJsonCopyString(doc,element,&text) != SPARK_STATUS_OK )
+			return 0u;
+		bytes = (uint32_t)strlen(text);
+		SparkTokenizerWorkspaceReset(&workspace);
+		tokens = malloc(((size_t)bytes + 1u + TextPromptPrefixCount + TextPromptSuffixCount) * sizeof(uint32_t));
+		if ( bytes == 0u || tokens == 0 || SparkTokenizerWorkspaceInitialize(&workspace,bytes + 1u) != SPARK_STATUS_OK )
+		{
+			free(text);
+			free(tokens);
+			return 0u;
+		}
+		SparkTokenizerEncodingReset(&encoding);
+		encoding.token_capacity = bytes + 1u;
+		encoding.token_ids = tokens + TextPromptPrefixCount;
+		status = SparkTokenizerSidecarEncodeText(&Sidecar,text,bytes,0u,&workspace,&encoding);
+		SparkTokenizerWorkspaceDestroy(&workspace);
+		free(text);
+		if ( status != SPARK_STATUS_OK )
+		{
+			free(tokens);
+			return 0u;
+		}
+		memcpy(tokens,TextPromptPrefix,(size_t)TextPromptPrefixCount * sizeof(uint32_t));
+		memcpy(tokens + TextPromptPrefixCount + encoding.token_count,TextPromptSuffix,(size_t)TextPromptSuffixCount * sizeof(uint32_t));
+		count = TextPromptPrefixCount + encoding.token_count + TextPromptSuffixCount;
+	}
+	else if ( SparkJsonTokenIsType(doc,element,SPARK_JSON_TOKEN_ARRAY) )
+	{
+		int32_t item = SparkJsonGetArrayElementFirst(doc,element);
+		uint32_t index;
+		count = (uint32_t)SparkJsonGetArrayElementCount(doc,element);
+		if ( count == 0u || count > API_MAX_PROMPT_TOKENS || (tokens = malloc((size_t)count * sizeof(uint32_t))) == 0 )
+			return 0u;
+		for (index=0u; index<count; index++)
+		{
+			if ( item < 0 || SparkJsonGetUInt32(doc,item,&tokens[index]) != SPARK_STATUS_OK || tokens[index] >= ApiOutputVocabulary )
+			{
+				free(tokens);
+				return 0u;
+			}
+			item = SparkJsonGetArrayElementNext(doc,element,item);
+		}
+	}
+	*tokens_out = tokens;
+	return count;
+}
+
+static ApiRequest *api_embedding_request(uint32_t *tokens, uint32_t count, const ApiOptions *options, uint64_t started_ms)
+{
+	ApiRequest *req = calloc(1,sizeof(*req));
+	if ( req == 0 )
+		return 0;
+	req->output_token_ids = malloc(sizeof(uint32_t));
+	req->token_ready_ns = malloc(sizeof(uint64_t));
+	req->tokens_json_capacity = 2u * API_TOKEN_TEXT_BYTES;
+	req->tokens_json = malloc(req->tokens_json_capacity);
+	if ( req->output_token_ids == 0 || req->token_ready_ns == 0 || req->tokens_json == 0 )
+	{
+		free(req->output_token_ids);
+		free(req->token_ready_ns);
+		free(req->tokens_json);
+		free(req);
+		return 0;
+	}
+	req->tokens_json[0] = '\0';
+	pthread_mutex_init(&req->mutex,0);
+	pthread_cond_init(&req->cond,0);
+	req->started_ms = started_ms;
+	req->priority = options->priority;
+	req->deadline_ms = options->deadline_ms != 0u ? started_ms + options->deadline_ms : 0u;
+	req->top_p = 1.0f;
+	req->drafts_disabled = 1u;
+	req->output_row = 1u;
+	req->max_tokens = 1u;
+	req->prompt_tokens = tokens;
+	req->prompt_count = count;
+	return req;
+}
+
+static size_t api_embedding_json(const ApiRequest *req, uint32_t index, uint32_t dimensions, int base64, char *out)
+{
+	const uint32_t width = dimensions != 0u && dimensions < req->row_value_count ? dimensions : req->row_value_count;
+	size_t length = (size_t)sprintf(out,"%s{\"object\":\"embedding\",\"index\":%u,\"embedding\":%s",index != 0u ? "," : "",index,base64 ? "\"" : "[");
+	double sum = 0.0,scale;
+	float *values = malloc((size_t)width * sizeof(float));
+	uint32_t element;
+	if ( values == 0 )
+		return 0u;
+	for (element=0u; element<width; element++)
+	{
+		const double value = (double)api_bf16_value(req->row_values[element]);
+		sum += value * value;
+	}
+	scale = sum > 0.0 ? 1.0 / sqrt(sum) : 0.0;
+	for (element=0u; element<width; element++)
+		values[element] = (float)((double)api_bf16_value(req->row_values[element]) * scale);
+	if ( base64 )
+		length += api_base64((const uint8_t *)values,(size_t)width * sizeof(float),out + length);
+	else
+		for (element=0u; element<width; element++)
+			length += (size_t)sprintf(out + length,"%s%.9g",element != 0u ? "," : "",(double)values[element]);
+	free(values);
+	length += (size_t)sprintf(out + length,"%s}",base64 ? "\"" : "]");
+	return length;
+}
+
+typedef struct ApiEmbeddingCall
+{
+	ApiOptions options;
+	ApiRequest **requests;
+	uint64_t started_ms;
+	uint32_t count;
+	uint32_t dimensions;
+	uint32_t prompt_tokens;
+	uint32_t text_inputs;
+	uint32_t failed;
+	int base64;
+} ApiEmbeddingCall;
+
+static uint32_t api_embedding_input_count(SparkJsonDocument *doc, int32_t input)
+{
+	int32_t element;
+	if ( input < 0 )
+		return 0u;
+	if ( SparkJsonTokenIsType(doc,input,SPARK_JSON_TOKEN_STRING) )
+		return 1u;
+	if ( !SparkJsonTokenIsType(doc,input,SPARK_JSON_TOKEN_ARRAY) )
+		return 0u;
+	element = SparkJsonGetArrayElementFirst(doc,input);
+	return element >= 0 && SparkJsonTokenIsType(doc,element,SPARK_JSON_TOKEN_PRIMITIVE) ? 1u : (uint32_t)SparkJsonGetArrayElementCount(doc,input);
+}
+
+static int api_embedding_options(SparkJsonDocument *doc, int32_t root, uint32_t width, ApiEmbeddingCall *call)
+{
+	char *format = 0;
+	int32_t member = root >= 0 ? SparkJsonFindObjectMember(doc,root,"encoding_format") : -1;
+	int valid = member < 0 || (SparkJsonCopyString(doc,member,&format) == SPARK_STATUS_OK && (strcmp(format,"float") == 0 || strcmp(format,"base64") == 0));
+	call->base64 = format != 0 && strcmp(format,"base64") == 0;
+	free(format);
+	member = root >= 0 ? SparkJsonFindObjectMember(doc,root,"dimensions") : -1;
+	if ( member >= 0 && (SparkJsonGetUInt32(doc,member,&call->dimensions) != SPARK_STATUS_OK || call->dimensions == 0u || call->dimensions > width) )
+		valid = 0;
+	return valid && api_parse_serving_options(doc,root,&call->options) && call->options.stream == 0u && call->options.temperature == 0.0f && call->options.logprobs == 0u;
+}
+
+static void api_embedding_discard(ApiEmbeddingCall *call, uint32_t **inputs)
+{
+	uint32_t index;
+	for (index=0u; index<call->count; index++)
+	{
+		if ( call->requests != 0 && call->requests[index] != 0 )
+			api_request_destroy(call->requests[index]);
+		if ( inputs != 0 )
+			free(inputs[index]);
+	}
+	free(call->requests);
+	call->requests = 0;
+}
+
+static int api_embedding_build(SparkJsonDocument *doc, int32_t input, ApiEmbeddingCall *call)
+{
+	uint32_t **inputs = calloc(call->count,sizeof(*inputs));
+	uint32_t *counts = calloc(call->count,sizeof(*counts));
+	uint32_t index;
+	int32_t element = SparkJsonTokenIsType(doc,input,SPARK_JSON_TOKEN_ARRAY) ? SparkJsonGetArrayElementFirst(doc,input) : input;
+	int code = 0;
+	if ( element >= 0 && SparkJsonTokenIsType(doc,element,SPARK_JSON_TOKEN_PRIMITIVE) )
+		element = input;
+	call->requests = calloc(call->count,sizeof(*call->requests));
+	if ( inputs == 0 || counts == 0 || call->requests == 0 )
+		code = 500;
+	for (index=0u; code == 0 && index<call->count; index++)
+	{
+		uint32_t budget = 1u;
+		call->text_inputs += SparkJsonTokenIsType(doc,element,SPARK_JSON_TOKEN_STRING) ? 1u : 0u;
+		counts[index] = api_embedding_tokens(doc,element,&inputs[index]);
+		call->prompt_tokens += counts[index];
+		if ( counts[index] == 0u || !api_fit_context(counts[index],&budget) )
+		{
+			call->failed = index;
+			code = 400;
+		}
+		if ( element != input )
+			element = SparkJsonGetArrayElementNext(doc,input,element);
+	}
+	for (index=0u; code == 0 && index<call->count; index++)
+	{
+		call->requests[index] = api_embedding_request(inputs[index],counts[index],&call->options,call->started_ms);
+		if ( call->requests[index] == 0 )
+			code = 500;
+		else
+			inputs[index] = 0;
+	}
+	if ( code != 0 )
+		api_embedding_discard(call,inputs);
+	free(inputs);
+	free(counts);
+	return code;
+}
+
+static uint32_t api_embedding_run(int fd, ApiEmbeddingCall *call)
+{
+	uint32_t index,failed = UINT32_MAX;
+	pthread_mutex_lock(&S.queue_mutex);
+	for (index=0u; index<call->count; index++)
+	{
+		call->requests[index]->id = ++S.next_id + 100000;
+		if ( S.queue_tail != 0 )
+			S.queue_tail->next = call->requests[index];
+		else
+			S.queue_head = call->requests[index];
+		S.queue_tail = call->requests[index];
+	}
+	pthread_mutex_unlock(&S.queue_mutex);
+	api_wake_worker();
+	for (index=0u; index<call->count; index++)
+	{
+		ApiRequest *req = call->requests[index];
+		api_await(fd,req,0u,API_WAIT_DONE);
+		if ( req->done == 0 )
+			api_abandon(req,SPARK_STATUS_INTERNAL_ERROR,0u);
+		if ( failed == UINT32_MAX && (req->deadline_expired != 0u || req->status != 0u || req->row_values == 0) )
+			failed = index;
+	}
+	return failed;
+}
+
+static char *api_embedding_response(const SparkModelServingAdapterDescriptor *adapter, const ApiEmbeddingCall *call)
+{
+	char id[512];
+	size_t id_length = 0u,length;
+	uint32_t index;
+	char *response = malloc(256u + sizeof(id) + (size_t)call->count * (96u + (size_t)adapter->boundary_element_count * (call->base64 ? 6u : 18u)));
+	if ( response == 0 )
+		return 0;
+	length = (size_t)sprintf(response,"{\"object\":\"list\",\"data\":[");
+	for (index=0u; index<call->count; index++)
+	{
+		const size_t written = api_embedding_json(call->requests[index],index,call->dimensions,call->base64,response + length);
+		if ( written == 0u )
+		{
+			free(response);
+			return 0;
+		}
+		length += written;
+	}
+	if ( adapter->model_id == 0 || !SparkJsonAppendEscaped(id,sizeof(id),&id_length,adapter->model_id,strlen(adapter->model_id)) )
+		id[0] = '\0';
+	(void)sprintf(response + length,"],\"model\":\"%s\",\"usage\":{\"prompt_tokens\":%u,\"total_tokens\":%u}}",id,call->prompt_tokens,call->prompt_tokens);
+	return response;
+}
+
+static void api_embedding_answer(int fd, const SparkModelServingAdapterDescriptor *adapter, const ApiEmbeddingCall *call, uint32_t failed)
+{
+	char *response = failed == UINT32_MAX ? api_embedding_response(adapter,call) : 0;
+	if ( response != 0 )
+	{
+		send_response(fd,200,response);
+		api_logf("embeddings_done fd=%d inputs=%u prompt_tokens=%u ms=%llu",fd,call->count,call->prompt_tokens,(unsigned long long)(api_now_ms() - call->started_ms));
+	}
+	else if ( failed == UINT32_MAX )
+		send_response(fd,500,"{\"error\":\"oom\"}");
+	else if ( call->requests[failed]->deadline_expired == 0u && call->requests[failed]->status == 0u )
+		send_response(fd,500,"{\"error\":{\"message\":\"the engine completed an embedding without its row\",\"type\":\"model_error\",\"code\":\"row_missing\"}}");
+	else
+	{
+		char err[224];
+		const int code = api_failure(call->requests[failed],err,sizeof(err));
+		send_response(fd,code,err);
+	}
+	free(response);
+}
+
+static void api_embedding_refuse_input(int fd, const ApiEmbeddingCall *call, int code)
+{
+	char message[256];
+	if ( code == 500 )
+		send_response(fd,500,"{\"error\":\"oom\"}");
+	else if ( call->text_inputs != 0u && !HaveSidecar )
+		send_tokenizer_unavailable(fd);
+	else
+	{
+		(void)snprintf(message,sizeof(message),"input %u is empty, holds a token outside the vocabulary, could not be encoded, or does not fit the %u positions this deployment serves",call->failed,__atomic_load_n(&S.context_limit,__ATOMIC_ACQUIRE));
+		api_embedding_error(fd,400,message,"invalid_input");
+	}
+}
+
+static void handle_embeddings(int fd, char *body, uint32_t body_len)
+{
+	const SparkModelServingAdapterDescriptor *adapter = SparkModelBatchEngineGetAdapterDescriptor(S.engine);
+	SparkJsonDocument doc;
+	ApiEmbeddingCall call;
+	uint32_t index,failed;
+	int32_t root,input;
+	int code;
+	memset(&doc,0,sizeof(doc));
+	memset(&call,0,sizeof(call));
+	call.started_ms = api_now_ms();
+	if ( adapter == 0 || (api_adapter_capabilities() & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT) == 0u )
+	{
+		api_embedding_error(fd,400,"this deployment's model returns no embeddings","embeddings_unsupported");
+		return;
+	}
+	if ( SparkJsonParseText(body,body_len,&doc) != SPARK_STATUS_OK )
+	{
+		send_response(fd,400,"{\"error\":\"invalid json\"}");
+		return;
+	}
+	root = SparkJsonGetRootToken(&doc);
+	input = root >= 0 ? SparkJsonFindObjectMember(&doc,root,"input") : -1;
+	call.count = api_embedding_input_count(&doc,input);
+	if ( !api_embedding_options(&doc,root,adapter->boundary_element_count,&call) )
+	{
+		SparkJsonDocumentDestroy(&doc);
+		api_embedding_error(fd,400,"encoding_format is float or base64; dimensions is an integer from 1 to the model's width; priority and deadline_ms are unsigned integers; an embedding takes no stream, sampling or logprobs","invalid_option");
+		return;
+	}
+	if ( call.count == 0u || call.count > API_MAX_EMBEDDING_INPUTS )
+	{
+		SparkJsonDocumentDestroy(&doc);
+		api_embedding_error(fd,400,"input is a text, a list of texts, a list of token ids or a list of such lists, with 1 to 256 entries","invalid_input");
+		return;
+	}
+	code = api_embedding_build(&doc,input,&call);
+	SparkJsonDocumentDestroy(&doc);
+	if ( code != 0 )
+	{
+		api_embedding_refuse_input(fd,&call,code);
+		return;
+	}
+	failed = api_embedding_run(fd,&call);
+	api_embedding_answer(fd,adapter,&call,failed);
+	for (index=0u; index<call.count; index++)
+		api_release_request(call.requests[index]);
+	free(call.requests);
+}
+
 static int api_parse_identity(const char *text, SparkModelServingCacheIdentity *identity)
 {
 	uint32_t index;
@@ -2023,7 +2435,7 @@ static void *api_connection(void *arg)
 	else if (strcmp(method, "POST") == 0 && strcmp(path, "/v1/cache/state") == 0 && api_engines_ready() != 0)
 		handle_cache_state(fd, body, body_len);
 	else if (strcmp(method, "POST") == 0 &&
-		(strcmp(path, "/v1/completions") == 0 ||
+		(strcmp(path, "/v1/completions") == 0 || strcmp(path, "/v1/embeddings") == 0 ||
 		 strcmp(path, "/v1/chat/completions") == 0 || strcmp(path, "/v1/cache/state") == 0) && api_engines_ready() == 0)
 	{
 		char b[256];
@@ -2035,6 +2447,8 @@ static void *api_connection(void *arg)
 		 strcmp(path, "/v1/chat/completions") == 0))
 		handle_completion(fd, body, body_len,
 			strcmp(path, "/v1/chat/completions") == 0);
+	else if (strcmp(method, "POST") == 0 && strcmp(path, "/v1/embeddings") == 0)
+		handle_embeddings(fd, body, body_len);
 	else
 		send_response(fd, 404, "{\"error\":\"not found\"}");
 	free(body_base);
@@ -2291,9 +2705,11 @@ int main(int argc, char **argv)
 		HaveSidecar = 1;
 		TextPromptPrefixCount = dep.tokenizer_text_prompt_prefix_count;
 		memcpy(TextPromptPrefix, dep.tokenizer_text_prompt_prefix_ids, (size_t)TextPromptPrefixCount * sizeof(uint32_t));
+		TextPromptSuffixCount = dep.tokenizer_text_prompt_suffix_count;
+		memcpy(TextPromptSuffix, dep.tokenizer_text_prompt_suffix_ids, (size_t)TextPromptSuffixCount * sizeof(uint32_t));
 		fprintf(stderr, "model_api: tokenizer sidecar ready format=%u "
-			"vocab=%llu asset=%s text_prompt_prefix_tokens=%u\n", Sidecar.format,
-			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path, TextPromptPrefixCount);
+			"vocab=%llu asset=%s text_prompt_prefix_tokens=%u text_prompt_suffix_tokens=%u\n", Sidecar.format,
+			(unsigned long long)Sidecar.tokenizer.maximum_token_id + 1ull, asset_path, TextPromptPrefixCount, TextPromptSuffixCount);
 	}
 	else
 		fprintf(stderr, "model_api: no tokenizer in deployment; text prompts "

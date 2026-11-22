@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_STAGE_RUNNER_ABI_VERSION 6u
+#define SPARK_STAGE_RUNNER_ABI_VERSION 7u
 #define SPARK_STAGE_RUNNER_CONFIGURATION_BYTES ((uint32_t)sizeof(SparkStageRunnerConfiguration))
 #define SPARK_STAGE_RUNNER_DISPATCH_BYTES ((uint32_t)sizeof(SparkStageRunnerDispatch))
 #define SPARK_STAGE_RUNNER_BYTES ((uint32_t)sizeof(SparkStageRunner))
@@ -152,6 +152,8 @@ typedef struct SparkStageRunnerDispatch
 	const uint32_t *state_saves;
 	const uint32_t *host_slots;
 	const uint32_t *host_parent_rows;
+	void *output_rows_bf16;
+	uint64_t output_rows_bytes;
 } SparkStageRunnerDispatch;
 
 typedef struct SparkStageRunnerKv
