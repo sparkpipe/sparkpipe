@@ -780,6 +780,22 @@ macro both stay on the CUDA fronts. Their implementation is
   - **Fallback.** After a copy, an event wait, a host step or a wait on
     another queue, a dependent launch is ordered with the semaphore acquire
     like any launch.
+  - **Segments.** A chain of latched launches keeps the GPU from switching
+    to another process's work. Unbounded, a chain beside a second process
+    ends in Xid 109 (context switch timeout) after about 4.3 s. A chain
+    therefore goes in segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`):
+    each segment starts with the front-end acquire and its other 31
+    launches wait on latches. When the nvrm backend replays step programs,
+    it must keep the same bound.
+    - On GB10 a dependent launch costs 1.58 µs in segments of 32 and
+      4.26 µs in segments of one (`make SPARKPIPE_DEVICE=nvrm
+      nvrm-latch-segments`, 100,000 launches each).
+    - Beside a chain in segments of 32, a second process's one-block
+      kernel waited 289 µs at the median and 316 µs at the 99th
+      percentile over 5 s, with no Xid.
+    - Segments of one go through the device layer's room checks without a
+      hang. The goal runs 100,000 launches that way.
+    - `SparkNvrmLatchSegmentSet` changes the length for tests.
   - **Not used yet.** The overlap CUDA allows, where the dependent grid's
     blocks start before the earlier grid ends, needs every dependent kernel
     to reach `griddepcontrol.wait` before the queue's completion can be
@@ -796,13 +812,32 @@ macro both stay on the CUDA fronts. Their implementation is
   - The launch descriptor is a GPC cluster grid
     (`NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA`) with `GPC_CGA_WIDTH`,
     `GPC_CGA_HEIGHT` and `GPC_CGA_DEPTH` set to the cluster shape
-    (`clcec0qmd.h`).
-  - `tests/nvrm/cluster_launch.cu` (in `make test-nvrm-gpu`) launches a
-    kernel compiled for clusters of 2, clusters of 4 and of 8 chosen at
-    launch, and a dependent writer and reader. Each cluster block records
-    its cluster numbering and reads a neighbour's shared memory across the
-    cluster. `make nvrm-cluster-launch` runs the same file in both flavours
-    and requires the same output bytes.
+    (`clcec0qmd.h`). Its `GRID_WIDTH`, `GRID_HEIGHT` and `GRID_DEPTH`
+    count clusters, not blocks. Counted in blocks, the GPU launched
+    grid x cluster blocks, some with block indices past the grid.
+  - Compiled code reads the cluster registers from constant bank 0. The
+    words were found by probing our own kernels on GB10:
+    - words 168-170: the cluster's width, height and depth
+      (`%cluster_nctaid`);
+    - words 172-174: their float reciprocals, from which the code derives
+      `%clusterid` and `%cluster_ctaid`;
+    - words 176-178: the grid in clusters (`%nclusterid`);
+    - word 179: the blocks per cluster (`%cluster_nctarank`).
+    The launcher fills them for every launch. A launch without clusters
+    reads as clusters of one block, as it does on the CUDA flavour. The
+    words are claimed, and a cluster that does not divide the grid is
+    refused.
+  - `tests/nvrm/cluster_launch.cu` (in `make test-nvrm-gpu`) launches:
+    - a kernel compiled for clusters of 2;
+    - clusters of 4 and of 8 chosen at launch;
+    - kernels compiled for clusters of 2x2x2 and 1x3x2 in 3-D grids;
+    - a 3-D grid without clusters;
+    - a dependent writer and reader.
+
+    Each block records every cluster register, and the clustered blocks
+    read a neighbour's shared memory across the cluster.
+    `make nvrm-cluster-launch` runs the same file in both flavours and
+    requires the same output bytes.
 - **Shared memory.** `LmKernelSharedMemoryOptIn` grants what the device has
   and refuses more.
 - **Release.** `SparkNvrmGpuRelease` destroys the default queue and the
