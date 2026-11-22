@@ -141,6 +141,12 @@ static SparkStatus SubmitSpace(SparkNvrmChannel *channel, uint64_t bytes, const 
 	return(SPARK_STATUS_OK);
 }
 
+uint32_t SparkNvrmMethodHeader(uint32_t subchannel, uint32_t method, uint32_t count)
+{
+	return((uint32_t)(SPARK_NVRM_VALUE(NVC56F_DMA_SEC_OP,NVC56F_DMA_SEC_OP_INC_METHOD) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_COUNT,count) |
+		SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_SUBCHANNEL,subchannel) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_ADDRESS,method >> 2)));
+}
+
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner)
 {
 	uint32_t *at;
@@ -149,47 +155,60 @@ SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32
 		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a method needs 1 to 8191 words, a word-aligned address and a subchannel below 8");
 	SUBMIT_TRY(SubmitSpace(channel,bytes,owner));
 	at = (uint32_t *)(void *)(channel->push.cpu + channel->push_used);
-	at[0] = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_DMA_SEC_OP,NVC56F_DMA_SEC_OP_INC_METHOD) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_COUNT,count) |
-		SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_SUBCHANNEL,subchannel) | SPARK_NVRM_VALUE(NVC56F_DMA_METHOD_ADDRESS,method >> 2));
+	at[0] = SparkNvrmMethodHeader(subchannel,method,count);
 	memcpy(at + 1,values,(size_t)count * sizeof(*values));
 	channel->push_used += bytes;
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus SubmitSemaphore(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t execute, uint64_t align, const char *owner)
+static uint32_t SubmitExecute(SparkNvrmSemaphoreOperation operation)
 {
-	uint32_t words[SUBMIT_SEMAPHORE_WORDS];
-	if ( (address & (align - 1u)) != 0u )
+	uint32_t execute = (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_PAYLOAD_SIZE,NVC56F_SEM_EXECUTE_PAYLOAD_SIZE_64BIT);
+	if ( operation == SPARK_NVRM_SEMAPHORE_ACQUIRE )
+		return(execute | (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_ACQ_CIRC_GEQ));
+	execute |= (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_WFI,NVC56F_SEM_EXECUTE_RELEASE_WFI_EN);
+	if ( operation == SPARK_NVRM_SEMAPHORE_MAX )
+		return(execute | (uint32_t)(SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_REDUCTION) |
+			SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION,NVC56F_SEM_EXECUTE_REDUCTION_IMAX) |
+			SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION_FORMAT,NVC56F_SEM_EXECUTE_REDUCTION_FORMAT_UNSIGNED)));
+	execute |= (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_RELEASE);
+	if ( operation == SPARK_NVRM_SEMAPHORE_RELEASE_TIME )
+		execute |= (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_TIMESTAMP,NVC56F_SEM_EXECUTE_RELEASE_TIMESTAMP_EN);
+	return(execute);
+}
+
+void SparkNvrmSemaphoreWords(uint32_t *words, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation)
+{
+	words[0] = SparkNvrmMethodHeader(SUBMIT_HOST_SUBCHANNEL,NVC56F_SEM_ADDR_LO,SUBMIT_SEMAPHORE_WORDS);
+	words[1] = (uint32_t)address;
+	words[2] = (uint32_t)(address >> 32);
+	words[3] = (uint32_t)value;
+	words[4] = (uint32_t)(value >> 32);
+	words[5] = SubmitExecute(operation);
+}
+
+static SparkStatus SubmitSemaphore(SparkNvrmChannel *channel, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation, const char *owner)
+{
+	uint32_t words[SPARK_NVRM_SEMAPHORE_METHOD_WORDS];
+	if ( (address & (operation == SPARK_NVRM_SEMAPHORE_RELEASE_TIME ? 15u : 7u)) != 0u )
 		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a semaphore is not aligned to its payload");
-	words[0] = (uint32_t)address;
-	words[1] = (uint32_t)(address >> 32);
-	words[2] = (uint32_t)value;
-	words[3] = (uint32_t)(value >> 32);
-	words[4] = execute | (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_PAYLOAD_SIZE,NVC56F_SEM_EXECUTE_PAYLOAD_SIZE_64BIT);
-	return(SparkNvrmPush(channel,SUBMIT_HOST_SUBCHANNEL,NVC56F_SEM_ADDR_LO,words,SUBMIT_SEMAPHORE_WORDS,owner));
+	SparkNvrmSemaphoreWords(words,address,value,operation);
+	return(SparkNvrmPush(channel,SUBMIT_HOST_SUBCHANNEL,NVC56F_SEM_ADDR_LO,words + 1,SUBMIT_SEMAPHORE_WORDS,owner));
 }
 
 SparkStatus SparkNvrmSemaphoreAcquire(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner)
 {
-	const uint32_t acquire = (uint32_t)SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_ACQ_CIRC_GEQ);
-	return(SubmitSemaphore(channel,address,value,acquire,8u,owner));
+	return(SubmitSemaphore(channel,address,value,SPARK_NVRM_SEMAPHORE_ACQUIRE,owner));
 }
 
 SparkStatus SparkNvrmSemaphoreMax(SparkNvrmChannel *channel, uint64_t address, uint64_t value, const char *owner)
 {
-	const uint32_t execute = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_REDUCTION) |
-		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_WFI,NVC56F_SEM_EXECUTE_RELEASE_WFI_EN) |
-		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION,NVC56F_SEM_EXECUTE_REDUCTION_IMAX) |
-		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_REDUCTION_FORMAT,NVC56F_SEM_EXECUTE_REDUCTION_FORMAT_UNSIGNED));
-	return(SubmitSemaphore(channel,address,value,execute,8u,owner));
+	return(SubmitSemaphore(channel,address,value,SPARK_NVRM_SEMAPHORE_MAX,owner));
 }
 
 SparkStatus SparkNvrmSemaphoreRelease(SparkNvrmChannel *channel, uint64_t address, uint64_t value, uint32_t timestamp, const char *owner)
 {
-	const uint32_t execute = (uint32_t)(SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_OPERATION,NVC56F_SEM_EXECUTE_OPERATION_RELEASE) |
-		SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_WFI,NVC56F_SEM_EXECUTE_RELEASE_WFI_EN) |
-		(timestamp != 0u ? SPARK_NVRM_VALUE(NVC56F_SEM_EXECUTE_RELEASE_TIMESTAMP,NVC56F_SEM_EXECUTE_RELEASE_TIMESTAMP_EN) : 0u));
-	return(SubmitSemaphore(channel,address,value,execute,timestamp != 0u ? 16u : 8u,owner));
+	return(SubmitSemaphore(channel,address,value,timestamp != 0u ? SPARK_NVRM_SEMAPHORE_RELEASE_TIME : SPARK_NVRM_SEMAPHORE_RELEASE,owner));
 }
 
 static uint32_t SubmitOrdered(SparkNvrmEngine previous, SparkNvrmEngine next)
@@ -236,6 +255,15 @@ SparkStatus SparkNvrmOpBegin(SparkNvrmChannel *channel, SparkNvrmEngine engine, 
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkNvrmOpBeginLatched(SparkNvrmChannel *channel, const char *owner)
+{
+	if ( channel->push_used != channel->push_submitted )
+		SUBMIT_REFUSE(SPARK_STATUS_BUSY,"an ordered operation starts after the previous submission");
+	if ( channel->last_engine != SPARK_NVRM_ENGINE_COMPUTE || channel->latch == 0u || channel->after_value != 0u )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a latched launch follows a launch on its channel, with no other wait pending");
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SubmitHostFence(SparkNvrmChannel *channel, const char *owner)
 {
 	SUBMIT_TRY(SubmitOrder(channel,SPARK_NVRM_ENGINE_HOST,owner));
@@ -243,38 +271,88 @@ static SparkStatus SubmitHostFence(SparkNvrmChannel *channel, const char *owner)
 	channel->fence_value++;
 	channel->segment_fenced = 1u;
 	channel->last_engine = SPARK_NVRM_ENGINE_HOST;
+	channel->latch = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+static void SubmitEntry(SparkNvrmChannel *channel, uint64_t address, uint64_t words, uint64_t value)
+{
+	volatile uint64_t *ring = (volatile uint64_t *)(void *)channel->control.cpu;
+	SparkNvrmSegment *segment = &channel->segments[(channel->segment_head + channel->segment_count) % SPARK_NVRM_CHANNEL_ENTRIES];
+	segment->start = channel->push_submitted;
+	segment->end = channel->push_used;
+	segment->value = value;
+	channel->segment_count++;
+	channel->push_submitted = channel->push_used;
+	ring[channel->put % channel->entries] = address | (words << SUBMIT_ENTRY_LENGTH_SHIFT) | (1ull << SUBMIT_ENTRY_LEVEL_BIT);
+	channel->put++;
+}
+
+static void SubmitRing(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
+{
+	volatile uint32_t *put = (volatile uint32_t *)(void *)(channel->control.cpu + (uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE + offsetof(Nvc96fControl,GPPut));
+	SubmitStoreFence();
+	*put = (uint32_t)(channel->put % channel->entries);
+	SubmitStoreFence();
+	gpu->usermode_page[NVC361_NOTIFY_CHANNEL_PENDING / 4u] = channel->token;
+}
+
+static SparkStatus SubmitEntries(SparkNvrmChannel *channel, uint32_t entries, const char *owner)
+{
+	while ( channel->segment_count + entries >= channel->entries || channel->segment_count + entries >= SPARK_NVRM_CHANNEL_ENTRIES )
+		SUBMIT_TRY(SubmitRetireOldest(channel,owner));
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SubmitPushReachable(const SparkNvrmChannel *channel, const char *owner)
+{
+	if ( (channel->push.address + channel->push.bytes - 1u) >> 40 != 0u )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a push buffer must lie below 2^40");
 	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner)
 {
-	volatile uint64_t *ring = (volatile uint64_t *)(void *)channel->control.cpu;
-	volatile uint32_t *put = (volatile uint32_t *)(void *)(channel->control.cpu + (uint64_t)channel->entries * NVC96F_GP_ENTRY__SIZE + offsetof(Nvc96fControl,GPPut));
-	SparkNvrmSegment *segment;
-	uint64_t words,address;
 	if ( channel->push_used == channel->push_submitted )
 		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a submission needs methods pushed since the previous one");
-	if ( (channel->push.address + channel->push.bytes - 1u) >> 40 != 0u )
-		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a push buffer must lie below 2^40");
+	SUBMIT_TRY(SubmitPushReachable(channel,owner));
 	if ( channel->segment_fenced == 0u )
 		SUBMIT_TRY(SubmitHostFence(channel,owner));
-	while ( channel->segment_count + 1u >= channel->entries || channel->segment_count + 1u >= SPARK_NVRM_CHANNEL_ENTRIES )
-		SUBMIT_TRY(SubmitRetireOldest(channel,owner));
-	words = (channel->push_used - channel->push_submitted) / sizeof(uint32_t);
-	address = channel->push.address + channel->push_submitted;
-	segment = &channel->segments[(channel->segment_head + channel->segment_count) % SPARK_NVRM_CHANNEL_ENTRIES];
-	segment->start = channel->push_submitted;
-	segment->end = channel->push_used;
-	segment->value = channel->fence_value;
-	channel->segment_count++;
-	channel->push_submitted = channel->push_used;
+	SUBMIT_TRY(SubmitEntries(channel,1u,owner));
+	SubmitEntry(channel,channel->push.address + channel->push_submitted,(channel->push_used - channel->push_submitted) / sizeof(uint32_t),channel->fence_value);
 	channel->segment_fenced = 0u;
-	ring[channel->put % channel->entries] = address | (words << SUBMIT_ENTRY_LENGTH_SHIFT) | (1ull << SUBMIT_ENTRY_LEVEL_BIT);
-	channel->put++;
-	SubmitStoreFence();
-	*put = (uint32_t)(channel->put % channel->entries);
-	SubmitStoreFence();
-	gpu->usermode_page[NVC361_NOTIFY_CHANNEL_PENDING / 4u] = channel->token;
+	SubmitRing(gpu,channel);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmSubmitSegment(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, uint64_t address, uint64_t words, uint64_t done_address,
+	uint64_t done_value, const char *owner)
+{
+	const uint64_t value = channel->fence_value + 1u,head_bytes = channel->push_used - channel->push_submitted;
+	uint64_t head_end,tail_end;
+	if ( words == 0u || words > SPARK_NVRM_SEGMENT_WORDS_MAX || (address & 3u) != 0u || ((address + words * sizeof(uint32_t) - 1u) >> 40) != 0u )
+		SUBMIT_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a prebuilt segment holds 1 to 2^21 - 1 word-aligned words below 2^40");
+	SUBMIT_TRY(SubmitPushReachable(channel,owner));
+	SUBMIT_TRY(SparkNvrmSemaphoreAcquire(channel,done_address,done_value,owner));
+	SUBMIT_TRY(SparkNvrmSemaphoreRelease(channel,channel->fence.address,value,0u,owner));
+	SUBMIT_TRY(SubmitEntries(channel,head_bytes != 0u ? 3u : 2u,owner));
+	tail_end = channel->push_used;
+	head_end = channel->push_submitted + head_bytes;
+	if ( head_bytes != 0u )
+	{
+		channel->push_used = head_end;
+		SubmitEntry(channel,channel->push.address + channel->push_submitted,head_bytes / sizeof(uint32_t),value);
+	}
+	SubmitEntry(channel,address,words,value);
+	channel->push_used = tail_end;
+	SubmitEntry(channel,channel->push.address + head_end,(tail_end - head_end) / sizeof(uint32_t),value);
+	SubmitRing(gpu,channel);
+	channel->fence_value = value;
+	channel->segment_fenced = 0u;
+	channel->last_engine = SPARK_NVRM_ENGINE_COMPUTE;
+	channel->latch = 0u;
+	channel->after_address = 0u;
+	channel->after_value = 0u;
 	return(SPARK_STATUS_OK);
 }
 
@@ -292,6 +370,7 @@ SparkStatus SparkNvrmOpEnd(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, SparkNv
 		SPARK_FAIL(status);
 	}
 	channel->last_engine = engine;
+	channel->latch = 0u;
 	channel->after_address = 0u;
 	channel->after_value = 0u;
 	if ( value != 0 )

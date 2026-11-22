@@ -30,7 +30,5 @@ int SparkNvrmWaitPace(SparkNvrmWait *wait, uint64_t timeout_ns);
 int SparkNvrmWaitDue(SparkNvrmWait *wait, uint64_t every_ns);
 int SparkNvrmWaitStalled(SparkNvrmWait *wait, uint64_t progress, uint64_t stall_ns);
 void SparkNvrmWaitEnd(SparkNvrmWait *wait);
-uint64_t SparkNvrmWaitStallNs(void);
-void SparkNvrmWaitStallSet(uint64_t stall_ns);
 
 #endif
