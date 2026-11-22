@@ -18,6 +18,9 @@ _Static_assert(1 DEVICE_PROPERTIES(DEVICE_PROPERTY_ONE_BIT),"every device proper
 _Static_assert((0u DEVICE_PROPERTIES(DEVICE_PROPERTY_OR)) == (0u DEVICE_PROPERTIES(DEVICE_PROPERTY_SUM)),"no two device properties share a bit");
 #define DEVICE_RECORDING_POLL_NS 50000
 
+static void DeviceProgramOpsLoad(void);
+static void DeviceProgramOpsUnload(void);
+
 typedef struct SparkDeviceSlot
 {
 	SparkDeviceAllocation *allocation;
@@ -123,6 +126,8 @@ static void DeviceDestroyQueueLocked(SparkDeviceQueue *queue);
 SparkStatus SparkDeviceShutdown(void)
 {
 	SparkStatus status;
+	if ( __atomic_load_n(&device_initialized,__ATOMIC_ACQUIRE) != 0u )
+		DeviceProgramOpsUnload();
 	pthread_mutex_lock(&device_mutex);
 	if ( device_initialized == 0u )
 	{
@@ -1788,6 +1793,8 @@ SparkStatus SparkDeviceProgramFinish(SparkDeviceQueue *queue, SparkDeviceProgram
 	if ( out == 0 )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"program_finish",0,0,"needs an output"));
 	*out = 0;
+	if ( __atomic_load_n(&device_initialized,__ATOMIC_ACQUIRE) != 0u && SparkDeviceBackendProgramLowersCopies() != 0u )
+		DeviceProgramOpsLoad();
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("program_finish",0);
 	if ( status == SPARK_STATUS_OK )
@@ -1945,6 +1952,9 @@ SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program)
 }
 
 #define DEVICE_TENSOR_MAP_IMAGE "sparkpipe_device_kernels/tensor_map_build.cubin"
+#define DEVICE_PROGRAM_OPS_IMAGE "sparkpipe_device_kernels/program_ops.cubin"
+#define DEVICE_PROGRAM_COPY_KERNEL "SparkDeviceProgramCopy"
+#define DEVICE_PROGRAM_FILL_KERNEL "SparkDeviceProgramFill"
 #define DEVICE_TENSOR_MAP_KERNEL "SparkDeviceTensorMapBuild"
 #define DEVICE_TENSOR_MAP_THREADS 64u
 #define DEVICE_TENSOR_MAP_PARAMETERS 3u
@@ -1994,16 +2004,92 @@ static SparkStatus DeviceTensorMapCheck(const SparkDeviceTensorMapRequest *reque
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus DeviceTensorMapImage(char *path, size_t capacity, const char *owner)
+static SparkStatus DeviceKernelImage(const char *image, const char *operation, char *path, size_t capacity, const char *owner)
 {
 	Dl_info info;
 	const char *slash;
 	memset(&info,0,sizeof(info));
 	if ( dladdr((void *)(uintptr_t)&SparkDeviceTensorMapEncode,&info) == 0 || info.dli_fname == 0 || (slash = strrchr(info.dli_fname,'/')) == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,"tensor_map",owner,0,"cannot find the device library's directory"));
-	if ( snprintf(path,capacity,"%.*s/%s",(int)(slash - info.dli_fname),info.dli_fname,DEVICE_TENSOR_MAP_IMAGE) >= (int)capacity )
-		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"tensor_map",owner,0,"the tensor map image's path is too long"));
+		return(SparkDeviceRecordError(SPARK_STATUS_NOT_FOUND,operation,owner,0,"cannot find the device library's directory"));
+	if ( snprintf(path,capacity,"%.*s/%s",(int)(slash - info.dli_fname),info.dli_fname,image) >= (int)capacity )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,operation,owner,0,"a device kernel image's path is too long"));
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus DeviceTensorMapImage(char *path, size_t capacity, const char *owner)
+{
+	return(DeviceKernelImage(DEVICE_TENSOR_MAP_IMAGE,"tensor_map",path,capacity,owner));
+}
+
+static pthread_mutex_t device_program_ops_lock = PTHREAD_MUTEX_INITIALIZER;
+static SparkDeviceLibrary *device_program_ops;
+static SparkDeviceKernel *device_program_op_kernels[2];
+static uint32_t device_program_ops_tried;
+static char device_program_ops_failure[SPARK_DEVICE_ERROR_TEXT_BYTES];
+
+static void DeviceProgramOpsLoad(void)
+{
+	static const char *const names[2] = {DEVICE_PROGRAM_COPY_KERNEL,DEVICE_PROGRAM_FILL_KERNEL};
+	char path[4096];
+	SparkStatus status;
+	uint32_t op;
+	pthread_mutex_lock(&device_program_ops_lock);
+	if ( device_program_ops_tried == 0u )
+	{
+		device_program_ops_tried = 1u;
+		status = DeviceKernelImage(DEVICE_PROGRAM_OPS_IMAGE,"program_finish",path,sizeof(path),"program copies");
+		if ( status == SPARK_STATUS_OK )
+			status = SparkDeviceLibraryLoad(&device_program_ops,path,"program copies");
+		for ( op = 0u; status == SPARK_STATUS_OK && op < 2u; op++ )
+			status = SparkDeviceKernelCreate(&device_program_op_kernels[op],device_program_ops,names[op]);
+		if ( status != SPARK_STATUS_OK )
+		{
+			snprintf(device_program_ops_failure,sizeof(device_program_ops_failure),"%s",SparkDeviceLastError()->text);
+			for ( op = 0u; op < 2u; op++ )
+				if ( device_program_op_kernels[op] != 0 )
+					(void)SparkDeviceKernelDestroy(device_program_op_kernels[op]);
+			if ( device_program_ops != 0 )
+				(void)SparkDeviceLibraryUnload(device_program_ops);
+			memset(device_program_op_kernels,0,sizeof(device_program_op_kernels));
+			device_program_ops = 0;
+		}
+	}
+	pthread_mutex_unlock(&device_program_ops_lock);
+}
+
+static void DeviceProgramOpsUnload(void)
+{
+	uint32_t op,live = 0u;
+	pthread_mutex_lock(&device_program_ops_lock);
+	for ( op = 0u; op < 2u; op++ )
+		if ( device_program_op_kernels[op] != 0 )
+		{
+			if ( SparkDeviceKernelDestroy(device_program_op_kernels[op]) == SPARK_STATUS_OK )
+				device_program_op_kernels[op] = 0;
+			else
+				live++;
+		}
+	if ( live == 0u && device_program_ops != 0 && SparkDeviceLibraryUnload(device_program_ops) == SPARK_STATUS_OK )
+		device_program_ops = 0;
+	if ( device_program_ops == 0 )
+		device_program_ops_tried = 0u;
+	pthread_mutex_unlock(&device_program_ops_lock);
+}
+
+SparkDeviceKernel *SparkDeviceProgramOpHold(uint32_t op, const char **failure)
+{
+	SparkDeviceKernel *kernel = op < 2u ? device_program_op_kernels[op] : 0;
+	if ( kernel != 0 )
+		kernel->programs++;
+	else if ( failure != 0 )
+		*failure = device_program_ops_failure[0] != '\0' ? device_program_ops_failure : "the program copy kernels are not loaded";
+	return(kernel);
+}
+
+void SparkDeviceProgramOpRelease(SparkDeviceKernel *kernel)
+{
+	if ( kernel != 0 && kernel->programs != 0u )
+		kernel->programs--;
 }
 
 static SparkStatus DeviceTensorMapLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceBuffer *buffer, uint64_t map_offset,

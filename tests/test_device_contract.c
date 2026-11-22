@@ -99,11 +99,6 @@ static uint32_t ProgramsRun(void)
 	return((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) != 0u);
 }
 
-static uint32_t ProgramsHoldCopies(void)
-{
-	return(strcmp(SparkDeviceGetProperties()->backend,"nvrm") != 0);
-}
-
 static int ChildFaults(SparkDeviceAddress address)
 {
 	pid_t child = fork();
@@ -1156,31 +1151,6 @@ static void TestProgramRefusals(SparkDeviceQueue *queue, SparkDeviceBuffer *targ
 	CHECK(SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"the queue answers again once its recording ends");
 }
 
-static void TestProgramsWithoutCopies(SparkDeviceQueue *queue, SparkDeviceBuffer *source, SparkDeviceBuffer *target, SparkDeviceEvent *mark,
-	uint32_t *calls)
-{
-	enum { RUNS = 3 };
-	SparkDeviceProgram *program = 0;
-	SparkDeviceProgramInfo info;
-	uint32_t run;
-	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_UNSUPPORTED && program == 0 &&
-		strstr(SparkDeviceLastError()->text,"copies and fills") != 0 && SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,
-		"a backend whose programs hold no copies or fills refuses them at finish, naming them, and its queue stays usable");
-	CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_OK && SparkDeviceQueueHostCallback(queue,CountCallback,calls) == SPARK_STATUS_OK &&
-		SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK && SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK &&
-		SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"record the host callback, the event and the wait alone");
-	CHECK(__atomic_load_n(calls,__ATOMIC_SEQ_CST) == 0u && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK && info.nodes == 3u &&
-		info.kernels == 0u && info.values == 0u,"recording runs nothing, and the program holds the three operations");
-	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_BUSY,"a live program keeps its event");
-	for ( run = 0u; run < RUNS; run++ )
-		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the program");
-	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceEventQuery(mark) == SPARK_STATUS_OK &&
-		__atomic_load_n(calls,__ATOMIC_SEQ_CST) == RUNS,"each run calls the host callback once, and the event it records completes");
-	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the program");
-	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_OK && SparkDeviceFree(source) == SPARK_STATUS_OK && SparkDeviceFree(target) == SPARK_STATUS_OK,
-		"free the program's buffers and event");
-}
-
 typedef struct RecordingWait
 {
 	SparkDeviceQueue *queue;
@@ -1230,6 +1200,81 @@ static void TestRecordingWaits(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the empty program");
 }
 
+typedef struct ProgramCopyShape
+{
+	uint32_t fill;
+	uint64_t to;
+	uint64_t from;
+	uint64_t bytes;
+	uint8_t value;
+} ProgramCopyShape;
+
+static SparkStatus ProgramCopyShapeIssue(SparkDeviceQueue *queue, const ProgramCopyShape *shape, SparkDeviceBuffer *target, SparkDeviceBuffer *source)
+{
+	return(shape->fill != 0u ? SparkDeviceFill(queue,At(target,shape->to),shape->value,shape->bytes) :
+		SparkDeviceCopy(queue,At(target,shape->to),At(source,shape->from),shape->bytes));
+}
+
+static void TestProgramCopyShapes(SparkDeviceQueue *queue)
+{
+	enum { MIB = 1 << 20, BYTES = 4 * MIB, SHAPES = 9, RUNS = 2 };
+	static const ProgramCopyShape shapes[SHAPES] = {
+		{1u,0u,0u,1u,0x11},
+		{1u,3u,0u,7u,0x22},
+		{1u,17u,0u,4099u,0x33},
+		{0u,5000u,5000u,1u,0},
+		{0u,6001u,6001u,4096u + 13u,0},
+		{0u,16384u,16385u,777u,0},
+		{0u,65536u,3u,MIB + 7u,0},
+		{1u,2u * MIB + 1u,0u,MIB - 3u,0x44},
+		{0u,3u * MIB + 48u,3u * MIB + 16u,MIB / 2u + 5u,0}};
+	SparkDeviceBuffer source,recorded,eager;
+	SparkDeviceProgram *program = 0;
+	uint8_t *model;
+	uint32_t shape,run,issued = 1u;
+	uint64_t index,wrong = 0u,off_model = 0u;
+	if ( ProgramsRecord() == 0u || ProgramsRun() == 0u )
+		return;
+	model = (uint8_t *)malloc(BYTES);
+	CHECK(model != 0 && SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes source") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&recorded,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes program") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&eager,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"copy shapes eager") == SPARK_STATUS_OK,"allocate the copy shape buffers");
+	if ( model == 0 || source.host == 0 || recorded.host == 0 || eager.host == 0 )
+	{
+		free(model);
+		return;
+	}
+	Pattern((uint8_t *)source.host,BYTES,29u);
+	memset(recorded.host,0xee,BYTES);
+	memset(eager.host,0xee,BYTES);
+	memset(model,0xee,BYTES);
+	for ( shape = 0u; shape < SHAPES; shape++ )
+		if ( shapes[shape].fill != 0u )
+			memset(model + shapes[shape].to,shapes[shape].value,(size_t)shapes[shape].bytes);
+		else
+			memcpy(model + shapes[shape].to,(const uint8_t *)source.host + shapes[shape].from,(size_t)shapes[shape].bytes);
+	CHECK(SparkDeviceProgramRecord(queue,"copy shapes") == SPARK_STATUS_OK,"record copies and fills of odd sizes and alignments");
+	for ( shape = 0u; shape < SHAPES; shape++ )
+		issued &= ProgramCopyShapeIssue(queue,&shapes[shape],&recorded,&source) == SPARK_STATUS_OK ? 1u : 0u;
+	CHECK(issued != 0u && SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,
+		"a program holds fills and copies of 1 byte to over a MiB, at offsets that share or differ in their alignment");
+	for ( run = 0u; program != 0 && run < RUNS; run++ )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the copy shapes program");
+	for ( shape = 0u, issued = 1u; shape < SHAPES; shape++ )
+		issued &= ProgramCopyShapeIssue(queue,&shapes[shape],&eager,&source) == SPARK_STATUS_OK ? 1u : 0u;
+	CHECK(issued != 0u && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"issue the same copies and fills eagerly and wait");
+	for ( index = 0u; index < BYTES; index++ )
+	{
+		wrong += ((const uint8_t *)recorded.host)[index] != ((const uint8_t *)eager.host)[index] ? 1u : 0u;
+		off_model += ((const uint8_t *)recorded.host)[index] != model[index] ? 1u : 0u;
+	}
+	CHECK(wrong == 0u && off_model == 0u,"every program run writes the bytes the eager copies and fills write, and only those");
+	CHECK(program == 0 || SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the copy shapes program");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&recorded) == SPARK_STATUS_OK && SparkDeviceFree(&eager) == SPARK_STATUS_OK,
+		"free the copy shape buffers");
+	free(model);
+}
+
 static void TestPrograms(SparkDeviceQueue *queue)
 {
 	enum { BYTES = 4096, RUNS = 3 };
@@ -1258,11 +1303,6 @@ static void TestPrograms(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_BUSY,"a buffer the recording uses is not freed under it");
 	CHECK(SparkDeviceQueueHostCallback(queue,CountCallback,&calls) == SPARK_STATUS_OK && SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK &&
 		SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK,"record a host callback, an event and a wait on it");
-	if ( ProgramsHoldCopies() == 0u )
-	{
-		TestProgramsWithoutCopies(queue,&source,&target,mark,&calls);
-		return;
-	}
 	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the program");
 	CHECK(((const uint8_t *)target.host)[0] == 0xee && ((const uint8_t *)target.host)[BYTES - 1u] == 0xee && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == 0u,
 		"recording runs nothing");
@@ -1434,6 +1474,7 @@ int main(void)
 	TestFileAndRegister(queue);
 	TestTransforms();
 	TestPrograms(queue);
+	TestProgramCopyShapes(queue);
 	TestHostMemoryShare();
 	TestKernels(queue);
 	TestTensorMaps();

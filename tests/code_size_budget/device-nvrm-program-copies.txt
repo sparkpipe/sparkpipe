@@ -1,0 +1,2 @@
++237
+nvrm programs run their copies and fills as launches of the device layer's copy and fill kernels (program_ops.cu), so a recorded program with copies finishes on nvrm instead of being refused.

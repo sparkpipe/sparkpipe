@@ -916,6 +916,11 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"this backend replays programs in the device layer"));
 }
 
+uint32_t SparkDeviceBackendProgramLowersCopies(void)
+{
+	return(0u);
+}
+
 SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
 {
 	(void)queue;
