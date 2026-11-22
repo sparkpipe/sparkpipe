@@ -7,6 +7,15 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 
+#define DEVICE_PROPERTIES(APPLY) APPLY(UNIFIED_MEMORY) APPLY(SHARED_ADDRESS) APPLY(KERNEL_LIBRARIES) APPLY(PARAMETER_BLOCKS) APPLY(PROGRAMS) \
+	APPLY(CLUSTERS) APPLY(TENSOR_MAPS)
+#define DEVICE_PROPERTY_ONE_BIT(name) && SPARK_DEVICE_PROPERTY_##name != 0u && (SPARK_DEVICE_PROPERTY_##name & (SPARK_DEVICE_PROPERTY_##name - 1u)) == 0u
+#define DEVICE_PROPERTY_OR(name) | SPARK_DEVICE_PROPERTY_##name
+#define DEVICE_PROPERTY_SUM(name) + SPARK_DEVICE_PROPERTY_##name
+
+_Static_assert(1 DEVICE_PROPERTIES(DEVICE_PROPERTY_ONE_BIT),"every device property is a single bit");
+_Static_assert((0u DEVICE_PROPERTIES(DEVICE_PROPERTY_OR)) == (0u DEVICE_PROPERTIES(DEVICE_PROPERTY_SUM)),"no two device properties share a bit");
+
 typedef struct SparkDeviceSlot
 {
 	SparkDeviceAllocation *allocation;
