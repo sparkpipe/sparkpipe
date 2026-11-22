@@ -67,7 +67,7 @@ harnesses above test them. They were spot-checked against the source on
   required`); it is never retried as successful inference. A failed chain or
   completion drain keeps the slot and its CUDA resources instead of releasing
   them while the stream may still be running.
-- A failed stage-runner capture (`STAGE-GRAPH-CAPTURE-FAILED`) aborts the rank.
+- A failed stage-runner program recording (`STAGE-PROGRAM-RECORD-FAILED`) aborts the rank.
 - A graph the module cannot build returns `UNSUPPORTED`, and that wave runs
   eager instead when the stage holds fewer leased experts than it has routed
   experts (`GLM whole-chain graph requires N leased experts`, 78c2c21).

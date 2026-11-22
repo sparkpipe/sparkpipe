@@ -13,12 +13,12 @@ static SparkStatus PRELAUNCH_STATUS[2];
 static SparkStatus VERIFY_STATUS[2];
 static uint64_t GRAPH_ERROR[2];
 static uint32_t STREAM_ORDERED[2];
-static uint32_t CAPTURING;
-static uint32_t WALK_SAW_CAPTURE;
+static uint32_t RECORDING;
+static uint32_t WALK_SAW_RECORDING;
 static uint32_t WALK_SITE;
-static cudaError_t INSTANTIATE_ERROR;
-static uint32_t GRAPHS_LIVE;
-static uint32_t EXECS_LIVE;
+static SparkStatus RECORD_STATUS;
+static SparkStatus FINISH_STATUS;
+static uint32_t PROGRAMS_LIVE;
 static int FAILURES;
 static SparkTpDeviceCollective COLLECTIVE[2];
 
@@ -49,10 +49,11 @@ static void Reset(void)
 	memset(VERIFY_STATUS,0,sizeof(VERIFY_STATUS));
 	memset(GRAPH_ERROR,0,sizeof(GRAPH_ERROR));
 	STREAM_ORDERED[0] = STREAM_ORDERED[1] = 1u;
-	CAPTURING = 0u;
-	WALK_SAW_CAPTURE = 0u;
+	RECORDING = 0u;
+	WALK_SAW_RECORDING = 0u;
 	WALK_SITE = 0u;
-	INSTANTIATE_ERROR = cudaSuccess;
+	RECORD_STATUS = SPARK_STATUS_OK;
+	FINISH_STATUS = SPARK_STATUS_OK;
 }
 
 SparkStatus SparkTpDeviceCollectiveArmCapture(SparkTpDeviceCollective *collective)
@@ -104,65 +105,49 @@ uint32_t SparkTpDeviceCollectiveStreamOrdered(const SparkTpDeviceCollective *col
 	return(STREAM_ORDERED[Which(collective)]);
 }
 
-cudaError_t cudaStreamBeginCapture(cudaStream_t stream,cudaStreamCaptureMode mode)
+SparkStatus SparkDeviceProgramRecord(SparkDeviceQueue *queue,const char *name)
 {
-	(void)stream;
-	(void)mode;
-	CAPTURING = 1u;
-	Log("begin",0u);
-	return(cudaSuccess);
+	(void)queue;
+	(void)name;
+	Log("record",0u);
+	if ( RECORD_STATUS == SPARK_STATUS_OK )
+		RECORDING = 1u;
+	return(RECORD_STATUS);
 }
 
-cudaError_t cudaStreamEndCapture(cudaStream_t stream,cudaGraph_t *graph)
+SparkStatus SparkDeviceProgramFinish(SparkDeviceQueue *queue,SparkDeviceProgram **program)
 {
-	(void)stream;
-	CAPTURING = 0u;
-	Log("end",0u);
-	*graph = (cudaGraph_t)(uintptr_t)0x1000u;
-	GRAPHS_LIVE++;
-	return(cudaSuccess);
+	(void)queue;
+	RECORDING = 0u;
+	Log("finish",0u);
+	*program = 0;
+	if ( FINISH_STATUS != SPARK_STATUS_OK )
+		return(FINISH_STATUS);
+	*program = (SparkDeviceProgram *)(uintptr_t)0x2000u;
+	PROGRAMS_LIVE++;
+	return(SPARK_STATUS_OK);
 }
 
-cudaError_t cudaGraphInstantiate(cudaGraphExec_t *exec,cudaGraph_t graph,...)
+SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program)
 {
-	(void)graph;
-	if ( INSTANTIATE_ERROR != cudaSuccess )
-		return(INSTANTIATE_ERROR);
-	*exec = (cudaGraphExec_t)(uintptr_t)0x2000u;
-	EXECS_LIVE++;
-	return(cudaSuccess);
+	(void)program;
+	Log("destroy",0u);
+	PROGRAMS_LIVE--;
+	return(SPARK_STATUS_OK);
 }
 
-cudaError_t cudaGraphUpload(cudaGraphExec_t exec,cudaStream_t stream)
+SparkStatus SparkDeviceQueueWait(SparkDeviceQueue *queue,uint64_t timeout_ns)
 {
-	(void)exec;
-	(void)stream;
-	return(cudaSuccess);
-}
-
-cudaError_t cudaGraphDestroy(cudaGraph_t graph)
-{
-	(void)graph;
-	GRAPHS_LIVE--;
-	return(cudaSuccess);
-}
-
-cudaError_t cudaGraphExecDestroy(cudaGraphExec_t exec)
-{
-	(void)exec;
-	EXECS_LIVE--;
-	return(cudaSuccess);
-}
-
-cudaError_t cudaGetLastError(void)
-{
-	return(cudaSuccess);
+	(void)queue;
+	(void)timeout_ns;
+	Log("wait",0u);
+	return(SPARK_STATUS_OK);
 }
 
 static uint32_t Walk(void *context)
 {
 	(void)context;
-	WALK_SAW_CAPTURE = CAPTURING;
+	WALK_SAW_RECORDING = RECORDING;
 	Log("walk",0u);
 	return(WALK_SITE);
 }
@@ -210,51 +195,56 @@ static void TestArmFailureDisarmsEveryCollective(void)
 	CHECK(LOG_COUNT == 4u && LogHas(0u,"arm0") && LogHas(1u,"arm1") && LogHas(2u,"disarm0") && LogHas(3u,"disarm1"));
 }
 
-static void TestRecordCapturesTheWalkBetweenArmAndDisarm(void)
+static void TestRecordRecordsTheWalkBetweenArmAndDisarm(void)
 {
 	SparkTpChainCollectives collectives = Two();
-	void *exec = 0;
+	SparkDeviceProgram *program = 0;
 	uint32_t site = 77u;
 	Reset();
-	CHECK(SparkTpChainGraphRecord(&collectives,(void *)0x10,Walk,0,&exec,&site) == SPARK_STATUS_OK);
-	CHECK(exec != 0 && site == 0u && WALK_SAW_CAPTURE == 1u && CAPTURING == 0u);
-	CHECK(LogHas(0u,"arm0") && LogHas(1u,"arm1") && LogHas(2u,"begin0") && LogHas(3u,"walk0") && LogHas(4u,"end0") && LogHas(5u,"disarm0") && LogHas(6u,"disarm1") && LOG_COUNT == 7u);
-	CHECK(GRAPHS_LIVE == 0u && EXECS_LIVE == 1u);
-	(void)cudaGraphExecDestroy((cudaGraphExec_t)exec);
+	CHECK(SparkTpChainGraphRecord(&collectives,(SparkDeviceQueue *)0x10,Walk,0,&program,&site) == SPARK_STATUS_OK);
+	CHECK(program != 0 && site == 0u && WALK_SAW_RECORDING == 1u && RECORDING == 0u);
+	CHECK(LogHas(0u,"arm0") && LogHas(1u,"arm1") && LogHas(2u,"record0") && LogHas(3u,"walk0") && LogHas(4u,"finish0") && LogHas(5u,"disarm0") &&
+		LogHas(6u,"disarm1") && LOG_COUNT == 7u);
+	CHECK(PROGRAMS_LIVE == 1u);
+	(void)SparkDeviceProgramDestroy(program);
 }
 
-static void TestRecordWalkFailureClosesTheCapture(void)
+static void TestRecordWalkFailureDestroysTheProgram(void)
 {
 	SparkTpChainCollectives collectives = Two();
-	void *exec = (void *)0x1;
+	SparkDeviceProgram *program = (SparkDeviceProgram *)0x1;
 	uint32_t site = 0u;
 	Reset();
 	WALK_SITE = 7u;
-	CHECK(SparkTpChainGraphRecord(&collectives,(void *)0x10,Walk,0,&exec,&site) == SPARK_STATUS_INTERNAL_ERROR);
-	CHECK(exec == 0 && site == 7u && CAPTURING == 0u && GRAPHS_LIVE == 0u && EXECS_LIVE == 0u);
-	CHECK(LogHas(LOG_COUNT - 2u,"disarm0") && LogHas(LOG_COUNT - 1u,"disarm1"));
+	CHECK(SparkTpChainGraphRecord(&collectives,(SparkDeviceQueue *)0x10,Walk,0,&program,&site) == SPARK_STATUS_INTERNAL_ERROR);
+	CHECK(program == 0 && site == 7u && RECORDING == 0u && PROGRAMS_LIVE == 0u);
+	CHECK(LogHas(LOG_COUNT - 3u,"destroy0") && LogHas(LOG_COUNT - 2u,"disarm0") && LogHas(LOG_COUNT - 1u,"disarm1"));
 }
 
-static void TestRecordInstantiateFailureLeaksNothing(void)
+static void TestRecordFinishFailureLeaksNothing(void)
 {
 	SparkTpChainCollectives collectives = Two();
-	void *exec = 0;
+	SparkDeviceProgram *program = 0;
 	uint32_t site = 0u;
 	Reset();
-	INSTANTIATE_ERROR = cudaErrorInvalidValue;
-	CHECK(SparkTpChainGraphRecord(&collectives,(void *)0x10,Walk,0,&exec,&site) == SPARK_STATUS_IO_ERROR);
-	CHECK(exec == 0 && GRAPHS_LIVE == 0u && EXECS_LIVE == 0u);
+	FINISH_STATUS = SPARK_STATUS_UNSUPPORTED;
+	CHECK(SparkTpChainGraphRecord(&collectives,(SparkDeviceQueue *)0x10,Walk,0,&program,&site) == SPARK_STATUS_UNSUPPORTED);
+	CHECK(program == 0 && PROGRAMS_LIVE == 0u && RECORDING == 0u);
+	Reset();
+	RECORD_STATUS = SPARK_STATUS_BUSY;
+	CHECK(SparkTpChainGraphRecord(&collectives,(SparkDeviceQueue *)0x10,Walk,0,&program,&site) == SPARK_STATUS_BUSY);
+	CHECK(program == 0 && PROGRAMS_LIVE == 0u && WALK_SAW_RECORDING == 0u && LogHas(LOG_COUNT - 2u,"disarm0") && LogHas(LOG_COUNT - 1u,"disarm1"));
 }
 
-static void TestRecordArmFailureNeverCaptures(void)
+static void TestRecordArmFailureNeverRecords(void)
 {
 	SparkTpChainCollectives collectives = Two();
-	void *exec = 0;
+	SparkDeviceProgram *program = 0;
 	uint32_t site = 0u;
 	Reset();
 	ARM_STATUS[0] = SPARK_STATUS_UNSUPPORTED;
-	CHECK(SparkTpChainGraphRecord(&collectives,(void *)0x10,Walk,0,&exec,&site) == SPARK_STATUS_UNSUPPORTED);
-	CHECK(exec == 0 && WALK_SAW_CAPTURE == 0u);
+	CHECK(SparkTpChainGraphRecord(&collectives,(SparkDeviceQueue *)0x10,Walk,0,&program,&site) == SPARK_STATUS_UNSUPPORTED);
+	CHECK(program == 0 && WALK_SAW_RECORDING == 0u);
 	CHECK(LogHas(0u,"arm0") && LogHas(1u,"disarm0") && LogHas(2u,"disarm1") && LOG_COUNT == 3u);
 }
 
@@ -297,7 +287,7 @@ static void TestGraphSettleChecksErrorsAndDisarms(void)
 static void TestGraphTableKeysAndDestroy(void)
 {
 	SparkTpChainGraphTable table;
-	void **entry;
+	SparkDeviceProgram **entry;
 	memset(&table,0,sizeof(table));
 	CHECK(SparkTpChainGraphEntry(&table,0u,0u) == 0);
 	CHECK(SparkTpChainGraphEntry(&table,SPARK_TP_CHAIN_GRAPH_MAX_REGIMES,1u) == 0);
@@ -314,12 +304,16 @@ static void TestGraphTableKeysAndDestroy(void)
 	CHECK(SparkTpChainGraphBucketRows(SPARK_TP_CHAIN_GRAPH_MAX_ROWS) == SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 	CHECK(SparkTpChainGraphBucketRows(256u) == 256u && SparkTpChainGraphBucketRows(257u) == 320u && SparkTpChainGraphBucketRows(320u) == 320u && SparkTpChainGraphBucketRows(321u) == 384u && SparkTpChainGraphBucketRows(1000u) == 1024u);
 	CHECK(SparkTpChainGraphBucketIndex(SPARK_TP_CHAIN_GRAPH_MAX_ROWS) == SPARK_TP_CHAIN_GRAPH_BUCKETS - 1u && SparkTpChainGraphBucketIndex(257u) == SPARK_TP_CHAIN_GRAPH_POW2_BUCKETS);
+	Reset();
+	CHECK(SparkTpChainGraphTableDestroy(&table,(SparkDeviceQueue *)0x10) == SPARK_STATUS_OK && LOG_COUNT == 0u);
 	entry = SparkTpChainGraphEntry(&table,1u,SPARK_TP_CHAIN_GRAPH_MAX_ROWS);
 	CHECK(entry != 0);
-	EXECS_LIVE = 1u;
-	*entry = (void *)0x2000;
-	SparkTpChainGraphTableDestroy(&table);
-	CHECK(*entry == 0 && EXECS_LIVE == 0u);
+	PROGRAMS_LIVE = 2u;
+	*entry = (SparkDeviceProgram *)0x2000;
+	*SparkTpChainGraphEntry(&table,0u,1u) = (SparkDeviceProgram *)0x3000;
+	CHECK(SparkTpChainGraphTableDestroy(&table,(SparkDeviceQueue *)0x10) == SPARK_STATUS_OK);
+	CHECK(*entry == 0 && *SparkTpChainGraphEntry(&table,0u,1u) == 0 && PROGRAMS_LIVE == 0u);
+	CHECK(LOG_COUNT == 3u && LogHas(0u,"wait0") && LogHas(1u,"destroy0") && LogHas(2u,"destroy0"));
 }
 
 int main(void)
@@ -327,10 +321,10 @@ int main(void)
 	TestModeParse();
 	TestStreamOrdered();
 	TestArmFailureDisarmsEveryCollective();
-	TestRecordCapturesTheWalkBetweenArmAndDisarm();
-	TestRecordWalkFailureClosesTheCapture();
-	TestRecordInstantiateFailureLeaksNothing();
-	TestRecordArmFailureNeverCaptures();
+	TestRecordRecordsTheWalkBetweenArmAndDisarm();
+	TestRecordWalkFailureDestroysTheProgram();
+	TestRecordFinishFailureLeaksNothing();
+	TestRecordArmFailureNeverRecords();
 	TestPreLaunchSeedsEachCollectiveInOrder();
 	TestLinearSettleVerifiesAndCancelsOnFailure();
 	TestGraphSettleChecksErrorsAndDisarms();
