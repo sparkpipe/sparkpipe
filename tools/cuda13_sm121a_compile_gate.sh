@@ -143,6 +143,16 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs
 	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
 	exit 5
 fi
+read -r -a stage_runner_binaries <<<"$(make_variable STAGE_RUNNER_BINARIES)"
+if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/stage_runner_binaries.txt" 2>&1; then
+	grep -E 'undefined reference|error' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
+	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
+	exit 11
+fi
 for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	if [[ ! -f "${repository_root}/${artifact}" ]]; then
 		echo "build produced no ${artifact}" >&2
