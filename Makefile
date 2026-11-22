@@ -1238,7 +1238,7 @@ nvrm-node: $(NVRM_WEIGHTD_PROGRAMS) $(NVRM_NODE_PROGRAMS)
 
 NVRM_TWIN = $(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1))
 NVRM_NVCC_DEVICE_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
-NVRM_SERVING_ADAPTERS := $(call NVRM_TWIN,$(NVRM_SERVING_ADAPTER_SOURCES))
+NVRM_SERVING_ADAPTERS := $(call NVRM_TWIN,$(NVRM_SERVING_ADAPTER_SOURCES) build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT))
 $(NVRM_SERVING_ADAPTERS): ADAPTER_LIBRARIES = $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY)
 $(NVRM_SERVING_ADAPTERS): ADAPTER_DEVICE_LINK = $(NVRM_NVCC_DEVICE_LINK)
 $(NVRM_SERVING_ADAPTERS): ADAPTER_NVCC_FLAGS = -cudart none -DSPARKPIPE_DEVICE_NVRM
@@ -2091,7 +2091,7 @@ build/libqwen38_27b_bf16_tp2_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B
 build/libqwen38_27b_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
 	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_FP8_E4M3,1u,qwen38_27b-tp1,qwen38_27b_fp8_tp1_stage)
 
-build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT): $(QWEN38_27B_ADAPTER_DEPS)
+build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT) $(call NVRM_TWIN,build/libqwen38_27b_bf16_tp1_serving_adapter.$(SHARED_LIBRARY_EXT)): $(QWEN38_27B_ADAPTER_DEPS)
 	$(call QWEN38_27B_LINK,SPARK_WEIGHT_CODEC_BF16,1u,qwen38_27b-bf16-tp1,qwen38_27b_tp1_stage)
 
 $(QWEN38_MAX_TP16_SERVING_ADAPTER) $(call NVRM_TWIN,$(QWEN38_MAX_TP16_SERVING_ADAPTER)): $(QWEN38_MAX_TP16_SOURCES) $(QWEN38_MAX_TP16_CONTRACT) modules/qwen38_max_resident_decode_stage/include/sparkpipe/spark_qwen38_max_stage_model.h model-families/qwen38/source/qwen38_hybrid_stage.cuh model-families/qwen38/include/sparkpipe/spark_qwen38_family.h include/sparkpipe/spark_stage_runner.h include/sparkpipe/spark_stage_runner_model.h include/sparkpipe/spark_stage_serving_adapter.h $(CUDA_HEADER_DEPS) $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) | build
