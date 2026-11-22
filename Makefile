@@ -33,7 +33,7 @@ SPARKPIPE_CUDA_RUNTIME_LINK := -L$(CUDA_HOME)/lib64 -lcudart
 SPARKPIPE_CUDA_DRIVER_LINK := -L$(CUDA_HOME)/lib64 -lcuda
 endif
 endif
-NVRM_FLAVOUR_GOALS := nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch nvrm-weightd clean
+NVRM_FLAVOUR_GOALS := nvrm-node nvrm-device nvrm-first-light nvrm-first-light-static nvrm-memory-bandwidth test-nvrm test-nvrm-gpu nvrm-gpu-present nvrm-occupancy-ab nvrm-launch-latency nvrm-cross-process-copy test-nvrm-launch nvrm-weightd clean
 ifeq ($(SPARKPIPE_DEVICE),nvrm)
 NVRM_UNPORTED_GOALS := $(filter-out $(NVRM_FLAVOUR_GOALS),$(or $(MAKECMDGOALS),all))
 ifneq ($(NVRM_UNPORTED_GOALS),)
@@ -1022,14 +1022,16 @@ HOSTED_RELEASE_FILES ?= $(sort $(HOSTED_RELEASE_NODE_FILES) $(HOSTED_RELEASE_HUB
 HOSTED_RELEASE_KERNELS = $(addsuffix .kernels,$(filter $(HOSTED_RELEASE_ADAPTERS),$(HOSTED_RELEASE_FILES)))
 HOSTED_RELEASE_ROOT ?= build/hosted_release_root
 HOSTED_RELEASE_GATE_FLAGS ?=
-HOSTED_RELEASE_NVRM_FILES := build/sparkpipe_weightd build/weightd_warm build/weightdctl
+HOSTED_RELEASE_NVRM_FILES := build/sparkpipe_weightd build/weightd_warm build/weightdctl build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
+HOSTED_RELEASE_NVRM_LINKED := build/sparkpipe_model_residentd $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 HOSTED_RELEASE_SOURCE = $(if $(filter $(1) $(1:.kernels=),$(HOSTED_RELEASE_NVRM_FILES)),$(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(1)),$(1))
-HOSTED_RELEASE_SOURCES = $(foreach file,$(HOSTED_RELEASE_FILES),$(call HOSTED_RELEASE_SOURCE,$(file)))
-HOSTED_RELEASE_STAGED = $(foreach file,$(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS),$(if $(filter $(file),$(call HOSTED_RELEASE_SOURCE,$(file))),$(file),$(call HOSTED_RELEASE_SOURCE,$(file))=$(file)))
+HOSTED_RELEASE_DEVICE_LIBRARIES = $(if $(filter $(HOSTED_RELEASE_NVRM_LINKED),$(HOSTED_RELEASE_FILES)),$(filter-out $(HOSTED_RELEASE_FILES),$(DEVICE_NVRM_LIBRARY)))
+HOSTED_RELEASE_SOURCES = $(foreach file,$(HOSTED_RELEASE_FILES),$(call HOSTED_RELEASE_SOURCE,$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
+HOSTED_RELEASE_STAGED = $(foreach file,$(HOSTED_RELEASE_FILES) $(HOSTED_RELEASE_KERNELS),$(if $(filter $(file),$(call HOSTED_RELEASE_SOURCE,$(file))),$(file),$(call HOSTED_RELEASE_SOURCE,$(file))=$(file))) $(HOSTED_RELEASE_DEVICE_LIBRARIES)
 
 .PHONY: hosted-release-gate
 hosted-release-gate: $(HOSTED_RELEASE_SOURCES)
-	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(HOSTED_RELEASE_STAGED)
+	python3 tools/hosted_release_gate.py check $(HOSTED_RELEASE_GATE_FLAGS) $(HOSTED_RELEASE_ROOT) --stage $(strip $(HOSTED_RELEASE_STAGED))
 
 MODULE_KERNELS_FLAGS = --keep --keep-dir $@.kernels
 define nvcc_module
@@ -1204,6 +1206,27 @@ $(NVRM_BUILD_DIR)/weightdctl: tools/weightdctl.c $(DEVICE_NVRM_SOURCES) $(NVRM_R
 
 .PHONY: nvrm-weightd
 nvrm-weightd: $(NVRM_WEIGHTD_PROGRAMS)
+
+NVRM_MODEL_COMMON_OBJECTS := $(patsubst %.c,$(NVRM_BUILD_DIR)/obj/%.o,$(SPARKPIPE_MODEL_COMMON_SOURCES))
+NVRM_MODEL_COMMON_LIBRARY := $(NVRM_BUILD_DIR)/libsparkpipe_model_common.a
+NVRM_DEVICE_LINK := -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_FLAVOUR_RPATH)
+NVRM_HIDDEN_TRANSPORT := $(patsubst build/%,$(NVRM_BUILD_DIR)/%,$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA))
+NVRM_NODE_PROGRAMS := $(NVRM_BUILD_DIR)/sparkpipe_model_residentd $(NVRM_HIDDEN_TRANSPORT)
+
+$(NVRM_MODEL_COMMON_LIBRARY): $(NVRM_MODEL_COMMON_OBJECTS)
+	@mkdir -p $(@D)
+	rm -f $@ && $(AR) rcs $@ $^
+
+$(NVRM_BUILD_DIR)/sparkpipe_model_residentd: node/model_residentd.c node/weightd_spawn.c node/weightd_spawn.h runtime/model_resident_socket.h $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) node/model_residentd.c node/weightd_spawn.c $(NVRM_RUNTIME_LIBRARY) $(NVRM_MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) $(NVRM_DEVICE_LINK) -o $@
+
+$(NVRM_HIDDEN_TRANSPORT): ring/transport/rdma.c ring/transport/rdma_control.c include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_hidden_transport_rdma_control.h include/sparkpipe/spark_weightd.h $(NVRM_RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(@D)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(NVRM_COMPILE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) ring/transport/rdma.c ring/transport/rdma_control.c $(NVRM_RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(NVRM_DEVICE_LINK) -libverbs -ldl -lpthread -o $@
+
+.PHONY: nvrm-node
+nvrm-node: $(NVRM_WEIGHTD_PROGRAMS) $(NVRM_NODE_PROGRAMS)
 
 build/obj/%.o: %.c | build
 	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@

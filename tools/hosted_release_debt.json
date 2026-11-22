@@ -37,12 +37,6 @@
       }
     },
     {
-      "reason": "sparkpipe_model_residentd allocates its stage boundary buffers (device memory, or pinned host memory mapped into the device) and creates its streams through spark_gpu.h, whose CUDA implementation calls the CUDA runtime.",
-      "files": {
-        "build/sparkpipe_model_residentd": ["needed libcudart.so.13"]
-      }
-    },
-    {
       "reason": "CUDA device library: runtime/device/cuda/device_cuda.c implements spark_device.h over the CUDA runtime, and every adapter loads it from runtime_libs/.",
       "files": {
         "build/runtime_libs/libsparkpipe_device_cuda.so": ["needed libcudart.so.13"]
