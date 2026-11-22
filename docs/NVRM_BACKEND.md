@@ -392,8 +392,17 @@ an SoC: bit `NV0000_CTRL_GPU_ID_INFO_SOC` of the identity's `gpuFlags`,
 from `NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2`. GB10 reports it. A discrete GPU
 does not, so on one the backend makes no claim of host-coherent memory,
 as the CUDA backend does from its integrated flag. The backend adopts no
-foreign memory or queue, and a queue it owns is never captured into a
-graph.
+foreign memory or queue. Adopting one of the device's own live queues works
+on every backend: the device layer finds the handle in its own list of
+queues by comparing pointers, never by reading through the handle, and
+hands back that queue as a borrow. The caller gets the same record, so the
+owner's sequence numbers and capture state apply. A release while borrows
+remain only returns a borrow, so the owner and the adopter may release in
+either order, and the last release destroys the queue. Any other handle, a
+freed queue's included, goes to the backend and is refused. This lets a
+runner adopt its execution stream the same way in the nvrm flavour, where
+the stream is a device queue, and in the CUDA flavour, where it is a CUDA
+stream. A queue the backend owns is never captured into a graph.
 
 Every channel registers with unified memory before anything is
 submitted on it, and the backend never schedules a single channel: the
@@ -532,6 +541,70 @@ macro both stay on the CUDA fronts. Their implementation is
   and refuses more.
 - **Release.** `SparkNvrmGpuRelease` destroys the default queue and the
   registered kernels before `SparkDeviceShutdown`.
+
+The rest of the front maps onto the device layer:
+
+- **Initialization.** The first call initializes the device, unless the
+  device layer already has. `SparkGpuSetDevice` picks the ordinal before
+  that; once the device is in use, only that ordinal is accepted.
+- **Memory.**
+  - `SparkGpuMalloc` allocates device-private memory.
+  - `SparkGpuMallocHost` and `SparkGpuHostAlloc` allocate pinned host
+    memory, and `SparkGpuMallocManaged` allocates shared coherent memory.
+    Their host and device addresses are the same, so
+    `SparkGpuHostGetDevicePointer` returns the host pointer after checking
+    that the memory belongs to the front.
+  - `SparkGpuHostRegister` registers host memory through the device layer.
+    The front keeps the host range so that copies and device-pointer
+    lookups can find it by host pointer.
+  - Freeing waits for the device first, as `cudaFree` does.
+- **Copies and fills.**
+  - A copy between memory the front knows goes on the stream's queue.
+  - Pageable host memory the device layer does not know is staged through
+    an 8 MiB pinned buffer, one chunk at a time. The call returns once the
+    host side may be reused: the source of a copy to the device, or the
+    filled destination of a copy to the host.
+  - `SparkGpuMemcpy` and `SparkGpuMemset` run on the default queue and wait
+    for it.
+  - 2D copies and fills run row by row, or as one operation when the
+    pitches equal the width.
+- **Streams.**
+  - Streams must be non-blocking. A blocking stream is refused, because
+    the hosted runtime has no legacy default stream to synchronize it with.
+  - Stream priorities are not implemented yet. `SparkGpuDeviceGetStreamPriorityRange`,
+    and a stream created with a priority other than the default, return
+    `SPARK_GPU_ERROR_NOT_SUPPORTED`. Ignoring the priority would run every
+    lane at one priority without saying so.
+  - `SparkGpuStreamQuery` and `SparkGpuEventQuery` return
+    `SPARK_GPU_ERROR_NOT_READY` without recording it as the last error.
+- **Events.** Events are device-layer events, and their elapsed time is
+  converted to milliseconds.
+- **Not supported yet.** These return `SPARK_GPU_ERROR_NOT_SUPPORTED`,
+  naming the call:
+  - stream capture and every graph call, until command lists exist
+    (Phase 3);
+  - the occupancy query, until the per-multiprocessor limits are reported;
+  - every device attribute but the multiprocessor count;
+  - `SparkGpuMemGetInfo` on a discrete GPU.
+- **Free memory on a unified GPU.** `SparkGpuMemGetInfo` reports `MemFree`
+  and `MemTotal` from `/proc/meminfo` at the moment of the call, each capped
+  by the device budget.
+  - The device budget is `SparkDeviceConfiguration.memory_budget_bytes` when
+    set, else physical memory (`_SC_PHYS_PAGES` times `_SC_PAGESIZE`). The
+    front's lazy initialization sets none.
+  - `MemFree`, not `MemAvailable`, is what the CUDA flavour reports on GB10.
+    On spark1 its free figure equalled `MemFree` read just before and just
+    after the call, as ours does, and both totals were `MemTotal`.
+  - `MemAvailable` would add the reclaimable page cache: 17.4 GB on spark1
+    at the time.
+- **Function attributes.** `SparkGpuFuncGetAttributes` reports a registered
+  kernel's thread limit, registers, static shared memory and stack.
+
+`tests/test_nvrm_gpu_api.c` (in `make test-nvrm-gpu`) runs every call on
+the GPU. It covers every space, a 20 MiB pageable round trip through the
+staging buffer, registered memory, pitched 2D copies and fills, events
+across two streams with a host function, the refusals, device queries,
+and the release and shutdown.
 
 `tests/nvrm/hosted_launch.cu` is compiled with `nvcc -cudart none
 -DSPARKPIPE_DEVICE_NVRM` and `-keep`. Its kernel directory gets the cubin

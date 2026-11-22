@@ -12,6 +12,7 @@
 #include "runtime/device/nvrm/nvrm_gpu.h"
 #include "runtime/device/nvrm/nvrm_host.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
+#include "runtime/device/nvrm/nvrm_register.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
 
 #define NVRM_WARP_THREADS 32u
@@ -392,7 +393,11 @@ SparkStatus SparkDeviceBackendQueueCreate(SparkDeviceQueue *queue)
 SparkStatus SparkDeviceBackendQueueAdopt(SparkDeviceQueue *queue, void *native)
 {
 	(void)native;
-	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_adopt",queue->owner,0,"the nvrm backend owns every queue it runs"));
+	{
+		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"queue_adopt",queue->owner,0,
+			"the nvrm backend adopts only its own live queues, and this handle is not one");
+		SPARK_FAIL(status);
+	}
 }
 
 void SparkDeviceBackendQueueDestroy(SparkDeviceQueue *queue)
@@ -620,6 +625,16 @@ SparkStatus SparkDeviceBackendKernelCreate(SparkDeviceKernel *kernel, const char
 	kernel->info.simd_width = NVRM_WARP_THREADS;
 	kernel->info.static_shared_bytes = reported->shared_bytes;
 	kernel->backend = nvrm;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvrmKernelResources(const SparkDeviceKernel *kernel, uint32_t *registers, uint32_t *stack_bytes)
+{
+	const NvrmKernel *nvrm = kernel != 0 ? (const NvrmKernel *)kernel->backend : 0;
+	if ( nvrm == 0 || registers == 0 || stack_bytes == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_info",0,0,"needs a live nvrm kernel and both outputs"));
+	*registers = nvrm->kernel->registers;
+	*stack_bytes = nvrm->kernel->stack_bytes;
 	return(SPARK_STATUS_OK);
 }
 

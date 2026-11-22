@@ -121,6 +121,22 @@ static void TestErrors(SparkGpuStream queue, SparkDeviceBuffer *words)
 	(void)SparkGpuGetLastError();
 }
 
+static void TestFunctionApi(void)
+{
+	SparkGpuFunctionAttributes attributes;
+	double *values = 0;
+	int blocks = 0;
+	CHECK(SparkGpuMalloc(&values,64u * sizeof(double)) == SPARK_GPU_SUCCESS && values != 0 && SparkGpuFree(values) == SPARK_GPU_SUCCESS,
+		"the typed allocation template allocates and frees");
+	CHECK(SparkGpuFuncGetAttributes(&attributes,HostedMix) == SPARK_GPU_SUCCESS && attributes.maxThreadsPerBlock > 0 && attributes.numRegs > 0,
+		"a registered kernel reports its thread limit and registers");
+	CHECK(SparkGpuFuncSetAttribute(HostedStep<HOSTED_STEP>,SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES,1024) == SPARK_GPU_SUCCESS,
+		"a kernel is granted dynamic shared memory the device has");
+	CHECK(SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,HostedStep<HOSTED_STEP>,128,0) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
+		strstr(SparkDeviceLastError()->text,"occupancy") != 0,"an occupancy query is refused, naming the kernel, until the per-multiprocessor limits are reported");
+	(void)SparkGpuGetLastError();
+}
+
 int main(void)
 {
 	SparkDeviceBuffer table,doubles,words;
@@ -143,6 +159,7 @@ int main(void)
 		((uint64_t *)table.host)[index] = 1000u + 17u * index;
 	TestLaunches(queue,&table,&doubles,&words);
 	TestErrors(queue,&words);
+	TestFunctionApi();
 	CHECK(SparkDeviceFree(&table) == SPARK_STATUS_OK && SparkDeviceFree(&doubles) == SPARK_STATUS_OK && SparkDeviceFree(&words) == SPARK_STATUS_OK &&
 		SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"free the buffers and the queue");
 	CHECK(SparkNvrmGpuRelease() == SPARK_GPU_SUCCESS && SparkDeviceShutdown() == SPARK_STATUS_OK,

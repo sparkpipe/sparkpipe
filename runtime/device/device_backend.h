@@ -45,6 +45,7 @@ struct SparkDeviceQueue
 {
 	uint64_t id;
 	uint64_t submitted;
+	uint32_t borrows;
 	void *backend;
 	SparkDeviceQueue *next;
 	char owner[SPARK_DEVICE_OWNER_BYTES];
