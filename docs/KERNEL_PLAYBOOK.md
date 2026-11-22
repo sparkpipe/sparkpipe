@@ -891,8 +891,10 @@ beside that kernel.
 - **Measured** on one GB10 in the DeepSeek V4.1 Flash decode replay
   (2026-11-22, 30 steps after 5), with DeepSeek V4.1 Flash's FP8 QDQ kernel
   also made a dependent launch (wait, then release) so the projection after it
-  can start early. The final streams are the same bytes, and the step is
-  shorter by 0.27-0.30 ms at one row and 0.29-0.46 ms at eight. Loading every
+  can start early. The final streams are the same bytes, and against the same
+  code without the early releases the step is shorter by 0.25-0.27 ms at one
+  row (27.97 to 27.72 ms), 0.27-0.38 ms at eight (66.1 to 65.8 ms) and
+  0.71-1.09 ms at sixteen (110.5 to 109.6 ms). Loading every
   task's weights into L2 before the wait instead made the eight-row step
   1.3 ms slower: the next kernel's whole weight read then competes with the
   running kernel's.
