@@ -28,6 +28,7 @@ typedef struct SparkNvrmStep
 	uint64_t second_address;
 	uint32_t payload;
 	uint32_t second;
+	uint32_t dependent;
 	uint32_t chained;
 	const char *name;
 } SparkNvrmStep;

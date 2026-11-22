@@ -1777,10 +1777,12 @@ nvrm-latch-segments: nvrm-gpu-present build/test_nvrm_latch_segments
 	./build/test_nvrm_latch_segments chain 1000 32 5000 & chain=$$!; sleep 0.5; \
 	./build/test_nvrm_latch_segments compete 2 165 || status=1; wait $$chain || status=1; \
 	./build/test_nvrm_latch_segments program 100000 32 || status=1; \
+	./build/test_nvrm_latch_segments trigger 200 20 || status=1; \
+	./build/test_nvrm_latch_segments stale 200 20 || status=1; \
 	./build/test_nvrm_latch_segments program 1024 32 5000 & chain=$$!; sleep 0.5; \
 	./build/test_nvrm_latch_segments compete 2 165 || status=1; wait $$chain || status=1; \
 	tools/nvrm_kernel_log.sh check $$mark || status=1; \
-	if [ $$status -eq 0 ]; then echo "PASS nvrm-latch-segments: dependent chains run in segments of one and of 32 launches, \
+	if [ $$status -eq 0 ]; then echo "PASS nvrm-latch-segments: dependent chains run in segments of one and of 32 launches, a plain launch in a program never reads a line cached before its parent wrote it, \
 a second process keeps running beside a 32-launch chain, and beside a chain of 5 ms kernels, eager or in a program, it waits at most one segment"; fi; exit $$status
 
 NVRM_FLAVOUR_GOALS += nvrm-cluster-launch

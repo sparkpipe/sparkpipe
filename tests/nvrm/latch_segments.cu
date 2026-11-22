@@ -170,7 +170,11 @@ static int ChainProgram(uint64_t launches, uint32_t segment, uint64_t spin_ns)
 		return(1);
 	}
 	for ( index = 0u; index < PROGRAM_LAUNCHES; index++ )
-		LM_LAUNCH((SegmentStep),1,32,0u,stream,counter,spin_ns);
+		if ( LM_LAUNCH_DEPENDENT((SegmentStep),1,32,0u,stream,counter,spin_ns) != SPARK_GPU_SUCCESS )
+		{
+			printf("FAIL record dependent launch %u: %s\n",index,SparkDeviceLastError()->text);
+			return(1);
+		}
 	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS || SparkDeviceProgramFinish(queue,&program) != SPARK_STATUS_OK )
 	{
 		printf("FAIL record the program chain: %s\n",SparkDeviceLastError()->text);
@@ -189,7 +193,7 @@ static int ChainProgram(uint64_t launches, uint32_t segment, uint64_t spin_ns)
 		printf("FAIL finish the program chain: %s\n",SparkDeviceLastError()->text);
 		return(1);
 	}
-	printf("program chain: %llu runs of %u launches of %.0f us in segments of %u, %.3f us each, counter %u\n",(unsigned long long)runs,PROGRAM_LAUNCHES,
+	printf("program chain: %llu runs of %u dependent launches of %.0f us in segments of %u, %.3f us each, counter %u\n",(unsigned long long)runs,PROGRAM_LAUNCHES,
 		(double)spin_ns / 1e3,SparkNvrmLatchSegment(),(double)(Now() - start) / 1e3 / (double)(runs * PROGRAM_LAUNCHES),seen);
 	if ( seen != (uint32_t)(runs * PROGRAM_LAUNCHES) || SparkDeviceProgramDestroy(program) != SPARK_STATUS_OK || SparkDeviceQueueDestroy(queue) != SPARK_STATUS_OK )
 	{

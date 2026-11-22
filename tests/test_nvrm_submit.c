@@ -712,7 +712,7 @@ static void TestImage(void)
 
 static void TestImageChain(void)
 {
-	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS, STEPS = 74, HOST = 70 };
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS, STEPS = 74, HOST = 70, PLAIN = 10, LATER_PLAIN = 50 };
 	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull;
 	static SparkNvrmStep steps[STEPS];
 	static uint32_t words[1024];
@@ -722,6 +722,7 @@ static void TestImageChain(void)
 	for ( index = 0u; index < STEPS; index++ )
 	{
 		steps[index].kind = index == HOST ? SPARK_NVRM_STEP_HOST : SPARK_NVRM_STEP_LAUNCH;
+		steps[index].dependent = index == PLAIN || index == LATER_PLAIN || index == HOST ? 0u : 1u;
 		steps[index].slot = 0x400ull * index;
 		steps[index].address = 0x4000000000ull;
 		steps[index].second_address = 0x4000000040ull;
@@ -729,16 +730,17 @@ static void TestImageChain(void)
 	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
 	for ( index = 0u; index < STEPS; index++ )
 	{
-		const uint32_t head = index == 0u || index == 32u || index == 64u || index == HOST || index == HOST + 1u ? 1u : 0u;
+		const uint32_t head = index == 0u || index == PLAIN || index == 42u || index == LATER_PLAIN || index == HOST || index == HOST + 1u ? 1u : 0u;
 		chained += steps[index].chained;
 		if ( steps[index].chained != 1u - head )
 			marked = 0u;
 	}
-	CHECK(marked != 0u && chained == 69u,"back-to-back launches chain in segments of 32; a host step ends a chain and the launch after it starts one");
+	CHECK(marked != 0u && chained == 68u,
+		"back-to-back dependent launches chain in segments of 32; a plain launch heads a chain, and a host step ends a chain and the launch after it starts one");
 	count = SparkNvrmImageWords(steps,STEPS);
 	SparkNvrmImageWrite(words,semaphore,slots,steps,STEPS);
-	CHECK(count == 8u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
-		"every launch is in the segment, and only the reset, three chain heads and the host step push semaphores");
+	CHECK(count == 9u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
+		"every launch is in the segment, and only the reset, four chain heads and the host step push semaphores");
 	for ( index = 0u, at = SEMAPHORE_WORDS; index < STEPS && laid != 0u; index++ )
 	{
 		if ( index == HOST )
@@ -765,6 +767,13 @@ static void TestImageChain(void)
 		chained += steps[index].chained;
 	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
 		"in segments of one launch nothing chains, and every launch after the first takes the acquire");
+	for ( index = 0u; index < STEPS; index++ )
+		steps[index].dependent = 0u;
+	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
+	for ( index = 0u, chained = 0u; index < STEPS; index++ )
+		chained += steps[index].chained;
+	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
+		"plain launches never chain: each waits for the launch before it to end, as a plain kernel boundary does");
 }
 
 static void TestLatchRanges(void)

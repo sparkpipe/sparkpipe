@@ -16,7 +16,8 @@ void SparkNvrmImageChain(SparkNvrmStep *steps, uint32_t count, uint32_t segment)
 {
 	uint32_t index,run = 0u;
 	for ( index = 1u; index < count; index++ )
-		if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH && run + 1u < segment )
+		if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index].dependent != 0u && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH &&
+			run + 1u < segment )
 		{
 			steps[index].chained = 1u;
 			run++;

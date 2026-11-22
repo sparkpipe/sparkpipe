@@ -1580,6 +1580,7 @@ static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *p
 			if ( node->launch.binding_count != 0u )
 				return(NvrmBindingsRefused(node->kernel,"program_finish"));
 			step->kind = SPARK_NVRM_STEP_LAUNCH;
+			step->dependent = node->launch.dependent != 0u ? 1u : 0u;
 			step->slot = slots;
 			step->slot_bytes = SparkNvrmLaunchSlotBytes(compiled->kernel);
 			step->name = node->kernel->name;

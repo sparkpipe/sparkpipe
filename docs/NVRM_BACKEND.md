@@ -623,10 +623,10 @@ steps it holds.
     the worker's answer.
 
   A step that is no launch then releases the next step number itself.
-- **Chains.** A launch right after a launch is chained: the segment sends
-  its descriptor right after the earlier one, with no front-end acquire,
-  and the descriptor orders it in hardware, as a dependent launch is
-  ordered (see below).
+- **Chains.** A dependent launch (`LM_LAUNCH_DEPENDENT`) right after a
+  launch is chained: the segment sends its descriptor right after the
+  earlier one, with no front-end acquire, and the descriptor orders it in
+  hardware, as an eager dependent launch is ordered (see below).
   - Every launch of the program arrives at a latch of its own when it ends
     (`ARRIVE_AT_LATCH_ID`). A chained launch waits on the latch of the
     launch before it (`WAIT_ON_LATCH_ID`), holds its blocks until that
@@ -636,9 +636,21 @@ steps it holds.
     (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), and invalidates the shader and
     texture data caches when it acquires the latch
     (`LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE`,
-    `LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE`). A plain kernel, which
-    calls no `griddepcontrol.wait`, therefore reads the earlier grid's
-    writes.
+    `LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE`).
+  - Only a kernel that calls `griddepcontrol.wait` before it reads the
+    earlier grid's writes may be chained, which is what CUDA asks of a
+    programmatic dependent launch. The latch alone does not keep a plain
+    kernel from reading a line its multiprocessor cached before the
+    earlier grid wrote it. `test_nvrm_latch_segments stale 200 20`
+    measured it on GB10: the parent's other blocks cache a word, block 0
+    writes it 20 µs later, and children of 96 blocks read it cached.
+    Chained plain children read the value from before the write in 282
+    of 153,600 reads when the parent triggers its dependents first and in
+    142 of 153,600 when it never does; children that call
+    `griddepcontrol.wait` never did. A plain launch is therefore never
+    chained: it takes the acquire and starts once the launch before it
+    has ended and the front end has flushed, as a plain kernel boundary
+    does on CUDA. Eager plain launches already took the acquire.
   - Latch ids. Finish takes a range of ids for the program, one per step,
     from the upper half of the 32-bit id space, and destroy gives it back.
     Live programs never share an id, and eager launches take their ids
@@ -647,7 +659,8 @@ steps it holds.
   - A chain holds at most 32 launches (`SPARK_NVRM_LATCH_SEGMENT`, the
     bound latched dependent launches keep, so another process waits at
     most one chain). The next launch heads a new chain and takes the
-    acquire, as does the launch after an event or host step.
+    acquire, as do a plain launch and the launch after an event or host
+    step.
   - Every launch still releases its step number plus one, so the run's
     tail and fault reports see the semaphore as before.
 - **Run.** A run is one queue operation. It pushes the queue's ordering
