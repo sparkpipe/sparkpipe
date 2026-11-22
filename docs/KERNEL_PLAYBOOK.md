@@ -856,6 +856,13 @@ plan format, the op catalogue and the generated bit-exact test are in
   through `Lane::Apply`. Every block of a row recomputes the whole sum with
   the same thread mapping, so the result does not depend on how the row is
   split.
+- **Route bodies.** `LmTopkWarpsRow` (one row's top-k on `LM_TOPK_WARPS`
+  warps), `LmRouteBuildBlock` (the expert-grouped route table, one block) and
+  `LmPackedRouteWeight` (one route's packed weight) are the bodies of
+  `LmTopkWarpsKernel`, `LmRouteBuildKernel` and `LmPackedRouteWeightKernel`.
+  A fused kernel may re-read in a later phase what an earlier phase wrote, so
+  these bodies take no `__restrict__` on the arrays a router fusion writes
+  and then reads. That keeps those loads off the non-coherent path.
 
 ## 2.10 What a dependent kernel may do before it waits (`dependent_launch.cuh`)
 
