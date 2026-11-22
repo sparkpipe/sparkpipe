@@ -385,6 +385,7 @@ TEST_NAMES := \
     test_weightd_pool_bytes \
     test_weightd_working_set \
     test_weightd_held_pack \
+    test_draftd_engine \
     test_weightd_lease_sets \
     test_weightd_dense_manifest \
     test_weightd_churn \
@@ -955,6 +956,8 @@ TEST_MODULE_ARCHIVES := \
     build/test_modules/module_affine.a
 TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
+TEST_DRAFTER_PROBE_MODULE := build/test_modules/drafter_probe.$(SHARED_LIBRARY_EXT)
+TEST_DRAFTER_PROBE_ABI_MODULE := build/test_modules/drafter_probe_abi.$(SHARED_LIBRARY_EXT)
 TEST_HIDDEN_TRANSPORT_MODULE := \
     build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_MODEL_SERVING_ADAPTER_MODULE := \
@@ -2498,6 +2501,15 @@ build/test_weightd_dense_manifest: tests/test_weightd_dense_manifest.c $(DEVICE_
 
 build/test_weightd_working_set: tests/test_weightd_working_set.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+$(TEST_DRAFTER_PROBE_MODULE): tests/fixtures/drafter_probe_module.c include/sparkpipe/spark_drafter_module.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build/test_modules
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) tests/fixtures/drafter_probe_module.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(TEST_DRAFTER_PROBE_ABI_MODULE): tests/fixtures/drafter_probe_module.c include/sparkpipe/spark_drafter_module.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build/test_modules
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -DPROBE_MODULE_ABI=99u -fPIC $(SHARED_LIBRARY_FLAGS) tests/fixtures/drafter_probe_module.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_draftd_engine: tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c build/sparkpipe_draftd $(TEST_DRAFTER_PROBE_MODULE) $(TEST_DRAFTER_PROBE_ABI_MODULE) | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_DRAFTD='"build/sparkpipe_draftd"' -DSPARK_TEST_PROBE_MODULE='"$(TEST_DRAFTER_PROBE_MODULE)"' -DSPARK_TEST_PROBE_ABI_MODULE='"$(TEST_DRAFTER_PROBE_ABI_MODULE)"' tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_weightd_held_pack: tests/test_weightd_held_pack.c tests/test_stderr_capture.h $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) $(filter %.c %.a,$^) $(LDFLAGS) -o $@

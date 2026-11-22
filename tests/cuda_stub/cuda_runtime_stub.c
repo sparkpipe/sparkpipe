@@ -1030,6 +1030,26 @@ cudaError_t cudaSetDevice(int device)
     return device == 0 ? cudaSuccess : cudaErrorInvalidDevice;
 }
 
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes)
+{
+    const uint64_t total = (uint64_t)1 << 36;
+    uint64_t used = 0u;
+    uint32_t index;
+    if (free_bytes == 0 || total_bytes == 0)
+        return cudaErrorInvalidValue;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_tracked_count; index++)
+    {
+        const cuda_stub_alloc_header *header = ((const cuda_stub_alloc_header *)cuda_stub_tracked[index]) - 1;
+        if (header->pinned == 0u)
+            used += header->bytes;
+    }
+    cuda_stub_ledger_unlock();
+    *total_bytes = (size_t)total;
+    *free_bytes = (size_t)(used < total ? total - used : 0u);
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int device)
 {
     if (properties == 0 || device != 0)
