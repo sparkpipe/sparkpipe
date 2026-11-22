@@ -28,9 +28,11 @@ typedef struct SparkNvrmStep
 	uint64_t second_address;
 	uint32_t payload;
 	uint32_t second;
+	uint32_t chained;
 	const char *name;
 } SparkNvrmStep;
 
+void SparkNvrmImageChain(SparkNvrmStep *steps, uint32_t count, uint32_t segment);
 uint32_t SparkNvrmImageWords(const SparkNvrmStep *steps, uint32_t count);
 void SparkNvrmImageWrite(uint32_t *words, uint64_t semaphore, uint64_t slots, SparkNvrmStep *steps, uint32_t count);
 void SparkNvrmImagePatch(uint32_t *words, uint32_t method, uint64_t value);

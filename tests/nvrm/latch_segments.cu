@@ -10,6 +10,7 @@
 #include "runtime/device/nvrm/nvrm_launch.h"
 
 #define SEGMENT_BATCH 1000u
+#define PROGRAM_LAUNCHES 64u
 #define COMPETE_SAMPLES_MAX 200000u
 
 __global__ void SegmentStep(uint32_t *counter, uint64_t spin_ns)
@@ -86,6 +87,55 @@ static int Chain(uint64_t launches, double seconds, uint32_t segment, uint64_t s
 	return(0);
 }
 
+static int ChainProgram(uint64_t launches, uint32_t segment, uint64_t spin_ns)
+{
+	SparkGpuStream stream = 0;
+	SparkDeviceQueue *queue = 0;
+	SparkDeviceProgram *program = 0;
+	SparkStatus initialized = SparkDeviceInitialize(0);
+	uint32_t *counter = 0,seen = 0u,index;
+	uint64_t runs = (launches + PROGRAM_LAUNCHES - 1u) / PROGRAM_LAUNCHES,run,start;
+	SparkNvrmLatchSegmentSet(segment);
+	if ( (initialized != SPARK_STATUS_OK && initialized != SPARK_STATUS_DUPLICATE) ||
+		SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&counter,sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemset(counter,0,sizeof(uint32_t)) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+		SparkDeviceQueueAdopt(&queue,(void *)stream,"latch segments") != SPARK_STATUS_OK || SparkDeviceProgramRecord(queue,"latch segments") != SPARK_STATUS_OK )
+	{
+		printf("FAIL set up the program chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	for ( index = 0u; index < PROGRAM_LAUNCHES; index++ )
+		LM_LAUNCH((SegmentStep),1,32,0u,stream,counter,spin_ns);
+	if ( SparkGpuGetLastError() != SPARK_GPU_SUCCESS || SparkDeviceProgramFinish(queue,&program) != SPARK_STATUS_OK )
+	{
+		printf("FAIL record the program chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	start = Now();
+	for ( run = 0u; run < runs; run++ )
+		if ( SparkDeviceProgramRun(program,queue,0,0u) != SPARK_STATUS_OK )
+		{
+			printf("FAIL program run %llu: %s\n",(unsigned long long)run,SparkDeviceLastError()->text);
+			return(1);
+		}
+	if ( SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK ||
+		SparkGpuMemcpy(&seen,counter,sizeof(seen),SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
+	{
+		printf("FAIL finish the program chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	printf("program chain: %llu runs of %u launches of %.0f us in segments of %u, %.3f us each, counter %u\n",(unsigned long long)runs,PROGRAM_LAUNCHES,
+		(double)spin_ns / 1e3,SparkNvrmLatchSegment(),(double)(Now() - start) / 1e3 / (double)(runs * PROGRAM_LAUNCHES),seen);
+	if ( seen != (uint32_t)(runs * PROGRAM_LAUNCHES) || SparkDeviceProgramDestroy(program) != SPARK_STATUS_OK || SparkDeviceQueueDestroy(queue) != SPARK_STATUS_OK )
+	{
+		printf("FAIL the program chain counted %u of %llu launches\n",seen,(unsigned long long)(runs * PROGRAM_LAUNCHES));
+		return(1);
+	}
+	SparkGpuFree(counter);
+	SparkGpuStreamDestroy(stream);
+	return(0);
+}
+
 static int Compete(double seconds, double wait_p99_ms)
 {
 	static uint64_t waits[COMPETE_SAMPLES_MAX];
@@ -129,8 +179,10 @@ int main(int argc, char **argv)
 		return(Chain(strtoull(argv[2],0,10),0.0,(uint32_t)strtoul(argv[3],0,10),spin_ns));
 	if ( (argc == 4 || argc == 5) && strcmp(argv[1],"chain-seconds") == 0 )
 		return(Chain(0u,strtod(argv[2],0),(uint32_t)strtoul(argv[3],0,10),spin_ns));
+	if ( (argc == 4 || argc == 5) && strcmp(argv[1],"program") == 0 )
+		return(ChainProgram(strtoull(argv[2],0,10),(uint32_t)strtoul(argv[3],0,10),spin_ns));
 	if ( argc == 4 && strcmp(argv[1],"compete") == 0 )
 		return(Compete(strtod(argv[2],0),strtod(argv[3],0)));
-	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS\n",argv[0]);
+	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | program LAUNCHES SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS\n",argv[0]);
 	return(2);
 }

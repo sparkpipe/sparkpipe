@@ -560,8 +560,11 @@ static void TestDependentLaunch(void)
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u && LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == first &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_SHADER_DATA_CACHE) == 1u &&
+		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_LATCH_ACQUIRE_INVALIDATE_TEXTURE_DATA_CACHE) == 1u && first < SPARK_NVRM_PROGRAM_LATCH_FIRST &&
 		LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) != first && fake.gpu.compute.latch == LATCH_FIELD(slots[1],NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID),
-		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch and holds its blocks and membar");
+		"a dependent launch after a launch pushes no acquire: its descriptor waits on the earlier latch, holds its blocks and membar, and invalidates the "
+		"data caches when it acquires the latch; eager latch ids stay below the programs' half");
 	CHECK(DependentLaunch(&fake,&program,&request,slots[2],0x1000702000ull,0u,&start) == SPARK_STATUS_OK && PushWord(&fake,(uint32_t)(start / 4u)) == acquire &&
 		LATCH_FIELD(slots[2],NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u,"a plain launch after a launch keeps the front-end acquire");
 	CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000001000ull,0x3000002000ull,4096u,&copied,"dependent") == SPARK_STATUS_OK &&
@@ -707,6 +710,82 @@ static void TestImage(void)
 	CHECK(memcmp(fake.push,words,2u * SEMAPHORE_WORDS * sizeof(uint32_t)) == 0,"a segment's semaphores are word for word the ones the eager path pushes");
 }
 
+static void TestImageChain(void)
+{
+	enum { SEMAPHORE_WORDS = SPARK_NVRM_SEMAPHORE_METHOD_WORDS, LAUNCH_WORDS = SPARK_NVRM_LAUNCH_WORDS, STEPS = 74, HOST = 70 };
+	static const uint64_t semaphore = 0x2000000000ull,slots = 0x2000000100ull;
+	static SparkNvrmStep steps[STEPS];
+	static uint32_t words[1024];
+	uint32_t index,count,at,chained = 0u,marked = 1u,laid = 1u;
+	memset(steps,0,sizeof(steps));
+	memset(words,0xee,sizeof(words));
+	for ( index = 0u; index < STEPS; index++ )
+	{
+		steps[index].kind = index == HOST ? SPARK_NVRM_STEP_HOST : SPARK_NVRM_STEP_LAUNCH;
+		steps[index].slot = 0x400ull * index;
+		steps[index].address = 0x4000000000ull;
+		steps[index].second_address = 0x4000000040ull;
+	}
+	SparkNvrmImageChain(steps,STEPS,SPARK_NVRM_LATCH_SEGMENT);
+	for ( index = 0u; index < STEPS; index++ )
+	{
+		const uint32_t head = index == 0u || index == 32u || index == 64u || index == HOST || index == HOST + 1u ? 1u : 0u;
+		chained += steps[index].chained;
+		if ( steps[index].chained != 1u - head )
+			marked = 0u;
+	}
+	CHECK(marked != 0u && chained == 69u,"back-to-back launches chain in segments of 32; a host step ends a chain and the launch after it starts one");
+	count = SparkNvrmImageWords(steps,STEPS);
+	SparkNvrmImageWrite(words,semaphore,slots,steps,STEPS);
+	CHECK(count == 8u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS && words[count] == 0xeeeeeeeeu,
+		"every launch is in the segment, and only the reset, three chain heads and the host step push semaphores");
+	for ( index = 0u, at = SEMAPHORE_WORDS; index < STEPS && laid != 0u; index++ )
+	{
+		if ( index == HOST )
+		{
+			laid = SemaphoreAt(words,at,semaphore,HOST,SPARK_NVRM_SEMAPHORE_ACQUIRE) && steps[HOST].payload == at + SEMAPHORE_WORDS &&
+				SemaphoreAt(words,steps[HOST].second + SEMAPHORE_WORDS,semaphore,HOST + 1u,SPARK_NVRM_SEMAPHORE_RELEASE);
+			at = steps[HOST].second + 2u * SEMAPHORE_WORDS;
+			continue;
+		}
+		if ( index != 0u && steps[index].chained == 0u )
+		{
+			laid = SemaphoreAt(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+			at += SEMAPHORE_WORDS;
+		}
+		laid = laid && LaunchAt(words,at,slots + 0x400ull * index);
+		at += LAUNCH_WORDS;
+	}
+	CHECK(laid != 0u && at == count,
+		"a chained launch follows the launch before it with no acquire; a chain's head acquires the step before it, and the host step waits for the last chain");
+	for ( index = 0u; index < STEPS; index++ )
+		steps[index].chained = 0u;
+	SparkNvrmImageChain(steps,STEPS,1u);
+	for ( index = 0u, chained = 0u; index < STEPS; index++ )
+		chained += steps[index].chained;
+	CHECK(chained == 0u && SparkNvrmImageWords(steps,STEPS) == 77u * SEMAPHORE_WORDS + 73u * LAUNCH_WORDS,
+		"in segments of one launch nothing chains, and every launch after the first takes the acquire");
+}
+
+static void TestLatchRanges(void)
+{
+	uint32_t first = 0u,second = 0u,reused = 0u,later = 0u,huge = 1u;
+	CHECK(SparkNvrmLatchRangeTake(10u,&first,"ranges") == SPARK_STATUS_OK && first >= SPARK_NVRM_PROGRAM_LATCH_FIRST &&
+		SparkNvrmLatchRangeTake(5u,&second,"ranges") == SPARK_STATUS_OK && second == first + 10u,
+		"programs take latch ids from the top half, one range after another");
+	SparkNvrmLatchRangeGive(first,10u);
+	CHECK(SparkNvrmLatchRangeTake(4u,&reused,"ranges") == SPARK_STATUS_OK && reused == first &&
+		SparkNvrmLatchRangeTake(7u,&later,"ranges") == SPARK_STATUS_OK && later == second + 5u,
+		"a range given back is taken again by a program it fits, and a larger one goes past the ranges in use");
+	CHECK(SparkNvrmLatchRangeTake(SPARK_NVRM_PROGRAM_LATCH_FIRST,&huge,"ranges") == SPARK_STATUS_CAPACITY_EXCEEDED && huge == 0u,
+		"a program larger than the free ids is refused");
+	SparkNvrmLatchRangeGive(reused,4u);
+	SparkNvrmLatchRangeGive(second,5u);
+	SparkNvrmLatchRangeGive(later,7u);
+	CHECK(SparkNvrmLatchRangeTake(3u,&first,"ranges") == SPARK_STATUS_OK && first == SPARK_NVRM_PROGRAM_LATCH_FIRST,"every range given back frees its ids");
+	SparkNvrmLatchRangeGive(first,3u);
+}
+
 static void TestSegment(void)
 {
 	static Fake fake;
@@ -751,6 +830,8 @@ int main(void)
 	TestLaunch();
 	TestDependentLaunch();
 	TestImage();
+	TestImageChain();
+	TestLatchRanges();
 	TestSegment();
 	TestStatus();
 	if ( failures != 0 )
@@ -758,6 +839,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch, program segments and their runs, and the device address map\n");
+	printf("PASS push methods, ring entries, the doorbell, push-buffer reuse, ordered copies and fills, semaphore releases, launch slots, dependent launches chained by latch, program segments, chains and runs, and the device address map\n");
 	return(0);
 }

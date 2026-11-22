@@ -68,6 +68,8 @@ typedef struct NvrmImage
 	uint64_t segment;
 	uint64_t last_queue;
 	uint64_t last_sequence;
+	uint32_t latch;
+	uint32_t latch_count;
 	const char *name;
 } NvrmImage;
 
@@ -1526,6 +1528,7 @@ SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDevicePro
 
 static void NvrmImageFree(NvrmImage *image)
 {
+	SparkNvrmLatchRangeGive(image->latch,image->latch_count);
 	if ( image->memory.bytes != 0u )
 		SparkNvrmMemoryRelease(&nvrm_gpu,&image->memory);
 	free(image->steps);
@@ -1548,6 +1551,8 @@ static SparkStatus NvrmImageDescribe(NvrmImage *image, const SparkDeviceProgram 
 	request.slot_bytes = step->slot_bytes;
 	request.release_address = image->memory.address;
 	request.release_payload = (uint64_t)node + 1u;
+	request.latch_arrive = image->latch + node;
+	request.latch_wait = step->chained != 0u ? image->latch + node - 1u : 0u;
 	return(SparkNvrmLaunchDescribe(&nvrm_gpu,&compiled->library->program,&request,program->name));
 }
 
@@ -1596,6 +1601,7 @@ static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *p
 			image->per_run = 1u;
 		}
 	}
+	SparkNvrmImageChain(image->steps,program->node_count,SparkNvrmLatchSegment());
 	for ( place = 0u; place < program->place_count; place++ )
 		if ( image->patched_count == 0u || image->patched[image->patched_count - 1u] != program->places[place].node )
 			image->patched[image->patched_count++] = program->places[place].node;
@@ -1624,6 +1630,8 @@ SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDevic
 	image->step_count = program->node_count;
 	image->name = program->name;
 	status = NvrmImageLayout(image,program);
+	if ( status == SPARK_STATUS_OK && (status = SparkNvrmLatchRangeTake(image->step_count,&image->latch,program->name)) == SPARK_STATUS_OK )
+		image->latch_count = image->step_count;
 	if ( status == SPARK_STATUS_OK && image->words > SPARK_NVRM_SEGMENT_WORDS_MAX )
 		status = NvrmImageRefuse(program,"the program's segment is over the 2^21 - 1 words one submission holds");
 	if ( status == SPARK_STATUS_OK )

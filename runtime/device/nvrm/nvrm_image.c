@@ -6,10 +6,23 @@ static uint32_t ImageStepWords(const SparkNvrmStep *step, uint32_t index)
 {
 	const uint32_t order = index != 0u ? SPARK_NVRM_SEMAPHORE_METHOD_WORDS : 0u;
 	if ( step->kind == SPARK_NVRM_STEP_LAUNCH )
-		return(order + SPARK_NVRM_LAUNCH_WORDS);
+		return(step->chained != 0u ? SPARK_NVRM_LAUNCH_WORDS : order + SPARK_NVRM_LAUNCH_WORDS);
 	if ( step->kind == SPARK_NVRM_STEP_AWAIT )
 		return(order + 2u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS);
 	return(order + 3u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS);
+}
+
+void SparkNvrmImageChain(SparkNvrmStep *steps, uint32_t count, uint32_t segment)
+{
+	uint32_t index,run = 0u;
+	for ( index = 1u; index < count; index++ )
+		if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH && run + 1u < segment )
+		{
+			steps[index].chained = 1u;
+			run++;
+		}
+		else
+			run = 0u;
 }
 
 uint32_t SparkNvrmImageWords(const SparkNvrmStep *steps, uint32_t count)
@@ -32,7 +45,7 @@ void SparkNvrmImageWrite(uint32_t *words, uint64_t semaphore, uint64_t slots, Sp
 	for ( index = 0u; index < count; index++ )
 	{
 		SparkNvrmStep *step = &steps[index];
-		if ( index != 0u )
+		if ( index != 0u && step->chained == 0u )
 			at = ImageSemaphore(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
 		if ( step->kind == SPARK_NVRM_STEP_LAUNCH )
 		{
