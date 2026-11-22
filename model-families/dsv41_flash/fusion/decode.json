@@ -1,0 +1,61 @@
+{
+ "header": "model-families/dsv41_flash/source/dsv41_flash_fused.cuh",
+ "test": "tests/cuda/dsv41_flash_fused_exact.cu",
+ "manifest": "model-families/dsv41_flash/fusion/decode.manifest.json",
+ "includes": ["inference/kernels/fused/arrival.cuh", "inference/kernels/fused/collapse_norm.cuh", "inference/kernels/hc.cuh", "runtime/launch.h"],
+ "test_includes": ["sparkpipe/spark_dsv41_flash_stage_model.h", "dsv41_flash_stage.cuh"],
+ "kernels": [
+  {
+   "name": "D41FusedMixNormKernel",
+   "launcher": "D41FusedMixNormLaunch",
+   "arguments_type": "D41FusedMixNormArguments",
+   "rows_constant": "D41FusedMixNormRows",
+   "threads": 256,
+   "rows_max": 16,
+   "shared_bytes": "(D41_HIDDEN + 8u) * sizeof(float)",
+   "replaces": ["LmHcSinkhornPartialKernel<4u>", "LmHcSinkhornKernel<4u>", "D41RmsNormQdqKernel<256u>"],
+   "arguments": [
+    {"name": "streams", "type": "const uint16_t *", "elements": "rows * D41K_HC * D41_HIDDEN", "fill": "bf16"},
+    {"name": "fn", "type": "const float *", "elements": "LmHcSinkhornShape<D41K_HC>::kMix * D41K_HC * D41_HIDDEN", "fill": "f32"},
+    {"name": "scale", "type": "const float *", "elements": "4u", "fill": "f32"},
+    {"name": "base", "type": "const float *", "elements": "LmHcSinkhornShape<D41K_HC>::kMix", "fill": "f32"},
+    {"name": "partials", "type": "float *", "elements": "rows * LmHcSinkhornShape<D41K_HC>::kPartials", "fill": "zero"},
+    {"name": "pre", "type": "float *", "elements": "rows * D41K_HC", "fill": "zero"},
+    {"name": "post", "type": "float *", "elements": "rows * D41K_HC", "fill": "zero"},
+    {"name": "comb", "type": "float *", "elements": "rows * D41K_HC * D41K_HC", "fill": "zero"},
+    {"name": "counters", "type": "uint32_t *", "elements": "rows", "fill": "zero"},
+    {"name": "collapse_pre", "type": "const float *", "elements": "rows * D41K_HC", "fill": "f32"},
+    {"name": "norm", "type": "const uint16_t *", "elements": "D41_HIDDEN", "fill": "bf16"},
+    {"name": "x", "type": "uint16_t *", "elements": "rows * D41_HIDDEN", "fill": "zero"},
+    {"name": "xq", "type": "uint16_t *", "elements": "rows * D41_HIDDEN", "fill": "zero"}
+   ],
+   "roles": [
+    {
+     "op": "hc_sinkhorn_partials",
+     "blocks_per_row": "LmHcSinkhornShape<D41K_HC>::kTasks",
+     "bind": {"streams_count": "D41K_HC", "streams": "arguments.streams", "fn": "arguments.fn", "partials": "arguments.partials", "width": "D41_HIDDEN"},
+     "tail": {
+      "op": "hc_sinkhorn_row",
+      "scope": "row",
+      "bind": {"streams_count": "D41K_HC", "partials": "arguments.partials", "scale": "arguments.scale", "base": "arguments.base", "pre": "arguments.pre",
+       "post": "arguments.post", "comb": "arguments.comb", "width": "D41_HIDDEN", "rms_epsilon": "D41_EPS", "iterations": "D41_HC_ITERATIONS",
+       "epsilon": "D41_HC_EPS"}
+     }
+    },
+    {
+     "op": "hc_collapse_norm",
+     "blocks_per_row": "D41_HIDDEN / D41_THREADS",
+     "bind": {"streams_count": "D41K_HC", "lane": "SparkDsv41FlashFp8QdqLaneOp", "streams": "arguments.streams",
+      "pre": "arguments.collapse_pre", "weight": "arguments.norm", "output": "arguments.x", "quantized": "arguments.xq", "width": "D41_HIDDEN",
+      "epsilon": "D41_EPS"}
+    }
+   ],
+   "reference": [
+    "FUSED_REQUIRE(LmHcSinkhornMixes<D41K_HC>(streams, fn, scale, base, partials, pre, post, comb, rows, D41_HIDDEN, D41_EPS, D41_HC_ITERATIONS, D41_HC_EPS, stream) == LM_LAUNCH_OK);",
+    "D41CollapseNormQdq(streams, collapse_pre, norm, x, xq, rows, stream);"
+   ],
+   "outputs": ["partials", "pre", "post", "comb", "x", "xq"],
+   "perturb": "streams"
+  }
+ ]
+}

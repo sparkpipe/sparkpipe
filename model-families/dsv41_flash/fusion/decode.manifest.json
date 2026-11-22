@@ -1,0 +1,56 @@
+{
+ "header": "model-families/dsv41_flash/source/dsv41_flash_fused.cuh",
+ "kernels": [
+  {
+   "launcher": "D41FusedMixNormLaunch",
+   "name": "D41FusedMixNormKernel",
+   "outputs": [
+    "partials",
+    "pre",
+    "post",
+    "comb",
+    "x",
+    "xq"
+   ],
+   "patchable": {
+    "rows": "parameter 1, and the grid width rows * (sum of blocks per row)"
+   },
+   "replaces": [
+    "LmHcSinkhornPartialKernel<4u>",
+    "LmHcSinkhornKernel<4u>",
+    "D41RmsNormQdqKernel<256u>"
+   ],
+   "roles": [
+    {
+     "blocks_per_row": "LmHcSinkhornShape<D41K_HC>::kTasks",
+     "body": "LmHcSinkhornPartialTask",
+     "op": "hc_sinkhorn_partials",
+     "replaces": "LmHcSinkhornPartialKernel",
+     "tail": {
+      "body": "LmHcSinkhornRow",
+      "op": "hc_sinkhorn_row",
+      "replaces": "LmHcSinkhornKernel",
+      "sync": "last arrival of the row"
+     }
+    },
+    {
+     "blocks_per_row": "D41_HIDDEN / D41_THREADS",
+     "body": "LmHcCollapseNormRow",
+     "op": "hc_collapse_norm",
+     "replaces": "a row norm of collapsed streams"
+    }
+   ],
+   "rows": [
+    1,
+    16
+   ],
+   "threads": 256
+  }
+ ],
+ "op_sources": [
+  "inference/kernels/fused/collapse_norm.cuh",
+  "inference/kernels/hc.cuh"
+ ],
+ "plan_sha256": "89f79b0dfe46c59b43d69ca665f76a4260fafda43ce8319801d37716a97efae8",
+ "test": "tests/cuda/dsv41_flash_fused_exact.cu"
+}

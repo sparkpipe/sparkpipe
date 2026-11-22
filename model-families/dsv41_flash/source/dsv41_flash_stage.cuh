@@ -24,6 +24,7 @@
 #include "inference/kernels/cell_pack.cuh"
 #include "inference/kernels/hc.cuh"
 #include "inference/kernels/hc_site.cuh"
+#include "inference/kernels/fused/collapse_norm.cuh"
 #include "inference/kernels/index_score.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -212,6 +213,8 @@ static_assert(D41_MOE_INTER % D41_SHARED_GRANULE == 0u && D41_SHARED_GRANULE % D
 	"the shared expert width splits into whole fp8 blocks and whole dense GEMM k tiles");
 static_assert(D41K_HC == LM_HC_SITE_STREAMS, "the stream expansion writes every hyper-connection stream");
 
+#include "dsv41_flash_fused.cuh"
+
 using D41Ratio2Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS / 2u, true>;
 using D41Ratio1Kv = LmKvGeometry<D41_SLOT_BYTES, D41_PAGE_TOKENS, true>;
 
@@ -312,6 +315,7 @@ struct D41ModelState : CudaStageState
 	uint8_t *engram_send, *engram_received;
 	D41Mx mx;
 	float *mixes, *pre_attn, *post_attn, *comb_attn, *post_ffn, *comb_ffn, *pre_head, *pre_whole;
+	uint32_t *mix_counters, mix_collapsed;
 	uint32_t own_first, own_rows, own_pad, o_b_ready, owner_reduced, x_complete, tail_owned;
 	uint8_t *o_b_all, *o_b_all_scale;
 	float *c_kv, *c_score;
@@ -521,27 +525,8 @@ void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ str
 	const uint16_t *__restrict__ weight, uint16_t *output, uint16_t *__restrict__ quantized, uint32_t dimension, float epsilon)
 {
 	extern __shared__ float d41_norm_shared[];
-	float *row = d41_norm_shared;
-	float *reduction = d41_norm_shared + dimension;
-	const uint64_t base = (uint64_t)blockIdx.x * dimension;
-	const uint32_t span = dimension / gridDim.y, begin = blockIdx.y * span;
-	uint32_t index;
-	float total = 0.0f, scale;
-	for ( index = threadIdx.x; index < dimension; index += THREADS )
-	{
-		float value = LmBf16ToFloat(streams != 0 ? LmHcCollapseElement<D41K_HC>(streams, pre, blockIdx.x, dimension, index) : input[base + index]);
-		row[index] = value;
-		total += value * value;
-	}
-	total = LmBlockSum<THREADS>(total, reduction);
-	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
-	for ( index = begin + threadIdx.x; index < begin + span; index += THREADS )
-	{
-		const uint16_t normed = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
-		if ( output != 0 )
-			output[base + index] = normed;
-		quantized[base + index] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(normed));
-	}
+	LmHcCollapseNormRow<THREADS, D41K_HC, SparkDsv41FlashFp8QdqLaneOp>(input, streams, pre, weight, output, quantized, blockIdx.x, dimension,
+		blockIdx.y, gridDim.y, epsilon, d41_norm_shared);
 }
 
 static void D41Fp8Qdq(uint16_t *data, uint64_t elements, SparkGpuStream stream)
@@ -642,6 +627,16 @@ static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head
 {
 	LM_LAUNCH((D41RopeRowsKernel), dim3(rows, heads), D41K_ROPE_PAIRS, 0, stream, data, heads, head_stride, rope_offset, positions, shift,
 		frequency, inverse, row_valid);
+}
+
+static const float *D41CollapsePre(const D41ModelState *state, uint32_t index, D41Part part)
+{
+	return part == D41_FFN_PART ? state->pre_attn : index == 0u ? state->pre_init : state->pre_head;
+}
+
+static uint32_t D41MixCollapses(const D41ModelState *state, uint32_t rows)
+{
+	return state->own_rows == 0u && state->dump == 0 && rows >= 1u && rows <= D41FusedMixNormRows ? 1u : 0u;
 }
 
 static SparkStatus D41HcMixes(D41ModelState *state, const uint16_t *streams, const float *fn, const float *base, const float *scale,
@@ -2925,6 +2920,29 @@ struct D41Cuda : CudaStage<D41Cuda>
 		const uint64_t first = state->own_first;
 		const uint32_t rows = state->own_rows != 0u ? state->own_rows : frame.current->rows;
 		const uint16_t *streams = state->streams + first * D41K_HC * D41_HIDDEN;
+		if ( D41MixCollapses(state, rows) != 0u )
+		{
+			const bool ffn = part == D41_FFN_PART;
+			D41FusedMixNormArguments fused;
+			memset(&fused, 0, sizeof(fused));
+			fused.streams = streams;
+			fused.fn = ffn ? layer->hc_ffn_fn : layer->hc_attn_fn;
+			fused.scale = ffn ? layer->hc_ffn_scale : layer->hc_attn_scale;
+			fused.base = ffn ? layer->hc_ffn_base : layer->hc_attn_base;
+			fused.partials = state->mixes;
+			fused.pre = (ffn ? state->pre_head : state->pre_attn) + first * D41K_HC;
+			fused.post = (ffn ? state->post_ffn : state->post_attn) + first * D41K_HC;
+			fused.comb = (ffn ? state->comb_ffn : state->comb_attn) + first * D41K_HC * D41K_HC;
+			fused.counters = state->mix_counters;
+			fused.collapse_pre = D41CollapsePre(state, index, part) + first * D41K_HC;
+			fused.norm = ffn ? layer->ffn_norm : layer->attn_norm;
+			fused.x = state->x;
+			fused.xq = state->xq;
+			if ( D41FusedMixNormLaunch(&fused, rows, frame.stream) != LM_LAUNCH_OK )
+				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+			state->mix_collapsed = 1u;
+			return D41Launched();
+		}
 		if ( part == D41_FFN_PART )
 			return D41HcMixes(state, streams, layer->hc_ffn_fn, layer->hc_ffn_base, layer->hc_ffn_scale, state->pre_head + first * D41K_HC,
 				state->post_ffn + first * D41K_HC, state->comb_ffn + first * D41K_HC * D41K_HC, rows, frame.stream);
@@ -2937,10 +2955,13 @@ struct D41Cuda : CudaStage<D41Cuda>
 		const D41Layer *layer = &state->layers[index];
 		const uint32_t rows = frame.current->rows, own = state->own_rows;
 		const uint64_t first = state->own_first;
-		const float *pre = part == D41_FFN_PART ? state->pre_attn : index == 0u ? state->pre_init : state->pre_head;
+		const float *pre = D41CollapsePre(state, index, part);
 		SparkStatus status;
-		D41CollapseNormQdq(state->streams + first * D41K_HC * D41_HIDDEN, pre + first * D41K_HC, part == D41_FFN_PART ? layer->ffn_norm : layer->attn_norm,
-			own != 0u ? state->own_x : state->x, own != 0u ? state->own_out : state->xq, own != 0u ? own : rows, frame.stream);
+		if ( state->mix_collapsed != 0u )
+			state->mix_collapsed = 0u;
+		else
+			D41CollapseNormQdq(state->streams + first * D41K_HC * D41_HIDDEN, pre + first * D41K_HC, part == D41_FFN_PART ? layer->ffn_norm :
+				layer->attn_norm, own != 0u ? state->own_x : state->x, own != 0u ? state->own_out : state->xq, own != 0u ? own : rows, frame.stream);
 		const uint32_t gather_x = own != 0u && part != D41_FFN_PART && D41RowsAttention(state) == 0u &&
 			((D41KvSource(index) && state->compress_done == 0u) || (D41Ratio(index) > 0u && D41IndexSource(index))) ? 1u : 0u;
 		if ( part != D41_FFN_PART )
@@ -3153,6 +3174,7 @@ inline uint64_t D41Cuda::Plan(D41ModelState *state, uint8_t *base, uint32_t lane
 		{ (void **)&state->q_gathered, D41_ROWS ? r * D41_INDEX_PACK * 2u : D41_TP * r * (D41_LOCAL_HEADS * D41_HEAD_DIM + D41_INDEX_PACK) * 2u },
 		{ (void **)&state->kv, r * D41_HEAD_DIM * 2u }, { (void **)&state->window_kv, r * D41_HEAD_DIM * 2u },
 		{ (void **)&state->mixes, r * LmHcSinkhornShape<D41K_HC>::kPartials * 4u },
+		{ (void **)&state->mix_counters, r * 4u },
 		{ (void **)&state->pre_attn, r * D41K_HC * 4u }, { (void **)&state->post_attn, r * D41K_HC * 4u }, { (void **)&state->comb_attn, r * 16u * 4u },
 		{ (void **)&state->post_ffn, r * D41K_HC * 4u }, { (void **)&state->comb_ffn, r * 16u * 4u },
 		{ (void **)&state->pre_head, r * D41K_HC * 4u }, { (void **)&state->pre_init, r * D41K_HC * 4u },
