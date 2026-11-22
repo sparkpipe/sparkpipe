@@ -379,6 +379,24 @@ nvrm-large-transfers` runs them on the GPU (see the GPU tests).
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
 
+System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
+pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
+memory both follow this rule.
+
+An object of 4 GiB or more in 2 MiB pages, mapped through the
+unified-memory external range, has no GPU mapping for the 64 KiB at
+object offset 4 GiB - 64 KiB. A write there takes Xid 31, `FAULT_PTE`.
+The hole follows the object, not the address. Mapping the object in
+pieces does not avoid it, and two 4 GiB objects back to back each have
+it. Objects in 64 KiB or 4 KiB pages map whole, and so do 2 MiB-page
+objects below 4 GiB.
+
+`SparkNvrmSystemAllocate` refuses a 2 MiB-page object of 4 GiB or more.
+On GB10 the page size costs nothing measurable. In three interleaved
+rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
+259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
+read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
+
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
 next generation 16 bytes into the mark, then the queue's fence, then an
@@ -513,7 +531,9 @@ launch-shape probe and first light:
   and reopening after a shutdown.
 - **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
   `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
-  40 GiB of available memory. It runs in two modes:
+  40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
+  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
+  fill takes 2.1 s. The test runs in two modes:
   - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
     zero-filled by the copy engine. For each size it copies the whole
     buffer to host-visible memory in one call and checks every byte, fills
@@ -646,7 +666,8 @@ The device layer's shared memory entry points
 ([DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)) map onto the module
 like this:
 
-- **Create.** Module system memory in 2 MiB pages, GPU-cached, allocated
+- **Create.** Module system memory, GPU-cached, in 2 MiB pages below 4 GiB
+  and 64 KiB pages from 4 GiB on (see the memory spaces above), allocated
   without the CPU mapping the device's own system memory gets
   (`SparkNvrmSystemAllocate`).
 - **Export.** Opens a fresh `/dev/nvidiactl` descriptor and attaches the
