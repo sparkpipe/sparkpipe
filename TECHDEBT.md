@@ -1358,6 +1358,21 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   path, is the runtime track's next item and builds on 64 KiB pages for
   objects from 4 GiB (#2084). Until then a held bind on nvrm is refused. A
   held pack is released only when weightd exits.
+- The K3.1 Pro DSpark module (`modules/k31_dspark_draft_stage/`) drafts in
+  5.1 ms at 100 context positions on the 5090: the block forward takes 3.5 ms
+  and the heads 1.7 ms. The forward's weights (4.52 GB) take 2.53 ms to read
+  at the card's 1.79 TB/s, so the forward runs at 1.4x its floor. Suspects:
+  - the bandwidth of the 7-row GEMMs;
+  - the query and value kernels: one 256-thread block per head, 96 blocks,
+    bound by latency;
+  - the norms, which run on 7 blocks.
+
+  Device graphs do not close the gap. Capturing the forward and the heads gave
+  byte-identical drafts at the same times (median forward 3.483 against 3.489
+  ms, draft 5.141 against 5.144 ms), because the host queues a draft's ~100
+  launches in about 0.25 ms while the GPU works for 5 ms. With a busy thread
+  on the draft server's core, both builds wait the same for the wake after the
+  stream sync. The work is per-kernel time.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
