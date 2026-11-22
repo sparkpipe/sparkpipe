@@ -940,6 +940,7 @@ TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
 K31_DSPARK_DRAFTER_MODULE := build/modules/k31_dspark_draft_stage.$(SHARED_LIBRARY_EXT)
 DRAFTER_DEVICE_OBJECTS := $(patsubst %.c,build/obj/drafter/%.o,$(WEIGHTD_DEVICE_SOURCES_cuda))
 DRAFTER_MODULES :=
+DRAFTER_CUOBJDUMP ?= $(dir $(shell command -v $(NVCC) 2>/dev/null))cuobjdump
 ifneq ($(CUDA_RUNTIME_HEADER),)
 DRAFTER_MODULES := $(K31_DSPARK_DRAFTER_MODULE)
 endif
@@ -2478,7 +2479,9 @@ build/obj/drafter/%.o: %.c | build
 
 $(K31_DSPARK_DRAFTER_MODULE): modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu include/sparkpipe/spark_drafter_module.h $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) | build
 	@mkdir -p $(@D)
-	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@
+	$(NVCC) -std=c++17 $(NVCCFLAGS) -cudart shared -Xcompiler -fPIC -shared -I. -Iinclude -Isrc -Imodel-families/common/include $< $(DRAFTER_DEVICE_OBJECTS) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) -L$(CUDA_HOME)/lib64 -lcudart -Xlinker -rpath,$(CUDA_HOME)/lib64 -Xlinker --no-undefined -o $@.tmp
+	python3 -I tools/kernel_spill_audit.py --cuobjdump $(DRAFTER_CUOBJDUMP) --kernel '' $@.tmp || { rm -f $@.tmp; exit 1; }
+	mv $@.tmp $@
 
 drafter-modules: $(DRAFTER_MODULES)
 

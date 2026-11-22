@@ -31,6 +31,7 @@
 #define K31_PACK_VERSION 1u
 #define K31_PACK_ALIGNMENT 128u
 #define K31_PI 3.14159265358979323846
+#define K31_INVERSE_PI 0.31830988618379067154
 
 typedef struct K31Layer
 {
@@ -91,6 +92,17 @@ void K31RmsRowsKernel(const uint16_t *__restrict__ input, const uint16_t *__rest
 		out[index] = LmFloatToBf16(LmBf16ToFloat(row[index]) * scale * LmBf16ToFloat(weight[index]));
 }
 
+static __device__ __forceinline__ void K31Rotation(uint32_t position, float inverse, float gain, float *cosine, float *sine)
+{
+	const float angle = (float)position * inverse;
+	const double half_turns = (double)angle * K31_INVERSE_PI;
+	const float reduced = (float)(half_turns - 2.0 * rint(0.5 * half_turns));
+	float s, c;
+	sincospif(reduced, &s, &c);
+	*cosine = c * gain;
+	*sine = s * gain;
+}
+
 __global__ __launch_bounds__(K31_THREADS, 1)
 void K31LatentRowsKernel(const uint16_t *__restrict__ latent, const uint16_t *__restrict__ norm, const float *__restrict__ inverse, float gain,
 	const uint32_t *__restrict__ positions, uint16_t *const *__restrict__ destinations, float epsilon)
@@ -111,8 +123,8 @@ void K31LatentRowsKernel(const uint16_t *__restrict__ latent, const uint16_t *__
 	if ( threadIdx.x < K31_ROPE / 2u )
 	{
 		const uint32_t pair = threadIdx.x;
-		const float angle = (float)positions[blockIdx.x] * inverse[pair];
-		const float cosine = cosf(angle) * gain, sine = sinf(angle) * gain;
+		float cosine, sine;
+		K31Rotation(positions[blockIdx.x], inverse[pair], gain, &cosine, &sine);
 		const float even = LmBf16ToFloat(row[K31_KV_RANK + 2u * pair]), odd = LmBf16ToFloat(row[K31_KV_RANK + 2u * pair + 1u]);
 		out[K31_KV_RANK + 2u * pair] = LmFloatToBf16(even * cosine - odd * sine);
 		out[K31_KV_RANK + 2u * pair + 1u] = LmFloatToBf16(even * sine + odd * cosine);
