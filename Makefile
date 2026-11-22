@@ -713,6 +713,7 @@ PYTHON_TESTS := \
 	tests/test_hidden_transport_host_rdma_load.py \
 	tests/test_skinny_dependent_cuda.py \
 	tests/test_skinny_frame_rows_cuda.py \
+	tests/test_grouped_experts_bands_cuda.py \
 	tests/test_stream_gemm_cuda.py \
 	tests/test_launch_refusals_cuda.py \
 	tests/test_k3_projection_shapes_cuda.py \
@@ -726,6 +727,7 @@ PYTHON_TESTS := \
 	tests/test_score_export.py \
 	tests/test_score_dump_cuda.py \
 	tests/test_kernel_codegen_diff.py \
+	tests/test_kernel_spill_audit.py \
 	tests/test_stage_runner_link_rules.py \
 	tests/test_host_codegen_diff.py \
 	tests/test_timing_reports.py \
@@ -2364,6 +2366,8 @@ build/test_dsv41_flash_moe_slices: tests/test_dsv41_flash_moe_slices.cu model-fa
 
 build/test_dsv41_flash_landing: tests/test_dsv41_flash_landing.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh inference/kernels/attn_shard.cuh inference/kernels/kv_shard.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_flash_landing (no nvcc on this host)"; fi
+build/test_grouped_experts_bands_cuda: tests/cuda/grouped_experts_bands_cuda.cu $(CUDA_HEADER_DEPS) | build
+	@if command -v $(NVCC) >/dev/null 2>&1; then $(KERNEL_TEST_NVCC) $< $(KERNEL_TEST_CUDA_LINK) -o $@; else echo "SKIP test_grouped_experts_bands_cuda (no nvcc on this host)"; fi
 build/test_dsv41_window_fold: tests/test_dsv41_window_fold.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_attend.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
 	@if command -v $(NVCC) >/dev/null 2>&1; then $(NVCC) -std=c++17 $(NVCCFLAGS) -I. -Iinclude -Imodel-families/common/include $< -L$(CUDA_HOME)/lib64 -lcudart -o $@; else echo "SKIP test_dsv41_window_fold (no nvcc on this host)"; fi
 build/test_dsv41_shared_split: tests/test_dsv41_shared_split.cu model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh model-families/dsv41_flash/source/dsv41_flash_kernels.cuh $(CUDA_HEADER_DEPS) | build
