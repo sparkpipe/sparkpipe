@@ -524,8 +524,8 @@ static uint32_t GpuPageBytes(SparkNvrmMemoryKind kind, uint64_t bytes)
 		return(SPARK_NVRM_PAGE_BYTES);
 	if ( kind == SPARK_NVRM_MEMORY_VIDEO )
 		return(bytes >= 4u * SPARK_NVRM_HUGE_PAGE_BYTES ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
-	if ( kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK && bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT )
-		return(SPARK_NVRM_HUGE_PAGE_BYTES);
+	if ( kind == SPARK_NVRM_MEMORY_SYSTEM_WRITE_BACK )
+		return(bytes >= SPARK_NVRM_HUGE_PAGE_BYTES && bytes < SPARK_NVRM_HUGE_OBJECT_LIMIT ? SPARK_NVRM_HUGE_PAGE_BYTES : SPARK_NVRM_PAGE_BYTES);
 	return(SparkNvrmSystemPageBytes(bytes));
 }
 
