@@ -247,13 +247,39 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     lanes. Rows are bf16 at their positions in 4,096-position pages of the
     sequence, and whole sequences leave oldest first when the lane's
     `context_bytes` is reached.
-  - **Drafts.** The module answers with the root alone; the block forward and the
-    heads come next.
+    A frame at position 0, or from another engine session or request, starts
+    the sequence over. A frame at position `p` drops every row from `p` on and
+    then holds its own rows, so a rewind after rejected drafts leaves no stale
+    rows behind. The module keeps each position's token beside its row.
+  - **Block forward.** A draft at position `p` runs the seven-row block (the
+    anchor and six mask tokens at `p..p+6`) through the five layers, as
+    `K3DsparkDrafter.forward_block` does, with the same bf16 rounding points:
+    - the target's embedding rows; per layer `input_layernorm`, `q_a_proj`,
+      `q_a_layernorm`, `q_b_proj`, the absorbed queries (`kv_b_proj`'s key half,
+      in fp32) with YaRN rope, and the block's own latent rows;
+    - attention over the held context rows below `p`, then causally over the
+      block. The context part is a tensor-core kernel with bf16 queries and
+      bf16 weights over fp32 sums, split over up to 8 ranges of the context and
+      merged with the block part in fp32, as the Python drafter's Triton kernel
+      and `causal_block_attention` do. It reads the rows in place in their
+      pages, and a gap in the held rows only shortens the context;
+    - `kv_b_proj`'s value half, `o_proj`, `post_attention_layernorm`, the SwiGLU
+      MLP, and the residual in fp32; then `final_norm`.
+  - **Drafts.** The module still answers with the root alone; the heads (the
+    target's head, the Markov walk and the confidence head) come next.
   - **Check.** `build/k31_dspark_context_probe` writes random taps through the
     module, and `tools/spec_offline/k31_dspark_context_compare.py` recomputes
     the rows with the Python drafter and in float64. On the 5090 the module's
     worst row was 0.0024-0.0032 from float64 (relative L2), the Python
     drafter's 0.0030-0.0055, at 37 and 5 rows.
+  - **Check of the block forward.** `tools/spec_offline/k31_dspark_block_compare.py
+    extract` cuts the first `N` positions of a sequence out of a tap recording;
+    `build/k31_dspark_block_probe` ingests them, runs the block at `N` and dumps
+    the block rows, the context rows and each layer's attention inputs and
+    output; `compare` checks each layer's attention against the Python
+    drafter's on the same inputs and the block's top tokens under the target's
+    head against the Python drafter's. `--time` times the forward on
+    synthetic context.
 
 ## Draft farm
 

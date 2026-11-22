@@ -2574,6 +2574,9 @@ drafter-modules: $(DRAFTER_MODULES)
 build/k31_dspark_context_probe: tools/k31_dspark_context_probe.c include/sparkpipe/spark_drafter_module.h | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
 
+build/k31_dspark_block_probe: tools/k31_dspark_block_probe.c include/sparkpipe/spark_drafter_module.h | build
+	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -ldl -o $@
+
 build/test_draftd_engine: tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) $(RUNTIME_LIBRARY) $(CORE_LIBRARY) tests/cuda_stub/cuda_runtime_stub.c build/sparkpipe_draftd $(TEST_DRAFTER_PROBE_MODULE) $(TEST_DRAFTER_PROBE_ABI_MODULE) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_TEST_DRAFTD='"build/sparkpipe_draftd"' -DSPARK_TEST_PROBE_MODULE='"$(TEST_DRAFTER_PROBE_MODULE)"' -DSPARK_TEST_PROBE_ABI_MODULE='"$(TEST_DRAFTER_PROBE_ABI_MODULE)"' tests/test_draftd_engine.c $(DEVICE_CUDA_STUB_TEST_SOURCES) tests/cuda_stub/cuda_runtime_stub.c $(RUNTIME_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
