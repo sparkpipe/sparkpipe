@@ -1214,6 +1214,11 @@ SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDevic
 	return(status);
 }
 
+uint32_t SparkDeviceBackendProgramLowersCopies(void)
+{
+	return(0u);
+}
+
 SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
 {
 	(void)queue;

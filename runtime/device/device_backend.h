@@ -209,6 +209,11 @@ SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceP
 SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place);
 SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program);
 SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program);
+uint32_t SparkDeviceBackendProgramLowersCopies(void);
+#define SPARK_DEVICE_PROGRAM_OP_COPY 0u
+#define SPARK_DEVICE_PROGRAM_OP_FILL 1u
+SparkDeviceKernel *SparkDeviceProgramOpHold(uint32_t op, const char **failure);
+void SparkDeviceProgramOpRelease(SparkDeviceKernel *kernel);
 SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values);
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program);
 

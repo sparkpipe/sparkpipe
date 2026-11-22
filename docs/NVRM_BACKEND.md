@@ -680,10 +680,23 @@ steps it holds.
   storing them. A program of launches alone stores nothing, so its runs
   on one queue go back to back; a run on another queue waits for the
   previous run, because both would use the one semaphore.
-- **Not inside programs.** Finish refuses copies and fills, naming them;
-  they go on the queue before or after the run. A dependent launch runs
-  inside a program as a plainly ordered launch, with the same results;
-  latched chains inside programs are the next step.
+- **Copies and fills.** Finish turns each copy or fill into a launch of the
+  device layer's copy or fill kernel (`SparkDeviceProgramCopy`,
+  `SparkDeviceProgramFill` in `sparkpipe_device_kernels/program_ops.cubin`,
+  built from `runtime/device/nvrm/program_ops.cu` by `make
+  nvrm-device-kernels`), with the two addresses and the size, or the value,
+  as its parameters.
+  - The kernels copy 16 bytes a thread where both ends share their
+    16-byte alignment, with byte head and tail, and byte by byte where
+    they do not. A fill stores 16 bytes a thread.
+  - The device layer loads the cubin once, at the first finish, outside
+    its lock. Each program that lowers a copy or fill holds the kernel,
+    and shutdown unloads them once no program holds them.
+  - Both ends must be memory the GPU addresses: device, shared, pinned or
+    registered memory. A copy or fill of pageable host memory is refused
+    at finish, naming the node, its size and the kernel before it.
+- **Dependent launches.** A dependent launch runs inside a program as a
+  plainly ordered launch, with the same results.
 - **Faults.** A fault report during a run names the program, the step its
   semaphore had reached, and that step's kernel.
 

@@ -33,6 +33,10 @@
 #define NVRM_END_COPY (UINT64_C(1) << 63)
 #define NVRM_REPORT_HEAD_BYTES 112u
 #define NVRM_REPORT_WHERE_BYTES 160u
+#define NVRM_OP_THREADS 256u
+#define NVRM_OP_BLOCK_BYTES (NVRM_OP_THREADS * 16u)
+#define NVRM_OP_GROUPS_MAX 1024u
+#define NVRM_OP_PARAMETER_BYTES 64u
 
 typedef enum NvrmOperation
 {
@@ -68,6 +72,8 @@ typedef struct NvrmImage
 	uint64_t segment;
 	uint64_t last_queue;
 	uint64_t last_sequence;
+	SparkDeviceKernel *ops[2];
+	const SparkDeviceKernel **kernels;
 	const char *name;
 } NvrmImage;
 
@@ -1403,6 +1409,11 @@ SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t b
 	return(SPARK_STATUS_OK);
 }
 
+uint32_t SparkDeviceBackendProgramLowersCopies(void)
+{
+	return(1u);
+}
+
 uint32_t SparkDeviceBackendProgramNative(void)
 {
 	return(0u);
@@ -1437,6 +1448,9 @@ SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDevicePro
 
 static void NvrmImageFree(NvrmImage *image)
 {
+	SparkDeviceProgramOpRelease(image->ops[0]);
+	SparkDeviceProgramOpRelease(image->ops[1]);
+	free(image->kernels);
 	if ( image->memory.bytes != 0u )
 		SparkNvrmMemoryRelease(&nvrm_gpu,&image->memory);
 	free(image->steps);
@@ -1447,12 +1461,12 @@ static void NvrmImageFree(NvrmImage *image)
 
 static SparkStatus NvrmImageDescribe(NvrmImage *image, const SparkDeviceProgram *program, uint32_t node, const SparkDeviceLaunch *launch)
 {
-	const SparkDeviceNode *recorded = &program->nodes[node];
-	const NvrmKernel *compiled = (const NvrmKernel *)recorded->kernel->backend;
+	const SparkDeviceKernel *kernel = image->kernels[node];
+	const NvrmKernel *compiled = (const NvrmKernel *)kernel->backend;
 	const SparkNvrmStep *step = &image->steps[node];
 	SparkNvrmLaunchRequest request;
 	memset(&request,0,sizeof(request));
-	NvrmLaunchRequestFill(recorded->kernel,launch,&request);
+	NvrmLaunchRequestFill(kernel,launch,&request);
 	request.dependent = 0u;
 	request.slot = image->memory.cpu + image->slots + step->slot;
 	request.slot_address = image->memory.address + image->slots + step->slot;
@@ -1468,6 +1482,54 @@ static SparkStatus NvrmImageRefuse(const SparkDeviceProgram *program, const char
 	SPARK_FAIL(status);
 }
 
+static uint32_t NvrmOpAddressable(const SparkDeviceBuffer *buffer)
+{
+	return(buffer->device != 0u && buffer->space != SPARK_DEVICE_SPACE_HOST_PAGEABLE ? 1u : 0u);
+}
+
+static SparkStatus NvrmOpRefuse(const SparkDeviceProgram *program, uint32_t index, const char *problem)
+{
+	const SparkDeviceNode *node = &program->nodes[index];
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	const char *after = "no kernel";
+	uint32_t back;
+	for ( back = index; back > 0u; back-- )
+		if ( program->nodes[back - 1u].kind == SPARK_DEVICE_NODE_LAUNCH )
+		{
+			after = program->nodes[back - 1u].kernel->name;
+			break;
+		}
+	snprintf(text,sizeof(text),"node %u of %u, a %s of %llu bytes after kernel %.60s: %s",index,program->node_count,
+		node->kind == SPARK_DEVICE_NODE_COPY ? "copy" : "fill",(unsigned long long)node->bytes,after,problem);
+	return(NvrmImageRefuse(program,text));
+}
+
+static SparkStatus NvrmOpLaunch(const SparkDeviceNode *node, const SparkDeviceKernel *kernel, SparkDeviceLaunch *launch, uint8_t *block, uint32_t room)
+{
+	const uint64_t destination = node->buffers[0].device + node->offsets[0];
+	const uint64_t values[3] = {destination,node->kind == SPARK_DEVICE_NODE_COPY ? node->buffers[1].device + node->offsets[1] : node->value,node->bytes};
+	const uint64_t groups = (node->bytes + NVRM_OP_BLOCK_BYTES - 1u) / NVRM_OP_BLOCK_BYTES;
+	uint32_t index;
+	if ( kernel->info.parameters == 0 || kernel->info.parameter_count != 3u || kernel->info.parameter_bytes > room )
+		return(SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"program_finish",kernel->name,0,"the program copy kernel takes other parameters"));
+	memset(block,0,room);
+	for ( index = 0u; index < 3u; index++ )
+	{
+		const SparkDeviceParameter *parameter = &kernel->info.parameters[index];
+		if ( parameter->bytes > sizeof(values[index]) || parameter->offset + parameter->bytes > kernel->info.parameter_bytes )
+			return(SparkDeviceRecordError(SPARK_STATUS_TARGET_MISMATCH,"program_finish",kernel->name,0,"the program copy kernel takes other parameters"));
+		memcpy(block + parameter->offset,&values[index],parameter->bytes);
+	}
+	memset(launch,0,sizeof(*launch));
+	launch->groups.x = (uint32_t)(groups == 0u ? 1u : groups < NVRM_OP_GROUPS_MAX ? groups : NVRM_OP_GROUPS_MAX);
+	launch->groups.y = launch->groups.z = 1u;
+	launch->threads.x = NVRM_OP_THREADS;
+	launch->threads.y = launch->threads.z = 1u;
+	launch->constants = block;
+	launch->constant_bytes = kernel->info.parameter_bytes;
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *program)
 {
 	uint64_t slots = 0u;
@@ -1478,13 +1540,31 @@ static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *p
 		SparkNvrmStep *step = &image->steps[index];
 		step->node = index;
 		if ( node->kind == SPARK_DEVICE_NODE_COPY || node->kind == SPARK_DEVICE_NODE_FILL )
-			return(NvrmImageRefuse(program,"a program on nvrm holds kernel launches, event records and waits and host callbacks; copies and fills go on the "
-				"queue before or after the run"));
+		{
+			const uint32_t op = node->kind == SPARK_DEVICE_NODE_COPY ? SPARK_DEVICE_PROGRAM_OP_COPY : SPARK_DEVICE_PROGRAM_OP_FILL;
+			const char *failure = 0;
+			char problem[SPARK_DEVICE_ERROR_TEXT_BYTES];
+			if ( NvrmOpAddressable(&node->buffers[0]) == 0u || (op == SPARK_DEVICE_PROGRAM_OP_COPY && NvrmOpAddressable(&node->buffers[1]) == 0u) )
+				return(NvrmOpRefuse(program,index,"a program on nvrm copies and fills only memory the GPU addresses, not pageable host memory"));
+			if ( image->ops[op] == 0 && (image->ops[op] = SparkDeviceProgramOpHold(op,&failure)) == 0 )
+			{
+				snprintf(problem,sizeof(problem),"a program on nvrm runs its copies and fills with the program copy kernels: %.120s",failure);
+				return(NvrmOpRefuse(program,index,problem));
+			}
+			image->kernels[index] = image->ops[op];
+			step->kind = SPARK_NVRM_STEP_LAUNCH;
+			step->slot = slots;
+			step->slot_bytes = SparkNvrmLaunchSlotBytes(((const NvrmKernel *)image->ops[op]->backend)->kernel);
+			step->name = image->ops[op]->name;
+			slots += step->slot_bytes;
+			continue;
+		}
 		if ( node->kind == SPARK_DEVICE_NODE_LAUNCH )
 		{
 			const NvrmKernel *compiled = (const NvrmKernel *)node->kernel->backend;
 			if ( node->launch.binding_count != 0u )
 				return(NvrmBindingsRefused(node->kernel,"program_finish"));
+			image->kernels[index] = node->kernel;
 			step->kind = SPARK_NVRM_STEP_LAUNCH;
 			step->slot = slots;
 			step->slot_bytes = SparkNvrmLaunchSlotBytes(compiled->kernel);
@@ -1525,6 +1605,7 @@ SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDevic
 	uint32_t index;
 	(void)queue;
 	if ( image == 0 || (program->node_count != 0u && (image->steps = (SparkNvrmStep *)calloc(program->node_count,sizeof(*image->steps))) == 0) ||
+		(program->node_count != 0u && (image->kernels = (const SparkDeviceKernel **)calloc(program->node_count,sizeof(*image->kernels))) == 0) ||
 		(program->place_count != 0u && (image->patched = (uint32_t *)calloc(program->place_count,sizeof(*image->patched))) == 0) ||
 		(program->scratch_bytes != 0u && (image->scratch = (uint8_t *)malloc(program->scratch_bytes)) == 0) )
 	{
@@ -1541,8 +1622,16 @@ SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDevic
 		status = SparkNvrmMemoryAllocate(&nvrm_gpu,image->segment + (uint64_t)image->words * sizeof(uint32_t),SPARK_NVRM_MEMORY_HOST,&image->memory,
 			program->name);
 	for ( index = 0u; status == SPARK_STATUS_OK && index < image->step_count; index++ )
-		if ( image->steps[index].kind == SPARK_NVRM_STEP_LAUNCH )
+	{
+		uint8_t block[NVRM_OP_PARAMETER_BYTES];
+		SparkDeviceLaunch launch;
+		if ( image->steps[index].kind != SPARK_NVRM_STEP_LAUNCH )
+			continue;
+		if ( program->nodes[index].kind == SPARK_DEVICE_NODE_LAUNCH )
 			status = NvrmImageDescribe(image,program,index,&program->nodes[index].launch);
+		else if ( (status = NvrmOpLaunch(&program->nodes[index],image->kernels[index],&launch,block,sizeof(block))) == SPARK_STATUS_OK )
+			status = NvrmImageDescribe(image,program,index,&launch);
+	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		NvrmImageFree(image);

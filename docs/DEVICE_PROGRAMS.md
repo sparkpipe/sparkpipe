@@ -106,7 +106,10 @@ where it is clear, the caller launches eagerly.
 | Metal | refused with `SPARK_STATUS_UNSUPPORTED`: the replay has not run on Metal hardware, so Metal launches eagerly | not reached |
 | nvrm | the recorded operations. Finish compiles them into an image: a persistent descriptor and constant bank 0 for every launch, and a prebuilt push segment that runs the steps in order ([nvrm programs](NVRM_BACKEND.md#programs)) | one submission: the queue's ordering acquire, the segment, and a tail that releases the queue's fence. Values, event payloads and host tickets are stored into the image first |
 
-nvrm refuses copies and fills inside a program at finish, naming them: they go on the queue before or after the run.
+nvrm runs a program's copies and fills as kernels: finish turns each into a launch of the device layer's copy or fill kernel
+(`sparkpipe_device_kernels/program_ops.cubin`), so a step body records the same operations on every backend, as a CUDA
+graph holds memcpy and memset nodes. Both ends must be memory the GPU addresses. A copy or fill of pageable host memory
+is refused at finish, naming the node, its size and the kernel before it.
 
 CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
 - a patch on a kernel node that passes its arguments as one packed buffer
@@ -130,10 +133,10 @@ CUDA refuses what a graph cannot hold, and the refusal breaks the recording:
   other threads during a recording return only after it finishes, and a
   query answers pending;
 - a program of a fill, a copy, a host callback, an event record and a wait
-  on it, run three times and compared byte for byte. Recording runs nothing.
-  On nvrm, finish refuses that program, naming copies and fills, and a
-  program of the host callback, the event record and the wait runs three
-  times instead;
+  on it, run three times and compared byte for byte. Recording runs nothing;
+- a program of fills and copies from 1 byte to over a MiB, at offsets that
+  share or differ in their 16-byte alignment, run twice and compared with
+  the same operations issued eagerly and with a host model;
 - buffers and events kept while a recording or a program uses them;
 - transforms: no transform, a ceiling division, an affine form, all five
   terms together, and a negative intermediate that does not fit;

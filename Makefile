@@ -79,6 +79,7 @@ DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
 DEVICE_KERNEL_DIR := $(DEVICE_RUNTIME_DIR)/sparkpipe_device_kernels
 DEVICE_TENSOR_MAP_IMAGE := $(DEVICE_KERNEL_DIR)/tensor_map_build.cubin
+DEVICE_PROGRAM_OPS_IMAGE := $(DEVICE_KERNEL_DIR)/program_ops.cubin
 DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
 NVRM_VENDOR := runtime/device/nvrm/vendor
 NVRM_MODULE_RELEASES := 580.178.04 595.84
@@ -1572,9 +1573,15 @@ $(DEVICE_TENSOR_MAP_IMAGE): runtime/device/nvrm/tensor_map_build.cu runtime/devi
 	$(NVCC) $(NVCCFLAGS) -cudart none $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir build/tensor_map_build.keep -cubin $< -o $@ > build/tensor_map_build.ptxas.log 2>&1 || { cat build/tensor_map_build.ptxas.log; exit 1; }
 	python3 -I tools/nvrm_kernel_manifest.py --cubin $@ --ptx build/tensor_map_build.keep/tensor_map_build.ptx --ptxas-log build/tensor_map_build.ptxas.log --nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $(DEVICE_KERNEL_DIR)/tensor_map_build.manifest
 
+$(DEVICE_PROGRAM_OPS_IMAGE): runtime/device/nvrm/program_ops.cu tools/nvrm_kernel_manifest.py | build
+	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): nvrm programs run their copies and fills with these kernels"; exit 1; }
+	@mkdir -p $(dir $@) build/program_ops.keep
+	$(NVCC) $(NVCCFLAGS) -cudart none $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir build/program_ops.keep -cubin $< -o $@ > build/program_ops.ptxas.log 2>&1 || { cat build/program_ops.ptxas.log; exit 1; }
+	python3 -I tools/nvrm_kernel_manifest.py --cubin $@ --ptx build/program_ops.keep/program_ops.ptx --ptxas-log build/program_ops.ptxas.log --nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $(DEVICE_KERNEL_DIR)/program_ops.manifest
+
 NVRM_FLAVOUR_GOALS += nvrm-device-kernels
 .PHONY: nvrm-device-kernels
-nvrm-device-kernels: $(DEVICE_TENSOR_MAP_IMAGE)
+nvrm-device-kernels: $(DEVICE_TENSOR_MAP_IMAGE) $(DEVICE_PROGRAM_OPS_IMAGE)
 
 build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1648,7 +1655,7 @@ build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY
 build/test_device_shared_memory_nvrm: tests/test_device_shared_memory.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
+build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) $(DEVICE_PROGRAM_OPS_IMAGE) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"tests/fixtures/nvrm/fixture_kernels.sm_121a.cubin"' \
 		-include tests/nvrm/fixture_kernels.h -DSPARK_DEVICE_TEST_LONG_KERNEL=SPARK_NVRM_FIXTURE_LONG_TEXT $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
