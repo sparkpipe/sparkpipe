@@ -2016,6 +2016,22 @@ and the multidev docs on 2026-09-28. Line numbers are in
   device memory. Production modules call the CUDA runtime directly
   (above), so even a complete backend serves nothing until they move
   behind the device layer or a GPU API of our own.
+- nvrm stream priorities. The nvrm GPU front reports one stream priority:
+  `SparkGpuDeviceGetStreamPriorityRange` answers 0 to 0, as CUDA does for a
+  context without priorities, and refuses any other priority. So the
+  residentd's execution stream and the stage runner's lanes run at the
+  priority of every other stream. Every queue's compute channel sits in one
+  channel group, which the GPU schedules as a whole.
+  - Real priorities would give the prioritized queues a channel group of
+    their own at a higher interleave level and timeslice, through the open
+    module's channel-group controls in `ctrl/ctrla06c.h` (open-gpu-kernel-modules
+    580.178.04): `NVA06C_CTRL_CMD_SET_INTERLEAVE_LEVEL` (`NVA06C_CTRL_INTERLEAVE_LEVEL_LOW`,
+    `_MEDIUM`, `_HIGH`) and `NVA06C_CTRL_CMD_SET_TIMESLICE` (`timesliceUs`).
+  - Whether work in two channel groups still overlaps on the compute engine,
+    or the groups take turns, is not known; the measurement must show it.
+  - Proof: at M8, decode step time on nvrm under mixed prefill and decode,
+    with the decode queues in a group of their own against today's single
+    group. If priority matters there, it becomes an M8 item.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,

@@ -969,10 +969,12 @@ The rest of the front maps onto the device layer:
 - **Streams.**
   - Streams must be non-blocking. A blocking stream is refused, because
     the hosted runtime has no legacy default stream to synchronize it with.
-  - Stream priorities are not implemented yet. `SparkGpuDeviceGetStreamPriorityRange`,
-    and a stream created with a priority other than the default, return
-    `SPARK_GPU_ERROR_NOT_SUPPORTED`. Ignoring the priority would run every
-    lane at one priority without saying so.
+  - The device has one stream priority. `SparkGpuDeviceGetStreamPriorityRange`
+    reports 0 to 0, which is what CUDA reports for a context without
+    stream priorities, so a caller that asks for the greatest priority gets
+    0 and sees that every stream shares it. A stream created with any other
+    priority is refused with `SPARK_GPU_ERROR_NOT_SUPPORTED` rather than
+    run at 0.
   - `SparkGpuStreamQuery` and `SparkGpuEventQuery` return
     `SPARK_GPU_ERROR_NOT_READY` without recording it as the last error.
 - **Events.** Events are device-layer events, and their elapsed time is
