@@ -125,11 +125,11 @@ static void TestErrors(SparkGpuStream queue, SparkDeviceBuffer *words)
 	LM_LAUNCH((HostedStep<HOSTED_STEP>),1,32,0,queue,(uint32_t *)words->device,1u);
 	CHECK(SparkGpuPeekAtLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED,"a later good launch does not clear the last error");
 	CHECK(SparkGpuGetLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED && SparkGpuGetLastError() == SPARK_GPU_SUCCESS,"Get returns the last error and clears it");
-	CHECK(LM_LAUNCH_DEPENDENT((HostedStep<HOSTED_STEP>),1,32,0,queue,(uint32_t *)words->device,1u) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
-		strstr(SparkDeviceLastError()->text,"dependent") != 0 && SparkGpuGetLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED,
-		"a programmatic dependent launch is refused, naming the kernel, until the descriptor carries it");
-	CHECK(LmLaunchClusterKernel(HostedStep<HOSTED_STEP>,dim3(1),dim3(32),0,queue,2u,0u,(uint32_t *)words->device,1u) == SPARK_GPU_ERROR_NOT_SUPPORTED &&
-		strstr(SparkDeviceLastError()->text,"cluster") != 0 && SparkGpuGetLastError() == SPARK_GPU_ERROR_NOT_SUPPORTED,"a cluster launch is refused");
+	CHECK(LM_LAUNCH_DEPENDENT((HostedStep<HOSTED_STEP>),1,32,0,queue,(uint32_t *)words->device,1u) == SPARK_GPU_SUCCESS &&
+		SparkGpuGetLastError() == SPARK_GPU_SUCCESS,"a programmatic dependent launch runs in queue order");
+	CHECK(LmLaunchClusterKernel(HostedStep<HOSTED_STEP>,dim3(1),dim3(32),0,queue,2u,0u,(uint32_t *)words->device,1u) == SPARK_GPU_ERROR_INVALID_VALUE &&
+		strstr(SparkDeviceLastError()->text,"whole number of clusters") != 0 && SparkGpuGetLastError() == SPARK_GPU_ERROR_INVALID_VALUE,
+		"a cluster launch whose grid is not a whole number of clusters is refused");
 	memset(packed,0,sizeof(packed));
 	layout[0].offset = 0u;
 	layout[0].bytes = 8u;
