@@ -2,9 +2,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
+
+#define DEVICE_RECORDING_POLL_NS 50000
 
 typedef struct SparkDeviceSlot
 {
@@ -753,6 +756,44 @@ static SparkStatus DeviceQueueValid(SparkDeviceQueue *queue, const char *operati
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t DeviceRecordingElsewhere(const SparkDeviceQueue *queue)
+{
+	return(queue->recording != 0 && pthread_equal(queue->recording->thread,pthread_self()) == 0 ? 1u : 0u);
+}
+
+static uint32_t DeviceAnyRecordingElsewhere(void)
+{
+	const SparkDeviceQueue *queue;
+	for ( queue = device_queues; queue != 0; queue = queue->next )
+		if ( DeviceRecordingElsewhere(queue) != 0u )
+			return(1u);
+	return(0u);
+}
+
+static SparkStatus DeviceAwaitRecordings(SparkDeviceQueue *queue, uint64_t timeout_ns, const char *operation)
+{
+	struct timespec now;
+	uint64_t started = 0u,elapsed;
+	SparkStatus status = queue != 0 ? DeviceQueueValid(queue,operation) : SPARK_STATUS_OK;
+	while ( status == SPARK_STATUS_OK && (queue != 0 ? DeviceRecordingElsewhere(queue) : DeviceAnyRecordingElsewhere()) != 0u )
+	{
+		const struct timespec pause = {0, DEVICE_RECORDING_POLL_NS};
+		clock_gettime(CLOCK_MONOTONIC,&now);
+		elapsed = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+		if ( started == 0u )
+			started = elapsed;
+		if ( timeout_ns != SPARK_DEVICE_WAIT_FOREVER && elapsed - started >= timeout_ns )
+			return(SPARK_STATUS_PENDING);
+		pthread_mutex_unlock(&device_mutex);
+		nanosleep(&pause,0);
+		pthread_mutex_lock(&device_mutex);
+		status = DeviceReady(operation,0);
+		if ( status == SPARK_STATUS_OK && queue != 0 )
+			status = DeviceQueueValid(queue,operation);
+	}
+	return(status);
+}
+
 static SparkStatus DeviceQueueSettled(SparkDeviceQueue *queue, const char *operation)
 {
 	SparkStatus status = DeviceQueueValid(queue,operation);
@@ -1044,6 +1085,8 @@ SparkStatus SparkDeviceQueueWait(SparkDeviceQueue *queue, uint64_t timeout_ns)
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("queue_wait",0);
 	if ( status == SPARK_STATUS_OK )
+		status = DeviceAwaitRecordings(queue,timeout_ns,"queue_wait");
+	if ( status == SPARK_STATUS_OK )
 		status = DeviceQueueSettled(queue,"queue_wait");
 	sequence = status == SPARK_STATUS_OK ? queue->submitted : 0u;
 	pthread_mutex_unlock(&device_mutex);
@@ -1135,6 +1178,8 @@ SparkStatus SparkDeviceSynchronize(uint64_t timeout_ns)
 	SparkStatus status;
 	pthread_mutex_lock(&device_mutex);
 	status = DeviceReady("synchronize",0);
+	if ( status == SPARK_STATUS_OK )
+		status = DeviceAwaitRecordings(0,timeout_ns,"synchronize");
 	for ( queue = device_queues; status == SPARK_STATUS_OK && queue != 0; queue = queue->next )
 	{
 		if ( queue->recording != 0 )
@@ -1632,6 +1677,7 @@ SparkStatus SparkDeviceProgramRecord(SparkDeviceQueue *queue, const char *name)
 		program->id = device_next_program_id++;
 		program->queue_id = queue->id;
 		program->native = SparkDeviceBackendProgramNative();
+		program->thread = pthread_self();
 		DeviceCopyText(program->name,sizeof(program->name),name);
 		status = SparkDeviceBackendProgramBegin(queue,program);
 	}
@@ -1720,9 +1766,11 @@ SparkStatus SparkDeviceProgramFinish(SparkDeviceQueue *queue, SparkDeviceProgram
 		if ( status == SPARK_STATUS_OK && program->broken != 0u )
 			status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"program_finish",program->name,0,
 				"an operation recorded into the program failed, so the program is incomplete");
+		if ( status == SPARK_STATUS_OK && program->native == 0u )
+			status = SparkDeviceBackendProgramCompile(queue,program);
 		if ( status != SPARK_STATUS_OK )
 		{
-			if ( program->native != 0u )
+			if ( program->native != 0u || program->compiled != 0u )
 				SparkDeviceBackendProgramRelease(program);
 			DeviceProgramRelease(program);
 		}
@@ -1784,7 +1832,7 @@ SparkStatus SparkDeviceProgramRun(SparkDeviceProgram *program, SparkDeviceQueue 
 		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_run",program->name,0,"out of host memory for the patch values");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDeviceProgramValues(program,values,placed,program->name);
-	if ( status == SPARK_STATUS_OK && program->native != 0u )
+	if ( status == SPARK_STATUS_OK && (program->native != 0u || program->compiled != 0u) )
 	{
 		int32_t slot = -1;
 		status = DeviceProgramSlots(program,queue,&slot);
@@ -1851,7 +1899,7 @@ SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program)
 				*link = program->next;
 				break;
 			}
-		if ( program->native != 0u )
+		if ( program->native != 0u || program->compiled != 0u )
 			SparkDeviceBackendProgramRelease(program);
 		program->id = 0u;
 		DeviceProgramRelease(program);
