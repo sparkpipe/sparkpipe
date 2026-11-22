@@ -125,14 +125,14 @@ class DebtListTest(unittest.TestCase):
         self.assertEqual(set(nvrm) & listed, set())
         adapters = set(make_words("HOSTED_RELEASE_ADAPTERS", "SHARED_LIBRARY_EXT=so"))
         staged = set(make_words("HOSTED_RELEASE_STAGED", "SHARED_LIBRARY_EXT=so"))
-        self.assertEqual(len(set(nvrm) & adapters), 13)
+        self.assertEqual(set(nvrm) & adapters, adapters)
         for adapter in sorted(set(nvrm) & adapters):
             with self.subTest(adapter):
                 twin = adapter.replace("build/", "build/nvrm/", 1)
                 self.assertIn(f"{twin}={adapter}", staged)
                 self.assertIn(f"{twin}.kernels={adapter}.kernels", staged)
         self.assertEqual(adapters - set(nvrm), {path for group in self.document["debt"] for path in group["files"] if path in adapters})
-        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")
+        library = make_words("DEVICE_NVRM_RUNTIME_FILES", "SHARED_LIBRARY_EXT=so")
         chosen = nvrm + ["tools/fleet_node_agent.sh"]
         self.assertEqual(make_words("HOSTED_RELEASE_SOURCES", "SHARED_LIBRARY_EXT=so", "HOSTED_RELEASE_FILES=" + " ".join(chosen)),
                          [path.replace("build/", "build/nvrm/", 1) for path in nvrm] + ["tools/fleet_node_agent.sh"] + library)
@@ -454,10 +454,11 @@ class ReleaseKitTest(unittest.TestCase):
         block = re.search(r'^FW_DIR=build\nAPI_DIR=build\nif \[ "\$\{HOSTED:-0\}" = 1 \]; then\n(.*?)^fi$', text, re.M | re.S)
         self.assertIsNotNone(block)
         lines = block.group(1).splitlines()
-        self.assertEqual(len(lines), 7)
-        library = make_words("DEVICE_NVRM_LIBRARY", "SHARED_LIBRARY_EXT=so")[0]
-        self.assertEqual(lines.pop(0).strip(), f'NODE="$NODE {library}"')
-        self.assertEqual(lines.pop(0).strip(), f'HUB_FILES="$HUB_FILES {library}"')
+        self.assertEqual(len(lines), 8)
+        runtime = " ".join(make_words("DEVICE_NVRM_RUNTIME_FILES", "SHARED_LIBRARY_EXT=so"))
+        self.assertEqual(lines.pop(0).strip(), f'NVRM_RUNTIME="{runtime}"')
+        self.assertEqual(lines.pop(0).strip(), 'NODE="$NODE $NVRM_RUNTIME"')
+        self.assertEqual(lines.pop(0).strip(), 'HUB_FILES="$HUB_FILES $NVRM_RUNTIME"')
         self.assertIn("ssh -o BatchMode=yes $HOST", lines[0])
         self.assertIn("make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy", lines[0])
         hub = re.search(r'^ssh -o BatchMode=yes (\S+) "rm -rf \$HUB_WORK/api-build-\$SHA ', text, re.M)
