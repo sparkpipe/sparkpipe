@@ -84,6 +84,21 @@ static int HostBackend(void)
 	return(strcmp(SparkDeviceGetProperties()->backend,"host") == 0);
 }
 
+static void CountCallback(void *context)
+{
+	__atomic_add_fetch((uint32_t *)context,1u,__ATOMIC_SEQ_CST);
+}
+
+static uint32_t ProgramsRecord(void)
+{
+	return(strcmp(SparkDeviceGetProperties()->backend,"metal") != 0);
+}
+
+static uint32_t ProgramsRun(void)
+{
+	return((SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_PROGRAMS) != 0u);
+}
+
 static int ChildFaults(SparkDeviceAddress address)
 {
 	pid_t child = fork();
@@ -600,6 +615,64 @@ static void TestKernelOrdering(SparkDeviceQueue *queue, SparkDeviceKernel *write
 		"free the ordering buffers");
 }
 
+
+static void TestKernelPrograms(SparkDeviceQueue *queue, SparkDeviceKernel *write)
+{
+	enum { COUNT = 5000, WIDTH = 256 };
+	if ( ProgramsRecord() == 0u )
+		return;
+	static const uint64_t values[][2] = {{11u, 5000u}, {977u, 1u}, {31337u, 4097u}};
+	SparkDeviceBuffer program_out, eager_out;
+	SparkDeviceBinding binding;
+	SparkDeviceLaunch launch;
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDevicePatch patch;
+	ContractParams params = {COUNT, 0u};
+	uint32_t index, run, wrong = 0u;
+	CHECK(SparkDeviceAllocate(&program_out,SPARK_DEVICE_SPACE_SHARED_COHERENT,COUNT * 4u,"program kernel out") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&eager_out,SPARK_DEVICE_SPACE_SHARED_COHERENT,COUNT * 4u,"eager kernel out") == SPARK_STATUS_OK,"allocate the outputs");
+	binding = Bind(&program_out,0u,COUNT * 4u,SPARK_DEVICE_BIND_WRITE);
+	launch = Launch1d(COUNT,WIDTH,&params,&binding,1u);
+	CHECK(SparkDeviceProgramRecord(queue,"contract kernel program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,write,&launch) == SPARK_STATUS_OK,
+		"record a launch");
+	memset(&patch,0,sizeof(patch));
+	patch.value = 0u;
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_CONSTANT;
+	patch.offset = 4u;
+	patch.bytes = 4u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the seed");
+	patch.value = 1u;
+	patch.offset = 0u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the count");
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_GRID_X;
+	patch.transform.multiply = 1;
+	patch.transform.divide = WIDTH;
+	patch.transform.scale = 1;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the grid width from the count");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK &&
+		info.kernels == 1u && info.values == 2u && info.places == 3u,"the program holds one kernel with three places for two values");
+	for ( run = 0u; program != 0 && run < sizeof(values) / sizeof(values[0]); run++ )
+	{
+		memset(program_out.host,0,COUNT * 4u);
+		memset(eager_out.host,0,COUNT * 4u);
+		CHECK(SparkDeviceProgramRun(program,queue,values[run],2u) == (ProgramsRun() != 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED),
+			"run the program with new patch values");
+		params.seed = (uint32_t)values[run][0];
+		params.count = (uint32_t)values[run][1];
+		binding = Bind(&eager_out,0u,COUNT * 4u,SPARK_DEVICE_BIND_WRITE);
+		launch = Launch1d(params.count,WIDTH,&params,&binding,1u);
+		CHECK(SparkDeviceKernelLaunch(queue,write,&launch) == SPARK_STATUS_OK && SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,
+			"launch the same values eagerly");
+		for ( index = 0u; ProgramsRun() != 0u && index < COUNT; index++ )
+			wrong += ((const uint32_t *)program_out.host)[index] != ((const uint32_t *)eager_out.host)[index];
+	}
+	CHECK(wrong == 0u,"every patched run writes the bytes the same launch writes eagerly");
+	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_BUSY,"a live program keeps the kernels it launches");
+	CHECK(program != 0 && SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,"destroy the kernel program");
+	CHECK(SparkDeviceFree(&program_out) == SPARK_STATUS_OK && SparkDeviceFree(&eager_out) == SPARK_STATUS_OK,"free the outputs");
+}
+
 static void TestKernelAcrossQueues(SparkDeviceKernel *write, SparkDeviceKernel *read)
 {
 	enum { COUNT = 65536, ROUNDS = 32 };
@@ -859,6 +932,33 @@ static void TestWordBlock(SparkDeviceQueue *queue, SparkDeviceLibrary *library, 
 	free(block);
 }
 
+
+static void TestParameterBlockProgram(SparkDeviceQueue *queue, SparkDeviceKernel *kernel, SparkDeviceLaunch *launch, ParameterBlock *block)
+{
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDevicePatch patch;
+	const uint64_t value = 0x12340000u;
+	CHECK(SparkDeviceProgramRecord(queue,"contract parameter program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,kernel,launch) == SPARK_STATUS_OK,
+		"record a parameter-block launch");
+	memset(&patch,0,sizeof(patch));
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_ARGUMENT;
+	patch.argument = 2u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch names one of the kernel's parameters");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,"the refused patch breaks that recording");
+	CHECK(SparkDeviceProgramRecord(queue,"contract parameter program") == SPARK_STATUS_OK && SparkDeviceKernelLaunch(queue,kernel,launch) == SPARK_STATUS_OK,
+		"record the launch again");
+	patch.argument = 1u;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_OK,"patch the kernel's value argument");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK &&
+		info.kernels == 1u && info.values == 1u && info.places == 1u,"finish a one-kernel program with one patch");
+	CHECK(SparkDeviceProgramRun(program,queue,&value,1u) == (ProgramsRun() != 0u ? SPARK_STATUS_OK : SPARK_STATUS_UNSUPPORTED),
+		"a backend runs a program only when it reports that it runs programs");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK,
+		"destroy the parameter-block program");
+	(void)block;
+}
+
 static void TestParameterBlockKernels(SparkDeviceQueue *queue)
 {
 	enum { GROUPS = 4, THREADS = 128, WORDS = GROUPS * THREADS };
@@ -907,6 +1007,7 @@ static void TestParameterBlockKernels(SparkDeviceQueue *queue)
 	for ( index = 0u; index < WORDS; index++ )
 		wrong += ((const uint32_t *)output.host)[index] != (block.value ^ index);
 	CHECK(wrong == 0u,"every thread wrote what its parameter block asked for");
+	TestParameterBlockProgram(queue,kernel,&launch,&block);
 	TestLongKernelName(queue,library);
 	TestWordBlock(queue,library,SPARK_DEVICE_TEST_LARGE_KERNEL,1u,CONTRACT_LARGE_BLOCK_BYTES,1u);
 	TestWordBlock(queue,library,SPARK_DEVICE_TEST_HUGE_KERNEL,0u,SparkDeviceGetProperties()->max_constant_bytes,CONTRACT_HUGE_ROUNDS);
@@ -961,12 +1062,97 @@ static void TestKernels(SparkDeviceQueue *queue)
 	TestKernelOrdering(queue,write,read);
 	TestKernelAcrossQueues(write,read);
 	TestKernelBusy(queue,library,shared);
+	TestKernelPrograms(queue,write);
 	CHECK(SparkDeviceFree(&device) == SPARK_STATUS_OK,"free the device buffer");
 	CHECK(SparkDeviceShutdown() == SPARK_STATUS_BUSY,"shutdown refuses while a kernel library is loaded");
 	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_OK && SparkDeviceKernelDestroy(read) == SPARK_STATUS_OK &&
 		SparkDeviceKernelDestroy(shared) == SPARK_STATUS_OK,"destroy the kernels");
 	CHECK(SparkDeviceKernelDestroy(write) == SPARK_STATUS_INVALID_ARGUMENT,"a destroyed kernel is refused");
 	CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"unload the library");
+}
+
+
+
+static void TestProgramRefusals(SparkDeviceQueue *queue, SparkDeviceBuffer *target)
+{
+	SparkDeviceProgram *program = 0;
+	SparkDevicePatch patch;
+	memset(&patch,0,sizeof(patch));
+	patch.target = SPARK_DEVICE_PROGRAM_TARGET_GRID_X;
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch needs a recording queue");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,"finishing needs a recording queue");
+	CHECK(SparkDeviceProgramRecord(queue,"contract refusals") == SPARK_STATUS_OK,"start a recording");
+	CHECK(SparkDeviceProgramRecord(queue,"contract twice") == SPARK_STATUS_BUSY,"a queue records one program at a time");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_BUSY && SparkDeviceQueueQuery(queue) == SPARK_STATUS_BUSY &&
+		SparkDeviceSynchronize(SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_BUSY,"a recording queue is neither waited on nor synchronized");
+	CHECK(SparkDeviceFill(queue,At(target,0u),1u,64u) == SPARK_STATUS_OK,"record a fill");
+	CHECK(SparkDeviceProgramPatch(queue,&patch) == SPARK_STATUS_INVALID_ARGUMENT,"a patch must follow a kernel launch");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_INVALID_ARGUMENT && program == 0,
+		"a program with a refused step is refused at finish, so a broken program never runs");
+	CHECK(SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"the queue answers again once its recording ends");
+}
+
+static void TestPrograms(SparkDeviceQueue *queue)
+{
+	enum { BYTES = 4096, RUNS = 3 };
+	SparkDeviceBuffer source, target;
+	SparkDeviceProgram *program = 0;
+	SparkDeviceProgramInfo info;
+	SparkDeviceEvent *mark = 0;
+	uint32_t calls = 0u, run, index, wrong = 0u;
+	uint64_t value = 0u;
+	if ( ProgramsRecord() == 0u )
+	{
+		CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"eagerly") != 0 &&
+			SparkDeviceQueueQuery(queue) == SPARK_STATUS_OK,"a backend that records no programs refuses the recording, naming why, and its queue stays usable");
+		return;
+	}
+	CHECK(SparkDeviceAllocate(&source,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program source") == SPARK_STATUS_OK &&
+		SparkDeviceAllocate(&target,SPARK_DEVICE_SPACE_SHARED_COHERENT,BYTES,"program target") == SPARK_STATUS_OK &&
+		SparkDeviceEventCreate(&mark) == SPARK_STATUS_OK,"allocate the program's buffers and event");
+	TestProgramRefusals(queue,&target);
+	Pattern((uint8_t *)source.host,BYTES,11u);
+	memset(target.host,0xee,BYTES);
+	CHECK(SparkDeviceProgramRecord(queue,"contract program") == SPARK_STATUS_OK,"start recording");
+	CHECK(SparkDeviceFill(queue,At(&target,0u),0x5a,BYTES / 2u) == SPARK_STATUS_OK &&
+		SparkDeviceCopy(queue,At(&target,BYTES / 2u),At(&source,0u),BYTES / 2u) == SPARK_STATUS_OK,"record a fill and a copy");
+	CHECK(SparkDeviceFree(&source) == SPARK_STATUS_BUSY,"a buffer the recording uses is not freed under it");
+	CHECK(SparkDeviceQueueHostCallback(queue,CountCallback,&calls) == SPARK_STATUS_OK && SparkDeviceEventRecord(mark,queue) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWaitEvent(queue,mark) == SPARK_STATUS_OK,"record a host callback, an event and a wait on it");
+	CHECK(SparkDeviceProgramFinish(queue,&program) == SPARK_STATUS_OK && program != 0,"finish the program");
+	CHECK(((const uint8_t *)target.host)[0] == 0xee && ((const uint8_t *)target.host)[BYTES - 1u] == 0xee && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == 0u,
+		"recording runs nothing");
+	CHECK(SparkDeviceProgramGetInfo(program,&info) == SPARK_STATUS_OK && info.nodes == 5u && info.kernels == 0u && info.values == 0u &&
+		info.places == 0u,"the program holds the five recorded operations and no patch");
+	CHECK(SparkDeviceFree(&target) == SPARK_STATUS_BUSY && SparkDeviceEventDestroy(mark) == SPARK_STATUS_BUSY,
+		"a live program keeps the buffers and events it uses");
+	CHECK(SparkDeviceProgramRun(program,queue,&value,1u) == SPARK_STATUS_INVALID_ARGUMENT,"a run passes exactly the program's patch values");
+	if ( ProgramsRun() == 0u )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_UNSUPPORTED,"a backend that does not run programs refuses the run");
+	for ( run = 0u; ProgramsRun() != 0u && run < RUNS; run++ )
+		CHECK(SparkDeviceProgramRun(program,queue,0,0u) == SPARK_STATUS_OK,"run the program");
+	CHECK(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK,"wait for the runs");
+	for ( index = 0u; ProgramsRun() != 0u && index < BYTES; index++ )
+		wrong += ((const uint8_t *)target.host)[index] != (index < BYTES / 2u ? 0x5au : ((const uint8_t *)source.host)[index - BYTES / 2u]);
+	CHECK(wrong == 0u && __atomic_load_n(&calls,__ATOMIC_SEQ_CST) == (ProgramsRun() != 0u ? RUNS : 0u),
+		"each run does the recorded fill, copy and host callback");
+	CHECK(SparkDeviceShutdown() == SPARK_STATUS_BUSY,"shutdown refuses while a program is live");
+	CHECK(SparkDeviceProgramDestroy(program) == SPARK_STATUS_OK && SparkDeviceProgramDestroy(program) == SPARK_STATUS_INVALID_ARGUMENT,
+		"destroy the program once");
+	CHECK(SparkDeviceEventDestroy(mark) == SPARK_STATUS_OK && SparkDeviceFree(&source) == SPARK_STATUS_OK && SparkDeviceFree(&target) == SPARK_STATUS_OK,
+		"free the program's buffers and event");
+}
+
+static void TestTransforms(void)
+{
+	SparkDeviceTransform rows = {1, 0, 64u, 1, 0}, affine = {3, -2, 1u, 2, 5}, both = {2, 1, 8u, 3, 1}, negative = {1, -10, 1u, 1, 0};
+	uint32_t fits = 0u;
+	CHECK(SparkDeviceTransformApply(0,77u,&fits) == 77u && fits == 1u,"no transform keeps the value");
+	CHECK(SparkDeviceTransformApply(&rows,1u,&fits) == 1u && fits == 1u && SparkDeviceTransformApply(&rows,64u,&fits) == 1u &&
+		SparkDeviceTransformApply(&rows,65u,&fits) == 2u,"a grid width from rows is a ceiling division");
+	CHECK(SparkDeviceTransformApply(&affine,4u,&fits) == 25u && fits == 1u,"value times a plus b, scaled and offset");
+	CHECK(SparkDeviceTransformApply(&both,7u,&fits) == 7u && fits == 1u,"ceil((7 * 2 + 1) / 8) * 3 + 1 is 7");
+	CHECK(SparkDeviceTransformApply(&negative,3u,&fits) == 0u && fits == 0u,"a negative intermediate does not fit");
 }
 
 static void TestLifecycle(void)
@@ -1017,6 +1203,8 @@ int main(void)
 	TestTiming(queue);
 	TestResolve();
 	TestFileAndRegister(queue);
+	TestTransforms();
+	TestPrograms(queue);
 	TestKernels(queue);
 	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"destroy the queue");
 	TestLifecycle();

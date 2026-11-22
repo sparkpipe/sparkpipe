@@ -29,14 +29,19 @@ payload, so the two rails are equal-rate data paths.
 | 8 | `0-7` | `0<->1`, `2<->3`, `4<->5`, `6<->7` |
 | 16 | `0-F` | `0<->1`, `2<->3`, `4<->5`, `6<->7`, `8<->9`, `A<->B`, `C<->D`, `E<->F` |
 
-Both rails reach every rank. Partner traffic is not special on the wire any
-more: it crosses `cisco0` like any other rail 2 traffic. The hub, rtx5090, is on
-`cisco0` at `10.10.201.250`; its draft servers still take the tap rank's stream
-over the 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1).
-Stage lanes do not use that path for serving: the API reaches each rank at
-`10.10.201.<rank>` and taps reach the hub at `10.10.201.250`, direct over rail 2
-through the cisco0 switch at 100 Gb/s (0.100 ms to spark0, against 0.375 ms
-forwarded through sparkf).
+The first port's switch is the network every fleet has; the second port's
+switch is optional. Serving therefore uses only the first port: the API reaches
+each rank's control endpoint at its first-port address `10.10.100.(10+rank)`
+(`first_port` in `tools/spark_fabric.json`, which `tools/stage_lane.py`
+renders from and the node baseline's addresses are tested against), and taps reach the hub's draft servers at `10.10.250.2`, the
+hub's 10 GbE link to sparkf (`eno1` 10.10.250.2/30, sparkf 10.10.250.1), which
+the ranks route through sparkf's first-port address `10.10.100.25`.
+`tests/test_lane_records.py` refuses a lane whose control endpoint or tap
+stream is anywhere else. When the second switch is up, both rails reach every
+rank, partner traffic crosses `cisco0` like any other rail 2 traffic, the hub is
+on `cisco0` at `10.10.201.250`, and weightd's mesh uses the second port by the
+rules in [WEIGHTD_DESIGN.md](WEIGHTD_DESIGN.md) (*Ports in use*); no serving
+endpoint depends on it.
 `MESH_LINK_MAP` in `tools/fleet_node_agent.sh` still lists the eight partner
 pairs, for which the agent passes weightd its rail 2 flags.
 

@@ -112,7 +112,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->memory_budget_bytes = configuration->memory_budget_bytes != 0u ? configuration->memory_budget_bytes :
 		(pages > 0 ? (uint64_t)pages * host_page_bytes : 0u);
 	properties->max_buffer_bytes = 1ull << 44;
-	properties->properties = 0u;
+	properties->properties = SPARK_DEVICE_PROPERTY_PROGRAMS;
 	properties->max_constant_bytes = HOST_CONSTANT_BYTES;
 	return(SPARK_STATUS_OK);
 }
@@ -868,4 +868,47 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	(void)launch;
 	(void)allocations;
 	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"the host backend launches no device kernels"));
+}
+
+uint32_t SparkDeviceBackendProgramNative(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
+{
+	(void)queue;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	(void)program;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)
+{
+	(void)queue;
+	(void)place;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_patch",program->name,0,"this backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_finish",program->name,0,"this backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values)
+{
+	(void)queue;
+	(void)values;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"this backend replays programs in the device layer"));
+}
+
+void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
+{
+	(void)program;
 }

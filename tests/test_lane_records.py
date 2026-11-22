@@ -115,6 +115,18 @@ def main():
                 if "kv_snapshot_maximum_bytes" in rank or "kv_partition_reserve_bytes" in rank or rank["kv_backing_maximum_bytes"] != need:
                     failures.append(f"{record_id}: rank {rank['rank_index']} renders a per-lane snapshot cap, a partition reserve or a {rank['kv_backing_maximum_bytes']}-byte backing instead of the {need} bytes its spilled pages need")
                     break
+            fabric, second = stage_lane.FABRIC["first_port"], stage_lane.FABRIC["second_port"]
+            first_node = record.get("first_node", 0)
+            for rendered_name, rendered in (("deployment.json", node), ("model_resident.json", hub)):
+                for rank in rendered["nodes"]:
+                    wanted = f"{fabric['prefix']}.{fabric['address_base'] + first_node + rank['rank_index']}"
+                    if rank["control_endpoint"]["host"] != wanted:
+                        failures.append(f"{record_id}: {rendered_name} rank {rank['rank_index']} control endpoint {rank['control_endpoint']['host']}, "
+                                        f"not its first-port address {wanted}: one switch is the network every lane can count on")
+                        break
+            stream = (record.get("taps") or {}).get("stream", "")
+            if stream.startswith(second["prefix"] + "."):
+                failures.append(f"{record_id}: taps.stream {stream} is on the optional second port's subnet")
             if "tokenizer" in node or "draft_server" in node or hub["tokenizer"]["sha256"] != record["tokenizer_sha256"]:
                 failures.append(f"{record_id}: the tokenizer and draft server belong to the hub model_resident.json only")
             prefix = record.get("text_prompt_prefix_token_ids")

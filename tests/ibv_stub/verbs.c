@@ -759,6 +759,11 @@ int spark_stub_ibv_qp_remote_qpn(uint32_t qpn)
     return qp != 0 ? (int)qp->remote_qpn : -1;
 }
 
+const char *ibv_wc_status_str(int status)
+{
+    return status == IBV_WC_SUCCESS ? "success" : "stub completion error";
+}
+
 uint32_t spark_stub_ibv_qp_remote_address(uint32_t qpn)
 {
     SparkStubIbvQp *qp = spark_stub_ibv_qp_find(qpn);
