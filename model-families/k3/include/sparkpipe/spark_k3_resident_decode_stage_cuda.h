@@ -1,13 +1,13 @@
 #pragma once
 struct SparkWeightdLazyPack;
 
-#include <cuda_runtime.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_k3_bind.h"
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
 #include "model-families/k3/source/slice.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 
 #define SPARK_K3_DISPATCH_OK 0
@@ -127,7 +127,7 @@ int32_t SparkK3DispatchAttachKv(SparkK3Dispatch *d, uint8_t *pool, uint64_t laye
 	const uint32_t *page_table, uint32_t page_table_stride, uint32_t pool_page_count, uint32_t sequence_count);
 int32_t SparkK3DispatchEnableIndex(SparkK3Dispatch *d);
 int32_t SparkK3DispatchResetSlot(SparkK3Dispatch *d, uint32_t slot,
-	uint32_t tp_degree, cudaStream_t stream);
+	uint32_t tp_degree, SparkGpuStream stream);
 
 int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 	SparkK3BoundLayer *bounds, uint32_t layer_count,
@@ -136,10 +136,10 @@ int32_t SparkK3DispatchBindWeights(SparkK3Dispatch *d, SparkK3Pack *pack,
 int32_t SparkK3DispatchShardRows(SparkK3Dispatch *d, uint32_t rows);
 int32_t SparkK3DispatchStep(SparkK3Dispatch *d, const SparkK3StepInput *in,
 	uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows,
-	uint32_t context, uint32_t multiprocessors, cudaStream_t stream);
+	uint32_t context, uint32_t multiprocessors, SparkGpuStream stream);
 int32_t SparkK3DispatchEnableVerify(SparkK3Dispatch *d, uint32_t rows);
 int32_t SparkK3DispatchKeep(SparkK3Dispatch *d, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_indices,
 	const uint32_t *state_index, const uint32_t *kept, uint32_t sequences, uint32_t rows, uint32_t multiprocessors,
-	cudaStream_t stream);
+	SparkGpuStream stream);
 
 

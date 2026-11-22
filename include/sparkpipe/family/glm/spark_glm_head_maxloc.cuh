@@ -1,8 +1,9 @@
 #pragma once
+#include "sparkpipe/spark_gpu.h"
 
-static int32_t SPARK_FAMILY(CudaStatus)(cudaError_t status)
+static int32_t SPARK_FAMILY(CudaStatus)(SparkGpuError status)
 {
-	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(status == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static __device__ __forceinline__ uint32_t SPARK_FAMILY(OrderedHeadScore)(float score)

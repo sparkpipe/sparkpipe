@@ -99,7 +99,9 @@ static void ProbeMatrixBuild(ProbeMatrix *matrix,uint32_t output,uint32_t input,
 	PROBE_CUDA(cudaMalloc((void **)&matrix->device_weight,count));
 	PROBE_CUDA(cudaMalloc((void **)&matrix->device_scale,scales * 4u));
 	PROBE_CUDA(cudaMemcpy(matrix->device_weight,matrix->weight.data(),count,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(matrix->device_scale,matrix->scale.data(),scales * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 }
 
 static double ProbeReference(const ProbeMatrix *matrix,uint32_t expert,uint32_t neuron,const uint16_t *activation,double *magnitude)
@@ -175,7 +177,9 @@ static void ProbeCaseBuild(ProbeCase *probe,uint32_t rows,cudaStream_t stream)
 	PROBE_CUDA(cudaMalloc((void **)&probe->output_up,(uint64_t)probe->pairs * PROBE_UP * 2u));
 	PROBE_CUDA(cudaMalloc((void **)&probe->output_down,(uint64_t)probe->pairs * PROBE_HIDDEN * 2u));
 	PROBE_CUDA(cudaMemcpy(probe->device_route,probe->route.data(),probe->pairs * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(probe->device_activation,probe->activation.data(),probe->activation.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_OK((LmRouteBuild<256u,PROBE_EXPERTS>(probe->device_route,rows,probe->pairs,PROBE_TOP_K,probe->offset,probe->packed,probe->source,PROBE_UP,PROBE_HIDDEN,PROBE_TILE_N,PROBE_TILE_N,probe->prefix_up,probe->prefix_down,stream)));
 	PROBE_CUDA(cudaStreamSynchronize(stream));
 	probe->packed_host.resize(probe->pairs);
@@ -186,6 +190,7 @@ static void ProbeCaseBuild(ProbeCase *probe,uint32_t rows,cudaStream_t stream)
 		for (pair=0u; pair<probe->pairs; pair++)
 			memcpy(packed_intermediate.data() + (uint64_t)probe->packed_host[pair] * PROBE_INTER,probe->intermediate.data() + (uint64_t)pair * PROBE_INTER,PROBE_INTER * 2u);
 		PROBE_CUDA(cudaMemcpy(probe->device_intermediate,packed_intermediate.data(),packed_intermediate.size() * 2u,cudaMemcpyHostToDevice));
+		PROBE_CUDA(cudaDeviceSynchronize());
 	}
 }
 
@@ -365,8 +370,11 @@ static void ProbeDense(const ProbeDenseShape *shape,uint32_t rows,uint32_t timin
 	PROBE_CUDA(cudaMalloc((void **)&row_offset,2u * 4u));
 	PROBE_CUDA(cudaMalloc((void **)&tile_prefix,2u * 4u));
 	PROBE_CUDA(cudaMemcpy(device_weight,weight.data(),weight.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_activation,activation.data(),activation.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(row_offset,host_offset,sizeof(host_offset),cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	for (path=0u; path<2u; path++)
 	{
 		PROBE_CUDA(cudaMemset(device_output,0xff,output.size() * 2u));
@@ -467,8 +475,11 @@ static void ProbeTileInvariance(const ProbeMatrix *matrix,uint32_t rows,uint32_t
 	PROBE_CUDA(cudaMalloc((void **)&device_offset,offset.size() * 4u));
 	PROBE_CUDA(cudaMalloc((void **)&device_source,source.size() * 4u));
 	PROBE_CUDA(cudaMemcpy(device_activation,activation.data(),activation.size() * 2u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_offset,offset.data(),offset.size() * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	PROBE_CUDA(cudaMemcpy(device_source,source.data(),source.size() * 4u,cudaMemcpyHostToDevice));
+	PROBE_CUDA(cudaDeviceSynchronize());
 	memset(&args,0,sizeof(args));
 	args.activation = device_activation;
 	args.weight = matrix->device_weight;

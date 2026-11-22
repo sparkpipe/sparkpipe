@@ -6,6 +6,7 @@
 #include "inference/kernels/mma.cuh"
 #include <math.h>
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_INDEX_SCORE_WARPS 8u
 #define LM_INDEX_SCORE_THREADS (LM_INDEX_SCORE_WARPS * LM_WARP_LANES)
@@ -395,7 +396,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 #endif
 
 template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages>
-static inline cudaError_t LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const uint16_t *head_weight_bf16, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, cudaStream_t stream)
+static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const uint16_t *head_weight_bf16, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream)
 {
 	static_assert(LM_INDEX_SCORE_SHARED_ROWS == LM_INDEX_SCORE_WARPS, "the block-slot kernel gives every warp of a block its own row");
 #ifdef __CUDACC__
@@ -406,5 +407,5 @@ static inline cudaError_t LmWeightedSparseScoreLaunch(const uint16_t *index_quer
 #endif
 		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight_bf16,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }

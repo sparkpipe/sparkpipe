@@ -11,7 +11,7 @@
 #include <unistd.h>
 
 #include <cuda.h>
-#include <cuda_runtime.h>
+#include "sparkpipe/spark_gpu.h"
 
 SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes)
 {
@@ -21,7 +21,7 @@ SparkStatus SparkWeightdKvPoolGranularity(uint64_t *bytes)
 	if ( bytes == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*bytes = 0u;
-	if ( cudaGetDevice(&device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	memset(&prop,0,sizeof(prop));
 	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
@@ -163,7 +163,7 @@ static SparkStatus SparkWeightdKvPoolPlace(SparkWeightdKvPoolMapping *mapping,co
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		mapping->chunk_offsets[index] = chunk_offsets[index];
 	}
-	if ( cudaGetDevice(&mapping->device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&mapping->device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( request->device_base != 0 )
 	{
@@ -354,7 +354,7 @@ SparkStatus SparkWeightdKvSharedMapChunks(SparkWeightdKvSharedMapping *mapping,v
 	if ( mapping->chunk_offsets == 0 || mapping->chunk_handles == 0 )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	memcpy(mapping->chunk_offsets,chunk_offsets,(size_t)mapping->chunk_count * sizeof(uint64_t));
-	if ( cudaGetDevice(&mapping->device) != cudaSuccess )
+	if ( SparkGpuGetDevice(&mapping->device) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	mapping->device_base = device_base;
 	return(SparkWeightdKvMapChunks(mapping->client,mapping->pool_generation,(uintptr_t)device_base,mapping->chunk_offsets,mapping->chunk_handles,mapping->chunk_bytes,

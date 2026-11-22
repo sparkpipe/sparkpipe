@@ -11,6 +11,7 @@
 
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define FUZZ_MAX_RANKS SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE
 #define FUZZ_HIDDEN 64u
@@ -95,8 +96,6 @@ extern int cuda_stub_host_register_result;
 extern int cuda_stub_pageable_coherent;
 extern int cuda_stub_host_unregister_result;
 extern uint32_t spark_stub_cuda_host_registered(void *address);
-extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
-extern int cudaHostUnregister(void *address);
 
 SparkStatus SparkWeightdClientConnect(const char *socket_path, SparkWeightdClient **client, SparkWeightdHelloResult *hello_out)
 {
@@ -2053,12 +2052,6 @@ static void *FuzzCollectiveCalloc(size_t count, size_t size)
     return calloc(count,size);
 }
 
-extern int cudaMalloc(void **pointer,size_t bytes);
-extern int cudaFree(void *pointer);
-extern int cudaMemset(void *pointer,int value,size_t bytes);
-extern int cudaMemsetAsync(void *pointer,int value,size_t bytes,void *stream);
-extern int cudaMemcpy(void *destination,const void *source,size_t bytes,int kind);
-extern int cudaHostAlloc(void **pointer,size_t bytes,unsigned int flags);
 extern uint32_t spark_stub_cuda_outstanding_allocs(void);
 
 static uint32_t g_init_fail_at,g_init_calls,g_init_free_mask,g_init_free_calls;
@@ -2109,12 +2102,12 @@ static int FuzzCudaHostAlloc(void **pointer,size_t bytes,unsigned int flags)
 }
 
 #define calloc FuzzCollectiveCalloc
-#define cudaMalloc FuzzCudaMalloc
-#define cudaFree FuzzCudaFree
-#define cudaMemset FuzzCudaMemset
-#define cudaMemsetAsync FuzzCudaMemsetAsync
-#define cudaMemcpy FuzzCudaMemcpy
-#define cudaHostAlloc FuzzCudaHostAlloc
+#define SparkGpuMalloc FuzzCudaMalloc
+#define SparkGpuFree FuzzCudaFree
+#define SparkGpuMemset FuzzCudaMemset
+#define SparkGpuMemsetAsync FuzzCudaMemsetAsync
+#define SparkGpuMemcpy FuzzCudaMemcpy
+#define SparkGpuHostAlloc FuzzCudaHostAlloc
 #include "../ring/transport/tp_device_collective.c"
 
 static void FuzzSessionClearsTails(void)
@@ -2143,12 +2136,12 @@ static void FuzzSessionClearsTails(void)
         "a new session clears every slot tail of its band before its first round, so no tag of an earlier session can pass a wait");
 }
 #undef calloc
-#undef cudaMalloc
-#undef cudaFree
-#undef cudaMemset
-#undef cudaMemsetAsync
-#undef cudaMemcpy
-#undef cudaHostAlloc
+#undef SparkGpuMalloc
+#undef SparkGpuFree
+#undef SparkGpuMemset
+#undef SparkGpuMemsetAsync
+#undef SparkGpuMemcpy
+#undef SparkGpuHostAlloc
 
 static void FuzzLegacyCallbacks(uint32_t enabled)
 {

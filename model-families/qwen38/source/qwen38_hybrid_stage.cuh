@@ -30,6 +30,7 @@
 #include "inference/kernels/weight_codec.cuh"
 #include "runtime/gemm.cuh"
 #include "sparkpipe/spark_qwen38_family.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define QH_THREADS 256u
 #define QH_SCALE_K 128u
@@ -487,7 +488,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 	};
 
 	static const char *Tag(void)
@@ -513,7 +514,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	template<class Format>
 	static int32_t Project(const void *weight, const float *scale_rows, const uint16_t *source, uint16_t *destination,
-		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors, cudaStream_t stream)
+		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors, SparkGpuStream stream)
 	{
 		const LmScaleTensor scale = scale_rows != 0 ?
 			LmScaleTensorBuild(scale_rows, LM_SCALE_ENCODING_F32, 1u, output_dimension, input_dimension, 1u, QH_SCALE_K) : LmScaleTensorNone();
@@ -523,7 +524,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static int32_t Linear(const State *state, const uint8_t *weight, const float *scale_rows, const uint16_t *source,
 		uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors,
-		cudaStream_t stream)
+		SparkGpuStream stream)
 	{
 		return state->linear_bytes == 1u ?
 			Project<LmFp8>(weight, scale_rows, source, destination, rows, input_dimension, output_dimension, exact, multiprocessors, stream) :
@@ -536,14 +537,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	static SparkStatus GdnRecur(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, const uint16_t *qkv, const uint16_t *ba,
-		const uint32_t *kept, uint32_t commit, cudaStream_t stream)
+		const uint32_t *kept, uint32_t commit, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, sequences = step->sequences, heads = state->gdn_heads;
 		uint8_t *state_pool = state->gdn_state + (uint64_t)layer->recurrent_index * state->slots * state->gdn_state_bytes;
 		uint16_t *window = state->gdn_window + (uint64_t)layer->recurrent_index * state->slots * (state->gdn_window_bytes / sizeof(uint16_t));
 		LmQkvLayout layout;
 		if ( LmCausalConvLaunch<QH_CONV,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, qkv, layer->gdn_conv,
-			state->qkv, state->gdn_channels, sequences, commit, step->sequence_row_indices, rows, stream) != cudaSuccess )
+			state->qkv, state->gdn_channels, sequences, commit, step->sequence_row_indices, rows, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		layout.query_dimension = state->gdn_qk;
 		layout.key_dimension = state->gdn_qk;
@@ -559,7 +560,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			ba + heads, ba, layer->gdn_a_log, layer->gdn_dt_bias, state->retention, state->write_gate, heads, rows, 2u * heads);
 		if ( LmDeltaRuleLaunch<QH_THREADS,QH_KEY_DIM,QH_VALUE_DIM,float>(rows, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index,
 				step->sequence_row_begin, kept, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
-				heads, 1u, sequences, commit, step->sequence_row_indices, stream) != cudaSuccess )
+				heads, 1u, sequences, commit, step->sequence_row_indices, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return CudaStageLaunched();
 	}
@@ -568,7 +569,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		const QwenHybridLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, heads = state->gdn_heads, exact = Exact(step);
 		const uint32_t sms = step->multiprocessors;
 		const uint64_t replay = (uint64_t)layer->recurrent_index * G::kVerifyRows;
@@ -581,10 +582,10 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			Project<LmBf16Format>(layer->gdn_ba, 0, state->normed, state->ba, rows, G::kHidden, 2u * heads, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( step->commit == 0u &&
-			(cudaMemcpyAsync(state->replay_qkv + replay * state->gdn_channels, state->qkv, (uint64_t)rows * state->gdn_channels * sizeof(uint16_t),
-				cudaMemcpyDeviceToDevice, stream) != cudaSuccess ||
-			cudaMemcpyAsync(state->replay_ba + replay * 2u * heads, state->ba, (uint64_t)rows * 2u * heads * sizeof(uint16_t), cudaMemcpyDeviceToDevice,
-				stream) != cudaSuccess) )
+			(SparkGpuMemcpyAsync(state->replay_qkv + replay * state->gdn_channels, state->qkv, (uint64_t)rows * state->gdn_channels * sizeof(uint16_t),
+				SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpyAsync(state->replay_ba + replay * 2u * heads, state->ba, (uint64_t)rows * 2u * heads * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE,
+				stream) != SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		status = GdnRecur(state, layer, step, state->qkv, state->ba, (const uint32_t *)0, step->commit, stream);
@@ -604,63 +605,63 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static SparkStatus IndexPrepare(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus IndexPrepare(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, sms = step->multiprocessors;
 		uint16_t *tail = state->index_tail + (uint64_t)layer->kv_index * state->slots * S::kIndexTail * G::kIndexDim;
 		if ( Project<LmBf16Format>(layer->index_qk, 0, state->normed, state->index_qk, rows, G::kHidden, S::kIndexWidth, Exact(step), sms, stream) !=
 			LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		QwenIndexSplitKernel<G><<<dim3(Blocks(S::kIndexWidth), rows), QH_THREADS, 0, stream>>>(state->index_qk, state->index_query, state->index_key);
-		if ( step->commit == 0u && cudaMemcpyAsync(state->replay_index + (uint64_t)layer->kv_index * G::kVerifyRows * G::kIndexDim, state->index_key,
-			(uint64_t)rows * G::kIndexDim * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+		LM_LAUNCH((QwenIndexSplitKernel<G>), dim3(Blocks(S::kIndexWidth), rows), QH_THREADS, 0, stream, state->index_qk, state->index_query, state->index_key);
+		if ( step->commit == 0u && SparkGpuMemcpyAsync(state->replay_index + (uint64_t)layer->kv_index * G::kVerifyRows * G::kIndexDim, state->index_key,
+			(uint64_t)rows * G::kIndexDim * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		LM_LAUNCH((LmHeadRmsNormKernel<QH_THREADS,float>), dim3(G::kIndexHeads,rows), QH_THREADS, 0, stream,
 			state->index_query, layer->index_q_norm, state->index_query, rows, G::kIndexHeads, G::kIndexDim, QH_EPSILON, 1.0f);
 		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS>), dim3(rows,G::kIndexHeads), QH_THREADS, 0, stream,
 			state->index_query, step->positions, G::kIndexHeads, G::kIndexDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
-		QwenIndexBlockKeysKernel<G><<<rows, G::kIndexDim, 0, stream>>>(state->index_key, tail, layer->index_k_norm, state->index_block,
+		LM_LAUNCH((QwenIndexBlockKeysKernel<G>), rows, G::kIndexDim, 0, stream, state->index_key, tail, layer->index_k_norm, state->index_block,
 			step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 			G::kRopeTheta);
-		QwenIndexStoreKernel<G><<<rows, G::kIndexDim, 0, stream>>>(state->index_views[layer->kv_index], state->index_block, step->sequence_of_row,
+		LM_LAUNCH((QwenIndexStoreKernel<G>), rows, G::kIndexDim, 0, stream, state->index_views[layer->kv_index], state->index_block, step->sequence_of_row,
 			step->positions);
-		QwenIndexTailKernel<G><<<step->sequences, G::kIndexDim, 0, stream>>>(state->index_key, tail, step->positions, step->sequence_row_begin,
+		LM_LAUNCH((QwenIndexTailKernel<G>), step->sequences, G::kIndexDim, 0, stream, state->index_key, tail, step->positions, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, step->commit, (const uint32_t *)0);
 		return CudaStageLaunched();
 	}
 
-	static SparkStatus IndexSelect(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus IndexSelect(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows;
 		const LmKvShardView *view = &state->index_views[layer->kv_index];
 		SparkStatus status;
-		QwenIndexScoreKernel<G><<<dim3((state->index_local_stride + QH_THREADS - 1u) / QH_THREADS, rows), QH_THREADS, 0, stream>>>(*view,
+		LM_LAUNCH((QwenIndexScoreKernel<G>), dim3((state->index_local_stride + QH_THREADS - 1u) / QH_THREADS, rows), QH_THREADS, 0, stream, *view,
 			state->index_query, step->sequence_of_row, step->context_length, step->positions, state->index_scores, state->index_local_stride,
 			1.0f / sqrtf((float)G::kIndexDim));
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmTopkExactLaunch<QH_THREADS>(state->index_scores, rows, state->index_local_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK,
 				LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->index_topk_entries,
-				state->index_local_selected, stream) != cudaSuccess ||
+				state->index_local_selected, stream) != SPARK_GPU_SUCCESS ||
 			LmIndexShardCandidatePackLaunch<QH_THREADS>(view->shard, state->index_scores, state->index_local_stride, state->index_local_selected,
-				S::kIndexBlocks, rows, state->index_candidates, stream) != cudaSuccess )
+				S::kIndexBlocks, rows, state->index_candidates, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows,
 			S::kIndexBlocks * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)), state->index_candidates, state->index_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( cudaMemsetAsync(state->index_mask, 0, (uint64_t)rows * state->index_mask_words * sizeof(uint32_t), stream) != cudaSuccess )
+		if ( SparkGpuMemsetAsync(state->index_mask, 0, (uint64_t)rows * state->index_mask_words * sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		for ( uint32_t first = 0u; first < rows; first += QH_INDEX_CHUNK )
 		{
 			const uint32_t count = rows - first < QH_INDEX_CHUNK ? rows - first : QH_INDEX_CHUNK;
 			if ( LmIndexShardCandidateScatterLaunch<QH_THREADS>(state->index_gathered + (uint64_t)first * S::kIndexBlocks,
 					(uint64_t)rows * S::kIndexBlocks, state->tp_degree, S::kIndexBlocks, count, state->index_global_stride, state->index_full_scores,
-					stream) != cudaSuccess ||
+					stream) != SPARK_GPU_SUCCESS ||
 				LmTopkExactLaunch<QH_THREADS>(state->index_full_scores, count, state->index_global_stride, S::kIndexBlocks, LM_TOPK_EXACT_CHUNK,
 					LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->index_topk_entries,
-					state->index_selected + (uint64_t)first * S::kIndexBlocks, stream) != cudaSuccess )
+					state->index_selected + (uint64_t)first * S::kIndexBlocks, stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			QwenIndexMaskKernel<G><<<count, QH_THREADS, 0, stream>>>(state->index_selected, step->sequence_of_row, step->context_length,
+			LM_LAUNCH((QwenIndexMaskKernel<G>), count, QH_THREADS, 0, stream, state->index_selected, step->sequence_of_row, step->context_length,
 				step->positions, state->index_mask, state->index_mask_words, first);
 		}
 		return CudaStageLaunched();
@@ -670,7 +671,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		const QwenHybridLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors, degree = state->tp_degree;
 		const uint64_t units = ((uint64_t)rows * LmGqaShardRecordFloats(G::kHeads, G::kHeadDim, degree) * sizeof(float) +
 			G::kHidden * sizeof(uint16_t) - 1u) / (G::kHidden * sizeof(uint16_t));
@@ -686,8 +687,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmRankMajorRowsKernel<QH_THREADS><<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
-		QwenHybridSplitAttentionKernel<G><<<dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_full, state->attn_query,
+		LM_LAUNCH((LmRankMajorRowsKernel<QH_THREADS>), dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
+		LM_LAUNCH((QwenHybridSplitAttentionKernel<G>), dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_full, state->attn_query,
 			state->attn_gate, state->attn_key, state->attn_value);
 		LM_LAUNCH((LmHeadRmsNormKernel<QH_THREADS,float>), dim3(G::kHeads,rows), QH_THREADS, 0, stream,
 			state->attn_query, layer->q_norm, state->attn_query, rows, G::kHeads, G::kHeadDim, QH_EPSILON, 1.0f);
@@ -697,7 +698,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->attn_query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
 		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS,LM_ROPE_HALF_SPLIT,G::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,G::kKvHeads), QH_THREADS, 0, stream,
 			state->attn_key, step->positions, G::kKvHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
-		QwenHybridPackSlotKernel<G><<<dim3(Blocks(2u * S::kKvWidth),rows), QH_THREADS, 0, stream>>>(state->attn_key, state->attn_value, state->attn_slot);
+		LM_LAUNCH((QwenHybridPackSlotKernel<G>), dim3(Blocks(2u * S::kKvWidth),rows), QH_THREADS, 0, stream, state->attn_key, state->attn_value, state->attn_slot);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,QH_THREADS>), rows, QH_THREADS, 0, stream,
 			*view, state->attn_slot, step->sequence_of_row, step->positions, rows, 2u * S::kKvWidth);
@@ -715,14 +716,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kKvHeads,G::kHeadDim,G::kHeadDim>(*view, state->attn_query, G::kHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kHeadDim), state->send, stride, rows, stream,
-				S::kIndexer ? state->index_mask : (const uint32_t *)0, state->index_mask_words, G::kIndexRatio) != cudaSuccess )
+				S::kIndexer ? state->index_mask : (const uint32_t *)0, state->index_mask_words, G::kIndexRatio) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( LmGqaShardMergeLaunch<G::kHeadDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream) != cudaSuccess )
+		if ( LmGqaShardMergeLaunch<G::kHeadDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSliceColumnsKernel<QH_THREADS><<<dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream>>>(state->attn_gate, state->merged_gate,
+		LM_LAUNCH((LmSliceColumnsKernel<QH_THREADS>), dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream, state->attn_gate, state->merged_gate,
 			S::kQWidth, state->tp_rank * state->attn_width, state->attn_width);
 		LM_LAUNCH((LmOutputGateKernel<QH_THREADS,true>), rows, QH_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -748,7 +749,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	static SparkStatus Moe(State *state, const QwenHybridLayer *layer, const SparkStageRunnerStep *step, uint32_t first, uint32_t rows,
-		cudaStream_t stream)
+		SparkGpuStream stream)
 	{
 		const uint32_t sms = step->multiprocessors, routes = rows * G::kTopK, exact = Exact(step);
 		const uint16_t *normed = state->normed + (uint64_t)first * G::kHidden;
@@ -758,17 +759,17 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		int32_t launch;
 		if ( Project<LmBf16Format>(layer->moe_router, 0, normed, state->router_logits, rows, G::kHidden, G::kExperts, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouterSoftmaxKernel<QH_THREADS,G::kExperts><<<rows, QH_THREADS, 0, stream>>>(state->router_logits, state->router_probs);
+		LM_LAUNCH((LmRouterSoftmaxKernel<QH_THREADS,G::kExperts>), rows, QH_THREADS, 0, stream, state->router_logits, state->router_probs);
 		if ( LmTopkRouteLaunch<QH_THREADS,G::kTopK,true,LM_TOPK_SCORE_IDENTITY>(rows, state->router_probs, G::kExperts, state->route_expert,
-			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, step->route_fault, stream) != cudaSuccess )
+			state->route_weight, (const float *)0, (const uint16_t *)0, 1.0f, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<QH_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
 			stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 		launch = LmLocalExpertsUp<ExpertFormat>(expert_routes, layer->moe_w1,
 			LmWeightCodecScaleTensor<G::kExpertCodec>(layer->moe_w1_scale, G::kLocalExperts, G::kMoeInter, G::kHidden), normed,
 			state->expert_gate, G::kHidden, G::kMoeInter, stream, exact);
@@ -778,7 +779,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				state->expert_up, G::kHidden, G::kMoeInter, stream, exact);
 		if ( launch != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), QH_THREADS, 0, stream>>>(state->expert_gate, state->expert_up,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), QH_THREADS, 0, stream, state->expert_gate, state->expert_up,
 			state->packed_weight, state->expert_act, G::kMoeInter, INFINITY);
 		launch = LmLocalExpertsDown<ExpertFormat>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
 			stream, exact);
@@ -786,14 +787,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			Project<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, exact, sms, stream) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		QwenHybridRowDotKernel<<<rows, QH_THREADS, 0, stream>>>(normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
+		LM_LAUNCH((QwenHybridRowDotKernel), rows, QH_THREADS, 0, stream, normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
 		LM_LAUNCH((LmSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Project<LmBf16Format>(layer->moe_shared_down, 0, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, exact, sms, stream) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		QwenHybridSigmoidGateRowsKernel<<<dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream>>>(state->shared_out, state->shared_logit, G::kHidden);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((QwenHybridSigmoidGateRowsKernel), dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream, state->shared_out, state->shared_logit, G::kHidden);
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->shared_out, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -802,7 +803,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	{
 		const QwenHybridLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		if constexpr ( G::kMoe )
 		{
 			const uint32_t chunk = step->commit == 0u ? LM_SKINNY_ROWS_WIDE : step->rows;
@@ -827,15 +828,15 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	static SparkStatus DumpLayer(State *state, uint32_t layer, const SparkStageRunnerStep *step, const uint16_t *hidden,
-		const uint16_t *partial, cudaStream_t stream)
+		const uint16_t *partial, SparkGpuStream stream)
 	{
 		const uint32_t width = S::kHyper && layer != 0xffffffffu ? S::kResidual : G::kHidden;
 		const uint32_t header[4] = { S::kHyper ? 0x484c5751u : 0x444c5751u, layer, step->rows, width };
 		const uint64_t values = (uint64_t)step->rows * width, partials = (uint64_t)step->rows * G::kHidden;
-		if ( cudaStreamSynchronize(stream) != cudaSuccess ||
-			cudaMemcpy(state->dump_positions, step->positions, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
-			cudaMemcpy(state->dump_rows, hidden, (size_t)values * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
-			(partial != 0 && cudaMemcpy(state->dump_rows + values, partial, (size_t)partials * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess) )
+		if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(state->dump_positions, step->positions, (size_t)step->rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemcpy(state->dump_rows, hidden, (size_t)values * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
+			(partial != 0 && SparkGpuMemcpy(state->dump_rows + values, partial, (size_t)partials * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( partial == 0 )
 			memset(state->dump_rows + values, 0, (size_t)partials * sizeof(uint16_t));
@@ -844,7 +845,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( S::kHyper && layer == 0xffffffffu )
 		{
 			if ( step->token_ids == 0 ||
-				cudaMemcpy(state->dump_positions, step->token_ids, (size_t)step->rows * sizeof(uint32_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+				SparkGpuMemcpy(state->dump_positions, step->token_ids, (size_t)step->rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 			fwrite(state->dump_positions, sizeof(uint32_t), step->rows, state->dump);
 		}
@@ -854,38 +855,38 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	}
 
 	static SparkStatus HcPre(State *state, const float *norm, const uint16_t *down, const uint16_t *up, const uint16_t *inject,
-		uint16_t *mixed, uint32_t rows, uint32_t exact, uint32_t sms, cudaStream_t stream)
+		uint16_t *mixed, uint32_t rows, uint32_t exact, uint32_t sms, SparkGpuStream stream)
 	{
-		LmGroupRmsNormKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->residual, norm, state->hc_normed,
+		LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->residual, norm, state->hc_normed,
 			G::kStreams, G::kHidden, QH_EPSILON);
 		if ( Project<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmHyperGateKernel<QH_THREADS><<<Blocks((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream>>>(state->hc_low,
+		LM_LAUNCH((LmHyperGateKernel<QH_THREADS>), Blocks((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream, state->hc_low,
 			(uint64_t)rows * G::kHcLowRank, (float)G::kStreams);
 		if ( Project<LmBf16Format>(up, 0, state->hc_low, state->hc_up, rows, G::kHcLowRank, S::kResidual, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmHyperMixKernel<QH_THREADS><<<dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream>>>(state->hc_up, state->hc_normed, mixed,
+		LM_LAUNCH((LmHyperMixKernel<QH_THREADS>), dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream, state->hc_up, state->hc_normed, mixed,
 			G::kStreams, G::kHidden);
 		if ( inject != 0 )
 			LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
 		return CudaStageLaunched();
 	}
 
-	static SparkStatus HcInject(State *state, uint32_t rows, cudaStream_t stream)
+	static SparkStatus HcInject(State *state, uint32_t rows, SparkGpuStream stream)
 	{
-		LmHyperInjectKernel<QH_THREADS><<<dim3(Blocks(S::kResidual), rows), QH_THREADS, 0, stream>>>(state->residual, state->partial,
+		LM_LAUNCH((LmHyperInjectKernel<QH_THREADS>), dim3(Blocks(S::kResidual), rows), QH_THREADS, 0, stream, state->residual, state->partial,
 			state->hc_inject, G::kStreams, G::kHidden);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus PleRecur(State *state, const SparkStageRunnerStep *step, const uint16_t *conv_in, const uint32_t *kept, uint32_t commit,
-		cudaStream_t stream)
+		SparkGpuStream stream)
 	{
 		if ( LmCausalConvLaunch<G::kPleConv,LM_CONV_SWISH,uint16_t,G::kPleDilation>(state->ple_window, step->recurrent_index, step->sequence_row_begin,
 			kept, conv_in, state->ple_conv_weight, state->ple_conv_out, S::kResidual, step->sequences, commit, step->sequence_row_indices, step->rows,
-			stream) != cudaSuccess )
+			stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmNgramHistoryKernel<<<(step->sequences + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, (const int32_t *)0, step->sequence_row_begin,
+		LM_LAUNCH((LmNgramHistoryKernel), (step->sequences + 63u) / 64u, 64u, 0, stream, step->token_ids, (const int32_t *)0, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory, step->sequences, G::kPleOrders, commit, kept);
 		return CudaStageLaunched();
 	}
@@ -893,22 +894,22 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	static SparkStatus Ple(State *state, const Frame &frame)
 	{
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, sms = step->multiprocessors;
 		const uint64_t elements = (uint64_t)rows * S::kResidual;
 		SparkStatus status;
 		if ( step->token_ids == 0 )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		CudaStageRowState(state, G::kPleLayer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LmNgramHashKernel<<<(rows + 63u) / 64u, 64u, 0, stream>>>(step->token_ids, (const int32_t *)0, step->positions, state->row_lane,
+		LM_LAUNCH((LmNgramHashKernel), (rows + 63u) / 64u, 64u, 0, stream, step->token_ids, (const int32_t *)0, step->positions, state->row_lane,
 			state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, state->ple_history, S::kPleHistory,
 			state->ple_multipliers, state->ple_vocab_sizes, state->ple_offsets, state->ple_ids, rows, G::kPleOrders, G::kPleHeadsPerOrder,
 			(int32_t)G::kPleEos, (int32_t)G::kPleEos, 1u);
 		if constexpr ( G::kPleTableCodec == SPARK_WEIGHT_CODEC_BF16 )
-			LmNgramGatherBf16Kernel<<<dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream>>>(state->ple_ids, (const uint16_t *)state->ple_table,
+			LM_LAUNCH((LmNgramGatherBf16Kernel), dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream, state->ple_ids, (const uint16_t *)state->ple_table,
 				state->ple_embed, state->ple_table_first, state->ple_table_rows, S::kPleColumns, G::kPleHeadDim);
 		else
-			LmNgramGatherScaledKernel<<<dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream>>>(state->ple_ids, state->ple_table, state->ple_table_scale,
+			LM_LAUNCH((LmNgramGatherScaledKernel), dim3(rows, S::kPleColumns), G::kPleHeadDim, 0, stream, state->ple_ids, state->ple_table, state->ple_table_scale,
 				state->ple_embed, state->ple_table_first, state->ple_table_rows, S::kPleColumns, G::kPleHeadDim);
 		status = CudaStageLaunched();
 		if ( status == SPARK_STATUS_OK )
@@ -920,28 +921,28 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			Project<LmBf16Format>(state->ple_value_weight, 0, state->ple_embed, state->ple_value, rows, G::kHidden, G::kHidden, Exact(step), sms, stream) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmGroupRmsNormKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->ple_key, state->ple_norm_key, state->ple_key,
+		LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->ple_key, state->ple_norm_key, state->ple_key,
 			G::kStreams, G::kHidden, QH_EPSILON);
-		LmGroupRmsNormKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->residual, state->ple_norm_query, state->ple_query,
+		LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->residual, state->ple_norm_query, state->ple_query,
 			G::kStreams, G::kHidden, QH_EPSILON);
-		LmHyperKeyGateKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->ple_key, state->ple_query, state->ple_value,
+		LM_LAUNCH((LmHyperKeyGateKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->ple_key, state->ple_query, state->ple_value,
 			state->ple_gated, G::kStreams, G::kHidden);
-		LmGroupRmsNormKernel<QH_THREADS><<<dim3(G::kStreams, rows), QH_THREADS, 0, stream>>>(state->ple_gated, state->ple_norm_conv, state->ple_conv_in,
+		LM_LAUNCH((LmGroupRmsNormKernel<QH_THREADS>), dim3(G::kStreams, rows), QH_THREADS, 0, stream, state->ple_gated, state->ple_norm_conv, state->ple_conv_in,
 			G::kStreams, G::kHidden, QH_EPSILON);
-		if ( step->commit == 0u && cudaMemcpyAsync(state->replay_ple, state->ple_conv_in, elements * sizeof(uint16_t), cudaMemcpyDeviceToDevice, stream) !=
-			cudaSuccess )
+		if ( step->commit == 0u && SparkGpuMemcpyAsync(state->replay_ple, state->ple_conv_in, elements * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) !=
+			SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		status = PleRecur(state, step, state->ple_conv_in, (const uint32_t *)0, step->commit, stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LmHyperAddKernel<QH_THREADS><<<Blocks(elements), QH_THREADS, 0, stream>>>(state->residual, state->ple_gated, state->ple_conv_out, elements);
+		LM_LAUNCH((LmHyperAddKernel<QH_THREADS>), Blocks(elements), QH_THREADS, 0, stream, state->residual, state->ple_gated, state->ple_conv_out, elements);
 		CudaStageRowState(state, G::kPleLayer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream_void, Frame *frame)
 	{
-		cudaStream_t stream = (cudaStream_t)stream_void;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots || (step->commit == 0u && step->rows > G::kVerifyRows) )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -949,8 +950,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		frame->stream = stream;
 		if ( state->dump != 0 )
 		{
-			cudaStreamCaptureStatus capturing = cudaStreamCaptureStatusNone;
-			if ( cudaStreamIsCapturing(stream, &capturing) != cudaSuccess || capturing != cudaStreamCaptureStatusNone )
+			SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
+			if ( SparkGpuStreamIsCapturing(stream, &capturing) != SPARK_GPU_SUCCESS || capturing != SPARK_GPU_CAPTURE_STATUS_NONE )
 				return SPARK_STATUS_UNSUPPORTED;
 			status = DumpLayer(state, 0xffffffffu, step, step->hidden_bf16, 0, stream);
 		}
@@ -1004,17 +1005,17 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	static SparkStatus AddRows(State *state, const Frame &frame)
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
-		QwenHybridAddRowsKernel<<<Blocks(width), QH_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16, state->partial, width);
+		LM_LAUNCH((QwenHybridAddRowsKernel), Blocks(width), QH_THREADS, 0, frame.stream, frame.step->hidden_bf16, state->partial, width);
 		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
 		const SparkStageRunnerStep *step = frame.step;
-		LmHyperExpandKernel<QH_THREADS><<<dim3(Blocks(S::kResidual), step->rows), QH_THREADS, 0, frame.stream>>>(step->hidden_bf16, state->residual,
+		LM_LAUNCH((LmHyperExpandKernel<QH_THREADS>), dim3(Blocks(S::kResidual), step->rows), QH_THREADS, 0, frame.stream, step->hidden_bf16, state->residual,
 			G::kStreams, G::kHidden);
 		if constexpr ( S::kPle || S::kIndexer )
-			LmRowLanesKernel<<<step->sequences, QH_THREADS, 0, frame.stream>>>(step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
+			LM_LAUNCH((LmRowLanesKernel), step->sequences, QH_THREADS, 0, frame.stream, step->sequence_row_begin, step->sequence_row_indices, state->row_lane,
 				state->row_ordinal);
 		return CudaStageLaunched();
 	}
@@ -1480,7 +1481,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		State *state = (State *)model;
-		cudaStream_t stream = (cudaStream_t)stream_void;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( G::kVerifyRows == 0u || kept == 0 || step->commit != 0u || step->rows == 0u || step->rows > G::kVerifyRows || step->sequences == 0u ||
 			step->sequences > state->slots || (S::kPle && step->token_ids == 0) )
@@ -1493,7 +1494,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			{
 				if constexpr ( S::kIndexer )
 				{
-					QwenIndexTailKernel<G><<<step->sequences, G::kIndexDim, 0, stream>>>(state->replay_index +
+					LM_LAUNCH((QwenIndexTailKernel<G>), step->sequences, G::kIndexDim, 0, stream, state->replay_index +
 						(uint64_t)layer->kv_index * G::kVerifyRows * G::kIndexDim, state->index_tail + (uint64_t)layer->kv_index * state->slots * S::kIndexTail *
 						G::kIndexDim, step->positions, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, 1u, kept);
 					status = CudaStageLaunched();

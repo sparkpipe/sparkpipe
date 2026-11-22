@@ -322,6 +322,18 @@ flag only if none of its sources reads either field;
 `tests/test_graph_ignores_gather.py` checks that for every family that sets
 it.
 
+A runner captures graphs when its device collective defers rounds to
+hardware waits, or when it runs alone (`tp_degree` 1) with no collective,
+as a single-GPU drafter does. Capture, launch and settle then make no
+collective calls.
+
+A model whose input rows are wider than its hidden width, such as a drafter
+that ingests several target taps per position, sets `input_width` in its
+geometry. The runner then sizes its hidden buffer for the wider row, and
+copies `rows x input_width` elements of a dispatch's `hidden_input_bf16`.
+A dispatch whose `hidden_input_bytes` is shorter than that is refused.
+`tests/cuda/stage_runner_single_gpu_cuda.cu` checks both behaviours.
+
 ## include/sparkpipe/spark_stagepack_format.h
 
 ### 4-bit weight formats
@@ -404,7 +416,7 @@ For `host-rdma`, the required mask is `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOS
 - The required mask is not `SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS`. That set adds batched submission, poll descriptors, multi-lane and the remote-completion doorbell.
 - A required mask must list only bits the daemon cannot run without. Recommended bits must not be promoted into it.
 
-The host RDMA backend in `ring/transport/rdma.cu` declares, in its default build:
+The host RDMA backend in `ring/transport/rdma.c` declares, in its default build:
 
 - `SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS`;
 - `SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS`;

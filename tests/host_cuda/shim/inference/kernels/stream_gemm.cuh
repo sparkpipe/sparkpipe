@@ -9,6 +9,12 @@ struct LmStreamWeight
 };
 
 template<class Format>
+static constexpr uint32_t LmStreamInputMultiple(void)
+{
+	return(16u / (uint32_t)sizeof(uint16_t));
+}
+
+template<class Format>
 static int32_t LmStreamGemmGrouped(const void *, LmScaleTensor, const uint16_t *, uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, cudaStream_t)
 {
 	return(LM_LAUNCH_ERR_SHAPE);

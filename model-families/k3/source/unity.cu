@@ -8,6 +8,7 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "model-families/k3/source/layer.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 using K3LinearState = LmKvState<K3_KDA_STATE_SLOT_BYTES>;
 
@@ -68,12 +69,12 @@ template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, L
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 
-extern "C" int32_t K3HeadFullVocab(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t s)
+extern "C" int32_t K3HeadFullVocab(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, SparkGpuStream s)
 {
 	return(K3Head(b,norm_weight,head_weight,0,K3_VOCAB,rows,s));
 }
 
-extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t s)
+extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, SparkGpuStream s)
 {
 	return(K3Head(b,norm_weight,head_weight,token_ids,count,rows,s));
 }

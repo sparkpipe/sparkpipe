@@ -1,6 +1,6 @@
 #pragma once
-#include <cuda_runtime_api.h>
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_gpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,7 +18,7 @@ SparkStatus SparkWeightdMapDestroy(SparkWeightdMap *map);
 SparkStatus SparkWeightdMapAcquire(SparkWeightdMap *map,const SparkWeightdExpertKey *keys,uint32_t count,uint64_t *identifier,uint64_t timeout);
 SparkStatus SparkWeightdMapBeginUse(SparkWeightdMap *map,uint64_t identifier,void **address);
 SparkStatus SparkWeightdMapBase(const SparkWeightdMap *map,void **address);
-SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,cudaStream_t stream);
+SparkStatus SparkWeightdMapRecordCompletion(SparkWeightdMap *map,uint64_t identifier,SparkGpuStream stream);
 SparkStatus SparkWeightdMapRelease(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 SparkStatus SparkWeightdMapReleaseCompleted(SparkWeightdMap *map,uint64_t identifier,uint64_t timeout);
 
