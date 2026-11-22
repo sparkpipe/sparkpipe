@@ -11,6 +11,7 @@
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
 #include "runtime/device/nvrm/nvrm_host.h"
+#include "runtime/device/nvrm/nvrm_image.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 #include "runtime/device/nvrm/nvrm_register.h"
 #include "runtime/device/nvrm/nvrm_resources.h"
@@ -42,7 +43,8 @@ typedef enum NvrmOperation
 	NVRM_OPERATION_HOST = 3,
 	NVRM_OPERATION_RECORD = 4,
 	NVRM_OPERATION_AWAIT = 5,
-	NVRM_OPERATION_LAUNCH = 6
+	NVRM_OPERATION_LAUNCH = 6,
+	NVRM_OPERATION_PROGRAM = 7
 } NvrmOperation;
 
 typedef struct NvrmAllocation
@@ -52,6 +54,23 @@ typedef struct NvrmAllocation
 	void *mapping;
 	uint64_t mapping_bytes;
 } NvrmAllocation;
+
+typedef struct NvrmImage
+{
+	SparkNvrmMemory memory;
+	SparkNvrmStep *steps;
+	uint32_t step_count;
+	uint32_t *patched;
+	uint32_t patched_count;
+	uint8_t *scratch;
+	uint32_t per_run;
+	uint32_t words;
+	uint64_t slots;
+	uint64_t segment;
+	uint64_t last_queue;
+	uint64_t last_sequence;
+	const char *name;
+} NvrmImage;
 
 typedef struct NvrmQueue
 {
@@ -63,6 +82,7 @@ typedef struct NvrmQueue
 	SparkNvrmMemory bounce;
 	uint64_t ends[NVRM_SEQUENCES];
 	const SparkDeviceKernel *kernels[NVRM_SEQUENCES];
+	const NvrmImage *images[NVRM_SEQUENCES];
 	uint8_t operations[NVRM_SEQUENCES];
 	uint64_t recorded;
 	uint64_t completed;
@@ -138,18 +158,6 @@ static uint32_t nvrm_shared_capacity;
 static SparkDeviceMemoryHandle nvrm_shared_serial;
 static NvrmSpans nvrm_reservations;
 static NvrmSpans nvrm_mappings;
-
-typedef struct NvrmHeld
-{
-	SparkNvrmMemory memory;
-	uint64_t value;
-} NvrmHeld;
-
-static pthread_mutex_t nvrm_held_lock = PTHREAD_MUTEX_INITIALIZER;
-static NvrmHeld *nvrm_held;
-static uint32_t nvrm_held_count;
-
-static SparkStatus NvrmHeldSettle(void);
 static pthread_mutex_t nvrm_queues_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvrmQueue *nvrm_queues;
 
@@ -176,14 +184,15 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 {
 	const long pages = sysconf(_SC_PHYS_PAGES),page = sysconf(_SC_PAGESIZE);
 	const uint64_t memory = pages > 0 && page > 0 ? (uint64_t)pages * (uint64_t)page : 0u;
-	uint32_t copy_engine = 0u,held;
-	pthread_mutex_lock(&nvrm_held_lock);
-	held = nvrm_held_count;
-	pthread_mutex_unlock(&nvrm_held_lock);
-	if ( held != 0u )
-		return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"initialize","",0,
-			"memory held behind a zero fill that never finished keeps the GPU open; restart the process"));
+	uint32_t copy_engine = 0u;
 	NVRM_TRY(SparkNvrmGpuOpen(&nvrm_gpu,configuration->ordinal,SPARK_NVRM_MEMORY_HOST,"initialize"));
+	if ( SparkNvrmModuleZeroesMemory(SPARK_NVRM_MODULE_PARAMETERS) == 0 )
+	{
+		SparkNvrmGpuClose(&nvrm_gpu);
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"initialize","",0,
+			"the open kernel module does not zero the system memory it allocates (InitializeSystemMemoryAllocations is not 1 in "
+			SPARK_NVRM_MODULE_PARAMETERS "); load it with NVreg_InitializeSystemMemoryAllocations=1"));
+	}
 	{
 		SparkStatus copies = SparkNvrmCopyEngineAsync(&nvrm_gpu,&copy_engine,"initialize");
 		if ( copies == SPARK_STATUS_OK )
@@ -207,7 +216,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
-		SPARK_DEVICE_PROPERTY_CLUSTERS |
+		SPARK_DEVICE_PROPERTY_CLUSTERS | SPARK_DEVICE_PROPERTY_PROGRAMS |
 		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
 }
@@ -215,7 +224,6 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 SparkStatus SparkDeviceBackendShutdown(void)
 {
 	uint32_t chunk;
-	NVRM_TRY(NvrmHeldSettle());
 	for (chunk = 0u; chunk < nvrm_events.chunk_count; chunk++)
 		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm_events.chunks[chunk]);
 	memset(&nvrm_events,0,sizeof(nvrm_events));
@@ -237,74 +245,10 @@ static NvrmAllocation *NvrmNew(SparkDeviceAllocation *allocation, const char *op
 	return(nvrm);
 }
 
-static SparkStatus NvrmWaitChannel(uint64_t queue_id, const SparkNvrmChannel *channel, uint64_t value, const char *operation);
-
-static SparkStatus NvrmZero(SparkNvrmMemory *memory, uint64_t *value, const char *owner)
-{
-	*value = 0u;
-	NVRM_TRY(SparkNvrmFill(&nvrm_gpu,&nvrm_gpu.compute,memory->address,0u,memory->bytes,value,owner));
-	return(NvrmWaitChannel(0u,&nvrm_gpu.compute,*value,"allocate"));
-}
-
-static void NvrmHold(const SparkNvrmMemory *memory, uint64_t value, const char *owner)
-{
-	const SparkDeviceError *last = SparkDeviceLastError();
-	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
-	NvrmHeld *grown;
-	pthread_mutex_lock(&nvrm_held_lock);
-	grown = (NvrmHeld *)realloc(nvrm_held,(size_t)(nvrm_held_count + 1u) * sizeof(*grown));
-	if ( grown != 0 )
-	{
-		nvrm_held = grown;
-		nvrm_held[nvrm_held_count].memory = *memory;
-		nvrm_held[nvrm_held_count].value = value;
-		nvrm_held_count++;
-	}
-	pthread_mutex_unlock(&nvrm_held_lock);
-	snprintf(text,sizeof(text),"%.150s; the zero fill had not finished, so its %llu bytes stay held",last->text,(unsigned long long)memory->bytes);
-	(void)SparkDeviceRecordError(last->status,"allocate",owner,last->backend_code,text);
-}
-
-static SparkStatus NvrmHeldSettle(void)
-{
-	uint32_t index,kept = 0u;
-	uint64_t kept_bytes = 0u;
-	pthread_mutex_lock(&nvrm_held_lock);
-	for (index = 0u; index < nvrm_held_count; index++)
-	{
-		NvrmHeld *held = &nvrm_held[index];
-		if ( SparkNvrmChannelCompleted(&nvrm_gpu.compute) < held->value &&
-			SparkNvrmWaitFence(&nvrm_gpu.compute,held->value,SPARK_NVRM_WAIT_TIMEOUT_NS,"shutdown","held memory") != SPARK_STATUS_OK )
-		{
-			nvrm_held[kept++] = *held;
-			kept_bytes += held->memory.bytes;
-			continue;
-		}
-		SparkNvrmMemoryRelease(&nvrm_gpu,&held->memory);
-	}
-	nvrm_held_count = kept;
-	if ( kept == 0u )
-	{
-		free(nvrm_held);
-		nvrm_held = 0;
-	}
-	pthread_mutex_unlock(&nvrm_held_lock);
-	if ( kept == 0u )
-		return(SPARK_STATUS_OK);
-	{
-		char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
-		snprintf(text,sizeof(text),"%llu bytes of allocations stay held behind zero fills that never finished; the GPU stays open until the process exits",
-			(unsigned long long)kept_bytes);
-		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"shutdown","",0,text);
-		SPARK_FAIL(status);
-	}
-}
-
 SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm = NvrmNew(allocation,"allocate");
 	const uint32_t private_space = allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE;
-	uint64_t fill = 0u;
 	SparkStatus status;
 	if ( nvrm == 0 )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
@@ -323,14 +267,6 @@ SparkStatus SparkDeviceBackendAllocate(SparkDeviceAllocation *allocation)
 	}
 	status = SparkNvrmMemoryAllocate(&nvrm_gpu,allocation->bytes,private_space != 0u ? SPARK_NVRM_MEMORY_SYSTEM : SPARK_NVRM_MEMORY_HOST,&nvrm->memory,
 		allocation->owner);
-	if ( status == SPARK_STATUS_OK && private_space != 0u )
-		status = NvrmZero(&nvrm->memory,&fill,allocation->owner);
-	if ( status != SPARK_STATUS_OK && fill != 0u && SparkNvrmChannelCompleted(&nvrm_gpu.compute) < fill )
-	{
-		NvrmHold(&nvrm->memory,fill,allocation->owner);
-		free(nvrm);
-		SPARK_FAIL(status);
-	}
 	if ( status != SPARK_STATUS_OK )
 	{
 		SparkNvrmMemoryRelease(&nvrm_gpu,&nvrm->memory);
@@ -462,6 +398,8 @@ static const char *NvrmOperationName(uint8_t operation)
 		return("an event record");
 	case NVRM_OPERATION_AWAIT:
 		return("an event wait");
+	case NVRM_OPERATION_PROGRAM:
+		return("a program");
 	default:
 		return("an operation");
 	}
@@ -516,6 +454,16 @@ static void NvrmPosition(NvrmQueue *nvrm, char *text, size_t capacity)
 	const char *last = nvrm->kernel[0] != '\0' ? nvrm->kernel : "none";
 	if ( done >= recorded )
 		snprintf(text,capacity,"; nothing pending; last kernel launched %s",last);
+	else if ( nvrm->operations[at] == NVRM_OPERATION_PROGRAM && nvrm->images[at] != 0 )
+	{
+		const NvrmImage *image = nvrm->images[at];
+		const uint64_t reached = __atomic_load_n((const volatile uint64_t *)(const void *)image->memory.cpu,__ATOMIC_ACQUIRE);
+		if ( reached < image->step_count )
+			snprintf(text,capacity,"; in program %s at step %llu of %u, %s",image->name,(unsigned long long)reached + 1u,image->step_count,
+				image->steps[reached].name);
+		else
+			snprintf(text,capacity,"; in program %s after its %u steps",image->name,image->step_count);
+	}
 	else if ( nvrm->operations[at] != NVRM_OPERATION_LAUNCH || nvrm->kernels[at] == 0 )
 		snprintf(text,capacity,"; at %s; last kernel launched %s",NvrmOperationName(nvrm->operations[at]),last);
 	else if ( done + 1u == nvrm->kernel_sequence )
@@ -539,13 +487,7 @@ static SparkStatus NvrmReportLocked(NvrmQueue *nvrm, const SparkNvrmFault *fault
 	if ( fault != 0 )
 		SparkNvrmFaultText(fault,head,sizeof(head));
 	else
-	{
-		const uint64_t stall_ns = SparkNvrmWaitStallNs();
-		if ( stall_ns >= 1000000000ull && stall_ns % 1000000000ull == 0u )
-			snprintf(head,sizeof(head),"no GPU progress for %llu s",(unsigned long long)(stall_ns / 1000000000ull));
-		else
-			snprintf(head,sizeof(head),"no GPU progress for %llu ms",(unsigned long long)(stall_ns / 1000000ull));
-	}
+		snprintf(head,sizeof(head),"no GPU progress for %llu s",(unsigned long long)(SPARK_NVRM_WAIT_STALL_NS / 1000000000ull));
 	where[0] = '\0';
 	name[0] = '\0';
 	if ( nvrm != 0 )
@@ -574,7 +516,7 @@ static SparkStatus NvrmWatch(uint64_t queue_id, SparkNvrmWait *wait, const char 
 		NvrmLocateLocked(nvrm,faulted,&fault);
 		status = NvrmReportLocked(nvrm,&fault,operation);
 	}
-	else if ( wait != 0 && SparkNvrmWaitStalled(wait,NvrmProgressLocked(),SparkNvrmWaitStallNs()) != 0 )
+	else if ( wait != 0 && SparkNvrmWaitStalled(wait,NvrmProgressLocked(),SPARK_NVRM_WAIT_STALL_NS) != 0 )
 		status = NvrmReportLocked(nvrm,0,operation);
 	pthread_mutex_unlock(&nvrm_queues_lock);
 	return(status);
@@ -1089,6 +1031,31 @@ static void NvrmSlotTaken(NvrmQueue *nvrm, uint64_t start, uint32_t bytes, uint6
 	nvrm->slot_head = start + bytes;
 }
 
+static void NvrmLaunchRequestFill(const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch, SparkNvrmLaunchRequest *request)
+{
+	const NvrmKernel *compiled = (const NvrmKernel *)kernel->backend;
+	request->kernel = compiled->kernel;
+	request->grid[0] = launch->groups.x;
+	request->grid[1] = launch->groups.y;
+	request->grid[2] = launch->groups.z;
+	request->block[0] = launch->threads.x;
+	request->block[1] = launch->threads.y;
+	request->block[2] = launch->threads.z;
+	request->dynamic_shared_bytes = launch->shared_bytes;
+	request->arguments = launch->constants;
+	request->argument_bytes = launch->constant_bytes;
+	request->cluster[0] = launch->cluster.x;
+	request->cluster[1] = launch->cluster.y;
+	request->cluster[2] = launch->cluster.z;
+	request->dependent = launch->dependent;
+}
+
+static SparkStatus NvrmBindingsRefused(const SparkDeviceKernel *kernel, const char *operation)
+{
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,operation,kernel->name,0,
+		"nvrm kernels take every argument in their parameter block; pass it as the launch's constants"));
+}
+
 SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch,
 	SparkDeviceAllocation *const *allocations)
 {
@@ -1099,28 +1066,14 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	uint64_t value = 0u,start = 0u;
 	(void)allocations;
 	if ( launch->binding_count != 0u )
-		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,
-			"nvrm kernels take every argument in their parameter block; pass it as the launch's constants"));
+		return(NvrmBindingsRefused(kernel,"kernel_launch"));
 	NVRM_TRY(NvrmRoom(queue,"kernel_launch"));
 	memset(&request,0,sizeof(request));
 	NVRM_TRY(NvrmSlot(nvrm,bytes,queue->owner,&start));
 	request.slot = nvrm->slots.cpu + start;
 	request.slot_address = nvrm->slots.address + start;
 	request.slot_bytes = bytes;
-	request.kernel = compiled->kernel;
-	request.grid[0] = launch->groups.x;
-	request.grid[1] = launch->groups.y;
-	request.grid[2] = launch->groups.z;
-	request.block[0] = launch->threads.x;
-	request.block[1] = launch->threads.y;
-	request.block[2] = launch->threads.z;
-	request.dynamic_shared_bytes = launch->shared_bytes;
-	request.arguments = launch->constants;
-	request.argument_bytes = launch->constant_bytes;
-	request.cluster[0] = launch->cluster.x;
-	request.cluster[1] = launch->cluster.y;
-	request.cluster[2] = launch->cluster.z;
-	request.dependent = launch->dependent;
+	NvrmLaunchRequestFill(kernel,launch,&request);
 	NVRM_TRY(SparkNvrmLaunch(&nvrm_gpu,NvrmOn(nvrm,&nvrm->channel),&compiled->library->program,&request,&value,queue->owner));
 	NvrmSlotTaken(nvrm,start,bytes,value);
 	memcpy(nvrm->kernel,kernel->name,sizeof(nvrm->kernel));
@@ -1465,7 +1418,7 @@ uint32_t SparkDeviceBackendProgramNative(void)
 SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
 {
 	const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_run",queue->owner,0,
-		"the nvrm backend does not run programs yet, and replaying their operations one by one would be a slow path");
+		"the nvrm backend runs programs from their prebuilt segments, never by replaying their operations one by one");
 	SPARK_FAIL(status);
 }
 
@@ -1489,14 +1442,239 @@ SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDevicePro
 	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_finish",program->name,0,"the nvrm backend records programs in the device layer"));
 }
 
+static void NvrmImageFree(NvrmImage *image)
+{
+	if ( image->memory.bytes != 0u )
+		SparkNvrmMemoryRelease(&nvrm_gpu,&image->memory);
+	free(image->steps);
+	free(image->patched);
+	free(image->scratch);
+	free(image);
+}
+
+static SparkStatus NvrmImageDescribe(NvrmImage *image, const SparkDeviceProgram *program, uint32_t node, const SparkDeviceLaunch *launch)
+{
+	const SparkDeviceNode *recorded = &program->nodes[node];
+	const NvrmKernel *compiled = (const NvrmKernel *)recorded->kernel->backend;
+	const SparkNvrmStep *step = &image->steps[node];
+	SparkNvrmLaunchRequest request;
+	memset(&request,0,sizeof(request));
+	NvrmLaunchRequestFill(recorded->kernel,launch,&request);
+	request.dependent = 0u;
+	request.slot = image->memory.cpu + image->slots + step->slot;
+	request.slot_address = image->memory.address + image->slots + step->slot;
+	request.slot_bytes = step->slot_bytes;
+	request.release_address = image->memory.address;
+	request.release_payload = (uint64_t)node + 1u;
+	return(SparkNvrmLaunchDescribe(&nvrm_gpu,&compiled->library->program,&request,program->name));
+}
+
+static SparkStatus NvrmImageRefuse(const SparkDeviceProgram *program, const char *text)
+{
+	const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_finish",program->name,0,text);
+	SPARK_FAIL(status);
+}
+
+static SparkStatus NvrmImageLayout(NvrmImage *image, const SparkDeviceProgram *program)
+{
+	uint64_t slots = 0u;
+	uint32_t index,place;
+	for ( index = 0u; index < program->node_count; index++ )
+	{
+		const SparkDeviceNode *node = &program->nodes[index];
+		SparkNvrmStep *step = &image->steps[index];
+		step->node = index;
+		if ( node->kind == SPARK_DEVICE_NODE_COPY || node->kind == SPARK_DEVICE_NODE_FILL )
+			return(NvrmImageRefuse(program,"a program on nvrm holds kernel launches, event records and waits and host callbacks; copies and fills go on the "
+				"queue before or after the run"));
+		if ( node->kind == SPARK_DEVICE_NODE_LAUNCH )
+		{
+			const NvrmKernel *compiled = (const NvrmKernel *)node->kernel->backend;
+			if ( node->launch.binding_count != 0u )
+				return(NvrmBindingsRefused(node->kernel,"program_finish"));
+			step->kind = SPARK_NVRM_STEP_LAUNCH;
+			step->slot = slots;
+			step->slot_bytes = SparkNvrmLaunchSlotBytes(compiled->kernel);
+			step->name = node->kernel->name;
+			slots += step->slot_bytes;
+		}
+		else if ( node->kind == SPARK_DEVICE_NODE_RECORD || node->kind == SPARK_DEVICE_NODE_AWAIT )
+		{
+			const NvrmEvent *event = (const NvrmEvent *)node->event->backend;
+			step->kind = node->kind == SPARK_DEVICE_NODE_RECORD ? SPARK_NVRM_STEP_RECORD : SPARK_NVRM_STEP_AWAIT;
+			step->address = node->kind == SPARK_DEVICE_NODE_RECORD ? event->address + SPARK_NVRM_MARK_TIME_OFFSET : event->address;
+			step->second_address = event->address;
+			step->name = node->kind == SPARK_DEVICE_NODE_RECORD ? "an event record" : "an event wait";
+			image->per_run = 1u;
+		}
+		else
+		{
+			step->kind = SPARK_NVRM_STEP_HOST;
+			step->name = "a host callback";
+			image->per_run = 1u;
+		}
+	}
+	for ( place = 0u; place < program->place_count; place++ )
+		if ( image->patched_count == 0u || image->patched[image->patched_count - 1u] != program->places[place].node )
+			image->patched[image->patched_count++] = program->places[place].node;
+	if ( image->patched_count != 0u )
+		image->per_run = 1u;
+	image->slots = SPARK_NVRM_IMAGE_SEMAPHORE_BYTES;
+	image->segment = (image->slots + slots + SPARK_NVRM_QMD_ALIGN - 1u) / SPARK_NVRM_QMD_ALIGN * SPARK_NVRM_QMD_ALIGN;
+	image->words = SparkNvrmImageWords(image->steps,image->step_count);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramCompile(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	NvrmImage *image = (NvrmImage *)calloc(1u,sizeof(*image));
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	(void)queue;
+	if ( image == 0 || (program->node_count != 0u && (image->steps = (SparkNvrmStep *)calloc(program->node_count,sizeof(*image->steps))) == 0) ||
+		(program->place_count != 0u && (image->patched = (uint32_t *)calloc(program->place_count,sizeof(*image->patched))) == 0) ||
+		(program->scratch_bytes != 0u && (image->scratch = (uint8_t *)malloc(program->scratch_bytes)) == 0) )
+	{
+		if ( image != 0 )
+			NvrmImageFree(image);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"program_finish",program->name,0,"out of host memory for the program's image"));
+	}
+	image->step_count = program->node_count;
+	image->name = program->name;
+	status = NvrmImageLayout(image,program);
+	if ( status == SPARK_STATUS_OK && image->words > SPARK_NVRM_SEGMENT_WORDS_MAX )
+		status = NvrmImageRefuse(program,"the program's segment is over the 2^21 - 1 words one submission holds");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmMemoryAllocate(&nvrm_gpu,image->segment + (uint64_t)image->words * sizeof(uint32_t),SPARK_NVRM_MEMORY_HOST,&image->memory,
+			program->name);
+	for ( index = 0u; status == SPARK_STATUS_OK && index < image->step_count; index++ )
+		if ( image->steps[index].kind == SPARK_NVRM_STEP_LAUNCH )
+			status = NvrmImageDescribe(image,program,index,&program->nodes[index].launch);
+	if ( status != SPARK_STATUS_OK )
+	{
+		NvrmImageFree(image);
+		SPARK_FAIL(status);
+	}
+	__atomic_store_n((volatile uint64_t *)(void *)image->memory.cpu,0u,__ATOMIC_RELEASE);
+	SparkNvrmImageWrite((uint32_t *)(void *)(image->memory.cpu + image->segment),image->memory.address,image->memory.address + image->slots,
+		image->steps,image->step_count);
+	program->backend = image;
+	program->compiled = 1u;
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus NvrmImageSettle(const NvrmImage *image)
+{
+	NvrmQueue *last;
+	if ( image->last_queue == 0u )
+		return(SPARK_STATUS_OK);
+	pthread_mutex_lock(&nvrm_queues_lock);
+	last = NvrmListedLocked(image->last_queue);
+	pthread_mutex_unlock(&nvrm_queues_lock);
+	if ( last == 0 || NvrmCompletedSequence(last) >= image->last_sequence )
+		return(SPARK_STATUS_OK);
+	return(SparkDeviceBackendQueueWait(last->queue,image->last_sequence,SPARK_DEVICE_WAIT_FOREVER));
+}
+
+static void NvrmImageEvents(const SparkDeviceProgram *program, NvrmImage *image)
+{
+	uint32_t *words = (uint32_t *)(void *)(image->memory.cpu + image->segment);
+	uint32_t index;
+	for ( index = 0u; index < image->step_count; index++ )
+		if ( image->steps[index].kind == SPARK_NVRM_STEP_RECORD )
+		{
+			NvrmEvent *event = (NvrmEvent *)program->nodes[index].event->backend;
+			event->generation++;
+			SparkNvrmImagePatch(words,image->steps[index].payload,event->generation);
+			SparkNvrmImagePatch(words,image->steps[index].second,event->generation);
+		}
+		else if ( image->steps[index].kind == SPARK_NVRM_STEP_AWAIT )
+			SparkNvrmImagePatch(words,image->steps[index].payload,((const NvrmEvent *)program->nodes[index].event->backend)->generation);
+}
+
+static void NvrmImageEventsUndo(const SparkDeviceProgram *program, const NvrmImage *image)
+{
+	uint32_t index;
+	for ( index = 0u; index < image->step_count; index++ )
+		if ( image->steps[index].kind == SPARK_NVRM_STEP_RECORD )
+			((NvrmEvent *)program->nodes[index].event->backend)->generation--;
+}
+
+static void NvrmImageHosts(NvrmImage *image, const SparkNvrmHostWorker *worker)
+{
+	uint32_t *words = (uint32_t *)(void *)(image->memory.cpu + image->segment);
+	uint64_t ticket = worker->ticket;
+	uint32_t index;
+	for ( index = 0u; index < image->step_count; index++ )
+		if ( image->steps[index].kind == SPARK_NVRM_STEP_HOST )
+		{
+			ticket++;
+			SparkNvrmImagePatchAddress(words,image->steps[index].payload,SparkNvrmHostGate(worker,0u));
+			SparkNvrmImagePatch(words,image->steps[index].payload,ticket);
+			SparkNvrmImagePatchAddress(words,image->steps[index].second,SparkNvrmHostGate(worker,1u));
+			SparkNvrmImagePatch(words,image->steps[index].second,ticket);
+		}
+}
+
 SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values)
 {
-	(void)queue;
-	(void)values;
-	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"the nvrm backend does not run programs yet"));
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	NvrmImage *image = (NvrmImage *)program->backend;
+	SparkNvrmChannel *channel;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint64_t bound;
+	uint32_t index;
+	NVRM_TRY(NvrmRoom(queue,"program_run"));
+	if ( image->per_run != 0u || image->last_queue != queue->id )
+		NVRM_TRY(NvrmImageSettle(image));
+	for ( index = 0u; status == SPARK_STATUS_OK && index < image->patched_count; index++ )
+	{
+		SparkDeviceLaunch launch = program->nodes[image->patched[index]].launch;
+		SparkDeviceProgramPatchLaunch(program,image->patched[index],values,&launch,image->scratch);
+		status = NvrmImageDescribe(image,program,image->patched[index],&launch);
+	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	NvrmImageEvents(program,image);
+	NvrmImageHosts(image,&nvrm->worker);
+	channel = NvrmOn(nvrm,&nvrm->channel);
+	bound = channel->local_address;
+	status = SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_COMPUTE,queue->owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmBindLocalMemory(&nvrm_gpu,channel,queue->owner);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkNvrmSubmitSegment(&nvrm_gpu,channel,image->memory.address + image->segment,image->words,image->memory.address,image->step_count,
+			queue->owner);
+	if ( status != SPARK_STATUS_OK )
+	{
+		SparkNvrmOpAbandon(channel);
+		channel->local_address = bound;
+		NvrmImageEventsUndo(program,image);
+		SPARK_FAIL(status);
+	}
+	for ( index = 0u; index < image->step_count; index++ )
+		if ( image->steps[index].kind == SPARK_NVRM_STEP_HOST )
+		{
+			SparkNvrmHostItem item;
+			memset(&item,0,sizeof(item));
+			item.kind = SPARK_NVRM_HOST_CALL;
+			item.function = program->nodes[index].function;
+			item.context = program->nodes[index].context;
+			SparkNvrmHostQueue(&nvrm->worker,&item);
+		}
+		else if ( image->steps[index].kind == SPARK_NVRM_STEP_RECORD )
+			((NvrmEvent *)program->nodes[index].event->backend)->queue_id = queue->id;
+	image->last_queue = queue->id;
+	image->last_sequence = queue->submitted;
+	nvrm->images[queue->submitted % NVRM_SEQUENCES] = image;
+	NvrmEnd(queue,NVRM_OPERATION_PROGRAM,0);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 {
-	(void)program;
+	if ( program->backend != 0 )
+		NvrmImageFree((NvrmImage *)program->backend);
+	program->backend = 0;
+	program->compiled = 0u;
 }

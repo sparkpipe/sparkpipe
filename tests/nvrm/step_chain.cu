@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_gpu.h"
 #include "runtime/launch.h"
 
@@ -52,8 +53,24 @@ static int ChainIssue(SparkGpuStream stream, unsigned long long *starts, unsigne
 	return(SparkGpuGetLastError() == SPARK_GPU_SUCCESS);
 }
 
-static int ChainMeasure(SparkGpuStream stream, SparkGpuGraphExec exec, unsigned long long *starts, unsigned long long *ends, unsigned long long *host_starts,
-	unsigned long long *host_ends, uint32_t nodes, int blocks, ChainResult *result)
+typedef struct ChainRunner
+{
+	SparkGpuGraphExec exec;
+	SparkDeviceProgram *program;
+	SparkDeviceQueue *queue;
+} ChainRunner;
+
+static int ChainRun(SparkGpuStream stream, const ChainRunner *runner, unsigned long long *starts, unsigned long long *ends, uint32_t nodes, int blocks)
+{
+	if ( runner->program != 0 )
+		return(SparkDeviceProgramRun(runner->program,runner->queue,0,0u) == SPARK_STATUS_OK);
+	if ( runner->exec != 0 )
+		return(SparkGpuGraphLaunch(runner->exec,stream) == SPARK_GPU_SUCCESS);
+	return(ChainIssue(stream,starts,ends,nodes,blocks));
+}
+
+static int ChainMeasure(SparkGpuStream stream, const ChainRunner *runner, unsigned long long *starts, unsigned long long *ends,
+	unsigned long long *host_starts, unsigned long long *host_ends, uint32_t nodes, int blocks, ChainResult *result)
 {
 	int run;
 	memset(result,0,sizeof(*result));
@@ -66,7 +83,7 @@ static int ChainMeasure(SparkGpuStream stream, SparkGpuGraphExec exec, unsigned 
 			SparkGpuMemsetAsync(ends,0,nodes * sizeof(*ends),stream) != SPARK_GPU_SUCCESS || SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 			return(0);
 		begin = ChainNow();
-		if ( exec != 0 ? SparkGpuGraphLaunch(exec,stream) != SPARK_GPU_SUCCESS : ChainIssue(stream,starts,ends,nodes,blocks) == 0 )
+		if ( ChainRun(stream,runner,starts,ends,nodes,blocks) == 0 )
 			return(0);
 		issued = ChainNow();
 		if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
@@ -99,11 +116,36 @@ static void ChainPrint(const char *flavour, const char *mode, uint32_t nodes, in
 		result->idle_per_node_us);
 }
 
+static int ChainProgram(SparkGpuStream stream, SparkDeviceQueue *queue, unsigned long long *starts, unsigned long long *ends,
+	unsigned long long *host_starts, unsigned long long *host_ends, uint32_t nodes, int blocks, ChainResult *result)
+{
+	ChainRunner runner;
+	SparkDeviceProgramInfo info;
+	int measured;
+	memset(&runner,0,sizeof(runner));
+	runner.queue = queue;
+	if ( SparkDeviceProgramRecord(queue,"step chain") != SPARK_STATUS_OK )
+		return(0);
+	if ( ChainIssue(stream,starts,ends,nodes,blocks) == 0 )
+	{
+		(void)SparkDeviceProgramFinish(queue,&runner.program);
+		return(0);
+	}
+	if ( SparkDeviceProgramFinish(queue,&runner.program) != SPARK_STATUS_OK || SparkDeviceProgramGetInfo(runner.program,&info) != SPARK_STATUS_OK ||
+		info.kernels != nodes )
+		return(0);
+	measured = ChainMeasure(stream,&runner,starts,ends,host_starts,host_ends,nodes,blocks,result);
+	return(SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && SparkDeviceProgramDestroy(runner.program) == SPARK_STATUS_OK &&
+		measured);
+}
+
 int main(int argc, char **argv)
 {
 	static const uint32_t counts[] = {16u, 256u, 1600u, CHAIN_MAX_NODES};
 	const char *flavour = argc > 1 ? argv[1] : "this flavour";
 	SparkGpuStream stream = 0;
+	SparkDeviceQueue *queue = 0;
+	SparkStatus initialized;
 	unsigned long long *starts = 0,*ends = 0,*host_starts,*host_ends;
 	int sms = 0,widths[2],width;
 	uint32_t count;
@@ -116,20 +158,33 @@ int main(int argc, char **argv)
 		printf("FAIL set up the chain: %s\n",SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(1);
 	}
+	initialized = SparkDeviceInitialize(0);
+	if ( (initialized != SPARK_STATUS_OK && initialized != SPARK_STATUS_DUPLICATE) || SparkDeviceQueueAdopt(&queue,(void *)stream,"step chain") != SPARK_STATUS_OK )
+	{
+		printf("FAIL the device layer cannot adopt the chain's stream: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
 	widths[0] = 1;
 	widths[1] = sms;
 	for (width = 0; width < 2; width++)
 		for (count = 0u; count < sizeof(counts) / sizeof(counts[0]); count++)
 		{
 			ChainResult result;
+			ChainRunner runner;
 			SparkGpuGraph graph = 0;
-			SparkGpuGraphExec exec = 0;
-			if ( ChainMeasure(stream,0,starts,ends,host_starts,host_ends,counts[count],widths[width],&result) == 0 )
+			memset(&runner,0,sizeof(runner));
+			if ( ChainMeasure(stream,&runner,starts,ends,host_starts,host_ends,counts[count],widths[width],&result) == 0 )
 			{
 				printf("FAIL an eager chain of %u nodes: %s\n",counts[count],SparkGpuGetErrorString(SparkGpuGetLastError()));
 				return(1);
 			}
 			ChainPrint(flavour,"eager",counts[count],widths[width],&result);
+			if ( ChainProgram(stream,queue,starts,ends,host_starts,host_ends,counts[count],widths[width],&result) == 0 )
+			{
+				printf("FAIL a program of %u nodes: %s\n",counts[count],SparkDeviceLastError()->text);
+				return(1);
+			}
+			ChainPrint(flavour,"program",counts[count],widths[width],&result);
 			if ( SparkGpuStreamBeginCapture(stream,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) != SPARK_GPU_SUCCESS )
 			{
 				(void)SparkGpuGetLastError();
@@ -137,15 +192,16 @@ int main(int argc, char **argv)
 				continue;
 			}
 			if ( ChainIssue(stream,starts,ends,counts[count],widths[width]) == 0 || SparkGpuStreamEndCapture(stream,&graph) != SPARK_GPU_SUCCESS ||
-				SparkGpuGraphInstantiate(&exec,graph,0) != SPARK_GPU_SUCCESS || SparkGpuGraphUpload(exec,stream) != SPARK_GPU_SUCCESS ||
-				ChainMeasure(stream,exec,starts,ends,host_starts,host_ends,counts[count],widths[width],&result) == 0 )
+				SparkGpuGraphInstantiate(&runner.exec,graph,0) != SPARK_GPU_SUCCESS || SparkGpuGraphUpload(runner.exec,stream) != SPARK_GPU_SUCCESS ||
+				ChainMeasure(stream,&runner,starts,ends,host_starts,host_ends,counts[count],widths[width],&result) == 0 )
 			{
 				printf("FAIL a graph of %u nodes: %s\n",counts[count],SparkGpuGetErrorString(SparkGpuGetLastError()));
 				return(1);
 			}
 			ChainPrint(flavour,"graph",counts[count],widths[width],&result);
-			(void)SparkGpuGraphExecDestroy(exec);
+			(void)SparkGpuGraphExecDestroy(runner.exec);
 			(void)SparkGpuGraphDestroy(graph);
 		}
+	(void)SparkDeviceQueueDestroy(queue);
 	return(0);
 }

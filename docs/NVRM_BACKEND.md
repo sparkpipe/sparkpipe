@@ -32,50 +32,70 @@ device closed; `tests/test_device_flavours.py` checks the flavour switch,
 the refused goals, that the default build is the cuda flavour, and the
 library's dynamic dependencies.
 
-## One module version
+## Module releases
 
-The resource-manager ioctl structures change between module releases, so the
-backend is built for exactly one release of the open kernel module and
-refuses any other when it opens the device. The pinned release is
-**580.178.04**: `runtime/device/nvrm/nvrm_version.h` names it, and the
-generated headers below come from it. A module update is a regeneration, a
+The resource-manager ioctl structures change between module releases, so a
+build of the backend is for exactly one release of the open kernel module
+and refuses any other when it opens the device. Two releases are pinned:
+
+| Release | Hosts |
+| --- | --- |
+| **580.178.04** | the Sparks (aarch64); the default |
+| **595.84** | the hub's RTX 5090 (x86_64) |
+
+`NVRM_MODULE_RELEASE` picks the release a build is for: the Makefile's
+default, 580.178.04, or 595.84 (`make NVRM_MODULE_RELEASE=595.84 ...`). Any
+other value stops the build. Each release has its own tree of generated
+headers below and a release header,
+`runtime/device/nvrm/release/<release>/nvrm_release.h`, which names the
+release the backend accepts at open and fills the parameter fields that
+differ between the pinned releases: 595.84's `UVM_FREE` takes no length and
+its `UVM_UNREGISTER_CHANNEL` no GPU UUID. `build/nvrm_module_release`
+records the release a build tree last built for, so switching releases
+rebuilds the nvrm library and every program that compiles the backend's
+sources. A module update is a new pin: a regeneration, a release header, a
 rebuild and a requalification of the backend, like any other release.
 
 ## Generated headers
 
 The structures, ioctl numbers, class numbers, methods and QMD layout come
-from two pinned upstream trees, copied by `tools/nvrm_headers.py`:
+from pinned upstream trees, copied by `tools/nvrm_headers.py`:
 
 | Upstream | Pin | Provides | Output |
 | --- | --- | --- | --- |
-| [open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) | release 580.178.04, commit `c8e699821c23` | the ioctl numbers and structures, the UVM ioctls, the resource-manager SDK (`nvos.h`, status codes, allocation and control parameters), class numbers, and the GPFIFO entry and host method formats | `runtime/device/nvrm/vendor/open-gpu-kernel-modules/` |
+| [open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) | release 580.178.04, commit `c8e699821c23`; release 595.84, commit `722ae84526a0` | the ioctl numbers and structures, the UVM ioctls, the resource-manager SDK (`nvos.h`, status codes, allocation and control parameters), class numbers, and the GPFIFO entry and host method formats | `runtime/device/nvrm/vendor/open-gpu-kernel-modules/<release>/` |
 | [open-gpu-doc](https://github.com/NVIDIA/open-gpu-doc) | commit `9fdf5c406200` | the Blackwell compute methods (`clcec0.h`), its QMD version 5 layout (`clcec0qmd.h`) and the copy-engine methods (`clcab5.h`) | `runtime/device/nvrm/vendor/open-gpu-doc/` |
 
 The tool copies the headers it lists and every header they include, keeps
 each one's path relative to its include root, removes the comments and
-writes the matching `NOTICE` entries. Only nvrm translation units compile
-with these include paths:
+writes the matching `NOTICE` entries, one per release. Only nvrm
+translation units compile with these include paths:
 
 ```
--Iruntime/device/nvrm/vendor/open-gpu-kernel-modules -Iruntime/device/nvrm/vendor/open-gpu-doc
+-Iruntime/device/nvrm/release/<release> -Iruntime/device/nvrm/vendor/open-gpu-kernel-modules/<release> -Iruntime/device/nvrm/vendor/open-gpu-doc
 ```
 
-To regenerate, clone both trees at their pins into a new directory outside
-the repository and run the tool from the repository root; `--check` renders
-into memory and fails when the tree differs:
+To regenerate, clone the trees at their pins into a new directory outside
+the repository and run the tool from the repository root with one
+`--module` checkout per pinned release; `--check` renders into memory and
+fails when the tree differs:
 
 ```
-git clone --depth 1 --branch 580.178.04 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules
+git clone --depth 1 --branch 580.178.04 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules-580.178.04
+git clone --depth 1 --branch 595.84 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules-595.84
 git clone https://github.com/NVIDIA/open-gpu-doc DIR/open-gpu-doc
 git -C DIR/open-gpu-doc checkout 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
-python3 -I tools/nvrm_headers.py --module DIR/open-gpu-kernel-modules --doc DIR/open-gpu-doc --check
+python3 -I tools/nvrm_headers.py --module DIR/open-gpu-kernel-modules-580.178.04 --module DIR/open-gpu-kernel-modules-595.84 \
+    --doc DIR/open-gpu-doc --check
 ```
 
-The tool refuses a checkout at any other commit. `tests/test_nvrm_headers.py`
-runs in `make test` without the upstream trees: it checks the tool's comment
+The tool tells the releases apart by their `version.mk` and refuses a
+checkout at any other commit, two checkouts of one release, or a pinned
+release without a checkout. `tests/test_nvrm_headers.py` runs in
+`make test` without the upstream trees: it checks the tool's comment
 removal, include resolution and `NOTICE` rewriting on scratch trees, and
-that the headers in the tree, their `NOTICE` entries and
-`nvrm_version.h` all name the pins.
+that the headers in the tree, their `NOTICE` entries, the release headers
+and the Makefile's `NVRM_MODULE_RELEASES` all name the pins.
 
 ## Kernel images
 
@@ -382,12 +402,38 @@ nvrm-large-transfers` runs them on the GPU (see the GPU tests).
 
 | Space | nvrm memory | Host view | Device address |
 |---|---|---|---|
-| device-private | system memory, zero-filled by the copy engine | none | yes |
+| device-private | system memory, zeroed by the open module when allocated | none | yes |
 | shared coherent | host memory | same address | yes |
 | host pinned | host memory | same address | yes |
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+The open module zeroes the system memory it allocates, so device memory
+starts zeroed without a fill of our own. In open-gpu-kernel-modules
+580.178.04:
+
+- `kernel-open/nvidia/nv-reg.h:181-203` documents
+  `InitializeSystemMemoryAllocations` as "zero out system memory
+  allocations (default)", and line 960 defaults it to 1.
+- `src/nvidia/arch/nvalloc/unix/src/osinit.c:211-218` sets
+  `PDB_PROP_SYS_INITIALIZE_SYSTEM_MEMORY_ALLOCATIONS` unless that key
+  reads 0.
+- `src/nvidia/arch/nvalloc/unix/src/os.c:1013-1022` passes the property
+  to `nv_alloc_pages` as `zeroed`.
+- `kernel-open/nvidia/nv.c:3850-3851` marks the allocation zeroed.
+- `kernel-open/nvidia/nv-vm.c:263-265` then adds `__GFP_ZERO`, which the
+  2 MiB-page path at lines 520-541 uses too.
+
+Once it has opened the GPU, the backend refuses to initialize unless
+`/proc/driver/nvidia/params` lists `InitializeSystemMemoryAllocations: 1`.
+Without it, fresh device memory would hold another allocation's data. A
+host without the module still fails first on the control device it
+cannot open.
+
+Before this, the copy engine also zeroed each device allocation. On
+spark1, 8, 10.5 and 16 GiB allocations took 0.89, 1.39 and 2.19 s with
+that fill and take 0.62, 0.78 and 1.26 s without it.
 
 System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
 pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
@@ -575,18 +621,12 @@ launch-shape probe and first light:
 - **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
   `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
   40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
-  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
-  fill takes 2.1 s. The test runs in two modes:
+  and copies at 18.0 GB/s at these sizes. It runs in one mode:
   - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
     zero-filled by the copy engine. For each size it copies the whole
     buffer to host-visible memory in one call and checks every byte, fills
     the whole buffer in one call, copies it back and checks again, and
     fills host-visible memory of the same size at an odd offset.
-  - `held`: sets the stall threshold to zero, so that a 4 GiB
-    allocation's wait gives up while its zero fill is still running. The
-    allocation must fail, keep its memory held and say so. Shutdown must
-    then release the memory once the fill ends, and the device must open
-    and fill memory again afterwards.
 
   The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
@@ -618,6 +658,53 @@ rounds and every back-to-back set is wrong, so the test sees misordering.
 Within one channel the hardware orders an engine switch by itself (the
 test passes with the queue's wait removed). The queue keeps the wait,
 which is what the class headers document.
+
+## Programs
+
+`SparkDeviceProgramFinish` compiles a recorded program
+([device programs](DEVICE_PROGRAMS.md)) into an image, and
+`SparkDeviceProgramRun` runs the image with one submission, however many
+steps it holds.
+- **Image.** One allocation of coherent system memory holds three parts:
+  - the program's 64-bit semaphore;
+  - a descriptor and constant bank 0 for every launch, built at finish by
+    the code that builds eager launches. A launch's descriptor releases its
+    step number plus one to the semaphore when its grid ends;
+  - the push segment.
+- **Segment.** The segment first sets the semaphore to zero. Every later
+  step first acquires the semaphore at its own step number, so it starts
+  once the step before it has ended, as an eager launch starts once the
+  queue's fence has passed. Then:
+  - a launch sends its descriptor;
+  - an event record stamps the event's time and raises its generation;
+  - an event wait acquires the event's generation;
+  - a host step releases a ticket to the queue's host worker and acquires
+    the worker's answer.
+
+  A step that is no launch then releases the next step number itself.
+- **Run.** A run is one queue operation. It pushes the queue's ordering
+  acquire, and the local-memory binding if the channel lacks it. It then
+  queues three ring entries and rings the doorbell once: that head, the
+  segment, and a tail that acquires the semaphore at the step count and
+  releases the queue's next fence value.
+- **Per-run values.** Before the doorbell, a run stores the values that
+  change between runs:
+  - a patched launch gets its descriptor and bank 0 rebuilt with the
+    patched constants and grid;
+  - an event record gets the event's next generation, and an event wait
+    its current one;
+  - a host step gets the run queue's worker gates and tickets.
+
+  A program with any of these waits for its previous run to end before
+  storing them. A program of launches alone stores nothing, so its runs
+  on one queue go back to back; a run on another queue waits for the
+  previous run, because both would use the one semaphore.
+- **Not inside programs.** Finish refuses copies and fills, naming them;
+  they go on the queue before or after the run. A dependent launch runs
+  inside a program as a plainly ordered launch, with the same results;
+  latched chains inside programs are the next step.
+- **Faults.** A fault report during a run names the program, the step its
+  semaphore had reached, and that step's kernel.
 
 ## Faults and stalls
 
@@ -656,14 +743,8 @@ operation, as it does after any I/O error.
   another queue's event is not stalled while that queue runs. A single grid
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
-- **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. When the wait for an allocation's zero
-  fill gives up while the fill is still running, the allocation fails but
-  its memory stays held. Freeing memory under a running copy engine
-  makes the kernel module assert, and the GPU then needs a reset. The
-  error text names the held bytes. Shutdown releases held memory once its
-  fill has finished. If the fill never finishes, shutdown leaves the GPU
-  open for the process's exit to close. Channel waits that know no queue
+- **Internal waits.** Waits for ring space and launch slots use the same
+  watch. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
@@ -1093,5 +1174,6 @@ two side by side. None of them is a pass/fail gate:
   - The tool reports the host time to issue the step, the wall time to
     synchronize, the GPU span, and the GPU idle per boundary between
     kernels.
-  - It runs eager launches, and in the CUDA flavour also one captured graph
-    of the same launches. nvrm refuses capture for now.
+  - It runs eager launches, a device-layer program of the same launches
+    (in both flavours; on CUDA a program is a captured graph underneath),
+    and in the CUDA flavour one graph captured directly.
