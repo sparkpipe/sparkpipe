@@ -139,6 +139,29 @@ class StagerTest(unittest.TestCase):
             self.assertIn(path, writes)
         self.assertEqual(writes["/etc/default/earlyoom"], (BASELINE.EARLYOOM_DEFAULT, 0o644))
 
+    def test_the_image_ships_the_fabric_qos_script_its_helper_and_its_enabled_unit(self):
+        sources = {destination: source for destination, (source, _) in BASELINE.ASSET_SOURCES.items()}
+        expected = {"/etc/systemd/system/sparkpipe-roce-qos.service": ("tools/fabric/sparkpipe-roce-qos.service", 0o644),
+                    "/usr/local/sbin/sparkpipe_roce_qos.sh": ("tools/fabric/sparkpipe_roce_qos.sh", 0o755),
+                    "/usr/local/sbin/sparkpipe-dscp-trust": ("tools/fabric/sparkpipe_dscp_trust.sh", 0o755)}
+        self.assertEqual(set(STAGER.fabric_qos_assets(BASELINE)), set(expected))
+        for destination, (source, mode) in expected.items():
+            self.assertEqual(sources[destination], source)
+            self.assertEqual(BASELINE.ASSET_SOURCES[destination][1], mode)
+            self.assertNotIn("mlnx", (ROOT / source).read_text().lower())
+        payload = {"assets": {path: {"text": f"{path}\n", "mode": mode} for path, (_, mode) in expected.items()}}
+        writes, commands = {}, []
+        with mock.patch.object(BASELINE, "atomic_write", side_effect=lambda path, text, mode: writes.__setitem__(str(path), (text, mode)) or True), \
+                mock.patch.object(BASELINE, "run", side_effect=lambda argv, **keywords: commands.append(STAGER.classify(BASELINE, argv))):
+            STAGER.stage_fabric_qos(BASELINE, payload)
+        self.assertEqual(writes, {path: (f"{path}\n", mode) for path, (_, mode) in expected.items()})
+        self.assertEqual(commands, [("image", ["systemctl", "--root=/", "enable", "sparkpipe-roce-qos.service"])])
+        with self.assertRaises(BASELINE.BrickproofError):
+            STAGER.stage_fabric_qos(BASELINE, {"assets": {}})
+        unit = (ROOT / "tools" / "fabric" / "sparkpipe-roce-qos.service").read_text()
+        self.assertIn("ExecStart=/usr/local/sbin/sparkpipe_roce_qos.sh", unit)
+        self.assertIn("WantedBy=sys-subsystem-net-devices-enp1s0f1np1.device", unit)
+
     def test_a_command_the_stager_cannot_place_fails(self):
         for argv in (["apt-get", "install", "-y", "x"], ["systemctl", "isolate", "rescue.target"], ["/usr/local/sbin/new-tool"]):
             with self.subTest(argv=argv), self.assertRaises(BASELINE.BrickproofError):
