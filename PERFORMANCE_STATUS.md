@@ -495,6 +495,8 @@ The instruments ran against a real rank of Qwen 3.8 27B FP8 on one GB10
 shared with another service, so these are first readings, not a floor, and
 nothing here stands for a sixteen-rank lane.
 
+One GB10, one rank, GPU shared with another service, not a floor:
+
 | At 8,000 tokens of context | First token | Largest part |
 | --- | ---: | --- |
 | 1 new token | 561 ms | the wave before the last token, 421 ms |

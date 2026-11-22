@@ -21,6 +21,8 @@ here stands for a sixteen-rank lane.
 
 ## What the run showed
 
+One GB10, one rank, GPU shared with another service, not a floor.
+
 | Instrument | Result |
 | --- | --- |
 | `POST /v1/cache/state`, a prefix the engine holds | 14,209 of 14,210 tokens held, resident, saved, with state and read, from one rank of one |
@@ -37,10 +39,15 @@ The engine reported no wait behind the background wave. `background_wait_ms`
 counted only the time a request could not be dispatched. On this rank a
 probe is dispatched at once and then waits at the rank, which serves one
 wave at a time: the slower probe's first wave took 667 ms for 130 ms of the
-rank's own work. Commit `d2da5475f` counts that time. It is tested against a
-mock rank that serves one wave at a time and has not yet run on a real rank.
+rank's own work. Commits `d2da5475f` and `c7e9233f1` count that time: the part of
+each of the request's waves beyond the ranks' own work on it, as they report
+it, up to the time a background wave was running. It is tested against a
+mock rank that serves one wave at a time and one that serves two side by
+side, and has not yet run on a real rank.
 
-## First numbers (GPU shared, not a floor)
+## First numbers
+
+One GB10, one rank, GPU shared with another service, not a floor.
 
 | Request at 8,000 tokens of context | First token | Waves before the last token | The last token's wave |
 | --- | ---: | ---: | ---: |
@@ -54,13 +61,31 @@ mock rank that serves one wave at a time and has not yet run on a real rank.
 Decode ran at 7.3 to 7.7 tok/s plain and 8.9 as served. A prefill wave of
 1,024 rows took about 1.1 s (875 to 966 tok/s).
 
-Where a small turn's time goes on this rank: a wave of one row is about
-135 ms of the rank's work. A request's first wave costs more: about 107 ms
-pass between its dispatch and the rank's work on it (252 ms against 145 ms
-of service when the whole prompt is cached), and when it resumes a session
-with new tokens the wave itself is about 140 ms longer than a plain one-row
-wave (277 ms of service for one row). So of the 522 ms one of the two
-one-token turns took to its first token, about 250 ms is that start cost.
+## Finding: a request's first wave has a fixed start cost
+
+One GB10, one rank, GPU shared with another service, not a floor.
+
+A wave of one row is about 135 ms of this rank's work. A request's first
+wave costs more, in two ways:
+
+- About 107 ms pass between its dispatch and the rank's work on it. With
+  the whole prompt cached, the only wave took 252 ms for 145 ms of service.
+- When it resumes a session with new tokens, the wave itself is about
+  140 ms longer than a plain one-row wave: 277 ms of service for one row.
+
+So of the 522 ms one of the two one-token turns took to its first token,
+about 250 ms is that start cost. It is the first part of a turn's floor that
+does not come from the new tokens, and any rule that adds a wave to a turn
+adds to it.
+
+The evidence is in `engine.log` (`service_ms` is the rank's work, `wall_ms`
+the time from dispatch to the wave's return):
+
+| Line | Request | Wave | `service_ms` | `wall_ms` |
+| ---: | --- | --- | ---: | ---: |
+| 15 | 100002, a turn with one new token | its first wave, one row | 277.45 | 383.38 |
+| 16 | 100002 | the last token's wave, one row | 135.21 | 135.70 |
+| 61 | 100009, whole prompt cached | its only wave, one row | 144.93 | 252.28 |
 
 ## Files
 
