@@ -908,6 +908,17 @@ static void TestKernels(SparkDeviceQueue *queue)
 	CHECK(SparkDeviceKernelCreate(&write,library,"contract_write") == SPARK_STATUS_OK &&
 		SparkDeviceKernelCreate(&read,library,"contract_read") == SPARK_STATUS_OK &&
 		SparkDeviceKernelCreate(&shared,library,"contract_shared") == SPARK_STATUS_OK,"create the contract kernels");
+	if ( write == 0 || read == 0 || shared == 0 )
+	{
+		if ( write != 0 )
+			SparkDeviceKernelDestroy(write);
+		if ( read != 0 )
+			SparkDeviceKernelDestroy(read);
+		if ( shared != 0 )
+			SparkDeviceKernelDestroy(shared);
+		CHECK(SparkDeviceLibraryUnload(library) == SPARK_STATUS_OK,"unload the library its kernels could not be created from");
+		return;
+	}
 	CHECK(SparkDeviceAllocate(&device,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,4096u,"kernel device") == SPARK_STATUS_OK,"allocate");
 	TestKernelRefusals(queue,write,&device);
 	TestKernelOrdering(queue,write,read);
@@ -943,7 +954,11 @@ int main(void)
 	const SparkDeviceProperties *properties;
 	char backend[sizeof(properties->backend)] = "?";
 	CHECK(SparkDeviceGetProperties() == 0,"no properties before initialize");
-	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_OK,"initialize");
+	if ( SparkDeviceInitialize(0) != SPARK_STATUS_OK )
+	{
+		printf("FAIL initialize: %s %s\n",SparkDeviceLastError()->operation,SparkDeviceLastError()->text);
+		return 1;
+	}
 	CHECK(SparkDeviceInitialize(0) == SPARK_STATUS_DUPLICATE,"one device per process");
 	properties = SparkDeviceGetProperties();
 	CHECK(properties != 0 && properties->backend[0] != '\0' && properties->page_bytes != 0u &&

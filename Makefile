@@ -1579,7 +1579,7 @@ test-nvrm: $(NVRM_TEST_BINARIES)
 
 $(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit -framework CoreGraphics $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
 
 ifneq ($(METAL_TOOLCHAIN),)
 build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
