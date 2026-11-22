@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_map.h"
 #include "sparkpipe/spark_weightd_spine.h"
+#include "sparkpipe/spark_weightd_device.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "sparkpipe/spark_sha256.h"
@@ -1462,6 +1463,7 @@ int main(int argc,char **argv)
 	snprintf(wset,sizeof(wset),"%s.wset",path);
 	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
 	write_fixture(path,manifest);
+	assert(SparkWeightdDeviceOpen() == SPARK_STATUS_OK);
 	check_spine_preload(path,manifest);
 	check_spine_load(path,manifest);
 	check_spine_residency_modes(path,manifest,socket_path);
