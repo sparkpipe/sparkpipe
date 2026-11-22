@@ -14,7 +14,7 @@ def function(name):
 
 HARNESS = r'''
 set -u
-declare -A DOCTOR_SINCE DOCTOR_NEXT
+declare -A DOCTOR_SINCE DOCTOR_NEXT DOCTOR_FLAPS DOCTOR_QUIET
 MESH_INTERFACE=rocep1s0f1
 MESH_PAIR_INTERFACE=rocep1s0f0
 MESH_PAIRED=1
@@ -80,6 +80,10 @@ class FleetAgentDoctor(unittest.TestCase):
 
     def test_a_rank_without_a_pair_link_never_flaps_its_pair_port(self):
         self.assertEqual(run([1000, 1061, 1362, 1700, 2100], paired=False), {})
+
+    def test_a_port_that_never_links_is_flapped_three_times_then_left_alone(self):
+        flaps = run([1000, 1061, 1362, 1663, 1964, 2265, 2566])
+        self.assertEqual(sorted(flaps), [1061, 1362, 1663], flaps)
 
     def test_a_port_that_recovers_resets_the_hold_down(self):
         script_times = [1000, 1030]
