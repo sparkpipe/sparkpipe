@@ -1611,12 +1611,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - **Placement.** The model is one rank on one node, beside the fleet's chat
     model. A lane record has no form for that: one model holds the fleet, a
     record's `ranks` picks a group of nodes, and the swap controller stops
-    every other record's lane. The node that carries it needs 16.4 GB of
-    device memory at start and 20.8 GB with its KV pool full (measured: 15.4
-    GB of weights, 0.4 GB of state, up to 4.8 GB of KV for 16 sequences of
-    2,048 positions), and a node has about 22 GiB free while a sixteen-rank
-    model is active, so the embedding node needs a smaller KV pool, an FP8
-    build of the embedding weights measured under
+    every other record's lane. The node that carries it gives up 16.4 GB of
+    device memory at start and 20.8 GB with the embedding lane's KV pool
+    full (measured: 15.4 GB of weights, 0.4 GB of state, up to 4.8 GB of KV
+    for 16 sequences of 2,048 positions). That comes out of the chat model's
+    KV pool on that node, and the largest chat models leave no such room:
+    `tools/stage_lane.py` budgets 97.5 to 100 GiB of a node's 119.6 GiB for
+    Kimi K3 and GLM 5.3 Full. Beside those the embedding model needs a
+    smaller KV pool, an FP8 build of its weights measured under
     [`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md) (the publisher ships
     none), or a node of its own.
   - **Release.** `scripts/release_build.sh` builds the adapters the lane
