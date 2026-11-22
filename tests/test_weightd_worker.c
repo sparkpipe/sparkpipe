@@ -1,5 +1,5 @@
 #include "sparkpipe/spark_weightd_worker.h"
-#include <cuda.h>
+#include "sparkpipe/spark_device.h"
 #include <assert.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -10,7 +10,7 @@ typedef struct State
 	pthread_mutex_t mutex;
 	pthread_cond_t changed;
 	pthread_t caller;
-	CUcontext cuda_context;
+	SparkDeviceInstance instance;
 	SparkWeightdWorker *worker;
 	uint32_t started,release,completed;
 } State;
@@ -25,9 +25,9 @@ static void execute(void *context)
 {
 	Job *job = context;
 	State *state = job->state;
-	CUcontext current;
+	SparkDeviceInstance current = 0u;
 	assert(pthread_equal(pthread_self(),state->caller) == 0);
-	assert(cuCtxGetCurrent(&current) == CUDA_SUCCESS && current == state->cuda_context);
+	assert(SparkDeviceThreadInstance(&current) == SPARK_STATUS_OK && current == state->instance);
 	assert(SparkWeightdWorkerDestroy(state->worker) == SPARK_STATUS_INVALID_ARGUMENT);
 	assert(SparkWeightdWorkerWaitIdle(state->worker,1u) == SPARK_STATUS_INVALID_ARGUMENT);
 	pthread_mutex_lock(&state->mutex);
@@ -52,7 +52,8 @@ int main(void)
 	assert(pthread_mutex_init(&state.mutex,0) == 0);
 	assert(pthread_cond_init(&state.changed,0) == 0);
 	state.caller = pthread_self();
-	assert(cuCtxGetCurrent(&state.cuda_context) == CUDA_SUCCESS);
+	assert(SparkDeviceInitialize(0) == SPARK_STATUS_OK);
+	assert(SparkDeviceThreadInstance(&state.instance) == SPARK_STATUS_OK && state.instance != 0u);
 	assert(SparkWeightdWorkerCreate(&state.worker) == SPARK_STATUS_OK);
 	for (i=0u; i<=SPARK_WEIGHTD_WORK_QUEUE_CAPACITY; i++)
 		jobs[i] = (Job){&state,i};
