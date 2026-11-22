@@ -299,6 +299,7 @@ static void ProbeOpen(Probe *probe)
 		pages[page] = page;
 	table = (uint32_t *)Device(pages.size() * sizeof(uint32_t));
 	CUDA(cudaMemcpy(table, pages.data(), pages.size() * sizeof(uint32_t), cudaMemcpyHostToDevice));
+	CUDA(cudaDeviceSynchronize());
 	memset(&kv, 0, sizeof(kv));
 	kv.pool = probe->latent_pool;
 	kv.layer_stride_bytes = probe->latent_bytes;
