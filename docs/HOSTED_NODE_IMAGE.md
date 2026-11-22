@@ -161,6 +161,33 @@ while a model activates, when the large allocations happen:
   the settings raised only until the agent's next loop. A node without the
   helper opens no window.
 
+The activation phase, from `raise` to the last of the 802 objects, with
+40 GiB held in 80 GiB:
+
+| Holder | Phase per trial (s) | NVRM kernel-log lines |
+| --- | --- | --- |
+| every other 4 KiB page | 6.59, 6.58, 6.77, 6.74, 100.1 | 0 |
+| a random half of the 4 KiB pages | 6.68, 6.80, 6.92, 34.90, 6.75 | 0 |
+
+Every trial allocated all 802 objects. The two slow ones are a kernel
+limit, which the window accepts rather than works around:
+- In those trials `compact_memory` stopped early: after 0.02 and 1.57 s,
+  leaving 16,333 and 22,624 free blocks instead of about 37,000.
+- Compaction tracepoints show such a run ending with status `contended`
+  once its free scanner finds no target pages, and the background
+  compaction backs off for about 32 s after it. Until it runs again,
+  direct compaction, the allocations' own pull included, makes nothing,
+  and objects wait up to 24 s each.
+- A second `compact_memory` does not help. Written 2, 4 and 6 s after a
+  raise that stopped early, it returned within 0.05 s and added at most one
+  block, in both such trials out of eight. So the helper has no verb for
+  it.
+- The holder is about 25 times harsher than a real activation. A real
+  activation needs few 2 MiB blocks: Qwen3.8-27B's only object of 2 MiB
+  pages is its 1.9 GB state arena, about 950 blocks, which the pull makes
+  in well under a second. Its weights take 64 KiB pages and its KV chunks
+  4 KiB pages.
+
 ## GPU device nodes
 
 The open module registers its character devices but creates no `/dev`
