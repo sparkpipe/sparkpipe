@@ -19,6 +19,17 @@ extern "C" {
 #define SPARK_NVRM_WAIT_TIMEOUT_NS 10000000000ull
 #define SPARK_NVRM_MARK_BYTES 32u
 #define SPARK_NVRM_MARK_TIME_OFFSET 16u
+#define SPARK_NVRM_HUGE_WAIT_NS 60000000000ull
+#define SPARK_NVRM_HUGE_POLL_NS 10000000ull
+
+typedef struct SparkNvrmHugeSource
+{
+	const char *buddyinfo;
+	const char *min_free_kbytes;
+	uint64_t page_bytes;
+	uint64_t wait_ns;
+	uint64_t poll_ns;
+} SparkNvrmHugeSource;
 
 typedef enum SparkNvrmMemoryKind
 {
@@ -185,7 +196,8 @@ SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes,
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
 uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner);
-uint64_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes);
+uint32_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes, uint64_t *blocks);
+SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t bytes, const char *owner);
 SparkStatus SparkNvrmHugePagesReady(uint64_t bytes, const char *owner);
 SparkStatus SparkNvrmVideoAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, uint32_t *handle, const char *owner);
 SparkStatus SparkNvrmVideoBytes(SparkNvrmGpu *gpu, uint64_t *heap_bytes, uint64_t *free_bytes, const char *owner);

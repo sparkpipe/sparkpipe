@@ -457,6 +457,38 @@ rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
 259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
 read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
 
+The module needs physically contiguous 2 MiB blocks for an object of
+2 MiB pages and does not compact memory to find them: with fragmented
+memory it answers `NV_ERR_NO_MEMORY` and logs "Check failed: Out of
+memory" while gigabytes are free. So before it asks the module for such
+an object, `SparkNvrmSystemAllocate` waits until the free 2 MiB blocks
+cover the object's blocks plus the kernel's reserve
+(`SparkNvrmHugePagesReady`, `nvrm_pages.c`):
+
+- Free blocks are counted in `/proc/buddyinfo`'s Normal zones, the zone
+  the kernel serves the module's allocations from. Each larger block counts
+  as the 2 MiB blocks it holds, for any base page size. DMA and DMA32 keep
+  their blocks for allocations that need them, and Movable takes no kernel
+  allocation, so their blocks do not count.
+- The reserve is `vm.min_free_kbytes` in 2 MiB blocks: 22 at the boot
+  default of 45056 KiB, 512 while the node image's compaction window
+  raises it to 1 GiB ([HOSTED_NODE_IMAGE.md](HOSTED_NODE_IMAGE.md)).
+  The page allocator keeps a zone's last free pages above its watermarks,
+  which start at this reserve, so blocks inside it are not the module's.
+- It polls every 10 ms, for at most 60 s per object, while the kernel's
+  compaction frees blocks. Then it refuses with `capacity_exceeded`, for
+  example "a 64 MiB object of 2 MiB pages needs 32 free 2 MiB blocks above
+  the 512-block min_free reserve; 19620 were free after 60 s". Nothing
+  falls back to smaller pages.
+- Without a readable `/proc/buddyinfo` or a Normal zone in it, the module
+  decides alone, as before.
+
+This covers every 2 MiB-page system allocation: shared memory on an
+integrated GPU (weightd's arenas), device-private memory from 8 MiB up on
+an integrated GPU, and write-back system memory from 2 MiB up on a
+discrete one. `build/test_nvrm_pages` checks the count, the target, the
+bound and the wake-up against fake kernel files.
+
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
 next generation 16 bytes into the mark, then the queue's fence, then an

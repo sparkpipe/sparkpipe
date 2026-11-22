@@ -5,16 +5,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_clock.h"
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
 
-#define PAGES_BUDDYINFO "/proc/buddyinfo"
-#define PAGES_MEMINFO "/proc/meminfo"
 #define PAGES_TEXT_BYTES 16384u
 #define PAGES_ORDERS_MAX 32u
-#define PAGES_WAIT_STEP_NS 100000000ull
-#define PAGES_WAIT_STEPS 20u
+#define PAGES_ZONE "Normal"
 
 static uint32_t PagesOrder(uint64_t page_bytes, uint64_t huge_bytes)
 {
@@ -24,14 +22,13 @@ static uint32_t PagesOrder(uint64_t page_bytes, uint64_t huge_bytes)
 	return(order);
 }
 
-static uint64_t PagesLine(const char *line, uint32_t order)
+static uint32_t PagesLine(const char *line, uint32_t order, uint64_t *blocks)
 {
 	const char *zone = strstr(line,"zone");
 	char name[32];
-	uint64_t blocks = 0u;
 	uint32_t index = 0u;
 	int used = 0;
-	if ( zone == 0 || sscanf(zone,"zone %31s%n",name,&used) != 1 || strcmp(name,"Movable") == 0 )
+	if ( zone == 0 || sscanf(zone,"zone %31s%n",name,&used) != 1 || strcmp(name,PAGES_ZONE) != 0 )
 		return(0u);
 	zone += used;
 	while ( index < PAGES_ORDERS_MAX )
@@ -41,18 +38,19 @@ static uint64_t PagesLine(const char *line, uint32_t order)
 		if ( end == zone )
 			break;
 		if ( index >= order )
-			blocks += (uint64_t)count << (index - order);
+			*blocks += (uint64_t)count << (index - order);
 		zone = end;
 		index++;
 	}
-	return(blocks);
+	return(index > order ? 1u : 0u);
 }
 
-uint64_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes)
+uint32_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes, uint64_t *blocks)
 {
 	const uint32_t order = PagesOrder(page_bytes,huge_bytes);
 	const char *line = buddyinfo;
-	uint64_t blocks = 0u;
+	uint32_t zones = 0u;
+	*blocks = 0u;
 	if ( buddyinfo == 0 || page_bytes == 0u || huge_bytes == 0u || order >= PAGES_ORDERS_MAX || (page_bytes << order) != huge_bytes )
 		return(0u);
 	while ( line != 0 && *line != '\0' )
@@ -64,11 +62,13 @@ uint64_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uin
 		{
 			memcpy(copy,line,length);
 			copy[length] = '\0';
-			blocks += PagesLine(copy,order);
+			zones += PagesLine(copy,order,blocks);
 		}
 		line = next != 0 ? next + 1 : 0;
 	}
-	return(blocks);
+	if ( zones == 0u )
+		*blocks = 0u;
+	return(zones);
 }
 
 static int PagesRead(const char *path, char *text, size_t capacity)
@@ -89,41 +89,51 @@ static int PagesRead(const char *path, char *text, size_t capacity)
 	return(done != 0u);
 }
 
-static uint64_t PagesAvailable(char *text)
+static uint64_t PagesReserve(const char *path, char *text)
 {
-	const char *line = PagesRead(PAGES_MEMINFO,text,PAGES_TEXT_BYTES) ? strstr(text,"MemAvailable:") : 0;
-	return(line != 0 ? strtoull(line + strlen("MemAvailable:"),0,10) << 10 : 0u);
+	if ( !PagesRead(path,text,PAGES_TEXT_BYTES) )
+		return(0u);
+	return((strtoull(text,0,10) * 1024u + SPARK_NVRM_HUGE_PAGE_BYTES - 1u) / SPARK_NVRM_HUGE_PAGE_BYTES);
+}
+
+SparkStatus SparkNvrmHugePagesWait(const SparkNvrmHugeSource *source, uint64_t bytes, const char *owner)
+{
+	const long system_page = sysconf(_SC_PAGESIZE);
+	const uint64_t page = source->page_bytes != 0u ? source->page_bytes : system_page > 0 ? (uint64_t)system_page : 0u;
+	const uint64_t needed = (bytes + SPARK_NVRM_HUGE_PAGE_BYTES - 1u) / SPARK_NVRM_HUGE_PAGE_BYTES;
+	const struct timespec step = { (time_t)(source->poll_ns / 1000000000u), (long)(source->poll_ns % 1000000000u) };
+	const uint64_t start = SparkMonotonicNs();
+	char *text = (char *)malloc(PAGES_TEXT_BYTES);
+	char reason[256];
+	uint64_t blocks = 0u,reserve = 0u;
+	if ( text == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,0,"out of host memory to read the free page lists"));
+	for (;;)
+	{
+		if ( page == 0u || !PagesRead(source->buddyinfo,text,PAGES_TEXT_BYTES) || SparkNvrmFreeHugeBlocks(text,page,SPARK_NVRM_HUGE_PAGE_BYTES,&blocks) == 0u )
+		{
+			free(text);
+			return(SPARK_STATUS_OK);
+		}
+		reserve = PagesReserve(source->min_free_kbytes,text);
+		if ( blocks >= needed + reserve )
+		{
+			free(text);
+			return(SPARK_STATUS_OK);
+		}
+		if ( SparkMonotonicNs() - start >= source->wait_ns )
+			break;
+		(void)nanosleep(&step,0);
+	}
+	free(text);
+	snprintf(reason,sizeof(reason),"a %llu MiB object of 2 MiB pages needs %llu free 2 MiB blocks above the %llu-block min_free reserve; %llu were free after %llu s",
+		(unsigned long long)((bytes + (1u << 20) - 1u) >> 20),(unsigned long long)needed,(unsigned long long)reserve,(unsigned long long)blocks,
+		(unsigned long long)(source->wait_ns / 1000000000u));
+	return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,0,reason));
 }
 
 SparkStatus SparkNvrmHugePagesReady(uint64_t bytes, const char *owner)
 {
-	const long page = sysconf(_SC_PAGESIZE);
-	const uint64_t needed = (bytes + SPARK_NVRM_HUGE_PAGE_BYTES - 1u) / SPARK_NVRM_HUGE_PAGE_BYTES;
-	const struct timespec step = { 0, (long)PAGES_WAIT_STEP_NS };
-	char *text = (char *)malloc(PAGES_TEXT_BYTES);
-	char reason[128];
-	uint64_t blocks = 0u;
-	uint32_t attempt;
-	if ( text == 0 )
-		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,0,"out of host memory to read the free page lists"));
-	for (attempt = 0u; attempt <= PAGES_WAIT_STEPS; attempt++)
-	{
-		if ( page <= 0 || !PagesRead(PAGES_BUDDYINFO,text,PAGES_TEXT_BYTES) )
-		{
-			free(text);
-			return(SPARK_STATUS_OK);
-		}
-		blocks = SparkNvrmFreeHugeBlocks(text,(uint64_t)page,SPARK_NVRM_HUGE_PAGE_BYTES);
-		if ( blocks >= needed )
-		{
-			free(text);
-			return(SPARK_STATUS_OK);
-		}
-		if ( attempt < PAGES_WAIT_STEPS )
-			(void)nanosleep(&step,0);
-	}
-	snprintf(reason,sizeof(reason),"memory too fragmented: %llu free 2 MiB blocks after 2 s, %llu needed, %llu MiB available",
-		(unsigned long long)blocks,(unsigned long long)needed,(unsigned long long)(PagesAvailable(text) >> 20));
-	free(text);
-	return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"allocate",owner,0,reason));
+	static const SparkNvrmHugeSource kernel = { "/proc/buddyinfo","/proc/sys/vm/min_free_kbytes",0u,SPARK_NVRM_HUGE_WAIT_NS,SPARK_NVRM_HUGE_POLL_NS };
+	return(SparkNvrmHugePagesWait(&kernel,bytes,owner));
 }
