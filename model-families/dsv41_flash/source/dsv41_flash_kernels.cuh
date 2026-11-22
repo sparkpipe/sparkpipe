@@ -525,6 +525,14 @@ static __device__ __forceinline__ uint16_t SparkDsv41FlashFp8QdqLane(float value
 	return(LmFloatToBf16(LmE4m3ToFloat(LmFloatToE4m3(value)) * scale));
 }
 
+struct SparkDsv41FlashFp8QdqLaneOp
+{
+	static __device__ __forceinline__ uint16_t Apply(float value)
+	{
+		return SparkDsv41FlashFp8QdqLane(value);
+	}
+};
+
 static __global__ void SparkDsv41FlashFp8QdqKernel(const uint16_t *source_bf16, uint16_t *data_bf16, uint32_t group_count)
 {
 	const uint32_t group = blockIdx.x * (blockDim.x / SPARK_DSV41_FLASH_FP8_BLOCK) + threadIdx.x / SPARK_DSV41_FLASH_FP8_BLOCK;

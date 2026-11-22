@@ -52,12 +52,12 @@ template<typename... Parameters>
 static SparkGpuError LmLaunchDependentKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream,
 	typename LmParameterOf<Parameters>::Type... arguments)
 {
-	(void)grid;
-	(void)block;
-	(void)shared;
-	(void)stream;
-	((void)arguments, ...);
-	return(SparkNvrmLaunchUnsupported((const void *)kernel,"a programmatic dependent launch"));
+	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
+	SparkDeviceParameter layout[sizeof...(Parameters) + 1u];
+	const uint32_t shape[6] = {grid.x, grid.y, grid.z, block.x, block.y, block.z};
+	uint32_t offset = 0u,index = 0u;
+	(LmPackParameter<Parameters>(packed,layout,offset,index,arguments), ...);
+	return(SparkNvrmLaunchDependent((const void *)kernel,shape,shape + 3,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset));
 }
 
 #define LM_LAUNCH_DEPENDENT(kernel, grid, block, shared, stream, ...) \
@@ -67,14 +67,12 @@ template<typename... Parameters>
 static SparkGpuError LmLaunchClusterKernel(void (*kernel)(Parameters...), dim3 grid, dim3 block, size_t shared, SparkGpuStream stream, uint32_t cluster,
 	uint32_t dependent, typename LmParameterOf<Parameters>::Type... arguments)
 {
-	(void)grid;
-	(void)block;
-	(void)shared;
-	(void)stream;
-	(void)cluster;
-	(void)dependent;
-	((void)arguments, ...);
-	return(SparkNvrmLaunchUnsupported((const void *)kernel,"a cluster launch"));
+	alignas(16) uint8_t packed[LmParameterBytes<Parameters...>() + 1u];
+	SparkDeviceParameter layout[sizeof...(Parameters) + 1u];
+	const uint32_t shape[6] = {grid.x, grid.y, grid.z, block.x, block.y, block.z};
+	uint32_t offset = 0u,index = 0u;
+	(LmPackParameter<Parameters>(packed,layout,offset,index,arguments), ...);
+	return(SparkNvrmLaunchCluster((const void *)kernel,shape,shape + 3,cluster,dependent,shared,stream,packed,layout,(uint32_t)sizeof...(Parameters),offset));
 }
 #endif
 

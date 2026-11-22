@@ -1519,6 +1519,14 @@ static SparkStatus DeviceLaunchShape(const SparkDeviceKernel *kernel, const Spar
 	}
 	if ( launch->binding_count > SPARK_DEVICE_MAX_BINDINGS || (launch->binding_count != 0u && launch->bindings == 0) )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,"more than 30 bindings or a missing binding table"));
+	if ( launch->cluster.x == 0u && launch->cluster.y == 0u && launch->cluster.z == 0u )
+		return(SPARK_STATUS_OK);
+	if ( (device_properties.properties & SPARK_DEVICE_PROPERTY_CLUSTERS) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"kernel_launch",kernel->name,0,"the backend runs no thread-block clusters"));
+	if ( launch->cluster.x == 0u || launch->cluster.y == 0u || launch->cluster.z == 0u || launch->groups.x % launch->cluster.x != 0u ||
+		launch->groups.y % launch->cluster.y != 0u || launch->groups.z % launch->cluster.z != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",kernel->name,0,
+			"a cluster has three nonzero sizes and the grid is a whole number of clusters on every axis"));
 	return(SPARK_STATUS_OK);
 }
 

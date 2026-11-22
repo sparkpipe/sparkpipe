@@ -76,6 +76,15 @@ static __device__ __forceinline__ uint16_t D41RopeImaginary(float real, float im
 	return LmFloatToBf16(__fmaf_rn(real, sine, __fmul_rn(imaginary, cosine)));
 }
 
+static __device__ __forceinline__ void D41RopePair(uint16_t *value, uint32_t position, int32_t shift, float inverse_frequency, uint32_t inverse)
+{
+	float sine, cosine;
+	D41RopeTurn(position, shift, inverse_frequency, inverse, &sine, &cosine);
+	const float real = LmBf16ToFloat(value[0]), imaginary = LmBf16ToFloat(value[1]);
+	value[0] = D41RopeReal(real, imaginary, sine, cosine);
+	value[1] = D41RopeImaginary(real, imaginary, sine, cosine);
+}
+
 static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
 	const uint32_t *__restrict__ positions, int32_t shift, const float *__restrict__ inverse_frequency, uint32_t inverse,
 	const uint32_t *__restrict__ row_valid)
@@ -83,12 +92,7 @@ static __global__ void D41RopeRowsKernel(uint16_t *__restrict__ data, uint32_t h
 	const uint32_t row = blockIdx.x, head = blockIdx.y, pair = threadIdx.x;
 	if ( pair >= D41K_ROPE_PAIRS || head >= heads || (row_valid != 0 && row_valid[row] == D41K_NO_ROW) )
 		return;
-	float sine, cosine;
-	D41RopeTurn(positions[row], shift, inverse_frequency[pair], inverse, &sine, &cosine);
-	uint16_t *value = data + ((uint64_t)row * heads + head) * head_stride + rope_offset + 2u * pair;
-	const float real = LmBf16ToFloat(value[0]), imaginary = LmBf16ToFloat(value[1]);
-	value[0] = D41RopeReal(real, imaginary, sine, cosine);
-	value[1] = D41RopeImaginary(real, imaginary, sine, cosine);
+	D41RopePair(data + ((uint64_t)row * heads + head) * head_stride + rope_offset + 2u * pair, positions[row], shift, inverse_frequency[pair], inverse);
 }
 
 static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, const uint8_t *__restrict__ block_scale, uint8_t *__restrict__ weight,
@@ -533,12 +537,11 @@ static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds
 	}
 }
 
-static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
+static __device__ __forceinline__ void D41WindowRingStoreRow(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count)
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count, uint32_t row)
 {
-	const uint32_t row = blockIdx.x;
 	if ( commit == 0u || row >= rows || positions[row] % degree != rank )
 		return;
 	const uint32_t lane = row_lane[row];
@@ -551,14 +554,20 @@ static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wav
 		target[c] = wave_kv[(uint64_t)row * D41K_LATENT + c];
 }
 
+static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
+	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count)
+{
+	D41WindowRingStoreRow(wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, ring_slot_stride, ring_rows, window, degree,
+		rank, rows, commit, lane_count, blockIdx.x);
+}
+
 #define D41K_GRID_ITEMS 32768u
 
-static __global__ void D41MergeSinkKernel(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
-	const float *__restrict__ sink, uint16_t *__restrict__ output)
+static __device__ __forceinline__ void D41MergeSinkHead(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
+	const float *__restrict__ sink, uint16_t *output, uint32_t row, uint32_t head, float *scales, float *denominator_shared)
 {
-	__shared__ float scales[16];
-	__shared__ float denominator_shared;
-	const uint32_t row = blockIdx.x, head = blockIdx.y;
 	const uint64_t base = ((uint64_t)row * heads + head) * D41K_RECORD;
 	if ( threadIdx.x == 0u )
 	{
@@ -571,7 +580,7 @@ static __global__ void D41MergeSinkKernel(const float *__restrict__ partials, ui
 			scales[source] = maximum == -INFINITY ? 0.0f : __expf(maximum - top);
 			denominator = fmaf(partials[(uint64_t)source * source_stride + base + 1u], scales[source], denominator);
 		}
-		denominator_shared = denominator + __expf(sink[head] - top);
+		*denominator_shared = denominator + __expf(sink[head] - top);
 	}
 	__syncthreads();
 	for ( uint32_t element = threadIdx.x; element < D41K_LATENT; element += blockDim.x )
@@ -579,8 +588,34 @@ static __global__ void D41MergeSinkKernel(const float *__restrict__ partials, ui
 		float merged = 0.0f;
 		for ( uint32_t source = 0u; source < sources; ++source )
 			merged = fmaf(partials[(uint64_t)source * source_stride + base + 2u + element], scales[source], merged);
-		output[((uint64_t)row * heads + head) * D41K_LATENT + element] = LmFloatToBf16(merged / denominator_shared);
+		output[element] = LmFloatToBf16(merged / *denominator_shared);
 	}
+}
+
+static __global__ void D41MergeSinkKernel(const float *__restrict__ partials, uint64_t source_stride, uint32_t sources, uint32_t heads,
+	const float *__restrict__ sink, uint16_t *__restrict__ output)
+{
+	__shared__ float scales[16];
+	__shared__ float denominator_shared;
+	D41MergeSinkHead(partials, source_stride, sources, heads, sink, output + ((uint64_t)blockIdx.x * heads + blockIdx.y) * D41K_LATENT, blockIdx.x,
+		blockIdx.y, scales, &denominator_shared);
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ void D41OutputHead(const float *__restrict__ partials, uint64_t source_stride, uint32_t heads,
+	const float *__restrict__ sink, const uint32_t *__restrict__ positions, const float *__restrict__ inverse_frequency, uint16_t *group_input,
+	uint32_t group_heads, uint32_t rows, uint32_t row, uint32_t head, float *shared)
+{
+	static_assert(THREADS % 32u == 0u && D41K_LATENT % THREADS == 0u, "every warp quantizes whole 32-element blocks of the head");
+	uint16_t *merged = (uint16_t *)(shared + 32u);
+	D41MergeSinkHead(partials, source_stride, 1u, heads, sink, merged, row, head, shared, shared + 16u);
+	__syncthreads();
+	if ( threadIdx.x < D41K_ROPE_PAIRS )
+		D41RopePair(merged + D41K_LATENT - 2u * D41K_ROPE_PAIRS + 2u * threadIdx.x, positions[row], 0, inverse_frequency[threadIdx.x], 1u);
+	__syncthreads();
+	uint16_t *target = group_input + ((uint64_t)(head / group_heads) * rows + row) * group_heads * D41K_LATENT + (head % group_heads) * D41K_LATENT;
+	for ( uint32_t element = threadIdx.x; element < D41K_LATENT; element += THREADS )
+		target[element] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(merged[element]));
 }
 
 static __global__ void D41SwigluRowsKernel(const uint16_t *__restrict__ gate, const uint16_t *__restrict__ up, uint16_t *__restrict__ output,
