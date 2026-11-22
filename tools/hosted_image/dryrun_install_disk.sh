@@ -148,20 +148,21 @@ mknod "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/removed" c 0 0
 mkdir -p "$seed/var/lib/containers/storage/overlay-containers/c0/userdata"
 mkfifo "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/ctl"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/attach"
-ln -s l0 "$seed/var/lib/containers/storage/overlay/top"
 printf '[Unit]\nDescription=Ceph %%i for %s\n' "$fsid" > "$units/ceph-$fsid@.service"
 printf '[Unit]\nRequires=ds4-extnvme-link.service\n' > "$units/ceph-$fsid@.service.d/30-ds4-extnvme-link.conf"
 printf '[Unit]\nDescription=Ceph cluster %s\n' "$fsid" > "$units/ceph-$fsid.target"
 printf '[Unit]\nDescription=All Ceph clusters and services\n' > "$units/ceph.target"
-ln -s ../ceph-$fsid@.service "$units/ceph-$fsid.target.wants/ceph-$fsid@osd.3.service"
-ln -s ../ceph-$fsid.target "$units/ceph.target.wants/ceph-$fsid.target"
-ln -s ../ceph.target "$units/multi-user.target.wants/ceph.target"
-ln -s ../ceph-$fsid.target "$units/multi-user.target.wants/ceph-$fsid.target"
-ln -s /dev/null "$units/ceph-crash.service"
+mkdir -p "$seed/usr/lib/systemd/system"
+printf '[Unit]\nDescription=Multi-User System\n' > "$seed/usr/lib/systemd/system/multi-user.target"
+printf '[Unit]\nDescription=Timer Units\n' > "$seed/usr/lib/systemd/system/timers.target"
+systemctl --root="$seed" add-wants "ceph-$fsid.target" "ceph-$fsid@osd.3.service" > /dev/null
+systemctl --root="$seed" add-wants ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" add-wants multi-user.target ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" mask ceph-crash.service > /dev/null
 printf '[Service]\nExecStart=/usr/local/sbin/ds4-extnvme-link\n' > "$units/ds4-extnvme-link.service"
 printf '[Service]\nExecStart=/usr/local/sbin/ds4_spark_uplink.py monitor\n' > "$units/ds4-uplink-monitor.service"
 printf '[Timer]\nOnUnitActiveSec=15s\n' > "$units/ds4-uplink-monitor.timer"
-ln -s ../ds4-uplink-monitor.timer "$units/timers.target.wants/ds4-uplink-monitor.timer"
+systemctl --root="$seed" add-wants timers.target ds4-uplink-monitor.timer > /dev/null
 printf '#!/bin/sh\nexit 0\n' > "$seed/usr/local/sbin/ds4-extnvme-link"
 printf '#!/usr/bin/env python3\n' > "$seed/usr/local/sbin/ds4_spark_uplink.py"
 chmod 755 "$seed/usr/local/sbin/ds4-extnvme-link" "$seed/usr/local/sbin/ds4_spark_uplink.py"

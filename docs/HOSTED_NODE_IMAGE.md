@@ -341,7 +341,7 @@ attaches it as a loop device and partitions it like a node, then seeds:
 
 - a previous system with Tailscale state in `/var/lib/tailscale`, and a
   fleet node's state for every line of `carry-fleet.txt` (Ceph state and
-  units, the private tools, profiles, a container layer with a link and a
+  units with their wants links and a mask, the private tools, profiles, a container layer with a
   whiteout, a container run directory with a pipe and a socket) and the
   `sparkemerg` account;
 - `/home/node` with a 256 MiB pack and a release root linked to a stub
