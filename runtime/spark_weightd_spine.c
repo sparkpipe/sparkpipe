@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_weightd_spine.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_direct.h"
+#include "sparkpipe/spark_weightd_device.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_ck128.h"
@@ -31,8 +32,12 @@ static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *ind
 		if ( end > limit )
 			end = limit;
 		placed = pack_offsets != 0u ? span->offset : span->compact_offset;
-		if ( end > start && SparkGpuMemcpy(destination + placed + (start - span->offset),buffer + (start - offset),(size_t)(end - start),SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( end > start )
+		{
+			const SparkStatus written = SparkWeightdDeviceWrite(destination + placed + (start - span->offset),buffer + (start - offset),end - start);
+			if ( written != SPARK_STATUS_OK )
+				SPARK_RETURN(written);
+		}
 		if ( (span->offset + span->bytes) > limit )
 			break;
 		(*index)++;
