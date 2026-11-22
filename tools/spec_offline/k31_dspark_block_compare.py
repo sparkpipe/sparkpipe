@@ -153,6 +153,31 @@ def layer_attention(d, path, context):
     return latent.double(), python.double()
 
 
+RULES = ((0, 0.0, 0.0, 0), (12345, 1.0, 0.95, 0), (777, 1.0 / 0.6, 1.0, 20))
+
+
+def compare_drafts(d, path, y, anchor, position):
+    raw = np.fromfile(path, dtype=np.uint32).reshape(len(RULES), 1 + 2 * d.block)
+    ok = True
+    for index, (seed, inverse_temperature, nucleus, top_k) in enumerate(RULES):
+        tokens = raw[index, 1:1 + d.block].astype(np.int64)
+        scores = raw[index, 1 + d.block:].view(np.float32)
+        with torch.no_grad():
+            if inverse_temperature > 0.0:
+                rule = (torch.tensor(seed, device="cuda"), torch.tensor(np.float32(inverse_temperature), device="cuda"),
+                        torch.tensor(np.float32(nucleus), device="cuda"), torch.tensor(top_k, device="cuda"))
+                python_tokens, python_scores = d.propose(y, anchor, rule, torch.tensor(position, device="cuda"), torch.tensor(True, device="cuda"))
+            else:
+                python_tokens, python_scores = d.propose(y, anchor)
+        python_tokens, python_scores = python_tokens.cpu().numpy(), python_scores.float().cpu().numpy()
+        equal = int((tokens == python_tokens).sum())
+        worst = float(np.abs(scores - python_scores).max())
+        ok = ok and equal == d.block and worst < 1e-3
+        print(f"rule {index} (seed {seed}, inverse temperature {inverse_temperature:.3f}, nucleus {nucleus}, top-k {top_k}): drafts equal on {equal} of"
+              f" {d.block} slots, largest confidence difference {worst:.2e}; module {tokens.tolist()} python {python_tokens.tolist()}")
+    return ok
+
+
 def compare(options):
     d = K3DsparkDrafter(options.checkpoint, options.target, NAMES, "cuda")
     tokens = np.fromfile(options.out / "tokens.bin", dtype=np.uint32)
@@ -179,7 +204,8 @@ def compare(options):
         attention_ok = attention_ok and mean < 1e-4 and worst < 1e-2
         print(f"layer {index}: attention against the Python drafter on the same inputs, relative difference mean {mean:.2e} largest {worst:.2e}")
     tokens_ok = bool((top[0] == top[1]).all())
-    passed = attention_ok and tokens_ok
+    drafts_ok = compare_drafts(d, options.out / "drafts.bin", module.to(torch.bfloat16), anchor, position)
+    passed = attention_ok and tokens_ok and drafts_ok
     print(("PASS" if passed else "FAIL") + f" position {position} anchor {anchor}: attention {'matches' if attention_ok else 'differs'},"
           f" top tokens equal on {int((top[0] == top[1]).sum())} of {d.block} rows; y against float64 mean module"
           f" {module_error.mean().item():.5f} python {python_error.mean().item():.5f}")
