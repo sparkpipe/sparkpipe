@@ -358,6 +358,16 @@ byte from the copy engine's remap constant: four bytes per element over
 the aligned middle, one byte per element over an unaligned head and
 tail.
 
+The line limit counts bytes, not elements. `LINE_LENGTH_IN` is a 32-bit
+count (`clcab5.h`): bytes for a copy, remap elements for a fill. The copy
+engine utilities in NVIDIA's open kernel modules never put more than
+2^32 - 1 bytes in one line. Lines used to be cut at 2^31 elements, so a
+fill of 8 GiB or more became one line of 2^31 four-byte elements
+(8 GiB). Its fence never arrived. A fill line now holds at most 2^29
+elements. `tests/test_nvrm_submit.c` checks the lines pushed for fills
+and copies of 8, 10.5 and 16 GiB. `make SPARKPIPE_DEVICE=nvrm
+nvrm-large-transfers` runs them on the GPU (see the GPU tests).
+
 `device_nvrm.c` maps the device layer onto this:
 
 | Space | nvrm memory | Host view | Device address |
@@ -501,6 +511,21 @@ launch-shape probe and first light:
   unaligned offset, pageable copies through the bounce buffer and pageable
   fills, 64 queues opened and closed in turn, two queues copying at once,
   and reopening after a shutdown.
+- **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
+  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
+  40 GiB of available memory. It runs in two modes:
+  - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
+    zero-filled by the copy engine. For each size it copies the whole
+    buffer to host-visible memory in one call and checks every byte, fills
+    the whole buffer in one call, copies it back and checks again, and
+    fills host-visible memory of the same size at an odd offset.
+  - `held`: sets the stall threshold to zero, so that a 4 GiB
+    allocation's wait gives up while its zero fill is still running. The
+    allocation must fail, keep its memory held and say so. Shutdown must
+    then release the memory once the fill ends, and the device must open
+    and fill memory again afterwards.
+
+  The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
   the backend-neutral device contract the host, Metal and CUDA backends
   pass: spaces, copies, events, waits between queues, host callbacks, busy
@@ -565,7 +590,13 @@ operation, as it does after any I/O error.
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
 - **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. Channel waits that know no queue
+  allocations use the same watch. When the wait for an allocation's zero
+  fill gives up while the fill is still running, the allocation fails but
+  its memory stays held. Freeing memory under a running copy engine
+  makes the kernel module assert, and the GPU then needs a reset. The
+  error text names the held bytes. Shutdown releases held memory once its
+  fill has finished. If the fill never finishes, shutdown leaves the GPU
+  open for the process's exit to close. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
