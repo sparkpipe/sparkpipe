@@ -8,7 +8,7 @@
 #include "sparkpipe/spark_error_site.h"
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_rm.h"
-#include "runtime/device/nvrm/nvrm_version.h"
+#include "nvrm_release.h"
 #include "nv-ioctl.h"
 #include "nv_escape.h"
 #include "nvos.h"

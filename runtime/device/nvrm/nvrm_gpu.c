@@ -15,7 +15,7 @@
 #include "nv_escape.h"
 #include "nvos.h"
 #include "nv-unix-nvos-params-wrappers.h"
-#include "uvm_linux_ioctl.h"
+#include "nvrm_release.h"
 #include "class/cl003e.h"
 #include "class/cl0070.h"
 #include "class/cl0071.h"
@@ -313,7 +313,7 @@ static void GpuRangeFree(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes)
 	UVM_FREE_PARAMS release;
 	memset(&release,0,sizeof(release));
 	release.base = address;
-	release.length = bytes;
+	SPARK_NVRM_UVM_FREE_LENGTH(release,bytes);
 	(void)ioctl(gpu->rm.uvm,UVM_FREE,&release);
 }
 
@@ -515,7 +515,7 @@ void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory)
 		UVM_FREE_PARAMS release;
 		memset(&release,0,sizeof(release));
 		release.base = memory->address;
-		release.length = memory->bytes;
+		SPARK_NVRM_UVM_FREE_LENGTH(release,memory->bytes);
 		(void)ioctl(gpu->rm.uvm,UVM_FREE,&release);
 	}
 	if ( memory->host_mapped != 0u )

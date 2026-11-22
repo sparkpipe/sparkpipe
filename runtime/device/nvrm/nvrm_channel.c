@@ -5,7 +5,7 @@
 #include "runtime/device/device_backend.h"
 #include "runtime/device/nvrm/nvrm_gpu.h"
 #include "nvos.h"
-#include "uvm_linux_ioctl.h"
+#include "nvrm_release.h"
 #include "class/cl2080_notification.h"
 #include "class/cl9067.h"
 #include "class/cla06c.h"
@@ -216,7 +216,7 @@ void SparkNvrmChannelDestroy(SparkNvrmGpu *gpu, SparkNvrmChannel *channel)
 	{
 		UVM_UNREGISTER_CHANNEL_PARAMS registration;
 		memset(&registration,0,sizeof(registration));
-		memcpy(registration.gpuUuid.uuid,gpu->uuid,sizeof(gpu->uuid));
+		SPARK_NVRM_UVM_UNREGISTER_GPU(registration,gpu->uuid);
 		registration.hClient = gpu->rm.client;
 		registration.hChannel = channel->handle;
 		(void)SparkNvrmRmUvm(&gpu->rm,-1,UVM_UNREGISTER_CHANNEL,&registration,(uint32_t)sizeof(registration),&registration.rmStatus,"free","free");

@@ -32,50 +32,70 @@ device closed; `tests/test_device_flavours.py` checks the flavour switch,
 the refused goals, that the default build is the cuda flavour, and the
 library's dynamic dependencies.
 
-## One module version
+## Module releases
 
-The resource-manager ioctl structures change between module releases, so the
-backend is built for exactly one release of the open kernel module and
-refuses any other when it opens the device. The pinned release is
-**580.178.04**: `runtime/device/nvrm/nvrm_version.h` names it, and the
-generated headers below come from it. A module update is a regeneration, a
+The resource-manager ioctl structures change between module releases, so a
+build of the backend is for exactly one release of the open kernel module
+and refuses any other when it opens the device. Two releases are pinned:
+
+| Release | Hosts |
+| --- | --- |
+| **580.178.04** | the Sparks (aarch64); the default |
+| **595.84** | the hub's RTX 5090 (x86_64) |
+
+`NVRM_MODULE_RELEASE` picks the release a build is for: the Makefile's
+default, 580.178.04, or 595.84 (`make NVRM_MODULE_RELEASE=595.84 ...`). Any
+other value stops the build. Each release has its own tree of generated
+headers below and a release header,
+`runtime/device/nvrm/release/<release>/nvrm_release.h`, which names the
+release the backend accepts at open and fills the parameter fields that
+differ between the pinned releases: 595.84's `UVM_FREE` takes no length and
+its `UVM_UNREGISTER_CHANNEL` no GPU UUID. `build/nvrm_module_release`
+records the release a build tree last built for, so switching releases
+rebuilds the nvrm library and every program that compiles the backend's
+sources. A module update is a new pin: a regeneration, a release header, a
 rebuild and a requalification of the backend, like any other release.
 
 ## Generated headers
 
 The structures, ioctl numbers, class numbers, methods and QMD layout come
-from two pinned upstream trees, copied by `tools/nvrm_headers.py`:
+from pinned upstream trees, copied by `tools/nvrm_headers.py`:
 
 | Upstream | Pin | Provides | Output |
 | --- | --- | --- | --- |
-| [open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) | release 580.178.04, commit `c8e699821c23` | the ioctl numbers and structures, the UVM ioctls, the resource-manager SDK (`nvos.h`, status codes, allocation and control parameters), class numbers, and the GPFIFO entry and host method formats | `runtime/device/nvrm/vendor/open-gpu-kernel-modules/` |
+| [open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) | release 580.178.04, commit `c8e699821c23`; release 595.84, commit `722ae84526a0` | the ioctl numbers and structures, the UVM ioctls, the resource-manager SDK (`nvos.h`, status codes, allocation and control parameters), class numbers, and the GPFIFO entry and host method formats | `runtime/device/nvrm/vendor/open-gpu-kernel-modules/<release>/` |
 | [open-gpu-doc](https://github.com/NVIDIA/open-gpu-doc) | commit `9fdf5c406200` | the Blackwell compute methods (`clcec0.h`), its QMD version 5 layout (`clcec0qmd.h`) and the copy-engine methods (`clcab5.h`) | `runtime/device/nvrm/vendor/open-gpu-doc/` |
 
 The tool copies the headers it lists and every header they include, keeps
 each one's path relative to its include root, removes the comments and
-writes the matching `NOTICE` entries. Only nvrm translation units compile
-with these include paths:
+writes the matching `NOTICE` entries, one per release. Only nvrm
+translation units compile with these include paths:
 
 ```
--Iruntime/device/nvrm/vendor/open-gpu-kernel-modules -Iruntime/device/nvrm/vendor/open-gpu-doc
+-Iruntime/device/nvrm/release/<release> -Iruntime/device/nvrm/vendor/open-gpu-kernel-modules/<release> -Iruntime/device/nvrm/vendor/open-gpu-doc
 ```
 
-To regenerate, clone both trees at their pins into a new directory outside
-the repository and run the tool from the repository root; `--check` renders
-into memory and fails when the tree differs:
+To regenerate, clone the trees at their pins into a new directory outside
+the repository and run the tool from the repository root with one
+`--module` checkout per pinned release; `--check` renders into memory and
+fails when the tree differs:
 
 ```
-git clone --depth 1 --branch 580.178.04 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules
+git clone --depth 1 --branch 580.178.04 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules-580.178.04
+git clone --depth 1 --branch 595.84 https://github.com/NVIDIA/open-gpu-kernel-modules DIR/open-gpu-kernel-modules-595.84
 git clone https://github.com/NVIDIA/open-gpu-doc DIR/open-gpu-doc
 git -C DIR/open-gpu-doc checkout 9fdf5c4062007929d9f4e6cbad9c9771fe61b880
-python3 -I tools/nvrm_headers.py --module DIR/open-gpu-kernel-modules --doc DIR/open-gpu-doc --check
+python3 -I tools/nvrm_headers.py --module DIR/open-gpu-kernel-modules-580.178.04 --module DIR/open-gpu-kernel-modules-595.84 \
+    --doc DIR/open-gpu-doc --check
 ```
 
-The tool refuses a checkout at any other commit. `tests/test_nvrm_headers.py`
-runs in `make test` without the upstream trees: it checks the tool's comment
+The tool tells the releases apart by their `version.mk` and refuses a
+checkout at any other commit, two checkouts of one release, or a pinned
+release without a checkout. `tests/test_nvrm_headers.py` runs in
+`make test` without the upstream trees: it checks the tool's comment
 removal, include resolution and `NOTICE` rewriting on scratch trees, and
-that the headers in the tree, their `NOTICE` entries and
-`nvrm_version.h` all name the pins.
+that the headers in the tree, their `NOTICE` entries, the release headers
+and the Makefile's `NVRM_MODULE_RELEASES` all name the pins.
 
 ## Kernel images
 
