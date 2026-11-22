@@ -321,8 +321,9 @@ static void TestCopyAddresses(uint64_t granularity)
 		SparkDeviceAddressLookup(reserved,bytes) == SPARK_DEVICE_ADDRESS_UNKNOWN,
 		"free the buffers and the queue and unmap both mappings; the unmapped range looks up as reserved with nothing there");
 	CHECK(SparkDeviceAddressRelease(reserved,bytes + granularity) == SPARK_STATUS_OK && SparkDeviceAddressRelease(read_only,bytes) == SPARK_STATUS_OK &&
-		SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK && SparkDeviceAddressLookup(reserved,bytes) == SPARK_DEVICE_ADDRESS_OUTSIDE,
-		"release both reservations and the memory; the range is no longer the device's");
+		SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK && SparkDeviceAddressLookup(reserved,bytes) != SPARK_DEVICE_ADDRESS_MAPPED &&
+		SparkDeviceAddressLookup(reserved,bytes) != SPARK_DEVICE_ADDRESS_BUFFER,
+		"release both reservations and the memory; nothing holds the range any more");
 }
 
 int main(int argc, char **argv)

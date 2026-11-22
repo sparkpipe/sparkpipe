@@ -86,7 +86,10 @@ address itself:
   `SPARK_DEVICE_ADDRESS_MAPPED` (one or more adjacent mappings),
   `SPARK_DEVICE_ADDRESS_UNKNOWN` (part of a reservation with nothing behind it,
   or a range that runs past its buffer or mapping) or
-  `SPARK_DEVICE_ADDRESS_OUTSIDE` (not the device's: host memory).
+  `SPARK_DEVICE_ADDRESS_OUTSIDE` (not the device's: host memory). On nvrm
+  the backend's whole device address range is the device's, so an address
+  there that nothing holds is unknown even after its reservation is released:
+  its CPU side stays reserved with no access.
 - `SparkDeviceCopyAddresses` queues a copy between two device address ranges,
   each inside a device buffer or a mapping, at least one of them a mapping.
   The destination must be writable: a read-only mapping or buffer is refused.
