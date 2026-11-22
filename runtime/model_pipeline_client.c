@@ -1223,6 +1223,27 @@ SparkStatus SparkModelPipelineClientCacheHint(SparkModelPipelineClient *pipeline
 	return(SPARK_STATUS_OK);
 }
 
+SparkStatus SparkModelPipelineClientCacheProbe(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	uint32_t rank,sent = 0u;
+	if ( pipeline == 0 || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		sent += SparkModelResidentClientCacheProbe(pipeline->clients[rank],identity,token_count) == SPARK_STATUS_OK ? 1u : 0u;
+	if ( sent != pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelPipelineClientGetRankCacheProbe(const SparkModelPipelineClient *pipeline,uint32_t rank_index,SparkModelResidentCacheProbeReport *report)
+{
+	if ( pipeline == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( rank_index >= pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	return(SparkModelResidentClientGetCacheProbe(pipeline->clients[rank_index],report));
+}
+
 SparkStatus SparkModelPipelineClientGetRankStatus(
 	const SparkModelPipelineClient *pipeline,
 	uint32_t rank_index,

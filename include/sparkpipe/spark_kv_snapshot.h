@@ -148,6 +148,7 @@ SparkStatus SparkKvSnapshotWrite(SparkKvSnapshotStore *store,const SparkKvSnapsh
 SparkStatus SparkKvSnapshotWriteBegin(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,const SparkKvSnapshotKey *parent,const uint32_t *kinds,const uint64_t *bytes,uint32_t segment_count,uint64_t used_seconds,SparkKvSnapshotWriteTicket *ticket);
 SparkStatus SparkKvSnapshotParent(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key,SparkKvSnapshotKey *parent_out);
 uint32_t SparkKvSnapshotContains(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
+uint32_t SparkKvSnapshotStored(SparkKvSnapshotStore *store,const SparkKvSnapshotKey *key);
 SparkStatus SparkKvSnapshotWriteCommit(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);
 uint32_t SparkKvSnapshotTakeFailedWrites(SparkKvSnapshotStore *store,SparkKvSnapshotKey *keys,SparkStatus *statuses,uint32_t capacity,uint32_t *lost_out);
 void SparkKvSnapshotWriteCancel(SparkKvSnapshotStore *store,SparkKvSnapshotWriteTicket *ticket);

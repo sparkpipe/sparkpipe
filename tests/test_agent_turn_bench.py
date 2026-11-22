@@ -284,11 +284,68 @@ def check_memory_watch(tmp, check):
     check("gone" in summary["errors"], "a node whose sampler failed reported no error")
 
 
+def timer_arguments(command, base, corpus_dir, output, shapes, extra=()):
+    return bench.build_parser().parse_args([
+        command, "--endpoint", base, "--model", "alpha", "--corpus", str(corpus_dir), "--shapes", shapes, "--preamble-tokens", "600", "--label", "floor",
+        "--reply-tokens", "64", "--result-tokens", "150:300", "--output", str(output), *extra])
+
+
+def check_floor_and_cold(tmp, check):
+    corpus_dir = corpus(tmp / "floor-corpus")
+    output = tmp / "floor"
+    with Background(tmp / "floor-chat", 4) as background:
+        harness = background.harness
+        bench.floor(timer_arguments("floor", harness.base, corpus_dir, output, "messages,responses", ("--contexts", "3000,6000", "--tails", "50,300", "--repeats", "2")))
+        after_floor = len(harness.engine.requests)
+        cold = ("--opening-tokens", "4000", "--subagent-tokens", "3000", "--nonce", "n1")
+        bench.cold(timer_arguments("cold", harness.base, corpus_dir, output, "messages", cold))
+        bench.cold(timer_arguments("cold", harness.base, corpus_dir, output, "messages", ("--events", "resume", "--event", "swap")))
+        sent = len(harness.engine.requests) - after_floor
+        classes = sorted({request["priority"] for request in harness.engine.requests})
+        bench.render(timer_arguments("render", harness.base, corpus_dir, tmp / "render", "messages", ("--contexts", "3000,6000", "--repeats", "3")))
+        rendered = len(harness.engine.requests) - after_floor - sent
+    records = bench.load_records([output])
+    turns = [record for record in records if record["phase"] == "floor"]
+    grows = [record for record in records if record["phase"] == "floor_grow"]
+    check(len(grows) == 4 and len(turns) == 16 and all(record["error"] is None for record in grows + turns),
+          f"two shapes at two context levels make 4 level requests and 16 turns: {len(grows)} and {len(turns)}")
+    check(all(record["prompt_tokens"] >= record["context"] * 0.8 for record in grows), f"a level request did not reach its context: {[(r['context'], r['prompt_tokens']) for r in grows]}")
+    for shape in ("messages", "responses"):
+        ordered = [record for record in records if record.get("shape") == shape and record["phase"] in bench.FLOOR_PHASES]
+        for before, after in zip(ordered, ordered[1:]):
+            if after["phase"] == "floor":
+                check(after["cached_tokens"] >= before["prompt_tokens"], f"a {shape} floor turn lost its prefix: {after['cached_tokens']} cached after a prompt of {before['prompt_tokens']}")
+                check(after["tail"] * 0.4 <= after["prefill_tokens"] <= after["tail"] * 3 + 200, f"a {shape} turn with a {after['tail']}-token tail prefilled {after['prefill_tokens']}")
+    check(all("seen_tokens" in record and record.get("cause") in (None, "resume_point") for record in turns),
+          f"a floor turn's record carries the chat layer's ledger and is blamed for nothing: {sorted({str(record.get('cause')) for record in turns})}")
+    check(classes == [2], f"the timed requests are interactive: {classes}")
+    opening, second = (next(record for record in records if record["phase"] == phase) for phase in ("cold_opening", "cold_opening_second"))
+    check(opening["cause"] == "opening_changed" and opening["cause_block"] == "tools" and opening["cached_tokens"] <= 128 and
+          4000 * 0.8 <= opening["prompt_tokens"] <= 4000 * 1.6,
+          f"an opening with a new nonce is cold from its first tool on: {opening['cause']} {opening.get('cause_block')} {opening['cached_tokens']} of {opening['prompt_tokens']}")
+    check(second["cached_tokens"] >= opening["prompt_tokens"] * 0.8 and second.get("cause") != "first_opening",
+          f"a second session on the same opening reuses it: {second['cached_tokens']} cached, cause {second.get('cause')}")
+    subagent, again = (next(record for record in records if record["phase"] == phase) for phase in ("cold_subagent", "cold_subagent_second"))
+    check(subagent["cause"] == "first_opening" and subagent["cached_tokens"] <= 128 and again["cached_tokens"] >= subagent["prompt_tokens"] * 0.6,
+          f"a subagent type's first opening is cold and its second reuses it: {subagent['cause']}, then {again['cached_tokens']} cached")
+    resume = next(record for record in records if record["phase"] == "cold_resume")
+    last = [record for record in records if record.get("shape") == "messages" and record["phase"] == "floor"][-1]
+    check(resume["event"] == "swap" and resume["cached_tokens"] >= last["prompt_tokens"] and resume["context"] == 6000,
+          f"the resume turn continues the saved floor session and names its event: {resume['event']} {resume['cached_tokens']} cached")
+    check(sent == 5, f"the cold arms sent {sent} requests, not two openings, two subagents and one resume")
+    renders = [record for record in bench.load_records([tmp / "render"]) if record["phase"] == "render"]
+    check(rendered == 0 and len(renders) == 2 and all(record["render_ms"] > 0 and record["repeats"] == 3 and record["prompt_tokens"] >= record["context"] * 0.8 for record in renders),
+          f"render times the chat layer's rendering and tokenizing at each context and sends the engine nothing: {rendered} engine requests, {renders}")
+    table = bench.floor_markdown(bench.summarize_floor(records))
+    check("| floor tail 50 | messages |" in table and "| cold_resume (swap) tail 300 |" in table and "first_opening" in table, "the report has no floor, resume or cause rows")
+
+
 def main():
     check = fixture.Checks("test_agent_turn_bench")
     with tempfile.TemporaryDirectory() as directory:
         tmp = Path(directory)
         check_end_to_end(tmp, check)
+        check_floor_and_cold(tmp, check)
         check_retry(check)
         check_summary(check)
         check_memory_watch(tmp, check)
