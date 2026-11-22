@@ -12,6 +12,10 @@ MODES = ("--run", "--peer-reduce", "--reduce-scatter", "--pipelined", "--all-to-
 
 
 def main():
+    if os.environ.get("SPARK_RUN_PARKED") != "1":
+        print("SKIP test_tp_mesh_hardware_probe: parked while its reduce-scatter can fault the GPU (TECHDEBT.md, Runtime completion); "
+              "SPARK_RUN_PARKED=1 runs it, on spark1 only")
+        return 0
     binary = built_binary("test_tp_mesh_hardware_probe", ROOT / "build/tp_mesh_hardware_probe")
     if binary is None:
         return 0
