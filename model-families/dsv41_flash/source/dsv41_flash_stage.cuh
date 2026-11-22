@@ -1525,7 +1525,11 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	}
 	else
 		D41InitRecords(state->records_received, stride, rows, D41_LOCAL_HEADS, 1u, stream);
-	if ( fused == 0u )
+	if ( fused == 0u && rows == 1u )
+		LM_LAUNCH((D41WindowFoldClusterKernel), dim3(D41K_WINDOW_PARTS, D41_LOCAL_HEADS, rows), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS,
+			state->q_local, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
+			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
+	else if ( fused == 0u )
 		LM_LAUNCH((D41WindowFoldWholeKernel), dim3(rows, D41_LOCAL_HEADS), D41K_THREADS, 0, stream, state->records_received, D41_LOCAL_HEADS, state->q_local,
 			state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices,
 			step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
