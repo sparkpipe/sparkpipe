@@ -92,7 +92,7 @@ thread binds to its creator's instance before it touches device memory.
 | CUDA | the driver's virtual memory management, reached through `cudaGetDriverEntryPointByVersion`, so the device library links only the CUDA runtime. Pinned device allocations exported as POSIX file descriptors. Mappings take offset 0 only, as the driver requires | an instance is the device's primary context |
 | host | POSIX shared memory objects. Reservations are `PROT_NONE` anonymous mappings and maps are `MAP_FIXED` mappings of the object. It adopts device-private ranges of its own mappings | one instance per process |
 | Metal | refused with `SPARK_STATUS_UNSUPPORTED` | one instance per process |
-| nvrm | refused with `SPARK_STATUS_UNSUPPORTED` until its implementation lands | refused until then |
+| nvrm | module system memory, GPU-cached, in 2 MiB pages, with no CPU mapping. Export puts the object in a fresh `/dev/nvidiactl` descriptor (`NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD`); import duplicates it under this process's device (`..._IMPORT_OBJECT_FROM_FD`) and reads its size back. Reservations come from the backend's own device address range, and maps are an RM mapping plus a unified-memory external mapping at the address, with the offset asked for. The backend keeps its handle until the last unmap and the release. Both granularities are 2 MiB | one instance per process |
 
 ## Tests
 
@@ -110,6 +110,31 @@ runs in `make test` against the host backend. It covers:
   partial unmap, and unmapped by one call;
 - a second thread binding to the instance, and refusing a value the device
   layer did not return.
+
+The nvrm build of the same test (`build/test_device_shared_memory_nvrm`) and
+[`tests/nvrm/shared_coherence.cu`](../tests/nvrm/shared_coherence.cu) run in
+`make test-nvrm-gpu`. The coherence test runs three 1 GiB cases across two
+processes, and each case also runs as a mutant that drops its completion
+point; every mutant must be caught as a mismatch:
+
+1. the exporter fills the memory from pageable memory by copy, and a kernel in
+   the importer checksums every byte through a read-only mapping;
+2. 64 kernels in the importer write through a read-write mapping, and the
+   exporter reads it back by copy;
+3. the importer writes by `SparkDeviceCopy` through an adopted range and
+   waits on its queue, and the exporter reads it back by copy (the KV pool's
+   path).
+
+It also checks that no adopted range has a host view, and runs a thousand
+rounds of the whole lifetime: create, map, export, release while mapped,
+import, map read-only, unmap and release. Every round keeps its bytes and
+reserves the same address again, and memory and descriptors end where
+they started.
+
+The writer in case 2 is 64 grids and not one because of scheduling. A
+running grid is not preempted for another process's copy. With one 30 ms
+grid, the reader's copy queued behind the writer even without the completion
+point, so that mutant went uncaught.
 
 [`tests/test_device_shared_memory_cuda.py`](../tests/test_device_shared_memory_cuda.py)
 runs the same binary against the CUDA backend on a CUDA host.
