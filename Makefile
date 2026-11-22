@@ -77,6 +77,8 @@ DEVICE_HOST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
+DEVICE_KERNEL_DIR := $(DEVICE_RUNTIME_DIR)/sparkpipe_device_kernels
+DEVICE_TENSOR_MAP_IMAGE := $(DEVICE_KERNEL_DIR)/tensor_map_build.cubin
 DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
 NVRM_VENDOR := runtime/device/nvrm/vendor
 NVRM_MODULE_RELEASES := 580.178.04 595.84
@@ -490,6 +492,7 @@ PYTHON_TESTS := \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_device_neutral.py \
+	tests/test_device_property_bits.py \
 	tests/test_bulk_copy_forms.py \
 	tests/test_launch_path.py \
 	tests/test_gpu_api.py \
@@ -497,6 +500,7 @@ PYTHON_TESTS := \
 	tests/test_device_contract_cuda.py \
 	tests/test_device_shared_memory_cuda.py \
 	tests/test_device_capture_cuda.py \
+	tests/test_tensor_map_build_cuda.py \
 	tests/test_device_contract_metal.py \
 	tests/test_metal_kernels.py \
 	tests/test_metal_bf16_convert.py \
@@ -1613,6 +1617,9 @@ $(DEVICE_CUDA_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 $(STAGE_RUNNER_BINARIES): $(DEVICE_CUDA_LIBRARY)
 
+build/test_tensor_map_build_cuda: tests/cuda/tensor_map_build_cuda.cu runtime/device/nvrm/tensor_map_build.cuh runtime/gemm.cuh runtime/tensor_map.h $(DEVICE_CUDA_LIBRARY) | build
+	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ] && command -v $(NVCC) > /dev/null; then $(NVCC) -std=c++17 $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs' -L$(CUDA_HOME)/lib64 -lcuda -o $@; else echo "SKIP test_tensor_map_build_cuda (no CUDA toolkit)"; fi
+
 build/test_device_capture_cuda: tests/cuda/device_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
 	@if [ -f "$(DEVICE_CUDA_LIBRARY)" ] && command -v $(NVCC) > /dev/null; then $(NVCC) $(NVCCFLAGS) --cudart shared $(CORE_INCLUDE_FLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_cuda -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs' -o $@; else echo "SKIP test_device_capture_cuda (no CUDA toolkit)"; fi
 
@@ -1632,6 +1639,16 @@ $(DEVICE_NVRM_LIBRARY): $(DEVICE_NVRM_SOURCES) $(DEVICE_HEADERS) $(wildcard runt
 NVRM_FLAVOUR_GOALS += nvrm-device
 .PHONY: nvrm-device nvrm-first-light test-nvrm
 nvrm-device: $(DEVICE_NVRM_LIBRARY)
+
+$(DEVICE_TENSOR_MAP_IMAGE): runtime/device/nvrm/tensor_map_build.cu runtime/device/nvrm/tensor_map_build.cuh include/sparkpipe/spark_device.h tools/nvrm_kernel_manifest.py | build
+	@command -v $(NVCC) > /dev/null || { echo "FAIL $@ needs $(NVCC): the device layer builds tensor maps with this kernel"; exit 1; }
+	@mkdir -p $(dir $@) build/tensor_map_build.keep
+	$(NVCC) $(NVCCFLAGS) -cudart none $(CORE_INCLUDE_FLAGS) -Xptxas -v -keep -keep-dir build/tensor_map_build.keep -cubin $< -o $@ > build/tensor_map_build.ptxas.log 2>&1 || { cat build/tensor_map_build.ptxas.log; exit 1; }
+	python3 -I tools/nvrm_kernel_manifest.py --cubin $@ --ptx build/tensor_map_build.keep/tensor_map_build.ptx --ptxas-log build/tensor_map_build.ptxas.log --nvcc $(NVCC) --flags "$(NVCCFLAGS)" --source $< --arch $(CUDA_ARCH) --output $(DEVICE_KERNEL_DIR)/tensor_map_build.manifest
+
+NVRM_FLAVOUR_GOALS += nvrm-device-kernels
+.PHONY: nvrm-device-kernels
+nvrm-device-kernels: $(DEVICE_TENSOR_MAP_IMAGE)
 
 build/nvrm_first_light: tools/nvrm_first_light.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(DEVICE_NVRM_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
@@ -1721,7 +1738,7 @@ build/test_nvrm_queue_order: tests/test_nvrm_queue_order.c $(DEVICE_NVRM_LIBRARY
 build/test_device_shared_memory_nvrm: tests/test_device_shared_memory.c $(DEVICE_NVRM_LIBRARY) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
-build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) | build
+build/test_device_contract_nvrm: tests/test_device_contract.c tests/nvrm/fixture_kernels.h $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -DSPARK_DEVICE_TEST_LIBRARY='"$(NVRM_GPU_FIXTURE).cubin"' \
 		-include tests/nvrm/fixture_kernels.h -DSPARK_DEVICE_TEST_LONG_KERNEL=SPARK_NVRM_FIXTURE_LONG_TEXT $< -L$(DEVICE_RUNTIME_DIR) -lsparkpipe_device_nvrm $(DEVICE_RPATH_FLAGS) $(LDLIBS) -o $@
 
@@ -1845,6 +1862,20 @@ nvrm-mesh-records: nvrm-gpu-present build/test_nvrm_mesh_records build/cuda_mesh
 	if [ "$$(tr '\n' '|' < build/mesh_records.cuda.txt)" != "$(MESH_RECORDS_EXPECTED)|" ]; then echo "FAIL nvrm-mesh-records: the CUDA flavour printed:"; cat build/mesh_records.cuda.txt; exit 1; fi; \
 	if ! cmp -s build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; then echo "FAIL nvrm-mesh-records: the flavours printed different records"; diff build/mesh_records.cuda.txt build/mesh_records.nvrm.txt; exit 1; fi; \
 	echo "PASS nvrm-mesh-records: each record line once with its values, identical on both flavours"
+
+build/test_nvrm_tensor_map_gemm: tests/nvrm/tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) $(DEVICE_TENSOR_MAP_IMAGE) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_tensor_map_gemm: tests/nvrm/tensor_map_gemm.cu tests/nvrm/tensor_map_gemms.cuh runtime/gemm.cuh runtime/tensor_map.h | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -L$(CUDA_HOME)/lib64 -lcuda -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-tensor-maps
+.PHONY: nvrm-tensor-maps
+nvrm-tensor-maps: nvrm-gpu-present build/test_nvrm_tensor_map_gemm build/cuda_tensor_map_gemm
+	@./build/cuda_tensor_map_gemm cuda > build/tensor_map_gemm.cuda.txt; cuda=$$?; ./build/test_nvrm_tensor_map_gemm nvrm > build/tensor_map_gemm.nvrm.txt; nvrm=$$?; \
+	if [ $$cuda -ne 0 ] || [ $$nvrm -ne 0 ]; then echo "FAIL nvrm-tensor-maps: the CUDA flavour exited $$cuda and the nvrm flavour $$nvrm"; exit 1; fi; \
+	if ! cmp -s build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt; then echo "FAIL nvrm-tensor-maps: GEMM outputs differ between driver-encoded maps (CUDA flavour) and GPU-built maps (nvrm flavour)"; diff build/tensor_map_gemm.cuda.txt build/tensor_map_gemm.nvrm.txt | head -20; exit 1; fi; \
+	echo "PASS nvrm-tensor-maps: $$(grep -c ' ok$$' build/tensor_map_gemm.nvrm.txt) GEMMs bit-identical between the flavours, $$(grep -c ' refused ' build/tensor_map_gemm.nvrm.txt) identical refusals"
 
 build/nvrm_cross_process_copy: tests/nvrm/cross_process_copy.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
 	$(NVRM_HOSTED_MODULE)
