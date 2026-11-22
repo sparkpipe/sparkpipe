@@ -31,6 +31,7 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROPERTY_SHARED_ADDRESS 2u
 #define SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES 4u
 #define SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS 8u
+#define SPARK_DEVICE_PROPERTY_PROGRAMS 16u
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
 
@@ -42,6 +43,13 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_MAX_BINDINGS 30u
 #define SPARK_DEVICE_KERNEL_NAME_LIMIT 64u
 #define SPARK_DEVICE_ERROR_TEXT_BYTES 256u
+
+#define SPARK_DEVICE_PROGRAM_MAX_PATCHES 64u
+#define SPARK_DEVICE_PROGRAM_TARGET_ARGUMENT 1u
+#define SPARK_DEVICE_PROGRAM_TARGET_CONSTANT 2u
+#define SPARK_DEVICE_PROGRAM_TARGET_GRID_X 3u
+#define SPARK_DEVICE_PROGRAM_TARGET_GRID_Y 4u
+#define SPARK_DEVICE_PROGRAM_TARGET_GRID_Z 5u
 
 typedef struct SparkDeviceBuffer
 {
@@ -63,7 +71,36 @@ typedef struct SparkDeviceQueue SparkDeviceQueue;
 typedef struct SparkDeviceEvent SparkDeviceEvent;
 typedef struct SparkDeviceLibrary SparkDeviceLibrary;
 typedef struct SparkDeviceKernel SparkDeviceKernel;
+typedef struct SparkDeviceProgram SparkDeviceProgram;
 typedef void (*SparkDeviceHostFunction)(void *context);
+
+typedef struct SparkDeviceTransform
+{
+	int64_t multiply;
+	int64_t add;
+	uint64_t divide;
+	int64_t scale;
+	int64_t offset;
+} SparkDeviceTransform;
+
+typedef struct SparkDevicePatch
+{
+	uint32_t value;
+	uint32_t target;
+	uint32_t argument;
+	uint32_t offset;
+	uint32_t bytes;
+	SparkDeviceTransform transform;
+} SparkDevicePatch;
+
+typedef struct SparkDeviceProgramInfo
+{
+	uint32_t nodes;
+	uint32_t kernels;
+	uint32_t values;
+	uint32_t places;
+	uint64_t digest;
+} SparkDeviceProgramInfo;
 
 typedef struct SparkDeviceGrid
 {
@@ -194,6 +231,14 @@ SparkStatus SparkDeviceKernelCreate(SparkDeviceKernel **kernel, SparkDeviceLibra
 SparkStatus SparkDeviceKernelDestroy(SparkDeviceKernel *kernel);
 SparkStatus SparkDeviceKernelGetInfo(const SparkDeviceKernel *kernel, SparkDeviceKernelInfo *info);
 SparkStatus SparkDeviceKernelLaunch(SparkDeviceQueue *queue, const SparkDeviceKernel *kernel, const SparkDeviceLaunch *launch);
+
+SparkStatus SparkDeviceProgramRecord(SparkDeviceQueue *queue, const char *name);
+SparkStatus SparkDeviceProgramPatch(SparkDeviceQueue *queue, const SparkDevicePatch *patch);
+SparkStatus SparkDeviceProgramFinish(SparkDeviceQueue *queue, SparkDeviceProgram **program);
+SparkStatus SparkDeviceProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values, uint32_t count);
+SparkStatus SparkDeviceProgramGetInfo(const SparkDeviceProgram *program, SparkDeviceProgramInfo *info);
+SparkStatus SparkDeviceProgramDestroy(SparkDeviceProgram *program);
+uint64_t SparkDeviceTransformApply(const SparkDeviceTransform *transform, uint64_t value, uint32_t *fits);
 
 #ifdef __cplusplus
 }

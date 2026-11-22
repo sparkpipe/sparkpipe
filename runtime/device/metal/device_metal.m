@@ -1169,3 +1169,46 @@ SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t b
 	(void)bytes;
 	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_unmap","",0,"the Metal backend has no shared device memory yet"));
 }
+
+uint32_t SparkDeviceBackendProgramNative(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendProgramReplay(SparkDeviceQueue *queue)
+{
+	(void)queue;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendProgramBegin(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"program_record",program->name,0,
+		"the Metal backend records no programs: their replay has not run on Metal hardware, so Metal launches eagerly"));
+}
+
+SparkStatus SparkDeviceBackendProgramPatch(SparkDeviceQueue *queue, SparkDeviceProgram *program, SparkDevicePlace *place)
+{
+	(void)queue;
+	(void)place;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_patch",program->name,0,"this backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramEnd(SparkDeviceQueue *queue, SparkDeviceProgram *program)
+{
+	(void)queue;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_finish",program->name,0,"this backend records programs in the device layer"));
+}
+
+SparkStatus SparkDeviceBackendProgramRun(SparkDeviceProgram *program, SparkDeviceQueue *queue, const uint64_t *values)
+{
+	(void)queue;
+	(void)values;
+	return(SparkDeviceRecordError(SPARK_STATUS_INTERNAL_ERROR,"program_run",program->name,0,"this backend replays programs in the device layer"));
+}
+
+void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
+{
+	(void)program;
+}

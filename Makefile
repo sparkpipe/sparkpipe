@@ -9,7 +9,8 @@ CFLAGS += -D_GNU_SOURCE
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 CUDA_STUB_INCLUDE_FLAGS := -Itests/cuda_stub -Imodel-families/common/include
-DEVICE_CUDA_STUB_TEST_SOURCES := runtime/device/device.c runtime/device/cuda/device_cuda.c
+DEVICE_CORE_SOURCES := runtime/device/device.c runtime/device/program.c
+DEVICE_CUDA_STUB_TEST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
 ifeq ($(CUDA_RUNTIME_HEADER),)
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) $(CUDA_STUB_INCLUDE_FLAGS)
@@ -78,13 +79,13 @@ SHARED_LIBRARY_EXT ?= so
 endif
 DEVICE_RUNTIME_DIR := build/runtime_libs
 DEVICE_HOST_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_host.$(SHARED_LIBRARY_EXT)
-DEVICE_HOST_SOURCES := runtime/device/device.c runtime/device/host/device_host.c
+DEVICE_HOST_SOURCES := $(DEVICE_CORE_SOURCES) runtime/device/host/device_host.c
 DEVICE_CUDA_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_cuda.$(SHARED_LIBRARY_EXT)
 DEVICE_METAL_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_metal.$(SHARED_LIBRARY_EXT)
 DEVICE_NVRM_LIBRARY := $(DEVICE_RUNTIME_DIR)/libsparkpipe_device_nvrm.$(SHARED_LIBRARY_EXT)
-DEVICE_NVRM_SOURCES := runtime/device/device.c src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
+DEVICE_NVRM_SOURCES := $(DEVICE_CORE_SOURCES) src/spark_sha256.c $(wildcard runtime/device/nvrm/*.c)
 DEVICE_NVRM_INCLUDE_FLAGS := -Iruntime/device/nvrm/vendor/open-gpu-kernel-modules -Iruntime/device/nvrm/vendor/open-gpu-doc
-WEIGHTD_DEVICE_SOURCES_cuda := runtime/device/device.c runtime/device/cuda/device_cuda.c
+WEIGHTD_DEVICE_SOURCES_cuda := $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c
 WEIGHTD_DEVICE_SOURCES_nvrm := $(DEVICE_NVRM_SOURCES)
 WEIGHTD_DEVICE_SOURCES := $(WEIGHTD_DEVICE_SOURCES_$(SPARKPIPE_DEVICE))
 DEVICE_FLAVOUR_LIBRARY_cuda := $(if $(CUDA_RUNTIME_HEADER),$(DEVICE_CUDA_LIBRARY))
@@ -685,6 +686,7 @@ PYTHON_TESTS := \
 	tests/test_k3_index_exchange_cuda.py \
 	tests/test_runner_capture_flags_cuda.py \
 	tests/test_device_adopted_capture_cuda.py \
+	tests/test_device_program_cuda.py \
 	tests/test_stage_runner_sum_rule_cuda.py \
 	tests/test_stage_runner_failed_dispatch_cuda.py \
 	tests/test_stage_runner_single_gpu_cuda.py \
@@ -1524,9 +1526,9 @@ $(DEVICE_HOST_LIBRARY): $(DEVICE_HOST_SOURCES) $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
 	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_HOST_SOURCES) $(LDLIBS) -o $@
 
-$(DEVICE_CUDA_LIBRARY): runtime/device/device.c runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
+$(DEVICE_CUDA_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
+	@if [ -f "$(CUDA_HOME)/include/cuda_runtime.h" ]; then $(CC) $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/cuda/device_cuda.c -L$(CUDA_HOME)/lib64 -lcudart $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no CUDA runtime headers on this host)"; fi
 $(STAGE_RUNNER_BINARIES): $(DEVICE_CUDA_LIBRARY)
 
 build/test_device_capture_cuda: tests/cuda/device_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
@@ -1708,9 +1710,9 @@ test-nvrm-gpu: nvrm-gpu-present $(NVRM_GPU_TEST_BINARIES) build/nvrm_first_light
 test-nvrm: $(NVRM_TEST_BINARIES)
 	@set -e; for test_binary in $(NVRM_TEST_BINARIES); do echo "RUN $$test_binary"; ./$$test_binary; done
 
-$(DEVICE_METAL_LIBRARY): runtime/device/device.c runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
+$(DEVICE_METAL_LIBRARY): $(DEVICE_CORE_SOURCES) runtime/device/metal/device_metal.m $(DEVICE_HEADERS) | build
 	@mkdir -p $(dir $@)
-	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) runtime/device/device.c runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit -framework CoreGraphics $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
+	@if [ "$(UNAME_S)" = Darwin ] && xcrun --find metal >/dev/null 2>&1; then $(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fobjc-arc -fPIC $(SHARED_LIBRARY_FLAGS) $(DEVICE_LIBRARY_NAME_FLAGS) $(DEVICE_CORE_SOURCES) runtime/device/metal/device_metal.m -framework Metal -framework Foundation -framework IOKit -framework CoreGraphics $(LDLIBS) -o $@; else echo "SKIP $(notdir $@) (no Metal toolchain on this host)"; fi
 
 ifneq ($(METAL_TOOLCHAIN),)
 build/metal/%.air: %.metal $(METAL_KERNEL_INCLUDES) | build
@@ -1975,6 +1977,9 @@ build/test_pipeline_runtime: tests/test_pipeline_runtime.c $(RUNTIME_LIBRARY) $(
 
 build/device_adopted_capture_cuda: tests/cuda/device_adopted_capture_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
 	$(NVCC) $(NVCCFLAGS) --cudart shared -I. -Iinclude tests/cuda/device_adopted_capture_cuda.cu $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -lcuda -o $@
+
+build/device_program_cuda: tests/cuda/device_program_cuda.cu $(DEVICE_CUDA_LIBRARY) | build
+	$(NVCC) $(NVCCFLAGS) --cudart shared -I. -Iinclude tests/cuda/device_program_cuda.cu $(LDFLAGS) -Xcompiler -pthread $(DEVICE_CUDA_NVCC_LINK) -o $@
 build/runner_capture_flags_cuda: tests/cuda/runner_capture_flags_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
 	$(NVCC) $(NVCCFLAGS) -I. -Iinclude -Isrc -Imodel-families/common/include tests/cuda/runner_capture_flags_cuda.cu runtime/json.c runtime/filesystem.c src/spark_status.c $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) -Xcompiler -pthread -ldl $(DEVICE_CUDA_NVCC_LINK) $(SPARKPIPE_CUDA_RUNTIME_LINK) -lcuda -o $@
 build/runner_verify_step_cuda: tests/cuda/runner_verify_step_cuda.cu inference/runner/stage_runner.cu $(RUNTIME_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(CUDA_HEADER_DEPS) | build
