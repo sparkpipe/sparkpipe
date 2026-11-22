@@ -843,6 +843,7 @@ PYTHON_TESTS := \
 	tests/test_chat_replay_store.py \
 	tests/test_draftd_kernels.py \
 	tests/test_latent_block_drafter.py \
+	tests/test_drafter_pack.py \
 	tests/test_block_drafter_context.py \
 	tests/test_tapstream_truncated.py \
 	tests/test_block_draftd_latent.py \
