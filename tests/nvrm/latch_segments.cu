@@ -15,7 +15,9 @@
 #define TRIGGER_PAIRS 32u
 #define STALE_PARENT_GROUPS 48u
 #define STALE_CHILD_GROUPS 96u
-#define STALE_PAIRS 32u
+#define STALE_PATTERNS 24u
+#define STALE_READ_CACHED 0u
+#define STALE_READ_CONSTANT 1u
 
 __global__ void SegmentStep(uint32_t *counter, uint64_t spin_ns)
 {
@@ -64,22 +66,26 @@ __global__ void TriggerWaiting(const uint32_t *word, uint32_t *seen, uint32_t sl
 		seen[slot] = *(const volatile uint32_t *)word;
 }
 
-static __device__ __forceinline__ uint32_t StaleLoad(const uint32_t *word)
+static __device__ __forceinline__ uint32_t StaleLoad(const uint32_t *word, uint32_t read)
 {
 	uint32_t value;
-	asm volatile("ld.global.ca.u32 %0,[%1];" : "=r"(value) : "l"(word) : "memory");
+	if ( read == STALE_READ_CONSTANT )
+		asm volatile("ld.global.nc.u32 %0,[%1];" : "=r"(value) : "l"(word) : "memory");
+	else
+		asm volatile("ld.global.ca.u32 %0,[%1];" : "=r"(value) : "l"(word) : "memory");
 	return(value);
 }
 
-__global__ void StaleParent(uint32_t *word, uint32_t value, uint64_t spin_ns, uint32_t trigger, uint32_t *sink)
+__global__ void StaleParent(uint32_t *word, uint32_t value, uint64_t spin_ns, uint32_t trigger, uint32_t read, uint32_t reads, uint32_t writes, uint32_t *sink)
 {
 	if ( trigger != 0u )
 		asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
 	if ( threadIdx.x != 0u )
 		return;
-	if ( blockIdx.x != 0u )
+	if ( blockIdx.x != 0u || writes == 0u )
 	{
-		sink[blockIdx.x] = StaleLoad(word);
+		if ( reads != 0u )
+			sink[blockIdx.x] = StaleLoad(word,read);
 		return;
 	}
 	uint64_t start,now;
@@ -90,12 +96,12 @@ __global__ void StaleParent(uint32_t *word, uint32_t value, uint64_t spin_ns, ui
 	word[0] = value;
 }
 
-__global__ void StaleChild(const uint32_t *word, uint32_t *seen, uint32_t slot, uint32_t wait)
+__global__ void StaleChild(const uint32_t *word, uint32_t *seen, uint32_t slot, uint32_t wait, uint32_t read)
 {
 	if ( wait != 0u )
 		asm volatile("griddepcontrol.wait;" ::: "memory");
 	if ( threadIdx.x == 0u )
-		seen[slot * STALE_CHILD_GROUPS + blockIdx.x] = StaleLoad(word);
+		seen[slot * STALE_CHILD_GROUPS + blockIdx.x] = StaleLoad(word,read);
 }
 
 static uint64_t Now(void)
@@ -323,16 +329,61 @@ static int Trigger(uint64_t runs, uint64_t spin_ns)
 	return(0);
 }
 
+typedef struct StalePattern
+{
+	uint32_t earlier;
+	uint32_t trigger;
+	uint32_t parent_read;
+	uint32_t child_read;
+	uint32_t wait;
+} StalePattern;
+
+static StalePattern StalePatternAt(uint32_t index)
+{
+	StalePattern pattern;
+	memset(&pattern,0,sizeof(pattern));
+	if ( index < 16u )
+	{
+		pattern.trigger = (index & 1u) != 0u ? 1u : 0u;
+		pattern.parent_read = (index & 2u) != 0u ? STALE_READ_CONSTANT : STALE_READ_CACHED;
+		pattern.child_read = (index & 4u) != 0u ? STALE_READ_CONSTANT : STALE_READ_CACHED;
+		pattern.wait = (index & 8u) != 0u ? 1u : 0u;
+		return(pattern);
+	}
+	pattern.earlier = 1u;
+	pattern.trigger = (index & 1u) != 0u ? 1u : 0u;
+	pattern.child_read = (index & 2u) != 0u ? STALE_READ_CONSTANT : STALE_READ_CACHED;
+	pattern.wait = (index & 4u) != 0u ? 1u : 0u;
+	return(pattern);
+}
+
+static void StalePatternName(const StalePattern *pattern, char *text, size_t bytes)
+{
+	static const char *const reads[2] = {"ld.ca","ld.nc"};
+	if ( pattern->earlier != 0u )
+		snprintf(text,bytes,"a kernel before the parent caches the word (ld.ca), the parent %s and writes it, a %s child reads it with %s",
+			pattern->trigger != 0u ? "triggers first" : "never triggers",pattern->wait != 0u ? "waiting dependent" : "plain",reads[pattern->child_read]);
+	else
+		snprintf(text,bytes,"the parent's other groups cache the word (%s), the parent %s, a %s child reads it with %s",reads[pattern->parent_read],
+			pattern->trigger != 0u ? "triggers first" : "never triggers",pattern->wait != 0u ? "waiting dependent" : "plain",reads[pattern->child_read]);
+}
+
 static int StaleIssue(SparkGpuStream stream, uint32_t *word, uint32_t *seen, uint32_t *sink, uint64_t spin_ns)
 {
-	uint32_t pair;
-	for ( pair = 0u; pair < STALE_PAIRS; pair++ )
+	uint32_t index;
+	for ( index = 0u; index < STALE_PATTERNS; index++ )
 	{
-		const uint32_t trigger = (pair & 1u) == 0u ? 1u : 0u,wait = (pair & 2u) != 0u ? 1u : 0u;
-		LM_LAUNCH((StaleParent),STALE_PARENT_GROUPS,32,0u,stream,word,pair + 1u,spin_ns,trigger,sink);
-		if ( wait == 0u )
-			LM_LAUNCH((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,pair,wait);
-		else if ( LM_LAUNCH_DEPENDENT((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,pair,wait) != SPARK_GPU_SUCCESS )
+		const StalePattern pattern = StalePatternAt(index);
+		if ( pattern.earlier != 0u )
+		{
+			LM_LAUNCH((StaleParent),STALE_PARENT_GROUPS,32,0u,stream,word,0u,(uint64_t)0u,0u,(uint32_t)STALE_READ_CACHED,1u,0u,sink);
+			LM_LAUNCH((StaleParent),1,32,0u,stream,word,index + 1u,spin_ns,pattern.trigger,(uint32_t)STALE_READ_CACHED,0u,1u,sink);
+		}
+		else
+			LM_LAUNCH((StaleParent),STALE_PARENT_GROUPS,32,0u,stream,word,index + 1u,spin_ns,pattern.trigger,pattern.parent_read,1u,1u,sink);
+		if ( pattern.wait == 0u )
+			LM_LAUNCH((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,index,0u,pattern.child_read);
+		else if ( LM_LAUNCH_DEPENDENT((StaleChild),STALE_CHILD_GROUPS,32,0u,stream,(const uint32_t *)word,seen,index,1u,pattern.child_read) != SPARK_GPU_SUCCESS )
 			return(0);
 	}
 	return(SparkGpuGetLastError() == SPARK_GPU_SUCCESS);
@@ -341,15 +392,16 @@ static int StaleIssue(SparkGpuStream stream, uint32_t *word, uint32_t *seen, uin
 static int Stale(uint64_t runs, uint64_t spin_ns)
 {
 	static const char *const ways[2] = {"eager","program"};
-	static uint32_t host[STALE_PAIRS * STALE_CHILD_GROUPS];
+	static uint32_t host[STALE_PATTERNS * STALE_CHILD_GROUPS];
 	SparkGpuStream stream = 0;
 	SparkDeviceQueue *queue = 0;
 	SparkDeviceProgram *program = 0;
 	SparkStatus initialized = SparkDeviceInitialize(0);
-	uint32_t *word = 0,*seen = 0,*sink = 0,pair,group,way,kind;
-	uint64_t run,late[2][4],reads[2][4];
+	uint32_t *word = 0,*seen = 0,*sink = 0,index,group,way;
+	uint64_t run,late[2][STALE_PATTERNS],reads = 0u,stale[2][2];
+	char name[256];
 	memset(late,0,sizeof(late));
-	memset(reads,0,sizeof(reads));
+	memset(stale,0,sizeof(stale));
 	if ( (initialized != SPARK_STATUS_OK && initialized != SPARK_STATUS_DUPLICATE) ||
 		SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&word,sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&seen,sizeof(host)) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&sink,STALE_PARENT_GROUPS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
@@ -370,22 +422,27 @@ static int Stale(uint64_t runs, uint64_t spin_ns)
 				printf("FAIL stale-line run %llu %s: %s\n",(unsigned long long)run,ways[way],SparkDeviceLastError()->text);
 				return(1);
 			}
-			for ( pair = 0u; pair < STALE_PAIRS; pair++ )
+			for ( index = 0u; index < STALE_PATTERNS; index++ )
 				for ( group = 0u; group < STALE_CHILD_GROUPS; group++ )
-				{
-					kind = pair & 3u;
-					reads[way][kind]++;
-					if ( host[pair * STALE_CHILD_GROUPS + group] != pair + 1u )
-						late[way][kind]++;
-				}
+					if ( host[index * STALE_CHILD_GROUPS + group] != index + 1u )
+						late[way][index]++;
 		}
+	reads = runs * STALE_CHILD_GROUPS;
 	for ( way = 0u; way < 2u; way++ )
 	{
-		printf("stale %s: %llu runs; a parent of %u groups whose other groups cache the word, then group 0 writes it %.0f us later; children of %u groups read it cached\n",
-			ways[way],(unsigned long long)runs,STALE_PARENT_GROUPS,(double)spin_ns / 1e3,STALE_CHILD_GROUPS);
-		for ( kind = 0u; kind < 4u; kind++ )
-			printf("  parent %s, %s child: %llu of %llu reads saw the value from before the parent's write\n",(kind & 1u) == 0u ? "triggers first" : "never triggers",
-				(kind & 2u) != 0u ? "waiting dependent" : "plain",(unsigned long long)late[way][kind],(unsigned long long)reads[way][kind]);
+		printf("stale %s: %llu runs of %u patterns, the writer %.0f us late, %llu reads by children of %u groups a pattern\n",ways[way],(unsigned long long)runs,
+			STALE_PATTERNS,(double)spin_ns / 1e3,(unsigned long long)reads,STALE_CHILD_GROUPS);
+		for ( index = 0u; index < STALE_PATTERNS; index++ )
+		{
+			const StalePattern pattern = StalePatternAt(index);
+			stale[way][pattern.wait] += late[way][index];
+			if ( late[way][index] == 0u )
+				continue;
+			StalePatternName(&pattern,name,sizeof(name));
+			printf("  %s: %llu of %llu reads saw the value from before the write\n",name,(unsigned long long)late[way][index],(unsigned long long)reads);
+		}
+		printf("  plain children: %llu stale reads in %llu; waiting dependent children: %llu stale reads in %llu\n",(unsigned long long)stale[way][0],
+			(unsigned long long)(reads * (STALE_PATTERNS / 2u)),(unsigned long long)stale[way][1],(unsigned long long)(reads * (STALE_PATTERNS / 2u)));
 	}
 	if ( SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK || SparkDeviceProgramDestroy(program) != SPARK_STATUS_OK ||
 		SparkDeviceQueueDestroy(queue) != SPARK_STATUS_OK )
@@ -397,13 +454,11 @@ static int Stale(uint64_t runs, uint64_t spin_ns)
 	SparkGpuFree(seen);
 	SparkGpuFree(sink);
 	SparkGpuStreamDestroy(stream);
-	for ( way = 0u; way < 2u; way++ )
-		for ( kind = 0u; kind < 4u; kind++ )
-			if ( late[way][kind] != 0u )
-			{
-				printf("FAIL a child read a cached line from before its parent's write\n");
-				return(1);
-			}
+	if ( stale[0][0] + stale[0][1] + stale[1][0] + stale[1][1] != 0u )
+	{
+		printf("FAIL a child read a cached line from before the write it follows\n");
+		return(1);
+	}
 	return(0);
 }
 
