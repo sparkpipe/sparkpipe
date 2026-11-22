@@ -17,6 +17,9 @@ It is a measurement tool, not a test of the model's numbers.
   and the routed experts in the MXFP4 cell layout (one pool of 96 experts that
   every layer shares). Values are bounded so that every step stays finite; the
   run checks the streams and the route fault word at the end.
+- **Production initial state.** The arena starts zeroed, as the stage runner
+  allocates it, and `D41Cuda::Upload` writes the first layer's collapse
+  weights; the streams and the window ring start random.
 - **One state per step.** The first kernel of every step copies the same
   starting streams, so every step computes the same values and every run routes
   the same tokens to the same experts. Two builds or two variants therefore
@@ -77,15 +80,16 @@ hosts) against the four-node trace:
 
 | sequence | 1 row | 8 rows |
 |---|---|---|
-| attention output (12 kernels) | 112.3-115.4 / 113.7 | 110.7-112.4 / 123.7 |
+| attention output (12 kernels) | 112.2-115.4 / 113.7 | 110.7-112.4 / 123.7 |
 | attention core (3) | 82.5-82.7 / 78.6 | 99.4-99.7 / 109.7 |
 | attention input (5) | 78.0-80.7 / 86.3 | 87.3-88.2 / 100.7 |
 | shared expert (5) | 43.1-45.3 / 58.0 | 55.0-56.6 / 65.0 |
 | mHC (3) | 21.2-22.0 / 26.1 | 25.3-25.4 / 31.0 |
 | router (5) | 24.4-24.8 / 28.1 | 27.2-27.3 / 31.5 |
 
-- Steps of 1,921 kernels take 27.0-27.7 ms (1 row) and 68.0-69.4 ms (8 rows)
-  with the traced waits. The two hosts agree within 3%. Against the four-node
+- Steps of 1,921 kernels take 27.0-27.7 ms (1 row) and 66.2-69.4 ms (8 rows)
+  with the traced waits; the 8-row span moves with the routing the starting
+  streams give the expert kernels. The two hosts agree within 3%. Against the four-node
   trace most kernels run 7-14% faster here, while the step's boundary structure
   is the same: 0.48 us median between kernels, 1.15 us before every
   dependently launched skinny or cell kernel, 1.2 ms of gaps a step. The tool

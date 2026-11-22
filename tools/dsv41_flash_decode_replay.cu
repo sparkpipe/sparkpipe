@@ -489,11 +489,14 @@ static void ReplaySetup(ReplayWorld *world, const ReplayOptions *options, uint32
 	state->history_bytes = 4u * sizeof(int32_t);
 	state->recurrent_bytes = (state->ring_bytes + state->compressor_bytes + state->history_bytes + 255u) & ~255ull;
 	arena_bytes = D41Cuda::Plan(state, 0, 0u);
-	arena = (uint8_t *)ReplayFilled(arena_bytes, REPLAY_FILL_BF16, 0x77u);
-	D41Cuda::Plan(state, arena, 0u);
+	arena = (uint8_t *)ReplayAllocate(arena_bytes);
+	ReplayCuda(cudaMemset(arena, 0, arena_bytes), "clear the arena");
+	ReplayRequire(D41Cuda::Plan(state, arena, 0u) == arena_bytes, "the arena plan places every buffer");
 	state->arena = arena;
 	state->arena_bytes = arena_bytes;
-	ReplayCuda(cudaMemset(state->moe_gathered, 0, (uint64_t)D41_TP * REPLAY_MAX_ROWS * D41_HIDDEN * 2u), "clear the gathered rows");
+	ReplayFill(state->streams, (uint64_t)REPLAY_MAX_ROWS * D41K_HC * D41_HIDDEN * 2u, REPLAY_FILL_BF16, 0x77u);
+	ReplayFill(state->recurrent, (uint64_t)REPLAY_SLOTS * state->recurrent_bytes, REPLAY_FILL_BF16, 0x78u);
+	ReplayRequire(D41Cuda::Upload(state) == SPARK_STATUS_OK, "the stage's upload runs");
 	state->full_frequency = (float *)ReplayAllocate(2u * D41K_ROPE_PAIRS * sizeof(float));
 	state->compress_frequency = state->full_frequency + D41K_ROPE_PAIRS;
 	ReplayRequire(D41Frequencies(state->full_frequency) == SPARK_STATUS_OK, "the rotary frequencies build");
