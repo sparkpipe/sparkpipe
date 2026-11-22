@@ -497,6 +497,7 @@ Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nv_escape.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nv_uvm_user_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nv_vgpu_types.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nvcfg_sdk.h
+Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nverror.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nvgputypes.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nvimpshared.h
 Files: runtime/device/nvrm/vendor/open-gpu-kernel-modules/nvlimits.h
@@ -526,6 +527,7 @@ distributed under the following license:
 Copyright (c) 1993-2006 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 1993-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Copyright (c) 1993-2025, NVIDIA CORPORATION. All rights reserved.
 Copyright (c) 1999-2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2001, Nvidia Corporation. All rights reserved.
 Copyright (c) 2001-2001 NVIDIA CORPORATION & AFFILIATES. All rights reserved.

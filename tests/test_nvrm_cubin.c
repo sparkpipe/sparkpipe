@@ -314,6 +314,7 @@ typedef struct Synthetic
 	const char *bank_name;
 	uint64_t text_address;
 	uint32_t cut_info;
+	const char *missing_name;
 } Synthetic;
 
 typedef struct Image
@@ -368,11 +369,11 @@ static uint32_t Record(uint8_t *at, uint32_t attribute, uint32_t symbol, uint32_
 static uint32_t BuildSynthetic(const Synthetic *knobs, Image *image)
 {
 	SectionSpec sections[11];
-	char names[512] = {0},symbol_names[64] = {0};
+	char names[512] = {0},symbol_names[128] = {0};
 	uint8_t symbols[4u * 24u],info[64],kernel_info[32],text[64],bank[SPARK_NVRM_BANK0_DRIVER_BYTES + 16u],relocations[3u * 24u],extra[64];
 	uint32_t names_used = 1u,symbols_used = 1u,count = 10u,index,info_used = 0u,table;
 	const uint32_t name_kernel = AppendName(symbol_names,&symbols_used,"k"),name_bank = AppendName(symbol_names,&symbols_used,".nv.constant0.k");
-	const uint32_t name_missing = AppendName(symbol_names,&symbols_used,"missing");
+	const uint32_t name_missing = AppendName(symbol_names,&symbols_used,knobs->missing_name != 0 ? knobs->missing_name : "missing");
 	memset(image,0,sizeof(*image));
 	memset(sections,0,sizeof(sections));
 	memset(symbols,0,sizeof(symbols));
@@ -523,7 +524,14 @@ static void TestRefusals(void)
 	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"0x77") != 0 && cubin.image == 0,
 		"an unknown relocation type is refused, named");
 	knobs = SyntheticDefaults(); knobs.relocation_symbol = 3u;
-	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED,"a relocation against an undefined symbol is refused");
+	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"missing") != 0,
+		"a relocation against an undefined symbol is refused, naming the symbol");
+	knobs = SyntheticDefaults(); knobs.relocation_symbol = 3u; knobs.missing_name = "__cuda_syscall_cp_async_bulk_tensor_2d_tile_unicast";
+	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"__cuda_syscall_cp_async_bulk") != 0 &&
+		strstr(SparkDeviceLastError()->text,".shared::cta") != 0,"a call into a CUDA driver routine is refused, naming it and the load form that needs none");
+	knobs = SyntheticDefaults(); knobs.relocation_symbol = 3u; knobs.missing_name = "vprintf";
+	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED && strstr(SparkDeviceLastError()->text,"error record") != 0,
+		"device printf is refused, pointing to error records");
 	knobs = SyntheticDefaults(); knobs.relocation_offset = 60u;
 	CHECK(ParseSynthetic(&knobs,&cubin) == SPARK_STATUS_UNSUPPORTED,"a relocation running past its section is refused");
 	knobs = SyntheticDefaults(); knobs.register_records = 0u;
