@@ -12,6 +12,7 @@
 #define SEGMENT_BATCH 1000u
 #define PROGRAM_LAUNCHES 64u
 #define COMPETE_SAMPLES_MAX 200000u
+#define TRIGGER_PAIRS 32u
 
 __global__ void SegmentStep(uint32_t *counter, uint64_t spin_ns)
 {
@@ -31,6 +32,33 @@ __global__ void CompeteStep(uint32_t *counter)
 {
 	if ( threadIdx.x == 0u && blockIdx.x == 0u )
 		counter[0] += 1u;
+}
+
+__global__ void TriggerParent(uint32_t *word, uint32_t value, uint64_t spin_ns)
+{
+	asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
+	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+	{
+		uint64_t start,now;
+		asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+		do
+			asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+		while ( now - start < spin_ns );
+		*(volatile uint32_t *)word = value;
+	}
+}
+
+__global__ void TriggerPlain(const uint32_t *word, uint32_t *seen, uint32_t slot)
+{
+	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+		seen[slot] = *(const volatile uint32_t *)word;
+}
+
+__global__ void TriggerWaiting(const uint32_t *word, uint32_t *seen, uint32_t slot)
+{
+	asm volatile("griddepcontrol.wait;" ::: "memory");
+	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+		seen[slot] = *(const volatile uint32_t *)word;
 }
 
 static uint64_t Now(void)
@@ -172,6 +200,88 @@ static int Compete(double seconds, double wait_p99_ms)
 	return(0);
 }
 
+static int TriggerIssue(SparkGpuStream stream, uint32_t *word, uint32_t *seen, uint64_t spin_ns)
+{
+	uint32_t pair;
+	for ( pair = 0u; pair < TRIGGER_PAIRS; pair++ )
+	{
+		LM_LAUNCH((TriggerParent),1,32,0u,stream,word,pair + 1u,spin_ns);
+		if ( (pair & 1u) == 0u )
+			LM_LAUNCH((TriggerPlain),1,32,0u,stream,(const uint32_t *)word,seen,pair);
+		else if ( LM_LAUNCH_DEPENDENT((TriggerWaiting),1,32,0u,stream,(const uint32_t *)word,seen,pair) != SPARK_GPU_SUCCESS )
+			return(0);
+	}
+	return(SparkGpuGetLastError() == SPARK_GPU_SUCCESS);
+}
+
+static int Trigger(uint64_t runs, uint64_t spin_ns)
+{
+	static const char *const ways[2] = {"eager","program"};
+	SparkGpuStream stream = 0;
+	SparkDeviceQueue *queue = 0;
+	SparkDeviceProgram *program = 0;
+	SparkStatus initialized = SparkDeviceInitialize(0);
+	uint32_t *word = 0,*seen = 0,host[TRIGGER_PAIRS],pair,way;
+	uint64_t run,late[2][2] = {{0u,0u},{0u,0u}},first[2][2][2];
+	memset(first,0,sizeof(first));
+	if ( (initialized != SPARK_STATUS_OK && initialized != SPARK_STATUS_DUPLICATE) ||
+		SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS || SparkGpuMalloc(&word,sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&seen,TRIGGER_PAIRS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS || SparkGpuMemset(word,0,sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS || SparkDeviceQueueAdopt(&queue,(void *)stream,"latch trigger") != SPARK_STATUS_OK ||
+		SparkDeviceProgramRecord(queue,"latch trigger") != SPARK_STATUS_OK || TriggerIssue(stream,word,seen,spin_ns) == 0 ||
+		SparkDeviceProgramFinish(queue,&program) != SPARK_STATUS_OK )
+	{
+		printf("FAIL set up the trigger chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	for ( run = 0u; run < runs; run++ )
+		for ( way = 0u; way < 2u; way++ )
+		{
+			if ( SparkGpuMemset(seen,0xff,TRIGGER_PAIRS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+				(way == 0u ? TriggerIssue(stream,word,seen,spin_ns) == 0 : SparkDeviceProgramRun(program,queue,0,0u) != SPARK_STATUS_OK) ||
+				SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS ||
+				SparkGpuMemcpy(host,seen,sizeof(host),SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS )
+			{
+				printf("FAIL trigger run %llu %s: %s\n",(unsigned long long)run,ways[way],SparkDeviceLastError()->text);
+				return(1);
+			}
+			for ( pair = 0u; pair < TRIGGER_PAIRS; pair++ )
+				if ( host[pair] != pair + 1u && late[way][pair & 1u]++ == 0u )
+				{
+					first[way][pair & 1u][0] = pair;
+					first[way][pair & 1u][1] = host[pair];
+				}
+		}
+	for ( way = 0u; way < 2u; way++ )
+	{
+		printf("trigger %s: %llu runs of %u parents that trigger their dependents first and write %.0f us later\n",ways[way],(unsigned long long)runs,
+			TRIGGER_PAIRS,(double)spin_ns / 1e3);
+		printf("  plain children read a value from before their parent's write %llu of %llu times",(unsigned long long)late[way][0],
+			(unsigned long long)(runs * TRIGGER_PAIRS / 2u));
+		if ( late[way][0] != 0u )
+			printf(" (first: child %llu read %llu)",(unsigned long long)first[way][0][0],(unsigned long long)first[way][0][1]);
+		printf("\n  waiting dependent children did %llu of %llu times",(unsigned long long)late[way][1],(unsigned long long)(runs * TRIGGER_PAIRS / 2u));
+		if ( late[way][1] != 0u )
+			printf(" (first: child %llu read %llu)",(unsigned long long)first[way][1][0],(unsigned long long)first[way][1][1]);
+		printf("\n");
+	}
+	if ( SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) != SPARK_STATUS_OK || SparkDeviceProgramDestroy(program) != SPARK_STATUS_OK ||
+		SparkDeviceQueueDestroy(queue) != SPARK_STATUS_OK )
+	{
+		printf("FAIL finish the trigger chain: %s\n",SparkDeviceLastError()->text);
+		return(1);
+	}
+	SparkGpuFree(word);
+	SparkGpuFree(seen);
+	SparkGpuStreamDestroy(stream);
+	if ( late[0][0] + late[0][1] + late[1][0] + late[1][1] != 0u )
+	{
+		printf("FAIL a child read its parent's output before the parent wrote it: a plain launch waits for its parent to end, and a dependent launch's griddepcontrol.wait does\n");
+		return(1);
+	}
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	const uint64_t spin_ns = argc == 5 ? strtoull(argv[4],0,10) * 1000ull : 0u;
@@ -183,6 +293,8 @@ int main(int argc, char **argv)
 		return(ChainProgram(strtoull(argv[2],0,10),(uint32_t)strtoul(argv[3],0,10),spin_ns));
 	if ( argc == 4 && strcmp(argv[1],"compete") == 0 )
 		return(Compete(strtod(argv[2],0),strtod(argv[3],0)));
-	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | program LAUNCHES SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS\n",argv[0]);
+	if ( argc == 4 && strcmp(argv[1],"trigger") == 0 )
+		return(Trigger(strtoull(argv[2],0,10),strtoull(argv[3],0,10) * 1000ull));
+	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | program LAUNCHES SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS | trigger RUNS SPIN_US\n",argv[0]);
 	return(2);
 }
