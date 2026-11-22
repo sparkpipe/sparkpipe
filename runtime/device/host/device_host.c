@@ -1,10 +1,12 @@
 #include <errno.h>
+#include <fcntl.h>
 #include "sparkpipe/spark_clock.h"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -120,6 +122,272 @@ SparkStatus SparkDeviceBackendShutdown(void)
 	return(SPARK_STATUS_OK);
 }
 
+#define HOST_INSTANCE 1u
+#define HOST_RECOMMENDED_GRANULARITY (2ull << 20)
+
+typedef struct HostRange
+{
+	uint64_t base;
+	uint64_t bytes;
+} HostRange;
+
+typedef struct HostRanges
+{
+	HostRange *ranges;
+	uint32_t count;
+	uint32_t capacity;
+} HostRanges;
+
+static pthread_mutex_t host_shared_mutex = PTHREAD_MUTEX_INITIALIZER;
+static HostRanges host_reservations;
+static HostRanges host_mappings;
+static uint32_t host_shared_serial;
+
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance)
+{
+	*instance = HOST_INSTANCE;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance)
+{
+	if ( instance != HOST_INSTANCE )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"not the instance this device layer returned"));
+	return(SPARK_STATUS_OK);
+}
+
+static uint32_t HostAligned(uint64_t value)
+{
+	return(value % host_page_bytes == 0u ? 1u : 0u);
+}
+
+static int32_t HostRangeAt(const HostRanges *ranges, uint64_t base, uint64_t bytes, uint32_t exact)
+{
+	uint32_t index;
+	for (index=0u; index<ranges->count; index++)
+	{
+		const HostRange *range = &ranges->ranges[index];
+		if ( exact != 0u ? range->base == base && range->bytes == bytes : base >= range->base && bytes <= range->bytes && base - range->base <= range->bytes - bytes )
+			return((int32_t)index);
+	}
+	return(-1);
+}
+
+static uint32_t HostRangeOverlaps(const HostRanges *ranges, uint64_t base, uint64_t bytes)
+{
+	uint32_t index;
+	for (index=0u; index<ranges->count; index++)
+		if ( base < ranges->ranges[index].base + ranges->ranges[index].bytes && ranges->ranges[index].base < base + bytes )
+			return(1u);
+	return(0u);
+}
+
+static uint32_t HostRangeAdd(HostRanges *ranges, uint64_t base, uint64_t bytes)
+{
+	if ( ranges->count == ranges->capacity )
+	{
+		const uint32_t capacity = ranges->capacity != 0u ? ranges->capacity * 2u : 16u;
+		HostRange *grown = (HostRange *)realloc(ranges->ranges,(size_t)capacity * sizeof(*grown));
+		if ( grown == 0 )
+			return(0u);
+		ranges->ranges = grown;
+		ranges->capacity = capacity;
+	}
+	ranges->ranges[ranges->count].base = base;
+	ranges->ranges[ranges->count].bytes = bytes;
+	ranges->count++;
+	return(1u);
+}
+
+static void HostRangeRemove(HostRanges *ranges, uint32_t index)
+{
+	ranges->ranges[index] = ranges->ranges[ranges->count - 1u];
+	ranges->count--;
+}
+
+static uint32_t HostMappingsCover(uint64_t base, uint64_t bytes)
+{
+	uint64_t covered = 0u;
+	uint32_t index;
+	for (index=0u; index<host_mappings.count; index++)
+	{
+		const HostRange *range = &host_mappings.ranges[index];
+		if ( range->base < base + bytes && base < range->base + range->bytes )
+		{
+			if ( range->base < base || range->base + range->bytes > base + bytes )
+				return(0u);
+			covered += range->bytes;
+		}
+	}
+	return(covered == bytes ? 1u : 0u);
+}
+
+static uint32_t HostMappingsSpan(uint64_t base, uint64_t bytes)
+{
+	uint64_t covered = 0u;
+	uint32_t index;
+	for (index=0u; index<host_mappings.count; index++)
+	{
+		const HostRange *range = &host_mappings.ranges[index];
+		const uint64_t start = range->base > base ? range->base : base;
+		const uint64_t end = range->base + range->bytes < base + bytes ? range->base + range->bytes : base + bytes;
+		if ( end > start )
+			covered += end - start;
+	}
+	return(covered == bytes ? 1u : 0u);
+}
+
+static int HostMemoryFd(SparkDeviceMemoryHandle memory)
+{
+	return(memory > 0u && memory <= (SparkDeviceMemoryHandle)INT32_MAX + 1u ? (int)(memory - 1u) : -1);
+}
+
+static uint64_t HostMemoryBytes(int fd)
+{
+	struct stat status;
+	return(fd >= 0 && fstat(fd,&status) == 0 && status.st_size > 0 ? (uint64_t)status.st_size : 0u);
+}
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	*bytes = granularity == SPARK_DEVICE_GRANULARITY_RECOMMENDED && HOST_RECOMMENDED_GRANULARITY > host_page_bytes ? HOST_RECOMMENDED_GRANULARITY : host_page_bytes;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	char name[32];
+	int fd;
+	if ( HostAligned(bytes) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"the size is not a multiple of the minimum granularity"));
+	snprintf(name,sizeof(name),"/spk%ld.%u",(long)getpid(),__atomic_add_fetch(&host_shared_serial,1u,__ATOMIC_RELAXED));
+	fd = shm_open(name,O_RDWR | O_CREAT | O_EXCL,0600);
+	if ( fd < 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_create",owner,errno,"shm_open failed"));
+	(void)shm_unlink(name);
+	if ( ftruncate(fd,(off_t)bytes) != 0 )
+	{
+		const int error = errno;
+		(void)close(fd);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_create",owner,error,"ftruncate of the shared memory failed"));
+	}
+	*memory = (SparkDeviceMemoryHandle)fd + 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	const int fd = HostMemoryFd(memory);
+	if ( HostMemoryBytes(fd) == 0u || close(fd) != 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_release","",errno,"not a memory handle"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	const int own = HostMemoryFd(memory);
+	const int exported = HostMemoryBytes(own) != 0u ? dup(own) : -1;
+	if ( exported < 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_export","",errno,"not a memory handle"));
+	*fd = exported;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	const int imported = HostMemoryBytes(fd) != 0u ? dup(fd) : -1;
+	if ( imported < 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_import",owner,errno,"not an exported memory file descriptor"));
+	*memory = (SparkDeviceMemoryHandle)imported + 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	void *base;
+	uint32_t recorded;
+	if ( HostAligned(bytes) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_reserve",owner,0,"the size is not a multiple of the minimum granularity"));
+	base = mmap(0,(size_t)bytes,PROT_NONE,MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,-1,0);
+	if ( base == MAP_FAILED )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"address_reserve",owner,errno,"mmap of the reservation failed"));
+	pthread_mutex_lock(&host_shared_mutex);
+	recorded = HostRangeAdd(&host_reservations,(uint64_t)(uintptr_t)base,bytes);
+	pthread_mutex_unlock(&host_shared_mutex);
+	if ( recorded == 0u )
+	{
+		(void)munmap(base,(size_t)bytes);
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"address_reserve",owner,ENOMEM,"out of host memory for the reservation record"));
+	}
+	*address = (SparkDeviceAddress)(uintptr_t)base;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	int32_t index;
+	pthread_mutex_lock(&host_shared_mutex);
+	index = HostRangeAt(&host_reservations,address,bytes,1u);
+	if ( index < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_release","",0,"not a reserved range");
+	else if ( HostRangeOverlaps(&host_mappings,address,bytes) != 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_release","",0,"the range still has mappings");
+	else if ( munmap((void *)(uintptr_t)address,(size_t)bytes) != 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"address_release","",errno,"munmap of the reservation failed");
+	else
+		HostRangeRemove(&host_reservations,(uint32_t)index);
+	pthread_mutex_unlock(&host_shared_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	const int fd = HostMemoryFd(memory);
+	const uint64_t object_bytes = HostMemoryBytes(fd);
+	const int protection = (access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? PROT_READ | PROT_WRITE : PROT_READ;
+	SparkStatus status = SPARK_STATUS_OK;
+	pthread_mutex_lock(&host_shared_mutex);
+	if ( object_bytes == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"not a memory handle");
+	else if ( HostAligned(address) == 0u || HostAligned(bytes) == 0u || HostAligned(offset) == 0u || offset > object_bytes || bytes > object_bytes - offset )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"the range is unaligned or runs past the memory");
+	else if ( HostRangeAt(&host_reservations,address,bytes,0u) < 0 )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"the range is not inside one reservation");
+	else if ( HostRangeOverlaps(&host_mappings,address,bytes) != 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"the range is already mapped");
+	else if ( mmap((void *)(uintptr_t)address,(size_t)bytes,protection,MAP_SHARED | MAP_FIXED,fd,(off_t)offset) == MAP_FAILED )
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_map","",errno,"mmap of the memory failed");
+	else if ( HostRangeAdd(&host_mappings,address,bytes) == 0u )
+	{
+		(void)mmap((void *)(uintptr_t)address,(size_t)bytes,PROT_NONE,MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,-1,0);
+		status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"memory_map","",ENOMEM,"out of host memory for the mapping record");
+	}
+	pthread_mutex_unlock(&host_shared_mutex);
+	return(status);
+}
+
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index = 0u;
+	pthread_mutex_lock(&host_shared_mutex);
+	if ( HostMappingsCover(address,bytes) == 0u )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_unmap","",0,"the range is not exactly a set of whole mappings");
+	else if ( mmap((void *)(uintptr_t)address,(size_t)bytes,PROT_NONE,MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE,-1,0) == MAP_FAILED )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_unmap","",errno,"restoring the reservation failed");
+	while ( status == SPARK_STATUS_OK && index < host_mappings.count )
+	{
+		const HostRange *range = &host_mappings.ranges[index];
+		if ( range->base >= address && range->base < address + bytes )
+			HostRangeRemove(&host_mappings,index);
+		else
+			index++;
+	}
+	pthread_mutex_unlock(&host_shared_mutex);
+	return(status);
+}
+
 static SparkStatus HostReserve(SparkDeviceAllocation *allocation, HostAllocation *host, const char *operation)
 {
 	host->reservation_bytes = HostRound(allocation->bytes);
@@ -209,7 +477,21 @@ SparkStatus SparkDeviceBackendRegister(SparkDeviceAllocation *allocation, void *
 
 SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
 {
-	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,"the host backend holds only memory it allocated, registered or mapped"));
+	HostAllocation *host;
+	uint32_t mapped;
+	pthread_mutex_lock(&host_shared_mutex);
+	mapped = allocation->host == 0 && allocation->space == SPARK_DEVICE_SPACE_DEVICE_PRIVATE ? HostMappingsSpan(allocation->device,allocation->bytes) : 0u;
+	pthread_mutex_unlock(&host_shared_mutex);
+	if ( mapped == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,
+			"the host backend adopts only device-private ranges of shared memory it mapped"));
+	host = (HostAllocation *)calloc(1u,sizeof(*host));
+	if ( host == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"adopt",allocation->owner,ENOMEM,"out of host memory"));
+	host->kind = HOST_MEMORY_BORROWED;
+	host->data = (uint8_t *)(uintptr_t)allocation->device;
+	allocation->backend = host;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkDeviceBackendMapFile(SparkDeviceAllocation *allocation, int fd, uint64_t offset)

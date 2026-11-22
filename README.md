@@ -578,7 +578,10 @@ objects with residency transitions. Kernels launch through the same layer:
 a backend loads a kernel library and launches kernels by name with
 buffer-range bindings, which the layer checks against the kernel's limits
 and keeps alive until the work that reads them completes
-([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)). Processes share device
+memory through the same layer: exported by file descriptor, mapped into each
+process's own address range, with no CPU view
+([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives

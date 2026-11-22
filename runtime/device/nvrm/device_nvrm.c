@@ -748,3 +748,80 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	NvrmEnd(queue);
 	return(SPARK_STATUS_OK);
 }
+
+SparkStatus SparkDeviceBackendThreadInstance(SparkDeviceInstance *instance)
+{
+	(void)instance;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"thread_instance","",0,"the nvrm backend does not bind threads to an instance yet"));
+}
+
+SparkStatus SparkDeviceBackendThreadBind(SparkDeviceInstance instance)
+{
+	(void)instance;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"thread_bind","",0,"the nvrm backend does not bind threads to an instance yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	(void)granularity;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_granularity","",0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	(void)memory;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_create",owner,0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	(void)memory;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_release","",0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	(void)memory;
+	(void)fd;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_export","",0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	(void)memory;
+	(void)fd;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_import",owner,0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"address_reserve",owner,0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"address_release","",0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	(void)address;
+	(void)bytes;
+	(void)memory;
+	(void)offset;
+	(void)access;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_map","",0,"the nvrm backend has no shared device memory yet"));
+}
+
+SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	(void)address;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_unmap","",0,"the nvrm backend has no shared device memory yet"));
+}

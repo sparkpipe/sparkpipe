@@ -2012,3 +2012,43 @@ __attribute__((constructor)) static void SparkTpMeshStubLaunchersInstall(void)
 {
     SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshStubLaunchers);
 }
+
+cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,unsigned int cuda_version,unsigned long long flags,
+    enum cudaDriverEntryPointQueryResult *status)
+{
+    static const struct
+    {
+        const char *symbol;
+        void *function;
+    } entries[] = {
+        {"cuCtxGetCurrent",(void *)cuCtxGetCurrent},
+        {"cuCtxSetCurrent",(void *)cuCtxSetCurrent},
+        {"cuMemGetAllocationGranularity",(void *)cuMemGetAllocationGranularity},
+        {"cuMemCreate",(void *)cuMemCreate},
+        {"cuMemRelease",(void *)cuMemRelease},
+        {"cuMemExportToShareableHandle",(void *)cuMemExportToShareableHandle},
+        {"cuMemImportFromShareableHandle",(void *)cuMemImportFromShareableHandle},
+        {"cuMemAddressReserve",(void *)cuMemAddressReserve},
+        {"cuMemAddressFree",(void *)cuMemAddressFree},
+        {"cuMemMap",(void *)cuMemMap},
+        {"cuMemSetAccess",(void *)cuMemSetAccess},
+        {"cuMemUnmap",(void *)cuMemUnmap},
+    };
+    size_t index;
+    if (symbol == 0 || function == 0 || cuda_version == 0u || flags != 0ull)
+        return cudaErrorInvalidValue;
+    *function = 0;
+    if (status != 0)
+        *status = cudaDriverEntryPointSymbolNotFound;
+    for (index = 0u; index < sizeof(entries) / sizeof(entries[0]); index++)
+    {
+        if (strcmp(entries[index].symbol,symbol) == 0)
+        {
+            *function = entries[index].function;
+            if (status != 0)
+                *status = cudaDriverEntryPointSuccess;
+            break;
+        }
+    }
+    return cudaSuccess;
+}

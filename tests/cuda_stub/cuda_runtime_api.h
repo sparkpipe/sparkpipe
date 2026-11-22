@@ -6,7 +6,21 @@
 extern "C" {
 #endif
 
+#define CUDART_VERSION 13000
+
 typedef int cudaError_t;
+
+enum cudaGetDriverEntryPointFlags
+{
+    cudaEnableDefault = 0x0
+};
+
+enum cudaDriverEntryPointQueryResult
+{
+    cudaDriverEntryPointSuccess = 0,
+    cudaDriverEntryPointSymbolNotFound = 1,
+    cudaDriverEntryPointVersionNotSufficent = 2
+};
 typedef void *cudaStream_t;
 typedef void *cudaEvent_t;
 typedef void *cudaGraph_t;
@@ -315,6 +329,8 @@ cudaError_t cudaGraphExecHostNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t 
 cudaError_t cudaGetFuncBySymbol(cudaFunction_t *function,const void *symbol);
 cudaError_t cudaPointerGetAttributes(struct cudaPointerAttributes *attributes,const void *pointer);
 cudaError_t cudaGetLastError(void);
+cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,unsigned int cuda_version,unsigned long long flags,
+    enum cudaDriverEntryPointQueryResult *status);
 #include <stdint.h>
 
 void spark_stub_cuda_reset_faults(void);

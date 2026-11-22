@@ -97,7 +97,7 @@ SparkStatus SparkDeviceInitialize(const SparkDeviceConfiguration *configuration)
 	status = SparkDeviceBackendInitialize(configuration != 0 ? configuration : &defaults,&device_properties);
 	if ( status == SPARK_STATUS_OK )
 	{
-		device_initialized = 1u;
+		__atomic_store_n(&device_initialized,1u,__ATOMIC_RELEASE);
 		__atomic_store_n(&device_faulted,0u,__ATOMIC_SEQ_CST);
 	}
 	pthread_mutex_unlock(&device_mutex);
@@ -134,7 +134,7 @@ SparkStatus SparkDeviceShutdown(void)
 	device_free_slots = 0;
 	device_index = 0;
 	device_slot_count = device_slot_capacity = device_free_count = device_index_count = 0u;
-	device_initialized = 0u;
+	__atomic_store_n(&device_initialized,0u,__ATOMIC_RELEASE);
 	pthread_mutex_unlock(&device_mutex);
 	return(status);
 }
@@ -603,6 +603,130 @@ uint32_t SparkDeviceSegmented(SparkDeviceRange range)
 	segmented = allocation != 0 && allocation->segment_stride != 0u ? 1u : 0u;
 	pthread_mutex_unlock(&device_mutex);
 	return(segmented);
+}
+
+static SparkStatus DeviceSharedReady(const char *operation, const char *owner)
+{
+	if ( __atomic_load_n(&device_initialized,__ATOMIC_ACQUIRE) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,operation,owner,0,"device is not initialized"));
+	if ( SparkDeviceFaulted() != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,operation,owner,0,"device faulted earlier; every operation fails"));
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkDeviceThreadInstance(SparkDeviceInstance *instance)
+{
+	SparkStatus status;
+	if ( instance == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_instance","",0,"needs an output"));
+	*instance = 0u;
+	status = DeviceSharedReady("thread_instance","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendThreadInstance(instance));
+}
+
+SparkStatus SparkDeviceThreadBind(SparkDeviceInstance instance)
+{
+	SparkStatus status;
+	if ( instance == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"thread_bind","",0,"needs an instance that SparkDeviceThreadInstance returned"));
+	status = DeviceSharedReady("thread_bind","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendThreadBind(instance));
+}
+
+SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes)
+{
+	SparkStatus status;
+	if ( bytes != 0 )
+		*bytes = 0u;
+	if ( bytes == 0 || (granularity != SPARK_DEVICE_GRANULARITY_MINIMUM && granularity != SPARK_DEVICE_GRANULARITY_RECOMMENDED) )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_granularity","",0,"needs an output and the minimum or recommended granularity"));
+	status = DeviceSharedReady("memory_granularity","");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceBackendMemoryGranularity(granularity,bytes);
+	if ( status == SPARK_STATUS_OK && (*bytes == 0u || (*bytes & (*bytes - 1u)) != 0u) )
+		status = SparkDeviceRecordError(SPARK_STATUS_IO_ERROR,"memory_granularity","",0,"the backend reported a granularity that is not a power of two");
+	return(status);
+}
+
+SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	SparkStatus status;
+	if ( memory != 0 )
+		*memory = 0u;
+	if ( memory == 0 || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create",owner,0,"needs an output and a size"));
+	status = DeviceSharedReady("memory_create",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryCreate(memory,bytes,owner));
+}
+
+SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory)
+{
+	SparkStatus status;
+	if ( memory == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_release","",0,"needs a memory handle"));
+	status = DeviceSharedReady("memory_release","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryRelease(memory));
+}
+
+SparkStatus SparkDeviceMemoryExport(SparkDeviceMemoryHandle memory, int *fd)
+{
+	SparkStatus status;
+	if ( fd != 0 )
+		*fd = -1;
+	if ( memory == 0u || fd == 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_export","",0,"needs a memory handle and an output"));
+	status = DeviceSharedReady("memory_export","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryExport(memory,fd));
+}
+
+SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner)
+{
+	SparkStatus status;
+	if ( memory != 0 )
+		*memory = 0u;
+	if ( memory == 0 || fd < 0 )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_import",owner,0,"needs an output and an exported file descriptor"));
+	status = DeviceSharedReady("memory_import",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryImport(memory,fd,owner));
+}
+
+SparkStatus SparkDeviceAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner)
+{
+	SparkStatus status;
+	if ( address != 0 )
+		*address = 0u;
+	if ( address == 0 || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_reserve",owner,0,"needs an output and a size"));
+	status = DeviceSharedReady("address_reserve",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendAddressReserve(address,bytes,owner));
+}
+
+SparkStatus SparkDeviceAddressRelease(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"address_release","",0,"needs a reserved range"));
+	status = DeviceSharedReady("address_release","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendAddressRelease(address,bytes));
+}
+
+SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
+{
+	const uint32_t device_access = SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE;
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u || memory == 0u || (access & SPARK_DEVICE_ACCESS_DEVICE_READ) == 0u || (access & ~device_access) != 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"needs a reserved range, a memory handle and device read or read-write access"));
+	status = DeviceSharedReady("memory_map","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryMap(address,bytes,memory,offset,access));
+}
+
+SparkStatus SparkDeviceMemoryUnmap(SparkDeviceAddress address, uint64_t bytes)
+{
+	SparkStatus status;
+	if ( address == 0u || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_unmap","",0,"needs a mapped range"));
+	status = DeviceSharedReady("memory_unmap","");
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryUnmap(address,bytes));
 }
 
 static uint32_t DeviceDeviceSide(const SparkDeviceAllocation *allocation)

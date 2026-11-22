@@ -10,6 +10,8 @@ extern "C" {
 #endif
 
 typedef uint64_t SparkDeviceAddress;
+typedef uint64_t SparkDeviceMemoryHandle;
+typedef uint64_t SparkDeviceInstance;
 
 typedef enum SparkDeviceSpace
 {
@@ -31,6 +33,9 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS 8u
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
+
+#define SPARK_DEVICE_GRANULARITY_MINIMUM 0u
+#define SPARK_DEVICE_GRANULARITY_RECOMMENDED 1u
 
 #define SPARK_DEVICE_BIND_READ 1u
 #define SPARK_DEVICE_BIND_WRITE 2u
@@ -138,6 +143,8 @@ const SparkDeviceProperties *SparkDeviceGetProperties(void);
 const SparkDeviceError *SparkDeviceLastError(void);
 uint32_t SparkDeviceFaulted(void);
 SparkStatus SparkDeviceSynchronize(uint64_t timeout_ns);
+SparkStatus SparkDeviceThreadInstance(SparkDeviceInstance *instance);
+SparkStatus SparkDeviceThreadBind(SparkDeviceInstance instance);
 
 SparkStatus SparkDeviceAllocate(SparkDeviceBuffer *buffer, SparkDeviceSpace space, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceRegister(SparkDeviceBuffer *buffer, void *host, uint64_t bytes, uint32_t access, const char *owner);
@@ -149,6 +156,16 @@ SparkStatus SparkDeviceResolve(SparkDeviceAddress address, uint64_t bytes, Spark
 SparkStatus SparkDeviceAddressOf(SparkDeviceRange range, uint64_t bytes, SparkDeviceAddress *address);
 SparkStatus SparkDeviceHostOf(SparkDeviceRange range, uint64_t bytes, void **host);
 uint32_t SparkDeviceSegmented(SparkDeviceRange range);
+
+SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes);
+SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory);
+SparkStatus SparkDeviceMemoryExport(SparkDeviceMemoryHandle memory, int *fd);
+SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner);
+SparkStatus SparkDeviceAddressReserve(SparkDeviceAddress *address, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceAddressRelease(SparkDeviceAddress address, uint64_t bytes);
+SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access);
+SparkStatus SparkDeviceMemoryUnmap(SparkDeviceAddress address, uint64_t bytes);
 
 SparkStatus SparkDeviceCopy(SparkDeviceQueue *queue, SparkDeviceRange destination, SparkDeviceRange source, uint64_t bytes);
 SparkStatus SparkDeviceFill(SparkDeviceQueue *queue, SparkDeviceRange destination, uint8_t value, uint64_t bytes);
