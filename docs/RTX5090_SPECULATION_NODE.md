@@ -247,10 +247,19 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     lanes. Rows are bf16 at their positions in 4,096-position pages of the
     sequence, and whole sequences leave oldest first when the lane's
     `context_bytes` is reached.
-    A frame at position 0, or from another engine session or request, starts
-    the sequence over. A frame at position `p` drops every row from `p` on and
-    then holds its own rows, so a rewind after rejected drafts leaves no stale
-    rows behind. The module keeps each position's token beside its row.
+    A frame at position 0 starts the sequence over. A frame from another
+    engine session or request at a later position retires the sequence's
+    context, which stays as a donor, and starts a new one, as
+    `block_draftd.py` does. A frame at position `p` drops every row from `p`
+    on and then holds its own rows, so a rewind after rejected drafts leaves
+    no stale rows behind. The module keeps each position's token beside its
+    row.
+  - **Donor prefixes.** When a sequence's context lacks positions below the
+    anchor (after a prefix-cache hit, the tap stream starts past the cached
+    prefix), `propose` copies them from other contexts, the most recently
+    used first, whose tokens match the committed ones up to that point, as
+    `LatentContext.copy_prefix` does. Only rows the donor holds and the
+    sequence lacks are copied, on the device.
   - **Block forward.** A draft at position `p` runs the seven-row block (the
     anchor and six mask tokens at `p..p+6`) through the five layers, as
     `K3DsparkDrafter.forward_block` does, with the same bf16 rounding points:
@@ -296,7 +305,17 @@ make NVCC=/usr/local/cuda-13.3/bin/nvcc CUDA_HOME=/usr/local/cuda-13.1 \
     head against the Python drafter's. It also runs `propose` under a greedy
     rule and two sampling rules and checks the drafts and confidences against
     `K3DsparkDrafter.propose` on the module's block rows. `--time` times the
-    forward on synthetic context.
+    forward on synthetic context. The probe also checks the donor path: a sequence that holds only the
+    second half of the positions borrows the first half and drafts what the
+    whole sequence drafts.
+  - **Replay gate.** `build/drafter_module_replay` drives any drafter module
+    through a tap recording: before each decode, verify or chain frame at
+    position `p > 0` it asks for a draft at `p` with the frame's first token
+    as the anchor, then ingests the frame.
+    `tools/spec_offline/drafter_replay_compare.py` replays the same schedule
+    through the Python drafter with `block_draftd.py`'s context store and
+    compares the answers, the drafts and each side's accepted length against
+    the recording's committed stream.
 
 ## Draft farm
 

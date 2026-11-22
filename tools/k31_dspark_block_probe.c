@@ -89,7 +89,7 @@ static int Open(Probe *probe, const char *library_path, const char *pack, const 
 	return 0;
 }
 
-static int Ingest(Probe *probe, const uint16_t *taps, const uint32_t *tokens, uint64_t first, uint32_t rows)
+static int IngestAs(Probe *probe, uint64_t sequence, uint64_t request_id, const uint16_t *taps, const uint32_t *tokens, uint64_t first, uint32_t rows)
 {
 	SparkTapStreamReaderFrame frame;
 	SparkTapStreamHello hello;
@@ -97,9 +97,9 @@ static int Ingest(Probe *probe, const uint16_t *taps, const uint32_t *tokens, ui
 	memset(&hello, 0, sizeof(hello));
 	hello.hidden = PROBE_HIDDEN;
 	memset(&frame, 0, sizeof(frame));
-	frame.header.sequence_id = PROBE_SEQUENCE;
+	frame.header.sequence_id = sequence;
 	frame.header.control_generation = 1u;
-	frame.header.request_id = 1u;
+	frame.header.request_id = request_id;
 	frame.header.first_position = first;
 	frame.header.row_count = rows;
 	frame.hello = &hello;
@@ -114,6 +114,11 @@ static int Ingest(Probe *probe, const uint16_t *taps, const uint32_t *tokens, ui
 		return 1;
 	}
 	return 0;
+}
+
+static int Ingest(Probe *probe, const uint16_t *taps, const uint32_t *tokens, uint64_t first, uint32_t rows)
+{
+	return IngestAs(probe, PROBE_SEQUENCE, 1u, taps, tokens, first, rows);
 }
 
 static void *ReadAll(const char *directory, const char *name, uint64_t *bytes)
@@ -239,6 +244,62 @@ static int Drafts(Probe *probe, const char *directory, const uint32_t *tokens, u
 	return fclose(file) == 0 ? 0 : 1;
 }
 
+static SparkStatus ProposeAs(Probe *probe, uint64_t sequence, const uint32_t *committed, uint64_t position, uint32_t *drafts)
+{
+	SparkDraftServerRequest request;
+	SparkDraftBridgeNode nodes[PROBE_BLOCK + 1u];
+	uint32_t count = 0u;
+	SparkStatus status;
+	memset(&request, 0, sizeof(request));
+	request.speculator_mask = 2u;
+	request.sequence_id = sequence;
+	request.position = position;
+	request.anchor_token_id = committed[position];
+	request.committed_token_ids = committed;
+	request.committed_token_count = (uint32_t)position + 1u;
+	request.depth = PROBE_BLOCK;
+	request.max_depth = PROBE_BLOCK;
+	request.node_capacity = PROBE_BLOCK + 1u;
+	status = probe->module->propose(probe->state, &request, nodes, PROBE_BLOCK + 1u, &count);
+	for ( uint32_t draft = 0u; draft < PROBE_BLOCK; draft++ )
+		drafts[draft] = draft + 1u < count ? nodes[draft + 1u].token_id : 0u;
+	return status;
+}
+
+static int Donors(Probe *probe, const uint16_t *taps, const uint32_t *tokens, uint64_t rows)
+{
+	const uint64_t row_elements = (uint64_t)PROBE_TAPS * PROBE_HIDDEN, half = rows / 2u;
+	uint32_t whole[PROBE_BLOCK], borrowed[PROBE_BLOCK], alone[PROBE_BLOCK];
+	uint32_t *stranger = (uint32_t *)malloc((size_t)(rows + 1u) * sizeof(uint32_t));
+	SparkStatus whole_status, borrowed_status, alone_status;
+	int failed;
+	if ( stranger == 0 || rows < 2u )
+	{
+		free(stranger);
+		return rows < 2u ? 0 : 1;
+	}
+	memcpy(stranger, tokens, (size_t)(rows + 1u) * sizeof(uint32_t));
+	for ( uint64_t at = 0u; at < half; at++ )
+		stranger[at] = tokens[at] + 1u;
+	failed = IngestAs(probe, PROBE_SEQUENCE + 1u, 2u, taps + half * row_elements, tokens + half, half, (uint32_t)(rows - half)) != 0 ||
+		IngestAs(probe, PROBE_SEQUENCE + 2u, 3u, taps + half * row_elements, tokens + half, half, (uint32_t)(rows - half)) != 0;
+	whole_status = ProposeAs(probe, PROBE_SEQUENCE, tokens, rows, whole);
+	borrowed_status = ProposeAs(probe, PROBE_SEQUENCE + 1u, tokens, rows, borrowed);
+	alone_status = ProposeAs(probe, PROBE_SEQUENCE + 2u, stranger, rows, alone);
+	free(stranger);
+	if ( failed != 0 || whole_status != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS || borrowed_status != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS ||
+		alone_status != SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS )
+	{
+		fprintf(stderr, "donor check: a propose answered %d, %d, %d\n", (int)whole_status, (int)borrowed_status, (int)alone_status);
+		return 1;
+	}
+	printf("donor check: a sequence holding only positions %llu..%llu borrows 0..%llu from one that shares its tokens and drafts %s; "
+		"one whose first %llu tokens differ keeps its gap and drafts %s\n", (unsigned long long)half, (unsigned long long)rows - 1u,
+		(unsigned long long)half - 1u, memcmp(whole, borrowed, sizeof(whole)) == 0 ? "the same tokens" : "OTHER tokens", (unsigned long long)half,
+		memcmp(whole, alone, sizeof(whole)) == 0 ? "the same tokens" : "other tokens");
+	return memcmp(whole, borrowed, sizeof(whole)) == 0 ? 0 : 1;
+}
+
 static int Compare(Probe *probe, const char *directory)
 {
 	const uint64_t row_elements = (uint64_t)PROBE_TAPS * PROBE_HIDDEN;
@@ -283,7 +344,7 @@ static int Compare(Probe *probe, const char *directory)
 		if ( WriteAll(directory, name, out, rows * PROBE_LATENT) != 0 )
 			return 1;
 	}
-	if ( Trace(probe, directory, tokens[rows], rows) != 0 || Drafts(probe, directory, tokens, rows) != 0 )
+	if ( Trace(probe, directory, tokens[rows], rows) != 0 || Drafts(probe, directory, tokens, rows) != 0 || Donors(probe, taps, tokens, rows) != 0 )
 		return 1;
 	printf("wrote y.bin, trace0..%u.bin and %llu context rows x %u layers to %s\n", PROBE_LAYERS - 1u, (unsigned long long)rows, PROBE_LAYERS, directory);
 	free(out);
