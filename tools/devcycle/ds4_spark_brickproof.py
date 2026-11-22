@@ -1591,9 +1591,11 @@ def audit_one(host: str,payload: dict[str,object],identity: Path) -> dict[str,ob
 
 def write_receipt(action: str,documents: list[dict[str,object]]) -> Path:
     timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = Path(tempfile.gettempdir()) / f"ds4_spark_brickproof_{action}_{timestamp}.json"
-    path.write_text(json.dumps({"action":action,"nodes":documents},indent=2,sort_keys=True) + "\n")
-    return(path)
+    handle,name = tempfile.mkstemp(prefix=f"ds4_spark_brickproof_{action}_{timestamp}_",suffix=".json")
+    with os.fdopen(handle,"w") as output:
+        output.write(json.dumps({"action":action,"nodes":documents},indent=2,sort_keys=True) + "\n")
+    os.chmod(name,0o644)
+    return(Path(name))
 
 
 def parse_nodes(value: str) -> tuple[str,...]:
