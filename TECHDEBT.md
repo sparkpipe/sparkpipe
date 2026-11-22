@@ -1997,7 +1997,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   replay.
 - The nvrm backend (`runtime/device/nvrm/`,
   [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
-  from the pinned open kernel module (580.178.04) and open-gpu-doc, the
+  from the pinned open kernel module releases (580.178.04 for the Sparks,
+  595.84 for the hub's RTX 5090) and open-gpu-doc, the
   `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
   version 5 packer tested on release-built kernels, device open, memory
   and kernel launch below the backend entries, and backend entries for

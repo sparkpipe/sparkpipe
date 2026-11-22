@@ -225,7 +225,18 @@ the image gets the same bytes `apply` writes.
   - the DMA guard: its install step's service and timer, written by the
     guard's own `unit_text` with the baseline's notify address, timer
     enabled, so the guard arms 60 s after every boot;
-  - `multi-user.target` as the default.
+  - `multi-user.target` as the default;
+  - the lossless RoCE settings on `enp1s0f1np1`, which a staged baseline
+    leaves out and the stager adds:
+    [`sparkpipe_roce_qos.sh`](../tools/fabric/sparkpipe_roce_qos.sh) as
+    `/usr/local/sbin/sparkpipe_roce_qos.sh`, its unit
+    `sparkpipe-roce-qos.service`, enabled and bound to the port, and the
+    DSCP trust helper
+    [`sparkpipe_dscp_trust.sh`](../tools/fabric/sparkpipe_dscp_trust.sh) as
+    `/usr/local/sbin/sparkpipe-dscp-trust`. They set DSCP trust (the 64-entry
+    DSCP>>3 map), PFC on priority 3 and prio-buffer 3:1 with iproute2's
+    `dcb` and `ethtool`. Nothing from `mlnx_qos` or other MLNX tools is in
+    the image.
 - **Left to the live node:** `sysctl --system`, `udevadm`, `modprobe`,
   `update-grub` (the disk install generates the GRUB menu), runtime
   `systemctl` verbs and linger.
