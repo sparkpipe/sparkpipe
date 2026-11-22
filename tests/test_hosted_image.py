@@ -271,6 +271,8 @@ class StaticFilesTest(unittest.TestCase):
             self.assertEqual(raised.stdout, "sparkpipe-compact: raised\n")
             self.assertEqual(((base / "proactiveness").read_text().strip(), (base / "reserve").read_text().strip(), (base / "compact").read_text().strip()),
                              ("90", "1048576", "1"))
+            raise_text = helper.read_text()
+            self.assertLess(raise_text.index('echo 1 > "$compact"'), raise_text.index('echo 90 > "$proactiveness"'))
             self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")
             self.assertEqual(run("raise").returncode, 0)
             self.assertEqual((base / "state" / "boot").read_text(), "20 45056\n")

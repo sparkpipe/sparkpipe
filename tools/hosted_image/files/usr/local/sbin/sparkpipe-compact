@@ -14,9 +14,9 @@ flock 9
 case "${1:-}" in
 raise)
 	[ -f "$saved" ] || printf '%s %s\n' "$(cat "$proactiveness")" "$(cat "$reserve")" > "$saved"
+	echo 1 > "$compact"
 	echo 90 > "$proactiveness"
 	echo 1048576 > "$reserve"
-	echo 1 > "$compact"
 	echo "sparkpipe-compact: raised"
 	;;
 restore)

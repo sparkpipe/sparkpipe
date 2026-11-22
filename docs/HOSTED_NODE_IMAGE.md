@@ -134,12 +134,16 @@ So the image boots with the kernel's defaults and raises both settings only
 while a model activates, when the large allocations happen:
 
 - [`sparkpipe-compact`](../tools/hosted_image/files/usr/local/sbin/sparkpipe-compact)
-  `raise` records the boot values in `/run/sparkpipe-compact/boot`, sets
-  proactiveness 90 and `min_free_kbytes` 1 GiB, writes `compact_memory`
-  once and returns. The kernel's background compaction makes most of the
-  blocks over the following seconds. Nothing guesses when it is done: each
-  nvrm allocation of 2 MiB pages waits until the free 2 MiB blocks cover
-  it and the raised reserve, up to 60 s
+  `raise` records the boot values in `/run/sparkpipe-compact/boot`, writes
+  `compact_memory`, then sets proactiveness 90 and `min_free_kbytes` 1 GiB,
+  and returns. `compact_memory` goes first because raising proactiveness
+  wakes the kernel's background compaction: with the holder below, a
+  `compact_memory` written after the raise returned within 0.03 to 0.4 s
+  with almost no new blocks in 3 of 5 trials, while written first it ran
+  about 5 s and left 36,600 to 37,300 free 2 MiB blocks in 4 of 5. Nothing
+  guesses when compaction is done: each nvrm allocation of 2 MiB pages
+  waits until the free 2 MiB blocks cover it and the raised reserve, and
+  makes missing blocks itself, for up to 60 s
   ([NVRM_BACKEND.md](NVRM_BACKEND.md)). `restore` puts the
   recorded values back, but only when no activation holds
   `/run/sparkpipe-compact/window` (each holds a shared lock on it), so
