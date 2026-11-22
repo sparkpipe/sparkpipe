@@ -11,6 +11,8 @@ extern "C" {
 
 #define SPARK_NVRM_PAGE_BYTES 4096u
 #define SPARK_NVRM_HUGE_PAGE_BYTES (2u << 20)
+#define SPARK_NVRM_BIG_PAGE_BYTES (64u << 10)
+#define SPARK_NVRM_HUGE_OBJECT_LIMIT (4ull << 30)
 #define SPARK_NVRM_CHANNEL_ENTRIES 1024u
 #define SPARK_NVRM_PUSH_BYTES (1u << 20)
 #define SPARK_NVRM_LOCAL_RETIRED 16u
@@ -181,6 +183,7 @@ void SparkNvrmGpuClose(SparkNvrmGpu *gpu);
 SparkStatus SparkNvrmMemoryAllocate(SparkNvrmGpu *gpu, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 SparkStatus SparkNvrmMemoryAttach(SparkNvrmGpu *gpu, void *host, uint64_t bytes, SparkNvrmMemoryKind kind, SparkNvrmMemory *memory, const char *owner);
 void SparkNvrmMemoryRelease(SparkNvrmGpu *gpu, SparkNvrmMemory *memory);
+uint32_t SparkNvrmSystemPageBytes(uint64_t bytes);
 SparkStatus SparkNvrmSystemAllocate(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t page_bytes, SparkNvrmMemoryKind kind, uint32_t *handle, const char *owner);
 uint64_t SparkNvrmFreeHugeBlocks(const char *buddyinfo, uint64_t page_bytes, uint64_t huge_bytes);
 SparkStatus SparkNvrmHugePagesReady(uint64_t bytes, const char *owner);

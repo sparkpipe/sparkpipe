@@ -400,6 +400,16 @@ byte from the copy engine's remap constant: four bytes per element over
 the aligned middle, one byte per element over an unaligned head and
 tail.
 
+The line limit counts bytes, not elements. `LINE_LENGTH_IN` is a 32-bit
+count (`clcab5.h`): bytes for a copy, remap elements for a fill. The copy
+engine utilities in NVIDIA's open kernel modules never put more than
+2^32 - 1 bytes in one line. Lines used to be cut at 2^31 elements, so a
+fill of 8 GiB or more became one line of 2^31 four-byte elements
+(8 GiB). Its fence never arrived. A fill line now holds at most 2^29
+elements. `tests/test_nvrm_submit.c` checks the lines pushed for fills
+and copies of 8, 10.5 and 16 GiB. `make SPARKPIPE_DEVICE=nvrm
+nvrm-large-transfers` runs them on the GPU (see the GPU tests).
+
 `device_nvrm.c` maps the device layer onto this:
 
 | Space | nvrm memory | Host view | Device address |
@@ -410,6 +420,42 @@ tail.
 | host pageable | heap | yes | none |
 | registered | user memory | the caller's pointer | yes |
 | file-backed | read-only user memory over a read-only mapping | yes | yes |
+
+System memory objects take 2 MiB pages from 8 MiB up to 4 GiB, and 64 KiB
+pages from 4 GiB on (`SparkNvrmSystemPageBytes`). Device memory and shared
+memory both follow this rule on an integrated GPU. A discrete GPU's video
+memory keeps 2 MiB pages from 8 MiB at every size: the hole below was
+measured in GB10 system memory, and the hub's gate passed with those pages.
+Its write-back system memory (host-pinned and shared-coherent) takes 2 MiB
+pages from 2 MiB up to 4 GiB and 64 KiB pages from 4 GiB on.
+
+An object of 4 GiB or more in 2 MiB pages, mapped through the
+unified-memory external range, has no GPU mapping for the 64 KiB at
+object offset 4 GiB - 64 KiB. A write there takes Xid 31, `FAULT_PTE`.
+The hole follows the object, not the address. Mapping the object in
+pieces does not avoid it, and two 4 GiB objects back to back each have
+it. Objects in 64 KiB or 4 KiB pages map whole, and so do 2 MiB-page
+objects below 4 GiB.
+
+The cause is not known; the rule rests on these measurements. Our calls
+pass 64-bit sizes and offsets. The open-gpu-kernel-modules 580.178.04
+paths they reach also read 64-bit clean:
+
+- `kernel-open/nvidia-uvm/uvm_map_external.c`, `map_rm_pt_range`, lines
+  280-347;
+- `src/nvidia/src/kernel/rmapi/nv_gpu_ops.c`,
+  `nvGpuOpsBuildExternalAllocPtes`, lines 3841-4300;
+- `src/nvidia/src/kernel/gpu/mem_mgr/mem_desc.c`,
+  `memdescGetPtePhysAddrsForGpu`, lines 3001-3050.
+
+If the cause is found and fixed, 2 MiB pages can come back for large
+objects. `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` is the check.
+
+`SparkNvrmSystemAllocate` refuses a 2 MiB-page object of 4 GiB or more.
+On GB10 the page size costs nothing measurable. In three interleaved
+rounds of 20 launches, 4 GiB buffers in 64 KiB pages read at 258.4 to
+259.6 GB/s and copy at 225.2 to 225.9 GB/s. 2 GiB buffers in 2 MiB pages
+read at 258.0 to 258.9 GB/s and copy at 225.6 to 227.1 GB/s.
 
 Events are 32-byte marks carved from a pooled host allocation. Recording
 one is a queue operation that releases a timestamped copy of the event's
@@ -543,6 +589,23 @@ launch-shape probe and first light:
   unaligned offset, pageable copies through the bounce buffer and pageable
   fills, 64 queues opened and closed in turn, two queues copying at once,
   and reopening after a shutdown.
+- **`tests/test_nvrm_large_transfers.c`** runs in its own goal,
+  `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers`, because it needs
+  40 GiB of available memory. On GB10 the copy engine fills at 18.6 GB/s
+  and copies at 18.0 GB/s at these sizes. Allocating 16 GiB with its zero
+  fill takes 2.1 s. The test runs in two modes:
+  - `sizes`: allocates 8, 10.5 and 16 GiB of device-private memory, each
+    zero-filled by the copy engine. For each size it copies the whole
+    buffer to host-visible memory in one call and checks every byte, fills
+    the whole buffer in one call, copies it back and checks again, and
+    fills host-visible memory of the same size at an odd offset.
+  - `held`: sets the stall threshold to zero, so that a 4 GiB
+    allocation's wait gives up while its zero fill is still running. The
+    allocation must fail, keep its memory held and say so. Shutdown must
+    then release the memory once the fill ends, and the device must open
+    and fill memory again afterwards.
+
+  The goal fails on any NVRM line in the kernel log.
 - **`tests/test_device_contract.c`** (`build/test_device_contract_nvrm`),
   the backend-neutral device contract the host, Metal and CUDA backends
   pass: spaces, copies, events, waits between queues, host callbacks, busy
@@ -607,7 +670,13 @@ operation, as it does after any I/O error.
   or host step that runs longer than 10 s with nothing else running is
   reported as a stall.
 - **Internal waits.** Waits for ring space, launch slots and zero-filled
-  allocations use the same watch. Channel waits that know no queue
+  allocations use the same watch. When the wait for an allocation's zero
+  fill gives up while the fill is still running, the allocation fails but
+  its memory stays held. Freeing memory under a running copy engine
+  makes the kernel module assert, and the GPU then needs a reset. The
+  error text names the held bytes. Shutdown releases held memory once its
+  fill has finished. If the fill never finishes, shutdown leaves the GPU
+  open for the process's exit to close. Channel waits that know no queue
   (push-buffer space, synchronizing a new channel, tearing one down) check
   their own channel's notifier and keep their 10 s timeout.
 - **The report.** `SparkDeviceLastError()` holds the operation
@@ -657,8 +726,9 @@ The device layer's shared memory entry points
 ([DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)) map onto the module
 like this:
 
-- **Create.** On an integrated GPU, module system memory in 2 MiB pages,
-  GPU-cached, allocated without the CPU mapping the device's own system
+- **Create.** On an integrated GPU, module system memory, GPU-cached, in
+  2 MiB pages below 4 GiB and 64 KiB pages from 4 GiB on (see the memory
+  spaces above), allocated without the CPU mapping the device's own system
   memory gets (`SparkNvrmSystemAllocate`). On a discrete GPU, video memory
   in 2 MiB pages (`SparkNvrmVideoAllocate`), exported, imported and mapped
   the same way.
@@ -995,3 +1065,27 @@ their submission more than their bytes. A 4 KiB draft download takes
 bytes) 5.9 us, both on one queue 6.4 us, and 12.6 us when the CPU first
 writes the row; 16 rows (819,200 bytes) upload in 24 to 25 us, or
 20.7 us from a buffer in 2 MiB pages.
+
+## Step measurements
+
+These measurement tools build one source in both flavours and print the
+two side by side. None of them is a pass/fail gate:
+
+- **`make nvrm-launch-latency`** (`tests/nvrm/launch_latency.cu`): how long
+  after a kernel's hold a launch-to-synchronize returns, for holds from 0 to
+  2 ms, with the process CPU each wait costs.
+- **`make nvrm-cross-process-copy`** (`tests/nvrm/cross_process_copy.cu`): how
+  long another process's 64 MiB copy takes while this process holds every SM
+  with one 50 ms grid or 25 grids of 2 ms, and the same from a second stream
+  of the same process.
+- **`make nvrm-step-chain`** (`tests/nvrm/step_chain.cu`): a step of N short
+  kernels back to back, with N of 16, 256, 1,600 or 2,627 (the node counts
+  of today's rows=1 decode graphs).
+  - Each kernel runs on one block or on one block per SM and holds for
+    2 us. Its blocks record the kernel's first start and last end on the
+    GPU clock.
+  - The tool reports the host time to issue the step, the wall time to
+    synchronize, the GPU span, and the GPU idle per boundary between
+    kernels.
+  - It runs eager launches, and in the CUDA flavour also one captured graph
+    of the same launches. nvrm refuses capture for now.
