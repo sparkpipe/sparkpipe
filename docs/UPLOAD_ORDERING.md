@@ -50,7 +50,7 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 | `model-families/mimo26/source/mimo26_stage.cuh` | 2 uploads | Load. |
 | `model-families/motif/source/motif_stage.cuh` | 1 upload | Load. |
 | `model-families/qwen38/source/qwen38_hybrid_stage.cuh` | 4 readbacks | Readback after sync: the layer dump syncs the stream first and launches nothing in between. |
-| `ring/transport/tp_device_collective.c` | 12 uploads, 15 readbacks, 3 fills | See below. |
+| `ring/transport/tp_device_collective.c` | 10 uploads, 15 readbacks, 3 fills | See below. |
 | `runtime/spark_weightd.c` | 4 uploads | Serving write: the verify sink, the staged range loads and the lease sink. Their consumers are engine processes that learn of the data from weightd's reply after the call returns. The arena epoch bump is published the same way. All come from pageable or staging memory, so they were cross-process races on a discrete GPU, and the contract closes them. |
 | `runtime/spark_weightd_spine.c` | 1 upload | Same as weightd: spine spans copied into a lease before the reply. |
 
@@ -59,12 +59,14 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 - **`EnsureCells`**, once per collective: a fill of the arrival ring, the zeroing of the round control block, and five 8-byte seeds from pageable variables.
   - The zeroing was `SparkGpuMemsetAsync(..., 0)`, legacy-stream work that the collective's kernels on the non-blocking submission stream do not wait for. It is now `SparkGpuMemset`, which has landed when it returns.
   - Class: load. Fixed for a discrete GPU: the seeds and fills land before any round runs.
-- **`SeedEpoch`**, per chain: two uploads from the pinned published cell and one fill.
+- **`SeedEpoch`**, per chain: two uploads from the pinned published cell and one fill. Every dispatch starts a chain, because the batch engine gives each submission its own request id.
   - `ChainKey` first checks that the active stream has finished.
-  - The pinned uploads were host-synchronous already. The fill was a race on any GPU and now lands.
-  - Class: serving write after idle.
-- **The rounds loop** (`EnqueueRoundsInternal`): two uploads of the round control words from a pageable struct before the loop kernel launches, which synchronizes its stream right after.
-  - It was a race on a discrete GPU and now lands. Class: serving write after idle.
+  - When there is an active stream, the three writes are now asynchronous on it, so they are ordered before the round kernels that follow on the same stream without any host wait. Switching streams requires the old one to be idle.
+  - Only the first chain, with no active stream yet, uses the synchronous copies and fill, which land before they return.
+  - Before: the pinned uploads were host-synchronous, and the fill was a race on any GPU. Class: serving write after idle; per step, stream-ordered.
+- **The rounds loop** (`EnqueueRoundsInternal`): two uploads of the round control words before the loop kernel launches.
+  - They are now asynchronous on the submission stream, ordered before the loop kernel. The source is a pageable struct and a stack pair, which the copy stages before it returns.
+  - Before: a race on a discrete GPU.
 - **`ArmCapture`:** two uploads zeroing the error and diag words before a graph capture.
   - A capture can begin right after the previous step's graph was launched on the same stream, and that graph uses those words. So the zeroing was a backward race on any GPU.
   - Fixed: `ArmCapture` now synchronizes the collective's active stream, which `GraphPreLaunch` set to the launch stream, before it writes.
@@ -73,6 +75,10 @@ The synchronous copy and fill sites in production code, by file. `tests/test_upl
 - **Readbacks after sync:** the rounds loop's control readback (1827), `GraphPreLaunch` (2292), and the timing readback (2676, 2679), each after a stream sync or terminal check.
 - **Monitoring reads:** the wait-kernel timeout report (1024, 1025), `DeviceRoundsDone`, `GraphProgress`, the stuck, arrival and diag dumps, and `GraphError`.
 - **`ClearGraphError`:** one upload of zero into the error word. No production code calls it.
+
+## Per-step cost
+
+No path that runs on every decode step or verify frame issues a synchronous upload, device copy or fill. The per-step writes are `SeedEpoch` and the rounds loop, now ordered in their stream. The remaining synchronous sites run at load, at a graph capture (once per row count), or in weightd's load and eviction paths. The synchronous readbacks keep their old cost, since a device-to-host copy was already synchronous. `test_tp_device_collective_mock` checks that a new chain issues no synchronous copy and no stream sync.
 
 ## Kernels on the legacy stream
 

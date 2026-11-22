@@ -593,7 +593,6 @@ cudaError_t cudaStreamQuery(cudaStream_t stream)
 }
 
 uint32_t cuda_stub_stream_sync_calls;
-uint32_t cuda_stub_work_stream_sync_calls;
 static spark_stub_cuda_sync_hook_t cuda_stub_sync_hook;
 static void *cuda_stub_sync_hook_context;
 
@@ -607,8 +606,6 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
     spark_stub_cuda_sync_hook_t hook = __atomic_load_n(&cuda_stub_sync_hook, __ATOMIC_SEQ_CST);
     cuda_stub_stream_sync_calls++;
-    if (stream != 0)
-        cuda_stub_work_stream_sync_calls++;
     if (cuda_stub_discrete_on() != 0u && cuda_stub_stream_blocking(stream) != 0u)
         cuda_stub_land();
     if (hook != 0)

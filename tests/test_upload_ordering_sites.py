@@ -28,7 +28,7 @@ SITES = {
     "model-families/mimo26/source/mimo26_stage.cuh": 2,
     "model-families/motif/source/motif_stage.cuh": 1,
     "model-families/qwen38/source/qwen38_hybrid_stage.cuh": 4,
-    "ring/transport/tp_device_collective.c": 30,
+    "ring/transport/tp_device_collective.c": 28,
     "runtime/spark_weightd.c": 4,
     "runtime/spark_weightd_spine.c": 1,
 }
