@@ -1352,6 +1352,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
   weightd on the hub come next; K3's DFlash2 drafter retires with its lane
   (#1910).
+- weightd's held packs bind drafters on a device without unified memory
+  through exported host memory (`SparkDeviceMemoryCreateHost`). The CUDA
+  backend has it; nvrm's, a system-memory object exported through the NV0000
+  path, is the runtime track's next item and builds on 64 KiB pages for
+  objects from 4 GiB (#2084). Until then a held bind on nvrm is refused. A
+  held pack is released only when weightd exits.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,

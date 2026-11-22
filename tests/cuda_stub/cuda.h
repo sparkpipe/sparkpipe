@@ -43,8 +43,18 @@ typedef enum CUmemAllocationHandleType_enum
 typedef enum CUmemLocationType_enum
 {
     CU_MEM_LOCATION_TYPE_INVALID = 0x0,
-    CU_MEM_LOCATION_TYPE_DEVICE = 0x1
+    CU_MEM_LOCATION_TYPE_DEVICE = 0x1,
+    CU_MEM_LOCATION_TYPE_HOST_NUMA = 0x3
 } CUmemLocationType;
+
+typedef enum CUdevice_attribute_enum
+{
+    CU_DEVICE_ATTRIBUTE_HOST_NUMA_ID = 134,
+    CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED = 141
+} CUdevice_attribute;
+
+CUresult cuDeviceGet(CUdevice *device, int ordinal);
+CUresult cuDeviceGetAttribute(int *value, CUdevice_attribute attribute, CUdevice device);
 
 typedef enum CUmemAccessFlags_enum
 {
@@ -124,6 +134,8 @@ CUresult cuMemRelease(CUmemGenericAllocationHandle handle);
 CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes);
 CUresult cuMemcpyDtoD(CUdeviceptr destination, CUdeviceptr source,
     size_t bytes);
+CUresult cuMemGetAllocationPropertiesFromHandle(CUmemAllocationProp *prop,
+    CUmemGenericAllocationHandle handle);
 
 CUresult cuda_stub_vmm_probe_write(CUdeviceptr pointer,
     const void *bytes,

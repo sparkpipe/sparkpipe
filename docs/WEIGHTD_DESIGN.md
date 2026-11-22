@@ -1323,48 +1323,62 @@ memory once.
 
 - **HOLD (IPC kinds 61 and 62).** `SparkWeightdClientHold` sends the identity
   and pack path. The first HOLD of an identity opens the pack, admits its bytes
-  against node memory, creates a `memfd` (`MFD_ALLOW_SEALING`), streams the
-  pack into it through the same receipt or full-digest verification as a cold
-  attach, drops the writable mapping and seals the memfd against writes,
-  growth and shrinking. A later HOLD of the same identity reuses the held copy
-  and never reads the pack. The reply carries a duplicate of the memfd
-  (`SCM_RIGHTS`), the bytes, the held copy's generation and load time,
-  `first_hold` and the number of held packs.
+  against node memory and creates pinned host memory for it
+  (`SparkDeviceMemoryCreateHost`, see
+  [DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)), rounded up to the
+  minimum granularity. It maps that memory for the CPU alone, streams the pack
+  into it through the same receipt or full-digest verification as a cold
+  attach, and unmaps it. A later HOLD of the same identity reuses the held copy
+  and never reads the pack. The reply carries an exported descriptor
+  (`SCM_RIGHTS`), the pack and pinned bytes, the held copy's generation and
+  load time, `first_hold` and the number of held packs.
 - **Lifetime.** A held pack stays until weightd exits, so a consumer restart
-  copies again from weightd's host memory, never from the disk. At most
+  copies again from weightd's pinned memory, never from the disk. At most
   `SPARK_WEIGHTD_HELD_PACK_COUNT_MAX` (8) packs are held; a ninth identity is
-  `CAPACITY_EXCEEDED`. A wrong digest holds nothing.
+  `CAPACITY_EXCEEDED`. A wrong digest holds nothing. A backend without
+  exportable host memory refuses HOLD with
+  `weightd hold refused: model=...: the <backend> backend has no exportable host memory`.
 - **Consumer.** `SparkWeightdLazyPackCreate` asks the device first. With
   unified memory it attaches lazily as before; without, it takes the held path:
   it refuses a manifest with expert ranges (`UNSUPPORTED`; a pack binds whole,
-  as its spine) and a `read_only` pack, sends HOLD, checks the memfd is sealed
-  and of the pack's size, maps it read-only, allocates the private spine and
-  copies the spine spans through a 256 MiB pinned staging buffer, then unmaps.
+  as its spine) and a `read_only` pack, sends HOLD, imports the descriptor,
+  maps it device-read-only, allocates the private spine and copies the spine
+  spans from the mapping with the copy engines in 1 GiB pieces, with no CPU
+  copy, then unmaps and releases the import.
   `WD-SPINE-HELD spans= bytes= first_hold= held= hold_s= copy_s=` reports it.
-  The sealed memfd cannot be registered for DMA (registration pins pages
-  writable), hence the staging copy.
 - **Older weightd.** A weightd without HOLD closes the connection on kind 61.
   The client then fails with `weightd hold: no reply to kind 61 (HOLD)` and
   never reads the pack itself.
 - **Frames.** `SparkWeightdIpcHold` is 1,344 bytes and
-  `SparkWeightdIpcHoldResult` 64; the existing kinds and frames are unchanged,
+  `SparkWeightdIpcHoldResult` 72; the existing kinds and frames are unchanged,
   so the ABI stays 17.
 - **On the 5090 node** (2026-11-22, CUDA flavour, a user-process weightd on its
-  own socket, latch port and KV root): the first HOLD of each drafter pack took
-  22-26 s, nearly all of it the full sha256 (0.4 GB/s; the receipt it records
-  makes later holds skip it), and the copy into video memory 0.9-1.1 s
-  (about 9.5 GB/s). A rebind, as after a consumer restart, took 1.0-1.3 s with
-  `first_hold=0`. 100 slices of each device copy equalled the file. Build there
-  against a CUDA toolkit no newer than the driver's (595.84 serves CUDA 13.2;
-  `/usr/local/cuda-13.1`): the device layer loads driver entry points by the
-  runtime's version, and a 13.3 build's are missing, so weightd fails to start.
+  own socket, latch port and KV root), each drafter pack (9.1-10.6 GB):
+  - the first HOLD with a recorded receipt took 2.3-2.8 s (the stream 1.4-1.6 s,
+    the rest creating and pinning); without a receipt the full sha256 runs at
+    0.4 GB/s on that CPU, once per pack file;
+  - the copy into video memory took 0.22-0.25 s, 41.7-42.5 GB/s, which is the
+    card's pinned host-to-device rate under CUDA (`cuMemHostAlloc` copies run at
+    41.9 GB/s there; a second copy stream adds nothing);
+  - a rebind, as after a consumer restart, took 0.27-0.30 s with
+    `first_hold=0`;
+  - 100 slices of each device copy equalled the file;
+  - MemAvailable fell from 117,382,896 kB to 87,644,796 kB with all three held
+    (29.79 GB pinned) and came back when weightd exited.
+
+  Build there against a CUDA toolkit no newer than the driver's (595.84 serves
+  CUDA 13.2; `/usr/local/cuda-13.1`): the device layer loads driver entry
+  points by the runtime's version, and a 13.3 build's are missing, so weightd
+  fails to start.
 - **Test.** `tests/test_weightd_held_pack.c` runs a server and the CUDA stub as
   a discrete GPU (`SPARK_STUB_CUDA_DISCRETE` mode reports `integrated` 0): a
   bind copies the bytes and a rebind after the pack file is overwritten still
-  returns the held bytes with `first_hold=0`; the memfd refuses a writable
-  mapping and truncation; a wrong digest holds nothing; expert ranges are
-  refused; and a stand-in weightd that closes on kind 61 makes the bind fail
-  with the message above.
+  returns the held bytes with `first_hold=0`; the held descriptor imports and
+  maps device-read-only with the pack's bytes, and refuses host write without
+  host read; a wrong digest holds nothing; expert ranges are refused; a stub
+  without host-NUMA memory makes HOLD refuse with the backend's text; and a
+  stand-in weightd that closes on kind 61 makes the bind fail with the message
+  above.
 
 ### Working-set recording
 

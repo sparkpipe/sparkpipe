@@ -231,7 +231,8 @@ typedef struct SparkWeightdHeldPack
     SparkWeightdIdentity identity;
     uint64_t generation;
     uint64_t load_ns;
-    int fd;
+    uint64_t allocation_bytes;
+    SparkDeviceMemoryHandle memory;
 } SparkWeightdHeldPack;
 
 struct SparkWeightdServer
@@ -4374,14 +4375,14 @@ static SparkStatus SparkWeightdHeldCreate(SparkWeightdServer *server,
     const char *pack_path, const SparkWeightdIdentity *identity,
     SparkWeightdHeldPack **held_out)
 {
-#if defined(__linux__)
     SparkWeightdHeldPack *held;
+    SparkDeviceMemoryHandle memory = 0u;
+    SparkDeviceAddress address = 0u;
     struct stat before;
-    void *host = MAP_FAILED;
-    uint64_t started_ns = SparkMonotonicNs();
+    uint64_t started_ns = SparkMonotonicNs(), granularity = 0u, allocation_bytes = 0u;
     SparkStatus status = SPARK_STATUS_OK;
+    uint32_t mapped = 0u;
     int32_t pack_fd;
-    int fd = -1;
     if (server->held_pack_count >= SPARK_WEIGHTD_HELD_PACK_COUNT_MAX)
     {
         fprintf(stderr, "weightd hold refused: model=%s finds all %u held packs taken; a held pack stays until weightd exits\n",
@@ -4395,53 +4396,53 @@ static SparkStatus SparkWeightdHeldCreate(SparkWeightdServer *server,
         (uint64_t)before.st_size != identity->arena_bytes)
         status = SPARK_STATUS_INVALID_ARGUMENT;
     if (status == SPARK_STATUS_OK)
-        status = SparkWeightdNodeMemoryAdmit(server->meminfo_path, identity->arena_bytes, "held pack", identity->model);
+        status = SparkWeightdDeviceOpen();
+    if (status == SPARK_STATUS_OK &&
+        (SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM, &granularity) != SPARK_STATUS_OK || granularity == 0u))
+        status = SPARK_STATUS_UNSUPPORTED;
     if (status == SPARK_STATUS_OK)
     {
-        fd = memfd_create("weightd held pack", MFD_CLOEXEC | MFD_ALLOW_SEALING);
-        if (fd < 0 || ftruncate(fd, (off_t)identity->arena_bytes) != 0)
-            status = SPARK_STATUS_CAPACITY_EXCEEDED;
+        allocation_bytes = (identity->arena_bytes + granularity - 1u) / granularity * granularity;
+        status = SparkWeightdNodeMemoryAdmit(server->meminfo_path, allocation_bytes, "held pack", identity->model);
     }
+    if (status == SPARK_STATUS_OK)
+        status = SparkDeviceMemoryCreateHost(&memory, allocation_bytes, "weightd held pack");
+    if (status == SPARK_STATUS_OK)
+        status = SparkDeviceAddressReserve(&address, allocation_bytes, "weightd held pack");
     if (status == SPARK_STATUS_OK)
     {
-        host = mmap(0, (size_t)identity->arena_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        if (host == MAP_FAILED)
-            status = SPARK_STATUS_CAPACITY_EXCEEDED;
+        status = SparkDeviceMemoryMap(address, allocation_bytes, memory, 0u,
+            SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE);
+        mapped = status == SPARK_STATUS_OK ? 1u : 0u;
     }
+    if (status == SPARK_STATUS_UNSUPPORTED)
+        fprintf(stderr, "weightd hold refused: model=%s: %s\n", identity->model, SparkDeviceLastError()->text);
     if (status == SPARK_STATUS_OK)
-        status = SparkWeightdHeldCopy(server, pack_path, pack_fd, identity, (uint8_t *)host, &before);
-    if (host != MAP_FAILED && munmap(host, (size_t)identity->arena_bytes) != 0 && status == SPARK_STATUS_OK)
+        status = SparkWeightdHeldCopy(server, pack_path, pack_fd, identity, (uint8_t *)(uintptr_t)address, &before);
+    if (mapped != 0u && SparkDeviceMemoryUnmap(address, allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK)
+        status = SPARK_STATUS_IO_ERROR;
+    if (address != 0u && SparkDeviceAddressRelease(address, allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK)
         status = SPARK_STATUS_IO_ERROR;
     (void)close(pack_fd);
-    if (status == SPARK_STATUS_OK &&
-        fcntl(fd, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL) != 0)
-        status = SPARK_STATUS_IO_ERROR;
     if (status != SPARK_STATUS_OK)
     {
-        if (fd >= 0)
-            (void)close(fd);
+        if (memory != 0u)
+            (void)SparkDeviceMemoryRelease(memory);
         SPARK_RETURN(status);
     }
     held = &server->held_packs[server->held_pack_count++];
     held->identity = *identity;
     held->generation = ++server->next_held_generation;
     held->load_ns = SparkMonotonicNs() - started_ns;
-    held->fd = fd;
-    server->held_pack_bytes += identity->arena_bytes;
-    printf("weightd held model=%s revision=%s bytes=%llu seconds=%.3f held=%u held_bytes=%llu\n",
-        identity->model, identity->revision, (unsigned long long)identity->arena_bytes,
+    held->allocation_bytes = allocation_bytes;
+    held->memory = memory;
+    server->held_pack_bytes += allocation_bytes;
+    printf("weightd held model=%s revision=%s bytes=%llu pinned=%llu seconds=%.3f held=%u held_bytes=%llu\n",
+        identity->model, identity->revision, (unsigned long long)identity->arena_bytes, (unsigned long long)allocation_bytes,
         (double)held->load_ns / 1e9, server->held_pack_count, (unsigned long long)server->held_pack_bytes);
     fflush(stdout);
     *held_out = held;
     return SPARK_STATUS_OK;
-#else
-    (void)server;
-    (void)pack_path;
-    (void)held_out;
-    fprintf(stderr, "weightd hold refused: model=%s; a held pack is a sealed memfd, which this platform lacks\n",
-        identity->model);
-    SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-#endif
 }
 
 static uint32_t SparkWeightdServerOnHold(SparkWeightdServer *server, SparkWeightdConnection *connection, const uint8_t *request, uint8_t *response, uint32_t result_kind, uint64_t request_id)
@@ -4469,15 +4470,20 @@ static uint32_t SparkWeightdServerOnHold(SparkWeightdServer *server, SparkWeight
         status = SPARK_STATUS_CAPACITY_EXCEEDED;
     if (status == SPARK_STATUS_OK)
     {
-        fd = fcntl(held->fd, F_DUPFD_CLOEXEC, 0);
-        if (fd < 0)
+        fd = -1;
+        if (SparkDeviceMemoryExport(held->memory, &fd) != SPARK_STATUS_OK || fd < 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) != 0)
+        {
+            if (fd >= 0)
+                (void)close(fd);
             status = SPARK_STATUS_IO_ERROR;
+        }
         else
             connection->response_fds[connection->response_fd_count++] = fd;
     }
     if (status == SPARK_STATUS_OK)
     {
         result->held_bytes = held->identity.arena_bytes;
+        result->allocation_bytes = held->allocation_bytes;
         result->generation = held->generation;
         result->load_ns = held->load_ns;
         result->fd_staged = 1u;
@@ -5278,7 +5284,7 @@ void SparkWeightdServerDestroy(SparkWeightdServer *server)
     }
     for (index = 0u; index < server->held_pack_count; index++)
     {
-        (void)close(server->held_packs[index].fd);
+        (void)SparkDeviceMemoryRelease(server->held_packs[index].memory);
     }
     server->held_pack_count = 0u;
     if (server->listen_fd >= 0)
@@ -5979,6 +5985,7 @@ SparkStatus SparkWeightdClientHold(SparkWeightdClient *client,
     }
     result->status = SPARK_STATUS_OK;
     result->held_bytes = wire_result.held_bytes;
+    result->allocation_bytes = wire_result.allocation_bytes;
     result->generation = wire_result.generation;
     result->load_ns = wire_result.load_ns;
     result->first_hold = wire_result.first_hold;

@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include "sparkpipe/spark_device.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_weightd_lazy_pack.h"
@@ -20,6 +21,7 @@
 #define TIMEOUT UINT64_C(10000000000)
 
 void spark_stub_cuda_discrete_ordering(uint32_t enabled);
+void spark_stub_cuda_host_memory_share(uint32_t enabled);
 
 typedef struct TestServer
 {
@@ -135,31 +137,37 @@ static void check_bind_and_restart(const char *root,const char *socket_path)
 	free(other);
 }
 
-static void check_sealed(const char *root,const char *socket_path)
+static void check_held_export(const char *root,const char *socket_path)
 {
 	char path[512];
 	uint8_t *bytes = malloc(PACK_BYTES);
 	SparkWeightdLazyAttachRequest request;
 	SparkWeightdHoldResult held;
 	SparkWeightdClient *client;
-	const int wanted = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_SEAL;
-	struct stat info;
-	void *mapping;
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceAddress address = 0u,other = 0u;
+	uint64_t granularity = 0u;
 	assert(bytes != 0);
 	fill(bytes,PACK_BYTES,23u);
-	snprintf(path,sizeof(path),"%s/sealed",root);
+	snprintf(path,sizeof(path),"%s/export",root);
 	write_pack(path,bytes,0u);
-	request = request_for(path,"held-sealed");
+	request = request_for(path,"held-export");
 	assert(SparkWeightdClientConnect(socket_path,&client,0) == SPARK_STATUS_OK);
 	assert(SparkWeightdClientHold(client,&request.identity,path,&held,TIMEOUT) == SPARK_STATUS_OK);
+	assert(SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) == SPARK_STATUS_OK && granularity != 0u);
 	assert(held.first_hold == 1u && held.held_count == 2u && held.held_bytes == PACK_BYTES && held.fd >= 0);
-	assert((fcntl(held.fd,F_GET_SEALS) & wanted) == wanted);
-	assert(fstat(held.fd,&info) == 0 && (uint64_t)info.st_size == PACK_BYTES);
-	assert(mmap(0,PACK_BYTES,PROT_READ | PROT_WRITE,MAP_SHARED,held.fd,0) == MAP_FAILED);
-	assert(ftruncate(held.fd,0) != 0);
-	mapping = mmap(0,PACK_BYTES,PROT_READ,MAP_SHARED,held.fd,0);
-	assert(mapping != MAP_FAILED && memcmp(mapping,bytes,PACK_BYTES) == 0 && munmap(mapping,PACK_BYTES) == 0);
-	assert(close(held.fd) == 0);
+	assert(held.allocation_bytes >= PACK_BYTES && held.allocation_bytes % granularity == 0u && held.allocation_bytes - PACK_BYTES < granularity);
+	assert(SparkDeviceMemoryImport(&memory,held.fd,"held test") == SPARK_STATUS_OK && close(held.fd) == 0);
+	assert(SparkDeviceAddressReserve(&address,held.allocation_bytes,"held test") == SPARK_STATUS_OK);
+	assert(SparkDeviceMemoryMap(address,held.allocation_bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ) == SPARK_STATUS_OK);
+	assert(memcmp((const void *)(uintptr_t)address,bytes,PACK_BYTES) == 0);
+	assert(SparkDeviceAddressReserve(&other,held.allocation_bytes,"held test") == SPARK_STATUS_OK);
+	assert(SparkDeviceMemoryMap(other,held.allocation_bytes,memory,0u,SPARK_DEVICE_ACCESS_HOST_WRITE) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(strcmp(SparkDeviceLastError()->text,"host write access needs host read access") == 0);
+	assert(SparkDeviceAddressRelease(other,held.allocation_bytes) == SPARK_STATUS_OK);
+	assert(SparkDeviceMemoryUnmap(address,held.allocation_bytes) == SPARK_STATUS_OK);
+	assert(SparkDeviceAddressRelease(address,held.allocation_bytes) == SPARK_STATUS_OK);
+	assert(SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK);
 	assert(SparkWeightdClientHold(client,&request.identity,path,&held,TIMEOUT) == SPARK_STATUS_OK);
 	assert(held.first_hold == 0u && held.held_count == 2u && close(held.fd) == 0);
 	request.identity.pack_sha256[0] = request.identity.pack_sha256[0] == '0' ? '1' : '0';
@@ -240,26 +248,69 @@ static void check_weightd_without_hold(const char *root)
 	free(bytes);
 }
 
-int main(void)
+static void start_server(TestServer *state,pthread_t *thread,const char *socket_path)
 {
-	char root[] = "/tmp/weightd-held-XXXXXX",socket_path[256];
+	SparkWeightdServerConfig config;
+	memset(&config,0,sizeof(config));
+	config.socket_path = socket_path;
+	config.device_bytes_max = UINT64_C(1) << 30;
+	assert(SparkWeightdServerCreate(&config,&state->server) == SPARK_STATUS_OK);
+	assert(pthread_create(thread,0,run_server,state) == 0);
+}
+
+static void stop_server(TestServer *state,pthread_t thread)
+{
+	state->stop = 1;
+	assert(pthread_join(thread,0) == 0);
+	SparkWeightdServerDestroy(state->server);
+}
+
+static int check_without_host_share(const char *root)
+{
+	char path[512],socket_path[256];
+	uint8_t *bytes = malloc(PACK_BYTES);
+	SparkWeightdLazyAttachRequest request;
+	SparkWeightdLazyPack *pack = 0;
 	TestServer state = {0};
-	SparkWeightdServerConfig config = {0};
 	pthread_t thread;
+	char *log;
+	assert(bytes != 0);
+	spark_stub_cuda_discrete_ordering(1u);
+	spark_stub_cuda_host_memory_share(0u);
+	snprintf(socket_path,sizeof(socket_path),"%s/no-share-socket",root);
+	start_server(&state,&thread,socket_path);
+	fill(bytes,PACK_BYTES,59u);
+	snprintf(path,sizeof(path),"%s/no-share",root);
+	write_pack(path,bytes,0u);
+	request = request_for(path,"held-no-share");
+	assert(bind_pack(socket_path,&request,&pack,&log) == SPARK_STATUS_UNSUPPORTED && pack == 0);
+	assert(strstr(log,"weightd hold refused: model=held-no-share: the cuda backend has no exportable host memory") != 0);
+	assert(strstr(log,"WD-SPINE-") == 0);
+	free(log);
+	stop_server(&state,thread);
+	free(bytes);
+	puts("PASS no host memory share: HOLD refuses and the bind fails");
+	return(0);
+}
+
+int main(int argc,char **argv)
+{
+	char root[] = "/tmp/weightd-held-XXXXXX",socket_path[256],command[600];
+	TestServer state = {0};
+	pthread_t thread;
+	if ( argc == 3 && strcmp(argv[1],"without-host-share") == 0 )
+		return(check_without_host_share(argv[2]));
 	spark_stub_cuda_discrete_ordering(1u);
 	assert(mkdtemp(root) != 0);
 	snprintf(socket_path,sizeof(socket_path),"%s/socket",root);
-	config.socket_path = socket_path;
-	config.device_bytes_max = UINT64_C(1) << 30;
-	assert(SparkWeightdServerCreate(&config,&state.server) == SPARK_STATUS_OK);
-	assert(pthread_create(&thread,0,run_server,&state) == 0);
+	start_server(&state,&thread,socket_path);
 	check_bind_and_restart(root,socket_path);
-	check_sealed(root,socket_path);
+	check_held_export(root,socket_path);
 	check_expert_ranges_refused(root,socket_path);
 	check_weightd_without_hold(root);
-	state.stop = 1;
-	assert(pthread_join(thread,0) == 0);
-	SparkWeightdServerDestroy(state.server);
-	printf("PASS weightd held packs: HOLD verifies a pack once into a sealed memfd held until weightd exits; a device without unified memory copies the spine into its own memory, a rebind reuses the held copy without reading the pack, a wrong digest holds nothing, expert ranges are refused, and a weightd without HOLD fails loudly naming kind 61\n");
+	stop_server(&state,thread);
+	snprintf(command,sizeof(command),"%s without-host-share %s",argv[0],root);
+	assert(system(command) == 0);
+	printf("PASS weightd held packs: HOLD verifies a pack once into exported host memory held until weightd exits; a device without unified memory imports it read-only and copies the spine into its own memory, a rebind reuses the held copy without reading the pack, a wrong digest holds nothing, expert ranges are refused, a backend without exportable host memory refuses HOLD, and a weightd without HOLD fails loudly naming kind 61\n");
 	return(0);
 }

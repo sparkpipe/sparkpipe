@@ -1101,7 +1101,9 @@ static uint8_t *cuda_stub_backing_data(cuda_stub_vmm_backing *backing)
 }
 
 #define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846)
-#define CUDA_STUB_SHARE_VERSION 3u
+#define CUDA_STUB_SHARE_VERSION 4u
+
+static uint32_t cuda_stub_host_share = 1u;
 
 typedef struct cuda_stub_share_header
 {
@@ -1110,6 +1112,8 @@ typedef struct cuda_stub_share_header
     uint64_t bytes;
     uint64_t process;
     uint64_t backing;
+    uint32_t location;
+    uint32_t reserved;
 } cuda_stub_share_header;
 
 static cuda_stub_vmm_backing *cuda_stub_backing_create(uint64_t bytes)
@@ -1242,7 +1246,8 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
 {
     if (granularity == 0 || prop == 0 ||
         prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
-        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE)
+        (prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE &&
+            prop->location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA))
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
@@ -1318,6 +1323,8 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     header.bytes = phys->bytes;
     header.process = (uint64_t)getpid();
     header.backing = (uint64_t)(uintptr_t)phys->backing;
+    header.location = (uint32_t)phys->prop.location.type;
+    header.reserved = 0u;
     if (pwrite(phys->backing->fd, &header, sizeof(header), (off_t)phys->bytes) != (ssize_t)sizeof(header))
         return CUDA_ERROR_OUT_OF_MEMORY;
     fd = fcntl(phys->backing->fd, F_DUPFD_CLOEXEC, 0);
@@ -1430,6 +1437,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     }
     if (header.magic != CUDA_STUB_SHARE_MAGIC ||
         header.version != CUDA_STUB_SHARE_VERSION || header.bytes == 0ull ||
+        (header.location != (uint32_t)CU_MEM_LOCATION_TYPE_DEVICE && header.location != (uint32_t)CU_MEM_LOCATION_TYPE_HOST_NUMA) ||
         (uint64_t)status.st_size != (uint64_t)sizeof(header) + header.bytes)
     {
         return CUDA_ERROR_INVALID_VALUE;
@@ -1454,7 +1462,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     phys->mapped_count = 0u;
     phys->bytes = header.bytes;
     phys->prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    phys->prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    phys->prop.location.type = (CUmemLocationType)header.location;
     phys->prop.location.id = 0;
     phys->prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     phys->backing = backing;
@@ -1472,7 +1480,8 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
         cuda_stub_sleep_microseconds(cuda_stub_create_delay_us);
     if (handle == 0 || prop == 0 ||
         prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
-        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+        (prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE &&
+            (prop->location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA || cuda_stub_host_share == 0u)) ||
         flags != 0ull || bytes == 0u)
     {
         return CUDA_ERROR_INVALID_VALUE;
@@ -1591,9 +1600,12 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     cuda_stub_vmm_reservation *reservation;
     CUdeviceptr span_start;
     uint64_t offset;
-    if (descriptors == 0 || descriptor_count != (size_t)1u ||
-        descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
-        (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u)
+    if (descriptors == 0 || descriptor_count == (size_t)0u || descriptor_count > (size_t)2u ||
+        (descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE && descriptors[0].location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA) ||
+        (descriptor_count == (size_t)2u && (descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+            descriptors[1].location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA)) ||
+        (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u ||
+        (descriptor_count == (size_t)2u && (descriptors[1].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u))
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
@@ -1609,7 +1621,39 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    reservation->granted_access = (unsigned int)descriptors[0].flags;
+    reservation->granted_access = descriptors[0].location.type == CU_MEM_LOCATION_TYPE_DEVICE
+        ? (unsigned int)descriptors[0].flags : reservation->granted_access;
+    return CUDA_SUCCESS;
+}
+
+void spark_stub_cuda_host_memory_share(uint32_t enabled)
+{
+    cuda_stub_host_share = enabled != 0u ? 1u : 0u;
+}
+
+CUresult cuDeviceGet(CUdevice *device, int ordinal)
+{
+    if (device == 0 || ordinal != 0)
+        return CUDA_ERROR_INVALID_DEVICE;
+    *device = ordinal;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuDeviceGetAttribute(int *value, CUdevice_attribute attribute, CUdevice device)
+{
+    if (value == 0 || device != 0)
+        return CUDA_ERROR_INVALID_VALUE;
+    *value = attribute == CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED ? (int)cuda_stub_host_share : 0;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuMemGetAllocationPropertiesFromHandle(CUmemAllocationProp *prop,
+    CUmemGenericAllocationHandle handle)
+{
+    const cuda_stub_vmm_phys *phys = (const cuda_stub_vmm_phys *)handle;
+    if (prop == 0 || phys == 0 || phys->magic != CUDA_STUB_VMM_MAGIC)
+        return CUDA_ERROR_INVALID_VALUE;
+    *prop = phys->prop;
     return CUDA_SUCCESS;
 }
 
@@ -2316,6 +2360,9 @@ cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,
         {"cuMemMap",(void *)cuMemMap},
         {"cuMemSetAccess",(void *)cuMemSetAccess},
         {"cuMemUnmap",(void *)cuMemUnmap},
+        {"cuMemGetAllocationPropertiesFromHandle",(void *)cuMemGetAllocationPropertiesFromHandle},
+        {"cuDeviceGet",(void *)cuDeviceGet},
+        {"cuDeviceGetAttribute",(void *)cuDeviceGetAttribute},
     };
     size_t index;
     if (symbol == 0 || function == 0 || cuda_version == 0u || flags != 0ull)

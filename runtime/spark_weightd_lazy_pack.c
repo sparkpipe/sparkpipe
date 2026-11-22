@@ -165,7 +165,7 @@ static SparkStatus lazy_pack_initialize(SparkWeightdLazyPack *pack,int32_t fd,co
 	SPARK_RETURN(status);
 }
 
-#define LAZY_HELD_STAGING_BYTES (UINT64_C(256) << 20)
+#define LAZY_HELD_PIECE_BYTES (UINT64_C(1) << 30)
 
 static SparkStatus lazy_pack_unified(uint32_t *unified)
 {
@@ -180,40 +180,56 @@ static SparkStatus lazy_pack_unified(uint32_t *unified)
 	return(SPARK_STATUS_OK);
 }
 
-#if defined(__linux__)
-static SparkStatus lazy_held_check(int fd,uint64_t bytes)
+static SparkStatus lazy_held_copy(SparkWeightdLazyPack *pack,SparkDeviceAddress held)
 {
-	const int wanted = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE;
-	struct stat info;
-	const int seals = fcntl(fd,F_GET_SEALS);
-	if ( fstat(fd,&info) != 0 || S_ISREG(info.st_mode) == 0 || (uint64_t)info.st_size != bytes || seals < 0 || (seals & wanted) != wanted )
+	uint64_t done,piece;
+	uint32_t index;
+	for ( index = 0u; index < pack->manifest.spine_count; index++ )
 	{
-		fprintf(stderr,"weightd held pack refused: the held copy is not a sealed %llu-byte memfd\n",(unsigned long long)bytes);
-		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
+		const SparkWeightdSpan *span = &pack->manifest.spine[index];
+		for ( done = 0u; done < span->bytes; done += piece )
+		{
+			piece = (span->bytes - done) < LAZY_HELD_PIECE_BYTES ? (span->bytes - done) : LAZY_HELD_PIECE_BYTES;
+			if ( SparkGpuMemcpy((uint8_t *)pack->spine + span->compact_offset + done,(const void *)(uintptr_t)(held + span->offset + done),(size_t)piece,
+				SPARK_GPU_COPY_DEVICE_TO_DEVICE) != SPARK_GPU_SUCCESS )
+				SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		}
 	}
 	return(SPARK_STATUS_OK);
 }
 
-static SparkStatus lazy_held_copy(SparkWeightdLazyPack *pack,const uint8_t *held)
+static SparkStatus lazy_held_bind(SparkWeightdLazyPack *pack,const SparkWeightdHoldResult *held,uint64_t *copy_ns)
 {
-	void *staging = 0;
-	uint64_t done,piece;
-	SparkStatus status = SPARK_STATUS_OK;
-	uint32_t index;
-	if ( SparkGpuHostAlloc(&staging,(size_t)LAZY_HELD_STAGING_BYTES,SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	for ( index = 0u; status == SPARK_STATUS_OK && index < pack->manifest.spine_count; index++ )
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceAddress address = 0u;
+	uint32_t mapped = 0u;
+	SparkStatus status = SparkDeviceMemoryImport(&memory,held->fd,"weightd held pack");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAddressReserve(&address,held->allocation_bytes,"weightd held pack");
+	if ( status == SPARK_STATUS_OK )
 	{
-		const SparkWeightdSpan *span = &pack->manifest.spine[index];
-		for ( done = 0u; status == SPARK_STATUS_OK && done < span->bytes; done += piece )
-		{
-			piece = (span->bytes - done) < LAZY_HELD_STAGING_BYTES ? (span->bytes - done) : LAZY_HELD_STAGING_BYTES;
-			memcpy(staging,held + span->offset + done,(size_t)piece);
-			if ( SparkGpuMemcpy((uint8_t *)pack->spine + span->compact_offset + done,staging,(size_t)piece,SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
-				status = SPARK_STATUS_IO_ERROR;
-		}
+		status = SparkDeviceMemoryMap(address,held->allocation_bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ);
+		mapped = status == SPARK_STATUS_OK ? 1u : 0u;
 	}
-	if ( SparkGpuFreeHost(staging) != SPARK_GPU_SUCCESS && status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && SparkGpuMalloc(&pack->spine_allocation,(size_t)(pack->manifest.spine_allocation_bytes + 255u)) != SPARK_GPU_SUCCESS )
+	{
+		pack->spine_allocation = 0;
+		fprintf(stderr,"weightd held pack refused: no %llu bytes of device memory for the spine\n",(unsigned long long)(pack->manifest.spine_allocation_bytes + 255u));
+		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		pack->spine_allocation_bytes = (pack->manifest.spine_allocation_bytes + 255u);
+		pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
+		*copy_ns = SparkMonotonicNs();
+		status = lazy_held_copy(pack,address);
+		*copy_ns = SparkMonotonicNs() - *copy_ns;
+	}
+	if ( mapped != 0u && SparkDeviceMemoryUnmap(address,held->allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( address != 0u && SparkDeviceAddressRelease(address,held->allocation_bytes) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( memory != 0u && SparkDeviceMemoryRelease(memory) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
 		status = SPARK_STATUS_IO_ERROR;
 	SPARK_RETURN(status);
 }
@@ -223,8 +239,7 @@ static SparkStatus lazy_pack_held(SparkWeightdLazyPack *pack,const char *socket,
 	char path[SPARK_WEIGHTD_PATH_BYTES + 8u];
 	SparkWeightdHoldResult held;
 	const uint64_t bytes = request->identity.arena_bytes;
-	const uint8_t *mapping;
-	uint64_t started_ns,hold_ns,copy_ns;
+	uint64_t started_ns,hold_ns,copy_ns = 0u;
 	SparkStatus status;
 	if ( pack->read_only != 0u )
 	{
@@ -259,27 +274,11 @@ static SparkStatus lazy_pack_held(SparkWeightdLazyPack *pack,const char *socket,
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	hold_ns = SparkMonotonicNs() - started_ns;
-	status = lazy_held_check(held.fd,bytes);
-	mapping = status == SPARK_STATUS_OK ? mmap(0,(size_t)bytes,PROT_READ,MAP_SHARED,held.fd,0) : MAP_FAILED;
+	if ( held.held_bytes != bytes || held.allocation_bytes < bytes )
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	if ( status == SPARK_STATUS_OK )
+		status = lazy_held_bind(pack,&held,&copy_ns);
 	(void)close(held.fd);
-	if ( status != SPARK_STATUS_OK )
-		SPARK_RETURN(status);
-	if ( mapping == MAP_FAILED )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( SparkGpuMalloc(&pack->spine_allocation,(size_t)(pack->manifest.spine_allocation_bytes + 255u)) != SPARK_GPU_SUCCESS )
-	{
-		pack->spine_allocation = 0;
-		(void)munmap((void *)mapping,(size_t)bytes);
-		fprintf(stderr,"weightd held pack refused: no %llu bytes of device memory for the spine\n",(unsigned long long)(pack->manifest.spine_allocation_bytes + 255u));
-		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	}
-	pack->spine_allocation_bytes = (pack->manifest.spine_allocation_bytes + 255u);
-	pack->spine = (void *)(((uintptr_t)pack->spine_allocation + 255u) & ~(uintptr_t)255u);
-	copy_ns = SparkMonotonicNs();
-	status = lazy_held_copy(pack,mapping);
-	copy_ns = SparkMonotonicNs() - copy_ns;
-	if ( munmap((void *)mapping,(size_t)bytes) != 0 && status == SPARK_STATUS_OK )
-		status = SPARK_STATUS_IO_ERROR;
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pack->attached.status = SPARK_STATUS_OK;
@@ -291,18 +290,6 @@ static SparkStatus lazy_pack_held(SparkWeightdLazyPack *pack,const char *socket,
 	    (unsigned long long)pack->manifest.spine_bytes,held.first_hold,held.held_count,(double)hold_ns / 1e9,(double)copy_ns / 1e9);
 	SPARK_RETURN(SparkWeightdWorkerCreate(&pack->worker));
 }
-#else
-static SparkStatus lazy_pack_held(SparkWeightdLazyPack *pack,const char *socket,const SparkWeightdLazyAttachRequest *request,uint64_t timeout,SparkWeightdManifestCheck check,void *context)
-{
-	(void)pack;
-	(void)socket;
-	(void)timeout;
-	(void)check;
-	(void)context;
-	fprintf(stderr,"weightd held pack refused: %s; a held pack is a sealed memfd, which this platform lacks\n",request->pack_path);
-	SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-}
-#endif
 
 SparkStatus SparkWeightdLazyPackCreate(const char *socket,const SparkWeightdLazyAttachRequest *request,const SparkWeightdLazyPackOptions *options,SparkWeightdLazyPack **out)
 {

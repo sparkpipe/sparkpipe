@@ -655,6 +655,26 @@ SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes)
 	return(status);
 }
 
+static SparkStatus DeviceHostShareRefused(const char *operation, const char *owner)
+{
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	snprintf(text,sizeof(text),"the %s backend has no exportable host memory",device_properties.backend);
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,operation,owner,0,text));
+}
+
+SparkStatus SparkDeviceMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
+{
+	SparkStatus status;
+	if ( memory != 0 )
+		*memory = 0u;
+	if ( memory == 0 || bytes == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_create_host",owner,0,"needs an output and a size"));
+	status = DeviceSharedReady("memory_create_host",owner);
+	if ( status == SPARK_STATUS_OK && (device_properties.properties & SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE) == 0u )
+		status = DeviceHostShareRefused("memory_create_host",owner);
+	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryCreateHost(memory,bytes,owner));
+}
+
 SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner)
 {
 	SparkStatus status;
@@ -720,10 +740,17 @@ SparkStatus SparkDeviceAddressRelease(SparkDeviceAddress address, uint64_t bytes
 SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access)
 {
 	const uint32_t device_access = SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE;
+	const uint32_t host_access = SPARK_DEVICE_ACCESS_HOST_READ | SPARK_DEVICE_ACCESS_HOST_WRITE;
 	SparkStatus status;
-	if ( address == 0u || bytes == 0u || memory == 0u || (access & SPARK_DEVICE_ACCESS_DEVICE_READ) == 0u || (access & ~device_access) != 0u )
+	if ( (access & SPARK_DEVICE_ACCESS_HOST_WRITE) != 0u && (access & SPARK_DEVICE_ACCESS_HOST_READ) == 0u )
+		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"host write access needs host read access"));
+	if ( address == 0u || bytes == 0u || memory == 0u || (access & ~(device_access | host_access)) != 0u ||
+		(access & (SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_HOST_READ)) == 0u ||
+		((access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u && (access & SPARK_DEVICE_ACCESS_DEVICE_READ) == 0u) )
 		return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"memory_map","",0,"needs a reserved range, a memory handle and device read or read-write access"));
 	status = DeviceSharedReady("memory_map","");
+	if ( status == SPARK_STATUS_OK && (access & host_access) != 0u && (device_properties.properties & SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE) == 0u )
+		status = DeviceHostShareRefused("memory_map","");
 	return(status != SPARK_STATUS_OK ? status : SparkDeviceBackendMemoryMap(address,bytes,memory,offset,access));
 }
 

@@ -1067,6 +1067,7 @@ typedef struct SparkWeightdIpcHoldResult
 {
     SparkWeightdIpcHeader header;
     uint64_t held_bytes;
+    uint64_t allocation_bytes;
     uint64_t generation;
     uint64_t load_ns;
     uint32_t status;
@@ -1076,7 +1077,7 @@ typedef struct SparkWeightdIpcHoldResult
 } SparkWeightdIpcHoldResult;
 
 #if !defined(__cplusplus)
-_Static_assert(sizeof(SparkWeightdIpcHold) == 1344u && sizeof(SparkWeightdIpcHoldResult) == 64u,"hold frames are fixed for ABI 17");
+_Static_assert(sizeof(SparkWeightdIpcHold) == 1344u && sizeof(SparkWeightdIpcHoldResult) == 72u,"hold frames are fixed for ABI 17");
 #endif
 
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
@@ -1505,6 +1506,7 @@ typedef struct SparkWeightdHoldResult
 {
     SparkStatus status;
     uint64_t held_bytes;
+    uint64_t allocation_bytes;
     uint64_t generation;
     uint64_t load_ns;
     uint32_t first_hold;
