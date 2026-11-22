@@ -842,7 +842,13 @@ SparkGpuError SparkGpuMemGetInfo(size_t *free_bytes, size_t *total_bytes)
 	GPU_TRY(GpuReady());
 	properties = SparkDeviceGetProperties();
 	if ( (properties->properties & SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY) == 0u )
-		GPU_REFUSE_IN("memory_info",SPARK_STATUS_UNSUPPORTED,"free memory on a discrete GPU needs the module's framebuffer report, not implemented yet");
+	{
+		GPU_TRY(SparkNvrmVideoMemoryInfo(&available,&total));
+		total = total < properties->memory_budget_bytes ? total : properties->memory_budget_bytes;
+		*total_bytes = (size_t)total;
+		*free_bytes = (size_t)(available < total ? available : total);
+		return(SPARK_GPU_SUCCESS);
+	}
 	if ( (file = fopen(GPU_MEMINFO_PATH,"r")) == 0 )
 		GPU_REFUSE_IN("memory_info",SPARK_STATUS_IO_ERROR,"cannot read " GPU_MEMINFO_PATH " for the unified GPU's free memory");
 	length = fread(text,1u,sizeof(text) - 1u,file);
