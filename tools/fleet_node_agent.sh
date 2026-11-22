@@ -541,7 +541,10 @@ compact_watch() {
     exec 8<"$COMPACT_STATE/window" || exit 1
     flock -s 8 || exit 1
     trap 'flock -u 8; exec 8<&-; sudo -n "$COMPACT_HELPER" restore' EXIT
-    sudo -n "$COMPACT_HELPER" raise || exit 1
+    if ! sudo -n "$COMPACT_HELPER" raise; then
+        : > "$rr/.compact-failed"
+        exit 1
+    fi
     : > "$rr/.compact-raised"
     echo "$(date +%T) compaction raised for $rr"
     while [ "$waited" -lt "$seconds" ]; do
@@ -564,12 +567,13 @@ compact_watch() {
 compact_open() {
     local name="$1" rr="$2" i
     [ -x "$COMPACT_HELPER" ] || return 0
-    rm -f "$rr/.compact-raised"
+    rm -f "$rr/.compact-raised" "$rr/.compact-failed"
     COMPACT_HELPER="$COMPACT_HELPER" COMPACT_STATE="$COMPACT_STATE" setsid bash -c \
         "$(declare -f compact_watch match_pids); compact_watch \"\$@\"" compact-watch "$rr" "$COMPACT_SECONDS" \
         > "$rr/compact.log" 2>&1 < /dev/null &
-    for i in $(seq 1 100); do
+    for i in $(seq 1 600); do
         [ -f "$rr/.compact-raised" ] && return 0
+        [ -f "$rr/.compact-failed" ] && break
         sleep 0.1
     done
     note_root "$name" failed-start "the compaction window did not open: $(tail -1 "$rr/compact.log" 2>/dev/null)"

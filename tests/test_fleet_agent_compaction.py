@@ -42,13 +42,14 @@ class CompactionWindowTest(unittest.TestCase):
         (self.state / "window").write_text("")
         helper = HELPER
         for real, fake in (("/run/sparkpipe-compact", self.state), ("/proc/sys/vm/compaction_proactiveness", self.base / "proactiveness"),
-                           ("/proc/sys/vm/min_free_kbytes", self.base / "reserve"), ("/proc/sys/vm/compact_memory", self.base / "compact")):
+                           ("/proc/sys/vm/min_free_kbytes", self.base / "reserve"), ("/proc/sys/vm/compact_memory", self.base / "compact"), ("/proc/buddyinfo", self.base / "buddyinfo")):
             helper = helper.replace(real, str(fake))
         helper = helper.replace("case \"${1:-}\" in", "echo \"$1\" >> \"" + str(self.base / "calls") + "\"\ncase \"${1:-}\" in", 1)
         write(self.base / "bin" / "sparkpipe-compact", helper, 0o755)
         write(self.base / "bin" / "sudo", SUDO, 0o755)
         (self.base / "proactiveness").write_text("20\n")
         (self.base / "reserve").write_text("45056\n")
+        (self.base / "buddyinfo").write_text("Node 0, zone   Normal  10 10 10 10 10 10 10 10 10 100 4\n")
         self.root = self.base / "root"
         write(self.root / "bin" / "sparkpipe_model_residentd", RESIDENTD, 0o755)
 

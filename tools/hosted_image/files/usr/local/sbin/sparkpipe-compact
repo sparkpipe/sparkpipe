@@ -6,6 +6,12 @@ saved="$state/boot"
 proactiveness=/proc/sys/vm/compaction_proactiveness
 reserve=/proc/sys/vm/min_free_kbytes
 compact=/proc/sys/vm/compact_memory
+buddyinfo=/proc/buddyinfo
+free_blocks() {
+	awk -v page="$(getconf PAGESIZE)" 'BEGIN { order = 0; while (page * 2 ^ order < 2097152) order++ }
+		/zone/ { if ($4 == "Movable") next; for (i = 5; i <= NF; i++) if (i - 5 >= order) total += $i * 2 ^ (i - 5 - order) }
+		END { printf "%d\n", total }' "$buddyinfo"
+}
 umask 022
 mkdir -p "$state"
 [ -e "$window" ] || : > "$window"
@@ -17,6 +23,18 @@ raise)
 	echo 90 > "$proactiveness"
 	echo 1048576 > "$reserve"
 	echo 1 > "$compact"
+	previous=$(free_blocks)
+	samples=0
+	steady=0
+	while [ "$samples" -lt 40 ]; do
+		sleep 0.5
+		samples=$((samples + 1))
+		blocks=$(free_blocks)
+		if [ "$blocks" -le $((previous + previous / 100)) ]; then steady=$((steady + 1)); else steady=0; fi
+		previous=$blocks
+		[ "$samples" -ge 6 ] && [ "$steady" -ge 4 ] && break
+	done
+	echo "sparkpipe-compact: raised; $blocks free 2 MiB blocks after $((samples / 2)) s"
 	;;
 restore)
 	[ -f "$saved" ] || exit 0

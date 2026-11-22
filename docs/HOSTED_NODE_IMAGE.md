@@ -135,8 +135,11 @@ while a model activates, when the large allocations happen:
 
 - [`sparkpipe-compact`](../tools/hosted_image/files/usr/local/sbin/sparkpipe-compact)
   `raise` records the boot values in `/run/sparkpipe-compact/boot`, sets
-  proactiveness 90 and `min_free_kbytes` 1 GiB, and writes `compact_memory`.
-  `restore` puts the recorded values back, but only when no activation holds
+  proactiveness 90 and `min_free_kbytes` 1 GiB, writes `compact_memory`, and
+  then waits until the free 2 MiB blocks stop growing (by under 1% over
+  2 s, after at least 3 s, at most 20 s), because the kernel's background
+  compaction makes most of them only after the raise. `restore` puts the
+  recorded values back, but only when no activation holds
   `/run/sparkpipe-compact/window` (each holds a shared lock on it), so
   activations that overlap share one window.
 - [`90-sparkpipe-compact`](../tools/hosted_image/files/etc/sudoers.d/90-sparkpipe-compact)
