@@ -7,6 +7,18 @@
 #include "sparkpipe/spark_clock.h"
 #include "runtime/device/nvrm/nvrm_wait.h"
 
+static uint64_t wait_stall_ns = SPARK_NVRM_WAIT_STALL_NS;
+
+uint64_t SparkNvrmWaitStallNs(void)
+{
+	return(__atomic_load_n(&wait_stall_ns,__ATOMIC_RELAXED));
+}
+
+void SparkNvrmWaitStallSet(uint64_t stall_ns)
+{
+	__atomic_store_n(&wait_stall_ns,stall_ns,__ATOMIC_RELAXED);
+}
+
 void SparkNvrmWaitBegin(SparkNvrmWait *wait)
 {
 	memset(wait,0,sizeof(*wait));
