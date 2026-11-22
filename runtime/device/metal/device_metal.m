@@ -1226,3 +1226,16 @@ void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 {
 	(void)program;
 }
+
+uint32_t SparkDeviceBackendTensorMapOnDevice(void)
+{
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	(void)requests;
+	(void)count;
+	(void)maps;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"tensor_map",owner,0,"the Metal backend has no tensor maps"));
+}

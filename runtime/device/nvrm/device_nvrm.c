@@ -222,6 +222,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
 		SPARK_DEVICE_PROPERTY_CLUSTERS | SPARK_DEVICE_PROPERTY_PROGRAMS | SPARK_DEVICE_PROPERTY_NO_PAGE_FALLBACK |
+		SPARK_DEVICE_PROPERTY_TENSOR_MAPS |
 		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
 }
@@ -1722,4 +1723,17 @@ void SparkDeviceBackendProgramRelease(SparkDeviceProgram *program)
 		NvrmImageFree((NvrmImage *)program->backend);
 	program->backend = 0;
 	program->compiled = 0u;
+}
+
+uint32_t SparkDeviceBackendTensorMapOnDevice(void)
+{
+	return(1u);
+}
+
+SparkStatus SparkDeviceBackendTensorMapEncode(const SparkDeviceTensorMapRequest *requests, uint32_t count, SparkDeviceTensorMap *maps, const char *owner)
+{
+	(void)requests;
+	(void)count;
+	(void)maps;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"tensor_map",owner,0,"the nvrm backend builds tensor maps on the device"));
 }

@@ -1299,6 +1299,91 @@ static void TestTransforms(void)
 	CHECK(SparkDeviceTransformApply(&negative,3u,&fits) == 0u && fits == 0u,"a negative intermediate does not fit");
 }
 
+static SparkDeviceTensorMapRequest TensorMapRequest(SparkDeviceAddress address)
+{
+	SparkDeviceTensorMapRequest request;
+	memset(&request,0,sizeof(request));
+	request.address = address;
+	request.rank = 3u;
+	request.swizzle_bytes = 128u;
+	request.dimension[0] = 256u;
+	request.dimension[1] = 24u;
+	request.dimension[2] = 2u;
+	request.stride_bytes[0] = 256u;
+	request.stride_bytes[1] = 256u * 24u;
+	request.box[0] = 128u;
+	request.box[1] = 16u;
+	request.box[2] = 1u;
+	request.element_stride[0] = request.element_stride[1] = request.element_stride[2] = 1u;
+	return(request);
+}
+
+static void TensorMapRefused(SparkDeviceTensorMapRequest request, const char *reason, const char *what)
+{
+	static SparkDeviceTensorMap map;
+	const SparkStatus status = SparkDeviceTensorMapEncode(&request,1u,&map,"contract tensor map");
+	CHECK(status == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,reason) != 0,what);
+}
+
+static void TestTensorMaps(void)
+{
+	static SparkDeviceTensorMap maps[3];
+	const uint32_t supported = (SparkDeviceGetProperties()->properties & SPARK_DEVICE_PROPERTY_TENSOR_MAPS) != 0u;
+	SparkDeviceTensorMapRequest requests[3],request;
+	SparkDeviceBuffer tensor;
+	SparkStatus status;
+	memset(&tensor,0,sizeof(tensor));
+	CHECK(SparkDeviceAllocate(&tensor,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,256u * 24u * 2u,"contract tensor") == SPARK_STATUS_OK,"allocate a tensor for maps");
+	requests[0] = TensorMapRequest(tensor.device != 0u ? tensor.device : 4096u);
+	requests[1] = requests[0];
+	requests[1].rank = 2u;
+	requests[1].swizzle_bytes = 64u;
+	requests[1].box[0] = 64u;
+	requests[2] = requests[0];
+	requests[2].swizzle_bytes = 0u;
+	requests[2].box[0] = 16u;
+	request = requests[0];
+	request.address += 8u;
+	TensorMapRefused(request,"16-byte aligned","a tensor map refuses an address off 16 bytes");
+	request = requests[0];
+	request.rank = 4u;
+	TensorMapRefused(request,"rank","a tensor map refuses a rank the engine never plans");
+	request = requests[0];
+	request.swizzle_bytes = 96u;
+	TensorMapRefused(request,"swizzle must be","a tensor map refuses a swizzle span other than 0, 32, 64 or 128 bytes");
+	request = requests[0];
+	request.dimension[1] = 0u;
+	TensorMapRefused(request,"every dimension","a tensor map refuses an empty dimension");
+	request = requests[0];
+	request.box[1] = 257u;
+	TensorMapRefused(request,"box edge","a tensor map refuses a box edge over 256 elements");
+	request = requests[0];
+	request.element_stride[2] = 9u;
+	TensorMapRefused(request,"element stride","a tensor map refuses an element stride over 8");
+	request = requests[2];
+	request.box[0] = 24u;
+	TensorMapRefused(request,"multiple of 16 bytes","a tensor map refuses a box whose inner edge is not whole 16-byte chunks");
+	request = requests[0];
+	request.swizzle_bytes = 64u;
+	TensorMapRefused(request,"swizzle span","a tensor map refuses a box wider than its swizzle span");
+	request = requests[0];
+	request.stride_bytes[0] = 264u;
+	TensorMapRefused(request,"multiple of 16 bytes below","a tensor map refuses a stride off 16 bytes");
+	request = requests[0];
+	request.stride_bytes[1] = 256u * 23u;
+	TensorMapRefused(request,"cover the dimensions","a tensor map refuses a stride that overlaps the dimension below it");
+	CHECK(SparkDeviceTensorMapEncode(requests,0u,maps,"contract tensor map") == SPARK_STATUS_INVALID_ARGUMENT,"a tensor map batch is never empty");
+	CHECK(SparkDeviceTensorMapEncode(requests,3u,(SparkDeviceTensorMap *)(void *)((uint8_t *)maps + 16u),"contract tensor map") ==
+		SPARK_STATUS_INVALID_ARGUMENT,"tensor maps are written only to 64-byte aligned room");
+	status = SparkDeviceTensorMapEncode(requests,3u,maps,"contract tensor map");
+	if ( supported != 0u )
+		CHECK(status == SPARK_STATUS_OK,"a device with tensor maps encodes a batch of rank 2 and 3 maps with each swizzle");
+	else
+		CHECK(status == SPARK_STATUS_UNSUPPORTED,"a device without tensor maps refuses to encode them");
+	if ( tensor.bytes != 0u )
+		CHECK(SparkDeviceFree(&tensor) == SPARK_STATUS_OK,"free the tensor");
+}
+
 static void TestLifecycle(void)
 {
 	SparkDeviceBuffer buffer;
@@ -1351,6 +1436,7 @@ int main(void)
 	TestPrograms(queue);
 	TestHostMemoryShare();
 	TestKernels(queue);
+	TestTensorMaps();
 	CHECK(SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK,"destroy the queue");
 	TestLifecycle();
 	if ( failures != 0 )
