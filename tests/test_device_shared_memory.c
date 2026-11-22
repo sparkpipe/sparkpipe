@@ -201,6 +201,32 @@ static void TestChunkedMapping(uint64_t granularity)
 		"release both handles, then one unmap covers both whole mappings");
 }
 
+static void TestPartlyMappedReservation(uint64_t granularity)
+{
+	const uint32_t access = SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE;
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceBuffer outside;
+	Shared shared,front;
+	int mapped;
+	CHECK(SparkDeviceMemoryCreate(&memory,granularity,"growing pool") == SPARK_STATUS_OK && Reserve(&shared,4u * granularity,"growing pool"),
+		"create one chunk and a reservation four chunks long");
+	mapped = SparkDeviceMemoryMap(shared.address,granularity,memory,0u,access) == SPARK_STATUS_OK;
+	CHECK(mapped,"map the chunk at the front of the reservation");
+	if ( strcmp(SparkDeviceGetProperties()->backend,"cuda") != 0 )
+		CHECK(SparkDeviceAdopt(&outside,shared.address,0,5u * granularity,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,"growing pool") == SPARK_STATUS_UNSUPPORTED,
+			"a backend that tracks its reservations refuses a range that runs past one; CUDA's adopt takes any device range");
+	CHECK(Adopt(&shared,"growing pool"),"a range inside one reservation is adopted whole while only its front is mapped, as a pool that maps chunks as it grows");
+	if ( mapped != 0 && shared.adopted != 0u )
+	{
+		front = shared;
+		front.bytes = granularity;
+		CHECK(Fill(&front,5u) && Matches(&front,5u),"copies through the adopted range reach its mapped front");
+	}
+	CHECK(SparkDeviceFree(&shared.buffer) == SPARK_STATUS_OK && (mapped == 0 || SparkDeviceMemoryUnmap(shared.address,granularity) == SPARK_STATUS_OK) &&
+		SparkDeviceAddressRelease(shared.address,shared.bytes) == SPARK_STATUS_OK && SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK,
+		"release the view, the mapping, the reservation and the memory");
+}
+
 static void *ThreadBind(void *argument)
 {
 	const SparkDeviceInstance instance = *(const SparkDeviceInstance *)argument;
@@ -235,6 +261,7 @@ int main(int argc, char **argv)
 		TestArgumentRefusals(minimum);
 		TestExportImport(argv[0],4u * recommended);
 		TestChunkedMapping(recommended);
+		TestPartlyMappedReservation(recommended);
 	}
 	TestThreadBinding();
 	if ( SparkDeviceGetProperties() != 0 )

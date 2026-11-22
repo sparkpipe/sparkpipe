@@ -23,10 +23,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_]{0,63}$')
-POINTERS = ('const uint16_t *', 'uint16_t *', 'const float *', 'float *', 'const uint32_t *', 'uint32_t *')
+POINTERS = ('const uint8_t *', 'uint8_t *', 'const uint16_t *', 'uint16_t *', 'const float *', 'float *', 'const uint32_t *', 'uint32_t *')
 SCALARS = ('uint32_t', 'int32_t', 'uint64_t', 'float')
 FILLS = ('bf16', 'f32', 'zero', 'index')
-BUMPS = {'uint16_t': '0x3f80u', 'float': '1.5f', 'uint32_t': '1u'}
+BUMPS = {'uint8_t': '1u', 'uint16_t': '0x3f80u', 'float': '1.5f', 'uint32_t': '1u'}
 SHARED_ROOTS = ('include/', 'runtime/', 'inference/', 'node/', 'cache/', 'serving/', 'src/', 'common/', 'model-families/common/')
 OPS = {
     'hc_sinkhorn_partials': {
@@ -45,6 +45,14 @@ OPS = {
         'call': ('LmHcSinkhornRow<{streams_count}>({partials}, {scale}, {base}, {pre}, {post}, {comb}, {width}, {rms_epsilon}, {iterations}, '
                  '{epsilon}, row, threadIdx.x, {shared});'),
         'lanes': 32,
+    },
+    'topk_route_row': {
+        'body': 'LmTopkWarpsRow',
+        'source': 'inference/kernels/topk_warp.cuh',
+        'replaces': 'LmTopkWarpKernel and LmTopkWarpsKernel: one row\'s top-k routes and weights, on LM_TOPK_WARPS warps',
+        'parameters': ('k', 'renormalise', 'transform', 'scores', 'n', 'indices', 'values', 'bias', 'logits', 'scale', 'fault'),
+        'call': 'LmTopkWarpsRow<{k}, {renormalise}, {transform}>({scores}, {n}, {indices}, {values}, {bias}, {logits}, {scale}, {fault}, row);',
+        'lanes': 0,
     },
     'hc_collapse_norm': {
         'body': 'LmHcCollapseNormRow',
@@ -124,8 +132,9 @@ def check_argument(kernel, argument, names):
     names.add(argument['name'])
     require(argument.get('type') in POINTERS + SCALARS, f'{kernel["name"]}: argument {argument["name"]} has an unknown type')
     if not pointer(argument):
-        require(isinstance(argument.get('value'), str) and 'elements' not in argument and 'fill' not in argument,
-                f'{kernel["name"]}: scalar argument {argument["name"]} takes a value expression only')
+        require((isinstance(argument.get('value'), str)) != (isinstance(argument.get('derived'), str)) and 'elements' not in argument and
+                'fill' not in argument,
+                f'{kernel["name"]}: scalar argument {argument["name"]} takes a value expression only, or a launch-derived one')
         return
     require(argument.get('fill') in FILLS, f'{kernel["name"]}: argument {argument["name"]} fill is one of {FILLS}')
     require(isinstance(argument.get('elements'), str), f'{kernel["name"]}: argument {argument["name"]} needs an element count expression')
@@ -133,9 +142,9 @@ def check_argument(kernel, argument, names):
             f'{kernel["name"]}: argument {argument["name"]} is filled from an expression of its index')
     require(isinstance(argument.get('partial', False), bool), f'{kernel["name"]}: partial of {argument["name"]} is true or false')
     regions = argument.get('row_zero', [])
-    require(isinstance(regions, list) and all(isinstance(region, list) and len(region) == 2 and all(isinstance(item, str) for item in region)
-                                              for region in regions),
-            f'{kernel["name"]}: row_zero of {argument["name"]} lists [offset, count] expressions')
+    require(regions == 'none' or (isinstance(regions, list) and all(isinstance(region, list) and len(region) == 2 and
+                                                                    all(isinstance(item, str) for item in region) for region in regions)),
+            f'{kernel["name"]}: row_zero of {argument["name"]} lists [offset, count] expressions, or is none for an output of the whole launch')
 
 
 def load(path):
@@ -177,10 +186,12 @@ def load(path):
             check_op(ops, kernel, role, arguments, False)
             if 'tail' in role:
                 require(counters is not None, f'{kernel["name"]}: a role with a tail needs the counters argument')
-                require(role['tail'].get('scope') == 'row', f'{kernel["name"]}: a tail runs for its row')
+                require(role['tail'].get('scope') in ('row', 'launch'), f'{kernel["name"]}: a tail runs for its row or once for the launch')
                 check_op(ops, kernel, role['tail'], arguments, True)
         require(isinstance(kernel.get('perturb'), str) and kernel['perturb'] in arguments and pointer(arguments[kernel['perturb']]),
                 f'{kernel["name"]}: perturb names an input argument')
+        require('bump' not in kernel or (isinstance(kernel['bump'], str) and re.fullmatch(r'-?[0-9][0-9.e+-]*[uf]?', kernel['bump']) is not None),
+                f'{kernel["name"]}: bump is a numeric literal')
         require(isinstance(kernel.get('reference'), list) and kernel['reference'], f'{kernel["name"]}: the reference calls are listed')
         require(isinstance(kernel.get('outputs'), list) and kernel['outputs'] and
                 all(output in arguments and writable(arguments[output]) for output in kernel['outputs']),
@@ -247,7 +258,10 @@ def emit_header(plan):
             if tail:
                 lanes = ops[tail['op']]['lanes']
                 guard = f' && threadIdx.x < {lanes}u' if lanes else ''
-                lines.append(f'\t\tif ( LmFusedLastArrival(arguments.counters + row, {per_row}){guard} )')
+                if tail['scope'] == 'row':
+                    lines.append(f'\t\tif ( LmFusedLastArrival(arguments.counters + row, {per_row}){guard} )')
+                else:
+                    lines.append(f'\t\tif ( LmFusedLastArrival(arguments.counters, rows * ({per_row})){guard} )')
                 lines.append('\t\t\t' + tail_call)
             lines.append('\t\treturn;')
             lines.append('\t}')
@@ -260,7 +274,11 @@ def emit_header(plan):
         lines.append('{')
         lines.append(f'\tif ( arguments == 0 || rows == 0u || rows > {kernel["rows_constant"]} )')
         lines.append('\t\treturn LM_LAUNCH_ERR_SHAPE;')
-        lines.append(f'\tLM_LAUNCH(({name}), rows * ({total}), {threads}u, {kernel["shared_bytes"]}, stream, *arguments, rows);')
+        derived = [argument for argument in kernel['arguments'] if 'derived' in argument]
+        if derived:
+            lines.append(f'\t{kernel["arguments_type"]} launch = *arguments;')
+            lines += [f'\tlaunch.{argument["name"]} = ({argument["type"]})({argument["derived"]});' for argument in derived]
+        lines.append(f'\tLM_LAUNCH(({name}), rows * ({total}), {threads}u, {kernel["shared_bytes"]}, stream, {"launch" if derived else "*arguments"}, rows);')
         lines.append('\treturn SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH;')
         lines.append('}')
         lines.append('')
@@ -291,7 +309,7 @@ def emit_buffers(kernel):
     lines = [f'static void {name}Buffers({kernel["arguments_type"]} *set, uint64_t seed, uint32_t edges)', '{', f'\tconst uint32_t rows = {kernel["rows_max"]}u;']
     for index, argument in enumerate(args):
         if not pointer(argument):
-            lines.append(f'\tset->{argument["name"]} = ({argument["type"]})({argument["value"]});')
+            lines.append(f'\tset->{argument["name"]} = ({argument["type"]})({argument.get("value", "0")});')
             continue
         base = base_type(argument)
         lines += ['\t{', f'\t\tconst uint64_t count = (uint64_t)({argument["elements"]}), bytes = count * sizeof({base});', '\t\tvoid *pointer = 0;',
@@ -352,6 +370,8 @@ def emit_compare(kernel):
     for output in kernel['outputs']:
         argument = arguments[output]
         base = base_type(argument)
+        if argument.get('row_zero') == 'none':
+            continue
         for region in argument.get('row_zero', []) or [None]:
             lines += ['\t{', '\t\tuint64_t offset[2], count[2];']
             if region is None:
@@ -401,7 +421,7 @@ def emit_exact(kernel):
               f'\tFUSED_REQUIRE({launcher}(&reference, 1u, stream) == LM_LAUNCH_OK);', f'\tFUSED_REQUIRE({launcher}(&fused, {rows_max}u, stream) == LM_LAUNCH_OK);',
               '\tFUSED_CUDA(cudaStreamSynchronize(stream));', f'\tFUSED_REQUIRE({name}RowZero(&reference, 1u, &fused, {rows_max}u) == 0u);', '\t++checks;']
     lines += [f'\t{name}Copy(&reference, &origin);', f'\t{name}Copy(&fused, &origin);', '\t{',
-              f'\t\tconst {base_type(perturbed)} bump = {BUMPS[base_type(perturbed)]};',
+              f'\t\tconst {base_type(perturbed)} bump = {kernel.get("bump", BUMPS[base_type(perturbed)])};',
               f'\t\tFUSED_CUDA(cudaMemcpy((void *)fused.{kernel["perturb"]}, &bump, sizeof(bump), cudaMemcpyHostToDevice));',
               '\t\tFUSED_CUDA(cudaDeviceSynchronize());', '\t}', f'\tFUSED_REQUIRE({launcher}(&reference, {rows_max}u, stream) == LM_LAUNCH_OK);',
               f'\tFUSED_REQUIRE({launcher}(&fused, {rows_max}u, stream) == LM_LAUNCH_OK);', '\tFUSED_CUDA(cudaStreamSynchronize(stream));',
@@ -445,11 +465,12 @@ def emit_manifest(plan, plan_text):
             entry = {'op': role['op'], 'body': ops[role['op']]['body'], 'replaces': ops[role['op']]['replaces'], 'blocks_per_row': role['blocks_per_row']}
             if 'tail' in role:
                 entry['tail'] = {'op': role['tail']['op'], 'body': ops[role['tail']['op']]['body'], 'replaces': ops[role['tail']['op']]['replaces'],
-                                 'sync': 'last arrival of the row'}
+                                 'sync': 'last arrival of the row' if role['tail']['scope'] == 'row' else 'last arrival of the launch'}
             roles.append(entry)
+        patchable = {'rows': 'parameter 1, and the grid width rows * (sum of blocks per row)'}
+        patchable.update({argument['name']: argument['derived'] for argument in kernel['arguments'] if 'derived' in argument})
         manifest['kernels'].append({'name': kernel['name'], 'launcher': kernel['launcher'], 'rows': [1, kernel['rows_max']], 'threads': kernel['threads'],
-                                    'replaces': kernel['replaces'], 'roles': roles, 'outputs': kernel['outputs'],
-                                    'patchable': {'rows': 'parameter 1, and the grid width rows * (sum of blocks per row)'}})
+                                    'replaces': kernel['replaces'], 'roles': roles, 'outputs': kernel['outputs'], 'patchable': patchable})
     manifest['op_sources'] = sorted({ops[op]['source'] for op in used})
     return json.dumps(manifest, indent=1, sort_keys=True) + '\n'
 

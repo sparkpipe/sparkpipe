@@ -21,9 +21,10 @@ if [[ ! -f /usr/include/infiniband/verbs.h ]]; then
 	echo "CUDA gate requires libibverbs development headers" >&2
 	exit 2
 fi
+release_toolkit="13.0"
 nvcc_version="$(${nvcc_binary} --version)"
-if ! grep -Eq 'release 13\.' <<<"${nvcc_version}"; then
-	echo "CUDA gate requires CUDA 13.x" >&2
+if ! grep -Fq "release ${release_toolkit}," <<<"${nvcc_version}"; then
+	echo "CUDA gate requires CUDA ${release_toolkit}, the release build hosts' toolkit, so that the spill audit checks what ships" >&2
 	printf '%s\n' "${nvcc_version}" >&2
 	exit 2
 fi
@@ -142,6 +143,16 @@ if ! make -C "${repository_root}" -j"$(nproc)" "${adapters[@]}" "${cuda_programs
 	echo "the serving adapters or CUDA programs do not build for sm_121a; see logs/adapters.txt" >&2
 	exit 5
 fi
+read -r -a stage_runner_binaries <<<"$(make_variable STAGE_RUNNER_BINARIES)"
+if ! make -C "${repository_root}" -j"$(nproc)" "${stage_runner_binaries[@]}" \
+	NVCC="${nvcc_binary}" \
+	CUDA_ARCH=sm_121a \
+	CUDA_HOME="${cuda_home}" \
+	> "${output_directory}/logs/stage_runner_binaries.txt" 2>&1; then
+	grep -E 'undefined reference|error' "${output_directory}/logs/stage_runner_binaries.txt" | head -n 20 >&2 || true
+	echo "a stage-runner binary in STAGE_RUNNER_BINARIES does not build or link for sm_121a; see logs/stage_runner_binaries.txt" >&2
+	exit 11
+fi
 for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	if [[ ! -f "${repository_root}/${artifact}" ]]; then
 		echo "build produced no ${artifact}" >&2
@@ -155,6 +166,17 @@ for artifact in "${adapters[@]}" build/k3_tp_context_cuda; do
 	printf '%s\n' "${elf_listing}" > "${output_directory}/logs/$(basename "${artifact}").elf.txt"
 done
 printf '%s\n' "${adapters[@]}" > "${output_directory}/adapters.txt"
+audited=()
+for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
+	if [[ -f "${repository_root}/${artifact}" ]]; then
+		audited+=("${repository_root}/${artifact}")
+	fi
+done
+if ! python3 -I "${repository_root}/tools/dependent_wait_audit.py" "${audited[@]}" > "${output_directory}/logs/dependent_wait_audit.txt" 2>&1; then
+	grep -E '^(REFUSED|dependent)' "${output_directory}/logs/dependent_wait_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/dependent_wait_audit.txt" >&2
+	echo "a kernel stores to global memory before it waits for the kernel it depends on; see logs/dependent_wait_audit.txt" >&2
+	exit 9
+fi
 
 if ! make -C "${repository_root}" test-nvrm-launch \
 	NVCC="${nvcc_binary}" \
@@ -183,6 +205,19 @@ if ! make -C "${repository_root}" -j"$(nproc)" tools hosted-release-gate \
 fi
 python3 "${repository_root}/tools/hosted_release_gate.py" findings "${hosted_release_root}" > "${output_directory}/hosted_release_findings.json"
 grep -E '^hosted-release-gate' "${output_directory}/logs/hosted_release_gate.txt"
+
+spill_audited=()
+for artifact in "${adapters[@]}" "${cuda_programs[@]}"; do
+	if [[ -f "${repository_root}/${artifact}" ]]; then
+		spill_audited+=("${repository_root}/${artifact}")
+	fi
+done
+if ! python3 -I "${repository_root}/tools/kernel_spill_audit.py" --kernel LmSkinnyGroupedKernel "${spill_audited[@]}" \
+	> "${output_directory}/logs/kernel_spill_audit.txt" 2>&1; then
+	grep -E '^(REFUSED|kernel)' "${output_directory}/logs/kernel_spill_audit.txt" >&2 || tail -n 20 "${output_directory}/logs/kernel_spill_audit.txt" >&2
+	echo "a grouped expert GEMV spills registers to local memory; see logs/kernel_spill_audit.txt" >&2
+	exit 10
+fi
 
 staged_roots="$(mktemp -d)"
 trap 'rm -rf "${staged_roots}"' EXIT

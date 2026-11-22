@@ -1,0 +1,6 @@
+#ifndef SDK_CL9010_CALLBACK_H
+#define SDK_CL9010_CALLBACK_H
+
+typedef void (*OSVBLANKCALLBACKPROC)(NvP64 pParm1, NvP64 pParm2);
+
+#endif
