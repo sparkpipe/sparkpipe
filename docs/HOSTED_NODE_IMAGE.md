@@ -103,6 +103,10 @@ above that the image's own `/etc/passwd` and `/etc/group` define
 the image does not define, still fails the build, the disk install and the
 dry run.
 
+`psmisc` (for `fuser`) and `lsof` are there so that a disk install from the
+[in-memory copy](#first-boot-and-bring-up) can show that the target disk is
+not open, next to `findmnt` and `losetup`.
+
 ## GB10 settings
 
 | File | Setting |
@@ -217,8 +221,12 @@ runs
 [`gpu-device-nodes`](../tools/hosted_image/files/usr/lib/sparkpipe/gpu-device-nodes)
 when `nvidia` or `nvidia_uvm` loads and when a GPU binds the driver. It
 creates `/dev/nvidiactl`, one `/dev/nvidiaN` per listed GPU and
-`/dev/nvidia-uvm`, mode 0666. It fails when the control device is
-registered and no GPU is listed, or a GPU has no minor.
+`/dev/nvidia-uvm`, mode 0666. It fails when a GPU has no minor, or when the
+control device is registered and no GPU is listed, except on the events
+that can come before the GPU is listed: the `nvidia` module's add event,
+which the kernel sends before the module's init probes the GPU, and a GPU's
+bind event. On those it makes the control node and succeeds, and
+`nvidia_uvm`'s add event, which comes after, makes the GPU's node or fails.
 
 ## Node baseline
 
@@ -293,13 +301,18 @@ The initramfs mounts the file system named by `root=` read-only, copies the
 `loop=` file into a tmpfs, unmounts that file system and mounts the copy as
 `/`. Nothing on the disk is then mounted, open or mapped, so a
 [disk install](#disk-install) can run from the copy against that same disk.
+The initramfs also empties the copy's `/etc/fstab`: systemd takes the root
+from the kernel command line and mounts nothing else, so a disk that carries
+an installed image's `SPARKROOT` and `SPARKESP` labels stays unmounted, as
+a rescue boot after an install needs.
 The copy takes as much memory as the file's size, and changes made while it
 runs are lost at the next boot.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
 does not stop the boot); the [disk install](#disk-install) creates both. The
-hostname is `sparkpipe-node` until bring-up.
+hostname is `sparkpipe-node` until bring-up. `/etc/default/locale` sets
+`LANG=C.UTF-8`, so every login and `sudo` session finds a locale.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
 identity and keys, then `apply`, reboot and `audit`. A node whose disk install
