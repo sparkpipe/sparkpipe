@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_weightd_lazy_pack.h"
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/norm.cuh"
+#include "runtime/launch.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -269,7 +270,7 @@ static SparkStatus K31Scratch(K31State *state)
 {
 	int multiprocessors = 0;
 	if ( SparkGpuStreamCreateWithFlags(&state->stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
-		cudaDeviceGetAttribute(&multiprocessors, cudaDevAttrMultiProcessorCount, 0) != cudaSuccess ||
+		SparkGpuDeviceGetAttribute(&multiprocessors, SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT, 0) != SPARK_GPU_SUCCESS ||
 		SparkGpuMallocHost((void **)&state->host_taps, (size_t)K31_INGEST_ROWS * K31_TAP_WIDTH * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMallocHost((void **)&state->host_positions, (size_t)K31_INGEST_ROWS * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc((void **)&state->taps, (size_t)K31_INGEST_ROWS * K31_TAP_WIDTH * sizeof(uint16_t)) != SPARK_GPU_SUCCESS ||
@@ -373,7 +374,7 @@ static SparkStatus K31WriteRows(K31State *state, K31Sequence *sequence, uint64_t
 	if ( LmDenseRows<LmBf16Format>(state->context_proj, LmScaleTensorNone(), state->taps, state->features_raw, (float *)0, rows, K31_TAP_WIDTH,
 		K31_HIDDEN, 0u, state->multiprocessors, state->stream) != LM_LAUNCH_OK )
 		return SPARK_STATUS_INTERNAL_ERROR;
-	K31RmsRowsKernel<<<rows, K31_THREADS, 0, state->stream>>>(state->features_raw, state->context_norm, state->features, K31_HIDDEN, state->epsilon);
+	LM_LAUNCH((K31RmsRowsKernel), rows, K31_THREADS, 0, state->stream, state->features_raw, state->context_norm, state->features, K31_HIDDEN, state->epsilon);
 	if ( SparkGpuMalloc((void **)&device_rows, sizeof(host_rows)) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for ( uint32_t layer = 0u; layer < K31_LAYERS && status == SPARK_STATUS_OK; layer++ )
@@ -385,7 +386,7 @@ static SparkStatus K31WriteRows(K31State *state, K31Sequence *sequence, uint64_t
 			SparkGpuMemcpyAsync(device_rows, host_rows, (size_t)rows * sizeof(uint16_t *), SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_INTERNAL_ERROR;
 		if ( status == SPARK_STATUS_OK )
-			K31LatentRowsKernel<<<rows, K31_THREADS, 0, state->stream>>>(state->latent_raw, state->layers[layer].kv_a_norm, state->rope_inverse,
+			LM_LAUNCH((K31LatentRowsKernel), rows, K31_THREADS, 0, state->stream, state->latent_raw, state->layers[layer].kv_a_norm, state->rope_inverse,
 				state->rope_gain, state->positions, device_rows, state->epsilon);
 		if ( status == SPARK_STATUS_OK && SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS )
 			status = SPARK_STATUS_IO_ERROR;
