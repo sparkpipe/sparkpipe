@@ -6,8 +6,9 @@ window keys before updating the online softmax; every record it writes must be t
 the key-by-key fold, for decode rows, verify frames, prefill waves, local-head landings, early
 positions and partial records. Both folds take the publisher's flash form, as DeepSeek's
 sparse_attn does: the values are multiplied by each weight exp(s - m) rounded to BF16, while the
-running sum adds the FP32 weight. On a rank that keeps the whole window, a one-row step whose heads
-are spread over the ranks folds in an eight-block cluster a head: each block scores sixteen of the window's keys with the same
+running sum adds the FP32 weight. On a rank that keeps the whole window, a one-row step folds in an
+eight-block cluster a head, whether its heads are spread over the ranks (TP16) or are the rank's own 16 (TP4, where
+longer steps keep the one-block fold): each block scores sixteen of the window's keys with the same
 per-key reduction, the blocks share the scores, and each folds its own 64 elements of the latent in
 key order; those records must be the same bits too. Perturbing one key must change the result. A wave of more than 16
 rows on a rank that keeps the whole window attends its window and its selected compressed rows in

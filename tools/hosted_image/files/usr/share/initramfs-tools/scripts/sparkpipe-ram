@@ -1,0 +1,16 @@
+. /scripts/local
+
+mountroot()
+{
+	[ -n "${ROOT}" ] && [ -n "${LOOP}" ] || panic "sparkpipe-ram needs root= naming the file system that holds the image file and loop= naming the file"
+	local_device_setup "${ROOT}" "image file system"
+	ROOT="${DEV}"
+	mkdir -p /host /run/sparkpipe-ram
+	mount -r -t "$(get_fstype "${ROOT}")" "${ROOT}" /host || panic "cannot mount ${ROOT} read-only"
+	[ -f "/host/${LOOP#/}" ] || panic "/host/${LOOP#/} does not exist"
+	mount -t tmpfs -o mode=0700 sparkpipe-ram /run/sparkpipe-ram || panic "cannot mount a tmpfs for the image"
+	cp "/host/${LOOP#/}" /run/sparkpipe-ram/root.img || panic "cannot copy /host/${LOOP#/} into memory"
+	umount /host || panic "cannot unmount ${ROOT}"
+	modprobe loop
+	mount -w -o loop -t "${LOOPFSTYPE:-ext4}" /run/sparkpipe-ram/root.img "${rootmnt?}" || panic "cannot mount the copy of ${LOOP} from memory"
+}

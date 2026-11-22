@@ -167,6 +167,7 @@ void SparkDeviceBackendRelease(SparkDeviceAllocation *allocation);
 
 SparkStatus SparkDeviceBackendMemoryGranularity(uint32_t granularity, uint64_t *bytes);
 SparkStatus SparkDeviceBackendMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceBackendMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceBackendMemoryRelease(SparkDeviceMemoryHandle memory);
 SparkStatus SparkDeviceBackendMemoryExport(SparkDeviceMemoryHandle memory, int *fd);
 SparkStatus SparkDeviceBackendMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner);

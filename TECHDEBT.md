@@ -1352,6 +1352,12 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
   weightd on the hub come next; K3's DFlash2 drafter retires with its lane
   (#1910).
+- weightd's held packs bind drafters on a device without unified memory
+  through exported host memory (`SparkDeviceMemoryCreateHost`). The CUDA
+  backend has it; nvrm's, a system-memory object exported through the NV0000
+  path, is the runtime track's next item and builds on 64 KiB pages for
+  objects from 4 GiB (#2084). Until then a held bind on nvrm is refused. A
+  held pack is released only when weightd exits.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
@@ -2014,9 +2020,31 @@ and the multidev docs on 2026-09-28. Line numbers are in
   kernels; command lists replacing graphs; memory shared with weightd;
   TMA descriptors; fault reports (a hung queue is waited on forever).
   Host-backed memory registers 4 KiB pages and reads 18% slower than
-  device memory. Production modules call the CUDA runtime directly
+  device memory. On the hub's RTX 5090 the backend runs the whole GPU gate
+  with device-private and shared memory in video memory, but host-pinned
+  and shared-coherent memory are still host memory in 4 KiB pages: the
+  copy engine moves 22.6 GB/s from video memory into it against 42.2 GB/s
+  into system memory in 2 MiB pages (the link's floor is 63.0 GB/s). A
+  CPU-cached, snooped system memory kind in 2 MiB pages for those spaces
+  is still to measure there. Production modules call the CUDA runtime directly
   (above), so even a complete backend serves nothing until they move
   behind the device layer or a GPU API of our own.
+- nvrm stream priorities. The nvrm GPU front reports one stream priority:
+  `SparkGpuDeviceGetStreamPriorityRange` answers 0 to 0, as CUDA does for a
+  context without priorities, and refuses any other priority. So the
+  residentd's execution stream and the stage runner's lanes run at the
+  priority of every other stream. Every queue's compute channel sits in one
+  channel group, which the GPU schedules as a whole.
+  - Real priorities would give the prioritized queues a channel group of
+    their own at a higher interleave level and timeslice, through the open
+    module's channel-group controls in `ctrl/ctrla06c.h` (open-gpu-kernel-modules
+    580.178.04): `NVA06C_CTRL_CMD_SET_INTERLEAVE_LEVEL` (`NVA06C_CTRL_INTERLEAVE_LEVEL_LOW`,
+    `_MEDIUM`, `_HIGH`) and `NVA06C_CTRL_CMD_SET_TIMESLICE` (`timesliceUs`).
+  - Whether work in two channel groups still overlaps on the compute engine,
+    or the groups take turns, is not known; the measurement must show it.
+  - Proof: at M8, decode step time on nvrm under mixed prefill and decode,
+    with the decode queues in a group of their own against today's single
+    group. If priority matters there, it becomes an M8 item.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,

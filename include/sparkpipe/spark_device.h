@@ -34,6 +34,7 @@ typedef enum SparkDeviceSpace
 #define SPARK_DEVICE_PROPERTY_PROGRAMS 16u
 #define SPARK_DEVICE_PROPERTY_CLUSTERS 32u
 #define SPARK_DEVICE_PROPERTY_TENSOR_MAPS 64u
+#define SPARK_DEVICE_PROPERTY_HOST_MEMORY_SHARE 128u
 
 #define SPARK_DEVICE_WAIT_FOREVER UINT64_MAX
 
@@ -228,6 +229,7 @@ uint32_t SparkDeviceSegmented(SparkDeviceRange range);
 
 SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity, uint64_t *bytes);
 SparkStatus SparkDeviceMemoryCreate(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
+SparkStatus SparkDeviceMemoryCreateHost(SparkDeviceMemoryHandle *memory, uint64_t bytes, const char *owner);
 SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory);
 SparkStatus SparkDeviceMemoryExport(SparkDeviceMemoryHandle memory, int *fd);
 SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory, int fd, const char *owner);

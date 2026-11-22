@@ -250,8 +250,56 @@ class StaticFilesTest(unittest.TestCase):
         self.assertFalse([token for token in tokens if token.startswith(("console=", "ip=", "fsck."))])
 
 
+class RamRootTest(unittest.TestCase):
+    SCRIPT = IMAGE / "files" / "usr" / "share" / "initramfs-tools" / "scripts" / "sparkpipe-ram"
+
+    def mountroot(self, root="UUID=host", loop="/home/node/rescue/SPARKROOT.ext4", fail=""):
+        stubs = """
+calls=""
+call() { calls="$calls|$*"; }
+local_device_setup() { call setup "$1"; DEV=/dev/nvme0n1p2; }
+get_fstype() { echo ext4; }
+mkdir() { call mkdir "$@"; }
+mount() { call mount "$@"; [ "$FAIL" != mount ] || return 1; }
+cp() { call cp "$@"; [ "$FAIL" != cp ] || return 1; }
+umount() { call umount "$@"; }
+modprobe() { call modprobe "$@"; }
+panic() { call panic "$*"; printf '%s\\n' "$calls"; exit 3; }
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            host = Path(directory, "host")
+            if loop:
+                (host / loop.lstrip("/")).parent.mkdir(parents=True)
+                (host / loop.lstrip("/")).write_text("image")
+            script = self.SCRIPT.read_text().replace(". /scripts/local\n", "").replace("/host", str(host))
+            program = stubs + script + '\nrootmnt=/root\nmountroot\nprintf "%s\\n" "$calls"\n'
+            environment = dict(os.environ, ROOT=root, LOOP=loop, LOOPFSTYPE="ext4", FAIL=fail)
+            result = subprocess.run(["sh", "-c", program], capture_output=True, text=True, env=environment)
+            return subprocess.CompletedProcess(result.args, result.returncode, result.stdout.replace(str(host), "/host"), result.stderr)
+
+    def test_the_image_copy_runs_from_memory_and_the_disk_is_unmounted_before_the_root_mounts(self):
+        self.assertTrue(self.SCRIPT.read_text().startswith(". /scripts/local\n"))
+        result = self.mountroot()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = result.stdout.strip().split("|")[1:]
+        self.assertEqual(calls, ["setup UUID=host", "mkdir -p /host /run/sparkpipe-ram", "mount -r -t ext4 /dev/nvme0n1p2 /host",
+                                 "mount -t tmpfs -o mode=0700 sparkpipe-ram /run/sparkpipe-ram",
+                                 "cp /host/home/node/rescue/SPARKROOT.ext4 /run/sparkpipe-ram/root.img", "umount /host", "modprobe loop",
+                                 "mount -w -o loop -t ext4 /run/sparkpipe-ram/root.img /root"])
+
+    def test_a_missing_input_or_a_failed_copy_stops_before_the_root_is_mounted(self):
+        result = self.mountroot(loop="")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic sparkpipe-ram needs root=", result.stdout)
+        result = self.mountroot(fail="cp")
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("panic cannot copy", result.stdout)
+        self.assertNotIn("-o loop", result.stdout)
+
+
 class SelfUpdateTest(unittest.TestCase):
-    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service")
+    UNITS = ("apt-daily.timer", "apt-daily.service", "apt-daily-upgrade.timer", "apt-daily-upgrade.service", "motd-news.timer", "motd-news.service",
+             "podman-auto-update.timer", "podman-auto-update.service", "podman.socket", "podman.service")
 
     def test_the_image_masks_every_update_and_news_unit_and_carries_no_unattended_upgrades(self):
         self.assertEqual((IMAGE / "masked-units.txt").read_text().split(), list(self.UNITS))
@@ -266,8 +314,9 @@ class SelfUpdateTest(unittest.TestCase):
             units.mkdir(parents=True)
             (root / "etc" / "systemd" / "system").mkdir(parents=True)
             for unit in self.UNITS:
-                kind = "Timer" if unit.endswith(".timer") else "Service"
-                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + ("OnCalendar=daily\n[Install]\nWantedBy=timers.target\n" if kind == "Timer" else "ExecStart=/bin/true\n"))
+                kind = {"timer": "Timer", "socket": "Socket"}.get(unit.rsplit(".", 1)[1], "Service")
+                body = {"Timer": "OnCalendar=daily\n[Install]\nWantedBy=timers.target\n", "Socket": "ListenStream=/run/test.sock\n[Install]\nWantedBy=sockets.target\n"}
+                (units / unit).write_text(f"[Unit]\nDescription={unit}\n[{kind}]\n" + body.get(kind, "ExecStart=/bin/true\n"))
             completed = subprocess.run(["bash", str(IMAGE / "mask_units.sh"), str(root)], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             for unit in self.UNITS:
@@ -284,11 +333,30 @@ class OwnershipTest(unittest.TestCase):
         self.assertIn('install_tree "$out/inputs/release-root" "$root/$RELEASE_ROOT_PATH"', self.HOOK)
 
     def test_the_hook_fails_on_any_build_user_ownership_and_on_a_root_that_is_not_root_owned_0755(self):
-        self.assertIn("-uid +999 -a ! -uid 65534", self.HOOK)
-        self.assertIn("-gid +999 -a ! -gid 65534", self.HOOK)
+        check = 'owned="$(foreign_owner "$root" "$root")"'
+        self.assertIn(check, self.HOOK)
         self.assertIn('= "0:0:755" ]', self.HOOK)
-        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index("-uid +999"))
-        self.assertGreater(self.HOOK.index("-uid +999"), self.HOOK.index("update-initramfs"))
+        self.assertLess(self.HOOK.index("install_tree \"$here/files\""), self.HOOK.index(check))
+        self.assertGreater(self.HOOK.index(check), self.HOOK.index("update-initramfs"))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the ownership rule uses GNU find's -printf")
+    def test_ownership_above_999_passes_only_for_accounts_the_image_defines(self):
+        owner, group = os.getuid(), os.getgid()
+        if owner < 1000 or group < 1000:
+            self.skipTest("the rule is about owners of 1000 or above, and this user is below")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "etc").mkdir()
+            (root / "var" / "lib" / "ceph").mkdir(parents=True)
+            (root / "etc" / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+            (root / "etc" / "group").write_text("root:x:0:\n")
+            run = lambda: subprocess.run(["bash", "-c", f'. "{IMAGE}/owners.sh"; foreign_owner "$1" "$1"', "rule", str(root)],
+                                         capture_output=True, text=True, check=True).stdout.strip()
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "passwd").write_text(f"root:x:0:0:root:/root:/bin/bash\nceph:x:{owner}:{group}:Ceph:/var/lib/ceph:/usr/sbin/nologin\n")
+            self.assertEqual(run(), str(root))
+            (root / "etc" / "group").write_text(f"root:x:0:\nceph:x:{group}:\n")
+            self.assertEqual(run(), "")
 
     @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0, "install -o 0 needs root on Linux")
     def test_install_tree_gives_root_ownership_and_plain_modes(self):

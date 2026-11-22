@@ -150,7 +150,7 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertLess(SOURCE.index('findmnt -rn -S "$partition"'), SOURCE.index('mount_at "$root" "$target"'))
         self.assertLess(SOURCE.index('e2fsck -fp "$root"'), SOURCE.index('mount_at "$root" "$target"'))
         self.assertLess(SOURCE.index("previous aside directory"), SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
-        self.assertLess(SOURCE.index("tar --zstd -xpf"), SOURCE.index("-uid +999 -a ! -uid 65534"))
+        self.assertLess(SOURCE.index("tar --zstd -xpf"), SOURCE.index('owned="$(foreign_owner "$target" "$target"'))
         self.assertIn("trap unmount_all EXIT", SOURCE)
 
     def test_tailscale_state_is_checked_first_and_carried_before_the_ownership_check(self):
@@ -164,7 +164,7 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertLess(extract, image_check)
         self.assertLess(image_check, carry)
         self.assertLess(carry, compare)
-        self.assertLess(compare, SOURCE.index("-uid +999 -a ! -uid 65534"))
+        self.assertLess(compare, SOURCE.index('owned="$(foreign_owner "$target" "$target"'))
         self.assertIn("so the node joins the tailnet at bring-up", SOURCE)
 
     def test_the_labels_match_the_image_fstab(self):

@@ -89,6 +89,20 @@ changes only together with the snapshot. The kernel and the module package
 are one pair: a new module version means a new kernel release, new pins and
 requalification of the device backend.
 
+A fleet node also stores one of the cluster's Ceph OSDs, which cephadm runs
+in a container, and mounts the CephFS model store. The image carries what
+that needs, all from Ubuntu: `podman`, the container engine cephadm uses on
+the image (from the snapshot, without Docker's own repository), `catatonit`
+for the `--init` its daemons start with, `lvm2` for the OSD's logical
+volume, and `ceph-common`, whose `mount.ceph` reads the CephFS client
+secret. The node's cluster state comes from its previous root at the disk
+install. `ceph-common` adds the `ceph` account at the Debian-allocated
+uid 64045, so the image's ownership rule allows any uid or gid of 1000 or
+above that the image's own `/etc/passwd` and `/etc/group` define
+([`owners.sh`](../tools/hosted_image/owners.sh)). A build user's owner, which
+the image does not define, still fails the build, the disk install and the
+dry run.
+
 ## GB10 settings
 
 | File | Setting |
@@ -169,8 +183,9 @@ what was left.
 ## An image node never updates itself
 
 A rented node changes only by a new image, never during a rental. The image
-masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`)
-and `motd-news`, which fetches news from Ubuntu
+masks the APT timers and their services (`apt-daily`, `apt-daily-upgrade`),
+`motd-news`, which fetches news from Ubuntu, and podman's auto-update timer
+and its root API socket and service, which cephadm does not use
 ([`masked-units.txt`](../tools/hosted_image/masked-units.txt),
 [`mask_units.sh`](../tools/hosted_image/mask_units.sh)). It carries no
 `unattended-upgrades`, and the build fails if a dependency brings it in.
@@ -188,6 +203,15 @@ command line must say `rw`, not `ro`. With `ro`, the initramfs attaches
 the loop device read-only, so `/` can never be remounted read-write, and
 the units that write state (logind, timesyncd, the DMA guard's boot record)
 fail.
+
+With `boot=sparkpipe-ram` added, the image runs from memory instead
+([`sparkpipe-ram`](../tools/hosted_image/files/usr/share/initramfs-tools/scripts/sparkpipe-ram)).
+The initramfs mounts the file system named by `root=` read-only, copies the
+`loop=` file into a tmpfs, unmounts that file system and mounts the copy as
+`/`. Nothing on the disk is then mounted, open or mapped, so a
+[disk install](#disk-install) can run from the copy against that same disk.
+The copy takes as much memory as the file's size, and changes made while it
+runs are lost at the next boot.
 
 `/etc/fstab` names the root filesystem `SPARKROOT` (ext4) and the EFI
 system partition `SPARKESP` (vfat, `nofail`, so a missing partition
@@ -245,7 +269,7 @@ Then it:
    first boot, with no login. Otherwise the installer says that the node joins
    at bring-up ([TAILSCALE_JOIN.md](TAILSCALE_JOIN.md)). Then it checks that
    `/` is `0:0 755` and that no path outside `/home` belongs to a uid or gid
-   of 1000 or above.
+   of 1000 or above that the image does not define.
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
@@ -319,7 +343,8 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    - labels, identity, user, groups, modes and `fstab` are as expected;
    - `/var/lib/tailscale` is the previous root's, with the same entries,
      owners, modes and checksums;
-   - nothing outside `/home` belongs to a uid or gid of 1000 or above;
+   - nothing outside `/home` belongs to a uid or gid of 1000 or above that
+     the image does not define;
    - the initramfs was rebuilt with the dropbear key;
    - the kernel entry uses the root UUID and the GB10 arguments;
    - `EFI/ubuntu` holds the image's own signed shim and GRUB;
