@@ -257,6 +257,92 @@ static void TestFillSplit(void)
 	CHECK(channel->push_used == 40u * 4u,"then the copy engine's fence release");
 }
 
+#define LINES_MAX 16u
+
+typedef struct Lines
+{
+	uint64_t address[LINES_MAX];
+	uint32_t length[LINES_MAX];
+	uint32_t count;
+} Lines;
+
+static void LinesRead(const Fake *fake, uint32_t end_word, Lines *lines)
+{
+	uint32_t word = 0u;
+	uint64_t address = 0u;
+	memset(lines,0,sizeof(*lines));
+	while ( word < end_word )
+	{
+		const uint32_t header = PushWord(fake,word);
+		const uint32_t count = (header >> 16) & 0x1fffu,method = (header & 0xfffu) << 2;
+		if ( method == 0x400u && count == 4u )
+			address = ((uint64_t)PushWord(fake,word + 3u) << 32) | PushWord(fake,word + 4u);
+		if ( method == 0x408u && count == 2u )
+			address = ((uint64_t)PushWord(fake,word + 1u) << 32) | PushWord(fake,word + 2u);
+		if ( method == 0x418u && count == 1u && lines->count < LINES_MAX )
+		{
+			lines->address[lines->count] = address;
+			lines->length[lines->count++] = PushWord(fake,word + 1u);
+		}
+		word += 1u + count;
+	}
+}
+
+static int LinesAre(const Lines *lines, uint64_t first, uint64_t bytes, uint32_t element_bytes)
+{
+	const uint64_t line_bytes = 1ull << 31;
+	uint64_t done = 0u;
+	uint32_t index;
+	if ( lines->count != (uint32_t)((bytes + line_bytes - 1u) / line_bytes) )
+		return(0);
+	for (index = 0u; index < lines->count; index++)
+	{
+		const uint64_t expected = bytes - done < line_bytes ? bytes - done : line_bytes;
+		if ( lines->address[index] != first + done || (uint64_t)lines->length[index] * element_bytes != expected )
+			return(0);
+		done += expected;
+	}
+	return(done == bytes);
+}
+
+static void TestLongLines(void)
+{
+	static const uint64_t sizes[] = {8ull << 30, (21ull << 30) / 2u, 16ull << 30};
+	static Fake fake;
+	Lines lines;
+	uint64_t value = 0u;
+	uint32_t index;
+	for (index = 0u; index < sizeof(sizes) / sizeof(sizes[0]); index++)
+	{
+		char what[160];
+		FakeOpen(&fake);
+		CHECK(SparkNvrmFill(&fake.gpu,&fake.gpu.compute,0x2000000000ull,0u,sizes[index],&value,"fill") == SPARK_STATUS_OK,"push a fill of 8 GiB or more");
+		LinesRead(&fake,(uint32_t)(fake.gpu.compute.push_used / 4u),&lines);
+		snprintf(what,sizeof(what),"a %llu MiB fill goes in lines of at most 2^31 bytes, 2^29 four-byte elements each, back to back",
+			(unsigned long long)(sizes[index] >> 20));
+		CHECK(LinesAre(&lines,0x2000000000ull,sizes[index],4u),what);
+		FakeOpen(&fake);
+		CHECK(SparkNvrmCopy(&fake.gpu,&fake.gpu.compute,0x2000000000ull,0x6000000000ull,sizes[index],&value,"copy") == SPARK_STATUS_OK,
+			"push a copy of 8 GiB or more");
+		LinesRead(&fake,(uint32_t)(fake.gpu.compute.push_used / 4u),&lines);
+		snprintf(what,sizeof(what),"a %llu MiB copy goes in lines of at most 2^31 bytes, back to back",(unsigned long long)(sizes[index] >> 20));
+		CHECK(LinesAre(&lines,0x2000000000ull,sizes[index],1u),what);
+	}
+}
+
+static void TestPageSizes(void)
+{
+	static Fake fake;
+	uint32_t handle = 0u;
+	FakeOpen(&fake);
+	CHECK(SparkNvrmSystemPageBytes(4ull << 20) == SPARK_NVRM_PAGE_BYTES && SparkNvrmSystemPageBytes(8ull << 20) == SPARK_NVRM_HUGE_PAGE_BYTES &&
+		SparkNvrmSystemPageBytes((4ull << 30) - (2ull << 20)) == SPARK_NVRM_HUGE_PAGE_BYTES && SparkNvrmSystemPageBytes(4ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES &&
+		SparkNvrmSystemPageBytes(16ull << 30) == SPARK_NVRM_BIG_PAGE_BYTES,
+		"system memory takes 2 MiB pages from 8 MiB to below 4 GiB and 64 KiB pages from 4 GiB on");
+	CHECK(SparkNvrmSystemAllocate(&fake.gpu,4ull << 30,SPARK_NVRM_HUGE_PAGE_BYTES,0u,&handle,"pages") == SPARK_STATUS_INVALID_ARGUMENT && handle == 0u &&
+		strstr(SparkDeviceLastError()->text,"4 GiB") != 0,"an object of 2 MiB pages at 4 GiB or more is refused before the module sees it");
+}
+
 static void TestMarks(void)
 {
 	static Fake fake;
@@ -451,6 +537,8 @@ int main(void)
 	TestReclaim();
 	TestOrdering();
 	TestFillSplit();
+	TestLongLines();
+	TestPageSizes();
 	TestMarks();
 	TestAddress();
 	TestSemaphore();

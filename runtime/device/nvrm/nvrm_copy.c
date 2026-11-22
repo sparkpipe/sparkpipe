@@ -6,9 +6,12 @@
 #include "classes/dma-copy/clcab5.h"
 
 #define COPY_SUBCHANNEL 4u
-#define COPY_CHUNK_ELEMENTS (1ull << 31)
+#define COPY_LINE_BYTES (1ull << 31)
 #define COPY_WORD_BYTES 4u
 #define COPY_BYTE_PATTERN 0x01010101u
+
+_Static_assert(COPY_LINE_BYTES <= 0xffffffffull && COPY_LINE_BYTES % COPY_WORD_BYTES == 0u,
+	"a line's bytes stay below 2^32 and whole four-byte elements");
 
 #define COPY_TRY(call) \
 	do { \
@@ -58,10 +61,11 @@ static SparkStatus CopyFinish(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, Spar
 static SparkStatus CopyLines(SparkNvrmChannel *channel, uint64_t destination, uint64_t source, uint64_t elements, uint32_t element_bytes,
 	uint32_t remap, const char *owner)
 {
+	const uint64_t line_elements = COPY_LINE_BYTES / element_bytes;
 	uint64_t done;
-	for (done = 0u; done < elements; done += COPY_CHUNK_ELEMENTS)
+	for (done = 0u; done < elements; done += line_elements)
 	{
-		const uint64_t count = elements - done < COPY_CHUNK_ELEMENTS ? elements - done : COPY_CHUNK_ELEMENTS;
+		const uint64_t count = elements - done < line_elements ? elements - done : line_elements;
 		const uint64_t from = source + done * element_bytes,to = destination + done * element_bytes;
 		uint32_t words[4];
 		words[0] = (uint32_t)SPARK_NVRM_VALUE(NVCAB5_OFFSET_IN_UPPER_UPPER,from >> 32);
