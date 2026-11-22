@@ -226,6 +226,53 @@ static void Grouped(const char *format, uint32_t tokens, uint32_t groups, uint32
 	TAIL_CUDA(cudaFree(padded_out));
 }
 
+template<class Format>
+static void RowInvariant(const char *format, uint32_t input, uint32_t output)
+{
+	static const uint32_t waves[] = { 17u, 33u, 64u, 100u, 256u, 1024u, 2048u };
+	static const uint32_t starts[] = { 0u, 5u, 16u, 1000u };
+	const uint32_t rows = 3072u;
+	const std::vector<uint16_t> weight = Matrix(output, input, 0.0625f, 3u), activation = Matrix(rows, input, 4.0f, 7u);
+	uint16_t *weight_device = Upload(weight), *activation_device = Upload(activation), *reference, *wave;
+	uint32_t checked = 0u;
+	TAIL_CUDA(cudaMalloc((void **)&reference, (size_t)rows * output * sizeof(uint16_t)));
+	TAIL_CUDA(cudaMalloc((void **)&wave, (size_t)rows * output * sizeof(uint16_t)));
+	if ( LmStreamGemmDense<Format>(weight_device, LmScaleTensorNone(), activation_device, reference, (float *)0, rows, input, output, 0u, 0u, multiprocessors, 0) != LM_LAUNCH_OK )
+	{
+		printf("FAIL %s row invariance K%u: the %u-row reference wave did not launch\n", format, input, rows);
+		failures++;
+		return;
+	}
+	const std::vector<uint16_t> whole = Download(reference, (size_t)rows * output);
+	for ( uint32_t start : starts )
+		for ( uint32_t count : waves )
+		{
+			if ( start + count > rows )
+				continue;
+			TAIL_CUDA(cudaMemset(wave, 0xff, (size_t)count * output * sizeof(uint16_t)));
+			if ( LmStreamGemmDense<Format>(weight_device, LmScaleTensorNone(), activation_device + (size_t)start * input, wave, (float *)0, count, input, output, 0u, 0u,
+				multiprocessors, 0) != LM_LAUNCH_OK )
+			{
+				printf("FAIL %s row invariance K%u: a %u-row wave from row %u did not launch\n", format, input, count, start);
+				failures++;
+				continue;
+			}
+			const std::vector<uint16_t> part = Download(wave, (size_t)count * output);
+			if ( memcmp(part.data(), &whole[(size_t)start * output], part.size() * sizeof(uint16_t)) != 0 )
+			{
+				printf("FAIL %s row invariance K%u: the %u-row wave from row %u differs from the same rows in the %u-row wave\n", format, input, count, start, rows);
+				failures++;
+			}
+			checked++;
+		}
+	printf("PASS %s row invariance K%u N%u: %u waves of 17 to 2048 rows starting at rows 0 to 1000 give each row the bits it gets in one %u-row wave\n", format, input,
+		output, checked, rows);
+	TAIL_CUDA(cudaFree(weight_device));
+	TAIL_CUDA(cudaFree(activation_device));
+	TAIL_CUDA(cudaFree(reference));
+	TAIL_CUDA(cudaFree(wave));
+}
+
 static void Refuses(uint32_t input)
 {
 	char chunk[512];
@@ -275,6 +322,8 @@ int main(void)
 	Dense<LmBf16Block32>("bf16 block-32", 40u, 224u, 256u);
 	Grouped<LmBf16Format>("bf16", 1000u, 12u, 224u, 512u);
 	Grouped<LmBf16Block32>("bf16 block-32", 600u, 9u, 200u, 640u);
+	RowInvariant<LmBf16Format>("bf16", 224u, 1024u);
+	RowInvariant<LmBf16Block32>("bf16 block-32", 200u, 1024u);
 	Refuses(228u);
 	if ( order_sensitive * 2u < order_samples )
 	{
@@ -291,6 +340,6 @@ int main(void)
 		return 1;
 	}
 	printf("PASS stream K tail: an unscaled input that is a multiple of 8 but not of the k-tile runs with its last tile zero-filled, bit-identical to the "
-		"zero-padded wave for dense and grouped waves at every tile height, and other inputs refuse\n");
+		"zero-padded wave for dense and grouped waves at every tile height and row-invariant across wave sizes and starts, and other inputs refuse\n");
 	return 0;
 }

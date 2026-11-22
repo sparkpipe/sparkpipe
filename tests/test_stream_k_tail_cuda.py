@@ -2,6 +2,8 @@
 """The stream GEMM's K tail: an unscaled (bf16) input that is a multiple of 8 but not of the 64-wide k-tile runs with its last tile
 zero-filled, so its bf16 and fp32 outputs are bit-identical to the same wave zero-padded to the next multiple of 64, for dense and
 grouped waves at every tile height, both bf16 formats and K3's routed_up wave (2048 x 224 -> 7168), and agree with an fp64 reference;
+each row gets the same bits in a wave of any size from 17 to 2048 rows wherever the wave starts, so prefill waves split differently, as
+prefix reuse splits them, agree with a cold run;
 an input that is not a multiple of 8 refuses through SPARK_FAIL."""
 import shutil
 import subprocess
