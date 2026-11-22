@@ -536,6 +536,30 @@ the session and subagent openings, and the other six models. The K3
 follow-up line under "KV cache and long context" is from October and stays
 until K3 is measured again.
 
+## Embeddings
+
+Qwen3-Embedding-8B from the engine, one rank on one GB10 (2026-11-22, node
+files from commit `0f0e678d8`; receipts and the full tables in
+[`qualification/embeddings-20261122/`](qualification/embeddings-20261122/)).
+No fleet serves it yet ([`TECHDEBT.md`](TECHDEBT.md#serving-api)).
+
+| One GB10, one rank, the publisher's torch service resident on the same GPU | |
+| --- | ---: |
+| Agreement with the publisher's code, 256 texts of 2 to 1,871 tokens | cosine 0.99973 at the least, 0.99989 at the median |
+| Two runs of the publisher's own code (a padded batch, one text at a time) | cosine 0.99967 at the least, 0.99988 at the median |
+| First passage for 32 queries over 224 passages | the same for all 32 |
+| The same text alone, in a request of 8, among 32 texts, from the cache | the same bits |
+| 64 mixed texts a request, 258 tokens a text | 13.8 texts/s, 3,567 tokens/s |
+| 64 short texts in one request, 36 tokens a text | 96 texts/s |
+| One text a request, 37 tokens | 76 ms |
+| The torch service on the same GPU, 64 mixed texts a request | 9.8 texts/s, 2,524 tokens/s |
+| Device memory at start, and with the KV pool full | 16.4 GB, 20.8 GB |
+
+The vectors are not bit-equal to torch's. The difference is BF16 rounding
+and is the size of the difference between two runs of the publisher's code:
+every BF16 run is about 1e-4 (1 minus cosine) from the FP32 model and from
+every other BF16 run, ours included.
+
 ## How the numbers are measured
 
 - Tool: [`tools/api_serving_perf.py`](tools/api_serving_perf.py) against each

@@ -1,0 +1,14 @@
+{
+  "sequences": 16,
+  "rows": 2048,
+  "context": 2048,
+  "kv_page_bytes": 9437184,
+  "kv_physical_pages": 512,
+  "kv_logical_pages": 512,
+  "kv_pool_max_gib": 4.5,
+  "kv_backing_max_gib": 4.236328125,
+  "prefix": [],
+  "suffix": [
+    151643
+  ]
+}

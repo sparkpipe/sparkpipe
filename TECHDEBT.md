@@ -1602,18 +1602,20 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 ## Serving API
 
 - Embeddings (`POST /v1/embeddings`, the memory host method `embed`,
-  Qwen3-Embedding-8B on one rank) are built, pass the host tests and compile
-  for CUDA. Before a fleet serves them:
-  - **First run.** The stage has not run on a GPU. Its agreement with the
-    publisher's code on the same texts, its device memory beside a chat
-    model and its texts per second on one GB10 are not measured.
+  Qwen3-Embedding-8B on one rank) are built and measured on one GB10
+  ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md#embeddings)). Before a
+  fleet serves them:
+  - **Evidence.** One run on one GB10, 256 texts of at most 1,871 tokens,
+    most of them English prose. No retrieval benchmark has run through the
+    engine, and no text longer than the lane's 2,048 positions.
   - **Placement.** The model is one rank on one node, beside the fleet's chat
     model. A lane record has no form for that: one model holds the fleet, a
     record's `ranks` picks a group of nodes, and the swap controller stops
-    every other record's lane. The node that carries it needs about 21 GB of
-    device memory for it (15.1 GB of weights, the KV pool, the wave buffers),
-    and a node has about 22 GiB free while a sixteen-rank model is active, so
-    the embedding node needs a smaller KV pool for the chat model, an FP8
+    every other record's lane. The node that carries it needs 16.4 GB of
+    device memory at start and 20.8 GB with its KV pool full (measured: 15.4
+    GB of weights, 0.4 GB of state, up to 4.8 GB of KV for 16 sequences of
+    2,048 positions), and a node has about 22 GiB free while a sixteen-rank
+    model is active, so the embedding node needs a smaller KV pool, an FP8
     build of the embedding weights measured under
     [`docs/VARIANT_GATE.md`](docs/VARIANT_GATE.md) (the publisher ships
     none), or a node of its own.
@@ -1627,12 +1629,14 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
     chat layer writes no request record for an embeddings call, and LiteLLM
     has no route for it.
   - **Cache.** An embedding request publishes its prompt blocks like a chat
-    prompt, so the same text embedded again resumes from them and every text
-    takes KV pool pages until the usual eviction. Whether an embedding lane
-    publishes at all is not decided, and that a resumed text returns the
-    bits of a cold one is not measured.
+    prompt, so the same text embedded again resumes from them and returns
+    the bits of the first time (measured on 256 texts). The price is the KV
+    pool and, for every token of a text that is embedded twice, 147 KB of
+    snapshot file: 9.9 GB in the measured run. An embedding lane that
+    publishes nothing would need neither; it is not built, and whether a
+    lane should publish is not decided.
   - **Length.** An input longer than the lane's positions is refused. The
-    lane staged for the first run serves 2,048 positions; the model takes
+    measured lane serves 2,048 positions; the model takes
     32K, and each position of this model costs 147 KB of KV (36 attention
     layers).
   - **Metal.** The device runner refuses final rows, and the dense Qwen3

@@ -1,0 +1,25 @@
+weightd latch: acquired port 61991
+weightd kv memory margin_bytes=5253414748: earlyoom's 2% of MemTotal 128453009408 plus 2684354560 runtime headroom
+weightd-mesh: identity not stated; mesh disabled
+weightd kv ledger $HOME/.sparkpipe-kv-ledger: node quota 500000000000 bytes for the node's own KV on disk, shared by every lane
+weightd kv purge: every 60 s under $HOME, leftover temporaries are deleted and closed stores are counted; no cache file is deleted for its age
+spark_weightd ready unix=/var/tmp/emb-1rank/weightd.sock ceiling=22548578304 kv_reserve=5368709120 arena_ceiling=17179869184 load_pace_per_second=0 kv_shared_window=0
+ERRSITE runtime/spark_weightd.c:1342 status=3 count=1
+weightd pack-verify path=/var/tmp/emb-1rank/packs/qwen3_embedding_8b.tp1.rank00.pack receipt=absent status=not_found: full sha256 verification
+weightd pack-verify path=/var/tmp/emb-1rank/packs/qwen3_embedding_8b.tp1.rank00.pack mode=sha256 bytes=15135237760 seconds=7.927 gbps=1.91 io=direct read_wait_s=0.010 work_s=7.905
+pool slots=1 chunk_bytes=2097152 bytes=2097152 arena=15135237760 (fixed physical pool; an eviction reassigns a slot)
+weightd lazy-attach model=qwen3-embedding-8b experts=0 arena=15135237760 pool=2097152
+weightd kv shared pool off label=qwen3_embedding_8b_tp1_stage: weightd runs without --kv-shared-window-bytes, so the engine keeps its prefixes private
+weightd kv capacity label=qwen3_embedding_8b_tp1_stage generation=1 chunks=0->73 of 769 bytes=459276288 kv_committed=459276288 kv_limit=22546481152 mem_available=88872185856 margin_bytes=5253414748
+weightd kv pool attached label=qwen3_embedding_8b_tp1_stage generation=1 reattached=0 bytes=459276288 of 4838129664 chunks=73/769 chunk_bytes=6291456 metadata_bytes=32840 kv_committed=459276288 kv_reserve=5368709120 kv_limit=22546481152 margin_bytes=5253414748
+weightd kv capacity label=qwen3_embedding_8b_tp1_stage generation=1 chunks=73->146 of 769 bytes=918552576 kv_committed=918552576 kv_limit=22546481152 mem_available=88171384832 margin_bytes=5253414748
+weightd kv pool resized label=qwen3_embedding_8b_tp1_stage generation=1 chunks=73->146 of 769 wanted=0 kv_committed=918552576 kv_reserve=5368709120 kv_limit=22546481152
+weightd kv capacity label=qwen3_embedding_8b_tp1_stage generation=1 chunks=146->292 of 769 bytes=1837105152 kv_committed=1837105152 kv_limit=22546481152 mem_available=86998646784 margin_bytes=5253414748
+weightd kv pool resized label=qwen3_embedding_8b_tp1_stage generation=1 chunks=146->292 of 769 wanted=0 kv_committed=1837105152 kv_reserve=5368709120 kv_limit=22546481152
+weightd kv capacity label=qwen3_embedding_8b_tp1_stage generation=1 chunks=292->584 of 769 bytes=3674210304 kv_committed=3674210304 kv_limit=22546481152 mem_available=85130244096 margin_bytes=5253414748
+weightd kv pool resized label=qwen3_embedding_8b_tp1_stage generation=1 chunks=292->584 of 769 wanted=0 kv_committed=3674210304 kv_reserve=5368709120 kv_limit=22546481152
+weightd kv capacity label=qwen3_embedding_8b_tp1_stage generation=1 chunks=584->769 of 769 bytes=4838129664 kv_committed=4838129664 kv_limit=22546481152 mem_available=83898290176 margin_bytes=5253414748
+weightd kv pool resized label=qwen3_embedding_8b_tp1_stage generation=1 chunks=584->769 of 769 wanted=0 kv_committed=4838129664 kv_reserve=5368709120 kv_limit=22546481152
+weightd kv pool detached label=qwen3_embedding_8b_tp1_stage generation=1 bytes=4838129664; kept for reattach
+weightd kv pool released label=qwen3_embedding_8b_tp1_stage generation=1 bytes=4838129664 reason=daemon_exit kv_committed=0 kv_reserve=5368709120
+spark_weightd stopped arenas=1 bytes=2097152
