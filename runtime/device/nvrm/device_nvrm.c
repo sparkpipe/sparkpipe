@@ -1025,6 +1025,7 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	request.cluster[0] = launch->cluster.x;
 	request.cluster[1] = launch->cluster.y;
 	request.cluster[2] = launch->cluster.z;
+	request.dependent = launch->dependent;
 	NVRM_TRY(SparkNvrmLaunch(&nvrm_gpu,NvrmOn(nvrm,&nvrm->channel),&compiled->library->program,&request,&value,queue->owner));
 	NvrmSlotTaken(nvrm,start,bytes,value);
 	memcpy(nvrm->kernel,kernel->name,sizeof(nvrm->kernel));

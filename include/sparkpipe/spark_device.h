@@ -127,6 +127,7 @@ typedef struct SparkDeviceLaunch
 	const SparkDeviceBinding *bindings;
 	uint32_t binding_count;
 	SparkDeviceGrid cluster;
+	uint32_t dependent;
 } SparkDeviceLaunch;
 
 typedef struct SparkDeviceParameter

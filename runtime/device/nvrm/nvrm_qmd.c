@@ -198,6 +198,22 @@ static void QmdCluster(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 	QMD_PUT(builder,NVCEC0_QMDV05_00_GPC_CGA_DEPTH,shape->cluster[2]);
 }
 
+static void QmdLatch(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
+{
+	if ( shape->latch_arrive != 0u )
+	{
+		QMD_PUT(builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID_TRUE);
+		QMD_PUT(builder,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID,shape->latch_arrive);
+	}
+	if ( shape->latch_wait == 0u )
+		return;
+	QMD_PUT(builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID_TRUE);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID,shape->latch_wait);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE,
+		NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE_TRUE);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE_TRUE);
+}
+
 SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *qmd, const char *owner)
 {
 	QmdBuilder builder = {qmd,0};
@@ -230,6 +246,7 @@ SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *q
 	QmdBanks(&builder,shape);
 	QmdRelease(&builder,shape);
 	QmdCluster(&builder,shape);
+	QmdLatch(&builder,shape);
 	if ( builder.refused != 0 )
 	{
 		char text[128];

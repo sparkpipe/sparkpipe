@@ -205,6 +205,8 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 		}
 	shape->release_address = request->release_address;
 	shape->release_payload = request->release_payload;
+	shape->latch_arrive = request->latch_arrive;
+	shape->latch_wait = request->latch_wait;
 }
 
 static SparkStatus LaunchRefuse(const char *owner, const char *text)
@@ -289,15 +291,30 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 	return(SparkNvrmPush(channel,LAUNCH_COMPUTE_SUBCHANNEL,NVCEC0_SEND_SIGNALING_PCAS2_B,&word,1u,owner));
 }
 
+static uint32_t launch_latch;
+
+static uint32_t LaunchLatch(void)
+{
+	uint32_t latch;
+	do
+		latch = __atomic_add_fetch(&launch_latch,1u,__ATOMIC_RELAXED);
+	while ( latch == 0u );
+	return(latch);
+}
+
 SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
 	uint64_t *value, const char *owner)
 {
 	SparkNvrmLaunchRequest ordered = *request;
 	const uint64_t bound = channel->local_address;
+	const uint32_t latched = request->dependent != 0u && channel->last_engine == SPARK_NVRM_ENGINE_COMPUTE && channel->latch != 0u &&
+		channel->after_value == 0u ? 1u : 0u;
 	SparkStatus status;
 	ordered.release_address = channel->fence.address;
 	ordered.release_payload = channel->fence_value + 1u;
-	LAUNCH_TRY(SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_COMPUTE,owner));
+	ordered.latch_arrive = LaunchLatch();
+	ordered.latch_wait = latched != 0u ? channel->latch : 0u;
+	LAUNCH_TRY(latched != 0u ? SparkNvrmOpBeginLatched(channel,owner) : SparkNvrmOpBegin(channel,SPARK_NVRM_ENGINE_COMPUTE,owner));
 	status = SparkNvrmLaunchQueue(gpu,channel,program,&ordered,owner);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkNvrmOpEnd(gpu,channel,SPARK_NVRM_ENGINE_COMPUTE,value,owner);
@@ -307,5 +324,6 @@ SparkStatus SparkNvrmLaunch(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const 
 		channel->local_address = bound;
 		SPARK_FAIL(status);
 	}
+	channel->latch = ordered.latch_arrive;
 	return(SPARK_STATUS_OK);
 }

@@ -177,7 +177,7 @@ static SparkGpuError GpuLayoutAgrees(const SparkDeviceKernel *kernel, const Spar
 	return(SPARK_GPU_SUCCESS);
 }
 
-static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, size_t shared_bytes,
+static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent, size_t shared_bytes,
 	SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
 {
 	SparkDeviceKernel *kernel = 0;
@@ -204,6 +204,7 @@ static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], con
 	launch.shared_bytes = (uint32_t)shared_bytes;
 	launch.constants = bytes != 0u ? parameters : 0;
 	launch.constant_bytes = bytes;
+	launch.dependent = dependent;
 	if ( cluster != 0u )
 	{
 		launch.cluster.x = cluster;
@@ -218,15 +219,21 @@ static SparkGpuError GpuLaunch(const void *function, const uint32_t grid[3], con
 SparkGpuError SparkNvrmLaunchPacked(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
 	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
 {
-	return(GpuLaunch(function,grid,block,0u,shared_bytes,stream,parameters,layout,count,bytes));
+	return(GpuLaunch(function,grid,block,0u,0u,shared_bytes,stream,parameters,layout,count,bytes));
 }
 
-SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, size_t shared_bytes,
-	SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
+SparkGpuError SparkNvrmLaunchDependent(const void *function, const uint32_t grid[3], const uint32_t block[3], size_t shared_bytes, SparkGpuStream stream,
+	const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
+{
+	return(GpuLaunch(function,grid,block,0u,1u,shared_bytes,stream,parameters,layout,count,bytes));
+}
+
+SparkGpuError SparkNvrmLaunchCluster(const void *function, const uint32_t grid[3], const uint32_t block[3], uint32_t cluster, uint32_t dependent,
+	size_t shared_bytes, SparkGpuStream stream, const void *parameters, const SparkDeviceParameter *layout, uint32_t count, uint32_t bytes)
 {
 	if ( cluster == 0u )
 		GPU_REFUSE(SPARK_STATUS_INVALID_ARGUMENT,"a cluster launch names a cluster of at least one block");
-	return(GpuLaunch(function,grid,block,cluster,shared_bytes,stream,parameters,layout,count,bytes));
+	return(GpuLaunch(function,grid,block,cluster,dependent != 0u ? 1u : 0u,shared_bytes,stream,parameters,layout,count,bytes));
 }
 
 SparkGpuError SparkNvrmSharedMemoryOptIn(const void *function, uint32_t shared_bytes)

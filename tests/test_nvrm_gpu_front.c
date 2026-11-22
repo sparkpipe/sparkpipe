@@ -62,9 +62,9 @@ int main(void)
 		SparkNvrmLaunchPacked((const void *)Unregistered,grid,block,(size_t)UINT32_MAX + 1u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
 		SparkNvrmLaunchPacked((const void *)Unregistered,grid,block,0u,0,0,0,1u,8u) == SPARK_GPU_ERROR_INVALID_VALUE,
 		"a launch without its grid, with more than 4 GiB of shared memory or with parameters but no block is refused");
-	CHECK(SparkNvrmLaunchCluster((const void *)Unregistered,grid,block,0u,0u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
+	CHECK(SparkNvrmLaunchCluster((const void *)Unregistered,grid,block,0u,0u,0u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
 		strstr(SparkDeviceLastError()->text,"cluster") != 0,"a cluster launch names a cluster of at least one block");
-	CHECK(SparkNvrmLaunchCluster((const void *)Unregistered,grid,block,2u,0u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
+	CHECK(SparkNvrmLaunchCluster((const void *)Unregistered,grid,block,2u,1u,0u,0,0,0,0u,0u) == SPARK_GPU_ERROR_INVALID_VALUE &&
 		strstr(SparkDeviceLastError()->text,"no module registered") != 0,"a cluster launch of a function no module registered is refused");
 	CHECK(SparkNvrmSharedMemoryOptIn((const void *)Unregistered,1024u) == SPARK_GPU_ERROR_INVALID_VALUE,"shared memory is granted only on an initialized device");
 	CHECK(strcmp(SparkGpuGetErrorString(SPARK_GPU_SUCCESS),"no error") == 0 && strcmp(SparkGpuGetErrorString(SPARK_GPU_ERROR_NOT_SUPPORTED),

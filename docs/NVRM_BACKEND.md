@@ -758,13 +758,32 @@ macro both stay on the CUDA fronts. Their implementation is
   parameter table: the count, each offset and size, and the total. A
   mismatch is refused, naming the parameter. It then launches with the
   packed block as the launch's constants.
-- **Dependent launches.** `LM_LAUNCH_DEPENDENT` launches in queue order,
-  like `LM_LAUNCH`: the grid starts after the grid before it has ended.
-  Its `griddepcontrol.wait` then passes at once, and a
-  `griddepcontrol.launch_dependents` in the grid before has nothing to
-  release. The outputs are the same as with CUDA's dependent launch. The
-  overlap CUDA allows, where the dependent grid starts while the one before
-  it finishes, is not used yet.
+- **Dependent launches.** A dependent launch's blocks start once the grid
+  before it on the queue has ended, ordered by a descriptor latch instead of
+  a front-end semaphore wait.
+  - **Arrive.** Every launch arrives at a latch of its own when it ends
+    (`ARRIVE_AT_LATCH_VALID`, `ARRIVE_AT_LATCH_ID`). The id comes from one
+    counter per process, so no two launches in flight share it.
+  - **Wait.** `LM_LAUNCH_DEPENDENT` right after a launch on the same queue
+    pushes no semaphore acquire. Its descriptor waits on the earlier
+    launch's latch (`WAIT_ON_LATCH_VALID`, `WAIT_ON_LATCH_ID`) and holds its
+    blocks until that launch's blocks have ended
+    (`HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE`). It also
+    holds its own completion membar until the latch is acquired
+    (`HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE`), so its completion is never reported
+    before the earlier launch's.
+  - **Inside the kernel.** `griddepcontrol.wait` returns once the earlier
+    launch's latch is acquired, so its writes are visible.
+  - **Cost.** On a GB10 node the dependent grid started 0.23 to 0.42 µs
+    after the earlier one ended, against 2.6 to 2.9 µs through the
+    semaphore acquire.
+  - **Fallback.** After a copy, an event wait, a host step or a wait on
+    another queue, a dependent launch is ordered with the semaphore acquire
+    like any launch.
+  - **Not used yet.** The overlap CUDA allows, where the dependent grid's
+    blocks start before the earlier grid ends, needs every dependent kernel
+    to reach `griddepcontrol.wait` before the queue's completion can be
+    trusted.
 - **Clusters.** A kernel compiled with a cluster shape (`__cluster_dims__`,
   PTX `.reqnctapercluster`) runs in clusters of that shape on every launch,
   as with `<<<>>>`. `LmLaunchClusterKernel` names a cluster of `cluster` by

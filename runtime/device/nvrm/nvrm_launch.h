@@ -38,6 +38,9 @@ typedef struct SparkNvrmLaunchRequest
 	uint64_t release_address;
 	uint64_t release_payload;
 	uint32_t cluster[3];
+	uint32_t dependent;
+	uint32_t latch_arrive;
+	uint32_t latch_wait;
 } SparkNvrmLaunchRequest;
 
 SparkStatus SparkNvrmProgramLoad(SparkNvrmGpu *gpu, const uint8_t *blob, uint64_t bytes, const char *manifest, uint64_t manifest_bytes,

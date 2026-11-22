@@ -175,6 +175,23 @@ static void TestCluster(const SparkNvrmCubinKernel *kernel)
 		"a cluster wider than its descriptor field is refused");
 }
 
+static void TestLatch(const SparkNvrmCubinKernel *kernel)
+{
+	SparkNvrmLaunchShape shape = ShapeFor(kernel);
+	SparkNvrmQmd qmd;
+	shape.latch_arrive = 41u;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"latch") == SPARK_STATUS_OK && FIELD(&qmd,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_VALID) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) == 41u && FIELD(&qmd,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 0u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 0u,
+		"every launch arrives at its own latch and waits on none");
+	shape.latch_wait = 40u;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"latch") == SPARK_STATUS_OK && FIELD(&qmd,NVCEC0_QMDV05_00_WAIT_ON_LATCH_VALID) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_WAIT_ON_LATCH_ID) == 40u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_CTA_LAUNCH_UNTIL_PARENT_LATCH_ACQUIRE_AND_CTA_COMPLETE) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_HOLD_MEMBAR_UNTIL_LATCH_ACQUIRE) == 1u && FIELD(&qmd,NVCEC0_QMDV05_00_ARRIVE_AT_LATCH_ID) == 41u,
+		"a dependent launch waits on the launch before it, holds its blocks until that one ends and holds its membar until the latch");
+}
+
 static SparkStatus ClusterShape(const SparkNvrmCubinKernel *kernel, uint32_t groups, uint32_t asked, uint32_t cluster[3])
 {
 	SparkNvrmLaunchRequest request;
@@ -368,6 +385,7 @@ int main(void)
 		TestSharedConfiguration(kernel);
 		TestBank0(kernel);
 		TestCluster(kernel);
+		TestLatch(kernel);
 		TestClusterShape(kernel);
 		SparkNvrmCubinRelease(&cubin);
 	}
