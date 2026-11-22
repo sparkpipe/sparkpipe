@@ -184,7 +184,9 @@ does not stop the boot); the [disk install](#disk-install) creates both. The
 hostname is `sparkpipe-node` until bring-up.
 
 Bring-up then follows [NODE_BASELINE.md](NODE_BASELINE.md#replacing-or-adding-a-node):
-identity and keys, then `apply`, reboot and `audit`. The modules load under
+identity and keys, then `apply`, reboot and `audit`. A node whose disk install
+carried no Tailscale state joins the tailnet with
+[`tools/tailscale_join.sh`](TAILSCALE_JOIN.md), without a browser login. The modules load under
 Secure Boot through the kernel's own signing chain, so a node needs no
 enrollment step.
 
@@ -204,7 +206,8 @@ Before it changes anything it checks:
 
 - the build directory's `MANIFEST` records a passing dependency audit and
   the archive's SHA-256;
-- the identity bundle (below) is well formed;
+- the identity bundle (below) is well formed and carries no
+  `var/lib/tailscale`;
 - both partitions have the expected filesystem types and neither is mounted;
 - an active firmware boot entry in `BootOrder` loads
   `\EFI\ubuntu\shimaa64.efi` from this disk's EFI partition, matched by its
@@ -213,7 +216,9 @@ Before it changes anything it checks:
 - the EFI partition holds `EFI/ubuntu/shimaa64.efi`;
 - `e2fsck` finds the root clean;
 - nothing else is mounted under the work directory's target;
-- the root has 10 GiB free and holds no earlier set-aside directory.
+- the root has 10 GiB free and holds no earlier set-aside directory;
+- the old root's `/var/lib/tailscale`, if it has one, is a directory that
+  holds only files and directories.
 
 Then it:
 
@@ -222,8 +227,14 @@ Then it:
    filesystem, so nothing is copied and the old system can be moved back.
    It then copies the old system's `EFI/ubuntu` from the EFI partition into
    `/.dgxos-<UTC stamp>/esp/EFI/ubuntu` and compares the copy.
-2. extracts the image beside `/home`, then checks that `/` is `0:0 755` and
-   that no path outside `/home` belongs to a uid or gid of 1000 or above.
+2. extracts the image beside `/home`. The image must carry no Tailscale
+   state. If the old root has `/var/lib/tailscale`, the installer copies it
+   from the set-aside directory into the new root with its owners and modes
+   and compares the copy. The node then rejoins the tailnet as itself at its
+   first boot, with no login. Otherwise the installer says that the node joins
+   at bring-up ([TAILSCALE_JOIN.md](TAILSCALE_JOIN.md)). Then it checks that
+   `/` is `0:0 755` and that no path outside `/home` belongs to a uid or gid
+   of 1000 or above.
 3. labels the partitions `SPARKROOT` and `SPARKESP`, which is what the
    image's `fstab` names.
 4. creates the bundle's groups and its user, then installs its files.
@@ -275,7 +286,7 @@ touches no real disk, uses no GPU, and never writes the host's firmware
 boot entries. It creates a 24 GiB sparse disk image under `NEW_DIR`,
 attaches it as a loop device and partitions it like a node, then seeds:
 
-- a previous system;
+- a previous system with Tailscale state in `/var/lib/tailscale`;
 - `/home/node` with a 256 MiB pack and a release root linked to a stub
   `libcuda.so.1`;
 - an EFI partition with `EFI/ubuntu`, `EFI/BOOT` and another vendor's
@@ -295,6 +306,8 @@ wrapper accepts only `-v`. Then the harness runs, in order:
    - the old root and the old `EFI/ubuntu` are intact in the set-aside
      directory;
    - labels, identity, user, groups, modes and `fstab` are as expected;
+   - `/var/lib/tailscale` is the previous root's, with the same entries,
+     owners, modes and checksums;
    - nothing outside `/home` belongs to a uid or gid of 1000 or above;
    - the initramfs was rebuilt with the dropbear key;
    - the kernel entry uses the root UUID and the GB10 arguments;
@@ -303,7 +316,9 @@ wrapper accepts only `-v`. Then the harness runs, in order:
 3. the rollback described above, checked against the old root and the
    whole old EFI partition;
 4. the installer refusing while `/.hosted-<stamp>` exists;
-5. a second install, with the same checks;
+5. a second install, after the previous root's Tailscale state is
+   removed, with the same checks, except that the installed root must hold no
+   Tailscale state and the installer must say the node joins at bring-up;
 6. the acceptance gate: after the set-aside directory is deleted, the
    image audit over the installed root fails on the stub-linked release
    root in `/home`, then passes once that root is removed;
@@ -321,7 +336,9 @@ The identity bundle is a directory with three parts:
   `files/etc/hostname`. Each file is installed owned by root with its mode
   from the bundle. A directory the image lacks is created with its mode from
   the bundle; a directory the image already has keeps the image's mode.
-  `files/` may hold only regular files and directories. A bundle that
+  `files/` may hold only regular files and directories, and never
+  `var/lib/tailscale`: a node's Tailscale state comes only from its previous
+  root. A bundle that
   carries `/etc/ssh/ssh_host_ed25519_key` must also carry
   `/etc/dropbear/initramfs/dropbear_ed25519_host_key`: with SSH host keys
   present, `sparkpipe-host-keys.service` does not run, so nothing else would

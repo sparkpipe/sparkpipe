@@ -37,6 +37,7 @@ USER_NAME="$(setting USER_NAME)" USER_UID="$(setting USER_UID)" USER_GID="$(sett
 [[ "$USER_GROUPS" =~ ^[a-z0-9,]*$ ]] || fail "$identity/user.conf USER_GROUPS must be a comma list of group names"
 [[ "$USER_NAME" =~ ^[a-z][a-z0-9]*$ ]] && [[ "$USER_UID" =~ ^[0-9]+$ ]] && [[ "$USER_GID" =~ ^[0-9]+$ ]] && [ -n "$USER_SHELL" ] || fail "$identity/user.conf needs USER_NAME, USER_UID, USER_GID, USER_GROUPS and USER_SHELL"
 [ -z "$(find "$identity/files" ! -type f ! -type d -print -quit)" ] || fail "$identity/files may hold only files and directories"
+[ ! -e "$identity/files/var/lib/tailscale" ] || fail "$identity carries var/lib/tailscale; the node's Tailscale state comes from its previous root, never from the bundle"
 if [ -f "$identity/files/etc/ssh/ssh_host_ed25519_key" ] && [ ! -f "$identity/files/etc/dropbear/initramfs/dropbear_ed25519_host_key" ]; then
 	fail "$identity carries SSH host keys but no initramfs SSH host keys, so the first boot would not create them"
 fi
@@ -95,6 +96,11 @@ mount_at "$root" "$target"
 [ "$(findmnt -rn -o TARGET | awk -v top="$target" '$0 == top || index($0, top "/") == 1')" = "$target" ] || fail "something else is mounted under $target"
 [ "$(df --output=avail -B1G "$target" | tail -1 | tr -d ' ')" -ge 10 ] || fail "$root has less than 10 GiB free"
 [ -z "$(find "$target" -mindepth 1 -maxdepth 1 \( -name '.dgxos-*' -o -name '.hosted-*' \) -print -quit)" ] || fail "$root holds a previous aside directory; finish its acceptance or rollback first"
+tailscale_state=var/lib/tailscale
+if [ -e "$target/$tailscale_state" ] || [ -L "$target/$tailscale_state" ]; then
+	[ -d "$target/$tailscale_state" ] && [ ! -L "$target/$tailscale_state" ] || fail "$root's /$tailscale_state is not a directory"
+	[ -z "$(find "$target/$tailscale_state" ! -type f ! -type d -print -quit)" ] || fail "$root's /$tailscale_state may hold only files and directories"
+fi
 mount_at -o ro "$esp" "$work/esp"
 [ -s "$work/esp/EFI/ubuntu/shimaa64.efi" ] || fail "$esp has no EFI/ubuntu/shimaa64.efi for the firmware boot entry to load"
 esp_before="$(foreign_esp_entries "$work/esp")"
@@ -113,6 +119,14 @@ unmount_last
 echo "install_disk: copied EFI/ubuntu from $esp into /.dgxos-$stamp/esp"
 
 tar --zstd -xpf "$image/rootfs.tar.zst" --numeric-owner --xattrs --xattrs-include='*' --exclude=./home -C "$target"
+[ ! -e "$target/$tailscale_state" ] || [ -z "$(ls -A "$target/$tailscale_state")" ] || fail "the image carries Tailscale state in /$tailscale_state"
+if [ -d "$aside/root/$tailscale_state" ]; then
+	cp -a "$aside/root/$tailscale_state" "$target/${tailscale_state%/*}/"
+	diff -r --no-dereference "$aside/root/$tailscale_state" "$target/$tailscale_state" > /dev/null || fail "the carried /$tailscale_state differs from /.dgxos-$stamp/root/$tailscale_state"
+	echo "install_disk: carried the node's Tailscale state from /.dgxos-$stamp/root/$tailscale_state, so the node rejoins the tailnet as itself"
+else
+	echo "install_disk: the previous root has no /$tailscale_state, so the node joins the tailnet at bring-up"
+fi
 [ "$(stat -c %u:%g:%a "$target")" = "0:0:755" ] || fail "the installed root is $(stat -c %u:%g:%a "$target"), not 0:0:755"
 owned="$(find "$target" -xdev \( -path "$target/home" -o -path "$aside" \) -prune -o \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)"
 [ -z "$owned" ] || fail "${owned#"$target"} belongs to uid or gid 1000 or above"

@@ -1916,7 +1916,14 @@ and the multidev docs on 2026-09-28. Line numbers are in
     passes on a partitioned disk-image file: install, rollback, the refusal
     while a set-aside directory exists, a second install and the audit gate.
     It has not yet installed onto a node's disk, and no disk it installed
-    has booted;
+    has booted. It carries the node's `/var/lib/tailscale`, so a reimaged
+    node rejoins the tailnet as itself; the dry run checks the copy;
+  - a new node's first tailnet login:
+    [`tools/tailscale_join.sh`](tools/tailscale_join.sh)
+    ([`docs/TAILSCALE_JOIN.md`](docs/TAILSCALE_JOIN.md)) logs a node in
+    from an auth-key file with no browser. It has run only against fake
+    commands. It needs the tailnet's tag and a reusable, pre-approved key or
+    an OAuth client before it can run on a node;
   - proving it on a spare Spark and on a four-node group against the
     factory OS.
 
