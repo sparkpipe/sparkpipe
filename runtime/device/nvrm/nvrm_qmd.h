@@ -45,6 +45,7 @@ typedef struct SparkNvrmLaunchShape
 	uint64_t release_address;
 	uint64_t release_payload;
 	uint32_t release_timestamp;
+	uint32_t cluster[3];
 } SparkNvrmLaunchShape;
 
 SparkStatus SparkNvrmQmdWrite(SparkNvrmQmd *qmd, uint32_t high, uint32_t low, uint64_t value, const char *owner);

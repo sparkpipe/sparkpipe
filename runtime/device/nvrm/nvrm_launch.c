@@ -32,6 +32,9 @@ static SparkStatus LaunchManifest(SparkNvrmProgram *program, const uint8_t *blob
 		const SparkNvrmManifestKernel *reported = SparkNvrmManifestKernelNamed(&program->manifest,program->cubin.kernels[index].name);
 		program->cubin.kernels[index].barriers = reported->barriers;
 		program->cubin.kernels[index].frame_bytes = reported->stack_bytes;
+		program->cubin.kernels[index].clustered = reported->clustered;
+		memcpy(program->cubin.kernels[index].cluster,reported->cluster,sizeof(reported->cluster));
+		program->cubin.kernels[index].cluster_limit = reported->cluster_limit;
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -204,12 +207,59 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 	shape->release_payload = request->release_payload;
 }
 
+static SparkStatus LaunchRefuse(const char *owner, const char *text)
+{
+	const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,text);
+	SPARK_FAIL(status);
+}
+
+SparkStatus SparkNvrmLaunchClusterShape(const SparkNvrmLaunchRequest *request, uint32_t cluster[3], const char *owner)
+{
+	const SparkNvrmCubinKernel *kernel = request->kernel;
+	const uint32_t asked = request->cluster[0] != 0u || request->cluster[1] != 0u || request->cluster[2] != 0u ? 1u : 0u;
+	const uint32_t limit = kernel->cluster_limit != 0u && kernel->cluster_limit < SPARK_NVRM_CLUSTER_GROUPS_MAX ? kernel->cluster_limit :
+		SPARK_NVRM_CLUSTER_GROUPS_MAX;
+	char text[192];
+	uint64_t groups;
+	uint32_t axis;
+	memset(cluster,0,3u * sizeof(uint32_t));
+	if ( asked != 0u && (request->cluster[0] == 0u || request->cluster[1] == 0u || request->cluster[2] == 0u) )
+		return(LaunchRefuse(owner,"a cluster shape has three nonzero sizes"));
+	if ( asked != 0u && kernel->cluster[0] != 0u && memcmp(request->cluster,kernel->cluster,sizeof(kernel->cluster)) != 0 )
+	{
+		snprintf(text,sizeof(text),"%.40s was compiled for clusters of %ux%ux%u blocks, not %ux%ux%u",kernel->name,kernel->cluster[0],kernel->cluster[1],
+			kernel->cluster[2],request->cluster[0],request->cluster[1],request->cluster[2]);
+		return(LaunchRefuse(owner,text));
+	}
+	if ( asked != 0u )
+		memcpy(cluster,request->cluster,3u * sizeof(uint32_t));
+	else if ( kernel->cluster[0] != 0u )
+		memcpy(cluster,kernel->cluster,3u * sizeof(uint32_t));
+	else if ( kernel->clustered != 0u )
+	{
+		snprintf(text,sizeof(text),"%.40s runs in clusters; launch it with a cluster shape",kernel->name);
+		return(LaunchRefuse(owner,text));
+	}
+	else
+		return(SPARK_STATUS_OK);
+	for ( axis = 0u; axis < 3u; axis++ )
+		if ( request->grid[axis] % cluster[axis] != 0u )
+			return(LaunchRefuse(owner,"a cluster launch's grid is a whole number of clusters on every axis"));
+	groups = (uint64_t)cluster[0] * cluster[1] * cluster[2];
+	if ( groups > limit )
+	{
+		snprintf(text,sizeof(text),"a cluster of %llu blocks is over the limit of %u for %.40s",(unsigned long long)groups,limit,kernel->name);
+		return(LaunchRefuse(owner,text));
+	}
+	return(SPARK_STATUS_OK);
+}
+
 SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const SparkNvrmProgram *program, const SparkNvrmLaunchRequest *request,
 	const char *owner)
 {
 	SparkNvrmLaunchShape shape;
 	SparkNvrmQmd qmd;
-	uint32_t word;
+	uint32_t word,cluster[3];
 	if ( request->kernel == 0 || request->slot == 0 || (request->slot_address & (SPARK_NVRM_QMD_ALIGN - 1u)) != 0u ||
 		request->slot_bytes < SparkNvrmLaunchSlotBytes(request->kernel) )
 	{
@@ -218,6 +268,7 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 		SPARK_FAIL(status);
 	}
 	LAUNCH_TRY(SparkNvrmKernelRunnable(request->kernel,owner));
+	LAUNCH_TRY(SparkNvrmLaunchClusterShape(request,cluster,owner));
 	if ( gpu->local_bytes_per_thread < request->kernel->stack_bytes + SPARK_NVRM_LOCAL_EXTRA_BYTES )
 	{
 		const SparkStatus status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"kernel_launch",owner,0,
@@ -229,6 +280,7 @@ SparkStatus SparkNvrmLaunchQueue(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, c
 		request->slot + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_address + SPARK_NVRM_LAUNCH_QMD_BYTES,request->slot_bytes - SPARK_NVRM_LAUNCH_QMD_BYTES,
 		owner));
 	LaunchShape(gpu,program,request,&shape);
+	memcpy(shape.cluster,cluster,sizeof(shape.cluster));
 	LAUNCH_TRY(SparkNvrmQmdBuild(&shape,&qmd,owner));
 	memcpy(request->slot,qmd.word,sizeof(qmd.word));
 	word = (uint32_t)(request->slot_address >> 8);

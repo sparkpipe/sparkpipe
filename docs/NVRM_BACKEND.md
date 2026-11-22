@@ -523,6 +523,9 @@ launch-shape probe and first light:
   upload then a kernel. Each kernel holds for 1 ms before it writes. With the
   cross-channel wait removed, every transition reads most words out of order;
   the device contract's 400 KB kernel, copy and kernel round did not catch it.
+- **`tests/nvrm/cluster_launch.cu`** (`build/test_nvrm_cluster_launch`)
+  checks cluster numbering, shared memory read across a cluster and
+  dependent launches, and the cluster refusals (see Clusters below).
 - **`tests/test_nvrm_queue_order.c`** is the ordering contract: a
   copy-engine fill then a kernel reading it, a kernel writing then a
   copy-engine copy of it, 32 rounds each, then 32 back-to-back sets of
@@ -755,10 +758,32 @@ macro both stay on the CUDA fronts. Their implementation is
   parameter table: the count, each offset and size, and the total. A
   mismatch is refused, naming the parameter. It then launches with the
   packed block as the launch's constants.
-- **Not supported yet.** `LM_LAUNCH_DEPENDENT` and `LmLaunchClusterKernel`
-  are refused with `SPARK_GPU_ERROR_NOT_SUPPORTED`, naming the kernel,
-  until the launch descriptor carries programmatic dependence and clusters
-  (Phase 3).
+- **Dependent launches.** `LM_LAUNCH_DEPENDENT` launches in queue order,
+  like `LM_LAUNCH`: the grid starts after the grid before it has ended.
+  Its `griddepcontrol.wait` then passes at once, and a
+  `griddepcontrol.launch_dependents` in the grid before has nothing to
+  release. The outputs are the same as with CUDA's dependent launch. The
+  overlap CUDA allows, where the dependent grid starts while the one before
+  it finishes, is not used yet.
+- **Clusters.** A kernel compiled with a cluster shape (`__cluster_dims__`,
+  PTX `.reqnctapercluster`) runs in clusters of that shape on every launch,
+  as with `<<<>>>`. `LmLaunchClusterKernel` names a cluster of `cluster` by
+  1 by 1 blocks at launch for any kernel.
+  - Refused: a launch shape that differs from the compiled one, a kernel
+    that must run in clusters (`.explicitcluster`) launched without a
+    shape, a grid that is not a whole number of clusters on every axis, and
+    a cluster over 8 blocks or over the kernel's `.maxclusterrank`.
+  - The shapes come from the module manifest's `bound` lines.
+  - The launch descriptor is a GPC cluster grid
+    (`NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA`) with `GPC_CGA_WIDTH`,
+    `GPC_CGA_HEIGHT` and `GPC_CGA_DEPTH` set to the cluster shape
+    (`clcec0qmd.h`).
+  - `tests/nvrm/cluster_launch.cu` (in `make test-nvrm-gpu`) launches a
+    kernel compiled for clusters of 2, clusters of 4 and of 8 chosen at
+    launch, and a dependent writer and reader. Each cluster block records
+    its cluster numbering and reads a neighbour's shared memory across the
+    cluster. `make nvrm-cluster-launch` runs the same file in both flavours
+    and requires the same output bytes.
 - **Shared memory.** `LmKernelSharedMemoryOptIn` grants what the device has
   and refuses more.
 - **Release.** `SparkNvrmGpuRelease` destroys the default queue and the

@@ -186,6 +186,7 @@ SparkStatus SparkDeviceBackendInitialize(const SparkDeviceConfiguration *configu
 	properties->max_shared_bytes = NVRM_GROUP_SHARED_BYTES;
 	properties->max_constant_bytes = NVRM_PARAMETER_BYTES;
 	properties->properties = SPARK_DEVICE_PROPERTY_SHARED_ADDRESS | SPARK_DEVICE_PROPERTY_KERNEL_LIBRARIES | SPARK_DEVICE_PROPERTY_PARAMETER_BLOCKS |
+		SPARK_DEVICE_PROPERTY_CLUSTERS |
 		(nvrm_gpu.integrated != 0u ? SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY : 0u);
 	return(SPARK_STATUS_OK);
 }
@@ -1021,6 +1022,9 @@ SparkStatus SparkDeviceBackendKernelLaunch(SparkDeviceQueue *queue, const SparkD
 	request.dynamic_shared_bytes = launch->shared_bytes;
 	request.arguments = launch->constants;
 	request.argument_bytes = launch->constant_bytes;
+	request.cluster[0] = launch->cluster.x;
+	request.cluster[1] = launch->cluster.y;
+	request.cluster[2] = launch->cluster.z;
 	NVRM_TRY(SparkNvrmLaunch(&nvrm_gpu,NvrmOn(nvrm,&nvrm->channel),&compiled->library->program,&request,&value,queue->owner));
 	NvrmSlotTaken(nvrm,start,bytes,value);
 	memcpy(nvrm->kernel,kernel->name,sizeof(nvrm->kernel));

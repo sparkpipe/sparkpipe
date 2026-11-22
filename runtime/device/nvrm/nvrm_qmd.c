@@ -119,6 +119,9 @@ static const char *QmdShapeProblem(const SparkNvrmLaunchShape *shape)
 			return("a constant bank address is not 64-byte aligned");
 	if ( shape->release_address != 0u && (shape->release_address & (shape->release_timestamp != 0u ? 0xfu : 0x7u)) != 0u )
 		return("the release semaphore is not aligned to its structure");
+	if ( shape->cluster[0] != 0u && (shape->cluster[1] == 0u || shape->cluster[2] == 0u || shape->grid[0] % shape->cluster[0] != 0u ||
+		shape->grid[1] % shape->cluster[1] != 0u || shape->grid[2] % shape->cluster[2] != 0u) )
+		return("a cluster launch's grid is a whole number of clusters on every axis");
 	return(0);
 }
 
@@ -185,6 +188,16 @@ static void QmdRelease(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
 		NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE_SEMAPHORE_FOUR_WORDS : NVCEC0_QMDV05_00_RELEASE_STRUCTURE_SIZE_SEMAPHORE_TWO_WORDS);
 }
 
+static void QmdCluster(QmdBuilder *builder, const SparkNvrmLaunchShape *shape)
+{
+	if ( shape->cluster[0] == 0u )
+		return;
+	QMD_PUT(builder,NVCEC0_QMDV05_00_QMD_TYPE,NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GPC_CGA_WIDTH,shape->cluster[0]);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GPC_CGA_HEIGHT,shape->cluster[1]);
+	QMD_PUT(builder,NVCEC0_QMDV05_00_GPC_CGA_DEPTH,shape->cluster[2]);
+}
+
 SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *qmd, const char *owner)
 {
 	QmdBuilder builder = {qmd,0};
@@ -216,6 +229,7 @@ SparkStatus SparkNvrmQmdBuild(const SparkNvrmLaunchShape *shape, SparkNvrmQmd *q
 	QmdShape(&builder,shape);
 	QmdBanks(&builder,shape);
 	QmdRelease(&builder,shape);
+	QmdCluster(&builder,shape);
 	if ( builder.refused != 0 )
 	{
 		char text[128];

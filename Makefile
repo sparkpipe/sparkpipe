@@ -1699,7 +1699,22 @@ nvrm-fault-reports: nvrm-gpu-present build/nvrm_fault_reports
 		mark=$$(tools/nvrm_kernel_log.sh mark); echo "RUN a plain kernel after the $$mode fault"; ./build/nvrm_fault_reports plain || status=1; \
 		tools/nvrm_kernel_log.sh check $$mark || status=1; done; exit $$status
 
-NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels
+build/test_nvrm_cluster_launch: tests/nvrm/cluster_launch.cu tools/nvrm_kernel_manifest.py $(NVRM_HOSTED_HEADERS) $(DEVICE_NVRM_LIBRARY) | build
+	$(NVRM_HOSTED_MODULE)
+
+build/cuda_cluster_launch: tests/nvrm/cluster_launch.cu | build
+	$(NVCC) $(NVCCFLAGS) $(CORE_INCLUDE_FLAGS) $< -o $@
+
+NVRM_FLAVOUR_GOALS += nvrm-cluster-launch
+.PHONY: nvrm-cluster-launch
+nvrm-cluster-launch: nvrm-gpu-present build/test_nvrm_cluster_launch build/cuda_cluster_launch
+	@./build/cuda_cluster_launch cuda > build/cluster_launch.cuda.txt; cuda=$$?; ./build/test_nvrm_cluster_launch nvrm > build/cluster_launch.nvrm.txt; nvrm=$$?; \
+		cat build/cluster_launch.cuda.txt build/cluster_launch.nvrm.txt; [ $$cuda -eq 0 ] && [ $$nvrm -eq 0 ] && \
+		grep '^digest' build/cluster_launch.cuda.txt > build/cluster_launch.cuda.digests && grep '^digest' build/cluster_launch.nvrm.txt > build/cluster_launch.nvrm.digests && \
+		diff build/cluster_launch.cuda.digests build/cluster_launch.nvrm.digests && \
+		echo "PASS cluster and dependent launches over nvrm write the CUDA flavour's bytes in $$(wc -l < build/cluster_launch.cuda.digests) cases"
+
+NVRM_GPU_TEST_BINARIES := build/test_nvrm_launch_dimensions build/test_nvrm_memory build/test_nvrm_queue_order build/test_device_contract_nvrm build/test_nvrm_module_state build/test_nvrm_register_gpu build/test_nvrm_hosted_launch build/test_nvrm_gpu_api build/test_device_shared_memory_nvrm build/test_nvrm_shared_coherence build/test_nvrm_queue_channels build/test_nvrm_cluster_launch
 NVRM_CONTROL_DEVICE := /dev/nvidiactl
 
 NVRM_FLAVOUR_GOALS += nvrm-gpu-present

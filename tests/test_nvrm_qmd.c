@@ -5,6 +5,7 @@
 #include "sparkpipe/spark_device.h"
 #include "runtime/device/nvrm/nvrm_cubin.h"
 #include "runtime/device/nvrm/nvrm_qmd.h"
+#include "runtime/device/nvrm/nvrm_launch.h"
 
 #define MW(range) range
 #include "classes/compute/clcec0qmd.h"
@@ -149,6 +150,69 @@ static void TestReleaseTimestamp(const SparkNvrmCubinKernel *kernel)
 	shape.release_address = 0u;
 	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"untimed") == SPARK_STATUS_OK && FIELD(&qmd,NVCEC0_QMDV05_00_RELEASE_ENABLE(0)) == 0u,
 		"a launch without a semaphore releases nothing");
+}
+
+static void TestCluster(const SparkNvrmCubinKernel *kernel)
+{
+	SparkNvrmLaunchShape shape = ShapeFor(kernel);
+	SparkNvrmQmd qmd;
+	shape.grid[0] = 8u;
+	shape.cluster[0] = 2u;
+	shape.cluster[1] = 2u;
+	shape.cluster[2] = 1u;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"cluster") == SPARK_STATUS_OK &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_QMD_TYPE) == NVCEC0_QMDV05_00_QMD_TYPE_GRID_GPC_CGA && FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_WIDTH) == 2u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_HEIGHT) == 2u && FIELD(&qmd,NVCEC0_QMDV05_00_GPC_CGA_DEPTH) == 1u &&
+		FIELD(&qmd,NVCEC0_QMDV05_00_GRID_WIDTH) == 8u,"a cluster launch is a GPC cluster grid with the cluster's width, height and depth");
+	shape.grid[0] = 7u;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"cluster") == SPARK_STATUS_INVALID_ARGUMENT &&
+		strstr(SparkDeviceLastError()->text,"whole number of clusters") != 0,"a grid that is not a whole number of clusters is refused");
+	shape.grid[0] = 64u;
+	shape.grid[1] = 1u;
+	shape.cluster[0] = 64u;
+	shape.cluster[1] = 1u;
+	CHECK(SparkNvrmQmdBuild(&shape,&qmd,"cluster") == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"GPC_CGA_WIDTH") != 0,
+		"a cluster wider than its descriptor field is refused");
+}
+
+static SparkStatus ClusterShape(const SparkNvrmCubinKernel *kernel, uint32_t groups, uint32_t asked, uint32_t cluster[3])
+{
+	SparkNvrmLaunchRequest request;
+	memset(&request,0,sizeof(request));
+	request.kernel = kernel;
+	request.grid[0] = groups;
+	request.grid[1] = request.grid[2] = 1u;
+	request.cluster[0] = asked;
+	request.cluster[1] = request.cluster[2] = asked != 0u ? 1u : 0u;
+	return(SparkNvrmLaunchClusterShape(&request,cluster,"cluster shape"));
+}
+
+static void TestClusterShape(const SparkNvrmCubinKernel *fixture)
+{
+	SparkNvrmCubinKernel kernel = *fixture;
+	uint32_t cluster[3] = {9u, 9u, 9u};
+	CHECK(ClusterShape(&kernel,8u,0u,cluster) == SPARK_STATUS_OK && cluster[0] == 0u && cluster[1] == 0u && cluster[2] == 0u,
+		"a kernel without clusters launches without one");
+	CHECK(ClusterShape(&kernel,8u,4u,cluster) == SPARK_STATUS_OK && cluster[0] == 4u && cluster[1] == 1u && cluster[2] == 1u,
+		"any kernel can be launched in clusters the launch names");
+	kernel.clustered = 1u;
+	kernel.cluster[0] = 2u;
+	kernel.cluster[1] = kernel.cluster[2] = 1u;
+	CHECK(ClusterShape(&kernel,8u,0u,cluster) == SPARK_STATUS_OK && cluster[0] == 2u && cluster[1] == 1u && cluster[2] == 1u,
+		"a kernel compiled for clusters runs in them when the launch names none");
+	CHECK(ClusterShape(&kernel,8u,2u,cluster) == SPARK_STATUS_OK && cluster[0] == 2u,"a launch may repeat the compiled cluster shape");
+	CHECK(ClusterShape(&kernel,8u,4u,cluster) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"compiled for clusters of 2x1x1") != 0,
+		"a launch that names another cluster shape than the compiled one is refused");
+	CHECK(ClusterShape(&kernel,7u,0u,cluster) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"whole number of clusters") != 0,
+		"a grid that is not a whole number of compiled clusters is refused");
+	kernel.cluster[0] = kernel.cluster[1] = kernel.cluster[2] = 0u;
+	CHECK(ClusterShape(&kernel,8u,0u,cluster) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"launch it with a cluster shape") != 0,
+		"a kernel that must run in clusters without a compiled shape needs one at launch");
+	CHECK(ClusterShape(&kernel,16u,16u,cluster) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"over the limit of 8") != 0,
+		"a cluster over eight blocks is refused");
+	kernel.cluster_limit = 2u;
+	CHECK(ClusterShape(&kernel,8u,4u,cluster) == SPARK_STATUS_INVALID_ARGUMENT && strstr(SparkDeviceLastError()->text,"over the limit of 2") != 0 &&
+		ClusterShape(&kernel,8u,2u,cluster) == SPARK_STATUS_OK,"a kernel's own cluster rank bound lowers the limit");
 }
 
 typedef struct Broken
@@ -303,6 +367,8 @@ int main(void)
 		TestRefusals(kernel);
 		TestSharedConfiguration(kernel);
 		TestBank0(kernel);
+		TestCluster(kernel);
+		TestClusterShape(kernel);
 		SparkNvrmCubinRelease(&cubin);
 	}
 	TestFieldAccess();
