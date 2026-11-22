@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""tools/turn_floor.py times an engine's turns by token ids and splits each first token's time into send, queue, restore, the prefill waves and the one-row wave of the last prompt token, using only the engine's own log. This test serves a stub engine that logs as release c2b714343 does (waves over every prompt token but the last, the last token as a wave of one row that yields the first token, then chains whose tokens share one stamp), keeps its own record of each of those times, runs every arm against it and checks that the split recovers them. The stub's sleeps set only a lower bound: a host that sleeps long changes what the stub records, never whether the split agrees with it."""
+"""tools/turn_floor.py times an engine's turns by token ids and splits each first token's time into send, queue, restore, the prefill waves and the one-row wave of the last prompt token, using only the engine's own log. This test serves a stub engine that logs as release c2b714343 does (waves over every prompt token but the last, the last token as a wave of one row that yields the first token, then chains whose tokens share one stamp) and reuses as the exact-reuse rules do (a wave ends at each cut the request names, a request resumes only at a wave end of its own where an earlier request with the same wave ends kept state, state is kept one token before the prompt's end and at the cuts in keep, and a reply's pages are never reused), keeps its own record of each of those times, runs every arm against it and checks that the split recovers them. The stub's sleeps set only a lower bound: a host that sleeps long changes what the stub records, never whether the split agrees with it."""
 import hashlib
 import http.server
 import importlib.util
@@ -59,7 +59,6 @@ class Stub:
         self.log = open(log_path, "a")
         self.lock = threading.Lock()
         self.busy = threading.Lock()
-        self.seen = []
         self.next_id = 100000
         self.restore_next = False
         self.store = {"save_pages": EARLIER_SAVES, "save_ns": EARLIER_SAVES * 1000000, "restore_pages": 0, "restore_ns": 0}
@@ -69,18 +68,19 @@ class Stub:
         self.restored_ms = 0.0
         self.answers_state = True
         self.state_cuts = []
+        self.points = set()
         self.unordered = 0
 
-    def cached(self, ids):
-        best = 0
-        for earlier in self.seen:
-            shared = 0
-            for left, right in zip(earlier, ids):
-                if left != right:
-                    break
-                shared += 1
-            best = max(best, min(shared, len(ids) - 1))
-        return best
+    @staticmethod
+    def wave_ends(ids, cuts):
+        return sorted({cut for cut in cuts if cut < len(ids) - 1} | {len(ids) - 1})
+
+    def kept(self, ids, cuts, keep):
+        ends = self.wave_ends(ids, cuts)
+        return [(end, (hashlib.sha256(json.dumps(ids[:end]).encode()).hexdigest(), tuple(cut for cut in ends if cut <= end)), end == len(ids) - 1 or end in keep) for end in ends]
+
+    def cached(self, ids, cuts=()):
+        return max([end for end, key, _ in self.kept(ids, cuts, ()) if key in self.points], default=0)
 
     def report_store(self):
         self.write(json.dumps(dict({"event": "kv_store_report", "boot_pid": BOOT, "rank": 0, "residentd_pid": 7}, **self.store), separators=(",", ":")))
@@ -100,10 +100,11 @@ class Stub:
 
     def serve(self, body, emit):
         ids, budget = body["prompt_token_ids"], body["max_tokens"]
+        cuts, keep = body.get("cuts") or [], body.get("keep") or []
         with self.lock:
             self.next_id += 1
             request_id = self.next_id
-            cached = self.cached(ids)
+            cached = self.cached(ids, cuts)
             restore, self.restore_next = self.restore_next, False
         accepted = time.monotonic_ns()
         self.requests.append({"priority": body.get("priority"), "speculation": body.get("speculation"), "prompt": len(ids), "cached": cached,
@@ -119,18 +120,18 @@ class Stub:
                 self.store["restore_ns"] += int(RESTORE_MS * 1e6)
                 self.report_store()
             dispatched = time.monotonic_ns()
-            rows_left, done, first = len(ids) - 1 - cached, cached, True
-            while rows_left > 0:
-                rows = min(rows_left, WAVE_ROWS)
-                if not first:
-                    time.sleep(WAVE_GAP_MS / 1000)
-                began = time.monotonic_ns()
-                time.sleep(WAVE_MS / 1000)
-                wall = (time.monotonic_ns() - began) / 1e6
-                done += rows
-                self.step(request_id, "prefill", rows, 1, wall, done, 0.0 if first else WAVE_GAP_MS)
-                rows_left -= rows
-                first = False
+            done, first = cached, True
+            for end in [end for end in self.wave_ends(ids, cuts) if end > cached]:
+                while done < end:
+                    rows = min(end - done, WAVE_ROWS)
+                    if not first:
+                        time.sleep(WAVE_GAP_MS / 1000)
+                    began = time.monotonic_ns()
+                    time.sleep(WAVE_MS / 1000)
+                    wall = (time.monotonic_ns() - began) / 1e6
+                    done += rows
+                    self.step(request_id, "prefill", rows, 1, wall, done, 0.0 if first else WAVE_GAP_MS)
+                    first = False
             if not first:
                 time.sleep(WAVE_GAP_MS / 1000)
             began = time.monotonic_ns()
@@ -149,7 +150,7 @@ class Stub:
                 emit(chain, cached, None)
         emit([], cached, "length")
         with self.lock:
-            self.seen.append(list(ids) + [token for token, _ in tokens][:-1])
+            self.points.update(key for _, key, held in self.kept(ids, cuts, keep) if held)
         self.store["save_pages"] += 1
         self.store["save_ns"] += 1000000
         self.report_store()
@@ -198,7 +199,7 @@ def handler(stub):
                     self.send_error(404)
                     return
                 stub.state_cuts.append(body.get("cuts") or [])
-                held = stub.cached(body["prompt_token_ids"] + [0])
+                held = stub.cached(body["prompt_token_ids"], body.get("cuts") or [])
                 self.reply({"object": "cache.state", "complete": True, "prompt_tokens": len(body["prompt_token_ids"]), "matched_tokens": held, "resume_tokens": held,
                             "probed_tokens": held, "ranks": 1, "ranks_reported": 1, "ranks_failed": 0, "held_tokens": held, "resident_tokens": held, "saved_tokens": 0,
                             "state_tokens": held, "read_tokens": held, "boot": str(BOOT)})
@@ -385,9 +386,9 @@ check(stub.unordered == 0 and all(row.get("error") is None for row in short_turn
       f"{stub.unordered} refused, {[request['cuts'] for request in short_requests]} {short_questions}")
 asked = summary["cache_states"]
 check(len(asked) == 2 and asked[0]["event"] == "after the turns" and asked[0]["http_status"] == 200 and asked[0]["answer"]["ranks_failed"] == 0 and
-      asked[0]["answer"]["held_tokens"] == asked[0]["history_tokens"] == asked[0]["answer"]["prompt_tokens"] and asked[0]["answer"]["resident_tokens"] == asked[0]["history_tokens"] and
-      asked[1]["http_status"] == 404,
-      f"the truth arm asks the engine what it holds of the session and keeps the answer, and an engine without the endpoint is recorded, not fatal: {asked}")
+      asked[0]["answer"]["held_tokens"] == asked[0]["history_tokens"] - 1 and asked[0]["history_tokens"] == asked[0]["answer"]["prompt_tokens"] and
+      asked[0]["answer"]["resident_tokens"] == asked[0]["history_tokens"] - 1 and asked[1]["http_status"] == 404,
+      f"the truth arm asks the engine what it holds of the session, which is all but the last token a request on it would compute, and keeps the answer; an engine without the endpoint is recorded, not fatal: {asked}")
 timed = ("queue_ms", "restore_ms", "prefill_ms", "first_step_ms", "prefill_waves", "prefill_rows", "decode_tok_s", "restore_polls", "request_id")
 check(cut["log_start"] == log_start and cut["log_base"] < cut["log_start"] and cut["baseline_reports"] == 1 and cut["kept"] < cut["lines"] and len(recut) == len(rows) and
       all({name: one.get(name) for name in timed} == {name: other.get(name) for name in timed} for one, other in zip(rows, recut)) and
@@ -426,9 +427,10 @@ served = [row for row in rows if row["kind"] == "decode_served"]
 check(len(served) == 2 and all(row["speculation"] is None and row["output_tokens"] == 10 and row["prefill_tokens"] == 1 for row in served) and
       "Decode as served, tok/s, by context." in tables, f"each level ends with a reply as served on the whole history: {[(row['context'], row['output_tokens']) for row in served]}")
 small = [row for row in turns if row["tail"] == 50]
-check(all(row["prefill_tokens"] == 51 for row in small), f"a turn prefills its new tail and the last reply token: {[row['prefill_tokens'] for row in small]}")
-check(all(row["prefill_waves"] == 1 and row["prefill_ms"] >= WAVE_MS + WAVE_GAP_MS - EARLY_MS for row in small),
-      f"a small tail costs one prefill wave: {[(row['prefill_waves'], round(row['prefill_ms'], 1)) for row in small]}")
+check(all(row["prefill_tokens"] == 1 + 6 + 50 for row in small),
+      f"a turn resumes one token before the previous prompt's end and prefills that token, the previous reply and its new tail: {[row['prefill_tokens'] for row in small]}")
+check(all(row["prefill_waves"] == 2 and row["prefill_ms"] >= 2 * WAVE_MS + 2 * WAVE_GAP_MS - EARLY_MS for row in small),
+      f"a small tail costs two prefill waves, one that ends where the previous reply ended and one for the tail: {[(row['prefill_waves'], round(row['prefill_ms'], 1)) for row in small]}")
 check(all(row["first_step_ms"] >= STEP_MS - EARLY_MS and row["decode_step_kind"] == "chain" for row in small),
       f"the first token costs the one-row wave of the last prompt token, and the chains come after it: {[round(row['first_step_ms'], 1) for row in small]}")
 check(all(row["queue_ms"] >= QUEUE_MS - EARLY_MS and row["restore_ms"] == 0 and row["restore_polls"] == 0 for row in small),
@@ -445,9 +447,11 @@ check(grow["cached_tokens"] == 0 and grow["prefill_waves"] == 4 and grow["prefil
       near(grow["between_waves_ms"], grow["prefill_ms"] - grow["waves_ms"], 0.001) and grow["between_waves_ms"] >= 4 * WAVE_GAP_MS - EARLY_MS,
       f"a cold prompt's prefill is the sum of its waves and the gaps between them: {grow['prefill_waves']} waves, {round(grow['prefill_ms'], 1)} ms")
 decode = [row for row in rows if row["kind"] == "decode"]
-check(len(decode) == 2 and all(row["prefill_tokens"] == 1 and row["prefill_waves"] == 0 and row["output_tokens"] == 12 and row["first_step_ms"] >= STEP_MS - EARLY_MS and
-                               row["prefill_ms"] < row["first_step_ms"] for row in decode),
-      f"the decode sample resumes the whole history, so its first token costs the last token's wave and no other: {[(round(row['prefill_ms'], 2), round(row['first_step_ms'], 2)) for row in decode]}")
+check(len(decode) == 2 and all(row["prefill_tokens"] == 1 + 6 and row["prefill_waves"] == 1 and row["output_tokens"] == 12 and row["first_step_ms"] >= STEP_MS - EARLY_MS and
+                               row["prefill_ms"] >= WAVE_MS + WAVE_GAP_MS - EARLY_MS for row in decode),
+      f"the decode sample computes the last reply again in one wave and then the last token's wave: {[(round(row['prefill_ms'], 2), round(row['first_step_ms'], 2)) for row in decode]}")
+check(all(row["prefill_waves"] == 0 and row["prefill_ms"] < row["first_step_ms"] for row in served),
+      f"the same history sent again resumes one token before its end, so its first token costs the last token's wave and no other: {[(round(row['prefill_ms'], 2), round(row['first_step_ms'], 2)) for row in served]}")
 check(all(row["decode_tok_s"] is not None and row["decode_tok_s"] <= 1.01 * 1000 / STEP_MS for row in decode),
       f"the decode sample's rate is no faster than the stub's steps: {[row.get('decode_tok_s') for row in decode]}")
 second = next(row for row in rows if row["kind"] == "subagent_second")
@@ -461,7 +465,7 @@ check(behind and all(row["priority"] == 2 for row in behind) and any(request["pr
 check(any(row["queue_ms"] > 10 for row in behind), f"a probe that arrives during a background wave shows the wait as queue time: {[round(row['queue_ms'], 1) for row in behind]}")
 resume = next(row for row in rows if row["kind"] == "resume")
 check(resume["event"] == "swap" and resume["restore_ms"] >= RESTORE_MS + QUEUE_MS - EARLY_MS and resume["restore_polls"] == 1 and resume["queue_ms"] == 0 and
-      resume["prefill_waves"] == 1 and resume["prefill_ms"] >= WAVE_MS + WAVE_GAP_MS - EARLY_MS,
+      resume["prefill_waves"] == 2 and resume["prefill_ms"] >= 2 * WAVE_MS + 2 * WAVE_GAP_MS - EARLY_MS,
       f"a request the ranks answered pending waited for a restore, apart from its prefill: {round(resume['restore_ms'], 1)} ms restore, {round(resume['prefill_ms'], 1)} ms prefill")
 check(resume["store"]["restore_pages"] > 0 and resume["store"]["restore_ns"] == int(RESTORE_MS * 1e6), f"the resume's restored pages come from the engine's store reports: {resume['store']}")
 check(resume["cache_matched_tokens"] == resume["cached_tokens"] + 3 and resume["cache_resumed_tokens"] == resume["cached_tokens"] and resume["cache_boot"] == str(BOOT) and

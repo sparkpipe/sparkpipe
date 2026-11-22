@@ -1,0 +1,22 @@
+2026-11-22T03:58:21Z hold job starts at minute 0; no new step after minute 35, lane closed by minute 41; release b18810e38
+2026-11-22T03:58:21Z block g2 starts at minute 0, 35 minutes left for new steps: --cases prefix,kept,opening,session,committed --kept-contexts 8000 --reply-tokens 32 --max-tokens 16 --contexts 8000,32000 --tails 1,500 --served-tokens 32
+2026-11-22T04:12:52Z block g2 ended rc=0 at minute 14: verdict=PASS 2026-11-22T04:12:52Z GX-PASS qwen3.8-27b-fp8-one-gb10
+2026-11-22T04:12:52Z item 4 check starts at minute 14
+2026-11-22T04:14:47Z item 4 check ended at minute 16: /var/tmp/gx-1rank/runs/i4/result.txt:ITEM4 HOLDS: page cache entries at stop after the session: entries=152 with a 16-token last reply, entries=152 with a 144-token one (out=144); private=0 
+2026-11-22T04:14:47Z block g3 starts at minute 16, 19 minutes left for new steps: --cases prefix,kept,opening,session,committed --kept-contexts 8000 --reply-tokens 32 --max-tokens 16 --contexts 8000,32000 --tails 40,5000 --served-tokens 0
+2026-11-22T04:34:10Z block g3 ended rc=0 at minute 35: verdict=PASS 2026-11-22T04:34:10Z GX-PASS qwen3.8-27b-fp8-one-gb10
+2026-11-22T04:34:10Z drafted case not started: 0 minutes left for new steps
+20261122T043413Z stop model_api pid=68417
+20261122T043414Z stop residentd pid=68268
+20261122T043432Z engine stopped; snapshot files: 2649; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=2633 unsaved_entries=0 ineligible_entries=0 used_bytes=13378355200 files=2648 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_
+20261122T043432Z stop weightd pid=55691
+20261122T043433Z trace strace-weightd.log: lines=14210 home_ledger=0 unlink_outside=7 rename_outside=0 write_open_outside=11953 write_open_inside=34 unlink_inside=3 rename_inside=0 read_open_outside=273 root_ledger_open=1 unlink_done_outside=0 rename_done_outside=0 file_write_outside=0 stop=0
+20261122T043433Z trace strace-residentd.log: lines=62685 home_ledger=0 unlink_outside=98 rename_outside=0 write_open_outside=1287 write_open_inside=17517 unlink_inside=14 rename_inside=17461 read_open_outside=18674 root_ledger_open=14 unlink_done_outside=0 rename_done_outside=0 file_write_outside=0 stop=0
+20261122T043434Z the traced starts touched nothing outside the lane; later starts run without strace
+20261122T043434Z stopped; MemAvailable 115 GiB
+20261122T043434Z reclaimed: KV files under the lane 0, ledger 0, folder 115M
+weightd=down residentd=down api=down
+health: 
+MemAvailable 115 GiB; boot 2026-11-20 08:28:58; guard active; disk free 742 GiB
+snapshot files 0; backing files 0; violation none; traced=no
+2026-11-22T04:34:34Z HOLD-CLOSED at minute 36: lane processes 0, KV files 0, NVRM or Xid lines in the hold 0

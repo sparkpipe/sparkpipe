@@ -17,7 +17,10 @@ OLD_WD=${OLD_WD:?OLD_WD is the 16-hex weightd every node runs before this releas
 NEW_WD=$(shasum -a 256 "$FW/sparkpipe_weightd" | cut -c1-16)
 MODELS="qwen3.8-max glm-5.3 kimi-k3 kimi-k3.1-pro glm-5.3-flash qwen3.8-27b qwen3.8-27b-fp8 qwen3.8-flash deepseek-v4.1-flash gemma-4-31b gemma-4-26b-a4b ling-3.0-flash ling-3.0-flash-fin hy4-preview muse-glimmer-30b laguna-s-2.1 mimo-v2.6-flash mimo-v2.6-pro k-exaone-2.0 a.x-k2 solar-open-2"
 GX_MODELS="kimi-k3.1-pro kimi-k3 glm-5.3 glm-5.3-flash qwen3.8-27b qwen3.8-max deepseek-v4.1-flash"
-for id in $GX_MODELS; do case " $MODELS " in *" $id "*) ;; *) echo "GX_MODELS names $id, which MODELS does not: refusing to run" >&2; exit 1;; esac; done
+GX_NOT_GATED=""
+for id in $GX_MODELS $GX_NOT_GATED; do case " $MODELS " in *" $id "*) ;; *) echo "GX_MODELS or GX_NOT_GATED names $id, which MODELS does not: refusing to run" >&2; exit 1;; esac; done
+GX_SHORT_MODELS=""
+for id in $MODELS; do case " $GX_MODELS $GX_NOT_GATED " in *" $id "*) ;; *) GX_SHORT_MODELS="$GX_SHORT_MODELS${GX_SHORT_MODELS:+ }$id" ;; esac; done
 row() { python3 "$KIT/../tools/lane_config.py" release-row "$1" 2>/dev/null; }
 python3 -c "import json,sys; sys.exit(sorted(sys.argv[2].split()) != sorted(json.load(open(sys.argv[1]))['lanes']))" "$KIT/../deployment/lanes.json" "$MODELS" || { echo "MODELS differ from the records in deployment/lanes.json: refusing to run" >&2; exit 1; }
 field() { local r k="$2"; r=$(row "$1") || return 1; set -- $r; case "$k" in lane) echo "$1";; fwlib) echo "$2";; lib) echo "$3";; api) echo "$4";; port) echo "$5";; label) echo "$6";; esac; }
@@ -191,8 +194,9 @@ case "$step" in
     done
     restore_max ;;
   gx)
-    stamp "gx ${ONLY:-$GX_MODELS}"
-    GX_RELEASE=$SHA GX_DIR=${GX_DIR:-$RD/gx} GX_OUT=${GX_OUT:-$STATE/gx} GX_END=qwen3.8-max "$KIT/gx_gate.sh" ${ONLY:-$GX_MODELS} || { echo "GX-FAILED: a served model's gate did not pass; its receipt is in ${GX_OUT:-$STATE/gx}"; exit 1; } ;;
+    stamp "gx ${ONLY:-$GX_MODELS $GX_SHORT_MODELS}"
+    [ -z "$GX_NOT_GATED" ] || echo "gx: not gated: $GX_NOT_GATED"
+    GX_RELEASE=$SHA GX_DIR=${GX_DIR:-$RD/gx} GX_OUT=${GX_OUT:-$STATE/gx} GX_END=qwen3.8-max GX_SHORT="$GX_SHORT_MODELS" "$KIT/gx_gate.sh" ${ONLY:-$GX_MODELS $GX_SHORT_MODELS} || { echo "GX-FAILED: a served model's gate did not pass; its receipt is in ${GX_OUT:-$STATE/gx}"; exit 1; } ;;
   restart)
     failed=0
     for id in ${ONLY:-$MODELS}; do

@@ -1097,6 +1097,116 @@ as recorded debt for models too large for a group.
 
 ## Prefix reuse (I23)
 
+- **Exact reuse (gate GX, `docs/EXACTNESS_GATE.md`), open items.**
+  - Gate GX has not run on the fleet. The engine rules are proven on the
+    host tests (`tests/test_model_batch_engine_mock.c`, the API test and
+    `tests/test_gx_gate.py`) and on one rank of one model, where the gate
+    passed (`qualification/gx-20261122/`). Its `drafted` case has not run on
+    a rank. Run the first runs of `docs/EXACTNESS_GATE.md`
+    on a release candidate, every lane included, and record the cost of the
+    rules in `PERFORMANCE_STATUS.md`: prefill speed with the extra wave ends,
+    and time per turn with the previous reply computed again.
+  - A follow-up turn computes the previous reply again as prefill, from one
+    token before the earlier prompt's end. The other exact form commits a
+    finished reply at once, so the next turn resumes where the reply ends:
+    the chat layer's `reply_commit` model setting, off for every model. The
+    waves are the same in both forms; a commit only starts the reply's wave
+    before the next turn arrives. Neither form is measured. The gate's
+    `session` and `committed` units give the time per turn of each: turn the
+    setting on for the models where the committed form is faster, and record
+    both in `PERFORMANCE_STATUS.md`.
+  - The engine test (`tests/test_model_batch_engine_mock.c`) replays the lanes
+    of thirteen scenarios through a host page cache, in the order the engine
+    sent them, so a lane sequence the rank refuses fails there: the fault the
+    gate's first block found on a rank does. Not replayed: scenarios that
+    script a rank's refusal or loss, the draft scenarios with their own
+    drivers (lookup, tree, long verify, model drafts), and the recurrent
+    state store, so the rules about kept state are still proven on a rank
+    only. The API test's adapter keeps no page cache at all.
+  - A reply commit whose conversation never continues is one wasted wave, in
+    the background class. The chat layer commits every reply it
+    records. It could commit only replies that end in a tool call, where the
+    next turn is certain.
+  - A prompt that takes the streamed prefill still publishes the blocks of
+    its streamed span, under identities no other request can name. They stay
+    in the rank page cache, unread, until eviction takes them. No lane in
+    `deployment/lanes.json` streams. When one does, name no identity for the
+    span, as the waves after it already do, so its blocks leave at release.
+  - The engine no longer sends a publish frame or a publish flag after a
+    request's last cut, so three things are now unused: the publish-only
+    work kind (`SPARK_MODEL_SERVING_WORK_KIND_CACHE_PUBLISH`) with the
+    engine's deferred decode publication, the adapter capability check that
+    a speculating adapter can publish decode checkpoints, and the
+    staged-publish lane flag (`SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED`,
+    `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED`) with the page cache's
+    promotion of a staged state. Remove them together.
+  - Every prompt of at least one block now ends with a one-row wave for its
+    last token, on every adapter. GLM 5.3 Full, which keeps no recurrent
+    state, used to run its last token in the last wave.
+  - A history rendered from text names its replies' cuts from the control
+    tokens around each assistant turn, but only when no reply of the history
+    is replayed. A history that mixes replayed replies and replies without a
+    record names cuts for the replayed ones alone, so the turn resumes at
+    the last cut before the first reply without one. Name the others from
+    the text between the replayed turns.
+  - A reply rendered from text gets its first cut only when the history's
+    assistant header carries the generation prompt less its last token. A
+    template that opens reasoning in the generation prompt and renders
+    history without it has no such position, so its turns resume at the
+    reply's end of the turn before, or at an anchor.
+  - The engine keeps the newest four states on a path that are not on a
+    checkpoint anchor and drops the oldest first. In an opening the oldest
+    are the most widely shared, so a session's own turns release its
+    opening's states within a few turns, and the chat layer therefore asks
+    for state at few places. Kept states need a class of their own and a
+    bound, apart from the states of a session's turns (stage 2).
+  - The 8-token margin of a block's cut (`tools/serving/prompt_cuts.py`) is
+    measured on one of the thirteen served tokenizers only: Qwen 3.8 (four
+    lanes), over 4,614 paragraph ends of 79 repository texts, each with four
+    joins, where at most 2 trailing tokens changed (0 in 92%, 1 in 8%, 2 in
+    three cases). The other twelve are measured where their files are: run
+    `prompt_cuts.py margin` with every model directory of
+    `deployment/hub/chat_frontend.json`; it fails when the margin is not
+    above the worst count, and `docs/EXACTNESS_GATE.md` lists the result
+    for each. A tokenizer that needs more only makes two prompts share less
+    at that block, never differ.
+  - A block's cut falls on a 64-token grid on every lane. DeepSeek V4.1
+    Flash has 256-token cache blocks, so three of four such cuts end inside
+    a cache block there. Reuse is exact either way; the state kept at such a
+    cut holds a partly filled page. Take the grid from the engine once its
+    API reports the block size.
+  - Each state kept at a block's cut is one recurrent-state copy in the
+    lane's state store. A head with many system blocks keeps one per block.
+    Measure what a head costs to compute cold with its cuts, and what its
+    states take, before raising the number of blocks a client may mark.
+  - The head's cuts cost each request a digest of its system prompt, tools
+    and first user message, and each new head one render and one
+    tokenization per block (cached by that digest). Not measured.
+  - A block of the head is found in the rendered prompt by its text. A
+    template that rewrites a block's text (trims it, escapes it) gets no cut
+    for that block.
+  - A pack's `resume_from` is an estimate from the model's `resume_tokens`
+    (64 for every model in `deployment/hub/chat_frontend.json`). A refreshed
+    pack resumes at a checkpoint anchor or a row-budget wave end, so the
+    estimate overstates. Set `resume_tokens` per model to the spacing of its
+    kept wave ends, or report the engine's cached tokens alone.
+  - The chat tests' engine stand-in (`tests/chat_harness_fixture.py`) still
+    reports cached tokens by the longest prefix shared with any earlier
+    prompt or reply. It also records where the engine's rules resume each
+    request (`resumes`, the model of the gate's stand-in in
+    `tests/test_gx_gate.py`), and the commit, messages and pack tests assert
+    it. Make the reported cached tokens follow that model too, so every chat
+    test's cached count is the engine's.
+  - A lane with a streamed prefill computes every prompt that streams whole
+    and shares none of it, so on such a lane a follow-up turn of a long
+    prompt pays the whole prefill again. Reuse there needs the streamed
+    span to end at cuts and its passes to split at fixed places, so that a
+    resumed request computes what the cold one does.
+  - The same request under concurrency shares its waves with other requests'
+    rows. Exactness there waits for batch-invariant kernels (Dynamic
+    batching, below). The gate's `crowd` step measures the difference and
+    does not judge it; it has not run on the fleet.
+
 Prefix reuse is required and non-compliant adapters are refused at load
 ([`docs/DRIVER_ACCEPTANCE.md`](docs/DRIVER_ACCEPTANCE.md), Prefix reuse is
 required).

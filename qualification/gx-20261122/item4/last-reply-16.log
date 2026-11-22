@@ -1,0 +1,3 @@
+2026-11-22T04:13:28Z chain session/8000/500/turn1 prompt=8521 cached=0 out=32 13.2s
+2026-11-22T04:13:33Z chain session/8000/500/turn2 prompt=9053 cached=8520 out=32 5.2s
+2026-11-22T04:13:37Z chain session/8000/500 prompt=9585 cached=9052 out=16 3.4s

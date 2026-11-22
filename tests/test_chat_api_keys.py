@@ -30,6 +30,8 @@ class FakeModel:
     def __init__(self, name):
         self.id = name
         self.context_tokens = 4096
+        self.block_tokens = 64
+        self.engine_block = None
         self.max_output_tokens = 1024
         self.reasoning_effort = {}
         self.reasoning = None

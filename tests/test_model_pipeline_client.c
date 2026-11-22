@@ -1407,7 +1407,7 @@ static void TestModelBatchEngineContinuous(
 			nanosleep(&span,0);
 		}
 	}
-	assert(state.first_prefill_row_count == 30u);
+	assert(state.first_prefill_row_count == 28u);
 	assert(state.first_prefill_lane_count == 2u);
 	TestModelBatchWaitIdle(engine,3u);
 	assert(state.accepted_count == 3u);
@@ -1415,16 +1415,17 @@ static void TestModelBatchEngineContinuous(
 	assert(state.completed_count == 3u);
 	assert(state.error_count == 0u);
 	{
-		uint32_t prefill_submissions = 0u;
+		uint32_t prefill_submissions = 0u,prefill_rows = 0u;
 		for (index=0u; index<state.submission_count; index++)
 		{
 			if ( state.submission_work_kinds[index] != SPARK_MODEL_SERVING_WORK_KIND_PREFILL )
 				continue;
-			assert(state.submission_row_counts[index] == 30u ||
-				state.submission_row_counts[index] == 15u);
+			assert(state.submission_row_counts[index] <= 32u);
+			prefill_rows += state.submission_row_counts[index];
 			prefill_submissions++;
 		}
-		assert(prefill_submissions == 2u);
+		assert(prefill_rows == 45u);
+		assert(prefill_submissions >= 3u && prefill_submissions <= 5u);
 	}
 	assert(SparkModelBatchEngineDestroy(engine) == SPARK_STATUS_OK);
 	memset(&state,0,sizeof(state));

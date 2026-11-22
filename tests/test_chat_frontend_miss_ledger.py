@@ -53,6 +53,15 @@ def unit(check):
     check(entry["cause"] is None and entry["tail_tokens"] == 400 and entry["miss_tokens"] == 1 and entry["session_turn"] == 2 and entry["session_tokens"] == 46500,
           f"a turn that extends its session and resumes at the reply's end has no cause: {entry}")
     ledger.settle(turn, 47000)
+    again = ledger.entry(facts(prompt_tokens=47300, seen_tokens=46976, seen_of=47000, seen_at=NOW, engine=engine(46899, 46899), now=NOW + 7))
+    check(again["cause"] == "reply_recomputed" and again["recomputed_tokens"] == 101 and again["lost_tokens"] == 0 and again["lost_reason"] is None and again["miss_tokens"] == 101 and
+          again["tail_tokens"] == 300,
+          f"a turn that resumes one token before its session's last prompt ended computed the reply again by rule, and nothing was lost: {again}")
+    short = ledger.entry(facts(prompt_tokens=47300, seen_tokens=46976, seen_of=47000, seen_at=NOW, engine=engine(46960, 46960), now=NOW + 7))
+    check(short["cause"] is None and short["lost_tokens"] == 0, f"a reply of no more than a block computed again needs no cause: {short}")
+    silent = ledger.entry(facts(prompt_tokens=47300, seen_tokens=46976, seen_of=47000, seen_at=NOW, engine=None, cached_tokens=46899, now=NOW + 7))
+    check(silent["cause"] == "reply_recomputed" and silent["recomputed_tokens"] == 101 and silent["engine_reported"] is False,
+          f"the same holds with an engine that reports only its cached tokens: {silent}")
     anchored = ledger.entry(facts(prompt_tokens=47300, seen_tokens=46976, seen_of=47000, seen_at=NOW, engine=engine(46999, 32768), now=NOW + 9))
     check(anchored["cause"] == "resume_point" and anchored["recomputed_tokens"] == 14231 and anchored["lost_tokens"] == 0 and anchored["miss_tokens"] == 14232,
           f"tokens between the engine's resume point and its match are recomputed, not lost: {anchored}")

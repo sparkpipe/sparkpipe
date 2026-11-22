@@ -232,7 +232,7 @@ work. `model_api` checks no API key and ignores the request's `model` field.
 | `GET /v1/models` | — | `{"object":"list","data":[{"id":...}]}`; the id is the served adapter's model id (for example `google/gemma-4-26B-A4B-it`); 503 with the bring-up state until every rank is ready |
 | `POST /v1/completions` | `prompt` (text) or `prompt_token_ids` | `text_completion` with `choices[0].text`, `finish_reason`, `usage`, `tokens` |
 | `POST /v1/chat/completions` | `messages`, or `prompt` or `prompt_token_ids` | `chat.completion` with `choices[0].message`, `finish_reason`, `usage`, `tokens` |
-| `POST /v1/cache/state` | `prompt_token_ids`, or `identity` (the 64 hex digits of a prefix's SHA-256) with `token_count` | `cache.state`: what the engine and every rank hold for that prefix (below) |
+| `POST /v1/cache/state` | `prompt_token_ids` with the `cuts` the request would name, or `identity` (the 64 hex digits of a prefix's SHA-256) with `token_count` | `cache.state`: what the engine and every rank hold for that prefix (below) |
 | anything else | — | `404 {"error":"not found"}` |
 
 Reply text is always valid UTF-8. When the emitted tokens leave a byte
@@ -264,6 +264,9 @@ Optional request fields:
 | `top_p` | above 0 and at most 1, default 1; samples from the smallest set of top tokens whose probability at the request's temperature reaches `top_p` |
 | `top_k` | unsigned integer up to 1048576, default 0 (off); samples from the `top_k` most likely tokens, applied before `top_p` |
 | `logprobs` | unsigned integer up to 20: return each emitted token's log-probability and that many top alternatives. The response adds `token_logprobs`, one entry per token in `tokens`: an array of `[token_id, logprob]` pairs, the emitted token first and the alternatives in descending order. Logprobs are the model's log_softmax at temperature 1 (before truncation); `null` stands for a value too small for a float |
+| `cuts` | array of up to 16,384 rising token counts inside the prompt: where the request's structure ends a prefill wave (where a shared prefix ends, one token before a reply began, where a reply ends). A later request resumes at a cut only when it names the same cuts up to there. Cuts change which waves compute the prompt, never the prompt. See `docs/EXACTNESS_GATE.md` |
+| `keep` | array of rising token counts: the cuts where the engine keeps state, so a later request can resume there. A count that is not a cut, or that lies inside the prompt's first cache block, is ignored. State is always kept one token before the prompt's end |
+| `commit_only` | boolean. `true` computes the prompt to its end, keeps the state there and generates nothing: the reply has no tokens, `finish_reason` is `commit` and `usage.published_tokens` is the position the engine marked as a resume point with state: the prompt's end, or 0 when the mark failed or the prompt took the streamed prefill and shares nothing. It takes no `max_tokens` or `logprobs` (`400 commit_only_conflict`) |
 | `speculation` | boolean, default `true`. `false` makes the engine draft nothing for this request, neither lookup nor model drafts, so every token is one plain decode step. Chained decode steps are unchanged, so this measures decode without speculation. A request that asks for `logprobs` never drafts either, but it also decodes one step per submission |
 | `chat_template_kwargs` | `messages` requests only, exactly `{"enable_thinking": bool}`; default `false` |
 
@@ -319,7 +322,8 @@ An older `model_api` refuses a `model_resident.json` that carries
 install as the API binary that reads it.
 
 A malformed `stream`, `priority`, `deadline_ms`, `temperature`, `seed`,
-`top_p`, `top_k`, `logprobs`, `speculation` or `chat_template_kwargs`, or
+`top_p`, `top_k`, `logprobs`, `speculation`, `commit_only`, `cuts`, `keep`
+or `chat_template_kwargs`, or
 `chat_template_kwargs` on a `prompt` or `prompt_token_ids` request, is a
 `400 invalid_option`, never a silent default. With `temperature` 0,
 `top_p` and `top_k` cannot change the greedy token and are not forwarded.
@@ -371,9 +375,15 @@ the engine recomputes because it can resume only at a state point. The
 during it gets `429 busy`) and changes nothing: no restore starts and no
 entry is marked read. For `prompt_token_ids` it reports `prompt_tokens`,
 `matched_tokens` and `resume_tokens` from the prefix index, then asks every
-rank about the matched prefix. For an `identity` it asks the ranks directly.
-The answer is the least over the ranks, because a prefix is usable only when
-every rank has it:
+rank about the prefix up to the resume point. It answers for a request that
+generates from that prompt and names those `cuts`: `resume_tokens` is the
+last wave end of that request's own cold run where state is kept, and the
+identity the ranks are asked about is the identity of its waves up to there
+(`docs/EXACTNESS_GATE.md`). The same prompt with other cuts has other waves
+and may resume elsewhere; without `cuts` the answer is for a request that
+names none. For an `identity` it asks the ranks directly, and takes no
+cuts. The answer is the least over the ranks, because a prefix is usable
+only when every rank has it:
 
 | Field | Meaning |
 | --- | --- |
@@ -635,6 +645,116 @@ tokenizes as it did when the turn was generated, and the prompt matches the
 engine's cache up to the end of the previous reply. A forced tool choice
 stores its opening marker with the generated tokens.
 
+Cuts and commits (`docs/EXACTNESS_GATE.md`). The chat layer names the
+engine's `cuts` from the prompt's structure:
+
+- where the opening ends: the leading system turns and the tools, up to the
+  control token that starts the first message. The chat layer finds it by
+  rendering the head of the prompt (the opening and the first user message)
+  on its own, and names it only when the prompt's tokens begin with the
+  opening's tokens and it is at least one cache block long;
+- where each block of the head ends: the tools, each system block (each
+  `system` text block on Messages, each leading system or developer message
+  elsewhere) and each content block of the first user message but its last.
+  A block's end is not a token boundary, so its cut is the last cache block
+  at or before the tokens of the prompt's text through the block, tokenized
+  by itself, less 8 tokens (`tools/serving/prompt_cuts.py`). Two prompts
+  with the same block get the same cut. A block's cut within one cache
+  block of the opening's end is left out. A cache block is the model's
+  `block_tokens` (64 unless the model's entry says otherwise; DeepSeek V4.1
+  Flash caches in blocks of 256). Before the first request to an engine the
+  chat layer reads the engine's `/v1/models`: a model whose engine reports
+  another block size, or none, is refused with a 503 until the two agree;
+- where a context pack ends, which is where the pack's warm-up commit ended;
+- one token before each earlier reply began, and where the reply ends. A
+  replayed reply's cuts come from its record. A history rendered from text,
+  with no replay record, gets them from its control tokens: the token that
+  opens the assistant turn, plus the generation prompt less its last token,
+  and the token that closes the turn. The first is named only when the
+  prompt's tokens there are the generation prompt's, so it is the position
+  one token before the earlier prompt's end;
+- one token before the opening of a forced tool call. A forced opening is
+  stored with the reply, so the next turn's cut before the reply falls
+  there and not one token before the forced prompt's end.
+
+Finding the cuts costs the chat layer two things, each once. An opening's
+block cuts tokenize the text through every block end by itself; the result
+is kept for the last 64 openings of a model, so only an opening's first
+request pays. The cuts of replies rendered from text are read off the
+turn's own render, and the token count at each reply boundary is kept by
+the text before it, so a turn tokenizes only what the turn before had not
+counted; a chat layer process that sees a long history for the first time
+counts it once. `PERFORMANCE_STATUS.md` ("Exact reuse") has the times.
+
+A request names at most 16,384 cuts. Past that the oldest stay and newer
+ones are not named, so the first waves are the same from turn to turn and
+only the tail after the last named cut is computed again; `/health` counts
+such requests per model in `cuts_capped`, and each logs a `cuts_capped`
+line.
+
+Every one of these cuts is named whether or not state is kept at it. The
+cuts fix the waves, and so the identities of everything after them: a cut
+added later makes the rest of a prompt cold once. What is kept can change
+from request to request.
+
+It lists in `keep`, so that the engine keeps state there: the opening's
+end, a pack's ends and the cut before a forced tool call, always; and the
+cut of a block of the head (the tools, a system block, a block of the first
+user message but its last) only when the client marked that block with
+`cache_control`. On Messages a mark on any tool counts for the tools; on
+Chat Completions a mark on a content part counts for that part. A lane has
+few state records and the engine keeps only the newest few on a path, so a
+state at every block would push out the widely shared ones first. A client
+that marks, marks where its static part ends, and that is the state worth a
+record; a client that does not gets the opening's end.
+
+A conversation that shares a marked block with an earlier one, or the
+opening, or a pack, then resumes at that cut instead of at the last
+checkpoint anchor before it. A request needs no mark of its own to resume
+where an earlier request's mark left state. `cache_control` on a later
+message is read and changes nothing: such a mark moves from turn to turn,
+so it never adds a cut (a cut that one turn names and the next does not
+would change the waves of what they share and stop every resume), and state
+is always kept one token before a prompt's end.
+
+`max_tokens: 0` on Messages, or
+`commit_only: true` on Chat Completions and Responses, is a commit. The
+prompt is planned as for any request, the engine computes it to its end and
+keeps the state there, and the answer is one `cache.commit` object (`model`,
+`prompt_tokens`, `cached_tokens`, `committed_tokens`, `prefill_ms` and the
+`sparkpipe` record), whatever the request says about streaming.
+`committed_tokens` is what the engine marked as resumable beyond what was
+cached, so it is 0 when the engine kept no resume point. A commit
+takes no output limit, logprobs, forced tool choice or WebSocket.
+
+A model whose settings carry `"reply_commit": true` commits each reply it
+records for replay as soon as the reply ends: the turn's prompt and the
+reply's tokens without the stop token, in the background class, through the
+sequence gate and under the account that made the turn. In that class a
+commit takes no sequence that is kept free for interactive turns, the
+engine starts no wave of it while an interactive request has work queued or
+in flight (`README.md`, "Interactive first"), and a turn that still waits
+behind a wave of it shows that wait in its `background_wait_ms`. The next
+turn then resumes where the reply ends, instead of computing the reply again
+while the user waits. A turn of the same account and member that arrives
+while its reply's commit is at the engine waits for it, so the reply is
+computed once. A prompt that holds the commit's history (the tokens before
+its reply) without the reply, a turn asked again or a conversation that
+went on otherwise, withdraws the commit: nothing will resume at its end. The wait is bounded by the commit's own work: at most twice
+the time its tokens take at the model's measured prefill rate, and at least
+one second, counted from when the commit reached the engine. With no
+measured rate for a prompt of that size the turn does not wait. A commit
+that is still running when the wait ends, or that has not reached the
+engine, is withdrawn; one that fails is ignored. In each case the turn
+computes the reply itself, exactly as on a model without the setting, so a
+commit can never fail a turn or hold it. A commit never wakes an engine
+that is down. Each one logs a `reply_commit` line with its prompt and
+cached tokens, seconds and outcome (`done`, `withdrawn`, `refused` or the
+engine's error code). The setting is off for every model, and no model
+turns it on before gate GX and the turn floor have run both forms on that
+model; `tests/test_chat_frontend_commit.py` checks the served
+configuration.
+
 Working state and deletion (§3.2, Agreement 6.2). The store is a directory
 (`replay.directory`, mode 700 whoever created it) with one SQLite file per
 account (`account-<id>.sqlite` for a gateway account, `key-<id>.sqlite` for
@@ -735,7 +855,8 @@ Causes, in the order they are tried:
 | `compaction` | the request carries the context-compacted header, or follows a compaction request of its session and no longer extends it | `cause_position`: the first block nobody had carried |
 | `history_changed` | the session exists and the prompt does not extend its last prompt and reply | `cause_position`; `cause_block` is `reply` when the change is inside the last reply (the client sent back another reply than it was given, or the replay store no longer had it), else `history` |
 | `restored` | the engine waited for a restore | `restore_ms` |
-| `lost` | an earlier request carried more than the engine matched | `lost_reason`: `wiped` (the working state was wiped since it was carried), `release` (the adapter artifact changed), `swap` (the model was away since), `restart` (another API boot), `evicted` (none of these), or null when the engine reports no boot |
+| `reply_recomputed` | the turn extends its session, and the engine matched the session's last prompt (to one token before its end, or further) but stopped more than one block short of the reply's end. A reply's decode pages are never reused (`docs/EXACTNESS_GATE.md`), so a turn computes the previous reply again unless the reply was committed when it ended (`reply_commit`) | `recomputed_tokens`: what was prefilled between the resume point and the session's end |
+| `lost` | an earlier request carried more than the engine matched, and the rule above does not explain it | `lost_reason`: `wiped` (the working state was wiped since it was carried), `release` (the adapter artifact changed), `swap` (the model was away since), `restart` (another API boot), `evicted` (none of these), or null when the engine reports no boot |
 | `pack_profile` | the request is the first with its tool set or template settings on a pack | |
 | `first_opening`, `opening_changed` | a session's first request prefills more than one block of opening tokens nobody had carried. `first_opening` when its family (scope, model, API shape, request class and agent type) has no opening yet; otherwise `opening_changed` | `cause_block`: the first part that differs from the family's newest opening, in the order `tools`, `attribution` (a first system block that starts with `x-anthropic-billing-header:`), `system`, `project_context` (the text before the first prompt); `template` when every part is known and the prompt still rendered differently, as with another reasoning effort |
 | `resume_point` | the engine matched more than one block beyond where it resumed | `recomputed_tokens` |
@@ -896,14 +1017,17 @@ it gets 404 for a name that exists elsewhere.
 - **Refresh.** A push or `POST /v1/packs/{name}/refresh` builds the new
   version, then warms it in the background class (the priority
   `X-SparkPipe-Priority: background` gives a request), through the sequence gate,
-  as a one-token completion whose prompt is the template's prefix and the
-  pack (`warm_prefix`, which `commit_only` replaces once E5 lands). It warms
+  as a commit (`commit_only`) whose prompt is the template's prefix and the
+  pack (`warm_prefix`). A request on the pack names the commit's end as a
+  cut, so it resumes exactly there. It warms
   once for each of the last four tool sets and template settings requests
-  used on the pack, or once with none. The engine's prefix cache reuses every
-  token before the first changed file; `last_refresh` reports that file, its
+  used on the pack, or once with none. A refreshed version's commit resumes
+  at the last wave end before the first changed file where the earlier
+  commit left state: a checkpoint anchor on a model with recurrent state, a
+  row-budget wave end on one without. `last_refresh` reports that file, its
   token offset (`changed_at`) and, per warm-up, the prompt and cached tokens
-  and `resume_from`, the model's `resume_tokens` boundary (default 64) before
-  the change. The alias moves to the new version only when every warm-up is
+  (what the engine reused) and `resume_from`, an estimate: the model's
+  `resume_tokens` boundary (default 64) before the change. The alias moves to the new version only when every warm-up is
   done, and a `pack.warm` line is logged. A refresh that arrives during one
   runs once more after it.
 - **Sessions.** The first request of a session pins the current warm

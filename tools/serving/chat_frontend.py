@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import base64
+import bisect
 import codecs
 import contextlib
 import copy
@@ -73,6 +74,7 @@ chat_replay = load_sibling("chat_replay")
 chat_shapes = load_sibling("chat_shapes")
 working_state = load_sibling("working_state")
 context_packs = load_sibling("context_packs")
+prompt_cuts = load_sibling("prompt_cuts")
 memory_connector = load_sibling("memory_connector")
 miss_ledger = load_sibling("miss_ledger")
 context_packs.RequestError = RequestError
@@ -94,6 +96,8 @@ PRIORITY_HEADER = "X-SparkPipe-Priority"
 PRIORITY_METADATA = "x-sparkpipe-priority"
 PRIORITY_CLASSES = ("interactive", "background")
 CANCEL_WAIT_SECONDS = 5.0
+REPLY_COMMIT_PATIENCE = 2.0
+REPLY_COMMIT_FLOOR_SECONDS = 1.0
 REQUEST_ID = re.compile(r"r_[0-9a-f]{24}")
 REQUEST_PATH = re.compile(r"/v1/requests/" + REQUEST_ID.pattern)
 FLEET_HEADER = "X-SparkPipe-Fleet"
@@ -128,6 +132,7 @@ REPLAY_SENTINEL = "\ue000SPARKPIPE-REPLAY-{}\ue001"
 REPLAY_MARK = re.compile("\ue000SPARKPIPE-REPLAY-([0-9]+)\ue001")
 GENERATION_PROBE = "\ue000SPARKPIPE-PROBE\ue001"
 GENERATION_CACHE = 64
+TURN_COUNT_CACHE = 1 << 15
 DIRECTIVE_CHECK_SECONDS = 1.0
 RECORD_PRUNE_SECONDS = 60.0
 OWN_SCOPE = "own"
@@ -481,6 +486,11 @@ async def heartbeat(events, interval):
         await iterator.aclose()
 
 
+class ReplyCommit:
+    def __init__(self, model, gate, ids, work=0, history=0):
+        self.model, self.gate, self.ids, self.work, self.history, self.sent, self.task = model, gate, ids, work, history, None, None
+
+
 class LiveRequest:
     def __init__(self, scope, member):
         self.scope, self.member = scope, member
@@ -729,6 +739,8 @@ TEMPLATE_PIECE_CACHE_BYTES = 0
 INTERACTIVE_PRIORITY = 2
 BULK_PRIORITY = 1
 BACKGROUND_PRIORITY = 0
+ENGINE_MAX_CUTS = 16384
+CUTS_CAPPED = Counter()
 BULK_SUFFIX = "-bulk"
 
 
@@ -1001,6 +1013,10 @@ class WarmGate:
 
 
 class Model:
+    block_tokens = CACHE_BLOCK_TOKENS
+    engine_block = None
+    rendered = None
+
     def __init__(self, spec, base):
         directory = (base / spec["model_dir"]).resolve()
         self.id = spec["id"]
@@ -1042,15 +1058,23 @@ class Model:
         self.stop_token_ids = [self.token_id(text) for text in spec["stop_tokens"]]
         self.stop_strings = list(spec["stop_tokens"])
         self.openings = OrderedDict()
+        self.opening_cache = OrderedDict()
         self.gate = WarmGate(self.id, self.engine, spec.get("warm_queue"))
         sequences = spec.get("sequences")
         if isinstance(sequences, bool) or not isinstance(sequences, int) or sequences < 1:
             raise SystemExit(f"chat_frontend: {self.id} needs sequences, the engine's sequences at once (deployment/lanes.json)")
         self.sequences = SequenceGate(sequences)
-        self.resume_tokens = spec.get("resume_tokens", CACHE_BLOCK_TOKENS)
-        if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % CACHE_BLOCK_TOKENS:
-            raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {CACHE_BLOCK_TOKENS}: the positions a cached prefix resumes from")
+        self.block_tokens = spec.get("block_tokens", CACHE_BLOCK_TOKENS)
+        if isinstance(self.block_tokens, bool) or not isinstance(self.block_tokens, int) or self.block_tokens < 1:
+            raise SystemExit(f"chat_frontend: {self.id} block_tokens must be a positive integer: the tokens of one cache block of the model's engine")
+        self.engine_block = None
+        self.resume_tokens = spec.get("resume_tokens", self.block_tokens)
+        if isinstance(self.resume_tokens, bool) or not isinstance(self.resume_tokens, int) or self.resume_tokens < 1 or self.resume_tokens % self.block_tokens:
+            raise SystemExit(f"chat_frontend: {self.id} resume_tokens must be a positive multiple of {self.block_tokens}: the positions a cached prefix resumes from")
         self.images = spec.get("images", False) is True
+        self.reply_commit = spec.get("reply_commit", False)
+        if not isinstance(self.reply_commit, bool):
+            raise SystemExit(f"chat_frontend: {self.id} reply_commit must be a boolean: commit each finished reply at once, so the next turn resumes where it ends")
 
     def logprob(self, pair):
         text = self.vocabulary.piece(pair[0])
@@ -1065,10 +1089,11 @@ class Model:
     def render(self, messages, tools, kwargs, pack=None):
         context = dict(self.template_defaults)
         context.update(kwargs)
-        if pack is None:
-            return self.renderer.render(messages, tools, context, self.context_tokens - 1)
         text, pieces = self.renderer.pieces(messages, tools, context)
-        return encode_pieces(self.renderer.cache, text, context_packs.splice(text, pieces, pack), self.context_tokens - 1)
+        pieces = list(context_packs.splice(text, pieces, pack) if pack is not None else pieces)
+        text, ids = encode_pieces(self.renderer.cache, text, pieces, self.context_tokens - 1)
+        self.rendered = (ids, text, pieces)
+        return text, ids
 
     def pack_prefix(self, version, ids, tools, kwargs):
         context = dict(self.template_defaults)
@@ -1081,6 +1106,83 @@ class Model:
                 return prefix + list(special), len(prefix)
             prefix.extend(self.renderer.cache.encode(piece, special, self.context_tokens))
         raise RequestError(400, "invalid_messages", "the chat template dropped the pack")
+
+    def structure(self, messages, marks, tools, kwargs, pack=None, tools_kept=False):
+        leading, blocks = [], []
+        for index, message in enumerate(messages):
+            if message.get("role") != "system":
+                break
+            leading.append(plain_message(message))
+            blocks.append(message_blocks(message, marks[index] if index < len(marks) else None))
+        first = messages[len(leading)] if len(leading) < len(messages) and messages[len(leading)].get("role") == "user" else None
+        asked = message_blocks(first, marks[len(leading)] if len(leading) < len(marks) else None) if first is not None else []
+        first = plain_message(first) if asked else None
+        if pack is not None and blocks:
+            blocks[0] = []
+        key = hashlib.sha256(chat_replay.canonical([leading, first, blocks, asked, tools or [], kwargs, pack[0] if pack else None, bool(tools_kept)]).encode()).digest()
+        if key in self.opening_cache:
+            self.opening_cache.move_to_end(key)
+            return self.opening_cache[key]
+        try:
+            found = self.structure_probe(leading, first, blocks, asked, tools, kwargs, pack, bool(tools_kept))
+        except RequestError:
+            found = None
+        self.opening_cache[key] = found
+        while len(self.opening_cache) > GENERATION_CACHE:
+            self.opening_cache.popitem(last=False)
+        return found
+
+    def structure_probe(self, leading, first, blocks, asked, tools, kwargs, pack, tools_kept):
+        context = dict(self.template_defaults)
+        context.update(kwargs)
+        pattern = control_pattern(self.vocabulary)
+        text, pieces = self.renderer.pieces(leading + [first if first is not None else {"role": "user", "content": GENERATION_PROBE}], tools, context)
+        marks = []
+        if pack is not None:
+            pieces = context_packs.splice(text, pieces, pack[1])
+            offset = 0
+            for piece, special in pieces:
+                offset += len(piece)
+                if not isinstance(special, bool):
+                    marks.append(offset)
+        cursor, opened, system_ends, user_ends = 0, None, [], []
+        for group in blocks:
+            for block, kept in group:
+                at = text.find(block, cursor)
+                if at < 0:
+                    continue
+                opened = at if opened is None else opened
+                cursor = at + len(block)
+                system_ends.append((cursor, kept))
+        user = text.find(GENERATION_PROBE, cursor) if first is None else -1
+        for block, kept in asked if first is not None else []:
+            at = text.find(block, cursor)
+            if at < 0:
+                continue
+            user = at if user < 0 else user
+            cursor = at + len(block)
+            user_ends.append((cursor, kept))
+        end = max((match.start() for start, stop, special in template_spans(pieces) if special and start < user
+                   for match in pattern.finditer(text, start, min(stop, user))), default=0) if pattern is not None else 0
+        if end <= 0:
+            return None
+        bounds = [(mark, True, True) for mark in marks if mark <= end] + [(end, True, True)]
+        if tools and opened:
+            bounds.append((opened, False, tools_kept))
+        bounds.extend((offset, False, kept) for offset, kept in system_ends if offset < end)
+        bounds.extend((offset, False, kept) for offset, kept in user_ends[:-1] if offset > end)
+        bounds.sort()
+        opening = array("I", encode_span(self, pieces, 0, end))
+        counts = [len(opening) if offset == end else len(encode_span(self, pieces, 0, offset)) for offset, _, _ in bounds]
+        named, floor = [], 0
+        for index, (offset, exact, kept) in enumerate(bounds):
+            count = counts[index]
+            later = next((counts[other] for other in range(index + 1, len(bounds)) if bounds[other][1]), None)
+            cut = count if exact else prompt_cuts.structural_cut(count, self.block_tokens)
+            if cut > floor and (exact or later is None or later - count >= self.block_tokens):
+                named.append((cut, kept, exact))
+            floor = max(floor, count)
+        return opening, named
 
     def generation_prompt(self, tools, kwargs):
         key = hashlib.sha256(chat_replay.canonical([tools or [], kwargs]).encode()).digest()
@@ -1098,6 +1200,119 @@ class Model:
         while len(self.openings) > GENERATION_CACHE:
             self.openings.popitem(last=False)
         return opening
+
+    def reply_header(self, tools, kwargs):
+        key = hashlib.sha256(chat_replay.canonical(["reply header", tools or [], kwargs]).encode()).digest()
+        if key in self.openings:
+            self.openings.move_to_end(key)
+            return self.openings[key]
+        opening, header = self.generation_prompt(tools, kwargs), None
+        anchor = max((control for control in self.vocabulary.control_strings() if control and opening and opening.startswith(control)), key=len, default=None)
+        if anchor is not None:
+            context = dict(self.template_defaults)
+            context.update(kwargs)
+            mark = REPLAY_SENTINEL.format(0)
+            probe = [{"role": "user", "content": GENERATION_PROBE}, {"role": "assistant", "content": mark}, {"role": "user", "content": GENERATION_PROBE}]
+            try:
+                text, pieces = self.renderer.pieces(probe, tools, context)
+                at = text.find(mark)
+                start = rfind_in(template_spans(pieces), text, anchor, 0, at) if at >= 0 else -1
+                if start >= 0 and (opening.startswith(text[start:at]) or text[start:at].startswith(opening)):
+                    header = text[start:at]
+            except RequestError:
+                header = None
+        self.openings[key] = header
+        while len(self.openings) > GENERATION_CACHE:
+            self.openings.popitem(last=False)
+        return header
+
+    def turn_cuts(self, messages, tools, kwargs, pack, ids):
+        turns = sum(1 for message in messages if message.get("role") == "assistant")
+        header = self.reply_header(tools, kwargs) if turns else None
+        if not header:
+            return []
+        opening = list(self.vocabulary.encode(self.generation_prompt(tools, kwargs), True))
+        stops = set(self.stop_token_ids)
+        try:
+            if self.rendered is not None and self.rendered[0] is ids:
+                text, pieces = self.rendered[1], self.rendered[2]
+            else:
+                context = dict(self.template_defaults)
+                context.update(kwargs)
+                text, pieces = self.renderer.pieces(messages, tools, context)
+                pieces = list(context_packs.splice(text, pieces, pack) if pack is not None else pieces)
+            walk = SpanWalk(self, text, pieces, self.__dict__.setdefault("turn_counts", OrderedDict()))
+            cuts, cursor = [], 0
+            for _ in range(turns):
+                start = walk.find(header, cursor)
+                close = min((position for position in (walk.find(stop, start + len(header), False) for stop in self.stop_strings) if position >= 0), default=-1) if start >= 0 else -1
+                if close < 0:
+                    break
+                begin = walk.count(start) + len(opening) - 1
+                count = walk.count(close)
+                cursor = close
+                if begin < count < len(ids) and ids[count] in stops and list(ids[begin - len(opening) + 1:begin]) == opening[:-1]:
+                    cuts += [begin, count]
+        except RequestError:
+            return []
+        return cuts
+
+
+class SpanWalk:
+    def __init__(self, model, text, pieces, known):
+        self.model, self.text, self.pieces, self.known = model, text, pieces, known
+        self.offsets, offset = [], 0
+        for piece, _ in pieces:
+            self.offsets.append(offset)
+            offset += len(piece)
+        self.special = [index for index, (_, special) in enumerate(pieces) if special is True]
+        self.searched, self.piece, self.at, self.tokens = 0, 0, 0, 0
+        self.digest = hashlib.sha256(json.dumps([(self.offsets[index], len(special)) for index, (_, special) in enumerate(pieces) if not isinstance(special, bool)]).encode())
+        self.hashed = 0
+
+    def find(self, needle, begin, forward=True):
+        searched = self.searched
+        while searched < len(self.special) and self.offsets[self.special[searched]] + len(self.pieces[self.special[searched]][0]) <= begin:
+            searched += 1
+        if forward:
+            self.searched = searched
+        for index in self.special[searched:]:
+            start = self.offsets[index]
+            found = self.text.find(needle, max(start, begin), start + len(self.pieces[index][0]))
+            if found >= 0:
+                return found
+        return -1
+
+    def count(self, position):
+        self.digest.update(self.text[self.hashed:position].encode())
+        self.hashed = position
+        key = self.digest.copy().digest()
+        known = self.known.get(key)
+        if known is not None:
+            self.known.move_to_end(key)
+            self.piece = bisect.bisect_right(self.offsets, position) - 1
+            if self.piece >= 0 and position == self.offsets[self.piece] + len(self.pieces[self.piece][0]):
+                self.piece += 1
+            self.at, self.tokens = position, known
+            return known
+        while self.at < position:
+            piece, special = self.pieces[self.piece]
+            start = self.offsets[self.piece]
+            end = start + len(piece)
+            high = min(position, end)
+            if not isinstance(special, bool):
+                if (self.at, high) != (start, end):
+                    raise RequestError(400, "invalid_messages", "a replayed turn overlaps the pack")
+                self.tokens += len(special)
+            else:
+                self.tokens += len(self.model.renderer.cache.encode(piece[self.at - start:high - start], special, self.model.context_tokens))
+            self.at = high
+            if high == end:
+                self.piece += 1
+        self.known[key] = self.tokens
+        while len(self.known) > TURN_COUNT_CACHE:
+            self.known.popitem(last=False)
+        return self.tokens
 
 
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
@@ -1805,8 +2020,77 @@ class PrefixLedger:
             self.blocks.popitem(last=False)
 
 
-def cache_points(seen, total):
-    return [seen] if 0 < seen < total else []
+def structure_cuts(replay, total, opening=()):
+    return sorted({cut for cut in (*opening, *(replay or {}).get("cuts", ())) if 0 < cut < total})
+
+
+def request_positions(value, name, total):
+    if value is None:
+        return []
+    if (not isinstance(value, list) or len(value) > ENGINE_MAX_CUTS or
+            any(isinstance(position, bool) or not isinstance(position, int) or not 0 < position < total for position in value) or
+            any(later <= earlier for earlier, later in zip(value, value[1:]))):
+        raise RequestError(400, "invalid_request", f"{name} must be an array of at most {ENGINE_MAX_CUTS} rising token counts inside the prompt")
+    return list(value)
+
+
+def plain_message(message):
+    return {key: value for key, value in message.items() if key not in (chat_shapes.HANDLES, chat_shapes.BLOCKS)}
+
+
+def message_blocks(message, marked):
+    if marked is not None:
+        return [[block, bool(kept)] for block, kept in marked if block]
+    content = message.get("content")
+    if isinstance(content, str):
+        return [[content, False]] if content else []
+    if isinstance(content, list):
+        return [[part["text"], chat_shapes.marked(part)] for part in content
+                if isinstance(part, dict) and part.get("type") == "text" and isinstance(part.get("text"), str) and part["text"]]
+    return []
+
+
+def opening_cuts(model, messages, marks, tools, kwargs, pack, ids, tools_kept=False):
+    found = model.structure(messages, marks, tools, kwargs, pack, tools_kept)
+    if found is None:
+        return [], []
+    opening, named = found
+    head = array("I", ids[:len(opening)])
+    cuts, keep = [], []
+    for cut, kept, exact in named:
+        if not model.block_tokens <= cut < len(ids) or (exact and head[:cut] != opening[:cut]):
+            continue
+        cuts.append(cut)
+        if kept:
+            keep.append(cut)
+    return cuts, keep
+
+
+def reply_cuts(model, messages, tools, kwargs, pack, ids):
+    return model.turn_cuts(messages, tools, kwargs, pack, ids) if any(message.get("role") == "assistant" for message in messages) else []
+
+
+def name_cuts(model, engine, replay, structural, kept):
+    every = structure_cuts(replay, len(engine["prompt_token_ids"]), structural)
+    cuts = every[:ENGINE_MAX_CUTS]
+    named = set(cuts)
+    keep = [cut for cut in sorted(set(kept)) if cut in named]
+    if cuts:
+        engine["cuts"] = cuts
+    if keep:
+        engine["keep"] = keep
+    if len(every) > len(cuts):
+        CUTS_CAPPED[model.id] += 1
+        print(json.dumps({"event": "cuts_capped", "model": model.id, "named": len(cuts), "dropped": len(every) - len(cuts), "prompt_tokens": len(engine["prompt_token_ids"]),
+                          "from_token": every[len(cuts)]}), file=sys.stderr, flush=True)
+    return cuts, len(every) - len(cuts)
+
+
+def commit_flag(body):
+    value = body.get("commit_only")
+    if value is not None and not isinstance(value, bool):
+        raise RequestError(400, "invalid_request", "commit_only must be a boolean")
+    return value is True
 
 
 def memory_model(model):
@@ -1824,24 +2108,38 @@ class MemoryHost:
         return {"ready": await self.frontend.memory_model_ready(self.model(request))}
 
     def render_ids(self, request):
-        ids, reasoning_open = self.frontend.memory_render_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["suffix"],
-                                                               request["start"])
-        return {"ids": ids, "reasoning_open": reasoning_open}
+        model = self.model(request)
+        ids, reasoning_open = self.frontend.memory_render_ids(model, request["messages"], request["tools"], request["kwargs"], request["suffix"], request["start"])
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], ids)
+        return {"ids": ids, "reasoning_open": reasoning_open, "cuts": cuts, "keep": keep}
 
     def continuation_ids(self, request):
-        found = self.frontend.memory_continuation_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["prompt_ids"],
+        model = self.model(request)
+        found = self.frontend.memory_continuation_ids(model, request["messages"], request["tools"], request["kwargs"], request["prompt_ids"],
                                                       request["generated_ids"], request["instruction"], request["suffix"], request["start"])
-        return {"ids": found[0] if found else None, "reasoning_open": bool(found and found[1])}
+        if not found:
+            return {"ids": None, "reasoning_open": False, "cuts": [], "keep": []}
+        prompt, generated = list(request["prompt_ids"]), list(request["generated_ids"])
+        while generated and generated[-1] in model.stop_token_ids:
+            generated.pop()
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], prompt, (len(prompt) - 1, len(prompt) + len(generated)))
+        return {"ids": found[0], "reasoning_open": bool(found[1]), "cuts": [cut for cut in cuts if cut < len(found[0])], "keep": keep}
 
     def cut_ids(self, request):
-        return {"ids": self.frontend.memory_cut_ids(self.model(request), request["messages"], request["tools"], request["kwargs"], request["sentinel"])}
+        model = self.model(request)
+        ids = self.frontend.memory_cut_ids(model, request["messages"], request["tools"], request["kwargs"], request["sentinel"])
+        if ids is None:
+            return {"ids": None, "cuts": [], "keep": []}
+        cuts, keep = self.frontend.memory_cuts(model, request["messages"], request["tools"], request["kwargs"], ids)
+        return {"ids": ids, "cuts": cuts, "keep": sorted(set(keep) | set(cuts[-1:]))}
 
     def count(self, request):
         return {"tokens": self.frontend.memory_count(self.model(request), request["text"])}
 
     async def complete(self, request):
-        return {"text": await self.frontend.memory_complete(self.model(request), request["ids"], request["max_tokens"], request["reasoning_open"], request["kind"],
-                                                            request["trace"])}
+        ids = request["ids"]
+        return {"text": await self.frontend.memory_complete(self.model(request), ids, request["max_tokens"], request["reasoning_open"], request["kind"], request["trace"],
+                                                            request_positions(request.get("cuts"), "cuts", len(ids)), request_positions(request.get("keep"), "keep", len(ids)))}
 
 
 def utc_stamp(moment):
@@ -1975,6 +2273,7 @@ class Frontend:
             self.workspace = context_packs.Workspace(base / repositories["directory"], repositories["max_push_bytes"], repositories["max_repositories"],
                                                      repositories["max_packs"])
         self.pack_tasks = set()
+        self.reply_commits = set()
         self.records = RequestRecords(records_folder(config, base))
         codex = config.get("codex") or {}
         if not isinstance(codex, dict) or set(codex) - {"instructions_file"}:
@@ -2000,10 +2299,11 @@ class Frontend:
         self.expiry_task = asyncio.create_task(self.expiry_loop())
 
     async def stop(self, app):
-        for task in (self.expiry_task, *self.pack_tasks):
+        commits = [pending.task for pending in self.reply_commits]
+        for task in (self.expiry_task, *self.pack_tasks, *commits):
             if task is not None:
                 task.cancel()
-        await asyncio.gather(*self.pack_tasks, return_exceptions=True)
+        await asyncio.gather(*self.pack_tasks, *commits, return_exceptions=True)
         if self.memory is not None:
             await self.memory.stop()
         await self.session.close()
@@ -2303,14 +2603,17 @@ class Frontend:
         stops = set(model.stop_token_ids)
         ids = encode_span(model, pieces, 0, regions[0][0])
         replayed = 0
+        cuts = []
         for number, (start, close, tokens) in enumerate(regions):
             ids.extend(model.vocabulary.encode(opening, True))
+            cuts.append(len(ids) - 1)
             ids.extend(tokens)
             following = encode_span(model, pieces, close, regions[number + 1][0] if number + 1 < len(regions) else len(text))
             head, rest = chat_replay.splice(ids, following, stops)
             replayed = len(head)
+            cuts.append(replayed)
             ids = head + rest
-        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions)}
+        return {"text": text, "ids": ids, "replayed": replayed, "turns": len(regions), "cuts": cuts}
 
     def replay_record(self, model, plan, assistant, result, handles, turn=None):
         if plan.get("scope") is None or self.replay is None or result.get("engine_finish") == "stop_string" or not result.get("token_ids"):
@@ -2318,12 +2621,99 @@ class Frontend:
         if plan.get("session") is not None and plan["session"].rounds:
             return None
         try:
-            return self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
-                                   list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
+            recorded = self.replay.put(plan["scope"], plan.get("member"), model.id, chat_replay.view_digest(model.id, assistant), plan["replay_context"],
+                                       list(plan.get("forced_ids", [])) + list(result["token_ids"]), handles, turn)
         except chat_replay.STORE_ERRORS as error:
             print(json.dumps({"event": "replay_store_failed", "request": plan.get("request_id"), "error": f"{type(error).__name__}: {error}"}),
                   file=sys.stderr, flush=True)
             return None
+        self.reply_commit(model, plan, result)
+        return recorded
+
+    def reply_commit(self, model, plan, result):
+        if not getattr(model, "reply_commit", False) or plan.get("reply_committed") or plan.get("commit_only") or plan.get("cuts_dropped"):
+            return
+        prompt = list(plan["engine_body"]["prompt_token_ids"])
+        tokens = list(result["token_ids"])
+        stops = set(model.stop_token_ids)
+        while tokens and tokens[-1] in stops:
+            tokens.pop()
+        if not tokens or len(prompt) + len(tokens) >= model.context_tokens:
+            return
+        plan["reply_committed"] = True
+        cuts = sorted(set(plan["engine_body"].get("cuts", [])) | {len(prompt) - len(plan.get("forced_ids", [])) - 1})
+        pending = ReplyCommit(model.id, plan.get("gate", (OWN_SCOPE, None)), prompt + tokens, len(tokens) + len(plan.get("forced_ids", [])) + 1, len(prompt))
+        if len(cuts) > ENGINE_MAX_CUTS:
+            return
+        pending.task = asyncio.ensure_future(self.commit_reply(model, pending, [cut for cut in cuts if cut > 0], BACKGROUND_PRIORITY, plan.get("request_id")))
+        self.reply_commits.add(pending)
+        pending.task.add_done_callback(lambda task: self.reply_commits.discard(pending))
+
+    async def commit_reply(self, model, pending, cuts, priority, request):
+        scope, member = pending.gate
+        started = time.monotonic()
+        usage, finish, outcome = {}, None, "error"
+        try:
+            await model.sequences.acquire(priority, None, scope, member)
+            try:
+                pending.sent = time.monotonic()
+                body = {"prompt_token_ids": pending.ids, "stream": True, "commit_only": True, "priority": priority}
+                if cuts:
+                    body["cuts"] = cuts
+                events = self.engine_events(model, body)
+                try:
+                    async for chunk in events:
+                        if "error" in chunk:
+                            raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+                        usage = chunk.get("usage") or usage
+                        finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+                finally:
+                    await events.aclose()
+                outcome = "done" if finish == "commit" else "refused"
+            finally:
+                await model.sequences.release(scope, member)
+            if outcome == "done":
+                self.prefix_ledger(model).record(list(pending.ids))
+        except RequestError as error:
+            outcome = error.code
+        except asyncio.CancelledError:
+            outcome = "withdrawn"
+            raise
+        finally:
+            print(json.dumps({"event": "reply_commit", "model": model.id, "request": request, "prompt_tokens": len(pending.ids),
+                              "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"), "seconds": round(time.monotonic() - started, 3),
+                              "outcome": outcome}), file=sys.stderr, flush=True)
+
+    async def reply_joined(self, model, plan):
+        ids = plan["engine_body"]["prompt_token_ids"]
+        cuts = set(plan["engine_body"].get("cuts", ()))
+        gate = plan.get("gate", (OWN_SCOPE, None))
+        for pending in [pending for pending in self.reply_commits if (pending.model, pending.gate) == (model.id, gate)]:
+            if len(pending.ids) in cuts and ids[:len(pending.ids)] == pending.ids:
+                patience = self.reply_patience(model, pending)
+                if patience > 0:
+                    await asyncio.wait({pending.task}, timeout=patience)
+            elif not 0 < pending.history <= len(ids) or ids[:pending.history] != pending.ids[:pending.history]:
+                continue
+            if not pending.task.done():
+                pending.task.cancel()
+                await asyncio.wait({pending.task}, timeout=CANCEL_WAIT_SECONDS)
+
+    def reply_patience(self, model, pending):
+        if pending.sent is None or self.replay is None:
+            return 0.0
+        try:
+            rate = self.replay.prefill_rate(model.id, len(pending.ids))
+        except chat_replay.STORE_ERRORS:
+            rate = None
+        if rate is None:
+            return 0.0
+        return max(0.0, pending.sent + max(REPLY_COMMIT_FLOOR_SECONDS, REPLY_COMMIT_PATIENCE * rate * pending.work / 1000) - time.monotonic())
+
+    async def entered(self, model, plan, scope, member):
+        if getattr(model, "reply_commit", False):
+            await self.reply_joined(model, plan)
+        await model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY), BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member)
 
     def store_safely(self, plan, action, *arguments):
         try:
@@ -2336,7 +2726,7 @@ class Frontend:
         timing = plan["timing"]
         first, last, admitted = timing.get("first"), timing.get("last"), timing.get("admitted", started)
         completion = usage["completion"]
-        prefill_ms = round((first - admitted) * 1000) if first else None
+        prefill_ms = round((first - admitted) * 1000) if first else plan.get("prefill_ms")
         rounds = result.get("engine_rounds", 1)
         if prefill_ms is not None and self.replay is not None and rounds == 1:
             self.store_safely(plan, self.replay.observe_prefill, model.id, usage["prompt"], usage["prompt"] - usage["cached"], prefill_ms)
@@ -2383,7 +2773,7 @@ class Frontend:
         session, agent = plan.get("affinity") or (None, None)
         usage = timing.get("engine_usage") or result.get("usage") or {}
         mains = [(scope, session, agent, kind) for kind in MAIN_CLASSES] if session is not None else []
-        facts = {"model": model.id, "block_tokens": CACHE_BLOCK_TOKENS, "resume_tokens": model.resume_tokens, "scope": scope,
+        facts = {"model": model.id, "block_tokens": model.block_tokens, "resume_tokens": model.resume_tokens, "scope": scope,
                  "session": (scope, session, agent, client.get("class")) if session is not None else None, "shape": plan.get("shape", "chat"),
                  "session_fallbacks": mains if client.get("class") == miss_ledger.COMPACTION_CLASS else (), "prompt_tokens": plan["prompt_tokens"],
                  "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0), "engine": timing.get("engine_cache"),
@@ -2432,7 +2822,7 @@ class Frontend:
             if self.memory is not None:
                 states[model.id]["memory_jobs"] = await self.memory_pending(model)
         healthy = all(state["status"] == 200 for state in states.values())
-        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults}, status=200 if healthy else 503)
+        return web.json_response({"ok": healthy, "models": states, "tool_call_faults": self.tool_call_faults, "cuts_capped": dict(CUTS_CAPPED)}, status=200 if healthy else 503)
 
     async def liveliness(self, request):
         return web.json_response({"ok": True})
@@ -2656,14 +3046,16 @@ class Frontend:
         started = time.monotonic()
         priority = self.hinted_priority(False, {PRIORITY_HEADER: "background"}, None)
         await model.sequences.acquire(priority, None, scope, None)
-        usage = {}
+        usage, finish = {}, None
         try:
-            body = {"prompt_token_ids": list(ids), "max_tokens": 1, "stream": True, "stop_token_ids": model.stop_token_ids,
-                    "priority": priority, "temperature": 0.0}
+            body = {"prompt_token_ids": list(ids), "stream": True, "commit_only": True, "priority": priority}
             async for chunk in self.engine_stream(model, body, True):
                 usage = chunk.get("usage") or usage
+                finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
         finally:
             await model.sequences.release(scope, None)
+        if finish != "commit":
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
         self.prefix_ledger(model).record(list(ids))
         self.public_prefix_ledger(scope, model).record(list(ids))
         return {"prompt_tokens": len(ids), "cached_tokens": (usage.get("prompt_tokens_details") or {}).get("cached_tokens"),
@@ -2678,14 +3070,14 @@ class Frontend:
     def prefix_ledger(self, model):
         if self.prefixes is None:
             self.prefixes = {}
-        return self.prefixes.setdefault(model.id, PrefixLedger())
+        return self.prefixes.setdefault(model.id, PrefixLedger(model.block_tokens))
 
     def public_body_limit(self):
         context = max((self.models[model_id].context_tokens for model_id in self.public_models if model_id in self.models), default=0)
         return max(PUBLIC_BODY_MIN_BYTES, PUBLIC_BODY_BYTES_PER_TOKEN * context + PUBLIC_BODY_OVERHEAD_BYTES)
 
     def public_prefix_ledger(self, scope, model):
-        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(capacity_blocks=PUBLIC_KEY_PREFIX_BLOCKS))
+        return self.public_prefixes.setdefault((scope, model.id), PrefixLedger(model.block_tokens, PUBLIC_KEY_PREFIX_BLOCKS))
 
     def prepare(self, model, body):
         messages, tools, kwargs, trace = self.plan_input(model, body, None)
@@ -2753,10 +3145,12 @@ class Frontend:
         engine = plan["engine_body"]
         plan["carried"] = self.prefix_ledger(model).carried(engine["prompt_token_ids"])
         seen, seen_of = plan["carried"][:2]
-        points = cache_points(seen, len(engine["prompt_token_ids"]))
-        if points:
-            engine["cache_points"] = points
-        trace.update(seen_tokens=seen, seen_of=seen_of)
+        structural, kept = opening_cuts(model, messages, [], tools, kwargs, pack, engine["prompt_token_ids"])
+        if replay is None:
+            structural = structural + reply_cuts(model, messages, tools, kwargs, pack and pack[1], engine["prompt_token_ids"])
+        cuts, dropped = name_cuts(model, engine, replay, structural, kept)
+        plan["cuts_dropped"] = dropped
+        trace.update(seen_tokens=seen, seen_of=seen_of, cuts=len(cuts))
         trace.update(temperature=engine.get("temperature"), top_p=engine.get("top_p"), top_k=engine.get("top_k"), reasoning_effort=body.get("reasoning_effort"),
                      tools=len(tools or []), stream=bool(body.get("stream")))
         plan["trace"] = trace
@@ -2767,6 +3161,11 @@ class Frontend:
         if len(prompt_ids) >= model.context_tokens:
             raise RequestError(400, chat_shapes.OVERFLOW_CODE, f"the prompt has {len(prompt_ids)} tokens and {model.id} serves {model.context_tokens}",
                                overflow=(len(prompt_ids), model.context_tokens - 1))
+        if commit_flag(body):
+            if body.get("max_completion_tokens") is not None or body.get("max_tokens") is not None or body.get("logprobs"):
+                raise RequestError(400, "invalid_request", "commit_only computes the prompt, keeps its state and generates nothing, so it takes no max_tokens or logprobs")
+            return {"body": body, "engine_body": {"prompt_token_ids": prompt_ids, "stream": True, "commit_only": True, "priority": request_priority(model, body)},
+                    "parser": None, "prompt_tokens": len(prompt_ids), "messages": messages, "tools": tools, "kwargs": kwargs, "session": session, "commit_only": True}
         limit = number(body, "max_completion_tokens", 1, 2 ** 31, integer=True)
         if limit is None:
             limit = number(body, "max_tokens", 1, 2 ** 31, integer=True)
@@ -2791,10 +3190,31 @@ class Frontend:
         return {"body": body, "engine_body": engine_body, "parser": parser, "prompt_tokens": len(prompt_ids), "messages": messages,
                 "tools": tools, "kwargs": kwargs, "session": session}
 
+    async def engine_block(self, model):
+        if model.engine_block == model.block_tokens:
+            return
+        async with self.session.get(model.engine + "/v1/models", timeout=aiohttp.ClientTimeout(total=10)) as response:
+            text = await response.text()
+            if response.status != 200:
+                raise self.engine_refusal(model, response.status, text)
+        try:
+            reported = json.loads(text)["data"][0].get("block_tokens")
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError):
+            reported = None
+        if isinstance(reported, bool) or not isinstance(reported, int) or reported != model.block_tokens:
+            self.engine_detail(model, "block_tokens", 503, text)
+            said = f"caches in blocks of {reported} tokens" if isinstance(reported, int) and not isinstance(reported, bool) else "does not say how many tokens its cache block holds"
+            raise RequestError(503, "engine_block_mismatch", f"the {model.id} engine {said} and the chat layer names its cuts on blocks of {model.block_tokens}; "
+                               f"it is not served until both agree")
+        model.engine_block = reported
+
     async def engine_events(self, model, engine_body):
         try:
+            await self.engine_block(model)
             async with self.session.post(model.engine + "/v1/completions", json=engine_body) as response:
                 if response.status != 200:
+                    if response.status >= 500:
+                        model.engine_block = None
                     raise self.engine_refusal(model, response.status, await response.text())
                 async for raw in response.content:
                     line = raw.decode("utf-8", "replace").strip()
@@ -2811,6 +3231,7 @@ class Frontend:
                     yield event
                 raise RequestError(502, "engine_error", f"the {model.id} engine stream ended before [DONE]; the reply is incomplete")
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            model.engine_block = None
             self.engine_detail(model, "unreachable", 503, f"{model.engine}: {type(error).__name__}: {error}")
             raise RequestError(503, "engine_unavailable", f"the {model.id} engine is unreachable; try again")
 
@@ -3136,11 +3557,18 @@ class Frontend:
         parts = self.memory_template_parts(model, messages, tools, kwargs, [sentinel])
         return parts[0][0] if parts else None
 
-    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None):
+    def memory_cuts(self, model, messages, tools, kwargs, ids, more=()):
+        messages = normalize_messages(messages)
+        structural, kept = opening_cuts(model, messages, [], tools, kwargs, None, ids)
+        cuts = sorted({cut for cut in (*structural, *reply_cuts(model, messages, tools, kwargs, None, ids), *more) if cut > 0})[:ENGINE_MAX_CUTS]
+        return cuts, [cut for cut in sorted(set(kept)) if cut in cuts]
+
+    async def memory_complete(self, model, ids, max_tokens, reasoning_open=False, kind="background", trace=None, cuts=(), keep=()):
         body = {"prompt_token_ids": ids, "max_tokens": max_tokens, "stream": True, "stop_token_ids": model.stop_token_ids, "priority": BACKGROUND_PRIORITY, "temperature": 0.0}
-        points = cache_points(self.prefix_ledger(model).seen(ids)[0], len(ids))
-        if points:
-            body["cache_points"] = points
+        if cuts:
+            body["cuts"] = list(cuts)
+        if keep:
+            body["keep"] = list(keep)
         parser = OutputParser(model, None, reasoning_open, []) if model.channels is None else None
         step = model.vocabulary.decoder()
         content, usage, generated, outcome, tokens = [], {}, 0, "error", []
@@ -3228,7 +3656,7 @@ class Frontend:
             plan["trace"]["key"] = public["id"]
             plan.update(public_key=public, public_scope=scope)
             plan["public_cached"] = max(self.public_prefix_ledger(scope, model).seen(plan["engine_body"]["prompt_token_ids"])[0], replayed_tokens(plan))
-            return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+            return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
         if "command" in plan:
             name, argument = plan["command"]
             try:
@@ -3238,7 +3666,7 @@ class Frontend:
                 return error_response(error)
             print(json.dumps(dict(plan["trace"], event="chat_command", model=model.id, command=name)), file=sys.stderr, flush=True)
             return await self.reply_text(request, model, body, text)
-        return await self.admitted(request, model, body, plan, started, self.answer, error_response)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.answer, error_response)
 
     def stamp(self, plan, started, headers, affinity=None):
         plan["request_id"] = "r_" + uuid.uuid4().hex[:24]
@@ -3260,9 +3688,7 @@ class Frontend:
             self.memory_foreground(model, 1)
         try:
             try:
-                await live.until(plan["request_id"], model.sequences.acquire(plan["engine_body"].get("priority", INTERACTIVE_PRIORITY),
-                                                                            BUSY_WAIT_SECONDS if "public_key" in plan else None, scope, member),
-                                 lambda: model.sequences.release(scope, member))
+                await live.until(plan["request_id"], self.entered(model, plan, scope, member), lambda: model.sequences.release(scope, member))
             except RequestError as error:
                 return failed(error)
             plan["timing"]["admitted"] = time.monotonic()
@@ -3302,6 +3728,39 @@ class Frontend:
             pass
         print(json.dumps({"event": "request_cancelled", "request": identifier, "released": live.finished.is_set()}), file=sys.stderr, flush=True)
         return web.json_response({"id": identifier, "object": "request", "cancelled": True, "released": live.finished.is_set()})
+
+    async def commit(self, model, plan):
+        usage, finish = None, None
+        live = self.live.get(plan.get("request_id"))
+        events = self.engine_stream(model, plan["engine_body"], "public_key" in plan)
+        async for chunk in (events if live is None else live.watch(plan["request_id"], events)):
+            if "error" in chunk:
+                raise RequestError(502, "engine_error", json.dumps(chunk["error"]))
+            if chunk.get("tokens"):
+                raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine generated tokens for a commit; it needs an engine that takes commit_only")
+            finish = (chunk.get("choices") or [{}])[0].get("finish_reason") or finish
+            usage = chunk.get("usage") or usage
+        published = usage.get("published_tokens") if isinstance(usage, dict) else None
+        if finish != "commit" or isinstance(published, bool) or not isinstance(published, int):
+            raise RequestError(502, "commit_only_unsupported", f"the {model.id} engine did not confirm the commit (finish_reason {finish!r})")
+        plan["prefill_ms"] = round((time.monotonic() - plan["timing"].get("admitted", plan["timing"]["arrived"])) * 1000)
+        self.prefix_ledger(model).record(list(plan["engine_body"]["prompt_token_ids"]))
+        return {"usage": usage, "token_ids": [], "finish_reason": "commit", "engine_finish": "commit", "published": published}
+
+    async def commit_answer(self, request, model, body, plan, started):
+        shape = plan.get("shape", "chat")
+        failed = anthropic_error_response if shape == "messages" else responses_error_response if shape == "responses" else error_response
+        try:
+            result = await self.commit(model, plan)
+        except RequestError as error:
+            self.log(model, plan["prompt_tokens"], None, started, None, error.code, plan.get("trace"))
+            return failed(error)
+        usage, record = self.settle(model, plan, result, None, started, request.headers, shape)
+        self.record_public_prefix(model, plan, result)
+        self.log(model, plan["prompt_tokens"], result["usage"], started, None, "commit", plan.get("trace"))
+        return web.json_response({"object": "cache.commit", "model": model.id, "prompt_tokens": usage["prompt"], "cached_tokens": usage["cached"],
+                                  "committed_tokens": max(0, result["published"] - usage["cached"]), "prefill_ms": record["prefill_ms"], "sparkpipe": record},
+                                 headers=self.early_headers(model, plan, request.headers))
 
     def settle(self, model, plan, result, assistant, started, headers, shape, reasoning_tokens=0):
         usage = self.normalized_usage(plan, result, reasoning_tokens)
@@ -3347,18 +3806,24 @@ class Frontend:
         body = await self.read_body(request) if body is None else body
         if shape == "messages":
             translated = chat_shapes.messages_request(body)
+            translated["blocks"] = chat_shapes.take_blocks(translated["messages"])
         else:
-            translated = self.responses_input(chat_shapes.responses_request(body), scope, self.member_of(key, request.headers), local)
+            asked = chat_shapes.responses_request(body)
+            taken = chat_shapes.take_blocks(asked["input_messages"])
+            translated = self.responses_input(asked, scope, self.member_of(key, request.headers), local)
+            translated["blocks"] = [None] * (len(translated["messages"]) - len(taken)) + taken
         model, bulk, pack = await self.resolve_model(translated["model"], key, scope)
         if translated["images"] and not model.images:
             raise RequestError(400, "image_not_supported", f"{model.id} does not take images")
         translated["metadata"] = body.get("metadata")
         translated["opening"] = chat_shapes.messages_opening(body) if shape == "messages" else chat_shapes.responses_opening(body)
         translated["pack_request"] = self.pack_request(scope, pack, request.headers, key, translated.get("affinity"))
+        translated["commit_only"] = translated.get("max_tokens") == 0 if shape == "messages" else commit_flag(body)
         return body, translated, model, bulk, key, scope
 
     async def harness_plan(self, model, translated, scope, headers, key, bulk):
         messages = normalize_messages(translated["messages"])
+        marks = list(translated.get("blocks") or [])
         pack = None
         tools = translated["tools"] or None
         choice = translated["tool_choice"]
@@ -3388,11 +3853,11 @@ class Frontend:
                                                   "target": None, "identity": list(identity)})
             if prepared is not None and prepared["session"] is not None:
                 session = memory_connector.Session(self.memory, prepared["session"])
-                messages, tools = normalize_messages(prepared["messages"]), prepared["tools"]
+                messages, tools, marks = normalize_messages(prepared["messages"]), prepared["tools"], []
                 lined = {key: prepared["trace"][key] for key in ("memory_lined", "memory_open")}
         if session is None and translated.get("pack_request") is not None:
             pack = self.choose_pack(translated["pack_request"], messages, tools, kwargs)
-            messages = [context_packs.pack_message(pack[0])] + messages
+            messages, marks = [context_packs.pack_message(pack[0])] + messages, [None] + marks
         contexts = chat_replay.context_digests(model.id, tools, kwargs, messages)
         replay = self.replay_render(model, messages, tools, kwargs, scope, member, contexts, pack and pack[1])
         messages = without_handles(messages)
@@ -3408,10 +3873,20 @@ class Frontend:
             text, ids = text + opening, list(ids) + forced_ids
         limit = translated["max_tokens"]
         body = dict(translated["sampling"], max_tokens=min(limit, model.max_output_tokens) if limit else None, stop=translated["stops"])
+        if translated.get("commit_only"):
+            if forced:
+                raise RequestError(400, "invalid_request", "a commit generates nothing, so it takes no forced tool choice")
+            body = {"commit_only": True}
         plan = self.finish_plan(model, body, messages, tools, kwargs, session, (text, ids))
         if forced:
             plan["parser"].feed(model.tool_calls["start"])
         plan["engine_body"]["priority"] = self.hinted_priority(bulk, headers, key, translated.get("metadata"))
+        structural, kept = opening_cuts(model, messages, marks, tools, kwargs, pack, ids, bool(translated.get("tools_marked")) and session is None)
+        if replay is None:
+            structural = structural + reply_cuts(model, messages, tools, kwargs, pack and pack[1], ids)
+        if forced_ids:
+            structural, kept = structural + [len(ids) - len(forced_ids) - 1], kept + [len(ids) - len(forced_ids) - 1]
+        plan["cuts_dropped"] = name_cuts(model, plan["engine_body"], replay, structural, kept)[1]
         carried = self.prefix_ledger(model).carried(ids)
         plan.update(scope=scope, member=member, replay_context=contexts[-1], replay=replay, forced_ids=forced_ids, gate=(scope, member), carried=carried,
                     trace={"shape": "harness", "tools": len(tools or []), "replayed": replayed_tokens({"replay": replay}), "seen_tokens": carried[0],
@@ -3439,7 +3914,7 @@ class Frontend:
             return failed(error)
         self.stamp(plan, started, request.headers, translated.get("affinity"))
         plan.update(shape=shape, translated=translated, request_body=body)
-        return await self.admitted(request, model, body, plan, started, self.harness_answer, failed)
+        return await self.admitted(request, model, body, plan, started, self.commit_answer if plan.get("commit_only") else self.harness_answer, failed)
 
     def responses_echo(self, body, translated):
         echo = {key: body.get(key) for key in ("instructions", "previous_response_id", "temperature", "top_p", "max_output_tokens", "metadata", "user")}
@@ -3559,6 +4034,8 @@ class Frontend:
             body["stream"] = True
             body, translated, model, bulk, key, scope = await self.translate(request, "responses", body, local)
             await self.admit_model(model, key, request.headers)
+            if translated["commit_only"]:
+                raise RequestError(400, "invalid_request", "commit_only is not taken on the WebSocket; send it to POST /v1/responses")
             if generate is False:
                 await self.socket_warmup(sink, body, translated, local)
                 return

@@ -1,0 +1,136 @@
+2026-11-22T03:14:17Z cache clear before plan
+20261122T031417Z engine stopped; snapshot files: 0; last store close: 
+20261122T031417Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T031417Z safe: weightd_receipt check path=<pack>/qwen38_27b.tp1.rank00.pack status=ok reason=valid; KV node root /var/tmp/gx-1rank; no other engine; traced=yes
+20261122T031417Z preflight guard=active boot=2026-11-20 08:28:58 memavailable_gib=99 need_gib=58 disk_free_gib=742 need_disk_gib=150 kernel=7.0.0-1025-nvidia
+20261122T031417Z watcher on (pid 15581): /var/tmp/gx-1rank/logs/strace-weightd.log /var/tmp/gx-1rank/logs/strace-residentd.log; strace --seccomp-bpf
+20261122T031418Z weightd pid=15595 ceiling=49392123904 kv_reserve=17179869184 log=/var/tmp/gx-1rank/logs/weightd-20261122T031417Z.log
+20261122T031419Z residentd pid=15637 log=/var/tmp/gx-1rank/logs/residentd-20261122T031418Z.log
+20261122T031427Z residentd ready after 7s
+20261122T031427Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+2026-11-22T03:18:26Z first start: the API refused its deployment (a chat template without a tokenizer); the template was removed from the API copy (the gate sends token ids) and the block starts again; nothing had been planned or run
+2026-11-22T03:18:26Z cache clear before plan
+20261122T031826Z stop residentd pid=15637
+20261122T031827Z engine stopped; snapshot files: 1; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=0 unsaved_entries=0 ineligible_entries=0 used_bytes=0 files=0 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_bytes=0 status=o
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T031827Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T031827Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T031828Z residentd pid=20709 log=/var/tmp/gx-1rank/logs/residentd-20261122T031827Z.log
+20261122T031836Z residentd ready after 7s
+20261122T031836Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T031837Z model_api pid=20849 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":186578835,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T03:18:37Z preflight
+2026-11-22T03:18:37Z step chain
+2026-11-22T03:18:47Z step chain ended rc=0; on the GPU beside the lane and the embeddings: none
+2026-11-22T03:18:47Z cache clear before cold:40
+20261122T031847Z stop model_api pid=20849
+20261122T031847Z stop residentd pid=20709
+20261122T031849Z engine stopped; snapshot files: 130; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=1 unsaved_entries=0 ineligible_entries=0 used_bytes=843059200 files=129 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_bytes=
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T031849Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T031849Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T031850Z residentd pid=21040 log=/var/tmp/gx-1rank/logs/residentd-20261122T031849Z.log
+20261122T031858Z residentd ready after 7s
+20261122T031858Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T031859Z model_api pid=21179 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":186600604,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T03:18:59Z step cold:40
+2026-11-22T03:19:08Z step cold:40 ended rc=0; on the GPU beside the lane and the embeddings: none
+check: prefix/8000/40 failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+check: prefix/8000/40 failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+check: prefix/8000/40 reuse is ERROR
+check: 3 problems
+2026-11-22T03:19:08Z cache clear before plan
+20261122T031908Z stop model_api pid=21179
+20261122T031908Z stop residentd pid=21040
+20261122T031910Z engine stopped; snapshot files: 128; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=126 unsaved_entries=0 ineligible_entries=0 used_bytes=683929600 files=127 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_byte
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T031910Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T031910Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T031911Z residentd pid=21543 log=/var/tmp/gx-1rank/logs/residentd-20261122T031910Z.log
+20261122T031920Z residentd ready after 8s
+20261122T031920Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T031921Z model_api pid=21922 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":186623274,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T03:19:22Z step chain
+2026-11-22T03:25:30Z the driver was stopped at 03:19:35Z to read the preflight errors; the chain step it had started went on alone and ended at 03:22:57Z (14 of 14 units), with no GPU samples after 03:19:31Z; the driver goes on from the next step
+2026-11-22T03:25:30Z resumes: park:32000=open(0/14) restore:32000=open(0/14) cold:1=open(0/7) cold:500=open(0/7) 
+2026-11-22T03:25:31Z cache clear before park:32000
+20261122T032531Z stop model_api pid=21922
+20261122T032531Z stop residentd pid=21543
+20261122T032535Z engine stopped; snapshot files: 1842; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=147 unsaved_entries=0 ineligible_entries=0 used_bytes=13004902400 files=1841 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T032535Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T032535Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T032536Z residentd pid=24498 log=/var/tmp/gx-1rank/logs/residentd-20261122T032535Z.log
+20261122T032544Z residentd ready after 7s
+20261122T032544Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T032545Z model_api pid=24640 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":187007001,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T03:25:45Z step park:32000
+2026-11-22T03:28:34Z step park:32000 ended rc=0; on the GPU beside the lane and the embeddings: none
+2026-11-22T03:28:34Z cache evict before restore:32000
+20261122T032834Z stop model_api pid=24640
+20261122T032834Z stop residentd pid=24498
+20261122T032843Z engine stopped; snapshot files: 1703; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=886 unsaved_entries=0 ineligible_entries=0 used_bytes=10913996800 files=1702 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T032843Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T032844Z residentd pid=25739 log=/var/tmp/gx-1rank/logs/residentd-20261122T032843Z.log
+20261122T032852Z residentd ready after 7s
+20261122T032852Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T032853Z model_api pid=25874 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":187194751,"kv_write_alert_rank":-1,"kv_capacity_tokens":0,"kv_capacity_max_tokens":262144}
+2026-11-22T03:28:53Z step restore:32000
+2026-11-22T03:29:53Z step restore:32000 ended rc=0; on the GPU beside the lane and the embeddings: none
+2026-11-22T03:29:53Z cache clear before cold:1
+20261122T032953Z stop model_api pid=25874
+20261122T032954Z stop residentd pid=25739
+20261122T032958Z engine stopped; snapshot files: 1842; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=129 unsaved_entries=0 ineligible_entries=0 used_bytes=13004902400 files=1841 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T032958Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T032958Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T032959Z residentd pid=26383 log=/var/tmp/gx-1rank/logs/residentd-20261122T032958Z.log
+20261122T033007Z residentd ready after 7s
+20261122T033007Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T033008Z model_api pid=26526 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":187269957,"kv_write_alert_rank":-1,"kv_capacity_tokens":0,"kv_capacity_max_tokens":262144}
+2026-11-22T03:30:08Z step cold:1
+2026-11-22T03:32:10Z step cold:1 ended rc=0; on the GPU beside the lane and the embeddings: none
+2026-11-22T03:32:10Z cache clear before cold:500
+20261122T033210Z stop model_api pid=26526
+20261122T033211Z stop residentd pid=26383
+20261122T033222Z engine stopped; snapshot files: 1499; last store close: qwen38_27b_fp8_tp1_stage kv snapshot store close saved_entries=1489 unsaved_entries=0 ineligible_entries=0 used_bytes=7645798400 files=1498 save_failures=0 write_failures=0 resaved=0 save_deferred=0 evicted_unsaved=0 demotions_queued=0 park_saves_queued=0 evictions=0 quota_refusals=0 quota_honored_b
+weightd_warm: DROP-KV label=qwen38_27b_fp8_tp1_stage released=1 bytes=8889827328 busy=0
+20261122T033222Z drop-kv qwen38_27b_fp8_tp1_stage exit=0
+20261122T033222Z cleared: snapshot files 0, backing files 0, prefix index 0
+20261122T033223Z residentd pid=28051 log=/var/tmp/gx-1rank/logs/residentd-20261122T033222Z.log
+20261122T033231Z residentd ready after 7s
+20261122T033231Z rank ledgers: /var/tmp/gx-1rank/.sparkpipe-kv-ledger 
+20261122T033232Z model_api pid=28190 health 200 after 1s: {"status":"ok","served":0,"tokenizer":false,"ranks":1,"connected_ranks":1,"missing_rank":-1,"degraded_rank":-1,"degraded_path":"none","engine_status":"ok","live_requests":0,"idle_ms":187414260,"kv_write_alert_rank":-1,"kv_capacity_tokens":131072,"kv_capacity_max_tokens":262144}
+2026-11-22T03:32:32Z step cold:500
+2026-11-22T03:34:57Z step cold:500 ended rc=0; on the GPU beside the lane and the embeddings: none
+prefix/8000/1          context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/8000/500        context=8021    cut=8021    cached chain/restore/cold=8021/8021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/1         context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+prefix/32000/500       context=32021   cut=32021   cached chain/restore/cold=32021/32021/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/1            context=6913    cut=6913    cached chain/restore/cold=6913/6913/0 reuse=PASS (equal) restored=PASS (equal)
+kept/8000/500          context=6913    cut=None    cached chain/restore/cold=None/None/None reuse=ERROR (-) restored=ERROR (-)
+  chain failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  cold failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  restore failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+opening/8000/1         context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+opening/8000/500       context=8021    cut=5952    cached chain/restore/cold=5952/5952/0 reuse=PASS (equal) restored=PASS (equal)
+session/8000/1         context=8021    cut=None    cached chain/restore/cold=None/None/None reuse=ERROR (-) restored=ERROR (-)
+  chain failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  cold failed: its session did not finish in the chain step
+  restore failed: its park step failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+session/8000/500       context=8021    cut=9052    cached chain/restore/cold=9052/9052/0 reuse=PASS (equal) restored=PASS (equal)
+session/32000/1        context=32021   cut=None    cached chain/restore/cold=None/None/None reuse=ERROR (-) restored=ERROR (-)
+  chain failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  cold failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  restore failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+session/32000/500      context=32021   cut=33052   cached chain/restore/cold=33052/33052/0 reuse=PASS (equal) restored=PASS (equal)
+committed/8000/1       context=8021    cut=None    cached chain/restore/cold=None/None/None reuse=ERROR (-) restored=ERROR (-)
+  chain failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  cold failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+  restore failed: the stream carried an error: {"message": "model status 1", "type": "model_error", "code": 1}
+committed/8000/500     context=8021    cut=9085    cached chain/restore/cold=9085/9085/0 reuse=PASS (equal) restored=PASS (equal)
+waves refused for capacity=0 requests that waited out the in-flight budget=0
+alone=yes
+verdict=INCOMPLETE
+2026-11-22T03:34:58Z GX-INCOMPLETE qwen3.8-27b-fp8-one-gb10

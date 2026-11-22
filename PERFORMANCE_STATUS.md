@@ -455,6 +455,104 @@ Limits today: K3's recurrent-state store fills after about 977 checkpointed
 requests in one conversation, after which the request fails, and the
 snapshot store's chain links grow with the square of the chain length.
 
+### Exact reuse
+
+Not yet measured on the fleet. The follow-up and cached-turn figures above
+were measured before the exact-reuse rules
+([`docs/EXACTNESS_GATE.md`](docs/EXACTNESS_GATE.md)) and have not been
+measured with them.
+
+Gate GX has passed on one rank: Qwen 3.8 27B FP8 on one GB10, requests as
+token ids through the engine API, 2026-11-22
+([receipts](qualification/gx-20261122/README.md)). Twenty-eight units in two
+blocks gave the cold run's tokens and logprobs, in a reusing run and again
+after eviction and restore from disk, with the cached tokens equal to the
+resume cut each time. Nothing here stands for a fleet lane.
+
+One GB10, one rank, no other process on the GPU:
+
+| First token of | Reusing | After eviction and restore | Cold |
+| --- | ---: | ---: | ---: |
+| 1 new token after an 8,000-token prefix | 262 ms | 959 ms | 8,686 ms |
+| 500 new tokens after it | 973 ms | 987 ms | 9,314 ms |
+| 5,000 new tokens after it | 6,236 ms | 6,009 ms | 14,468 ms |
+| 1 new token after a 32,000-token prefix | 296 ms | 2,045 ms | 37,664 ms |
+| 500 new tokens after it | 1,141 ms | 1,125 ms | 38,511 ms |
+| 5,000 new tokens after it | 7,471 ms | 7,433 ms | 45,102 ms |
+| a second conversation that shares the first two blocks of an 8,000-token head | 2,764 ms | 3,245 ms | 9,052 ms |
+| a session's third turn, 1 new token, the previous 32-token reply computed again | 716 ms | 1,185 ms | 9,107 ms |
+| a session's third turn, 1 new token, each reply committed when it ended | 262 ms | 861 ms | 9,084 ms |
+| a session's third turn, 500 new tokens, the previous 32-token reply computed again | 1,166 ms | 1,444 ms | 10,882 ms |
+| a session's third turn, 500 new tokens, each reply committed when it ended | 992 ms | 1,277 ms | 11,167 ms |
+
+The second conversation shared 6,015 tokens with the first and resumed at
+5,952, the cut of the block they share, so it computed 2,070 tokens. On the
+engine before the rules, the turn floor's second session shared 45,500 of
+46,000 tokens and resumed at 32,768, the last state checkpoint, so it
+computed 13,232 (the section below). The two runs differ in size; what they
+have in common is where the resume point lies: at the shared block's cut
+with the rules, at the last checkpoint without them.
+
+The two reply forms are both exact. The committed sessions are other
+conversations than the recomputed ones, and in the one-token committed
+session the second reply was one token long, so the rows compare the forms,
+not one turn run twice. A commit took 0.4 to 0.5 s after its reply ended.
+The gate's `session` and `committed` units give the same numbers for a
+lane.
+
+What the rules add, counted in tokens and waves, not in time:
+
+- A follow-up turn computes the previous reply again as prefill: the reply's
+  tokens at the model's prefill rate, every turn. For a model with
+  `reply_commit` set, that wave starts when the reply ends, so the turn
+  waits only for what is left of it, and a reply that no turn follows costs
+  one wave that nobody reads.
+- A follow-up turn runs one wave more than before: the reply, the new input,
+  then the last token.
+- Every prompt ends with a one-row wave for its last token. Before, an
+  adapter without recurrent state computed the last token with the rows
+  before it.
+- A cold prompt runs one wave more for each cut it names: where its opening
+  ends and where each block of its head ends.
+- A prompt that shares a block of its head with an earlier prompt resumes at
+  that block's cut, at most 71 tokens before the block's text ends.
+
+What the cuts cost the chat layer, on the Qwen 3.8 tokenizer. Measured on a
+workstation that ran other work, not on the hub, so the ratios hold and the
+milliseconds do not:
+
+| Request | Render and tokenize | Cuts |
+| --- | ---: | ---: |
+| the first request of a 35,000-token opening with two block ends | 62 to 96 ms | 108 to 153 ms, once for an opening |
+| the same opening again | 51 to 70 ms | 2 to 3 ms |
+| a 92,800-token turn with 14 replies rendered from text | 147 to 185 ms | 4 to 5 ms |
+| that history the first time a chat layer process sees it | 141 to 212 ms | 135 to 145 ms, once |
+
+An opening's block cuts tokenize the text through each block end by itself,
+once; the chat layer remembers the last 64 openings of a model. The cuts of
+replies rendered from text read the prompt's own render and remember the
+token count at each reply boundary by the text before it, so a turn
+tokenizes only what the turn before had not counted. The render arm of
+`tools/agent_turn_bench.py` on later turns, five repeats, with the rules
+against main: 86, 115 and 174 ms against 87, 109 and 198 ms at 48,500,
+62,000 and 96,900 tokens, and 105, 139 and 203 ms against 100, 125 and
+185 ms in a second run.
+
+Gate GX's receipts will give, for each lane:
+
+- cold prefill at 8K, 100K and 300K with the rules' wave ends;
+- time to first token of a follow-up turn that computes the previous reply
+  again as prefill (`session` units), and of one whose reply was committed
+  when it ended (`committed` units), with the seconds each commit took;
+- time to first token of a conversation that shares the first blocks of its
+  head with an earlier one (`opening` units);
+- time to first token after an eviction, with the pages and bytes read back;
+- the decode rate as served on a cached prompt;
+- how many requests sent together give the tokens they give alone (the
+  gate's `crowd` step);
+- the waves the ranks refused for capacity, and the requests that waited out
+  the in-flight budget (`load`).
+
 ## First token of a turn
 
 The first token of a request is the sum of five parts, which
@@ -463,9 +561,9 @@ The first token of a request is the sum of five parts, which
 request reaching the engine (send), its wait for a first admitted wave
 (queue), its wait for a prefix to come back from NVMe (restore), the prefill
 waves over the new tokens, and the one-row wave of the last prompt token,
-whose result is the first token. An adapter without checkpoints (GLM 5.3
-Full) has no separate last wave: its last token rides in the last prefill
-wave.
+whose result is the first token. Under the exact-reuse rules every adapter
+runs that one-row wave; before them an adapter without checkpoints (GLM 5.3
+Full) computed its last token in the last prefill wave.
 
 Measured so far: one cold request (2026-11-21, release c2b714343, 16 Sparks;
 receipt in

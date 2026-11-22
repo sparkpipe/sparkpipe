@@ -173,7 +173,11 @@ session is saved as `session-<shape>.json` for the resume event.
 **`render`** times the chat layer alone: it fills a session to each of
 `--contexts` and asks `/v1/messages/count_tokens` for it `--repeats` times.
 That request is translated, rendered and tokenized like a real one and never
-reaches an engine, so the model need not be resident.
+reaches an engine, so the model need not be resident. Each row carries the
+median, the least and the largest time, and the first sample by itself
+(`render_ms_first`). Filling the session has already asked the chat layer
+for the same opening, so that first sample is not an opening's first
+request.
 
 `--nonce` goes into the first tool's description and the system prompt, so
 each `cold` run is a first sight unless the nonce is repeated. A request

@@ -305,7 +305,7 @@ def main() -> int:
         "SparkModelBatchSchedulerPlanCacheBoundLaneCount" in batch_engine
         and "SparkModelBatchSchedulerCacheDemandFits" in batch_engine
         and "SparkModelBatchCacheDemandAdditional" in batch_engine
-        and "request->cache_published_identity" in batch_engine
+        and "request->reserved_shared_block_count" in batch_engine
         and "engine->kv_physical_page_capacity" in batch_engine
         and "engine->inflight_kv_page_count" in batch_engine,
         "neutral scheduler does not account for shared-prefix KV page demand",
@@ -417,7 +417,7 @@ def main() -> int:
         "generated driver boundary does not forward neutral KV page budgets",
     )
     require(
-        "#define SPARK_MODEL_DRIVER_ABI_VERSION 21u" in driver_header
+        "#define SPARK_MODEL_DRIVER_ABI_VERSION 22u" in driver_header
         and "uint64_t submission_id;" in driver_header
         and "uint64_t control_generation;" in driver_header
         and "uint64_t transaction_id;" in driver_header

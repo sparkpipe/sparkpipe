@@ -1,0 +1,3 @@
+last_reply_max=16 requests=3 prompt=9585 out=16  live_after_session: pool_resident_pages=152 at_stop: resident_pages=152 entries=152 window=0 private=0 nonresident=0 orphaned=0
+last_reply_max=144 requests=3 prompt=9585 out=144  live_after_session: pool_resident_pages=152 at_stop: resident_pages=152 entries=152 window=0 private=0 nonresident=0 orphaned=0
+ITEM4 HOLDS: page cache entries at stop after the session: entries=152 with a 16-token last reply, entries=152 with a 144-token one (out=144); private=0 

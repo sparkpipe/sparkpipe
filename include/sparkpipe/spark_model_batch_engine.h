@@ -9,11 +9,11 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 17u
+#define SPARK_MODEL_BATCH_ENGINE_ABI_VERSION 18u
 #define SPARK_MODEL_BATCH_ENGINE_PEER_INDEX_MAX 8u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_STOP_TOKEN_COUNT 16u
 #define SPARK_MODEL_BATCH_ENGINE_MAX_REQUEST_STOP_TOKEN_COUNT 16u
-#define SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS 4u
+#define SPARK_MODEL_BATCH_ENGINE_MAX_CUTS 16384u
 #define SPARK_MODEL_BATCH_ENGINE_INVALID_REQUEST_HANDLE 0u
 #define SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT 32u
 #define SPARK_MODEL_BATCH_PRIORITY_BACKGROUND 0u
@@ -58,6 +58,7 @@ typedef struct SparkModelBatchEvent
 	uint64_t sequence_id;
 	SparkModelBatchRequestHandle request_handle;
 	uint32_t stale_prefix_recompute_count;
+	uint32_t resume_token_count;
 	uint64_t first_dispatch_ns;
 	uint64_t restore_wait_ns;
 	uint64_t background_wait_ns;
@@ -114,8 +115,11 @@ typedef struct SparkModelBatchSubmitRequest
 	uint32_t drafts_disabled;
 	uint32_t stop_token_count;
 	const uint32_t *stop_token_ids;
-	uint32_t cache_point_count;
-	uint32_t cache_points[SPARK_MODEL_BATCH_ENGINE_MAX_CACHE_POINTS];
+	uint32_t commit;
+	uint32_t cut_count;
+	const uint32_t *cuts;
+	uint32_t keep_count;
+	const uint32_t *keeps;
 } SparkModelBatchSubmitRequest;
 
 typedef struct SparkModelBatchEngineView
@@ -141,6 +145,7 @@ typedef struct SparkModelBatchEngineView
 	uint64_t emitted_token_count;
 	uint64_t rejected_submission_count_by_status[SPARK_MODEL_BATCH_ENGINE_STATUS_COUNTER_COUNT];
 	uint64_t rejected_lane_count;
+	uint64_t retry_deadline_count;
 	uint64_t prefix_hit_count;
 	uint64_t prefix_miss_count;
 	uint64_t prefix_hit_token_count;
@@ -238,6 +243,8 @@ SparkStatus SparkModelBatchEngineCacheStateBegin(
 	SparkModelBatchEngine *engine,
 	const uint32_t *prompt_token_ids,
 	uint32_t token_count,
+	const uint32_t *cuts,
+	uint32_t cut_count,
 	const SparkModelServingCacheIdentity *identity,
 	SparkModelBatchCacheState *state);
 SparkStatus SparkModelBatchEngineCacheStatePoll(

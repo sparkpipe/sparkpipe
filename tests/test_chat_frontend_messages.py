@@ -102,6 +102,17 @@ async def run(tmp, check):
               f"the cache matches the whole previous turn, {len(engine.committed[0])} tokens: {delta['usage']}")
         check(delta["sparkpipe"]["replayed_tokens"] == len(first_prompt) + len(generated) and headers.get("X-SparkPipe-Replayed-Tokens") == str(len(first_prompt) + len(generated)),
               f"telemetry says how many prompt tokens came from the replay store: {delta['sparkpipe']}")
+        opened = (engine.requests[0].get("cuts") or [0])[0]
+        check(engine.requests[0].get("cuts") == engine.requests[0].get("keep") == [opened] and "cache_points" not in engine.requests[0] and
+              harness.tokenizer.decode(first_prompt[:opened], skip_special_tokens=False).endswith("Work in /repo.<|im_end|>\n") and
+              harness.tokenizer.decode(first_prompt[opened:], skip_special_tokens=False).startswith("<|im_start|>user\n"),
+              f"a first turn names where its opening ends, after the tools and the system turn and on the control token that starts the first message, and asks for state there: "
+              f"{engine.requests[0].get('cuts')} {engine.requests[0].get('keep')}")
+        check(engine.requests[1].get("cuts") == [opened, len(first_prompt) - 1, len(first_prompt) + len(generated)] and engine.requests[1].get("keep") == [opened] and
+              "cache_points" not in engine.requests[1],
+              f"the next turn names the same opening, one token before the replayed reply began and where it ends: {engine.requests[1].get('cuts')}")
+        check(engine.resumes[:2] == [0, len(first_prompt) - 1],
+              f"by the engine's rules the first turn resumes nowhere and the next one token before the first prompt's end, computing the reply again: {engine.resumes[:2]}")
         check(harness.prompt_text(1).endswith("<|im_start|>tool\nhello world<|im_end|>\n<|im_start|>assistant\n<think>"),
               f"what follows the replayed turn is rendered by the template: {harness.prompt_text(1)[-120:]}")
         model = harness.frontend.models["alpha"]

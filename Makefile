@@ -837,6 +837,10 @@ PYTHON_TESTS := \
 	tests/test_chat_api_keys.py \
 	tests/test_chat_frontend_object_and_channel_calls.py \
 	tests/test_chat_frontend_messages.py \
+	tests/test_chat_frontend_commit.py \
+	tests/test_chat_frontend_block_cuts.py \
+	tests/test_chat_frontend_reply_cuts.py \
+	tests/test_prompt_cuts.py \
 	tests/test_chat_frontend_responses.py \
 	tests/test_chat_frontend_client_fidelity.py \
 	tests/test_count_tokens_check.py \

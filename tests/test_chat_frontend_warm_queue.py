@@ -32,6 +32,14 @@ class FakeEngine:
         self.engine_authorizations.append(request.headers.get("Authorization"))
         return web.json_response({"status": "ok"} if self.ready() else {"status": "starting"}, status=200 if self.ready() else 503)
 
+    async def models(self, request):
+        self.engine_authorizations.append(request.headers.get("Authorization"))
+        if self.failed:
+            return web.json_response({"error": {"message": "latched", "code": "engine_failed"}}, status=503)
+        if not self.ready():
+            return web.json_response({"status": "starting", "phase": "connect"}, status=503)
+        return web.json_response({"object": "list", "data": [{"id": "fake", "object": "model", "max_model_len": 1 << 20, "block_tokens": 64}]})
+
     async def completions_handler(self, request):
         self.engine_authorizations.append(request.headers.get("Authorization"))
         if self.failed:
@@ -60,6 +68,8 @@ class FakeModel:
         self.id = "fake"
         self.engine = engine_url
         self.gate = chat_frontend.WarmGate(self.id, engine_url, warm)
+        self.block_tokens = 64
+        self.engine_block = None
 
 
 async def collect(frontend, model):
@@ -86,6 +96,7 @@ async def run(failures):
     app = web.Application()
     app.router.add_get("/health", engine.health)
     app.router.add_post("/v1/completions", engine.completions_handler)
+    app.router.add_get("/v1/models", engine.models)
     app.router.add_post("/activate", engine.activate)
     runner = web.AppRunner(app)
     await runner.setup()

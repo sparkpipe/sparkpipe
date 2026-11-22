@@ -40,6 +40,9 @@ class FakeModel(chat_frontend.Model):
     def render(self, messages, tools, kwargs):
         return "t1 t3 t4", self.vocabulary.encode("t1 t3 t4", True)
 
+    def structure(self, messages, marks, tools, kwargs, pack=None, tools_kept=False):
+        return None
+
 
 def refused(body, status=400):
     try:

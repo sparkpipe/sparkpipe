@@ -1,0 +1,18 @@
+{
+ "margin_tokens": 8,
+ "records": [
+  {
+   "tokenizer": "Qwen 3.8",
+   "lanes": [
+    "qwen3.8-27b",
+    "qwen3.8-27b-fp8",
+    "qwen3.8-max",
+    "qwen3.8-flash"
+   ],
+   "tokenizer_json_sha256": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+   "samples": 18456,
+   "worst": 2,
+   "measured": "2026-11-21"
+  }
+ ]
+}

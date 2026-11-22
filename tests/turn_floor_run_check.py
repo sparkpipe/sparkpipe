@@ -23,10 +23,13 @@ check(all(row.get("error") is None and isinstance(row.get("request_id"), int) an
           row["prefill_ms"] >= 0 for row in rows), "each request has the engine's own stamps: accepted, first admitted dispatch and first token")
 check(rows[0]["cached_tokens"] == 0 and rows[0]["prefill_tokens"] == 16 and all(row["output_tokens"] == (3 if row["kind"].startswith("decode") else 2) for row in rows),
       f"the stream's tokens and cached count are read as the API sends them: {[(row['cached_tokens'], row['output_tokens']) for row in rows]}")
-turns = [row for row in rows if row["kind"] == "turn"]
-check(all(row["cached_tokens"] >= row["context"] and 0 < row["prefill_tokens"] < row["prompt_tokens"] for row in turns) and
-      all(row["cached_tokens"] == row["prompt_tokens"] - 1 for row in rows if row["kind"].startswith("decode")),
-      f"a turn resumes from the session the engine kept, and a prompt it has whole computes its last token again: {[(row['kind'], row['prompt_tokens'], row['cached_tokens']) for row in rows]}")
+session = [row for row in rows if row["kind"] in ("grow", "turn")]
+check([row["cached_tokens"] for row in session] == [0] + [row["prompt_tokens"] - 1 for row in session[:-1]] and
+      all(0 < row["prefill_tokens"] < row["prompt_tokens"] for row in session[1:]) and
+      all(row["cached_tokens"] == before["prompt_tokens"] - 1 for before, row in zip(rows, rows[1:]) if row["kind"] == "decode") and
+      all(row["cached_tokens"] == row["prompt_tokens"] - 1 for row in rows if row["kind"] == "decode_served"),
+      "a turn names where each earlier reply began and ended, resumes one token before the previous prompt's end and computes that reply again; "
+      f"a prompt the engine has whole computes its last token again: {[(row['kind'], row['prompt_tokens'], row['cached_tokens']) for row in rows]}")
 boots = {row.get("cache_boot") for row in rows}
 check(len(boots) == 1 and None not in boots and all(row["cache_resumed_tokens"] == row["cached_tokens"] and row["cache_matched_tokens"] >= row["cache_resumed_tokens"] and
                                                      row["cache_restore_ms"] == 0 and row["cache_background_wait_ms"] == 0 for row in rows),

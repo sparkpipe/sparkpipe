@@ -9,6 +9,7 @@ OPENING_BLOCKS = ("tools", "attribution", "system", "project_context")
 FIRST_OPENING = "first_opening"
 OPENING_CHANGED = "opening_changed"
 RESTORED = "restored"
+REPLY_RECOMPUTED = "reply_recomputed"
 LOST = "lost"
 COMPACTION = "compaction"
 HISTORY_CHANGED = "history_changed"
@@ -16,7 +17,7 @@ PACK_PROFILE = "pack_profile"
 MODEL_NOT_RESIDENT = "model_not_resident"
 RESUME_POINT = "resume_point"
 UNATTRIBUTED = "unattributed"
-CAUSES = (FIRST_OPENING, OPENING_CHANGED, RESTORED, LOST, COMPACTION, HISTORY_CHANGED, PACK_PROFILE, MODEL_NOT_RESIDENT, RESUME_POINT, UNATTRIBUTED)
+CAUSES = (FIRST_OPENING, OPENING_CHANGED, RESTORED, REPLY_RECOMPUTED, LOST, COMPACTION, HISTORY_CHANGED, PACK_PROFILE, MODEL_NOT_RESIDENT, RESUME_POINT, UNATTRIBUTED)
 LOST_REASONS = ("wiped", "release", "swap", "restart", "evicted")
 COMPACTION_CLASS = "compaction"
 TEMPLATE_BLOCK = "template"
@@ -124,8 +125,10 @@ class Ledger:
             tail = min(prompt - carried, first_prompt) if first_prompt is not None else prompt - carried
         else:
             tail = None
-        lost_tokens = max(0, min(carried, prompt - 1) - (matched if matched is not None else resumed))
-        lost_tokens = lost_tokens if lost_tokens > slack else 0
+        reach = matched if matched is not None else resumed
+        unmatched = max(0, min(carried, prompt - 1) - reach)
+        reply_tokens = max(0, min(carried, prompt - 1) - resumed) if extends and unmatched > slack and reach >= session["prompt"] - 1 else 0
+        lost_tokens = unmatched if unmatched > slack and not reply_tokens else 0
         recomputed = max(0, matched - resumed) if matched is not None else None
         miss = max(0, prompt - resumed - tail) if tail is not None else None
         opening_tokens = max(0, prompt - carried - tail) if first_request else 0
@@ -140,6 +143,8 @@ class Ledger:
             block = REPLY_BLOCK if seen >= session["prompt"] // block_tokens * block_tokens else HISTORY_BLOCK
         elif engine["restore_ms"]:
             cause = RESTORED
+        elif reply_tokens > slack:
+            cause, recomputed = REPLY_RECOMPUTED, reply_tokens
         elif lost_tokens:
             cause, lost = LOST, self.lost_reason(model_id, carried_at, engine["boot"], engine["artifact"], facts.get("wiped"))
         elif facts.get("pack_profile_new") and miss is not None and miss > slack:
