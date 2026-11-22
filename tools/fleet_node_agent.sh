@@ -1171,6 +1171,7 @@ while true; do
     self_update
     node_doctor
     janitor
+    compact_sweep
     if ! ensure_weightd; then
         report_if_changed
         sleep 1
@@ -1180,7 +1181,6 @@ while true; do
     for r in $ROOT_LIST; do ensure_root "$r"; done
     for r in $ROOT_LIST; do prune_logs "$HOME/sparkdata/$r"; done
     warmup_hook
-    compact_sweep
     report_if_changed
     sleep 1
 done
