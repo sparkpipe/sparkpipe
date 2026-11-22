@@ -354,7 +354,6 @@ static __device__ __forceinline__ void LmSkinnyAccumulate(const LmSkinnyArgument
 	float scale;
 	uint4 weight[unroll][NPG];
 	typename LmSkinnyFormat<Format>::Activation staged[unroll][ROWS];
-	#pragma unroll 1
 	for ( base = sub; base < chunks; base += LANES * unroll )
 	{
 		#pragma unroll
