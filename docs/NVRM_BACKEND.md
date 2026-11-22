@@ -780,13 +780,30 @@ macro both stay on the CUDA fronts. Their implementation is
   - **Fallback.** After a copy, an event wait, a host step or a wait on
     another queue, a dependent launch is ordered with the semaphore acquire
     like any launch.
-  - **Segments.** A chain of latched launches keeps the GPU from switching
-    to another process's work. Unbounded, a chain beside a second process
-    ends in Xid 109 (context switch timeout) after about 4.3 s. A chain
-    therefore goes in segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`):
-    each segment starts with the front-end acquire and its other 31
-    launches wait on latches. When the nvrm backend replays step programs,
-    it must keep the same bound.
+  - **Segments.** The GPU does not switch to another process's work while
+    a latched launch is held behind a running one; it switches at a launch
+    that starts with the front-end acquire. A chain therefore goes in
+    segments of 32 launches (`SPARK_NVRM_LATCH_SEGMENT`): each segment
+    starts with the front-end acquire and its other 31 launches wait on
+    latches. Another process waits at most one segment of the chain's
+    kernels. When the nvrm backend replays step programs, it must keep the
+    same bound.
+    - Measured on GB10 with 5 ms kernels queued ahead
+      (`test_nvrm_latch_segments chain-seconds 8 SEGMENT 5000` beside
+      `compete 6 1000`):
+      - In segments of 32, every launch of the second process waited one
+        segment (160.3 ms at the median, 160.4 ms at most, 32 x 5 ms),
+        with no Xid.
+      - Unbounded, the second process waited until Xid 109
+        (`CTX SWITCH TIMEOUT`) about 4 s in. That killed the chain's
+        channel, the device layer reported `GPU fault 109 (channel
+        error)`, and the second process and a plain kernel after it ran
+        normally.
+    - A chain of short kernels submitted one at a time leaves the GPU idle
+      between them, so the GPU switches even without segments: 5.48 million
+      launches of 1.46 µs in 8 s, unbounded, left a second process's 99th
+      percentile wait at 327 µs, with no Xid. The goal therefore checks
+      the bound with 5 ms kernels.
     - On GB10 a dependent launch costs 1.58 µs in segments of 32 and
       4.26 µs in segments of one (`make SPARKPIPE_DEVICE=nvrm
       nvrm-latch-segments`, 100,000 launches each).

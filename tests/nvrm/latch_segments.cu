@@ -12,11 +12,18 @@
 #define SEGMENT_BATCH 1000u
 #define COMPETE_SAMPLES_MAX 200000u
 
-__global__ void SegmentStep(uint32_t *counter)
+__global__ void SegmentStep(uint32_t *counter, uint64_t spin_ns)
 {
 	asm volatile("griddepcontrol.wait;" ::: "memory");
 	if ( threadIdx.x == 0u && blockIdx.x == 0u )
+	{
+		uint64_t start,now;
+		asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+		do
+			asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+		while ( now - start < spin_ns );
 		counter[0] += 1u;
+	}
 }
 
 __global__ void CompeteStep(uint32_t *counter)
@@ -38,7 +45,7 @@ static int CompareTimes(const void *left, const void *right)
 	return(a < b ? -1 : a > b);
 }
 
-static int Chain(uint64_t launches, double seconds, uint32_t segment)
+static int Chain(uint64_t launches, double seconds, uint32_t segment, uint64_t spin_ns)
 {
 	SparkGpuStream stream = 0;
 	uint32_t *counter = 0,seen = 0u;
@@ -55,7 +62,7 @@ static int Chain(uint64_t launches, double seconds, uint32_t segment)
 	{
 		uint32_t index;
 		for ( index = 0u; index < SEGMENT_BATCH && (launches == 0u || done < launches); index++,done++ )
-			if ( LM_LAUNCH_DEPENDENT((SegmentStep),1,32,0u,stream,counter) != SPARK_GPU_SUCCESS )
+			if ( LM_LAUNCH_DEPENDENT((SegmentStep),1,32,0u,stream,counter,spin_ns) != SPARK_GPU_SUCCESS )
 			{
 				printf("FAIL dependent launch %llu: %s\n",(unsigned long long)done,SparkDeviceLastError()->text);
 				return(1);
@@ -67,7 +74,7 @@ static int Chain(uint64_t launches, double seconds, uint32_t segment)
 		printf("FAIL finish the chain: %s\n",SparkDeviceLastError()->text);
 		return(1);
 	}
-	printf("chain: %llu dependent launches in segments of %u, %.3f us each, counter %u\n",(unsigned long long)done,SparkNvrmLatchSegment(),
+	printf("chain: %llu dependent launches of %.0f us in segments of %u, %.3f us each, counter %u\n",(unsigned long long)done,(double)spin_ns / 1e3,SparkNvrmLatchSegment(),
 		(double)(Now() - start) / 1e3 / (double)done,seen);
 	if ( seen != (uint32_t)done )
 	{
@@ -117,12 +124,13 @@ static int Compete(double seconds, double wait_p99_ms)
 
 int main(int argc, char **argv)
 {
-	if ( argc == 4 && strcmp(argv[1],"chain") == 0 )
-		return(Chain(strtoull(argv[2],0,10),0.0,(uint32_t)strtoul(argv[3],0,10)));
-	if ( argc == 4 && strcmp(argv[1],"chain-seconds") == 0 )
-		return(Chain(0u,strtod(argv[2],0),(uint32_t)strtoul(argv[3],0,10)));
+	const uint64_t spin_ns = argc == 5 ? strtoull(argv[4],0,10) * 1000ull : 0u;
+	if ( (argc == 4 || argc == 5) && strcmp(argv[1],"chain") == 0 )
+		return(Chain(strtoull(argv[2],0,10),0.0,(uint32_t)strtoul(argv[3],0,10),spin_ns));
+	if ( (argc == 4 || argc == 5) && strcmp(argv[1],"chain-seconds") == 0 )
+		return(Chain(0u,strtod(argv[2],0),(uint32_t)strtoul(argv[3],0,10),spin_ns));
 	if ( argc == 4 && strcmp(argv[1],"compete") == 0 )
 		return(Compete(strtod(argv[2],0),strtod(argv[3],0)));
-	printf("usage: %s chain LAUNCHES SEGMENT | chain-seconds SECONDS SEGMENT | compete SECONDS P99_WAIT_MS\n",argv[0]);
+	printf("usage: %s chain LAUNCHES SEGMENT [SPIN_US] | chain-seconds SECONDS SEGMENT [SPIN_US] | compete SECONDS P99_WAIT_MS\n",argv[0]);
 	return(2);
 }
