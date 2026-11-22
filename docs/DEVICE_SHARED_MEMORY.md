@@ -66,6 +66,13 @@ keeps the memory and its contents.
 kernel bindings then use it like any other buffer. `SparkDeviceHostOf` on
 it fails.
 
+weightd copies pack bytes and the arena epoch into its own mappings with
+`SparkWeightdDeviceWrite`
+([`include/sparkpipe/spark_weightd_device.h`](../include/sparkpipe/spark_weightd_device.h)).
+When no buffer holds the destination, it adopts exactly the range it writes,
+copies, and releases the view. A failed write fails the load or the eviction
+that made it, the epoch's included.
+
 ## Coherence
 
 Shared memory has no CPU view. No entry point returns a host pointer for it.

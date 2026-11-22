@@ -1379,10 +1379,8 @@ static SparkStatus SparkWeightdVerifySinkWrite(void *context,
         SparkSha256Update(&sink->sha, data, (size_t)bytes);
     if (sink->hash == 2u)
         SparkCk128Update(&sink->ck, data, (size_t)bytes);
-    if (sink->device != 0 &&
-        SparkGpuMemcpy((void *)(sink->device + offset), data, (size_t)bytes,
-            SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS)
-        return SPARK_STATUS_IO_ERROR;
+    if (sink->device != 0)
+        SPARK_RETURN(SparkWeightdDeviceWrite((void *)(sink->device + offset), data, bytes));
     return SPARK_STATUS_OK;
 }
 
@@ -2324,8 +2322,7 @@ static SparkStatus SparkWeightdEvictGroup(SparkWeightdServer *server,SparkWeight
 	arena->experts[group_index].present = 0u;
 	arena->epoch++;
 	if ( arena->epoch_device != 0 )
-		(void)SparkGpuMemcpy(arena->epoch_device,&arena->epoch,
-		    sizeof(uint64_t),SPARK_GPU_COPY_HOST_TO_DEVICE);
+		SPARK_RETURN(SparkWeightdDeviceWrite(arena->epoch_device,&arena->epoch,sizeof(uint64_t)));
 	return(SPARK_STATUS_OK);
 }
 
@@ -2391,10 +2388,9 @@ static SparkStatus SparkWeightdLoadRangeFromStaging(SparkWeightdArena *arena,
 	SparkCk128Finalize(&context,digest);
 	if ( memcmp(digest,range->digest,sizeof(digest)) != 0 )
 		return(SPARK_STATUS_HASH_MISMATCH);
-	if ( SparkGpuMemcpy((uint8_t *)arena->device_base + range->offset,source,
-		(size_t)range->bytes,SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
+	if ( SparkWeightdDeviceWrite((uint8_t *)arena->device_base + range->offset,source,range->bytes) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
+		fprintf(stderr,"WD-LOADRANGE-FAIL write dst_off=%llu bytes=%llu gpu=%s\n",
 			(unsigned long long)range->offset,
 			(unsigned long long)range->bytes,SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(SPARK_STATUS_IO_ERROR);
@@ -2447,9 +2443,9 @@ static SparkStatus SparkWeightdLeaseSinkRange(void *context,uint32_t span_index,
 	if ( span_offset == 0u )
 		SparkCk128Initialize(&sink->context);
 	SparkCk128Update(&sink->context,data,(size_t)bytes);
-	if ( SparkGpuMemcpy((uint8_t *)sink->arena->device_base + range->offset + span_offset,data,(size_t)bytes,SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
+	if ( SparkWeightdDeviceWrite((uint8_t *)sink->arena->device_base + range->offset + span_offset,data,bytes) != SPARK_STATUS_OK )
 	{
-		fprintf(stderr,"WD-LOADRANGE-FAIL memcpy dst_off=%llu bytes=%llu cuda=%s\n",
+		fprintf(stderr,"WD-LOADRANGE-FAIL write dst_off=%llu bytes=%llu gpu=%s\n",
 			(unsigned long long)(range->offset + span_offset),
 			(unsigned long long)bytes,SparkGpuGetErrorString(SparkGpuGetLastError()));
 		return(SPARK_STATUS_IO_ERROR);
