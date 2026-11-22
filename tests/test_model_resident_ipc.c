@@ -411,9 +411,51 @@ static void TestCompletionDecodeReplacesHeldCompletion(void)
 	assert(SparkModelResidentIpcDecodeCompletion(buffer,message_bytes,&fresh) == SPARK_STATUS_OK);
 	assert(memcmp(&held,&fresh,sizeof(held)) == 0);
 	buffer[message_bytes - 1u] ^= 0xffu;
-	((SparkModelResidentIpcCompletion *)buffer)->reserved = 1u;
+	((SparkModelResidentIpcCompletion *)buffer)->row_values_offset += 4u;
 	assert(SparkModelResidentIpcDecodeCompletionReplacing(buffer,message_bytes,&held) == SPARK_STATUS_SCHEMA_ERROR);
 	assert(memcmp(&held,&fresh,sizeof(held)) == 0);
+}
+
+static void TestCompletionRowValues(void)
+{
+	static uint8_t buffer[SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES];
+	static SparkModelServingCompletion rows,plain,held,fresh;
+	uint32_t message_bytes,plain_bytes,index;
+	TestCompletionFill(&rows,3u,2u,5u,13u);
+	TestCompletionFill(&plain,3u,2u,5u,13u);
+	rows.completion_flags |= SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES;
+	rows.row_value_stride = 7u;
+	rows.row_value_count = 21u;
+	for (index=0u; index<rows.row_value_count; index++)
+		rows.row_values[index] = (uint16_t)(0x3f80u + index);
+	assert(SparkModelResidentIpcEncodeCompletion(&plain,9u,buffer,sizeof(buffer),&plain_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcEncodeCompletion(&rows,9u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	assert(message_bytes == ((plain_bytes + 21u * 2u + 3u) & ~3u));
+	memset(&fresh,0xa5,sizeof(fresh));
+	assert(SparkModelResidentIpcDecodeCompletion(buffer,message_bytes,&fresh) == SPARK_STATUS_OK);
+	assert(fresh.row_value_stride == 7u && fresh.row_value_count == 21u);
+	assert(memcmp(fresh.row_values,rows.row_values,21u * sizeof(uint16_t)) == 0);
+	assert(SparkModelServingCompletionRow(&fresh,2u) == &fresh.row_values[14]);
+	assert(SparkModelServingCompletionRow(&fresh,3u) == 0);
+	assert(memcmp(&fresh,&rows,sizeof(fresh)) == 0);
+	memset(&held,0,sizeof(held));
+	assert(SparkModelResidentIpcDecodeCompletionReplacing(buffer,message_bytes,&held) == SPARK_STATUS_OK);
+	assert(memcmp(&held,&fresh,sizeof(held)) == 0);
+	assert(SparkModelResidentIpcEncodeCompletion(&plain,10u,buffer,sizeof(buffer),&plain_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcDecodeCompletionReplacing(buffer,plain_bytes,&held) == SPARK_STATUS_OK);
+	assert(held.row_value_count == 0u && held.row_value_stride == 0u);
+	assert(memcmp(&held,&plain,sizeof(held)) == 0);
+	rows.row_value_count = 20u;
+	assert(SparkModelResidentIpcEncodeCompletion(&rows,9u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+	rows.row_value_stride = 4096u;
+	rows.row_value_count = SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES;
+	for (index=0u; index<rows.row_value_count; index++)
+		rows.row_values[index] = (uint16_t)(index * 31u);
+	assert(SparkModelResidentIpcEncodeCompletion(&rows,9u,buffer,sizeof(buffer),&message_bytes) == SPARK_STATUS_OK);
+	assert(SparkModelResidentIpcDecodeCompletionReplacing(buffer,message_bytes,&held) == SPARK_STATUS_OK);
+	assert(memcmp(held.row_values,rows.row_values,sizeof(rows.row_values)) == 0);
+	((SparkModelResidentIpcCompletion *)buffer)->row_value_stride = 0u;
+	assert(SparkModelResidentIpcDecodeCompletion(buffer,message_bytes,&fresh) == SPARK_STATUS_SCHEMA_ERROR);
 }
 
 static void TestStampedSubmissionMatchesDirectEncoding(void)
@@ -866,6 +908,7 @@ int main(void)
 	TestSubmissionRoundTrip();
 	TestCompletionRoundTrip();
 	TestCompletionDecodeReplacesHeldCompletion();
+	TestCompletionRowValues();
 	TestStampedSubmissionMatchesDirectEncoding();
 	TestTokenContinuationCarriesEveryLane();
 	TestSpansExpandToTheFullForm();

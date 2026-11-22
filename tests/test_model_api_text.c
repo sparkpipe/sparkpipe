@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -32,6 +33,9 @@
 #ifndef TEST_MODEL_RESIDENT_TRANSPORT_PATH
 #define TEST_MODEL_RESIDENT_TRANSPORT_PATH ""
 #endif
+#ifndef TEST_MODEL_SERVING_WIDE_ROWS_PATH
+#define TEST_MODEL_SERVING_WIDE_ROWS_PATH ""
+#endif
 
 #define TEST_RANK_COUNT 3u
 #define TEST_API_MAX_SEQUENCE_POSITIONS 64u
@@ -52,6 +56,7 @@ static const char TestApiChatTemplateNonSpecialStopJson[] =
 	"\"assistant_thinking\":null,\"turn_suffix\":\"\",\"generation\":\"<|assistant|>\\n\","
 	"\"generation_thinking\":null,\"stop_markers\":[\"<think>\"]}";
 static const char *TestApiChatTemplate = TestApiChatTemplateJson;
+static const char *TestApiAdapterPath = TEST_MODEL_SERVING_ADAPTER_PATH;
 static uint32_t TestApiEosToken = 0u;
 
 static const char *const TestApiTransportHosts[TEST_RANK_COUNT] =
@@ -158,6 +163,7 @@ static void TestApiWriteTokenizerFixture(const char *path)
 }
 
 static const uint32_t TestApiTextPromptPrefix[1] = { 1u };
+static const uint32_t TestApiTextPromptSuffix[1] = { 2u };
 
 static void TestApiWriteDeployment(const char *path,
 	const SparkModelResidentEndpoint *endpoints,
@@ -178,8 +184,8 @@ static void TestApiWriteDeployment(const char *path,
 	stage_indices[1] = 2u;
 	stage_indices[2] = 1u;
 	memset(&fixture,0,sizeof(fixture));
-	fixture.adapter_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
-	fixture.driver_shared_object_path = TEST_MODEL_SERVING_ADAPTER_PATH;
+	fixture.adapter_shared_object_path = TestApiAdapterPath;
+	fixture.driver_shared_object_path = TestApiAdapterPath;
 	fixture.driver_program_name = "resident_decode";
 	fixture.transport_shared_object_path = TEST_MODEL_RESIDENT_TRANSPORT_PATH;
 	fixture.transport_mode = "host-rdma";
@@ -223,6 +229,8 @@ static void TestApiWriteDeployment(const char *path,
 			fixture.tokenizer_asset_sha256 = asset_sha256;
 			fixture.tokenizer_text_prompt_prefix_ids = TestApiTextPromptPrefix;
 			fixture.tokenizer_text_prompt_prefix_count = 1u;
+			fixture.tokenizer_text_prompt_suffix_ids = TestApiTextPromptSuffix;
+			fixture.tokenizer_text_prompt_suffix_count = 1u;
 		}
 		else
 		{
@@ -789,6 +797,163 @@ static uint32_t TestApiEncodeExpected(const SparkTokenizerSidecar *sidecar,
 	SparkTokenizerWorkspaceDestroy(&workspace);
 	assert(encoding.token_count != 0u && encoding.token_count <= token_capacity);
 	return encoding.token_count;
+}
+
+
+static uint32_t TestApiScanEmbedding(const char *body,uint32_t index,float *values,uint32_t capacity)
+{
+	char marker[48];
+	const char *cursor;
+	uint32_t count = 0u;
+	(void)snprintf(marker,sizeof(marker),"\"index\":%u,\"embedding\":[",index);
+	cursor = strstr(body,marker);
+	assert(cursor != 0);
+	cursor += strlen(marker);
+	while ( *cursor != ']' )
+	{
+		char *end;
+		const float value = strtof(cursor,&end);
+		assert(end != cursor && count < capacity);
+		values[count++] = value;
+		cursor = *end == ',' ? end + 1 : end;
+	}
+	return count;
+}
+
+static void TestApiExpectEmbedding(const float *values,uint32_t count,uint32_t width,uint32_t last_token)
+{
+	const double first = (double)(last_token % 8u + 1u);
+	const double norm = sqrt(first * first + (double)(width - 1u));
+	uint32_t element;
+	assert(count == width);
+	assert(values[0] == (float)(first / norm));
+	for (element=1u; element<width; element++)
+		assert(values[element] == (float)(1.0 / norm));
+}
+
+static uint32_t TestApiBase64Decode(const char *text,uint8_t *bytes,uint32_t capacity)
+{
+	uint32_t count = 0u,bits = 0u,held = 0u;
+	for (; *text != '"'; text++)
+	{
+		const char digit = *text;
+		uint32_t value;
+		if ( digit == '=' )
+			break;
+		value = digit >= 'A' && digit <= 'Z' ? (uint32_t)(digit - 'A') : digit >= 'a' && digit <= 'z' ? (uint32_t)(digit - 'a') + 26u :
+			digit >= '0' && digit <= '9' ? (uint32_t)(digit - '0') + 52u : digit == '+' ? 62u : 63u;
+		assert(digit == '/' || value != 63u);
+		bits = (bits << 6) | value;
+		held += 6u;
+		if ( held >= 8u )
+		{
+			held -= 8u;
+			assert(count < capacity);
+			bytes[count++] = (uint8_t)(bits >> held);
+		}
+	}
+	return count;
+}
+
+static void TestApiEmbeddings(TestApiStack *stack,const SparkTokenizerSidecar *sidecar)
+{
+	static char response[262144];
+	float values[64],packed[64];
+	uint32_t expected[16],expected_count;
+	const char *body,*cursor;
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12,13],[21,22]]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	assert(TestApiBodyContains(body,"\"object\":\"list\""));
+	assert(TestApiBodyContains(body,"\"model\":\"test/model\""));
+	assert(TestApiBodyContains(body,"\"usage\":{\"prompt_tokens\":5,\"total_tokens\":5}"));
+	TestApiExpectEmbedding(values,TestApiScanEmbedding(body,0u,values,64u),64u,13u);
+	TestApiExpectEmbedding(values,TestApiScanEmbedding(body,1u,values,64u),64u,22u);
+	assert(strstr(body,"\"index\":2") == 0);
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[11,12,13]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	TestApiExpectEmbedding(values,TestApiScanEmbedding(body,0u,values,64u),64u,13u);
+	assert(strstr(body,"\"index\":1") == 0);
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12,13]],\"dimensions\":8}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	TestApiExpectEmbedding(values,TestApiScanEmbedding(TestApiResponseJsonBody(response),0u,values,64u),8u,13u);
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12,13]],\"encoding_format\":\"base64\"}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	cursor = strstr(TestApiResponseJsonBody(response),"\"embedding\":\"");
+	assert(cursor != 0);
+	assert(TestApiBase64Decode(cursor + strlen("\"embedding\":\""),(uint8_t *)packed,sizeof(packed)) == sizeof(packed));
+	TestApiExpectEmbedding(packed,64u,64u,13u);
+
+	if ( sidecar != 0 )
+	{
+		expected_count = TestApiEncodeExpected(sidecar,"hello",expected,16u);
+		TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":\"hello\"}",response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		TestApiExpectEmbedding(values,TestApiScanEmbedding(body,0u,values,64u),64u,TestApiTextPromptSuffix[0]);
+		(void)snprintf(response + 131072,512u,"\"usage\":{\"prompt_tokens\":%u,\"total_tokens\":%u}",expected_count + 2u,expected_count + 2u);
+		assert(TestApiBodyContains(body,response + 131072));
+		TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[\"hello\",[11,12,13],\"hello world\"]}",response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 200);
+		body = TestApiResponseJsonBody(response);
+		TestApiExpectEmbedding(values,TestApiScanEmbedding(body,0u,values,64u),64u,TestApiTextPromptSuffix[0]);
+		TestApiExpectEmbedding(values,TestApiScanEmbedding(body,1u,values,64u),64u,13u);
+		TestApiExpectEmbedding(values,TestApiScanEmbedding(body,2u,values,64u),64u,TestApiTextPromptSuffix[0]);
+	}
+	else
+	{
+		TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":\"hello\"}",response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400);
+		assert(TestApiBodyContains(TestApiResponseJsonBody(response),"tokenizer_unavailable"));
+	}
+
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"code\":\"invalid_input\""));
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12],[]]}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"input 1 is empty"));
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12]],\"dimensions\":65}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	assert(TestApiBodyContains(TestApiResponseJsonBody(response),"\"code\":\"invalid_option\""));
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12]],\"encoding_format\":\"hex\"}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings","{\"input\":[[11,12]],\"stream\":true}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 400);
+	{
+		char request[1024];
+		int length = snprintf(request,sizeof(request),"{\"input\":[[");
+		for (uint32_t index=0u; index<TEST_API_MAX_SEQUENCE_POSITIONS; index++)
+			length += snprintf(request + length,sizeof(request) - (size_t)length,"%s%u",index != 0u ? "," : "",11u + index);
+		(void)snprintf(request + length,sizeof(request) - (size_t)length,"]]}");
+		TestApiHttpCall(stack->api_port,"POST","/v1/embeddings",request,response,sizeof(response));
+		assert(TestApiResponseStatus(response) == 400);
+		assert(TestApiBodyContains(TestApiResponseJsonBody(response),"does not fit the 64 positions"));
+	}
+	TestApiHttpCall(stack->api_port,"POST","/v1/completions","{\"prompt_token_ids\":[11,12],\"max_tokens\":2}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	printf("test_model_api_text: embeddings OK (%s inputs; unit-length rows in input order; float, base64 and dimensions)\n",
+		sidecar != 0 ? "text and token" : "token");
+}
+
+static void TestApiEmbeddingLaneLimit(TestApiStack *stack)
+{
+	static char response[262144];
+	float values[8];
+	uint32_t index;
+	const char *body;
+	TestApiHttpCall(stack->api_port,"POST","/v1/embeddings",
+		"{\"input\":[[11,21],[11,22],[11,23],[11,24],[11,25],[11,26],[11,27],[11,28],[11,29],[11,30]],\"dimensions\":8}",response,sizeof(response));
+	assert(TestApiResponseStatus(response) == 200);
+	body = TestApiResponseJsonBody(response);
+	for (index=0u; index<10u; index++)
+		TestApiExpectEmbedding(values,TestApiScanEmbedding(body,index,values,8u),8u,21u + index);
+	assert(TestApiBodyContains(body,"\"usage\":{\"prompt_tokens\":20,\"total_tokens\":20}"));
+	printf("test_model_api_text: ten 16384-wide rows OK (one completion carries four, so the engine splits the inputs over waves)\n");
 }
 
 static char *TestApiReadFile(const char *path)
@@ -1407,6 +1572,7 @@ int main(void)
 	TestApiIdleWake(&stack);
 	TestApiModelList(&stack);
 	TestApiTokenIdServingWithoutTokenizer(&stack);
+	TestApiEmbeddings(&stack,0);
 	TestApiContextLimit(&stack);
 	TestApiStopApi(&stack);
 	TestApiStopResidents(stack.residents,stack.paths);
@@ -1431,6 +1597,7 @@ int main(void)
 		configuration.format = SPARK_TOKENIZER_SIDECAR_FORMAT_AUTO;
 		assert(SparkTokenizerSidecarLoad(&sidecar,&configuration) == SPARK_STATUS_OK);
 		TestApiChatTemplateServing(&stack,&sidecar);
+		TestApiEmbeddings(&stack,&sidecar);
 		SparkTokenizerSidecarUnload(&sidecar);
 	}
 	TestApiChatDeclaredStops(&stack);
@@ -1442,6 +1609,16 @@ int main(void)
 	TestApiDegradedPath(&stack);
 	TestApiRankLoss(&stack);
 	TestApiStopStack(&stack);
+
+	memset(&stack,0,sizeof(stack));
+	stack.api_port = TestTcpPortRange(1u);
+	assert(stack.api_port != 0u && "no free loopback port below the ephemeral range");
+	TestApiAdapterPath = TEST_MODEL_SERVING_WIDE_ROWS_PATH;
+	TestApiStartStack(&stack,0);
+	TestApiStartApi(&stack);
+	TestApiEmbeddingLaneLimit(&stack);
+	TestApiStopStack(&stack);
+	TestApiAdapterPath = TEST_MODEL_SERVING_ADAPTER_PATH;
 
 	TestApiStartsBeforeEngines();
 	TestApiEngineStopCompletes();

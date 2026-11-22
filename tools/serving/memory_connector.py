@@ -10,7 +10,7 @@ from aiohttp import web
 
 PROTOCOL = 1
 UNAVAILABLE = "memory_unavailable"
-HOST_METHODS = ("model_ready", "render_ids", "continuation_ids", "cut_ids", "count", "complete")
+HOST_METHODS = ("model_ready", "render_ids", "continuation_ids", "cut_ids", "count", "complete", "embed")
 CALL_SECONDS = 30.0
 HELLO_SECONDS = 10.0
 RETRY_SECONDS = 5.0
@@ -42,6 +42,8 @@ class Connector:
         self.listen = (address, int(port))
         self.token = read_token(base / settings["token_file"])
         self.host = host
+        offers = getattr(host, "offers", None)
+        self.host_methods = tuple(method for method in HOST_METHODS if offers is None or offers(method))
         self.timeout = float(settings.get("timeout_seconds", CALL_SECONDS))
         self.ready = False
         self.retry_at = 0.0
@@ -92,7 +94,7 @@ class Connector:
 
     async def connect(self):
         try:
-            answer = await self.post("hello", {"protocol": PROTOCOL, "host_url": "http://%s:%d" % self.listen, "host_methods": list(HOST_METHODS)}, HELLO_SECONDS)
+            answer = await self.post("hello", {"protocol": PROTOCOL, "host_url": "http://%s:%d" % self.listen, "host_methods": list(self.host_methods)}, HELLO_SECONDS)
             if answer.get("protocol") != PROTOCOL:
                 raise RequestError(503, UNAVAILABLE, f"the memory program speaks protocol {answer.get('protocol')}, the chat layer {PROTOCOL}")
         except RequestError as error:
@@ -143,7 +145,7 @@ class Connector:
         if not hmac.compare_digest(request.headers.get("Authorization", ""), "Bearer " + self.token):
             return refusal(401, "unauthorized", "the chat layer's memory host needs the memory token")
         method = request.match_info["method"]
-        handler = getattr(self.host, method, None) if method in HOST_METHODS else None
+        handler = getattr(self.host, method, None) if method in self.host_methods else None
         if handler is None:
             return refusal(404, "unsupported", f"the chat layer has no host method {method}")
         try:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_model_driver.h"
@@ -11,12 +12,13 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 39u
+#define SPARK_MODEL_SERVING_ADAPTER_ABI_VERSION 40u
 #define SPARK_MODEL_SERVING_ADAPTER_INTERFACE_SYMBOL \
 	"SparkModelServingAdapterGetInterface"
 #define SPARK_MODEL_SERVING_ADAPTER_ARTIFACT_SHA256_LENGTH 64u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES 512u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES 4096u
+#define SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES 65536u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_STAGE_COUNT 16u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_LAYER_COUNT 256u
 #define SPARK_MODEL_SERVING_ADAPTER_MAX_ACTIVE_SEQUENCE_COUNT 1024u
@@ -39,12 +41,14 @@ extern "C" {
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH UINT32_C(0x00000004)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS UINT32_C(0x00000008)
 #define SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED UINT32_C(0x00000010)
+#define SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW UINT32_C(0x00000020)
 #define SPARK_MODEL_SERVING_LANE_KNOWN_FLAGS \
 	(SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_TOKEN | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PREFIX | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_PUBLISH | \
 	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STATELESS | \
-	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED)
+	 SPARK_MODEL_SERVING_LANE_FLAG_CACHE_STAGED | \
+	 SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW)
 
 #define SPARK_MODEL_SERVING_BOUNDARY_FORMAT_BF16 1u
 
@@ -75,6 +79,10 @@ extern "C" {
 	UINT32_C(0x00100000)
 #define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY \
 	UINT32_C(0x00200000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT \
+	UINT32_C(0x00400000)
+#define SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY \
+	UINT32_C(0x00800000)
 #define SPARK_MODEL_SERVING_ADAPTER_KNOWN_CAPABILITIES \
 	(SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ASYNC_COMPLETION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_HIDDEN_TRANSPORT | \
@@ -89,7 +97,9 @@ extern "C" {
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SAMPLING_TRUNCATION | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_LOGPROBS | \
 	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY | \
-	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY)
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_TREE_VERIFY | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT | \
+	 SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROWS_ONLY)
 
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_COMMIT 1u
 #define SPARK_MODEL_SERVING_PREFETCH_RESOLUTION_ABORT 2u
@@ -116,9 +126,11 @@ static inline uint32_t SparkModelServingWorkKindUsesRows(uint32_t work_kind)
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS UINT32_C(0x00000001)
 #define SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION \
 	UINT32_C(0x00000002)
+#define SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES UINT32_C(0x00000004)
 #define SPARK_MODEL_SERVING_COMPLETION_KNOWN_FLAGS \
 	(SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS | \
-	 SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION)
+	 SPARK_MODEL_SERVING_COMPLETION_FLAG_MODEL_EXTENSION | \
+	 SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES)
 
 typedef struct SparkModelServingAdapterDescriptor
 {
@@ -160,6 +172,13 @@ static inline uint32_t SparkModelServingAdapterCompletionTokenCapacity(
 {
 	return((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_SPECULATIVE_VERIFY) != 0u ?
 		SPARK_MODEL_SERVING_ADAPTER_MAX_OUTPUT_TOKEN_COUNT : descriptor->max_output_token_count);
+}
+
+static inline uint32_t SparkModelServingAdapterRowValueCapacity(
+	const SparkModelServingAdapterDescriptor *descriptor)
+{
+	return((descriptor->capability_flags & SPARK_MODEL_SERVING_ADAPTER_CAPABILITY_ROW_OUTPUT) != 0u ?
+		SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES : 0u);
 }
 
 static inline uint32_t SparkModelServingAdapterTokensPerSequenceLimit(
@@ -313,7 +332,33 @@ typedef struct SparkModelServingCompletion
 	uint64_t service_time_ns;
 	uint64_t device_memcpy_bytes;
 	uint64_t host_staging_bytes;
+	uint32_t row_value_stride;
+	uint32_t row_value_count;
+	uint16_t row_values[SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES];
 } SparkModelServingCompletion;
+
+#define SPARK_MODEL_SERVING_COMPLETION_HEAD_BYTES \
+	((uint32_t)offsetof(SparkModelServingCompletion,row_values))
+
+static inline uint32_t SparkModelServingSubmissionRowLaneCount(const SparkModelServingSubmission *submission)
+{
+	uint32_t lane,count = 0u;
+	if ( submission->lanes == 0 )
+		return(0u);
+	for (lane=0u; lane<submission->lane_count; lane++)
+		if ( (submission->lanes[lane].flags & SPARK_MODEL_SERVING_LANE_FLAG_OUTPUT_ROW) != 0u )
+			count++;
+	return(count);
+}
+
+static inline const uint16_t *SparkModelServingCompletionRow(const SparkModelServingCompletion *completion,uint32_t row)
+{
+	if ( (completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_ROW_VALUES) == 0u || completion->row_value_stride == 0u ||
+		completion->row_value_count > SPARK_MODEL_SERVING_ADAPTER_MAX_ROW_VALUES ||
+		(uint64_t)(row + 1u) * completion->row_value_stride > completion->row_value_count )
+		return(0);
+	return(&completion->row_values[(size_t)row * completion->row_value_stride]);
+}
 
 static inline uint32_t SparkModelServingVerifyKeptRows(
 	const uint32_t *sequence_row_begin,

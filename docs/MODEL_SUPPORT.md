@@ -26,6 +26,7 @@ tree contains. A family is identified by its exact checkpoint contract in
 | Laguna S 2.1 | poolside/Laguna-S-2.1 | `laguna_authoritative.json` |
 | Hunyuan HY4 preview | tencent/Hy4-preview-FP8 | `hy4_authoritative.json` |
 | Muse Glimmer 30B | meta-models/Muse-Glimmer-30B | `muse_glimmer_authoritative.json` |
+| Qwen3-Embedding-8B (embeddings, one rank) | Qwen/Qwen3-Embedding-8B | `qwen3_embedding_8b_authoritative.json` |
 
 The Korean models K-EXAONE 2.0 (LG AI Research), A.X K2 (SK Telecom) and
 Solar Open 2 (Upstage) are product targets; their contracts and drivers are

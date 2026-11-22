@@ -762,7 +762,8 @@ static SparkStatus SparkModelResidentdAllocateHostStorage(
 	descriptor = runtime->adapter_library.adapter_interface.descriptor;
 	status = SparkModelResidentIpcCalculateSubmitCapacity(&runtime->runtime_limits,&submit_bytes);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,&completion_bytes);
+		status = SparkModelResidentIpcCalculateCompletionBytes(SparkModelServingAdapterCompletionTokenCapacity(descriptor),SPARK_MODEL_SERVING_ADAPTER_MAX_EXTENSION_BYTES,SPARK_MODEL_SERVING_ADAPTER_MAX_LOGPROB_ENTRIES,
+			SparkModelServingAdapterRowValueCapacity(descriptor),&completion_bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	runtime->route_capacity = runtime->runtime_limits.max_inflight_submission_count;

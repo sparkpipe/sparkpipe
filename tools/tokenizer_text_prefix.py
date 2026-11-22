@@ -3,7 +3,9 @@
 
 Hugging Face encodes a text prompt with add_special_tokens on (vLLM does so for
 /v1/completions), so the tokenizer's post-processor wraps the text. The ids it
-places before the text are the deployment's text_prompt_prefix_token_ids.
+places before the text are the deployment's text_prompt_prefix_token_ids; the
+ids it places after the text (--suffix) are its text_prompt_suffix_token_ids,
+which an embedding of a text ends with.
 
 Rules, in Hugging Face order:
   tokenizer_config.json add_bos_token false: no prefix.
@@ -81,6 +83,46 @@ def processor_prefix(processor) -> list[int]:
     raise TokenizerPrefixError(f"post_processor type {kind!r} is not understood")
 
 
+def processor_suffix(processor) -> list[int]:
+    if processor is None:
+        return []
+    kind = processor.get("type")
+    if kind == "Sequence":
+        suffix: list[int] = []
+        for inner in processor.get("processors") or []:
+            suffix = suffix + processor_suffix(inner)
+        return suffix
+    if kind == "TemplateProcessing":
+        pieces = processor.get("single") or []
+        positions = [index for index, piece in enumerate(pieces) if "Sequence" in piece]
+        if len(positions) != 1:
+            raise TokenizerPrefixError("TemplateProcessing single template does not hold exactly one $A sequence")
+        suffix = []
+        for piece in pieces[positions[0] + 1:]:
+            suffix += [int(value) for value in processor["special_tokens"][piece["SpecialToken"]["id"]]["ids"]]
+        return suffix
+    if kind in ("BertProcessing", "RobertaProcessing"):
+        return [int(processor["sep"][1])]
+    if kind == "ByteLevel":
+        return []
+    raise TokenizerPrefixError(f"post_processor type {kind!r} is not understood")
+
+
+def text_prompt_suffix_token_ids(tokenizer: dict, config: dict | None) -> list[int]:
+    add_eos = (config or {}).get("add_eos_token")
+    if add_eos is True:
+        eos = token_content((config or {}).get("eos_token"))
+        if eos is None:
+            raise TokenizerPrefixError("add_eos_token is true but eos_token is unset")
+        return [token_id(tokenizer, eos)]
+    if add_eos not in (None, False):
+        raise TokenizerPrefixError(f"add_eos_token {add_eos!r} is not a boolean")
+    add_bos = (config or {}).get("add_bos_token")
+    if add_bos is True or (add_bos is None and (config or {}).get("tokenizer_class") in BOS_DEFAULT_CLASSES):
+        return []
+    return processor_suffix(tokenizer.get("post_processor"))
+
+
 def text_prompt_prefix_token_ids(tokenizer: dict, config: dict | None) -> list[int]:
     add_bos = (config or {}).get("add_bos_token")
     if add_bos is None and (config or {}).get("tokenizer_class") in BOS_DEFAULT_CLASSES:
@@ -110,12 +152,26 @@ def directory_prefix(directory: Path) -> list[int]:
     raise TokenizerPrefixError(f"{directory} holds neither tokenizer.json nor a TikTokenTokenizer tiktoken.model")
 
 
+def directory_suffix(directory: Path) -> list[int]:
+    config_path = directory / "tokenizer_config.json"
+    config = json.loads(config_path.read_text()) if config_path.is_file() else None
+    tokenizer_path = directory / "tokenizer.json"
+    if tokenizer_path.is_file():
+        return text_prompt_suffix_token_ids(json.loads(tokenizer_path.read_text()), config)
+    if (directory / "tiktoken.model").is_file() and (config or {}).get("tokenizer_class") == "TikTokenTokenizer":
+        if (config or {}).get("add_eos_token") is True:
+            raise TokenizerPrefixError("TikTokenTokenizer with add_eos_token true is not understood")
+        return []
+    raise TokenizerPrefixError(f"{directory} holds neither tokenizer.json nor a TikTokenTokenizer tiktoken.model")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("directory", type=Path, help="directory holding tokenizer.json and tokenizer_config.json")
+    parser.add_argument("--suffix", action="store_true", help="print the ids placed after the text instead of those before it")
     args = parser.parse_args()
     try:
-        print(json.dumps(directory_prefix(args.directory)))
+        print(json.dumps(directory_suffix(args.directory) if args.suffix else directory_prefix(args.directory)))
     except (TokenizerPrefixError, KeyError, TypeError, OSError, json.JSONDecodeError) as error:
         print(f"tokenizer_text_prefix: {args.directory}: {error}", file=sys.stderr)
         return 1

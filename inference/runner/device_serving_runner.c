@@ -259,6 +259,8 @@ SparkStatus SparkStageRunnerSubmit(SparkStageRunner *runner, const SparkStageRun
 	if ( (dispatch->flags & ~SPARK_STAGE_RUNNER_DISPATCH_KNOWN_FLAGS) != 0u || (dispatch->flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) != 0u ||
 		dispatch->hidden_input_bf16 != 0 )
 		return(ServingRefuse(SPARK_STATUS_UNSUPPORTED,"a device stage runs whole-model rows; deferred prefill and boundary input are not served"));
+	if ( dispatch->output_rows_bf16 != 0 )
+		return(ServingRefuse(SPARK_STATUS_UNSUPPORTED,"a device stage returns no final rows"));
 	if ( dispatch->distribution_count != 0u && (dispatch->distribution_rows == 0 || dispatch->distribution_positions == 0 ||
 		dispatch->distribution_rules == 0 || dispatch->distribution_count > serving->head_rows) )
 		return(ServingRefuse(SPARK_STATUS_INVALID_ARGUMENT,"sampled rows name their rows, positions and rules, within the head capacity"));

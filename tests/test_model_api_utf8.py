@@ -96,7 +96,7 @@ def main():
             "-I.", "-Iinclude", "-Isrc", "-Imodel-families/common/include",
             str(source), "build/libsparkpipe_runtime.a",
             "build/libsparkpipe_model_common.a", "build/libsparkpipe_core.a",
-            "-ldl", "-lpthread", "-o", str(binary),
+            "-ldl", "-lpthread", "-lm", "-o", str(binary),
         ], cwd=ROOT, check=True)
         request = "".join(data.hex() + "|" + (",".join(map(str, cuts)) if cuts else "") + "\n" for data, cuts in inputs)
         result = subprocess.run([str(binary)], cwd=ROOT, input=request, timeout=60, capture_output=True, text=True)

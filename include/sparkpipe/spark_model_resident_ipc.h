@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 29u
+#define SPARK_MODEL_RESIDENT_IPC_ABI_VERSION 30u
 #define SPARK_MODEL_RESIDENT_IPC_MAGIC UINT32_C(0x52444D53)
 #define SPARK_MODEL_RESIDENT_IPC_MAX_MESSAGE_BYTES UINT32_C(2097152)
 #define SPARK_MODEL_RESIDENT_IPC_ID_BYTES 128u
@@ -224,7 +224,9 @@ typedef struct SparkModelResidentIpcCompletion
 	uint32_t logprob_stride;
 	uint32_t logprob_entry_count;
 	uint32_t logprobs_offset;
-	uint32_t reserved;
+	uint32_t row_value_stride;
+	uint32_t row_value_count;
+	uint32_t row_values_offset;
 	uint64_t queue_delay_ns;
 	uint64_t service_time_ns;
 	uint64_t device_memcpy_bytes;
@@ -435,6 +437,7 @@ SparkStatus SparkModelResidentIpcCalculateCompletionBytes(
 	uint32_t token_count,
 	uint32_t model_extension_bytes,
 	uint32_t logprob_entry_count,
+	uint32_t row_value_count,
 	uint32_t *message_bytes_out);
 SparkStatus SparkModelResidentIpcEncodeCompletion(
 	const SparkModelServingCompletion *completion,

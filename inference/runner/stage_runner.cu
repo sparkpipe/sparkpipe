@@ -1013,9 +1013,12 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( runner->owns_final_head == 0u )
 		return SPARK_STATUS_OK;
-	if ( (state->geometry.head_prenormed == 0u &&
-			StageRunnerSlice(state, state->geometry.head_norm_offset, state->geometry.head_norm_bytes, &state->head_norm_weight) != SPARK_STATUS_OK) ||
-		StageRunnerSlice(state, state->geometry.head_offset, state->geometry.head_bytes, &state->head_weight) != SPARK_STATUS_OK )
+	if ( state->geometry.head_prenormed == 0u &&
+		StageRunnerSlice(state, state->geometry.head_norm_offset, state->geometry.head_norm_bytes, &state->head_norm_weight) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	if ( state->geometry.headless != 0u )
+		return SPARK_STATUS_OK;
+	if ( StageRunnerSlice(state, state->geometry.head_offset, state->geometry.head_bytes, &state->head_weight) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 	if ( SparkGpuMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) != SPARK_GPU_SUCCESS ||
@@ -1280,7 +1283,7 @@ SparkStatus SparkStageRunnerInitialize(SparkStageRunner *runner, const SparkStag
 		state->vocab_slice_rows = state->geometry.head_rows != 0u ? state->geometry.head_rows :
 			state->geometry.embed_rows != 0u ? state->geometry.embed_rows : state->vocab;
 		if ( (runner->owns_embedding != 0u && (state->geometry.embed_rows == 0u || state->geometry.embed_rows > state->vocab)) ||
-			(runner->owns_final_head != 0u && (state->geometry.head_rows == 0u || state->geometry.head_rows > state->vocab)) ||
+			(runner->owns_final_head != 0u && state->geometry.headless == 0u && (state->geometry.head_rows == 0u || state->geometry.head_rows > state->vocab)) ||
 			(state->geometry.embed_rows != 0u && state->geometry.head_rows != 0u && state->geometry.embed_rows != state->geometry.head_rows) )
 		{
 			fprintf(stderr, "sparkpipe_stage_runner: vocab shard rows embed=%u head=%u vocab=%u do not agree\n",
@@ -2519,6 +2522,30 @@ static SparkStatus StageRunnerStepOutputs(SparkStageRunnerState *state, const Sp
 	return state->model_interface->sideband(state->model, 1u, state->hidden, current->sideband_output, (uint64_t)rows * state->geometry.sideband_bytes_per_row, rows, stream);
 }
 
+static SparkStatus StageRunnerOutputRows(SparkStageRunnerState *state, const SparkStageRunnerStep *in, uint16_t *output, SparkGpuStream stream)
+{
+	LmStageHeadRows head;
+	const uint32_t sequences = in->sequences;
+	LM_LAUNCH((LmStageLastRowsGatherKernel), sequences, LM_STAGE_HEAD_THREADS, 0, stream, in->sequence_row_begin, in->sequence_row_indices,
+		state->hidden, state->head_hidden, state->geometry.hidden);
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	if ( state->geometry.head_prenormed != 0u )
+		return SparkGpuMemcpyAsync(output, state->head_hidden, (uint64_t)sequences * state->geometry.hidden * sizeof(uint16_t),
+			SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	memset(&head, 0, sizeof(head));
+	head.hidden_bf16 = state->head_hidden;
+	head.normed_bf16 = output;
+	head.norm_weight = state->head_norm_weight;
+	head.hidden = state->geometry.hidden;
+	head.epsilon = state->geometry.rms_epsilon;
+	head.norm_f32 = state->geometry.head_norm_f32;
+	head.norm_round_first = state->geometry.head_norm_round_first;
+	if ( LmStageNormRows(head, sequences, stream) != LM_LAUNCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus StageRunnerStageInput(SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch, uint32_t rows, SparkGpuStream stream)
 {
 	const uint64_t bytes = (uint64_t)rows * (state->geometry.input_width != 0u ? state->geometry.input_width : state->geometry.hidden) * sizeof(uint16_t);
@@ -2719,6 +2746,15 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: unknown dispatch flags 0x%x\n", dispatch->flags);
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
+	if ( dispatch->output_rows_bf16 != 0 && (runner->owns_final_head == 0u || steps != 1u ||
+		(dispatch->flags & (SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL | SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER)) != SPARK_STAGE_RUNNER_DISPATCH_FLAG_PREFILL ||
+		dispatch->sequence_row_begin == 0 || dispatch->sequence_row_indices == 0 || dispatch->active_sequence_count > state->head_capacity ||
+		dispatch->output_rows_bytes < (uint64_t)dispatch->active_sequence_count * state->geometry.hidden * sizeof(uint16_t)) )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: submit refused: final rows are returned for the %u sequences of one prefill step into %llu bytes; flags 0x%x steps %u\n",
+			dispatch->active_sequence_count, (unsigned long long)dispatch->output_rows_bytes, dispatch->flags, steps);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
 	if ( runner->owns_final_head != 0u && runner->tp_degree > 1u && state->device_collective_created == 0 )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: submit refused: %u ranks share a head without a device collective\n", runner->tp_degree);
@@ -2857,6 +2893,11 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 		phase_marks[2] = SparkMonotonicNs();
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerStepOutputs(state, runner, dispatch, stream, rows);
+		if ( exchange_status == SPARK_STATUS_OK && dispatch->output_rows_bf16 != 0 )
+			exchange_status = StageRunnerOutputRows(state, &in, (uint16_t *)dispatch->output_rows_bf16, stream);
+		if ( exchange_status == SPARK_STATUS_OK && runner->owns_final_head != 0u && state->head_weight == 0 && dispatch->output_token_ids != 0 &&
+			SparkGpuMemsetAsync(dispatch->output_token_ids, 0, (uint64_t)rows * sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
+			exchange_status = SPARK_STATUS_IO_ERROR;
 		phase_marks[3] = SparkMonotonicNs();
 		if ( state->layer_marks != 0u && exchange_status == SPARK_STATUS_OK )
 			StageRunnerLayerMarksEnd(state, runner->tp_rank);
@@ -2898,7 +2939,7 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 	runner->stats.completed_count++;
 	if ( dispatch->completion_function != 0 )
 	{
-		if ( runner->owns_final_head == 0u )
+		if ( runner->owns_final_head == 0u || state->head_weight == 0 )
 			memset(state->output_token_host, 0, (uint64_t)rows * sizeof(*state->output_token_host));
 		memset(&completion, 0, sizeof(completion));
 		completion.request_id = dispatch->request_id;

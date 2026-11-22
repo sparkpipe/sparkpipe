@@ -1083,6 +1083,61 @@ class Model:
         return opening
 
 
+EMBEDDING_FIELDS = ("id", "model_dir", "engine", "context_tokens", "dimensions")
+EMBEDDING_BATCH_INPUTS = 64
+EMBEDDING_REQUEST_INPUTS = 2048
+EMBEDDING_FORMATS = ("float", "base64")
+
+
+class EmbeddingModel:
+    def __init__(self, spec, base):
+        if not isinstance(spec, dict) or not set(EMBEDDING_FIELDS) <= set(spec) or set(spec) - set(EMBEDDING_FIELDS) - {"batch_inputs"}:
+            raise SystemExit(f"chat_frontend: an embeddings entry needs {', '.join(EMBEDDING_FIELDS)}, and optionally batch_inputs")
+        self.id = spec["id"]
+        self.engine = spec["engine"].rstrip("/")
+        numbers = [spec["context_tokens"], spec["dimensions"], spec.get("batch_inputs", EMBEDDING_BATCH_INPUTS)]
+        if not isinstance(self.id, str) or not self.id or any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in numbers):
+            raise SystemExit(f"chat_frontend: embeddings entry {self.id!r} needs a name and positive whole context_tokens, dimensions and batch_inputs")
+        self.context_tokens, self.dimensions, self.batch_inputs = numbers
+        self.tokenizer = Tokenizer.from_file(str((base / spec["model_dir"]).resolve() / "tokenizer.json"))
+
+    def encode(self, texts):
+        return [encoding.ids for encoding in self.tokenizer.encode_batch(texts, add_special_tokens=True)]
+
+    def described(self):
+        return {"id": self.id, "dimensions": self.dimensions, "context_tokens": self.context_tokens}
+
+
+def embedding_inputs(model, value):
+    if isinstance(value, str):
+        value = [value]
+    elif isinstance(value, list) and value and all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+        value = [value]
+    if not isinstance(value, list) or not 1 <= len(value) <= EMBEDDING_REQUEST_INPUTS:
+        raise RequestError(400, "invalid_request", f"input must be a text, a list of texts, a list of token ids or a list of such lists, with 1 to {EMBEDDING_REQUEST_INPUTS} entries")
+    texts = [index for index, item in enumerate(value) if isinstance(item, str)]
+    if any(not value[index] for index in texts):
+        raise RequestError(400, "invalid_request", "an input text is empty")
+    encoded = dict(zip(texts, model.encode([value[index] for index in texts])))
+    inputs = []
+    for index, item in enumerate(value):
+        ids = encoded.get(index, item)
+        if not isinstance(ids, list) or not ids or not all(isinstance(token, int) and not isinstance(token, bool) and token >= 0 for token in ids):
+            raise RequestError(400, "invalid_request", f"input {index} must be a text or a non-empty list of token ids")
+        if len(ids) >= model.context_tokens:
+            raise RequestError(400, "context_length_exceeded", f"input {index} has {len(ids)} tokens and {model.id} embeds fewer than {model.context_tokens}")
+        inputs.append(ids)
+    return inputs
+
+
+def embedding_dimensions(model, value):
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= model.dimensions:
+        raise RequestError(400, "invalid_request", f"dimensions must be a whole number from 1 to {model.dimensions}")
+    return value
+
+
 SOURCE_TAG = re.compile(r'<source id="([0-9]+)"((?: [a-z][a-z-]*="[^"]*")*)>')
 SOURCE_ATTRIBUTE = re.compile(r' ([a-z][a-z-]*)="([^"]*)"')
 CITATION_WRAPPER_KEYS = {"head_sha256", "open", "close", "separator"}
@@ -1202,7 +1257,7 @@ class PathTable(frozenset):
 
 
 PUBLIC_PATHS = PathTable({"/health/liveliness", "/v1/models", "/v1/chat/completions", "/v1/sparkpipe/status", "/v1/messages", "/v1/messages/count_tokens",
-                          "/v1/responses", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"},
+                          "/v1/responses", "/v1/embeddings", "/v1/tokenize", "/v1/detokenize", "/v1/models/aliases", "/v1/codex/models", "/v1/cache", "/api/hello"},
                          (REQUEST_PATH, PUBLIC_ROUTES))
 OPEN_PATHS = frozenset({"/health/liveliness", "/api/hello"})
 ANTHROPIC_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
@@ -1818,6 +1873,17 @@ class MemoryHost:
     def count(self, request):
         return {"tokens": self.frontend.memory_count(self.model(request), request["text"])}
 
+    def offers(self, method):
+        return method != "embed" or bool(self.frontend.embedding_models)
+
+    async def embed(self, request):
+        model = self.frontend.embedding_model(request.get("model"))
+        inputs = embedding_inputs(model, request.get("texts"))
+        dimensions = embedding_dimensions(model, request.get("dimensions"))
+        vectors, tokens = await self.frontend.embed(model, inputs, dimensions, BACKGROUND_PRIORITY)
+        return {"model": model.id, "dimensions": dimensions or model.dimensions, "tokens": tokens,
+                "vectors": [base64.b64encode(vector).decode("ascii") for vector in vectors]}
+
     async def complete(self, request):
         return {"text": await self.frontend.memory_complete(self.model(request), request["ids"], request["max_tokens"], request["reasoning_open"], request["kind"],
                                                             request["trace"])}
@@ -1914,6 +1980,12 @@ class Frontend:
         for spec in config["models"]:
             model = Model(spec, base)
             self.models[model.id] = model
+        self.embedding_models = {}
+        for spec in config.get("embeddings") or []:
+            model = EmbeddingModel(spec, base)
+            if model.id in self.models or model.id in self.embedding_models:
+                raise SystemExit(f"chat_frontend: embeddings entry {model.id!r} repeats a model name")
+            self.embedding_models[model.id] = model
         self.control = config.get("control")
         if self.control is not None and set(self.control) not in ({"status_url"}, {"status_url", "force_url", "admin_url"}):
             raise SystemExit("chat_frontend: control needs status_url, and optionally both force_url and admin_url")
@@ -3530,6 +3602,61 @@ class Frontend:
             plan["session"].release()
         return web.json_response({"input_tokens": plan["prompt_tokens"]})
 
+    def embedding_model(self, name):
+        if name is None and len(self.embedding_models) == 1:
+            return next(iter(self.embedding_models.values()))
+        if not isinstance(name, str) or name not in self.embedding_models:
+            raise RequestError(404, "unsupported" if not self.embedding_models else "model_not_found",
+                               f"embedding model {name!r} is not served here; served: {sorted(self.embedding_models)}")
+        return self.embedding_models[name]
+
+    async def embed(self, model, inputs, dimensions, priority):
+        vectors, tokens, started = [], 0, time.monotonic()
+        for first in range(0, len(inputs), model.batch_inputs):
+            body = {"input": inputs[first:first + model.batch_inputs], "encoding_format": "base64", "priority": priority}
+            if dimensions is not None:
+                body["dimensions"] = dimensions
+            try:
+                async with self.session.post(model.engine + "/v1/embeddings", json=body) as response:
+                    status, text = response.status, await response.text()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+                self.engine_detail(model, "unreachable", 503, f"{model.engine}: {type(error).__name__}: {error}")
+                raise RequestError(503, "engine_unavailable", f"the {model.id} engine is unreachable; try again")
+            if status != 200:
+                raise self.engine_refusal(model, status, text)
+            try:
+                answer = json.loads(text)
+                rows = [base64.b64decode(item["embedding"], validate=True) for item in sorted(answer["data"], key=lambda item: item["index"])]
+                tokens += answer["usage"]["prompt_tokens"]
+            except (ValueError, KeyError, TypeError):
+                rows = None
+            if rows is None or len(rows) != len(body["input"]) or any(len(row) != 4 * (dimensions or model.dimensions) for row in rows):
+                self.engine_detail(model, "embeddings_malformed", 502, text[:120])
+                raise RequestError(502, "engine_error", f"the {model.id} engine answered an embeddings call with something else")
+            vectors.extend(rows)
+        print(json.dumps({"event": "embeddings", "model": model.id, "inputs": len(inputs), "prompt_tokens": tokens, "priority": priority,
+                          "seconds": round(time.monotonic() - started, 3)}), file=sys.stderr, flush=True)
+        return vectors, tokens
+
+    async def embeddings(self, request):
+        key = request.get("public_key")
+        try:
+            self.scope_of(key, request.headers)
+            body = await self.read_body(request)
+            model = self.embedding_model(body.get("model"))
+            packed = body.get("encoding_format", "float")
+            if packed not in EMBEDDING_FORMATS:
+                raise RequestError(400, "invalid_request", f"encoding_format must be one of {', '.join(EMBEDDING_FORMATS)}")
+            dimensions = embedding_dimensions(model, body.get("dimensions"))
+            inputs = await asyncio.to_thread(embedding_inputs, model, body.get("input"))
+            vectors, tokens = await self.embed(model, inputs, dimensions, INTERACTIVE_PRIORITY)
+        except RequestError as error:
+            return error_response(error)
+        data = [{"object": "embedding", "index": index,
+                 "embedding": base64.b64encode(vector).decode("ascii") if packed == "base64" else array("f", vector).tolist()}
+                for index, vector in enumerate(vectors)]
+        return web.json_response({"object": "list", "data": data, "model": model.id, "usage": {"prompt_tokens": tokens, "total_tokens": tokens}})
+
     async def tokenize(self, request):
         key = request.get("public_key")
         try:
@@ -3973,6 +4100,7 @@ def build(frontend):
     app.router.add_get("/v1/responses", frontend.responses_socket)
     app.router.add_get("/v1/responses/{response_id}", frontend.stored_response)
     app.router.add_delete("/v1/responses/{response_id}", frontend.stored_response)
+    app.router.add_post("/v1/embeddings", frontend.embeddings)
     app.router.add_post("/v1/tokenize", frontend.tokenize)
     app.router.add_post("/v1/detokenize", frontend.detokenize)
     app.router.add_get("/v1/models/aliases", frontend.get_aliases)
