@@ -287,7 +287,8 @@ TOOL_NAMES := \
     sparkpipe_registrar \
     sparkpipe_weightd \
     sparkpipe_weightsd \
-    sparkpipe_mesh_status
+    sparkpipe_mesh_status \
+    sparkpipe_draftd
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -329,6 +330,8 @@ TEST_NAMES := \
 	    test_hidden_transport \
 	    test_hidden_transport_rdma_control \
 	    test_draft_bridge \
+	    test_draft_server \
+	    test_tap_stream_reader \
     test_row_layout_round_span \
     test_fabric_topology \
     test_release \
@@ -842,6 +845,7 @@ PYTHON_TESTS := \
 	tests/test_spark_pack_core.py \
 	tests/test_host_turn_bench.py \
 	tests/test_draft_replay_server.py \
+	tests/test_draftd.py \
 	tests/test_roofline_meter.py \
 	tests/test_tokenizer_text_prefix.py \
 	tests/test_ling_verify_pack.py \
@@ -895,6 +899,7 @@ PYTHON_TEST_BINARIES := build/test_tiktoken_compiled \
 	build/weightd_lazy_consumer \
 	build/sparkpipe_weightd \
 	build/sparkpipe_mesh_status \
+	build/sparkpipe_draftd \
 	build/dsv41_flash_pack_synthesize \
 	build/dsv41_flash_experts_manifest \
 	build/test_dsv41_flash_pack_contract
@@ -2081,6 +2086,15 @@ build/test_hidden_transport_rdma_control: tests/test_hidden_transport_rdma_contr
 
 build/test_draft_bridge: tests/test_draft_bridge.c ring/transport/draft_bridge.c include/sparkpipe/spark_draft_bridge.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_draft_bridge.c ring/transport/draft_bridge.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
+build/test_draft_server: tests/test_draft_server.c include/sparkpipe/spark_draft_server.h include/sparkpipe/spark_draft_bridge.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_draft_server.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
+
+build/test_tap_stream_reader: tests/test_tap_stream_reader.c include/sparkpipe/spark_tap_stream_reader.h include/sparkpipe/spark_tap_stream.h $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_tap_stream_reader.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_draftd: node/draftd.c include/sparkpipe/spark_draft_server.h include/sparkpipe/spark_tap_stream_reader.h $(CORE_LIBRARY) | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) node/draftd.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_row_layout_round_span: tests/test_row_layout_round_span.c include/sparkpipe/spark_row_layout.h $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_row_layout_round_span.c $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
