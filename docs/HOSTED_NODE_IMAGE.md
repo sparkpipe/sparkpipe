@@ -96,14 +96,36 @@ requalification of the device backend.
 | `etc/default/grub.d/90-sparkpipe-gb10.cfg` | Appends to `GRUB_CMDLINE_LINUX`: the SoC UART as `earlycon`, `init_on_alloc=0`, `iommu.passthrough=0`, `pci=pcie_bus_safe`, `initcall_blacklist=tegra234_cbb_init`, no crash kernel, and `panic=60`, so a failed boot, the initramfs included, reboots instead of waiting at a shell. GRUB runs on the console and the serial line. `GRUB_CMDLINE_LINUX_DEFAULT` and `GRUB_DEFAULT` belong to the baseline's GRUB policy: the serial console `ttyS0` at 921600, no boot-time fsck and the node's recovery address |
 | `etc/modprobe.d/sparkpipe-gb10.conf` | nouveau and nova never load; the RTL8127 management port binds `r8127`; `cppc_cpufreq auto_sel_mode=1`; `sbsa_gwdt action=1` |
 | `etc/modules-load.d/sparkpipe-gpu.conf` | `nvidia` and `nvidia_uvm` load at boot |
-| `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address |
+| `etc/sysctl.d/80-sparkpipe-gb10.conf` | `arp_announce=2`, `arp_ignore=1` on all interfaces: each fabric port answers only for its own address. `vm.compaction_proactiveness=90` and `vm.min_free_kbytes=1048576`: the kernel compacts memory in the background and keeps 1 GiB free, so free 2 MiB blocks are ready when the nvrm backend allocates device memory, which it does in 2 MiB pages with no 4 KiB fallback (see [Contiguous memory](#contiguous-memory)) |
 | `etc/security/limits.d/90-sparkpipe.conf` | unlimited locked memory for RDMA registration, 500,000 open files (soft and hard) |
 | `etc/systemd/sleep.conf.d/90-sparkpipe-no-suspend.conf` | no suspend or hibernation |
 | `etc/netplan/01-sparkpipe.yaml` | NetworkManager manages the interfaces; bring-up adds the fleet profiles |
 
 The command line, module options, sysctls and limits are the ones a Spark
 runs under the factory OS (DGX OS 7.5.0), read from its configuration and
-`/proc/cmdline`.
+`/proc/cmdline`, except the two compaction settings below.
+
+### Contiguous memory
+
+The nvrm backend allocates device memory in 2 MiB pages through the open
+kernel module. In the measurement below, the module's allocations failed
+with `NV_ERR_NO_MEMORY` as soon as the free 2 MiB blocks ran out, with more
+than 70 GiB still free in smaller pieces: they did not wait for the kernel
+to compact. On a GB10 Spark with 115 GiB available, a process held 40 GiB in
+every other 4 KiB page of 80 GiB (anonymous, movable memory), and then
+802 allocations of 64 MiB (50 GiB) in 2 MiB pages ran while it held them:
+
+| Settings | Free 2 MiB blocks just before the allocation | Allocated |
+| --- | --- | --- |
+| kernel defaults (proactiveness 20, `min_free_kbytes` 45166) | 6,800 | 205 of 802, then no memory |
+| `min_free_kbytes` 1 GiB | 7,569 | 229 of 802, then no memory |
+| defaults and one `compact_memory` write | 13,866 | 439 of 802, then no memory |
+| proactiveness 90 | 21,965 | 682 of 802, then no memory |
+| proactiveness 90 and `min_free_kbytes` 1 GiB, twice | 27,182 and 26,738 | 802 of 802 in 1.1 s, both times |
+
+With both settings the kernel keeps enough free 2 MiB blocks in the
+background for the whole allocation; with either alone it does not. The
+image sets both.
 
 ## GPU device nodes
 

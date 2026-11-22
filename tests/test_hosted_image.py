@@ -217,6 +217,14 @@ class StaticFilesTest(unittest.TestCase):
         self.assertTrue(os.access(files / "usr" / "lib" / "sparkpipe" / "gpu-device-nodes", os.X_OK))
         self.assertEqual({module for module in re.findall(r'KERNEL=="([^"]+)"', rules)}, {"nvidia", "nvidia_uvm"})
 
+    def test_the_image_keeps_free_2_mib_blocks_for_the_device_backend(self):
+        settings = dict(re.findall(r'^([a-z_.]+)\s*=\s*(\S+)\s*$', (IMAGE / "files" / "etc" / "sysctl.d" / "80-sparkpipe-gb10.conf").read_text(), re.M))
+        self.assertEqual(settings["vm.compaction_proactiveness"], "90")
+        self.assertEqual(settings["vm.min_free_kbytes"], "1048576")
+        later = "\n".join([BASELINE.NO_THRASH_SYSCTL, BASELINE.RECOVERY_SYSCTL, BASELINE.DIRTY_CAP_SYSCTL])
+        self.assertNotIn("vm.compaction_proactiveness", later)
+        self.assertNotIn("vm.min_free_kbytes", later)
+
     def test_the_gb10_fragment_only_appends_to_the_command_line_the_baseline_owns(self):
         grub = (IMAGE / "files" / "etc" / "default" / "grub.d" / "90-sparkpipe-gb10.cfg").read_text()
         assignments = dict(re.findall(r'^([A-Z_]+)=(.*)$', grub, re.M))
