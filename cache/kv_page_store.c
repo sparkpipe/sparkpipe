@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_kv_page_store.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
+#include "sparkpipe/spark_ck128.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -355,9 +356,20 @@ static SparkStatus SparkKvPageStoreReadExact(
 	return(SPARK_STATUS_OK);
 }
 
+_Static_assert(SPARK_KV_PAGE_STORE_DIGEST_BYTES == SPARK_SHA256_DIGEST_BYTES,"a record digest has room for a SHA-256");
+
 static void SparkKvPageStoreDigest(const SparkKvPageStore *store,const uint8_t *page,uint8_t digest[SPARK_SHA256_DIGEST_BYTES])
 {
 	SparkSha256Context context;
+	if ( (store->flags & SPARK_KV_PAGE_STORE_FLAG_MEMORY) != 0u )
+	{
+		SparkCk128Context fast;
+		memset(digest,0,SPARK_SHA256_DIGEST_BYTES);
+		SparkCk128Initialize(&fast);
+		SparkCk128Update(&fast,page,(size_t)store->page_bytes);
+		SparkCk128Finalize(&fast,digest);
+		return;
+	}
 	SparkSha256Initialize(&context);
 	SparkSha256Update(&context,page,(size_t)store->page_bytes);
 	SparkSha256Finalize(&context,digest);
@@ -909,6 +921,27 @@ static SparkStatus SparkKvPageStoreReadbackLocked(SparkKvPageStoreWorker *worker
 	memcpy(job->digest,worker->slot_digests + (uint64_t)job->backing_slot_index * SPARK_SHA256_DIGEST_BYTES,SPARK_SHA256_DIGEST_BYTES);
 	SparkKvPageStoreQueueJob(worker,job);
 	SPARK_FAIL(SPARK_STATUS_BUSY);
+}
+
+SparkStatus SparkKvPageStoreRecordDigest(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation,uint8_t digest[SPARK_KV_PAGE_STORE_DIGEST_BYTES])
+{
+	SparkKvPageStoreWorker *worker;
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t slot;
+	if ( SparkKvPageStoreIsValid(store) == 0u || logical_page_index >= store->logical_page_capacity || generation == 0u || digest == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	worker = (SparkKvPageStoreWorker *)store->worker_state;
+	if ( pthread_mutex_lock(&worker->mutex) != 0 )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	slot = worker->backing_slots_by_logical_page[logical_page_index];
+	if ( store->valid_pages[logical_page_index] != SPARK_KV_PAGE_STORE_PAGE_VALID || store->generations[logical_page_index] != generation || slot == SPARK_KV_CACHE_NO_BLOCK )
+		status = SPARK_STATUS_NOT_FOUND;
+	else if ( SparkKvPageStoreFindJob(worker,SPARK_KV_PAGE_STORE_COPY_DEVICE_TO_HOST,logical_page_index,generation) != 0 )
+		status = SPARK_STATUS_BUSY;
+	else
+		memcpy(digest,worker->slot_digests + (uint64_t)slot * SPARK_SHA256_DIGEST_BYTES,SPARK_KV_PAGE_STORE_DIGEST_BYTES);
+	(void)pthread_mutex_unlock(&worker->mutex);
+	return(status);
 }
 
 SparkStatus SparkKvPageStoreReadback(SparkKvPageStore *store,uint32_t logical_page_index,uint64_t generation,uintptr_t destination,uint64_t bytes)

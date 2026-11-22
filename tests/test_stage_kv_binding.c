@@ -1686,6 +1686,76 @@ static void TestRecurrentRoundTrip(void)
 	printf("A11 recurrent state: captured only for publishing lanes, recorded at finish, restored on a prefix hit at claim, cleared by reset and by a failed finish: ok\n");
 }
 
+static void TestRecurrentResumeOnTheSameLane(void)
+{
+	TestStep step;
+	TestFinished finished = {0};
+	SparkStageKvRecurrentCounters counters;
+	SparkDeviceQueue *queue = (SparkDeviceQueue *)(uintptr_t)0x51u;
+	uint8_t first[TEST_RECURRENT_BYTES],second[TEST_RECURRENT_BYTES],stored[SPARK_KV_PAGE_STORE_DIGEST_BYTES];
+	uint32_t index,page;
+	MakeDirectories();
+	ConfigureRecurrent(&CONFIGURATION);
+	assert(OpenWith(&CONFIGURATION) == SPARK_STATUS_OK);
+	for (index=0u; index<TEST_RECURRENT_BYTES; index++)
+	{
+		first[index] = (uint8_t)(0xc0u + index);
+		second[index] = (uint8_t)(0x10u + 3u * index);
+	}
+	StepInit(&step,1u,0u,0u,4u);
+	StepPublish(&step,4u,0x90u);
+	StepStart(&step);
+	memcpy(RECURRENT.lanes[0],first,sizeof(first));
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK && SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	page = BINDING.lane_held_pages[0];
+	assert(page < TEST_LOGICAL && SparkKvPageStoreRecordDigest(&BINDING.state_store,page,BINDING.lane_held_generations[0],stored) == SPARK_STATUS_OK &&
+		memcmp(stored,BINDING.lane_held_digests,sizeof(stored)) == 0);
+	for (index=16u; index<SPARK_KV_PAGE_STORE_DIGEST_BYTES; index++)
+		assert(stored[index] == 0u);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.captures == 1u && counters.restores == 0u && counters.restore_skips == 0u);
+	ReleaseSequence(1u,0u);
+	StepInit(&step,2u,0u,4u,5u);
+	StepPrefix(&step,4u,0x90u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && (BINDING.lane_state_flags[0] & SPARK_STAGE_KV_LANE_STATE_RESTORE_READY) != 0u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK && StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[0],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK && memcmp(RECURRENT.lanes[0],first,sizeof(first)) == 0);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u && counters.restore_skips == 1u);
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK && SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	StepInit(&step,3u,1u,4u,5u);
+	StepPrefix(&step,4u,0x90u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK &&
+		StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[1],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK && memcmp(RECURRENT.lanes[1],first,sizeof(first)) == 0);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u && counters.restore_skips == 0u);
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK && SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	StepInit(&step,4u,0u,0u,4u);
+	StepPublish(&step,4u,0x91u);
+	StepStart(&step);
+	memcpy(RECURRENT.lanes[0],second,sizeof(second));
+	assert(SparkStageKvBindingRecurrentCapture(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK);
+	assert(StepFinish(&step,SPARK_STATUS_OK,&finished) == SPARK_STATUS_OK && SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK && finished.status == SPARK_STATUS_OK);
+	assert(BINDING.lane_held_pages[0] != page);
+	ReleaseSequence(4u,0u);
+	StepInit(&step,5u,0u,4u,5u);
+	StepPrefix(&step,4u,0x90u);
+	assert(StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE) == SPARK_STATUS_OK && StepAdmit(&step,SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT) == SPARK_STATUS_OK &&
+		StepClaim(&step) == SPARK_STATUS_OK);
+	memset(RECURRENT.lanes[0],0,TEST_RECURRENT_BYTES);
+	assert(SparkStageKvBindingRecurrentRestore(&BINDING,&step.slot,1u,queue) == SPARK_STATUS_OK && memcmp(RECURRENT.lanes[0],first,sizeof(first)) == 0);
+	SparkStageKvBindingTakeRecurrentCounters(&BINDING,&counters);
+	assert(counters.restores == 1u && counters.restore_skips == 0u && BINDING.lane_held_pages[0] == page);
+	assert(StepFinish(&step,SPARK_STATUS_IO_ERROR,&finished) == SPARK_STATUS_OK && SparkStageKvBindingQuiesce(&BINDING,1000000000ull) == SPARK_STATUS_OK);
+	Close();
+	printf("A11b recurrent state on the same lane: a lane that still holds a record's bytes resumes from them without a read through the state store, another lane reads the store, a lane "
+		"that captured another state since reads the store again, every restore gives the captured bytes, and a memory store's record digest is the fast checksum: ok\n");
+}
+
 static void TestRecurrentStateSurvivesRestart(void)
 {
 	TestStep step;
@@ -2138,6 +2208,7 @@ static void RunScenarios(void)
 	TestSnapshotLayoutSeparation();
 	TestSnapshotDestroySavesAll();
 	TestRecurrentRoundTrip();
+	TestRecurrentResumeOnTheSameLane();
 	TestRecurrentStateSurvivesRestart();
 	TestPromptCheckpointPersists();
 	TestRecurrentRefusals();

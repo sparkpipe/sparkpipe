@@ -92,6 +92,8 @@ Every entry records `used_seconds`, the wall-clock time it was last created, tou
 
 ### Staged reply checkpoint
 
+A lane resumes from the state it already holds. The stage KV binding remembers, per resident lane, which record's bytes the lane's state buffer holds: the page, its generation and the record's digest, set when the lane's buffer was written to the record or read from it and forgotten when a capture overwrites the buffer. When an admission needs a record and the lane's buffer holds that page and generation with the digest the store has now, the read through the store is skipped (`restore_skips` in `SparkStageKvRecurrentCounters`); in every other case the record is read as before. The rank's phase line reports the counters over its window: `state_restores`, `state_restore_skips`, `state_restore_ms`, `state_captures`, `state_capture_ms` on `STAGE-WAVE-HOST`.
+
 A stateless publish whose lane also carries `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STAGED` keeps the lane's recurrent state in the stage KV binding. The flag is valid only together with `SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_STATELESS`. The batch engine sets it on every decode publication that drops state.
 
 - The binding captures the lane's state into the lane's state buffer and remembers the published page, its generation and the sequence. Any later publish of the lane replaces that stage: a staged one with its own page, any other with none.
@@ -239,6 +241,13 @@ Each store runs one worker thread. That thread executes queued writeback, prefet
 - `destination` remains owned by the store until a terminal result or until the store is destroyed.
 - The record must be valid for that generation, or the call returns `SPARK_STATUS_NOT_FOUND`. `bytes` must equal the store's `page_bytes`.
 - Readback copies into a buffer only. It does not change KV arena residency.
+
+### Record digests
+
+Every record carries a digest of its bytes, computed when it is written and checked when it is read; a read whose digest differs fails with `SPARK_STATUS_HASH_MISMATCH`.
+
+- A store on disk uses SHA-256. A store created with `SPARK_KV_PAGE_STORE_FLAG_MEMORY` never reaches disk and uses the 128-bit fast checksum (`spark_ck128.h`) in the first 16 of the digest's 32 bytes, the rest zero. The state store is such a store: a recurrent state is hashed with SHA-256 only when it is demoted to the snapshot store, which has its own file checksum.
+- `SparkKvPageStoreRecordDigest(store, logical_page_index, generation, digest)` returns the digest of the page's current record without reading it: `SPARK_STATUS_NOT_FOUND` when the page has no valid record of that generation, `SPARK_STATUS_BUSY` while a write of it is queued or running.
 
 ### Record validation and invalidation
 

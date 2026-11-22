@@ -147,6 +147,7 @@ typedef struct SparkStageKvRecurrent
 typedef struct SparkStageKvRecurrentCounters
 {
 	uint64_t restores;
+	uint64_t restore_skips;
 	uint64_t restore_bytes;
 	uint64_t restore_ns;
 	uint64_t captures;
@@ -352,6 +353,9 @@ struct SparkStageKvBinding
 	uint8_t *state_staging;
 	SparkDeviceBuffer lane_state;
 	uint8_t *lane_state_flags;
+	uint8_t *lane_held_digests;
+	uint32_t *lane_held_pages;
+	uint64_t *lane_held_generations;
 	uint32_t *lane_staged_pages;
 	uint64_t *lane_staged_generations;
 	uint64_t *lane_staged_sequences;
@@ -360,6 +364,7 @@ struct SparkStageKvBinding
 	uint32_t reserved_recurrent;
 	uint64_t page_store_backing_bytes;
 	atomic_ullong recurrent_restores;
+	atomic_ullong recurrent_restore_skips;
 	atomic_ullong recurrent_restore_bytes;
 	atomic_ullong recurrent_restore_ns;
 	atomic_ullong recurrent_captures;
