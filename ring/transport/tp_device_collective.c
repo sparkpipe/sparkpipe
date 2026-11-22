@@ -628,7 +628,7 @@ static uint64_t SparkTpDeviceCollectiveWaveEpoch(
 }
 
 static SparkStatus SparkTpDeviceCollectiveSeedEpoch(
-    SparkTpDeviceCollectiveImplementation *implementation,uint64_t epoch,void *stream)
+    SparkTpDeviceCollectiveImplementation *implementation,uint64_t epoch)
 {
     uint64_t *seed = (uint64_t *)(uintptr_t)(implementation->published_host_cell +
         SPARK_TP_MESH_ROUND_CONTROL_WORDS);
@@ -639,17 +639,17 @@ static SparkStatus SparkTpDeviceCollectiveSeedEpoch(
     seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ] = 0ull;
     seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_EPOCH] = epoch;
     seed[SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR] = 0ull;
-    if ( stream != 0 )
+    if ( implementation->active_stream_valid != 0u )
     {
         if ( SparkGpuMemcpyAsync(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED * sizeof(uint64_t),
                 seed + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED,sizeof(uint64_t),
-                SPARK_GPU_COPY_HOST_TO_DEVICE,stream) != 0 ||
+                SPARK_GPU_COPY_HOST_TO_DEVICE,implementation->active_stream) != 0 ||
              SparkGpuMemcpyAsync(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ * sizeof(uint64_t),
                 seed + SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ,
                 (SPARK_TP_MESH_ROUND_CONTROL_WORD_ERROR + 1u - SPARK_TP_MESH_ROUND_CONTROL_WORD_SEQ) * sizeof(uint64_t),
-                SPARK_GPU_COPY_HOST_TO_DEVICE,stream) != 0 ||
+                SPARK_GPU_COPY_HOST_TO_DEVICE,implementation->active_stream) != 0 ||
              SparkGpuMemsetAsync(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS * sizeof(uint64_t),0,
-                (SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL - SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS) * sizeof(uint64_t),stream) != 0 )
+                (SPARK_TP_MESH_ROUND_CONTROL_WORD_SHIPPED_CELL - SPARK_TP_MESH_ROUND_CONTROL_WORD_SOURCE_WAIT_NS) * sizeof(uint64_t),implementation->active_stream) != 0 )
             SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     else if ( SparkGpuMemcpy(control + SPARK_TP_MESH_ROUND_CONTROL_WORD_CANCEL_EXPECTED * sizeof(uint64_t),
@@ -709,8 +709,7 @@ SparkStatus SparkTpDeviceCollectiveChainKey(
         return status;
     if ( epoch != implementation->chain_epoch )
     {
-        status = SparkTpDeviceCollectiveSeedEpoch(implementation,epoch,
-            implementation->active_stream_valid != 0u ? implementation->active_stream : 0);
+        status = SparkTpDeviceCollectiveSeedEpoch(implementation,epoch);
         if ( status != SPARK_STATUS_OK )
             return status;
     }
