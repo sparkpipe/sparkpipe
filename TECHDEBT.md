@@ -1370,7 +1370,7 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   Device graphs do not close the gap. Capturing the forward and the heads gave
   byte-identical drafts at the same times (median forward 3.483 against 3.489
   ms, draft 5.141 against 5.144 ms), because the host queues a draft's ~100
-  launches in about 0.25 ms while the GPU works for 5 ms. With a busy thread
+  launches in 0.12 ms while the GPU works for 5 ms. With a busy thread
   on the draft server's core, both builds wait the same for the wake after the
   stream sync. The work is per-kernel time.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
