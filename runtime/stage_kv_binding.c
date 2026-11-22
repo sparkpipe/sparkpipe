@@ -518,6 +518,25 @@ static SparkStatus SparkStageKvBindingHint(SparkStageKvBinding *binding,const Sp
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkStageKvBindingProbe(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,SparkModelDriverAdmissionDecision *decision)
+{
+	SparkModelDriverCacheProbe probe;
+	uint64_t held;
+	SparkStatus status;
+	SparkModelDriverInitializeAdmissionDecision(decision);
+	if ( SparkModelDriverAdmissionRequestIsValid(request) == 0u || request->cache_lane_count != 1u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	status = SparkStageKvBindingLock(binding,&held);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	SparkKvPageCacheProbePrefix(&binding->page_cache,&request->cache_lanes[0].prefix_identity,request->cache_lanes[0].prefix_token_count,&probe);
+	SparkStageKvBindingUnlock(binding,SPARK_STAGE_KV_LOCK_SITE_RESTORE,held);
+	decision->accepted = 1u;
+	decision->rejection_reason = SPARK_MODEL_DRIVER_ADMISSION_ACCEPTED;
+	SparkModelDriverStoreCacheProbe(decision,&probe);
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request)
 {
 	uint32_t lane,index,waiting = 0u,held = 0u;
@@ -1831,6 +1850,8 @@ SparkStatus SparkStageKvBindingAdmit(SparkStageKvBinding *binding,const SparkMod
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_HINT )
 		return(SparkStageKvBindingHint(binding,request,decision));
+	if ( request->admission_flags == SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PROBE )
+		return(SparkStageKvBindingProbe(binding,request,decision));
 	status = SparkStageKvBindingLock(binding,&held);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);

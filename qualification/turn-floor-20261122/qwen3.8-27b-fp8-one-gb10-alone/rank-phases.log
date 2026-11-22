@@ -1,0 +1,23 @@
+qwen38_27b_fp8_tp1_stage kv binding recurrent lane_bytes=154927104 state_slots=36 state_memory_bytes=5577375744 page_store_backing_bytes=60137930752 kept_states=newest 4 plus every 16384 tokens status=ok
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=658.3 capture_ms=0.0 sync_ms=0.8 finish_ms=35.9
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=437.3 capture_ms=0.0 sync_ms=1.3 finish_ms=64.1
+RESIDENTD-FRAMES rank=0 frames=128 idle_after_completion_ms=11.893 to_adapter_ms=0.184 adapter_ms=510.612 to_sent_ms=0.068
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=976.8 capture_ms=0.0 sync_ms=0.3 finish_ms=9.1
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1343.8 capture_ms=0.0 sync_ms=0.3 finish_ms=9.1
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1503.0 capture_ms=0.0 sync_ms=0.2 finish_ms=9.0
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1654.0 capture_ms=0.0 sync_ms=0.3 finish_ms=9.2
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1804.4 capture_ms=0.0 sync_ms=0.3 finish_ms=9.3
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1958.4 capture_ms=0.0 sync_ms=0.3 finish_ms=9.2
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1429.0 capture_ms=0.0 sync_ms=0.8 finish_ms=34.3
+RESIDENTD-FRAMES rank=0 frames=128 idle_after_completion_ms=3.815 to_adapter_ms=0.119 adapter_ms=1432.065 to_sent_ms=0.092
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=958.4 capture_ms=0.0 sync_ms=1.1 finish_ms=50.7
+RESIDENTD-FRAMES rank=0 frames=128 idle_after_completion_ms=10.635 to_adapter_ms=0.142 adapter_ms=641.696 to_sent_ms=0.055
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=457.7 capture_ms=0.0 sync_ms=0.6 finish_ms=25.8
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1045.1 capture_ms=0.0 sync_ms=0.3 finish_ms=9.0
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1009.7 capture_ms=0.0 sync_ms=0.3 finish_ms=9.2
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1214.2 capture_ms=0.0 sync_ms=0.3 finish_ms=9.1
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1370.6 capture_ms=0.0 sync_ms=0.3 finish_ms=9.1
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1241.6 capture_ms=0.0 sync_ms=0.5 finish_ms=17.6
+RESIDENTD-FRAMES rank=0 frames=128 idle_after_completion_ms=135.759 to_adapter_ms=0.148 adapter_ms=872.868 to_sent_ms=0.892
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1103.2 capture_ms=0.0 sync_ms=0.3 finish_ms=9.3
+STAGE-WAVE-HOST tag=qwen38_27b_fp8_tp1_stage rank=0 prefill_waves=16 admit_ms=0.1 submit_ms=1258.9 capture_ms=0.0 sync_ms=0.3 finish_ms=9.1

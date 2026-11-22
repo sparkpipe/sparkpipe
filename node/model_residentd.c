@@ -2585,6 +2585,32 @@ static SparkStatus SparkModelResidentdProcessCacheHint(
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkModelResidentdProcessCacheProbe(
+	SparkModelResidentdRuntime *runtime,
+	const void *message,
+	uint32_t message_bytes)
+{
+	const SparkModelResidentIpcCacheProbe *request = (const SparkModelResidentIpcCacheProbe *)message;
+	SparkModelResidentIpcCacheProbeReport report;
+	SparkModelServingCacheProbe probe;
+	SparkStatus status,probe_status;
+	status = SparkModelResidentIpcValidateCacheProbe(message,message_bytes);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	memset(&probe,0,sizeof(probe));
+	probe_status = runtime->adapter_state != 0 && runtime->adapter_library.adapter_interface.cache_probe != 0 ?
+		runtime->adapter_library.adapter_interface.cache_probe(runtime->adapter_state,&request->identity,request->token_count,&probe) : SPARK_STATUS_UNSUPPORTED;
+	if ( probe_status != SPARK_STATUS_OK )
+		memset(&probe,0,sizeof(probe));
+	status = SparkModelResidentIpcInitializeCacheProbeReport(&report,request,probe_status,runtime->rank_plan.rank_index,&probe);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_RETURN(status);
+	pthread_mutex_lock(&runtime->mutex);
+	status = SparkModelResidentdQueueRawLocked(runtime,&report,sizeof(report));
+	pthread_mutex_unlock(&runtime->mutex);
+	SPARK_RETURN(status);
+}
+
 static SparkStatus SparkModelResidentdProcessMessage(
 	SparkModelResidentdRuntime *runtime,
 	const void *message,
@@ -2632,6 +2658,8 @@ static SparkStatus SparkModelResidentdProcessMessage(
 		status = SparkModelResidentdProcessStatusRequest(runtime,message,message_bytes);
 	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_HINT )
 		status = SparkModelResidentdProcessCacheHint(runtime,message,message_bytes);
+	else if ( header->kind == SPARK_MODEL_RESIDENT_IPC_KIND_CACHE_PROBE )
+		status = SparkModelResidentdProcessCacheProbe(runtime,message,message_bytes);
 	else
 		status = SPARK_STATUS_UNSUPPORTED;
 	if ( status == SPARK_STATUS_OK )
