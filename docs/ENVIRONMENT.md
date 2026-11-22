@@ -55,7 +55,7 @@ environment to weightd, and it refuses a root whose environment files name a
 | --- | --- |
 | `SPARK_MODEL_BATCH_SEQUENTIAL` | `sparkpipe_model_batch`: run the requests one at a time |
 | `SPARK_WEIGHTD_SOCKET`, `SPARK_WEIGHTD_PACK_SHA256`, `SPARK_WEIGHTD_IDENTITY_MODEL`, `SPARK_WEIGHTD_IDENTITY_REVISION`, `SPARK_WEIGHTD_ATTACH_LAZY` | `weightdctl` and the eager attach it uses (`SparkWeightdAttachPack`), and the weightd probes |
-| `SPARK_MESH_PAIR_INTERFACE` | the fleet agent: the point-to-point verbs device (default `roceP2p1s0f0`) |
+| `SPARK_MESH_PAIR_INTERFACE` | the fleet agent: the second port's verbs device (default `roceP2p1s0f0`); weightd leaves it out while it is down |
 | `SPARK_LANES` | `tools/stage_lane.py` and `tools/lane_config.py`: a candidate lane file in place of `deployment/lanes.json` |
 
 ## DEBUG builds only

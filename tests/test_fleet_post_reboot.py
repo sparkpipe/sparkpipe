@@ -56,7 +56,9 @@ if "SAFE MODE" in command:
 if "nvidia-smi" in command:
     out("none 5000\n" if "noclock" in fail else "2411 5000\n" if "clock" in fail else "2190 5000\n")
 if "weightd-mesh/.ready" in command:
-    out("marker=yes\nready=1\n")
+    if "oldmarker" in fail:
+        out("marker=yes\nready=1\n")
+    out("marker=yes\nports=rocep1s0f1 degraded=0x%s\nready=1\n" % ("0030" if "degraded" in fail else "0000"))
 if "ceph osd tree down" in command:
     out('{"nodes": []}\n')
 if "ceph health" in command:
@@ -104,6 +106,16 @@ class FleetPostRebootTest(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertRegex(result.stdout, rf"spark3 +{check} +FAIL")
                 self.assertIn("NOT READY spark3", result.stdout)
+
+    def test_a_degraded_mesh_link_blocks_ready_and_names_the_ranks(self) -> None:
+        result = self.run_script("degraded")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertRegex(result.stdout, r"spark3 +mesh +FAIL +degraded links \(ports=rocep1s0f1 degraded=0x0030\)")
+        self.assertIn("NOT READY spark3", result.stdout)
+        healthy = self.run_script()
+        self.assertRegex(healthy.stdout, r"spark3 +mesh +ok +\.ready present \(ports=rocep1s0f1 degraded=0x0000\)")
+        older = self.run_script("oldmarker")
+        self.assertEqual(older.returncode, 0, older.stdout + older.stderr)
 
     def test_two_metric_10_default_routes_are_healthy(self) -> None:
         result = self.run_script("tworoutes")

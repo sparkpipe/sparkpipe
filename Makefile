@@ -726,6 +726,7 @@ PYTHON_TESTS := \
 	tests/test_node_baseline_contract.py \
 	tests/test_node_baseline_audit.py \
 	tests/test_fleet_post_reboot.py \
+	tests/test_fleet_ready_poll.py \
 	tests/test_hosted_dependency_audit.py \
 	tests/test_hosted_release_gate.py \
 	tests/test_tailscale_join.py \
