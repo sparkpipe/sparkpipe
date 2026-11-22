@@ -1013,6 +1013,7 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	static_assert(ExpertFormat::kScaleGroup == 0u || (G5N_HIDDEN % ExpertFormat::kScaleGroup == 0u && G5N_EXPERT_INTER % ExpertFormat::kScaleGroup == 0u),
 		"routed expert dimensions hold whole codec scale groups");
 	const uint32_t packed_rows = rows * G5N_TOP_K;
+	const uint32_t pairwise = LmSkinnyExpertPairsFit(packed_rows, G5N_TOP_K);
 	const dim3 grid((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, rows);
 	LmGemmArguments gemm;
 	int32_t status;
@@ -1031,13 +1032,15 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	}
 	else
 	{
-		status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
-			b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
-		if ( status == LM_LAUNCH_ERR_SHAPE )
+		if ( pairwise != 0u )
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
+				b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
+		else
 			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
 				b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
-			G5N_EXPERTS_REFUSE("skinny kernels", "w1", rows, packed_rows, b->expert_w1_rows, G5N_HIDDEN);
+			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w1", rows, packed_rows, b->expert_w1_rows,
+				G5N_HIDDEN);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -1055,13 +1058,15 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	}
 	else
 	{
-		status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
-			b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
-		if ( status == LM_LAUNCH_ERR_SHAPE )
+		if ( pairwise != 0u )
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
+				b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
+		else
 			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
 				b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
-			G5N_EXPERTS_REFUSE("skinny kernels", "w2", rows, packed_rows, G5N_HIDDEN, b->expert_intermediate);
+			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w2", rows, packed_rows, G5N_HIDDEN,
+				b->expert_intermediate);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
