@@ -104,6 +104,7 @@ static void TestTimeout(void)
 	took = SparkMonotonicNs() - start;
 	CHECK(expired == 1 && took >= WAIT_TIMEOUT_NS,"a finite timeout reports that it expired, never before its time");
 	CHECK(took < WAIT_HANG_NS,"a finite timeout returns even on a loaded host");
+	expired = 0;
 	SparkNvrmWaitBegin(&wait);
 	while ( __atomic_load_n(&store.value,__ATOMIC_ACQUIRE) == 0u && (expired = SparkNvrmWaitPace(&wait,SPARK_DEVICE_WAIT_FOREVER)) == 0 )
 		;
