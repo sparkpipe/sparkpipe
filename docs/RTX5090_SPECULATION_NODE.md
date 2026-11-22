@@ -175,7 +175,8 @@ folded in).
 ## Drafter packs
 
 `tools/drafter_pack.py` cuts a drafter and the target tensors it reads into one
-named pack (`tools/spark_named_pack.py`, magic `DRPK`) for the engine drafters
+named pack (`tools/spark_named_pack.py`, magic `DRPK`, 128-byte alignment in its
+format, `tp_degree` 1 and `tp_rank` 0 in its config) for the engine drafters
 that replace `block_draftd.py`:
 
 ```sh
@@ -198,8 +199,10 @@ python3 tools/drafter_pack.py --drafter k31dspark \
   a drafter tensor that the checkpoint's `model.safetensors.index.json` places
   in a file that is not there (a partial download holds only the drafter's
   files), and a source whose `.sha256` sidecar or `--expect-sha256` disagrees.
-- **Receipt:** `<pack>.sha256` and `<pack>.receipt.json`, which names every
-  source with its sha256, the left-out tensors and the scalars.
+- **Sidecars:** `<pack>.sha256`; `<pack>.experts`, an empty weightd expert
+  manifest, so weightd binds the whole pack as its spine; and
+  `<pack>.receipt.json`, which names every source with its sha256, the
+  left-out tensors and the scalars.
 
 ## Draft farm
 

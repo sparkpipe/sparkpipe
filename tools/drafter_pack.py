@@ -17,8 +17,10 @@ pack's config, not its payload.
 Each source file's sha256 is computed and recorded. A `<file>.sha256` beside a source, or an --expect-sha256 given
 for it, must match, or the pack is refused.
 
-The output is DIR/<arm>.rank0.sp, a named pack (tools/spark_named_pack.py) with magic DRPK, its .sha256 sidecar and
-a .receipt.json naming every source and its digest.
+The output is DIR/<arm>.rank0.sp, a named pack (tools/spark_named_pack.py) with magic DRPK whose format declares its
+128-byte alignment and whose config declares tp_degree 1 and tp_rank 0, its .sha256 sidecar, an empty weightd
+expert manifest (.experts: no expert ranges, so weightd binds the whole pack as its spine) and a .receipt.json naming
+every source and its digest.
 """
 from __future__ import annotations
 
@@ -37,6 +39,8 @@ from spark_pack_common import PackFailure, read_safetensors_header, write_receip
 DRAFTER_PACK_MAGIC = 0x4B505244
 DRAFTER_PACK_VERSION = 1
 CHUNK_BYTES = 64 << 20
+EXPERT_MANIFEST_MAGIC = 0x58504557
+EXPERT_MANIFEST_VERSION = 2
 KINDS = {"BF16": "bf16", "F32": "f32", "F8_E4M3": "fp8", "F8_E8M0": "e8m0"}
 
 DRAFTERS = {
@@ -252,11 +256,13 @@ def build(drafter: str, checkpoint: Path, targets: list, revision: str, out_dir:
                          {"source": source_name, "source_file": tensor["file"].name, "dtype": tensor["dtype"]})
     tensors = dict(writer.manifest)
     writer.close()
-    fmt = {"pack": "drafter", "drafter": drafter, "layout": "checkpoint", "version": DRAFTER_PACK_VERSION}
-    pack_config = {"drafter": drafter, "arm": spec["arm"], "revision": revision, "checkpoint_config": config,
-                   "scalars": scalars, "skipped": skipped, "sources": digests}
+    fmt = {"pack": "drafter", "drafter": drafter, "layout": "checkpoint", "version": DRAFTER_PACK_VERSION,
+           "alignment": NAMED_PACK_ALIGN}
+    pack_config = {"drafter": drafter, "arm": spec["arm"], "revision": revision, "tp_degree": 1, "tp_rank": 0,
+                   "checkpoint_config": config, "scalars": scalars, "skipped": skipped, "sources": digests}
     assemble(pack_path, payload_path, DRAFTER_PACK_MAGIC, DRAFTER_PACK_VERSION, NAMED_PACK_ALIGN, fmt, pack_config, tensors)
     pack_digest = write_sha256_sidecar(pack_path)
+    Path(str(pack_path) + ".experts").write_bytes(struct.pack("<4I", EXPERT_MANIFEST_MAGIC, EXPERT_MANIFEST_VERSION, 0, 0))
     write_receipt({"pack": pack_path.name, "sha256": pack_digest, "drafter": drafter, "revision": revision,
                    "tensors": len(tensors), "sources": digests, "skipped": skipped, "scalars": scalars}, pack_path)
     print(f"{pack_path.name}: {len(tensors)} tensors, {pack_path.stat().st_size} bytes, sha256 {pack_digest}")

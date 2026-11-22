@@ -91,7 +91,9 @@ def test_k31(scratch):
     check(result.returncode == 0, f"k31dspark packs: {result.stderr}")
     pack = out / "k31dspark.bf16.tp1.rank0.sp"
     magic, version, manifest, payloads = read_pack(pack)
-    check(magic == 0x4B505244 and version == 1 and manifest["format"]["drafter"] == "k31dspark", "k31dspark: header and format")
+    check(magic == 0x4B505244 and version == 1 and manifest["format"]["drafter"] == "k31dspark" and
+          manifest["format"]["alignment"] == 128 and manifest["config"]["tp_degree"] == 1 and manifest["config"]["tp_rank"] == 0,
+          "k31dspark: header, format alignment and topology")
     check(set(payloads) == {name for name in sources if not name.startswith("language_model.")} |
           {"target.embed", "target.head", "target.norm"}, f"k31dspark: packed names {sorted(payloads)}")
     for name, blob in payloads.items():
@@ -103,6 +105,8 @@ def test_k31(scratch):
     check(len(receipt["skipped"]) == 2 and receipt["tensors"] == len(payloads) and len(receipt["sources"]) == 2,
           "k31dspark: the receipt names the left-out tensors and both sources")
     check((out / "k31dspark.bf16.tp1.rank0.sp.sha256").read_text().split()[0] == receipt["sha256"], "k31dspark: sidecar")
+    check((out / "k31dspark.bf16.tp1.rank0.sp.experts").read_bytes() == struct.pack("<4I", 0x58504557, 2, 0, 0),
+          "k31dspark: an empty weightd expert manifest, so the whole pack is the spine")
     unknown = scratch / "k31-unknown"
     k31_checkpoint(unknown, {"extra.weight": ("BF16", [2], None)})
     result = run("--drafter", "k31dspark", "--checkpoint", unknown, "--target", target, "--revision", "r1", "--out", scratch / "o1")
