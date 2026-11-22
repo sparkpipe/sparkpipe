@@ -257,6 +257,46 @@ which could be mistaken for the qualified route.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.
+- **Stream GEMM warp rows.** `LmStreamGemmLaunchShape` takes tiles of 16,
+  32, 64 or 128 rows, and `LmStreamWarpRows<Format,TILE_M>` sets the rows a
+  warp covers. Scaled 1-byte weights (FP8, MXFP8) take one warp row at every
+  tile, so a warp converts and scales half the weight columns that two warp
+  rows of 32 gave it. With two warp rows, each thread of MXFP8's 64-row tile
+  held the scales of four 32-wide blocks for four 8-column fragments,
+  `scale[4][4][2]`, filled by a loop CUDA 13.0 did not unroll: 128 bytes of
+  stack indexed at run time. One warp row keeps them in registers (248
+  registers, no frame). Cold on one GB10 under CUDA 13.0, at 64-4096 rows,
+  HY4's shared-expert down projection (128 inputs, 6144 outputs) took
+  0.026-0.43 ms instead of 0.036-0.69 ms, and the dense layer's (1152
+  inputs) 0.082-3.0 ms instead of 0.14-6.8 ms. FP8's 64-row tile is 1-30%
+  faster. The BF16 block-32 format (`LmBf16Block32`) keeps a total and a
+  per-block partial for every output, and takes two warp rows of 64 at the
+  128-row tile: with four warp rows of 32 its K-tail variant spilled 8 bytes
+  at 255 registers. Two warp rows keep it in registers and are 1-4% faster.
+  Its 64-row tiles and plain BF16 keep warp rows of 32; one warp row
+  measured as fast or up to 6% slower there. Every tile and warp row gives
+  the same bytes, because each output adds its K blocks in the same order
+  (`tests/test_stream_gemm_cuda.py`, `tests/test_stream_k_tail_cuda.py`).
+- **Hot-path kernels keep no frame.** `tools/kernel_spill_audit.py` reads
+  `cuobjdump -res-usage` for every serving adapter and CUDA program (sm_121a
+  compile gate, exit 10) and lists every kernel with a stack frame or local
+  memory, by family. A frame holds spilled registers or an array indexed at
+  run time; either way the kernel moves data through local memory. Skinny
+  GEMV (`LmSkinny*`), cell (`LmCell*`), stream GEMM (`LmStreamGemm*`) and
+  attention kernels run on every decode or prefill step, so the audit
+  refuses a frame in any of them. The 27 attention instantiations that kept
+  frames under CUDA 13.0 when the audit started (`D41AttendKernel`,
+  `LmLatentShardPrefillKernel`, `LmGqaShardTiledKernel`,
+  `LmAttentionBlockPartialKernel`, `LmLatentAttentionDecodeSplitKernel` and
+  the DSV4.1 window folds, 8-168 bytes) are listed in its `PENDING` with
+  their sizes. `PENDING` must match exactly, so it only shrinks: a new or
+  larger frame is refused, a smaller one fails until its entry is lowered,
+  and an entry whose kernel keeps no frame or is gone fails until it is
+  removed (`--print-pending` prints the list the artifacts carry). Frames in
+  other families are reported, not refused: the tensor-map GEMM's arrays,
+  the rank-source structs of the TP gather and sum kernels, the mesh
+  hardware piece's 8 bytes, and the DSV4.1 gate and n-gram arrays. Each is
+  fixed only where a measurement shows it costs time on a hot path.
 
 ## 2.3 MMA atoms (`mma.cuh`)
 

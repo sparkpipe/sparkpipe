@@ -269,6 +269,22 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Steady-state decode hot path
 
+- The attention kernels keep the stack frames recorded in `PENDING`
+  (`tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
+  `D41AttendKernel` at two query tiles (DSV4.1's row-parallel attention)
+  keeps its 168-byte spill on purpose. Its ten warps (eight consumers, a
+  planner and an issuer) cap ptxas at 168 registers, against the 242 it
+  needs. Measured cold on one GB10 (CUDA 13.0, 2026-11-23, bytes identical):
+  - reloading the query fragments every tile removes the spill, but runs at
+    0.72-0.93x at 1-16 rows a rank (decode) and about even at 32-256 rows;
+  - keeping half the fragments in registers still needs about 210 registers;
+  - two one-tile launches run at 0.65-0.87x on the compressed layers (38 of
+    40), though 1.1-1.25x faster on the two window-only layers.
+
+  So the spill is the cheapest measured option at decode while the block
+  keeps its 53,760 registers and leaves room for the collectives beside it.
+  `LmLatentShardPrefillKernel` (14 entries) runs the same ten warps; the
+  other entries wait for their own measurement.
 - Accept each hot-path change independently: exact token parity first, then
   at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
   candidates until the preceding candidate beats the current GLM 5.3 Flash
