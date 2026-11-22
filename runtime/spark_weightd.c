@@ -58,15 +58,6 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBufferLkey(void) { return 0u; }
 __attribute__((weak)) int SparkWeightdMeshBufferFd(void) { return -1; }
 __attribute__((weak)) int SparkWeightdMeshStagingFd(void) { return -1; }
 
-#ifdef DEBUG
-extern void SparkWeightdMeshDeviceProbe(const char *tag,void *device_pointer,
-    uint64_t bytes);
-__attribute__((weak)) void SparkWeightdMeshDeviceProbe(const char *tag,
-    void *device_pointer,uint64_t bytes)
-{
-    (void)tag; (void)device_pointer; (void)bytes;
-}
-#endif
 __attribute__((weak)) void SparkWeightdMeshPoll(void) { }
 __attribute__((weak)) SparkStatus SparkWeightdMeshStatusFill(SparkWeightdIpcMeshStatusResult *result)
 {
@@ -100,8 +91,7 @@ __attribute__((weak)) uint32_t SparkWeightdMeshBroadcast(uint32_t peer_mask,
     return 0u;
 }
 
-#include <cuda.h>
-
+#include "sparkpipe/spark_weightd_device.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_ck128.h"
 #define SPARK_WEIGHTD_LOAD_WORKERS 4u
@@ -758,14 +748,14 @@ static uint64_t SparkWeightdVmmRoundUp(uint64_t value, uint64_t multiple)
 
 static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
 {
-    CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
+    SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)arena->device_base;
     uint32_t index;
     if (base != 0)
     {
         if (arena->pool_export_handle != 0)
         {
-            (void)cuMemUnmap(base,
-                (size_t)(arena->chunk_bytes * arena->chunk_count));
+            (void)SparkDeviceMemoryUnmap(base,
+                arena->chunk_bytes * arena->chunk_count);
         }
         else
         {
@@ -773,34 +763,34 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
             {
                 if (arena->chunk_handles != 0 && arena->chunk_handles[index] != 0)
                 {
-                    (void)cuMemUnmap(base + (CUdeviceptr)index * arena->chunk_bytes,
-                        (size_t)arena->chunk_bytes);
+                    (void)SparkDeviceMemoryUnmap(base + (SparkDeviceAddress)index * arena->chunk_bytes,
+                        arena->chunk_bytes);
                 }
             }
         }
     }
     if (base != 0 && arena->epoch_device != 0)
     {
-        (void)cuMemUnmap(
-            (CUdeviceptr)(uintptr_t)arena->epoch_device,
-            (size_t)arena->chunk_bytes);
+        (void)SparkDeviceMemoryUnmap(
+            (SparkDeviceAddress)(uintptr_t)arena->epoch_device,
+            arena->chunk_bytes);
     }
     if (arena->epoch_handle != 0)
     {
-        (void)cuMemRelease(
-            (CUmemGenericAllocationHandle)arena->epoch_handle);
+        (void)SparkDeviceMemoryRelease(
+            SparkWeightdMemoryOf(arena->epoch_handle));
         arena->epoch_handle = 0;
     }
     {
         void *pool = arena->pool_export_handle;
         if (pool != 0)
-            (void)cuMemRelease((CUmemGenericAllocationHandle)pool);
+            (void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(pool));
         arena->pool_export_handle = 0;
         if (arena->slot_handles != 0)
         {
             for (index = 0u; index < arena->slot_count; index++)
                 if (arena->slot_handles[index] != 0)
-                    (void)cuMemRelease((CUmemGenericAllocationHandle)arena->slot_handles[index]);
+                    (void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(arena->slot_handles[index]));
             free(arena->slot_handles);
             free(arena->chunk_slots);
             free(arena->free_slots);
@@ -819,8 +809,8 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
                 if (arena->chunk_handles[index] != 0 &&
                     arena->chunk_handles[index] != pool)
                 {
-                    (void)cuMemRelease(
-                        (CUmemGenericAllocationHandle)arena->chunk_handles[index]);
+                    (void)SparkDeviceMemoryRelease(
+                        SparkWeightdMemoryOf(arena->chunk_handles[index]));
                 }
             }
             free(arena->chunk_handles);
@@ -842,7 +832,7 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
     arena->staging = 0;
     if (base != 0)
     {
-        (void)cuMemAddressFree(base, (size_t)arena->virtual_bytes);
+        (void)SparkDeviceAddressRelease(base, arena->virtual_bytes);
     }
     arena->chunk_handles = 0;
     arena->chunk_refs = 0;
@@ -856,28 +846,17 @@ static void SparkWeightdVmmRelease(SparkWeightdArena *arena)
 static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     SparkWeightdArena *arena)
 {
-    CUmemAllocationProp prop;
-    CUmemAccessDesc access;
-    CUdeviceptr base = 0;
-    size_t granularity = 0;
+    SparkDeviceAddress base = 0;
+    uint64_t granularity = 0;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
     uint32_t created = 0u;
     uint32_t mapped = 0u;
     uint32_t index;
-    int device = 0;
 
-    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
-    {
-        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    }
-    memset(&prop, 0, sizeof(prop));
-    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    prop.location.id = device;
-    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-    if (cuMemGetAllocationGranularity(&granularity, &prop,
-            CU_MEM_ALLOC_GRANULARITY_RECOMMENDED) != CUDA_SUCCESS ||
+    if (SparkWeightdDeviceOpen() != SPARK_STATUS_OK ||
+        SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_RECOMMENDED,
+            &granularity) != SPARK_STATUS_OK ||
         granularity == 0u)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -899,8 +878,8 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
         arena->chunk_refs = 0;
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
-    if (cuMemAddressReserve(&base,
-            (size_t)(chunk_count * chunk_bytes), 0u, 0ull, 0ull) != CUDA_SUCCESS)
+    if (SparkDeviceAddressReserve(&base,
+            chunk_count * chunk_bytes, "weightd arena") != SPARK_STATUS_OK)
     {
         free(arena->chunk_handles);
         free(arena->chunk_refs);
@@ -910,27 +889,22 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     }
     for (index = 0u; index < chunk_count; index++)
     {
-        CUmemGenericAllocationHandle handle = 0;
-        if (cuMemCreate(&handle, (size_t)chunk_bytes, &prop, 0ull) !=
-            CUDA_SUCCESS)
+        SparkDeviceMemoryHandle handle = 0u;
+        if (SparkDeviceMemoryCreate(&handle, chunk_bytes, "weightd arena") !=
+            SPARK_STATUS_OK)
         {
             break;
         }
-        arena->chunk_handles[index] = (void *)handle;
+        arena->chunk_handles[index] = (void *)(uintptr_t)handle;
         created++;
-        if (cuMemMap(base + (CUdeviceptr)index * chunk_bytes,
-                (size_t)chunk_bytes, 0u, handle, 0ull) != CUDA_SUCCESS)
+        if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * chunk_bytes,
+                chunk_bytes, handle, 0u, SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK)
         {
             break;
         }
         mapped++;
     }
-    access.location.type = prop.location.type;
-    access.location.id = prop.location.id;
-    access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-    if (mapped == chunk_count &&
-        cuMemSetAccess(base, (size_t)(chunk_count * chunk_bytes), &access,
-            1u) == CUDA_SUCCESS)
+    if (mapped == chunk_count)
     {
         arena->device_base = (void *)(uintptr_t)base;
         arena->virtual_bytes = chunk_count * chunk_bytes;
@@ -944,13 +918,13 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
     }
     if (mapped != 0u)
     {
-        (void)cuMemUnmap(base, (size_t)(mapped * chunk_bytes));
+        (void)SparkDeviceMemoryUnmap(base, mapped * chunk_bytes);
     }
     for (index = 0u; index < created; index++)
     {
-        (void)cuMemRelease((CUmemGenericAllocationHandle)arena->chunk_handles[index]);
+        (void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(arena->chunk_handles[index]));
     }
-    (void)cuMemAddressFree(base, (size_t)(chunk_count * chunk_bytes));
+    (void)SparkDeviceAddressRelease(base, chunk_count * chunk_bytes);
     free(arena->chunk_handles);
     free(arena->chunk_refs);
     arena->chunk_handles = 0;
@@ -961,24 +935,14 @@ static SparkStatus SparkWeightdVmmAllocate(uint64_t arena_bytes,
 static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
     SparkWeightdArena *arena)
 {
-    CUmemAllocationProp prop;
-    size_t granularity = 0;
+    uint64_t granularity = 0;
     uint64_t chunk_bytes;
     uint32_t chunk_count;
-    CUdeviceptr base = 0;
-    int device = 0;
+    SparkDeviceAddress base = 0;
 
-    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
-    {
-        SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-    }
-    memset(&prop, 0, sizeof(prop));
-    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    prop.location.id = device;
-    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-    if (cuMemGetAllocationGranularity(&granularity, &prop,
-            CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS ||
+    if (SparkWeightdDeviceOpen() != SPARK_STATUS_OK ||
+        SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,
+            &granularity) != SPARK_STATUS_OK ||
         granularity == 0u)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
@@ -998,31 +962,24 @@ static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     {
-        CUmemAccessDesc access_stub;
-        memset(&access_stub,0,sizeof(access_stub));
-        access_stub.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-        access_stub.location.id = device;
-        access_stub.flags = CU_MEM_ACCESS_FLAGS_PROT_READ;
-        if (cuMemAddressReserve(&base,
-                (size_t)((chunk_count + 1ull) * chunk_bytes), 0u, 0ull,
-                0ull) != CUDA_SUCCESS ||
-            cuMemCreate((CUmemGenericAllocationHandle *)
-                &arena->epoch_handle,(size_t)chunk_bytes,&prop,0ull) !=
-                CUDA_SUCCESS ||
-            cuMemMap(base + (CUdeviceptr)chunk_count * chunk_bytes,
-                (size_t)chunk_bytes,0u,
-                (CUmemGenericAllocationHandle)arena->epoch_handle,0ull) !=
-                CUDA_SUCCESS ||
-            cuMemSetAccess(base + (CUdeviceptr)chunk_count * chunk_bytes,
-                (size_t)chunk_bytes,&access_stub,1u) != CUDA_SUCCESS)
+        SparkDeviceMemoryHandle epoch = 0u;
+        SparkStatus reserved = SparkDeviceAddressReserve(&base,
+            (chunk_count + 1ull) * chunk_bytes, "weightd arena");
+        if (reserved == SPARK_STATUS_OK)
+            reserved = SparkDeviceMemoryCreate(&epoch,chunk_bytes,"weightd epoch");
+        arena->epoch_handle = (void *)(uintptr_t)epoch;
+        if (reserved == SPARK_STATUS_OK)
+            reserved = SparkDeviceMemoryMap(base + (SparkDeviceAddress)chunk_count * chunk_bytes,
+                chunk_bytes,epoch,0u,SPARK_WEIGHTD_DEVICE_READ_WRITE);
+        if (reserved != SPARK_STATUS_OK)
         {
             if ( base != 0 )
-                (void)cuMemAddressFree(base,
-                    (size_t)((chunk_count + 1ull) * chunk_bytes));
+                (void)SparkDeviceAddressRelease(base,
+                    (chunk_count + 1ull) * chunk_bytes);
             if ( arena->epoch_handle != 0 )
             {
-                (void)cuMemRelease((CUmemGenericAllocationHandle)
-                    arena->epoch_handle);
+                (void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(
+                    arena->epoch_handle));
                 arena->epoch_handle = 0;
             }
             free(arena->chunk_handles);
@@ -1032,7 +989,7 @@ static SparkStatus SparkWeightdVmmReserve(uint64_t arena_bytes,
             SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
         arena->epoch_device = (void *)(uintptr_t)
-            (base + (CUdeviceptr)chunk_count * chunk_bytes);
+            (base + (SparkDeviceAddress)chunk_count * chunk_bytes);
         arena->epoch = 0ull;
     }
     arena->device_base = (void *)(uintptr_t)base;
@@ -1731,31 +1688,24 @@ static SparkStatus SparkWeightdArenaChunkEnsure(
 static SparkStatus SparkWeightdSlotsFill(SparkWeightdServer *server,
     SparkWeightdArena *arena)
 {
-	CUmemAllocationProp prop;
 	uint32_t index;
-	int device = 0;
-	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	memset(&prop,0,sizeof(prop));
-	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop.location.id = device;
-	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 	for ( index = 0u; index < arena->slot_count; index++ )
 	{
-		CUmemGenericAllocationHandle handle = 0;
+		SparkDeviceMemoryHandle handle = 0u;
 		if ( arena->slot_handles[index] != 0 )
 			continue;
 		if ( server->resident_bytes > SparkWeightdArenaCeiling(server) ||
 		     arena->chunk_bytes > SparkWeightdArenaCeiling(server) - server->resident_bytes ||
-		     cuMemCreate(&handle,(size_t)arena->chunk_bytes,&prop,0ull) != CUDA_SUCCESS )
+		     SparkDeviceMemoryCreate(&handle,arena->chunk_bytes,"weightd expert slot") != SPARK_STATUS_OK )
 		{
 			fprintf(stderr,"weightd expert pool refused: slot %u of %u (%llu bytes) does not fit beside %llu resident bytes under the %llu-byte arena ceiling\n",
 			    index,arena->slot_count,(unsigned long long)arena->chunk_bytes,
 			    (unsigned long long)server->resident_bytes,(unsigned long long)SparkWeightdArenaCeiling(server));
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
-		arena->slot_handles[index] = (void *)handle;
+		arena->slot_handles[index] = (void *)(uintptr_t)handle;
 		arena->free_slots[arena->free_slot_count++] = index;
 		arena->live_slot_count++;
 		server->resident_bytes += arena->chunk_bytes;
@@ -1770,7 +1720,7 @@ static SparkStatus SparkWeightdSlotRelease(SparkWeightdServer *server,
 	if ( arena->free_slot_count == 0u )
 		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 	index = arena->free_slots[arena->free_slot_count - 1u];
-	if ( cuMemRelease((CUmemGenericAllocationHandle)arena->slot_handles[index]) != CUDA_SUCCESS )
+	if ( SparkDeviceMemoryRelease(SparkWeightdMemoryOf(arena->slot_handles[index])) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	arena->free_slot_count--;
 	arena->slot_handles[index] = 0;
@@ -1835,26 +1785,17 @@ static SparkStatus SparkWeightdCreateSlots(SparkWeightdServer *server,
 static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
     SparkWeightdArena *arena)
 {
-	CUmemAllocationProp prop;
-	CUmemAccessDesc access;
-	CUmemGenericAllocationHandle handle = 0;
-	CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
-	size_t granularity = 0;
+	SparkDeviceMemoryHandle handle = 0u;
+	SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)arena->device_base;
+	uint64_t granularity = 0;
 	uint64_t span_bytes,create_bytes,started_ns;
 	uint32_t index;
-	int device = 0;
 
 	if ( arena->expert_pool_bytes <= arena->identity.arena_bytes )
 		SPARK_RETURN(SparkWeightdCreateSlots(server,arena));
-	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	memset(&prop,0,sizeof(prop));
-	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop.location.id = device;
-	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-	if ( cuMemGetAllocationGranularity(&granularity,&prop,
-	        CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS ||
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK ||
+	     SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,
+	        &granularity) != SPARK_STATUS_OK ||
 	     granularity == 0u )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	span_bytes = arena->chunk_bytes * (uint64_t)arena->chunk_count;
@@ -1871,39 +1812,24 @@ static SparkStatus SparkWeightdPremapPool(SparkWeightdServer *server,
 	if ( SparkWeightdNodeMemoryAdmit(server->meminfo_path,create_bytes,"expert pool",arena->identity.model) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	started_ns = SparkMonotonicNs();
-	if ( cuMemCreate(&handle,(size_t)create_bytes,&prop,0ull) != CUDA_SUCCESS )
+	if ( SparkDeviceMemoryCreate(&handle,create_bytes,"weightd expert pool") != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"WD-POOL-PREMAP-FAIL single-alloc create span=%llu failed\n",
 		    (unsigned long long)create_bytes);
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	if ( cuMemMap(base,(size_t)span_bytes,0u,handle,0ull) != CUDA_SUCCESS )
+	if ( SparkDeviceMemoryMap(base,span_bytes,handle,0u,SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK )
 	{
 		fprintf(stderr,"WD-POOL-PREMAP-FAIL map base=%llu span=%llu\n",
 		    (unsigned long long)base,(unsigned long long)span_bytes);
-		(void)cuMemRelease(handle);
+		(void)SparkDeviceMemoryRelease(handle);
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
-	memset(&access,0,sizeof(access));
-	access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	access.location.id = device;
-	access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-	if ( cuMemSetAccess(base,(size_t)span_bytes,&access,1u) != CUDA_SUCCESS )
-	{
-		fprintf(stderr,"WD-POOL-PREMAP-FAIL access span=%llu\n",
-		    (unsigned long long)span_bytes);
-		(void)cuMemUnmap(base,(size_t)span_bytes);
-		(void)cuMemRelease(handle);
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	}
-	arena->pool_export_handle = (void *)handle;
+	arena->pool_export_handle = (void *)(uintptr_t)handle;
 	for ( index = 0u; index < arena->chunk_count; index++ )
-		arena->chunk_handles[index] = (void *)handle;
+		arena->chunk_handles[index] = (void *)(uintptr_t)handle;
 	arena->pool_committed_bytes += span_bytes;
 	server->resident_bytes += span_bytes;
-#ifdef DEBUG
-	SparkWeightdMeshDeviceProbe("pool",arena->device_base,span_bytes);
-#endif
 	printf("pool single-alloc chunks=%u span=%llu seconds=%.3f (one allocation for the whole arena; pooled chunks never evicted)\n",
 	    arena->chunk_count,(unsigned long long)span_bytes,(double)(SparkMonotonicNs() - started_ns) / 1e9);
 	fflush(stdout);
@@ -2041,9 +1967,8 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
                  connection->response_fd_count < SPARK_WEIGHTD_EXPORT_BATCH_MAX )
             {
                 int pool_fd = -1;
-                if ( cuMemExportToShareableHandle(&pool_fd,
-                         (CUmemGenericAllocationHandle)(uintptr_t)arena->pool_export_handle,
-                         CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0ull) == CUDA_SUCCESS &&
+                if ( SparkDeviceMemoryExport(SparkWeightdMemoryOf(arena->pool_export_handle),
+                         &pool_fd) == SPARK_STATUS_OK &&
                      pool_fd >= 0 )
                 {
                     (void)fcntl(pool_fd,F_SETFD,FD_CLOEXEC);
@@ -2178,9 +2103,8 @@ static void SparkWeightdServerAttachLazy(SparkWeightdServer *server,
          connection->response_fd_count < SPARK_WEIGHTD_EXPORT_BATCH_MAX )
     {
         int pool_fd = -1;
-        if ( cuMemExportToShareableHandle(&pool_fd,
-                 (CUmemGenericAllocationHandle)(uintptr_t)arena->pool_export_handle,
-                 CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0ull) == CUDA_SUCCESS &&
+        if ( SparkDeviceMemoryExport(SparkWeightdMemoryOf(arena->pool_export_handle),
+                 &pool_fd) == SPARK_STATUS_OK &&
              pool_fd >= 0 )
         {
             (void)fcntl(pool_fd,F_SETFD,FD_CLOEXEC);
@@ -2249,21 +2173,13 @@ static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,Spark
     uint32_t first_chunk,
     uint32_t last_chunk)
 {
-    CUmemAllocationProp prop;
-    CUmemAccessDesc access;
-    CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
+    SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)arena->device_base;
     uint32_t index;
-    int device = 0;
 
-    if (SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS)
+    if (SparkWeightdDeviceOpen() != SPARK_STATUS_OK)
     {
         SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
     }
-    memset(&prop, 0, sizeof(prop));
-    prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-    prop.location.id = device;
-    prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     for (index = first_chunk; index <= last_chunk; index++)
     {
         if (arena->chunk_handles[index] == 0 && arena->slot_handles != 0)
@@ -2276,9 +2192,10 @@ static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,Spark
                 SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
             }
             pool_slot = arena->free_slots[arena->free_slot_count - 1u];
-            if (cuMemMap(base + (CUdeviceptr)index * arena->chunk_bytes,
-                    (size_t)arena->chunk_bytes, 0u,
-                    (CUmemGenericAllocationHandle)arena->slot_handles[pool_slot], 0ull) != CUDA_SUCCESS)
+            if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * arena->chunk_bytes,
+                    arena->chunk_bytes,
+                    SparkWeightdMemoryOf(arena->slot_handles[pool_slot]), 0u,
+                    SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK)
             {
                 fprintf(stderr,"WD-CHUNK-FAIL map idx=%u slot=%u\n",(unsigned)index,pool_slot);
                 SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -2291,37 +2208,29 @@ static SparkStatus SparkWeightdArenaChunkEnsure(SparkWeightdServer *server,Spark
         }
         else if (arena->chunk_handles[index] == 0)
         {
-            CUmemGenericAllocationHandle handle = 0;
+            SparkDeviceMemoryHandle handle = 0u;
             if (server->resident_bytes > SparkWeightdArenaCeiling(server) ||
                 arena->chunk_bytes > SparkWeightdArenaCeiling(server) - server->resident_bytes)
                 SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-            if (cuMemCreate(&handle, (size_t)arena->chunk_bytes, &prop,
-                    0ull) != CUDA_SUCCESS)
+            if (SparkDeviceMemoryCreate(&handle, arena->chunk_bytes,
+                    "weightd arena chunk") != SPARK_STATUS_OK)
             {
                 fprintf(stderr,"WD-CHUNK-FAIL create idx=%u bytes=%llu\n",
                     (unsigned)index,(unsigned long long)arena->chunk_bytes);
                 SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
             }
-            if (cuMemMap(base + (CUdeviceptr)index * arena->chunk_bytes,
-                    (size_t)arena->chunk_bytes, 0u, handle, 0ull) != CUDA_SUCCESS)
+            if (SparkDeviceMemoryMap(base + (SparkDeviceAddress)index * arena->chunk_bytes,
+                    arena->chunk_bytes, handle, 0u, SPARK_WEIGHTD_DEVICE_READ_WRITE) != SPARK_STATUS_OK)
             {
-                (void)cuMemRelease(handle);
+                (void)SparkDeviceMemoryRelease(handle);
                 fprintf(stderr,"WD-CHUNK-FAIL map idx=%u bytes=%llu\n",
                     (unsigned)index,(unsigned long long)arena->chunk_bytes);
                 SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
             }
-            arena->chunk_handles[index] = (void *)handle;
+            arena->chunk_handles[index] = (void *)(uintptr_t)handle;
             arena->pool_committed_bytes += arena->chunk_bytes;
             server->resident_bytes += arena->chunk_bytes;
             arena->created_chunks[index] = 1u;
-        }
-        access.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-        access.location.id = device;
-        access.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-        if (cuMemSetAccess(base + (CUdeviceptr)index * arena->chunk_bytes,
-                (size_t)arena->chunk_bytes, &access, 1u) != CUDA_SUCCESS)
-        {
-            SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
         }
     }
     return SPARK_STATUS_OK;
@@ -2358,12 +2267,12 @@ static SparkStatus SparkWeightdFreeChunk(SparkWeightdServer *server,SparkWeightd
 	if ( arena->pool_export_handle != 0 &&
 	     arena->chunk_handles[index] == arena->pool_export_handle )
 		return(SPARK_STATUS_OK);
-	CUdeviceptr base = (CUdeviceptr)(uintptr_t)arena->device_base;
+	SparkDeviceAddress base = (SparkDeviceAddress)(uintptr_t)arena->device_base;
 	if ( arena->chunk_handles[index] == 0 )
 		return(SPARK_STATUS_OK);
 	if ( arena->slot_handles != 0 )
 	{
-		if ( arena->chunk_slots[index] >= arena->slot_count || cuMemUnmap(base + ((CUdeviceptr)index * arena->chunk_bytes),(size_t)arena->chunk_bytes) != CUDA_SUCCESS )
+		if ( arena->chunk_slots[index] >= arena->slot_count || SparkDeviceMemoryUnmap(base + ((SparkDeviceAddress)index * arena->chunk_bytes),arena->chunk_bytes) != SPARK_STATUS_OK )
 		{
 			arena->failure_status = SPARK_STATUS_IO_ERROR;
 			return(SPARK_STATUS_IO_ERROR);
@@ -2374,7 +2283,7 @@ static SparkStatus SparkWeightdFreeChunk(SparkWeightdServer *server,SparkWeightd
 		arena->pool_committed_bytes -= arena->chunk_bytes;
 		return(SPARK_STATUS_OK);
 	}
-	if ( cuMemUnmap(base + ((CUdeviceptr)index * arena->chunk_bytes),(size_t)arena->chunk_bytes) != CUDA_SUCCESS || cuMemRelease((CUmemGenericAllocationHandle)arena->chunk_handles[index]) != CUDA_SUCCESS )
+	if ( SparkDeviceMemoryUnmap(base + ((SparkDeviceAddress)index * arena->chunk_bytes),arena->chunk_bytes) != SPARK_STATUS_OK || SparkDeviceMemoryRelease(SparkWeightdMemoryOf(arena->chunk_handles[index])) != SPARK_STATUS_OK )
 	{
 		arena->failure_status = SPARK_STATUS_IO_ERROR;
 		return(SPARK_STATUS_IO_ERROR);
@@ -2949,7 +2858,7 @@ static SparkStatus SparkWeightdServerExportOne(SparkWeightdConnection *connectio
 	int32_t fd = -1;
 	if ( connection->response_fd_count >= SPARK_WEIGHTD_EXPORT_BATCH_MAX )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( cuMemExportToShareableHandle(&fd,(CUmemGenericAllocationHandle)handle,CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,0u) != CUDA_SUCCESS || fd < 0 )
+	if ( SparkDeviceMemoryExport(SparkWeightdMemoryOf(handle),&fd) != SPARK_STATUS_OK || fd < 0 )
 		return(SPARK_STATUS_IO_ERROR);
 	if ( fcntl(fd,F_SETFD,FD_CLOEXEC) != 0 )
 	{
@@ -3482,7 +3391,7 @@ static void SparkWeightdKvPoolFree(SparkWeightdKvPool *pool)
 	uint32_t index;
 	for (index=0u; pool->chunk_handles != 0 && index<pool->chunk_count; index++)
 		if ( pool->chunk_handles[index] != 0 )
-			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[index]);
+			(void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(pool->chunk_handles[index]));
 	free(pool->chunk_handles);
 	if ( pool->metadata_map != 0 )
 		(void)munmap(pool->metadata_map,(size_t)pool->metadata_bytes);
@@ -3593,10 +3502,8 @@ static void SparkWeightdKvMakeRoom(SparkWeightdServer *server,const SparkWeightd
 
 static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKvPool *pool,uint32_t target)
 {
-	CUmemAllocationProp prop;
 	uint64_t room;
 	uint32_t grant,before = pool->chunk_count,created_failed = 0u;
-	int device = 0;
 	if ( target > pool->chunk_capacity )
 		target = pool->chunk_capacity;
 	if ( target <= pool->chunk_count )
@@ -3607,22 +3514,17 @@ static uint32_t SparkWeightdKvPoolGrow(SparkWeightdServer *server,SparkWeightdKv
 	SparkWeightdKvMakeRoom(server,pool,(uint64_t)(target - pool->chunk_count) * pool->chunk_bytes);
 	room = SparkWeightdKvFreeBytes(server) / pool->chunk_bytes;
 	grant = target - pool->chunk_count < room ? target : pool->chunk_count + (uint32_t)room;
-	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK )
 		return(pool->chunk_count);
-	memset(&prop,0,sizeof(prop));
-	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop.location.id = device;
-	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
 	while ( pool->chunk_count < grant )
 	{
-		CUmemGenericAllocationHandle handle = 0;
-		if ( cuMemCreate(&handle,(size_t)pool->chunk_bytes,&prop,0ull) != CUDA_SUCCESS )
+		SparkDeviceMemoryHandle handle = 0u;
+		if ( SparkDeviceMemoryCreate(&handle,pool->chunk_bytes,"weightd kv chunk") != SPARK_STATUS_OK )
 		{
 			created_failed = 1u;
 			break;
 		}
-		pool->chunk_handles[pool->chunk_count++] = (void *)handle;
+		pool->chunk_handles[pool->chunk_count++] = (void *)(uintptr_t)handle;
 		server->kv_committed_bytes += pool->chunk_bytes;
 	}
 	SparkWeightdKvPoolLogGrow(server,pool,before,target,created_failed);
@@ -3637,24 +3539,17 @@ static uint64_t SparkWeightdKvChunksFor(uint64_t bytes,uint64_t chunk_bytes)
 
 static SparkStatus SparkWeightdKvPoolRequestValid(const SparkWeightdIpcKvPoolAttach *request)
 {
-	size_t granularity = 0u;
-	CUmemAllocationProp prop;
+	uint64_t granularity = 0u;
 	uint32_t index,nonzero = 0u;
-	int device = 0;
 	for (index=0u; index<SPARK_WEIGHTD_KV_POOL_KEY_BYTES; index++)
 		nonzero |= request->key[index];
 	if ( nonzero == 0u || request->device_bytes == 0u || request->chunk_bytes == 0u || request->minimum_bytes > request->device_bytes ||
 		request->metadata_bytes > SPARK_WEIGHTD_KV_POOL_METADATA_BYTES_MAX || SparkWeightdKvChunksFor(request->device_bytes,request->chunk_bytes) > SPARK_WEIGHTD_KV_POOL_CHUNKS_MAX ||
 		memchr(request->label,'\0',sizeof(request->label)) == 0 || request->label[0] == '\0' )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( SparkGpuGetDevice(&device) != SPARK_GPU_SUCCESS )
+	if ( SparkWeightdDeviceOpen() != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
-	memset(&prop,0,sizeof(prop));
-	prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-	prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-	prop.location.id = device;
-	prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
-	if ( cuMemGetAllocationGranularity(&granularity,&prop,CU_MEM_ALLOC_GRANULARITY_MINIMUM) != CUDA_SUCCESS || granularity == 0u ||
+	if ( SparkDeviceMemoryGranularity(SPARK_DEVICE_GRANULARITY_MINIMUM,&granularity) != SPARK_STATUS_OK || granularity == 0u ||
 		request->chunk_bytes % granularity != 0u )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
@@ -4056,7 +3951,7 @@ static uint32_t SparkWeightdServerOnKvPoolResize(SparkWeightdServer *server,Spar
 		while ( pool->chunk_count > request->target_chunks )
 		{
 			pool->chunk_count--;
-			(void)cuMemRelease((CUmemGenericAllocationHandle)pool->chunk_handles[pool->chunk_count]);
+			(void)SparkDeviceMemoryRelease(SparkWeightdMemoryOf(pool->chunk_handles[pool->chunk_count]));
 			pool->chunk_handles[pool->chunk_count] = 0;
 			server->kv_committed_bytes -= pool->chunk_bytes;
 		}

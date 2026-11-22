@@ -44,26 +44,18 @@ SparkStatus SparkWeightdClientLeaseSlotsBatch(SparkWeightdClient *client,uint64_
     (void)client;(void)arena_generation;(void)lease_identifier;(void)batch_offset;(void)batch;(void)timeout_nanoseconds;
     abort();
 }
-CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
-    void *fd,CUmemAllocationHandleType type)
+SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory,int fd,const char *owner)
 {
-    (void)type;
-    assert((intptr_t)fd==watched[imports]);
+    (void)owner;
+    assert(fd==watched[imports]);
     imports++;
-    if (mode==2u) return CUDA_ERROR_INVALID_VALUE;
-    *handle=(CUmemGenericAllocationHandle)(uintptr_t)imports;
-    return CUDA_SUCCESS;
+    if (mode==2u) return SPARK_STATUS_INVALID_ARGUMENT;
+    *memory=imports;
+    return SPARK_STATUS_OK;
 }
-CUresult cuMemMap(CUdeviceptr address,size_t bytes,size_t offset,
-    CUmemGenericAllocationHandle handle,unsigned long long flags)
+SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address,uint64_t bytes,SparkDeviceMemoryHandle memory,uint64_t offset,uint32_t access)
 {
-    (void)address;(void)bytes;(void)offset;(void)handle;(void)flags;
-    abort();
-}
-CUresult cuMemSetAccess(CUdeviceptr address,size_t bytes,
-    const CUmemAccessDesc *descriptors,size_t count)
-{
-    (void)address;(void)bytes;(void)descriptors;(void)count;
+    (void)address;(void)bytes;(void)memory;(void)offset;(void)access;
     abort();
 }
 static void check(unsigned check_mode)
@@ -84,8 +76,8 @@ static void check(unsigned check_mode)
     expected=mode==1u?SPARK_STATUS_SCHEMA_ERROR:mode==2u?SPARK_STATUS_IO_ERROR:SPARK_STATUS_OK;
     assert(map_import_slots(&map)==expected);
     assert(exports==1u && imports==(mode==0u?2u:mode==2u?1u:0u));
-    assert(mode!=0u || (map.slot_count==2u && map.slot_handles[0]==(CUmemGenericAllocationHandle)1u &&
-        map.slot_handles[1]==(CUmemGenericAllocationHandle)2u && map.chunk_slots[0]==SPARK_WEIGHTD_SLOT_NONE && map.chunk_slots[1]==SPARK_WEIGHTD_SLOT_NONE));
+    assert(mode!=0u || (map.slot_count==2u && map.slot_handles[0]==1u &&
+        map.slot_handles[1]==2u && map.chunk_slots[0]==SPARK_WEIGHTD_SLOT_NONE && map.chunk_slots[1]==SPARK_WEIGHTD_SLOT_NONE));
     for (unsigned i=0u;i<2u;i++)
     {
         unsigned char value=255u;
@@ -116,9 +108,9 @@ static int test_close(int fd);
 #include "MAP_SOURCE"
 #undef close
 static unsigned init_fault,cleanup_faults,cleanup_hits,events,live_events[SPARK_WEIGHTD_LEASE_COUNT_MAX];
-static unsigned handles[2],mappings[2],reserved,imports,maps,accesses;
+static unsigned handles[2],mappings[2],reserved,imports,maps;
 static int fds[2],closes[2];
-static const CUdeviceptr base=65536u;
+static const SparkDeviceAddress base=65536u;
 static int cleanup(unsigned phase)
 {
     unsigned bit=1u<<phase;
@@ -134,7 +126,8 @@ static int test_close(int fd)
     return close(fd);
 }
 cudaError_t cudaGetDevice(int *device) { *device=0;return cudaSuccess; }
-CUresult cuCtxGetCurrent(CUcontext *context) { *context=(CUcontext)1;return CUDA_SUCCESS; }
+SparkStatus SparkDeviceInitialize(const SparkDeviceConfiguration *configuration) { (void)configuration;return SPARK_STATUS_OK; }
+SparkStatus SparkDeviceThreadInstance(SparkDeviceInstance *instance) { *instance=1u;return SPARK_STATUS_OK; }
 SparkStatus SparkWeightdClientSlotExportBatch(SparkWeightdClient *client,uint64_t arena_generation,uint32_t slot_offset,SparkWeightdSlotBatch *batch,uint64_t timeout_nanoseconds)
 {
     (void)client;(void)arena_generation;(void)slot_offset;(void)batch;(void)timeout_nanoseconds;
@@ -158,69 +151,58 @@ cudaError_t cudaEventDestroy(cudaEvent_t event)
     if (cleanup(5u)) return 1;
     live_events[i]=0u;return cudaSuccess;
 }
-CUresult cuMemGetAllocationGranularity(size_t *value,const CUmemAllocationProp *prop,
-    CUmemAllocationGranularity_flags flags)
+SparkStatus SparkDeviceMemoryGranularity(uint32_t granularity,uint64_t *bytes)
 {
-    (void)prop;(void)flags;*value=4096u;return CUDA_SUCCESS;
+    assert(granularity==SPARK_DEVICE_GRANULARITY_MINIMUM);*bytes=4096u;return SPARK_STATUS_OK;
 }
-CUresult cuMemAddressReserve(CUdeviceptr *address,size_t bytes,size_t alignment,
-    CUdeviceptr hint,unsigned long long flags)
+SparkStatus SparkDeviceAddressReserve(SparkDeviceAddress *address,uint64_t bytes,const char *owner)
 {
-    assert(bytes==12288u && alignment==0u && hint==0u && flags==0u && reserved==0u);
-    reserved=1u;*address=base;return CUDA_SUCCESS;
+    (void)owner;
+    assert(bytes==12288u && reserved==0u);
+    reserved=1u;*address=base;return SPARK_STATUS_OK;
 }
-CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
-    void *fd,CUmemAllocationHandleType type)
+SparkStatus SparkDeviceMemoryImport(SparkDeviceMemoryHandle *memory,int fd,const char *owner)
 {
-    unsigned i=(intptr_t)fd==fds[0]?0u:1u;
-    assert((intptr_t)fd==fds[i] && type==CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+    unsigned i=fd==fds[0]?0u:1u;
+    (void)owner;
+    assert(fd==fds[i]);
     imports++;
-    if (init_fault==1u+3u*i) return CUDA_ERROR_INVALID_VALUE;
-    assert(handles[i]==0u);handles[i]=1u;*handle=(CUmemGenericAllocationHandle)(uintptr_t)(i+1u);
-    return CUDA_SUCCESS;
+    if (init_fault==1u+2u*i) return SPARK_STATUS_INVALID_ARGUMENT;
+    assert(handles[i]==0u);handles[i]=1u;*memory=i+1u;
+    return SPARK_STATUS_OK;
 }
-CUresult cuMemMap(CUdeviceptr address,size_t bytes,size_t offset,
-    CUmemGenericAllocationHandle handle,unsigned long long flags)
+SparkStatus SparkDeviceMemoryMap(SparkDeviceAddress address,uint64_t bytes,SparkDeviceMemoryHandle memory,uint64_t offset,uint32_t access)
 {
-    unsigned i=(unsigned)(uintptr_t)handle-1u;
+    unsigned i=(unsigned)memory-1u;
     assert(i<2u && handles[i] && !mappings[i] && reserved);
     assert(address==base+(i==0u?8192u:0u));
-    assert(bytes==(i==0u?4096u:8192u) && offset==0u && flags==0u);
+    assert(bytes==(i==0u?4096u:8192u) && offset==0u);
+    assert(access==(i==0u?SPARK_DEVICE_ACCESS_DEVICE_READ:(SPARK_DEVICE_ACCESS_DEVICE_READ|SPARK_DEVICE_ACCESS_DEVICE_WRITE)));
     maps++;
-    if (init_fault==2u+3u*i) return CUDA_ERROR_INVALID_VALUE;
-    mappings[i]=1u;return CUDA_SUCCESS;
+    if (init_fault==2u+2u*i) return SPARK_STATUS_INVALID_ARGUMENT;
+    mappings[i]=1u;return SPARK_STATUS_OK;
 }
-CUresult cuMemSetAccess(CUdeviceptr address,size_t bytes,
-    const CUmemAccessDesc *descriptors,size_t count)
-{
-    unsigned i=address==base?1u:0u;
-    assert(mappings[i] && count==1u && bytes==(i==0u?4096u:8192u));
-    assert(descriptors->flags==(i==0u?CU_MEM_ACCESS_FLAGS_PROT_READ:CU_MEM_ACCESS_FLAGS_PROT_READWRITE));
-    accesses++;
-    if (init_fault==3u+3u*i) return CUDA_ERROR_INVALID_VALUE;
-    return CUDA_SUCCESS;
-}
-CUresult cuMemUnmap(CUdeviceptr address,size_t bytes)
+SparkStatus SparkDeviceMemoryUnmap(SparkDeviceAddress address,uint64_t bytes)
 {
     unsigned i=address==base?1u:0u;
     assert(address==base+(i==0u?8192u:0u));
     assert(bytes==(i==0u?4096u:8192u) && mappings[i] && reserved);
-    if (cleanup(i)) return CUDA_ERROR_INVALID_VALUE;
-    mappings[i]=0u;return CUDA_SUCCESS;
+    if (cleanup(i)) return SPARK_STATUS_INVALID_ARGUMENT;
+    mappings[i]=0u;return SPARK_STATUS_OK;
 }
-CUresult cuMemRelease(CUmemGenericAllocationHandle handle)
+SparkStatus SparkDeviceMemoryRelease(SparkDeviceMemoryHandle memory)
 {
-    unsigned i=(unsigned)(uintptr_t)handle-1u;
+    unsigned i=(unsigned)memory-1u;
     assert(i<2u && handles[i] && !mappings[i]);
-    if (cleanup(2u+i)) return CUDA_ERROR_INVALID_VALUE;
-    handles[i]=0u;return CUDA_SUCCESS;
+    if (cleanup(2u+i)) return SPARK_STATUS_INVALID_ARGUMENT;
+    handles[i]=0u;return SPARK_STATUS_OK;
 }
-CUresult cuMemAddressFree(CUdeviceptr address,size_t bytes)
+SparkStatus SparkDeviceAddressRelease(SparkDeviceAddress address,uint64_t bytes)
 {
     assert(address==base && bytes==12288u && reserved);
     assert(!mappings[0] && !mappings[1] && !handles[0] && !handles[1]);
-    if (cleanup(4u)) return CUDA_ERROR_INVALID_VALUE;
-    reserved=0u;return CUDA_SUCCESS;
+    if (cleanup(4u)) return SPARK_STATUS_INVALID_ARGUMENT;
+    reserved=0u;return SPARK_STATUS_OK;
 }
 static void check(unsigned fault,unsigned failures)
 {
@@ -228,7 +210,7 @@ static void check(unsigned fault,unsigned failures)
     SparkWeightdMap *map=0;
     unsigned retries=0u;
     init_fault=fault;cleanup_faults=failures;cleanup_hits=0u;
-    events=0u;imports=maps=accesses=0u;
+    events=0u;imports=maps=0u;
     for (unsigned i=0u;i<2u;i++)
     {
         assert(!handles[i] && !mappings[i]);
@@ -241,9 +223,8 @@ static void check(unsigned fault,unsigned failures)
         fds[0],fds[1],&map);
     assert(status==(fault?SPARK_STATUS_IO_ERROR:SPARK_STATUS_OK));
     for (unsigned i=0u;i<2u;i++) assert(closes[i]==1 && fcntl(fds[i],F_GETFD)==-1);
-    assert(imports==(fault && fault<4u?1u:2u));
-    assert(maps==(fault==1u?0u:fault && fault<5u?1u:2u));
-    assert(accesses==(fault && fault<3u?0u:fault && fault<6u?1u:2u));
+    assert(imports==(fault && fault<3u?1u:2u));
+    assert(maps==(fault==1u?0u:fault && fault<4u?1u:2u));
     assert((map!=0)==(fault==0u || failures!=0u));
     if (fault && map) assert(map->failure==SPARK_STATUS_IO_ERROR);
     while (map)
@@ -265,7 +246,7 @@ static void check_retirement(void)
     SparkWeightdMap map={0};
     uint64_t owners[1]={3u};
     uint8_t mapped[1]={1u};
-    CUmemGenericAllocationHandle imported[1]={(CUmemGenericAllocationHandle)(uintptr_t)2u};
+    SparkDeviceMemoryHandle imported[1]={2u};
     map.base=base;map.chunk_bytes=8192u;map.chunk_count=1u;
     map.owners=owners;map.mapped=mapped;map.handles=imported;
     reserved=1u;handles[1]=mappings[1]=1u;
@@ -281,15 +262,15 @@ static void check_retirement(void)
 }
 int main(void)
 {
-    for (unsigned phase=0u;phase<=6u;phase++) check(phase,0u);
+    for (unsigned phase=0u;phase<=4u;phase++) check(phase,0u);
     for (unsigned phase=0u;phase<6u;phase++)
     {
         check(0u,1u<<phase);
-        check(6u,1u<<phase);
+        if (phase!=1u) check(4u,1u<<phase);
     }
-    check(0u,63u);check(6u,63u);
+    check(0u,63u);check(4u,63u&~2u);
     check_retirement();
-    puts("PASS weightd map create: 21 actual-source cases; six init failures, six cleanup retry boundaries, combined retries, exact resource ownership; a released lease keeps every mapping in slot and pooled maps");
+    puts("PASS weightd map create: 18 actual-source cases; four init failures, six cleanup retry boundaries, combined retries, exact resource ownership; a released lease keeps every mapping in slot and pooled maps");
     return 0;
 }
 '''

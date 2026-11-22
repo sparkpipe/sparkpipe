@@ -168,10 +168,10 @@ class LinkFlagsTest(unittest.TestCase):
         flags = make_words("LDFLAGS", home) + make_words("LDLIBS", home)
         self.assertEqual([flag for flag in flags if "cuda" in flag], [])
 
-    def test_host_only_link_lines_name_no_device_library_and_device_programs_keep_theirs(self):
+    def test_host_only_link_lines_name_no_device_library_and_weightd_tools_only_the_runtime(self):
         host_only = list(HOST_ONLY_PROGRAMS)
-        controls = ["build/weightd_warm", "build/weightdctl"]
-        completed = subprocess.run(["make", "-n", "-B", "-C", str(ROOT), f"CUDA_HOME={self.toolkit}", *host_only, *controls],
+        weightd = ["build/weightd_warm", "build/weightdctl"]
+        completed = subprocess.run(["make", "-n", "-B", "-C", str(ROOT), f"CUDA_HOME={self.toolkit}", *host_only, *weightd],
                                    capture_output=True, text=True, check=True)
         links = {}
         for line in completed.stdout.splitlines():
@@ -182,9 +182,10 @@ class LinkFlagsTest(unittest.TestCase):
             with self.subTest(target):
                 self.assertIn(target, links)
                 self.assertNotRegex(links[target], r"-lcuda\b|-lcudart\b|lib64")
-        for target in controls:
+        for target in weightd:
             with self.subTest(target):
-                self.assertRegex(links[target], r"-lcuda\b")
+                self.assertRegex(links[target], r"-lcudart\b")
+                self.assertNotRegex(links[target], r"-lcuda\b")
 
 
 class GateTest(unittest.TestCase):
@@ -389,23 +390,26 @@ class HostOnlyBuildTest(unittest.TestCase):
             toolkit = fake_toolkit(base / "cuda", libraries=True)
             host_only = make_words("HOSTED_RELEASE_HOST_ONLY_FILES", directory=source)
             built = [path for path in host_only if path.startswith("build/")]
-            control = "build/weightd_warm"
+            weightd = ["build/weightd_warm", "build/weightdctl"]
+            if Path("/usr/include/infiniband/verbs.h").is_file():
+                weightd.append("build/sparkpipe_weightd")
             completed = subprocess.run(["make", "-C", str(source), f"-j{os.cpu_count() or 2}", f"CUDA_HOME={toolkit}",
-                                        "CC=cc -Wl,--no-as-needed", *built, control], capture_output=True, text=True)
+                                        "CC=cc -Wl,--no-as-needed", *built, *weightd], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 0, completed.stdout[-4000:] + completed.stderr[-4000:])
             cwd = os.getcwd()
             os.chdir(source)
             try:
                 MODULE.stage(str(base / "host_only"), host_only)
-                MODULE.stage(str(base / "control"), [control])
+                MODULE.stage(str(base / "weightd"), weightd)
             finally:
                 os.chdir(cwd)
             report = AUDIT.audit_root(str(base / "host_only"))
             self.assertEqual(report.scanned, len(host_only))
             self.assertEqual(report.findings(), [])
-            control_report = AUDIT.audit_root(str(base / "control"))
-            self.assertIn(("build/weightd_warm", "needed", "libcuda.so.1"), control_report.found)
-            self.assertIn(("build/weightd_warm", "needed", "libcudart.so.13"), control_report.found)
+            weightd_report = AUDIT.audit_root(str(base / "weightd"))
+            for program in weightd:
+                found = {(kind, detail) for path, kind, detail in weightd_report.found if path == program}
+                self.assertEqual(found, {("needed", "libcudart.so.13")}, program)
 
 
 if __name__ == "__main__":

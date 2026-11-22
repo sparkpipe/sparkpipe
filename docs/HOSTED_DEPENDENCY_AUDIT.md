@@ -193,8 +193,8 @@ also runs in `make test`. It checks four things.
   validation refuses patterns, loose or duplicated paths, unsorted entries,
   short reasons and finding kinds that are never debt.
 - **Link flags.** With a stand-in CUDA toolkit, the global link flags name
-  no CUDA library. The host-only programs' link lines name none either,
-  while weightd's tools keep `-lcuda`.
+  no CUDA library. The host-only programs' link lines name none either.
+  weightd's tools name `-lcudart` and never `-lcuda`.
 - **The gate.** It passes a listed finding and fails new, stale and missing
   ones. It stages exact paths only, and a directory only when it holds
   regular files and no links. `shrink` fails on any added file or
@@ -205,5 +205,8 @@ also runs in `make test`. It checks four things.
 - **The host-only build**, on Linux. It builds the host-only programs from a
   copy of the sources with the stand-in toolkit and `-Wl,--no-as-needed`.
   The audit must find nothing in them, so a CUDA library on any of their
-  link lines fails even where `--as-needed` would drop it. A control build
-  of `weightd_warm` must show `libcuda.so.1` and `libcudart.so.13`.
+  link lines fails even where `--as-needed` would drop it. The same build of
+  `weightd_warm` and `weightdctl`, and of `sparkpipe_weightd` where the
+  verbs headers exist, must show `libcudart.so.13` and nothing else. Their
+  device memory goes through the device layer compiled into them, so none
+  needs `libcuda.so.1`.

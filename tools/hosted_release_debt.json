@@ -32,17 +32,11 @@
       }
     },
     {
-      "reason": "weightd and its client tools: weightd creates, exports, imports and maps device memory with the CUDA driver API (cuMemCreate, cuMemExportToShareableHandle, cuMemImportFromShareableHandle, cuMemMap, cuMemSetAccess) and copies with the CUDA runtime, and its client calls share objects with that code (runtime/spark_weightd.c, runtime/spark_weightd_worker.c), so weightd_warm and weightdctl link both libraries too.",
+      "reason": "weightd and its client tools reach device memory through the device layer compiled into each program. In the CUDA flavour that is the CUDA backend over the CUDA runtime (runtime/device/cuda/device_cuda.c), plus the spark_gpu.h copies and events weightd makes.",
       "files": {
-        "build/sparkpipe_weightd": ["needed libcuda.so.1", "needed libcudart.so.13"],
-        "build/weightd_warm": ["needed libcuda.so.1", "needed libcudart.so.13"],
-        "build/weightdctl": ["needed libcuda.so.1", "needed libcudart.so.13"]
-      }
-    },
-    {
-      "reason": "RDMA transport: its weightd mesh calls (SparkWeightdClientConnect, SparkWeightdClientMeshBroadcast) come from runtime/spark_weightd.c, which also holds weightd's driver-API memory code.",
-      "files": {
-        "build/libhidden_transport_spark_host_rdma_verbs.so": ["needed libcuda.so.1"]
+        "build/sparkpipe_weightd": ["needed libcudart.so.13"],
+        "build/weightd_warm": ["needed libcudart.so.13"],
+        "build/weightdctl": ["needed libcudart.so.13"]
       }
     },
     {
