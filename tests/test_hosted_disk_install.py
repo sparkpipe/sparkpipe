@@ -81,6 +81,12 @@ class InstallDiskInputsTest(unittest.TestCase):
         (self.identity / "groups.conf").unlink()
         self.refused("needs files/, user.conf and groups.conf")
 
+    def test_the_bundle_never_carries_tailscale_state(self):
+        state = self.identity / "files" / "var" / "lib" / "tailscale"
+        state.mkdir(parents=True)
+        (state / "tailscaled.state").write_text("{}")
+        self.refused("carries var/lib/tailscale; the node's Tailscale state comes from its previous root")
+
     def test_the_bundle_is_read_as_data_and_never_executed(self):
         marker = Path(self.directory.name) / "executed"
         (self.identity / "user.conf").write_text(f"USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo\nUSER_SHELL=/bin/bash\ntouch {marker}\n")
@@ -147,6 +153,20 @@ class InstallDiskContractTest(unittest.TestCase):
         self.assertLess(SOURCE.index("tar --zstd -xpf"), SOURCE.index("-uid +999 -a ! -uid 65534"))
         self.assertIn("trap unmount_all EXIT", SOURCE)
 
+    def test_tailscale_state_is_checked_first_and_carried_before_the_ownership_check(self):
+        old_root_check = SOURCE.index("/$tailscale_state may hold only files and directories")
+        self.assertLess(SOURCE.index('mount_at "$root" "$target"'), old_root_check)
+        self.assertLess(old_root_check, SOURCE.index('mkdir -p "$aside/root" "$aside/esp/EFI"'))
+        extract = SOURCE.index("tar --zstd -xpf")
+        image_check = SOURCE.index("the image carries Tailscale state")
+        carry = SOURCE.index('cp -a "$aside/root/$tailscale_state" "$target/${tailscale_state%/*}/"')
+        compare = SOURCE.index('diff -r --no-dereference "$aside/root/$tailscale_state" "$target/$tailscale_state"')
+        self.assertLess(extract, image_check)
+        self.assertLess(image_check, carry)
+        self.assertLess(carry, compare)
+        self.assertLess(compare, SOURCE.index("-uid +999 -a ! -uid 65534"))
+        self.assertIn("so the node joins the tailnet at bring-up", SOURCE)
+
     def test_the_labels_match_the_image_fstab(self):
         fstab = (ROOT / "tools" / "hosted_image" / "customize_image.sh").read_text()
         for label in ("SPARKROOT", "SPARKESP"):
@@ -194,6 +214,14 @@ class DryRunHarnessTest(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text()
         self.assertIn("hosted-disk-dryrun:", makefile)
         self.assertIn('bash tools/hosted_image/dryrun_install_disk.sh --image "$(IMAGE)" --dir "$(DIR)"', makefile)
+
+    def test_the_previous_root_holds_the_tailscale_state_and_both_installs_check_it(self):
+        self.assertNotIn('"$files/var/lib/tailscale', HARNESS_SOURCE)
+        self.assertIn('"$seed/var/lib/tailscale/tailscaled.state"', HARNESS_SOURCE)
+        self.assertIn('diff "$dir/tailscale-seed.list" "$dir/tailscale-$name.list" || fail', HARNESS_SOURCE)
+        self.assertIn("verify_install first carried\n", HARNESS_SOURCE)
+        self.assertIn("verify_install second absent\n", HARNESS_SOURCE)
+        self.assertLess(HARNESS_SOURCE.index('rm -r --one-file-system "$roll/var/lib/tailscale"'), HARNESS_SOURCE.index("install_run second 0"))
 
     def test_the_harness_is_executable(self):
         self.assertTrue(os.access(HARNESS, os.X_OK))

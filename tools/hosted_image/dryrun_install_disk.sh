@@ -107,7 +107,7 @@ pass "firmware wrapper: this host's efibootmgr -v plus an active BootFFFE in Boo
 seed="$dir/seed"
 mkdir "$seed"
 mount_at "${loop}p2" "$seed"
-mkdir -p "$seed"/{etc,usr/bin,var/log,boot/efi,root,opt/vendor,srv,tmp,home/node/sparkdata/packs,home/node/.ssh,home/node/releases/old/bin}
+mkdir -p "$seed"/{etc,usr/bin,var/log,var/lib/tailscale/files,boot/efi,root,opt/vendor,srv,tmp,home/node/sparkdata/packs,home/node/.ssh,home/node/releases/old/bin}
 chmod 1777 "$seed/tmp"
 chmod 700 "$seed/root"
 echo 'PRETTY_NAME="previous system"' > "$seed/etc/os-release"
@@ -115,6 +115,11 @@ echo previous > "$seed/etc/hostname"
 echo previous-binary > "$seed/usr/bin/previous"
 head -c 64M /dev/zero > "$seed/swap.img"
 echo vendor > "$seed/opt/vendor/owned"
+printf '{"_machinekey":"dryrun-%s"}\n' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$seed/var/lib/tailscale/tailscaled.state"
+echo '{}' > "$seed/var/lib/tailscale/derpmap.cached.json"
+chmod 600 "$seed/var/lib/tailscale/tailscaled.state" "$seed/var/lib/tailscale/derpmap.cached.json"
+chmod 700 "$seed/var/lib/tailscale" "$seed/var/lib/tailscale/files"
+(cd "$seed/var/lib/tailscale" && find . -printf '%P %U:%G %m %s\n' | sort && find . -type f -exec sha256sum {} + | sort) > "$dir/tailscale-seed.list"
 chown -R 1000:1000 "$seed/opt/vendor"
 head -c 256M /dev/urandom > "$seed/home/node/sparkdata/packs/pack.bin"
 echo "ssh-ed25519 AAAAdryrun user" > "$seed/home/node/.ssh/authorized_keys"
@@ -144,11 +149,12 @@ esp_outside_own "$esp_seed" > "$dir/esp-seed.list"
 tree_sums "$esp_seed" > "$dir/esp-seed-full.list"
 tree_sums "$esp_seed/EFI/ubuntu" > "$dir/esp-ubuntu-seed.list"
 unmount_last
-pass "seeded a previous system ($(wc -l < "$dir/seed-root.list") entries outside /home), /home/node with a 256 MiB pack and an old CUDA-linked release root, and an EFI partition with EFI/ubuntu, EFI/BOOT and EFI/vendor"
+cp "$dir/seed-root.list" "$dir/previous-first.list"
+pass "seeded a previous system ($(wc -l < "$dir/seed-root.list") entries outside /home) with Tailscale state, /home/node with a 256 MiB pack and an old CUDA-linked release root, and an EFI partition with EFI/ubuntu, EFI/BOOT and EFI/vendor"
 
 bundle="$dir/bundle"
 files="$bundle/files"
-mkdir -p "$files"/etc/{ssh,dropbear/initramfs,sudoers.d,netplan} "$files/var/lib/tailscale" "$files/root/.ssh"
+mkdir -p "$files"/etc/{ssh,dropbear/initramfs,sudoers.d,netplan} "$files/root/.ssh"
 echo node > "$files/etc/hostname"
 echo 1 > "$files/etc/ds4-node-rank"
 ssh-keygen -q -t ed25519 -N '' -C dryrun -f "$files/etc/ssh/ssh_host_ed25519_key"
@@ -157,9 +163,7 @@ echo 'node ALL=(ALL) NOPASSWD: ALL' > "$files/etc/sudoers.d/90-admins"
 chmod 440 "$files/etc/sudoers.d/90-admins"
 printf 'network:\n  version: 2\n' > "$files/etc/netplan/90-dryrun.yaml"
 chmod 600 "$files/etc/netplan/90-dryrun.yaml"
-echo '{}' > "$files/var/lib/tailscale/tailscaled.state"
-chmod 600 "$files/var/lib/tailscale/tailscaled.state"
-chmod 700 "$files/var/lib/tailscale" "$files/root/.ssh"
+chmod 700 "$files/root/.ssh"
 echo "ssh-ed25519 AAAAdryrun root" > "$files/root/.ssh/authorized_keys"
 chmod 600 "$files/root/.ssh/authorized_keys"
 printf 'USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo,adm,admins\nUSER_SHELL=/bin/bash\n' > "$bundle/user.conf"
@@ -180,7 +184,7 @@ install_run() {
 }
 
 verify_install() {
-	local name="$1" check="$dir/check-$1" esp="$dir/esp-$1" aside uuid shim grub
+	local name="$1" tailscale="$2" check="$dir/check-$1" esp="$dir/esp-$1" aside uuid shim grub
 	[ "$(blkid -p -s LABEL -o value "${loop}p2")" = SPARKROOT ] || fail "p2 label is not SPARKROOT"
 	[ "$(blkid -p -s LABEL -o value "${loop}p1")" = SPARKESP ] || fail "p1 label is not SPARKESP"
 	uuid="$(blkid -p -s UUID -o value "${loop}p2")"
@@ -193,7 +197,7 @@ verify_install() {
 	[ "$(find "$check" -mindepth 1 -maxdepth 1 -name '.dgxos-*' | wc -l)" = 1 ] || fail "expected one .dgxos-* directory"
 	aside="$(find "$check" -mindepth 1 -maxdepth 1 -name '.dgxos-*')"
 	(cd "$aside/root" && find . -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/aside-$name.list"
-	diff "$dir/seed-root.list" "$dir/aside-$name.list" || fail "the set-aside system differs from the previous root"
+	diff "$dir/previous-$name.list" "$dir/aside-$name.list" || fail "the set-aside system differs from the previous root"
 	tree_sums "$aside/esp/EFI/ubuntu" > "$dir/aside-esp-$name.list"
 	diff "$dir/esp-ubuntu-seed.list" "$dir/aside-esp-$name.list" || fail "the saved EFI/ubuntu differs from the previous one"
 	[ "$(ls -A "$aside")" = "$(printf 'esp\nroot')" ] || fail "/${aside##*/} holds more than esp and root: $(ls -A "$aside" | tr '\n' ' ')"
@@ -204,11 +208,20 @@ verify_install() {
 	grep -q '^node:x:1000:1000::/home/node:/bin/bash$' "$check/etc/passwd" || fail "node passwd line: $(grep '^node:' "$check/etc/passwd")"
 	grep -q '^admins:x:1001:node$' "$check/etc/group" || fail "admins group: $(grep '^admins:' "$check/etc/group")"
 	grep -q '^sudo:.*node' "$check/etc/group" || fail "node is not in sudo"
-	for entry in "etc/sudoers.d/90-admins 0:0:440" "etc/ssh/ssh_host_ed25519_key 0:0:600" "etc/netplan/90-dryrun.yaml 0:0:600" "root/.ssh 0:0:700" "root/.ssh/authorized_keys 0:0:600" "var/lib/tailscale/tailscaled.state 0:0:600" ". 0:0:755"; do
+	for entry in "etc/sudoers.d/90-admins 0:0:440" "etc/ssh/ssh_host_ed25519_key 0:0:600" "etc/netplan/90-dryrun.yaml 0:0:600" "root/.ssh 0:0:700" "root/.ssh/authorized_keys 0:0:600" ". 0:0:755"; do
 		[ "$(stat -c %u:%g:%a "$check/${entry% *}")" = "${entry#* }" ] || fail "${entry% *} is $(stat -c %u:%g:%a "$check/${entry% *}"), expected ${entry#* }"
 	done
-	echo "dryrun: var/lib/tailscale is $(stat -c %u:%g:%a "$check/var/lib/tailscale")"
 	pass "identity restored: hostname, host key, user 1000 with sudo and admins, file modes"
+	if [ "$tailscale" = carried ]; then
+		(cd "$check/var/lib/tailscale" && find . -printf '%P %U:%G %m %s\n' | sort && find . -type f -exec sha256sum {} + | sort) > "$dir/tailscale-$name.list"
+		diff "$dir/tailscale-seed.list" "$dir/tailscale-$name.list" || fail "the installed /var/lib/tailscale differs from the previous root's"
+		grep -q "carried the node's Tailscale state from /${aside##*/}/root/var/lib/tailscale" "$dir/install-$name.log" || fail "$name did not report the carried Tailscale state"
+		pass "Tailscale state carried from the previous root: $(wc -l < "$dir/tailscale-$name.list") entries and checksums identical, /var/lib/tailscale $(stat -c %u:%g:%a "$check/var/lib/tailscale")"
+	else
+		[ ! -e "$check/var/lib/tailscale/tailscaled.state" ] || fail "the installed root has Tailscale state the previous root did not have"
+		grep -q "the previous root has no /var/lib/tailscale" "$dir/install-$name.log" || fail "$name did not report that the previous root had no Tailscale state"
+		pass "no Tailscale state in the previous root and none in the installed root"
+	fi
 	[ "$(awk '($1 == "LABEL=SPARKROOT" && $2 == "/") || ($1 == "LABEL=SPARKESP" && $2 == "/boot/efi")' "$check/etc/fstab" | wc -l)" = 2 ] || fail "fstab does not name SPARKROOT on / and SPARKESP on /boot/efi"
 	[ -z "$(find "$check" -xdev \( -path "$check/home" -o -path "$aside" \) -prune -o \( \( -uid +999 -a ! -uid 65534 \) -o \( -gid +999 -a ! -gid 65534 \) \) -print -quit)" ] || fail "a path outside /home has uid or gid >= 1000"
 	[ "$check/boot/initrd.img-$KERNEL_RELEASE" -nt "$dir/start" ] || fail "the initramfs was not rebuilt"
@@ -241,7 +254,7 @@ verify_install() {
 install_run no-entry 1 "$PATH" "no active firmware boot entry"
 install_run first 0 "$firmware:$PATH"
 grep -q "booted by the unchanged firmware entry BootFFFE" "$dir/install-first.log" || fail "the install did not name BootFFFE as the entry that boots it"
-verify_install first
+verify_install first carried
 
 echo "dryrun: == rollback"
 roll="$dir/rollback"
@@ -279,11 +292,14 @@ mount_at "${loop}p2" "$roll"
 only_mount "$roll"
 [ -d "$roll/.hosted-$stamp" ] || fail "no .hosted-$stamp to remove"
 rm -rf --one-file-system "$roll/.hosted-$stamp"
+rm -r --one-file-system "$roll/var/lib/tailscale"
+(cd "$roll" && find . -path ./home -prune -o -path ./lost+found -prune -o -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/previous-second.list"
+awk '$1 != "var/lib/tailscale" && index($1, "var/lib/tailscale/") != 1' "$dir/seed-root.list" | diff - "$dir/previous-second.list" || fail "removing the Tailscale state changed more of the previous root"
 unmount_last
-pass "removed /.hosted-$stamp after the refusal"
+pass "removed /.hosted-$stamp after the refusal, and the previous root's Tailscale state, so the second install meets a node that never joined"
 
 install_run second 0 "$firmware:$PATH"
-verify_install second
+verify_install second absent
 
 echo "dryrun: == acceptance gate"
 gate="$dir/gate"

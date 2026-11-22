@@ -712,6 +712,7 @@ PYTHON_TESTS := \
 	tests/test_fleet_post_reboot.py \
 	tests/test_hosted_dependency_audit.py \
 	tests/test_hosted_release_gate.py \
+	tests/test_tailscale_join.py \
 	tests/test_hosted_image.py \
 	tests/test_hosted_disk_install.py \
 	tests/test_dsv41_flash_geometry.py \
