@@ -1,0 +1,156 @@
+const BLOCK = 256;
+
+kernel[BLOCK, 48] rmsnorm_bf16_vec16(
+    global u32* x_bf16, global u32* weight_bf16, global u32* out_bf16,
+    u32 rows, u32 chunks16, f32 eps, f32 inv_dim
+) {
+    shared f32 smem[8];
+    reg u32 row = ctaid_x();
+    if (row >= rows) { return; }
+
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    ureg u64 x_row = ptr_add(x_bf16, row * chunks16, 32);
+    ureg u64 o_row = ptr_add(out_bf16, row * chunks16, 32);
+
+    reg f32 s0 = 0.0f;
+    reg f32 s1 = 0.0f;
+    reg f32 s2 = 0.0f;
+    reg f32 s3 = 0.0f;
+
+    for (reg u32 c = tid; c < chunks16; c += BLOCK) {
+        reg u32x8 xv = ldg256_persist(ptr_add(x_row, c, 32));
+        unroll (k = 0..4) {
+            reg f32 v0 = bf16_lo(xv[k * 2]);
+            reg f32 v1 = bf16_hi(xv[k * 2]);
+            reg f32 v2 = bf16_lo(xv[k * 2 + 1]);
+            reg f32 v3 = bf16_hi(xv[k * 2 + 1]);
+            s0 = fma(v0, v0, s0);
+            s1 = fma(v1, v1, s1);
+            s2 = fma(v2, v2, s2);
+            s3 = fma(v3, v3, s3);
+        }
+    }
+
+    reg f32 wsum = warp_sum((s0 + s1) + (s2 + s3));
+    if (lane == 0) {
+        sts32(smem, wid, wsum);
+    }
+    barrier();
+
+    reg f32 bsum = 0.0f;
+    unroll (w = 0..8) {
+        bsum = bsum + lds32(smem, w);
+    }
+    reg f32 inv_rms = rsqrt(fma(bsum, inv_dim, eps));
+
+    for (reg u32 c = tid; c < chunks16; c += BLOCK) {
+        reg u32x8 xv = ldg256_persist(ptr_add(x_row, c, 32));
+        reg u32x8 wv = ldg256_persist(ptr_add(weight_bf16, c, 32));
+        reg u32x8 ov;
+        unroll (k = 0..8) {
+            reg f32 lo = bf16_lo(xv[k]) * inv_rms * bf16_lo(wv[k]);
+            reg f32 hi = bf16_hi(xv[k]) * inv_rms * bf16_hi(wv[k]);
+            ov[k] = pack_bf16x2(lo, hi);
+        }
+        stg256(ptr_add(o_row, c, 32), ov);
+    }
+}
+
+kernel[BLOCK, 48] fused_residual_rmsnorm_bf16x8(
+    global u32* x_bf16, global u32* res_bf16, global u32* weight_bf16, global u32* out_bf16,
+    u32 rows, u32 chunks16, f32 eps, f32 inv_dim
+) {
+    shared f32 smem[8];
+    reg u32 row = ctaid_x();
+    if (row >= rows) { return; }
+
+    reg u32 tid = tid_x();
+    reg u32 wid = warp_id();
+    reg u32 lane = lane_id();
+    ureg u64 x_row = ptr_add(x_bf16, row * chunks16, 32);
+    ureg u64 r_row = ptr_add(res_bf16, row * chunks16, 32);
+    ureg u64 o_row = ptr_add(out_bf16, row * chunks16, 32);
+
+    reg f32 s0 = 0.0f;
+    reg f32 s1 = 0.0f;
+    reg f32 s2 = 0.0f;
+    reg f32 s3 = 0.0f;
+
+    for (reg u32 c = tid; c < chunks16; c += BLOCK) {
+        reg u32x8 xv = ldg256_stream(ptr_add(x_row, c, 32));
+        reg u32x8 rv = ldg256_stream(ptr_add(r_row, c, 32));
+        reg u32x8 hv;
+        unroll (k = 0..4) {
+            reg f32 v0 = bf16_lo(xv[k * 2]) + bf16_lo(rv[k * 2]);
+            reg f32 v1 = bf16_hi(xv[k * 2]) + bf16_hi(rv[k * 2]);
+            reg f32 v2 = bf16_lo(xv[k * 2 + 1]) + bf16_lo(rv[k * 2 + 1]);
+            reg f32 v3 = bf16_hi(xv[k * 2 + 1]) + bf16_hi(rv[k * 2 + 1]);
+            s0 = fma(v0, v0, s0);
+            s1 = fma(v1, v1, s1);
+            s2 = fma(v2, v2, s2);
+            s3 = fma(v3, v3, s3);
+            hv[k * 2] = pack_bf16x2(v0, v1);
+            hv[k * 2 + 1] = pack_bf16x2(v2, v3);
+        }
+        stg256(ptr_add(r_row, c, 32), hv);
+    }
+
+    reg f32 wsum = warp_sum((s0 + s1) + (s2 + s3));
+    if (lane == 0) {
+        sts32(smem, wid, wsum);
+    }
+    barrier();
+
+    reg f32 bsum = 0.0f;
+    unroll (w = 0..8) {
+        bsum = bsum + lds32(smem, w);
+    }
+    reg f32 inv_rms = rsqrt(fma(bsum, inv_dim, eps));
+
+    for (reg u32 c = tid; c < chunks16; c += BLOCK) {
+        reg u32x8 hv = ldg256_persist(ptr_add(r_row, c, 32));
+        reg u32x8 wv = ldg256_persist(ptr_add(weight_bf16, c, 32));
+        reg u32x8 ov;
+        unroll (k = 0..8) {
+            reg f32 lo = bf16_lo(hv[k]) * inv_rms * bf16_lo(wv[k]);
+            reg f32 hi = bf16_hi(hv[k]) * inv_rms * bf16_hi(wv[k]);
+            ov[k] = pack_bf16x2(lo, hi);
+        }
+        stg256(ptr_add(o_row, c, 32), ov);
+    }
+}
+
+kernel[BLOCK, 48] swiglu_packed_bf16x8(
+    global u32* gate_bf16, global u32* up_bf16, global u32* out_bf16,
+    u32 total_chunks16
+) {
+    reg u32 idx = ctaid_x() * BLOCK + tid_x();
+    if (idx >= total_chunks16) { return; }
+
+    reg u32x8 gv = ldg256_stream(ptr_add(gate_bf16, idx, 32));
+    reg u32x8 uv = ldg256_stream(ptr_add(up_bf16, idx, 32));
+    reg u32x8 ov;
+    unroll (k = 0..4) {
+        reg f32 g0 = bf16_lo(gv[k * 2]);
+        reg f32 g1 = bf16_hi(gv[k * 2]);
+        reg f32 g2 = bf16_lo(gv[k * 2 + 1]);
+        reg f32 g3 = bf16_hi(gv[k * 2 + 1]);
+        reg f32 e0 = exp2_ftz(g0 * -1.4426950408889634f);
+        reg f32 e1 = exp2_ftz(g1 * -1.4426950408889634f);
+        reg f32 e2 = exp2_ftz(g2 * -1.4426950408889634f);
+        reg f32 e3 = exp2_ftz(g3 * -1.4426950408889634f);
+        e0 = rcp(e0 + 1.0f);
+        e1 = rcp(e1 + 1.0f);
+        e2 = rcp(e2 + 1.0f);
+        e3 = rcp(e3 + 1.0f);
+        e0 = g0 * e0;
+        e1 = g1 * e1;
+        e2 = g2 * e2;
+        e3 = g3 * e3;
+        ov[k * 2] = pack_bf16x2(e0 * bf16_lo(uv[k * 2]), e1 * bf16_hi(uv[k * 2]));
+        ov[k * 2 + 1] = pack_bf16x2(e2 * bf16_lo(uv[k * 2 + 1]), e3 * bf16_hi(uv[k * 2 + 1]));
+    }
+    stg256(ptr_add(out_bf16, idx, 32), ov);
+}
