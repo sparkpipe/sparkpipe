@@ -69,17 +69,19 @@ __global__ __launch_bounds__(LM_MX_THREADS) void LmMxQuantizeKernel(const uint16
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,1u));
 		amax = fmaxf(amax,__shfl_xor_sync(0xffffffffu,amax,2u));
 		scale = SparkMathFp8QdqScale(fmaxf(0.0f,amax));
-#pragma unroll
-		for (e = 0u; e < 4u; e++)
-		{
-			low |= (uint32_t)LmFloatToE4m3(fminf(fmaxf(value[e] / scale,-LM_E4M3_MAX),LM_E4M3_MAX)) << (8u * e);
-			high |= (uint32_t)LmFloatToE4m3(fminf(fmaxf(value[4u + e] / scale,-LM_E4M3_MAX),LM_E4M3_MAX)) << (8u * e);
-		}
+		const uint32_t scale_bits = __float_as_uint(scale);
+		const float inv_scale = __uint_as_float(0x7f000000u - scale_bits);
+		const uint32_t p0 = (uint32_t)LmFloatPairToE4m3(value[0] * inv_scale,value[1] * inv_scale);
+		const uint32_t p1 = (uint32_t)LmFloatPairToE4m3(value[2] * inv_scale,value[3] * inv_scale);
+		const uint32_t p2 = (uint32_t)LmFloatPairToE4m3(value[4] * inv_scale,value[5] * inv_scale);
+		const uint32_t p3 = (uint32_t)LmFloatPairToE4m3(value[6] * inv_scale,value[7] * inv_scale);
+		low = p0 | (p1 << 16u);
+		high = p2 | (p3 << 16u);
 		if ( live != 0u )
 		{
 			*(uint2 *)(codes + octet * 8u) = make_uint2(low,high);
 			if ( (octet & 3u) == 0u )
-				scales[octet >> 2u] = (uint8_t)((__float_as_uint(scale) >> 23u) & 0xffu);
+				scales[octet >> 2u] = (uint8_t)((scale_bits >> 23u) & 0xffu);
 		}
 	}
 }

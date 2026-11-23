@@ -7,7 +7,7 @@
 
 static __device__ __forceinline__ float LmE8m0ToFloat(uint8_t code)
 {
-	return(code == 0xffu ? __int_as_float(0x7fffffff) : exp2f((float)code - 127.0f));
+	return(SparkMathUe8m0ToFloat(code));
 }
 
 struct LmMxfp4
