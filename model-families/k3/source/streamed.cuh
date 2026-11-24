@@ -651,26 +651,64 @@ struct K3StreamedMlaExchange
 template<uint32_t VALUE_DIM>
 __global__ static void K3StreamedFoldRecordsKernel(float *running, const float *block, uint32_t heads, uint32_t rows, uint32_t first)
 {
+	__shared__ float keep_s[256u], take_s[256u];
 	const uint32_t width = heads * VALUE_DIM, record = LmGqaShardRecordFloats(heads,VALUE_DIM,1u);
 	float *r = running + (uint64_t)blockIdx.x * record;
 	const float *b = block + (uint64_t)blockIdx.x * record;
-	uint32_t index;
+	const uintptr_t bits = (uintptr_t)r | (uintptr_t)b;
 	if ( blockIdx.x >= rows )
 		return;
-	for (index = threadIdx.x; index < width; index += blockDim.x)
+	for (uint32_t h0 = 0u; h0 < heads; h0 += 256u)
 	{
-		const uint32_t head = index / VALUE_DIM;
-		const float old_max = first != 0u ? -INFINITY : r[width + 2u * head], new_max = b[width + 2u * head], top = fmaxf(old_max,new_max);
-		const float keep = old_max == -INFINITY ? 0.0f : __expf(old_max - top), take = new_max == -INFINITY ? 0.0f : __expf(new_max - top);
-		r[index] = (first != 0u ? 0.0f : r[index] * keep) + b[index] * take;
-	}
-	__syncthreads();
-	for (index = threadIdx.x; index < heads; index += blockDim.x)
-	{
-		const float old_max = first != 0u ? -INFINITY : r[width + 2u * index], new_max = b[width + 2u * index], top = fmaxf(old_max,new_max);
-		const float keep = old_max == -INFINITY ? 0.0f : __expf(old_max - top), take = new_max == -INFINITY ? 0.0f : __expf(new_max - top);
-		r[width + 2u * index + 1u] = (first != 0u ? 0.0f : r[width + 2u * index + 1u] * keep) + b[width + 2u * index + 1u] * take;
-		r[width + 2u * index] = top;
+		const uint32_t hcount = heads - h0 < 256u ? heads - h0 : 256u;
+		for (uint32_t h = threadIdx.x; h < hcount; h += blockDim.x)
+		{
+			const uint32_t head = h0 + h;
+			const float old_max = first != 0u ? -INFINITY : r[width + 2u * head], new_max = b[width + 2u * head], top = fmaxf(old_max,new_max);
+			const float keep = old_max == -INFINITY ? 0.0f : __expf(old_max - top), take = new_max == -INFINITY ? 0.0f : __expf(new_max - top);
+			keep_s[h] = keep;
+			take_s[h] = take;
+			r[width + 2u * head + 1u] = (first != 0u ? 0.0f : r[width + 2u * head + 1u] * keep) + b[width + 2u * head + 1u] * take;
+			r[width + 2u * head] = top;
+		}
+		__syncthreads();
+		float *rh = r + (uint64_t)h0 * VALUE_DIM;
+		const float *bh = b + (uint64_t)h0 * VALUE_DIM;
+		if ( (bits & 15u) == 0u && (VALUE_DIM & 3u) == 0u )
+		{
+			constexpr uint32_t VEC_DIM = VALUE_DIM >> 2u;
+			const uint32_t total = hcount * VEC_DIM;
+			float4 *r4 = (float4 *)rh;
+			const float4 *b4 = (const float4 *)bh;
+			for (uint32_t idx = threadIdx.x; idx < total; idx += blockDim.x)
+			{
+				const uint32_t h = idx / VEC_DIM;
+				const float keep = keep_s[h], take = take_s[h];
+				const float4 bv = b4[idx], rv = first != 0u ? float4{0.0f, 0.0f, 0.0f, 0.0f} : r4[idx];
+				r4[idx] = float4{rv.x * keep + bv.x * take, rv.y * keep + bv.y * take, rv.z * keep + bv.z * take, rv.w * keep + bv.w * take};
+			}
+		}
+		else if ( (bits & 7u) == 0u && (VALUE_DIM & 1u) == 0u )
+		{
+			constexpr uint32_t VEC_DIM = VALUE_DIM >> 1u;
+			const uint32_t total = hcount * VEC_DIM;
+			float2 *r2 = (float2 *)rh;
+			const float2 *b2 = (const float2 *)bh;
+			for (uint32_t idx = threadIdx.x; idx < total; idx += blockDim.x)
+			{
+				const uint32_t h = idx / VEC_DIM;
+				const float keep = keep_s[h], take = take_s[h];
+				const float2 bv = b2[idx], rv = first != 0u ? float2{0.0f, 0.0f} : r2[idx];
+				r2[idx] = float2{rv.x * keep + bv.x * take, rv.y * keep + bv.y * take};
+			}
+		}
+		else
+			for (uint32_t idx = threadIdx.x; idx < hcount * VALUE_DIM; idx += blockDim.x)
+			{
+				const uint32_t h = idx / VALUE_DIM;
+				rh[idx] = (first != 0u ? 0.0f : rh[idx] * keep_s[h]) + bh[idx] * take_s[h];
+			}
+		__syncthreads();
 	}
 }
 

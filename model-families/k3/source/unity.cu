@@ -79,8 +79,6 @@ extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_we
 	return(K3Head(b,norm_weight,head_weight,token_ids,count,rows,s));
 }
 
-template __global__ void LmPerHeadProjectSplitKernel<K3_THREADS, K3_KV_LORA_RANK, K3_V_HEAD_DIM>(const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
-
 template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, float);
 
 template __global__ void LmCopyRowsKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t);

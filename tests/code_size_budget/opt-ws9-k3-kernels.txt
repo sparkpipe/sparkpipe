@@ -1,0 +1,2 @@
++128
+K3 kernel optimizations: hoist per-head expf and vectorize float4/float2 merge in K3StreamedFoldRecordsKernel; dispatch non-cell prefill router GEMM to LmStreamGemmDense; fuse 3 KDA causal conv launches into LmCausalConvStreamsLaunch; fuse decode projections in K3LayerKdaProject, K3LayerMlaDown, and K3LayerMlaDownSlice via LmSkinnyDenseMulti; vectorize K3LatentScatterKernel, K3LatentSliceKernel, and K3SplitFusedProjectionsKernel with uint4/uint2/uint32_t fast paths and scalar fallback; remove dead LmPerHeadProjectSplitKernel instantiation in unity.cu.
