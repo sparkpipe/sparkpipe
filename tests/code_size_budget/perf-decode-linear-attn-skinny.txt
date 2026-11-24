@@ -1,0 +1,2 @@
++100
+Align shared parallel headroom from #2171/#2172 (+61) and add LmDeltaRuleColumnKernel cp.async/PDL fast paths and LmSkinny RG=8 MXFP4/NVFP4 M=8 2x dispatch (+39).
