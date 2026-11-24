@@ -46,7 +46,7 @@ static __device__ __forceinline__ unsigned long long SparkTpLdcvU64(const volati
 static __device__ __forceinline__ unsigned long long SparkTpLdAcquireU64(const volatile void *address)
 { unsigned long long v; asm volatile("ld.acquire.sys.global.u64 %0,[%1];" : "=l"(v) : "l"(address) : "memory"); return(v); }
 static __device__ __forceinline__ unsigned long long SparkTpGlobalTimerNs(void)
-{ unsigned long long ns; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(ns)); return ns; }
+{ unsigned long long ns; asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(ns) :: "memory"); return ns; }
 static __device__ __forceinline__ uint4 SparkTpLdCvU128(const volatile void *address)
 { uint4 v; asm volatile("ld.global.cv.v4.u32 {%0,%1,%2,%3},[%4];" : "=r"(v.x),"=r"(v.y),"=r"(v.z),"=r"(v.w) : "l"(address) : "memory"); return(v); }
 static __device__ __forceinline__ void SparkTpStVolatileU128(volatile void *address,uint4 v)
@@ -1269,7 +1269,6 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
         SparkTpMeshGateAwait(gate,control);
         if ( (mode & SPARK_TP_MESH_PUBLISH_GUARD) != 0u ) SparkTpMeshGateGuard(gate,control);
     }
-    LmDependentRelease();
     if ( failed != 0u && control->error_word == 0u ) control->error_word = UINT64_MAX;
     if ( control->error_word == 0u )
     {
@@ -1284,6 +1283,8 @@ static __global__ void SparkTpMeshHardwarePublishKernel(
         SparkTpMeshGateRequest(gate,control,SPARK_WEIGHTD_MESH_WAIT_PEERS,peer_mask,0u,timeout_ns);
     if ( (mode & SPARK_TP_MESH_PUBLISH_ARRIVAL) != 0u )
         control->wait_started_ns = SparkTpGlobalTimerNs();
+    __threadfence();
+    LmDependentRelease();
 }
 
 static __global__ void SparkTpMeshHardwarePublishGateKernel(
@@ -1884,7 +1885,6 @@ static __global__ void SparkTpMeshRsagStagePublishKernel(
     __syncthreads();
     if ( threadIdx.x == 0u )
     {
-        LmDependentRelease();
         if ( control->error_word == 0u && control->seq > UINT32_MAX - 1u ) control->error_word = UINT64_MAX;
         if ( failed == 0u )
         {
@@ -1897,6 +1897,8 @@ static __global__ void SparkTpMeshRsagStagePublishKernel(
             control->copy_ns += SparkTpGlobalTimerNs() - started;
         }
         control->wait_started_ns = SparkTpGlobalTimerNs();
+        __threadfence();
+        LmDependentRelease();
     }
 }
 

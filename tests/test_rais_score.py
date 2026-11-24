@@ -474,6 +474,13 @@ class TestRaisBenchCli(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_effective_alpha_b8_sparse_and_full(self) -> None:
+        self.assertAlmostEqual(rais_bench.compute_effective_alpha(16, 552, 768), 768.0 / 216.0, places=4)
+        self.assertAlmostEqual(rais_bench.compute_effective_alpha(77, 558, 768), 768.0 / 210.0, places=4)
+        self.assertAlmostEqual(rais_bench.compute_effective_alpha(96, 672, 768), 8.0, places=4)
+        self.assertAlmostEqual(rais_bench.compute_effective_alpha(0, 0, 768), 1.0, places=4)
+        self.assertAlmostEqual(rais_bench.compute_effective_alpha(16, 48, 0), 4.0, places=4)
+
 
 if __name__ == "__main__":
     unittest.main()
