@@ -83,6 +83,23 @@ SPARK_MATH_FN float SparkMathRmsScale(float total, float count, float epsilon)
 	return(SPARK_MATH_RSQRT(total / count + epsilon));
 }
 
+SPARK_MATH_FN float SparkMathLayerNormInverse(float total, float total_squared, float count, float epsilon)
+{
+	const float mean = total / count;
+	return(SPARK_MATH_RSQRT(SPARK_MATH_FMAX((total_squared / count) - (mean * mean), 0.0f) + epsilon));
+}
+
+SPARK_MATH_FN float SparkMathLayerNormValue(float value, float mean, float inverse, float weight, float bias)
+{
+	return(((value - mean) * inverse * weight) + bias);
+}
+
+SPARK_MATH_FN SparkMathU32 SparkMathTopkKey(float value)
+{
+	const SparkMathU32 bits = SPARK_MATH_AS_BITS(value);
+	return(bits ^ ((bits >> 31u) != 0u ? 0xffffffffu : 0x80000000u));
+}
+
 SPARK_MATH_FN float SparkMathResidualSum(float hidden, float branch)
 {
 	return(SparkMathRoundBf16(hidden + branch));

@@ -29,10 +29,17 @@ Rank r of T holds:
                        experts [r 384/T, +384/T) as moe_w1 / moe_w3 / moe_w2;
                        shared_gate_up (w1 and w3 rows [r 2304/T, +2304/T)) and
                        shared_down (w2 columns of the same window)
-  layers 2, 8, 14, 20  c_kv, c_gate (ratio 2 only) bf16, c_norm f32
+  layers 2, 8, 14, 20  c_kv, c_gate (ratio 2 only) bf16, c_norm f32; the
+                       indexer's key projection idx_k (indexer.wk) bf16
+                       [128, 512] and idx_k_norm f32 [128]
+  layers 2, 8, 14, 20, 24, 28, 32, 36
+                       the indexer's query idx_q_b (indexer.wq_b, all 32
+                       index heads on every rank) fp8 [4096, 1024] with its
+                       scale, and its head weights idx_weights
+                       (indexer.weights_proj) bf16 [32, 5120]
   layers 1, 14         engram_kv rows [r 25600/T, +25600/T), engram_query and
                        engram_key bf16 [4, 5120]
-The indexer, the dspark blocks and the vision tower are not packed.
+The dspark blocks and the vision tower are not packed.
 
 usage: dsv41_flash_tp16_pack.py --checkpoint DIR --output-dir DIR --contract model_contracts/dsv41_flash_authoritative.json
        --tp-degree T [--part ranks|engram|all] [--ranks 0,1,...] [--resume]
@@ -161,6 +168,7 @@ def pack_layer(checkpoint, packs, text, engram, layer):
     hidden, heads, head_dim = text["hidden_size"], text["num_attention_heads"], text["head_dim"]
     q_lora, o_lora, groups = text["q_lora_rank"], text["o_lora_rank"], text["o_groups"]
     experts, inter = text["n_routed_experts"], text["moe_intermediate_size"]
+    index_heads, index_dim = text["index_n_heads"], text["index_head_dim"]
     rank_heads, rank_groups, local, shared_rows = heads // tp, groups // tp, experts // tp, inter // tp
     group_input = heads * head_dim // groups
     name, a, f = f"layers.{layer}.", f"layers.{layer}.attn.", f"layers.{layer}.ffn."
@@ -189,6 +197,13 @@ def pack_layer(checkpoint, packs, text, engram, layer):
         if ratio == 2:
             packs.replicated(name + "c_gate", checkpoint.bf16(a + "compressor.wgate.weight", (head_dim, hidden)), "bf16")
         packs.replicated(name + "c_norm", checkpoint.widened(a + "compressor.norm.weight", (head_dim,)), "f32")
+        packs.replicated(name + "idx_k", checkpoint.bf16(a + "indexer.wk.weight", (index_dim, head_dim)), "bf16")
+        packs.replicated(name + "idx_k_norm", checkpoint.widened(a + "indexer.k_norm.weight", (index_dim,)), "f32")
+    if layer in text["index_source_layer_ids"]:
+        idx_q_b = checkpoint.fp8(a + "indexer.wq_b", index_heads * index_dim, q_lora)
+        for rank in packs.ranks:
+            packs.scaled(rank, name + "idx_q_b", scaled_window(idx_q_b, 0, index_heads * index_dim, 0, q_lora))
+        packs.replicated(name + "idx_weights", checkpoint.bf16(a + "indexer.weights_proj.weight", (index_heads, hidden)), "bf16")
     packs.replicated(name + "router", checkpoint.bf16(f + "gate.weight", (experts, hidden)), "bf16")
     packs.replicated(name + "router_bias", checkpoint.f32(f + "gate.bias", (experts,)), "f32")
     for target, source, rows, columns in (("moe_w1", "w1", inter, hidden), ("moe_w3", "w3", inter, hidden), ("moe_w2", "w2", hidden, inter)):
