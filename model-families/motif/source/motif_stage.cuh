@@ -8,6 +8,7 @@
 #include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/attn_shard.cuh"
+#include "inference/kernels/attn_shard_prefill.cuh"
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/diff_attn.cuh"
 #include "inference/kernels/formats/bf16.cuh"
@@ -20,6 +21,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/poly_norm.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
@@ -104,6 +106,19 @@ __global__ static void MotifQueryPackKernel(const uint16_t *__restrict__ latent,
 {
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
 	const uint64_t pair = (uint64_t)row * heads + head;
+	if constexpr ( ((MO_LATENT | MO_NOPE | MO_HEAD | MO_SLOT) & 7u) == 0u )
+	{
+		if ( LmIsAligned16(latent) && LmIsAligned16(query) && LmIsAligned16(packed) )
+		{
+			constexpr uint32_t LATENT_VECS = MO_LATENT >> 3u, SLOT_VECS = MO_SLOT >> 3u;
+			const uint4 *lat4 = (const uint4 *)(latent + pair * MO_LATENT);
+			const uint4 *rope4 = (const uint4 *)(query + pair * MO_HEAD + MO_NOPE);
+			uint4 *out4 = (uint4 *)(packed + pair * MO_SLOT);
+			for ( uint32_t vector = threadIdx.x; vector < SLOT_VECS; vector += blockDim.x )
+				out4[vector] = vector < LATENT_VECS ? lat4[vector] : rope4[vector - LATENT_VECS];
+			return;
+		}
+	}
 	for ( uint32_t element = threadIdx.x; element < MO_SLOT; element += blockDim.x )
 		packed[pair * MO_SLOT + element] = element < MO_LATENT ? latent[pair * MO_LATENT + element] : query[pair * MO_HEAD + MO_NOPE + element - MO_LATENT];
 }
@@ -315,6 +330,44 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		return Check(Norm<true>(state->collapsed, attention ? w->attn_norm : w->ffn_norm, state->normed, rows, MO_HIDDEN, MO_HIDDEN, frame.stream), "norm", layer);
 	}
 
+	static SparkGpuError Attend(State *state, const SparkStageRunnerStep *step, uint32_t layer, bool window, uint64_t query_stride,
+		uint64_t record_stride, SparkGpuStream stream)
+	{
+		const uint32_t rows = step->rows, degree = state->tp_degree, total_heads = degree * kHeads;
+		const float scale = window ? SPARK_MOTIF_MODEL_WINDOW_SOFTMAX_SCALE : SPARK_MOTIF_MODEL_FULL_SOFTMAX_SCALE;
+		const uint32_t *selected = window ? state->windows : (const uint32_t *)0;
+		const uint32_t selected_count = window ? MO_WINDOW : 0u;
+		if ( rows > LM_SKINNY_ROWS_WIDE && step->commit != 0u )
+		{
+			if ( !window && step->sequences == 1u && (total_heads % (LM_LATENT_SHARD_QUERIES / 2u)) == 0u )
+				return LmLatentShardPrefillRowsLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE, 2u>(state->views[layer], state->gathered,
+					query_stride, kHeads, total_heads, step->sequence_of_row, step->context_length, step->positions, scale, state->partials,
+					record_stride, rows, 1u, 0u, stream, LmLatentShardDense(kHeads));
+			if ( (total_heads % LM_LATENT_SHARD_QUERIES) == 0u || total_heads < LM_LATENT_SHARD_QUERIES )
+				return LmLatentShardAttendLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride,
+					kHeads, step->sequence_of_row, step->context_length, step->positions, selected, selected_count, selected_count, scale,
+					state->partials, record_stride, rows, stream);
+			const uint32_t max_ranks = (LM_LATENT_SHARD_QUERIES - 1u) / kHeads;
+			if ( max_ranks != 0u )
+			{
+				for ( uint32_t rank_first = 0u; rank_first < degree; rank_first += max_ranks )
+				{
+					const uint32_t chunk = degree - rank_first < max_ranks ? degree - rank_first : max_ranks;
+					const SparkGpuError error = LmLatentShardAttendHeadsLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer],
+						state->gathered + (uint64_t)rank_first * query_stride, query_stride, kHeads, chunk * kHeads, step->sequence_of_row,
+						step->context_length, step->positions, selected, selected_count, selected_count, scale,
+						state->partials + (uint64_t)rank_first * record_stride, record_stride, kHeads, 1u, rows, stream);
+					if ( error != SPARK_GPU_SUCCESS )
+						return error;
+				}
+				return SPARK_GPU_SUCCESS;
+			}
+		}
+		return LmLatentShardPartialLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride, kHeads,
+			step->sequence_of_row, step->context_length, step->positions, selected, selected_count, selected_count, scale, state->partials,
+			record_stride, rows, stream);
+	}
+
 	static SparkStatus Attention(State *state, Frame &frame, uint32_t layer, bool window)
 	{
 		const MotifLayer *w = frame.layer;
@@ -345,7 +398,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			inv_freq, 1.0f, MO_NOPE);
 		LM_LAUNCH((LmRopePerHeadKernel<MO_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_BF16_TRIG>), dim3(rows, 1u), MO_THREADS, 0, stream, state->slot, step->positions, 1u, MO_SLOT, MO_ROPE, theta,
 			inv_freq, 1.0f, MO_LATENT);
-		if ( LmPerHeadProjectRowsLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream) != SPARK_GPU_SUCCESS )
+		if ( LmPerHeadProjectChainLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream,
+				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);
 		LM_LAUNCH((MotifQueryPackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads);
 		LM_LAUNCH((LmKvShardStoreKernel<MotifKv, MO_THREADS>), rows, MO_THREADS, 0, stream, state->views[layer], state->slot, step->sequence_of_row,
@@ -358,16 +412,14 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, QuerySequences(rows), 0u, state->query, state->gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		if ( LmLatentShardPartialLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride, kHeads,
-				step->sequence_of_row, step->context_length, step->positions, window ? state->windows : (const uint32_t *)0, window ? MO_WINDOW : 0u,
-				window ? MO_WINDOW : 0u, window ? SPARK_MOTIF_MODEL_WINDOW_SOFTMAX_SCALE : SPARK_MOTIF_MODEL_FULL_SOFTMAX_SCALE, state->partials, record_stride,
-				rows, stream) != SPARK_GPU_SUCCESS )
+		if ( Attend(state, step, layer, window, query_stride, record_stride, stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "attention partial", layer);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, RecordSequences(rows), 0u, state->partials, state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmLatentShardMergeLaunch<MO_LATENT>(state->received, record_stride, degree, kHeads, state->merged, rows, stream) != SPARK_GPU_SUCCESS ||
-			LmPerHeadProjectRowsLaunch<MO_THREADS, MO_LATENT, MO_VALUE>(state->merged, w->uv, state->values, kHeads, rows, stream) != SPARK_GPU_SUCCESS ||
+			LmPerHeadProjectChainLaunch<MO_THREADS, MO_LATENT, MO_VALUE>(state->merged, w->uv, state->values, kHeads, rows, stream,
+				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS ||
 			LmDifferentialGateLaunch(state->values, state->lambda + (uint64_t)state->tp_rank * kSignal, MO_GROUPS * MO_SIGNAL, state->gate, state->diff,
 				rows, kGroups, MO_SIGNAL, MO_VALUE, stream) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "attention merge", layer);

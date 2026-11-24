@@ -15,6 +15,7 @@
 #include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/formats/mxfp8.cuh"
 #include "inference/kernels/hc.cuh"
+#include "inference/kernels/index_score.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
@@ -22,6 +23,7 @@
 #include "inference/kernels/moe_local.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/scale.cuh"
 #include "inference/kernels/skinny.cuh"
@@ -157,12 +159,57 @@ struct HyState : CudaStagePackState
 
 template<uint32_t THREADS, uint32_t WIDTH>
 __global__ __launch_bounds__(THREADS, 1)
-void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t input_stride, uint32_t output_stride, float epsilon)
+void HyRmsNormKernel(const uint16_t *input, const uint16_t *__restrict__ weight, uint16_t *output, uint32_t input_stride, uint32_t output_stride, float epsilon)
 {
-	constexpr uint32_t PER_THREAD = (WIDTH + THREADS - 1u) / THREADS;
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	const uint16_t *source = input + (uint64_t)blockIdx.x * input_stride;
 	uint16_t *target = output + (uint64_t)blockIdx.x * output_stride;
+	if constexpr ( (WIDTH & 7u) == 0u )
+	{
+		if ( ((input_stride | output_stride) & 7u) == 0u && LmIsAligned16(source) && LmIsAligned16(weight) && LmIsAligned16(target) )
+		{
+			constexpr uint32_t VECTORS = WIDTH / 8u;
+			constexpr uint32_t SLOTS = (VECTORS + THREADS - 1u) / THREADS;
+			uint4 staged[SLOTS];
+			float total = 0.0f;
+#pragma unroll
+			for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
+			{
+				const uint32_t vector = threadIdx.x + slot * THREADS;
+				if ( vector < VECTORS )
+				{
+					uint16_t bits[8];
+					staged[slot] = *(const uint4 *)(source + vector * 8u);
+					LmUnpackUint4Bf16(staged[slot], bits);
+#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+					{
+						const float value = LmBf16ToFloat(bits[k]);
+						total += value * value;
+					}
+				}
+			}
+			const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, epsilon);
+#pragma unroll
+			for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
+			{
+				const uint32_t vector = threadIdx.x + slot * THREADS;
+				if ( vector < VECTORS )
+				{
+					uint16_t bits[8], w_bits[8];
+					float out_f[8];
+					LmUnpackUint4Bf16(staged[slot], bits);
+					LmUnpackUint4Bf16(*(const uint4 *)(weight + vector * 8u), w_bits);
+#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+						out_f[k] = LmBf16ToFloat(w_bits[k]) * LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(bits[k]) * inverse));
+					*(uint4 *)(target + vector * 8u) = LmPackUint4FloatToBf16(out_f);
+				}
+			}
+			return;
+		}
+	}
+	constexpr uint32_t PER_THREAD = (WIDTH + THREADS - 1u) / THREADS;
 	float values[PER_THREAD];
 	float total = 0.0f;
 #pragma unroll
@@ -175,7 +222,7 @@ void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *ou
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 		if ( threadIdx.x + step * THREADS < WIDTH )
 			total += values[step] * values[step];
-	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)WIDTH, epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, epsilon);
 #pragma unroll
 	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
 	{
@@ -187,11 +234,50 @@ void HyRmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *ou
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void HyLayerNormKernel(uint16_t *rows, const float *weight, const float *bias, uint32_t width, float epsilon)
+void HyLayerNormKernel(uint16_t *__restrict__ rows, const float *__restrict__ weight, const float *__restrict__ bias, uint32_t width, float epsilon)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	uint16_t *row = rows + (uint64_t)blockIdx.x * width;
 	float total = 0.0f, squares = 0.0f;
+	if ( (width & 7u) == 0u && (width >> 3u) <= THREADS && LmIsAligned16(row) && LmIsAligned16(weight) && LmIsAligned16(bias) )
+	{
+		const uint32_t vectors = width >> 3u;
+		float vals[8];
+		if ( threadIdx.x < vectors )
+		{
+			uint16_t bits[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(row + threadIdx.x * 8u), bits);
+#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				vals[k] = LmBf16ToFloat(bits[k]);
+				total += vals[k];
+			}
+		}
+		const float mean = LmBlockSum<THREADS>(total, reduction) / (float)width;
+		if ( threadIdx.x < vectors )
+		{
+#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				const float centred = vals[k] - mean;
+				squares += centred * centred;
+			}
+		}
+		const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(squares, reduction), (float)width, epsilon);
+		if ( threadIdx.x < vectors )
+		{
+			const uint32_t offset = threadIdx.x * 8u;
+			float w_f[8], b_f[8], out_f[8];
+			LmLoadFloat8(weight + offset, w_f);
+			LmLoadFloat8(bias + offset, b_f);
+#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				out_f[k] = (vals[k] - mean) * inverse * w_f[k] + b_f[k];
+			*(uint4 *)(row + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 		total += LmBf16ToFloat(row[index]);
 	const float mean = LmBlockSum<THREADS>(total, reduction) / (float)width;
@@ -200,76 +286,92 @@ void HyLayerNormKernel(uint16_t *rows, const float *weight, const float *bias, u
 		const float centred = LmBf16ToFloat(row[index]) - mean;
 		squares += centred * centred;
 	}
-	const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(squares, reduction), (float)width, epsilon);
+	const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(squares, reduction), (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 		row[index] = LmFloatToBf16((LmBf16ToFloat(row[index]) - mean) * inverse * weight[index] + bias[index]);
 }
 
-__global__ static void HyQueryPackKernel(const uint16_t *latent, const uint16_t *q, uint16_t *query, uint32_t heads, uint32_t latent_dim,
+__global__ static void HyQueryPackKernel(const uint16_t *__restrict__ latent, const uint16_t *__restrict__ q, uint16_t *__restrict__ query, uint32_t heads, uint32_t latent_dim,
 	uint32_t nope, uint32_t rope)
 {
 	const uint32_t row = blockIdx.x, head = blockIdx.y;
 	const uint64_t pair = (uint64_t)row * heads + head;
-	for ( uint32_t element = threadIdx.x; element < latent_dim + rope; element += blockDim.x )
-		query[pair * (latent_dim + rope) + element] = element < latent_dim ? latent[pair * latent_dim + element] :
+	const uint32_t total = latent_dim + rope;
+	if ( ((latent_dim | nope | rope) & 7u) == 0u && LmIsAligned16(latent) && LmIsAligned16(q) && LmIsAligned16(query) )
+	{
+		const uint32_t latent_vecs = latent_dim >> 3u, total_vecs = total >> 3u;
+		const uint4 *lat4 = (const uint4 *)(latent + pair * latent_dim);
+		const uint4 *rope4 = (const uint4 *)(q + pair * (nope + rope) + nope);
+		uint4 *out4 = (uint4 *)(query + pair * total);
+		for ( uint32_t vector = threadIdx.x; vector < total_vecs; vector += blockDim.x )
+			out4[vector] = vector < latent_vecs ? lat4[vector] : rope4[vector - latent_vecs];
+		return;
+	}
+	for ( uint32_t element = threadIdx.x; element < total; element += blockDim.x )
+		query[pair * total + element] = element < latent_dim ? latent[pair * latent_dim + element] :
 			q[pair * (nope + rope) + nope + element - latent_dim];
 }
 
-__global__ static void HySigmoidGateKernel(uint16_t *values, const uint16_t *gate_logits, uint64_t count)
+__global__ static void HySigmoidGateKernel(uint16_t *__restrict__ values, const uint16_t *__restrict__ gate_logits, uint64_t count)
 {
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
+	const uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
+	if ( LmIsAligned16(values) && LmIsAligned16(gate_logits) )
+	{
+		const uint64_t vecs = count >> 3u;
+		uint4 *val4 = (uint4 *)values;
+		const uint4 *gate4 = (const uint4 *)gate_logits;
+		for ( uint64_t v = tid; v < vecs; v += stride )
+		{
+			uint16_t v_bits[8], g_bits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(val4[v], v_bits);
+			LmUnpackUint4Bf16(gate4[v], g_bits);
+#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(g_bits[k]))));
+				out_f[k] = LmBf16ToFloat(v_bits[k]) * gate;
+			}
+			val4[v] = LmPackUint4FloatToBf16(out_f);
+		}
+		for ( uint64_t index = (vecs << 3u) + tid; index < count; index += stride )
+		{
+			const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
+			values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
+		}
+		return;
+	}
+	for ( uint64_t index = tid; index < count; index += stride )
 	{
 		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
 		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
 	}
 }
 
-__global__ static void HyScaleRowsKernel(float *values, uint64_t count, float scale)
+__global__ static void HyScaleRowsKernel(float *__restrict__ values, uint64_t count, float scale)
 {
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
-		values[index] *= scale;
-}
-
-template<class Geometry, uint32_t HEADS, uint32_t DIM>
-__global__ static void HyIndexScoreKernel(LmKvShardView view, const uint16_t *query, const float *weights, const uint32_t *sequence_of_row,
-	const uint32_t *context_length, const uint32_t *positions, float *scores, uint32_t stride, uint32_t dense_limit)
-{
-	__shared__ float shared_query[HEADS * DIM];
-	__shared__ float shared_weight[HEADS];
-	const uint32_t row = blockIdx.y, sequence = sequence_of_row[row];
-	uint32_t limit = context_length[sequence];
-	if ( positions[row] + 1u < limit )
-		limit = positions[row] + 1u;
-	const uint32_t local_count = SparkKvShardLocalKeys(view.shard, limit);
-	for ( uint32_t index = threadIdx.x; index < HEADS * DIM; index += blockDim.x )
-		shared_query[index] = LmBf16ToFloat(query[(uint64_t)row * HEADS * DIM + index]);
-	for ( uint32_t index = threadIdx.x; index < HEADS; index += blockDim.x )
-		shared_weight[index] = weights[(uint64_t)row * HEADS + index];
-	__syncthreads();
-	for ( uint32_t local = blockIdx.x * blockDim.x + threadIdx.x; local < stride; local += gridDim.x * blockDim.x )
+	const uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
+	if ( LmIsAligned16(values) )
 	{
-		float score = -INFINITY;
-		if ( limit > dense_limit && local < local_count )
+		const uint64_t vecs = count >> 2u;
+		float4 *val4 = (float4 *)values;
+		for ( uint64_t v = tid; v < vecs; v += stride )
 		{
-			const uint16_t *key = (const uint16_t *)LmKvShardSlotRequired<Geometry>(view, sequence,
-				SparkKvShardLocalPosition(view.shard, local), row, LM_KV_ACCESS_READ);
-			if ( key != 0 )
-			{
-				float key_values[DIM];
-				for ( uint32_t d = 0u; d < DIM; ++d )
-					key_values[d] = LmBf16ToFloat(key[d]);
-				score = 0.0f;
-				for ( uint32_t head = 0u; head < HEADS; ++head )
-				{
-					float dot = 0.0f;
-					for ( uint32_t d = 0u; d < DIM; ++d )
-						dot = fmaf(shared_query[head * DIM + d], key_values[d], dot);
-					score = fmaf(shared_weight[head], fmaxf(dot, 0.0f), score);
-				}
-			}
+			float4 item = val4[v];
+			item.x *= scale;
+			item.y *= scale;
+			item.z *= scale;
+			item.w *= scale;
+			val4[v] = item;
 		}
-		scores[(uint64_t)row * stride + local] = score;
+		for ( uint64_t index = (vecs << 2u) + tid; index < count; index += stride )
+			values[index] *= scale;
+		return;
 	}
+	for ( uint64_t index = tid; index < count; index += stride )
+		values[index] *= scale;
 }
 
 template<class G>
@@ -328,6 +430,25 @@ struct HyModel : CudaStage<HyModel<G>>
 			input_dimension, output_dimension, step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
 	}
 
+	static int32_t LinearPair(const HyScaled &first, const HyScaled &second, const uint16_t *source, uint16_t *first_destination,
+		uint16_t *second_destination, uint32_t rows, uint32_t input_dimension, uint32_t first_dimension, uint32_t second_dimension,
+		const SparkStageRunnerStep *step, SparkGpuStream stream)
+	{
+		const uint32_t row_exact = step->commit == 0u ? 1u : 0u;
+		if ( rows <= LM_SKINNY_ROWS_WIDE || row_exact != 0u )
+		{
+			const LmSkinnyDenseTarget targets[2] = {
+				{ first.weight, first_destination, (float *)0, first_dimension, first_dimension, 0u, Scales(first.scale, 1u, first_dimension, input_dimension) },
+				{ second.weight, second_destination, (float *)0, second_dimension, second_dimension, 0u, Scales(second.scale, 1u, second_dimension, input_dimension) }
+			};
+			const int32_t status = LmSkinnyDenseMulti<LmMxfp8>(targets, 2u, source, rows, input_dimension, stream, row_exact);
+			if ( status != LM_LAUNCH_ERR_SHAPE )
+				return status;
+		}
+		const int32_t status = Linear(first, source, first_destination, rows, input_dimension, first_dimension, step, stream);
+		return status != LM_LAUNCH_OK ? status : Linear(second, source, second_destination, rows, input_dimension, second_dimension, step, stream);
+	}
+
 	static int32_t Dense16(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
@@ -349,14 +470,13 @@ struct HyModel : CudaStage<HyModel<G>>
 			state->index_q, step->positions, G::kIndexHeads, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->index_k, step->positions, 1u, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
-		LM_LAUNCH((HyScaleRowsKernel), Blocks((uint64_t)rows * G::kIndexHeads), HY_THREADS, 0, stream, state->index_weights, (uint64_t)rows * G::kIndexHeads,
+		LM_LAUNCH((HyScaleRowsKernel), Blocks(((uint64_t)rows * G::kIndexHeads + 3u) >> 2u), HY_THREADS, 0, stream, state->index_weights, (uint64_t)rows * G::kIndexHeads,
 			(float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::IndexKv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->index_k, step->sequence_of_row,
 			step->positions, rows, G::kIndexDim);
-		LM_LAUNCH((HyIndexScoreKernel<typename S::IndexKv,G::kIndexHeads,G::kIndexDim>), dim3((state->local_capacity + HY_THREADS - 1u) / HY_THREADS, rows), HY_THREADS, 0, stream, *view,
-			state->index_q, state->index_weights, step->sequence_of_row, step->context_length, step->positions, state->index_scores,
-			state->local_capacity, G::kIndexTopk);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
+			LmWeightedSparseScoreLaunch<typename S::IndexKv, G::kIndexHeads, G::kIndexDim, LmKvShardView, false, float>(state->index_q, state->index_weights,
+				*view, step->sequence_of_row, step->context_length, step->positions, rows, state->local_capacity, 1.0f, state->index_scores, stream) != SPARK_GPU_SUCCESS ||
 			LmTopkExactLaunch<HY_THREADS>(state->index_scores, rows, state->local_capacity, G::kIndexTopk, LM_TOPK_EXACT_CHUNK,
 				LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->topk_entries,
 				state->index_local_selected, stream) != SPARK_GPU_SUCCESS ||
@@ -393,17 +513,16 @@ struct HyModel : CudaStage<HyModel<G>>
 		SparkStatus status;
 		if ( state->kv_attached == 0u || partial_stride > state->partial_stride )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( Linear(layer->q_a, state->normed, state->q_resid, rows, G::kHidden, G::kQLora, step, stream) != LM_LAUNCH_OK ||
-			Linear(layer->kv_a, state->normed, state->kv, rows, G::kHidden, S::kSlot, step, stream) != LM_LAUNCH_OK ||
+		if ( LinearPair(layer->q_a, layer->kv_a, state->normed, state->q_resid, state->kv, rows, G::kHidden, G::kQLora, S::kSlot, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kQLora>), rows, HY_THREADS, 0, stream, state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
 			G::kEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
-			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK )
+			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK ||
+			LmPerHeadProjectChainLaunch<HY_THREADS,G::kNope,G::kLatent,S::kQkDim,0u>(state->q, layer->uk, state->q_latent, S::kRankHeads, rows, stream,
+				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmPerHeadProjectSplitKernel<HY_THREADS,G::kNope,G::kLatent,S::kQkDim,0u>), dim3(rows,S::kRankHeads,G::kLatent / LM_PER_HEAD_SPLIT_OUTPUTS),
-			HY_THREADS, 0, stream, state->q, layer->uk, state->q_latent, S::kRankHeads, rows);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,S::kRankHeads), HY_THREADS, 0, stream,
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
 		LM_LAUNCH((HyQueryPackKernel), dim3(rows, S::kRankHeads), HY_THREADS, 0, stream, state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
@@ -433,11 +552,11 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmLatentShardMergeLaunch<G::kLatent>(state->received, partial_stride, degree, S::kRankHeads, state->latent, rows, stream,
-				layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != SPARK_GPU_SUCCESS )
+				layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != SPARK_GPU_SUCCESS ||
+			LmPerHeadProjectChainLaunch<HY_THREADS,G::kLatent,G::kValueDim>(state->latent, layer->uv, state->value, S::kRankHeads, rows, stream,
+				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmPerHeadProjectSplitKernel<HY_THREADS,G::kLatent,G::kValueDim>), dim3(rows,S::kRankHeads,G::kValueDim / LM_PER_HEAD_SPLIT_OUTPUTS),
-			HY_THREADS, 0, stream, state->latent, layer->uv, state->value, S::kRankHeads, rows);
-		LM_LAUNCH((HySigmoidGateKernel), Blocks((uint64_t)rows * S::kRankHeads * G::kValueDim), HY_THREADS, 0, stream, state->value, state->gate,
+		LM_LAUNCH((HySigmoidGateKernel), Blocks(((uint64_t)rows * S::kRankHeads * G::kValueDim + 7u) >> 3u), HY_THREADS, 0, stream, state->value, state->gate,
 			(uint64_t)rows * S::kRankHeads * G::kValueDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->out, state->value, state->partial, rows, S::kRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )

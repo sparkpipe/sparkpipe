@@ -1,0 +1,2 @@
++171
+hy4 and motif kernel modernization: uint4/float4 vectorized fast paths with scalar fallbacks for HyRmsNormKernel, HyLayerNormKernel, HyQueryPackKernel, HySigmoidGateKernel, HyScaleRowsKernel, and MotifQueryPackKernel, fused q_a/kv_a LmSkinnyDenseMulti dispatch in hy4, and tensor-core TMA prefill attention dispatch in motif.
