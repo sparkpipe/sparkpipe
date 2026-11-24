@@ -68,6 +68,25 @@ class Dft3TreeNodesTest(unittest.TestCase):
             scores = [((trial + k) % 10) / 10.0 for k in range(6)]
             self.assertTrue(layout_accepts(draft_nodes(3, drafts, [0.5] * 6, 12, SOURCE, alternates, scores, 3)), f"trial {trial}")
 
+    def test_dspark_runner_up_matches_softmax(self):
+        try:
+            import torch
+            from dspark_drafter import runner_up
+        except ImportError:
+            return
+        logits = torch.tensor([1.0, 3.0, 2.5, -1.0], dtype=torch.float32)
+        probs = torch.softmax(logits, -1)
+        alt_token, alt_score = runner_up(logits, torch.tensor(1), 1.0)
+        self.assertEqual(int(alt_token), 2)
+        self.assertAlmostEqual(float(alt_score), float(probs[2]), places=6)
+        alt_token, alt_score = runner_up(logits, torch.tensor(2), 0.5)
+        scaled_probs = torch.softmax(logits * 0.5, -1)
+        self.assertEqual(int(alt_token), 1)
+        self.assertAlmostEqual(float(alt_score), float(scaled_probs[1]), places=6)
+        nodes = draft_nodes(7, [1, 2], [0.8, 0.7], 8, SOURCE, [2, 1], [float(probs[2]), float(scaled_probs[1])], 2)
+        self.assertEqual(len(nodes), 5)
+        self.assertTrue(layout_accepts(nodes))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=1)

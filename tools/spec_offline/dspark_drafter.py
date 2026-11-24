@@ -108,6 +108,16 @@ def rms_norm(x, weight, eps):
     return (weight.to(torch.float32) * values).to(x.dtype)
 
 
+def runner_up(row, choice, scale=1.0):
+    scaled = row * scale
+    top_values, top_indices = torch.topk(scaled, 2, -1)
+    pick_second = top_indices[0] == choice
+    alt_token = torch.where(pick_second, top_indices[1], top_indices[0])
+    alt_logit = torch.where(pick_second, top_values[1], top_values[0])
+    alt_score = torch.exp(alt_logit - torch.logsumexp(scaled, -1))
+    return alt_token, alt_score
+
+
 class Rope:
     def __init__(self, dimension, theta, device):
         self.inverse = 1.0 / (theta ** (torch.arange(0, dimension, 2, dtype=torch.float32, device=device) / dimension))
@@ -309,7 +319,7 @@ class DsparkDrafter:
         return y.to(x.dtype)
 
     @torch.inference_mode()
-    def draft(self, context, token, position, sampling=None):
+    def draft(self, context, token, position, sampling=None, return_alternates=False):
         rows = self.block
         positions = torch.arange(position, position + rows, device=self.device)
         ids = torch.full((rows,), self.noise, dtype=torch.int64, device=self.device)
@@ -335,17 +345,22 @@ class DsparkDrafter:
         hidden = self.hc_pre(h, pre)
         logits = F.linear(rms_norm(hidden, self.final_norm, self.eps).to(torch.float32), self.head)
         tokens = [int(token)]
-        embeddings = []
+        embeddings, alternates, alternate_scores = [], [], []
+        scale = 1.0 if sampling is None else sampling[1]
         for slot in range(rows):
             previous = self.markov_embed[tokens[-1]]
             embeddings.append(previous)
             row = logits[slot] + F.linear(previous.to(torch.float32), self.markov_head)
-            if sampling is None:
-                tokens.append(int(torch.argmax(row)))
-            else:
-                tokens.append(int(coupled_choice(row, sampling, position + slot)))
+            chosen = torch.argmax(row) if sampling is None else coupled_choice(row, sampling, position + slot)
+            tokens.append(int(chosen))
+            if return_alternates:
+                alt_token, alt_score = runner_up(row, chosen, scale)
+                alternates.append(int(alt_token))
+                alternate_scores.append(float(alt_score))
         features = torch.cat((hidden, torch.stack(embeddings)), -1).to(torch.float32)
         confidence = torch.sigmoid(F.linear(features, self.confidence).squeeze(-1))
+        if return_alternates:
+            return tokens[1:], confidence.tolist(), alternates, alternate_scores
         return tokens[1:], confidence.tolist()
 
 

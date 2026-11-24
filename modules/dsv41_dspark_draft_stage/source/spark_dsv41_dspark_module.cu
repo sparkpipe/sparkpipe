@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_clock.h"
+#include "sparkpipe/spark_draft_tree_pack.h"
 #include "sparkpipe/spark_drafter_module.h"
 #include "sparkpipe/spark_gpu.h"
 #include "sparkpipe/spark_json.h"
@@ -140,8 +141,11 @@ typedef struct Ds41Draft
 typedef struct Ds41Picks
 {
 	unsigned long long keys[DS41_BLOCK];
+	unsigned long long alt_keys[DS41_BLOCK];
 	uint32_t tokens[DS41_BLOCK];
 	float scores[DS41_BLOCK];
+	uint32_t alt_tokens[DS41_BLOCK];
+	float alt_scores[DS41_BLOCK];
 } Ds41Picks;
 
 typedef struct Ds41Forward
@@ -288,6 +292,23 @@ static __device__ __forceinline__ void Ds41SoftmaxMerge(float *top, float *sum, 
 static __device__ __forceinline__ uint32_t Ds41KeyToken(unsigned long long key)
 {
 	return 0xffffffffu - (uint32_t)key;
+}
+
+static __device__ __forceinline__ float Ds41KeyValue(unsigned long long key)
+{
+	const uint32_t ordered = (uint32_t)(key >> 32u);
+	return __uint_as_float(ordered ^ ((ordered & 0x80000000u) != 0u ? 0x80000000u : 0xffffffffu));
+}
+
+static __device__ __forceinline__ void Ds41Top2Insert(unsigned long long candidate, unsigned long long *first, unsigned long long *second)
+{
+	if ( candidate > *first )
+	{
+		*second = *first;
+		*first = candidate;
+	}
+	else if ( candidate > *second && candidate != *first )
+		*second = candidate;
 }
 
 static __device__ __forceinline__ uint32_t Ds41Previous(const Ds41Draft *draft, const Ds41Picks *picks, uint32_t step)
@@ -747,11 +768,12 @@ void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds4
 	constexpr uint32_t PER = DS41_MARKOV / DS41_WARP;
 	__shared__ float embedding[DS41_MARKOV];
 	__shared__ unsigned long long best[DS41_WARPS];
+	__shared__ unsigned long long second_best[DS41_WARPS];
 	__shared__ float tops[DS41_WARPS];
 	__shared__ float sums[DS41_WARPS];
 	const uint32_t warp = threadIdx.x / DS41_WARP, lane = threadIdx.x % DS41_WARP, previous = Ds41Previous(draft, picks, step);
-	const float inverse_temperature = draft->inverse_temperature;
-	unsigned long long key = 0ull;
+	const float scale = draft->greedy != 0u ? 1.0f : draft->inverse_temperature;
+	unsigned long long first = 0ull, second = 0ull;
 	float top = -INFINITY, sum = 0.0f;
 	for ( uint32_t index = threadIdx.x; index < DS41_MARKOV; index += DS41_THREADS )
 		embedding[index] = LmBf16ToFloat(markov_embed[(uint64_t)previous * DS41_MARKOV + index]);
@@ -773,37 +795,40 @@ void Ds41MarkovRowKernel(uint32_t step, const Ds41Draft *__restrict__ draft, Ds4
 		{
 			const unsigned long long candidate = ((unsigned long long)SparkMathSampleOrdered(value) << 32u) | (unsigned long long)(0xffffffffu - token);
 			row[token] = value;
-			key = candidate > key ? candidate : key;
-			if ( draft->greedy == 0u )
-				Ds41SoftmaxMerge(&top, &sum, value * inverse_temperature, 1.0f);
+			if ( draft->greedy != 0u )
+				Ds41Top2Insert(candidate, &first, &second);
+			Ds41SoftmaxMerge(&top, &sum, value * scale, 1.0f);
 		}
 	}
-	if ( draft->greedy == 0u )
-	{
-		if ( lane == 0u )
-		{
-			tops[warp] = top;
-			sums[warp] = sum;
-		}
-		__syncthreads();
-		if ( threadIdx.x == 0u )
-		{
-			for ( uint32_t index = 1u; index < DS41_WARPS; index++ )
-				Ds41SoftmaxMerge(&top, &sum, tops[index], sums[index]);
-			partials[2u * blockIdx.x] = top;
-			partials[2u * blockIdx.x + 1u] = sum;
-		}
-		return;
-	}
-	key = Ds41WarpKey(key);
 	if ( lane == 0u )
-		best[warp] = key;
+	{
+		best[warp] = first;
+		second_best[warp] = second;
+		tops[warp] = top;
+		sums[warp] = sum;
+	}
 	__syncthreads();
 	if ( threadIdx.x == 0u )
 	{
-		for ( uint32_t index = 0u; index < DS41_WARPS; index++ )
-			key = best[index] > key ? best[index] : key;
-		atomicMax(&picks->keys[step], key);
+		for ( uint32_t index = 1u; index < DS41_WARPS; index++ )
+		{
+			Ds41SoftmaxMerge(&top, &sum, tops[index], sums[index]);
+			if ( draft->greedy != 0u )
+			{
+				Ds41Top2Insert(best[index], &first, &second);
+				Ds41Top2Insert(second_best[index], &first, &second);
+			}
+		}
+		partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u] = top;
+		partials[((uint64_t)step * gridDim.x + blockIdx.x) * 2u + 1u] = sum;
+		if ( draft->greedy != 0u )
+		{
+			const unsigned long long prev = atomicMax(&picks->keys[step], first);
+			const unsigned long long loser = prev > first ? first : prev;
+			const unsigned long long runner = loser > second ? loser : second;
+			if ( runner != 0ull )
+				atomicMax(&picks->alt_keys[step], runner);
+		}
 	}
 }
 
@@ -868,15 +893,20 @@ void Ds41SampleKernel(uint32_t step, const Ds41Draft *__restrict__ draft, const 
 	if ( threadIdx.x == 0u )
 	{
 		unsigned long long key = best[0];
+		uint32_t winner, runner;
 		for ( uint32_t index = 1u; index < DS41_SAMPLED / DS41_WARP; index++ )
 			key = best[index] > key ? best[index] : key;
-		picks->tokens[step] = sorted_tokens[Ds41KeyToken(key)];
+		winner = Ds41KeyToken(key);
+		runner = winner == 0u ? 1u : 0u;
+		picks->tokens[step] = sorted_tokens[winner];
+		picks->alt_tokens[step] = sorted_tokens[runner];
+		picks->alt_scores[step] = sum > 0.0f ? expf(sorted_values[runner] - top) / sum : 0.0f;
 	}
 }
 
 __global__ __launch_bounds__(DS41_THREADS, 1)
 void Ds41ConfidenceKernel(const Ds41Draft *__restrict__ draft, Ds41Picks *__restrict__ picks, const uint16_t *__restrict__ hidden,
-	const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ weight)
+	const uint16_t *__restrict__ markov_embed, const uint16_t *__restrict__ weight, const float *__restrict__ partials, uint32_t blocks)
 {
 	__shared__ float reduction[DS41_WARPS];
 	const uint32_t slot = blockIdx.x, previous = Ds41Previous(draft, picks, slot);
@@ -889,10 +919,23 @@ void Ds41ConfidenceKernel(const Ds41Draft *__restrict__ draft, Ds41Picks *__rest
 	}
 	dot = LmBlockSum<DS41_THREADS>(dot, reduction);
 	if ( threadIdx.x == 0u )
-	{
 		picks->scores[slot] = 1.0f / (1.0f + expf(-dot));
-		if ( draft->greedy != 0u )
+	if ( draft->greedy != 0u )
+	{
+		const float top = Ds41KeyValue(picks->keys[slot]);
+		const float alt = Ds41KeyValue(picks->alt_keys[slot]);
+		const float *step_partials = partials + (uint64_t)slot * 2u * blocks;
+		float sum = 0.0f;
+		for ( uint32_t block = threadIdx.x; block < blocks; block += DS41_THREADS )
+			if ( step_partials[2u * block] != -INFINITY )
+				sum += step_partials[2u * block + 1u] * expf(step_partials[2u * block] - top);
+		sum = LmBlockSum<DS41_THREADS>(sum, reduction);
+		if ( threadIdx.x == 0u )
+		{
 			picks->tokens[slot] = Ds41KeyToken(picks->keys[slot]);
+			picks->alt_tokens[slot] = Ds41KeyToken(picks->alt_keys[slot]);
+			picks->alt_scores[slot] = sum > 0.0f ? expf(alt - top) / sum : 0.0f;
+		}
 	}
 }
 
@@ -1242,7 +1285,7 @@ static SparkStatus Ds41Scratch(Ds41State *state, uint64_t context_bytes)
 		!DS41_DEVICE(forward->moe_out, DS41_BLOCK * DS41_HIDDEN) || !DS41_DEVICE(forward->hidden, DS41_BLOCK * DS41_HIDDEN) ||
 		!DS41_DEVICE(forward->normed, DS41_BLOCK * DS41_HIDDEN) || !DS41_DEVICE(forward->logits, (uint64_t)DS41_BLOCK * DS41_VOCAB) ||
 		!DS41_DEVICE(forward->row, DS41_VOCAB) || !DS41_DEVICE(forward->candidates, DS41_SAMPLED) ||
-		!DS41_DEVICE(forward->softmax_partials, 8u * (uint64_t)multiprocessors) ||
+		!DS41_DEVICE(forward->softmax_partials, (uint64_t)DS41_BLOCK * 8u * (uint64_t)multiprocessors) ||
 		!DS41_DEVICE(forward->topk_values, 2u * LmTopkExactCandidateEntries(DS41_VOCAB, DS41_SAMPLED, DS41_TOPK_CHUNK)) ||
 		!DS41_DEVICE(forward->topk_positions, 2u * LmTopkExactCandidateEntries(DS41_VOCAB, DS41_SAMPLED, DS41_TOPK_CHUNK)) )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1601,11 +1644,11 @@ static SparkStatus Ds41Heads(Ds41State *state, uint32_t greedy)
 		if ( LmTopkExactLaunch<DS41_TOPK_THREADS>(forward->row, 1u, DS41_VOCAB, DS41_SAMPLED, DS41_TOPK_CHUNK, LM_TOPK_EXACT_CHUNKED_ROWS,
 			forward->topk_values, forward->topk_positions, entries, forward->candidates, stream) != SPARK_GPU_SUCCESS )
 			return SPARK_STATUS_INTERNAL_ERROR;
-		LM_LAUNCH((Ds41SampleKernel), 1u, DS41_PICK_THREADS, 0, stream, step, forward->draft, forward->row, forward->candidates, forward->softmax_partials,
-			blocks, forward->picks);
+		LM_LAUNCH((Ds41SampleKernel), 1u, DS41_PICK_THREADS, 0, stream, step, forward->draft, forward->row, forward->candidates,
+			forward->softmax_partials + (uint64_t)step * 2u * blocks, blocks, forward->picks);
 	}
 	LM_LAUNCH((Ds41ConfidenceKernel), DS41_BLOCK, DS41_THREADS, 0, stream, forward->draft, forward->picks, forward->hidden, state->markov_embed,
-		state->confidence);
+		state->confidence, forward->softmax_partials, blocks);
 	if ( SparkGpuMemcpyAsync(forward->host_picks, forward->picks, sizeof(Ds41Picks), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
 	return SparkGpuGetLastError() == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
@@ -1776,11 +1819,13 @@ static SparkStatus Ds41Propose(void *opaque, const SparkDraftServerRequest *requ
 	Ds41Sequence *sequence = Ds41Live(state, request->sequence_id);
 	const uint32_t source = request->speculator_mask & (~request->speculator_mask + 1u);
 	const uint64_t first = request->position > DS41_WINDOW ? request->position - DS41_WINDOW : 0u;
-	uint32_t drafts = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t requested = request->depth < request->max_depth ? request->depth : request->max_depth;
+	const uint32_t limit = request->node_capacity != 0u && request->node_capacity < capacity ? request->node_capacity : capacity;
+	uint32_t drafts = requested;
 	uint64_t checked = first;
 	SparkStatus status;
 	*count = 0u;
-	if ( capacity == 0u )
+	if ( limit == 0u )
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	if ( sequence == 0 || (request->position != 0u && Ds41Held(sequence, request->position - 1u) == 0u) )
 		return SPARK_DRAFTER_MODULE_PROPOSE_AWAIT_TAPS;
@@ -1798,7 +1843,7 @@ static SparkStatus Ds41Propose(void *opaque, const SparkDraftServerRequest *requ
 		if ( sequence->tokens[position % DS41_WINDOW] != request->committed_token_ids[position] )
 			return Ds41Settle(state, SPARK_DRAFTER_MODULE_PROPOSE_NO_CONTEXT);
 	drafts = drafts < DS41_BLOCK ? drafts : DS41_BLOCK;
-	drafts = drafts < capacity - 1u ? drafts : capacity - 1u;
+	drafts = drafts < limit - 1u ? drafts : limit - 1u;
 	status = Ds41Prepare(state, sequence, request->anchor_token_id, request->position, &request->sampling);
 	if ( status == SPARK_STATUS_OK )
 		status = Ds41RunForward(state, sequence->ring, DS41_STAGES, (const uint16_t **)0, (const float **)0);
@@ -1807,20 +1852,8 @@ static SparkStatus Ds41Propose(void *opaque, const SparkDraftServerRequest *requ
 	status = Ds41Settle(state, status);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	nodes[0].token_id = request->anchor_token_id;
-	nodes[0].parent_index = SPARK_DRAFT_BRIDGE_ROOT_PARENT_INDEX;
-	nodes[0].depth = 0u;
-	nodes[0].source_bit = source;
-	nodes[0].score = 1.0f;
-	for ( uint32_t draft = 0u; draft < drafts; draft++ )
-	{
-		nodes[draft + 1u].token_id = state->forward.host_picks->tokens[draft];
-		nodes[draft + 1u].parent_index = draft;
-		nodes[draft + 1u].depth = draft + 1u;
-		nodes[draft + 1u].source_bit = source;
-		nodes[draft + 1u].score = state->forward.host_picks->scores[draft];
-	}
-	*count = drafts + 1u;
+	*count = SparkDraftTreePack(request->anchor_token_id, source, state->forward.host_picks->tokens, state->forward.host_picks->scores,
+		state->forward.host_picks->alt_tokens, state->forward.host_picks->alt_scores, drafts, requested, limit, SPARK_DRAFT_TREE_DEFAULT_MIN_SCORE, nodes);
 	return SPARK_DRAFTER_MODULE_PROPOSE_DRAFTS;
 }
 
