@@ -4,6 +4,7 @@
 #include "inference/kernels/attn_split.h"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/shard_reduce.cuh"
 #include <stdint.h>
 #include "sparkpipe/spark_gpu.h"
 
@@ -103,20 +104,8 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	uint32_t sequence = sequence_of_row[row];
 	uint64_t query_base = ((uint64_t)row * heads + head) * (LATENT + ROPE);
 	float running_max = -INFINITY,running_sum = 0.0f;
-	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
-	{
-		LmKvReportRequiredAccessFailure(
-			cache,
-			!LmKvViewIsConfigured(cache)
-				? LM_KV_ACCESS_ERROR_INVALID_VIEW
-				: LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-			LM_KV_ACCESS_READ,
-			row,
-			sequence,
-			0xffffffffu,
-			0xffffffffu);
+	if ( !LmKvCheckSequence(cache,row,sequence) )
 		return;
-	}
 	for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
 		accumulator[index] = 0.0f;
 	for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
@@ -242,20 +231,8 @@ void LmLatentAttentionDecodeKernel(
     float running_max = -INFINITY;
     float running_sum = 0.0f;
 
-    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
-    {
-        LmKvReportRequiredAccessFailure(
-            cache,
-            !LmKvViewIsConfigured(cache)
-                ? LM_KV_ACCESS_ERROR_INVALID_VIEW
-                : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-            LM_KV_ACCESS_READ,
-            row,
-            sequence,
-            0xffffffffu,
-            0xffffffffu);
+    if (!LmKvCheckSequence(cache, row, sequence))
         return;
-    }
 
     #pragma unroll
     for (index = 0u; index < 8u; ++index)
@@ -427,20 +404,8 @@ void LmLatentAttentionDecodeSplitKernel(
     float running_max = -INFINITY;
     float running_sum = 0.0f;
 
-    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
-    {
-        LmKvReportRequiredAccessFailure(
-            cache,
-            !LmKvViewIsConfigured(cache)
-                ? LM_KV_ACCESS_ERROR_INVALID_VIEW
-                : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-            LM_KV_ACCESS_READ,
-            row,
-            sequence,
-            0xffffffffu,
-            0xffffffffu);
+    if (!LmKvCheckSequence(cache, row, sequence))
         return;
-    }
     if (partition >= partitions)
     {
         return;
@@ -599,11 +564,6 @@ void LmLatentAttentionDecodeSplitKernel(
     }
 }
 
-static __device__ __forceinline__ uint32_t LmAttnPackBf16Pair(float low, float high)
-{
-    return (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
-}
-
 template<uint32_t THREADS, uint32_t LATENT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentAttentionDecodeSplitCombineKernel(
@@ -613,170 +573,25 @@ void LmLatentAttentionDecodeSplitCombineKernel(
     uint32_t partitions)
 {
     __shared__ float scales[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
-    __shared__ float max_shared[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
-    __shared__ float den_shared[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
     __shared__ float denominator_shared;
-    uint32_t row = blockIdx.x;
-    uint32_t head = blockIdx.y;
-    uint32_t partition;
-    uint32_t element;
-    uint64_t block_base;
-    float denominator;
-
+    const uint32_t row = blockIdx.x, head = blockIdx.y;
+    const uint64_t block_base = ((uint64_t)row * heads + head) * partitions * (LATENT + 2u);
     LmDependentRelease();
     LmDependentWait();
-    block_base = ((uint64_t)row * heads + head) * partitions *
-                 (LATENT + 2u);
-    if constexpr (THREADS >= 32u && LM_WARP_LANES == 32u)
+    if (threadIdx.x < 32u)
     {
-        if (threadIdx.x < 32u)
-        {
-            float lane_max = -INFINITY;
-            for (partition = threadIdx.x; partition < partitions; partition += 32u)
-            {
-                const float part_max = partials[
-                    block_base + (uint64_t)partition * (LATENT + 2u)];
-                max_shared[partition] = part_max;
-                den_shared[partition] = partials[
-                    block_base + (uint64_t)partition * (LATENT + 2u) + 1u];
-                lane_max = part_max > lane_max ? part_max : lane_max;
-            }
-            #pragma unroll
-            for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
-            {
-                float other = __shfl_xor_sync(0xffffffffu, lane_max, offset);
-                lane_max = other > lane_max ? other : lane_max;
-            }
-            for (partition = threadIdx.x; partition < partitions; partition += 32u)
-            {
-                const float part_max = max_shared[partition];
-                scales[partition] = (lane_max == -INFINITY ||
-                                     part_max == -INFINITY)
-                    ? 0.0f
-                    : __expf(part_max - lane_max);
-            }
-        }
-        __syncthreads();
-        denominator = 0.0f;
-        for (partition = 0u; partition < partitions; ++partition)
-            denominator = fmaf(den_shared[partition], scales[partition], denominator);
-    }
-    else
-    {
+        const float den = LmWarpMergeScales(partials + block_base, LATENT + 2u, partitions, scales);
         if (threadIdx.x == 0u)
-        {
-            float global_max = -INFINITY;
-            for (partition = 0u; partition < partitions; ++partition)
-            {
-                float candidate = partials[
-                    block_base + (uint64_t)partition * (LATENT + 2u)];
-                global_max = candidate > global_max ? candidate : global_max;
-            }
-            denominator = 0.0f;
-            for (partition = 0u; partition < partitions; ++partition)
-            {
-                float partition_max = partials[
-                    block_base + (uint64_t)partition * (LATENT + 2u)];
-                float scale = (global_max == -INFINITY ||
-                               partition_max == -INFINITY)
-                    ? 0.0f
-                    : __expf(partition_max - global_max);
-                scales[partition] = scale;
-                denominator = fmaf(
-                    partials[block_base + (uint64_t)partition * (LATENT + 2u) + 1u],
-                    scale,
-                    denominator);
-            }
-            denominator_shared = denominator;
-        }
-        __syncthreads();
-        denominator = denominator_shared;
+            denominator_shared = fmaxf(den, 1.0e-20f);
     }
-    const float denom = fmaxf(denominator, 1.0e-20f);
-    const float *src0 = partials + block_base + 2u;
-    uint16_t *out_ptr = output_bf16 + ((uint64_t)row * heads + head) * LATENT;
-    if constexpr ((LATENT % 2u) == 0u)
-    {
-        if ((((uintptr_t)src0) & 7u) == 0u && (((uintptr_t)out_ptr) & 3u) == 0u)
-        {
-            for (element = threadIdx.x; element < LATENT / 2u; element += THREADS)
-            {
-                float m0 = 0.0f, m1 = 0.0f;
-                for (partition = 0u; partition < partitions; ++partition)
-                {
-                    const float sc = scales[partition];
-                    const float2 v = ((const float2 *)(src0 + (uint64_t)partition * (LATENT + 2u)))[element];
-                    m0 = fmaf(v.x, sc, m0);
-                    m1 = fmaf(v.y, sc, m1);
-                }
-                ((uint32_t *)out_ptr)[element] = LmAttnPackBf16Pair(m0 / denom, m1 / denom);
-            }
-            return;
-        }
-    }
-    for (element = threadIdx.x; element < LATENT; element += THREADS)
-    {
-        float merged = 0.0f;
-
-        for (partition = 0u; partition < partitions; ++partition)
-        {
-            merged = fmaf(
-                src0[(uint64_t)partition * (LATENT + 2u) + element],
-                scales[partition],
-                merged);
-        }
-        out_ptr[element] = LmFloatToBf16(merged / denom);
-    }
+    __syncthreads();
+    LmWeightedSourcesMergeBf16<LATENT, THREADS, LATENT + 2u>(
+        partials + block_base + 2u, LATENT + 2u, partitions, scales, denominator_shared,
+        output_bf16 + ((uint64_t)row * heads + head) * LATENT);
 }
 
 #define LM_LATENT_HEADS_WARPS 8u
 #define LM_LATENT_HEADS_THREADS (LM_LATENT_HEADS_WARPS * 32u)
-
-template<uint32_t PER_LANE>
-static __device__ __forceinline__ void LmLatentHeadsLoad(const uint16_t *__restrict__ source, float *values)
-{
-    uint32_t chunk, word, bits[4];
-    uint4 packed;
-    for (chunk = 0u; chunk < PER_LANE / 8u; ++chunk)
-    {
-        packed = ((const uint4 *)source)[chunk];
-        bits[0] = packed.x; bits[1] = packed.y; bits[2] = packed.z; bits[3] = packed.w;
-        for (word = 0u; word < 4u; ++word)
-        {
-            values[chunk * 8u + word * 2u] = __uint_as_float(bits[word] << 16u);
-            values[chunk * 8u + word * 2u + 1u] = __uint_as_float(bits[word] & 0xffff0000u);
-        }
-    }
-}
-
-template<uint32_t HEADS, uint32_t PER_LANE>
-static __device__ __forceinline__ void LmLatentHeadsStep(const float (*query)[PER_LANE], const float *value, float qk_scale, float *running_max, float *running_sum, float (*accumulator)[PER_LANE])
-{
-    uint32_t head, element, mask;
-    float score, previous, scaled_previous, scaled_current;
-    for (head = 0u; head < HEADS; ++head)
-    {
-        score = 0.0f;
-        for (element = 0u; element < PER_LANE; ++element)
-            score += query[head][element] * value[element];
-        for (mask = 16u; mask > 0u; mask >>= 1u)
-            score += __shfl_xor_sync(0xffffffffu, score, mask);
-        score *= qk_scale;
-        previous = running_max[head];
-        running_max[head] = fmaxf(previous, score);
-        scaled_previous = __expf(previous - running_max[head]);
-        scaled_current = __expf(score - running_max[head]);
-        running_sum[head] = (running_sum[head] * scaled_previous) + scaled_current;
-        for (element = 0u; element < PER_LANE; ++element)
-            accumulator[head][element] = (accumulator[head][element] * scaled_previous) + (SparkMathAttentionValueWeight(scaled_current) * value[element]);
-    }
-}
-
-template<uint32_t HEADS, uint32_t LATENT>
-static __device__ __forceinline__ float LmLatentHeadsScale(const float (*warp_max)[HEADS], uint32_t warp, uint32_t head, float global_max)
-{
-    return(global_max == -INFINITY || warp_max[warp][head] == -INFINITY ? 0.0f : __expf(warp_max[warp][head] - global_max));
-}
 
 template<uint32_t HEADS, uint32_t LATENT, uint32_t PER_LANE>
 static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEADS], float (*warp_sum)[HEADS], float (*merged)[LATENT], const float *running_max, const float *running_sum, const float (*accumulator)[PER_LANE], float *global_max, float *global_sum)
@@ -786,28 +601,7 @@ static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEAD
     __shared__ float global_max_s[HEADS];
     __shared__ float warp_acc[LM_LATENT_HEADS_WARPS][HEADS][SLICE];
     uint32_t warp = threadIdx.x / 32u, lane = threadIdx.x % 32u, head, element, index;
-    if (lane == 0u)
-        for (head = 0u; head < HEADS; ++head)
-        {
-            warp_max[warp][head] = running_max[head];
-            warp_sum[warp][head] = running_sum[head];
-        }
-    __syncthreads();
-    if (warp == 0u)
-    {
-        for (head = 0u; head < HEADS; ++head)
-        {
-            float wm = lane < LM_LATENT_HEADS_WARPS ? warp_max[lane][head] : -INFINITY;
-            float gm = wm;
-            #pragma unroll
-            for (uint32_t offset = LM_LATENT_HEADS_WARPS / 2u; offset != 0u; offset >>= 1u)
-                gm = fmaxf(gm, __shfl_xor_sync(0xffffffffu, gm, offset));
-            if (lane < LM_LATENT_HEADS_WARPS)
-                warp_scale[lane][head] = gm == -INFINITY || wm == -INFINITY ? 0.0f : __expf(wm - gm);
-            if (lane == 0u)
-                global_max_s[head] = gm;
-        }
-    }
+    LmWarpScaleMax<LM_LATENT_HEADS_WARPS, HEADS>(running_max, running_sum, warp_max, warp_sum, warp_scale, global_max_s, warp, lane);
     for (uint32_t slice = 0u; slice < LATENT; slice += SLICE)
     {
         const uint32_t slice_end = slice + SLICE < LATENT ? slice + SLICE : LATENT;
@@ -874,10 +668,10 @@ static __device__ __forceinline__ void LmLatentHeadsWalk(LmKvView cache, const u
             slot[unroll] = LmLatentHeadsSlot<Geometry>(cache, selected_positions, selected_count, row_position, row, sequence, step + unroll * LM_LATENT_HEADS_WARPS, last, &failed);
         for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
             if (slot[unroll] != 0)
-                LmLatentHeadsLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
+                LmLatentVecLoad<PER_LANE>((const uint16_t *)slot[unroll] + lane * PER_LANE, value[unroll]);
         for (unroll = 0u; unroll < LM_LATENT_HEADS_UNROLL; ++unroll)
             if (slot[unroll] != 0)
-                LmLatentHeadsStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
+                LmLatentOnlineStep<HEADS, PER_LANE>(query, value[unroll], qk_scale, running_max, running_sum, accumulator);
     }
 }
 
@@ -906,16 +700,13 @@ void LmLatentAttentionHeadsKernel(
     float query[HEADS][PER_LANE], accumulator[HEADS][PER_LANE];
     float running_max[HEADS], running_sum[HEADS], global_max[HEADS], global_sum[HEADS];
     uint64_t base;
-    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
-    {
-        LmKvReportRequiredAccessFailure(cache, !LmKvViewIsConfigured(cache) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE, LM_KV_ACCESS_READ, row, sequence, 0xffffffffu, 0xffffffffu);
+    if (!LmKvCheckSequence(cache, row, sequence))
         return;
-    }
     for (head = 0u; head < HEADS; ++head)
     {
         running_max[head] = -INFINITY;
         running_sum[head] = 0.0f;
-        LmLatentHeadsLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * PER_LANE, query[head]);
+        LmLatentVecLoad<PER_LANE>(query_latent_bf16 + ((uint64_t)row * HEADS + head) * LATENT + lane * PER_LANE, query[head]);
         for (index = 0u; index < PER_LANE; ++index)
             accumulator[head][index] = 0.0f;
     }
@@ -1101,20 +892,8 @@ void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView
 	uint32_t sequence = sequence_of_row[row],head,index;
 	const uint8_t *slot;
 	float total = 0.0f;
-	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
-	{
-		LmKvReportRequiredAccessFailure(
-			cache,
-			!LmKvViewIsConfigured(cache)
-				? LM_KV_ACCESS_ERROR_INVALID_VIEW
-				: LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-			LM_KV_ACCESS_READ,
-			row,
-			sequence,
-			position,
-			0xffffffffu);
+	if ( !LmKvCheckSequence(cache,row,sequence,position) )
 		return;
-	}
 	if ( position >= context_length[sequence] )
 		return;
 	slot = LmKvSlotRequired<Geometry>(
