@@ -354,6 +354,16 @@ def is_immediate_eos(result: dict[str, Any]) -> bool:
     )
 
 
+def compute_effective_alpha(verify_lanes: int, accepted_drafts: int, total_output_tokens: int) -> float:
+    if verify_lanes <= 0:
+        return 1.0
+    verify_alpha = 1.0 + accepted_drafts / float(verify_lanes)
+    if total_output_tokens > accepted_drafts:
+        total_steps = max(verify_lanes, total_output_tokens - accepted_drafts)
+        return min(verify_alpha, total_output_tokens / float(total_steps))
+    return verify_alpha
+
+
 def format_batch_prompt(prompt_base: str, idx: int, stream_prefix: bool = False) -> str:
     if stream_prefix:
         return f"Task {idx + 1}: {prompt_base}"
@@ -425,12 +435,14 @@ def run_concurrent_batch(
         total_tok = sum(len(r["token_times"]) for r in decoding)
         agg_tok_s = total_tok / max(0.001, wall_s)
 
+    total_output_tokens = sum(int((r.get("usage") or {}).get("completion_tokens") or len(r["token_times"])) for r in decoding)
     return {
         "batch": batch_size,
         "unsupported": False,
         "failed": False,
         "errors": [],
         "wall_s": round(wall_s, 3),
+        "total_output_tokens": total_output_tokens,
         "aggregate_tok_s": round(agg_tok_s, 2),
         "per_stream_tok_s": round(agg_tok_s / batch_size, 2),
     }
@@ -711,11 +723,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     if plan["run_b8_spec"] and args.spec_toggle and args.spec_toggle != "none":
         b8_nospec = batch_results.get("8", {}).get("aggregate_tok_s") or 0.0
         if b8_nospec > 0.0:
+            res_b8_edit_nospec = do_batch(8, plan["batch_tokens"], EDIT_PROMPT, nospec_opt, stream_prefix=True)
+            b8_edit_base = res_b8_edit_nospec.get("aggregate_tok_s") or 0.0
+            if not res_b8_edit_nospec.get("failed") and not res_b8_edit_nospec.get("unsupported") and b8_edit_base > 0.0:
+                b8_nospec = b8_edit_base
+                spec_metrics["b8_edit_nospec_tok_s"] = round(b8_edit_base, 2)
             em_b8_before = read_engine_measurements(args.api_log)
             res_b8_spec = do_batch(8, plan["batch_tokens"], EDIT_PROMPT, spec_opt, stream_prefix=True)
             em_b8_after = read_engine_measurements(args.api_log)
             if not res_b8_spec.get("failed") and not res_b8_spec.get("unsupported"):
                 b8_spec_agg = res_b8_spec.get("aggregate_tok_s") or 0.0
+                b8_total_gen = int(res_b8_spec.get("total_output_tokens") or 0)
                 d_b8_lanes = 0
                 d_b8_draft = 0
                 d_b8_acc = 0
@@ -727,7 +745,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     spec_metrics["b8_draft_tokens"] = d_b8_draft
                     spec_metrics["b8_accepted_draft_tokens"] = d_b8_acc
                 if d_b8_lanes > 0:
-                    a_b8 = round(1.0 + d_b8_acc / float(d_b8_lanes), 3)
+                    a_b8 = round(compute_effective_alpha(d_b8_lanes, d_b8_acc, b8_total_gen), 3)
                     spec_metrics["verify_b8_enabled"] = True
                     spec_metrics["alpha_b8"] = a_b8
                     spec_metrics["b8_spec_tok_s"] = round(b8_spec_agg, 2)
