@@ -1,0 +1,2 @@
++12
+Speculative tree verification Wave 4: advertise tree_slot_grain on the 11 verified TP16 serving adapters across gemma4, hy4, mimo26, glm52 and glm5_next, fix glm52 wave offset and glm5_next large-tree pool scoring, and register test_tree_slot_grain_adapters.py in Makefile.
