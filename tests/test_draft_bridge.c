@@ -134,6 +134,20 @@ static uint32_t TestDraftBridgeGetU32Le(
         ((uint32_t)source[3] << 24u);
 }
 
+static uint64_t TestDraftBridgeGetU64Le(
+    const uint8_t *source)
+{
+    uint64_t value;
+    uint32_t shift;
+
+    value = 0u;
+    for (shift = 0u; shift < 64u; shift += 8u)
+    {
+        value |= (uint64_t)source[shift / 8u] << shift;
+    }
+    return value;
+}
+
 static uint32_t TestDraftBridgeFloatBits(
     float value)
 {
@@ -483,8 +497,8 @@ static void *TestDraftBridgeStubMain(
             mode == SPARK_TEST_DRAFT_BRIDGE_MODE_SLOW ||
             mode == SPARK_TEST_DRAFT_BRIDGE_MODE_SPLIT ?
                 SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD : mode,
-            SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID,
-            SPARK_TEST_DRAFT_BRIDGE_GENERATION,
+            TestDraftBridgeGetU64Le(header + 44u),
+            TestDraftBridgeGetU64Le(header + 52u),
             response);
         if (mode == SPARK_TEST_DRAFT_BRIDGE_MODE_SPLIT)
         {
@@ -1624,6 +1638,220 @@ static uint32_t TestDraftBridgeConfigValidation(void)
     return 0u;
 }
 
+static uint32_t TestDraftBridgePipelineEightExchanges(void)
+{
+    static const uint32_t modes[SPARK_DRAFT_BRIDGE_MAX_PIPELINE] = {
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD
+    };
+    static const uint32_t committed[SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT] = {
+        11u, 22u, SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN
+    };
+    static const uint8_t taps[SPARK_TEST_DRAFT_BRIDGE_TAP_ROW_BYTES] = {
+        0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u
+    };
+    TestDraftBridgeStub stub;
+    SparkDraftBridgeConfig config;
+    SparkDraftBridgeProposalInfo info;
+    SparkDraftBridge *bridge;
+    SparkDraftBridgeNode nodes[SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY];
+    uint32_t node_count;
+    uint32_t index;
+
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeStubStart(
+            &stub,
+            modes,
+            SPARK_DRAFT_BRIDGE_MAX_PIPELINE,
+            0u) == 0u);
+    TestDraftBridgeInitializeConfig(&config, stub.port);
+    bridge = 0;
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeInitialize(&config, &bridge) == SPARK_STATUS_OK);
+    for (index = 0u; index < SPARK_DRAFT_BRIDGE_MAX_PIPELINE; ++index)
+    {
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(
+            SparkDraftBridgeEnqueueTree(
+                bridge,
+                SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK,
+                SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID + index,
+                SPARK_TEST_DRAFT_BRIDGE_GENERATION + index,
+                SPARK_TEST_DRAFT_BRIDGE_POSITION,
+                SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN,
+                committed,
+                SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT,
+                taps,
+                SPARK_TEST_DRAFT_BRIDGE_TAP_COUNT,
+                SPARK_TEST_DRAFT_BRIDGE_DEPTH,
+                SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
+                SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
+                0,
+                SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_OK);
+    }
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeEnqueueTree(
+            bridge,
+            SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK,
+            SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID + 99u,
+            SPARK_TEST_DRAFT_BRIDGE_GENERATION,
+            SPARK_TEST_DRAFT_BRIDGE_POSITION,
+            SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN,
+            committed,
+            SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT,
+            taps,
+            SPARK_TEST_DRAFT_BRIDGE_TAP_COUNT,
+            SPARK_TEST_DRAFT_BRIDGE_DEPTH,
+            SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
+            SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
+            0,
+            SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_BUSY);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeRequestStandard(
+            bridge,
+            SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_BUSY);
+    for (index = 0u; index < SPARK_DRAFT_BRIDGE_MAX_PIPELINE; ++index)
+    {
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(SparkDraftBridgePoll(bridge, 0, 0, 0) == 1u);
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(
+            TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+            SPARK_STATUS_OK);
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(
+            TestDraftBridgeCheckGoodTree(nodes, node_count, &info) == 0u);
+    }
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(SparkDraftBridgePoll(bridge, 0, 0, 0) == 0u);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_NOT_FOUND);
+    SparkDraftBridgeDestroy(bridge);
+    TestDraftBridgeStubStop(&stub);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(stub.failed == 0u);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        stub.exchanges_completed == SPARK_DRAFT_BRIDGE_MAX_PIPELINE);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(stub.accept_count == 1u);
+    return 0u;
+}
+
+static uint32_t TestDraftBridgePipelineRejectionAndCancel(void)
+{
+    static const uint32_t modes[] = {
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_BAD_SEQUENCE,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_SILENT,
+        SPARK_TEST_DRAFT_BRIDGE_MODE_GOOD
+    };
+    static const uint32_t committed[SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT] = {
+        11u, 22u, SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN
+    };
+    TestDraftBridgeStub stub;
+    SparkDraftBridgeConfig config;
+    SparkDraftBridgeProposalInfo info;
+    SparkDraftBridge *bridge;
+    SparkDraftBridgeNode nodes[SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY];
+    uint32_t node_count;
+    uint32_t index;
+
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeStubStart(&stub, modes, 6u, 0u) == 0u);
+    TestDraftBridgeInitializeConfig(&config, stub.port);
+    bridge = 0;
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeInitialize(&config, &bridge) == SPARK_STATUS_OK);
+    for (index = 0u; index < 4u; ++index)
+    {
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(
+            SparkDraftBridgeEnqueueTree(
+                bridge,
+                SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK,
+                SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID + index,
+                SPARK_TEST_DRAFT_BRIDGE_GENERATION + index,
+                SPARK_TEST_DRAFT_BRIDGE_POSITION,
+                SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN,
+                committed,
+                SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT,
+                0,
+                0u,
+                SPARK_TEST_DRAFT_BRIDGE_DEPTH,
+                SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
+                SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
+                0,
+                SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_OK);
+    }
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_VALIDATION_FAILED);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        info.server_status == SPARK_DRAFT_BRIDGE_SERVER_STATUS_BAD_SEQUENCE);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_OK);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(SparkDraftBridgePoll(bridge, 0, 0, 0) == 0u);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(stub.accept_count == 1u);
+    for (index = 0u; index < 2u; ++index)
+    {
+        SPARK_TEST_DRAFT_BRIDGE_CHECK(
+            SparkDraftBridgeEnqueueTree(
+                bridge,
+                SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK,
+                SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID + 10u + index,
+                SPARK_TEST_DRAFT_BRIDGE_GENERATION,
+                SPARK_TEST_DRAFT_BRIDGE_POSITION,
+                SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN,
+                committed,
+                SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT,
+                0,
+                0u,
+                SPARK_TEST_DRAFT_BRIDGE_DEPTH,
+                SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
+                SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
+                0,
+                SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_OK);
+    }
+    SparkDraftBridgeCancel(bridge);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(SparkDraftBridgePoll(bridge, 0, 0, 0) == 0u);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_NOT_FOUND);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        SparkDraftBridgeEnqueueTree(
+            bridge,
+            SPARK_TEST_DRAFT_BRIDGE_SPECULATOR_MASK,
+            SPARK_TEST_DRAFT_BRIDGE_SEQUENCE_ID + 20u,
+            SPARK_TEST_DRAFT_BRIDGE_GENERATION,
+            SPARK_TEST_DRAFT_BRIDGE_POSITION,
+            SPARK_TEST_DRAFT_BRIDGE_ANCHOR_TOKEN,
+            committed,
+            SPARK_TEST_DRAFT_BRIDGE_COMMITTED_COUNT,
+            0,
+            0u,
+            SPARK_TEST_DRAFT_BRIDGE_DEPTH,
+            SPARK_TEST_DRAFT_BRIDGE_TIME_BUDGET_MS,
+            SPARK_TEST_DRAFT_BRIDGE_MAX_DEPTH,
+            0,
+            SPARK_TEST_DRAFT_BRIDGE_NODE_CAPACITY) == SPARK_STATUS_OK);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(
+        TestDraftBridgeAwaitReply(bridge, nodes, &node_count, &info) ==
+        SPARK_STATUS_OK);
+    SparkDraftBridgeDestroy(bridge);
+    TestDraftBridgeStubStop(&stub);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(stub.failed == 0u);
+    SPARK_TEST_DRAFT_BRIDGE_CHECK(stub.accept_count == 2u);
+    return 0u;
+}
+
 static uint32_t TestDraftBridgeRunCase(
     const char *name,
     uint32_t (*case_fn)(void))
@@ -1691,6 +1919,12 @@ int main(void)
     failures += TestDraftBridgeRunCase(
         "config_validation",
         TestDraftBridgeConfigValidation);
+    failures += TestDraftBridgeRunCase(
+        "pipeline_eight_exchanges",
+        TestDraftBridgePipelineEightExchanges);
+    failures += TestDraftBridgeRunCase(
+        "pipeline_rejection_and_cancel",
+        TestDraftBridgePipelineRejectionAndCancel);
     if (failures != 0u)
     {
         fprintf(stderr, "FAILURES %u\n", (unsigned)failures);

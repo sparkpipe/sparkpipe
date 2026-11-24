@@ -31,6 +31,13 @@
 #define SPARK_DRAFT_BRIDGE_PHASE_FAILED 5u
 
 
+typedef struct SparkDraftBridgeInflight
+{
+    uint64_t sequence_id;
+    uint64_t generation;
+    uint32_t node_capacity;
+} SparkDraftBridgeInflight;
+
 struct SparkDraftBridge
 {
     char host[SPARK_DRAFT_BRIDGE_HOST_BYTES];
@@ -54,9 +61,10 @@ struct SparkDraftBridge
     uint64_t request_sent;
     uint64_t response_bytes;
     uint64_t response_expected;
-    uint64_t sequence_id;
-    uint64_t generation;
-    uint32_t node_capacity;
+    SparkDraftBridgeInflight inflight[SPARK_DRAFT_BRIDGE_MAX_PIPELINE];
+    uint32_t inflight_head;
+    uint32_t inflight_count;
+    uint32_t sent_any;
     uint32_t node_count;
     uint32_t server_status;
     uint32_t stale;
@@ -141,11 +149,24 @@ static void SparkDraftBridgeDropConnection(
     SparkDraftBridgeFreeAddresses(bridge);
 }
 
+static void SparkDraftBridgeResetPipeline(
+    SparkDraftBridge *bridge)
+{
+    bridge->inflight_head = 0u;
+    bridge->inflight_count = 0u;
+    bridge->request_bytes = 0u;
+    bridge->request_sent = 0u;
+    bridge->response_bytes = 0u;
+    bridge->response_expected = 0u;
+    bridge->sent_any = 0u;
+    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+}
+
 static SparkStatus SparkDraftBridgeFailTransport(
     SparkDraftBridge *bridge)
 {
     SparkDraftBridgeDropConnection(bridge);
-    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+    SparkDraftBridgeResetPipeline(bridge);
     SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 }
 
@@ -340,10 +361,16 @@ static SparkStatus SparkDraftBridgeSend(
             return SparkDraftBridgeFailTransport(bridge);
         }
         bridge->request_sent += (uint64_t)put;
+        bridge->sent_any = 1u;
     }
-    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
-    bridge->response_bytes = 0u;
-    bridge->response_expected = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
+    bridge->request_bytes = 0u;
+    bridge->request_sent = 0u;
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
+        bridge->response_bytes = 0u;
+        bridge->response_expected = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -379,6 +406,7 @@ static SparkStatus SparkDraftBridgeReceive(
 static SparkStatus SparkDraftBridgeReadHeader(
     SparkDraftBridge *bridge)
 {
+    const SparkDraftBridgeInflight *head;
     const uint8_t *reader;
     uint64_t response_sequence_id;
     uint64_t response_generation;
@@ -390,6 +418,7 @@ static SparkStatus SparkDraftBridgeReadHeader(
     {
         return SparkDraftBridgeFailTransport(bridge);
     }
+    head = &bridge->inflight[bridge->inflight_head];
     reader = bridge->response_buffer + SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC_BYTES;
     bridge->server_status = SparkDraftBridgeGetU32Le(reader);
     reader += sizeof(uint32_t);
@@ -398,15 +427,15 @@ static SparkStatus SparkDraftBridgeReadHeader(
     response_sequence_id = SparkDraftBridgeGetU64Le(reader);
     reader += sizeof(uint64_t);
     response_generation = SparkDraftBridgeGetU64Le(reader);
-    if (bridge->node_count > bridge->node_capacity)
+    if (bridge->node_count > head->node_capacity)
     {
         SparkDraftBridgeDropConnection(bridge);
-        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+        SparkDraftBridgeResetPipeline(bridge);
         SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
     }
     bridge->stale =
-        response_sequence_id != bridge->sequence_id ||
-        response_generation != bridge->generation ? 1u : 0u;
+        response_sequence_id != head->sequence_id ||
+        response_generation != head->generation ? 1u : 0u;
     bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_BODY;
     bridge->response_expected =
         (uint64_t)SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES +
@@ -430,18 +459,39 @@ static SparkStatus SparkDraftBridgeAdvance(
         else if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
         {
             status = SparkDraftBridgeSend(bridge);
-        }
-        else if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_HEADER)
-        {
-            status = SparkDraftBridgeReceive(bridge);
-            if (status == SPARK_STATUS_OK)
+            if (status == SPARK_STATUS_PENDING &&
+                bridge->inflight_count > 1u &&
+                bridge->sent_any != 0u)
             {
-                status = SparkDraftBridgeReadHeader(bridge);
+                bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
+                bridge->response_bytes = 0u;
+                bridge->response_expected =
+                    SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
+                status = SPARK_STATUS_OK;
             }
         }
         else
         {
-            return SparkDraftBridgeReceive(bridge);
+            if (bridge->request_sent < bridge->request_bytes)
+            {
+                status = SparkDraftBridgeSend(bridge);
+                if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
+                {
+                    return status;
+                }
+            }
+            if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_HEADER)
+            {
+                status = SparkDraftBridgeReceive(bridge);
+                if (status == SPARK_STATUS_OK)
+                {
+                    status = SparkDraftBridgeReadHeader(bridge);
+                }
+            }
+            else
+            {
+                return SparkDraftBridgeReceive(bridge);
+            }
         }
     }
     return status;
@@ -566,7 +616,45 @@ void SparkDraftBridgeDestroy(
     free(bridge);
 }
 
-SparkStatus SparkDraftBridgeRequestTree(
+static SparkStatus SparkDraftBridgeReserveRequest(
+    SparkDraftBridge *bridge,
+    uint64_t message_bytes)
+{
+    uint64_t pending;
+    uint64_t needed;
+    uint8_t *grown;
+
+    if (bridge->request_sent == bridge->request_bytes)
+    {
+        bridge->request_sent = 0u;
+        bridge->request_bytes = 0u;
+    }
+    pending = bridge->request_bytes - bridge->request_sent;
+    if (bridge->request_sent != 0u &&
+        message_bytes > bridge->request_buffer_bytes - bridge->request_bytes)
+    {
+        memmove(
+            bridge->request_buffer,
+            bridge->request_buffer + bridge->request_sent,
+            (size_t)pending);
+        bridge->request_bytes = pending;
+        bridge->request_sent = 0u;
+    }
+    needed = bridge->request_bytes + message_bytes;
+    if (needed > bridge->request_buffer_bytes)
+    {
+        grown = (uint8_t *)realloc(bridge->request_buffer, (size_t)needed);
+        if (grown == 0)
+        {
+            SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+        }
+        bridge->request_buffer = grown;
+        bridge->request_buffer_bytes = needed;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkDraftBridgeSubmitTree(
     SparkDraftBridge *bridge,
     uint32_t speculator_mask,
     uint64_t sequence_id,
@@ -581,11 +669,14 @@ SparkStatus SparkDraftBridgeRequestTree(
     uint32_t time_budget_ms,
     uint32_t max_depth,
     const SparkRowSampling *sampling,
-    uint32_t node_capacity)
+    uint32_t node_capacity,
+    uint32_t max_inflight)
 {
     SparkStatus status;
     uint8_t *cursor;
+    uint64_t message_bytes;
     uint32_t token_index;
+    uint32_t tail;
 
     if (bridge == 0 || committed_token_ids == 0)
     {
@@ -628,12 +719,25 @@ SparkStatus SparkDraftBridgeRequestTree(
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_FAILED)
+    {
+        SPARK_FAIL(max_inflight == 1u ? SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR);
+    }
+    if (bridge->inflight_count >= max_inflight)
     {
         SPARK_FAIL(SPARK_STATUS_BUSY);
     }
 
-    cursor = bridge->request_buffer;
+    message_bytes =
+        (uint64_t)SPARK_DRAFT_BRIDGE_REQUEST_HEADER_BYTES +
+        (uint64_t)committed_token_count * sizeof(uint32_t) +
+        (uint64_t)tap_row_count * bridge->tap_row_bytes;
+    status = SparkDraftBridgeReserveRequest(bridge, message_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    cursor = bridge->request_buffer + bridge->request_bytes;
     memcpy(
         cursor,
         SPARK_DRAFT_BRIDGE_PROTOCOL_MAGIC,
@@ -700,35 +804,122 @@ SparkStatus SparkDraftBridgeRequestTree(
         cursor += (size_t)tap_row_count * bridge->tap_row_bytes;
     }
     bridge->request_bytes = (uint64_t)(cursor - bridge->request_buffer);
-    bridge->request_sent = 0u;
-    bridge->response_bytes = 0u;
-    bridge->response_expected = 0u;
-    bridge->sequence_id = sequence_id;
-    bridge->generation = generation;
-    bridge->node_capacity = node_capacity;
-    bridge->node_count = 0u;
-    bridge->server_status = 0u;
-    bridge->stale = 0u;
-    if (bridge->socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
+    tail = (bridge->inflight_head + bridge->inflight_count) %
+        SPARK_DRAFT_BRIDGE_MAX_PIPELINE;
+    bridge->inflight[tail].sequence_id = sequence_id;
+    bridge->inflight[tail].generation = generation;
+    bridge->inflight[tail].node_capacity = node_capacity;
+    bridge->inflight_count++;
+    if (bridge->inflight_count == 1u)
     {
-        status = SparkDraftBridgeConnect(bridge);
+        bridge->response_bytes = 0u;
+        bridge->response_expected = 0u;
+        bridge->node_count = 0u;
+        bridge->server_status = 0u;
+        bridge->stale = 0u;
+        bridge->sent_any = 0u;
+        if (bridge->socket_fd == SPARK_DRAFT_BRIDGE_DISCONNECTED_FD)
+        {
+            status = SparkDraftBridgeConnect(bridge);
+        }
+        else
+        {
+            bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_SEND;
+            bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
+            status = SPARK_STATUS_OK;
+        }
+        if (status == SPARK_STATUS_OK &&
+            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+        {
+            status = SparkDraftBridgeSend(bridge);
+        }
     }
-    else
-    {
-        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_SEND;
-        bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
-        status = SPARK_STATUS_OK;
-    }
-    if (status == SPARK_STATUS_OK &&
-        bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+    else if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_CONNECT)
     {
         status = SparkDraftBridgeSend(bridge);
     }
+    else
+    {
+        status = SPARK_STATUS_OK;
+    }
     if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
     {
+        bridge->inflight_count = 1u;
         bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_FAILED;
     }
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkDraftBridgeRequestTree(
+    SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    const uint32_t *committed_token_ids,
+    uint32_t committed_token_count,
+    const void *tap_rows,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    uint32_t node_capacity)
+{
+    return SparkDraftBridgeSubmitTree(
+        bridge,
+        speculator_mask,
+        sequence_id,
+        generation,
+        position,
+        anchor_token_id,
+        committed_token_ids,
+        committed_token_count,
+        tap_rows,
+        tap_row_count,
+        depth,
+        time_budget_ms,
+        max_depth,
+        sampling,
+        node_capacity,
+        1u);
+}
+
+SparkStatus SparkDraftBridgeEnqueueTree(
+    SparkDraftBridge *bridge,
+    uint32_t speculator_mask,
+    uint64_t sequence_id,
+    uint64_t generation,
+    uint64_t position,
+    uint32_t anchor_token_id,
+    const uint32_t *committed_token_ids,
+    uint32_t committed_token_count,
+    const void *tap_rows,
+    uint32_t tap_row_count,
+    uint32_t depth,
+    uint32_t time_budget_ms,
+    uint32_t max_depth,
+    const SparkRowSampling *sampling,
+    uint32_t node_capacity)
+{
+    return SparkDraftBridgeSubmitTree(
+        bridge,
+        speculator_mask,
+        sequence_id,
+        generation,
+        position,
+        anchor_token_id,
+        committed_token_ids,
+        committed_token_count,
+        tap_rows,
+        tap_row_count,
+        depth,
+        time_budget_ms,
+        max_depth,
+        sampling,
+        node_capacity,
+        SPARK_DRAFT_BRIDGE_MAX_PIPELINE);
 }
 
 SparkStatus SparkDraftBridgeReply(
@@ -750,7 +941,8 @@ SparkStatus SparkDraftBridgeReply(
     {
         SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
     }
-    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE ||
+        bridge->inflight_count == 0u)
     {
         SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
     }
@@ -758,7 +950,7 @@ SparkStatus SparkDraftBridgeReply(
     memset(info_out, 0, sizeof(*info_out));
     if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_FAILED)
     {
-        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+        SparkDraftBridgeResetPipeline(bridge);
         SPARK_FAIL(SPARK_STATUS_IO_ERROR);
     }
     status = SparkDraftBridgeAdvance(bridge);
@@ -766,9 +958,30 @@ SparkStatus SparkDraftBridgeReply(
     {
         return status;
     }
-    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+    bridge->inflight_head =
+        (bridge->inflight_head + 1u) % SPARK_DRAFT_BRIDGE_MAX_PIPELINE;
+    bridge->inflight_count--;
+    if (bridge->inflight_count != 0u)
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_HEADER;
+        bridge->response_bytes = 0u;
+        bridge->response_expected = SPARK_DRAFT_BRIDGE_RESPONSE_HEADER_BYTES;
+        bridge->deadline_ns = SparkDraftBridgeDeadline(bridge->io_timeout_ms);
+    }
+    else
+    {
+        bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+        bridge->response_bytes = 0u;
+        bridge->response_expected = 0u;
+        bridge->sent_any = 0u;
+    }
     if (bridge->stale != 0u)
     {
+        if (bridge->inflight_count != 0u)
+        {
+            SparkDraftBridgeDropConnection(bridge);
+            SparkDraftBridgeResetPipeline(bridge);
+        }
         SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
     }
     info_out->server_status = bridge->server_status;
@@ -818,11 +1031,11 @@ void SparkDraftBridgeCancel(
         return;
     }
     if (bridge->phase != SPARK_DRAFT_BRIDGE_PHASE_SEND ||
-        bridge->request_sent != 0u)
+        bridge->sent_any != 0u)
     {
         SparkDraftBridgeDropConnection(bridge);
     }
-    bridge->phase = SPARK_DRAFT_BRIDGE_PHASE_IDLE;
+    SparkDraftBridgeResetPipeline(bridge);
 }
 
 uint32_t SparkDraftBridgePoll(
@@ -843,7 +1056,9 @@ uint32_t SparkDraftBridgePoll(
     {
         *deadline_ns_out = 0u;
     }
-    if (bridge == 0 || bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE)
+    if (bridge == 0 ||
+        bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_IDLE ||
+        bridge->inflight_count == 0u)
     {
         return 0u;
     }
@@ -861,10 +1076,22 @@ uint32_t SparkDraftBridgePoll(
     }
     if (events_out != 0)
     {
-        *events_out =
-            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_CONNECT ||
-            bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND ?
-            SPARK_DRAFT_BRIDGE_POLL_WRITE : SPARK_DRAFT_BRIDGE_POLL_READ;
+        if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_CONNECT)
+        {
+            *events_out = SPARK_DRAFT_BRIDGE_POLL_WRITE;
+        }
+        else if (bridge->phase == SPARK_DRAFT_BRIDGE_PHASE_SEND)
+        {
+            *events_out = bridge->inflight_count > 1u && bridge->sent_any != 0u ?
+                (SPARK_DRAFT_BRIDGE_POLL_READ | SPARK_DRAFT_BRIDGE_POLL_WRITE) :
+                SPARK_DRAFT_BRIDGE_POLL_WRITE;
+        }
+        else
+        {
+            *events_out = SPARK_DRAFT_BRIDGE_POLL_READ |
+                (bridge->request_sent < bridge->request_bytes ?
+                    SPARK_DRAFT_BRIDGE_POLL_WRITE : 0u);
+        }
     }
     if (deadline_ns_out != 0)
     {

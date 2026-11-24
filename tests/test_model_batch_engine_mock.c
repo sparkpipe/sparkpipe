@@ -3094,6 +3094,9 @@ static void TestScenarioDraftWaitFreesEngine(const SparkModelResidentDeployment 
 static void TestScenarioDraftNeverAnswers(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioDraftWaitCancelled(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioDraftTwoLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioDraftMultiLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t lanes);
+static void TestScenarioDraftBatchCancelSafety(const SparkModelResidentDeployment *deployment,const char *runtime_root);
+static void TestScenarioDraftBatchProfitabilityGate(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioTreeVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioLongVerify(const SparkModelResidentDeployment *deployment,const char *runtime_root);
 static void TestScenarioRejectedVerifyDrafts(const SparkModelResidentDeployment *deployment,const char *runtime_root);
@@ -3133,6 +3136,10 @@ static void TestScenarioAdapterCacheModes(const char *runtime_root)
 		TestScenarioDraftNeverAnswers(&deployment,runtime_root);
 		TestScenarioDraftWaitCancelled(&deployment,runtime_root);
 		TestScenarioDraftTwoLanes(&deployment,runtime_root);
+		TestScenarioDraftMultiLanes(&deployment,runtime_root,4u);
+		TestScenarioDraftMultiLanes(&deployment,runtime_root,8u);
+		TestScenarioDraftBatchCancelSafety(&deployment,runtime_root);
+		TestScenarioDraftBatchProfitabilityGate(&deployment,runtime_root);
 		TestScenarioTreeVerify(&deployment,runtime_root);
 		SparkModelResidentDeploymentReset(&plain);
 		(void)unlink(plain_path);
@@ -3377,7 +3384,11 @@ static void TestDraftServe(TestDraftServer *server,int fd)
 		}
 		memset(cursor,0,48u);
 		cursor += 48u;
+#ifdef MSG_NOSIGNAL
+		if ( send(fd,reply,(size_t)(cursor - reply),MSG_NOSIGNAL) != (ssize_t)(cursor - reply) )
+#else
 		if ( send(fd,reply,(size_t)(cursor - reply),0) != (ssize_t)(cursor - reply) )
+#endif
 			return;
 	}
 }
@@ -3395,6 +3406,12 @@ static void *TestDraftThread(void *argument)
 			(void)close(fd);
 			break;
 		}
+#ifdef SO_NOSIGPIPE
+		{
+			int nosig = 1;
+			(void)setsockopt(fd,SOL_SOCKET,SO_NOSIGPIPE,&nosig,(socklen_t)sizeof(nosig));
+		}
+#endif
 		server->connections++;
 		TestDraftServe(server,fd);
 		(void)close(fd);
@@ -3899,6 +3916,169 @@ static void TestScenarioDraftTwoLanes(const SparkModelResidentDeployment *deploy
 	CHECK(view.speculative_draft_token_count != 0u && view.speculative_accepted_token_count == view.speculative_draft_token_count && server.bad_requests == 0u,
 		"two drafted lanes: asked one after the other, each request's answer is planned into its own lane and every draft is kept");
 	CHECK(server.requests >= 2u * shared && server.connections == 1u,"two drafted lanes: a shared frame asks once per lane over the one connection");
+	MockResidentClientSetStepDelay(0u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+}
+
+static void TestScenarioDraftMultiLanes(const SparkModelResidentDeployment *deployment,const char *runtime_root,uint32_t lanes)
+{
+	static SparkModelResidentDeployment drafted;
+	static char host[] = "127.0.0.1";
+	uint32_t script[256],index,submissions,rows,shared,max_lanes,all_exact = 1u;
+	SparkModelBatchEngineView view;
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	drafted = *deployment;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	CHECK(TestDraftStart(&server,TEST_DRAFT_CORRECT,script,256u) != 0u,"multi-lane neural draft: a stub draft server listens");
+	drafted.draft_server.host = host;
+	drafted.draft_server.port = server.port;
+	strcpy(drafted.draft_server.target_model,"test-target");
+	drafted.draft_server.depth = 4u;
+	drafted.draft_server.wait_ms = 50u;
+	drafted.draft_server.min_confidence = 0.05f;
+	engine = TestConnectFlags(&drafted,&state,runtime_root,256u,8u,0u);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return;
+	}
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetStepDelay(2000u);
+	if ( lanes > 4u )
+		MockResidentClientSetVerifyRowCost(0u);
+	for (index=1u; index<=lanes; index++)
+		TestSubmitPrompt(engine,index,940u + index,60u,script,24u);
+	for (index=1u; index<=lanes; index++)
+		TestDriveUntilTerminal(engine,&state,index,8000u);
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"multi-lane neural draft: engine view");
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	max_lanes = MockResidentClientTakeMaxDecodeLanes();
+	for (index=1u; index<=lanes; index++)
+		if ( state.completed_events[index] != 1u || state.error_events[index] != 0u ||
+			TestScriptedOutputMatches(&state,index,script,24u,60u) == 0u ||
+			TestLaneInputsFollowScript(index,script,256u) == 0u )
+			all_exact = 0u;
+	CHECK(all_exact != 0u,"multi-lane neural draft: every lane emits exact greedy output with committed inputs");
+	CHECK(max_lanes == lanes && shared != 0u && rows > lanes * submissions,
+		"multi-lane neural draft: shared decode frames reach full lane width and carry neural drafts");
+	CHECK(view.speculative_draft_token_count != 0u && view.speculative_accepted_token_count == view.speculative_draft_token_count &&
+		server.bad_requests == 0u,"multi-lane neural draft: all pipelined model drafts are verified and accepted");
+	CHECK(server.requests >= view.speculative_verify_lane_count && server.requests >= lanes && server.connections == 1u,
+		"multi-lane neural draft: all lanes pipeline over one persistent draft connection");
+	MockResidentClientSetVerifyRowCost(1u);
+	MockResidentClientSetStepDelay(0u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+}
+
+static void TestScenarioDraftBatchCancelSafety(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows,shared,cancelled_decodes,step;
+	SparkModelBatchRequestHandle handles[4];
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	engine = TestDraftedEngine(deployment,runtime_root,&state,&server,TEST_DRAFT_CORRECT,5000u,script);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return;
+	}
+	MockResidentClientSetStepDelay(15000u);
+	MockResidentClientSetVerifyRowCost(0u);
+	for (index=0u; index<4u; index++)
+		CHECK(TestSubmitPriority(engine,index + 1u,960u + index,24u,script,44u,SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE,&handles[index]) == SPARK_STATUS_OK,
+			"batch cancel safety: submit lane");
+	for (step=0u; step<4000u && TestDraftWaiting(engine) == 0u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		if ( TestDraftWaiting(engine) != 0u )
+			break;
+		(void)MockResidentClientDriveAll();
+		TestPause(engine);
+	}
+	CHECK(TestDraftWaiting(engine) != 0u,"batch cancel safety: four-lane batch enters pipelined draft wait");
+	cancelled_decodes = TestLanesLogged(SPARK_MODEL_SERVING_WORK_KIND_DECODE,961u);
+	CHECK(SparkModelBatchEngineCancel(engine,handles[1]) == SPARK_STATUS_OK,"batch cancel safety: cancel one lane mid-wait");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(TestDraftWaiting(engine) != 0u,"batch cancel safety: surviving lanes keep waiting on the open draft pipeline");
+	server.delay_us = 0u;
+	for (index=1u; index<=4u; index++)
+		TestDriveUntilTerminal(engine,&state,index,6000u);
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	CHECK(state.cancelled_events[2] == 1u && state.completed_events[2] == 0u &&
+		TestLanesLogged(SPARK_MODEL_SERVING_WORK_KIND_DECODE,961u) == cancelled_decodes,
+		"batch cancel safety: cancelled lane terminates cleanly without further decode");
+	CHECK(state.completed_events[1] == 1u && state.completed_events[3] == 1u && state.completed_events[4] == 1u &&
+		TestScriptedOutputMatches(&state,1u,script,44u,24u) != 0u &&
+		TestScriptedOutputMatches(&state,3u,script,44u,24u) != 0u &&
+		TestScriptedOutputMatches(&state,4u,script,44u,24u) != 0u,
+		"batch cancel safety: surviving lanes emit exact greedy output");
+	CHECK(shared != 0u && submissions != 0u && rows > submissions && server.connections == 1u && server.bad_requests == 0u,
+		"batch cancel safety: surviving lanes verify drafts over the same single connection");
+	server.delay_us = 40000u;
+	for (index=0u; index<4u; index++)
+		CHECK(TestSubmitPriority(engine,index + 5u,970u + index,24u,script,44u,SPARK_MODEL_BATCH_PRIORITY_INTERACTIVE,&handles[index]) == SPARK_STATUS_OK,
+			"batch cancel safety: submit second wave");
+	for (step=0u; step<4000u && TestDraftWaiting(engine) == 0u; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine,8u);
+		if ( TestDraftWaiting(engine) != 0u )
+			break;
+		(void)MockResidentClientDriveAll();
+		TestPause(engine);
+	}
+	CHECK(TestDraftWaiting(engine) != 0u,"batch cancel safety: second wave enters pipelined draft wait");
+	for (index=0u; index<4u; index++)
+		CHECK(SparkModelBatchEngineCancel(engine,handles[index]) == SPARK_STATUS_OK,"batch cancel safety: cancel all waiting lanes");
+	(void)SparkModelBatchEngineProgress(engine,8u);
+	CHECK(TestDraftWaiting(engine) == 0u,"batch cancel safety: cancelling all waiting lanes drops the draft pipeline immediately");
+	for (index=5u; index<=8u; index++)
+		TestDriveUntilTerminal(engine,&state,index,4000u);
+	MockResidentClientSetVerifyRowCost(1u);
+	MockResidentClientSetStepDelay(0u);
+	SparkModelBatchEngineDestroy(engine);
+	TestDraftStop(&server);
+}
+
+static void TestScenarioDraftBatchProfitabilityGate(const SparkModelResidentDeployment *deployment,const char *runtime_root)
+{
+	uint32_t script[256],index,submissions,rows,all_exact = 1u;
+	SparkModelBatchEngine *engine;
+	TestBatchState state;
+	TestDraftServer server;
+	for (index=0u; index<256u; index++)
+		script[index] = 3000u + (index * 37u + index * index * 11u) % 4093u;
+	engine = TestDraftedEngine(deployment,runtime_root,&state,&server,TEST_DRAFT_CORRECT,15000u,script);
+	if ( engine == 0 )
+	{
+		TestDraftStop(&server);
+		return;
+	}
+	for (index=1u; index<=8u; index++)
+		TestSubmitPrompt(engine,index,980u + index,24u,script,44u);
+	for (index=1u; index<=8u; index++)
+		TestDriveUntilTerminal(engine,&state,index,8000u);
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	for (index=1u; index<=8u; index++)
+		if ( state.completed_events[index] != 1u || state.error_events[index] != 0u ||
+			TestScriptedOutputMatches(&state,index,script,44u,24u) == 0u )
+			all_exact = 0u;
+	CHECK(all_exact != 0u,"batch profitability gate: every lane emits exact greedy output when drafts are too slow");
+	CHECK(submissions == 0u && server.requests <= 16u && server.bad_requests == 0u,
+		"batch profitability gate: slow 8-lane drafts are declined and pre-gated without repeated wasted bursts");
 	MockResidentClientSetStepDelay(0u);
 	SparkModelBatchEngineDestroy(engine);
 	TestDraftStop(&server);
