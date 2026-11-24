@@ -1,0 +1,2 @@
++67
+perf(allreduce): fuse HardwareArrival + Combine (+ optional next-phase Publish) into SparkTpMeshHardwareFusedDirectKernel, fuse RSAG stage+publish into SparkTpMeshRsagStagePublishKernel, and vectorize BF16/FP32 combine and band copy loads/stores with 128-bit/256-bit coherent ops.
