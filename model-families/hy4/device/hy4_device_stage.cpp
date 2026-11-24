@@ -6,6 +6,7 @@
 #include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_hy4_device_stage.h"
 #include "sparkpipe/spark_hy4_family.h"
 #include "sparkpipe/spark_hy4_tp16_stage_model.h"
@@ -221,7 +222,7 @@ struct HyDevice
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
 		if ( status == SPARK_STATUS_OK && (SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn_rows) != SPARK_STATUS_OK ||

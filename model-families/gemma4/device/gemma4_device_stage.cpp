@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "inference/runner/device_layers.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_gemma4_26b_stage_model.h"
 #include "sparkpipe/spark_gemma4_31b_stage_model.h"
 #include "sparkpipe/spark_gemma4_device_stage.h"
@@ -213,7 +214,7 @@ struct GemmaDevice
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		status = SparkDeviceStageOpen(&state->stage, &state->shape, request);
 		if ( status == SPARK_STATUS_OK && SparkNamedPackConfigU32(&state->stage.pack, "ffn_rows", &state->ffn) != SPARK_STATUS_OK )

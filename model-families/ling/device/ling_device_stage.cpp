@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "inference/runner/device_layers.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_ling_device_stage.h"
 #include "sparkpipe/spark_ling_family.h"
 #include "sparkpipe/spark_ling3_stage_model.h"
@@ -207,7 +208,7 @@ struct LingDevice
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		const SparkDeviceStageRecurrentPlan pools[] = { { L::kKdaLayers, SparkDeviceChannelDeltaStateBytes(&state->delta_shape) },
 			{ L::kKdaLayers, SparkDeviceChannelDeltaWindowBytes(&state->delta_shape) } };
