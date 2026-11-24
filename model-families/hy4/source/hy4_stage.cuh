@@ -157,86 +157,11 @@ struct HyState : CudaStagePackState
 	LmKvShardView index_views[G::kIndexLayers];
 };
 
-template<uint32_t THREADS, uint32_t WIDTH>
-__global__ __launch_bounds__(THREADS, 1)
-void HyRmsNormKernel(const uint16_t *input, const uint16_t *__restrict__ weight, uint16_t *output, uint32_t input_stride, uint32_t output_stride, float epsilon)
-{
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
-	const uint16_t *source = input + (uint64_t)blockIdx.x * input_stride;
-	uint16_t *target = output + (uint64_t)blockIdx.x * output_stride;
-	if constexpr ( (WIDTH & 7u) == 0u )
-	{
-		if ( ((input_stride | output_stride) & 7u) == 0u && LmIsAligned16(source) && LmIsAligned16(weight) && LmIsAligned16(target) )
-		{
-			constexpr uint32_t VECTORS = WIDTH / 8u;
-			constexpr uint32_t SLOTS = (VECTORS + THREADS - 1u) / THREADS;
-			uint4 staged[SLOTS];
-			float total = 0.0f;
-#pragma unroll
-			for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
-			{
-				const uint32_t vector = threadIdx.x + slot * THREADS;
-				if ( vector < VECTORS )
-				{
-					uint16_t bits[8];
-					staged[slot] = *(const uint4 *)(source + vector * 8u);
-					LmUnpackUint4Bf16(staged[slot], bits);
-#pragma unroll
-					for ( uint32_t k = 0u; k < 8u; ++k )
-					{
-						const float value = LmBf16ToFloat(bits[k]);
-						total += value * value;
-					}
-				}
-			}
-			const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, epsilon);
-#pragma unroll
-			for ( uint32_t slot = 0u; slot < SLOTS; ++slot )
-			{
-				const uint32_t vector = threadIdx.x + slot * THREADS;
-				if ( vector < VECTORS )
-				{
-					uint16_t bits[8], w_bits[8];
-					float out_f[8];
-					LmUnpackUint4Bf16(staged[slot], bits);
-					LmUnpackUint4Bf16(*(const uint4 *)(weight + vector * 8u), w_bits);
-#pragma unroll
-					for ( uint32_t k = 0u; k < 8u; ++k )
-						out_f[k] = LmBf16ToFloat(w_bits[k]) * LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(bits[k]) * inverse));
-					*(uint4 *)(target + vector * 8u) = LmPackUint4FloatToBf16(out_f);
-				}
-			}
-			return;
-		}
-	}
-	constexpr uint32_t PER_THREAD = (WIDTH + THREADS - 1u) / THREADS;
-	float values[PER_THREAD];
-	float total = 0.0f;
-#pragma unroll
-	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
-	{
-		const uint32_t index = threadIdx.x + step * THREADS;
-		values[step] = index < WIDTH ? LmBf16ToFloat(source[index]) : 0.0f;
-	}
-#pragma unroll
-	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
-		if ( threadIdx.x + step * THREADS < WIDTH )
-			total += values[step] * values[step];
-	const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)WIDTH, epsilon);
-#pragma unroll
-	for ( uint32_t step = 0u; step < PER_THREAD; ++step )
-	{
-		const uint32_t index = threadIdx.x + step * THREADS;
-		if ( index < WIDTH )
-			target[index] = LmFloatToBf16(LmBf16ToFloat(weight[index]) * LmBf16ToFloat(LmFloatToBf16(values[step] * inverse)));
-	}
-}
-
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void HyLayerNormKernel(uint16_t *__restrict__ rows, const float *__restrict__ weight, const float *__restrict__ bias, uint32_t width, float epsilon)
 {
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	__shared__ float reduction[LmBlockWarps<THREADS>()];
 	uint16_t *row = rows + (uint64_t)blockIdx.x * width;
 	float total = 0.0f, squares = 0.0f;
 	if ( (width & 7u) == 0u && (width >> 3u) <= THREADS && LmIsAligned16(row) && LmIsAligned16(weight) && LmIsAligned16(bias) )
@@ -245,14 +170,10 @@ void HyLayerNormKernel(uint16_t *__restrict__ rows, const float *__restrict__ we
 		float vals[8];
 		if ( threadIdx.x < vectors )
 		{
-			uint16_t bits[8];
-			LmUnpackUint4Bf16(*(const uint4 *)(row + threadIdx.x * 8u), bits);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(row + threadIdx.x * 8u), vals);
 #pragma unroll
 			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				vals[k] = LmBf16ToFloat(bits[k]);
 				total += vals[k];
-			}
 		}
 		const float mean = LmBlockSum<THREADS>(total, reduction) / (float)width;
 		if ( threadIdx.x < vectors )
@@ -291,89 +212,6 @@ void HyLayerNormKernel(uint16_t *__restrict__ rows, const float *__restrict__ we
 		row[index] = LmFloatToBf16((LmBf16ToFloat(row[index]) - mean) * inverse * weight[index] + bias[index]);
 }
 
-__global__ static void HyQueryPackKernel(const uint16_t *__restrict__ latent, const uint16_t *__restrict__ q, uint16_t *__restrict__ query, uint32_t heads, uint32_t latent_dim,
-	uint32_t nope, uint32_t rope)
-{
-	const uint32_t row = blockIdx.x, head = blockIdx.y;
-	const uint64_t pair = (uint64_t)row * heads + head;
-	const uint32_t total = latent_dim + rope;
-	if ( ((latent_dim | nope | rope) & 7u) == 0u && LmIsAligned16(latent) && LmIsAligned16(q) && LmIsAligned16(query) )
-	{
-		const uint32_t latent_vecs = latent_dim >> 3u, total_vecs = total >> 3u;
-		const uint4 *lat4 = (const uint4 *)(latent + pair * latent_dim);
-		const uint4 *rope4 = (const uint4 *)(q + pair * (nope + rope) + nope);
-		uint4 *out4 = (uint4 *)(query + pair * total);
-		for ( uint32_t vector = threadIdx.x; vector < total_vecs; vector += blockDim.x )
-			out4[vector] = vector < latent_vecs ? lat4[vector] : rope4[vector - latent_vecs];
-		return;
-	}
-	for ( uint32_t element = threadIdx.x; element < total; element += blockDim.x )
-		query[pair * total + element] = element < latent_dim ? latent[pair * latent_dim + element] :
-			q[pair * (nope + rope) + nope + element - latent_dim];
-}
-
-__global__ static void HySigmoidGateKernel(uint16_t *__restrict__ values, const uint16_t *__restrict__ gate_logits, uint64_t count)
-{
-	const uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
-	if ( LmIsAligned16(values) && LmIsAligned16(gate_logits) )
-	{
-		const uint64_t vecs = count >> 3u;
-		uint4 *val4 = (uint4 *)values;
-		const uint4 *gate4 = (const uint4 *)gate_logits;
-		for ( uint64_t v = tid; v < vecs; v += stride )
-		{
-			uint16_t v_bits[8], g_bits[8];
-			float out_f[8];
-			LmUnpackUint4Bf16(val4[v], v_bits);
-			LmUnpackUint4Bf16(gate4[v], g_bits);
-#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(g_bits[k]))));
-				out_f[k] = LmBf16ToFloat(v_bits[k]) * gate;
-			}
-			val4[v] = LmPackUint4FloatToBf16(out_f);
-		}
-		for ( uint64_t index = (vecs << 3u) + tid; index < count; index += stride )
-		{
-			const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
-			values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
-		}
-		return;
-	}
-	for ( uint64_t index = tid; index < count; index += stride )
-	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
-		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
-	}
-}
-
-__global__ static void HyScaleRowsKernel(float *__restrict__ values, uint64_t count, float scale)
-{
-	const uint64_t tid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	const uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
-	if ( LmIsAligned16(values) )
-	{
-		const uint64_t vecs = count >> 2u;
-		float4 *val4 = (float4 *)values;
-		for ( uint64_t v = tid; v < vecs; v += stride )
-		{
-			float4 item = val4[v];
-			item.x *= scale;
-			item.y *= scale;
-			item.z *= scale;
-			item.w *= scale;
-			val4[v] = item;
-		}
-		for ( uint64_t index = (vecs << 2u) + tid; index < count; index += stride )
-			values[index] *= scale;
-		return;
-	}
-	for ( uint64_t index = tid; index < count; index += stride )
-		values[index] *= scale;
-}
-
 template<class G>
 struct HyModel : CudaStage<HyModel<G>>
 {
@@ -410,12 +248,6 @@ struct HyModel : CudaStage<HyModel<G>>
 	static const char *WeightdModel(void)
 	{
 		return G::Name();
-	}
-
-	static uint32_t Blocks(uint64_t elements)
-	{
-		const uint64_t blocks = (elements + HY_THREADS - 1u) / HY_THREADS;
-		return (uint32_t)(blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u);
 	}
 
 	static LmScaleTensor Scales(const uint8_t *scale, uint32_t groups, uint32_t rows, uint32_t input_dimension)
@@ -470,8 +302,8 @@ struct HyModel : CudaStage<HyModel<G>>
 			state->index_q, step->positions, G::kIndexHeads, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->index_k, step->positions, 1u, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
-		LM_LAUNCH((HyScaleRowsKernel), Blocks(((uint64_t)rows * G::kIndexHeads + 3u) >> 2u), HY_THREADS, 0, stream, state->index_weights, (uint64_t)rows * G::kIndexHeads,
-			(float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
+		LM_LAUNCH((LmScaleElementsKernel<float>), LmGridBlocks<HY_THREADS>(((uint64_t)rows * G::kIndexHeads + 3u) >> 2u), HY_THREADS, 0, stream, state->index_weights,
+			(uint64_t)rows * G::kIndexHeads, (float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::IndexKv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->index_k, step->sequence_of_row,
 			step->positions, rows, G::kIndexDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -516,8 +348,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( LinearPair(layer->q_a, layer->kv_a, state->normed, state->q_resid, state->kv, rows, G::kHidden, G::kQLora, S::kSlot, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kQLora>), rows, HY_THREADS, 0, stream, state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
-			G::kEpsilon);
+		LM_LAUNCH((LmBf16RmsNormKernel<HY_THREADS>), rows, HY_THREADS, (G::kQLora + LmBlockWarps<HY_THREADS>()) * sizeof(float), stream, state->q_resid,
+			layer->q_norm, state->q_resid, G::kQLora, G::kQLora, G::kEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK ||
 			LmPerHeadProjectChainLaunch<HY_THREADS,G::kNope,G::kLatent,S::kQkDim,0u>(state->q, layer->uk, state->q_latent, S::kRankHeads, rows, stream,
@@ -525,9 +357,10 @@ struct HyModel : CudaStage<HyModel<G>>
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,S::kRankHeads), HY_THREADS, 0, stream,
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
-		LM_LAUNCH((HyQueryPackKernel), dim3(rows, S::kRankHeads), HY_THREADS, 0, stream, state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
+		LM_LAUNCH((LmQueryRopePackKernel), dim3(rows, S::kRankHeads), HY_THREADS, 0, stream, state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
 			G::kNope, G::kRope);
-		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kLatent>), rows, HY_THREADS, 0, stream, state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
+		LM_LAUNCH((LmBf16RmsNormKernel<HY_THREADS>), rows, HY_THREADS, (G::kLatent + LmBlockWarps<HY_THREADS>()) * sizeof(float), stream, state->kv,
+			layer->kv_norm, state->kv, G::kLatent, S::kSlot, G::kEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
@@ -556,8 +389,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			LmPerHeadProjectChainLaunch<HY_THREADS,G::kLatent,G::kValueDim>(state->latent, layer->uv, state->value, S::kRankHeads, rows, stream,
 				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((HySigmoidGateKernel), Blocks(((uint64_t)rows * S::kRankHeads * G::kValueDim + 7u) >> 3u), HY_THREADS, 0, stream, state->value, state->gate,
-			(uint64_t)rows * S::kRankHeads * G::kValueDim);
+		LM_LAUNCH((LmOutputGateKernel<HY_THREADS, true>), rows, HY_THREADS, 0, stream, state->value, state->gate, S::kRankHeads * G::kValueDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->out, state->value, state->partial, rows, S::kRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -613,7 +445,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			LmLocalExpertsUp<LmMxfp8>(expert_routes, layer->moe_w3.weight, Scales(layer->moe_w3.scale, G::kLocalExperts, G::kMoeInter, G::kHidden),
 				normed, state->expert_up, G::kHidden, G::kMoeInter, stream, exact) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), HY_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(LmGridBlocks<HY_THREADS>(G::kMoeInter), routes), HY_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter, G::kSwigluLimit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmLocalExpertsDown<LmMxfp8>(expert_routes, layer->moe_w2.weight, Scales(layer->moe_w2.scale, G::kLocalExperts, G::kHidden, G::kMoeInter),
@@ -625,14 +457,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, state->shared_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmGridBlocks<HY_THREADS>(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
-		LM_LAUNCH((LmHcExpandFlatKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, frame.step->hidden_bf16,
+		LM_LAUNCH((LmHcExpandFlatKernel<G::kStreams>), dim3(LmGridBlocks<HY_THREADS>(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, frame.step->hidden_bf16,
 			state->streams, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
@@ -644,14 +476,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		LmHcMix<HY_THREADS,G::kStreams,2u * G::kStreams,G::kHidden>(state->streams, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn,
 			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, ffn ? layer.mlp_hc_base : layer.attn_hc_base, state->hc_partial, state->hc_post, state->mixed, rows,
 			G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude, frame.stream);
-		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kHidden>), rows, HY_THREADS, 0, frame.stream, state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
-			G::kHidden, G::kHidden, G::kEpsilon);
+		LM_LAUNCH((LmBf16RmsNormKernel<HY_THREADS>), rows, HY_THREADS, (G::kHidden + LmBlockWarps<HY_THREADS>()) * sizeof(float), frame.stream, state->mixed,
+			ffn ? layer.post_norm : layer.input_norm, state->normed, G::kHidden, G::kHidden, G::kEpsilon);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
-		LM_LAUNCH((LmHcPostKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, state->streams, state->hc_post,
+		LM_LAUNCH((LmHcPostKernel<G::kStreams>), dim3(LmGridBlocks<HY_THREADS>(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, state->streams, state->hc_post,
 			state->partial, G::kHidden);
 		return SPARK_STATUS_OK;
 	}

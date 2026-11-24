@@ -1,2 +1,0 @@
-+26
-Vectorized and warp-parallel attention, shard merge/compact, GQA, and delta-rule kernels (PR #2133), shrunk by -317 net lines via shared shard_reduce.cuh consolidation.

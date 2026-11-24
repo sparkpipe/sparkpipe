@@ -1,2 +1,0 @@
-+85
-Shared vector/reduction primitives in vec.cuh and deduplication across norm, hyper_mix, moe_local, project, project_chain, route, and mma kernels (reduced from +1263 after deleting 1178 net non-test lines).

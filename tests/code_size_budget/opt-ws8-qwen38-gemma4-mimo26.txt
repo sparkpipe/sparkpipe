@@ -1,2 +1,0 @@
-+660
-Vectorize custom BF16 kernels with uint4 fast paths and exact scalar fallbacks across qwen38_hybrid_stage.cuh (including QwenIndexScoreKernel key caching + LDS.128 broadcast and QwenHybridRowDotKernel vectorized loads + warp-shuffle reduction), gemma4_stage.cuh (all 12 BF16 elementwise/pack/split/norm/combine kernels with register staging and fused dual-sum reduction), and mimo26_stage.cuh (replacing scalar MimoMoeCombineKernel with LmMoeLocalWeightedFinalizeKernel plus 5 vectorized BF16 kernels).
