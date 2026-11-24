@@ -18,7 +18,7 @@ static SparkStatus SparkK3PackReadConfig(const SparkNamedPack *named, SparkK3Pac
 	for ( uint32_t index = 0u; index < 19u; index++ )
 	{
 		if ( SparkNamedPackConfigU32(named, names[index], &values[index]) != SPARK_STATUS_OK )
-			return(SPARK_STATUS_VALIDATION_FAILED);
+			SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	}
 	config->hidden = values[0];
 	config->layers = values[1];
@@ -51,11 +51,11 @@ SparkStatus SparkK3PackOpen(const char *path, SparkK3Pack *pack)
 {
 	SparkStatus status;
 	if ( pack == 0 || path == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(pack, 0, sizeof(*pack));
 	pack->private_state = (struct SparkK3PackPrivate *)calloc(1u, sizeof(*pack->private_state));
 	if ( pack->private_state == 0 )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkNamedPackOpen(path, SPARK_K3_PACK_MAGIC, SPARK_K3_PACK_FORMAT_VERSION, SPARK_K3_PACK_ALIGNMENT,
 		&pack->private_state->named);
 	if ( status == SPARK_STATUS_OK )
@@ -85,7 +85,7 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name, SparkK3Pac
 	SparkNamedPackEntry named;
 	SparkStatus status;
 	if ( pack == 0 || pack->private_state == 0 || name == 0 || entry == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	memset(entry, 0, sizeof(*entry));
 	snprintf(entry->name, sizeof(entry->name), "%s", name);
 	status = SparkNamedPackEntryLoad(&pack->private_state->named, name, &named);
@@ -98,7 +98,7 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name, SparkK3Pac
 	else if ( strcmp(named.kind, "mxfp4_ws_interleaved_v1") == 0 )
 		entry->kind = SPARK_K3_PACK_KIND_MXFP4_WS_INTERLEAVED_V1;
 	else
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	entry->payload_offset = named.payload_offset;
 	entry->bytes = named.bytes;
 	entry->shape_count = named.shape_count;
@@ -109,6 +109,6 @@ SparkStatus SparkK3PackLoadEntry(SparkK3Pack *pack, const char *name, SparkK3Pac
 SparkStatus SparkK3PackLoadInterleaveTileK(SparkK3Pack *pack, const char *name, uint32_t *tile_k)
 {
 	if ( pack == 0 || pack->private_state == 0 || name == 0 || tile_k == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SparkNamedPackTensorFieldU32(&pack->private_state->named, name, "interleave", "tile_k", tile_k));
 }

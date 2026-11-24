@@ -12,13 +12,14 @@ static SparkStatus SparkK3BindResolve(SparkK3Pack *pack,
 {
 	char full_name[SPARK_K3_PACK_MAX_NAME_BYTES];
 	if ( bound->tensor_count >= SPARK_K3_BIND_MAX_NAMES )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	snprintf(full_name, sizeof(full_name), "%s%u.%s", K3_LAYER_PREFIX,
 		bound->layer_index, short_name);
 	bound->tensors[bound->tensor_count].name = short_name;
-	return(SparkK3PackLoadEntry(pack, full_name,
-		&bound->tensors[bound->tensor_count].entry) == SPARK_STATUS_OK ?
-		(++bound->tensor_count, SPARK_STATUS_OK) : SPARK_STATUS_VALIDATION_FAILED);
+	if ( SparkK3PackLoadEntry(pack, full_name, &bound->tensors[bound->tensor_count].entry) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	bound->tensor_count++;
+	return(SPARK_STATUS_OK);
 }
 
 #define BIND_ONE(bound, pack, name) \
@@ -58,7 +59,7 @@ static SparkStatus SparkK3BindAllOrNone(SparkK3Pack *pack, SparkK3BoundLayer *bo
 		present += SparkK3PackLoadEntry(pack, full_name, &probe) == SPARK_STATUS_OK ? 1u : 0u;
 	}
 	if ( present != 0u && present != count )
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	for ( uint32_t i = 0u; present != 0u && i < count; i++ )
 		BIND_ONE(bound, pack, names[i]);
 	return(SPARK_STATUS_OK);
@@ -116,9 +117,9 @@ SparkStatus SparkK3BindLayer(SparkK3Pack *pack, uint32_t layer_index,
 {
 	SparkStatus status;
 	if ( pack == 0 || bound == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( layer_index >= pack->config.total_layers )
-		return(SPARK_STATUS_VALIDATION_FAILED);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
 	memset(bound, 0, sizeof(*bound));
 	bound->layer_index = layer_index;
 	bound->layer_is_gdn = !SparkK3LayerIsMla(layer_index);

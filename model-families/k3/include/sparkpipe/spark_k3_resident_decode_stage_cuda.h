@@ -1,13 +1,75 @@
 #pragma once
 struct SparkWeightdLazyPack;
-
+struct K3SliceState;
+struct K3LayerBuffers;
+struct LmKvView;
+struct LmFrameError;
+#include <stddef.h>
 #include <stdint.h>
-
 #include "sparkpipe/spark_k3_bind.h"
 #include "sparkpipe/spark_k3_pack_load.h"
 #include "sparkpipe/spark_k3_pool_sizing.h"
-#include "model-families/k3/source/slice.cuh"
 #include "sparkpipe/spark_gpu.h"
+
+typedef struct K3LayerWeights
+{
+	const void *attn_norm_weight;
+	const void *mlp_norm_weight;
+	const void *kda_qkv_beta_weight;
+	const void *kda_decay_down_weight;
+	const float *kda_q_conv_weight;
+	const float *kda_k_conv_weight;
+	const float *kda_v_conv_weight;
+	const void *kda_decay_up_weight;
+	const float *kda_decay_bias;
+	const float *kda_head_log_scale;
+	const void *kda_gate_weight;
+	const float *kda_out_norm_weight;
+	const void *kda_out_weight;
+	const void *kda_out_scale;
+	const void *mla_q_down_weight;
+	const void *mla_q_down_scale;
+	const void *mla_q_norm_weight;
+	const void *mla_q_up_weight;
+	const void *mla_q_up_scale;
+	const void *mla_kv_a_weight;
+	const void *mla_kv_a_scale;
+	const void *mla_kv_a_norm_weight;
+	const void *mla_kv_b_value_weight;
+	const void *mla_q_b_weight;
+	const void *mla_kv_b_key_full_weight;
+	const void *mla_kv_b_value_full_weight;
+	const void *mla_kv_b_scale;
+	const void *mla_gate_weight;
+	const void *mla_out_weight;
+	const void *mla_out_scale;
+	const void *mla_index_query_weight;
+	const void *mla_index_key_weight;
+	const void *mla_index_head_weight;
+	const void *mla_index_norm_weight;
+	const void *mla_index_norm_bias;
+	const void *router_weight;
+	const float *router_bias;
+	const void *routed_down_weight;
+	const void *routed_down_scale;
+	const void *routed_up_weight;
+	const void *routed_up_scale;
+	const void *routed_norm_weight;
+	const void *expert_w1_weight;
+	const void *expert_w2_weight;
+	uint32_t expert_interleave;
+	uint32_t expert_tile_k;
+	const void *shared_w1_weight;
+	const void *shared_w1_scale;
+	const void *shared_w2_weight;
+	const void *shared_w2_scale;
+	const void *dense_gate_up_weight;
+	const void *dense_gate_up_scale;
+	const void *dense_down_weight;
+	const void *dense_down_scale;
+	const void *attnres_attn_weight;
+	const void *attnres_mlp_weight;
+} K3LayerWeights;
 
 
 #define SPARK_K3_DISPATCH_OK 0
@@ -78,8 +140,8 @@ typedef struct SparkK3Dispatch
 	K3SliceState *slice_state;
 	K3LayerBuffers *buffers;
 	K3LayerBuffers *buffers_host;
-	LmKvView *mla_cache;
-	LmKvAccessError *access_error;
+	struct LmKvView *mla_cache;
+	struct LmFrameError *access_error;
 	uint8_t *kv_pool;
 	uint32_t *page_table;
 	uint8_t *kda_state_pool;
@@ -110,8 +172,8 @@ typedef struct SparkK3Dispatch
 	uint64_t replay_bytes;
 	uint32_t replay_rows;
 	uint32_t indexed;
-	LmKvView *index_cache;
-	LmKvAccessError *index_access_error;
+	struct LmKvView *index_cache;
+	struct LmFrameError *index_access_error;
 	uint8_t *index_scratch;
 	uint64_t index_scratch_bytes;
 	int device;

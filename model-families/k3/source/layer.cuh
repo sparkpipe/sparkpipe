@@ -13,7 +13,6 @@
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
 #include "sparkpipe/spark_head_screen.h"
-#include "sparkpipe/spark_lm_certified_launch.h"
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/attn_shard_prefill.cuh"
