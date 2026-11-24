@@ -169,6 +169,7 @@ struct QwenHybridState : CudaStagePackState
 	uint16_t *shared_logit;
 	uint8_t *gdn_state;
 	uint16_t *gdn_window;
+	float *gdn_snapshots;
 	uint16_t *replay_qkv;
 	uint16_t *replay_ba;
 	uint16_t *replay_ple;
@@ -535,7 +536,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static constexpr bool kLanes = true;
 	static constexpr bool kKeepRows = G::kVerifyRows != 0u;
+	static constexpr bool kTreeVerify = !S::kPle && !S::kIndexer && G::kVerifyRows != 0u;
 	static constexpr bool kTapPlan = true;
+	static constexpr bool kGraphKey = true;
 	static constexpr uint32_t kChunkRows = G::kMoe ? QH_MOE_LANE_ROWS : 0u;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = G::kHidden;
@@ -593,11 +596,13 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		const uint32_t *kept, uint32_t commit, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows, sequences = step->sequences, heads = state->gdn_heads;
+		const uint32_t tree = step->tree != 0u && commit == 0u ? 1u : 0u;
 		uint8_t *state_pool = state->gdn_state + (uint64_t)layer->recurrent_index * state->slots * state->gdn_state_bytes;
 		uint16_t *window = state->gdn_window + (uint64_t)layer->recurrent_index * state->slots * (state->gdn_window_bytes / sizeof(uint16_t));
 		LmQkvLayout layout;
 		if ( LmCausalConvLaunch<QH_CONV,LM_CONV_SWISH,uint16_t>(window, step->recurrent_index, step->sequence_row_begin, kept, qkv, layer->gdn_conv,
-			state->qkv, state->gdn_channels, sequences, commit, step->sequence_row_indices, rows, stream) != SPARK_GPU_SUCCESS )
+			state->qkv, state->gdn_channels, sequences, commit, step->sequence_row_indices, rows, stream,
+			tree != 0u ? step->parent_rows : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		layout.query_dimension = state->gdn_qk;
 		layout.key_dimension = state->gdn_qk;
@@ -613,7 +618,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			ba + heads, ba, layer->gdn_a_log, layer->gdn_dt_bias, state->retention, state->write_gate, heads, rows, 2u * heads);
 		if ( LmDeltaRuleLaunch<QH_THREADS,QH_KEY_DIM,QH_VALUE_DIM,float>(rows, state_pool, (uint32_t)state->gdn_state_bytes, step->recurrent_index,
 				step->sequence_row_begin, kept, state->query_heads, state->key_heads, state->value, state->retention, state->write_gate, state->mixed,
-				heads, 1u, sequences, commit, step->sequence_row_indices, stream) != SPARK_GPU_SUCCESS )
+				heads, 1u, sequences, commit, step->sequence_row_indices, stream,
+				tree != 0u ? step->state_loads : (const uint32_t *)0, tree != 0u ? step->state_saves : (const uint32_t *)0,
+				tree != 0u ? state->gdn_snapshots : (float *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		return CudaStageLaunched();
 	}
@@ -641,7 +648,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				stream) != SPARK_GPU_SUCCESS) )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		status = GdnRecur(state, layer, step, state->qkv, state->ba, (const uint32_t *)0, step->commit, stream);
+		status = GdnRecur(state, layer, step, step->tree != 0u ? state->replay_qkv + replay * state->gdn_channels : state->qkv, state->ba,
+			(const uint32_t *)0, step->commit, stream);
 		CudaStageRowState(state, layer->recurrent_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( status != SPARK_STATUS_OK )
 			return status;
@@ -756,7 +764,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->attn_slot, S::kKvWidth, S::kKvWidth);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,QH_THREADS>), rows, QH_THREADS, 0, stream,
-			*view, state->attn_slot, step->sequence_of_row, step->positions, rows, 2u * S::kKvWidth);
+			*view, state->attn_slot, step->sequence_of_row, step->tree != 0u ? step->slots : step->positions, rows, 2u * S::kKvWidth);
 		if constexpr ( S::kIndexer )
 		{
 			status = IndexPrepare(state, layer, step, stream);
@@ -771,7 +779,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<typename S::Kv,LmKvShardView,G::kKvHeads,G::kHeadDim,G::kHeadDim>(*view, state->attn_query, G::kHeads,
 				step->sequence_of_row, step->context_length, step->positions, 1.0f / sqrtf((float)G::kHeadDim), state->send, stride, rows, stream,
-				S::kIndexer ? state->index_mask : (const uint32_t *)0, state->index_mask_words, G::kIndexRatio) != SPARK_GPU_SUCCESS )
+				S::kIndexer ? state->index_mask : (const uint32_t *)0, state->index_mask_words, G::kIndexRatio, 0u,
+				step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+				step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
@@ -1001,6 +1011,9 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots || (step->commit == 0u && step->rows > G::kVerifyRows) )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		if ( step->tree != 0u && (!kTreeVerify || step->commit != 0u || step->sequences != 1u || state->gdn_snapshots == 0 || step->slots == 0 ||
+			step->fork_positions == 0 || step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 || step->state_saves == 0) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		frame->step = step;
 		frame->stream = stream;
 		if ( state->dump != 0 )
@@ -1146,6 +1159,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			{ (void **)&state->shared_logit, rows * (G::kMoe ? 1u : 0u) * sizeof(uint16_t) },
 			{ (void **)&state->gdn_state, (uint64_t)S::kGdnLayers * slots * state->gdn_state_bytes },
 			{ (void **)&state->gdn_window, (uint64_t)S::kGdnLayers * slots * state->gdn_window_bytes },
+			{ (void **)&state->gdn_snapshots, replay != 0u && kTreeVerify ? LmDeltaRuleSnapshotBytes(state->gdn_heads, QH_KEY_DIM, QH_VALUE_DIM) : 0u },
 			{ (void **)&state->replay_qkv, (uint64_t)S::kGdnLayers * replay * state->gdn_channels * sizeof(uint16_t) },
 			{ (void **)&state->replay_ba, (uint64_t)S::kGdnLayers * replay * 2u * state->gdn_heads * sizeof(uint16_t) },
 			{ (void **)&state->replay_ple, S::kPle ? replay * S::kResidual * sizeof(uint16_t) : 0u },
@@ -1322,6 +1336,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
+		geometry->tree_verify = kTreeVerify ? 1u : 0u;
+		geometry->graph_ignores_gather = 1u;
 		geometry->head_prenormed = S::kHyper ? 1u : 0u;
 		return CudaStage<QwenHybridModel>::HeadRanges(state, geometry, false, S::kHyper);
 	}
@@ -1533,6 +1549,15 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
+	static uint32_t GraphKey(void *model, const SparkStageRunnerStep *step)
+	{
+		if ( ((const State *)model)->dump != 0 )
+			return 0u;
+		if ( step->commit == 0u && step->last_rows_only == 0u && step->sequences == 1u && step->rows > 1u && step->rows <= G::kVerifyRows )
+			return step->tree != 0u && !kTreeVerify ? 0u : 2u;
+		return 1u;
+	}
+
 	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
 		State *state = (State *)model;
@@ -1540,6 +1565,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		SparkStatus status = SPARK_STATUS_OK;
 		if ( G::kVerifyRows == 0u || kept == 0 || step->commit != 0u || step->rows == 0u || step->rows > G::kVerifyRows || step->sequences == 0u ||
 			step->sequences > state->slots || (S::kPle && step->token_ids == 0) )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree != 0u && (!kTreeVerify || step->sequences != 1u || step->slots == 0 || step->sequence_row_indices == 0) )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; ++index )
 		{
@@ -1552,6 +1579,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 					LM_LAUNCH((QwenIndexTailKernel<G>), step->sequences, G::kIndexDim, 0, stream, state->replay_index +
 						(uint64_t)layer->kv_index * G::kVerifyRows * G::kIndexDim, state->index_tail + (uint64_t)layer->kv_index * state->slots * S::kIndexTail *
 						G::kIndexDim, step->positions, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index, 1u, kept);
+					status = CudaStageLaunched();
+				}
+				else if ( step->tree != 0u )
+				{
+					CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+					LM_LAUNCH((LmKvShardPathMoveKernel<typename S::Kv,QH_THREADS>), G::kVerifyRows, QH_THREADS, 0, stream,
+						state->kv_views[layer->kv_index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, 2u * S::kKvWidth);
+					CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 					status = CudaStageLaunched();
 				}
 				continue;
