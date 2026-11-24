@@ -34,15 +34,6 @@ typedef struct SparkK3RunnerLane
 } SparkK3RunnerLane;
 
 
-__global__ static void K3RunnerDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
-{
-	if ( threadIdx.x == 0u )
-	{
-		offsets[0] = 0u;
-		offsets[1] = rows;
-	}
-}
-
 typedef struct SparkK3RunnerTpContext SparkK3RunnerTpContext;
 
 
@@ -92,16 +83,6 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 		fused[i] = attention[i];
 	else
 		fused[i] = segments == 2u ? LmFloatToBf16(LmBf16ToFloat(hidden[i]) + LmBf16ToFloat(shared[i])) : hidden[i];
-}
-
-__global__ static void K3RunnerLatentRowsKernel(const uint16_t *gathered, uint16_t *latent,
-	uint32_t rows, uint32_t slice, uint32_t ranks)
-{
-	const uint32_t row = blockIdx.y, column = (blockIdx.x * blockDim.x) + threadIdx.x;
-	if ( column >= slice * ranks )
-		return;
-	latent[(uint64_t)row * slice * ranks + column] =
-		gathered[((uint64_t)(column / slice) * rows + row) * slice + (column % slice)];
 }
 
 __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint16_t *query,
@@ -411,7 +392,7 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, Sp
 		LM_LAUNCH((K3RunnerLatentLogitsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, b->router_logits, rows, slice, experts, ranks);
 	else if ( rows > 1u )
-		LM_LAUNCH((K3RunnerLatentRowsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream,
+		LM_LAUNCH((LmRankMajorRowsKernel<256u>), dim3(LmVecBlocks<256u>(K3_ROUTED_EXPERT_HIDDEN), rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
@@ -1227,7 +1208,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.dense_tile_prefix = state->dense_tile_prefix;
 	state->rows = step->rows;
 	state->head_last_rows = step->last_rows_only;
-	LM_LAUNCH((K3RunnerDenseOffsetsKernel), 1u, 1u, 0, stream, state->dense_row_offset, step->rows);
+	LM_LAUNCH((LmDenseRowOffsetsKernel), 1u, 1u, 0, stream, state->dense_row_offset, step->rows);
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,

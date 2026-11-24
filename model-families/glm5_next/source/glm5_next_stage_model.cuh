@@ -726,7 +726,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 				state->kv_attached);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
-		LM_LAUNCH((Glm5NextDenseOffsetsKernel), 1u, 1u, 0, frame->stream, state->dense_row_offset, rows);
+		LM_LAUNCH((LmDenseRowOffsetsKernel), 1u, 1u, 0, frame->stream, state->dense_row_offset, rows);
 		return SPARK_STATUS_OK;
 	}
 

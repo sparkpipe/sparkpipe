@@ -428,90 +428,17 @@ static void K3PartialRows(const K3LayerBuffers *b, const uint16_t *value, uint32
 			partial,value,partial,count,K3_HIDDEN);
 }
 
-template<class Vec, uint32_t THREADS>
-static __device__ __forceinline__ void K3CopyRowVec(const void *__restrict__ src, void *__restrict__ dst, uint32_t count)
-{
-	const Vec *s = (const Vec *)src;
-	Vec *d = (Vec *)dst;
-	for (uint32_t i = threadIdx.x; i < count; i += THREADS)
-		d[i] = s[i];
-}
-
-template<uint32_t THREADS>
-static __device__ __forceinline__ void K3CopyRowBf16(const uint16_t *__restrict__ src, uint16_t *__restrict__ dst, uint32_t count)
-{
-	const uintptr_t bits = (uintptr_t)src | (uintptr_t)dst;
-	if ( (bits & 15u) == 0u && (count & 7u) == 0u )
-		K3CopyRowVec<uint4,THREADS>(src, dst, count >> 3u);
-	else if ( (bits & 7u) == 0u && (count & 3u) == 0u )
-		K3CopyRowVec<uint2,THREADS>(src, dst, count >> 2u);
-	else if ( (bits & 3u) == 0u && (count & 1u) == 0u )
-		K3CopyRowVec<uint32_t,THREADS>(src, dst, count >> 1u);
-	else
-		K3CopyRowVec<uint16_t,THREADS>(src, dst, count);
-}
-
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void K3LatentScatterKernel(const uint16_t *__restrict__ shard_bf16, uint16_t *__restrict__ full_bf16, uint32_t shard_dim, uint32_t shard_offset, uint32_t full_dim)
-{
-	const uint32_t row = blockIdx.y;
-	const uint32_t column = (blockIdx.x * THREADS) + threadIdx.x;
-	if ( (((uintptr_t)shard_bf16 | (uintptr_t)full_bf16) & 15u) == 0u && ((shard_dim | shard_offset | full_dim) & 7u) == 0u )
-	{
-		const uint32_t full_vec = full_dim >> 3u, shard_vec = shard_dim >> 3u, offset_vec = shard_offset >> 3u;
-		const uint4 zero = {0u, 0u, 0u, 0u};
-		if ( column < full_vec )
-			((uint4 *)full_bf16)[((uint64_t)row * full_vec) + column] =
-				(column >= offset_vec && column < offset_vec + shard_vec)
-					? ((const uint4 *)shard_bf16)[((uint64_t)row * shard_vec) + (column - offset_vec)] : zero;
-		return;
-	}
-	if ( column >= full_dim )
-		return;
-	full_bf16[((uint64_t)row * full_dim) + column] =
-		(column >= shard_offset && column < shard_offset + shard_dim)
-			? shard_bf16[((uint64_t)row * shard_dim) + (column - shard_offset)] : (uint16_t)0u;
-}
-
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1)
-void K3LatentSliceKernel(const uint16_t *__restrict__ full_bf16, uint16_t *__restrict__ shard_bf16, uint32_t rows, uint32_t shard_dim, uint32_t shard_offset, uint32_t full_dim)
-{
-	uint32_t row;
-	const uint32_t column = (blockIdx.x * THREADS) + threadIdx.x;
-	if ( (((uintptr_t)full_bf16 | (uintptr_t)shard_bf16) & 15u) == 0u && ((shard_dim | shard_offset | full_dim) & 7u) == 0u )
-	{
-		const uint32_t shard_vec = shard_dim >> 3u, offset_vec = shard_offset >> 3u, full_vec = full_dim >> 3u;
-		if ( column < shard_vec )
-		{
-			const uint4 *src = (const uint4 *)full_bf16;
-			uint4 *dst = (uint4 *)shard_bf16;
-			for (row = blockIdx.y; row < rows; row += gridDim.y)
-				dst[((uint64_t)row * shard_vec) + column] = src[((uint64_t)row * full_vec) + offset_vec + column];
-		}
-		return;
-	}
-	if ( column >= shard_dim )
-		return;
-	for (row = blockIdx.y; row < rows; row += gridDim.y)
-		shard_bf16[((uint64_t)row * shard_dim) + column] =
-			full_bf16[((uint64_t)row * full_dim) + shard_offset + column];
-}
-
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void K3SplitFusedProjectionsKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
 {
 	const uint32_t row = blockIdx.x;
-	const uint32_t k_offset = qk_dim, v_offset = 2u * qk_dim, beta_offset = v_offset + v_dim;
+	if ( row >= rows ) return;
 	const uint16_t *src = qkvb_bf16 + (uint64_t)row * fused_rows;
-	if ( row >= rows )
-		return;
-	K3CopyRowBf16<THREADS>(src, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
-	K3CopyRowBf16<THREADS>(src + k_offset, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
-	K3CopyRowBf16<THREADS>(src + v_offset, value_bf16 + (uint64_t)row * v_dim, v_dim);
-	K3CopyRowBf16<THREADS>(src + beta_offset, beta_bf16 + (uint64_t)row * heads, heads);
+	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
 }
 
 template<class Format>
@@ -1511,8 +1438,8 @@ static int32_t K3LayerMoeWeighted(const K3LayerBuffers *b, uint32_t rows,
 			SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t,true>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
 			b->latent_full_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_full_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
-		LM_LAUNCH((K3LatentSliceKernel<K3_LAYER_THREADS>), dim3((moe_in + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
-			b->latent_full_bf16,b->latent_bf16,rows,moe_in,b->tp_rank * moe_in,K3_ROUTED_EXPERT_HIDDEN);
+		LM_LAUNCH((LmSliceColumnsKernel<K3_LAYER_THREADS>), dim3(LmVecBlocks<K3_LAYER_THREADS>(moe_in), rows), K3_LAYER_THREADS, 0, stream,
+			b->latent_full_bf16, b->latent_bf16, K3_ROUTED_EXPERT_HIDDEN, b->tp_rank * moe_in, moe_in);
 		return(K3LayerMoeOutput<Format>(b,rows,multiprocessors,stream));
 	}
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,

@@ -1,2 +1,0 @@
-+48
-GLM 5 Next kernel modernization: router LmStreamGemmDense with fallback, per-head chain projections, grouped skinny MoE for rows=2..8, fused LmMoeFinalizeAddKernel, single-lookup/single-expf pool scoring, and uint4-vectorized index-pack and KDA split kernels.
