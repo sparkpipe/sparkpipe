@@ -11,6 +11,7 @@
 #include "inference/runner/device_stage_runner.h"
 #include "sparkpipe/spark_dsv41_flash_device_stage.h"
 #include "sparkpipe/spark_dsv41_flash_family.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_rope_plan.h"
 
 #define DD_SLICES 64u
@@ -360,7 +361,7 @@ struct D41Device
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		state->engram_fd = -1;
 		Shapes(state);
 		const SparkDeviceStageRecurrentPlan pools[] = { { kPairCaches, 2u * kHeadDim * sizeof(float) }, { 1u, kHistory * sizeof(int32_t) } };
@@ -397,7 +398,7 @@ struct D41Device
 		if ( SparkNamedPackOpen(path, SPARK_NAMED_PACK_MAGIC, SPARK_NAMED_PACK_VERSION, DD_ALIGNMENT, &state->engram_pack) != SPARK_STATUS_OK )
 		{
 			fprintf(stderr, "%s: cannot open the engram tables %s beside the rank pack\n", state->shape.tag, path);
-			return SPARK_STATUS_NOT_FOUND;
+			SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
 		}
 		state->engram_open = 1u;
 		state->engram_bytes = state->engram_pack.file_bytes;
@@ -598,7 +599,9 @@ struct D41Device
 		for ( uint64_t row = 0u; row < rows; row++ )
 			((float *)state->pre_init.host)[row * kStreams] = 1.0f;
 		state->host_last = (uint32_t *)calloc((size_t)rows, sizeof(uint32_t));
-		return state->host_last != 0 ? SPARK_STATUS_OK : SPARK_STATUS_CAPACITY_EXCEEDED;
+		if ( state->host_last == 0 )
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus BindDevice(void *model, const SparkStageRunnerDeviceWeights *weights, SparkStageRunnerModelGeometry *geometry)
