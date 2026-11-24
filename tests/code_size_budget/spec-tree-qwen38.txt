@@ -1,0 +1,2 @@
++36
+Qwen3.8 CUDA speculative tree verification and CUDA graph capture (#2151)
