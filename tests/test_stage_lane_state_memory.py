@@ -22,22 +22,29 @@ def main():
     failures = []
     with tempfile.TemporaryDirectory() as temporary:
         for name, model in sorted(stage_lane.MODELS.items()):
-            out = pathlib.Path(temporary) / name
-            result = render(name, out)
-            if result.returncode != 0:
-                failures.append(f"{name}: render failed: {result.stderr.strip()[-200:]}")
-                continue
-            adapters = [json.loads(path.read_text()) for path in sorted(out.glob("adapter.*.json"))]
-            floor = (2 * adapters[0]["resident_capacity"] + 2) * model["recurrent_bytes"]
-            for adapter in adapters:
-                if model["recurrent_bytes"] and adapter.get("state_memory_bytes", 0) < floor:
-                    failures.append(f"{name}: state_memory_bytes {adapter.get('state_memory_bytes')} below the binding's {floor}")
-                if not model["recurrent_bytes"] and "state_memory_bytes" in adapter:
-                    failures.append(f"{name}: a model without recurrent state names state_memory_bytes")
-            if model["recurrent_bytes"]:
-                short = render(name, pathlib.Path(temporary) / f"{name}-short", "--state-memory-bytes", str(floor - 1))
-                if short.returncode == 0 or "recurrent checkpoints" not in short.stderr:
-                    failures.append(f"{name}: state memory below two checkpoints per sequence plus two was accepted")
+            for sequences in (8, 32, 64):
+                out = pathlib.Path(temporary) / f"{name}-b{sequences}"
+                result = render(name, out, "--sequences", str(sequences))
+                if result.returncode != 0:
+                    failures.append(f"{name} (B={sequences}): render failed: {result.stderr.strip()[-200:]}")
+                    continue
+                adapters = [json.loads(path.read_text()) for path in sorted(out.glob("adapter.*.json"))]
+                deployment = json.loads((out / "deployment.json").read_text())
+                limits = deployment["runtime_limits"]
+                if limits["max_active_sequences"] != sequences or limits["resident_sequence_capacity"] != sequences:
+                    failures.append(f"{name} (B={sequences}): rendered limits {limits['max_active_sequences']}/{limits['resident_sequence_capacity']}")
+                floor = (2 * adapters[0]["resident_capacity"] + 2) * model["recurrent_bytes"]
+                for adapter in adapters:
+                    if adapter["max_sequences"] != sequences or adapter["resident_capacity"] != sequences:
+                        failures.append(f"{name} (B={sequences}): adapter sequences {adapter['max_sequences']}/{adapter['resident_capacity']}")
+                    if model["recurrent_bytes"] and adapter.get("state_memory_bytes", 0) < floor:
+                        failures.append(f"{name} (B={sequences}): state_memory_bytes {adapter.get('state_memory_bytes')} below the binding's {floor}")
+                    if not model["recurrent_bytes"] and "state_memory_bytes" in adapter:
+                        failures.append(f"{name} (B={sequences}): a model without recurrent state names state_memory_bytes")
+                if sequences == 8 and model["recurrent_bytes"]:
+                    short = render(name, pathlib.Path(temporary) / f"{name}-short", "--state-memory-bytes", str(floor - 1))
+                    if short.returncode == 0 or "recurrent checkpoints" not in short.stderr:
+                        failures.append(f"{name}: state memory below two checkpoints per sequence plus two was accepted")
     for line in failures:
         print("FAILED: " + line)
     if failures:

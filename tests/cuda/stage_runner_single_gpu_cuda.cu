@@ -225,24 +225,24 @@ static SparkStatus LoneHead(SparkStageRunnerState *state)
 	return SPARK_STATUS_OK;
 }
 
-static SparkStageRunnerState *LoneState(SparkStageRunnerModelInterface *model_interface, SparkStageRunner *runner, uint32_t input_width)
+static SparkStageRunnerState *LoneStateRows(SparkStageRunnerModelInterface *model_interface, SparkStageRunner *runner, uint32_t input_width, uint32_t max_rows)
 {
 	SparkStageRunnerState *state = new SparkStageRunnerState;
 	SparkStageRunnerConfiguration configuration;
 	memset(state, 0, sizeof(*state));
 	memset(&configuration, 0, sizeof(configuration));
-	configuration.max_input_row_count = LONE_ROWS;
-	configuration.max_active_sequence_count = LONE_ROWS;
-	configuration.resident_sequence_capacity = LONE_ROWS;
+	configuration.max_input_row_count = max_rows;
+	configuration.max_active_sequence_count = max_rows;
+	configuration.resident_sequence_capacity = max_rows;
 	state->model_interface = model_interface;
 	state->tp_degree = 1u;
-	state->max_rows = LONE_ROWS;
-	state->head_capacity = LONE_ROWS;
+	state->max_rows = max_rows;
+	state->head_capacity = max_rows;
 	state->vocab = LONE_VOCAB;
 	state->output_vocab = LONE_VOCAB;
 	state->vocab_slice_rows = LONE_VOCAB;
 	state->head_output_rows = LONE_VOCAB;
-	state->sequence_capacity = LONE_ROWS;
+	state->sequence_capacity = max_rows;
 	state->tap_final_entry = UINT32_MAX;
 	state->geometry.hidden = LONE_HIDDEN;
 	state->geometry.vocab = LONE_VOCAB;
@@ -255,6 +255,11 @@ static SparkStageRunnerState *LoneState(SparkStageRunnerModelInterface *model_in
 		StageRunnerCreateBuffers(state, runner, &configuration) != SPARK_STATUS_OK || StageRunnerAdoptQueue(state) != SPARK_STATUS_OK )
 		return 0;
 	return state;
+}
+
+static SparkStageRunnerState *LoneState(SparkStageRunnerModelInterface *model_interface, SparkStageRunner *runner, uint32_t input_width)
+{
+	return LoneStateRows(model_interface, runner, input_width, LONE_ROWS);
 }
 
 static SparkStatus LoneDecode(SparkStageRunner *runner, const uint32_t *tokens, uint32_t *positions_device, uint32_t *context_device,
@@ -356,10 +361,85 @@ static void LoneWideInput(void)
 	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_INVALID_ARGUMENT, "input rows shorter than the input width are refused");
 }
 
+static void LoneHighConcurrencyGraphs(uint32_t rows)
+{
+	SparkStageRunnerModelInterface model_interface;
+	SparkStageRunner runner;
+	SparkStageRunnerState *state;
+	SparkStageRunnerDispatch dispatch;
+	uint32_t first[64], second[64], positions[64], contexts[64], sequences[64], output_host[64];
+	uint32_t *positions_device = 0, *context_device = 0, *sequence_device = 0, *output_device = 0, slot, ok_first = 1u, ok_second = 1u;
+	SparkDeviceProgram *captured;
+	memset(&model_interface, 0, sizeof(model_interface));
+	memset(&runner, 0, sizeof(runner));
+	model_interface.tag = "lone-gpu-batch";
+	model_interface.step = LoneIdentityStep;
+	runner.owns_embedding = 1u;
+	runner.owns_final_head = 1u;
+	lone_steps = 0u;
+	state = LoneStateRows(&model_interface, &runner, 0u, rows);
+	Expect(state != 0, "a single-GPU runner supports high-concurrency decode rows");
+	if ( state == 0 )
+		return;
+	for ( uint32_t index = 0u; index < rows; ++index )
+	{
+		first[index] = (index * 3u + 1u) % LONE_VOCAB;
+		second[index] = (index * 5u + 17u) % LONE_VOCAB;
+		positions[index] = index + 2u;
+		contexts[index] = index + 3u;
+		sequences[index] = index;
+	}
+	if ( SparkGpuMalloc((void **)&positions_device, (size_t)rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&context_device, (size_t)rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&sequence_device, (size_t)rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc((void **)&output_device, (size_t)rows * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(positions_device, positions, (size_t)rows * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(context_device, contexts, (size_t)rows * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemcpy(sequence_device, sequences, (size_t)rows * sizeof(uint32_t), SPARK_GPU_COPY_HOST_TO_DEVICE) != SPARK_GPU_SUCCESS )
+	{
+		Expect(0, "high-concurrency decode buffers are allocated and uploaded");
+		return;
+	}
+	slot = StageRunnerGraphSlot(1u, rows, 0u, 0u);
+	Expect(StageRunnerGraphEligible(state, &runner, 1u, rows, rows) != 0u, "high-concurrency decode step is eligible for CUDA graph capture");
+	memset(&dispatch, 0, sizeof(dispatch));
+	dispatch.row_count = rows;
+	dispatch.active_sequence_count = rows;
+	dispatch.token_ids = first;
+	dispatch.positions = positions_device;
+	dispatch.context_length = context_device;
+	dispatch.sequence_of_row = sequence_device;
+	dispatch.output_token_ids = output_device;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "high-concurrency first decode wave succeeds");
+	Expect(SparkGpuMemcpy(output_host, output_device, (size_t)rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,
+		"high-concurrency first decode tokens copied back");
+	for ( uint32_t index = 0u; index < rows; ++index )
+		if ( output_host[index] != (first[index] + 1u) % LONE_VOCAB )
+			ok_first = 0u;
+	captured = state->graph_program[slot];
+	Expect(ok_first != 0u && captured != 0 && state->graph_launches == 1u && lone_steps == 1u,
+		"high-concurrency first decode wave captures graph and outputs all rows");
+	dispatch.token_ids = second;
+	Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_OK, "high-concurrency second decode wave succeeds");
+	Expect(SparkGpuMemcpy(output_host, output_device, (size_t)rows * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,
+		"high-concurrency second decode tokens copied back");
+	for ( uint32_t index = 0u; index < rows; ++index )
+		if ( output_host[index] != (second[index] + 1u) % LONE_VOCAB )
+			ok_second = 0u;
+	Expect(ok_second != 0u && state->graph_program[slot] == captured && state->graph_launches == 2u && lone_steps == 1u,
+		"high-concurrency second decode wave replays captured graph and outputs all rows");
+	SparkGpuFree(positions_device);
+	SparkGpuFree(context_device);
+	SparkGpuFree(sequence_device);
+	SparkGpuFree(output_device);
+}
+
 int main(void)
 {
 	LoneGraphs();
 	LoneWideInput();
+	LoneHighConcurrencyGraphs(32u);
+	LoneHighConcurrencyGraphs(64u);
 	if ( failures != 0 )
 	{
 		printf("FAIL stage_runner_single_gpu_cuda: %d failures\n", failures);

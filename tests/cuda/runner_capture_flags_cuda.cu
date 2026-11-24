@@ -110,9 +110,13 @@ static int GraphIdentityRules(void)
 static int GraphSlotRules(void)
 {
 	static uint8_t seen[STAGE_RUNNER_GRAPH_SLOTS];
-	if ( STAGE_RUNNER_GRAPH_KEYS != 10u || STAGE_RUNNER_GRAPH_ROWS != 32u )
+	SparkStageRunnerState state;
+	SparkStageRunner runner;
+	SparkStageRunnerModelInterface iface;
+	uint16_t dummy_head = 0u;
+	if ( STAGE_RUNNER_GRAPH_KEYS != 10u || STAGE_RUNNER_GRAPH_ROWS != 64u )
 	{
-		printf("FAIL expected 10 graph keys and 32 graph rows (got keys=%u rows=%u)\n", STAGE_RUNNER_GRAPH_KEYS, STAGE_RUNNER_GRAPH_ROWS);
+		printf("FAIL expected 10 graph keys and 64 graph rows (got keys=%u rows=%u)\n", STAGE_RUNNER_GRAPH_KEYS, STAGE_RUNNER_GRAPH_ROWS);
 		return 1;
 	}
 	memset(seen, 0, sizeof(seen));
@@ -129,6 +133,22 @@ static int GraphSlotRules(void)
 					}
 					seen[slot] = 1u;
 				}
+	memset(&state, 0, sizeof(state));
+	memset(&runner, 0, sizeof(runner));
+	memset(&iface, 0, sizeof(iface));
+	state.model_interface = &iface;
+	state.programs = 1u;
+	state.tp_degree = 1u;
+	state.head_weight = &dummy_head;
+	runner.owns_embedding = 1u;
+	runner.owns_final_head = 1u;
+	if ( StageRunnerGraphEligible(&state, &runner, 1u, 32u, 32u) == 0u ||
+		StageRunnerGraphEligible(&state, &runner, 1u, 64u, 64u) == 0u ||
+		StageRunnerGraphEligible(&state, &runner, 1u, 65u, 65u) != 0u )
+	{
+		printf("FAIL decode graphs must cover B=32 and B=64 and stop past STAGE_RUNNER_GRAPH_ROWS\n");
+		return 1;
+	}
 	return 0;
 }
 
@@ -220,9 +240,10 @@ static int AlternatingTreeGraphReplayRules(void)
 	}
 	if ( StageRunnerGraphEligible(state, &runner, 2u, 24u, 1u) != 1u ||
 		StageRunnerGraphEligible(state, &runner, 2u, 32u, 1u) != 1u ||
-		StageRunnerGraphEligible(state, &runner, 2u, 33u, 1u) != 0u )
+		StageRunnerGraphEligible(state, &runner, 2u, 64u, 1u) != 1u ||
+		StageRunnerGraphEligible(state, &runner, 2u, 65u, 1u) != 0u )
 	{
-		printf("FAIL graph row eligibility bounds (expected 24 and 32 eligible, 33 ineligible)\n");
+		printf("FAIL graph row eligibility bounds (expected 24, 32 and 64 eligible, 65 ineligible)\n");
 		failed = 1;
 	}
 	state->step_dispatch = &dispatch;
@@ -521,6 +542,6 @@ int main(void)
 	delete state;
 	if ( AlternatingTreeGraphReplayRules() != 0 )
 		return 1;
-	printf("PASS runner_capture_flags_cuda: graph replay follows the gather rule, alternating chain and tree verify graphs up to 32 rows keep separate slots without recapture, and a decode graph that cannot be captured aborts the rank\n");
+	printf("PASS runner_capture_flags_cuda: graph replay follows the gather rule, alternating chain and tree verify graphs up to 64 rows keep separate slots without recapture, and a decode graph that cannot be captured aborts the rank\n");
 	return 0;
 }
