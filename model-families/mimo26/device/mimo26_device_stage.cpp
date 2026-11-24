@@ -158,7 +158,9 @@ struct MimoDevice
 			return status;
 		SparkDeviceAttentionRopePrepare(&state->sliding, &state->sliding_rope);
 		SparkDeviceAttentionRopePrepare(&state->full, &state->full_rope);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		status = SparkDeviceStageGeometry(&state->stage, geometry);
+		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
+		return status;
 	}
 
 	static SparkStatus BindExpert(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *name, uint64_t rows,
@@ -307,6 +309,26 @@ struct MimoDevice
 		return MimoSchedule<G, MimoDevice>::Step((State *)model, step, queue);
 	}
 
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
+	{
+		State *state = (State *)model;
+		SparkDeviceKeepTensors keep;
+		SparkDeviceStepTensors frame;
+		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
+		if ( status != SPARK_STATUS_OK || step->tree == 0u || keep.moves == 0u )
+			return status;
+		status = SparkDeviceStageStepTables(&state->stage, step, &frame);
+		for ( uint32_t index = 0u; index < G::kLayers && status == SPARK_STATUS_OK; index++ )
+		{
+			const SparkDeviceAttentionShape &a = L::Full(index) ? state->full : state->sliding;
+			SparkOpsPaged paged = SparkDeviceStagePaged(&state->stage, &frame, index);
+			SparkKvParams move = { keep.moves, a.kv_heads, a.head_dimension, paged.page_slots, paged.pages_per_sequence, 0u, 0u, 0u, paged.pool_pages, a.value_dimension, 0u, 0u };
+			paged.kv_heads = a.kv_heads;
+			status = SparkOpsKvMove(state->stage.ops, (SparkDeviceQueue *)queue, &paged, keep.move_sources, keep.move_destinations, &move);
+		}
+		return status;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface interface_table =
@@ -328,7 +350,7 @@ struct MimoDevice
 			SparkDeviceStageReport,
 			0,
 			SparkDeviceStageLane,
-			0,
+			KeepRows,
 			0,
 			BindDevice,
 			0,

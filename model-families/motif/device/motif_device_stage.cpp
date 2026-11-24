@@ -215,7 +215,9 @@ struct MotifDevice
 			return status;
 		SparkDeviceLatentAttentionRopePrepare(&state->window_shape, kHeads, &state->window_rope);
 		SparkDeviceLatentAttentionRopePrepare(&state->full_shape, kHeads, &state->full_rope);
-		return SparkDeviceStageGeometry(&state->stage, geometry);
+		status = SparkDeviceStageGeometry(&state->stage, geometry);
+		geometry->tree_verify = status == SPARK_STATUS_OK ? 1u : 0u;
+		return status;
 	}
 
 	static SparkStatus BindHyper(State *state, const SparkStageRunnerDeviceWeights *weights, uint32_t index, const char *prefix, Hyper *hyper)
@@ -504,6 +506,16 @@ struct MotifDevice
 		return MotifSchedule<G, MotifDevice>::Step((State *)model, step, queue);
 	}
 
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *queue)
+	{
+		State *state = (State *)model;
+		SparkDeviceKeepTensors keep;
+		SparkStatus status = SparkDeviceStageKeepTables(&state->stage, step, kept, &keep);
+		if ( status == SPARK_STATUS_OK && step->tree != 0u )
+			status = SparkDeviceStageKeepRelocate(&state->stage, (SparkDeviceQueue *)queue, step, &keep);
+		return status;
+	}
+
 	static const SparkStageRunnerModelInterface *Interface(void)
 	{
 		static const SparkStageRunnerModelInterface interface_table =
@@ -525,7 +537,7 @@ struct MotifDevice
 			SparkDeviceStageReport,
 			0,
 			SparkDeviceStageLane,
-			0,
+			KeepRows,
 			0,
 			BindDevice,
 			0,
