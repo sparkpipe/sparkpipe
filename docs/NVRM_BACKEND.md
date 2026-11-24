@@ -875,6 +875,54 @@ steps it holds.
 - **Faults.** A fault report during a run names the program, the step its
   semaphore had reached, and that step's kernel.
 
+## Compute exclusivity while serving
+
+While residentd serves on a GPU, it is the only process that submits
+compute work there. Hosted Sparks carry no NVIDIA user space, and anyone
+who runs their own GPU code on a node stops our engine first.
+
+- **Why.** A channel the backend opens has the module's default compute
+  preemption, wait for idle, so switching its context out waits for every
+  running grid to end. The mesh waits in
+  `model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh` spin
+  on the SMs until a peer's data lands or their deadline passes, which can
+  take seconds when a peer is late. If another process submits compute
+  work while such a wait spins, the switch outlasts the module's context
+  switch timeout (`RmEngineContextSwitchTimeoutUs`, 0x3fffff us, about
+  4.19 s, by default): the module logs Xid 109 (`CTX SWITCH TIMEOUT`) and
+  recovers the channel, and the engine faults.
+- **Without long spins.** Kernels that end switch out at their boundaries.
+  On GB10 the Qwen3.8-27B BF16 TP1 engine, which has no mesh waits, served
+  four rounds of four requests on each flavour while another process ran a
+  plain kernel every 5 s (193 kernels, 2026-11-22). Every round's output
+  matched the first round's, no Xid was logged, and nvrm against CUDA stayed
+  at +4.9% per token at p50, against +5.0% without the other process.
+- **When weightd dies under a serving engine.** residentd's
+  `SparkTpMeshGateAwait` spins on the gate that weightd's mesh thread
+  writes, so with weightd gone the wait spins until its deadline. The fleet
+  agent's `ensure_weightd` (`tools/fleet_node_agent.sh`) starts a new
+  weightd as soon as it finds none, and does not stop the running residentd
+  first. The new weightd opens the GPU and submits work while the old
+  engine's waits still spin, which is the Xid 109 case above. The agent
+  must stop the dependent engines before it starts a new weightd
+  ([TECHDEBT.md](../TECHDEBT.md)).
+- **Inside residentd.** All compute channels of a process share one channel
+  group and one subcontext (`SparkNvrmChannelOpen`), so its own queues
+  never need a context switch between them. Copies run in a second channel
+  group on an asynchronous copy engine, which does not hold the graphics
+  engine.
+- **Instruction-level preemption does not help.** The module accepts
+  `NV2080_CTRL_CMD_GR_SET_CTXSW_PREEMPTION_MODE` with compute mode CILP on
+  our compute channel, and `NV2080_CTRL_CMD_GR_GET_CTXSW_MODES` reads it
+  back. The control is routed to GSP-RM (`ROUTE_TO_PHYSICAL`). On GB10 a
+  spinning grid still took Xid 109 at the first foreign kernel. This held
+  with preemption buffers bound through `NV2080_CTRL_CMD_GR_CTXSW_PREEMPTION_BIND`,
+  with shader exceptions enabled, in a synchronous subcontext, with the
+  mode set before the compute object, and with fence releases that skip
+  the host's wait for idle. CUDA beside the same foreign kernels kept
+  running. [TECHDEBT.md](../TECHDEBT.md) records the path if co-tenancy is
+  ever needed.
+
 ## Faults and stalls
 
 A wait never hangs on a GPU that has stopped: it fails with
@@ -1273,6 +1321,14 @@ The rest of the front maps onto the device layer:
   - Freeing waits for the device first, as `cudaFree` does.
 - **Copies and fills.**
   - A copy between memory the front knows goes on the stream's queue.
+  - A side inside a device-layer mapping (`SparkDeviceMemoryMap`, such as
+    weightd's held packs) copies by address (`SparkDeviceCopyAddresses`):
+    directly to another mapping or a device-visible buffer, and through the
+    staging buffer to or from host memory. This matches CUDA, which copies
+    any device address.
+  - An address inside the backend's device address range that no buffer and
+    no mapping holds is refused with `SPARK_GPU_ERROR_INVALID_VALUE`. Its CPU
+    side is reserved with no access, so a CPU copy there would fault.
   - Pageable host memory the device layer does not know is staged through
     an 8 MiB pinned buffer, one chunk at a time. The call returns once the
     host side may be reused: the source of a copy to the device, or the

@@ -803,12 +803,13 @@ class Dsv41FlashEngine:
         q = bf16_round_f32(_fp4_qdq_e8m0(q))
         index_score = np.zeros(keys.shape[0], dtype=np.float32)
         if keys.shape[0]:
-            scores = np.maximum(q @ keys.T, 0.0)
+            scores = np.maximum(bf16_round_f32(q @ keys.T), 0.0)
             weights = bf16_round_f32(self._linear(
                 x_norm, p + "weights_proj.weight")
                 * np.float32(self.index_dim ** -0.5
                              * self.index_heads ** -0.5))
-            index_score = (scores * weights[:, None]).sum(axis=0)
+            index_score = bf16_round_f32(bf16_round_f32(
+                scores * weights[:, None]).sum(axis=0, dtype=np.float32))
         if layer == self.candidate_source:
             shared["candidates"] = self._select_candidate_blocks(
                 index_score, compress_len)

@@ -620,13 +620,17 @@ static int32_t LmStreamGemmLaunch(const LmStreamGemmArguments *args, uint32_t mu
 		return(status);
 	if constexpr ( LmStreamWeight<Format>::kScaled )
 	{
-		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u && LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 )
+		if constexpr ( LmStreamWeight<Format>::kElementBytes == 1u &&
+			(LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_F32 || LmStreamWeight<Format>::kScaleEncoding == LM_SCALE_ENCODING_UE8M0) )
 		{
 			const uint32_t tile = LmStreamGemmWideTile(args,multiprocessors);
 			if ( tile != LM_STREAM_WIDE_TILE_NONE )
 				return(LmStreamGemmLaunchWide<Format>(args,tile,multiprocessors,stream));
 		}
-		if ( args->input_dimension % 256u == 0u )
+		const uint32_t groups = args->group_row_offset == 0 ? 1u : args->groups;
+		const uint32_t mean_rows = (args->rows + groups - 1u) / groups;
+		const uint64_t tiles_64x128 = ((uint64_t)args->rows + 63u) / 64u * ((args->output_dimension + 127u) / 128u);
+		if ( (mean_rows <= 32u || (groups == 1u && tiles_64x128 < multiprocessors)) && args->input_dimension % 256u == 0u )
 			return(LmStreamGemmLaunchShape<Format,64u,256u>(args,multiprocessors,stream));
 		return(LmStreamGemmLaunchShape<Format,128u,128u>(args,multiprocessors,stream));
 	}

@@ -78,6 +78,28 @@ an address the backend chooses; nothing is requested at a fixed address.
   refuses part of a mapping.
 - `SparkDeviceAddressRelease` returns an unmapped reservation.
 
+**Copies by address.** A mapping is not a buffer, so `SparkDeviceCopy` cannot
+name it until it is adopted (`SparkDeviceAdopt`). Two calls work with the
+address itself:
+- `SparkDeviceAddressLookup` says what holds a device address range:
+  `SPARK_DEVICE_ADDRESS_BUFFER` (a live device-visible buffer),
+  `SPARK_DEVICE_ADDRESS_MAPPED` (one or more adjacent mappings),
+  `SPARK_DEVICE_ADDRESS_UNKNOWN` (part of a reservation with nothing behind it,
+  or a range that runs past its buffer or mapping) or
+  `SPARK_DEVICE_ADDRESS_OUTSIDE` (not the device's: host memory). On nvrm
+  the backend's whole device address range is the device's, so an address
+  there that nothing holds is unknown even after its reservation is released:
+  its CPU side stays reserved with no access.
+- `SparkDeviceCopyAddresses` queues a copy between two device address ranges,
+  each inside a device buffer or a mapping, at least one of them a mapping.
+  The destination must be writable: a read-only mapping or buffer is refused.
+  Two buffers copy as ranges with `SparkDeviceCopy`, so the device layer keeps
+  tracking their use. Overlapping ranges are refused, and so is a queue that
+  is recording a program: a program records buffers, so adopt the mapped range
+  to record a copy of it.
+- The host, CUDA and nvrm backends keep their reservations and mappings for
+  this. The Metal backend has no shared memory and refuses both calls.
+
 **Lifetime.** Memory lives while any handle, mapping or exported descriptor
 refers to it, in any process. Releasing a handle while its memory is mapped
 keeps the memory and its contents.

@@ -45,6 +45,22 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmExpandHeadsKernel(const uint16_t *__restrict__ input_bf16, uint16_t *__restrict__ output_bf16, uint32_t source_heads, uint32_t head_dim, uint32_t group, uint32_t rows)
 {
 	uint32_t row = blockIdx.x,head,index;
+	if ( row >= rows )
+		return;
+	if ( (head_dim % 8u) == 0u && ((((uintptr_t)input_bf16 | (uintptr_t)output_bf16) & 15u) == 0u) )
+	{
+		const uint32_t head_chunks = head_dim >> 3u;
+		const uint32_t total_chunks = source_heads * group * head_chunks;
+		const uint4 *in4 = (const uint4 *)(input_bf16 + (uint64_t)row * source_heads * head_dim);
+		uint4 *out4 = (uint4 *)(output_bf16 + (uint64_t)row * source_heads * group * head_dim);
+		for (index = threadIdx.x; index < total_chunks; index += THREADS)
+		{
+			const uint32_t out_head = index / head_chunks;
+			const uint32_t chunk = index % head_chunks;
+			out4[index] = in4[(out_head / group) * head_chunks + chunk];
+		}
+		return;
+	}
 	for (head = 0u; head < source_heads * group; ++head)
 		for (index = threadIdx.x; index < head_dim; index += THREADS)
 			output_bf16[(((uint64_t)row * source_heads * group) + head) * head_dim + index] =
@@ -65,6 +81,20 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 		view,sequence_of_row[row],position_of_row[row],row);
 	if ( slot == 0 )
 		return;
+	if constexpr ( ((KV_HEADS * HEAD_DIM) % 8u) == 0u && ((KV_HEADS * VALUE_DIM) % 8u) == 0u )
+	{
+		if ( ((((uintptr_t)slot | (uintptr_t)key_bf16 | (uintptr_t)value_bf16) & 15u) == 0u) )
+		{
+			constexpr uint32_t KEY_CHUNKS = (KV_HEADS * HEAD_DIM) / 8u;
+			constexpr uint32_t TOTAL_CHUNKS = (KV_HEADS * (HEAD_DIM + VALUE_DIM)) / 8u;
+			const uint4 *key4 = (const uint4 *)(key_bf16 + (uint64_t)row * KV_HEADS * HEAD_DIM);
+			const uint4 *val4 = (const uint4 *)(value_bf16 + (uint64_t)row * KV_HEADS * VALUE_DIM);
+			uint4 *dst4 = (uint4 *)slot;
+			for (index = threadIdx.x; index < TOTAL_CHUNKS; index += THREADS)
+				dst4[index] = index < KEY_CHUNKS ? key4[index] : val4[index - KEY_CHUNKS];
+			return;
+		}
+	}
 	for (index = threadIdx.x; index < KV_HEADS * (HEAD_DIM + VALUE_DIM); index += THREADS)
 		((uint16_t *)slot)[index] = index < KV_HEADS * HEAD_DIM
 			? key_bf16[((uint64_t)row * KV_HEADS * HEAD_DIM) + index]

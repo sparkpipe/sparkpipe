@@ -102,6 +102,77 @@ static __device__ __forceinline__ float LmBlockMax(float value, float *shared)
 	return(value);
 }
 
+static __device__ __forceinline__ bool LmIsAligned16(const void *pointer)
+{
+	return(((uintptr_t)pointer & 15u) == 0u);
+}
+
+static __device__ __forceinline__ void LmUnpackUint4Bf16(uint4 packed, uint16_t values[8])
+{
+	values[0] = (uint16_t)packed.x;
+	values[1] = (uint16_t)(packed.x >> 16u);
+	values[2] = (uint16_t)packed.y;
+	values[3] = (uint16_t)(packed.y >> 16u);
+	values[4] = (uint16_t)packed.z;
+	values[5] = (uint16_t)(packed.z >> 16u);
+	values[6] = (uint16_t)packed.w;
+	values[7] = (uint16_t)(packed.w >> 16u);
+}
+
+static __device__ __forceinline__ uint4 LmPackUint4Bf16(const uint16_t values[8])
+{
+	return(make_uint4(
+		(uint32_t)values[0] | ((uint32_t)values[1] << 16u),
+		(uint32_t)values[2] | ((uint32_t)values[3] << 16u),
+		(uint32_t)values[4] | ((uint32_t)values[5] << 16u),
+		(uint32_t)values[6] | ((uint32_t)values[7] << 16u)));
+}
+
+static __device__ __forceinline__ uint4 LmPackUint4FloatToBf16(const float values[8])
+{
+	return(make_uint4(
+		(uint32_t)LmFloatToBf16(values[0]) | ((uint32_t)LmFloatToBf16(values[1]) << 16u),
+		(uint32_t)LmFloatToBf16(values[2]) | ((uint32_t)LmFloatToBf16(values[3]) << 16u),
+		(uint32_t)LmFloatToBf16(values[4]) | ((uint32_t)LmFloatToBf16(values[5]) << 16u),
+		(uint32_t)LmFloatToBf16(values[6]) | ((uint32_t)LmFloatToBf16(values[7]) << 16u)));
+}
+
+template<class Weight>
+static __device__ __forceinline__ void LmLoadWeight8(const Weight *weight, uint32_t offset, float values[8])
+{
+	if constexpr ( sizeof(Weight) == 2u )
+	{
+		uint16_t bits[8];
+		LmUnpackUint4Bf16(*(const uint4 *)(weight + offset), bits);
+		#pragma unroll
+		for (uint32_t k = 0u; k < 8u; ++k)
+			values[k] = LmBf16ToFloat(bits[k]);
+	}
+	else
+	{
+		float4 lo = *(const float4 *)(weight + offset);
+		float4 hi = *(const float4 *)(weight + offset + 4u);
+		values[0] = lo.x; values[1] = lo.y; values[2] = lo.z; values[3] = lo.w;
+		values[4] = hi.x; values[5] = hi.y; values[6] = hi.z; values[7] = hi.w;
+	}
+}
+
+static __device__ __forceinline__ void LmStoreFloat8(float *destination, const float values[8])
+{
+	float4 lo = {values[0], values[1], values[2], values[3]};
+	float4 hi = {values[4], values[5], values[6], values[7]};
+	*(float4 *)(destination) = lo;
+	*(float4 *)(destination + 4u) = hi;
+}
+
+static __device__ __forceinline__ void LmLoadFloat8(const float *source, float values[8])
+{
+	float4 lo = *(const float4 *)(source);
+	float4 hi = *(const float4 *)(source + 4u);
+	values[0] = lo.x; values[1] = lo.y; values[2] = lo.z; values[3] = lo.w;
+	values[4] = hi.x; values[5] = hi.y; values[6] = hi.z; values[7] = hi.w;
+}
+
 #define LM_RMS_NORM_STAGED 24u
 
 template<uint32_t THREADS, class Weight, bool ROUND_FIRST = false>
@@ -115,6 +186,131 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	uint32_t index;
 	float total = 0.0f,scale;
 	LmDependentRelease();
+	const bool vec_ok = ((dimension & 7u) == 0u) && ((row_stride & 7u) == 0u) &&
+		LmIsAligned16(input_bf16) && LmIsAligned16(output_bf16) && LmIsAligned16(weight) &&
+		LmIsAligned16(row) &&
+		(residual_bf16 == 0 || LmIsAligned16(residual_bf16)) &&
+		(residual_out_bf16 == 0 || LmIsAligned16(residual_out_bf16));
+	if ( vec_ok )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged[vec_slots];
+			uint32_t slot;
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset < dimension )
+				{
+					uint4 in_vec = *(const uint4 *)(input_bf16 + base + offset);
+					uint16_t bits[8];
+					float sq[8];
+					LmUnpackUint4Bf16(in_vec, bits);
+					if ( residual_bf16 != 0 )
+					{
+						uint16_t res_bits[8];
+						LmUnpackUint4Bf16(*(const uint4 *)(residual_bf16 + base + offset), res_bits);
+						#pragma unroll
+						for (uint32_t k = 0u; k < 8u; ++k)
+						{
+							bits[k] = LmFloatToBf16(LmBf16ToFloat(bits[k]) + LmBf16ToFloat(res_bits[k]));
+							const float value = LmBf16ToFloat(bits[k]);
+							sq[k] = value * value;
+						}
+						staged[slot] = LmPackUint4Bf16(bits);
+					}
+					else
+					{
+						staged[slot] = in_vec;
+						#pragma unroll
+						for (uint32_t k = 0u; k < 8u; ++k)
+						{
+							const float value = LmBf16ToFloat(bits[k]);
+							sq[k] = value * value;
+						}
+					}
+					LmStoreFloat8(row + offset, sq);
+				}
+				else
+					staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+			}
+			__syncthreads();
+			#pragma unroll
+			for (slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot)
+			{
+				index = threadIdx.x + slot * THREADS;
+				if ( index < dimension )
+					total += row[index];
+			}
+			total = LmBlockSumOnce<THREADS>(total,reduction);
+			scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				if ( residual_out_bf16 != 0 )
+					*(uint4 *)(residual_out_bf16 + base + offset) = staged[slot];
+				uint16_t bits[8];
+				float w[8], out_f[8];
+				LmUnpackUint4Bf16(staged[slot], bits);
+				LmLoadWeight8(weight, offset, w);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					const float value = LmBf16ToFloat(bits[k]);
+					out_f[k] = ROUND_FIRST ? SparkMathNormGainRounded(value * scale, w[k]) : value * scale * w[k];
+				}
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			float values[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + offset), bits);
+			if ( residual_bf16 != 0 )
+			{
+				uint16_t res_bits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(residual_bf16 + base + offset), res_bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					values[k] = SparkMathResidualSum(LmBf16ToFloat(bits[k]), LmBf16ToFloat(res_bits[k]));
+			}
+			else
+			{
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					values[k] = LmBf16ToFloat(bits[k]);
+			}
+			LmStoreFloat8(row + offset, values);
+		}
+		__syncthreads();
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+		{
+			const float value = row[index];
+			total += value * value;
+		}
+		total = LmBlockSumOnce<THREADS>(total,reduction);
+		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+		for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+		{
+			float values[8], w[8], out_f[8];
+			LmLoadFloat8(row + offset, values);
+			if ( residual_out_bf16 != 0 )
+				*(uint4 *)(residual_out_bf16 + base + offset) = LmPackUint4FloatToBf16(values);
+			LmLoadWeight8(weight, offset, w);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = ROUND_FIRST ? SparkMathNormGainRounded(values[k] * scale, w[k]) : values[k] * scale * w[k];
+			*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
 	{
 		uint16_t staged[LM_RMS_NORM_STAGED];
@@ -184,6 +380,100 @@ void LmBf16RmsNormKernel(const uint16_t *input,const uint16_t *weight,uint16_t *
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index,slot;
 	float total = 0.0f,scale,value;
+	const bool vec_ok = ((dimension & 7u) == 0u) && ((row_stride & 7u) == 0u) &&
+		LmIsAligned16(input) && LmIsAligned16(weight) && LmIsAligned16(output) && LmIsAligned16(row);
+	if ( vec_ok )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged_input[vec_slots];
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset < dimension )
+				{
+					uint4 in_vec = *(const uint4 *)(input + base + offset);
+					uint16_t bits[8];
+					float sq[8];
+					staged_input[slot] = in_vec;
+					LmUnpackUint4Bf16(in_vec, bits);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+					{
+						value = LmBf16ToFloat(bits[k]);
+						sq[k] = value * value;
+					}
+					LmStoreFloat8(row + offset, sq);
+				}
+				else
+					staged_input[slot] = make_uint4(0u, 0u, 0u, 0u);
+			}
+			__syncthreads();
+			#pragma unroll
+			for (slot = 0u; slot < LM_RMS_NORM_STAGED; ++slot)
+			{
+				index = threadIdx.x + slot * THREADS;
+				if ( index < dimension )
+					total += row[index];
+			}
+			total = LmBlockSumOnce<THREADS>(total,reduction);
+			scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				uint16_t bits[8], wbits[8];
+				float out_f[8];
+				LmUnpackUint4Bf16(staged_input[slot], bits);
+				LmUnpackUint4Bf16(*(const uint4 *)(weight + offset), wbits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					value = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(bits[k]) * scale));
+					out_f[k] = value * LmBf16ToFloat(wbits[k]);
+				}
+				*(uint4 *)(output + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			float values[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input + base + offset), bits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				values[k] = LmBf16ToFloat(bits[k]);
+			LmStoreFloat8(row + offset, values);
+		}
+		__syncthreads();
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+		{
+			value = row[index];
+			total += value * value;
+		}
+		total = LmBlockSumOnce<THREADS>(total,reduction);
+		scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+		for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+		{
+			uint16_t wbits[8];
+			float values[8], out_f[8];
+			LmLoadFloat8(row + offset, values);
+			LmUnpackUint4Bf16(*(const uint4 *)(weight + offset), wbits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				value = LmBf16ToFloat(LmFloatToBf16(values[k] * scale));
+				out_f[k] = value * LmBf16ToFloat(wbits[k]);
+			}
+			*(uint4 *)(output + base + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
 	{
 		uint16_t staged_input[LM_RMS_NORM_STAGED];
@@ -238,6 +528,93 @@ void LmLayerNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *__
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float value,total = 0.0f,total_squared = 0.0f,mean,variance,inverse;
+	const bool vec_ok = ((dimension & 7u) == 0u) && ((row_stride & 7u) == 0u) &&
+		LmIsAligned16(input_bf16) && LmIsAligned16(weight) && LmIsAligned16(bias) && LmIsAligned16(output_bf16);
+	if ( vec_ok )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged[vec_slots];
+			uint32_t slot;
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset < dimension )
+				{
+					uint4 in_vec = *(const uint4 *)(input_bf16 + base + offset);
+					uint16_t bits[8];
+					staged[slot] = in_vec;
+					LmUnpackUint4Bf16(in_vec, bits);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+					{
+						value = LmBf16ToFloat(bits[k]);
+						total += value;
+						total_squared += value * value;
+					}
+				}
+				else
+					staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+			}
+			LmBlockSum2Once<THREADS>(&total,&total_squared,pair_reduction);
+			mean = total / (float)dimension;
+			variance = fmaxf((total_squared / (float)dimension) - (mean * mean),0.0f);
+			inverse = rsqrtf(variance + epsilon);
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				uint16_t bits[8];
+				float w[8], b[8], out_f[8];
+				LmUnpackUint4Bf16(staged[slot], bits);
+				LmLoadWeight8(weight, offset, w);
+				LmLoadWeight8(bias, offset, b);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					out_f[k] = ((LmBf16ToFloat(bits[k]) - mean) * inverse * w[k]) + b[k];
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		if ( LmIsAligned16(row) )
+		{
+			for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+			{
+				uint16_t bits[8];
+				float values[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + offset), bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					value = LmBf16ToFloat(bits[k]);
+					values[k] = value;
+					total += value;
+					total_squared += value * value;
+				}
+				LmStoreFloat8(row + offset, values);
+			}
+			LmBlockSum2Once<THREADS>(&total,&total_squared,pair_reduction);
+			mean = total / (float)dimension;
+			variance = fmaxf((total_squared / (float)dimension) - (mean * mean),0.0f);
+			inverse = rsqrtf(variance + epsilon);
+			for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+			{
+				float values[8], w[8], b[8], out_f[8];
+				LmLoadFloat8(row + offset, values);
+				LmLoadWeight8(weight, offset, w);
+				LmLoadWeight8(bias, offset, b);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					out_f[k] = ((values[k] - mean) * inverse * w[k]) + b[k];
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+	}
 	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
 	{
 		uint16_t staged[LM_RMS_NORM_STAGED];
@@ -293,6 +670,23 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
 	LmDependentRelease();
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(gate_up_bf16) && LmIsAligned16(output_bf16) )
+	{
+		const uint64_t gate_base = base + (gate_first ? 0u : dimension);
+		const uint64_t up_base = base + (gate_first ? dimension : 0u);
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t gbits[8], ubits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + gate_base + index), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + up_base + index), ubits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = SparkMathSiluFast(LmBf16ToFloat(gbits[k])) * LmBf16ToFloat(ubits[k]);
+			*(uint4 *)(output_bf16 + out_base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
@@ -309,6 +703,23 @@ void LmSiluMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *_
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
 	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(gate_up_bf16) && LmIsAligned16(output_bf16) )
+	{
+		const uint64_t gate_base = base + (gate_first ? 0u : dimension);
+		const uint64_t up_base = base + (gate_first ? dimension : 0u);
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t gbits[8], ubits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + gate_base + index), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + up_base + index), ubits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = SparkMathClampedGlu(SparkMathSiluFast(LmBf16ToFloat(gbits[k])), LmBf16ToFloat(ubits[k]), limit);
+			*(uint4 *)(output_bf16 + out_base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
@@ -324,6 +735,23 @@ void LmSiluRoundedMulLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
 	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(gate_up_bf16) && LmIsAligned16(output_bf16) )
+	{
+		const uint64_t gate_base = base + (gate_first ? 0u : dimension);
+		const uint64_t up_base = base + (gate_first ? dimension : 0u);
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t gbits[8], ubits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + gate_base + index), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + up_base + index), ubits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = SparkMathClampedGlu(SparkMathRoundBf16(SparkMathSilu(LmBf16ToFloat(gbits[k]))), LmBf16ToFloat(ubits[k]), limit);
+			*(uint4 *)(output_bf16 + out_base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float gate = LmBf16ToFloat(gate_up_bf16[base + (gate_first ? index : dimension + index)]);
@@ -339,6 +767,25 @@ void LmSiluMulGateLimitKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
 	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(gate_up_bf16) && LmIsAligned16(output_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t gbits[8], ubits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + base + index), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + base + dimension + index), ubits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				float gate = fminf(LmBf16ToFloat(gbits[k]), limit);
+				float up = fminf(fmaxf(LmBf16ToFloat(ubits[k]), -limit), limit);
+				out_f[k] = SparkMathSilu(gate) * up;
+			}
+			*(uint4 *)(output_bf16 + out_base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float gate = fminf(LmBf16ToFloat(gate_up_bf16[base + index]), limit);
@@ -362,6 +809,80 @@ void LmHeadRmsNormKernel(const uint16_t *__restrict__ input_bf16, const Weight *
 	if ( row >= rows || head >= heads )
 		return;
 	base = ((uint64_t)row * heads + head) * head_dimension;
+	if ( ((head_dimension & 7u) == 0u) && LmIsAligned16(input_bf16) && LmIsAligned16(output_bf16) &&
+		(weight_bf16 == 0 || LmIsAligned16(weight_bf16)) )
+	{
+		if ( head_dimension <= THREADS * 8u )
+		{
+			const uint32_t offset = threadIdx.x * 8u;
+			uint4 staged = make_uint4(0u, 0u, 0u, 0u);
+			if ( offset < head_dimension )
+			{
+				uint16_t bits[8];
+				staged = *(const uint4 *)(input_bf16 + base + offset);
+				LmUnpackUint4Bf16(staged, bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					value = LmBf16ToFloat(bits[k]);
+					total += value * value;
+				}
+			}
+			total = LmBlockSum<THREADS>(total,reduction);
+			scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
+			if ( offset < head_dimension )
+			{
+				uint16_t bits[8];
+				float w[8], out_f[8];
+				LmUnpackUint4Bf16(staged, bits);
+				if ( weight_bf16 != 0 )
+					LmLoadWeight8(weight_bf16, offset, w);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					value = LmBf16ToFloat(bits[k]) * scale;
+					if ( weight_bf16 != 0 )
+						value = ROUND_FIRST ? SparkMathNormGainRounded(value, w[k]) : value * w[k];
+					rounded = LmBf16ToFloat(LmFloatToBf16(value));
+					out_f[k] = rounded * head_multiply;
+				}
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		for (index = threadIdx.x * 8u; index < head_dimension; index += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + index), bits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				value = LmBf16ToFloat(bits[k]);
+				total += value * value;
+			}
+		}
+		total = LmBlockSum<THREADS>(total,reduction);
+		scale = SparkMathRmsScale(total, (float)head_dimension, epsilon);
+		for (index = threadIdx.x * 8u; index < head_dimension; index += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			float w[8], out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + index), bits);
+			if ( weight_bf16 != 0 )
+				LmLoadWeight8(weight_bf16, index, w);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				value = LmBf16ToFloat(bits[k]) * scale;
+				if ( weight_bf16 != 0 )
+					value = ROUND_FIRST ? SparkMathNormGainRounded(value, w[k]) : value * w[k];
+				rounded = LmBf16ToFloat(LmFloatToBf16(value));
+				out_f[k] = rounded * head_multiply;
+			}
+			*(uint4 *)(output_bf16 + base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]);
@@ -470,6 +991,85 @@ void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16,const ui
 	uint64_t base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
 	float value,total = 0.0f,inverse;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(input_bf16) && LmIsAligned16(gate_bf16) && LmIsAligned16(weight) && LmIsAligned16(output_bf16) )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged[vec_slots];
+			uint32_t slot;
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset < dimension )
+				{
+					uint16_t bits[8];
+					staged[slot] = *(const uint4 *)(input_bf16 + base + offset);
+					LmUnpackUint4Bf16(staged[slot], bits);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+					{
+						value = LmBf16ToFloat(bits[k]);
+						total += value * value;
+					}
+				}
+				else
+					staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+			}
+			inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total,reduction), (float)dimension, epsilon);
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				uint16_t bits[8], gbits[8];
+				float w[8], out_f[8];
+				LmUnpackUint4Bf16(staged[slot], bits);
+				LmUnpackUint4Bf16(*(const uint4 *)(gate_bf16 + base + offset), gbits);
+				LmLoadWeight8(weight, offset, w);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					value = LmBf16ToFloat(bits[k]) * inverse * w[k];
+					value *= SparkMathSigmoidFast(LmBf16ToFloat(gbits[k]));
+					out_f[k] = value;
+				}
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t bits[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + index), bits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				value = LmBf16ToFloat(bits[k]);
+				total += value * value;
+			}
+		}
+		inverse = SparkMathRmsScale(LmBlockSum<THREADS>(total,reduction), (float)dimension, epsilon);
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t bits[8], gbits[8];
+			float w[8], out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + index), bits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_bf16 + base + index), gbits);
+			LmLoadWeight8(weight, index, w);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				value = LmBf16ToFloat(bits[k]) * inverse * w[k];
+				value *= SparkMathSigmoidFast(LmBf16ToFloat(gbits[k]));
+				out_f[k] = value;
+			}
+			*(uint4 *)(output_bf16 + base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		value = LmBf16ToFloat(input_bf16[base + index]);
@@ -491,6 +1091,34 @@ void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16,uint16_t *_
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u,out_base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
 	float gate,up;
+	if ( ((dimension & 7u) == 0u) && ((((uintptr_t)up_gate_bf16) | ((uintptr_t)output_bf16)) & 15u) == 0u )
+	{
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint4 uvec = *(const uint4 *)(up_gate_bf16 + base + index);
+			uint4 gvec = *(const uint4 *)(up_gate_bf16 + base + dimension + index);
+			uint32_t uwords[4] = {uvec.x, uvec.y, uvec.z, uvec.w};
+			uint32_t gwords[4] = {gvec.x, gvec.y, gvec.z, gvec.w};
+			uint32_t owords[4];
+			#pragma unroll
+			for (uint32_t w = 0u; w < 4u; ++w)
+			{
+				up = LmBf16ToFloat((uint16_t)uwords[w]);
+				gate = LmBf16ToFloat((uint16_t)gwords[w]);
+				gate = gate > limit ? limit : gate;
+				up = up > limit ? limit : (up < -limit ? -limit : up);
+				uint32_t lo = (uint32_t)LmFloatToBf16(SparkMathSiluFast(gate) * up);
+				up = LmBf16ToFloat((uint16_t)(uwords[w] >> 16u));
+				gate = LmBf16ToFloat((uint16_t)(gwords[w] >> 16u));
+				gate = gate > limit ? limit : gate;
+				up = up > limit ? limit : (up < -limit ? -limit : up);
+				uint32_t hi = (uint32_t)LmFloatToBf16(SparkMathSiluFast(gate) * up);
+				owords[w] = lo | (hi << 16u);
+			}
+			*(uint4 *)(output_bf16 + out_base + index) = make_uint4(owords[0], owords[1], owords[2], owords[3]);
+		}
+		return;
+	}
 	for (index=threadIdx.x; index<dimension; index+=THREADS)
 	{
 		up = LmBf16ToFloat(up_gate_bf16[base + index]);
@@ -508,6 +1136,21 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
 	uint64_t out_base = (uint64_t)(blockIdx.x / row_groups) * output_pitch + (uint64_t)(blockIdx.x % row_groups) * dimension;
 	uint32_t index;
+	if ( ((dimension & 7u) == 0u) && ((output_pitch & 7u) == 0u) && LmIsAligned16(gate_up_bf16) && LmIsAligned16(output_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t gbits[8], ubits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + base + index), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_up_bf16 + base + dimension + index), ubits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = SparkMathSitu(LmBf16ToFloat(gbits[k]), LmBf16ToFloat(ubits[k]), beta, linear_beta);
+			*(uint4 *)(output_bf16 + out_base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		const float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
@@ -552,6 +1195,22 @@ void LmHeadSigmoidGateKernel(uint16_t *__restrict__ heads_bf16, const uint16_t *
 	const uint32_t row = blockIdx.x,head = blockIdx.y;
 	const uint64_t base = (((uint64_t)row * heads) + head) * head_dimension;
 	const uint64_t gate_base = ((((uint64_t)row * heads) + head) * gate_head_stride) + gate_offset;
+	if ( ((head_dimension & 7u) == 0u) && ((gate_head_stride & 7u) == 0u) && ((gate_offset & 7u) == 0u) &&
+		LmIsAligned16(heads_bf16) && LmIsAligned16(gate_bf16) )
+	{
+		for (uint32_t index = threadIdx.x * 8u; index < head_dimension; index += THREADS * 8u)
+		{
+			uint16_t hbits[8], gbits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(heads_bf16 + base + index), hbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_bf16 + gate_base + index), gbits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = LmBf16ToFloat(hbits[k]) * SparkMathSigmoidFast(LmBf16ToFloat(gbits[k]));
+			*(uint4 *)(heads_bf16 + base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (uint32_t index = threadIdx.x; index < head_dimension; index += THREADS)
 	{
 		const float gate = LmBf16ToFloat(gate_bf16[gate_base + index]);
@@ -606,6 +1265,25 @@ void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__re
 {
 	uint64_t base = (uint64_t)blockIdx.x * dimension;
 	uint32_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(output_bf16) && LmIsAligned16(gate_bf16) )
+	{
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			uint16_t obits[8], gbits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(output_bf16 + base + index), obits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gate_bf16 + base + index), gbits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+			{
+				const float gate = LmBf16ToFloat(gbits[k]);
+				const float value = LmBf16ToFloat(obits[k]);
+				out_f[k] = value * (ROUND_GATE ? SparkMathRoundBf16(SparkMathSigmoid(gate)) : SparkMathSigmoidFast(gate));
+			}
+			*(uint4 *)(output_bf16 + base + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float gate = LmBf16ToFloat(gate_bf16[base + index]);
@@ -696,6 +1374,61 @@ void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_
 	uint32_t element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint32_t route;
 	LmDependentRelease();
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(packed_bf16) && LmIsAligned16(output_bf16) )
+	{
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= dimension )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t vec_element = (blockIdx.x * THREADS) + (threadIdx.x << 3u);
+				if ( vec_element >= dimension )
+					return;
+				for (token = blockIdx.y; token < tokens; token += gridDim.y)
+				{
+					float total[8];
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+						total[k] = 0.0f;
+					for (route = 0u; route < top_k; ++route)
+					{
+						const uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+						const float weight = route_weight[((uint64_t)token * top_k) + route];
+						uint16_t bits[8];
+						LmUnpackUint4Bf16(*(const uint4 *)(packed_bf16 + ((uint64_t)packed_row * dimension) + vec_element), bits);
+						#pragma unroll
+						for (uint32_t k = 0u; k < 8u; ++k)
+							total[k] += LmBf16ToFloat(bits[k]) * weight;
+					}
+					*(uint4 *)(output_bf16 + ((uint64_t)token * dimension) + vec_element) = LmPackUint4FloatToBf16(total);
+				}
+				return;
+			}
+		}
+		const uint32_t vec_element = element * 8u;
+		if ( vec_element >= dimension )
+			return;
+		for (token = blockIdx.y; token < tokens; token += gridDim.y)
+		{
+			float total[8];
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				total[k] = 0.0f;
+			for (route = 0u; route < top_k; ++route)
+			{
+				const uint32_t packed_row = packed_row_of_token_route[((uint64_t)token * top_k) + route];
+				const float weight = route_weight[((uint64_t)token * top_k) + route];
+				uint16_t bits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(packed_bf16 + ((uint64_t)packed_row * dimension) + vec_element), bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					total[k] += LmBf16ToFloat(bits[k]) * weight;
+			}
+			*(uint4 *)(output_bf16 + ((uint64_t)token * dimension) + vec_element) = LmPackUint4FloatToBf16(total);
+		}
+		return;
+	}
 	if ( element >= dimension )
 		return;
 	for (token = blockIdx.y; token < tokens; token += gridDim.y)
@@ -755,6 +1488,49 @@ void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__rest
 {
 	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(a_bf16) && LmIsAligned16(b_bf16) && LmIsAligned16(out_bf16) )
+	{
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= dimension )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t vec_element = (blockIdx.x * THREADS) + (threadIdx.x << 3u);
+				if ( vec_element >= dimension )
+					return;
+				for (row = blockIdx.y; row < rows; row += gridDim.y)
+				{
+					index = ((uint64_t)row * dimension) + vec_element;
+					uint16_t abits[8], bbits[8];
+					float out_f[8];
+					LmUnpackUint4Bf16(*(const uint4 *)(a_bf16 + index), abits);
+					LmUnpackUint4Bf16(*(const uint4 *)(b_bf16 + index), bbits);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+						out_f[k] = LmBf16ToFloat(abits[k]) + LmBf16ToFloat(bbits[k]);
+					*(uint4 *)(out_bf16 + index) = LmPackUint4FloatToBf16(out_f);
+				}
+				return;
+			}
+		}
+		const uint32_t vec_element = element * 8u;
+		if ( vec_element >= dimension )
+			return;
+		for (row = blockIdx.y; row < rows; row += gridDim.y)
+		{
+			index = ((uint64_t)row * dimension) + vec_element;
+			uint16_t abits[8], bbits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(a_bf16 + index), abits);
+			LmUnpackUint4Bf16(*(const uint4 *)(b_bf16 + index), bbits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				out_f[k] = LmBf16ToFloat(abits[k]) + LmBf16ToFloat(bbits[k]);
+			*(uint4 *)(out_bf16 + index) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	if ( element >= dimension )
 		return;
 	for (row = blockIdx.y; row < rows; row += gridDim.y)
@@ -770,6 +1546,35 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 {
 	uint32_t row,element = (blockIdx.x * THREADS) + threadIdx.x;
 	uint64_t index;
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(source_bf16) && LmIsAligned16(destination_bf16) )
+	{
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= dimension )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t vec_element = (blockIdx.x * THREADS) + (threadIdx.x << 3u);
+				if ( vec_element >= dimension )
+					return;
+				for (row = blockIdx.y; row < rows; row += gridDim.y)
+				{
+					index = ((uint64_t)row * dimension) + vec_element;
+					*(uint4 *)(destination_bf16 + index) = *(const uint4 *)(source_bf16 + index);
+				}
+				return;
+			}
+		}
+		const uint32_t vec_element = element * 8u;
+		if ( vec_element >= dimension )
+			return;
+		for (row = blockIdx.y; row < rows; row += gridDim.y)
+		{
+			index = ((uint64_t)row * dimension) + vec_element;
+			*(uint4 *)(destination_bf16 + index) = *(const uint4 *)(source_bf16 + index);
+		}
+		return;
+	}
 	if ( element >= dimension )
 		return;
 	for (row = blockIdx.y; row < rows; row += gridDim.y)
@@ -850,42 +1655,105 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float score[MAX_SOURCES];
 	__shared__ float weight[MAX_SOURCES];
+	constexpr uint32_t softmax_lanes = THREADS < LM_WARP_LANES ? 1u : LM_WARP_LANES;
 	uint32_t row = blockIdx.x,source,index;
-	float running_max = -INFINITY,running_sum = 0.0f;
+	const bool vec_ok = ((dimension & 7u) == 0u) && LmIsAligned16(bank_bf16) && LmIsAligned16(partial_bf16) && LmIsAligned16(output_bf16);
+	const bool score_vec_ok = vec_ok && LmIsAligned16(score_weight_bf16);
 	for (source = 0u; source < sources; ++source)
 	{
 		const uint16_t *values = source + 1u == sources
 			? partial_bf16 + ((uint64_t)row * dimension)
 			: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
 		float square = 0.0f,dot = 0.0f,inverse;
-		for (index = threadIdx.x; index < dimension; index += THREADS)
+		if ( score_vec_ok )
 		{
-			float value = LmBf16ToFloat(values[index]);
-			square += value * value;
+			for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+			{
+				uint16_t bits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(values + index), bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					const float value = LmBf16ToFloat(bits[k]);
+					square += value * value;
+				}
+			}
+			square = LmBlockSum<THREADS>(square,reduction);
+			inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
+			for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+			{
+				uint16_t bits[8], wbits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(values + index), bits);
+				LmUnpackUint4Bf16(*(const uint4 *)(score_weight_bf16 + index), wbits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					dot += LmBf16ToFloat(bits[k]) * inverse * LmBf16ToFloat(wbits[k]);
+			}
 		}
-		square = LmBlockSum<THREADS>(square,reduction);
-		inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
-		for (index = threadIdx.x; index < dimension; index += THREADS)
-			dot += LmBf16ToFloat(values[index]) * inverse
-				* LmBf16ToFloat(score_weight_bf16[index]);
+		else
+		{
+			for (index = threadIdx.x; index < dimension; index += THREADS)
+			{
+				float value = LmBf16ToFloat(values[index]);
+				square += value * value;
+			}
+			square = LmBlockSum<THREADS>(square,reduction);
+			inverse = SparkMathRmsScale(square, (float)dimension, epsilon);
+			for (index = threadIdx.x; index < dimension; index += THREADS)
+				dot += LmBf16ToFloat(values[index]) * inverse
+					* LmBf16ToFloat(score_weight_bf16[index]);
+		}
 		dot = LmBlockSum<THREADS>(dot,reduction);
 		if ( threadIdx.x == 0u )
 			score[source] = dot;
 		__syncthreads();
 	}
-	if ( threadIdx.x == 0u )
+	if ( threadIdx.x < softmax_lanes )
 	{
-		for (source = 0u; source < sources; ++source)
-			running_max = fmaxf(running_max,score[source]);
-		for (source = 0u; source < sources; ++source)
+		float local_max = -INFINITY;
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
+			local_max = fmaxf(local_max,score[source]);
+		#pragma unroll
+		for (uint32_t offset = softmax_lanes / 2u; offset > 0u; offset >>= 1u)
+			local_max = fmaxf(local_max,__shfl_xor_sync(0xffffffffu,local_max,offset));
+		float local_sum = 0.0f;
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
 		{
-			weight[source] = __expf(score[source] - running_max);
-			running_sum += weight[source];
+			const float w = __expf(score[source] - local_max);
+			weight[source] = w;
+			local_sum += w;
 		}
-		for (source = 0u; source < sources; ++source)
-			weight[source] /= running_sum;
+		#pragma unroll
+		for (uint32_t offset = softmax_lanes / 2u; offset > 0u; offset >>= 1u)
+			local_sum += __shfl_xor_sync(0xffffffffu,local_sum,offset);
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
+			weight[source] /= local_sum;
 	}
 	__syncthreads();
+	if ( vec_ok )
+	{
+		for (index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
+		{
+			float total[8];
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				total[k] = 0.0f;
+			for (source = 0u; source < sources; ++source)
+			{
+				const uint16_t *values = source + 1u == sources
+					? partial_bf16 + ((uint64_t)row * dimension)
+					: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+				const float w = weight[source];
+				uint16_t bits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(values + index), bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					total[k] += w * LmBf16ToFloat(bits[k]);
+			}
+			*(uint4 *)(output_bf16 + ((uint64_t)row * dimension) + index) = LmPackUint4FloatToBf16(total);
+		}
+		return;
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float total = 0.0f;
@@ -929,25 +1797,59 @@ template<uint32_t THREADS, uint32_t MAX_SOURCES>
 __global__ __launch_bounds__(THREADS) void LmAttnResMixKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const float *__restrict__ score_f32, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, uint32_t score_stride)
 {
 	__shared__ float weight[MAX_SOURCES];
+	constexpr uint32_t softmax_lanes = THREADS < LM_WARP_LANES ? 1u : LM_WARP_LANES;
 	const uint32_t row = blockIdx.y, index = (blockIdx.x * THREADS) + threadIdx.x;
 	uint32_t source;
-	float running_max = -INFINITY,running_sum = 0.0f,total = 0.0f;
-	if ( threadIdx.x == 0u )
+	if ( threadIdx.x < softmax_lanes )
 	{
 		const float *score = score_f32 + ((uint64_t)row * score_stride);
-		for (source = 0u; source < sources; ++source)
-			running_max = fmaxf(running_max,score[source]);
-		for (source = 0u; source < sources; ++source)
+		float local_max = -INFINITY;
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
+			local_max = fmaxf(local_max,score[source]);
+		#pragma unroll
+		for (uint32_t offset = softmax_lanes / 2u; offset > 0u; offset >>= 1u)
+			local_max = fmaxf(local_max,__shfl_xor_sync(0xffffffffu,local_max,offset));
+		float local_sum = 0.0f;
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
 		{
-			weight[source] = __expf(score[source] - running_max);
-			running_sum += weight[source];
+			const float w = __expf(score[source] - local_max);
+			weight[source] = w;
+			local_sum += w;
 		}
-		for (source = 0u; source < sources; ++source)
-			weight[source] /= running_sum;
+		#pragma unroll
+		for (uint32_t offset = softmax_lanes / 2u; offset > 0u; offset >>= 1u)
+			local_sum += __shfl_xor_sync(0xffffffffu,local_sum,offset);
+		for (source = threadIdx.x; source < sources; source += softmax_lanes)
+			weight[source] /= local_sum;
 	}
 	__syncthreads();
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(bank_bf16) && LmIsAligned16(partial_bf16) && LmIsAligned16(output_bf16) )
+	{
+		const uint32_t vec_index = index * 8u;
+		if ( vec_index >= dimension )
+			return;
+		float total[8];
+		#pragma unroll
+		for (uint32_t k = 0u; k < 8u; ++k)
+			total[k] = 0.0f;
+		for (source = 0u; source < sources; ++source)
+		{
+			const uint16_t *values = source + 1u == sources
+				? partial_bf16 + ((uint64_t)row * dimension)
+				: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
+			const float w = weight[source];
+			uint16_t bits[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(values + vec_index), bits);
+			#pragma unroll
+			for (uint32_t k = 0u; k < 8u; ++k)
+				total[k] += w * LmBf16ToFloat(bits[k]);
+		}
+		*(uint4 *)(output_bf16 + ((uint64_t)row * dimension) + vec_index) = LmPackUint4FloatToBf16(total);
+		return;
+	}
 	if ( index >= dimension )
 		return;
+	float total = 0.0f;
 	for (source = 0u; source < sources; ++source)
 	{
 		const uint16_t *values = source + 1u == sources
@@ -982,6 +1884,85 @@ void LmCenteredRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint
 	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float total = 0.0f,scale;
+	const bool vec_ok = ((dimension & 7u) == 0u) && ((row_stride & 7u) == 0u) &&
+		LmIsAligned16(input_bf16) && LmIsAligned16(weight_bf16) && LmIsAligned16(output_bf16);
+	if ( vec_ok )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged[vec_slots];
+			uint32_t slot;
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset < dimension )
+				{
+					uint16_t bits[8];
+					staged[slot] = *(const uint4 *)(input_bf16 + base + offset);
+					LmUnpackUint4Bf16(staged[slot], bits);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k)
+					{
+						const float value = LmBf16ToFloat(bits[k]);
+						total += value * value;
+					}
+				}
+				else
+					staged[slot] = make_uint4(0u, 0u, 0u, 0u);
+			}
+			total = LmBlockSum<THREADS>(total,reduction);
+			scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+			#pragma unroll
+			for (slot = 0u; slot < vec_slots; ++slot)
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				uint16_t bits[8], wbits[8];
+				float out_f[8];
+				LmUnpackUint4Bf16(staged[slot], bits);
+				LmUnpackUint4Bf16(*(const uint4 *)(weight_bf16 + offset), wbits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					out_f[k] = LmBf16ToFloat(bits[k]) * scale * (1.0f + LmBf16ToFloat(wbits[k]));
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		if ( LmIsAligned16(row) )
+		{
+			for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+			{
+				uint16_t bits[8];
+				float values[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + offset), bits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+				{
+					const float value = LmBf16ToFloat(bits[k]);
+					values[k] = value;
+					total += value * value;
+				}
+				LmStoreFloat8(row + offset, values);
+			}
+			total = LmBlockSum<THREADS>(total,reduction);
+			scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+			for (uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u)
+			{
+				uint16_t wbits[8];
+				float values[8], out_f[8];
+				LmLoadFloat8(row + offset, values);
+				LmUnpackUint4Bf16(*(const uint4 *)(weight_bf16 + offset), wbits);
+				#pragma unroll
+				for (uint32_t k = 0u; k < 8u; ++k)
+					out_f[k] = values[k] * scale * (1.0f + LmBf16ToFloat(wbits[k]));
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+	}
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 	{
 		float value = LmBf16ToFloat(input_bf16[base + index]);

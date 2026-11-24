@@ -22,7 +22,8 @@
 
 #define SPARK_GLM53_FULL_TP16_ADAPTER_ID GLM53_FULL_ADAPTER_ID
 #define SPARK_GLM53_FULL_TP16_MODEL_ID GLM53_FULL_MODEL_ID
-#define SPARK_GLM53_FULL_TP16_MAX_ROWS 4096u
+#define SPARK_GLM53_FULL_TP16_MAX_ROWS 16384u
+#define SPARK_GLM53_FULL_TP16_VERIFY_ROWS 4096u
 
 static void Glm53FullTp16ServingKvLayout(uint32_t tp_rank, uint32_t tp_degree, SparkStageKvConfiguration *kv)
 {
@@ -72,7 +73,7 @@ static const SparkStageServingModel Glm53FullTp16StageServing =
 	.linear_weight_codec = GLM53_FULL_LINEAR_CODEC,
 	.expert_weight_codec = GLM53_FULL_EXPERT_CODEC,
 	.max_rows = SPARK_GLM53_FULL_TP16_MAX_ROWS,
-	.verify_rows = SPARK_GLM53_FULL_TP16_MAX_ROWS,
+	.verify_rows = SPARK_GLM53_FULL_TP16_VERIFY_ROWS,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_GLM53_FULL_TP16_STAGE_PAGE_SLOTS,
 	.cache_checkpoint_token_count = 0u,

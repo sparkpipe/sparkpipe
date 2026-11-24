@@ -151,6 +151,7 @@ typedef struct NvrmSpan
 	SparkDeviceMemoryHandle memory;
 	int cpu_fd;
 	uint32_t device;
+	uint32_t writable;
 } NvrmSpan;
 
 typedef struct NvrmSpans
@@ -172,7 +173,7 @@ static NvrmSpans nvrm_mappings;
 static pthread_mutex_t nvrm_queues_lock = PTHREAD_MUTEX_INITIALIZER;
 static NvrmQueue *nvrm_queues;
 
-static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes);
+static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes, uint32_t write);
 static uint32_t NvrmReservationHolds(uint64_t address, uint64_t bytes);
 static void NvrmSharedClose(void);
 
@@ -322,7 +323,7 @@ SparkStatus SparkDeviceBackendAdopt(SparkDeviceAllocation *allocation)
 {
 	NvrmAllocation *nvrm;
 	if ( allocation->host != 0 || allocation->space != SPARK_DEVICE_SPACE_DEVICE_PRIVATE ||
-		(NvrmMappingsSpan(allocation->device,allocation->bytes) == 0u && NvrmReservationHolds(allocation->device,allocation->bytes) == 0u) )
+		(NvrmMappingsSpan(allocation->device,allocation->bytes,0u) == 0u && NvrmReservationHolds(allocation->device,allocation->bytes) == 0u) )
 		return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"adopt",allocation->owner,0,
 			"the nvrm backend adopts only device-private ranges inside one of its reservations or across its mappings"));
 	nvrm = NvrmNew(allocation,"adopt");
@@ -641,6 +642,28 @@ SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection
 		status = NvrmStaged(queue,destination,destination_offset,source,source_offset,bytes);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_FAIL(status);
+	NvrmEnd(queue,NVRM_OPERATION_COPY,0);
+	return(SPARK_STATUS_OK);
+}
+
+uint32_t SparkDeviceBackendAddressMapped(SparkDeviceAddress address, uint64_t bytes, uint32_t write)
+{
+	return(NvrmMappingsSpan(address,bytes,write));
+}
+
+uint32_t SparkDeviceBackendAddressOwned(SparkDeviceAddress address, uint64_t bytes)
+{
+	return(nvrm_gpu.reserved_bytes != 0u && address < nvrm_gpu.reserved_base + nvrm_gpu.reserved_bytes && nvrm_gpu.reserved_base < address + bytes ? 1u : 0u);
+}
+
+SparkStatus SparkDeviceBackendCopyMapped(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_at,
+	const SparkDeviceAllocation *source, uint64_t source_at, uint64_t bytes)
+{
+	NvrmQueue *nvrm = (NvrmQueue *)queue->backend;
+	const uint64_t to = destination != 0 ? destination->device + destination_at : destination_at;
+	const uint64_t from = source != 0 ? source->device + source_at : source_at;
+	NVRM_TRY(NvrmRoom(queue,"copy_addresses"));
+	NVRM_TRY(SparkNvrmCopy(&nvrm_gpu,NvrmOn(nvrm,&nvrm->copy),to,from,bytes,0,queue->owner));
 	NvrmEnd(queue,NVRM_OPERATION_COPY,0);
 	return(SPARK_STATUS_OK);
 }
@@ -1164,6 +1187,7 @@ static void NvrmSpansInsert(NvrmSpans *spans, uint32_t index, uint64_t address, 
 	spans->items[index].memory = memory;
 	spans->items[index].cpu_fd = -1;
 	spans->items[index].device = 0u;
+	spans->items[index].writable = 0u;
 	spans->count++;
 }
 
@@ -1244,13 +1268,14 @@ static uint32_t NvrmReservationHolds(uint64_t address, uint64_t bytes)
 	return(held);
 }
 
-static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes)
+static uint32_t NvrmMappingsSpan(uint64_t address, uint64_t bytes, uint32_t write)
 {
 	uint32_t index,spanned = 0u;
 	uint64_t reached = address;
 	pthread_mutex_lock(&nvrm_shared_lock);
 	index = NvrmSpansFirstEnding(&nvrm_mappings,address);
-	while ( index < nvrm_mappings.count && nvrm_mappings.items[index].address <= reached && reached < address + bytes )
+	while ( index < nvrm_mappings.count && nvrm_mappings.items[index].address <= reached && reached < address + bytes &&
+		(write == 0u || nvrm_mappings.items[index].writable != 0u) )
 	{
 		reached = nvrm_mappings.items[index].address + nvrm_mappings.items[index].bytes;
 		index++;
@@ -1456,6 +1481,7 @@ SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t byt
 		NvrmSpansInsert(&nvrm_mappings,index,address,bytes,memory);
 		nvrm_mappings.items[index].cpu_fd = cpu_fd;
 		nvrm_mappings.items[index].device = device;
+		nvrm_mappings.items[index].writable = (access & SPARK_DEVICE_ACCESS_DEVICE_WRITE) != 0u ? 1u : 0u;
 		shared->maps++;
 	}
 	pthread_mutex_unlock(&nvrm_shared_lock);

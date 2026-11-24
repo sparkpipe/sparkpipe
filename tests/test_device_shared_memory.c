@@ -245,6 +245,87 @@ static void TestThreadBinding(void)
 	CHECK(pthread_create(&thread,0,ThreadBind,&instance) == 0 && pthread_join(thread,0) == 0,"bind a second thread");
 }
 
+static int DevicePattern(SparkDeviceBuffer *buffer, uint64_t bytes, uint64_t seed, SparkDeviceAddress *address, const char *owner)
+{
+	SparkDeviceBuffer host;
+	SparkDeviceRange to, from;
+	uint64_t index;
+	int done;
+	if ( SparkDeviceAllocate(buffer,SPARK_DEVICE_SPACE_DEVICE_PRIVATE,bytes,owner) != SPARK_STATUS_OK )
+		return(0);
+	if ( SparkDeviceAllocate(&host,SPARK_DEVICE_SPACE_HOST_PAGEABLE,bytes,owner) != SPARK_STATUS_OK )
+		return(0);
+	for (index=0u; index<bytes; index++)
+		((uint8_t *)host.host)[index] = Pattern(seed,index);
+	to.buffer = buffer;
+	to.offset = 0u;
+	from.buffer = &host;
+	from.offset = 0u;
+	done = SparkDeviceCopySync(to,from,bytes) == SPARK_STATUS_OK && SparkDeviceAddressOf(to,bytes,address) == SPARK_STATUS_OK;
+	return(SparkDeviceFree(&host) == SPARK_STATUS_OK && done);
+}
+
+static int DeviceHolds(SparkDeviceBuffer *buffer, uint64_t bytes, uint64_t seed)
+{
+	SparkDeviceBuffer host;
+	SparkDeviceRange to, from;
+	uint64_t index;
+	int same;
+	if ( SparkDeviceAllocate(&host,SPARK_DEVICE_SPACE_HOST_PAGEABLE,bytes,"mapped read") != SPARK_STATUS_OK )
+		return(0);
+	to.buffer = &host;
+	to.offset = 0u;
+	from.buffer = buffer;
+	from.offset = 0u;
+	same = SparkDeviceCopySync(to,from,bytes) == SPARK_STATUS_OK;
+	for (index=0u; same != 0 && index<bytes; index++)
+		same = ((const uint8_t *)host.host)[index] == Pattern(seed,index);
+	return(SparkDeviceFree(&host) == SPARK_STATUS_OK && same);
+}
+
+static void TestCopyAddresses(uint64_t granularity)
+{
+	const uint64_t bytes = 2u * granularity;
+	SparkDeviceMemoryHandle memory = 0u;
+	SparkDeviceAddress reserved = 0u, read_only = 0u, source = 0u, target = 0u;
+	SparkDeviceBuffer from, to;
+	SparkDeviceQueue *queue = 0;
+	uint8_t on_host[64];
+	CHECK(SparkDeviceMemoryCreate(&memory,bytes,"copy addresses") == SPARK_STATUS_OK && SparkDeviceQueueCreate(&queue,"copy addresses") == SPARK_STATUS_OK &&
+		SparkDeviceAddressReserve(&reserved,bytes + granularity,"copy addresses") == SPARK_STATUS_OK &&
+		SparkDeviceAddressReserve(&read_only,bytes,"copy addresses read only") == SPARK_STATUS_OK,
+		"create shared memory, a queue, a reservation one granule longer than the memory and a second reservation");
+	CHECK(SparkDeviceMemoryMap(reserved,bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ | SPARK_DEVICE_ACCESS_DEVICE_WRITE) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryMap(read_only,bytes,memory,0u,SPARK_DEVICE_ACCESS_DEVICE_READ) == SPARK_STATUS_OK,
+		"map the memory read-write without adopting it, and again read-only");
+	CHECK(DevicePattern(&from,bytes,5u,&source,"copy addresses source") && DevicePattern(&to,bytes,6u,&target,"copy addresses target"),
+		"two device buffers hold known bytes");
+	CHECK(SparkDeviceAddressLookup(reserved,bytes) == SPARK_DEVICE_ADDRESS_MAPPED && SparkDeviceAddressLookup(source,bytes) == SPARK_DEVICE_ADDRESS_BUFFER &&
+		SparkDeviceAddressLookup(reserved + bytes,granularity) == SPARK_DEVICE_ADDRESS_UNKNOWN &&
+		SparkDeviceAddressLookup(reserved,bytes + granularity) == SPARK_DEVICE_ADDRESS_UNKNOWN &&
+		SparkDeviceAddressLookup((SparkDeviceAddress)(uintptr_t)on_host,sizeof(on_host)) == SPARK_DEVICE_ADDRESS_OUTSIDE,
+		"a lookup names a mapping, a buffer, a reserved range with nothing mapped, a range running past a mapping, and host memory");
+	CHECK(SparkDeviceCopyAddresses(queue,reserved,source,bytes) == SPARK_STATUS_OK && SparkDeviceCopyAddresses(queue,target,read_only,bytes) == SPARK_STATUS_OK &&
+		SparkDeviceQueueWait(queue,SPARK_DEVICE_WAIT_FOREVER) == SPARK_STATUS_OK && DeviceHolds(&to,bytes,5u),
+		"a buffer copied into a mapping by address reads back through another mapping of the same memory");
+	CHECK(SparkDeviceCopyAddresses(queue,reserved + bytes,source,granularity) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a copy into a reserved range with nothing mapped is refused");
+	CHECK(SparkDeviceCopyAddresses(queue,read_only,source,granularity) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a copy into a read-only mapping is refused");
+	CHECK(SparkDeviceCopyAddresses(queue,target,source,granularity) == SPARK_STATUS_INVALID_ARGUMENT,
+		"a copy between two buffers by address is refused; buffers copy as ranges");
+	CHECK(SparkDeviceCopyAddresses(queue,reserved,reserved + 64u,granularity) == SPARK_STATUS_INVALID_ARGUMENT,
+		"overlapping source and destination are refused");
+	CHECK(SparkDeviceFree(&from) == SPARK_STATUS_OK && SparkDeviceFree(&to) == SPARK_STATUS_OK && SparkDeviceQueueDestroy(queue) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryUnmap(reserved,bytes) == SPARK_STATUS_OK && SparkDeviceMemoryUnmap(read_only,bytes) == SPARK_STATUS_OK &&
+		SparkDeviceAddressLookup(reserved,bytes) == SPARK_DEVICE_ADDRESS_UNKNOWN,
+		"free the buffers and the queue and unmap both mappings; the unmapped range looks up as reserved with nothing there");
+	CHECK(SparkDeviceAddressRelease(reserved,bytes + granularity) == SPARK_STATUS_OK && SparkDeviceAddressRelease(read_only,bytes) == SPARK_STATUS_OK &&
+		SparkDeviceMemoryRelease(memory) == SPARK_STATUS_OK && SparkDeviceAddressLookup(reserved,bytes) != SPARK_DEVICE_ADDRESS_MAPPED &&
+		SparkDeviceAddressLookup(reserved,bytes) != SPARK_DEVICE_ADDRESS_BUFFER,
+		"release both reservations and the memory; nothing holds the range any more");
+}
+
 int main(int argc, char **argv)
 {
 	uint64_t minimum = 0u, recommended = 0u;
@@ -262,6 +343,7 @@ int main(int argc, char **argv)
 		TestExportImport(argv[0],4u * recommended);
 		TestChunkedMapping(recommended);
 		TestPartlyMappedReservation(recommended);
+		TestCopyAddresses(recommended);
 	}
 	TestThreadBinding();
 	if ( SparkDeviceGetProperties() != 0 )

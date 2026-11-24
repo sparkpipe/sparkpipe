@@ -19,10 +19,116 @@ void LmGroupRmsNormKernel(const uint16_t *__restrict__ input_bf16, const float *
 	uint32_t groups, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	__shared__ float sq_wave[THREADS * 8u];
 	const uint32_t group = blockIdx.x, row = blockIdx.y;
 	const uint64_t base = ((uint64_t)row * groups + group) * dimension;
 	const float *group_weight = weight + (uint64_t)group * dimension;
 	float total = 0.0f;
+	const bool vec_ok = ((dimension & 7u) == 0u) && LmIsAligned16(input_bf16) && LmIsAligned16(weight) && LmIsAligned16(output_bf16);
+	if ( vec_ok )
+	{
+		if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
+		{
+			constexpr uint32_t vec_slots = LM_RMS_NORM_STAGED / 8u;
+			uint4 staged_input[vec_slots];
+			#pragma unroll
+			for ( uint32_t slot = 0u; slot < vec_slots; ++slot )
+			{
+				const uint32_t wave_base = slot * THREADS * 8u;
+				if ( wave_base >= dimension )
+				{
+					staged_input[slot] = make_uint4(0u, 0u, 0u, 0u);
+					continue;
+				}
+				const uint32_t offset = wave_base + threadIdx.x * 8u;
+				if ( offset < dimension )
+				{
+					uint16_t bits[8];
+					float sq[8];
+					staged_input[slot] = *(const uint4 *)(input_bf16 + base + offset);
+					LmUnpackUint4Bf16(staged_input[slot], bits);
+					#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+					{
+						const float value = LmBf16ToFloat(bits[k]);
+						sq[k] = value * value;
+					}
+					LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
+				}
+				else
+					staged_input[slot] = make_uint4(0u, 0u, 0u, 0u);
+				__syncthreads();
+				#pragma unroll
+				for ( uint32_t s = 0u; s < 8u; ++s )
+				{
+					const uint32_t idx = wave_base + s * THREADS + threadIdx.x;
+					if ( idx < dimension )
+						total += sq_wave[s * THREADS + threadIdx.x];
+				}
+				if ( wave_base + THREADS * 8u < dimension )
+					__syncthreads();
+			}
+			total = LmBlockSum<THREADS>(total, reduction);
+			const float scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+			#pragma unroll
+			for ( uint32_t slot = 0u; slot < vec_slots; ++slot )
+			{
+				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
+				if ( offset >= dimension )
+					continue;
+				uint16_t bits[8];
+				float w[8], out_f[8];
+				LmUnpackUint4Bf16(staged_input[slot], bits);
+				LmLoadWeight8(group_weight, offset, w);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out_f[k] = LmBf16ToFloat(bits[k]) * scale * w[k];
+				*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+			}
+			return;
+		}
+		for ( uint32_t wave_base = 0u; wave_base < dimension; wave_base += THREADS * 8u )
+		{
+			const uint32_t offset = wave_base + threadIdx.x * 8u;
+			if ( offset < dimension )
+			{
+				uint16_t bits[8];
+				float sq[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + offset), bits);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+				{
+					const float value = LmBf16ToFloat(bits[k]);
+					sq[k] = value * value;
+				}
+				LmStoreFloat8(sq_wave + threadIdx.x * 8u, sq);
+			}
+			__syncthreads();
+			#pragma unroll
+			for ( uint32_t s = 0u; s < 8u; ++s )
+			{
+				const uint32_t idx = wave_base + s * THREADS + threadIdx.x;
+				if ( idx < dimension )
+					total += sq_wave[s * THREADS + threadIdx.x];
+			}
+			if ( wave_base + THREADS * 8u < dimension )
+				__syncthreads();
+		}
+		total = LmBlockSum<THREADS>(total, reduction);
+		const float scale = SparkMathRmsScale(total, (float)dimension, epsilon);
+		for ( uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u )
+		{
+			uint16_t bits[8];
+			float w[8], out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(input_bf16 + base + offset), bits);
+			LmLoadWeight8(group_weight, offset, w);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				out_f[k] = LmBf16ToFloat(bits[k]) * scale * w[k];
+			*(uint4 *)(output_bf16 + base + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	if ( dimension <= THREADS * LM_RMS_NORM_STAGED )
 	{
 		float staged_input[LM_RMS_NORM_STAGED], staged_weight[LM_RMS_NORM_STAGED];
@@ -61,6 +167,28 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmHyperExpandKernel(const uint16_t *__restrict__ hidden_bf16, uint16_t *__restrict__ streams_bf16, uint32_t streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+	if ( ((width & 7u) == 0u) && LmIsAligned16(hidden_bf16) && LmIsAligned16(streams_bf16) )
+	{
+		const uint32_t width_vecs = width >> 3u;
+		const uint32_t total_vecs = streams * width_vecs;
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= (uint64_t)streams * width )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t v = blockIdx.x * (THREADS >> 3u) + threadIdx.x;
+				if ( v < total_vecs )
+					*(uint4 *)(streams_bf16 + (uint64_t)row * streams * width + ((uint64_t)v << 3u)) =
+						*(const uint4 *)(hidden_bf16 + (uint64_t)row * width + ((uint64_t)(v % width_vecs) << 3u));
+				return;
+			}
+		}
+		for ( uint32_t v = blockIdx.x * THREADS + threadIdx.x; v < total_vecs; v += gridDim.x * THREADS )
+			*(uint4 *)(streams_bf16 + (uint64_t)row * streams * width + ((uint64_t)v << 3u)) =
+				*(const uint4 *)(hidden_bf16 + (uint64_t)row * width + ((uint64_t)(v % width_vecs) << 3u));
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * THREADS + threadIdx.x; index < streams * width; index += gridDim.x * THREADS )
 		streams_bf16[(uint64_t)row * streams * width + index] = hidden_bf16[(uint64_t)row * width + index % width];
 }
@@ -69,6 +197,22 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmHyperGateKernel(uint16_t *__restrict__ values_bf16, uint64_t elements, float divisor)
 {
+	if ( ((elements & 7u) == 0u) && LmIsAligned16(values_bf16) )
+	{
+		const uint64_t total_vecs = elements >> 3u;
+		for ( uint64_t v = (uint64_t)blockIdx.x * THREADS + threadIdx.x; v < total_vecs; v += (uint64_t)gridDim.x * THREADS )
+		{
+			const uint64_t offset = v << 3u;
+			uint16_t bits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(values_bf16 + offset), bits);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				out_f[k] = SparkMathHyperGate(LmBf16ToFloat(bits[k]), divisor);
+			*(uint4 *)(values_bf16 + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for ( uint64_t index = (uint64_t)blockIdx.x * THREADS + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * THREADS )
 	{
 		values_bf16[index] = LmFloatToBf16(SparkMathHyperGate(LmBf16ToFloat(values_bf16[index]),divisor));
@@ -82,6 +226,69 @@ void LmHyperMixKernel(const uint16_t *__restrict__ up_bf16, const uint16_t *__re
 {
 	const uint32_t row = blockIdx.y;
 	const uint64_t base = (uint64_t)row * streams * width;
+	if ( ((width & 7u) == 0u) && LmIsAligned16(up_bf16) && LmIsAligned16(normed_bf16) && LmIsAligned16(mixed_bf16) )
+	{
+		const uint32_t width_vecs = width >> 3u;
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= width )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t element = (blockIdx.x * THREADS) + (threadIdx.x << 3u);
+				if ( element >= width )
+					return;
+				float total[8];
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					total[k] = 0.0f;
+				for ( uint32_t stream = 0u; stream < streams; ++stream )
+				{
+					const uint64_t at = base + (uint64_t)stream * width + element;
+					uint16_t ubits[8], nbits[8];
+					LmUnpackUint4Bf16(*(const uint4 *)(up_bf16 + at), ubits);
+					LmUnpackUint4Bf16(*(const uint4 *)(normed_bf16 + at), nbits);
+					#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+					{
+						const float gate = SparkMathHyperMixGate(LmBf16ToFloat(ubits[k]));
+						total[k] += SparkMathHyperMixTerm(gate, LmBf16ToFloat(nbits[k]));
+					}
+				}
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					total[k] /= (float)streams;
+				*(uint4 *)(mixed_bf16 + (uint64_t)row * width + element) = LmPackUint4FloatToBf16(total);
+				return;
+			}
+		}
+		for ( uint32_t v = blockIdx.x * THREADS + threadIdx.x; v < width_vecs; v += gridDim.x * THREADS )
+		{
+			const uint32_t element = v << 3u;
+			float total[8];
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				total[k] = 0.0f;
+			for ( uint32_t stream = 0u; stream < streams; ++stream )
+			{
+				const uint64_t at = base + (uint64_t)stream * width + element;
+				uint16_t ubits[8], nbits[8];
+				LmUnpackUint4Bf16(*(const uint4 *)(up_bf16 + at), ubits);
+				LmUnpackUint4Bf16(*(const uint4 *)(normed_bf16 + at), nbits);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+				{
+					const float gate = SparkMathHyperMixGate(LmBf16ToFloat(ubits[k]));
+					total[k] += SparkMathHyperMixTerm(gate, LmBf16ToFloat(nbits[k]));
+				}
+			}
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				total[k] /= (float)streams;
+			*(uint4 *)(mixed_bf16 + (uint64_t)row * width + element) = LmPackUint4FloatToBf16(total);
+		}
+		return;
+	}
 	for ( uint32_t element = blockIdx.x * THREADS + threadIdx.x; element < width; element += gridDim.x * THREADS )
 	{
 		float total = 0.0f;
@@ -213,6 +420,27 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmHyperAddKernel(uint16_t *__restrict__ streams_bf16, const uint16_t *__restrict__ gated_bf16, const uint16_t *__restrict__ conv_bf16,
 	uint64_t elements)
 {
+	if ( ((elements & 7u) == 0u) && LmIsAligned16(streams_bf16) && LmIsAligned16(gated_bf16) && LmIsAligned16(conv_bf16) )
+	{
+		const uint64_t total_vecs = elements >> 3u;
+		for ( uint64_t v = (uint64_t)blockIdx.x * THREADS + threadIdx.x; v < total_vecs; v += (uint64_t)gridDim.x * THREADS )
+		{
+			const uint64_t offset = v << 3u;
+			uint16_t sbits[8], gbits[8], cbits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(streams_bf16 + offset), sbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(gated_bf16 + offset), gbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(conv_bf16 + offset), cbits);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				const float added = SparkMathHyperAddend(LmBf16ToFloat(gbits[k]), LmBf16ToFloat(cbits[k]));
+				out_f[k] = LmBf16ToFloat(sbits[k]) + added;
+			}
+			*(uint4 *)(streams_bf16 + offset) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for ( uint64_t index = (uint64_t)blockIdx.x * THREADS + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * THREADS )
 	{
 		const float added = SparkMathHyperAddend(LmBf16ToFloat(gated_bf16[index]),LmBf16ToFloat(conv_bf16[index]));
@@ -226,6 +454,52 @@ void LmHyperInjectKernel(uint16_t *__restrict__ streams_bf16, const uint16_t *__
 	uint32_t streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+	if ( ((width & 7u) == 0u) && LmIsAligned16(streams_bf16) && LmIsAligned16(output_bf16) )
+	{
+		const uint32_t width_vecs = width >> 3u;
+		const uint32_t total_vecs = streams * width_vecs;
+		if constexpr ( (THREADS & 7u) == 0u )
+		{
+			if ( (uint64_t)gridDim.x * THREADS >= (uint64_t)streams * width )
+			{
+				if ( threadIdx.x >= (THREADS >> 3u) )
+					return;
+				const uint32_t v = blockIdx.x * (THREADS >> 3u) + threadIdx.x;
+				if ( v < total_vecs )
+				{
+					const uint32_t stream = v / width_vecs;
+					const uint32_t element = (v % width_vecs) << 3u;
+					const uint64_t at = (uint64_t)row * streams * width + ((uint64_t)v << 3u);
+					const float weight = inject[(uint64_t)row * streams + stream];
+					uint16_t sbits[8], obits[8];
+					float out_f[8];
+					LmUnpackUint4Bf16(*(const uint4 *)(streams_bf16 + at), sbits);
+					LmUnpackUint4Bf16(*(const uint4 *)(output_bf16 + (uint64_t)row * width + element), obits);
+					#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k )
+						out_f[k] = LmBf16ToFloat(sbits[k]) + SparkMathHyperInjected(LmBf16ToFloat(obits[k]), weight);
+					*(uint4 *)(streams_bf16 + at) = LmPackUint4FloatToBf16(out_f);
+				}
+				return;
+			}
+		}
+		for ( uint32_t v = blockIdx.x * THREADS + threadIdx.x; v < total_vecs; v += gridDim.x * THREADS )
+		{
+			const uint32_t stream = v / width_vecs;
+			const uint32_t element = (v % width_vecs) << 3u;
+			const uint64_t at = (uint64_t)row * streams * width + ((uint64_t)v << 3u);
+			const float weight = inject[(uint64_t)row * streams + stream];
+			uint16_t sbits[8], obits[8];
+			float out_f[8];
+			LmUnpackUint4Bf16(*(const uint4 *)(streams_bf16 + at), sbits);
+			LmUnpackUint4Bf16(*(const uint4 *)(output_bf16 + (uint64_t)row * width + element), obits);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				out_f[k] = LmBf16ToFloat(sbits[k]) + SparkMathHyperInjected(LmBf16ToFloat(obits[k]), weight);
+			*(uint4 *)(streams_bf16 + at) = LmPackUint4FloatToBf16(out_f);
+		}
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * THREADS + threadIdx.x; index < streams * width; index += gridDim.x * THREADS )
 	{
 		const uint64_t at = (uint64_t)row * streams * width + index;

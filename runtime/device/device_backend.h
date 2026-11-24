@@ -175,6 +175,10 @@ SparkStatus SparkDeviceBackendAddressReserve(SparkDeviceAddress *address, uint64
 SparkStatus SparkDeviceBackendAddressRelease(SparkDeviceAddress address, uint64_t bytes);
 SparkStatus SparkDeviceBackendMemoryMap(SparkDeviceAddress address, uint64_t bytes, SparkDeviceMemoryHandle memory, uint64_t offset, uint32_t access);
 SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t bytes);
+uint32_t SparkDeviceBackendAddressMapped(SparkDeviceAddress address, uint64_t bytes, uint32_t write);
+uint32_t SparkDeviceBackendAddressOwned(SparkDeviceAddress address, uint64_t bytes);
+SparkStatus SparkDeviceBackendCopyMapped(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_at,
+	const SparkDeviceAllocation *source, uint64_t source_at, uint64_t bytes);
 
 SparkStatus SparkDeviceBackendCopy(SparkDeviceQueue *queue, SparkDeviceDirection direction,
 	const SparkDeviceAllocation *destination, uint64_t destination_offset,
