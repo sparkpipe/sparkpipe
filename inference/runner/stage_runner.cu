@@ -3453,7 +3453,8 @@ uint32_t SparkStageRunnerTreeSlotGrain(const SparkStageRunner *runner)
 	if ( SparkStageRunnerTreeVerifyCapable(runner) == 0u )
 		return 0u;
 	state = (const SparkStageRunnerState *)runner->private_state;
-	return state->geometry.kv_shard.grain * state->geometry.kv_shard.degree;
+	return state->geometry.tree_slot_grain != 0u ? state->geometry.tree_slot_grain :
+		state->geometry.kv_shard.grain * state->geometry.kv_shard.degree;
 }
 
 SparkStatus SparkStageRunnerKeepPath(SparkStageRunner *runner, const uint32_t *path_rows, const uint32_t *path_begin, const uint32_t *kept, uint32_t sequences)

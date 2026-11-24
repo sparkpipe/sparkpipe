@@ -106,6 +106,7 @@ typedef struct SparkStageRunnerModelGeometry
 	SparkKvShard kv_shard;
 	uint64_t recurrent_bytes;
 	uint32_t tree_verify;
+	uint32_t tree_slot_grain;
 	uint32_t experts;
 	uint32_t top_k;
 	uint32_t lease_tensor_base;

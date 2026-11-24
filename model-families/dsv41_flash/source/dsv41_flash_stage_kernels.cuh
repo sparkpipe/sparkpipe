@@ -116,16 +116,18 @@ static __global__ void D41Fp8SliceKernel(const uint8_t *__restrict__ payload, co
 static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, const float *__restrict__ score, uint16_t *__restrict__ pooled,
 	uint32_t *__restrict__ emit_row, float *__restrict__ state, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
 	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
-	const uint32_t *__restrict__ recurrent_slot, uint32_t ratio, uint32_t state_stride_floats, uint32_t width)
+	const uint32_t *__restrict__ recurrent_slot, uint32_t ratio, uint32_t state_stride_floats, uint32_t width,
+	const uint32_t *__restrict__ slots = 0, const uint32_t *__restrict__ parent_rows = 0)
 {
 	const uint32_t row = blockIdx.x;
 	const uint32_t position = positions[row];
+	const uint32_t target_slot = slots != 0 ? slots[row] : position;
 	if ( ratio == 1u )
 	{
 		for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
 			pooled[(uint64_t)row * width + c] = LmFloatToBf16(kv[(uint64_t)row * width + c]);
 		if ( threadIdx.x == 0u )
-			emit_row[row] = position;
+			emit_row[row] = target_slot;
 		return;
 	}
 	if ( (position + 1u) % ratio != 0u )
@@ -135,36 +137,130 @@ static __global__ void D41CompressorRowsKernel(const float *__restrict__ kv, con
 		return;
 	}
 	const uint32_t lane = row_lane[row], ordinal = row_ordinal[row];
-	const uint32_t previous = ordinal > 0u ? sequence_row_indices[sequence_row_begin[lane] + ordinal - 1u] : row;
+	const uint32_t previous = parent_rows != 0 ? parent_rows[row] :
+		(ordinal > 0u ? sequence_row_indices[sequence_row_begin[lane] + ordinal - 1u] : D41K_NO_ROW);
+	const uint32_t in_wave = previous != D41K_NO_ROW ? 1u : 0u;
 	const float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
 	{
-		const float kv0 = ordinal > 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
-		const float score0 = ordinal > 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
+		const float kv0 = in_wave != 0u ? kv[(uint64_t)previous * width + c] : slot_state[c];
+		const float score0 = in_wave != 0u ? score[(uint64_t)previous * width + c] : slot_state[width + c];
 		const float kv1 = kv[(uint64_t)row * width + c], score1 = score[(uint64_t)row * width + c];
 		pooled[(uint64_t)row * width + c] = LmFloatToBf16(SparkMathSoftmaxPool2(kv0, score0, kv1, score1));
 	}
 	if ( threadIdx.x == 0u )
-		emit_row[row] = position / ratio;
+		emit_row[row] = target_slot / ratio;
 }
 
 static __global__ void D41CompressorSaveKernel(const float *__restrict__ kv, const float *__restrict__ score, float *__restrict__ state,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint32_t rows, uint32_t ratio,
-	uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *__restrict__ lane_count)
+	uint32_t state_stride_floats, uint32_t width, uint32_t commit, const uint32_t *__restrict__ lane_count,
+	const uint32_t *__restrict__ path_rows = 0)
 {
-	const uint32_t row = blockIdx.x;
-	if ( commit == 0u || row >= rows || (positions[row] + 1u) % ratio == 0u )
+	if ( commit == 0u )
 		return;
-	const uint32_t lane = row_lane[row];
-	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
-	if ( row_ordinal[row] + 1u != count )
-		return;
+	uint32_t row = blockIdx.x, lane;
+	if ( path_rows != 0 )
+	{
+		const uint32_t count = lane_count != 0 ? lane_count[0] : 0u;
+		if ( blockIdx.x != 0u || count == 0u )
+			return;
+		row = path_rows[count - 1u];
+		if ( (positions[row] + 1u) % ratio == 0u )
+			return;
+		lane = 0u;
+	}
+	else
+	{
+		if ( row >= rows || (positions[row] + 1u) % ratio == 0u )
+			return;
+		lane = row_lane[row];
+		const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+		if ( row_ordinal[row] + 1u != count )
+			return;
+	}
 	float *slot_state = state + (uint64_t)recurrent_slot[lane] * state_stride_floats;
 	for ( uint32_t c = threadIdx.x; c < width; c += blockDim.x )
 	{
 		slot_state[c] = kv[(uint64_t)row * width + c];
 		slot_state[width + c] = score[(uint64_t)row * width + c];
+	}
+}
+
+static __global__ void D41CompressedTreeMapKernel(const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets,
+	uint32_t *__restrict__ compressed_fork, uint32_t *__restrict__ compressed_offset, uint32_t rows, uint32_t ratio)
+{
+	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows )
+		return;
+	compressed_fork[row] = fork_positions[row] == D41K_NO_ROW ? D41K_NO_ROW : fork_positions[row] / ratio;
+	compressed_offset[row] = slot_offsets[row] / ratio;
+}
+
+template<class Geometry, uint32_t THREADS>
+static __global__ __launch_bounds__(THREADS, 1)
+void D41CompressedPathMoveKernel(LmKvShardView view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ positions,
+	const uint32_t *__restrict__ path_rows, const uint32_t *__restrict__ path_count, const uint32_t *__restrict__ slots, uint32_t ratio,
+	uint32_t elements)
+{
+	const uint32_t index = blockIdx.x;
+	if ( index >= path_count[0] )
+		return;
+	const uint32_t row = path_rows[index], position = positions[row];
+	if ( (position + 1u) % ratio != 0u )
+		return;
+	const uint32_t source = slots[row] / ratio, destination = position / ratio;
+	if ( source == destination || SparkKvShardOwns(view.shard, destination) == 0u )
+		return;
+	const uint8_t *from = LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], source, row, LM_KV_ACCESS_READ);
+	uint8_t *to = (uint8_t *)LmKvShardSlotRequired<Geometry>(view, sequence_of_row[row], destination, row, LM_KV_ACCESS_WRITE);
+	if ( from == 0 || to == 0 )
+		return;
+	for ( uint32_t element = threadIdx.x; element < elements; element += THREADS )
+		((uint16_t *)to)[element] = ((const uint16_t *)from)[element];
+}
+
+static __global__ void D41TreeNgramHashKernel(const uint32_t *__restrict__ token_ids, const int32_t *__restrict__ token_map,
+	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ parent_rows, const uint32_t *__restrict__ recurrent_slot,
+	const int32_t *__restrict__ history, uint32_t history_stride, const int64_t *__restrict__ multipliers, const int64_t *__restrict__ primes,
+	const int64_t *__restrict__ offsets, int64_t *__restrict__ ids, uint32_t rows, uint32_t orders, uint32_t heads, int32_t pad)
+{
+	const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+	if ( row >= rows )
+		return;
+	const uint32_t position = positions[row];
+	const int32_t *carried = history + (uint64_t)recurrent_slot[0] * history_stride;
+	uint32_t blocked = 0u, current = row, past = 0u;
+	int64_t rolling = 0;
+	for ( uint32_t shift = 0u; shift <= orders; ++shift )
+	{
+		int32_t source = -1;
+		if ( position >= shift )
+		{
+			if ( current != D41K_NO_ROW )
+			{
+				const uint32_t token = token_ids[current];
+				source = token_map != 0 ? token_map[token] : (int32_t)token;
+				current = parent_rows[current];
+			}
+			else
+				source = carried[past++];
+		}
+		if ( position < shift || source == -1 )
+			blocked = 1u;
+		const int64_t value = blocked != 0u ? pad : source;
+		if ( shift == 0u )
+			rolling = value * multipliers[0];
+		else
+		{
+			rolling ^= value * multipliers[shift];
+			for ( uint32_t head = 0u; head < heads; ++head )
+			{
+				const uint32_t column = (shift - 1u) * heads + head;
+				ids[(uint64_t)row * orders * heads + column] = rolling % primes[column] + offsets[column];
+			}
+		}
 	}
 }
 
@@ -237,19 +333,45 @@ static inline void D41InitRecords(float *records, uint64_t destination_stride, u
 	LM_LAUNCH((D41InitRecordsKernel), blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u, D41K_THREADS, 0, stream, records, destination_stride, span, destinations);
 }
 
+#define D41K_WINDOW_KEYS 128u
+#define D41K_WINDOW_BATCH 16u
+
+static __device__ __forceinline__ void D41WindowTreeRows(const uint32_t *__restrict__ parent_rows, uint32_t row, uint32_t *tree_rows)
+{
+	if ( parent_rows == 0 )
+		return;
+	if ( threadIdx.x == 0u )
+	{
+		uint32_t current = row;
+		for ( uint32_t back = 0u; back < D41K_WINDOW_KEYS && current != D41K_NO_ROW; ++back )
+		{
+			tree_rows[back] = current;
+			current = parent_rows[current];
+		}
+	}
+	__syncthreads();
+}
+
+static __device__ __forceinline__ uint32_t D41WindowWaveRow(const uint32_t *__restrict__ lane_rows, const uint32_t *__restrict__ tree_rows,
+	const uint32_t *__restrict__ parent_rows, uint32_t position, uint32_t wave_first, uint32_t at)
+{
+	return parent_rows != 0 ? tree_rows[position - at] : lane_rows[at - wave_first];
+}
+
 static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t destination_stride, uint32_t heads_per_destination,
 	const uint16_t *__restrict__ query, uint64_t query_rank_stride, const uint16_t *__restrict__ wave_kv,
 	const uint16_t *__restrict__ ring, const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane,
 	const uint32_t *__restrict__ row_ordinal, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_indices,
 	const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows, uint32_t window, uint32_t degree, uint32_t rank,
-	float qk_scale, uint32_t record_heads, uint32_t record_copies)
+	float qk_scale, uint32_t record_heads, uint32_t record_copies, const uint32_t *__restrict__ parent_rows = 0)
 {
 	__shared__ float warp_sums[D41K_FOLD_KEYS][D41K_THREADS / 32u];
 	__shared__ float key_sums[D41K_FOLD_KEYS];
+	__shared__ uint32_t tree_rows[D41K_WINDOW_KEYS];
 	const uint32_t row = blockIdx.x, head = blockIdx.y, lane_index = threadIdx.x % 32u, warp = threadIdx.x / 32u;
 	const uint32_t position = positions[row], lane = row_lane[row];
-	const uint32_t wave_first = position - row_ordinal[row];
 	const uint32_t *lane_rows = sequence_row_indices + sequence_row_begin[lane];
+	const uint32_t wave_first = parent_rows != 0 ? positions[lane_rows[0]] : position - row_ordinal[row];
 	const uint32_t first = position + 1u > window ? position + 1u - window : 0u;
 	const uint32_t destination = head / heads_per_destination, local = head % heads_per_destination;
 	const uint16_t *q = query + (uint64_t)destination * query_rank_stride + ((uint64_t)row * heads_per_destination + local) * D41K_LATENT;
@@ -257,6 +379,7 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 	float *record = records + (uint64_t)(head / record_heads) * record_copies * destination_stride + record_offset;
 	float running_max = record[0], running_sum = record[1];
 	float accumulator[D41K_LATENT / D41K_THREADS], query_value[D41K_LATENT / D41K_THREADS];
+	D41WindowTreeRows(parent_rows, row, tree_rows);
 	for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
 	{
 		accumulator[e] = record[2u + threadIdx.x + e * D41K_THREADS];
@@ -270,7 +393,7 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 		for ( ; count < D41K_FOLD_KEYS && key + count * degree <= position; ++count )
 		{
 			const uint32_t at = key + count * degree;
-			const uint16_t *k = at >= wave_first ? wave_kv + (uint64_t)lane_rows[at - wave_first] * D41K_LATENT :
+			const uint16_t *k = at >= wave_first ? wave_kv + (uint64_t)D41WindowWaveRow(lane_rows, tree_rows, parent_rows, position, wave_first, at) * D41K_LATENT :
 				ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride + (uint64_t)((at / degree) % ring_rows) * D41K_LATENT;
 			float partial = 0.0f;
 			for ( uint32_t e = 0u; e < D41K_LATENT / D41K_THREADS; ++e )
@@ -318,9 +441,6 @@ static __global__ void D41WindowFoldKernel(float *__restrict__ records, uint64_t
 		}
 	}
 }
-
-#define D41K_WINDOW_KEYS 128u
-#define D41K_WINDOW_BATCH 16u
 
 static __device__ __forceinline__ const uint16_t *D41WindowKey(const uint16_t *__restrict__ wave_kv, const uint16_t *__restrict__ slot_ring,
 	const uint32_t *__restrict__ lane_rows, uint32_t wave_first, uint32_t window, uint32_t at)
@@ -558,13 +678,30 @@ static __global__ void __cluster_dims__(D41K_WINDOW_PARTS, 1, 1) __launch_bounds
 static __device__ __forceinline__ void D41WindowRingStoreRow(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count, uint32_t row)
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count, uint32_t row,
+	const uint32_t *__restrict__ path_rows = 0)
 {
-	if ( commit == 0u || row >= rows || positions[row] % degree != rank )
+	if ( commit == 0u || row >= rows )
 		return;
-	const uint32_t lane = row_lane[row];
-	const uint32_t count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
-	if ( row_ordinal[row] >= count || row_ordinal[row] + window < count )
+	uint32_t lane, ordinal, count;
+	if ( path_rows != 0 )
+	{
+		count = lane_count != 0 ? lane_count[0] : 0u;
+		ordinal = row;
+		if ( ordinal >= count || ordinal + window < count )
+			return;
+		row = path_rows[ordinal];
+		lane = 0u;
+	}
+	else
+	{
+		lane = row_lane[row];
+		count = lane_count != 0 ? lane_count[lane] : sequence_row_begin[lane + 1u] - sequence_row_begin[lane];
+		ordinal = row_ordinal[row];
+		if ( ordinal >= count || ordinal + window < count )
+			return;
+	}
+	if ( positions[row] % degree != rank )
 		return;
 	uint16_t *target = ring + (uint64_t)recurrent_slot[lane] * ring_slot_stride +
 		(uint64_t)((positions[row] / degree) % ring_rows) * D41K_LATENT;
@@ -575,10 +712,11 @@ static __device__ __forceinline__ void D41WindowRingStoreRow(const uint16_t *__r
 static __global__ void D41WindowRingStoreKernel(const uint16_t *__restrict__ wave_kv, uint16_t *__restrict__ ring,
 	const uint32_t *__restrict__ positions, const uint32_t *__restrict__ row_lane, const uint32_t *__restrict__ row_ordinal,
 	const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ recurrent_slot, uint64_t ring_slot_stride, uint32_t ring_rows,
-	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count)
+	uint32_t window, uint32_t degree, uint32_t rank, uint32_t rows, uint32_t commit, const uint32_t *__restrict__ lane_count,
+	const uint32_t *__restrict__ path_rows = 0)
 {
 	D41WindowRingStoreRow(wave_kv, ring, positions, row_lane, row_ordinal, sequence_row_begin, recurrent_slot, ring_slot_stride, ring_rows, window, degree,
-		rank, rows, commit, lane_count, blockIdx.x);
+		rank, rows, commit, lane_count, blockIdx.x, path_rows);
 }
 
 #define D41K_GRID_ITEMS 32768u
