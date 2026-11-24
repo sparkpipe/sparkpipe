@@ -599,6 +599,11 @@ void LmLatentAttentionDecodeSplitKernel(
     }
 }
 
+static __device__ __forceinline__ uint32_t LmAttnPackBf16Pair(float low, float high)
+{
+    return (uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u);
+}
+
 template<uint32_t THREADS, uint32_t LATENT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmLatentAttentionDecodeSplitCombineKernel(
@@ -608,49 +613,107 @@ void LmLatentAttentionDecodeSplitCombineKernel(
     uint32_t partitions)
 {
     __shared__ float scales[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
+    __shared__ float max_shared[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
+    __shared__ float den_shared[LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS];
     __shared__ float denominator_shared;
     uint32_t row = blockIdx.x;
     uint32_t head = blockIdx.y;
     uint32_t partition;
     uint32_t element;
     uint64_t block_base;
-    float global_max;
     float denominator;
 
     LmDependentRelease();
     LmDependentWait();
     block_base = ((uint64_t)row * heads + head) * partitions *
                  (LATENT + 2u);
-    if (threadIdx.x == 0u)
+    if constexpr (THREADS >= 32u && LM_WARP_LANES == 32u)
     {
-        global_max = -INFINITY;
-        for (partition = 0u; partition < partitions; ++partition)
+        if (threadIdx.x < 32u)
         {
-            float candidate = partials[
-                block_base + (uint64_t)partition * (LATENT + 2u)];
-
-            global_max = candidate > global_max ? candidate : global_max;
+            float lane_max = -INFINITY;
+            for (partition = threadIdx.x; partition < partitions; partition += 32u)
+            {
+                const float part_max = partials[
+                    block_base + (uint64_t)partition * (LATENT + 2u)];
+                max_shared[partition] = part_max;
+                den_shared[partition] = partials[
+                    block_base + (uint64_t)partition * (LATENT + 2u) + 1u];
+                lane_max = part_max > lane_max ? part_max : lane_max;
+            }
+            #pragma unroll
+            for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
+            {
+                float other = __shfl_xor_sync(0xffffffffu, lane_max, offset);
+                lane_max = other > lane_max ? other : lane_max;
+            }
+            for (partition = threadIdx.x; partition < partitions; partition += 32u)
+            {
+                const float part_max = max_shared[partition];
+                scales[partition] = (lane_max == -INFINITY ||
+                                     part_max == -INFINITY)
+                    ? 0.0f
+                    : __expf(part_max - lane_max);
+            }
         }
+        __syncthreads();
         denominator = 0.0f;
         for (partition = 0u; partition < partitions; ++partition)
-        {
-            float partition_max = partials[
-                block_base + (uint64_t)partition * (LATENT + 2u)];
-            float scale = (global_max == -INFINITY ||
-                           partition_max == -INFINITY)
-                ? 0.0f
-                : __expf(partition_max - global_max);
-
-            scales[partition] = scale;
-            denominator = fmaf(
-                partials[block_base + (uint64_t)partition * (LATENT + 2u) +
-                         1u],
-                scale,
-                denominator);
-        }
-        denominator_shared = denominator;
+            denominator = fmaf(den_shared[partition], scales[partition], denominator);
     }
-    __syncthreads();
+    else
+    {
+        if (threadIdx.x == 0u)
+        {
+            float global_max = -INFINITY;
+            for (partition = 0u; partition < partitions; ++partition)
+            {
+                float candidate = partials[
+                    block_base + (uint64_t)partition * (LATENT + 2u)];
+                global_max = candidate > global_max ? candidate : global_max;
+            }
+            denominator = 0.0f;
+            for (partition = 0u; partition < partitions; ++partition)
+            {
+                float partition_max = partials[
+                    block_base + (uint64_t)partition * (LATENT + 2u)];
+                float scale = (global_max == -INFINITY ||
+                               partition_max == -INFINITY)
+                    ? 0.0f
+                    : __expf(partition_max - global_max);
+                scales[partition] = scale;
+                denominator = fmaf(
+                    partials[block_base + (uint64_t)partition * (LATENT + 2u) + 1u],
+                    scale,
+                    denominator);
+            }
+            denominator_shared = denominator;
+        }
+        __syncthreads();
+        denominator = denominator_shared;
+    }
+    const float denom = fmaxf(denominator, 1.0e-20f);
+    const float *src0 = partials + block_base + 2u;
+    uint16_t *out_ptr = output_bf16 + ((uint64_t)row * heads + head) * LATENT;
+    if constexpr ((LATENT % 2u) == 0u)
+    {
+        if ((((uintptr_t)src0) & 7u) == 0u && (((uintptr_t)out_ptr) & 3u) == 0u)
+        {
+            for (element = threadIdx.x; element < LATENT / 2u; element += THREADS)
+            {
+                float m0 = 0.0f, m1 = 0.0f;
+                for (partition = 0u; partition < partitions; ++partition)
+                {
+                    const float sc = scales[partition];
+                    const float2 v = ((const float2 *)(src0 + (uint64_t)partition * (LATENT + 2u)))[element];
+                    m0 = fmaf(v.x, sc, m0);
+                    m1 = fmaf(v.y, sc, m1);
+                }
+                ((uint32_t *)out_ptr)[element] = LmAttnPackBf16Pair(m0 / denom, m1 / denom);
+            }
+            return;
+        }
+    }
     for (element = threadIdx.x; element < LATENT; element += THREADS)
     {
         float merged = 0.0f;
@@ -658,13 +721,11 @@ void LmLatentAttentionDecodeSplitCombineKernel(
         for (partition = 0u; partition < partitions; ++partition)
         {
             merged = fmaf(
-                partials[block_base + (uint64_t)partition * (LATENT + 2u) +
-                         2u + element],
+                src0[(uint64_t)partition * (LATENT + 2u) + element],
                 scales[partition],
                 merged);
         }
-        output_bf16[((uint64_t)row * heads + head) * LATENT + element] =
-            LmFloatToBf16(merged / fmaxf(denominator_shared, 1.0e-20f));
+        out_ptr[element] = LmFloatToBf16(merged / denom);
     }
 }
 
@@ -720,6 +781,10 @@ static __device__ __forceinline__ float LmLatentHeadsScale(const float (*warp_ma
 template<uint32_t HEADS, uint32_t LATENT, uint32_t PER_LANE>
 static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEADS], float (*warp_sum)[HEADS], float (*merged)[LATENT], const float *running_max, const float *running_sum, const float (*accumulator)[PER_LANE], float *global_max, float *global_sum)
 {
+    constexpr uint32_t SLICE = (HEADS <= 2u && LATENT <= 512u) ? LATENT : (HEADS == 4u && LATENT <= 512u ? 256u : 128u);
+    __shared__ float warp_scale[LM_LATENT_HEADS_WARPS][HEADS];
+    __shared__ float global_max_s[HEADS];
+    __shared__ float warp_acc[LM_LATENT_HEADS_WARPS][HEADS][SLICE];
     uint32_t warp = threadIdx.x / 32u, lane = threadIdx.x % 32u, head, element, index;
     if (lane == 0u)
         for (head = 0u; head < HEADS; ++head)
@@ -727,26 +792,57 @@ static __device__ __forceinline__ void LmLatentHeadsMerge(float (*warp_max)[HEAD
             warp_max[warp][head] = running_max[head];
             warp_sum[warp][head] = running_sum[head];
         }
-    for (index = threadIdx.x; index < HEADS * LATENT; index += LM_LATENT_HEADS_THREADS)
-        merged[index / LATENT][index % LATENT] = 0.0f;
     __syncthreads();
+    if (warp == 0u)
+    {
+        for (head = 0u; head < HEADS; ++head)
+        {
+            float wm = lane < LM_LATENT_HEADS_WARPS ? warp_max[lane][head] : -INFINITY;
+            float gm = wm;
+            #pragma unroll
+            for (uint32_t offset = LM_LATENT_HEADS_WARPS / 2u; offset != 0u; offset >>= 1u)
+                gm = fmaxf(gm, __shfl_xor_sync(0xffffffffu, gm, offset));
+            if (lane < LM_LATENT_HEADS_WARPS)
+                warp_scale[lane][head] = gm == -INFINITY || wm == -INFINITY ? 0.0f : __expf(wm - gm);
+            if (lane == 0u)
+                global_max_s[head] = gm;
+        }
+    }
+    for (uint32_t slice = 0u; slice < LATENT; slice += SLICE)
+    {
+        const uint32_t slice_end = slice + SLICE < LATENT ? slice + SLICE : LATENT;
+        const uint32_t slice_len = slice_end - slice;
+        for (head = 0u; head < HEADS; ++head)
+            for (element = 0u; element < PER_LANE; ++element)
+            {
+                const uint32_t col = lane * PER_LANE + element;
+                if (col >= slice && col < slice_end)
+                    warp_acc[warp][head][col - slice] = accumulator[head][element];
+            }
+        __syncthreads();
+        for (index = threadIdx.x; index < HEADS * slice_len; index += LM_LATENT_HEADS_THREADS)
+        {
+            head = index / slice_len;
+            const uint32_t local_col = index % slice_len;
+            float total = 0.0f;
+            #pragma unroll
+            for (uint32_t w = 0u; w < LM_LATENT_HEADS_WARPS; ++w)
+                total += warp_acc[w][head][local_col] * warp_scale[w][head];
+            merged[head][slice + local_col] = total;
+        }
+        if (slice_end < LATENT)
+            __syncthreads();
+    }
     for (head = 0u; head < HEADS; ++head)
     {
-        global_max[head] = -INFINITY;
-        global_sum[head] = 0.0f;
+        float gs = 0.0f;
+        global_max[head] = global_max_s[head];
+        #pragma unroll
         for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
-            global_max[head] = fmaxf(global_max[head], warp_max[index][head]);
-        for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
-            global_sum[head] = fmaf(warp_sum[index][head], LmLatentHeadsScale<HEADS, LATENT>(warp_max, index, head, global_max[head]), global_sum[head]);
+            gs = fmaf(warp_sum[index][head], warp_scale[index][head], gs);
+        global_sum[head] = gs;
     }
-    for (index = 0u; index < LM_LATENT_HEADS_WARPS; ++index)
-    {
-        if (warp == index)
-            for (head = 0u; head < HEADS; ++head)
-                for (element = 0u; element < PER_LANE; ++element)
-                    merged[head][lane * PER_LANE + element] += accumulator[head][element] * LmLatentHeadsScale<HEADS, LATENT>(warp_max, index, head, global_max[head]);
-        __syncthreads();
-    }
+    __syncthreads();
 }
 
 #define LM_LATENT_HEADS_UNROLL 2u

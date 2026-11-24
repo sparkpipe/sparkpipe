@@ -1,0 +1,2 @@
++343
+Vectorized and warp-parallel attention, shard merge/compact, GQA, and delta-rule kernels (PR #2133).
