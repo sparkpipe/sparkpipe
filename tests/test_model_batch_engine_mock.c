@@ -3952,7 +3952,17 @@ static void TestScenarioDraftMultiLanes(const SparkModelResidentDeployment *depl
 	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
 	MockResidentClientSetStepDelay(2000u);
 	if ( lanes > 4u )
+	{
 		MockResidentClientSetVerifyRowCost(0u);
+		MockResidentClientSetPrefillDelay(200000u);
+		TestSubmitPrompt(engine,16u,999u,16u,script,44u);
+		TestDriveUntilTerminal(engine,&state,1u,4000u);
+		MockResidentClientSetPrefillDelay(0u);
+		memset(&state,0,sizeof(state));
+		MockResidentClientTakeVerifyStats(&submissions,&rows);
+		(void)MockResidentClientTakeVerifyShared();
+		(void)MockResidentClientTakeMaxDecodeLanes();
+	}
 	for (index=1u; index<=lanes; index++)
 		TestSubmitPrompt(engine,index,940u + index,60u,script,24u);
 	for (index=1u; index<=lanes; index++)
@@ -4275,6 +4285,37 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	for (index=2u; index<=7u; index++)
 		CHECK(state.completed_events[index] == 1u && state.error_events[index] == 0u && TestScriptedOutputMatches(&state,index,script,44u,80u) != 0u && TestLaneInputsFollowScript(index,script,256u) != 0u,"batch verify 6-lane: every lane completes with exact greedy output and committed inputs");
 	CHECK(MockResidentClientTakeMaxDecodeLanes() == 6u && shared != 0u && rows > 6u * submissions && view.speculative_accepted_token_count >= 120u,"batch verify 6-lane: six concurrent decoding requests share lookup verify frames and accept drafts");
+	SparkModelBatchEngineDestroy(engine);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,256u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	MockResidentClientSetStepDelay(2000u);
+	MockResidentClientSetVerifyRowCost(0u);
+	MockResidentClientSetPrefillDelay(200000u);
+	TestSubmitPrompt(engine,16u,940u,80u,script,44u);
+	TestDriveUntilTerminal(engine,&state,1u,4000u);
+	MockResidentClientSetPrefillDelay(0u);
+	memset(&state,0,sizeof(state));
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	(void)MockResidentClientTakeVerifyShared();
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	for (index=1u; index<=8u; index++)
+		TestSubmitPrompt(engine,index,940u + index,80u,script,44u);
+	for (index=1u; index<=8u; index++)
+		TestDriveUntilTerminal(engine,&state,index,8000u);
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"batch verify 8-lane: engine view");
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	for (index=1u; index<=8u; index++)
+		CHECK(state.completed_events[index] == 1u && state.error_events[index] == 0u && TestScriptedOutputMatches(&state,index,script,44u,80u) != 0u && TestLaneInputsFollowScript(index,script,256u) != 0u,"batch verify 8-lane: every lane completes with exact greedy output and committed inputs");
+	CHECK(MockResidentClientTakeMaxDecodeLanes() == 8u && shared != 0u && rows > 8u * submissions && view.speculative_accepted_token_count >= 240u,"batch verify 8-lane: cold-start prefill outlier does not block eight concurrent lookup verify lanes");
+	MockResidentClientSetVerifyRowCost(1u);
+	MockResidentClientSetStepDelay(0u);
 	SparkModelBatchEngineDestroy(engine);
 }
 

@@ -140,13 +140,18 @@ def stream_completion(
     body: dict[str, Any],
     api_key: str | None = None,
     timeout: float = 900.0,
+    endpoint: str = "completions",
 ) -> dict[str, Any]:
     parsed = urllib.parse.urlparse(base_url.rstrip("/"))
-    path = (parsed.path.rstrip("/") if parsed.path else "") + "/v1/completions"
+    suffix = "/v1/chat/completions" if endpoint == "chat" else "/v1/completions"
+    path = (parsed.path.rstrip("/") if parsed.path else "") + suffix
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = dict(body)
+    if endpoint == "chat" and "prompt" in payload:
+        prompt_text = payload.pop("prompt")
+        payload["messages"] = [{"role": "user", "content": prompt_text}]
     payload["stream"] = True
 
     started = time.monotonic()
@@ -204,6 +209,12 @@ def stream_completion(
                 choices = doc.get("choices") or []
                 choice = choices[0] if choices else {}
                 delta_text = choice.get("text")
+                if not isinstance(delta_text, str):
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta, dict):
+                        content_piece = delta.get("content") or ""
+                        reasoning_piece = delta.get("reasoning_content") or ""
+                        delta_text = f"{reasoning_piece}{content_piece}"
                 if isinstance(delta_text, str) and delta_text:
                     text_parts.append(delta_text)
                 if isinstance(tokens_list, list) and tokens_list:
@@ -334,6 +345,21 @@ def is_capacity_rejection(error: Any) -> bool:
     return False
 
 
+def is_immediate_eos(result: dict[str, Any]) -> bool:
+    return (
+        result.get("error") is None
+        and result.get("http_status") == 200
+        and not result.get("token_times")
+        and result.get("finish_reason") == "stop"
+    )
+
+
+def format_batch_prompt(prompt_base: str, idx: int, stream_prefix: bool = False) -> str:
+    if stream_prefix:
+        return f"Task {idx + 1}: {prompt_base}"
+    return f"{prompt_base}\n[Stream {idx + 1}] Technical report:\nThe primary "
+
+
 def run_concurrent_batch(
     base_url: str,
     model: str,
@@ -343,18 +369,20 @@ def run_concurrent_batch(
     spec_body: dict[str, Any],
     api_key: str | None,
     timeout: float,
+    endpoint: str = "completions",
+    stream_prefix: bool = False,
 ) -> dict[str, Any]:
     results: list[dict[str, Any] | None] = [None] * batch_size
 
     def worker(idx: int) -> None:
         body = {
             "model": model,
-            "prompt": f"{prompt_base}\n[Stream {idx + 1}] Technical report:\nThe primary ",
+            "prompt": format_batch_prompt(prompt_base, idx, stream_prefix=stream_prefix),
             "max_tokens": max_tokens,
             "temperature": 0,
         }
         body.update(spec_body)
-        results[idx] = stream_completion(base_url, body, api_key=api_key, timeout=timeout)
+        results[idx] = stream_completion(base_url, body, api_key=api_key, timeout=timeout, endpoint=endpoint)
 
     started = time.monotonic()
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(batch_size)]
@@ -378,10 +406,12 @@ def run_concurrent_batch(
 
     decoding = [r for r in completed if r["token_times"]]
     if len(decoding) < batch_size:
+        eos_empty = any(is_immediate_eos(r) for r in completed)
         return {
             "batch": batch_size,
             "unsupported": False,
             "failed": True,
+            "immediate_eos": eos_empty,
             "errors": [{"reason": f"only {len(decoding)}/{batch_size} streams produced tokens"}],
             "aggregate_tok_s": 0.0,
         }
@@ -426,7 +456,7 @@ def tier_plan(tier: str, model_spec: rais_score.ModelSpec, max_batch: int) -> di
             "warm_targets": [min(8192, ctx_cap)],
             "warm_new_tokens": 128,
             "gate_gx_tokens": 32,
-            "run_b8_spec": False,
+            "run_b8_spec": True,
         }
     long_targets = [min(32768, ctx_cap)]
     if ctx_cap >= 98304:
@@ -465,12 +495,57 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     model_name = rais_score.resolve_model_name(args.model)
     model_spec = rais_score.MODEL_SPECS[model_name]
     plan = tier_plan(args.tier, model_spec, args.max_batch)
+    if getattr(args, "b8_spec", None) is not None:
+        plan["run_b8_spec"] = bool(args.b8_spec)
+    endpoint_mode = getattr(args, "endpoint", "completions") or "completions"
+    active_endpoint = "chat" if endpoint_mode == "chat" else "completions"
+    endpoint_fallback: str | None = None
 
     if args.dry_run:
-        return {"dry_run": True, "model": model_name, "hardware": args.hardware, "plan": plan}
+        return {"dry_run": True, "model": model_name, "hardware": args.hardware, "endpoint": active_endpoint, "plan": plan}
 
     if args.swap_url:
         swap_model(args.swap_url, model_name, args.swap_token, args.timeout)
+
+    def do_stream(body: dict[str, Any]) -> dict[str, Any]:
+        nonlocal active_endpoint, endpoint_fallback
+        raw = stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout, endpoint=active_endpoint)
+        if endpoint_mode == "auto" and active_endpoint == "completions" and is_immediate_eos(raw):
+            active_endpoint = "chat"
+            endpoint_fallback = "immediate_eos"
+            raw = stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout, endpoint=active_endpoint)
+        return raw
+
+    def do_batch(batch_size: int, max_tokens: int, prompt_base: str, spec_body: dict[str, Any], stream_prefix: bool = False) -> dict[str, Any]:
+        nonlocal active_endpoint, endpoint_fallback
+        res = run_concurrent_batch(
+            args.base_url,
+            model_name,
+            batch_size,
+            max_tokens,
+            prompt_base,
+            spec_body,
+            args.api_key,
+            args.timeout,
+            endpoint=active_endpoint,
+            stream_prefix=stream_prefix,
+        )
+        if endpoint_mode == "auto" and active_endpoint == "completions" and res.get("immediate_eos"):
+            active_endpoint = "chat"
+            endpoint_fallback = "immediate_eos"
+            res = run_concurrent_batch(
+                args.base_url,
+                model_name,
+                batch_size,
+                max_tokens,
+                prompt_base,
+                spec_body,
+                args.api_key,
+                args.timeout,
+                endpoint=active_endpoint,
+                stream_prefix=stream_prefix,
+            )
+        return res
 
     nospec_opt = _spec_payload(args.spec_toggle, False)
     spec_opt = _spec_payload(args.spec_toggle, True)
@@ -490,7 +565,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "temperature": 0,
         }
         body.update(nospec_opt)
-        res = summarize_stream(stream_completion(args.base_url, body, api_key=args.api_key, timeout=args.timeout))
+        res = summarize_stream(do_stream(body))
         if res["error"] is not None:
             errors_count += 1
         else:
@@ -541,7 +616,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     "temperature": 0,
                 }
                 nb.update(nospec_opt)
-                nr = summarize_stream(stream_completion(args.base_url, nb, api_key=args.api_key, timeout=args.timeout))
+                nr = summarize_stream(do_stream(nb))
                 if nr["error"] is not None:
                     errors_count += 1
                     continue
@@ -557,7 +632,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             }
             sb.update(spec_opt)
             em_before = read_engine_measurements(args.api_log)
-            sr = summarize_stream(stream_completion(args.base_url, sb, api_key=args.api_key, timeout=args.timeout))
+            sr = summarize_stream(do_stream(sb))
             em_after = read_engine_measurements(args.api_log)
             if sr["error"] is not None:
                 errors_count += 1
@@ -628,16 +703,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         if b > args.max_batch:
             batch_results[str(b)] = {"unsupported": True, "aggregate_tok_s": 0.0}
             continue
-        res_b = run_concurrent_batch(
-            args.base_url,
-            model_name,
-            b,
-            plan["batch_tokens"],
-            PROSE_PROMPT,
-            nospec_opt,
-            args.api_key,
-            args.timeout,
-        )
+        res_b = do_batch(b, plan["batch_tokens"], PROSE_PROMPT, nospec_opt)
         if res_b.get("failed"):
             errors_count += len(res_b.get("errors") or [1])
         batch_results[str(b)] = res_b
@@ -646,24 +712,20 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         b8_nospec = batch_results.get("8", {}).get("aggregate_tok_s") or 0.0
         if b8_nospec > 0.0:
             em_b8_before = read_engine_measurements(args.api_log)
-            res_b8_spec = run_concurrent_batch(
-                args.base_url,
-                model_name,
-                8,
-                plan["batch_tokens"],
-                EDIT_PROMPT,
-                spec_opt,
-                args.api_key,
-                args.timeout,
-            )
+            res_b8_spec = do_batch(8, plan["batch_tokens"], EDIT_PROMPT, spec_opt, stream_prefix=True)
             em_b8_after = read_engine_measurements(args.api_log)
             if not res_b8_spec.get("failed") and not res_b8_spec.get("unsupported"):
                 b8_spec_agg = res_b8_spec.get("aggregate_tok_s") or 0.0
                 d_b8_lanes = 0
+                d_b8_draft = 0
                 d_b8_acc = 0
                 if em_b8_before is not None and em_b8_after is not None:
                     d_b8_lanes = max(0, em_b8_after["verify_lanes"] - em_b8_before["verify_lanes"])
+                    d_b8_draft = max(0, em_b8_after["draft_tokens"] - em_b8_before["draft_tokens"])
                     d_b8_acc = max(0, em_b8_after["accepted_draft_tokens"] - em_b8_before["accepted_draft_tokens"])
+                    spec_metrics["b8_verify_lanes"] = d_b8_lanes
+                    spec_metrics["b8_draft_tokens"] = d_b8_draft
+                    spec_metrics["b8_accepted_draft_tokens"] = d_b8_acc
                 if d_b8_lanes > 0:
                     a_b8 = round(1.0 + d_b8_acc / float(d_b8_lanes), 3)
                     spec_metrics["verify_b8_enabled"] = True
@@ -681,12 +743,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     prompt_8k = build_prompt_for_tokens(plan["prefill_8k_tokens"], nonce_8k)
     cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128 + "The primary "
     cold_8k_res = summarize_stream(
-        stream_completion(
-            args.base_url,
-            {"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt},
-            api_key=args.api_key,
-            timeout=args.timeout,
-        )
+        do_stream({"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
     )
     prefill_8k_tokens = cold_8k_res.get("prompt_tokens") or plan["prefill_8k_tokens"]
     prefill_8k_tok_s = None
@@ -696,12 +753,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         prefill_8k_tok_s = round(prefill_8k_tokens * 1000.0 / cold_8k_res["ttft_ms"], 2)
 
     warm_gx_res = summarize_stream(
-        stream_completion(
-            args.base_url,
-            {"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt},
-            api_key=args.api_key,
-            timeout=args.timeout,
-        )
+        do_stream({"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
     )
     prefix_exact = False
     if warm_gx_res["error"] is not None:
@@ -711,12 +763,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     warm_8k_turn2 = prompt_8k + FOLLOWUP_DELTA_128 + " Confirm the ordering and include one concrete metric."
     warm_8k_res = summarize_stream(
-        stream_completion(
-            args.base_url,
-            {"model": model_name, "prompt": warm_8k_turn2, "max_tokens": 16, "temperature": 0, **nospec_opt},
-            api_key=args.api_key,
-            timeout=args.timeout,
-        )
+        do_stream({"model": model_name, "prompt": warm_8k_turn2, "max_tokens": 16, "temperature": 0, **nospec_opt})
     )
     warm_8k_ttft_ms = None
     if warm_8k_res["error"] is not None:
@@ -741,12 +788,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         p_long = build_prompt_for_tokens(target_len, nonce_l) + FOLLOWUP_DELTA_128 + "The primary "
         out_toks = plan["b1_long_tokens"] if target_len == max(plan["prefill_long_targets"]) else 1
         r_long = summarize_stream(
-            stream_completion(
-                args.base_url,
-                {"model": model_name, "prompt": p_long, "max_tokens": out_toks, "temperature": 0, **nospec_opt},
-                api_key=args.api_key,
-                timeout=args.timeout,
-            )
+            do_stream({"model": model_name, "prompt": p_long, "max_tokens": out_toks, "temperature": 0, **nospec_opt})
         )
         if r_long["error"] is not None:
             errors_count += 1
@@ -766,12 +808,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     if len(plan["warm_targets"]) > 1 and long_prompt_for_decode:
         r_w100 = summarize_stream(
-            stream_completion(
-                args.base_url,
-                {"model": model_name, "prompt": long_prompt_for_decode + FOLLOWUP_DELTA_128, "max_tokens": 16, "temperature": 0, **nospec_opt},
-                api_key=args.api_key,
-                timeout=args.timeout,
-            )
+            do_stream({"model": model_name, "prompt": long_prompt_for_decode + FOLLOWUP_DELTA_128, "max_tokens": 16, "temperature": 0, **nospec_opt})
         )
         if r_w100["error"] is not None:
             errors_count += 1
@@ -781,16 +818,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     if long_prompt_for_decode:
         b8_long_prompt = long_prompt_for_decode if b8_long_ctx >= b1_long_ctx else build_prompt_for_tokens(b8_long_ctx, f"b8l-{time.time_ns()}")
-        b8_long_res = run_concurrent_batch(
-            args.base_url,
-            model_name,
-            min(8, args.max_batch),
-            plan["b8_long_tokens"],
-            b8_long_prompt,
-            nospec_opt,
-            args.api_key,
-            args.timeout,
-        )
+        b8_long_res = do_batch(min(8, args.max_batch), plan["b8_long_tokens"], b8_long_prompt, nospec_opt)
         if b8_long_res.get("failed"):
             errors_count += len(b8_long_res.get("errors") or [1])
         elif not b8_long_res.get("unsupported"):
@@ -821,7 +849,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "warm_100k_ttft_ms": warm_100k_ttft_ms,
     }
 
-    return {
+    record: dict[str, Any] = {
         "rais_version": rais_score.RAIS_VERSION,
         "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "model": model_name,
@@ -829,6 +857,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         "tier": args.tier,
         "hardware": args.hardware,
         "base_url": args.base_url,
+        "endpoint": active_endpoint,
         "metrics": metrics_payload,
         "gates": {
             "prose_exact": prose_exact,
@@ -837,6 +866,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "errors": errors_count,
         },
     }
+    if endpoint_fallback is not None:
+        record["endpoint_fallback"] = endpoint_fallback
+    return record
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -847,6 +879,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hardware", default="16x-gb10-1x100g", choices=sorted(rais_score.HARDWARE_PROFILES))
     parser.add_argument("--engine", default="sparkpipe", help="Engine label recorded in JSONL output.")
     parser.add_argument("--spec-toggle", default="speculation", help="JSON field name toggling speculation, or 'none'.")
+    parser.add_argument("--b8-spec", action=argparse.BooleanOptionalAction, default=None, help="Enable or disable the B=8 batched speculation probe.")
+    parser.add_argument("--endpoint", default="completions", choices=("completions", "chat", "auto"), help="Endpoint mode: completions, chat, or auto (fallback on immediate token-0 EOS).")
     parser.add_argument("--api-key", default=None, help="Optional Bearer token for /v1/completions.")
     parser.add_argument("--api-log", default=None, help="Optional engine API log path for exact verify/draft counters.")
     parser.add_argument("--swap-url", default=None, help="Optional model swap endpoint URL.")
