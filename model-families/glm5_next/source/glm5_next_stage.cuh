@@ -20,6 +20,7 @@
 #include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
+#include "inference/kernels/project_chain.cuh"
 #include "inference/kernels/route.cuh"
 #include "inference/kernels/skinny.cuh"
 #include "inference/kernels/stream_gemm.cuh"
@@ -334,18 +335,85 @@ static int32_t Glm5NextLaunched(void)
 }
 
 template<uint32_t THREADS>
+static __device__ __forceinline__ void Glm5NextCopySlice(const uint16_t *__restrict__ source, uint16_t *__restrict__ destination, uint32_t count)
+{
+	if ( ((count & 7u) == 0u) && LmIsAligned16(source) && LmIsAligned16(destination) )
+	{
+		for ( uint32_t index = threadIdx.x * 8u; index < count; index += THREADS * 8u )
+			*(uint4 *)(destination + index) = *(const uint4 *)(source + index);
+		return;
+	}
+	if ( ((count & 3u) == 0u) && (((uintptr_t)source & 7u) == 0u) && (((uintptr_t)destination & 7u) == 0u) )
+	{
+		for ( uint32_t index = threadIdx.x * 4u; index < count; index += THREADS * 4u )
+			*(uint2 *)(destination + index) = *(const uint2 *)(source + index);
+		return;
+	}
+	for ( uint32_t index = threadIdx.x; index < count; index += THREADS )
+		destination[index] = source[index];
+}
+
+template<uint32_t DIM, uint32_t KPOOL>
+static __device__ __forceinline__ float Glm5NextPoolKeyElement(const uint16_t *const *slots, const float *__restrict__ compress_ape_f32, uint32_t index)
+{
+	float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], weights[KPOOL], key = 0.0f;
+	uint16_t slot_key[KPOOL];
+	uint32_t slot_in_pool;
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		const uint16_t *slot = slots[slot_in_pool];
+		slot_key[slot_in_pool] = slot[index];
+		logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
+		maximum = fmaxf(maximum, logits[slot_in_pool]);
+	}
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		if ( logits[slot_in_pool] != -INFINITY )
+		{
+			weights[slot_in_pool] = __expf(logits[slot_in_pool] - maximum);
+			sum += weights[slot_in_pool];
+		}
+		else
+			weights[slot_in_pool] = 0.0f;
+	}
+	const float denom = fmaxf(sum, 1.0e-20f);
+	for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+	{
+		const float mix = weights[slot_in_pool] / denom;
+		if ( mix != 0.0f )
+			key += mix * LmBf16ToFloat(slot_key[slot_in_pool]);
+	}
+	return key;
+}
+
+template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1) void Glm5NextIndexPackKernel(const uint16_t *__restrict__ key_bf16,
 	const uint16_t *__restrict__ gate_bf16, uint16_t *__restrict__ packed_bf16, uint32_t dimension)
 {
 	const uint32_t row = blockIdx.x;
-	const uint64_t base = (uint64_t)row * (2u * dimension + 1u);
-	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
+	const uint16_t *key_row = key_bf16 + (uint64_t)row * dimension;
+	const uint16_t *gate_row = gate_bf16 + (uint64_t)row * dimension;
+	uint16_t *packed_row = packed_bf16 + (uint64_t)row * (2u * dimension + 1u);
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(key_row) && LmIsAligned16(gate_row) && LmIsAligned16(packed_row) )
 	{
-		packed_bf16[base + index] = key_bf16[(uint64_t)row * dimension + index];
-		packed_bf16[base + dimension + index] = gate_bf16[(uint64_t)row * dimension + index];
+		for ( uint32_t index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u )
+		{
+			const uint4 key_vec = *(const uint4 *)(key_row + index);
+			const uint4 gate_vec = *(const uint4 *)(gate_row + index);
+			*(uint4 *)(packed_row + index) = key_vec;
+			*(uint4 *)(packed_row + dimension + index) = gate_vec;
+		}
+	}
+	else
+	{
+		for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
+		{
+			packed_row[index] = key_row[index];
+			packed_row[dimension + index] = gate_row[index];
+		}
 	}
 	if ( threadIdx.x == 0u )
-		packed_bf16[base + 2u * dimension] = 0x3F80u;
+		packed_row[2u * dimension] = 0x3F80u;
 }
 
 template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS>
@@ -372,30 +440,14 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 	}
 	for ( index = threadIdx.x; index < DIM; index += THREADS )
 	{
-		float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
+		const uint16_t *slots[KPOOL];
 		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
 		{
-			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-			if ( slot == 0 )
+			slots[slot_in_pool] = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+			if ( slots[slot_in_pool] == 0 )
 				return;
-			logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
-			maximum = fmaxf(maximum, logits[slot_in_pool]);
 		}
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-			if ( logits[slot_in_pool] != -INFINITY )
-				sum += __expf(logits[slot_in_pool] - maximum);
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-			mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-		{
-			if ( mix[slot_in_pool] == 0.0f )
-				continue;
-			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-			if ( slot == 0 )
-				return;
-			key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
-		}
-		pool_key[index] = key;
+		pool_key[index] = Glm5NextPoolKeyElement<DIM, KPOOL>(slots, compress_ape_f32, index);
 	}
 	__syncthreads();
 	float total = 0.0f;
@@ -428,6 +480,7 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 	static_assert(HEADS % (THREADS / LM_WARP_LANES) == 0u, "every warp scores the same number of heads");
 	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
 	__shared__ float pool_key[POOLS][DIM];
+	__shared__ const uint16_t *pool_slots[POOLS][KPOOL];
 	__shared__ uint32_t pool_ready[POOLS];
 	__shared__ float contribution[POOLS][HEADS];
 	const uint32_t first_local = blockIdx.x * POOLS, first_row = blockIdx.y * ROWS, warp = threadIdx.x / LM_WARP_LANES;
@@ -442,48 +495,30 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 			for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
 			{
 				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
-				pool_ready[local] = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+				uint32_t ready = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
+				if ( ready != 0u )
+				{
+					const uint32_t first = pool * KPOOL;
+					for ( uint32_t slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+					{
+						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
+						pool_slots[local][slot_in_pool] = slot;
+						if ( slot == 0 )
+						{
+							ready = 0u;
+							break;
+						}
+					}
+				}
+				pool_ready[local] = ready;
 			}
 			__syncthreads();
 			for ( uint32_t item = threadIdx.x; item < POOLS * DIM; item += THREADS )
 			{
-				const uint32_t local = item / DIM, index = item % DIM, first = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree) * KPOOL;
-				float maximum = -INFINITY, sum = 0.0f, logits[KPOOL], mix[KPOOL], key = 0.0f;
-				uint32_t slot_in_pool, failed = 0u;
+				const uint32_t local = item / DIM, index = item % DIM;
 				if ( pool_ready[local] == 0u )
 					continue;
-				for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
-				{
-					const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-					if ( slot == 0 )
-					{
-						failed = 1u;
-						break;
-					}
-					logits[slot_in_pool] = LmBf16ToFloat(slot[DIM + index]) + compress_ape_f32[slot_in_pool * DIM + index];
-					maximum = fmaxf(maximum, logits[slot_in_pool]);
-				}
-				if ( failed == 0u )
-				{
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-						if ( logits[slot_in_pool] != -INFINITY )
-							sum += __expf(logits[slot_in_pool] - maximum);
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
-						mix[slot_in_pool] = logits[slot_in_pool] == -INFINITY ? 0.0f : __expf(logits[slot_in_pool] - maximum) / fmaxf(sum, 1.0e-20f);
-					for ( slot_in_pool = 0u; slot_in_pool < KPOOL && failed == 0u; ++slot_in_pool )
-					{
-						if ( mix[slot_in_pool] == 0.0f )
-							continue;
-						const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-						if ( slot == 0 )
-							failed = 1u;
-						else
-							key += mix[slot_in_pool] * LmBf16ToFloat(slot[index]);
-					}
-				}
-				if ( failed != 0u )
-					pool_ready[local] = 0u;
-				pool_key[local][index] = key;
+				pool_key[local][index] = Glm5NextPoolKeyElement<DIM, KPOOL>(pool_slots[local], compress_ape_f32, index);
 			}
 			__syncthreads();
 			cached = sequence;
@@ -589,10 +624,24 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitDecayGateKernel(const
 	const uint32_t row = blockIdx.x;
 	if ( row >= rows )
 		return;
+	const uint16_t *fused_row = fused_bf16 + (uint64_t)row * 2u * LOW_RANK;
+	uint16_t *decay_row = decay_latent_bf16 + (uint64_t)row * LOW_RANK;
+	uint16_t *gate_row = gate_latent_bf16 + (uint64_t)row * LOW_RANK;
+	if ( ((LOW_RANK & 7u) == 0u) && LmIsAligned16(fused_bf16) && LmIsAligned16(decay_latent_bf16) && LmIsAligned16(gate_latent_bf16) )
+	{
+		for ( uint32_t index = threadIdx.x * 8u; index < LOW_RANK; index += THREADS * 8u )
+		{
+			const uint4 decay_vec = *(const uint4 *)(fused_row + index);
+			const uint4 gate_vec = *(const uint4 *)(fused_row + LOW_RANK + index);
+			*(uint4 *)(decay_row + index) = decay_vec;
+			*(uint4 *)(gate_row + index) = gate_vec;
+		}
+		return;
+	}
 	for ( uint32_t index = threadIdx.x; index < LOW_RANK; index += THREADS )
 	{
-		decay_latent_bf16[(uint64_t)row * LOW_RANK + index] = fused_bf16[(uint64_t)row * 2u * LOW_RANK + index];
-		gate_latent_bf16[(uint64_t)row * LOW_RANK + index] = fused_bf16[(uint64_t)row * 2u * LOW_RANK + LOW_RANK + index];
+		decay_row[index] = fused_row[index];
+		gate_row[index] = fused_row[LOW_RANK + index];
 	}
 }
 
@@ -602,18 +651,13 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitQkvbKernel(const uint
 	uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
 {
 	const uint32_t row = blockIdx.x;
-	const uint64_t fused = (uint64_t)row * fused_rows, dense = (uint64_t)row * qk_dim;
-	uint32_t index;
 	if ( row >= rows )
 		return;
-	for ( index = threadIdx.x; index < qk_dim; index += THREADS )
-		query_bf16[dense + index] = qkvb_bf16[fused + index];
-	for ( index = threadIdx.x; index < qk_dim; index += THREADS )
-		key_bf16[dense + index] = qkvb_bf16[fused + qk_dim + index];
-	for ( index = threadIdx.x; index < v_dim; index += THREADS )
-		value_bf16[(uint64_t)row * v_dim + index] = qkvb_bf16[fused + 2u * qk_dim + index];
-	for ( index = threadIdx.x; index < heads; index += THREADS )
-		beta_bf16[(uint64_t)row * heads + index] = qkvb_bf16[fused + 2u * qk_dim + v_dim + index];
+	const uint16_t *qkvb_row = qkvb_bf16 + (uint64_t)row * fused_rows;
+	Glm5NextCopySlice<THREADS>(qkvb_row, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	Glm5NextCopySlice<THREADS>(qkvb_row + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	Glm5NextCopySlice<THREADS>(qkvb_row + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
+	Glm5NextCopySlice<THREADS>(qkvb_row + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
 }
 
 __global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
@@ -913,8 +957,8 @@ static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t row
 		status = Glm5NextLinear(b, b->q_compressed_bf16, w->q_b, b->q_bf16, rows, G5N_QA, b->q_b_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
-		b->attn_heads, rows, stream) != SPARK_GPU_SUCCESS )
+	if ( LmPerHeadProjectChainLaunch<G5N_THREADS, G5N_NOPE, G5N_LATENT, G5N_NOPE, 0u>(b->q_bf16, (const uint16_t *)b->kv_b_key, b->query_latent_bf16,
+		b->attn_heads, rows, stream, b->row_invariant) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return Glm5NextLaunched();
 }
@@ -931,8 +975,8 @@ static int32_t Glm5NextAttentionMerge(const Glm5NextLayerBuffers *b, uint32_t ro
 	if ( LmLatentShardMergeLaunch<G5N_LATENT>(b->shard_partials_received_f32, b->shard_partial_stride, b->cache.shard.degree, b->attn_heads,
 		b->attention_latent_bf16, rows, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
-	if ( LmPerHeadProjectRowsLaunch<G5N_THREADS, G5N_LATENT, G5N_VALUE>(b->attention_latent_bf16, (const uint16_t *)b->kv_b_value,
-		b->attention_value_bf16, b->attn_heads, rows, stream) != SPARK_GPU_SUCCESS )
+	if ( LmPerHeadProjectChainLaunch<G5N_THREADS, G5N_LATENT, G5N_VALUE>(b->attention_latent_bf16, (const uint16_t *)b->kv_b_value,
+		b->attention_value_bf16, b->attn_heads, rows, stream, b->row_invariant) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return Glm5NextLinear(b, b->attention_value_bf16, b->w->attn_output, b->attention_out_bf16, rows, b->attn_output_columns, G5N_HIDDEN, sms, stream);
 }
@@ -972,14 +1016,19 @@ static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	}
 	else
 	{
-		memset(&gemm, 0, sizeof(gemm));
-		gemm.scale_a = LmScaleTensorNone();
-		gemm.scale_b = LmScaleTensorNone();
-		gemm.group_row_offset = b->dense_row_offset;
-		gemm.group_tile_prefix = b->dense_tile_prefix;
-		gemm.output_f32 = b->router_logits;
-		status = LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, w->router, rows, rows,
-			1u, 1u, G5N_HIDDEN, G5N_EXPERTS, sms, false, stream);
+		status = LmStreamGemmDense<LmBf16Format>(w->router, LmScaleTensorNone(), b->normed_bf16, (uint16_t *)0, b->router_logits, rows,
+			G5N_HIDDEN, G5N_EXPERTS, G5N_EXPERTS, 0u, sms, stream);
+		if ( status == LM_LAUNCH_ERR_SHAPE )
+		{
+			memset(&gemm, 0, sizeof(gemm));
+			gemm.scale_a = LmScaleTensorNone();
+			gemm.scale_b = LmScaleTensorNone();
+			gemm.group_row_offset = b->dense_row_offset;
+			gemm.group_tile_prefix = b->dense_tile_prefix;
+			gemm.output_f32 = b->router_logits;
+			status = LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, w->router, rows, rows,
+				1u, 1u, G5N_HIDDEN, G5N_EXPERTS, sms, false, stream);
+		}
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -1016,9 +1065,9 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 		"every wave below the stream threshold fits the grouped skinny expert kernel, whose mean rows per expert are bounded");
 	static_assert(ExpertFormat::kScaleGroup == 0u || (G5N_HIDDEN % ExpertFormat::kScaleGroup == 0u && G5N_EXPERT_INTER % ExpertFormat::kScaleGroup == 0u),
 		"routed expert dimensions hold whole codec scale groups");
+	static_assert(G5N_HIDDEN % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
 	const uint32_t packed_rows = rows * G5N_TOP_K;
-	const uint32_t pairwise = LmSkinnyExpertPairsFit(packed_rows, G5N_TOP_K);
-	const dim3 grid((G5N_HIDDEN + G5N_THREADS - 1u) / G5N_THREADS, rows);
+	const uint32_t pairwise = rows == 1u ? 1u : 0u;
 	LmGemmArguments gemm;
 	int32_t status;
 	if ( b->expert_w1_weight == 0 || b->expert_w2_weight == 0 ||
@@ -1041,7 +1090,7 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 				b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
 		else
 			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
-				b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
+				b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream, b->row_invariant);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w1", rows, packed_rows, b->expert_w1_rows,
 				G5N_HIDDEN);
@@ -1067,15 +1116,13 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 				b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
 		else
 			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
-				b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
+				b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream, b->row_invariant);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w2", rows, packed_rows, G5N_HIDDEN,
 				b->expert_intermediate);
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmMoeFinalizeKernel<G5N_THREADS>), grid, G5N_THREADS, 0, stream, b->expert_out_bf16, b->route_packed_row, b->route_weight,
-		b->attention_out_bf16, rows, G5N_TOP_K, G5N_HIDDEN);
 	status = Glm5NextLinear(b, b->normed_bf16, b->w->shared_gate_up, b->gate_up_bf16, rows, G5N_HIDDEN, b->shared_gate_up_rows, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
@@ -1084,8 +1131,9 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	status = Glm5NextLinear(b, b->intermediate_bf16, b->w->shared_down, b->shared_out_bf16, rows, b->shared_intermediate, G5N_HIDDEN, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((LmAddRowsKernel<G5N_THREADS>), grid, G5N_THREADS, 0, stream, b->attention_out_bf16, b->shared_out_bf16, b->attention_out_bf16,
-		rows, G5N_HIDDEN);
+	LM_LAUNCH((LmMoeFinalizeAddKernel<G5N_THREADS>), dim3((G5N_HIDDEN / LM_MOE_FINALIZE_ADD_ELEMENTS + G5N_THREADS - 1u) / G5N_THREADS, rows),
+		G5N_THREADS, 0, stream, b->expert_out_bf16, b->route_packed_row, b->route_weight, b->shared_out_bf16, b->attention_out_bf16, rows, G5N_TOP_K,
+		G5N_HIDDEN);
 	return Glm5NextLaunched();
 }
 
