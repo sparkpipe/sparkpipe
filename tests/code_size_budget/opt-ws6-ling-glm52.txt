@@ -1,0 +1,2 @@
++210
+Ling and GLM-5.2/5.3 stage kernel modernization: per-head project chain launch, fused decode normed projections, grouped w2 expert dispatch, and 16-byte uint4 vectorized elementwise and projection-norm fast paths.
