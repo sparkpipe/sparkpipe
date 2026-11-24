@@ -1,0 +1,2 @@
++1263
+16-byte uint4 vectorized fast paths and warp-parallel AttnRes softmax across norm, project, and hyper_mix kernels (PR #2134).
