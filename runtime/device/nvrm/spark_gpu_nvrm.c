@@ -476,9 +476,60 @@ static SparkStatus GpuCopyThroughStaging(SparkGpuStream stream, void *destinatio
 	return(status);
 }
 
+static uint32_t GpuDeviceSide(const void *pointer, uint32_t known, const SparkDeviceRange *range, SparkDeviceAddressKind kind, uint64_t bytes,
+	SparkDeviceAddress *address)
+{
+	if ( kind == SPARK_DEVICE_ADDRESS_MAPPED )
+	{
+		*address = (SparkDeviceAddress)(uintptr_t)pointer;
+		return(1u);
+	}
+	return(known != 0u && SparkDeviceAddressOf(*range,bytes,address) == SPARK_STATUS_OK ? 1u : 0u);
+}
+
+static SparkStatus GpuCopyMapped(SparkGpuStream stream, void *destination, SparkDeviceAddress to, uint32_t to_device, const void *source, SparkDeviceAddress from,
+	uint32_t from_device, uint64_t bytes)
+{
+	SparkDeviceRange staging;
+	SparkDeviceAddress bounce = 0u;
+	SparkStatus status;
+	uint64_t done;
+	if ( to_device != 0u && from_device != 0u )
+		return(SparkDeviceCopyAddresses(stream,to,from,bytes));
+	pthread_mutex_lock(&gpu_staging_mutex);
+	status = GpuStaging();
+	staging.buffer = &gpu_staging;
+	staging.offset = 0u;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDeviceAddressOf(staging,GPU_STAGING_BYTES,&bounce);
+	for (done = 0u; status == SPARK_STATUS_OK && done < bytes; done += GPU_STAGING_BYTES)
+	{
+		const uint64_t chunk = bytes - done < GPU_STAGING_BYTES ? bytes - done : GPU_STAGING_BYTES;
+		if ( to_device != 0u )
+		{
+			memcpy(gpu_staging.host,(const uint8_t *)source + done,(size_t)chunk);
+			status = SparkDeviceCopyAddresses(stream,to + done,bounce,chunk);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDeviceQueueWait(stream,SPARK_DEVICE_WAIT_FOREVER);
+		}
+		else
+		{
+			status = SparkDeviceCopyAddresses(stream,bounce,from + done,chunk);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkDeviceQueueWait(stream,SPARK_DEVICE_WAIT_FOREVER);
+			if ( status == SPARK_STATUS_OK )
+				memcpy((uint8_t *)destination + done,gpu_staging.host,(size_t)chunk);
+		}
+	}
+	pthread_mutex_unlock(&gpu_staging_mutex);
+	return(status);
+}
+
 static SparkGpuError GpuCopy(void *destination, const void *source, size_t bytes, SparkGpuCopyKind kind, SparkGpuStream stream)
 {
 	SparkDeviceRange to,from;
+	SparkDeviceAddressKind destination_kind,source_kind;
+	SparkDeviceAddress to_address = 0u,from_address = 0u;
 	uint32_t destination_known,source_known;
 	if ( kind < SPARK_GPU_COPY_HOST_TO_HOST || kind > SPARK_GPU_COPY_DEFAULT || (bytes != 0u && (destination == 0 || source == 0)) )
 		GPU_REFUSE_IN("copy",SPARK_STATUS_INVALID_ARGUMENT,"a copy needs a known kind and both pointers");
@@ -489,8 +540,18 @@ static SparkGpuError GpuCopy(void *destination, const void *source, size_t bytes
 		SPARK_FAIL(gpu_last_error);
 	destination_known = GpuRange(destination,bytes,&to);
 	source_known = GpuRange(source,bytes,&from);
+	destination_kind = destination_known != 0u ? SPARK_DEVICE_ADDRESS_BUFFER : SparkDeviceAddressLookup((SparkDeviceAddress)(uintptr_t)destination,bytes);
+	source_kind = source_known != 0u ? SPARK_DEVICE_ADDRESS_BUFFER : SparkDeviceAddressLookup((SparkDeviceAddress)(uintptr_t)source,bytes);
+	if ( destination_kind == SPARK_DEVICE_ADDRESS_UNKNOWN || source_kind == SPARK_DEVICE_ADDRESS_UNKNOWN )
+		GPU_REFUSE_IN("copy",SPARK_STATUS_INVALID_ARGUMENT,"an address in the device range lies in no buffer and no mapping");
 	if ( destination_known != 0u && source_known != 0u )
 		GPU_TRY(SparkDeviceCopy(stream,to,from,bytes));
+	else if ( destination_kind == SPARK_DEVICE_ADDRESS_MAPPED || source_kind == SPARK_DEVICE_ADDRESS_MAPPED )
+	{
+		const uint32_t to_device = GpuDeviceSide(destination,destination_known,&to,destination_kind,bytes,&to_address);
+		const uint32_t from_device = GpuDeviceSide(source,source_known,&from,source_kind,bytes,&from_address);
+		GPU_TRY(GpuCopyMapped(stream,destination,to_address,to_device,source,from_address,from_device,bytes));
+	}
 	else if ( destination_known != 0u || source_known != 0u )
 		GPU_TRY(GpuCopyThroughStaging(stream,destination,destination_known != 0u ? &to : 0,source,source_known != 0u ? &from : 0,bytes));
 	else

@@ -1177,6 +1177,32 @@ SparkStatus SparkDeviceBackendMemoryUnmap(SparkDeviceAddress address, uint64_t b
 	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"memory_unmap","",0,"the Metal backend has no shared device memory yet"));
 }
 
+uint32_t SparkDeviceBackendAddressMapped(SparkDeviceAddress address, uint64_t bytes, uint32_t write)
+{
+	(void)address;
+	(void)bytes;
+	(void)write;
+	return(0u);
+}
+
+uint32_t SparkDeviceBackendAddressOwned(SparkDeviceAddress address, uint64_t bytes)
+{
+	(void)address;
+	(void)bytes;
+	return(0u);
+}
+
+SparkStatus SparkDeviceBackendCopyMapped(SparkDeviceQueue *queue, const SparkDeviceAllocation *destination, uint64_t destination_at,
+	const SparkDeviceAllocation *source, uint64_t source_at, uint64_t bytes)
+{
+	(void)destination;
+	(void)destination_at;
+	(void)source;
+	(void)source_at;
+	(void)bytes;
+	return(SparkDeviceRecordError(SPARK_STATUS_UNSUPPORTED,"copy_addresses",queue->owner,0,"the Metal backend has no shared device memory yet"));
+}
+
 uint32_t SparkDeviceBackendProgramNative(void)
 {
 	return(0u);
