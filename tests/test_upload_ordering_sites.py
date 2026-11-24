@@ -40,7 +40,7 @@ HOST_VISIBLE = {
     "inference/runner/stage_runner.cu": 13,
     "model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh": 1,
     "model-families/dsv41_flash/source/dsv41_flash_stage.cuh": 15,
-    "model-families/glm52/source/glm52_stage.cuh": 4,
+    "model-families/glm52/source/glm52_stage.cuh": 3,
     "modules/dsv41_dspark_draft_stage/source/spark_dsv41_dspark_module.cu": 4,
     "modules/k31_dspark_draft_stage/source/spark_k31_dspark_module.cu": 5,
     "modules/qwen38_dspine_draft_stage/source/spark_qwen38_dspine_module.cu": 4,
