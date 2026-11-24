@@ -753,6 +753,35 @@ static __device__ __forceinline__ float LmAttnResScoreValue(const uint16_t *valu
 	float square = 0.0f, dot = 0.0f;
 	if ( vec_ok )
 	{
+		if ( dimension <= THREADS * 32u )
+		{
+			uint4 staged[4];
+			#pragma unroll
+			for (uint32_t chunk = 0u; chunk < 4u; ++chunk)
+			{
+				const uint32_t index = (chunk * THREADS + threadIdx.x) * 8u;
+				if ( index < dimension )
+				{
+					staged[chunk] = *(const uint4 *)(values + index);
+					square = LmSumSqBf16x8(staged[chunk], square);
+				}
+			}
+			const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(square, reduction), (float)dimension, epsilon);
+			#pragma unroll
+			for (uint32_t chunk = 0u; chunk < 4u; ++chunk)
+			{
+				const uint32_t index = (chunk * THREADS + threadIdx.x) * 8u;
+				if ( index < dimension )
+				{
+					float v[8], w[8];
+					LmLoadBf16x8AsFloat(staged[chunk], v);
+					LmLoadBf16x8AsFloat(*(const uint4 *)(score_weight_bf16 + index), w);
+					#pragma unroll
+					for (uint32_t k = 0u; k < 8u; ++k) dot += v[k] * inverse * w[k];
+				}
+			}
+			return(LmBlockSum<THREADS>(dot, reduction));
+		}
 		for (uint32_t index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u) square = LmSumSqBf16x8(*(const uint4 *)(values + index), square);
 		const float inverse = SparkMathRmsScale(LmBlockSum<THREADS>(square, reduction), (float)dimension, epsilon);
 		for (uint32_t index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u)
@@ -786,7 +815,7 @@ static __device__ __forceinline__ uint16_t LmAttnResMix1(const uint16_t *bank_bf
 }
 
 template<uint32_t THREADS, uint32_t MAX_SOURCES>
-__global__ __launch_bounds__(THREADS, 1)
+__global__ __launch_bounds__(THREADS)
 void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[LmBlockWarps<THREADS>()], score[MAX_SOURCES], weight[MAX_SOURCES];

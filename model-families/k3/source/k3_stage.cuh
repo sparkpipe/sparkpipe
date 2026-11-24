@@ -69,21 +69,28 @@ __global__ static void K3RunnerFusedPackKernel(const uint16_t *attention,
 	uint16_t *fused,uint32_t rows,uint32_t phase,uint32_t segments,
 	uint32_t gate_up_elements)
 {
-	uint32_t i = (blockIdx.x * blockDim.x) + threadIdx.x;
-	uint32_t elements = rows * K3_HIDDEN;
-	if ( phase == 2u )
+	const uint32_t index = (blockIdx.x * blockDim.x) + threadIdx.x;
+	const uint32_t count = phase == 2u ? gate_up_elements : rows * K3_HIDDEN;
+	const uint16_t *primary = phase == 2u ? gate_up : (phase == 0u ? attention : hidden);
+	const bool add_shared = phase != 2u && phase != 0u && segments == 2u;
+	if ( ((count & 7u) == 0u) && LmIsAligned16(primary) && LmIsAligned16(fused) && (!add_shared || LmIsAligned16(shared)) )
 	{
-		if ( i >= gate_up_elements )
+		if ( index >= (count >> 3u) )
 			return;
-		fused[i] = gate_up[i];
+		if ( !add_shared )
+		{
+			((uint4 *)fused)[index] = ((const uint4 *)primary)[index];
+			return;
+		}
+		float sum[8];
+		LmLoadBf16x8AsFloat(((const uint4 *)primary)[index], sum);
+		LmAddBf16x8(sum, ((const uint4 *)shared)[index]);
+		((uint4 *)fused)[index] = LmPackUint4FloatToBf16(sum);
 		return;
 	}
-	if ( i >= elements )
+	if ( index >= count )
 		return;
-	if ( phase == 0u )
-		fused[i] = attention[i];
-	else
-		fused[i] = segments == 2u ? LmFloatToBf16(LmBf16ToFloat(hidden[i]) + LmBf16ToFloat(shared[i])) : hidden[i];
+	fused[index] = add_shared ? LmFloatToBf16(LmBf16ToFloat(primary[index]) + LmBf16ToFloat(shared[index])) : primary[index];
 }
 
 __global__ static void K3RunnerMlaDownRowsKernel(const uint16_t *gathered, uint16_t *query,
@@ -315,9 +322,11 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 			(phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 		return;
 	}
-	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_INDEX )
+	if ( (phase & ~(K3_COLLECTIVE_FINISH | K3_COLLECTIVE_BEGIN)) == K3_COLLECTIVE_MLA_INDEX )
 	{
 		const uint32_t count = K3LayerIndexChunkCount(b, rows), share = K3LayerIndexShare(b, count);
+		const uint32_t stage = (phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH :
+			(phase & K3_COLLECTIVE_BEGIN) != 0u ? K3_RUNNER_STAGE_BEGIN : K3_RUNNER_STAGE_ALL;
 		if ( b->index_active == 0u || count == 0u || b->index_keep == 0u || b->index_send == 0 || b->index_received == 0 )
 		{
 			K3ModelFail(state);
@@ -327,7 +336,7 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 		const uint32_t split = width > K3_HIDDEN ? 2u : 1u;
 		static_assert(K3_INDEX_TOPK * (sizeof(uint2) / sizeof(uint16_t)) / 2u <= K3_HIDDEN, "half an index candidate row fits one collective row");
 		K3RunnerRound(state, stream, (share != 0u ? share : count) * split, b->index_send, b->index_received, width / split,
-			share != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
+			share != 0u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, stage);
 		return;
 	}
 	if ( (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_SELECTED )
@@ -530,7 +539,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		uint16_t *reduce_values = b->gate_up_bf16;
 		if ( state->has_collective != 0 )
 		{
-			LM_LAUNCH((K3RunnerFusedPackKernel), (gate_up_elements + 255u) / 256u,
+			LM_LAUNCH((K3RunnerFusedPackKernel), K3VecGrid(gate_up_elements, reduce_values, state->fused_device),
 				256u, 0, stream,
 				0, 0, reduce_values, reduce_values, state->fused_device,
 				rows, phase, 1u, gate_up_elements);
@@ -576,7 +585,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			K3RunnerTpApply(pending);
 		return;
 	}
-	LM_LAUNCH((K3RunnerFusedPackKernel), (elements + 255u) / 256u, 256u, 0, stream,
+	LM_LAUNCH((K3RunnerFusedPackKernel), K3VecGrid(elements, base == 0u ? phase0_source : b->hidden_bf16, state->fused_device, base != 0u && segments == 2u ? b->shared_out_bf16 : 0),
+		256u, 0, stream,
 		phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 		state->fused_device,rows,base,segments,0u);
 	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )

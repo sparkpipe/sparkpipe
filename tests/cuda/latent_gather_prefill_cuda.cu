@@ -395,6 +395,41 @@ static void GatherSparseCase(uint32_t rows,uint32_t context,uint32_t degree,uint
 				mismatches++;
 	GatherCheck(listed != 0u || context <= selected,"the case attends through selected keys on some rows",label);
 	GatherCheck(mismatches == 0u,"every source's own-head partials over its selected keys equal that rank's scatter partials bit for bit",label);
+	{
+		const uint64_t out_stride = (uint64_t)rows * heads_per_rank * GATHER_LATENT;
+		std::vector<uint16_t> merged((uint64_t)degree * out_stride),all_out(merged.size());
+		uint16_t *merged_device,*all_out_device;
+		float *all_partial_device;
+		double all_worst = 0.0;
+		GATHER_CUDA(cudaMalloc((void **)&merged_device,merged.size() * 2u));
+		GATHER_CUDA(cudaMalloc((void **)&all_out_device,all_out.size() * 2u));
+		GATHER_CUDA(cudaMalloc((void **)&all_partial_device,(uint64_t)degree * rank_stride * sizeof(float)));
+		for (target=0u; target<degree; target++)
+		{
+			SparkKvShard owner_shard = {degree,target,1u};
+			LmKvShardView pages_view;
+			LmKvShardGatherAllView all_view;
+			GatherCheck(LmKvShardViewInitialize<GatherKv>(&pages_view,pools[target],table_device,pages,1u,pages,error_device,owner_shard) == 0,"all-view pages",label);
+			GatherCheck(LmKvShardGatherAllViewInitialize<GatherKv>(&all_view,pages_view.pages,owner_shard,keys_device,key_stride,plan_device + 1u,plan_device + 2u) == 0,
+				"all-view init",label);
+			GatherCheck(LmLatentShardAttendHeadsLaunch<GatherKv,LmKvShardGatherAllView,GATHER_LATENT,GATHER_ROPE>(all_view,query_device + (uint64_t)target * query_stride,
+				query_stride,heads_per_rank,heads_per_rank,sequences_device,contexts_device,positions_device,chosen_device,selected,selected,scale,
+				all_partial_device + (uint64_t)target * rank_stride,rank_stride,heads_per_rank,1u,rows,0) == cudaSuccess,"all-view sparse attend launch",label);
+			GatherCheck(LmLatentShardMergeLaunch<GATHER_LATENT>(gather_device + (uint64_t)target * degree * rank_stride,rank_stride,degree,heads_per_rank,
+				merged_device + (uint64_t)target * out_stride,rows,0) == cudaSuccess,"sparse multi-source merge",label);
+			GatherCheck(LmLatentShardMergeLaunch<GATHER_LATENT>(all_partial_device + (uint64_t)target * rank_stride,rank_stride,1u,heads_per_rank,
+				all_out_device + (uint64_t)target * out_stride,rows,0) == cudaSuccess,"sparse all-view merge",label);
+		}
+		GATHER_CUDA(cudaDeviceSynchronize());
+		GATHER_CUDA(cudaMemcpy(&error_host,error_device,sizeof(error_host),cudaMemcpyDeviceToHost));
+		GatherCheck(error_host.error_code == LM_FRAME_ERROR_NONE,"no KV access error on all-view sparse wave",label);
+		GATHER_CUDA(cudaMemcpy(merged.data(),merged_device,merged.size() * 2u,cudaMemcpyDeviceToHost));
+		GATHER_CUDA(cudaMemcpy(all_out.data(),all_out_device,all_out.size() * 2u,cudaMemcpyDeviceToHost));
+		all_worst = GatherHeadWorst(all_out,merged,GATHER_LATENT);
+		GatherCheck(all_worst <= GATHER_HEAD_TOLERANCE,"single-pass all-view sparse gather matches multi-source merge within tolerance",label);
+		printf("%s %s: all-view sparse worst difference %.5f\n",all_worst <= GATHER_HEAD_TOLERANCE ? "ok  " : "FAIL",label,all_worst);
+		cudaFree(merged_device); cudaFree(all_out_device); cudaFree(all_partial_device);
+	}
 	printf("%s %s: %u of %u rows listed, %u keys chosen, %llu of %u source/target partial blocks differ\n",mismatches == 0u ? "ok  " : "FAIL",label,listed,rows,filled,
 		(unsigned long long)mismatches,degree * degree);
 	for (rank=0u; rank<degree; rank++)

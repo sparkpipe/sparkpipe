@@ -114,13 +114,17 @@ static __device__ __forceinline__ void LmCellMmaWait(void)
 	asm volatile("cp.async.wait_group %0;\n" :: "n"(PENDING) : "memory");
 }
 
-template<uint32_t COPIES, uint32_t SCALES, uint32_t BITS>
+template<uint32_t COPIES, uint32_t SCALES, uint32_t BITS, uint32_t CHUNKS>
 static __device__ __forceinline__ void LmCellMmaStage(uint16_t *buffer, uint8_t *weights, uint32_t *scales, const uint16_t *const source[COPIES], const uint16_t *fallback, const LmSkinnyCellArguments &args, const LmCellMmaSegments &segments, const LmCellMmaStride &stride, uint32_t group, uint32_t block_first, uint32_t column_segment, uint64_t cells_offset, uint64_t tile_stride, uint32_t t, uint32_t row, uint32_t vector, uint32_t weight_vectors)
 {
 	#pragma unroll
 	for ( uint32_t m = 0u; m < COPIES; m++ )
-		LmCellMmaCopy(buffer + (row + m * LM_CELL_MMA_STAGE_ROW_STEP) * LM_CELL_MMA_STAGE_PITCH + vector * 8u,
-			source[m] != 0 ? source[m] + t * LM_CELL_MMA_STAGE_K : fallback, source[m] != 0 ? 16u : 0u);
+	{
+		const uint32_t local = row + m * LM_CELL_MMA_STAGE_ROW_STEP;
+		if ( local < CHUNKS * 16u )
+			LmCellMmaCopy(buffer + local * LM_CELL_MMA_STAGE_PITCH + vector * 8u,
+				source[m] != 0 ? source[m] + t * LM_CELL_MMA_STAGE_K : fallback, source[m] != 0 ? 16u : 0u);
+	}
 	if constexpr ( SCALES == 0u )
 	{
 		const uint8_t *cells = segments.weight[column_segment + t / segments.tiles] + cells_offset + (uint64_t)(t % segments.tiles) * tile_stride;
@@ -181,7 +185,7 @@ static __device__ __forceinline__ void LmCellMmaLoad(const uint8_t *tile, uint32
 	}
 }
 
-template<uint32_t CHUNKS, uint32_t SCALES, uint32_t BITS>
+template<uint32_t CHUNKS, uint32_t SCALES, uint32_t BITS, uint32_t STAGE_ELEMENTS = LM_CELL_MMA_STAGE_ELEMENTS>
 static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments &args, const LmCellMmaSegments &segments, const LmCellMmaStride &stride, uint32_t group, float global, uint32_t column_segment, uint64_t cells_offset, uint64_t tile_stride, uint32_t cell_first, uint32_t block_first, uint32_t active, uint32_t first, uint32_t end, uint16_t *stage, uint8_t *weights, uint32_t *scales)
 {
 	constexpr uint32_t COPIES = (CHUNKS * 16u + LM_CELL_MMA_STAGE_ROW_STEP - 1u) / LM_CELL_MMA_STAGE_ROW_STEP;
@@ -212,17 +216,17 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	for ( t = 0u; t + 1u < LM_CELL_MMA_STAGES; t++ )
 	{
 		if ( t < args.k_tiles )
-			LmCellMmaStage<COPIES,SCALES,BITS>(stage + t * LM_CELL_MMA_STAGE_ELEMENTS,weights + t * TILE_BYTES,scales + t * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,column_segment,cells_offset,tile_stride,t,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + t * STAGE_ELEMENTS,weights + t * TILE_BYTES,scales + t * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,column_segment,cells_offset,tile_stride,t,row,vector,weight_vectors);
 		LmCellMmaCommit();
 	}
 	for ( t = 0u; t < args.k_tiles; t++ )
 	{
 		const uint32_t slot = t % LM_CELL_MMA_STAGES, ahead = t + LM_CELL_MMA_STAGES - 1u;
-		const uint16_t *buffer = stage + slot * LM_CELL_MMA_STAGE_ELEMENTS;
+		const uint16_t *buffer = stage + slot * STAGE_ELEMENTS;
 		LmCellMmaWait<LM_CELL_MMA_STAGES - 2u>();
 		__syncthreads();
 		if ( ahead < args.k_tiles )
-			LmCellMmaStage<COPIES,SCALES,BITS>(stage + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * TILE_BYTES,scales + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,column_segment,cells_offset,tile_stride,ahead,row,vector,weight_vectors);
+			LmCellMmaStage<COPIES,SCALES,BITS,CHUNKS>(stage + (ahead % LM_CELL_MMA_STAGES) * STAGE_ELEMENTS,weights + (ahead % LM_CELL_MMA_STAGES) * TILE_BYTES,scales + (ahead % LM_CELL_MMA_STAGES) * LM_CELL_MMA_THREADS,source,args.activation,args,segments,stride,group,block_first,column_segment,cells_offset,tile_stride,ahead,row,vector,weight_vectors);
 		LmCellMmaCommit();
 		if ( active != 0u )
 		{
@@ -355,10 +359,12 @@ static __device__ __forceinline__ void LmCellMmaRows(const LmSkinnyCellArguments
 	}
 }
 
-template<uint32_t SCALES, uint32_t BITS>
+template<uint32_t SCALES, uint32_t BITS, uint32_t MAX_CHUNKS = LM_CELL_MMA_CHUNKS>
 static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(const __grid_constant__ LmSkinnyCellArguments args, const __grid_constant__ LmCellMmaSegments segments, const __grid_constant__ LmCellMmaStride stride)
 {
-	__shared__ __align__(16) uint16_t stage[LM_CELL_MMA_STAGES * LM_CELL_MMA_STAGE_ELEMENTS];
+	constexpr uint32_t MAX_ROWS = MAX_CHUNKS * 16u;
+	constexpr uint32_t STAGE_ELEMENTS = MAX_ROWS * LM_CELL_MMA_STAGE_PITCH;
+	__shared__ __align__(16) uint16_t stage[LM_CELL_MMA_STAGES * STAGE_ELEMENTS];
 	__shared__ __align__(16) uint8_t weights[LM_CELL_MMA_STAGES * LM_CELL_MMA_TILE_BYTES(BITS)];
 	__shared__ __align__(16) uint32_t scales[SCALES != 0u ? LM_CELL_MMA_STAGES * LM_CELL_MMA_THREADS : 1u];
 	const uint32_t pairs = args.cells / LM_CELL_MMA_CELLS;
@@ -382,19 +388,34 @@ static __global__ __launch_bounds__(LM_CELL_MMA_THREADS) void LmCellMmaKernel(co
 	if constexpr ( SCALES == 2u )
 		global = stride.global[group];
 	end = args.group_row_offset[group + 1u];
-	for ( first = args.group_row_offset[group] + slot * LM_CELL_MMA_ROWS; first < end; first += slots * LM_CELL_MMA_ROWS )
+	for ( first = args.group_row_offset[group] + slot * MAX_ROWS; first < end; first += slots * MAX_ROWS )
 	{
-		last = end - first < LM_CELL_MMA_ROWS ? end : first + LM_CELL_MMA_ROWS;
-		if ( last - first > 4u * 16u )
-			LmCellMmaRows<LM_CELL_MMA_CHUNKS,SCALES,BITS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
-		else if ( last - first > 3u * 16u )
-			LmCellMmaRows<4u,SCALES,BITS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
-		else if ( last - first > 2u * 16u )
-			LmCellMmaRows<3u,SCALES,BITS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
-		else if ( last - first > 16u )
-			LmCellMmaRows<2u,SCALES,BITS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
+		last = end - first < MAX_ROWS ? end : first + MAX_ROWS;
+		if constexpr ( MAX_CHUNKS >= 8u )
+		{
+			if ( last - first > 4u * 16u )
+			{
+				LmCellMmaRows<LM_CELL_MMA_CHUNKS,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
+				continue;
+			}
+		}
+		if constexpr ( MAX_CHUNKS >= 4u )
+		{
+			if ( last - first > 3u * 16u )
+			{
+				LmCellMmaRows<4u,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
+				continue;
+			}
+			if ( last - first > 2u * 16u )
+			{
+				LmCellMmaRows<3u,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
+				continue;
+			}
+		}
+		if ( last - first > 16u )
+			LmCellMmaRows<2u,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
 		else
-			LmCellMmaRows<1u,SCALES,BITS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
+			LmCellMmaRows<1u,SCALES,BITS,STAGE_ELEMENTS>(args,segments,stride,group,global,column_segment,cells_offset,tile_stride,cell_first,block_first,active,first,last,stage,weights,scales);
 	}
 }
 
@@ -433,11 +454,25 @@ template<uint32_t SCALES, uint32_t BITS>
 static int32_t LmCellMmaLaunchKernel(LmSkinnyCellArguments &args, LmCellMmaSegments &segments, const LmCellMmaStride &stride, SparkGpuStream stream)
 {
 	uint64_t blocks, slots;
+	const uint64_t mean_rows = ((uint64_t)args.packed_rows + args.groups - 1u) / args.groups;
+	const uint64_t col_blocks = (args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS;
 	args.group_bytes = segments.group_bytes;
+	if constexpr ( SCALES == 0u && BITS == 4u )
+	{
+		if ( args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES && mean_rows <= 50u )
+		{
+			blocks = (uint64_t)args.groups * col_blocks;
+			if ( mean_rows <= 22u )
+				LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,2u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+			else
+				LM_LAUNCH_DEPENDENT((LmCellMmaKernel<0u,4u,4u>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+			return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		}
+	}
 	slots = ((uint64_t)args.packed_rows + (uint64_t)args.groups * LM_CELL_MMA_ROWS - 1u) / ((uint64_t)args.groups * LM_CELL_MMA_ROWS);
 	slots = args.k_tiles < LM_CELL_MMA_SLOT_MIN_K_TILES ? 1u : slots < LM_CELL_MMA_ROW_SLOTS ? slots : LM_CELL_MMA_ROW_SLOTS;
-	blocks = (uint64_t)args.groups * slots * ((args.cells / LM_CELL_MMA_CELLS + LM_CELL_MMA_WARPS - 1u) / LM_CELL_MMA_WARPS);
-	LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
+	blocks = (uint64_t)args.groups * slots * col_blocks;
+	LM_LAUNCH_DEPENDENT((LmCellMmaKernel<SCALES,BITS,LM_CELL_MMA_CHUNKS>),(uint32_t)blocks,LM_CELL_MMA_THREADS,0u,stream,args,segments,stride);
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 

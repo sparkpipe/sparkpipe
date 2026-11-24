@@ -181,12 +181,13 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 
 #endif
 
-template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t>
+template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t, uint32_t BLOCK_TILES = LM_INDEX_SCORE_BLOCK_TILES>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
 void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, uint32_t dense_limit = 0u)
 {
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
+	constexpr uint32_t BLOCK_POSITIONS = BLOCK_TILES * LM_INDEX_SCORE_TILE_POSITIONS;
 	static_assert(INDEX_HEADS % 16u == 0u && HEAD_TILES >= 2u, "whole 16-head operand tiles, at least two");
 	static_assert(INDEX_DIM % 16u == 0u, "whole 16-wide k steps");
 	static_assert(LM_INDEX_SCORE_WARPS % ROWS_PER_BLOCK == 0u, "every row gets the same number of warps");
@@ -206,7 +207,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	if ( valid == 0u || sequence >= index_cache.sequence_count )
 	{
 		if ( lane == 0u && blockIdx.x == 0u && warp < ROWS_PER_BLOCK )
-			LmKvReportRequiredAccessFailure(index_cache,valid == 0u ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,LM_KV_ACCESS_READ,row,sequence,blockIdx.x * LM_INDEX_SCORE_BLOCK_POSITIONS,0xffffffffu);
+			LmKvReportRequiredAccessFailure(index_cache,valid == 0u ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,LM_KV_ACCESS_READ,row,sequence,blockIdx.x * BLOCK_POSITIONS,0xffffffffu);
 		valid = 0u;
 	}
 	else
@@ -236,9 +237,9 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 	}
 	const uint32_t fork = valid != 0u && fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
 	const uint32_t offset = valid != 0u && slot_offsets != 0 ? slot_offsets[row] : 0u;
-	for (tile = warp / ROWS_PER_BLOCK; tile < LM_INDEX_SCORE_BLOCK_TILES; tile += tile_stride)
+	for (tile = warp / ROWS_PER_BLOCK; tile < BLOCK_TILES; tile += tile_stride)
 	{
-		const uint32_t first = blockIdx.x * LM_INDEX_SCORE_BLOCK_POSITIONS + tile * LM_INDEX_SCORE_TILE_POSITIONS;
+		const uint32_t first = blockIdx.x * BLOCK_POSITIONS + tile * LM_INDEX_SCORE_TILE_POSITIONS;
 		const uint32_t mine = first + group;
 		const uint32_t written = first + pair * 2u;
 		float accumulator[HEAD_TILES][4] = {};
@@ -866,6 +867,9 @@ static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_qu
 	if ( fork_positions == 0 && LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
 		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+	else if ( rows <= 4u && score_stride >= LM_INDEX_SCORE_BLOCK_POSITIONS )
+		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight,LM_INDEX_SCORE_WARPS>), dim3((score_stride + LM_INDEX_SCORE_WARPS * LM_INDEX_SCORE_TILE_POSITIONS - 1u) / (LM_INDEX_SCORE_WARPS * LM_INDEX_SCORE_TILE_POSITIONS),rows), LM_INDEX_SCORE_THREADS, 0, stream,
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets,dense_limit);
 	else
 #endif
 		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
