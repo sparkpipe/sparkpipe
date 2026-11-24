@@ -1123,6 +1123,240 @@ static void test_pair_first_routes(uint32_t local_rank)
     CHECK(pending_after == pending_before,"completing the tails retires every unsignaled piece from the send queues");
 }
 
+static void test_permutation_schedule(uint32_t local_rank)
+{
+    const uint32_t degrees[] = {2u, 3u, 4u, 5u, 6u, 7u, 8u, 12u, 16u};
+    const uint32_t saved_rank = weightd_mesh.local_rank;
+    const SparkWeightdMeshTopology saved_lane = weightd_mesh.lane_topology[2u];
+    const uint32_t band = 4u;
+    uint32_t d, r, s, mode;
+    uint32_t targets[SPARK_WEIGHTD_MESH_RANKS_PER_BAND][SPARK_WEIGHTD_MESH_PEERS];
+
+    CHECK(SparkWeightdMeshSchedulePeer(0u, 1u, 0u) == 0u &&
+        SparkWeightdMeshSchedulePeer(2u, 4u, 0u) == 2u &&
+        SparkWeightdMeshSchedulePeer(2u, 4u, 4u) == 2u &&
+        SparkWeightdMeshSchedulePeer(5u, 4u, 1u) == 5u,
+        "schedule helper guards degenerate degree, step and rank bounds");
+
+    for ( d = 0u; d < sizeof(degrees) / sizeof(degrees[0]); d++ )
+    {
+        const uint32_t degree = degrees[d];
+        const uint32_t full_mask = (1u << degree) - 1u;
+        const uint32_t pow2 = (degree & (degree - 1u)) == 0u ? 1u : 0u;
+        for ( s = 1u; s < degree; s++ )
+        {
+            uint32_t seen = 0u;
+            for ( r = 0u; r < degree; r++ )
+            {
+                const uint32_t target = SparkWeightdMeshSchedulePeer(r, degree, s);
+                CHECK(target < degree && target != r, "scheduled peer is a valid distinct rank");
+                CHECK((seen & (1u << target)) == 0u, "zero incast: no two ranks share a target at the same step");
+                seen |= 1u << target;
+                if ( pow2 != 0u )
+                {
+                    CHECK(SparkWeightdMeshSchedulePeer(target, degree, s) == r,
+                        "power-of-two schedule pairs bidirectional flows symmetrically");
+                    CHECK(((r ^ target) & 1u) == (s & 1u),
+                        "power-of-two schedule alternates rail parity cleanly at every step");
+                    if ( s == 1u )
+                        CHECK(target == (r ^ 1u), "step 1 targets pair partner first");
+                }
+            }
+            CHECK(seen == full_mask, "target mapping is a bijection across all ranks at every step");
+        }
+        for ( r = 0u; r < degree; r++ )
+        {
+            uint32_t visited = 1u << r;
+            for ( s = 1u; s < degree; s++ )
+                visited |= 1u << SparkWeightdMeshSchedulePeer(r, degree, s);
+            CHECK(visited == full_mask, "every rank reaches every peer exactly once across all steps");
+        }
+    }
+
+    for ( mode = 0u; mode < 6u; mode++ )
+    {
+        memset(targets, 0, sizeof(targets));
+        for ( r = 0u; r < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; r++ )
+        {
+            SparkWeightdMeshTopology topo = test_identity_topology(SPARK_WEIGHTD_MESH_RANKS_PER_BAND, r);
+            uint32_t all_peers = 0xffffu & ~(1u << r);
+            uint32_t first;
+            weightd_mesh.local_rank = r;
+            CHECK(SparkWeightdMeshLaneConfigure(band / 2u, &topo) == SPARK_STATUS_OK,
+                "permutation test configures lane for each rank");
+            first = spark_stub_ibv_posted_count();
+            if ( mode == 5u )
+            {
+                CHECK(SparkWeightdMeshBroadcast(all_peers, 0u, 64u, 0u, 0u, 0u) == TEST_MESH_PEERS,
+                    "broadcast posts to all 15 peers");
+            }
+            else
+            {
+                SparkWeightdMeshRoute route = {0};
+                uint64_t seq = ((uint64_t)(20u + mode) << 32u) | 1u;
+                uint64_t bytes = 4096u;
+                route.fields.peer_mask = all_peers;
+                if ( mode == 1u )
+                {
+                    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_SCATTER;
+                    route.fields.slice_bytes = 256u;
+                }
+                else if ( mode == 2u )
+                {
+                    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_GATHER;
+                    route.fields.slice_bytes = 256u;
+                }
+                else if ( mode == 3u )
+                {
+                    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+                    route.fields.slice_bytes = 4096u;
+                }
+                else if ( mode == 4u )
+                {
+                    route.fields.mode = SPARK_WEIGHTD_MESH_ROUTE_PEER;
+                    route.fields.pair_first = 1u;
+                    route.fields.half = SPARK_WEIGHTD_MESH_SEQUENCE_HALF(seq);
+                    bytes = SPARK_WEIGHTD_MESH_PAIR_FIRST_BYTES(2048u, 1024u);
+                }
+                CHECK(test_post_route(band, r, seq, bytes, route) == SPARK_STATUS_OK,
+                    "post route succeeds across all 16 ranks and collective modes");
+            }
+            CHECK(weightd_mesh.ring_count == TEST_MESH_PEERS,
+                "doorbell ring covers all 15 peers");
+            for ( s = 0u; s < TEST_MESH_PEERS; s++ )
+                targets[r][s] = test_peer_rank(weightd_mesh.ring_order[s], r);
+            test_complete_range(first, spark_stub_ibv_posted_count());
+        }
+        for ( s = 0u; s < TEST_MESH_PEERS; s++ )
+        {
+            uint32_t seen = 0u;
+            for ( r = 0u; r < SPARK_WEIGHTD_MESH_RANKS_PER_BAND; r++ )
+            {
+                uint32_t dst = targets[r][s];
+                CHECK(dst < SPARK_WEIGHTD_MESH_RANKS_PER_BAND && dst != r,
+                    "doorbell ring target is a distinct peer rank");
+                CHECK((seen & (1u << dst)) == 0u,
+                    "doorbell ring has zero incast across all 16 ranks at every step");
+                CHECK(targets[dst][s] == r,
+                    "doorbell ring pairs ranks symmetrically at every step for degree 16");
+                seen |= 1u << dst;
+            }
+            CHECK(seen == 0xffffu,
+                "doorbell ring target mapping is a 16-rank bijection at every step");
+        }
+    }
+
+    {
+        const uint32_t phys4[4] = {2u, 7u, 11u, 14u};
+        const uint32_t phys4_mask = (1u << 2u) | (1u << 7u) | (1u << 11u) | (1u << 14u);
+        uint32_t sub_targets[4][3];
+        for ( r = 0u; r < 4u; r++ )
+        {
+            SparkWeightdMeshTopology topo;
+            SparkWeightdMeshRoute route = {0};
+            uint32_t first;
+            memset(&topo, 0, sizeof(topo));
+            topo.rank_count = 4u;
+            topo.local_rank = r;
+            for ( s = 0u; s < 4u; s++ ) topo.physical_ranks[s] = phys4[s];
+            weightd_mesh.local_rank = phys4[r];
+            CHECK(SparkWeightdMeshLaneConfigure(band / 2u, &topo) == SPARK_STATUS_OK,
+                "non-identity TP4 topology configures");
+            route.fields.peer_mask = 0xfu & ~(1u << r);
+            first = spark_stub_ibv_posted_count();
+            CHECK(test_post_route(band, r, (UINT64_C(30) << 32u) | 1u, 1024u, route) == SPARK_STATUS_OK,
+                "non-identity TP4 route posts");
+            CHECK(weightd_mesh.ring_count == 3u, "non-identity TP4 rings 3 peers");
+            for ( s = 0u; s < 3u; s++ )
+                sub_targets[r][s] = test_peer_rank(weightd_mesh.ring_order[s], phys4[r]);
+            test_complete_range(first, spark_stub_ibv_posted_count());
+        }
+        for ( s = 0u; s < 3u; s++ )
+        {
+            uint32_t seen = 0u;
+            for ( r = 0u; r < 4u; r++ )
+            {
+                CHECK((seen & (1u << sub_targets[r][s])) == 0u,
+                    "non-identity TP4 has zero incast at every step");
+                seen |= 1u << sub_targets[r][s];
+            }
+            CHECK(seen == phys4_mask, "non-identity TP4 hits all 4 physical ranks bijectively");
+        }
+    }
+
+    {
+        uint32_t sub_targets[6][5];
+        for ( r = 0u; r < 6u; r++ )
+        {
+            SparkWeightdMeshTopology topo = test_identity_topology(6u, r);
+            SparkWeightdMeshRoute route = {0};
+            uint32_t first;
+            weightd_mesh.local_rank = r;
+            CHECK(SparkWeightdMeshLaneConfigure(band / 2u, &topo) == SPARK_STATUS_OK,
+                "non-power-of-two TP6 topology configures");
+            route.fields.peer_mask = 0x3fu & ~(1u << r);
+            first = spark_stub_ibv_posted_count();
+            CHECK(test_post_route(band, r, (UINT64_C(31) << 32u) | 1u, 1024u, route) == SPARK_STATUS_OK,
+                "non-power-of-two TP6 route posts");
+            CHECK(weightd_mesh.ring_count == 5u, "non-power-of-two TP6 rings 5 peers");
+            for ( s = 0u; s < 5u; s++ )
+                sub_targets[r][s] = test_peer_rank(weightd_mesh.ring_order[s], r);
+            test_complete_range(first, spark_stub_ibv_posted_count());
+        }
+        for ( s = 0u; s < 5u; s++ )
+        {
+            uint32_t seen = 0u;
+            for ( r = 0u; r < 6u; r++ )
+            {
+                CHECK((seen & (1u << sub_targets[r][s])) == 0u,
+                    "non-power-of-two TP6 cyclic schedule has zero incast at every step");
+                seen |= 1u << sub_targets[r][s];
+            }
+            CHECK(seen == 0x3fu, "non-power-of-two TP6 hits all 6 ranks bijectively");
+        }
+    }
+
+    {
+        uint64_t fake_bf[2][64];
+        volatile uint64_t *saved_db[TEST_MESH_PEERS];
+        uint32_t saved_comb[TEST_MESH_PEERS];
+        uint64_t barriers_before = weightd_mesh.timing.ring_barriers;
+        SparkWeightdMeshTopology topo = test_identity_topology(SPARK_WEIGHTD_MESH_RANKS_PER_BAND, 3u);
+        SparkWeightdMeshRoute route = {0};
+        uint32_t first;
+        memset(fake_bf, 0, sizeof(fake_bf));
+        weightd_mesh.local_rank = 3u;
+        CHECK(SparkWeightdMeshLaneConfigure(band / 2u, &topo) == SPARK_STATUS_OK,
+            "dual-rail BlueFlame batching test configures lane");
+        for ( s = 0u; s < TEST_MESH_PEERS; s++ )
+        {
+            uint32_t pr = test_peer_rank(s, 3u);
+            uint32_t rail = ((pr + 3u) & 1u) != 0u ? 1u : 0u;
+            saved_db[s] = weightd_mesh.send_queues[s].doorbell;
+            saved_comb[s] = weightd_mesh.send_queues[s].combining_bytes;
+            weightd_mesh.send_queues[s].doorbell = &fake_bf[rail][0];
+            weightd_mesh.send_queues[s].combining_bytes = 256u;
+        }
+        route.fields.peer_mask = 0xffffu & ~(1u << 3u);
+        first = spark_stub_ibv_posted_count();
+        CHECK(test_post_route(band, 3u, (UINT64_C(32) << 32u) | 1u, 1024u, route) == SPARK_STATUS_OK,
+            "dual-rail BlueFlame route posts");
+        CHECK(weightd_mesh.timing.ring_barriers - barriers_before == 3u,
+            "alternating parity schedule flushes 4 doorbells per barrier across dual rails without parity gaps");
+        test_complete_range(first, spark_stub_ibv_posted_count());
+        for ( s = 0u; s < TEST_MESH_PEERS; s++ )
+        {
+            weightd_mesh.send_queues[s].doorbell = saved_db[s];
+            weightd_mesh.send_queues[s].combining_bytes = saved_comb[s];
+        }
+    }
+
+    weightd_mesh.local_rank = saved_rank;
+    CHECK(SparkWeightdMeshLaneConfigure(band / 2u, &saved_lane) == SPARK_STATUS_OK,
+        "permutation test restores original lane topology");
+    (void)local_rank;
+}
+
 typedef struct TestMeshActivityThread
 {
     SparkWeightdServer *server;
@@ -3029,6 +3263,7 @@ int main(void)
     test_peer_routes(local_rank);
     test_peer_halves(local_rank);
     test_pair_first_routes(local_rank);
+    test_permutation_schedule(local_rank);
     test_mesh_peer_reset(local_rank);
 
     /* case 6: a second daemon instance with its own record dir must not

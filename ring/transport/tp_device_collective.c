@@ -1197,11 +1197,13 @@ static void SparkTpDeviceCollectiveReportSpinTimeout(const SparkTpDeviceCollecti
 
 static uint32_t SparkTpDeviceCollectiveScanPeers(const SparkTpDeviceCollectiveImplementation *implementation, uint64_t parity, uint64_t published, uint32_t *peer_passed)
 {
-    uint32_t peer, passed = 0u;
+    uint32_t step, peer_rank, peer, passed = 0u;
     volatile uint64_t *end_word;
-    for ( peer = 0u; peer < implementation->tp_degree - 1u; peer++ )
+    for ( step = 1u; step < implementation->tp_degree; step++ )
     {
-        end_word = (volatile uint64_t *)(SparkTpDeviceCollectivePeerSlot(implementation,SparkTpDeviceCollectivePeerRank(implementation,peer),parity) + implementation->slot_bytes - 8u);
+        peer_rank = SparkWeightdMeshSchedulePeer(implementation->tp_rank,implementation->tp_degree,step);
+        peer = peer_rank < implementation->tp_rank ? peer_rank : peer_rank - 1u;
+        end_word = (volatile uint64_t *)(SparkTpDeviceCollectivePeerSlot(implementation,peer_rank,parity) + implementation->slot_bytes - 8u);
         if ( peer_passed[peer] == 0u && (*end_word >> 32ull) == (published >> 32ull) && *end_word >= published )
         {
             peer_passed[peer] = 1u;
