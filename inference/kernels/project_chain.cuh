@@ -15,7 +15,7 @@
 #define LM_PROJECT_MMA_K 64u
 #define LM_PROJECT_MMA_PITCH (LM_PROJECT_MMA_K + 8u)
 
-template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t OUTPUTS = LM_PROJECT_CHAIN_OUTPUTS, uint32_t MAX_ROWS = LM_PROJECT_CHAIN_ROWS, uint32_t THREADS = LM_PROJECT_CHAIN_THREADS>
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t OUTPUTS = LM_PROJECT_CHAIN_OUTPUTS, uint32_t MAX_ROWS = LM_PROJECT_CHAIN_ROWS, uint32_t THREADS = LM_PROJECT_CHAIN_THREADS, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 __global__ __launch_bounds__(THREADS)
 void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
 {
@@ -46,10 +46,47 @@ void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const 
 	#pragma unroll 4
 	for (k = 0u; k < IN_DIM; k += 8u)
 		total = LmDotBf16x8(*(const uint4 *)(input_tile[row] + k), *(const uint4 *)(weight_tile[output] + k), total);
-	output_bf16[((uint64_t)row * heads + head) * OUT_DIM + first_output + output] = LmFloatToBf16(total);
+	output_bf16[((uint64_t)row * heads + head) * OUT_HEAD_STRIDE + first_output + output] = LmFloatToBf16(total);
 }
 
-template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET>
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t OUTPUTS, uint32_t K_TILE, uint32_t THREADS, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
+__global__ __launch_bounds__(THREADS)
+void LmPerHeadProjectB1Kernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16)
+{
+	constexpr uint32_t vectors = IN_DIM / 8u, tile_vecs = K_TILE / 8u, stride = K_TILE + 8u;
+	static_assert(IN_DIM % K_TILE == 0u && K_TILE % 8u == 0u && OUT_DIM % OUTPUTS == 0u && INPUT_OFFSET % 8u == 0u && INPUT_HEAD_DIM % 8u == 0u && INPUT_OFFSET + IN_DIM <= INPUT_HEAD_DIM, "per-head B1 tiles divide K and output dimensions");
+	__shared__ __align__(16) uint16_t input_tile[IN_DIM];
+	__shared__ __align__(16) uint16_t weight_tile[OUTPUTS][stride];
+	const uint32_t first_output = blockIdx.x * OUTPUTS, head = blockIdx.y;
+	const uint16_t *weight_base = weight_bf16 + ((uint64_t)head * OUT_DIM + first_output) * IN_DIM;
+	LmDependentWait();
+	for (uint32_t i = threadIdx.x; i < vectors; i += THREADS)
+		((uint4 *)input_tile)[i] = __ldg((const uint4 *)(input_bf16 + (uint64_t)head * INPUT_HEAD_DIM + INPUT_OFFSET) + i);
+	float total = 0.0f;
+	for (uint32_t k0 = 0u; k0 < IN_DIM; k0 += K_TILE)
+	{
+		#pragma unroll
+		for (uint32_t idx = threadIdx.x; idx < OUTPUTS * tile_vecs; idx += THREADS)
+		{
+			const uint32_t r = idx / tile_vecs, c = idx % tile_vecs;
+			*(uint4 *)(weight_tile[r] + c * 8u) = __ldcs((const uint4 *)(weight_base + (uint64_t)r * IN_DIM + k0) + c);
+		}
+		__syncthreads();
+		if (threadIdx.x < OUTPUTS)
+		{
+			#pragma unroll
+			for (uint32_t k = 0u; k < K_TILE; k += 8u)
+				total = LmDotBf16x8(*(const uint4 *)(input_tile + k0 + k), *(const uint4 *)(weight_tile[threadIdx.x] + k), total);
+		}
+		if (k0 + K_TILE < IN_DIM)
+			__syncthreads();
+	}
+	if (threadIdx.x < OUTPUTS)
+		output_bf16[(uint64_t)head * OUT_HEAD_STRIDE + first_output + threadIdx.x] = LmFloatToBf16(total);
+	LmDependentRelease();
+}
+
+template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 __global__ __launch_bounds__(LM_PROJECT_MMA_THREADS)
 void LmPerHeadProjectMmaKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
 {
@@ -102,43 +139,49 @@ void LmPerHeadProjectMmaKernel(const uint16_t *__restrict__ input_bf16, const ui
 			row = first_row + warp_row + LmMmaAccumulatorRow(lane, reg);
 			column = first_output + tile * LM_MMA16_N + LmMmaAccumulatorColumn(lane, reg);
 			if ( row < rows )
-				*(uint32_t *)(output_bf16 + ((uint64_t)row * heads + head) * OUT_DIM + column) = LmPackBf16Pair(accumulator[tile][reg], accumulator[tile][reg + 1u]);
+				*(uint32_t *)(output_bf16 + ((uint64_t)row * heads + head) * OUT_HEAD_STRIDE + column) = LmPackBf16Pair(accumulator[tile][reg], accumulator[tile][reg + 1u]);
 		}
 }
 
-template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 static inline SparkGpuError LmPerHeadProjectChainLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream,
 	uint32_t row_exact = 0u)
 {
 	if (rows == 0u || (rows > LM_PROJECT_CHAIN_ROWS && row_exact != 0u))
-		return LmPerHeadProjectRowsLaunch<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>(input_bf16, weight_bf16, output_bf16, heads, rows, stream);
+		return LmPerHeadProjectRowsLaunch<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, OUT_HEAD_STRIDE>(input_bf16, weight_bf16, output_bf16, heads, rows, stream);
 	if (rows > LM_PROJECT_CHAIN_ROWS)
 	{
-		LM_LAUNCH((LmPerHeadProjectMmaKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET>), dim3(OUT_DIM / LM_PROJECT_MMA_OUTPUTS, heads, (rows + LM_PROJECT_MMA_ROWS - 1u) / LM_PROJECT_MMA_ROWS),
+		LM_LAUNCH((LmPerHeadProjectMmaKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, OUT_HEAD_STRIDE>), dim3(OUT_DIM / LM_PROJECT_MMA_OUTPUTS, heads, (rows + LM_PROJECT_MMA_ROWS - 1u) / LM_PROJECT_MMA_ROWS),
 			LM_PROJECT_MMA_THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 		return SparkGpuPeekAtLastError();
 	}
 	if (rows == 1u)
 	{
+		if constexpr (IN_DIM % 64u == 0u && OUT_DIM % 16u == 0u)
+			if ((OUT_DIM / 16u) * heads >= 48u)
+			{
+				LM_LAUNCH_DEPENDENT((LmPerHeadProjectB1Kernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 64u, 32u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / 16u, heads, 1u), 32u, 0, stream, input_bf16, weight_bf16, output_bf16);
+				return SparkGpuPeekAtLastError();
+			}
 		if constexpr (OUT_DIM % 16u == 0u)
 			if ((OUT_DIM / 16u) * heads >= 48u)
 			{
-				LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 1u, 64u>), dim3(OUT_DIM / 16u, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+				LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 1u, 64u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / 16u, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 				return SparkGpuPeekAtLastError();
 			}
-		LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, LM_PROJECT_CHAIN_OUTPUTS, 1u, 64u>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+		LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, LM_PROJECT_CHAIN_OUTPUTS, 1u, 64u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 		return SparkGpuPeekAtLastError();
 	}
 	if constexpr (OUT_DIM % 16u == 0u)
 	{
 		if (rows == 2u)
-			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 2u, 32u>), dim3(OUT_DIM / 16u, heads, 1u), 32u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 2u, 32u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / 16u, heads, 1u), 32u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 		else if (rows <= 4u)
-			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 4u, 64u>), dim3(OUT_DIM / 16u, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, 4u, 64u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / 16u, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 		else
-			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, LM_PROJECT_CHAIN_ROWS, 128u>), dim3(OUT_DIM / 16u, heads, 1u), 128u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+			LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, 16u, LM_PROJECT_CHAIN_ROWS, 128u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / 16u, heads, 1u), 128u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 		return SparkGpuPeekAtLastError();
 	}
-	LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, LM_PROJECT_CHAIN_OUTPUTS, LM_PROJECT_CHAIN_ROWS, 64u>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+	LM_LAUNCH_DEPENDENT((LmPerHeadProjectChainKernel<IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, LM_PROJECT_CHAIN_OUTPUTS, LM_PROJECT_CHAIN_ROWS, 64u, OUT_HEAD_STRIDE>), dim3(OUT_DIM / LM_PROJECT_CHAIN_OUTPUTS, heads, 1u), 64u, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 	return SparkGpuPeekAtLastError();
 }

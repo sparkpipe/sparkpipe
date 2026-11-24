@@ -61,7 +61,7 @@ static __device__ __forceinline__ uint32_t LmTopkExactClusterPass(cooperative_gr
 
 template<uint32_t THREADS, uint32_t BLOCKS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkExactClusterKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+void LmTopkExactClusterKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices, const uint32_t *__restrict__ sequence_of_row = 0, const uint32_t *__restrict__ context_length = 0, const uint32_t *__restrict__ row_position = 0, uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
 {
 	__shared__ uint32_t keys[LM_TOPK_EXACT_CLUSTER_KEYS];
 	__shared__ uint32_t histogram[2][LM_TOPK_BUCKETS];
@@ -71,9 +71,20 @@ void LmTopkExactClusterKernel(const float *__restrict__ scores, uint32_t n, uint
 	__shared__ uint32_t chosen[2],greater[BLOCKS],equal[BLOCKS];
 	cooperative_groups::cluster_group cluster = cooperative_groups::this_cluster();
 	const uint32_t part = cluster.block_rank(),row = blockIdx.x / BLOCKS;
+	uint32_t skip = 0u;
+	const uint32_t eff_n = LmTopkExactRowActive(row,n,sequence_of_row,context_length,row_position,dense_limit,pool_stride,&skip);
+	if ( skip != 0u )
+		return;
+	if ( eff_n <= k )
+	{
+		if ( part == 0u )
+			for (uint32_t i = threadIdx.x; i < k; i += THREADS)
+				out_indices[(uint64_t)row * k + i] = i < eff_n ? i : 0xffffffffu;
+		return;
+	}
 	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,warp = threadIdx.x / LM_TOPK_WARP_LANES;
-	const uint32_t span = (n + BLOCKS - 1u) / BLOCKS,first = part * span;
-	const uint32_t length = first < n ? (n - first < span ? n - first : span) : 0u;
+	const uint32_t span = (eff_n + BLOCKS - 1u) / BLOCKS,first = part * span;
+	const uint32_t length = first < eff_n ? (eff_n - first < span ? eff_n - first : span) : 0u;
 	const float *row_scores = scores + (uint64_t)row * n + first;
 	uint32_t index,pass,bucket,shift,sum,greater_before = 0u,equal_before = 0u;
 	static_assert(THREADS >= LM_TOPK_BUCKETS && THREADS / LM_TOPK_WARP_LANES >= BLOCKS, "one bucket per thread and one warp per cluster rank");
@@ -138,14 +149,14 @@ static inline uint32_t LmTopkExactClusterFits(uint32_t rows, uint32_t n, uint32_
 }
 
 template<uint32_t THREADS>
-static inline SparkGpuError LmTopkExactRowsLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t *out_indices, SparkGpuStream stream)
+static inline SparkGpuError LmTopkExactRowsLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t *out_indices, SparkGpuStream stream, const uint32_t *sequence_of_row = 0, const uint32_t *context_length = 0, const uint32_t *row_position = 0, uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
 {
 	if ( LmTopkExactClusterFits(rows,n,k) != 0u )
 		return(LmLaunchClusterKernel((LmTopkExactClusterKernel<LM_TOPK_EXACT_CLUSTER_THREADS,LM_TOPK_EXACT_CLUSTER_BLOCKS>),
-			dim3(rows * LM_TOPK_EXACT_CLUSTER_BLOCKS),dim3(LM_TOPK_EXACT_CLUSTER_THREADS),0,stream,LM_TOPK_EXACT_CLUSTER_BLOCKS,0u,scores,n,k,out_indices));
+			dim3(rows * LM_TOPK_EXACT_CLUSTER_BLOCKS),dim3(LM_TOPK_EXACT_CLUSTER_THREADS),0,stream,LM_TOPK_EXACT_CLUSTER_BLOCKS,0u,scores,n,k,out_indices,sequence_of_row,context_length,row_position,dense_limit,pool_stride));
 	if ( n > LM_TOPK_EXACT_CACHED_ROW && n > k && k <= LM_TOPK_WIDE_MAX_K )
-		LM_LAUNCH((LmTopkExactWideKernel),rows,LM_TOPK_WIDE_THREADS,0,stream,scores,n,k,out_indices);
+		LM_LAUNCH((LmTopkExactWideKernel),rows,LM_TOPK_WIDE_THREADS,0,stream,scores,n,k,out_indices,sequence_of_row,context_length,row_position,dense_limit,pool_stride);
 	else
-		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices);
+		LM_LAUNCH((LmTopkExactKernel<THREADS>),rows,THREADS,0,stream,scores,n,k,out_indices,sequence_of_row,context_length,row_position,dense_limit,pool_stride);
 	return(SparkGpuPeekAtLastError());
 }

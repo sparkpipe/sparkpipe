@@ -244,6 +244,7 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmBf16RmsNormKernel(const uint16_t *input, const uint16_t *weight, uint16_t *output, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
 	extern __shared__ float lm_norm_shared[];
+	LmDependentRelease();
 	LmRmsNormRowBody<THREADS, uint16_t, true, false>(lm_norm_shared, input, (const uint16_t *)0, weight, (uint16_t *)0, output, dimension, row_stride, epsilon, LmRmsGainOp<true>{});
 }
 
@@ -460,6 +461,7 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmRmsNormSigmoidGateKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ gate_bf16, const float *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t dimension, float epsilon)
 {
 	const uint64_t base = (uint64_t)blockIdx.x * dimension;
+	LmDependentRelease();
 	LmRmsNormSmallBody<THREADS, LM_RMS_NORM_STAGED / 8u>(input_bf16 + base, gate_bf16 + base, weight, output_bf16 + base, dimension, epsilon, LmRmsSigmoidGateOp{});
 }
 
@@ -468,6 +470,7 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmClampedUpGateKernel(const uint16_t *__restrict__ up_gate_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float limit)
 {
 	const uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	LmDependentRelease();
 	LmGateUpRowBody<THREADS>(up_gate_bf16 + base + dimension, up_gate_bf16 + base, output_bf16 + (uint64_t)blockIdx.x * dimension, dimension, LmClampedUpGateOp{limit});
 }
 

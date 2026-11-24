@@ -13,7 +13,7 @@ static __host__ __device__ __forceinline__ uint32_t LmGridBlocks(uint64_t elemen
 template<uint32_t THREADS>
 static __host__ __device__ __forceinline__ uint32_t LmVecBlocks(uint64_t elements) { return((uint32_t)((((elements + 7u) >> 3u) + THREADS - 1u) / THREADS)); }
 
-static __device__ __forceinline__ bool LmIsAligned16(const void *pointer) { return(((uintptr_t)pointer & 15u) == 0u); }
+static __host__ __device__ __forceinline__ bool LmIsAligned16(const void *pointer) { return(((uintptr_t)pointer & 15u) == 0u); }
 static __device__ __forceinline__ bool LmIsAligned8(const void *pointer) { return(((uintptr_t)pointer & 7u) == 0u); }
 
 static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)

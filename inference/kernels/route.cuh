@@ -155,6 +155,56 @@ static __device__ __forceinline__ void LmRouteBuildBlock(const uint32_t *route_e
 
 template<uint32_t THREADS, uint32_t EXPERTS>
 __global__ __launch_bounds__(THREADS, 1)
+void LmRouteBuildSmallKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
+{
+	__shared__ uint32_t sel[32];
+	LmDependentWait();
+	if ( threadIdx.x < routes )
+		sel[threadIdx.x] = route_expert[threadIdx.x];
+	__syncthreads();
+	if ( threadIdx.x < routes )
+	{
+		const uint32_t mine = sel[threadIdx.x];
+		uint32_t packed = 0u;
+		for ( uint32_t j = 0u; j < routes; ++j )
+			if ( sel[j] < mine || (sel[j] == mine && j < threadIdx.x) )
+				packed++;
+		route_packed_row[threadIdx.x] = packed;
+		route_source_token[packed] = threadIdx.x / top_k;
+	}
+	for ( uint32_t expert = threadIdx.x; expert <= EXPERTS; expert += THREADS )
+	{
+		uint32_t before = 0u, tiles = 0u;
+		for ( uint32_t j = 0u; j < routes; ++j )
+		{
+			const uint32_t target = sel[j];
+			if ( target >= expert )
+				continue;
+			before++;
+			uint32_t first = 1u, count = 1u;
+			for ( uint32_t k = 0u; k < j; ++k )
+				if ( sel[k] == target )
+					first = 0u;
+			if ( first != 0u )
+			{
+				for ( uint32_t k = j + 1u; k < routes; ++k )
+					if ( sel[k] == target )
+						count++;
+				tiles += (count + tile_m - 1u) / tile_m;
+			}
+		}
+		group_row_offset[expert] = before;
+		if ( tile_prefix_up != 0 && tile_prefix_down != 0 )
+		{
+			tile_prefix_up[expert] = tiles * neuron_tiles_up;
+			tile_prefix_down[expert] = tiles * neuron_tiles_down;
+		}
+	}
+	LmDependentRelease();
+}
+
+template<uint32_t THREADS, uint32_t EXPERTS>
+__global__ __launch_bounds__(THREADS, 1)
 void LmRouteBuildKernel(const uint32_t *__restrict__ route_expert, uint32_t routes, uint32_t top_k, uint32_t *__restrict__ group_row_offset, uint32_t *__restrict__ route_packed_row, uint32_t *__restrict__ route_source_token, uint32_t tile_m, uint32_t neuron_tiles_up, uint32_t *__restrict__ tile_prefix_up, uint32_t neuron_tiles_down, uint32_t *__restrict__ tile_prefix_down)
 {
 	LmDependentRelease();
@@ -198,10 +248,16 @@ static int32_t LmRouteBuild(
 	tile_m = LmLaunchGroupedTileM(rows,top_k,EXPERTS);
 	neuron_tiles_up = (output_dimension_up + tile_n_up - 1u) / tile_n_up;
 	neuron_tiles_down = (output_dimension_down + tile_n_down - 1u) / tile_n_down;
-	LM_LAUNCH((LmRouteBuildKernel<THREADS,EXPERTS>), 1u, THREADS, 0, stream,
-		route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
-		route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
-		neuron_tiles_down,tile_prefix_down);
+	if ( packed_rows <= 32u )
+		LM_LAUNCH_DEPENDENT((LmRouteBuildSmallKernel<THREADS,EXPERTS>), 1u, THREADS, 0, stream,
+			route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
+			route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
+			neuron_tiles_down,tile_prefix_down);
+	else
+		LM_LAUNCH((LmRouteBuildKernel<THREADS,EXPERTS>), 1u, THREADS, 0, stream,
+			route_expert,packed_rows,top_k,group_row_offset,route_packed_row,
+			route_source_token,tile_m,neuron_tiles_up,tile_prefix_up,
+			neuron_tiles_down,tile_prefix_down);
 	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS
 		? LM_LAUNCH_OK
 		: LM_LAUNCH_ERR_LAUNCH);

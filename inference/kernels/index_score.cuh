@@ -183,7 +183,7 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 
 template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
-void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0)
+void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0, uint32_t dense_limit = 0u)
 {
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
@@ -215,6 +215,8 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 		bound = context_length[sequence];
 		if ( row_position != 0 && row_position[row] + 1u < bound )
 			bound = row_position[row] + 1u;
+		if ( dense_limit != 0u && bound <= dense_limit )
+			return;
 		bound = LmIndexScoreKeys(index_view, bound);
 		for (head_tile = 0u; head_tile < HEAD_TILES; head_tile++)
 			for (step = 0u; step < steps; step++)
@@ -845,7 +847,7 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 #endif
 
 template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages, bool ROUND_BF16 = false, class Weight = uint16_t>
-static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const Weight *head_weight, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0)
+static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const Weight *head_weight, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0, uint32_t dense_limit = 0u)
 {
 	static_assert(LM_INDEX_SCORE_SHARED_ROWS == LM_INDEX_SCORE_WARPS, "the block-slot kernel gives every warp of a block its own row");
 	if ( (fork_positions == 0) != (slot_offsets == 0) )
@@ -867,6 +869,6 @@ static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_qu
 	else
 #endif
 		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
-			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets);
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets,dense_limit);
 	return(SparkGpuPeekAtLastError());
 }

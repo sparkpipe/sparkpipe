@@ -132,14 +132,39 @@ static __device__ __forceinline__ void LmTopkExactSelect(const float *row_scores
 	LmTopkExactEmit<THREADS>(row_scores,n,state[LM_TOPK_EXACT_PREFIX],out,scan,state);
 }
 
+static __device__ __forceinline__ uint32_t LmTopkExactRowActive(uint32_t row, uint32_t n, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t dense_limit, uint32_t pool_stride, uint32_t *skip)
+{
+	*skip = 0u;
+	if ( dense_limit == 0u || sequence_of_row == 0 || context_length == 0 )
+		return(n);
+	uint32_t bound = context_length[sequence_of_row[row]];
+	if ( row_position != 0 && row_position[row] + 1u < bound )
+		bound = row_position[row] + 1u;
+	if ( bound <= dense_limit )
+	{
+		*skip = 1u;
+		return(0u);
+	}
+	if ( pool_stride > 1u )
+	{
+		const uint32_t active = bound / pool_stride;
+		return(active < n ? active : n);
+	}
+	return(n);
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkExactKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+void LmTopkExactKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices, const uint32_t *__restrict__ sequence_of_row = 0, const uint32_t *__restrict__ context_length = 0, const uint32_t *__restrict__ row_position = 0, uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
 {
 	__shared__ uint32_t histogram[LM_TOPK_BUCKETS];
 	__shared__ uint32_t scan[THREADS];
 	__shared__ uint32_t state[LM_TOPK_EXACT_STATE];
-	LmTopkExactSelect<THREADS>(scores + (uint64_t)blockIdx.x * n,n,k,out_indices + (uint64_t)blockIdx.x * k,histogram,scan,state);
+	uint32_t skip = 0u;
+	const uint32_t eff_n = LmTopkExactRowActive(blockIdx.x,n,sequence_of_row,context_length,row_position,dense_limit,pool_stride,&skip);
+	if ( skip != 0u )
+		return;
+	LmTopkExactSelect<THREADS>(scores + (uint64_t)blockIdx.x * n,eff_n,k,out_indices + (uint64_t)blockIdx.x * k,histogram,scan,state);
 }
 
 template<uint32_t THREADS>
@@ -240,7 +265,7 @@ static __device__ __forceinline__ void LmTopkWideSort(T *values, uint32_t padded
 }
 
 static __global__ __launch_bounds__(LM_TOPK_WIDE_THREADS)
-void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices)
+void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_t k, uint32_t *__restrict__ out_indices, const uint32_t *__restrict__ sequence_of_row = 0, const uint32_t *__restrict__ context_length = 0, const uint32_t *__restrict__ row_position = 0, uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
 {
 	__shared__ uint32_t histogram[LM_TOPK_WIDE_BUCKETS];
 	__shared__ uint32_t selected[LM_TOPK_WIDE_MAX_K];
@@ -250,6 +275,16 @@ void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_
 	__shared__ uint32_t choice[3],counts[2];
 	const float *row = scores + (uint64_t)blockIdx.x * n;
 	uint32_t *out = out_indices + (uint64_t)blockIdx.x * k;
+	uint32_t skip = 0u;
+	n = LmTopkExactRowActive(blockIdx.x,n,sequence_of_row,context_length,row_position,dense_limit,pool_stride,&skip);
+	if ( skip != 0u )
+		return;
+	if ( n <= k )
+	{
+		for (uint32_t i = threadIdx.x; i < k; i += LM_TOPK_WIDE_THREADS)
+			out[i] = i < n ? i : 0xffffffffu;
+		return;
+	}
 	const uint32_t lane = threadIdx.x % LM_TOPK_WARP_LANES,per = LM_TOPK_WIDE_BUCKETS / LM_TOPK_WIDE_THREADS;
 	const uint32_t shifts[3] = { 21u, 10u, 0u },widths[3] = { 11u, 11u, 10u };
 	uint32_t prefix = 0u,mask = 0u,need = k,count = n,pass,base,index,key,bucket,peers,running,part,local[LM_TOPK_WIDE_BUCKETS / LM_TOPK_WIDE_THREADS];

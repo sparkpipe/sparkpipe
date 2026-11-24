@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "dtype.cuh"
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/kernel_math.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
@@ -510,6 +511,7 @@ __global__ void LmHcPostBf16Kernel(const uint16_t *out_bf16,const uint16_t *snap
 	__shared__ float post[STREAMS],comb[STREAMS * STREAMS];
 	uint32_t row = blockIdx.x,element,stream,source,index;
 	float residual[STREAMS],out,value,contribution;
+	LmDependentRelease();
 	if ( row >= rows || hc == 0u || hc > STREAMS )
 		return;
 	for (index=threadIdx.x; index<hc; index+=blockDim.x)

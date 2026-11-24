@@ -208,7 +208,7 @@ void LmPerHeadProjectSplitKernel(const uint16_t *__restrict__ input_bf16, const 
 	output_bf16[output_base + threadIdx.x] = LmFloatToBf16(total);
 }
 
-template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t ROWS>
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t ROWS, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
 {
@@ -225,18 +225,18 @@ void LmPerHeadProjectRowsKernel(const uint16_t *__restrict__ input_bf16, const u
 	{
 		row = first_row + group * per_thread + j;
 		if ( row < rows )
-			output_bf16[((((uint64_t)row * heads) + head) * OUT_DIM) + first_index + lane] = LmFloatToBf16(total[j]);
+			output_bf16[((((uint64_t)row * heads) + head) * OUT_HEAD_STRIDE) + first_index + lane] = LmFloatToBf16(total[j]);
 	}
 }
 
-template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u>
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM = IN_DIM, uint32_t INPUT_OFFSET = 0u, uint32_t OUT_HEAD_STRIDE = OUT_DIM>
 static inline SparkGpuError LmPerHeadProjectRowsLaunch(const uint16_t *input_bf16, const uint16_t *weight_bf16, uint16_t *output_bf16, uint32_t heads, uint32_t rows, SparkGpuStream stream)
 {
 	constexpr uint32_t few = THREADS / LM_ROWS_TILE_N, many = 4u * few;
 	if ( rows <= few )
-		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, few>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, 1u), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, few, OUT_HEAD_STRIDE>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, 1u), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 	else
-		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, many>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, (rows + many - 1u) / many), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
+		LM_LAUNCH((LmPerHeadProjectRowsKernel<THREADS, IN_DIM, OUT_DIM, INPUT_HEAD_DIM, INPUT_OFFSET, many, OUT_HEAD_STRIDE>), dim3(OUT_DIM / LM_ROWS_TILE_N, heads, (rows + many - 1u) / many), THREADS, 0, stream, input_bf16, weight_bf16, output_bf16, heads, rows);
 	return(SparkGpuPeekAtLastError());
 }
 
@@ -255,18 +255,22 @@ void LmExtractRopePerHeadKernel(
 	uint32_t input_offset,
 	uint32_t rope_dimension,
 	float theta,
-	const float *__restrict__ inv_freq_table = 0)
+	const float *__restrict__ inv_freq_table = 0,
+	uint32_t output_head_stride = 0u,
+	uint32_t output_offset = 0u)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint32_t half = rope_dimension / 2u;
+	uint32_t out_stride = output_head_stride != 0u ? output_head_stride : rope_dimension;
 	uint64_t input_base,output_base;
 	float position;
+	LmDependentRelease();
 	if ( head >= heads || input_offset > input_head_dimension ||
 		rope_dimension > input_head_dimension - input_offset )
 		return;
 	input_base = ((((uint64_t)row * heads) + head) * input_head_dimension)
 		+ input_offset;
-	output_base = (((uint64_t)row * heads) + head) * rope_dimension;
+	output_base = ((((uint64_t)row * heads) + head) * out_stride) + output_offset;
 	position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
 	{
