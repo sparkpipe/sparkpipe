@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import http.server
 import json
 import math
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -304,17 +306,33 @@ class TestRaisBenchCli(unittest.TestCase):
         out_fast = rais_bench.run_benchmark(args_fast)
         self.assertTrue(out_fast["dry_run"])
         self.assertEqual(out_fast["plan"]["tier"], "fast")
-        self.assertFalse(out_fast["plan"]["run_b8_spec"])
+        self.assertEqual(out_fast["endpoint"], "completions")
+        self.assertTrue(out_fast["plan"]["run_b8_spec"])
+
+        args_fast_nob8 = parser.parse_args([
+            "--base-url", "http://127.0.0.1:8000",
+            "--model", "glm-5.3-flash",
+            "--tier", "fast",
+            "--no-b8-spec",
+            "--endpoint", "chat",
+            "--dry-run",
+        ])
+        out_fast_nob8 = rais_bench.run_benchmark(args_fast_nob8)
+        self.assertFalse(out_fast_nob8["plan"]["run_b8_spec"])
+        self.assertEqual(out_fast_nob8["endpoint"], "chat")
 
         args_full = parser.parse_args([
             "--base-url", "http://127.0.0.1:8000",
             "--model", "kimi-k3.1-pro",
             "--tier", "full",
+            "--b8-spec",
+            "--endpoint", "auto",
             "--dry-run",
         ])
         out_full = rais_bench.run_benchmark(args_full)
         self.assertEqual(out_full["plan"]["tier"], "full")
         self.assertTrue(out_full["plan"]["run_b8_spec"])
+        self.assertEqual(out_full["endpoint"], "completions")
         self.assertEqual(len(out_full["plan"]["prefill_long_targets"]), 2)
         self.assertEqual(len(out_full["plan"]["warm_targets"]), 2)
 
@@ -375,6 +393,86 @@ class TestRaisBenchCli(unittest.TestCase):
         self.assertGreater(summary["itl_p99_ms"], summary["itl_p50_ms"])
         self.assertTrue(rais_bench.is_capacity_rejection({"http_status": 429, "body": "busy"}))
         self.assertFalse(rais_bench.is_capacity_rejection({"http_status": 500, "body": "segfault"}))
+
+    def test_edit_batch_prompt_and_chat_endpoint_fallback(self) -> None:
+        p0 = rais_bench.format_batch_prompt(rais_bench.EDIT_PROMPT, 0, stream_prefix=True)
+        p1 = rais_bench.format_batch_prompt(rais_bench.EDIT_PROMPT, 1, stream_prefix=True)
+        self.assertNotEqual(p0, p1)
+        self.assertTrue(p0.endswith("\nUpdated code:\n```c\n"))
+        self.assertTrue(rais_bench.is_immediate_eos({
+            "error": None,
+            "http_status": 200,
+            "token_times": [],
+            "finish_reason": "stop",
+        }))
+        self.assertFalse(rais_bench.is_immediate_eos({
+            "error": None,
+            "http_status": 200,
+            "token_times": [0.05],
+            "finish_reason": "stop",
+        }))
+
+        seen_paths: list[str] = []
+        seen_chat_has_messages: list[bool] = []
+
+        class MockHandler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                seen_paths.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                if self.path == "/v1/completions":
+                    chunk = {"choices": [{"text": "", "finish_reason": "stop"}], "usage": {"prompt_tokens": 16, "completion_tokens": 0}}
+                    self.wfile.write(f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n".encode("utf-8"))
+                    return
+                seen_chat_has_messages.append(self.path == "/v1/chat/completions" and "messages" in body)
+                chunks = [
+                    {"choices": [{"delta": {"reasoning_content": "plan "}}], "tokens": [1]},
+                    {"choices": [{"delta": {"content": "typedef struct {"}}], "tokens": [2, 3]},
+                    {"choices": [{"delta": {}, "finish_reason": "length"}], "usage": {"prompt_tokens": 24, "completion_tokens": 3}},
+                ]
+                for item in chunks:
+                    self.wfile.write(f"data: {json.dumps(item)}\n\n".encode("utf-8"))
+                self.wfile.write(b"data: [DONE]\n\n")
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MockHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}"
+            chat_res = rais_bench.stream_completion(url, {"model": "qwen3.8-flash", "prompt": "hi", "max_tokens": 4}, endpoint="chat")
+            self.assertIsNone(chat_res["error"])
+            self.assertEqual(chat_res["text"], "plan typedef struct {")
+            self.assertEqual(len(chat_res["token_times"]), 3)
+            self.assertTrue(seen_chat_has_messages and all(seen_chat_has_messages))
+
+            comp_res = rais_bench.stream_completion(url, {"model": "qwen3.8-flash", "prompt": "hi", "max_tokens": 4}, endpoint="completions")
+            self.assertTrue(rais_bench.is_immediate_eos(comp_res))
+
+            parser = rais_bench.build_parser()
+            args = parser.parse_args([
+                "--base-url", url,
+                "--model", "qwen3.8-flash",
+                "--tier", "fast",
+                "--max-batch", "4",
+                "--spec-toggle", "none",
+                "--no-b8-spec",
+                "--endpoint", "auto",
+            ])
+            record = rais_bench.run_benchmark(args)
+            self.assertEqual(record["endpoint"], "chat")
+            self.assertEqual(record["endpoint_fallback"], "immediate_eos")
+            self.assertEqual(record["gates"]["errors"], 0)
+            self.assertIn("/v1/completions", seen_paths)
+            self.assertIn("/v1/chat/completions", seen_paths)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":
