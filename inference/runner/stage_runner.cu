@@ -31,7 +31,8 @@
 #define STAGE_RUNNER_GRAPH_ROWS SPARK_STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
 #define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
-#define STAGE_RUNNER_GRAPH_KEYS 3u
+#define STAGE_RUNNER_GRAPH_VERIFY_LANES 8u
+#define STAGE_RUNNER_GRAPH_KEYS (2u + STAGE_RUNNER_GRAPH_VERIFY_LANES)
 #define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
 #define STAGE_RUNNER_WIDE_ROWS STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
@@ -2270,7 +2271,16 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 
 static uint32_t StageRunnerGraphSlotKey(const SparkStageRunnerStep *in)
 {
-	return in->graph_key == 2u && in->tree != 0u ? 3u : in->graph_key;
+	if ( in->graph_key == 0u )
+		return 0u;
+	if ( in->rows > in->sequences )
+	{
+		if ( in->sequences > 1u && in->tree == 0u && (in->graph_key == 2u || in->commit == 0u) )
+			return 2u + (in->sequences <= STAGE_RUNNER_GRAPH_VERIFY_LANES ? in->sequences : STAGE_RUNNER_GRAPH_VERIFY_LANES);
+		if ( in->sequences == 1u && (in->graph_key == 2u || in->commit == 0u) )
+			return in->tree != 0u ? 3u : 2u;
+	}
+	return in->graph_key;
 }
 
 static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled, uint32_t last_rows)
@@ -2286,10 +2296,11 @@ static uint32_t StageRunnerGraphCollectiveReady(const SparkStageRunnerState *sta
 }
 
 static uint32_t StageRunnerGraphEligible(const SparkStageRunnerState *state, const SparkStageRunner *runner,
-	uint32_t key, uint32_t rows, uint32_t sequences)
+	uint32_t key, uint32_t rows, uint32_t sequences, uint32_t commit = 1u, uint32_t tree = 0u)
 {
+	const uint32_t verify_key = (key == 2u && state->model_interface->graph_key != 0) || (key == 1u && commit == 0u) ? 1u : 0u;
 	const uint32_t shape = (key == 1u && rows == sequences) ||
-		(key == 2u && sequences == 1u && rows > 1u && state->model_interface->graph_key != 0) ? 1u : 0u;
+		(verify_key != 0u && rows > sequences && (sequences == 1u || (sequences > 1u && tree == 0u))) ? 1u : 0u;
 	return state->programs != 0u && (state->resident != 0u || state->geometry.experts == 0u) && StageRunnerGraphCollectiveReady(state) != 0u &&
 		runner->owns_embedding != 0u &&
 		runner->owns_final_head != 0u && state->head_weight != 0 && shape != 0u &&
@@ -2303,7 +2314,7 @@ static void StageRunnerGraphIdentity(const SparkStageRunnerStep *in, uint32_t ig
 	identity->host_sequence_of_row = 0;
 	identity->host_slots = 0;
 	identity->host_parent_rows = 0;
-	if ( in->graph_key == 2u || ignores_gather != 0u )
+	if ( in->graph_key == 2u || in->commit == 0u || ignores_gather != 0u )
 	{
 		identity->gather_context = 0u;
 		identity->gather_sequence = 0u;
@@ -2533,7 +2544,7 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 	}
 	const uint32_t slot_key = StageRunnerGraphSlotKey(in);
 	if ( slot_key != 0u && slot_key <= STAGE_RUNNER_GRAPH_KEYS && dispatch != 0 &&
-		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
+		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences, in->commit, in->tree) != 0u )
 	{
 		const uint32_t slot = StageRunnerGraphSlot(slot_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
 		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
