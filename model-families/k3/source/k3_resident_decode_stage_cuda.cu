@@ -353,7 +353,7 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	size_t index = 0u;
 	d->scratch_bytes = 0u;
 	for ( size_t item = 0u; item < count; ++item )
-		d->scratch_bytes += (sizes[item] + 15u) & ~(size_t)15u;
+		d->scratch_bytes += (sizes[item] + 31u) & ~(size_t)15u;
 	if ( tp_degree > 1u )
 		d->scratch_bytes += (size_t)SparkK3KvShardScratchBytes(attention_rows, tp_degree) + 48u +
 			(size_t)K3DispatchExpandedValueBytes(attention_rows, tp_degree) + 16u;
@@ -363,29 +363,29 @@ int32_t SparkK3DispatchCreate(SparkK3Dispatch *d, const SparkK3PoolSizing *sizin
 	if ( SparkGpuMemset(d->scratch, 0, d->scratch_bytes) != SPARK_GPU_SUCCESS )
 		{ SparkK3DispatchDestroy(d); SPARK_FAIL(SPARK_K3_DISPATCH_ERR_CUDA); }
 	K3LayerBuffers *b = d->buffers_host;
-	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->query_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->key_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->value_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->gate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->decay_logit_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->latent_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->kv_slot_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->attention_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->shared_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->attnres_bank_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->attnres_partial_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->kda_beta_logit = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->kda_write_gate_out = (float *)k3_carve(d, &off, sizes[index++]);
-	b->gate_up_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->kda_retention = (float *)k3_carve(d, &off, sizes[index++]);
-	b->router_logits = (float *)k3_carve(d, &off, sizes[index++]);
-	b->attnres_score_f32 = (float *)k3_carve(d, &off, sizes[index++]);
-	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
-	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++]);
+	b->hidden_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->normed_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->fused_qkvb_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->query_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->key_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->value_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->gate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->decay_logit_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->latent_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->kv_slot_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->attention_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->shared_out_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->attnres_bank_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->attnres_partial_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->kda_beta_logit = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->kda_write_gate_out = (float *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->gate_up_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->intermediate_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->kda_retention = (float *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->router_logits = (float *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->attnres_score_f32 = (float *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->latent_full_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
+	b->shared_mid_bf16 = (uint16_t *)k3_carve(d, &off, sizes[index++] + 16u);
 	if ( index != count )
 		{ SparkK3DispatchDestroy(d); SPARK_FAIL(SPARK_K3_DISPATCH_ERR_ARGUMENT); }
 	if ( tp_degree > 1u )
@@ -767,34 +767,43 @@ __global__ static void K3DispatchPairKernel(uint32_t *arrays, uint32_t rows_a, u
 		arrays[K3_DISPATCH_PAIR_IDENTITY + index] = index;
 }
 
+template<class T>
+static T *K3PairAlign16(T *p)
+{
+	return (T *)(((uintptr_t)p + 15u) & ~(uintptr_t)15u);
+}
+
 static void K3DispatchPairView(const SparkK3Dispatch *d, const K3LayerBuffers *a, K3LayerBuffers *b, uint32_t rows_a)
 {
+	static_assert((K3_HIDDEN * sizeof(uint16_t)) % 16u == 0u, "hidden row stride is 16-byte aligned");
+	static_assert((K3_ROUTED_EXPERT_HIDDEN * sizeof(uint16_t)) % 16u == 0u, "routed latent stride is 16-byte aligned");
+	static_assert((K3_EXPERTS * sizeof(float)) % 16u == 0u, "router logits stride is 16-byte aligned");
 	const SparkK3ScratchWidths *w = &d->widths;
 	const size_t r = rows_a;
 	*b = *a;
 	b->hidden_bf16 += r * K3_HIDDEN;
-	b->normed_bf16 += r * K3_HIDDEN;
-	b->fused_qkvb_bf16 += r * w->qkvb;
-	b->query_bf16 += r * w->query;
-	b->key_bf16 += r * w->key;
-	b->value_bf16 += r * w->value;
-	b->gate_bf16 += r * w->gate;
-	b->decay_logit_bf16 += r * w->decay;
+	b->normed_bf16 = K3PairAlign16(a->normed_bf16 + r * K3_HIDDEN);
+	b->fused_qkvb_bf16 = K3PairAlign16(a->fused_qkvb_bf16 + r * w->qkvb);
+	b->query_bf16 = K3PairAlign16(a->query_bf16 + r * w->query);
+	b->key_bf16 = K3PairAlign16(a->key_bf16 + r * w->key);
+	b->value_bf16 = K3PairAlign16(a->value_bf16 + r * w->value);
+	b->gate_bf16 = K3PairAlign16(a->gate_bf16 + r * w->gate);
+	b->decay_logit_bf16 = K3PairAlign16(a->decay_logit_bf16 + r * w->decay);
 	b->latent_bf16 += r * w->latent;
-	b->kv_slot_bf16 += r * K3_MLA_KV_A_DIM;
-	b->attention_out_bf16 += r * w->attention_out;
-	b->shared_out_bf16 += r * K3_HIDDEN;
-	b->attnres_bank_bf16 += (size_t)K3_ATTNRES_MAX_SOURCES * r * K3_HIDDEN;
-	b->attnres_partial_bf16 += r * K3_HIDDEN;
-	b->kda_beta_logit += r * K3_KDA_HEADS;
-	b->kda_write_gate_out += r * K3_KDA_HEADS;
-	b->gate_up_bf16 += r * w->gate_up;
-	b->intermediate_bf16 += r * w->intermediate;
-	b->kda_retention += r * w->retention;
+	b->kv_slot_bf16 = K3PairAlign16(a->kv_slot_bf16 + r * K3_MLA_KV_A_DIM);
+	b->attention_out_bf16 = K3PairAlign16(a->attention_out_bf16 + r * w->attention_out);
+	b->shared_out_bf16 = K3PairAlign16(a->shared_out_bf16 + r * K3_HIDDEN);
+	b->attnres_bank_bf16 = K3PairAlign16(a->attnres_bank_bf16 + (size_t)K3_ATTNRES_MAX_SOURCES * r * K3_HIDDEN);
+	b->attnres_partial_bf16 = K3PairAlign16(a->attnres_partial_bf16 + r * K3_HIDDEN);
+	b->kda_beta_logit = K3PairAlign16(a->kda_beta_logit + r * K3_KDA_HEADS);
+	b->kda_write_gate_out = K3PairAlign16(a->kda_write_gate_out + r * K3_KDA_HEADS);
+	b->gate_up_bf16 = K3PairAlign16(a->gate_up_bf16 + r * w->gate_up);
+	b->intermediate_bf16 = K3PairAlign16(a->intermediate_bf16 + r * w->intermediate);
+	b->kda_retention = K3PairAlign16(a->kda_retention + r * w->retention);
 	b->router_logits += r * K3_EXPERTS;
-	b->attnres_score_f32 += r * K3_ATTNRES_MAX_SOURCES;
+	b->attnres_score_f32 = K3PairAlign16(a->attnres_score_f32 + r * K3_ATTNRES_MAX_SOURCES);
 	b->latent_full_bf16 += r * K3_ROUTED_EXPERT_HIDDEN;
-	b->shared_mid_bf16 += r * w->shared_mid;
+	b->shared_mid_bf16 = K3PairAlign16(a->shared_mid_bf16 + r * w->shared_mid);
 	if ( b->shard_gather_running != 0 )
 		b->shard_gather_running += r * SparkK3KvShardHeads(a->kv_shard.degree) * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK);
 	b->positions = a->positions + r;
