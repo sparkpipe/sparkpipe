@@ -1,0 +1,2 @@
++1062
+dsv41_flash rows16 B1/verify/batch decode and 64K-indexer optimizations on GB10: fused HyperMix+CollapseNorm (register-held and cp.async-staged), fused WindowFold+MergeSink+InvRoPE+QDQ+RingStore (cluster and 2-head tiled), extended fused TopK+Balance+RouteBuild (up to 256 rows), small-tile MXFP8 GEMMs (16x32 and 32x64 BF16/F32) with B64 MXFP8 shared-expert split, fused Q+KV Norm+RoPE+QDQ, fused HyperPost, fused Compress+Finish+Store, fused IndexQueryPrep, and max_positions>16384 short-context candidate-block skip.
