@@ -1,0 +1,2 @@
++294
+Hill-climb optimizations across skinny RG=8, fused BF16x2 cell MMA dequant, warp-parallel shard merge, K3 KDA/MLA/tiled state compose, GLM5 Next stream GEMM, and DSV4.1 window-fold and vectorized elementwise kernels merged in PR #2130.
