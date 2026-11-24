@@ -1,0 +1,2 @@
++761
+GLM-5.3 (glm52) and GLM-5.3-Flash (glm5_next) B1/B8/B64/prefill hill-climb: fused HC Post+Norm and vectorized BF16 Post (hc_site.cuh), fused small-batch TopK+RouteBuild (route.cuh), fused KDA decay/beta, DSA pre-store, IndexKey norm+RoPE+store, B1 kv_b_key+RoPE, and pipelined B1 FP8 MoE W1+Act/W2+Finalize kernels across glm52 and glm5_next.
