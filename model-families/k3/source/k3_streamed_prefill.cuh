@@ -45,6 +45,10 @@ struct K3Streamed
 	uint32_t *index_context_device;
 	uint32_t *key_pages;
 	uint8_t *mla_keys;
+	uint8_t *index_keys;
+	uint8_t *index_fp8;
+	float *index_scores;
+	uint32_t index_codec_fp8;
 
 	SparkStatus Begin(LmPass *p, const SparkStageRunnerStreamedPrefill *request, uint64_t padded_keys, SparkGpuStream stream);
 	SparkStatus PassBegin(LmPass *p, const LmPassStep *step, SparkGpuStream stream);
@@ -62,6 +66,9 @@ static void K3StreamedDestroy(K3Streamed *s)
 		return;
 	SparkGpuFree(s->mla_keys);
 	SparkGpuFree(s->key_pages);
+	SparkGpuFree(s->index_keys);
+	SparkGpuFree(s->index_fp8);
+	SparkGpuFree(s->index_scores);
 	LmPassDestroy(&s->pass);
 	delete s;
 }
@@ -171,6 +178,7 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	state_memory = LmPassAlloc<uint8_t>(p, (uint64_t)K3_KDA_LAYER_COUNT * K3_STREAMED_SHARDS * slot_floats * sizeof(float));
 	window_memory = LmPassAlloc<uint16_t>(p, (uint64_t)K3_KDA_LAYER_COUNT * K3_STREAMED_SHARDS * (2u * heads * K3_KDA_KEY_DIM + heads * K3_KDA_VALUE_DIM) * K3_KDA_CONV_KERNEL);
 	memset(&s->mla, 0, sizeof(s->mla));
+	s->mla.index_fp8 = s->index_codec_fp8;
 	s->mla.node = p->rank;
 	s->mla.nodes = K3_STREAMED_SHARDS;
 	s->mla.q_latents = LmPassAlloc<uint16_t>(p, pass * K3_Q_LORA_RANK);
@@ -197,30 +205,30 @@ static SparkStatus K3StreamedBuffers(K3Streamed *s)
 	if ( s->dispatch->indexed != 0u )
 	{
 		const uint64_t chunk = rows < K3_STREAMED_INDEX_CHUNK_ROWS ? rows : K3_STREAMED_INDEX_CHUNK_ROWS;
-		const uint64_t stride = SparkKvShardGatherKeys(s->dispatch->buffers_host->kv_shard, K3_MAX_CONTEXT), words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
+		const uint64_t words = LmIndexSelectBitmapWords(K3_MAX_CONTEXT);
 		s->mla.index_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_DIM);
-		s->mla.index_keys = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_DIM);
-		s->mla.index_packed = LmPassAlloc<uint8_t>(p, stride * K3IndexKv::kSlotBytes);
 		s->mla.index_heads_local = LmPassAlloc<uint16_t>(p, rows * K3_INDEX_HEADS);
 		s->mla.index_heads = LmPassAlloc<uint16_t>(p, pass * K3_INDEX_HEADS);
 		s->mla.index_query = LmPassAlloc<uint16_t>(p, chunk * K3_INDEX_QUERY);
-		s->mla.index_scores = LmPassAlloc<float>(p, chunk * stride);
-		s->mla.index_score_floats = chunk * stride;
-		s->mla.index_send = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
-		s->mla.index_received = LmPassAlloc<uint2>(p, (uint64_t)K3_STREAMED_SHARDS * chunk * K3_INDEX_TOPK);
+		if ( s->mla.index_fp8 != 0u )
+		{
+			s->mla.index_query_fp8 = LmPassAlloc<uint8_t>(p, chunk * K3_INDEX_QUERY);
+			s->mla.index_weights = LmPassAlloc<float>(p, chunk * K3_INDEX_HEADS);
+		}
+		s->mla.index_send = LmPassAlloc<uint2>(p, chunk * K3_INDEX_TOPK);
 		s->mla.index_bitmaps = LmPassAlloc<uint32_t>(p, chunk * 2u * words);
 		s->mla.index_bitmap_words = (uint32_t)words;
 		s->mla.index_selected_local = LmPassAlloc<uint32_t>(p, rows * K3_INDEX_TOPK);
-		s->mla.index_selected = LmPassAlloc<uint32_t>(p, pass * K3_INDEX_TOPK);
 		s->mla.index_error = (LmFrameError *)LmPassAlloc<uint8_t>(p, sizeof(LmFrameError));
 		s->mla.index_context = s->index_context_device = LmPassAlloc<uint32_t>(p, s->dispatch->sequences);
 		s->mla.index_chunk = (uint32_t)chunk;
 		s->mla.zero_rows = LmPassAlloc<uint32_t>(p, pass);
 		s->mla.key_error = (LmKvAccessError *)LmPassAlloc<uint8_t>(p, sizeof(LmKvAccessError));
 		s->mla.sparse_rows = (uint32_t)(pass < K3_STREAMED_SPARSE_ROWS ? pass : K3_STREAMED_SPARSE_ROWS);
-		s->mla.sparse_query = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_MLA_KV_A_DIM);
-		s->mla.sparse_partials = LmPassAlloc<float>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
-		s->mla.sparse_latent = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_KV_LORA_RANK);
+		s->mla.sparse_query = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * K3_MLA_KV_A_DIM);
+		s->mla.sparse_partials = LmPassAlloc<float>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * LM_LATENT_SHARD_RECORD_FLOATS(K3_KV_LORA_RANK));
+		s->mla.sparse_latent = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_MLA_HEADS * K3_KV_LORA_RANK);
+		s->mla.sparse_slice = LmPassAlloc<uint16_t>(p, (uint64_t)s->mla.sparse_rows * K3_STREAMED_HEADS * K3_MLA_KV_A_DIM);
 	}
 	if ( p->allocation_count == LM_PASS_MAX_ALLOCATIONS || state_memory == 0 || window_memory == 0 || s->mla.older_context == 0 || s->mla.help_values == 0 )
 	{
@@ -275,6 +283,7 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 	memset(s, 0, sizeof(*s));
 	s->dispatch = dispatch;
 	s->module = module;
+	s->index_codec_fp8 = config->index_fp8 != 0u && dispatch->indexed != 0u ? 1u : 0u;
 	for (s->moe_members = K3_STREAMED_SHARDS; s->moe_members > 1u && 2u * s->moe_members > config->expert_slots; s->moe_members /= 2u)
 	{
 	}
@@ -342,9 +351,10 @@ static SparkStatus K3StreamedCreate(const SparkStageRunnerStreamedPrefillConfig 
 		K3StreamedDestroy(s);
 		return status;
 	}
-	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu, expert down projections of %u shards at once, partner=%s\n",
+	fprintf(stderr, "sparkpipe_k3: streamed prefill node_rows=%u window=%llu (%u x dense %llu x %u ranks, %u x experts %llu) engine=%llu, expert down projections of %u shards at once, index %s, partner=%s\n",
 		s->pass.node_rows, (unsigned long long)s->pass.region_bytes, s->pass.config.dense_buffers, (unsigned long long)s->pass.window.config.dense_capacity, K3_STREAMED_SHARDS,
-		s->pass.config.expert_slots, (unsigned long long)s->pass.window.config.expert_capacity, (unsigned long long)s->pass.engine_bytes, s->moe_members, config->partner_pack_path);
+		s->pass.config.expert_slots, (unsigned long long)s->pass.window.config.expert_capacity, (unsigned long long)s->pass.engine_bytes, s->moe_members,
+		s->mla.index_fp8 != 0u ? "FP8 keys and queries (ue8m0 scales)" : "BF16", config->partner_pack_path);
 	*out = s;
 	return SPARK_STATUS_OK;
 }
@@ -385,13 +395,39 @@ static SparkStatus K3StreamedKeys(K3Streamed *s, uint64_t keys)
 	if ( s->dispatch->indexed != 0u )
 	{
 		const uint64_t pages = (keys + K3GlobalKv::kPageSlots - 1u) / K3GlobalKv::kPageSlots;
+		const uint64_t score_floats = (uint64_t)s->mla.index_chunk * keys;
+		const uint64_t fp8_values = s->mla.index_fp8 != 0u ? (keys * K3_INDEX_DIM + 255u) & ~(uint64_t)255u : 0u;
+		const uint64_t fp8_bytes = s->mla.index_fp8 != 0u ? fp8_values + keys * sizeof(float) : 0u;
 		SparkGpuFree(s->key_pages);
+		SparkGpuFree(s->index_keys);
+		SparkGpuFree(s->index_fp8);
+		SparkGpuFree(s->index_scores);
 		s->key_pages = 0;
-		if ( SparkGpuMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
+		s->index_keys = 0;
+		s->index_fp8 = 0;
+		s->index_scores = 0;
+		s->mla.index_full = 0;
+		s->mla.index_keys_fp8 = 0;
+		s->mla.index_key_scales = 0;
+		s->mla.index_scores = 0;
+		s->mla.index_score_floats = 0u;
+		if ( SparkGpuMalloc((void **)&s->key_pages, (size_t)pages * sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+			SparkGpuMalloc((void **)&s->index_keys, (size_t)(keys * K3IndexKv::kSlotBytes)) != SPARK_GPU_SUCCESS ||
+			(fp8_bytes != 0u && SparkGpuMalloc((void **)&s->index_fp8, (size_t)fp8_bytes) != SPARK_GPU_SUCCESS) ||
+			SparkGpuMalloc((void **)&s->index_scores, (size_t)(score_floats * sizeof(float))) != SPARK_GPU_SUCCESS )
 		{
-			s->key_pages = 0;
+			fprintf(stderr, "sparkpipe_k3: streamed prefill index buffers for %llu keys (%llu bytes) do not fit\n", (unsigned long long)keys,
+				(unsigned long long)(keys * K3IndexKv::kSlotBytes + fp8_bytes + score_floats * sizeof(float)));
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
+		if ( fp8_bytes != 0u )
+		{
+			s->mla.index_keys_fp8 = s->index_fp8;
+			s->mla.index_key_scales = (float *)(s->index_fp8 + fp8_values);
+		}
+		s->mla.index_full = s->index_keys;
+		s->mla.index_scores = s->index_scores;
+		s->mla.index_score_floats = score_floats;
 		LM_LAUNCH((K3StreamedIdentityPagesKernel), (uint32_t)((pages + 255u) / 256u), 256u, 0, 0, s->key_pages, (uint32_t)pages);
 		if ( SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);

@@ -52,7 +52,7 @@ extern LmHostDim3 blockDim;
 extern LmHostDim3 gridDim;
 
 #define __shared__
-#define __align__(bytes) alignas(bytes)
+#define __align__(bytes) __attribute__((aligned(bytes)))
 #define LM_HOST_SHARED_BYTES 65536u
 
 #define LM_HOST_WARP_LANES 1u

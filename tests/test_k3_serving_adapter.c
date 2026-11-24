@@ -303,6 +303,39 @@ static SparkStatus TestK3ParseTaps(const char *text, SparkStageServingState *sta
 	return(status);
 }
 
+static SparkStatus TestK3ParseStreamed(const char *extra, SparkStageServingState *state)
+{
+	char text[512];
+	SparkJsonDocument doc;
+	SparkStatus status;
+	memset(&doc, 0, sizeof(doc));
+	memset(state, 0, sizeof(*state));
+	state->model = &K3StageServing;
+	(void)snprintf(text, sizeof(text), "{\"node_rows\":32768,\"dense_buffers\":3,\"expert_slots\":28,\"partner_pack\":\"/p.pack\",\"fabric_device\":\"f\","
+		"\"pair_device\":\"q\",\"gid_index\":3,\"pair_gid_index\":3,\"traffic_class\":106%s}", extra);
+	status = SparkJsonParseText(text, strlen(text), &doc);
+	if ( status == SPARK_STATUS_OK )
+		status = StageServingParseStreamed(state, &doc, SparkJsonGetRootToken(&doc));
+	SparkJsonDocumentDestroy(&doc);
+	free(state->streamed_partner_pack);
+	free(state->streamed_fabric_device);
+	free(state->streamed_pair_device);
+	return(status);
+}
+
+static int32_t TestK3StreamedIndexCodec(void)
+{
+	SparkStageServingState state;
+	int32_t failures = 0;
+	failures += TestK3Check(TestK3ParseStreamed("", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.index_fp8 == 0u &&
+		state.runner_config.streamed_prefill.node_rows == 32768u, "a streamed prefill without index_fp8 scores the index in BF16");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_fp8\":1", &state) == SPARK_STATUS_OK && state.runner_config.streamed_prefill.index_fp8 == 1u,
+		"index_fp8 1 asks for the publisher's FP8 index");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_fp8\":2", &state) == SPARK_STATUS_SCHEMA_ERROR, "index_fp8 is 0 or 1");
+	failures += TestK3Check(TestK3ParseStreamed(",\"index_bits\":8", &state) == SPARK_STATUS_SCHEMA_ERROR, "an unknown streamed prefill member is refused");
+	return(failures);
+}
+
 static int32_t TestK3VerifyPublishRefused(void)
 {
 	static const uint64_t positions[2] = { 40u, 41u };
@@ -552,6 +585,7 @@ int main(int argc, char **argv)
 	failures += TestK3Grouping();
 	failures += TestK3VerifyPublishRefused();
 	failures += TestK3ResetAfterStreamedFailure();
+	failures += TestK3StreamedIndexCodec();
 	failures += TestK3TapStream();
 	int index;
 	if ( argc == 1 )

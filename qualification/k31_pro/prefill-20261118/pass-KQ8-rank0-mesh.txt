@@ -1,0 +1,37 @@
+stream	launches	seconds
+13	394018	544.6
+7	2	0.0
+32	8	0.0
+
+preceding compute kernel	mesh kernel	launches	seconds
+K3StreamedConvTailKernelPt	SparkTpMeshHardwareArrivalKernel	4416	18.48
+K3StreamedConvTailKernelPt	SparkTpMeshHardwareDirectKernel	2208	18.32
+LmFusedResidualRmsNormKernel	SparkTpMeshHardwareArrivalKernel	15216	7.49
+LmPerHeadProjectSplitKernel	SparkTpMeshHardwareArrivalKernel	5405	4.95
+LmPerHeadProjectSplitKernel	SparkTpMeshHardwareDirectKernel	1081	3.63
+LmFusedResidualRmsNormKernel	SparkTpMeshHardwareDirectKernel	3072	3.15
+K3StreamedStateComposeKernel	SparkTpMeshHardwareArrivalKernel	4416	2.33
+LmFusedResidualRmsNormKernel	SparkTpMeshHardwareDirectHalfKernel	12096	1.26
+K3StreamedStateComposeKernel	SparkTpMeshHardwareDirectKernel	2208	1.00
+LmFusedResidualRmsNormKernel	LmPassSumKernel	6144	0.83
+LmKvShardGatherPackKernel	SparkTpMeshHardwareArrivalKernel	2568	0.77
+LmLayerNormKernel	SparkTpMeshHardwareArrivalKernel	1296	0.41
+LmPassHealthKernel	SparkTpMeshHardwareDirectKernel	14	0.41
+LmPassHealthKernel	SparkTpMeshHardwareArrivalKernel	14	0.41
+LmPerHeadProjectSplitKernel	LmPassSumKernel	2162	0.41
+LmPerHeadProjectSplitKernel	SparkTpMeshHardwareDirectHalfKernel	4324	0.39
+LmPerHeadProjectSplitKernel	SparkTpMeshScatterStageKernelPhmm	4324	0.36
+K3StreamedStateComposeKernel	SparkTpMeshHardwareDirectWideKernel	2208	0.32
+LmKvShardGatherPackKernel	SparkTpMeshHardwareDirectHalfKernel	2016	0.21
+LmKvShardGatherPackKernel	LmPassSumKernel	1056	0.14
+K3StreamedStateComposeKernel	LmPassSumKernel	4416	0.12
+LmFusedResidualRmsNormKernel	SparkTpMeshHardwarePublishWideKernelPhmm	12144	0.11
+LmLayerNormKernel	SparkTpMeshHardwareDirectHalfKernel	960	0.09
+LmLayerNormKernel	SparkTpMeshHardwareDirectKernel	288	0.07
+LmLayerNormKernel	LmPassSumKernel	576	0.06
+
+conv-tail arrival waits: 2208
+ms min 0.00 median 3.80 mean 8.29 p90 12.13 max 172.70
+mean wait by shard index within a layer: 0:62.7 1:3.7 2:3.3 3:4.0 4:4.9 5:4.0 6:3.9 7:4.8 8:4.9 9:3.7 10:7.0 11:6.2 12:4.8 13:5.5 14:5.1 15:4.1
+the GEMM right before: ms median 5.11 mean 5.33
+first 40 waits (ms): 4.9 3.2 2.5 7.5 1.1 7.1 2.3 10.4 2.5 10.8 7.0 2.7 7.9 2.0 6.6 1.3 129.5 2.2 1.4 2.6 1.2 1.4 1.4 4.0 14.5 1.0 12.7 1.9 3.6 1.4 1.5 4.1 130.6 2.3 2.7 4.1 3.2 1.9 3.8 0.4
