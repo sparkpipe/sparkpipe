@@ -200,7 +200,7 @@
       "rows": 16384,
       "context_tokens": 1048576,
       "kv_logical_pages": 262144,
-      "state_budget_bytes": 5368709120,
+      "state_budget_bytes": 34359738368,
       "taps": {
         "entries": "o36,o37,o38",
         "stream": "10.10.250.2:7711",
