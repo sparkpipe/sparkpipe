@@ -12,6 +12,7 @@
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/mx_gemm.cuh"
 #include "inference/kernels/index_score.cuh"
+#include "inference/kernels/skinny.cuh"
 #include "inference/kernels/topk_exact.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_kernels.cuh"
 #include "model-families/dsv41_flash/source/dsv41_flash_stage_kernels.cuh"
@@ -575,6 +576,115 @@ static void TestFusedMxKernels(uint32_t *rng)
 	}
 }
 
+static void TestSpreadOutputAndSplitSkinny(uint32_t *rng)
+{
+	const uint32_t row_cases[] = { 1u, 8u, 17u, 32u, 64u };
+	const uint32_t heads = 4u;
+	std::vector<float> hfreq(D41K_ROPE_PAIRS);
+	for ( uint32_t i = 0u; i < D41K_ROPE_PAIRS; ++i )
+		hfreq[i] = powf(10000.0f, -2.0f * (float)i / (float)(2u * D41K_ROPE_PAIRS));
+	float *dfreq = 0;
+	TEST_CHECK(cudaMalloc(&dfreq, hfreq.size() * 4u));
+	TEST_CHECK(cudaMemcpy(dfreq, hfreq.data(), hfreq.size() * 4u, cudaMemcpyHostToDevice));
+	for ( uint32_t rows : row_cases )
+	{
+		const uint64_t stride = (uint64_t)rows * heads * D41K_RECORD;
+		std::vector<float> hrec(stride), hsink(heads);
+		std::vector<uint32_t> hpos(rows);
+		for ( uint32_t r = 0u; r < rows; ++r )
+		{
+			hpos[r] = 50u + r * 3u;
+			for ( uint32_t h = 0u; h < heads; ++h )
+			{
+				float *rec = hrec.data() + ((uint64_t)r * heads + h) * D41K_RECORD;
+				rec[0] = ((float)(TestNext(rng) % 400u) / 100.0f) - 2.0f;
+				rec[1] = 0.5f + (float)(TestNext(rng) % 500u) / 100.0f;
+				for ( uint32_t e = 0u; e < D41K_LATENT; ++e )
+					rec[2u + e] = ((float)(TestNext(rng) & 0xffffu) / 32768.0f - 1.0f) * 3.0f;
+			}
+		}
+		for ( uint32_t h = 0u; h < heads; ++h )
+			hsink[h] = ((float)(TestNext(rng) % 400u) / 100.0f) - 2.0f;
+		float *drec = 0, *dsink = 0;
+		uint32_t *dpos = 0;
+		uint16_t *dref = 0, *dgot = 0;
+		const size_t out_n = (size_t)rows * heads * D41K_LATENT;
+		TEST_CHECK(cudaMalloc(&drec, stride * 4u)); TEST_CHECK(cudaMalloc(&dsink, heads * 4u));
+		TEST_CHECK(cudaMalloc(&dpos, rows * 4u));
+		TEST_CHECK(cudaMalloc(&dref, out_n * 2u)); TEST_CHECK(cudaMalloc(&dgot, out_n * 2u));
+		TEST_CHECK(cudaMemcpy(drec, hrec.data(), stride * 4u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemcpy(dsink, hsink.data(), heads * 4u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemcpy(dpos, hpos.data(), rows * 4u, cudaMemcpyHostToDevice));
+		for ( uint32_t qdq = 0u; qdq < 2u; ++qdq )
+		{
+			D41MergeSinkKernel<<<dim3(rows, heads), 256u>>>(drec, stride, 1u, heads, dsink, dref);
+			D41RopeRowsKernel<<<dim3(rows, heads), D41K_ROPE_PAIRS>>>(dref, heads, D41K_LATENT, D41K_LATENT - 2u * D41K_ROPE_PAIRS, dpos, 0, dfreq, 1u, 0);
+			if ( qdq != 0u )
+				TEST_CHECK((cudaError_t)SparkDsv41FlashLaunchFp8Qdq(0, dref, out_n));
+			D41SpreadOutputKernel<256u><<<dim3(rows, heads), 256u>>>(drec, stride, heads, dsink, dpos, dfreq, dgot, qdq);
+			TEST_CHECK(cudaDeviceSynchronize());
+			std::vector<uint16_t> r1(out_n), r2(out_n);
+			TEST_CHECK(cudaMemcpy(r1.data(), dref, out_n * 2u, cudaMemcpyDeviceToHost));
+			TEST_CHECK(cudaMemcpy(r2.data(), dgot, out_n * 2u, cudaMemcpyDeviceToHost));
+			if ( memcmp(r1.data(), r2.data(), out_n * 2u) != 0 )
+			{ fprintf(stderr, "MISMATCH D41SpreadOutputKernel rows=%u qdq=%u\n", rows, qdq); exit(1); }
+		}
+		cudaFree(drec); cudaFree(dsink); cudaFree(dpos); cudaFree(dref); cudaFree(dgot);
+	}
+	cudaFree(dfreq);
+	printf("PASS D41SpreadOutputKernel (rows=1..64, qdq=0/1): 0 diffs\n");
+
+	const uint32_t primary = 24u, backup = 48u, groups = primary + backup, in_dim = 512u, out_dim = 256u;
+	const uint64_t gbytes = (uint64_t)(in_dim / LM_SKINNY_CELL_TILE_K) * (out_dim / LM_SKINNY_CELL_NEURONS) * LM_SKINNY_CELL_ROWS * LM_SKINNY_CHUNK_BYTES;
+	std::vector<uint8_t> w1((size_t)primary * gbytes), w2((size_t)backup * gbytes);
+	for ( auto &b : w1 ) b = (uint8_t)(TestNext(rng) & 0xffu);
+	for ( auto &b : w2 ) b = (uint8_t)(TestNext(rng) & 0xffu);
+	for ( uint32_t i = 0u; i < primary * (in_dim / 32u) * (out_dim / 16u); ++i )
+		for ( uint32_t j = 0u; j < 16u; ++j )
+			w1[(size_t)i * LM_SKINNY_CELL_ROWS * 16u + 16u * 16u + j] = (uint8_t)(124u + (TestNext(rng) % 7u));
+	for ( uint32_t i = 0u; i < backup * (in_dim / 32u) * (out_dim / 16u); ++i )
+		for ( uint32_t j = 0u; j < 16u; ++j )
+			w2[(size_t)i * LM_SKINNY_CELL_ROWS * 16u + 16u * 16u + j] = (uint8_t)(124u + (TestNext(rng) % 7u));
+	uint8_t *dw1 = 0, *dw2 = 0;
+	TEST_CHECK(cudaMalloc(&dw1, w1.size())); TEST_CHECK(cudaMalloc(&dw2, w2.size()));
+	TEST_CHECK(cudaMemcpy(dw1, w1.data(), w1.size(), cudaMemcpyHostToDevice));
+	TEST_CHECK(cudaMemcpy(dw2, w2.data(), w2.size(), cudaMemcpyHostToDevice));
+	for ( uint32_t rows : { 1u, 8u, 32u } )
+	{
+		const uint32_t routes = rows * 6u;
+		std::vector<uint16_t> hact((size_t)rows * in_dim);
+		for ( auto &v : hact ) v = TestRandBf16(rng, 2.0f);
+		std::vector<uint32_t> cnt(groups, 0u), off(groups + 1u, 0u), src(routes, 0u);
+		for ( uint32_t r = 0u; r < routes; ++r ) cnt[TestNext(rng) % groups]++;
+		for ( uint32_t g = 0u; g < groups; ++g ) off[g + 1u] = off[g] + cnt[g];
+		for ( uint32_t r = 0u; r < routes; ++r ) src[r] = TestNext(rng) % rows;
+		uint16_t *dact = 0, *dref = 0, *dgot = 0;
+		uint32_t *doff = 0, *dsrc = 0;
+		TEST_CHECK(cudaMalloc(&dact, hact.size() * 2u));
+		TEST_CHECK(cudaMalloc(&dref, (size_t)routes * out_dim * 2u));
+		TEST_CHECK(cudaMalloc(&dgot, (size_t)routes * out_dim * 2u));
+		TEST_CHECK(cudaMalloc(&doff, off.size() * 4u)); TEST_CHECK(cudaMalloc(&dsrc, src.size() * 4u));
+		TEST_CHECK(cudaMemcpy(dact, hact.data(), hact.size() * 2u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemcpy(doff, off.data(), off.size() * 4u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemcpy(dsrc, src.data(), src.size() * 4u, cudaMemcpyHostToDevice));
+		TEST_CHECK(cudaMemset(dref, 0, (size_t)routes * out_dim * 2u));
+		TEST_CHECK(cudaMemset(dgot, 0, (size_t)routes * out_dim * 2u));
+		if ( LmSkinnyCellExperts(dw1, dact, dref, doff, dsrc, primary, routes, rows, 0u, in_dim, out_dim, LM_SKINNY_CELL_TILE_K, 0) != LM_LAUNCH_OK ||
+			LmSkinnyCellExperts(dw2, dact, dref, doff + primary, dsrc, backup, routes, rows, 0u, in_dim, out_dim, LM_SKINNY_CELL_TILE_K, 0) != LM_LAUNCH_OK ||
+			LmSkinnyCellExpertsSplit(dw1, dw2, primary, dact, dgot, doff, dsrc, groups, routes, rows, 0u, in_dim, out_dim, LM_SKINNY_CELL_TILE_K, 0) != LM_LAUNCH_OK )
+		{ fprintf(stderr, "LAUNCH FAIL LmSkinnyCellExpertsSplit rows=%u\n", rows); exit(1); }
+		TEST_CHECK(cudaDeviceSynchronize());
+		std::vector<uint16_t> r1((size_t)routes * out_dim), r2((size_t)routes * out_dim);
+		TEST_CHECK(cudaMemcpy(r1.data(), dref, r1.size() * 2u, cudaMemcpyDeviceToHost));
+		TEST_CHECK(cudaMemcpy(r2.data(), dgot, r2.size() * 2u, cudaMemcpyDeviceToHost));
+		if ( memcmp(r1.data(), r2.data(), r1.size() * 2u) != 0 )
+		{ fprintf(stderr, "MISMATCH LmSkinnyCellExpertsSplit rows=%u\n", rows); exit(1); }
+		cudaFree(dact); cudaFree(dref); cudaFree(dgot); cudaFree(doff); cudaFree(dsrc);
+	}
+	cudaFree(dw1); cudaFree(dw2);
+	printf("PASS LmSkinnyCellExpertsSplit (rows=1/8/32): 0 diffs\n");
+}
+
 int main(void)
 {
 	uint32_t rng = 0x51a7f00du;
@@ -584,6 +694,7 @@ int main(void)
 	TestIndexMxfp4Case<true>(96u, 1024u, 16u, 5u, true, &rng);
 	TestWholeBlockMaskAndDirectTopk(&rng);
 	TestFusedMxKernels(&rng);
+	TestSpreadOutputAndSplitSkinny(&rng);
 	printf("PASS dsv41 prefill opt parity\n");
 	return 0;
 }
