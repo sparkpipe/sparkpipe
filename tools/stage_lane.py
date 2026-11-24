@@ -95,8 +95,8 @@ def qwen38_27b_fp8_group(ranks: int, api_port: int) -> dict:
     }
 
 DSV41_FLASH = {
-    "swap_id": "deepseek-v4.1-flash",
-    "api_port": 8463,
+    "swap_id": "deepseek-v4.1-flash-tp16",
+    "api_port": 8488,
     "kv_label": "dsv41_flash_stage",
     "node_memory_bytes": 44 << 30,
     "tokenizer_json": "/srv/workspace/sparkpipe/tokenizers/deepseek-v4.1-flash/tokenizer.json",
@@ -131,8 +131,8 @@ DSV41_FLASH_TP4 = {
 
 DSV41_FLASH_ROWS16 = {
     **DSV41_FLASH,
-    "swap_id": "deepseek-v4.1-flash-rows16",
-    "api_port": 8488,
+    "swap_id": "deepseek-v4.1-flash",
+    "api_port": 8463,
     "kv_label": "dsv41_flash_rows16_stage",
     "node_memory_bytes": 64 << 30,
     "pack": "sparkdata/dsv41flash-1017.mxfp4.tp16p/packs/rank{rank}.spstage",
@@ -652,7 +652,7 @@ def swap_entry(name: str, model: dict, lane: int, expert_pool_cap_bytes: int | N
         "node_ready": f"{root}/lane.sh ready {{run_id}}",
         "node_stop": f"{root}/lane.sh stop",
         "api_start": (f"systemctl --user reset-failed {unit} 2>/dev/null; systemctl --user is-active -q {unit} || "
-                      f"systemd-run --user --unit={unit} -p MemoryMax=2G -p MemorySwapMax=0 --working-directory={api} "
+                      f"systemd-run --user --unit={unit} -p MemoryMax=4G -p MemorySwapMax=0 --working-directory={api} "
                       f"bash -c 'mkdir -p {HUB_LOG_DIR} && exec ./bin/sparkpipe_model_api --deployment model_resident.json --runtime-root {api}/runtime "
                       f"--port {model['api_port']} >> {HUB_LOG_DIR}/{name}-kv-api.log 2>&1' >/dev/null"),
         "api_stop": f"systemctl --user stop {unit} 2>/dev/null; systemctl --user reset-failed {unit} 2>/dev/null; true",

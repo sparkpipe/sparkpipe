@@ -732,6 +732,7 @@ MODEL_ALIASES: dict[str, str] = {
     "qwen38_27b": "qwen3.8-27b",
     "qwen38_27b_fp8": "qwen3.8-27b-fp8",
     "dsv41_flash": "deepseek-v4.1-flash",
+    "dsv41_flash_rows16": "deepseek-v4.1-flash",
     "qwen38_max": "qwen3.8-max",
     "qwen38_flash": "qwen3.8-flash",
     "gemma4_31b": "gemma-4-31b",
