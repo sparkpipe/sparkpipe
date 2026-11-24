@@ -2,11 +2,25 @@
 #include "runtime/device/nvrm/nvrm_image.h"
 #include "runtime/device/nvrm/nvrm_launch.h"
 
-static uint32_t ImageStepWords(const SparkNvrmStep *step, uint32_t index)
+static uint32_t ImageOrderWords(const SparkNvrmStep *steps, uint32_t index)
 {
-	const uint32_t order = index != 0u ? SPARK_NVRM_SEMAPHORE_METHOD_WORDS : 0u;
+	if ( index == 0u )
+		return(0u);
+	if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH )
+		return(SPARK_NVRM_WAIT_IDLE_WORDS);
+	return(SPARK_NVRM_SEMAPHORE_METHOD_WORDS);
+}
+
+static uint32_t ImageStepWords(const SparkNvrmStep *steps, uint32_t index)
+{
+	const SparkNvrmStep *step = &steps[index];
+	const uint32_t order = ImageOrderWords(steps,index);
 	if ( step->kind == SPARK_NVRM_STEP_LAUNCH )
-		return(step->chained != 0u ? SPARK_NVRM_LAUNCH_WORDS : order + SPARK_NVRM_LAUNCH_WORDS);
+	{
+		if ( step->chained == SPARK_NVRM_CHAIN_QMD )
+			return(0u);
+		return(step->chained == SPARK_NVRM_CHAIN_LATCH ? SPARK_NVRM_LAUNCH_WORDS : order + SPARK_NVRM_LAUNCH_WORDS);
+	}
 	if ( step->kind == SPARK_NVRM_STEP_AWAIT )
 		return(order + 2u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS);
 	return(order + 3u * SPARK_NVRM_SEMAPHORE_METHOD_WORDS);
@@ -15,22 +29,27 @@ static uint32_t ImageStepWords(const SparkNvrmStep *step, uint32_t index)
 void SparkNvrmImageChain(SparkNvrmStep *steps, uint32_t count, uint32_t segment)
 {
 	uint32_t index,run = 0u;
+	if ( count != 0u )
+		steps[0].chained = SPARK_NVRM_CHAIN_NONE;
 	for ( index = 1u; index < count; index++ )
-		if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index].dependent != 0u && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH &&
-			run + 1u < segment )
+	{
+		steps[index].chained = SPARK_NVRM_CHAIN_NONE;
+		if ( steps[index].kind == SPARK_NVRM_STEP_LAUNCH && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH && run + 1u < segment )
 		{
-			steps[index].chained = 1u;
+			steps[index].chained = steps[index].dependent != 0u && steps[index - 1u].chained != SPARK_NVRM_CHAIN_QMD ?
+				SPARK_NVRM_CHAIN_LATCH : SPARK_NVRM_CHAIN_QMD;
 			run++;
 		}
 		else
 			run = 0u;
+	}
 }
 
 uint32_t SparkNvrmImageWords(const SparkNvrmStep *steps, uint32_t count)
 {
 	uint32_t index,words = SPARK_NVRM_SEMAPHORE_METHOD_WORDS;
 	for ( index = 0u; index < count; index++ )
-		words += ImageStepWords(&steps[index],index);
+		words += ImageStepWords(steps,index);
 	return(words);
 }
 
@@ -46,8 +65,18 @@ void SparkNvrmImageWrite(uint32_t *words, uint64_t semaphore, uint64_t slots, Sp
 	for ( index = 0u; index < count; index++ )
 	{
 		SparkNvrmStep *step = &steps[index];
-		if ( index != 0u && step->chained == 0u )
-			at = ImageSemaphore(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+		if ( step->kind == SPARK_NVRM_STEP_LAUNCH && step->chained == SPARK_NVRM_CHAIN_QMD )
+			continue;
+		if ( index != 0u && step->chained == SPARK_NVRM_CHAIN_NONE )
+		{
+			if ( step->kind == SPARK_NVRM_STEP_LAUNCH && steps[index - 1u].kind == SPARK_NVRM_STEP_LAUNCH )
+			{
+				SparkNvrmWaitIdleWords(words + at);
+				at += SPARK_NVRM_WAIT_IDLE_WORDS;
+			}
+			else
+				at = ImageSemaphore(words,at,semaphore,index,SPARK_NVRM_SEMAPHORE_ACQUIRE);
+		}
 		if ( step->kind == SPARK_NVRM_STEP_LAUNCH )
 		{
 			SparkNvrmLaunchWords(words + at,slots + step->slot);

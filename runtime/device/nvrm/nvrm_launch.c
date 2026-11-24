@@ -207,6 +207,7 @@ static void LaunchShape(const SparkNvrmGpu *gpu, const SparkNvrmProgram *program
 	shape->release_payload = request->release_payload;
 	shape->latch_arrive = request->latch_arrive;
 	shape->latch_wait = request->latch_wait;
+	shape->next_qmd_address = request->next_qmd_address;
 }
 
 static SparkStatus LaunchRefuse(const char *owner, const char *text)
@@ -385,7 +386,9 @@ SparkStatus SparkNvrmLatchRangeTake(uint32_t count, uint32_t *base, const char *
 		*base = (uint32_t)start;
 	}
 	pthread_mutex_unlock(&latch_ranges_lock);
-	return(status);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return(SPARK_STATUS_OK);
 }
 
 void SparkNvrmLatchRangeGive(uint32_t base, uint32_t count)

@@ -94,6 +94,7 @@ typedef struct SparkNvrmMemory
 
 #define SPARK_NVRM_SEMAPHORE_METHOD_WORDS 6u
 #define SPARK_NVRM_SEMAPHORE_PAYLOAD_WORD 3u
+#define SPARK_NVRM_WAIT_IDLE_WORDS 2u
 #define SPARK_NVRM_SEGMENT_WORDS_MAX ((1u << 21) - 1u)
 
 typedef enum SparkNvrmSemaphoreOperation
@@ -245,6 +246,7 @@ void SparkNvrmGpuUnmap(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes, uint
 SparkStatus SparkNvrmShareExport(SparkNvrmGpu *gpu, uint32_t handle, int *fd, const char *owner);
 SparkStatus SparkNvrmShareImport(SparkNvrmGpu *gpu, int fd, uint32_t *handle, uint64_t *bytes, const char *owner);
 uint32_t SparkNvrmMethodHeader(uint32_t subchannel, uint32_t method, uint32_t count);
+void SparkNvrmWaitIdleWords(uint32_t *words);
 void SparkNvrmSemaphoreWords(uint32_t *words, uint64_t address, uint64_t value, SparkNvrmSemaphoreOperation operation);
 SparkStatus SparkNvrmPush(SparkNvrmChannel *channel, uint32_t subchannel, uint32_t method, const uint32_t *values, uint32_t count, const char *owner);
 SparkStatus SparkNvrmSubmit(SparkNvrmGpu *gpu, SparkNvrmChannel *channel, const char *owner);

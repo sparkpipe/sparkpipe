@@ -1,0 +1,2 @@
++58
+NVRM program QMD-to-QMD chaining, compute WAIT_FOR_IDLE segment heads, and L1 membar with task chasing

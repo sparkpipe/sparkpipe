@@ -1587,7 +1587,9 @@ static SparkStatus NvrmImageDescribe(NvrmImage *image, const SparkDeviceProgram 
 	request.release_address = image->memory.address;
 	request.release_payload = (uint64_t)node + 1u;
 	request.latch_arrive = image->latch + node;
-	request.latch_wait = step->chained != 0u ? image->latch + node - 1u : 0u;
+	request.latch_wait = step->chained == SPARK_NVRM_CHAIN_LATCH ? image->latch + node - 1u : 0u;
+	if ( node + 1u < image->step_count && image->steps[node + 1u].chained == SPARK_NVRM_CHAIN_QMD )
+		request.next_qmd_address = image->memory.address + image->slots + image->steps[node + 1u].slot;
 	return(SparkNvrmLaunchDescribe(&nvrm_gpu,&compiled->library->program,&request,program->name));
 }
 
