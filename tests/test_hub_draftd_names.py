@@ -90,9 +90,9 @@ def record_server():
     roots, units = set(), set()
     for record_id in ENGINE_LANES:
         _, environment = lane_config.draftd_environment(record_id)
-        assert environment["DRAFTD_SERVER"] == "block_draftd" and environment["DRAFTD_ENGINE_LANE"] == record_id, environment
-        assert lane_config.served_unit(environment) == environment["DRAFTD_UNIT"]
-        assert lane_config.served_unit(dict(environment, DRAFTD_SERVER="engine")) == environment["DRAFTD_ENGINE_UNIT"]
+        assert environment["DRAFTD_SERVER"] == "engine" and environment["DRAFTD_ENGINE_LANE"] == record_id, environment
+        assert lane_config.served_unit(environment) == environment["DRAFTD_ENGINE_UNIT"]
+        assert lane_config.served_unit(dict(environment, DRAFTD_SERVER="block_draftd")) == environment["DRAFTD_UNIT"]
         assert environment["DRAFTD_WEIGHTD_UNIT"] == "sparkpipe-weightd-hub", environment
         roots.add(environment["DRAFTD_ENGINE_ROOT"])
         units.add(environment["DRAFTD_ENGINE_UNIT"])
