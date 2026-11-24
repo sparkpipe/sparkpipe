@@ -343,148 +343,95 @@ static __device__ __forceinline__ void GlmProjectionSource(uint32_t column, uint
 	*offset = local * GLM_GRANULE + column % GLM_GRANULE;
 }
 
+template<class S, uint32_t TOTAL, uint32_t NORM, bool CONCAT>
+static __device__ __forceinline__ void GlmProjectionNormBody(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ norm,
+	uint16_t *__restrict__ out_row, uint16_t *__restrict__ query_input_row, float *__restrict__ buf, float *__restrict__ reduction,
+	uint32_t row, uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t col_offset, float epsilon)
+{
+	uint32_t rank, offset, index;
+	float total = 0.0f;
+	const bool vec_ok = ((width & 7u) == 0u) && ((col_offset & 7u) == 0u) && ((TOTAL & 7u) == 0u) && ((NORM & 7u) == 0u) &&
+		LmIsAligned16(gathered) && LmIsAligned16(norm) && LmIsAligned16(out_row) && (!CONCAT || LmIsAligned16(query_input_row));
+	if ( vec_ok )
+	{
+		for ( index = threadIdx.x * 8u; index < TOTAL; index += GLM_THREADS * 8u )
+		{
+			float vals[8];
+			GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(gathered + ((uint64_t)rank * rows + row) * width + col_offset + offset), vals);
+			LmStoreFloat8(buf + index, vals);
+		}
+		__syncthreads();
+		for ( index = threadIdx.x; index < NORM; index += GLM_THREADS )
+			total += buf[index] * buf[index];
+		const float scale = SparkMathRmsScale(LmBlockSumOnce<GLM_THREADS>(total, reduction), (float)NORM, epsilon);
+		for ( index = threadIdx.x * 8u; index < TOTAL; index += GLM_THREADS * 8u )
+		{
+			float vals[8], gain[8], out_f[8];
+			LmLoadFloat8(buf + index, vals);
+			if ( index < NORM )
+			{
+				LmLoadWeight8(norm, index, gain);
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+					out_f[k] = S::kNormRoundFirst ? SparkMathNormGainRounded(vals[k] * scale, gain[k]) : vals[k] * scale * gain[k];
+			}
+			const uint4 out_v = LmPackUint4FloatToBf16(index < NORM ? out_f : vals);
+			*(uint4 *)(out_row + index) = out_v;
+			if constexpr ( CONCAT )
+			{
+				*(uint4 *)(query_input_row + index) = out_v;
+				*(uint4 *)(query_input_row + TOTAL + index) = LmPackUint4FloatToBf16(vals);
+			}
+		}
+		return;
+	}
+	for ( index = threadIdx.x; index < TOTAL; index += GLM_THREADS )
+	{
+		GlmProjectionSource(index, TOTAL, tp_degree, &rank, &offset);
+		const float value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + col_offset + offset]);
+		buf[index] = value;
+		if ( index < NORM )
+			total += value * value;
+	}
+	const float scale = SparkMathRmsScale(LmBlockSumOnce<GLM_THREADS>(total, reduction), (float)NORM, epsilon);
+	for ( index = threadIdx.x; index < TOTAL; index += GLM_THREADS )
+	{
+		const uint16_t out = index < NORM ? LmFloatToBf16(S::kNormRoundFirst ?
+			SparkMathNormGainRounded(buf[index] * scale, LmScalarToFloat(norm[index])) : buf[index] * scale * LmScalarToFloat(norm[index])) :
+			LmFloatToBf16(buf[index]);
+		out_row[index] = out;
+		if constexpr ( CONCAT )
+		{
+			query_input_row[index] = out;
+			query_input_row[TOTAL + index] = LmFloatToBf16(buf[index]);
+		}
+	}
+}
+
 template<class S>
 static __global__ __launch_bounds__(GLM_THREADS, 1) void GlmProjectionNormKernel(const uint16_t *__restrict__ gathered, const uint16_t *__restrict__ query_norm,
 	const uint16_t *__restrict__ latent_norm, const uint32_t *__restrict__ positions, uint16_t *__restrict__ query_out, uint16_t *__restrict__ slot_out,
 	uint32_t rows, uint32_t tp_degree, uint32_t width, uint32_t query_max, uint32_t rope_dimension, float theta, float epsilon,
 	uint16_t *__restrict__ query_input_out, const float *__restrict__ rope_table)
 {
-	__shared__ __align__(16) float query[S::kQueryA];
-	__shared__ __align__(16) float latent[S::kSlot];
-	__shared__ float reduction[GLM_THREADS / LM_WARP_LANES];
+	__shared__ __align__(16) float buf[S::kQueryA > S::kSlot ? S::kQueryA : S::kSlot];
+	__shared__ float reduction[LmBlockWarps<GLM_THREADS>()];
 	const uint32_t row = blockIdx.x, half = rope_dimension / 2u;
-	uint16_t *query_row = query_out + (uint64_t)row * S::kQueryA;
-	uint32_t rank, offset, index;
-	float total = 0.0f, scale, value, position;
 	LmDependentRelease();
 	if ( blockIdx.y == 0u )
 	{
-		const bool vec_ok = ((width & 7u) == 0u) && ((S::kQueryA & 7u) == 0u) && LmIsAligned16(gathered) && LmIsAligned16(query_norm) &&
-			LmIsAligned16(query_out) && (!S::kQueryConcat || LmIsAligned16(query_input_out));
-		if ( vec_ok )
-		{
-			for ( index = threadIdx.x * 8u; index < S::kQueryA; index += GLM_THREADS * 8u )
-			{
-				uint16_t bits[8];
-				float vals[8];
-				GlmProjectionSource(index, S::kQueryA, tp_degree, &rank, &offset);
-				LmUnpackUint4Bf16(*(const uint4 *)(gathered + ((uint64_t)rank * rows + row) * width + offset), bits);
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k )
-					vals[k] = LmBf16ToFloat(bits[k]);
-				LmStoreFloat8(query + index, vals);
-			}
-			__syncthreads();
-			for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-			{
-				value = query[index];
-				total += value * value;
-			}
-			total = LmBlockSum<GLM_THREADS>(total, reduction);
-			scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
-			for ( index = threadIdx.x * 8u; index < S::kQueryA; index += GLM_THREADS * 8u )
-			{
-				float vals[8], gain[8], out_f[8];
-				LmLoadFloat8(query + index, vals);
-				LmLoadWeight8(query_norm, index, gain);
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k )
-					out_f[k] = S::kNormRoundFirst ? SparkMathNormGainRounded(vals[k] * scale, gain[k]) : vals[k] * scale * gain[k];
-				const uint4 out_v = LmPackUint4FloatToBf16(out_f);
-				*(uint4 *)(query_row + index) = out_v;
-				if constexpr ( S::kQueryConcat )
-				{
-					*(uint4 *)(query_input_out + (uint64_t)row * S::kQueryInput + index) = out_v;
-					*(uint4 *)(query_input_out + (uint64_t)row * S::kQueryInput + S::kQueryA + index) = LmPackUint4FloatToBf16(vals);
-				}
-			}
-			return;
-		}
-		for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-		{
-			GlmProjectionSource(index, S::kQueryA, tp_degree, &rank, &offset);
-			value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + offset]);
-			query[index] = value;
-			total += value * value;
-		}
-		total = LmBlockSum<GLM_THREADS>(total, reduction);
-		scale = SparkMathRmsScale(total, (float)S::kQueryA, epsilon);
-		for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-			query_row[index] = LmFloatToBf16(S::kNormRoundFirst ? SparkMathNormGainRounded(query[index] * scale, LmScalarToFloat(query_norm[index])) :
-				query[index] * scale * LmScalarToFloat(query_norm[index]));
-		if constexpr ( S::kQueryConcat )
-			for ( index = threadIdx.x; index < S::kQueryA; index += GLM_THREADS )
-			{
-				query_input_out[(uint64_t)row * S::kQueryInput + index] = query_row[index];
-				query_input_out[(uint64_t)row * S::kQueryInput + S::kQueryA + index] = LmFloatToBf16(query[index]);
-			}
+		GlmProjectionNormBody<S, S::kQueryA, S::kQueryA, S::kQueryConcat>(gathered, query_norm, query_out + (uint64_t)row * S::kQueryA,
+			query_input_out + (uint64_t)row * S::kQueryInput, buf, reduction, row, rows, tp_degree, width, 0u, epsilon);
 		return;
 	}
-	const bool slot_vec_ok = ((width & 7u) == 0u) && ((query_max & 7u) == 0u) && ((S::kSlot & 7u) == 0u) && ((S::kLatent & 7u) == 0u) &&
-		LmIsAligned16(gathered) && LmIsAligned16(latent_norm) && LmIsAligned16(slot_out);
-	if ( slot_vec_ok )
-	{
-		for ( index = threadIdx.x * 8u; index < S::kSlot; index += GLM_THREADS * 8u )
-		{
-			uint16_t bits[8];
-			float vals[8];
-			GlmProjectionSource(index, S::kSlot, tp_degree, &rank, &offset);
-			LmUnpackUint4Bf16(*(const uint4 *)(gathered + ((uint64_t)rank * rows + row) * width + query_max + offset), bits);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				vals[k] = LmBf16ToFloat(bits[k]);
-			LmStoreFloat8(latent + index, vals);
-		}
-		__syncthreads();
-		for ( index = threadIdx.x; index < S::kLatent; index += GLM_THREADS )
-		{
-			value = latent[index];
-			total += value * value;
-		}
-		total = LmBlockSum<GLM_THREADS>(total, reduction);
-		scale = SparkMathRmsScale(total, (float)S::kLatent, epsilon);
-		for ( index = threadIdx.x * 8u; index < S::kSlot; index += GLM_THREADS * 8u )
-		{
-			float vals[8];
-			LmLoadFloat8(latent + index, vals);
-			if ( index < S::kLatent )
-			{
-				float gain[8], out_f[8];
-				LmLoadWeight8(latent_norm, index, gain);
-				#pragma unroll
-				for ( uint32_t k = 0u; k < 8u; ++k )
-					out_f[k] = S::kNormRoundFirst ? SparkMathNormGainRounded(vals[k] * scale, gain[k]) : vals[k] * scale * gain[k];
-				*(uint4 *)(slot_out + (uint64_t)row * S::kSlot + index) = LmPackUint4FloatToBf16(out_f);
-			}
-			else
-				*(uint4 *)(slot_out + (uint64_t)row * S::kSlot + index) = LmPackUint4FloatToBf16(vals);
-		}
-	}
-	else
-	{
-		for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
-		{
-			GlmProjectionSource(index, S::kSlot, tp_degree, &rank, &offset);
-			value = LmBf16ToFloat(gathered[((uint64_t)rank * rows + row) * width + query_max + offset]);
-			latent[index] = value;
-			if ( index < S::kLatent )
-				total += value * value;
-		}
-		total = LmBlockSum<GLM_THREADS>(total, reduction);
-		scale = SparkMathRmsScale(total, (float)S::kLatent, epsilon);
-		for ( index = threadIdx.x; index < S::kSlot; index += GLM_THREADS )
-			slot_out[(uint64_t)row * S::kSlot + index] = index < S::kLatent ? LmFloatToBf16(S::kNormRoundFirst ?
-				SparkMathNormGainRounded(latent[index] * scale, LmScalarToFloat(latent_norm[index])) : latent[index] * scale * LmScalarToFloat(latent_norm[index])) :
-				LmFloatToBf16(latent[index]);
-	}
+	GlmProjectionNormBody<S, S::kSlot, S::kLatent, false>(gathered, latent_norm, slot_out + (uint64_t)row * S::kSlot, (uint16_t *)0,
+		buf, reduction, row, rows, tp_degree, width, query_max, epsilon);
 	__syncthreads();
-	position = (float)positions[row];
-	for ( index = threadIdx.x; index < half; index += GLM_THREADS )
-		if constexpr ( S::kRopeTable )
-			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half, position * rope_table[index]);
-		else
-			LmRopeRotate<LM_ROPE_INTERLEAVED,S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index, half,
-				position * __powf(theta, -2.0f * (float)index / (float)rope_dimension));
+	const float position = (float)positions[row];
+	for ( uint32_t index = threadIdx.x; index < half; index += GLM_THREADS )
+		LmRopeRotate<LM_ROPE_INTERLEAVED, S::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>(slot_out, (uint64_t)row * S::kSlot + S::kLatent, index,
+			half, position * (S::kRopeTable ? rope_table[index] : __powf(theta, -2.0f * (float)index / (float)rope_dimension)));
 }
 
 static __global__ void GlmWaveContextKernel(const uint32_t *slots, const uint32_t *positions, uint32_t *context_lengths, uint32_t rows)
@@ -534,38 +481,6 @@ static __global__ void GlmPadRowsKernel(const uint32_t *positions, const uint32_
 		padded_positions[row] = positions[row < rows ? row : rows - 1u];
 		padded_slots[row] = slots[row < rows ? row : rows - 1u];
 	}
-}
-
-static __global__ void GlmRowsGatherKernel(const uint32_t *order, const uint16_t *source, uint16_t *target, uint32_t width)
-{
-	const uint64_t from = (uint64_t)order[blockIdx.x] * width, to = (uint64_t)blockIdx.x * width;
-	if ( ((width & 7u) == 0u) && LmIsAligned16(source) && LmIsAligned16(target) )
-	{
-		const uint32_t vectors = width >> 3u;
-		const uint4 *src = (const uint4 *)(source + from);
-		uint4 *dst = (uint4 *)(target + to);
-		for ( uint32_t index = threadIdx.x; index < vectors; index += blockDim.x )
-			dst[index] = src[index];
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < width; index += blockDim.x )
-		target[to + index] = source[from + index];
-}
-
-static __global__ void GlmRowsScatterKernel(const uint32_t *order, const uint16_t *source, uint16_t *target, uint32_t width)
-{
-	const uint64_t from = (uint64_t)blockIdx.x * width, to = (uint64_t)order[blockIdx.x] * width;
-	if ( ((width & 7u) == 0u) && LmIsAligned16(source) && LmIsAligned16(target) )
-	{
-		const uint32_t vectors = width >> 3u;
-		const uint4 *src = (const uint4 *)(source + from);
-		uint4 *dst = (uint4 *)(target + to);
-		for ( uint32_t index = threadIdx.x; index < vectors; index += blockDim.x )
-			dst[index] = src[index];
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < width; index += blockDim.x )
-		target[to + index] = source[from + index];
 }
 
 template<class Format>
@@ -2252,7 +2167,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			hidden = state->hidden;
 			positions = state->positions + wave->first;
 			slots = state->wave_slots + wave->first;
-			LM_LAUNCH((GlmRowsGatherKernel), rows, GLM_THREADS, 0, stream, state->order + wave->first, step->hidden_bf16, hidden, S::kHidden);
+			LM_LAUNCH((LmGatherRowsKernel<GLM_THREADS>), dim3(1u, rows), GLM_THREADS, 0, stream, step->hidden_bf16, state->order + wave->first, hidden, rows, S::kHidden);
 		}
 		else
 		{
@@ -2318,7 +2233,7 @@ struct GlmModel : CudaStage<GlmModel<G>>
 			LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM_THREADS,uint16_t,S::kNormRoundFirst>), rows, GLM_THREADS, (S::kHidden + 8u) * sizeof(float), stream,
 				hidden, state->residual, state->final_norm, 0, state->normed, S::kHidden, S::kHidden, S::kRmsEpsilon);
 		if ( wave->ordered != 0u )
-			LM_LAUNCH((GlmRowsScatterKernel), rows, GLM_THREADS, 0, stream, state->order + wave->first, state->normed, step->hidden_bf16, S::kHidden);
+			LM_LAUNCH((LmScatterRowsKernel<GLM_THREADS>), dim3(1u, rows), GLM_THREADS, 0, stream, state->normed, state->order + wave->first, step->hidden_bf16, rows, S::kHidden);
 		else if ( SparkGpuMemcpyAsync(hidden, state->normed, (size_t)rows * S::kHidden * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )

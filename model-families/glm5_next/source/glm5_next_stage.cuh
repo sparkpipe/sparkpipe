@@ -334,25 +334,6 @@ static int32_t Glm5NextLaunched(void)
 	return LM_LAUNCH_OK;
 }
 
-template<uint32_t THREADS>
-static __device__ __forceinline__ void Glm5NextCopySlice(const uint16_t *__restrict__ source, uint16_t *__restrict__ destination, uint32_t count)
-{
-	if ( ((count & 7u) == 0u) && LmIsAligned16(source) && LmIsAligned16(destination) )
-	{
-		for ( uint32_t index = threadIdx.x * 8u; index < count; index += THREADS * 8u )
-			*(uint4 *)(destination + index) = *(const uint4 *)(source + index);
-		return;
-	}
-	if ( ((count & 3u) == 0u) && (((uintptr_t)source & 7u) == 0u) && (((uintptr_t)destination & 7u) == 0u) )
-	{
-		for ( uint32_t index = threadIdx.x * 4u; index < count; index += THREADS * 4u )
-			*(uint2 *)(destination + index) = *(const uint2 *)(source + index);
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < count; index += THREADS )
-		destination[index] = source[index];
-}
-
 template<uint32_t DIM, uint32_t KPOOL>
 static __device__ __forceinline__ float Glm5NextPoolKeyElement(const uint16_t *const *slots, const float *__restrict__ compress_ape_f32, uint32_t index)
 {
@@ -390,28 +371,9 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1) void Glm5NextIndexPackKernel(const uint16_t *__restrict__ key_bf16,
 	const uint16_t *__restrict__ gate_bf16, uint16_t *__restrict__ packed_bf16, uint32_t dimension)
 {
-	const uint32_t row = blockIdx.x;
-	const uint16_t *key_row = key_bf16 + (uint64_t)row * dimension;
-	const uint16_t *gate_row = gate_bf16 + (uint64_t)row * dimension;
-	uint16_t *packed_row = packed_bf16 + (uint64_t)row * (2u * dimension + 1u);
-	if ( ((dimension & 7u) == 0u) && LmIsAligned16(key_row) && LmIsAligned16(gate_row) && LmIsAligned16(packed_row) )
-	{
-		for ( uint32_t index = threadIdx.x * 8u; index < dimension; index += THREADS * 8u )
-		{
-			const uint4 key_vec = *(const uint4 *)(key_row + index);
-			const uint4 gate_vec = *(const uint4 *)(gate_row + index);
-			*(uint4 *)(packed_row + index) = key_vec;
-			*(uint4 *)(packed_row + dimension + index) = gate_vec;
-		}
-	}
-	else
-	{
-		for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
-		{
-			packed_row[index] = key_row[index];
-			packed_row[dimension + index] = gate_row[index];
-		}
-	}
+	uint16_t *packed_row = packed_bf16 + (uint64_t)blockIdx.x * (2u * dimension + 1u);
+	LmCopySliceBf16<THREADS>(key_bf16 + (uint64_t)blockIdx.x * dimension, packed_row, dimension);
+	LmCopySliceBf16<THREADS>(gate_bf16 + (uint64_t)blockIdx.x * dimension, packed_row + dimension, dimension);
 	if ( threadIdx.x == 0u )
 		packed_row[2u * dimension] = 0x3F80u;
 }
@@ -617,58 +579,6 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolExpandKernel(const uin
 	}
 }
 
-template<uint32_t THREADS, uint32_t LOW_RANK>
-__global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitDecayGateKernel(const uint16_t *__restrict__ fused_bf16,
-	uint16_t *__restrict__ decay_latent_bf16, uint16_t *__restrict__ gate_latent_bf16, uint32_t rows)
-{
-	const uint32_t row = blockIdx.x;
-	if ( row >= rows )
-		return;
-	const uint16_t *fused_row = fused_bf16 + (uint64_t)row * 2u * LOW_RANK;
-	uint16_t *decay_row = decay_latent_bf16 + (uint64_t)row * LOW_RANK;
-	uint16_t *gate_row = gate_latent_bf16 + (uint64_t)row * LOW_RANK;
-	if ( ((LOW_RANK & 7u) == 0u) && LmIsAligned16(fused_bf16) && LmIsAligned16(decay_latent_bf16) && LmIsAligned16(gate_latent_bf16) )
-	{
-		for ( uint32_t index = threadIdx.x * 8u; index < LOW_RANK; index += THREADS * 8u )
-		{
-			const uint4 decay_vec = *(const uint4 *)(fused_row + index);
-			const uint4 gate_vec = *(const uint4 *)(fused_row + LOW_RANK + index);
-			*(uint4 *)(decay_row + index) = decay_vec;
-			*(uint4 *)(gate_row + index) = gate_vec;
-		}
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < LOW_RANK; index += THREADS )
-	{
-		decay_row[index] = fused_row[index];
-		gate_row[index] = fused_row[LOW_RANK + index];
-	}
-}
-
-template<uint32_t THREADS>
-__global__ __launch_bounds__(THREADS, 1) void Glm5NextSplitQkvbKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16,
-	uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim,
-	uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
-{
-	const uint32_t row = blockIdx.x;
-	if ( row >= rows )
-		return;
-	const uint16_t *qkvb_row = qkvb_bf16 + (uint64_t)row * fused_rows;
-	Glm5NextCopySlice<THREADS>(qkvb_row, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
-	Glm5NextCopySlice<THREADS>(qkvb_row + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
-	Glm5NextCopySlice<THREADS>(qkvb_row + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
-	Glm5NextCopySlice<THREADS>(qkvb_row + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
-}
-
-__global__ static void Glm5NextDenseOffsetsKernel(uint32_t *offsets, uint32_t rows)
-{
-	if ( threadIdx.x == 0u )
-	{
-		offsets[0] = 0u;
-		offsets[1] = rows;
-	}
-}
-
 struct Glm5NextHcPolicy
 {
 	static constexpr float kNormEpsilon = G5N_EPS;
@@ -792,10 +702,10 @@ static int32_t Glm5NextKda(const Glm5NextLayerBuffers *b, uint32_t rows, uint32_
 	}
 	if ( status != LM_LAUNCH_OK )
 		return status;
-	LM_LAUNCH((Glm5NextSplitQkvbKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_qkvb_bf16, b->kda_q_input, b->kda_k_input,
+	LM_LAUNCH((LmSplitQkvbKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_qkvb_bf16, b->kda_q_input, b->kda_k_input,
 		b->kda_v_input, b->kda_beta_logit, rows, rank_qk, rank_v, heads, fused);
-	LM_LAUNCH((Glm5NextSplitDecayGateKernel<G5N_THREADS, G5N_KDA_LOW_RANK>), rows, G5N_THREADS, 0, stream, b->fused_decay_gate_bf16,
-		b->kda_decay_latent_bf16, b->kda_gate_latent_bf16, rows);
+	LM_LAUNCH((LmSplit2RowsKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->fused_decay_gate_bf16,
+		b->kda_decay_latent_bf16, b->kda_gate_latent_bf16, rows, G5N_KDA_LOW_RANK);
 	status = Glm5NextLinear(b, b->kda_decay_latent_bf16, w->kda_decay_up, b->kda_decay_logit_bf16, rows, G5N_KDA_LOW_RANK, rank_qk, sms, stream);
 	if ( status == LM_LAUNCH_OK )
 		status = Glm5NextLinear(b, b->kda_gate_latent_bf16, w->kda_gate_up, b->kda_gate_bf16, rows, G5N_KDA_LOW_RANK, rank_v, sms, stream);
