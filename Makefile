@@ -792,6 +792,7 @@ PYTHON_TESTS := \
 	tests/test_dsv41_tap_paths.py \
 	tests/test_dsv41_hc_mix.py \
 	tests/test_dsv41_flash_fused_exact.py \
+	tests/test_dsv41_prefill_opt.py \
 	tests/test_skinny_rows.py \
 	tests/test_dsv41_flash_layer0_anchor.py \
 	tests/test_dsv41_flash_pack_contract.py \
