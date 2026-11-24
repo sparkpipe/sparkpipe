@@ -1,0 +1,2 @@
++349
+Shared MoE, GEMM, skinny grouped dynamic-count, and bit-exact per-head projection chain optimizations (PR #2135) plus PR #1943/#1947 delta.
