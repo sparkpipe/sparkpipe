@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RAIS v1.0 · 루프라인 기준 추론 성능 지표 · SparkPipe</title>
+<meta name="description" content="RAIS v1.0(Roofline-Anchored Inference Score)은 모든 추론 워크로드를 연산·메모리 대역폭·네트워크 집합통신의 물리적 하한에 고정하여, 4개 축 12개 세부 지표와 4개 이진 정확성 게이트로 엔진을 공정하게 비교합니다.">
+<meta name="theme-color" content="#0a0c10">
+<link rel="canonical" href="https://sparkpipe.ai/rais-ko.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SparkPipe">
+<meta property="og:title" content="RAIS v1.0 · 루프라인 기준 추론 성능 지표 · SparkPipe">
+<meta property="og:description" content="연산·메모리·네트워크 물리적 하한을 기준으로 추론 엔진의 0–100 효율을 산출하고 추측 디코딩과 이진 정확성 게이트를 함께 검증하는 공개 벤치마크 표준.">
+<meta property="og:url" content="https://sparkpipe.ai/rais-ko.html">
+<meta property="og:image" content="https://sparkpipe.ai/apple-touch-icon.png">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:locale:alternate" content="en_US">
+<link rel="alternate" hreflang="en" href="https://sparkpipe.ai/rais.html">
+<link rel="alternate" hreflang="ko" href="https://sparkpipe.ai/rais-ko.html">
+<link rel="alternate" hreflang="x-default" href="https://sparkpipe.ai/rais.html">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&family=Noto+Sans+KR:wght@400..800&display=swap">
+<link rel="stylesheet" href="site.css?v=91e4a0e1">
+<style>
+h1 { max-width: 16em; }
+.eq-box { border: 1px solid var(--screen-rule); border-radius: 6px; background: var(--screen); padding: 18px 20px; display: grid; gap: 12px; font: 500 13.5px/1.6 var(--mono); color: var(--screen-ink); }
+.eq-line { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px 18px; padding-top: 10px; border-top: 1px solid var(--screen-rule); }
+.eq-line:first-child { padding-top: 0; border-top: 0; }
+.eq-line b { color: var(--screen-signal); font-weight: 600; }
+.eq-line span { color: var(--screen-dim); font-size: 12px; }
+.roof-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.roof-card { border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); padding: 18px; display: grid; gap: 10px; align-content: start; }
+.roof-card .label { color: var(--signal); }
+.roof-card .eq { font: 600 13px/1.55 var(--mono); color: var(--ink); background: var(--screen); border: 1px solid var(--screen-rule); border-radius: 4px; padding: 10px 12px; overflow-x: auto; }
+.roof-card p { font-size: 14.5px; color: var(--steel); line-height: 1.6; }
+.rais-toolbar { display: flex; flex-wrap: wrap; gap: 14px 20px; align-items: end; padding: 18px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.rais-control { display: grid; gap: 6px; }
+.rais-control select { min-height: 38px; padding: 0 12px; border: 1px solid var(--rule-strong); border-radius: 3px; background: var(--screen); color: var(--ink); font: 500 13px var(--mono); }
+.rais-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.rais-pill { min-height: 34px; padding: 0 11px; border: 1px solid var(--rule-strong); border-radius: 3px; background: transparent; color: var(--steel); font: 600 12px/1 var(--mono); cursor: pointer; }
+.rais-pill:hover { color: var(--ink); border-color: var(--ink); }
+.rais-pill[aria-pressed="true"] { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+.rais-hw-meta { font: 500 12px/1.5 var(--mono); color: var(--steel); }
+.rais-kpi { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+.rais-kpi div { padding: 16px 18px; display: grid; gap: 6px; align-content: start; }
+.rais-kpi div + div { border-left: 1px solid var(--rule); }
+.rais-kpi strong { font: 700 20px/1.15 var(--mono); color: var(--ink); }
+.rais-kpi span { font-size: 13px; color: var(--steel); line-height: 1.5; }
+.rais-row { cursor: pointer; transition: background .12s; }
+.rais-row:hover { background: var(--raise); }
+.rais-row.active { background: color-mix(in srgb, var(--signal) 9%, var(--sheet)); }
+.rais-row.active td:first-child { box-shadow: inset 3px 0 0 var(--signal); }
+.rais-model-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rais-model-meta { font-size: 12px; color: var(--faint); margin-top: 3px; }
+.rais-tier-pill { font: 600 10.5px/1 var(--mono); padding: 3px 6px; border-radius: 3px; border: 1px solid var(--rule-strong); color: var(--steel); }
+.rais-tier-pill.t1 { color: var(--signal); border-color: color-mix(in srgb, var(--signal) 45%, transparent); background: color-mix(in srgb, var(--signal) 9%, transparent); }
+.rais-badge { display: inline-flex; align-items: center; gap: 6px; font: 600 11px/1.2 var(--mono); padding: 4px 8px; border-radius: 3px; white-space: nowrap; }
+.rais-badge.valid { background: color-mix(in srgb, #4ade80 15%, transparent); color: #86efac; border: 1px solid color-mix(in srgb, #4ade80 40%, transparent); }
+.rais-badge.partial { background: color-mix(in srgb, var(--signal) 12%, transparent); color: var(--signal); border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); }
+.rais-badge.pending { background: var(--raise); color: var(--steel); border: 1px solid var(--rule-strong); }
+.rais-score-cell { font: 700 15px var(--mono); color: var(--ink); }
+.rais-rf-cell { font-size: 12.5px; color: var(--steel); white-space: nowrap; }
+.rais-detail { border: 1px solid var(--rule); border-radius: 6px; background: var(--screen); padding: 20px; display: grid; gap: 18px; }
+.rais-detail-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--screen-rule); }
+.rais-detail-head h3 { font-size: 18px; color: var(--screen-ink); }
+.rais-detail-sub { font: 500 12px/1.5 var(--mono); color: var(--screen-dim); margin-top: 4px; }
+.rais-rf-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.rais-rf-card { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 12px 14px; display: grid; gap: 4px; }
+.rais-rf-card strong { font: 700 16px/1.2 var(--mono); color: var(--screen-ink); }
+.rais-rf-card small { font-size: 11px; color: var(--screen-dim); line-height: 1.4; }
+.rais-pillars-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.rais-pillar-card { border: 1px solid var(--screen-rule); border-radius: 4px; background: var(--screen-panel); padding: 12px 14px; display: grid; gap: 8px; }
+.rais-pillar-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.rais-pillar-top strong { font: 700 16px var(--mono); color: var(--screen-ink); }
+.rais-bar-track { height: 8px; border-radius: 2px; background: var(--paper); border: 1px solid var(--screen-rule); overflow: hidden; }
+.rais-bar-fill { display: block; height: 100%; background: var(--rule-strong); }
+.rais-bar-fill.on { background: var(--signal); }
+.rais-sub-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 18px; }
+.rais-sub-row { display: grid; grid-template-columns: minmax(0, 1fr) 40px 104px 82px; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--screen-rule); font-size: 13px; }
+.rais-sub-row.unmeasured { opacity: .68; }
+.rais-sub-name { color: var(--screen-ink); }
+.rais-sub-wt, .rais-sub-bn { font-size: 11.5px; color: var(--screen-dim); text-align: right; }
+.rais-sub-val { font: 600 12.5px var(--mono); color: var(--screen-ink); text-align: right; }
+.rais-sub-row.measured .rais-sub-val { color: var(--signal); }
+.gate-pill { display: inline-block; font: 600 11px/1 var(--mono); padding: 4px 7px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; }
+.gate-pill.pass { background: color-mix(in srgb, #4ade80 15%, transparent); color: #86efac; border: 1px solid color-mix(in srgb, #4ade80 40%, transparent); }
+.gate-pill.fail { background: var(--error-fill); color: var(--error); border: 1px solid color-mix(in srgb, var(--error) 45%, transparent); }
+.gate-pill.warn { background: color-mix(in srgb, var(--signal) 12%, transparent); color: var(--signal); border: 1px solid color-mix(in srgb, var(--signal) 40%, transparent); }
+.rais-meta-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; font: 500 12px/1.5 var(--mono); color: var(--steel); }
+.num-th { text-align: right; }
+td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+@media (max-width: 960px) {
+  .roof-cards, .rais-kpi, .rais-rf-grid, .rais-pillars-grid, .rais-sub-grid { grid-template-columns: minmax(0, 1fr); }
+  .rais-kpi div + div { border-left: 0; border-top: 1px solid var(--rule); }
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<div class="strip">
+  <div class="wrap">
+    <span><b>RAIS v1.0</b> · 공개 추론 벤치마크 표준</span>
+    <span><b>3대 루프라인</b> · 연산 · 메모리 · 네트워크</span>
+    <span><b>4개 축</b> · 12개 직교 세부 지표</span>
+    <span><b>4개 이진 게이트</b> · 통과 또는 INVALID</span>
+  </div>
+</div>
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="index-ko.html"><picture class="logo"><img src="hyor-ai-logo-reversed.svg" width="144" height="20" alt="HYOR AI"></picture><img class="seal" src="hyor-seal.svg" width="28" height="28" alt="HYOR AI"><span class="product">SparkPipe</span><span class="tag">RAIS v1.0</span></a>
+    <nav class="nav-links" aria-label="섹션">
+      <a href="#rooflines">루프라인</a>
+      <a href="#pillars">4개 축</a>
+      <a href="#scorecard">스코어카드</a>
+      <a href="#gates">게이트</a>
+      <a href="#reproduce">재현</a>
+      <a href="fleets-ko.html">플릿 목록</a>
+      <a href="index-ko.html">홈</a>
+    </nav>
+    <div class="nav-actions">
+      <div class="lang" role="group" aria-label="언어 / Language"><a href="rais.html?lang=en" hreflang="en" lang="en">EN</a><a href="rais-ko.html?lang=ko" hreflang="ko" aria-current="true">한국어</a></div>
+      <a class="btn small solid" href="#reproduce">직접 측정</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+<section class="wrap hero">
+  <p class="label hero-kicker">공개 추론 벤치마크 표준 · 버전 1.0</p>
+  <h1>루프라인 기준 추론 성능 지표.</h1>
+  <div class="hero-grid">
+    <div class="hero-copy">
+      <p class="lead">단순 tok/s 수치만으로는 104B 활성 MoE와 5B 플래시 모델을, BF16과 FP4를, DGX Spark 16대와 H200 8대를 공정하게 비교할 수 없습니다. <b>RAIS v1.0</b>은 모든 워크로드를 대상 하드웨어의 연산·메모리 대역폭·네트워크 집합통신 물리 하한에 고정하여 <b>0–100</b> 효율 점수를 산출합니다. 동일한 하드웨어에서 SparkPipe, vLLM, SGLang, TensorRT-LLM 및 자체 엔진을 일대일로 비교할 수 있습니다.</p>
+      <div class="actions">
+        <a class="btn solid" href="#scorecard">실측 스코어카드 보기</a>
+        <a class="btn" href="#reproduce">내 엔진에서 실행</a>
+        <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">전체 명세(영문)</a>
+      </div>
+      <p class="note">참조 채점기: <span class="mono">tools/rais_score.py</span> · OpenAI 호환 러너: <span class="mono">tools/rais_bench.py</span>. 이 페이지의 모든 수치는 저장소에 커밋된 검증 근거에서 계산되며, 전체 12개 지표 스윕이 끝나지 않은 모델은 명확히 대기 상태로 표시합니다.</p>
+    </div>
+    <figure class="screen">
+      <div class="screen-bar"><span><b>RAIS v1.0</b> · 물리적 하한</span><span>0–100 척도</span></div>
+      <div class="eq-box">
+        <div class="eq-line"><span>중첩 기준 물리 하한</span><b>T<sub>floor</sub> = max(T<sub>compute</sub>, T<sub>memory</sub>, T<sub>network</sub><sup>min</sup>)</b></div>
+        <div class="eq-line"><span>세부 지표 효율</span><b>S<sub>k</sub> = min(100, 100 × T<sub>floor,k</sub> / T<sub>actual,k</sub>)</b></div>
+        <div class="eq-line"><span>단독 RAIS 점수</span><b>RAIS = 0.25·P1 + 0.25·P2 + 0.25·P3 + 0.25·P4</b></div>
+        <div class="eq-line"><span>비추측 기본 루프라인</span><b>R = (P1 + P3 + P4) / 3</b></div>
+        <div class="eq-line"><span>ROI 최적화 여지 순위</span><b>ΔRAIS<sub>max</sub> = w<sub>k</sub> · (100 − S<sub>k</sub>)</b></div>
+      </div>
+      <div class="screen-read">
+        <div><small>균등 가중 4개 축</small><strong>25% × 4</strong></div>
+        <div><small>플릿 모델 카탈로그</small><strong>19개 모델</strong></div>
+        <div><small>정확성 계약</small><strong>이진 게이트 4종</strong></div>
+      </div>
+    </figure>
+  </div>
+  <div class="specs">
+    <div><strong>0–100</strong><span>하드웨어 물리에 고정된 효율 점수. 엔진 내부 구현을 참조하지 않으므로 같은 하드웨어에서 모든 엔진이 정확히 같은 분모를 공유합니다</span></div>
+    <div><strong>3대 <em>하한</em></strong><span>연산(T<sub>c</sub>), 메모리 대역폭(T<sub>m</sub>), 네트워크 집합통신 하한(T<sub>n</sub><sup>min</sup>)을 워크로드 형태마다 독립적으로 계산합니다</span></div>
+    <div><strong>12개 <em>지표</em></strong><span>단일 디코드, 추측 디코딩(α·1/V), 대화형·포화 배치, 콜드 프리필, 멀티턴 프리픽스 재사용을 직교하게 평가합니다</span></div>
+    <div><strong>VALID <em>조건</em></strong><span>그리디 추측 출력이 비추측과 비트 일치하고, 캐시 프리픽스가 콜드와 일치(Gate GX)하며, 서빙 오류가 0건일 때만 인증됩니다</span></div>
+  </div>
+</section>
+
+<div class="wrap">
+<section id="rooflines" class="sec">
+  <div class="sec-rail">
+    <p class="label">01 루프라인</p>
+    <p class="label">세 가지 물리 하한</p>
+  </div>
+  <div class="sec-body">
+    <h2>모든 추론 단계는 세 개의 독립된 물리 하한을 따릅니다.</h2>
+    <p class="prose">모델 <b>M</b>, 가속기 랭크 수 <b>N</b>인 하드웨어 프로필 <b>H</b>, 배치 크기 <b>B</b>, 컨텍스트 길이 <b>C</b>, 시퀀스당 포워드 행 수 <b>R</b>(<b>T<sub>rows</sub> = B · R</b>; 일반 디코드 <b>R = 1</b>, 추측 검증 <b>R = K + 1</b>, 프리필 <b>R = L</b>)에 대해 무손실 추론 엔진은 연산·메모리·네트워크 하한을 모두 만족해야 합니다.</p>
+    <div class="roof-cards">
+      <div class="roof-card">
+        <p class="label">1.1 연산 루프라인</p>
+        <h3>T<sub>compute</sub></h3>
+        <div class="eq">T<sub>c</sub> = (2·P<sub>spine</sub>·T<sub>rows</sub>)/(N·TF<sub>spine</sub>) + (2·P<sub>exp</sub>·T<sub>rows</sub>)/(N·TF<sub>exp</sub>) + F<sub>attn</sub>/(N·TF<sub>bf16</sub>)</div>
+        <p>비전문가 스파인 FLOPs, 활성 라우팅 MoE 전문가 FLOPs, 그리고 유효 컨텍스트 <b>C<sub>eff</sub></b>(DSA/CSA2 희소 어텐션은 <b>C<sub>sparse</sub></b>로 상한)에 대한 어텐션 FLOPs를 <b>N</b>개 랭크의 정밀도별 최고 TFLOPS와 대조합니다.</p>
+      </div>
+      <div class="roof-card">
+        <p class="label">1.2 메모리 대역폭 루프라인</p>
+        <h3>T<sub>memory</sub></h3>
+        <div class="eq">u(T<sub>rows</sub>,E,K) = 1 − (1 − K/E)<sup>T<sub>rows</sub></sup><br>T<sub>m</sub> = (W<sub>spine</sub> + W<sub>experts</sub>(u) + W<sub>kv+idx+state</sub>) / (N·BW<sub>mem</sub>)</div>
+        <p>스텝당 한 번 읽는 스파인 가중치, 쿠폰 수집기 합집합 법칙 <b>u(T<sub>rows</sub>, E, K)</b>에 따른 라우팅 MoE 전문가 가중치(<b>T<sub>rows</sub>=1</b>에서 단일 토큰 활성 가중치를, 큰 배치에서 전체 전문가 풀을 정확히 복원), 그리고 KV 캐시·희소 인덱서·슬라이딩 윈도우·순환 상태(GDN/KDA) 트래픽을 합산합니다.</p>
+      </div>
+      <div class="roof-card">
+        <p class="label">1.3 네트워크 집합통신 루프라인</p>
+        <h3>T<sub>network</sub><sup>min</sup></h3>
+        <div class="eq">T<sub>n</sub><sup>min</sup> = R<sub>ops</sub>·τ<sub>hop</sub> + R<sub>ops</sub>·[2(N−1)/N]·(T<sub>rows</sub>·d<sub>h</sub>·2B) / BW<sub>net</sub></div>
+        <p>단일 랭크(<b>N=1</b>)에서는 0입니다. 다중 랭크 텐서 병렬에서는 <b>L</b>개 레이어 모델이 스텝당 최소 <b>R<sub>ops</sub> = 2L</b>회의 전체 히든 BF16 올리듀스를 수행하며, 홉 지연 <b>τ<sub>hop</sub></b>과 링 리듀스-스캐터/올게더 전송량 하한을 지불합니다.</p>
+      </div>
+    </div>
+    <p class="prose"><b>중첩 기준 물리 하한</b>은 <b>T<sub>floor</sub> = max(T<sub>compute</sub>, T<sub>memory</sub>, T<sub>network</sub><sup>min</sup>)</b>이며, 중첩이 없는 직렬 하한은 <b>T<sub>serial</sub> = T<sub>c</sub> + T<sub>m</sub> + T<sub>n</sub><sup>min</sup></b>입니다. 그 비율 <b>G<sub>overlap</sub><sup>max</sup> = T<sub>serial</sub> / T<sub>floor</sub> ∈ [1, 3]</b>는 연산과 통신의 중첩으로 얻을 수 있는 최대 이득을 뜻합니다. 집합통신을 GEMM과 겹쳐 실행하는 엔진은 <b>T<sub>serial</sub></b>을 넘어 100에 가까워질 수 있는 반면, 직렬 실행 엔진은 <b>100 / G<sub>overlap</sub><sup>max</sup></b>에서 천장에 부딪힙니다.</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="참조 하드웨어 프로필">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">하드웨어 프로필</th>
+            <th scope="col" class="num-th">랭크 (N)</th>
+            <th scope="col" class="num-th">랭크당 메모리 BW</th>
+            <th scope="col" class="num-th">합산 메모리 BW</th>
+            <th scope="col" class="num-th">BF16 / FP8 / FP4 TFLOPS</th>
+            <th scope="col" class="num-th">랭크당 네트워크 BW</th>
+            <th scope="col" class="num-th">홉 지연 τ<sub>hop</sub></th>
+            <th scope="col" class="num-th">랭크당 VRAM</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono"><b>16x-gb10-1x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">16 µs</td><td class="num">128 GB</td></tr>
+          <tr><td class="mono"><b>16x-gb10-2x100g</b></td><td class="num">16</td><td class="num">273 GB/s</td><td class="num">4,368 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">25.0 GB/s</td><td class="num">16 µs</td><td class="num">128 GB</td></tr>
+          <tr><td class="mono"><b>4x-gb10-1x100g</b></td><td class="num">4</td><td class="num">273 GB/s</td><td class="num">1,092 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">12.5 GB/s</td><td class="num">12 µs</td><td class="num">128 GB</td></tr>
+          <tr><td class="mono"><b>1x-gb10</b></td><td class="num">1</td><td class="num">273 GB/s</td><td class="num">273 GB/s</td><td class="num">90 / 210 / 420</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">128 GB</td></tr>
+          <tr><td class="mono"><b>1x-m5-ultra</b></td><td class="num">1</td><td class="num">1,144 GB/s</td><td class="num">1,144 GB/s</td><td class="num">95 / 190 / 190</td><td class="num">0.0 GB/s</td><td class="num">0 µs</td><td class="num">256 GB</td></tr>
+          <tr><td class="mono"><b>8x-h200-nvlink</b></td><td class="num">8</td><td class="num">4,800 GB/s</td><td class="num">38,400 GB/s</td><td class="num">989 / 1,979 / 1,979</td><td class="num">450.0 GB/s</td><td class="num">2 µs</td><td class="num">141 GB</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="pillars" class="sec">
+  <div class="sec-rail">
+    <p class="label">02 4개 축</p>
+    <p class="label">4 × 25% = 100%</p>
+  </div>
+  <div class="sec-body">
+    <h2>네 개의 직교 축과 열두 개의 세부 지표.</h2>
+    <p class="prose">실제 서빙 환경은 엔진의 서로 다른 축을 압박합니다. RAIS는 100% 가중치를 네 개의 25% 축(축당 3개 지표)에 균등 배분하여, 단일 스트림 속도만으로 배치 확장성 부족이나 프리필 병목, 추측 디코딩 부재를 가리지 못하게 합니다.</p>
+    <div class="fns">
+      <div class="fn">
+        <p class="label">P1 · 단일 스트림 디코드 · 25%</p>
+        <dl>
+          <dt>1a · 짧은 컨텍스트 B1 (C=256) · 12%</dt>
+          <dd>추측 디코딩을 끈(<span class="mono">spec=OFF</span>) B=1, 256 컨텍스트 일반 디코드. 100 × T<sub>floor</sub> / T<sub>actual</sub>로 채점합니다.</dd>
+          <dt>1b · 긴 컨텍스트 B1 (C=64K–128K) · 9%</dt>
+          <dd>64K–128K(서빙 컨텍스트 상한 적용) 일반 디코드로 KV 스캔과 희소 인덱서 대역폭 비용을 드러냅니다.</dd>
+          <dt>1c · 꼬리 지터 (p50/p99 ITL) · 4%</dt>
+          <dd>B1 스트림의 토큰 간 지연 일관성: 100 × min(1, ITL<sub>p50</sub> / ITL<sub>p99</sub>).</dd>
+        </dl>
+      </div>
+      <div class="fn">
+        <p class="label">P2 · 추측 디코딩 · 25%</p>
+        <dl>
+          <dt>2a · 수락 품질 (α) · 12%</dt>
+          <dd>산문·코드·편집 워크로드 평균 라운드당 확정 토큰 α = E[A] + 1을 기준치 α<sub>ref</sub> = 4.0으로 정규화: 100 × min(1, max(0, α − 1) / 3).</dd>
+          <dt>2b-i · B1 검증·드래프트 효율 (1/V) · 8%</dt>
+          <dd>K ∈ [4, 16]에서 검증 오버헤드 V<sub>B1</sub> = α / (TPS<sub>spec</sub> / TPS<sub>nospec</sub>). 활성화 시 100 × min(1, 1/V<sub>B1</sub>), 미사용 시 0점.</dd>
+          <dt>2b-ii · B8 배치 검증 효율 (1/V) · 5%</dt>
+          <dd>B=8 배치 추측 검증 효율 100 × min(1, 1/V<sub>B8</sub>). 드래프터 품질(α)과 커널 검증 비용(V)을 분리해 진단합니다.</dd>
+        </dl>
+      </div>
+      <div class="fn">
+        <p class="label">P3 · 배치·동시성 확장 · 25%</p>
+        <dl>
+          <dt>3a · 대화형 배치 (B=4, 8, 16) · 10%</dt>
+          <dd>B ∈ {4, 8, 16}의 T<sub>floor</sub>(B, 256) 대비 평균 효율. 스트림당 속도가 0.25 × TPS<sub>B1</sub> SLA에 미달하면 비례 감점합니다.</dd>
+          <dt>3b · 고동시성 포화 (B=32, 64) · 9%</dt>
+          <dd>B ∈ {32, 64} 평균 효율. 동시성 상한으로 지원하지 않는 배치는 <b>실제 동작한 최대 하위 배치의 합산 tok/s를 그대로 B의 루프라인에 대입해 감점</b>합니다.</dd>
+          <dt>3c · 긴 컨텍스트 배치 (B=8 @ 32K–64K) · 6%</dt>
+          <dd>32K–64K 컨텍스트에서 8개 동시 스트림 디코드의 T<sub>floor</sub>(8, C) 대비 효율.</dd>
+        </dl>
+      </div>
+      <div class="fn">
+        <p class="label">P4 · 프리필·멀티턴 에이전트 · 25%</p>
+        <dl>
+          <dt>4a · 대화형 콜드 프리필 (8K) · 8%</dt>
+          <dd>캐시 없는 8,192토큰 프롬프트의 첫 토큰 시간(TTFT)을 T<sub>floor,prefill</sub>(8192)와 대조합니다.</dd>
+          <dt>4b · 긴 콜드 프리필 (32K / 128K+) · 9%</dt>
+          <dd>캐시 없는 32K(40%)와 128K(60%, 서빙 상한 적용) 프리필의 물리 하한 대비 효율.</dd>
+          <dt>4c · 멀티턴 프리픽스·상태 재사용 TTFT · 8%</dt>
+          <dd>캐시된 후속 턴(8K+128 40%, 100K+128 60%)을 증분 프리필 하한 T<sub>floor,warm</sub>(C<sub>prefix</sub>, 128)으로 채점합니다. 처음부터 재계산하면 0점에 가깝게 떨어집니다.</dd>
+        </dl>
+      </div>
+    </div>
+    <p class="prose">단독 <b>RAIS</b>와 함께 순수 비추측 엔진 효율인 <b>기본 루프라인 R = (P1 + P3 + P4) / 3</b>, 추측 요약 <b>(α, 1/V<sub>B1</sub>, 1/V<sub>B8</sub>)</b>, 그리고 19개 표준 플릿 모델 가중 합산(<b>티어 1 = 55%</b>, <b>티어 2 = 25%</b>, <b>티어 3 = 20%</b>)을 함께 보고합니다.</p>
+  </div>
+</section>
+
+<section id="scorecard" class="sec">
+  <div class="sec-rail">
+    <p class="label">03 실측 스코어카드</p>
+    <p class="label">19개 플릿 모델</p>
+  </div>
+  <div class="sec-body">
+    <h2>플릿 스코어카드 및 하드웨어 루프라인.</h2>
+    <p class="prose">저장소에 커밋된 검증 근거(<span class="mono">qualification/releases/c2b714343/</span>, <span class="mono">qualification/batch-sweep-20261018/</span>, <span class="mono">qualification/batch-sweep-20261024/</span>, <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>)를 <span class="mono">python3 tools/rais_score.py score --format html-data</span>로 직접 채점해 생성했습니다. 측정되지 않은 세부 지표나 전체 스윕 대기 모델의 수치는 추정하거나 지어내지 않습니다.</p>
+
+    <div class="rais-toolbar">
+      <div class="rais-control">
+        <label class="label" for="rais-hw">하드웨어 프로필</label>
+        <select id="rais-hw">
+          <option value="16x-gb10-1x100g">16x-gb10-1x100g · 플릿 1 (DGX Spark 16대)</option>
+          <option value="1x-m5-ultra">1x-m5-ultra · Apple Mac Studio M5 Ultra (Metal)</option>
+          <option value="16x-gb10-2x100g">16x-gb10-2x100g · DGX Spark 16대 (듀얼 100GbE)</option>
+          <option value="4x-gb10-1x100g">4x-gb10-1x100g · DGX Spark 4대</option>
+          <option value="1x-gb10">1x-gb10 · 단일 DGX Spark</option>
+          <option value="8x-h200-nvlink">8x-h200-nvlink · NVIDIA H200 SXM 8대</option>
+        </select>
+      </div>
+      <div class="rais-control">
+        <span class="label">플릿 티어</span>
+        <div class="rais-pills" role="group" aria-label="플릿 티어 필터">
+          <button type="button" class="rais-pill" data-rais-tier="all" aria-pressed="true">전체 19종</button>
+          <button type="button" class="rais-pill" data-rais-tier="1" aria-pressed="false">티어 1 (55%)</button>
+          <button type="button" class="rais-pill" data-rais-tier="2" aria-pressed="false">티어 2 (25%)</button>
+          <button type="button" class="rais-pill" data-rais-tier="3" aria-pressed="false">티어 3 (20%)</button>
+        </div>
+      </div>
+      <div class="rais-control">
+        <span class="label">측정 범위</span>
+        <div class="rais-pills" role="group" aria-label="스윕 상태 필터">
+          <button type="button" class="rais-pill" data-rais-filter="all" aria-pressed="true">전체</button>
+          <button type="button" class="rais-pill" data-rais-filter="multi" aria-pressed="false">다중 축 실측</button>
+          <button type="button" class="rais-pill" data-rais-filter="measured" aria-pressed="false">근거 보유</button>
+          <button type="button" class="rais-pill" data-rais-filter="pending" aria-pressed="false">스윕 대기만</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="rais-hw-meta" id="rais-hw-desc"></p>
+    <div class="rais-kpi" id="rais-kpi"></div>
+
+    <div class="rais-meta-row">
+      <span id="rais-status" role="status" aria-live="polite">RAIS 데이터를 불러오는 중…</span>
+      <span id="rais-count"></span>
+    </div>
+
+    <div class="table-wrap" tabindex="0" role="region" aria-label="RAIS v1.0 플릿 모델 스코어카드">
+      <table id="rais-table">
+        <thead>
+          <tr>
+            <th scope="col">모델</th>
+            <th scope="col">스윕 상태</th>
+            <th scope="col" class="num-th">RAIS</th>
+            <th scope="col" class="num-th">기본 R</th>
+            <th scope="col" class="num-th">P1 디코드</th>
+            <th scope="col" class="num-th">P2 추측</th>
+            <th scope="col" class="num-th">P3 배치</th>
+            <th scope="col" class="num-th">P4 프리필</th>
+            <th scope="col" class="num-th">B1 / 8K 하한 (tok/s)</th>
+          </tr>
+        </thead>
+        <tbody id="rais-rows"></tbody>
+      </table>
+    </div>
+
+    <div class="rais-detail" id="rais-detail" aria-live="polite"></div>
+
+    <h3>최우선 최적화 ROI 여지 (플릿 ΔRAIS<sub>max</sub> 순)</h3>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="최우선 최적화 ROI 여지">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col" class="num-th">순위</th>
+            <th scope="col">모델</th>
+            <th scope="col">세부 지표</th>
+            <th scope="col" class="num-th">현재 점수</th>
+            <th scope="col" class="num-th">플릿 ΔRAIS 상한</th>
+            <th scope="col">지배 병목</th>
+          </tr>
+        </thead>
+        <tbody id="rais-roi-rows"></tbody>
+      </table>
+    </div>
+
+    <p class="caption">부분 점수는 선택한 하드웨어 프로필에 커밋된 근거만 반영하며, 미측정 세부 지표는 <span class="mono">tools/rais_bench.py</span>로 측정되기 전까지 0점으로 계산됩니다. 두 변형 레인(<span class="mono">qwen3.8-27b-fp8</span>, <span class="mono">ling-3.0-flash-fin</span>)은 자체 기하학으로 단독 채점되되 19개 모델 플릿 합산에서는 중복 집계되지 않습니다. 모델별 라이선스와 서빙 컨텍스트 창은 <a href="fleets-ko.html">플릿 목록</a>에서 확인하세요.</p>
+  </div>
+</section>
+
+<section id="gates" class="sec">
+  <div class="sec-rail">
+    <p class="label">04 무결성</p>
+    <p class="label">이진 정확성 게이트</p>
+  </div>
+  <div class="sec-body">
+    <h2>비트 정확성 없는 속도는 INVALID로 무효 처리됩니다.</h2>
+    <p class="prose">인증된 모든 RAIS 실행은 처리량과 함께 네 가지 이진 정확성 게이트를 검증합니다. 네 개를 모두 통과해야 <span class="gate-pill pass">VALID</span>로 인증되며, 하나라도 실패하면 <span class="mono">certified_rais = null</span>과 함께 <span class="gate-pill fail">INVALID</span> 처리됩니다. 전체 게이트가 없는 부분 근거는 <span class="gate-pill warn">UNVERIFIED</span>로 표시됩니다.</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="이진 정확성 게이트">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">게이트</th>
+            <th scope="col">검증 조건</th>
+            <th scope="col">실패 시</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono"><b>prose_exact</b></td><td>산문 프롬프트에서 추측 디코딩 ON의 그리디(<span class="mono">temperature=0</span>) 출력이 추측 OFF 출력과 비트 단위로 일치해야 합니다.</td><td><span class="gate-pill fail">INVALID</span></td></tr>
+          <tr><td class="mono"><b>code_exact</b></td><td>코드 및 편집 프롬프트에서 추측 디코딩 ON의 그리디 출력이 추측 OFF 출력과 비트 단위로 일치해야 합니다.</td><td><span class="gate-pill fail">INVALID</span></td></tr>
+          <tr><td class="mono"><b>prefix_exact (Gate GX)</b></td><td>캐시된 웜 멀티턴 프리픽스(<span class="mono">8K + 128</span>)의 그리디 출력이 동일 프롬프트의 콜드 실행과 비트 단위로 일치해야 합니다.</td><td><span class="gate-pill fail">INVALID</span></td></tr>
+          <tr><td class="mono"><b>errors == 0</b></td><td>지원 워크로드 전반에서 HTTP 5xx, 전송 끊김, OOM, GPU Xid가 0건이어야 합니다(<span class="mono">max_sequences</span> 초과 거절은 무효화 대신 고정 상한 감점으로 처리).</td><td><span class="gate-pill fail">INVALID</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>호환 실행 티어</h3>
+    <p class="prose">두 티어 모두 동일한 RAIS v1.0 JSONL 스키마를 출력하며 <span class="mono">tools/rais_score.py</span>로 동일하게 채점됩니다.</p>
+    <div class="table-wrap" tabindex="0" role="region" aria-label="호환 실행 티어">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">워크로드</th>
+            <th scope="col">빠른 개선 티어 (<span class="mono">--tier fast</span>)</th>
+            <th scope="col">전체 인증 티어 (<span class="mono">--tier full</span>)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><b>소요 시간·용도</b></td><td>모델당 약 3–4분 · PR 단위 반복 개선 및 A/B 검증</td><td>모델당 약 15–25분 · 릴리스 인증 및 타 엔진 비교 공개</td></tr>
+          <tr><td><b>1a / 1c 짧은 B1</b></td><td>O=128, 2회 반복</td><td>O=256, 3회 반복</td></tr>
+          <tr><td><b>1b 긴 B1</b></td><td>C=32K(상한 적용), O=64</td><td>C=64K–128K(상한 적용), O=128</td></tr>
+          <tr><td><b>2a / 2b 추측 디코딩</b></td><td>산문·코드·편집, O=128 (B8 생략 또는 불러오기)</td><td>산문·코드·편집, O=256 + B8 배치 검증</td></tr>
+          <tr><td><b>3a / 3b / 3c 배치</b></td><td>B=4, 8, 16, 32, 64 (O=96) + B=8 @ 32K (O=64)</td><td>B=4, 8, 16, 32, 64 (O=256) + B=8 @ 64K (O=128)</td></tr>
+          <tr><td><b>4a / 4b / 4c 프리필·GX</b></td><td>8K + 32K 콜드 + 웜 8K+128 + Gate GX (O=32)</td><td>8K + 32K + 128K 콜드 + 웜 8K+128·100K+128 + Gate GX (O=64)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="reproduce" class="sec">
+  <div class="sec-rail">
+    <p class="label">05 재현</p>
+    <p class="label">모든 OpenAI 호환 엔진</p>
+  </div>
+  <div class="sec-body">
+    <h2>고객의 추론 엔진에서 RAIS를 직접 실행하세요.</h2>
+    <p class="prose">참조 러너는 표준 OpenAI <span class="mono">/v1/chat/completions</span> API를 호출하므로 SparkPipe, vLLM, SGLang, TensorRT-LLM 등 어떤 OpenAI 호환 서버에서도 동작합니다. 명령 한 줄로 같은 하드웨어 위의 두 엔진을 비교할 수 있습니다.</p>
+    <div class="code">
+      <div class="code-head"><span>RAIS v1.0 CLI · 빠른 측정 및 엔진 간 비교</span><span>shell</span></div>
+      <pre tabindex="0" role="region" aria-label="RAIS v1.0 CLI 명령"><span class="k">python3</span> tools/rais_bench.py \
+  --base-url http://127.0.0.1:8000 \
+  --model glm-5.3-flash \
+  --tier fast \
+  --hardware 16x-gb10-1x100g \
+  --engine sparkpipe \
+  --spec-toggle speculation \
+  --output rais_results.jsonl \
+  --score
+
+<span class="k">python3</span> tools/rais_score.py score rais_results.jsonl \
+  --hardware 16x-gb10-1x100g \
+  --format html-data \
+  --output site/rais-data.json
+
+<span class="k">python3</span> tools/rais_score.py compare sparkpipe.jsonl vllm.jsonl \
+  --hardware 16x-gb10-1x100g \
+  --label-a SparkPipe \
+  --label-b vLLM</pre>
+    </div>
+    <div class="actions">
+      <a class="btn solid" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">RAIS v1.0 명세(영문)</a>
+      <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/tools/rais_score.py">tools/rais_score.py</a>
+      <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/tools/rais_bench.py">tools/rais_bench.py</a>
+      <a class="btn" href="fleets-ko.html">플릿 목록</a>
+    </div>
+  </div>
+</section>
+</div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <a class="maker" href="https://hyor.io/index-ko.html"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
+    <nav aria-label="바닥글"><a href="index-ko.html">홈</a><a href="fleets-ko.html">플릿 목록</a><a href="rais-ko.html" aria-current="page">RAIS v1.0</a><a href="availability-ko.html">예약 현황</a><a href="compare-ko.html">비용 확인</a><a href="buy.html" hreflang="en">HC 구매 (영문)</a><a href="terms-ko.html">약관</a><a href="security-ko.html">보안</a><a href="privacy-ko.html">개인정보처리방침</a><a href="rais.html?lang=en" hreflang="en" lang="en">English</a><a href="https://github.com/sparkpipe/sparkpipe">GitHub</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+  </div>
+</footer>
+<script src="rais.js?v=1"></script>
+</body>
+</html>
