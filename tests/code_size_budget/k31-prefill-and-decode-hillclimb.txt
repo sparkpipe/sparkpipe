@@ -1,0 +1,2 @@
++560
+Kimi K3.1 Pro / K3 prefill and B1 long-context decode optimizations: LmKvShardGatherAllView single-pass all-rank gather attention, column-sliced parallel LmDeltaRuleChunkKernel, single-pass register-staged AttnRes + vectorized grid launches, CellMma occupancy specialization for short-K MoE down projections, and 2-pass sample-shifted 12-bit shared-memory LmIndexSelectMergeKernel with B1 sparse-score parallelism and MLA collective overlap.

@@ -119,7 +119,7 @@ static int32_t K3StreamedMoeDown(K3LayerBuffers *b, const void *const *down_weig
 		members * b->expert_w2_input,K3_ROUTED_EXPERT_HIDDEN,b->expert_tile_k,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
+	LM_LAUNCH((LmMoeFinalizeKernel<K3_LAYER_THREADS>), dim3(K3VecGrid(K3_ROUTED_EXPERT_HIDDEN,b->gate_up_bf16,b->latent_bf16),LmLaunchGridRows(rows)), K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16,rows,K3_TOP_K,K3_ROUTED_EXPERT_HIDDEN);
 	return(K3StreamedAccumulate(latent_accumulator,b->latent_bf16,(uint64_t)rows * K3_ROUTED_EXPERT_HIDDEN,first,stream));
 }

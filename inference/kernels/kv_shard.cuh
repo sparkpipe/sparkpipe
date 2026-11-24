@@ -32,6 +32,19 @@ struct LmKvShardGatherView
 	uint32_t key_end;
 };
 
+struct LmKvShardGatherAllView
+{
+	LmKvView pages;
+	SparkKvShard shard;
+	SparkKvShard owner_shard;
+	const uint8_t *keys;
+	uint64_t rank_stride;
+	const uint32_t *key_offset;
+	const uint32_t *key_context;
+	uint32_t key_begin;
+	uint32_t key_end;
+};
+
 #define LM_KV_SHARD_KEYS_ALL 0xffffffffu
 
 template<class Pages>
@@ -52,6 +65,16 @@ static __host__ __device__ __forceinline__ uint32_t LmKvKeyWindowBegin(const LmK
 }
 
 static __host__ __device__ __forceinline__ uint32_t LmKvKeyWindowEnd(const LmKvShardGatherView &view)
+{
+	return(view.key_end);
+}
+
+static __host__ __device__ __forceinline__ uint32_t LmKvKeyWindowBegin(const LmKvShardGatherAllView &view)
+{
+	return(view.key_begin);
+}
+
+static __host__ __device__ __forceinline__ uint32_t LmKvKeyWindowEnd(const LmKvShardGatherAllView &view)
 {
 	return(view.key_end);
 }
@@ -114,6 +137,33 @@ static __host__ __forceinline__ int32_t LmKvShardGatherViewWindow(LmKvShardGathe
 		return(-1);
 	view->key_begin = key_begin;
 	view->key_end = key_end;
+	return(0);
+}
+
+template<class Geometry>
+static __host__ __forceinline__ int32_t LmKvShardGatherAllViewInitialize(
+	LmKvShardGatherAllView *view,
+	const LmKvView &pages,
+	SparkKvShard owner_shard,
+	const uint8_t *keys,
+	uint64_t rank_stride,
+	const uint32_t *key_offset,
+	const uint32_t *key_context)
+{
+	if ( view == 0 || !Geometry::kGrows || SparkKvShardValid(owner_shard,Geometry::kPageSlots) == 0u || !LmKvViewIsConfigured(pages) ||
+		keys == 0 || key_offset == 0 || key_context == 0 )
+		return(-1);
+	view->pages = pages;
+	view->shard.degree = 1u;
+	view->shard.rank = 0u;
+	view->shard.grain = 1u;
+	view->owner_shard = owner_shard;
+	view->keys = keys;
+	view->rank_stride = rank_stride;
+	view->key_offset = key_offset;
+	view->key_context = key_context;
+	view->key_begin = 0u;
+	view->key_end = LM_KV_SHARD_KEYS_ALL;
 	return(0);
 }
 
@@ -205,6 +255,31 @@ static __device__ __forceinline__ const uint8_t *LmKvShardSlotRequired(
 		return(0);
 	}
 	return(view.keys + ((uint64_t)view.key_offset[sequence] + local - view.key_begin) * Geometry::kSlotBytes);
+}
+
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmKvShardSlotRequired(
+	const LmKvShardGatherAllView &view,
+	uint32_t sequence,
+	uint32_t position,
+	uint32_t row,
+	LmKvAccessKind access_kind)
+{
+	const uint32_t owner = SparkKvShardOwner(view.owner_shard,position);
+	const uint32_t local = SparkKvShardLocalIndex(view.owner_shard,position);
+	if ( sequence >= view.pages.sequence_count || position >= view.key_context[sequence] || local < view.key_begin || local >= view.key_end )
+	{
+		LmKvReportRequiredAccessFailure(
+			view.pages,
+			sequence >= view.pages.sequence_count ? LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE : LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE,
+			access_kind,
+			row,
+			sequence,
+			position,
+			Geometry::PageOf(position));
+		return(0);
+	}
+	return(view.keys + (uint64_t)owner * view.rank_stride + ((uint64_t)view.key_offset[sequence] + local - view.key_begin) * Geometry::kSlotBytes);
 }
 
 #ifdef __CUDACC__

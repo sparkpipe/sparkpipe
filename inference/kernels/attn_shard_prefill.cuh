@@ -92,6 +92,11 @@ static __device__ __forceinline__ void LmLatentShardSlotPrefetch(const LmKvShard
 {
 }
 
+template<class Geometry>
+static __device__ __forceinline__ void LmLatentShardSlotPrefetch(const LmKvShardGatherAllView &, uint32_t, uint32_t)
+{
+}
+
 static __device__ __forceinline__ void LmLatentShardGroupBarrier(uint32_t name)
 {
 	asm volatile("bar.sync %0, %1;\n" :: "r"(name), "n"(LM_PREFILL_ATTN_THREADS / 2u) : "memory");
