@@ -107,6 +107,15 @@ struct MimoState : CudaStagePackState
 __global__ static void MimoGatherRowsKernel(const uint16_t *gathered, uint16_t *full, uint32_t rows, uint32_t width, uint32_t ranks)
 {
 	const uint32_t row = blockIdx.y;
+	if ( (width & 7u) == 0u && LmIsAligned16(gathered) && LmIsAligned16(full) )
+	{
+		const uint32_t width_c = width >> 3u, total_c = width_c * ranks;
+		uint4 *f4 = (uint4 *)full + (uint64_t)row * total_c;
+		const uint4 *g4 = (const uint4 *)gathered;
+		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < total_c; c += gridDim.x * blockDim.x )
+			f4[c] = g4[((uint64_t)(c / width_c) * rows + row) * width_c + c % width_c];
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width * ranks; index += gridDim.x * blockDim.x )
 		full[(uint64_t)row * width * ranks + index] = gathered[((uint64_t)(index / width) * rows + row) * width + index % width];
 }
@@ -116,6 +125,33 @@ __global__ static void MimoSplitKernel(const uint16_t *full, uint16_t *query, ui
 {
 	const uint32_t row = blockIdx.y, fused = query_width + key_width + value_width;
 	const uint16_t *source = full + (uint64_t)row * fused;
+	if ( (query_width & 7u) == 0u && (key_width & 7u) == 0u && (value_width & 7u) == 0u &&
+		LmIsAligned16(full) && LmIsAligned16(query) && LmIsAligned16(key) && LmIsAligned16(value) )
+	{
+		const uint32_t q_c = query_width >> 3u, k_c = key_width >> 3u, v_c = value_width >> 3u, fused_c = q_c + k_c + v_c;
+		const uint4 *src4 = (const uint4 *)source;
+		uint4 *q4 = (uint4 *)query + (uint64_t)row * q_c;
+		uint4 *k4 = (uint4 *)key + (uint64_t)row * k_c;
+		uint4 *v4 = (uint4 *)value + (uint64_t)row * v_c;
+		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < fused_c; c += gridDim.x * blockDim.x )
+		{
+			if ( c < q_c )
+				q4[c] = src4[c];
+			else if ( c < q_c + k_c )
+				k4[c - q_c] = src4[c];
+			else
+			{
+				uint16_t bits[8];
+				float out[8];
+				LmUnpackUint4Bf16(src4[c], bits);
+				#pragma unroll
+				for ( uint32_t i = 0u; i < 8u; ++i )
+					out[i] = LmBf16ToFloat(bits[i]) * value_scale;
+				v4[c - q_c - k_c] = LmPackUint4FloatToBf16(out);
+			}
+		}
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < fused; index += gridDim.x * blockDim.x )
 	{
 		if ( index < query_width )
@@ -130,6 +166,16 @@ __global__ static void MimoSplitKernel(const uint16_t *full, uint16_t *query, ui
 __global__ static void MimoPackSlotKernel(const uint16_t *key, const uint16_t *value, uint16_t *slot, uint32_t key_width, uint32_t value_width)
 {
 	const uint32_t row = blockIdx.y, width = key_width + value_width;
+	if ( (key_width & 7u) == 0u && (value_width & 7u) == 0u && LmIsAligned16(key) && LmIsAligned16(value) && LmIsAligned16(slot) )
+	{
+		const uint32_t k_c = key_width >> 3u, v_c = value_width >> 3u, w_c = k_c + v_c;
+		uint4 *s4 = (uint4 *)slot + (uint64_t)row * w_c;
+		const uint4 *k4 = (const uint4 *)key + (uint64_t)row * k_c;
+		const uint4 *v4 = (const uint4 *)value + (uint64_t)row * v_c;
+		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < w_c; c += gridDim.x * blockDim.x )
+			s4[c] = c < k_c ? k4[c] : v4[c - k_c];
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 		slot[(uint64_t)row * width + index] = index < key_width ? key[(uint64_t)row * key_width + index] :
 			value[(uint64_t)row * value_width + index - key_width];
@@ -138,6 +184,28 @@ __global__ static void MimoPackSlotKernel(const uint16_t *key, const uint16_t *v
 __global__ static void MimoSwigluKernel(const uint16_t *gate, const uint16_t *up, uint32_t source_stride, uint16_t *output, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+	if ( (width & 7u) == 0u && (source_stride & 7u) == 0u && LmIsAligned16(gate) && LmIsAligned16(up) && LmIsAligned16(output) )
+	{
+		const uint32_t chunks = width >> 3u;
+		const uint4 *g4 = (const uint4 *)(gate + (uint64_t)row * source_stride);
+		const uint4 *u4 = (const uint4 *)(up + (uint64_t)row * source_stride);
+		uint4 *o4 = (uint4 *)(output + (uint64_t)row * width);
+		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += gridDim.x * blockDim.x )
+		{
+			uint16_t gb[8], ub[8];
+			float out[8];
+			LmUnpackUint4Bf16(g4[c], gb);
+			LmUnpackUint4Bf16(u4[c], ub);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+			{
+				const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathSilu(LmBf16ToFloat(gb[k]))));
+				out[k] = activated * LmBf16ToFloat(ub[k]);
+			}
+			o4[c] = LmPackUint4FloatToBf16(out);
+		}
+		return;
+	}
 	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
 	{
 		const float g = LmBf16ToFloat(gate[(uint64_t)row * source_stride + index]);
@@ -146,25 +214,26 @@ __global__ static void MimoSwigluKernel(const uint16_t *gate, const uint16_t *up
 	}
 }
 
-__global__ static void MimoMoeCombineKernel(const uint16_t *expert_out, const uint32_t *route_packed_row, const uint32_t *route_expert,
-	const float *route_weight, uint16_t *output, uint32_t top_k, uint32_t local_experts, uint32_t width)
-{
-	const uint32_t row = blockIdx.y;
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
-	{
-		float total = 0.0f;
-		for ( uint32_t k = 0u; k < top_k; ++k )
-		{
-			const uint32_t route = row * top_k + k;
-			if ( route_expert[route] < local_experts )
-				total = fmaf(LmBf16ToFloat(expert_out[(uint64_t)route_packed_row[route] * width + index]), route_weight[route], total);
-		}
-		output[(uint64_t)row * width + index] = LmFloatToBf16(total);
-	}
-}
-
 __global__ static void MimoResidualKernel(uint16_t *hidden, const uint16_t *partial, uint64_t count)
 {
+	if ( (count & 7u) == 0u && LmIsAligned16(hidden) && LmIsAligned16(partial) )
+	{
+		const uint64_t chunks = count >> 3u;
+		uint4 *h4 = (uint4 *)hidden;
+		const uint4 *p4 = (const uint4 *)partial;
+		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
+		{
+			uint16_t hb[8], pb[8];
+			float out[8];
+			LmUnpackUint4Bf16(h4[c], hb);
+			LmUnpackUint4Bf16(p4[c], pb);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k )
+				out[k] = LmBf16ToFloat(hb[k]) + LmBf16ToFloat(pb[k]);
+			h4[c] = LmPackUint4FloatToBf16(out);
+		}
+		return;
+	}
 	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
 		hidden[index] = LmFloatToBf16(LmBf16ToFloat(hidden[index]) + LmBf16ToFloat(partial[index]));
 }
@@ -211,6 +280,11 @@ struct MimoModel : CudaStage<MimoModel<G>>
 	{
 		const uint64_t blocks = (elements + MM_THREADS - 1u) / MM_THREADS;
 		return (uint32_t)(blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u);
+	}
+
+	static uint32_t VecBlocks(uint64_t elements)
+	{
+		return Blocks((elements + 7u) >> 3u);
 	}
 
 	static uint32_t RowExact(const SparkStageRunnerStep *step)
@@ -271,8 +345,8 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_rows, state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((MimoGatherRowsKernel), dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
-		LM_LAUNCH((MimoSplitKernel), dim3(Blocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_full, state->query, state->key, state->value, S::kQuery,
+		LM_LAUNCH((MimoGatherRowsKernel), dim3(VecBlocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
+		LM_LAUNCH((MimoSplitKernel), dim3(VecBlocks(FUSED), rows), MM_THREADS, 0, stream, state->attn_full, state->query, state->key, state->value, S::kQuery,
 			KW, VW, G::kValueScale);
 		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,G::kHeads), MM_THREADS, 0, stream,
 			state->query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
@@ -280,7 +354,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		LM_LAUNCH((LmRopePerHeadKernel<MM_THREADS,LM_ROPE_HALF_SPLIT,LM_ROPE_ROUNDED_TERMS>), dim3(rows,KVH), MM_THREADS, 0, stream,
 			state->key, step->positions, KVH, G::kHeadDim, G::kRopeDim, FULL ? G::kFullTheta : G::kSlidingTheta,
 			FULL ? state->full_inv_freq : state->sliding_inv_freq, 1.0f, 0u);
-		LM_LAUNCH((MimoPackSlotKernel), dim3(Blocks(KW + VW), rows), MM_THREADS, 0, stream, state->key, state->value, state->slot, KW, VW);
+		LM_LAUNCH((MimoPackSlotKernel), dim3(VecBlocks(KW + VW), rows), MM_THREADS, 0, stream, state->key, state->value, state->slot, KW, VW);
 		LM_LAUNCH((LmKvShardStoreKernel<Kv,MM_THREADS>), rows, MM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
 			rows, KW + VW);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -306,7 +380,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 		const uint32_t rows = step->rows;
 		if ( Fp8(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * S::kDenseRows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((MimoSwigluKernel), dim3(Blocks(S::kDenseRows), rows), MM_THREADS, 0, stream, state->gate_up, state->gate_up + S::kDenseRows,
+		LM_LAUNCH((MimoSwigluKernel), dim3(VecBlocks(S::kDenseRows), rows), MM_THREADS, 0, stream, state->gate_up, state->gate_up + S::kDenseRows,
 			2u * S::kDenseRows, state->intermediate, S::kDenseRows);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Fp8(layer->ffn_down, state->intermediate, state->partial, rows, S::kDenseRows, G::kHidden, step, stream) != LM_LAUNCH_OK )
@@ -342,13 +416,13 @@ struct MimoModel : CudaStage<MimoModel<G>>
 			ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((MimoSwigluKernel), dim3(Blocks(G::kMoeInter), routes), MM_THREADS, 0, stream, state->expert_gate, state->expert_up, G::kMoeInter,
+		LM_LAUNCH((MimoSwigluKernel), dim3(VecBlocks(G::kMoeInter), routes), MM_THREADS, 0, stream, state->expert_gate, state->expert_up, G::kMoeInter,
 			state->expert_act, G::kMoeInter);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((MimoMoeCombineKernel), dim3(Blocks(G::kHidden), rows), MM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
-			state->route_expert, state->route_weight, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
+		LM_LAUNCH((LmMoeLocalWeightedFinalizeKernel), dim3(VecBlocks(G::kHidden), rows), MM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
+			state->route_expert, state->route_weight, (const uint16_t *)0, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
@@ -364,7 +438,7 @@ struct MimoModel : CudaStage<MimoModel<G>>
 
 	static SparkStatus Residual(State *state, uint16_t *hidden, uint32_t rows, SparkGpuStream stream)
 	{
-		LM_LAUNCH((MimoResidualKernel), Blocks((uint64_t)rows * G::kHidden), MM_THREADS, 0, stream, hidden, state->partial, (uint64_t)rows * G::kHidden);
+		LM_LAUNCH((MimoResidualKernel), VecBlocks((uint64_t)rows * G::kHidden), MM_THREADS, 0, stream, hidden, state->partial, (uint64_t)rows * G::kHidden);
 		return CudaStageLaunched();
 	}
 
