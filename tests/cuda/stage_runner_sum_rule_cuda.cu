@@ -166,6 +166,14 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(SparkTpDeviceCollective *collec
 	return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveSetOperationTimeout(SparkTpDeviceCollective *collective, uint32_t timeout_milli, uint32_t *previous_milli)
+{
+	(void)collective; (void)timeout_milli;
+	if ( previous_milli != 0 )
+		*previous_milli = 0u;
+	return SPARK_STATUS_OK;
+}
+
 }
 
 static SparkStatus FakeStep(void *model, const SparkStageRunnerStep *step, void *stream)
