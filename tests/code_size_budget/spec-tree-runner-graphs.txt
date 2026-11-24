@@ -1,0 +1,2 @@
++7
+spec-tree/runner-graphs: add StageRunnerGraphSlotKey to route tree verify frames (graph_key=2, tree!=0) to dedicated graph key 3 so alternating chain and tree verify steps of equal row count do not evict and recapture each other's CUDA graphs, raise SPARK_STAGE_RUNNER_GRAPH_ROWS from 16 to 32 (matching STAGE_RUNNER_WIDE_ROWS), and raise SPARK_MODEL_BATCH_VERIFY_LANES from 4 to 8.

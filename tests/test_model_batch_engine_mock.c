@@ -4072,6 +4072,30 @@ static void TestScenarioBatchVerify(const SparkModelResidentDeployment *deployme
 	CHECK(state.completed_events[1] == 1u && state.completed_events[2] == 1u && state.error_events[1] == 0u && state.error_events[2] == 0u,"batch verify: a drafting request and one with speculation off both complete when they share verify frames");
 	CHECK(shared != 0u && TestScriptedOutputMatches(&state,1u,script,44u,80u) != 0u && TestScriptedOutputMatches(&state,2u,script,44u,80u) != 0u,"batch verify: a lane with no drafts rides shared verify frames across cache block boundaries and both emit the greedy stream");
 	SparkModelBatchEngineDestroy(engine);
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	engine = TestConnectFlags(deployment,&state,runtime_root,32u,8u,0u);
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetScript(script,256u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	TestSubmitPrompt(engine,1u,930u,80u,script,44u);
+	TestDriveUntilTerminal(engine,&state,1u,3000u);
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	(void)MockResidentClientTakeVerifyShared();
+	(void)MockResidentClientTakeMaxDecodeLanes();
+	for (index=2u; index<=7u; index++)
+		TestSubmitPrompt(engine,index,930u + index,80u,script,44u);
+	for (index=2u; index<=7u; index++)
+		TestDriveUntilTerminal(engine,&state,index,6000u);
+	memset(&view,0,sizeof(view));
+	CHECK(SparkModelBatchEngineGetView(engine,&view) == SPARK_STATUS_OK,"batch verify 6-lane: engine view");
+	MockResidentClientTakeVerifyStats(&submissions,&rows);
+	shared = MockResidentClientTakeVerifyShared();
+	for (index=2u; index<=7u; index++)
+		CHECK(state.completed_events[index] == 1u && state.error_events[index] == 0u && TestScriptedOutputMatches(&state,index,script,44u,80u) != 0u && TestLaneInputsFollowScript(index,script,256u) != 0u,"batch verify 6-lane: every lane completes with exact greedy output and committed inputs");
+	CHECK(MockResidentClientTakeMaxDecodeLanes() == 6u && shared != 0u && rows > 6u * submissions && view.speculative_accepted_token_count >= 120u,"batch verify 6-lane: six concurrent decoding requests share lookup verify frames and accept drafts");
+	SparkModelBatchEngineDestroy(engine);
 }
 
 static void TestScenarioSharedVerifyEndsOnBlock(const SparkModelResidentDeployment *deployment,const char *runtime_root)
