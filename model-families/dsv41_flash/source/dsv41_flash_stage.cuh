@@ -526,13 +526,80 @@ static void D41RmsNorm(const uint16_t *input, const uint16_t *weight, uint16_t *
 		(uint16_t *)input, (const uint16_t *)0, weight, (uint16_t *)0, output, width, width, D41_EPS);
 }
 
+static __device__ __forceinline__ uint4 D41Fp8Qdq8(const float vals[8])
+{
+	float amax = 0.0f, q[8];
+	#pragma unroll
+	for ( uint32_t k = 0u; k < 8u; ++k ) amax = fmaxf(amax, fabsf(vals[k]));
+	amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 1u));
+	amax = fmaxf(amax, __shfl_xor_sync(0xffffffffu, amax, 2u));
+	const float scale = SparkMathFp8QdqScale(fmaxf(0.0f, amax));
+	#pragma unroll
+	for ( uint32_t k = 0u; k < 8u; ++k )
+		q[k] = LmE4m3ToFloat(LmFloatToE4m3(fminf(fmaxf(vals[k] / scale, -LM_E4M3_MAX), LM_E4M3_MAX))) * scale;
+	return LmPackUint4FloatToBf16(q);
+}
+
+template<uint32_t THREADS>
+static __device__ __forceinline__ float D41RmsSharedScale(const float *values, float *reduction, uint32_t dimension, float epsilon)
+{
+	float total = 0.0f;
+	__syncthreads();
+	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS ) { const float val = values[index]; total += val * val; }
+	return SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)dimension, epsilon);
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void D41RmsNormQdqKernel(const uint16_t *input, const uint16_t *__restrict__ streams, const float *__restrict__ pre,
 	const uint16_t *__restrict__ weight, uint16_t *output, uint16_t *__restrict__ quantized, uint32_t dimension, float epsilon)
 {
-	extern __shared__ float d41_norm_shared[];
-	LmHcCollapseNormRow<THREADS, D41K_HC, SparkDsv41FlashFp8QdqLaneOp>(input, streams, pre, weight, output, quantized, blockIdx.x, dimension,
+	extern __shared__ __align__(16) float d41_norm_shared[];
+	const uint32_t row = blockIdx.x, span = dimension / gridDim.y, begin = blockIdx.y * span;
+	const uint64_t base = (uint64_t)row * dimension;
+	LmDependentWait();
+	LmDependentRelease();
+	if ( (dimension & 7u) == 0u && (span & 255u) == 0u && LmIsAligned16(weight) && LmIsAligned16(quantized) &&
+		(output == 0 || LmIsAligned16(output)) && (streams != 0 ? LmIsAligned16(streams) : LmIsAligned16(input)) )
+	{
+		for ( uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u )
+		{
+			float v[8];
+			if ( streams != 0 )
+			{
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k ) v[k] = 0.0f;
+				#pragma unroll
+				for ( uint32_t copy = 0u; copy < D41K_HC; ++copy )
+				{
+					const float pw = pre[(uint64_t)row * D41K_HC + copy];
+					float s[8];
+					LmLoadBf16x8AsFloat(*(const uint4 *)(streams + ((uint64_t)row * D41K_HC + copy) * dimension + offset), s);
+					#pragma unroll
+					for ( uint32_t k = 0u; k < 8u; ++k ) v[k] += pw * s[k];
+				}
+				LmLoadBf16x8AsFloat(LmPackUint4FloatToBf16(v), v);
+			}
+			else
+				LmLoadBf16x8AsFloat(*(const uint4 *)(input + base + offset), v);
+			LmStoreFloat8(d41_norm_shared + offset, v);
+		}
+		const float scale = D41RmsSharedScale<THREADS>(d41_norm_shared, d41_norm_shared + dimension, dimension, epsilon);
+		for ( uint32_t offset = begin + threadIdx.x * 8u; offset < begin + span; offset += THREADS * 8u )
+		{
+			float v[8], w[8];
+			LmLoadFloat8(d41_norm_shared + offset, v);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(weight + offset), w);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k ) v[k] = v[k] * scale * w[k];
+			const uint4 normed = LmPackUint4FloatToBf16(v);
+			if ( output != 0 ) *(uint4 *)(output + base + offset) = normed;
+			LmLoadBf16x8AsFloat(normed, v);
+			*(uint4 *)(quantized + base + offset) = D41Fp8Qdq8(v);
+		}
+		return;
+	}
+	LmHcCollapseNormRow<THREADS, D41K_HC, SparkDsv41FlashFp8QdqLaneOp>(input, streams, pre, weight, output, quantized, row, dimension,
 		blockIdx.y, gridDim.y, epsilon, d41_norm_shared);
 }
 
@@ -574,21 +641,50 @@ __global__ __launch_bounds__(THREADS, 1)
 void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *__restrict__ weight, const uint32_t *__restrict__ positions,
 	const float *__restrict__ inverse_frequency, uint16_t *__restrict__ quantized, uint32_t dimension, uint32_t rope_offset, float epsilon)
 {
-	extern __shared__ float d41_kv_shared[];
-	float *row = d41_kv_shared;
-	float *reduction = d41_kv_shared + dimension;
+	extern __shared__ __align__(16) float d41_kv_shared[];
+	float *row = d41_kv_shared, *reduction = d41_kv_shared + dimension, total = 0.0f;
 	const uint64_t base = (uint64_t)blockIdx.x * dimension;
-	uint32_t index;
-	float total = 0.0f, scale;
-	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	LmDependentWait();
+	LmDependentRelease();
+	if ( (dimension & 255u) == 0u && (rope_offset & 7u) == 0u && LmIsAligned16(input) && LmIsAligned16(weight) && LmIsAligned16(quantized) )
 	{
-		float value = LmBf16ToFloat(input[base + index]);
+		for ( uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u )
+		{
+			float v[8];
+			LmLoadBf16x8AsFloat(*(const uint4 *)(input + base + offset), v);
+			LmStoreFloat8(row + offset, v);
+		}
+		const float scale = D41RmsSharedScale<THREADS>(row, reduction, dimension, epsilon);
+		const uint32_t position = positions[blockIdx.x];
+		for ( uint32_t offset = threadIdx.x * 8u; offset < dimension; offset += THREADS * 8u )
+		{
+			float v[8], w[8];
+			LmLoadFloat8(row + offset, v);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(weight + offset), w);
+			#pragma unroll
+			for ( uint32_t k = 0u; k < 8u; ++k ) v[k] = LmBf16ToFloat(LmFloatToBf16(v[k] * scale * w[k]));
+			if ( offset >= rope_offset )
+				#pragma unroll
+				for ( uint32_t p = 0u; p < 4u; ++p )
+				{
+					float sine, cosine;
+					D41RopeTurn(position, 0, inverse_frequency[(offset - rope_offset) / 2u + p], 0u, &sine, &cosine);
+					const float real = v[2u * p], imag = v[2u * p + 1u];
+					v[2u * p] = LmBf16ToFloat(D41RopeReal(real, imag, sine, cosine));
+					v[2u * p + 1u] = LmBf16ToFloat(D41RopeImaginary(real, imag, sine, cosine));
+				}
+			*(uint4 *)(quantized + base + offset) = D41Fp8Qdq8(v);
+		}
+		return;
+	}
+	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
+	{
+		const float value = LmBf16ToFloat(input[base + index]);
 		row[index] = value;
 		total += value * value;
 	}
-	total = LmBlockSum<THREADS>(total, reduction);
-	scale = SparkMathRmsScale(total, (float)dimension, epsilon);
-	for ( index = threadIdx.x; index < dimension; index += THREADS )
+	const float scale = SparkMathRmsScale(LmBlockSum<THREADS>(total, reduction), (float)dimension, epsilon);
+	for ( uint32_t index = threadIdx.x; index < dimension; index += THREADS )
 	{
 		uint16_t value = LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 		const float own = LmBf16ToFloat(value), partner = __shfl_xor_sync(0xffffffffu, own, 1);
@@ -600,6 +696,13 @@ void D41KvNormRopeQdqKernel(const uint16_t *__restrict__ input, const uint16_t *
 		}
 		quantized[base + index] = SparkDsv41FlashFp8QdqLane(LmBf16ToFloat(value));
 	}
+}
+
+static void D41KvNormRopeQdq(const uint16_t *input, const uint16_t *weight, const uint32_t *positions, const float *frequency,
+	uint16_t *quantized, uint32_t rows, SparkGpuStream stream)
+{
+	(void)LM_LAUNCH_DEPENDENT((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream,
+		input, weight, positions, frequency, quantized, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
 }
 
 static uint32_t D41NormParts(uint32_t rows, uint32_t width)
@@ -617,16 +720,16 @@ static void D41RmsNormQdq(const uint16_t *input, const uint16_t *weight, uint16_
 		D41Fp8QdqCopy(output != 0 ? output : quantized, quantized, (uint64_t)rows * width, stream);
 		return;
 	}
-	LM_LAUNCH((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, width)), D41_THREADS, (width + 8u) * sizeof(float), stream, input, 0, 0, weight,
-		output, quantized, width, D41_EPS);
+	(void)LM_LAUNCH_DEPENDENT((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, width)), D41_THREADS, (width + 8u) * sizeof(float), stream,
+		input, (const uint16_t *)0, (const float *)0, weight, output, quantized, width, D41_EPS);
 }
 
 static void D41CollapseNormQdq(const uint16_t *streams, const float *pre, const uint16_t *weight, uint16_t *output, uint16_t *quantized,
 	uint32_t rows, SparkGpuStream stream)
 {
 	static_assert(D41_HIDDEN % D41_THREADS == 0u, "the hidden row splits evenly over the norm block");
-	LM_LAUNCH((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, D41_HIDDEN)), D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float), stream, 0, streams,
-		pre, weight, output, quantized, D41_HIDDEN, D41_EPS);
+	(void)LM_LAUNCH_DEPENDENT((D41RmsNormQdqKernel<D41_THREADS>), dim3(rows, D41NormParts(rows, D41_HIDDEN)), D41_THREADS, (D41_HIDDEN + 8u) * sizeof(float),
+		stream, (const uint16_t *)0, streams, pre, weight, output, quantized, D41_HIDDEN, D41_EPS);
 }
 
 static void D41Rope(uint16_t *data, uint32_t rows, uint32_t heads, uint32_t head_stride, uint32_t rope_offset,
@@ -1262,9 +1365,10 @@ static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const S
 		return SPARK_STATUS_OK;
 	if ( step->rows > D41_VERIFY_ROWS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	return SparkGpuMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
-		(uint64_t)step->rows * D41_HEAD_DIM * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ? SPARK_STATUS_OK :
-		SPARK_STATUS_INTERNAL_ERROR;
+	if ( SparkGpuMemcpyAsync(state->verify_window + (uint64_t)index * D41_VERIFY_ROWS * D41_HEAD_DIM, state->window_kv,
+		(uint64_t)step->rows * D41_HEAD_DIM * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	return SPARK_STATUS_OK;
 }
 
 static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerStep *step)
@@ -1324,8 +1428,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, rows, D41_QLORA, stream);
-	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
-		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	D41KvNormRopeQdq(state->kv, layer->kv_norm, step->positions, frequency, state->window_kv, rows, stream);
 	if ( (indexed != 0u ? D41LinearPair(&q_part, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
 		D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
 		D41Linear(&q_part, state->qrq, state->q_local, rows, D41_QLORA, width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
@@ -1336,9 +1439,9 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 		status = D41Compress(state, layer, index, step, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41IndexQuery(state, layer, index, step, packed, stream);
-	if ( status == SPARK_STATUS_OK && indexed != 0u )
-		status = SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) == SPARK_GPU_SUCCESS ?
-			SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	if ( status == SPARK_STATUS_OK && indexed != 0u &&
+		SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = cache < 3u ? D41SelectWhole<D41Ratio2Kv>(state, index, step, bound, length, stream) :
 			D41SelectWhole<D41Ratio1Kv>(state, index, step, bound, length, stream);
@@ -1408,22 +1511,9 @@ static SparkStatus D41OutputFused(D41ModelState *state, const D41Layer *layer, c
 	const float *frequency, SparkGpuStream stream)
 {
 	const uint32_t rows = step->rows;
-	D41FusedOutputArguments fused;
-	memset(&fused, 0, sizeof(fused));
-	fused.records = state->records_received;
-	fused.source_stride = stride;
-	fused.sink = layer->sink;
-	fused.positions = step->positions;
-	fused.frequency = frequency;
-	fused.group_input = state->group_input;
-	fused.window_kv = state->window_kv;
-	fused.ring = ring;
-	fused.row_lane = state->row_lane;
-	fused.row_ordinal = state->row_ordinal;
-	fused.sequence_row_begin = step->sequence_row_begin;
-	fused.recurrent_index = step->recurrent_index;
-	fused.ring_slot_stride = state->recurrent_bytes / sizeof(uint16_t);
-	fused.commit = step->commit;
+	const D41FusedOutputArguments fused = { state->records_received, stride, layer->sink, step->positions, frequency, state->group_input,
+		state->window_kv, ring, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->recurrent_index,
+		state->recurrent_bytes / sizeof(uint16_t), step->commit };
 	if ( D41FusedOutputLaunch(&fused, rows, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	for ( uint32_t group = 0u; group < D41_LOCAL_GROUPS; ++group )
@@ -1465,8 +1555,7 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 		D41_HEAD_DIM, sms, state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, own != 0u ? own_qrq : state->qrq, projected, D41_QLORA, stream);
-	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), projected, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
-		step->positions + state->own_first, frequency, own != 0u ? own_kv : state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	D41KvNormRopeQdq(state->kv, layer->kv_norm, step->positions + state->own_first, frequency, own != 0u ? own_kv : state->window_kv, projected, stream);
 	if ( own != 0u )
 	{
 		status = D41Launched();
@@ -1510,8 +1599,10 @@ static SparkStatus D41AttentionWhole(D41ModelState *state, const D41Layer *layer
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = D41IndexQuery(state, layer, index, step, packed, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u && D41_ROWS )
-		status = SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) ==
-			SPARK_GPU_SUCCESS ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+	{
+		if ( SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
 	else if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, D41_INDEX_PACK, packed, state->q_gathered);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
@@ -1643,8 +1734,7 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, own_qrq, own, D41_QLORA, stream);
-	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), own, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
-		step->positions + first, frequency, own_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	D41KvNormRopeQdq(state->kv, layer->kv_norm, step->positions + first, frequency, own_kv, own, stream);
 	if ( LmMxQuantize(own_qrq, qcodes, qscales, (uint64_t)own * D41_QLORA, stream) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Launched();
@@ -1791,8 +1881,7 @@ static SparkStatus D41Attention(D41ModelState *state, const D41Layer *layer, uin
 		D41Linear(&layer->q_b, state->qrq, state->q_local, rows, D41_QLORA, local_width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, D41_LOCAL_HEADS, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
-	LM_LAUNCH((D41KvNormRopeQdqKernel<D41_THREADS>), rows, D41_THREADS, (D41_HEAD_DIM + 8u) * sizeof(float), stream, state->kv, layer->kv_norm,
-		step->positions, frequency, state->window_kv, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, D41_EPS);
+	D41KvNormRopeQdq(state->kv, layer->kv_norm, step->positions, frequency, state->window_kv, rows, stream);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
 		status = D41Compress(state, layer, index, step, stream);
@@ -2037,24 +2126,10 @@ static uint32_t D41RoutesFuse(const D41ModelState *state, uint32_t rows)
 
 static int32_t D41FusedRoutes(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, uint32_t rows, SparkGpuStream stream)
 {
-	D41FusedRouteArguments fused;
-	memset(&fused, 0, sizeof(fused));
-	fused.scores = state->router_logits;
-	fused.bias = layer->router_bias;
-	fused.group = state->expert_group + (uint64_t)(layer - state->layers) * D41_EXPERTS;
-	fused.route_expert = state->route_expert;
-	fused.route_weight = state->route_weight;
-	fused.route_global = state->route_global;
-	fused.group_row_offset = state->group_row_offset;
-	fused.route_packed_row = state->route_packed_row;
-	fused.route_source_token = state->route_source_token;
-	fused.tile_prefix_up = state->tile_prefix_up;
-	fused.tile_prefix_down = state->tile_prefix_down;
-	fused.packed_weight = state->packed_weight;
-	fused.fault = step->route_fault;
-	fused.counters = state->route_counters;
-	fused.neuron_tiles_up = (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N;
-	fused.neuron_tiles_down = (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N;
+	const D41FusedRouteArguments fused = { state->router_logits, layer->router_bias, state->expert_group + (uint64_t)(layer - state->layers) * D41_EXPERTS,
+		state->route_expert, state->route_weight, state->route_global, state->group_row_offset, state->route_packed_row, state->route_source_token,
+		state->tile_prefix_up, state->tile_prefix_down, state->packed_weight, step->route_fault, state->route_counters, 0u,
+		(2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N };
 	return D41FusedRouteLaunch(&fused, rows, stream);
 }
 
@@ -3033,7 +3108,7 @@ struct D41Cuda : CudaStage<D41Cuda>
 		state->selected = frame.selected;
 		state->block_mask = frame.block_mask;
 		if ( status != SPARK_STATUS_OK )
-			return status;
+			SPARK_FAIL(status);
 		if ( D41_ENGRAM_DISK )
 			D41NgramHistory(state, step, stream);
 		return D41Launched();
@@ -3053,21 +3128,10 @@ struct D41Cuda : CudaStage<D41Cuda>
 		if ( D41MixCollapses(state, rows) != 0u )
 		{
 			const bool ffn = part == D41_FFN_PART;
-			D41FusedMixNormArguments fused;
-			memset(&fused, 0, sizeof(fused));
-			fused.streams = streams;
-			fused.fn = ffn ? layer->hc_ffn_fn : layer->hc_attn_fn;
-			fused.scale = ffn ? layer->hc_ffn_scale : layer->hc_attn_scale;
-			fused.base = ffn ? layer->hc_ffn_base : layer->hc_attn_base;
-			fused.partials = state->mixes;
-			fused.pre = (ffn ? state->pre_head : state->pre_attn) + first * D41K_HC;
-			fused.post = (ffn ? state->post_ffn : state->post_attn) + first * D41K_HC;
-			fused.comb = (ffn ? state->comb_ffn : state->comb_attn) + first * D41K_HC * D41K_HC;
-			fused.counters = state->mix_counters;
-			fused.collapse_pre = D41CollapsePre(state, index, part) + first * D41K_HC;
-			fused.norm = ffn ? layer->ffn_norm : layer->attn_norm;
-			fused.x = state->x;
-			fused.xq = state->xq;
+			const D41FusedMixNormArguments fused = { streams, ffn ? layer->hc_ffn_fn : layer->hc_attn_fn, ffn ? layer->hc_ffn_scale : layer->hc_attn_scale,
+				ffn ? layer->hc_ffn_base : layer->hc_attn_base, state->mixes, (ffn ? state->pre_head : state->pre_attn) + first * D41K_HC,
+				(ffn ? state->post_ffn : state->post_attn) + first * D41K_HC, (ffn ? state->comb_ffn : state->comb_attn) + first * D41K_HC * D41K_HC,
+				state->mix_counters, D41CollapsePre(state, index, part) + first * D41K_HC, ffn ? layer->ffn_norm : layer->attn_norm, state->x, state->xq };
 			if ( D41FusedMixNormLaunch(&fused, rows, frame.stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 			state->mix_collapsed = 1u;
@@ -3388,7 +3452,9 @@ static SparkStatus D41ReadFile(const char *path, uint64_t offset, void *target, 
 	if ( fseeko(file, (off_t)offset, SEEK_SET) != 0 || fread(target, 1u, (size_t)bytes, file) != bytes )
 		status = SPARK_STATUS_IO_ERROR;
 	fclose(file);
-	return status;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
 }
 
 static uint64_t D41FileBytes(const char *path)
@@ -3900,27 +3966,27 @@ static SparkStatus D41Fp8(D41ModelState *state, SparkWeightdLazyPack *pack, cons
 #define D41_PAYLOAD(kind, layer, field) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); const void *bound = 0; \
 		if ( found == 0 || D41SliceEntry(lazy_pack, found, 0u, &bound) != SPARK_STATUS_OK ) { \
-			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u has no " #kind "\n", layer); return SPARK_STATUS_PARSE_ERROR; } \
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u has no " #kind "\n", layer); SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); } \
 		*(const void **)&(field) = bound; } while ( 0 )
 #define D41_SCALE(kind, layer, field) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); const void *bound = 0; \
-		if ( found == 0 || D41SliceEntry(lazy_pack, found, 1u, &bound) != SPARK_STATUS_OK ) return SPARK_STATUS_PARSE_ERROR; \
+		if ( found == 0 || D41SliceEntry(lazy_pack, found, 1u, &bound) != SPARK_STATUS_OK ) SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); \
 		*(const void **)&(field) = bound; } while ( 0 )
 #define D41_FP8(kind, layer, field) \
 	do { if ( D41Fp8(state, lazy_pack, D41_ENTRY(kind, layer), &cursor, &(field)) != SPARK_STATUS_OK ) { \
-			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " is not a 32x32-block fp8 tensor\n", layer); return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
+			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " is not a 32x32-block fp8 tensor\n", layer); SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); } } while ( 0 )
 #define D41_FP8_NARROW(kind, layer, field, first_row, row_count, first_column, column_count) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
 		if ( found == 0 || D41Fp8Narrow(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
 			column_count == 0u ? found->columns : column_count, &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " has no 32x32-block fp8 split for this rank\n", layer); \
-			return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); } } while ( 0 )
 #define D41_FP8_SLICE(kind, layer, field, first_row, row_count, first_column, column_count) \
 	do { const D41PackEntry *found = D41_ENTRY(kind, layer); \
 		if ( found == 0 || D41Fp8Slice(state, lazy_pack, found, first_row, row_count == 0u ? found->rows : row_count, first_column, \
 			column_count == 0u ? found->columns : column_count, &cursor, &(field)) != SPARK_STATUS_OK ) { \
 			fprintf(stderr, "sparkpipe_dsv41_flash: layer %u " #kind " has no 32x32-block fp8 slice for this rank\n", layer); \
-			return SPARK_STATUS_PARSE_ERROR; } } while ( 0 )
+			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR); } } while ( 0 )
 
 static SparkStatus D41BindLayers(D41ModelState *state, SparkWeightdLazyPack *lazy_pack, uint64_t *side_bytes)
 {

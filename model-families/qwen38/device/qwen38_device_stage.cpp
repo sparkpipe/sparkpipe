@@ -6,6 +6,7 @@
 #include "inference/runner/device_indexer.h"
 #include "inference/runner/device_layers.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_qwen38_27b_stage_model.h"
 #include "sparkpipe/spark_qwen35_small_geometry.h"
 #include "sparkpipe/spark_qwen38_device_stage.h"
@@ -316,7 +317,7 @@ struct QwenDevice
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		const SparkDeviceStageRecurrentPlan pools[] = { { L::kGdnLayers, SparkDeviceGatedDeltaStateBytes(&state->delta_shape) },
 			{ L::kGdnLayers, SparkDeviceGatedDeltaWindowBytes(&state->delta_shape) },
