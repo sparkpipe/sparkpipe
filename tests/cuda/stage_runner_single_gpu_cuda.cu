@@ -131,6 +131,12 @@ SparkStatus SparkTpDeviceCollectiveSetOperationTimeout(SparkTpDeviceCollective *
 	return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveReady(SparkTpDeviceCollective *collective)
+{
+	(void)collective;
+	return SPARK_STATUS_OK;
+}
+
 }
 
 static SparkStatus LoneIdentityStep(void *model, const SparkStageRunnerStep *step, void *stream)
