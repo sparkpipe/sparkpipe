@@ -143,20 +143,23 @@ static_assert(D41_HIDDEN == SPARK_DSV41_FLASH_MODEL_HIDDEN_DIMENSION && D41_LAYE
 #define D41_ATTEND_TILES 2u
 #define D41_OWN_ROWS_MIN (D41_WHOLE ? 2048u : UINT32_MAX)
 #define D41_FFN_GATHER_ELEMENTS ((D41_HIDDEN + D41_HIDDEN / D41_FP8_BLOCK + 8u * D41_TOPK + 15u) / 16u * 8u)
-#define D41_BACKUP_LAYERS (D41_ROWS ? D41_CANDIDATE_SOURCE : 0u)
+#define D41_BACKUP_LAYERS (D41_ROWS ? D41_LAYERS : 0u)
 #define D41_BACKUP_COPIES (D41_ROWS && D41_TP >= 4u ? 2u : 1u)
 #define D41_HELD_EXPERTS ((1u + D41_BACKUP_COPIES) * D41_LOCAL_EXPERTS)
 #define D41_BACKUP_PASS (D41_LOCAL_EXPERTS / 2u)
 #define D41_BACKUP_PAIR 2u
+static inline uint32_t D41BackupCopies(uint32_t layer) { return layer < D41_CANDIDATE_SOURCE ? D41_BACKUP_COPIES : 1u; }
 typedef D41ExchangeCounts<D41_TP, D41_EXPERTS> D41Counts;
 typedef D41ExchangeTotals<D41_TP, D41_EXPERTS> D41Totals;
 static_assert(D41_HELD_EXPERTS < 255u && D41_BACKUP_LAYERS <= 64u && sizeof(D41Counts) % 16u == 0u &&
-	offsetof(D41Counts, routes) % 16u == 0u, "held groups fit a byte, filled layers a 64-bit mask, and a rank's counts gather as whole 16-byte rows");
+	sizeof(D41Counts) <= D41_HIDDEN * sizeof(uint16_t) && offsetof(D41Counts, routes) % 16u == 0u,
+	"held groups fit a byte, filled layers a 64-bit mask, and a rank's counts gather as whole 16-byte rows");
 #define D41_OWNER_OUTPUT_ELEMENTS ((D41_WO_A_ROWS + D41_WO_A_ROWS / D41_FP8_BLOCK) / 2u)
 #define D41_OWN_ROWS_STEP SPARK_DSV41_FLASH_STAGE_OWN_ROWS_STEP
 #define D41_WINDOW_EDGE_ROWS 256u
 #define D41_WHOLE_RECORD_ROWS (D41_LOCAL_HEADS > D41A_QUERIES ? 2u * D41_OWN_ROWS_STEP : SPARK_STAGE_RUNNER_GRAPH_ROWS)
-#define D41_MX_WIDTH (D41_ENGRAM_EMBED > D41_HIDDEN ? D41_ENGRAM_EMBED : D41_HIDDEN)
+#define D41_MX_BASE (D41_ENGRAM_EMBED > D41_HIDDEN ? D41_ENGRAM_EMBED : D41_HIDDEN)
+#define D41_MX_WIDTH (D41_ROWS && D41_WO_A_ROWS > D41_MX_BASE ? D41_WO_A_ROWS : D41_MX_BASE)
 #define D41_NORM_SPLIT_ROWS 16u
 #define D41_TAIL_MIN_ROWS (LM_SKINNY_ROWS_WIDE > D41_SKINNY_EXPERT_ROWS ? LM_SKINNY_ROWS_WIDE : D41_SKINNY_EXPERT_ROWS)
 #define D41_RECORD_ROW_ELEMENTS (D41_LOCAL_HEADS * D41K_RECORD * (uint32_t)(sizeof(float) / sizeof(uint16_t)))
@@ -307,7 +310,7 @@ struct D41ModelState : CudaStageState
 	SparkGpuEvent counts_ready;
 	SparkGpuStream shared_stream;
 	SparkGpuEvent shared_fork, shared_join;
-	uint32_t exchange_rows, exchange_live, shuffle_rows, moe_rows;
+	uint32_t exchange_rows, exchange_live, exchange_direct, shuffle_rows, moe_rows;
 	D41ReceivedRows<D41_TP> exchange_received, shuffle_received;
 	uint8_t *expert_owner, *expert_slot;
 	int64_t *engram_ids_next;
@@ -477,6 +480,8 @@ static int32_t D41Linear(const D41Fp8Linear *linear, const uint16_t *source, uin
 			"run on it, so the weight needs 16-byte alignment, an input that is a multiple of 32 and a ue8m0 scale for every 32-wide block\n", rows,
 			output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
 	}
+	if ( linear->wide == 0 )
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	return LmStreamGemmDense<LmBf16Block32>(linear->wide, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension,
 		output_dimension, 0u, 0u, multiprocessors, stream);
 }
@@ -1398,9 +1403,11 @@ static SparkStatus D41OutputToOwners(D41ModelState *state, uint32_t index, uint3
 #define D41_SPREAD (D41_ROWS && D41_HEADS % D41_TP == 0u && (D41_HEADS / D41_OGROUPS) % D41_SPREAD_HEADS == 0u && D41_WO_A_ROWS % D41_TP == 0u && \
 	D41_HIDDEN % D41_TP == 0u)
 
-#define D41_SPREAD_ROWS 16u
-static_assert(!D41_SPREAD || (D41_SPREAD_ROWS * D41_SPREAD_HEADS <= D41_LOCAL_HEADS && D41_SPREAD_ROWS <= D41_OWN_ROWS_MIN),
-	"a spread step's queries end before the index pack in q_local, and its gathered rows fit moe_gathered");
+#define D41_SPREAD_ROWS D41_VERIFY_ROWS
+static_assert(!D41_SPREAD || (D41_SPREAD_ROWS <= D41_OWN_ROWS_MIN && D41_SPREAD_ROWS <= D41_VERIFY_ROWS &&
+	D41_SPREAD_ROWS * D41_SPREAD_HEADS <= D41_WHOLE_RECORD_ROWS * D41_LOCAL_HEADS &&
+	D41_SPREAD_HEADS * D41_HEAD_DIM <= D41_HIDDEN && D41_WO_A_ROWS / D41_TP <= D41_HIDDEN),
+	"a spread step fits moe_gathered, records and verify buffers, and each spread slice fits one collective row");
 
 static SparkStatus D41VerifyWindow(D41ModelState *state, uint32_t index, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
@@ -1420,18 +1427,23 @@ static uint32_t D41SpreadRow(const D41ModelState *state, const SparkStageRunnerS
 }
 
 static SparkStatus D41SpreadGather(D41ModelState *state, SparkGpuStream stream, uint32_t rows, uint32_t width, uint16_t *source, uint16_t *target,
-	uint32_t first_rank, uint32_t ranks)
+	uint32_t first_rank, uint32_t ranks, uint32_t operation = SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, D41Mx *mx = 0)
 {
+	const uint32_t gathered_rows = state->max_rows < D41_OWN_ROWS_MIN ? state->max_rows : D41_OWN_ROWS_MIN;
 	SparkStatus status;
-	if ( rows == 1u && ranks == D41_TP )
-		return CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 1u, width, source, target);
-	if ( width % 8u != 0u || (uint64_t)D41_TP * rows * width > (uint64_t)D41_TP * D41_OWN_ROWS_MIN * D41_HIDDEN )
+	if ( rows == 1u && mx == 0 && (ranks == D41_TP || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) )
+		return CudaStageRound(state, stream, operation, 1u, width, source, target);
+	if ( width % 8u != 0u || (uint64_t)D41_TP * rows * width > (uint64_t)D41_TP * gathered_rows * D41_HIDDEN )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, width, source, state->moe_gathered);
+	status = CudaStageRound(state, stream, operation, rows, width, source, state->moe_gathered);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks((uint64_t)ranks * width / 8u), rows), D41_THREADS, 0, stream, state->moe_gathered, target,
-		rows, width, ranks, first_rank);
+	if ( mx != 0 )
+		LM_LAUNCH((D41RankMajorMxKernel), dim3(D41Blocks((uint64_t)ranks * width / 8u), rows), D41_THREADS, 0, stream, state->moe_gathered,
+			mx->codes, mx->scales, rows, width, ranks, first_rank);
+	else
+		LM_LAUNCH((LmRankMajorRowsKernel<D41_THREADS>), dim3(D41Blocks((uint64_t)ranks * width / 8u), rows), D41_THREADS, 0, stream, state->moe_gathered, target,
+			rows, width, ranks, first_rank);
 	return D41Launched();
 }
 
@@ -1440,7 +1452,7 @@ static D41Fp8Linear D41RowsOf(const D41Fp8Linear *linear, uint32_t first_row, ui
 	D41Fp8Linear part;
 	part.weight = linear->weight + (uint64_t)first_row * input_dimension;
 	part.scale = linear->scale + (uint64_t)first_row * (input_dimension / D41_FP8_BLOCK);
-	part.wide = (const uint16_t *)0;
+	part.wide = linear->wide != 0 ? linear->wide + (uint64_t)first_row * input_dimension : (const uint16_t *)0;
 	return part;
 }
 
@@ -1459,21 +1471,30 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	const uint64_t stride = D41DestinationStride(rows, heads);
 	const float qk_scale = 1.0f / sqrtf((float)D41_HEAD_DIM);
 	uint16_t *ring = (uint16_t *)state->recurrent + (uint64_t)index * D41_RING_ROWS * D41_HEAD_DIM;
-	uint16_t *packed = state->q_local + (uint64_t)D41_LOCAL_HEADS * D41_HEAD_DIM;
 	const uint32_t group_ranks = group_heads / heads;
-	uint16_t *group_input = rows == 1u ? state->group_input + (uint64_t)group * group_heads * D41_HEAD_DIM : state->group_input;
+	uint16_t *group_input = group_ranks == 1u ? state->attn_merged :
+		rows == 1u ? state->group_input + (uint64_t)group * group_heads * D41_HEAD_DIM : state->group_input;
 	const D41Fp8Linear q_part = D41RowsOf(&layer->q_b, head_first * D41_HEAD_DIM, D41_QLORA);
 	const D41Fp8Linear o_a_part = D41RowsOf(&layer->o_a[group], o_a_first, D41_GROUP_WIDTH);
 	const D41Fp8Linear o_b_part = D41RowsOf(&layer->o_b, state->tp_rank * o_b_rows, D41_WO_A_ROWS);
+	const uint32_t in_mx = state->mx_valid, q_mx = D41MxReady(&state->mx, rows, D41_QLORA, state->row_invariant);
+	const uint32_t oa_mx = D41MxReady(&state->mx, rows, D41_GROUP_WIDTH, state->row_invariant);
+	const uint32_t ob_mx = D41MxReady(&state->mx, rows, D41_WO_A_ROWS, state->row_invariant);
+	const uint32_t group_op = group_ranks == 2u ? SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER : SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER;
+	state->mx_valid = 0u;
 	SparkStatus status;
 	static_assert(!D41_SPREAD || D41_LOCAL_HEADS == D41_HEADS, "a spread row starts from every head's weights on every rank");
-	if ( D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms,
-		state->row_invariant, &state->mx, stream) != LM_LAUNCH_OK )
+	if ( (in_mx != 0u ? D41LinearPairMx(&layer->q_a, &layer->kv_a, &state->mx, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms, stream) :
+		D41LinearPair(&layer->q_a, &layer->kv_a, state->xq, state->q_latent, state->kv, rows, D41_HIDDEN, D41_QLORA, D41_HEAD_DIM, sms,
+		state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, state->qrq, rows, D41_QLORA, stream);
+	D41RmsNormQdq(state->q_latent, layer->q_norm, 0, q_mx != 0u ? (uint16_t *)0 : state->qrq, rows, D41_QLORA, stream,
+		q_mx != 0u ? state->mx.codes : (uint8_t *)0, q_mx != 0u ? state->mx.scales : (uint8_t *)0);
 	D41KvNormRopeQdq(state->kv, layer->kv_norm, step->positions, frequency, state->window_kv, rows, stream);
-	if ( (indexed != 0u ? D41LinearPair(&q_part, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
-		D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
+	if ( (q_mx != 0u ? (indexed != 0u ? D41LinearPairMx(&q_part, &layer->idx_q_b, &state->mx, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
+			D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, stream) : D41LinearMx(&q_part, &state->mx, state->q_local, rows, D41_QLORA, width, sms, stream)) :
+		indexed != 0u ? D41LinearPair(&q_part, &layer->idx_q_b, state->qrq, state->q_local, state->idx_pack_local, rows, D41_QLORA, width,
+			D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM, sms, state->row_invariant, &state->mx, stream) :
 		D41Linear(&q_part, state->qrq, state->q_local, rows, D41_QLORA, width, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	D41Rope(state->q_local, rows, heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 0u, 0, stream);
@@ -1481,10 +1502,7 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	if ( status == SPARK_STATUS_OK && D41KvSource(index) && state->compress_done == 0u )
 		status = D41Compress(state, layer, index, step, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
-		status = D41IndexQuery(state, layer, index, step, packed, stream);
-	if ( status == SPARK_STATUS_OK && indexed != 0u &&
-		SparkGpuMemcpyAsync(state->q_gathered, packed, (uint64_t)rows * D41_INDEX_PACK * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		status = D41IndexQuery(state, layer, index, step, state->q_gathered, stream);
 	if ( status == SPARK_STATUS_OK && indexed != 0u )
 		status = cache < 3u ? D41SelectWhole<D41Ratio2Kv>(state, index, step, bound, length, stream) :
 			D41SelectWhole<D41Ratio1Kv>(state, index, step, bound, length, stream);
@@ -1508,8 +1526,12 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 			(uint64_t)rows * width, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin,
 			step->sequence_row_indices, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, qk_scale,
 			heads, 1u, step->parent_rows);
-	else
+	else if ( rows <= 8u )
 		LM_LAUNCH((D41WindowFoldClusterKernel), dim3(D41K_WINDOW_PARTS, heads, rows), D41K_THREADS, 0, stream, state->records_received, heads, state->q_local, state->window_kv, ring,
+			step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
+			state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
+	else
+		LM_LAUNCH((D41WindowFoldWholeKernel), dim3(rows, heads), D41K_THREADS, 0, stream, state->records_received, heads, state->q_local, state->window_kv, ring,
 			step->positions, state->row_lane, state->row_ordinal, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
 			state->recurrent_bytes / sizeof(uint16_t), D41_WINDOW, qk_scale);
 	status = D41VerifyWindow(state, index, step, stream);
@@ -1518,24 +1540,25 @@ static SparkStatus D41AttentionSpread(D41ModelState *state, const D41Layer *laye
 	LM_LAUNCH((D41WindowRingStoreKernel), rows, D41_THREADS, 0, stream, state->window_kv, ring, step->positions, state->row_lane, state->row_ordinal,
 		step->sequence_row_begin, step->recurrent_index, state->recurrent_bytes / sizeof(uint16_t), D41_RING_ROWS, D41_WINDOW, 1u, 0u, rows,
 		step->commit, (const uint32_t *)0);
-	LM_LAUNCH((D41MergeSinkKernel), dim3(rows, heads), D41_THREADS, 0, stream, state->records_received, stride, 1u, heads, layer->sink + head_first,
-		state->attn_merged);
-	D41Rope(state->attn_merged, rows, heads, D41_HEAD_DIM, D41_HEAD_DIM - D41_ROPE, step->positions, 0, frequency, 1u, 0, stream);
+	LM_LAUNCH((D41SpreadOutputKernel<D41_THREADS>), dim3(rows, heads), D41_THREADS, 0, stream, state->records_received, stride, heads,
+		layer->sink + head_first, step->positions, frequency, state->attn_merged, oa_mx == 0u ? 1u : 0u);
 	status = D41Launched();
-	if ( status == SPARK_STATUS_OK )
-		status = D41SpreadGather(state, stream, rows, width, state->attn_merged, state->group_input, group * group_ranks, rows == 1u ? D41_TP : group_ranks);
+	if ( status == SPARK_STATUS_OK && group_ranks > 1u )
+		status = D41SpreadGather(state, stream, rows, width, state->attn_merged, state->group_input, group * group_ranks,
+			rows == 1u ? D41_TP : group_ranks, group_op, oa_mx != 0u ? &state->mx : (D41Mx *)0);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( D41QdqLinear(&o_a_part, group_input, state->wo_a_group, rows, D41_GROUP_WIDTH, o_a_rows, sms, state->row_invariant, &state->mx, stream) !=
-		LM_LAUNCH_OK )
+	if ( (oa_mx != 0u && group_ranks > 1u ? D41LinearMx(&o_a_part, &state->mx, state->wo_a_group, rows, D41_GROUP_WIDTH, o_a_rows, sms, stream) :
+		D41Linear(&o_a_part, group_input, state->wo_a_group, rows, D41_GROUP_WIDTH, o_a_rows, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
-		status = D41SpreadGather(state, stream, rows, o_a_rows, state->wo_a_group, state->wo_a_out, 0u, D41_TP);
+		status = D41SpreadGather(state, stream, rows, o_a_rows, state->wo_a_group, state->wo_a_out, 0u, D41_TP,
+			SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, ob_mx != 0u ? &state->mx : (D41Mx *)0);
 	if ( status != SPARK_STATUS_OK )
 		return status;
-	if ( D41QdqLinear(&o_b_part, state->wo_a_out, state->wo_a_group, rows, D41_WO_A_ROWS, o_b_rows, sms, state->row_invariant, &state->mx, stream) !=
-		LM_LAUNCH_OK )
+	if ( (ob_mx != 0u ? D41LinearMx(&o_b_part, &state->mx, state->wo_a_group, rows, D41_WO_A_ROWS, o_b_rows, sms, stream) :
+		D41QdqLinear(&o_b_part, state->wo_a_out, state->wo_a_group, rows, D41_WO_A_ROWS, o_b_rows, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
@@ -1773,7 +1796,8 @@ static SparkStatus D41AttentionRows(D41ModelState *state, const D41Layer *layer,
 {
 	const uint32_t rows = step->rows, sms = step->multiprocessors, ratio = D41Ratio(index), cache = D41CacheIndex(index);
 	const uint32_t own = state->own_rows, first = state->own_first, parts = D41_HEADS / D41A_QUERIES;
-	const uint32_t live = first < rows ? (rows - first < own ? rows - first : own) : 0u, edge = own < D41_WINDOW_EDGE_ROWS ? own : D41_WINDOW_EDGE_ROWS;
+	const uint32_t edge_need = (D41_WINDOW + state->own_pad + 7u) / 8u * 8u;
+	const uint32_t live = first < rows ? (rows - first < own ? rows - first : own) : 0u, edge = own < edge_need ? own : edge_need;
 	const uint32_t part_width = D41A_QUERIES * D41_HEAD_DIM, index_width = D41_LOCAL_INDEX_HEADS * D41_INDEX_DIM;
 	const float *frequency = ratio > 0u ? state->compress_frequency : state->full_frequency;
 	const uint32_t *bound = ratio == 2u ? state->bound_ratio2 : state->bound_ratio1;
@@ -2049,12 +2073,15 @@ static SparkStatus D41DumpRows(D41ModelState *state, uint32_t layer, uint32_t ki
 	uint32_t width, SparkGpuStream stream);
 
 static int32_t D41Experts(const uint8_t *cells, const uint16_t *activation, uint16_t *output, const D41ModelState *state, uint32_t rows,
-	uint32_t routes, uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t groups, SparkGpuStream stream)
+	uint32_t routes, uint32_t packed, uint32_t input_dimension, uint32_t output_dimension, uint32_t groups, SparkGpuStream stream,
+	const uint8_t *backup = 0, uint32_t primary_groups = 0u)
 {
 	const uint32_t *source = packed != 0u ? (const uint32_t *)0 : state->route_source_token;
 	if ( rows <= D41_SKINNY_EXPERT_ROWS || state->row_invariant != 0u )
-		return LmSkinnyCellExperts(cells, activation, output, state->group_row_offset, source, groups, routes, rows, packed,
-			input_dimension, output_dimension, LM_SKINNY_CELL_TILE_K, stream);
+		return LmSkinnyCellExpertsSplit(cells, backup, backup != 0 ? primary_groups : groups, activation, output, state->group_row_offset, source,
+			groups, routes, rows, packed, input_dimension, output_dimension, LM_SKINNY_CELL_TILE_K, stream);
+	if ( backup != 0 )
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	return LmCellMmaExperts(cells, activation, output, state->group_row_offset, source, groups, routes, packed, input_dimension,
 		output_dimension, LM_SKINNY_CELL_TILE_K, stream);
 }
@@ -2133,6 +2160,14 @@ static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunne
 		state->moe_final, state->partial);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	if ( state->exchange_direct != 0u )
+	{
+		if ( SparkGpuStreamWaitEvent(stream, state->shared_join, 0u) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+		LM_LAUNCH((D41DirectFinishKernel<D41_TP>), dim3(D41Blocks(D41_HIDDEN / 8u), own), D41_THREADS, 0, stream, state->partial,
+			state->exchange_slot, state->shared_out, live, D41_HIDDEN, state->own_out);
+		return D41Launched();
+	}
 	if ( state->moe_rows != 0u )
 		LM_LAUNCH((D41ShuffleSumKernel<D41_TP>), dim3(D41Blocks(D41_HIDDEN / 8u), state->moe_rows), D41_THREADS, 0, stream, state->partial, state->exchange_slot,
 			state->shuffle_received, state->shuffle_rows, D41_HIDDEN, state->moe_send);
@@ -2152,7 +2187,8 @@ static SparkStatus D41ExchangeReturn(D41ModelState *state, const SparkStageRunne
 static SparkStatus D41MoeExchanged(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	const uint32_t index = (uint32_t)(layer - state->layers), held = index < D41_BACKUP_LAYERS && state->backup_cells != 0 ? 1u : 0u;
-	const uint32_t groups = held != 0u ? D41_HELD_EXPERTS : D41_LOCAL_EXPERTS, rows = state->exchange_live, routes = rows * D41_TOPK;
+	const uint32_t copies = held != 0u ? D41BackupCopies(index) : 0u;
+	const uint32_t groups = D41_LOCAL_EXPERTS + copies * D41_LOCAL_EXPERTS, rows = state->exchange_live, routes = rows * D41_TOPK;
 	uint16_t *gate_up = state->expert_slice;
 	uint8_t *codes = (uint8_t *)state->expert_act;
 	if ( rows == 0u )
@@ -2206,24 +2242,44 @@ static int32_t D41FusedRoutes(D41ModelState *state, const D41Layer *layer, const
 	return D41FusedRouteLaunch(&fused, rows, stream);
 }
 
+static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, SparkGpuStream stream);
+
 static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
 	if ( D41Exchanges(state) != 0u )
 		return D41MoeExchanged(state, layer, step, stream);
-	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK;
-	const uint32_t mx_down = state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
+	const uint32_t rows = step->rows, sms = step->multiprocessors, routes = rows * D41_TOPK, index = (uint32_t)(layer - state->layers);
+	if ( D41_ROWS && state->own_rows == 0u && state->dump == 0 && index < D41_BACKUP_LAYERS && state->backup_cells != 0 &&
+		((state->backup_filled >> index) & 1u) == 0u )
+	{
+		const uint64_t row_bytes = (uint64_t)D41_HIDDEN * sizeof(uint16_t);
+		const uint64_t peer_bytes = (uint64_t)D41_BACKUP_PAIR * ((state->backup_group13 + state->backup_group2 + row_bytes - 1u) / row_bytes) * row_bytes;
+		SparkGpuCaptureStatus capturing = SPARK_GPU_CAPTURE_STATUS_NONE;
+		if ( peer_bytes <= (uint64_t)state->max_rows * D41_MOE_ROW_ELEMENTS * sizeof(uint16_t) &&
+			SparkGpuStreamIsCapturing(stream, &capturing) == SPARK_GPU_SUCCESS && capturing == SPARK_GPU_CAPTURE_STATUS_NONE )
+		{
+			const SparkStatus filled = D41FillBackups(state, layer, stream);
+			if ( filled != SPARK_STATUS_OK )
+				return filled;
+		}
+	}
+	const uint32_t in_mx = state->mx_valid, mx_down = state->dump == 0 && state->row_invariant == 0u && rows > D41_SKINNY_EXPERT_ROWS ? 1u : 0u;
 	const uint32_t split = D41SharedSplitStep(state, rows);
 	const uint32_t shared_block = D41_ROWS ? (rows + D41_TP - 1u) / D41_TP : rows, shared_first = D41_ROWS ? state->tp_rank * shared_block : 0u;
 	const uint32_t shared_rows = split == 0u && shared_first < rows ? (rows - shared_first < shared_block ? rows - shared_first : shared_block) : 0u;
+	const uint32_t balanced = D41_ROWS && state->own_rows == 0u && state->dump == 0 && index < D41_BACKUP_LAYERS &&
+		((state->backup_filled >> index) & 1u) != 0u && (rows <= D41_SKINNY_EXPERT_ROWS || state->row_invariant != 0u || (in_mx != 0u && mx_down != 0u)) ? 1u : 0u;
+	const uint32_t copies = balanced != 0u ? D41BackupCopies(index) : 0u, groups = D41_LOCAL_EXPERTS + copies * D41_LOCAL_EXPERTS;
 	uint32_t split_first = 0u, split_width = 0u;
 	uint16_t *gate_up = state->expert_slice;
 	uint8_t *codes = (uint8_t *)state->expert_act;
 	SparkStatus status;
+	state->mx_valid = 0u;
 	if ( split != 0u )
 		D41SharedPart(state->tp_rank, D41_TP, D41_MOE_INTER / D41_SHARED_GRANULE, D41_SHARED_GRANULE, &split_first, &split_width);
 	if ( D41_ROWS && split == 0u && SparkGpuMemsetAsync(state->shared_out, 0, (uint64_t)rows * D41_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	const uint32_t routed = D41RoutesFuse(state, rows);
+	const uint32_t routed = balanced == 0u ? D41RoutesFuse(state, rows) : 0u;
 	if ( state->own_rows == 0u &&
 		(D41Project(layer->router, state->x, 0, state->router_logits, rows, D41_HIDDEN, D41_EXPERTS, sms, state->row_invariant, stream) != LM_LAUNCH_OK ||
 		(routed != 0u ? D41FusedRoutes(state, layer, step, rows, stream) != LM_LAUNCH_OK :
@@ -2235,24 +2291,32 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		SparkGpuMemcpy(state->dump_routes, state->route_expert, (size_t)routes * sizeof(uint32_t), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS ||
 		SparkGpuMemcpy(state->dump_weights, state->route_weight, (size_t)routes * sizeof(float), SPARK_GPU_COPY_DEVICE_TO_HOST) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( routed == 0u )
+	if ( balanced != 0u )
+		LM_LAUNCH((D41BalanceRouteKernel<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_THREADS,D41_HELD_EXPERTS + 1u>), 1u, D41_THREADS, 0, stream,
+			state->route_expert, state->route_weight, state->route_global, rows, D41_TOPK, state->tp_rank, copies, state->row_invariant,
+			state->expert_owner + (uint64_t)index * D41_EXPERTS, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
+			state->expert_group + (uint64_t)index * D41_EXPERTS, state->group_row_offset, state->route_packed_row, state->route_source_token,
+			(uint32_t)LmLaunchGroupedTileM(rows, D41_TOPK, D41_HELD_EXPERTS + 1u), (2u * D41_MOE_INTER + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N,
+			state->tile_prefix_up, (D41_HIDDEN + D41_GEMM_TILE_N - 1u) / D41_GEMM_TILE_N, state->tile_prefix_down, state->packed_weight);
+	else if ( routed == 0u )
+	{
 		LM_LAUNCH((D41RouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global, routes,
-			state->expert_group + (uint64_t)(layer - state->layers) * D41_EXPERTS, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
-	if ( routed == 0u && LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset,
-		state->route_packed_row, state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up, state->tile_prefix_down,
-		stream) != LM_LAUNCH_OK )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-	if ( routed == 0u )
+			state->expert_group + (uint64_t)index * D41_EXPERTS, D41_LOCAL_EXPERTS, D41_LOCAL_EXPERTS, D41_EXPERTS);
+		if ( LmRouteBuild<D41_THREADS,D41_LOCAL_EXPERTS + 1u>(state->route_expert, rows, routes, D41_TOPK, state->group_row_offset,
+			state->route_packed_row, state->route_source_token, 2u * D41_MOE_INTER, D41_HIDDEN, D41_GEMM_TILE_N, state->tile_prefix_up,
+			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
+			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight,
 			routes);
-	const uint32_t in_mx = state->mx_valid, sh_mx = shared_rows != 0u && D41MxReady(&state->mx, shared_rows, state->shared_width, state->row_invariant) != 0u ? 1u : 0u;
-	state->mx_valid = 0u;
+	}
+	const uint32_t sh_mx = shared_rows != 0u && D41MxReady(&state->mx, shared_rows, state->shared_width, state->row_invariant) != 0u ? 1u : 0u;
 	D41Mx sh_in = { state->mx.codes + (uint64_t)shared_first * D41_HIDDEN, state->mx.scales + (uint64_t)shared_first * (D41_HIDDEN / D41_FP8_BLOCK), state->mx.grid };
 	if ( (in_mx != 0u && mx_down != 0u ?
-		LmCellMxExperts(layer->e_w13_cells, state->mx.codes, state->mx.scales, gate_up, state->group_row_offset, state->route_source_token,
-			D41_LOCAL_EXPERTS, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, stream) :
-		D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, D41_LOCAL_EXPERTS, stream)) !=
-		LM_LAUNCH_OK ||
+		LmCellMxExpertsSplit(layer->e_w13_cells, balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
+			LmCellMxPacked(state->mx.codes, state->mx.scales, D41_HIDDEN), gate_up, state->group_row_offset, state->route_source_token, groups, routes, 0u,
+			D41_HIDDEN, 2u * D41_MOE_INTER, stream) :
+		D41Experts(layer->e_w13_cells, state->xq, gate_up, state, rows, routes, 0u, D41_HIDDEN, 2u * D41_MOE_INTER, groups, stream,
+			balanced != 0u ? layer->e_w13_backup : (const uint8_t *)0, D41_LOCAL_EXPERTS)) != LM_LAUNCH_OK ||
 		(split != 0u ? D41LinearPair(&layer->sh_w1_split, &layer->sh_w3_split, state->xq, state->shared_gate, state->shared_up, rows, D41_HIDDEN,
 			split_width, split_width, sms, state->row_invariant, (const D41Mx *)0, stream) != LM_LAUNCH_OK :
 		D41_ROWS ? shared_rows != 0u && (in_mx != 0u ?
@@ -2262,7 +2326,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 			D41SharedUp(state, layer, rows, sms, in_mx, stream) != LM_LAUNCH_OK) )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	LM_LAUNCH((D41ExpertActKernel), dim3(D41Blocks(D41_MOE_INTER / 8u), routes < D41_ACT_BLOCKS ? routes : D41_ACT_BLOCKS), D41_THREADS, 0, stream, gate_up,
-		state->packed_weight, state->group_row_offset, D41_LOCAL_EXPERTS, codes, mx_down != 0u ? (uint16_t *)0 : state->expert_act, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
+		state->packed_weight, state->group_row_offset, groups, codes, mx_down != 0u ? (uint16_t *)0 : state->expert_act, routes, D41_MOE_INTER, D41_SWIGLU_LIMIT);
 	if ( split != 0u )
 		LM_LAUNCH((D41SwigluRowsKernel), dim3(D41Blocks(split_width), rows), D41_THREADS, 0, stream, state->shared_gate, state->shared_up, state->shared_act,
 			split_width, D41_SWIGLU_LIMIT);
@@ -2287,16 +2351,17 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		D41QdqLinear(&layer->sh_w2, state->shared_act, state->shared_out + (uint64_t)shared_first * D41_HIDDEN, shared_rows,
 		state->shared_width, D41_HIDDEN, sms, state->row_invariant, &state->mx, stream)) != LM_LAUNCH_OK) ||
 		(mx_down != 0u ?
-		LmCellMxExperts(layer->e_w2_cells, codes, codes + (uint64_t)routes * D41_MOE_INTER, state->expert_slice, state->group_row_offset,
-			(const uint32_t *)0, D41_LOCAL_EXPERTS, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) :
-		D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, D41_LOCAL_EXPERTS,
-			stream)) != LM_LAUNCH_OK )
+		LmCellMxExpertsSplit(layer->e_w2_cells, balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0, balanced != 0u ? D41_LOCAL_EXPERTS : 0u,
+			LmCellMxPacked(codes, codes + (uint64_t)routes * D41_MOE_INTER, D41_MOE_INTER), state->expert_slice, state->group_row_offset,
+			(const uint32_t *)0, groups, routes, 1u, D41_MOE_INTER, D41_HIDDEN, stream) :
+		D41Experts(layer->e_w2_cells, state->expert_act, state->expert_slice, state, rows, routes, 1u, D41_MOE_INTER, D41_HIDDEN, groups, stream,
+			balanced != 0u ? layer->e_w2_backup : (const uint8_t *)0, D41_LOCAL_EXPERTS)) != LM_LAUNCH_OK )
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	if ( split != 0u )
 	{
 		float *partial = (float *)state->moe_final;
 		LM_LAUNCH((D41MoeFinalizeF32Kernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
-			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
+			state->route_expert, (const float *)state->shared_out, partial, D41_TOPK, groups, D41_HIDDEN);
 		status = D41Launched();
 		if ( status == SPARK_STATUS_OK )
 			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, 2u * rows, D41_HIDDEN, partial, state->moe_gathered);
@@ -2307,7 +2372,7 @@ static SparkStatus D41MoeWhole(D41ModelState *state, const D41Layer *layer, cons
 		return D41Launched();
 	}
 	LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(D41Blocks(D41_HIDDEN), rows), D41_THREADS, 0, stream, state->expert_slice, state->route_packed_row,
-		state->route_expert, state->shared_out, state->moe_final, D41_TOPK, D41_LOCAL_EXPERTS, D41_HIDDEN);
+		state->route_expert, state->shared_out, state->moe_final, D41_TOPK, groups, D41_HIDDEN);
 	status = D41Launched();
 	if ( status != SPARK_STATUS_OK )
 		return status;
@@ -2531,8 +2596,8 @@ static SparkStatus D41FillBackupPass(D41ModelState *state, const D41Layer *layer
 
 static SparkStatus D41FillBackups(D41ModelState *state, const D41Layer *layer, SparkGpuStream stream)
 {
-	const uint32_t index = (uint32_t)(layer - state->layers);
-	for ( uint32_t copy = 0u; copy < D41_BACKUP_COPIES; ++copy )
+	const uint32_t index = (uint32_t)(layer - state->layers), copies = D41BackupCopies(index);
+	for ( uint32_t copy = 0u; copy < copies; ++copy )
 		for ( uint32_t first = 0u; first < D41_LOCAL_EXPERTS; first += D41_BACKUP_PASS )
 		{
 			const SparkStatus status = D41FillBackupPass(state, layer, copy, first, first + D41_BACKUP_PASS < D41_LOCAL_EXPERTS ? first + D41_BACKUP_PASS :
@@ -2548,14 +2613,15 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 {
 	const uint32_t own = state->own_rows, rows = step->rows, first = state->own_first, sms = step->multiprocessors;
 	const uint32_t routed = first + own <= rows ? own : rows > first ? rows - first : 0u, shuffle = (own + D41_TP - 1u) / D41_TP;
-	const uint32_t index = (uint32_t)(layer - state->layers);
+	const uint32_t index = (uint32_t)(layer - state->layers), max_cap = state->max_rows / D41_TP;
 	const uint32_t held = index < D41_BACKUP_LAYERS && state->backup_cells != 0 && shuffle <= UINT8_MAX ? 1u : 0u;
 	const uint64_t record_bytes = (uint64_t)D41_FFN_GATHER_ELEMENTS * sizeof(uint16_t);
 	const uint64_t counts_bytes = held != 0u ? sizeof(D41Counts) : offsetof(D41Counts, routes);
 	const uint8_t *owner = state->expert_owner + (uint64_t)index * D41_EXPERTS;
 	uint8_t *codes = (uint8_t *)state->attn_merged, *scales = codes + (uint64_t)own * D41_HIDDEN;
 	uint8_t *moe_codes = codes, *moe_scales = codes + (uint64_t)D41_TP * shuffle * D41_HIDDEN;
-	uint32_t pair[D41_TP * D41_TP], capacity = 0u, offload = 0u;
+	uint32_t pair[D41_TP * D41_TP], direct_pair[D41_TP * D41_TP], capacity = 0u, direct_cap = 0u, shuffle_cap = 0u, offload = 0u, direct_offload = 0u;
+	uint16_t direct_quota[D41_BACKUP_COPIES * D41_TP * D41_EXPERTS];
 	D41Mx side = state->mx;
 	SparkStatus status = held != 0u && ((state->backup_filled >> index) & 1u) == 0u ? D41FillBackups(state, layer, stream) : SPARK_STATUS_OK;
 	side.grid = UINT32_MAX;
@@ -2594,26 +2660,46 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	LM_LAUNCH((D41ExchangeTotalsKernel<D41_TP,D41_EXPERTS>), held != 0u ? 7u : 1u, 1024u, 0, stream, (const uint8_t *)state->exchange_counts, counts_bytes, held,
 		state->exchange_totals);
 	if ( D41Launched() != SPARK_STATUS_OK ||
-		SparkGpuMemcpyAsync(state->exchange_totals_host, state->exchange_totals, held != 0u ? sizeof(D41Totals) : sizeof(state->exchange_totals->pair),
-			SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS || SparkGpuEventRecord(state->counts_ready, stream) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( routed != 0u )
-		LM_LAUNCH((D41ShufflePackKernel), routed, 256u, 0, stream, codes, scales, state->route_expert, state->route_weight, first, D41_TP, shuffle, D41_HIDDEN,
-			D41_TOPK, record_bytes, (uint8_t *)state->moe_send);
-	status = D41Launched();
-	if ( status == SPARK_STATUS_OK )
-		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, shuffle, D41_FFN_GATHER_ELEMENTS, state->moe_send,
-			state->moe_received);
-	if ( status != SPARK_STATUS_OK )
-		return status;
-	if ( SparkGpuEventSynchronize(state->counts_ready) != SPARK_GPU_SUCCESS )
+		SparkGpuMemcpyAsync(state->exchange_totals_host, state->exchange_totals, held != 0u ? sizeof(D41Totals) : offsetof(D41Totals, routes),
+			SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS || SparkGpuEventRecord(state->counts_ready, stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuEventSynchronize(state->counts_ready) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	if ( held != 0u )
+	{
+		const uint8_t *owner_h = state->owner_host + (uint64_t)index * D41_EXPERTS;
+		const uint8_t *backup_h = state->backup_host + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS;
+		const uint16_t *at_h = state->expert_at_host + (uint64_t)index * D41_TP * D41_LOCAL_EXPERTS;
 		offload = D41BackupPlan<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_BACKUP_COPIES>(state->exchange_totals_host,
-			state->owner_host + (uint64_t)index * D41_EXPERTS, state->backup_host + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS,
-			state->expert_at_host + (uint64_t)index * D41_TP * D41_LOCAL_EXPERTS, D41_TP * shuffle, state->exchange_quota_host, pair);
+			owner_h, backup_h, at_h, D41_TP * shuffle, state->exchange_quota_host, pair);
+		direct_offload = D41BackupPlanFor<D41_TP,D41_EXPERTS,D41_LOCAL_EXPERTS,D41_BACKUP_COPIES>(state->exchange_totals_host->direct_pair,
+			state->exchange_totals_host->routes, state->exchange_totals_host->direct_sole, owner_h, backup_h, at_h, max_cap, direct_quota, direct_pair);
+	}
 	else
+	{
 		memcpy(pair, state->exchange_totals_host->pair, sizeof(pair));
+		memcpy(direct_pair, state->exchange_totals_host->direct_pair, sizeof(direct_pair));
+	}
+	for ( uint32_t i = 0u; i < D41_TP * D41_TP; ++i )
+	{
+		shuffle_cap = pair[i] > shuffle_cap ? pair[i] : shuffle_cap;
+		direct_cap = direct_pair[i] > direct_cap ? direct_pair[i] : direct_cap;
+	}
+	shuffle_cap = shuffle_cap != 0u ? (shuffle_cap + 7u) / 8u * 8u : 8u;
+	direct_cap = direct_cap != 0u ? (direct_cap + 7u) / 8u * 8u : 8u;
+	const uint32_t direct = direct_cap <= shuffle_cap + shuffle && direct_cap <= max_cap ? 1u : 0u;
+	state->exchange_direct = direct;
+	if ( direct != 0u )
+	{
+		memcpy(pair, direct_pair, sizeof(pair));
+		if ( direct_offload != 0u )
+			memcpy(state->exchange_quota_host, direct_quota, sizeof(direct_quota));
+		offload = direct_offload;
+		capacity = direct_cap;
+	}
+	else
+		capacity = shuffle_cap;
+	if ( capacity > (direct != 0u ? max_cap : D41_TP * shuffle) )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	state->shuffle_rows = shuffle;
 	state->shuffle_received.first[0] = 0u;
 	state->exchange_received.first[0] = 0u;
@@ -2621,29 +2707,36 @@ static SparkStatus D41FfnExchange(D41ModelState *state, const D41Layer *layer, c
 	{
 		state->shuffle_received.first[source + 1u] = state->shuffle_received.first[source] + D41ShuffleCount(source, state->tp_rank, rows, own, D41_TP);
 		state->exchange_received.first[source + 1u] = state->exchange_received.first[source] + pair[source * D41_TP + state->tp_rank];
-		for ( uint32_t target = 0u; target < D41_TP; ++target )
-			capacity = pair[source * D41_TP + target] > capacity ? pair[source * D41_TP + target] : capacity;
 	}
-	capacity = capacity != 0u ? (capacity + 7u) / 8u * 8u : 8u;
-	if ( capacity > D41_TP * shuffle )
-		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 	state->exchange_rows = capacity;
-	state->moe_rows = state->shuffle_received.first[D41_TP];
+	state->moe_rows = direct != 0u ? routed : state->shuffle_received.first[D41_TP];
 	state->exchange_live = state->exchange_received.first[D41_TP];
+	if ( direct == 0u )
+	{
+		if ( routed != 0u )
+			LM_LAUNCH((D41ShufflePackKernel), routed, 256u, 0, stream, codes, scales, state->route_expert, state->route_weight, first, D41_TP, shuffle,
+				D41_HIDDEN, D41_TOPK, record_bytes, (uint8_t *)state->moe_send);
+		status = D41Launched();
+		if ( status == SPARK_STATUS_OK )
+			status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, shuffle, D41_FFN_GATHER_ELEMENTS, state->moe_send,
+				state->moe_received);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		if ( state->moe_rows != 0u )
+			LM_LAUNCH((D41ShuffleUnpackKernel<D41_TP>), dim3(2u, state->moe_rows), D41_THREADS, 0, stream, (const uint8_t *)state->moe_received,
+				state->shuffle_received, shuffle, D41_HIDDEN, D41_TOPK, record_bytes, moe_codes, moe_scales, state->route_expert, state->route_weight);
+	}
 	if ( offload != 0u && SparkGpuMemcpy2DAsync(state->exchange_quota, D41_EXPERTS * sizeof(uint16_t),
 		state->exchange_quota_host + (uint64_t)state->tp_rank * D41_EXPERTS, (uint64_t)D41_TP * D41_EXPERTS * sizeof(uint16_t), D41_EXPERTS * sizeof(uint16_t),
 		D41_BACKUP_COPIES, SPARK_GPU_COPY_HOST_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
-	if ( state->moe_rows != 0u )
-		LM_LAUNCH((D41ShuffleUnpackKernel<D41_TP>), dim3(2u, state->moe_rows), D41_THREADS, 0, stream, (const uint8_t *)state->moe_received, state->shuffle_received,
-			shuffle, D41_HIDDEN, D41_TOPK, record_bytes, moe_codes, moe_scales, state->route_expert, state->route_weight);
 	LM_LAUNCH((D41ExchangeSlotsKernel<D41_TP,D41_EXPERTS,D41_TOPK,D41_BACKUP_COPIES>), 1u, D41K_SLOT_WARPS * 32u, 0, stream, state->route_expert, state->moe_rows,
 		owner, state->expert_backup + (uint64_t)index * D41_BACKUP_COPIES * D41_EXPERTS, offload != 0u ? state->exchange_quota : (const uint16_t *)0, capacity,
-		state->exchange_slot,
-		state->exchange_slot_count);
+		state->exchange_slot, state->exchange_slot_count);
 	if ( state->moe_rows != 0u )
-		LM_LAUNCH((D41ExchangePackKernel), dim3(state->moe_rows, D41_TP), 256u, 0, stream, moe_codes, moe_scales, state->route_expert, state->route_weight,
-			state->exchange_slot, owner, D41_TP, capacity, D41_HIDDEN, D41_TOPK, D41_EXPERTS, record_bytes, (uint8_t *)state->moe_send);
+		LM_LAUNCH((D41ExchangePackKernel), dim3(state->moe_rows, D41_TP), 256u, 0, stream, direct != 0u ? codes : moe_codes, direct != 0u ? scales : moe_scales,
+			state->route_expert, state->route_weight, state->exchange_slot, owner, D41_TP, capacity, D41_HIDDEN, D41_TOPK, D41_EXPERTS, record_bytes,
+			(uint8_t *)state->moe_send);
 	status = D41Launched();
 	if ( status == SPARK_STATUS_OK )
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, capacity, D41_FFN_GATHER_ELEMENTS, state->moe_send,
@@ -3283,7 +3376,9 @@ struct D41Cuda : CudaStage<D41Cuda>
 					mx_s = mx_c + (uint64_t)own * D41_HIDDEN;
 					pre_coded = 1u;
 				}
-				else if ( (ffn ? (D41SharedSplitStep(state, rows) == 0u && rows > D41_SKINNY_EXPERT_ROWS) : (own != 0u || !D41_ROWS)) &&
+				else if ( (ffn ? (D41SharedSplitStep(state, rows) == 0u && rows > D41_SKINNY_EXPERT_ROWS) :
+					(own != 0u || !D41_ROWS || !(frame.current->commit != 0u &&
+					D41MxReady(&state->mx, (rows + D41_OWN_ROWS_STEP - 1u) / D41_OWN_ROWS_STEP * (D41_OWN_ROWS_STEP / D41_TP), D41_QLORA, state->row_invariant) != 0u))) &&
 					D41MxReady(&state->mx, n, D41_HIDDEN, state->row_invariant) != 0u )
 				{
 					mx_c = state->mx.codes;
@@ -3635,16 +3730,17 @@ static uint32_t D41BackupPlaces(D41ModelState *state, const uint8_t *owner, cons
 		uint16_t *at = state->expert_at_host + (uint64_t)layer * D41_TP * D41_LOCAL_EXPERTS;
 		uint8_t *layer_backup = backup + (uint64_t)layer * D41_BACKUP_COPIES * D41_EXPERTS;
 		uint32_t placed[D41_BACKUP_COPIES][D41_TP], held[D41_EXPERTS];
+		const uint32_t copies = layer < D41_BACKUP_LAYERS ? D41BackupCopies(layer) : 0u;
 		memset(placed, 0, sizeof(placed));
 		for ( uint32_t expert = 0u; expert < D41_EXPERTS; ++expert )
 		{
 			at[owner[base + expert] * D41_LOCAL_EXPERTS + slot[base + expert]] = (uint16_t)expert;
 			held[expert] = D41_HELD_EXPERTS;
 			for ( uint32_t copy = 0u; copy < D41_BACKUP_COPIES; ++copy )
-				layer_backup[copy * D41_EXPERTS + expert] = layer < D41_BACKUP_LAYERS ? (uint8_t)D41BackupRank(copy, owner[base + expert], slot[base + expert]) :
+				layer_backup[copy * D41_EXPERTS + expert] = copy < copies ? (uint8_t)D41BackupRank(copy, owner[base + expert], slot[base + expert]) :
 					(uint8_t)UINT8_MAX;
 		}
-		for ( uint32_t copy = 0u; copy < D41_BACKUP_COPIES && layer < D41_BACKUP_LAYERS; ++copy )
+		for ( uint32_t copy = 0u; copy < copies; ++copy )
 			for ( uint32_t home = 0u; home < D41_TP; ++home )
 				for ( uint32_t index = 0u; index < D41_LOCAL_EXPERTS; ++index )
 				{
@@ -4418,18 +4514,23 @@ static SparkStatus D41PackCells(D41ModelState *state, SparkWeightdLazyPack *lazy
 	}
 	if ( D41_BACKUP_LAYERS != 0u && whole != 0u )
 	{
-		const uint64_t g13 = bytes[0] / groups, g2 = bytes[1] / groups, layer_bytes = (uint64_t)D41_BACKUP_COPIES * D41_LOCAL_EXPERTS * (g13 + g2);
-		if ( SparkGpuMalloc((void **)&state->backup_cells, (uint64_t)D41_BACKUP_LAYERS * layer_bytes) != SPARK_GPU_SUCCESS )
+		const uint64_t g13 = bytes[0] / groups, g2 = bytes[1] / groups, copy_bytes = (uint64_t)D41_LOCAL_EXPERTS * (g13 + g2);
+		uint64_t total_copies = 0u, offset = 0u;
+		for ( uint32_t index = 0u; index < D41_BACKUP_LAYERS; ++index )
+			total_copies += D41BackupCopies(index);
+		if ( SparkGpuMalloc((void **)&state->backup_cells, total_copies * copy_bytes) != SPARK_GPU_SUCCESS )
 		{
 			state->backup_cells = 0;
 			fprintf(stderr, "sparkpipe_dsv41_flash: %llu bytes for backup expert copies could not be allocated\n",
-				(unsigned long long)((uint64_t)D41_BACKUP_LAYERS * layer_bytes));
+				(unsigned long long)(total_copies * copy_bytes));
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		for ( uint32_t index = 0u; index < D41_BACKUP_LAYERS; ++index )
 		{
-			state->layers[index].e_w13_backup = state->backup_cells + index * layer_bytes;
-			state->layers[index].e_w2_backup = state->backup_cells + index * layer_bytes + D41_BACKUP_COPIES * D41_LOCAL_EXPERTS * g13;
+			const uint64_t copies = D41BackupCopies(index);
+			state->layers[index].e_w13_backup = state->backup_cells + offset;
+			state->layers[index].e_w2_backup = state->backup_cells + offset + copies * D41_LOCAL_EXPERTS * g13;
+			offset += copies * copy_bytes;
 		}
 		state->backup_group13 = g13;
 		state->backup_group2 = g2;
