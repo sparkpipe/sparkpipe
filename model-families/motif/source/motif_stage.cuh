@@ -149,6 +149,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	using LaneShared = CudaStageFields<&State::full_inv_freq, &State::kv_error>;
 	static constexpr uint32_t kGroups = State::kGroups, kHeads = State::kHeads, kSignal = State::kSignal, kLocalExperts = State::kLocalExperts;
 	static constexpr bool kLanes = true;
+	static constexpr bool kKeepRows = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = MO_HIDDEN;
 	static constexpr uint32_t kVocab = MO_VOCAB;
@@ -164,35 +165,12 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		uint32_t index;
 	};
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::WeightdModel();
-	}
-
-	static const char *WeightdRevision(void)
-	{
-		return G::WeightdRevision();
-	}
-
-	static uint32_t QuerySequences(uint32_t rows)
-	{
-		return (uint32_t)(((uint64_t)rows * kHeads * MO_SLOT + MO_HIDDEN - 1u) / MO_HIDDEN);
-	}
-
-	static uint32_t RecordSequences(uint32_t rows)
-	{
-		return (uint32_t)(((uint64_t)rows * kHeads * MO_RECORD * 2u + MO_HIDDEN - 1u) / MO_HIDDEN);
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::WeightdModel(); }
+	static const char *WeightdRevision(void) { return G::WeightdRevision(); }
+	static uint32_t QuerySequences(uint32_t rows) { return (uint32_t)(((uint64_t)rows * kHeads * MO_SLOT + MO_HIDDEN - 1u) / MO_HIDDEN); }
+	static uint32_t RecordSequences(uint32_t rows) { return (uint32_t)(((uint64_t)rows * kHeads * MO_RECORD * 2u + MO_HIDDEN - 1u) / MO_HIDDEN); }
 
 	static SparkStatus Check(int32_t status, const char *site, uint32_t layer)
 	{
@@ -234,6 +212,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			fprintf(stderr, "%s: step refused rows=%u sequences=%u kv_attached=%u\n", G::Tag(), step->rows, step->sequences, state->kv_attached);
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 		}
+		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		frame->step = step;
 		frame->stream = (SparkGpuStream)stream;
 		frame->layer = 0;
@@ -301,7 +281,8 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		}
 		return LmLatentShardPartialLaunch<MotifKv, LmKvShardView, MO_LATENT, MO_ROPE>(state->views[layer], state->gathered, query_stride, kHeads,
 			step->sequence_of_row, step->context_length, step->positions, selected, selected_count, selected_count, scale, state->partials,
-			record_stride, rows, stream);
+			record_stride, rows, stream, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+			step->tree != 0u ? step->slot_offsets : (const uint32_t *)0);
 	}
 
 	static SparkStatus Attention(State *state, Frame &frame, uint32_t layer, bool window)
@@ -339,7 +320,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);
 		LM_LAUNCH((LmQueryRopePackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads, MO_LATENT, MO_NOPE, MO_ROPE);
 		LM_LAUNCH((LmKvShardStoreKernel<MotifKv, MO_THREADS>), rows, MO_THREADS, 0, stream, state->views[layer], state->slot, step->sequence_of_row,
-			step->positions, rows, MO_SLOT);
+			step->tree != 0u ? step->slots : step->positions, rows, MO_SLOT);
 		if ( window )
 			LM_LAUNCH((MotifWindowListKernel), rows, MO_THREADS, 0, stream, step->positions, state->windows, rows);
 		status = Check(LM_LAUNCH_OK, "kv store", layer);
@@ -362,19 +343,28 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		return Check(Linear(w->out, state->diff, state->partial, rows, kSignal * MO_VALUE, MO_HIDDEN, sms, stream), "attention out", layer);
 	}
 
-	static SparkStatus FullAttention(State *state, Frame &frame, uint32_t layer)
-	{
-		return Attention(state, frame, layer, false);
-	}
+	static SparkStatus FullAttention(State *state, Frame &frame, uint32_t layer) { return Attention(state, frame, layer, false); }
+	static SparkStatus WindowAttention(State *state, Frame &frame, uint32_t layer) { return Attention(state, frame, layer, true); }
+	static SparkStatus AllReduce(State *state, Frame &frame) { return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial); }
 
-	static SparkStatus WindowAttention(State *state, Frame &frame, uint32_t layer)
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
-		return Attention(state, frame, layer, true);
-	}
-
-	static SparkStatus AllReduce(State *state, Frame &frame)
-	{
-		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+		State *state = (State *)model;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
+		if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree == 0u )
+			return SPARK_STATUS_OK;
+		if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < MO_LAYERS; ++layer )
+		{
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+			LM_LAUNCH((LmKvShardPathMoveKernel<MotifKv, MO_THREADS>), step->rows, MO_THREADS, 0, stream, state->views[layer],
+				step->sequence_of_row, step->sequence_row_indices, kept, step->slots, MO_SLOT);
+			CudaStageRowState(state, layer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		}
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperPost(State *state, Frame &frame, uint32_t layer, uint32_t part)
@@ -527,10 +517,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		return CudaStagePlace(plan, base);
 	}
 
-	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
-	{
-		return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u;
-	}
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration) { return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u; }
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
@@ -565,6 +552,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
+		geometry->tree_verify = 1u;
 		geometry->head_norm_round_first = 1u;
 		if ( CudaStage<MotifStage>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -575,10 +563,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	}
 
 	template<class T>
-	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes)
-	{
-		tensors->Add(name, kind, bytes, field);
-	}
+	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes) { tensors->Add(name, kind, bytes, field); }
 
 	static SparkStatus LayerTensors(State *state, uint32_t index, CudaStageTensors *t)
 	{

@@ -221,7 +221,10 @@ struct HyModel : CudaStage<HyModel<G>>
 	using Schedule = HySchedule<G, HyModel>;
 	using Kv = CudaStageKv<CudaStageKvViews<typename S::Kv, &State::kv_views, 0u, G::kLayers>,
 		CudaStageKvViews<typename S::IndexKv, &State::index_views, 1u, G::kIndexLayers>>;
+	using LaneShared = CudaStageFields<&State::kv_error>;
 
+	static constexpr bool kLanes = true;
+	static constexpr bool kKeepRows = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = G::kHidden;
 	static constexpr uint32_t kVocab = G::kVocab;
@@ -235,25 +238,10 @@ struct HyModel : CudaStage<HyModel<G>>
 		SparkGpuStream stream;
 	};
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::Name();
-	}
-
-	static LmScaleTensor Scales(const uint8_t *scale, uint32_t groups, uint32_t rows, uint32_t input_dimension)
-	{
-		return LmScaleTensorBuild(scale, LM_SCALE_ENCODING_UE8M0, groups, rows, input_dimension, 1u, HY_SCALE_GROUP);
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::Name(); }
+	static LmScaleTensor Scales(const uint8_t *scale, uint32_t groups, uint32_t rows, uint32_t input_dimension) { return LmScaleTensorBuild(scale, LM_SCALE_ENCODING_UE8M0, groups, rows, input_dimension, 1u, HY_SCALE_GROUP); }
 
 	static int32_t Linear(const HyScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
@@ -305,10 +293,11 @@ struct HyModel : CudaStage<HyModel<G>>
 		LM_LAUNCH((LmScaleElementsKernel<float>), LmGridBlocks<HY_THREADS>(((uint64_t)rows * G::kIndexHeads + 3u) >> 2u), HY_THREADS, 0, stream, state->index_weights,
 			(uint64_t)rows * G::kIndexHeads, (float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::IndexKv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->index_k, step->sequence_of_row,
-			step->positions, rows, G::kIndexDim);
+			step->tree != 0u ? step->slots : step->positions, rows, G::kIndexDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmWeightedSparseScoreLaunch<typename S::IndexKv, G::kIndexHeads, G::kIndexDim, LmKvShardView, false, float>(state->index_q, state->index_weights,
-				*view, step->sequence_of_row, step->context_length, step->positions, rows, state->local_capacity, 1.0f, state->index_scores, stream) != SPARK_GPU_SUCCESS ||
+				*view, step->sequence_of_row, step->context_length, step->positions, rows, state->local_capacity, 1.0f, state->index_scores, stream,
+				step->tree != 0u ? step->fork_positions : (const uint32_t *)0, step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS ||
 			LmTopkExactLaunch<HY_THREADS>(state->index_scores, rows, state->local_capacity, G::kIndexTopk, LM_TOPK_EXACT_CHUNK,
 				LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->topk_entries,
 				state->index_local_selected, stream) != SPARK_GPU_SUCCESS ||
@@ -364,7 +353,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
-			step->positions, rows, S::kSlot);
+			step->tree != 0u ? step->slots : step->positions, rows, S::kSlot);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if ( G::IndexerLayer(index) )
@@ -378,7 +367,8 @@ struct HyModel : CudaStage<HyModel<G>>
 			return status;
 		if ( LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->gathered, query_stride, S::kRankHeads,
 				step->sequence_of_row, step->context_length, step->positions, state->selected, G::kIndexTopk, G::kIndexTopk,
-				(float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, rows, stream) != SPARK_GPU_SUCCESS )
+				(float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, rows, stream,
+				step->tree != 0u ? step->fork_positions : (const uint32_t *)0, step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->send,
 			state->received);
@@ -495,14 +485,36 @@ struct HyModel : CudaStage<HyModel<G>>
 		return CudaStageLaunched();
 	}
 
-	static SparkStatus AllReduce(State *state, const Frame &frame)
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
 	{
-		return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial);
+		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		return CudaStage<HyModel>::Begin(state, step, stream, frame);
 	}
+
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
+	{
+		State *state = (State *)model;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
+		if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree == 0u )
+			return SPARK_STATUS_OK;
+		if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t index = 0u; index < G::kLayers; ++index )
+			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::Kv,HY_THREADS>), step->rows, HY_THREADS, 0, stream,
+				state->kv_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, S::kSlot);
+		for ( uint32_t index = 0u; index < G::kIndexLayers; ++index )
+			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::IndexKv,HY_THREADS>), step->rows, HY_THREADS, 0, stream,
+				state->index_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, G::kIndexDim);
+		return CudaStageLaunched();
+	}
+
+	static SparkStatus AllReduce(State *state, const Frame &frame) { return CudaStageRound(state, frame.stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16, frame.step->rows, 0u, state->partial, state->partial); }
 
 	static uint64_t Plan(State *state, uint8_t *base, uint32_t lane)
 	{
-		(void)lane;
 		const uint64_t rows = state->max_rows, routes = rows * G::kTopK, groups = G::kLocalExperts + 2u;
 		const uint64_t width = rows * G::kHidden * sizeof(uint16_t), chunk = rows < HY_SELECT_CHUNK ? rows : HY_SELECT_CHUNK;
 		const CudaStageSlice plan[] =
@@ -554,7 +566,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			{ (void **)&state->shared_gate_up, rows * 2u * state->shared_rows * sizeof(uint16_t) },
 			{ (void **)&state->shared_act, rows * state->shared_rows * sizeof(uint16_t) },
 			{ (void **)&state->shared_out, width },
-			{ (void **)&state->kv_error, sizeof(LmKvAccessError) },
+			{ (void **)&state->kv_error, lane == 0u ? sizeof(LmKvAccessError) : 0u },
 		};
 		return CudaStagePlace(plan, base);
 	}
@@ -575,16 +587,8 @@ struct HyModel : CudaStage<HyModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
-	{
-		return configuration->kv_pages_per_sequence != 0u ? 1u : 0u;
-	}
-
-	static SparkStatus Prepare(State *state, const SparkStageRunnerConfiguration *configuration)
-	{
-		state->context_capacity = configuration->kv_pages_per_sequence * G::kPageSlots;
-		return SPARK_STATUS_OK;
-	}
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration) { return configuration->kv_pages_per_sequence != 0u ? 1u : 0u; }
+	static SparkStatus Prepare(State *state, const SparkStageRunnerConfiguration *configuration) { state->context_capacity = configuration->kv_pages_per_sequence * G::kPageSlots; return SPARK_STATUS_OK; }
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
@@ -611,6 +615,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
 		const uint32_t vocab_rows = G::kVocab / state->tp_degree;
+		geometry->tree_verify = 1u;
 		if ( CudaStage<HyModel>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
 		if ( geometry->embed_rows != vocab_rows || geometry->head_rows != vocab_rows ||
@@ -634,10 +639,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	}
 
 	template<class T>
-	static void Add(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t elements)
-	{
-		tensors->Add(name, kind, elements * sizeof(T), field);
-	}
+	static void Add(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t elements) { tensors->Add(name, kind, elements * sizeof(T), field); }
 
 	static SparkStatus AddScaled(CudaStageTensors *tensors, uint32_t index, const char *name, HyScaled *field, uint64_t rows, uint32_t columns)
 	{

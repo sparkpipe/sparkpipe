@@ -195,20 +195,9 @@ struct LingModel : CudaStage<LingModel<G>>
 		SparkGpuStream stream;
 	};
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::Name();
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::Name(); }
 
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
@@ -236,20 +225,9 @@ struct LingModel : CudaStage<LingModel<G>>
 		return LM_LAUNCH_OK;
 	}
 
-	static uint16_t *ReplayQkv(State *state, const LingLayer *layer)
-	{
-		return state->replay_qkv + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaChannels;
-	}
-
-	static float *ReplayRetention(State *state, const LingLayer *layer)
-	{
-		return state->replay_retention + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaWidth;
-	}
-
-	static float *ReplayWriteGate(State *state, const LingLayer *layer)
-	{
-		return state->replay_write_gate + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaRankHeads;
-	}
+	static uint16_t *ReplayQkv(State *state, const LingLayer *layer) { return state->replay_qkv + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaChannels; }
+	static float *ReplayRetention(State *state, const LingLayer *layer) { return state->replay_retention + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaWidth; }
+	static float *ReplayWriteGate(State *state, const LingLayer *layer) { return state->replay_write_gate + (uint64_t)layer->recurrent_index * G::kVerifyRows * S::kKdaRankHeads; }
 
 	static SparkStatus Kda(State *state, const Frame &frame, const LingLayer &entry)
 	{
@@ -337,8 +315,6 @@ struct LingModel : CudaStage<LingModel<G>>
 		SparkStatus status;
 		if ( state->kv_attached == 0u || partial_stride > state->partial_stride )
 			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-		if ( step->tree != 0u )
-			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		const LmSkinnyDenseTarget targets[3] =
 		{
 			{ layer->mla_q, state->mla_q, (float *)0, S::kMlaRankHeads * S::kQkDim, 0u, 0u, LmScaleTensorNone() },
@@ -359,7 +335,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			state->mla_kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,LG_THREADS>), rows, LG_THREADS, 0, stream, *view, state->mla_kv, step->sequence_of_row,
-			step->positions, rows, S::kSlot);
+			step->tree != 0u ? step->slots : step->positions, rows, S::kSlot);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -372,7 +348,8 @@ struct LingModel : CudaStage<LingModel<G>>
 					step->sequence_of_row, step->context_length, step->positions, scale, state->attn_send, partial_stride, rows, stream) :
 				LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->mla_gathered, query_stride, S::kMlaRankHeads,
 					step->sequence_of_row, step->context_length, step->positions, (const uint32_t *)0, 0u, 0u, scale, state->attn_send, partial_stride,
-					rows, stream)) != SPARK_GPU_SUCCESS )
+					rows, stream, step->tree != 0u ? step->fork_positions : (const uint32_t *)0,
+					step->tree != 0u ? step->slot_offsets : (const uint32_t *)0)) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->attn_send,
 			state->attn_received);
@@ -537,7 +514,9 @@ struct LingModel : CudaStage<LingModel<G>>
 	{
 		if ( step->rows == 0u || step->rows > state->max_rows || step->sequences > state->slots )
 			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-		if ( step->tree != 0u && (!S::kGqa || G::kVerifyRows == 0u || step->commit != 0u || step->sequences != 1u) )
+		if ( step->tree != 0u && (G::kVerifyRows == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 ||
+			step->fork_positions == 0 || step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 ||
+			step->state_saves == 0 || state->kda_snapshots == 0) )
 			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 		frame->step = step;
 		frame->stream = (SparkGpuStream)stream;
@@ -597,7 +576,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		}
 		if ( step->tree != 0u )
 		{
-			if ( !S::kGqa || sequences != 1u || step->slots == 0 || step->sequence_row_indices == 0 )
+			if ( sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
 				SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 			for ( uint32_t index = 0u; index < G::kLayers; ++index )
 			{
@@ -637,7 +616,7 @@ struct LingModel : CudaStage<LingModel<G>>
 			{ (void **)&state->replay_qkv, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaChannels * sizeof(uint16_t) },
 			{ (void **)&state->replay_retention, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaWidth * sizeof(float) },
 			{ (void **)&state->replay_write_gate, (uint64_t)S::kKdaLayers * verify_rows * S::kKdaRankHeads * sizeof(float) },
-			{ (void **)&state->kda_snapshots, verify_rows != 0u && S::kGqa ? LmDeltaRuleSnapshotBytes(S::kKdaRankHeads, G::kKdaDim, G::kKdaDim) : 0u },
+			{ (void **)&state->kda_snapshots, verify_rows != 0u ? LmDeltaRuleSnapshotBytes(S::kKdaRankHeads, G::kKdaDim, G::kKdaDim) : 0u },
 			{ (void **)&state->mla_q, rows * S::kMlaRankHeads * S::kQkDim * sizeof(uint16_t) },
 			{ (void **)&state->mla_latent_query, rows * S::kMlaRankHeads * G::kLatent * sizeof(uint16_t) },
 			{ (void **)&state->mla_query, rows * S::kMlaRankHeads * S::kSlot * sizeof(uint16_t) },
@@ -691,10 +670,7 @@ struct LingModel : CudaStage<LingModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
-	{
-		return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u;
-	}
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration) { return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u; }
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
@@ -725,7 +701,7 @@ struct LingModel : CudaStage<LingModel<G>>
 
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
-		geometry->tree_verify = S::kGqa && G::kVerifyRows != 0u ? 1u : 0u;
+		geometry->tree_verify = G::kVerifyRows != 0u ? 1u : 0u;
 		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		if ( CudaStage<LingModel>::HeadRanges(state, geometry, false, false) != SPARK_STATUS_OK )
 			SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -742,10 +718,7 @@ struct LingModel : CudaStage<LingModel<G>>
 	}
 
 	template<class T>
-	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes)
-	{
-		tensors->Add(name, kind, bytes, field);
-	}
+	static void Tensor(CudaStageTensors *tensors, const char *name, const char *kind, T **field, uint64_t bytes) { tensors->Add(name, kind, bytes, field); }
 
 	static SparkStatus LayerTensors(State *state, uint32_t index, CudaStageTensors *tensors)
 	{

@@ -301,6 +301,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	using LaneShared = CudaStageFields<&State::full_inv_freq, &State::kv_error>;
 
 	static constexpr bool kLanes = true;
+	static constexpr bool kKeepRows = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = G::kHidden;
 	static constexpr uint32_t kVocab = G::kVocab;
@@ -314,20 +315,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		SparkGpuStream stream;
 	};
 
-	static const char *Tag(void)
-	{
-		return G::Tag();
-	}
-
-	static const char *ReportTag(void)
-	{
-		return G::ReportTag();
-	}
-
-	static const char *WeightdModel(void)
-	{
-		return G::Name();
-	}
+	static const char *Tag(void) { return G::Tag(); }
+	static const char *ReportTag(void) { return G::ReportTag(); }
+	static const char *WeightdModel(void) { return G::Name(); }
 
 	static int32_t Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
 		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
@@ -415,12 +405,13 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		}
 		LM_LAUNCH((LmConcatRowsKernel), dim3(LmVecBlocks<GM_THREADS>(2u * KVW), rows), GM_THREADS, 0, stream, state->key, state->value, state->slot, KVW, KVW);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
-		LM_LAUNCH((LmKvShardStoreKernel<Kv,GM_THREADS>), rows, GM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
-			rows, 2u * KVW);
+		LM_LAUNCH((LmKvShardStoreKernel<Kv,GM_THREADS>), rows, GM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row,
+			step->tree != 0u ? step->slots : step->positions, rows, 2u * KVW);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmGqaShardPartialLaunch<Kv,LmKvShardView,KVH,HD,HD>(*view, state->query, HEADS, step->sequence_of_row, step->context_length,
-				step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u, FULL ? 0u : layer->window) != SPARK_GPU_SUCCESS )
+				step->positions, G::kAttentionScale, state->send, stride, rows, stream, (const uint32_t *)0, 0u, 1u, FULL ? 0u : layer->window,
+				step->tree != 0u ? step->fork_positions : (const uint32_t *)0, step->tree != 0u ? step->slot_offsets : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)units, 0u, state->send, state->received);
 		if ( status != SPARK_STATUS_OK )
@@ -555,19 +546,42 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		return CudaStageLaunched();
 	}
 
-	static SparkStatus Experts(State *state, const Frame &frame, const GemmaLayer &entry)
+	static SparkStatus Experts(State *state, const Frame &frame, const GemmaLayer &entry) { return ExpertRows(state, &entry, frame.step, frame.stream); }
+	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const GemmaLayer &entry) { return SigmoidExpertRows(state, &entry, frame.step, frame.stream); }
+	static uint16_t *BranchRows(State *state, const Frame &frame, GemmaBranch branch) { return state->partial + (uint64_t)branch * frame.step->rows * G::kHidden; }
+
+	static SparkStatus Begin(State *state, const SparkStageRunnerStep *step, void *stream, Frame *frame)
 	{
-		return ExpertRows(state, &entry, frame.step, frame.stream);
+		if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 || step->slot_offsets == 0) )
+			SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+		return CudaStage<GemmaModel>::Begin(state, step, stream, frame);
 	}
 
-	static SparkStatus SigmoidExperts(State *state, const Frame &frame, const GemmaLayer &entry)
+	static SparkStatus KeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream_void)
 	{
-		return SigmoidExpertRows(state, &entry, frame.step, frame.stream);
-	}
-
-	static uint16_t *BranchRows(State *state, const Frame &frame, GemmaBranch branch)
-	{
-		return state->partial + (uint64_t)branch * frame.step->rows * G::kHidden;
+		State *state = (State *)model;
+		SparkGpuStream stream = (SparkGpuStream)stream_void;
+		if ( state == 0 || step == 0 || kept == 0 || step->rows == 0u || step->rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( step->tree == 0u )
+			return SPARK_STATUS_OK;
+		if ( state->kv_attached == 0u || step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t index = 0u; index < S::kSlidingLayers; ++index )
+		{
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::SlidingKvGeometry,GM_THREADS>), step->rows, GM_THREADS, 0, stream,
+				state->sliding_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, 2u * S::kSlidingKv);
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		}
+		for ( uint32_t index = 0u; index < S::kFullLayers; ++index )
+		{
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
+			LM_LAUNCH((LmKvShardPathMoveKernel<typename S::FullKvGeometry,GM_THREADS>), step->rows, GM_THREADS, 0, stream,
+				state->full_views[index], step->sequence_of_row, step->sequence_row_indices, kept, step->slots, 2u * S::kFullKv);
+			CudaStageRowState(state, index, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
+		}
+		return CudaStageLaunched();
 	}
 
 	static SparkStatus EmbedNorm(State *state, const Frame &frame)
@@ -691,10 +705,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		return SPARK_STATUS_OK;
 	}
 
-	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration)
-	{
-		return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u;
-	}
+	static uint32_t Accepts(const SparkStageRunnerConfiguration *configuration) { return configuration->linear_weight_codec == SPARK_WEIGHT_CODEC_BF16 ? 1u : 0u; }
 
 	static SparkStatus Config(State *state, const SparkStageRunnerConfiguration *configuration)
 	{
@@ -735,6 +746,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 
 	static SparkStatus Head(State *state, SparkStageRunnerModelGeometry *geometry)
 	{
+		geometry->tree_verify = 1u;
 		geometry->head_norm_round_first = G::kNormRoundFirst ? 1u : 0u;
 		geometry->logit_softcap = G::kLogitSoftcap;
 		geometry->logit_scale = G::kLogitScale;

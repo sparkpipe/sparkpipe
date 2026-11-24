@@ -483,12 +483,6 @@ static void CheckTree(VfRig<G> &rig, const std::vector<uint8_t> &prefix)
 	SparkStageRunnerStep tree_step;
 	for ( uint32_t row = 0u; row < VF_TREE_ROWS; ++row )
 		tree_rows[row] = { 0u, VF_PREFIX + depths[row], variants[row] };
-	if constexpr ( !S::kGqa )
-	{
-		rig.Load(prefix);
-		Require(rig.RunTree(tree_rows, parents, VF_TREE_ROWS, &tree_out) == 0, model, "a tree frame on the latent attention stage is refused", 0u, 0u, 0u);
-		return;
-	}
 	for ( uint32_t path = 0u; path < 3u; ++path )
 	{
 		VfRow chain_rows[5];
