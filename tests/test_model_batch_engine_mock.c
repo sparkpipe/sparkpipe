@@ -4441,6 +4441,92 @@ static void TestScenarioDecodeAfterPrefill(const SparkModelResidentDeployment *d
 	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_INVALID_ARGUMENT && engine == 0,"decode after prefill: an unknown engine flag is refused");
 }
 
+typedef struct TestHighBatchState
+{
+	uint32_t token_events[65];
+	uint32_t completed_events[65];
+	uint32_t error_events[65];
+	uint32_t total_terminals;
+	uint32_t total_errors;
+} TestHighBatchState;
+
+static void TestHighBatchEvent(void *context, const SparkModelBatchEvent *event)
+{
+	TestHighBatchState *s = (TestHighBatchState *)context;
+	uint64_t id = event->request_id;
+	if ( id == 0u || id > 64u )
+		return;
+	if ( event->kind == SPARK_MODEL_BATCH_EVENT_TOKEN )
+		s->token_events[id]++;
+	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_COMPLETED )
+	{
+		s->completed_events[id]++;
+		s->total_terminals++;
+	}
+	else if ( event->kind == SPARK_MODEL_BATCH_EVENT_REQUEST_CANCELLED ||
+		event->kind == SPARK_MODEL_BATCH_EVENT_ERROR )
+	{
+		s->error_events[id]++;
+		s->total_errors++;
+		s->total_terminals++;
+	}
+}
+
+static void TestScenarioHighConcurrencyBatch(const SparkModelResidentDeployment *deployment, const char *runtime_root, uint32_t batch)
+{
+	SparkModelResidentDeployment high;
+	SparkModelBatchEngineConfiguration configuration;
+	TestHighBatchState state;
+	SparkSpeculationFrameModel frame_model;
+	SparkModelBatchEngine *engine;
+	uint32_t prompt[4], index, step, max_decode_lanes, ok_tokens = 1u;
+	MockResidentClientReset();
+	memset(&state,0,sizeof(state));
+	memset(&frame_model,0,sizeof(frame_model));
+	high = *deployment;
+	high.runtime_limits.max_active_sequence_count = batch;
+	high.runtime_limits.resident_sequence_capacity = batch;
+	high.runtime_limits.max_input_row_count = 256u;
+	high.runtime_limits.kv_logical_page_capacity = 256u;
+	high.runtime_limits.kv_physical_page_capacity = 256u;
+	TestConfigure(&configuration,&high,0,runtime_root,256u,batch,0u);
+	configuration.event_function = TestHighBatchEvent;
+	configuration.event_context = &state;
+	engine = 0;
+	CHECK(SparkModelBatchEngineConnect(&configuration,&engine) == SPARK_STATUS_OK && engine != 0,
+		"high concurrency: batch engine connects at requested concurrency");
+	if ( engine == 0 )
+		return;
+	MockResidentClientSetAutoTokens(1u);
+	MockResidentClientSetFinalRank(TEST_RANKS - 1u,1u);
+	for (index=1u; index<=batch; index++)
+	{
+		prompt[0] = 100u + index;
+		prompt[1] = 200u + index;
+		prompt[2] = 300u + index;
+		prompt[3] = 400u + index;
+		TestSubmitPrompt(engine,index,9000u + index,4u,prompt,4u);
+	}
+	for (step=0u; step<4000u && state.total_terminals < batch; step++)
+	{
+		(void)SparkModelBatchEngineProgress(engine, 8u);
+		(void)MockResidentClientDriveAll();
+		TestPause(engine);
+	}
+	max_decode_lanes = MockResidentClientTakeMaxDecodeLanes();
+	for (index=1u; index<=batch; index++)
+		if ( state.completed_events[index] != 1u || state.token_events[index] != 4u || state.error_events[index] != 0u )
+			ok_tokens = 0u;
+	CHECK(state.total_terminals == batch && state.total_errors == 0u && ok_tokens != 0u,
+		"high concurrency: every concurrent request finishes all budgeted tokens with zero errors");
+	CHECK(max_decode_lanes == batch,
+		"high concurrency: decode wave reaches full configured concurrency");
+	SparkSpeculationFrameObserveBatchStep(&frame_model,batch,1u,2048u,100000000ull);
+	CHECK(SparkSpeculationFrameBatchStepCost(&frame_model,batch,2048u) > 0.0f,
+		"high concurrency: batch step latency model tracks concurrency up to 64");
+	SparkModelBatchEngineDestroy(engine);
+}
+
 int main(void)
 {
 	SparkModelResidentDeployment deployment;
@@ -4515,6 +4601,8 @@ int main(void)
 	TestScenarioEosEarlyStop(&deployment,runtime_root);
 	TestScenarioTwoRequestsRankDies(&deployment,runtime_root);
 	TestScenarioAdapterCacheModes(runtime_root);
+	TestScenarioHighConcurrencyBatch(&deployment,runtime_root,32u);
+	TestScenarioHighConcurrencyBatch(&deployment,runtime_root,64u);
 
 	SparkModelResidentDeploymentReset(&deployment);
 	MockResidentClientReset();

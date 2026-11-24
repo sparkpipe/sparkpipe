@@ -423,7 +423,7 @@ static SparkStatus SparkStageKvBindingRecurrentAdmit(SparkStageKvBinding *bindin
 static void SparkStageKvCommitStaged(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request,uint64_t *held);
 static void *SparkStageKvBindingSaveMain(void *context);
 
-_Static_assert(SPARK_STAGE_KV_RESTORE_SLOTS <= 32u,"restore slots are held in a 32-bit mask");
+_Static_assert(SPARK_STAGE_KV_RESTORE_SLOTS <= 64u,"restore slots are held in a 64-bit mask");
 
 static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFind(SparkStageKvBinding *binding,const SparkModelDriverCacheIdentity *identity,uint32_t token_count)
 {
@@ -435,7 +435,7 @@ static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFind(SparkStageKvBindi
 	return(0);
 }
 
-static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFree(SparkStageKvBinding *binding,uint32_t held)
+static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFree(SparkStageKvBinding *binding,uint64_t held)
 {
 	SparkStageKvRestoreSlot *oldest = 0;
 	uint32_t index;
@@ -443,14 +443,14 @@ static SparkStageKvRestoreSlot *SparkStageKvBindingRestoreFree(SparkStageKvBindi
 	{
 		if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_FREE )
 			return(&binding->restores[index]);
-		if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_DONE && (held & (1u << index)) == 0u &&
+		if ( binding->restores[index].state == SPARK_STAGE_KV_RESTORE_DONE && (held & (UINT64_C(1) << index)) == 0u &&
 			(oldest == 0 || binding->restores[index].done_ns < oldest->done_ns) )
 			oldest = &binding->restores[index];
 	}
 	return(oldest);
 }
 
-static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,const SparkModelDriverCacheLane *lane,uint32_t *held)
+static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,const SparkModelDriverCacheLane *lane,uint64_t *held)
 {
 	SparkStageKvRestoreSlot *slot,*free_slot;
 	if ( (lane->flags & SPARK_MODEL_DRIVER_CACHE_LANE_FLAG_PREFIX) == 0u || lane->prefix_token_count == 0u ||
@@ -458,7 +458,7 @@ static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,co
 		return(0u);
 	slot = SparkStageKvBindingRestoreFind(binding,&lane->prefix_identity,lane->prefix_token_count);
 	if ( slot != 0 )
-		*held |= 1u << (uint32_t)(slot - binding->restores);
+		*held |= UINT64_C(1) << (uint32_t)(slot - binding->restores);
 	if ( slot != 0 && slot->state == SPARK_STAGE_KV_RESTORE_DONE )
 		return(0u);
 	if ( SparkKvPageCachePrefixReady(&binding->page_cache,&lane->prefix_identity,lane->prefix_token_count) != 0u ||
@@ -473,7 +473,7 @@ static uint32_t SparkStageKvBindingRestoreWanted(SparkStageKvBinding *binding,co
 	free_slot->identity = lane->prefix_identity;
 	free_slot->token_count = lane->prefix_token_count;
 	free_slot->state = SPARK_STAGE_KV_RESTORE_QUEUED;
-	*held |= 1u << (uint32_t)(free_slot - binding->restores);
+	*held |= UINT64_C(1) << (uint32_t)(free_slot - binding->restores);
 	binding->restore_jobs++;
 	(void)pthread_cond_signal(&binding->restore_ready);
 	return(1u);
@@ -539,7 +539,8 @@ static SparkStatus SparkStageKvBindingProbe(SparkStageKvBinding *binding,const S
 
 static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,const SparkModelDriverAdmissionRequest *request)
 {
-	uint32_t lane,index,waiting = 0u,held = 0u;
+	uint64_t held = 0u;
+	uint32_t lane,index,waiting = 0u;
 	if ( request->admission_flags != SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE || binding->page_cache.snapshot == 0 || binding->restore_started == 0u )
 		return(SPARK_STATUS_OK);
 	for (lane=0u; lane<request->cache_lane_count; lane++)
@@ -548,7 +549,7 @@ static SparkStatus SparkStageKvBindingRestoreGate(SparkStageKvBinding *binding,c
 	if ( waiting == 0u )
 	{
 		for (index=0u; index<SPARK_STAGE_KV_RESTORE_SLOTS; index++)
-			if ( (held & (1u << index)) != 0u && binding->restores[index].state == SPARK_STAGE_KV_RESTORE_DONE )
+			if ( (held & (UINT64_C(1) << index)) != 0u && binding->restores[index].state == SPARK_STAGE_KV_RESTORE_DONE )
 				binding->restores[index].state = SPARK_STAGE_KV_RESTORE_FREE;
 		return(SPARK_STATUS_OK);
 	}

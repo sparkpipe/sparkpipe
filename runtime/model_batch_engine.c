@@ -4239,6 +4239,8 @@ static void SparkModelBatchBuildDecodeRows(
 	{
 		chain_tokens = engine->adapter_descriptor->max_output_token_count /
 			lane_count;
+		if ( chain_tokens == 0u )
+			chain_tokens = 1u;
 		if ( chain_tokens > SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE )
 			chain_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_TOKENS_PER_SEQUENCE;
 	}

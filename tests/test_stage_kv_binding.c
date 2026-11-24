@@ -2177,12 +2177,106 @@ static void TestDevicePoolNeedsNoWeightd(void)
 	printf("device pool needs no weightd: one device-private buffer carries the page table and every region at full capacity, with no pool thread, no shared window and no reattach; an unnamed pool source refuses\n");
 }
 
+static void TestHighConcurrencyLanes(uint32_t lanes)
+{
+	SparkStageKvConfiguration high;
+	SparkModelDriverCacheLane cache_lanes[64];
+	SparkModelDriverAdmissionRequest request;
+	SparkModelDriverAdmissionDecision decision;
+	SparkModelDriverFrame frame;
+	SparkStageKvBindingCompletion completion;
+	TestFinished finished;
+	uint32_t slots[64];
+	uint64_t sequences[64],positions[64],next[64];
+	uint8_t bound[64];
+	uint32_t index;
+	assert(lanes <= 64u);
+	MakeDirectories();
+	Configure(&high);
+	high.resident_sequence_capacity = lanes;
+	high.logical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK);
+	high.physical_page_count = lanes * (TEST_POSITIONS / TEST_BLOCK);
+	high.max_input_row_count = lanes > TEST_POSITIONS ? lanes : TEST_POSITIONS;
+	high.backing_maximum_bytes = (uint64_t)(high.logical_page_count - TEST_POSITIONS / TEST_BLOCK + 2u) * TEST_PAGE_BYTES;
+	assert(OpenWith(&high) == SPARK_STATUS_OK);
+	assert(BINDING.resident_sequence_capacity == lanes);
+	memset(cache_lanes,0,sizeof(cache_lanes));
+	for (index=0u; index<lanes; index++)
+	{
+		slots[index] = index;
+		sequences[index] = 1000u + index;
+		positions[index] = 0u;
+		next[index] = 1u;
+		bound[index] = 1u;
+		cache_lanes[index].sequence_id = sequences[index];
+		cache_lanes[index].request_generation = 1u;
+		cache_lanes[index].step_generation = 1u;
+		cache_lanes[index].resident_sequence_slot = index;
+		cache_lanes[index].sequence_position = 0u;
+		cache_lanes[index].context_token_count = 1u;
+	}
+	memset(&request,0,sizeof(request));
+	request.descriptor_bytes = sizeof(request);
+	request.program_id = 1u;
+	request.request_id = request.submission_id = request.transaction_id = NEXT_ID++;
+	request.control_generation = request.request_generation = request.step_generation = 1u;
+	request.active_slot_count = lanes;
+	request.new_token_count = lanes;
+	request.cache_lane_count = lanes;
+	request.cache_lanes = cache_lanes;
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_PREPARE;
+	assert(SparkStageKvBindingAdmit(&BINDING,&request,&decision) == SPARK_STATUS_OK);
+	request.admission_flags = SPARK_MODEL_DRIVER_ADMISSION_FLAG_CACHE_COMMIT;
+	assert(SparkStageKvBindingAdmit(&BINDING,&request,&decision) == SPARK_STATUS_OK);
+	memset(&frame,0,sizeof(frame));
+	frame.program_id = request.program_id;
+	frame.request_id = request.request_id;
+	frame.active_slot_count = lanes;
+	frame.new_token_count = lanes;
+	frame.cache_lane_count = lanes;
+	frame.cache_lanes = cache_lanes;
+	frame.driver_dispatch_slot = decision.driver_dispatch_slot;
+	frame.driver_dispatch_generation = request.control_generation;
+	frame.driver_dispatch_cookie0 = request.transaction_id;
+	frame.driver_dispatch_cookie1 = request.submission_id;
+	frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
+	assert(SparkStageKvBindingClaim(&BINDING,&frame,lanes,slots,sequences,positions,next) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingUploadPageTables(&BINDING,slots,lanes,BINDING.copy_queue) == SPARK_STATUS_OK);
+	memset(&finished,0,sizeof(finished));
+	memset(&completion,0,sizeof(completion));
+	completion.lane_count = lanes;
+	completion.status = SPARK_STATUS_OK;
+	completion.resident_slots = slots;
+	completion.bound = bound;
+	completion.sequence_ids = sequences;
+	completion.next_positions = next;
+	completion.finished_function = Finished;
+	completion.finished_context = &finished;
+	assert(SparkStageKvBindingFinishAsync(&BINDING,frame.driver_dispatch_slot,&completion) == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingQuiesce(&BINDING,5000000000ull) == SPARK_STATUS_OK);
+	assert(atomic_load(&finished.count) == 1u && finished.status == SPARK_STATUS_OK);
+	assert(SparkStageKvBindingResidentCount(&BINDING) == lanes);
+	Close();
+	if ( lanes == SPARK_STAGE_KV_RESTORE_SLOTS )
+	{
+		MakeDirectories();
+		high.resident_sequence_capacity = SPARK_STAGE_KV_RESTORE_SLOTS + 1u;
+		high.logical_page_count = high.resident_sequence_capacity * (TEST_POSITIONS / TEST_BLOCK);
+		high.physical_page_count = high.logical_page_count;
+		ExpectRefused(&high,SPARK_STATUS_CAPACITY_EXCEEDED);
+		RemoveDirectories();
+	}
+	printf("high concurrency kv binding: %u concurrent resident lanes admit, claim, upload, finish and quiesce cleanly\n",lanes);
+}
+
 static void RunScenarios(void)
 {
 	if ( POOL_SOURCE == SPARK_STAGE_KV_POOL_SOURCE_WEIGHTD )
 		TestWeightdOwnsPool();
 	else
 		TestDevicePoolNeedsNoWeightd();
+	TestHighConcurrencyLanes(32u);
+	TestHighConcurrencyLanes(64u);
 	TestCompletionEntryNeverWaits();
 	TestCopyOnWriteIsOneDeviceCopyPerRegionLayer();
 	TestCopyOnWriteDuringAPark();
