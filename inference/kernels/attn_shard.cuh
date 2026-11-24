@@ -361,37 +361,51 @@ void LmLatentShardMergeKernel(
     const float *__restrict__ sinks)
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ float max_shared[SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ float den_shared[SPARK_KV_SHARD_MAX_DEGREE];
     __shared__ float denominator_shared;
     uint32_t row = blockIdx.x, head = blockIdx.y, source, element;
     uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-    float global_max, denominator, source_max, scale, merged;
-    if (threadIdx.x == 0u)
+    float denominator, source_max, denom, merged;
+    if (threadIdx.x < 32u)
     {
-        global_max = -INFINITY;
-        for (source = 0u; source < sources; ++source)
+        float lane_max = -INFINITY;
+        for (source = threadIdx.x; source < sources; source += 32u)
         {
             source_max = partials[(uint64_t)source * source_stride + block_base];
-            global_max = source_max > global_max ? source_max : global_max;
+            max_shared[source] = source_max;
+            den_shared[source] = partials[(uint64_t)source * source_stride + block_base + 1u];
+            lane_max = source_max > lane_max ? source_max : lane_max;
         }
-        denominator = 0.0f;
-        for (source = 0u; source < sources; ++source)
+        for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
         {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-            scales[source] = scale;
-            denominator = fmaf(partials[(uint64_t)source * source_stride + block_base + 1u], scale, denominator);
+            float other = __shfl_xor_sync(0xffffffffu, lane_max, offset);
+            lane_max = other > lane_max ? other : lane_max;
         }
-        if (sinks != 0)
-            denominator += global_max == -INFINITY ? __expf(sinks[head]) : __expf(sinks[head] - global_max);
-        denominator_shared = denominator;
+        for (source = threadIdx.x; source < sources; source += 32u)
+        {
+            source_max = max_shared[source];
+            scales[source] = lane_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - lane_max);
+        }
+        __syncwarp();
+        if (threadIdx.x == 0u)
+        {
+            denominator = 0.0f;
+            for (source = 0u; source < sources; ++source)
+                denominator = fmaf(den_shared[source], scales[source], denominator);
+            if (sinks != 0)
+                denominator += lane_max == -INFINITY ? __expf(sinks[head]) : __expf(sinks[head] - lane_max);
+            denominator_shared = fmaxf(denominator, 1.0e-20f);
+        }
     }
     __syncthreads();
+    denom = denominator_shared;
     for (element = threadIdx.x; element < LATENT; element += THREADS)
     {
         merged = 0.0f;
         for (source = 0u; source < sources; ++source)
             merged = fmaf(partials[(uint64_t)source * source_stride + block_base + 2u + element], scales[source], merged);
-        output_bf16[((uint64_t)row * heads_per_rank + head) * LATENT + element] = LmFloatToBf16(merged / fmaxf(denominator_shared, 1.0e-20f));
+        output_bf16[((uint64_t)row * heads_per_rank + head) * LATENT + element] = LmFloatToBf16(merged / denom);
     }
 }
 
@@ -406,35 +420,49 @@ void LmLatentShardFoldKernel(
     uint32_t first)
 {
     __shared__ float scales[SPARK_KV_SHARD_MAX_DEGREE + 1u];
+    __shared__ float max_shared[SPARK_KV_SHARD_MAX_DEGREE];
+    __shared__ float den_shared[SPARK_KV_SHARD_MAX_DEGREE];
     uint32_t row = blockIdx.x, head = blockIdx.y, source, element;
     uint64_t block_base = ((uint64_t)row * heads_per_rank + head) * LM_LATENT_SHARD_RECORD_FLOATS(LATENT);
-    float global_max, denominator, source_max, scale, merged;
-    if (threadIdx.x == 0u)
+    float denominator, source_max, running_scale, merged;
+    if (threadIdx.x < 32u)
     {
-        global_max = first != 0u ? -INFINITY : running[block_base];
-        for (source = 0u; source < sources; ++source)
+        float run_max = first != 0u ? -INFINITY : running[block_base];
+        float lane_max = threadIdx.x == 0u ? run_max : -INFINITY;
+        for (source = threadIdx.x; source < sources; source += 32u)
         {
             source_max = partials[(uint64_t)source * source_stride + block_base];
-            global_max = source_max > global_max ? source_max : global_max;
+            max_shared[source] = source_max;
+            den_shared[source] = partials[(uint64_t)source * source_stride + block_base + 1u];
+            lane_max = source_max > lane_max ? source_max : lane_max;
         }
-        source_max = first != 0u ? -INFINITY : running[block_base];
-        scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-        scales[sources] = scale;
-        denominator = first != 0u ? 0.0f : running[block_base + 1u] * scale;
-        for (source = 0u; source < sources; ++source)
+        for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
         {
-            source_max = partials[(uint64_t)source * source_stride + block_base];
-            scale = global_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - global_max);
-            scales[source] = scale;
-            denominator = fmaf(partials[(uint64_t)source * source_stride + block_base + 1u], scale, denominator);
+            float other = __shfl_xor_sync(0xffffffffu, lane_max, offset);
+            lane_max = other > lane_max ? other : lane_max;
         }
-        running[block_base] = global_max;
-        running[block_base + 1u] = denominator;
+        for (source = threadIdx.x; source < sources; source += 32u)
+        {
+            source_max = max_shared[source];
+            scales[source] = lane_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - lane_max);
+        }
+        __syncwarp();
+        if (threadIdx.x == 0u)
+        {
+            running_scale = lane_max == -INFINITY || run_max == -INFINITY ? 0.0f : __expf(run_max - lane_max);
+            scales[sources] = running_scale;
+            denominator = first != 0u ? 0.0f : running[block_base + 1u] * running_scale;
+            for (source = 0u; source < sources; ++source)
+                denominator = fmaf(den_shared[source], scales[source], denominator);
+            running[block_base] = lane_max;
+            running[block_base + 1u] = denominator;
+        }
     }
     __syncthreads();
+    running_scale = scales[sources];
     for (element = threadIdx.x; element < LATENT; element += THREADS)
     {
-        merged = first != 0u ? 0.0f : running[block_base + 2u + element] * scales[sources];
+        merged = first != 0u ? 0.0f : running[block_base + 2u + element] * running_scale;
         for (source = 0u; source < sources; ++source)
             merged = fmaf(partials[(uint64_t)source * source_stride + block_base + 2u + element], scales[source], merged);
         running[block_base + 2u + element] = merged;

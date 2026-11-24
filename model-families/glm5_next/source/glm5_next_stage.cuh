@@ -311,6 +311,10 @@ static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *act
 			"it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
 			LM_SKINNY_ROWS_WIDE);
 	}
+	status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, (float *)0, rows, input_dimension, output_dimension,
+		output_dimension, 0u, multiprocessors, stream);
+	if ( status != LM_LAUNCH_ERR_SHAPE )
+		return status;
 	memset(&gemm, 0, sizeof(gemm));
 	gemm.scale_a = LmScaleTensorNone();
 	gemm.scale_b = LmScaleTensorNone();
