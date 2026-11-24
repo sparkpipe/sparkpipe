@@ -151,6 +151,7 @@ def stream_completion(
 
     started = time.monotonic()
     token_times: list[float] = []
+    event_times: list[float] = []
     event_token_counts: list[int] = []
     text_parts: list[str] = []
     usage: dict[str, Any] | None = None
@@ -171,6 +172,7 @@ def stream_completion(
                 "started": started,
                 "http_status": http_status,
                 "token_times": token_times,
+                "event_times": event_times,
                 "event_token_counts": event_token_counts,
                 "text": "",
                 "usage": None,
@@ -208,9 +210,11 @@ def stream_completion(
                     count = len(tokens_list)
                     for _ in range(count):
                         token_times.append(rel)
+                    event_times.append(rel)
                     event_token_counts.append(count)
                 elif isinstance(delta_text, str) and delta_text:
                     token_times.append(rel)
+                    event_times.append(rel)
                     event_token_counts.append(1)
                 if choice.get("finish_reason"):
                     finish = choice["finish_reason"]
@@ -229,6 +233,7 @@ def stream_completion(
         "started": started,
         "http_status": http_status,
         "token_times": token_times,
+        "event_times": event_times,
         "event_token_counts": event_token_counts,
         "text": "".join(text_parts),
         "usage": usage,
@@ -238,8 +243,44 @@ def stream_completion(
     }
 
 
+def read_engine_measurements(api_log_path: str | None) -> dict[str, int] | None:
+    if not api_log_path:
+        return None
+    path = Path(api_log_path)
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > 131072:
+                handle.seek(size - 131072)
+            raw = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(raw.splitlines()):
+        if '"event":"engine_measurements"' not in line and '"event": "engine_measurements"' not in line:
+            continue
+        start = line.find("{")
+        if start < 0:
+            continue
+        try:
+            doc = json.loads(line[start:])
+        except json.JSONDecodeError:
+            continue
+        if doc.get("event") == "engine_measurements":
+            return {
+                "verify_lanes": int(doc.get("verify_lanes") or 0),
+                "draft_tokens": int(doc.get("draft_tokens") or 0),
+                "accepted_draft_tokens": int(doc.get("accepted_draft_tokens") or 0),
+                "tree_frames": int(doc.get("tree_frames") or 0),
+                "tree_branch_frames": int(doc.get("tree_branch_frames") or 0),
+                "tree_branch_accepted": int(doc.get("tree_branch_accepted") or 0),
+            }
+    return None
+
+
 def summarize_stream(result: dict[str, Any]) -> dict[str, Any]:
     times = result["token_times"]
+    event_times = result.get("event_times") or []
+    event_counts = result.get("event_token_counts") or []
     usage = result.get("usage") or {}
     completion_tokens = usage.get("completion_tokens") or len(times)
     prompt_tokens = usage.get("prompt_tokens")
@@ -257,18 +298,26 @@ def summarize_stream(result: dict[str, Any]) -> dict[str, Any]:
         out["ttft_ms"] = round(times[0] * 1000.0, 2)
     if len(times) > 1 and times[-1] > times[0]:
         out["decode_tok_s"] = round((len(times) - 1) / (times[-1] - times[0]), 3)
-        itls = [(times[i] - times[i - 1]) * 1000.0 for i in range(1, len(times)) if times[i] > times[i - 1]]
+        if len(event_times) > 1 and len(event_times) == len(event_counts):
+            itls = [
+                (event_times[i] - event_times[i - 1]) * 1000.0 / float(max(1, event_counts[i]))
+                for i in range(1, len(event_times))
+                if event_times[i] > event_times[i - 1]
+            ]
+        else:
+            itls = [(times[i] - times[i - 1]) * 1000.0 for i in range(1, len(times)) if times[i] > times[i - 1]]
         if itls:
             out["itl_p50_ms"] = round(percentile(itls, 50.0) or 0.0, 3)
             out["itl_p99_ms"] = round(percentile(itls, 99.0) or 0.0, 3)
+    if event_counts:
+        out["chunk_mean"] = round(sum(event_counts) / float(len(event_counts)), 3)
     spec_stats = result.get("spec_stats")
     if isinstance(spec_stats, dict) and isinstance(spec_stats.get("alpha"), (int, float)):
         out["alpha"] = float(spec_stats["alpha"])
     elif isinstance(spec_stats, dict) and isinstance(spec_stats.get("accepted_per_round"), (int, float)):
         out["alpha"] = 1.0 + float(spec_stats["accepted_per_round"])
-    elif result.get("event_token_counts"):
-        counts = result["event_token_counts"]
-        out["alpha_est"] = round(sum(counts) / float(len(counts)), 3)
+    elif event_counts:
+        out["alpha_est"] = round(sum(event_counts) / float(len(event_counts)), 3)
     return out
 
 
@@ -431,6 +480,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     p50_list: list[float] = []
     p99_list: list[float] = []
     nospec_prose_text = ""
+    nospec_prose_chunk = 1.0
 
     for rep in range(plan["b1_repeats"]):
         body = {
@@ -446,6 +496,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         else:
             if rep == 0:
                 nospec_prose_text = res["text"]
+                nospec_prose_chunk = float(res.get("chunk_mean") or 1.0)
             if res.get("decode_tok_s"):
                 b1_rates.append(res["decode_tok_s"])
             if res.get("itl_p50_ms"):
@@ -463,18 +514,25 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.spec_toggle and args.spec_toggle != "none":
         domain_prompts = (
-            ("prose", PROSE_PROMPT, nospec_prose_text),
-            ("code", CODE_PROMPT, ""),
-            ("edit", EDIT_PROMPT, ""),
+            ("prose", PROSE_PROMPT, nospec_prose_text, nospec_prose_chunk),
+            ("code", CODE_PROMPT, "", 1.0),
+            ("edit", EDIT_PROMPT, "", 1.0),
         )
         spec_tok_rates: list[float] = []
         nospec_tok_rates: list[float] = []
         alphas: dict[str, float] = {}
+        total_verify_lanes = 0
+        total_draft_tokens = 0
+        total_accepted_tokens = 0
+        total_tree_frames = 0
+        total_tree_branch_accepted = 0
+        log_used = False
 
-        for domain, prompt_text, cached_nospec_text in domain_prompts:
+        for domain, prompt_text, cached_nospec_text, cached_chunk_mean in domain_prompts:
             if cached_nospec_text:
                 base_text = cached_nospec_text
                 base_rate = b1_short_tok_s
+                base_chunk = cached_chunk_mean
             else:
                 nb = {
                     "model": model_name,
@@ -489,6 +547,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                     continue
                 base_text = nr["text"]
                 base_rate = nr.get("decode_tok_s")
+                base_chunk = float(nr.get("chunk_mean") or 1.0)
 
             sb = {
                 "model": model_name,
@@ -497,7 +556,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 "temperature": 0,
             }
             sb.update(spec_opt)
+            em_before = read_engine_measurements(args.api_log)
             sr = summarize_stream(stream_completion(args.base_url, sb, api_key=args.api_key, timeout=args.timeout))
+            em_after = read_engine_measurements(args.api_log)
             if sr["error"] is not None:
                 errors_count += 1
                 continue
@@ -508,26 +569,58 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 code_exact = bool(code_exact and exact)
 
+            dom_speedup = 1.0
             if sr.get("decode_tok_s") and base_rate:
                 spec_tok_rates.append(sr["decode_tok_s"])
                 nospec_tok_rates.append(base_rate)
-            alpha_val = sr.get("alpha") or sr.get("alpha_est")
-            if alpha_val is None and sr.get("decode_tok_s") and base_rate:
-                alpha_val = max(1.0, sr["decode_tok_s"] / base_rate)
+                dom_speedup = sr["decode_tok_s"] / base_rate
+
+            alpha_val: float | None = sr.get("alpha")
+            if alpha_val is None and em_before is not None and em_after is not None:
+                log_used = True
+                d_lanes = max(0, em_after["verify_lanes"] - em_before["verify_lanes"])
+                d_draft = max(0, em_after["draft_tokens"] - em_before["draft_tokens"])
+                d_acc = max(0, em_after["accepted_draft_tokens"] - em_before["accepted_draft_tokens"])
+                d_tf = max(0, em_after["tree_frames"] - em_before["tree_frames"])
+                d_tba = max(0, em_after["tree_branch_accepted"] - em_before["tree_branch_accepted"])
+                total_verify_lanes += d_lanes
+                total_draft_tokens += d_draft
+                total_accepted_tokens += d_acc
+                total_tree_frames += d_tf
+                total_tree_branch_accepted += d_tba
+                if d_lanes > 0:
+                    alpha_val = 1.0 + d_acc / float(d_lanes)
+                else:
+                    alpha_val = 1.0
+            elif alpha_val is None:
+                if dom_speedup <= 1.03:
+                    alpha_val = 1.0
+                elif base_chunk <= 1.15 and sr.get("alpha_est"):
+                    alpha_val = float(sr["alpha_est"])
+                else:
+                    alpha_val = max(1.0, dom_speedup)
             if alpha_val is not None:
                 alphas[domain] = round(float(alpha_val), 3)
                 spec_metrics[f"alpha_{domain}"] = alphas[domain]
 
+        if log_used:
+            spec_metrics["verify_lanes"] = total_verify_lanes
+            spec_metrics["draft_tokens"] = total_draft_tokens
+            spec_metrics["accepted_draft_tokens"] = total_accepted_tokens
+            spec_metrics["tree_frames"] = total_tree_frames
+            spec_metrics["tree_branch_accepted"] = total_tree_branch_accepted
+
         if alphas:
             alpha_mean = sum(alphas.values()) / len(alphas)
             spec_metrics["alpha"] = round(alpha_mean, 3)
-            spec_metrics["verify_b1_enabled"] = alpha_mean > 1.001
+            spec_active = (total_verify_lanes > 0) if log_used else (alpha_mean > 1.03)
+            spec_metrics["verify_b1_enabled"] = spec_active
             if spec_tok_rates and nospec_tok_rates:
                 mean_spec = statistics.mean(spec_tok_rates)
                 mean_nospec = statistics.mean(nospec_tok_rates)
                 spec_metrics["b1_spec_tok_s"] = round(mean_spec, 3)
                 speedup = mean_spec / mean_nospec if mean_nospec > 0 else 1.0
-                if speedup > 0 and alpha_mean > 1.001:
+                if spec_active and speedup > 0 and alpha_mean > 1.001:
                     spec_metrics["verify_v_b1"] = round(alpha_mean / speedup, 4)
 
     batch_results: dict[str, Any] = {}
@@ -552,6 +645,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     if plan["run_b8_spec"] and args.spec_toggle and args.spec_toggle != "none":
         b8_nospec = batch_results.get("8", {}).get("aggregate_tok_s") or 0.0
         if b8_nospec > 0.0:
+            em_b8_before = read_engine_measurements(args.api_log)
             res_b8_spec = run_concurrent_batch(
                 args.base_url,
                 model_name,
@@ -562,12 +656,25 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
                 args.api_key,
                 args.timeout,
             )
+            em_b8_after = read_engine_measurements(args.api_log)
             if not res_b8_spec.get("failed") and not res_b8_spec.get("unsupported"):
                 b8_spec_agg = res_b8_spec.get("aggregate_tok_s") or 0.0
-                if b8_spec_agg > b8_nospec * 1.02:
+                d_b8_lanes = 0
+                d_b8_acc = 0
+                if em_b8_before is not None and em_b8_after is not None:
+                    d_b8_lanes = max(0, em_b8_after["verify_lanes"] - em_b8_before["verify_lanes"])
+                    d_b8_acc = max(0, em_b8_after["accepted_draft_tokens"] - em_b8_before["accepted_draft_tokens"])
+                if d_b8_lanes > 0:
+                    a_b8 = round(1.0 + d_b8_acc / float(d_b8_lanes), 3)
+                    spec_metrics["verify_b8_enabled"] = True
+                    spec_metrics["alpha_b8"] = a_b8
+                    spec_metrics["b8_spec_tok_s"] = round(b8_spec_agg, 2)
+                    spec_metrics["verify_v_b8"] = round(a_b8 / max(0.01, b8_spec_agg / b8_nospec), 4)
+                elif b8_spec_agg > b8_nospec * 1.03 and spec_metrics.get("verify_b1_enabled"):
                     a_b8 = spec_metrics.get("alpha", 1.5)
                     spec_metrics["verify_b8_enabled"] = True
                     spec_metrics["alpha_b8"] = a_b8
+                    spec_metrics["b8_spec_tok_s"] = round(b8_spec_agg, 2)
                     spec_metrics["verify_v_b8"] = round(a_b8 / (b8_spec_agg / b8_nospec), 4)
 
     nonce_8k = f"pf8k-{time.time_ns()}"
@@ -741,6 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--engine", default="sparkpipe", help="Engine label recorded in JSONL output.")
     parser.add_argument("--spec-toggle", default="speculation", help="JSON field name toggling speculation, or 'none'.")
     parser.add_argument("--api-key", default=None, help="Optional Bearer token for /v1/completions.")
+    parser.add_argument("--api-log", default=None, help="Optional engine API log path for exact verify/draft counters.")
     parser.add_argument("--swap-url", default=None, help="Optional model swap endpoint URL.")
     parser.add_argument("--swap-token", default=None, help="Optional Bearer token for --swap-url.")
     parser.add_argument("--max-batch", type=int, default=64, help="Maximum batch concurrency to attempt.")

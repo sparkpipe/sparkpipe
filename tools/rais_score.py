@@ -1015,7 +1015,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     b1_short_tok_s = metrics.get("b1_short_tok_s")
     if b1_short_tok_s is None:
         b1_short_tok_s = metrics.get("b1_nospec_tok_s")
-    short_ctx = int(metrics.get("b1_short_ctx", 256))
+    short_ctx = int(metrics.get("b1_short_ctx") or 256)
     rf_1a = compute_roofline(model, hw, batch=1, ctx=short_ctx)
     s_1a, raw_1a = _eff_from_tok_s(b1_short_tok_s, rf_1a.floor_tok_s)
     submetrics["p1a_short_b1"] = {
@@ -1029,7 +1029,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     }
 
     default_long_ctx = min(model.context_tokens - 512, 65536) if model.context_tokens >= 65536 else max(1024, model.context_tokens - 512)
-    long_ctx = int(metrics.get("b1_long_ctx", default_long_ctx))
+    long_ctx = int(metrics.get("b1_long_ctx") or default_long_ctx)
     b1_long_tok_s = metrics.get("b1_long_tok_s")
     rf_1b = compute_roofline(model, hw, batch=1, ctx=long_ctx)
     s_1b, raw_1b = _eff_from_tok_s(b1_long_tok_s, rf_1b.floor_tok_s)
@@ -1102,7 +1102,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     else:
         inv_v_b1 = 0.0
         s_2b_b1 = 0.0
-    verify_k = int(spec.get("verify_k", 8))
+    verify_k = int(spec.get("verify_k") or 8)
     rf_2b_b1 = compute_roofline(model, hw, batch=1, ctx=short_ctx, rows_per_seq=verify_k + 1)
     submetrics["p2b_verify_b1"] = {
         "score": round(s_2b_b1, 2),
@@ -1198,7 +1198,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     }
 
     default_batch_long_ctx = min(model.context_tokens - 512, 32768) if model.context_tokens >= 32768 else max(1024, model.context_tokens - 512)
-    b8_long_ctx = int(metrics.get("b8_long_ctx", default_batch_long_ctx))
+    b8_long_ctx = int(metrics.get("b8_long_ctx") or default_batch_long_ctx)
     b8_long_tok_s = metrics.get("b8_long_tok_s")
     rf_3c = compute_roofline(model, hw, batch=8, ctx=b8_long_ctx)
     s_3c, raw_3c = _eff_from_tok_s(b8_long_tok_s, rf_3c.floor_tok_s)
@@ -1212,7 +1212,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
         "bottleneck": rf_3c.binding_bottleneck,
     }
 
-    prefill_8k_tokens = int(metrics.get("prefill_8k_tokens", 8192))
+    prefill_8k_tokens = int(metrics.get("prefill_8k_tokens") or 8192)
     prefill_8k_tok_s = metrics.get("prefill_8k_tok_s")
     if prefill_8k_tok_s is None and isinstance(metrics.get("prefill_8k_ms"), (int, float)) and metrics["prefill_8k_ms"] > 0.0:
         prefill_8k_tok_s = prefill_8k_tokens * 1000.0 / float(metrics["prefill_8k_ms"])
@@ -1229,7 +1229,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     }
 
     p4b_parts: list[tuple[str, float, float, dict[str, Any]]] = []
-    pf_32k_tokens = int(metrics.get("prefill_32k_tokens", min(32768, model.context_tokens - 256)))
+    pf_32k_tokens = int(metrics.get("prefill_32k_tokens") or min(32768, model.context_tokens - 256))
     pf_32k_tok_s = metrics.get("prefill_32k_tok_s")
     if pf_32k_tok_s is None and isinstance(metrics.get("prefill_32k_ms"), (int, float)) and metrics["prefill_32k_ms"] > 0.0:
         pf_32k_tok_s = pf_32k_tokens * 1000.0 / float(metrics["prefill_32k_ms"])
@@ -1238,7 +1238,7 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
         sc32, r32 = _eff_from_tok_s(pf_32k_tok_s, rf_4b_32k.floor_tok_s)
         p4b_parts.append(("32K", 0.4, sc32, {"tokens": pf_32k_tokens, "measured_tok_s": pf_32k_tok_s, "score": round(sc32, 2), "raw_efficiency_pct": r32, "roofline": asdict(rf_4b_32k)}))
 
-    pf_128k_tokens = int(metrics.get("prefill_128k_tokens", min(131072, model.context_tokens - 256)))
+    pf_128k_tokens = int(metrics.get("prefill_128k_tokens") or min(131072, model.context_tokens - 256))
     pf_128k_tok_s = metrics.get("prefill_128k_tok_s")
     if pf_128k_tok_s is None and isinstance(metrics.get("prefill_128k_ms"), (int, float)) and metrics["prefill_128k_ms"] > 0.0:
         pf_128k_tok_s = pf_128k_tokens * 1000.0 / float(metrics["prefill_128k_ms"])
@@ -1263,16 +1263,16 @@ def score_model(record: dict[str, Any], hardware_name: str) -> dict[str, Any]:
     }
 
     p4c_parts: list[tuple[str, float, float, dict[str, Any]]] = []
-    warm_8k_prefix = int(metrics.get("warm_8k_prefix_tokens", 8192))
-    warm_8k_new = int(metrics.get("warm_8k_new_tokens", 128))
+    warm_8k_prefix = int(metrics.get("warm_8k_prefix_tokens") or 8192)
+    warm_8k_new = int(metrics.get("warm_8k_new_tokens") or 128)
     warm_8k_ttft_ms = metrics.get("warm_8k_ttft_ms")
     rf_4c_8k = compute_roofline(model, hw, batch=1, ctx=warm_8k_prefix + warm_8k_new, rows_per_seq=warm_8k_new, is_prefill=True, prefix_ctx=warm_8k_prefix)
     if isinstance(warm_8k_ttft_ms, (int, float)) and warm_8k_ttft_ms > 0.0:
         sc_w8, r_w8 = _eff_from_ms(warm_8k_ttft_ms, rf_4c_8k.t_floor_ms)
         p4c_parts.append(("8K+128", 0.4, sc_w8, {"prefix_tokens": warm_8k_prefix, "new_tokens": warm_8k_new, "ttft_ms": warm_8k_ttft_ms, "score": round(sc_w8, 2), "raw_efficiency_pct": r_w8, "roofline": asdict(rf_4c_8k)}))
 
-    warm_100k_prefix = int(metrics.get("warm_100k_prefix_tokens", min(100000, model.context_tokens - 512)))
-    warm_100k_new = int(metrics.get("warm_100k_new_tokens", 128))
+    warm_100k_prefix = int(metrics.get("warm_100k_prefix_tokens") or min(100000, model.context_tokens - 512))
+    warm_100k_new = int(metrics.get("warm_100k_new_tokens") or 128)
     warm_100k_ttft_ms = metrics.get("warm_100k_ttft_ms")
     rf_4c_100k = compute_roofline(model, hw, batch=1, ctx=warm_100k_prefix + warm_100k_new, rows_per_seq=warm_100k_new, is_prefill=True, prefix_ctx=warm_100k_prefix)
     if isinstance(warm_100k_ttft_ms, (int, float)) and warm_100k_ttft_ms > 0.0:
@@ -1502,9 +1502,9 @@ def import_hillclimb_records(path: Path, default_model: str | None = None, engin
                 rate = entry.get("median_decode_tok_s") or entry.get("aggregate_tok_s")
                 prompt_tok = 256
                 if entry.get("per_stream") and isinstance(entry["per_stream"], list):
-                    prompt_tok = int(entry["per_stream"][0].get("prompt_tokens", 256))
+                    prompt_tok = int(entry["per_stream"][0].get("prompt_tokens") or 256)
                 elif entry.get("repeats") and isinstance(entry["repeats"], list) and entry["repeats"][0].get("usage"):
-                    prompt_tok = int(entry["repeats"][0]["usage"].get("prompt_tokens", 256))
+                    prompt_tok = int(entry["repeats"][0]["usage"].get("prompt_tokens") or 256)
                 if rate and prompt_tok >= 16384:
                     m["b1_long_tok_s"] = float(rate)
                     m["b1_long_ctx"] = prompt_tok
