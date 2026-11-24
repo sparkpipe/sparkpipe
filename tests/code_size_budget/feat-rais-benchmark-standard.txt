@@ -1,0 +1,2 @@
++2615
+RAIS v1.0 benchmark standard: tools/rais_score.py (1839 lines, 3-roofline reference scorer, 6 hardware profiles, 21-lane/19-model catalog, ROI planner, compare & import-hillclimb CLI), tools/rais_bench.py (775 lines, zero-dep OpenAI-compatible fast/full runner with Gate GX and spec exactness verification), and Makefile PYTHON_TESTS registration (+1).

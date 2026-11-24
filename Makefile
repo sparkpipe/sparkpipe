@@ -491,6 +491,7 @@ PYTHON_TESTS := \
 	tests/test_agent_turn_bench.py \
 	tests/test_turn_floor.py \
 	tests/test_turn_floor_fleet.py \
+	tests/test_rais_score.py \
 	tests/test_code_size.py \
 	tests/test_complexity_ceiling.py \
 	tests/test_config_coverage.py \
