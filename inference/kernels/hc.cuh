@@ -7,6 +7,7 @@
 #include "dtype.cuh"
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/kernel_math.cuh"
+#include "inference/kernels/vec.cuh"
 #include "runtime/launch.h"
 #include "sparkpipe/spark_gpu.h"
 
@@ -569,18 +570,62 @@ __global__ void LmHcPostF32SourceMajorKernel(const uint16_t *__restrict__ sublay
 	const float *__restrict__ comb, uint16_t *streams, uint32_t width)
 {
 	const uint32_t row = blockIdx.y;
+	float p[STREAMS], c[STREAMS][STREAMS];
+	LmDependentWait();
+	#pragma unroll
+	for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+		p[copy] = __ldg(post + (uint64_t)row * STREAMS + copy);
+	#pragma unroll
+	for ( uint32_t from = 0u; from < STREAMS; ++from )
+		#pragma unroll
+		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+			c[from][copy] = __ldg(comb + (uint64_t)row * STREAMS * STREAMS + from * STREAMS + copy);
+	if ( (width & 7u) == 0u && LmIsAligned16(sublayer) && LmIsAligned16(streams) )
+	{
+		const uint32_t octets = width >> 3u;
+		for ( uint32_t q = blockIdx.x * blockDim.x + threadIdx.x; q < octets; q += gridDim.x * blockDim.x )
+		{
+			const uint32_t offset = q << 3u;
+			float x[8], source[STREAMS][8];
+			LmLoadBf16x8AsFloat(__ldg((const uint4 *)(sublayer + (uint64_t)row * width + offset)), x);
+			#pragma unroll
+			for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+				LmLoadBf16x8AsFloat(*(const uint4 *)(streams + ((uint64_t)row * STREAMS + copy) * width + offset), source[copy]);
+			#pragma unroll
+			for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
+			{
+				float out[8];
+				#pragma unroll
+				for ( uint32_t k = 0u; k < 8u; ++k )
+				{
+					float total = 0.0f;
+					#pragma unroll
+					for ( uint32_t from = 0u; from < STREAMS; ++from )
+						total += c[from][copy] * source[from][k];
+					out[k] = p[copy] * x[k] + total;
+				}
+				*(uint4 *)(streams + ((uint64_t)row * STREAMS + copy) * width + offset) = LmPackUint4FloatToBf16(out);
+			}
+		}
+		LmDependentRelease();
+		return;
+	}
 	for ( uint32_t element = blockIdx.x * blockDim.x + threadIdx.x; element < width; element += gridDim.x * blockDim.x )
 	{
 		const float x = LmBf16ToFloat(sublayer[(uint64_t)row * width + element]);
 		float source[STREAMS];
+		#pragma unroll
 		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
 			source[copy] = LmBf16ToFloat(streams[((uint64_t)row * STREAMS + copy) * width + element]);
+		#pragma unroll
 		for ( uint32_t copy = 0u; copy < STREAMS; ++copy )
 		{
 			float total = 0.0f;
+			#pragma unroll
 			for ( uint32_t from = 0u; from < STREAMS; ++from )
-				total += comb[(uint64_t)row * STREAMS * STREAMS + from * STREAMS + copy] * source[from];
-			streams[((uint64_t)row * STREAMS + copy) * width + element] = LmFloatToBf16(post[(uint64_t)row * STREAMS + copy] * x + total);
+				total += c[from][copy] * source[from];
+			streams[((uint64_t)row * STREAMS + copy) * width + element] = LmFloatToBf16(p[copy] * x + total);
 		}
 	}
+	LmDependentRelease();
 }

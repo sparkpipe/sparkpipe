@@ -145,12 +145,8 @@ static __device__ __forceinline__ uint32_t LmTopkExactRowActive(uint32_t row, ui
 		*skip = 1u;
 		return(0u);
 	}
-	if ( pool_stride > 1u )
-	{
-		const uint32_t active = bound / pool_stride;
-		return(active < n ? active : n);
-	}
-	return(n);
+	const uint32_t active = pool_stride > 1u ? bound / pool_stride : bound;
+	return(active < n ? active : n);
 }
 
 template<uint32_t THREADS>
@@ -382,14 +378,14 @@ void LmTopkExactWideKernel(const float *__restrict__ scores, uint32_t n, uint32_
 #include "inference/kernels/topk_exact_cluster.cuh"
 
 template<uint32_t THREADS>
-static inline SparkGpuError LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, SparkGpuStream stream)
+static inline SparkGpuError LmTopkExactLaunch(const float *scores, uint32_t rows, uint32_t n, uint32_t k, uint32_t chunk, uint32_t chunked_rows, float *scratch_values, uint32_t *scratch_positions, uint64_t scratch_entries, uint32_t *out_indices, SparkGpuStream stream, const uint32_t *sequence_of_row = 0, const uint32_t *context_length = 0, const uint32_t *row_position = 0, uint32_t dense_limit = 0u, uint32_t pool_stride = 1u)
 {
 	const float *values = scores;
 	const uint32_t *positions = 0;
 	uint32_t length = n,half = 0u;
 	uint64_t level;
 	if ( rows > chunked_rows || LmTopkExactCandidateEntries(n,k,chunk) == 0u || LmTopkExactClusterFits(rows,n,k) != 0u )
-		return(LmTopkExactRowsLaunch<THREADS>(scores,rows,n,k,out_indices,stream));
+		return(LmTopkExactRowsLaunch<THREADS>(scores,rows,n,k,out_indices,stream,sequence_of_row,context_length,row_position,dense_limit,pool_stride));
 	if ( scratch_values == 0 || scratch_positions == 0 || (uint64_t)rows * LmTopkExactCandidateEntries(n,k,chunk) * 2u > scratch_entries )
 		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	while ( (level = LmTopkExactCandidateEntries(length,k,chunk)) != 0u )

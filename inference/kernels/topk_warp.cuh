@@ -16,12 +16,11 @@ static __device__ __forceinline__ uint64_t LmTopkWarpCandidate(const float *scor
 }
 
 template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
-__global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
+static __device__ __forceinline__ void LmTopkWarpRow(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault, uint32_t row, uint32_t lane)
 {
 	constexpr uint32_t width = K <= 1u ? 1u : K <= 2u ? 2u : K <= 4u ? 4u : K <= 8u ? 8u : K <= 16u ? 16u : 32u;
 	static_assert(K <= LM_WARP_LANES, "one lane holds each chosen expert");
-	const uint32_t lane = threadIdx.x;
-	const uint64_t base = (uint64_t)blockIdx.x * n;
+	const uint64_t base = (uint64_t)row * n;
 	uint64_t candidate[LM_TOPK_WARP_PER_LANE], best, winner;
 	uint32_t slot, round, high, low, step, chosen = 0u;
 	float value = 0.0f, tree, total;
@@ -46,7 +45,7 @@ __global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *_
 		LmTopkRouteFault(fault,high);
 	if ( lane < K )
 	{
-		out_indices[(uint64_t)blockIdx.x * K + lane] = chosen;
+		out_indices[(uint64_t)row * K + lane] = chosen;
 		value = LmTopkScore<SCORE_TRANSFORM>(scores,logits_bf16,base + chosen);
 	}
 	if ( out_values == 0 )
@@ -60,7 +59,13 @@ __global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *_
 	}
 	total = __shfl_sync(0xffffffffu,tree,0) + 1e-20f;
 	if ( lane < K )
-		out_values[(uint64_t)blockIdx.x * K + lane] = RENORMALISE ? (value / total) * mixture_scale : value * mixture_scale;
+		out_values[(uint64_t)row * K + lane] = RENORMALISE ? (value / total) * mixture_scale : value * mixture_scale;
+}
+
+template<uint32_t K, bool RENORMALISE, uint32_t SCORE_TRANSFORM>
+__global__ __launch_bounds__(LM_WARP_LANES) void LmTopkWarpKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale, uint32_t *__restrict__ fault)
+{
+	LmTopkWarpRow<K,RENORMALISE,SCORE_TRANSFORM>(scores,n,out_indices,out_values,selection_bias,logits_bf16,mixture_scale,fault,blockIdx.x,threadIdx.x);
 }
 
 #define LM_TOPK_WARPS 8u
