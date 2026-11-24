@@ -4,6 +4,7 @@
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/gqa.cuh"
 #include "inference/kernels/kv_shard.cuh"
+#include "inference/kernels/shard_reduce.cuh"
 #include "runtime/launch.h"
 #include <math.h>
 #include <stdint.h>
@@ -88,13 +89,8 @@ void LmGqaShardPartialKernel(
 	if ( row >= rows || warp >= group )
 		return;
 	sequence = sequence_of_row[row];
-	if ( !LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count )
-	{
-		LmKvReportRequiredAccessFailure(cache.pages,
-			!LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-			LM_KV_ACCESS_READ,row,sequence,0xffffffffu,0xffffffffu);
+	if ( !LmKvCheckSequence(cache.pages,row,sequence) )
 		return;
-	}
 	if ( (heads % KV_HEADS) != 0u || group > LM_GQA_SHARD_MAX_GROUP || ((uint64_t)heads * VALUE_DIM) % degree != 0u )
 	{
 		LmKvReportRequiredAccessFailure(cache.pages,LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY,LM_KV_ACCESS_READ,row,sequence,head,heads);
@@ -309,14 +305,8 @@ void LmGqaShardTiledKernel(
 		__syncthreads();
 		sequence = run[0];
 		run_end = run[1];
-		if ( !LmKvViewIsConfigured(cache.pages) || sequence >= cache.pages.sequence_count )
-		{
-			if ( threadIdx.x == 0u )
-				LmKvReportRequiredAccessFailure(cache.pages,
-					!LmKvViewIsConfigured(cache.pages) ? LM_KV_ACCESS_ERROR_INVALID_VIEW : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
-					LM_KV_ACCESS_READ,cursor,sequence,0xffffffffu,0xffffffffu);
+		if ( !LmKvCheckSequence(cache.pages,cursor,sequence,0xffffffffu,threadIdx.x == 0u) )
 			return;
-		}
 		for (side = 0u; side < 2u; ++side)
 		{
 			uint32_t fork, start;
@@ -542,23 +532,16 @@ void LmGqaShardMergeKernel(
 {
 	__shared__ float scales[LM_GQA_SHARD_MERGE_SLOTS][SPARK_KV_SHARD_MAX_DEGREE];
 	__shared__ float denom_shared[LM_GQA_SHARD_MERGE_SLOTS];
-	__shared__ float den_warp[8u][SPARK_KV_SHARD_MAX_DEGREE];
 	const uint32_t row = blockIdx.x;
 	const uint32_t width = LmGqaShardWidth(heads,VALUE_DIM,sources), slots = LmGqaShardHeadSlots(heads,VALUE_DIM,sources);
 	const uint32_t record = width + 2u * slots, origin = (rank * width) / VALUE_DIM;
 	const uint32_t warp = threadIdx.x >> 5u, lane = threadIdx.x & 31u;
-	uint32_t used_slots, slot_base;
-
 	if ( row >= rows || width == 0u )
 		return;
-	used_slots = (rank * width + width - 1u) / VALUE_DIM - origin + 1u;
+	const uint32_t used_slots = (rank * width + width - 1u) / VALUE_DIM - origin + 1u;
 	const float *row_base = received + (uint64_t)row * record;
 	uint16_t *out_row = output_bf16 + (uint64_t)row * width;
-	const bool vec4_ok = (VALUE_DIM % 4u) == 0u && (width % 4u) == 0u && ((rank * width) % 4u) == 0u &&
-		((((uintptr_t)row_base) & 15u) == 0u) && ((source_stride % 4u) == 0u) && ((((uintptr_t)out_row) & 7u) == 0u);
-	const bool vec2_ok = !vec4_ok && (VALUE_DIM % 2u) == 0u && (width % 2u) == 0u && ((rank * width) % 2u) == 0u &&
-		((((uintptr_t)row_base) & 7u) == 0u) && ((source_stride % 2u) == 0u) && ((((uintptr_t)out_row) & 3u) == 0u);
-	for (slot_base = 0u; slot_base < used_slots; slot_base += LM_GQA_SHARD_MERGE_SLOTS)
+	for (uint32_t slot_base = 0u; slot_base < used_slots; slot_base += LM_GQA_SHARD_MERGE_SLOTS)
 	{
 		const uint32_t slot_end = slot_base + LM_GQA_SHARD_MERGE_SLOTS < used_slots ? slot_base + LM_GQA_SHARD_MERGE_SLOTS : used_slots;
 		const uint32_t chunk_slots = slot_end - slot_base;
@@ -567,101 +550,23 @@ void LmGqaShardMergeKernel(
 		for (uint32_t local_slot = warp; local_slot < chunk_slots; local_slot += 8u)
 		{
 			const uint32_t slot_index = slot_base + local_slot;
-			float source_max = -INFINITY;
-			float source_den = 0.0f;
-			float lane_max = -INFINITY;
-			float sink = 0.0f;
-			if ( lane < sources )
-			{
-				const float *meta = row_base + (uint64_t)lane * source_stride + width + 2u * slot_index;
-				source_max = meta[0];
-				source_den = meta[1];
-				lane_max = source_max;
-			}
-			if ( sinks != 0 )
-			{
-				sink = sinks[origin + slot_index];
-				if ( lane == 0u )
-					lane_max = sink > lane_max ? sink : lane_max;
-			}
-			#pragma unroll
-			for (uint32_t offset = 16u; offset != 0u; offset >>= 1u)
-			{
-				float other = __shfl_xor_sync(0xffffffffu,lane_max,offset);
-				lane_max = other > lane_max ? other : lane_max;
-			}
-			if ( lane < sources )
-			{
-				scales[local_slot][lane] = lane_max == -INFINITY || source_max == -INFINITY ? 0.0f : __expf(source_max - lane_max);
-				den_warp[warp][lane] = source_den;
-			}
-			__syncwarp();
+			const float sink = sinks != 0 ? sinks[origin + slot_index] : -INFINITY;
+			float gm = -INFINITY;
+			float den = LmWarpMergeScales(row_base + width + 2u * slot_index, source_stride, sources, scales[local_slot], &gm, sink);
 			if ( lane == 0u )
 			{
-				float denominator = 0.0f;
-				for (uint32_t source = 0u; source < sources; ++source)
-					denominator = fmaf(den_warp[warp][source],scales[local_slot][source],denominator);
 				if ( sinks != 0 )
-					denominator += __expf(sink - lane_max);
-				denom_shared[local_slot] = fmaxf(denominator,1.0e-20f);
+					den += __expf(sink - gm);
+				denom_shared[local_slot] = fmaxf(den,1.0e-20f);
 			}
-			__syncwarp();
 		}
 		__syncthreads();
-		if ( vec4_ok )
-		{
-			const uint32_t vec_begin = elem_begin >> 2u, vec_end = elem_end >> 2u;
-			for (uint32_t vec = vec_begin + threadIdx.x; vec < vec_end; vec += blockDim.x)
-			{
-				const uint32_t element = vec << 2u;
-				const uint32_t local_slot = (rank * width + element) / VALUE_DIM - origin - slot_base;
-				const float denom = denom_shared[local_slot];
-				float m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f;
-				for (uint32_t source = 0u; source < sources; ++source)
-				{
-					const float scale = scales[local_slot][source];
-					const float4 v = ((const float4 *)(row_base + (uint64_t)source * source_stride))[vec];
-					m0 = fmaf(v.x,scale,m0);
-					m1 = fmaf(v.y,scale,m1);
-					m2 = fmaf(v.z,scale,m2);
-					m3 = fmaf(v.w,scale,m3);
-				}
-				((uint2 *)out_row)[vec] = make_uint2(
-					LmPackBf16Pair(m0 / denom,m1 / denom),
-					LmPackBf16Pair(m2 / denom,m3 / denom));
-			}
-		}
-		else if ( vec2_ok )
-		{
-			const uint32_t vec_begin = elem_begin >> 1u, vec_end = elem_end >> 1u;
-			for (uint32_t vec = vec_begin + threadIdx.x; vec < vec_end; vec += blockDim.x)
-			{
-				const uint32_t element = vec << 1u;
-				const uint32_t local_slot = (rank * width + element) / VALUE_DIM - origin - slot_base;
-				const float denom = denom_shared[local_slot];
-				float m0 = 0.0f, m1 = 0.0f;
-				for (uint32_t source = 0u; source < sources; ++source)
-				{
-					const float scale = scales[local_slot][source];
-					const float2 v = ((const float2 *)(row_base + (uint64_t)source * source_stride))[vec];
-					m0 = fmaf(v.x,scale,m0);
-					m1 = fmaf(v.y,scale,m1);
-				}
-				((uint32_t *)out_row)[vec] = LmPackBf16Pair(m0 / denom,m1 / denom);
-			}
-		}
-		else
-		{
-			for (uint32_t element = elem_begin + threadIdx.x; element < elem_end; element += blockDim.x)
-			{
-				const uint32_t local_slot = (rank * width + element) / VALUE_DIM - origin - slot_base;
-				const float denom = denom_shared[local_slot];
-				float merged = 0.0f;
-				for (uint32_t source = 0u; source < sources; ++source)
-					merged = fmaf(row_base[(uint64_t)source * source_stride + element],scales[local_slot][source],merged);
-				out_row[element] = LmFloatToBf16(merged / denom);
-			}
-		}
+		LmWeightedSourcesMergeRangeBf16<VALUE_DIM, 256u>(
+			row_base, source_stride, sources, elem_begin, elem_end, out_row,
+			[&](uint32_t elem) { return (rank * width + elem) / VALUE_DIM - origin - slot_base; },
+			[&](uint32_t slot, uint32_t s) { return scales[slot][s]; },
+			[&](uint32_t slot) { return denom_shared[slot]; },
+			rank * width);
 		if ( slot_end < used_slots )
 			__syncthreads();
 	}

@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_tp_mesh_round_control.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "inference/kernels/dependent_launch.cuh"
+#include "inference/kernels/mma.cuh"
 #include "inference/kernels/weight_prefetch.cuh"
 #include "runtime/launch.h"
 #define SPARK_TP_MESH_KERNELS_MARKER "SPARK-TP-MESH-KERNELS-V17-HALF-SLOTS"
@@ -326,14 +327,9 @@ static __device__ __forceinline__ uint16_t SparkTpFloatToBf16(float value)
 	return(__bfloat16_as_ushort(__float2bfloat16_rn(value)));
 }
 
-static __device__ __forceinline__ uint32_t SparkTpPackBf16Pair(float x,float y)
-{
-	return(((uint32_t)SparkTpFloatToBf16(y) << 16u) | (uint32_t)SparkTpFloatToBf16(x));
-}
-
 static __device__ __forceinline__ void SparkTpStoreBf16Pair(void *base,uint64_t element,float x,float y)
 {
-	((uint32_t *)base)[element] = SparkTpPackBf16Pair(x,y);
+	((uint32_t *)base)[element] = LmPackBf16Pair(x,y);
 }
 
 static_assert(sizeof(SparkTpMeshRoundControl) ==
@@ -1454,7 +1450,7 @@ static __device__ void SparkTpMeshHardwareSumQuad(
         }
 #pragma unroll
     for ( k = 0u; k < 4u; k++ )
-        words[k] = SparkTpPackBf16Pair(sum[2u * k],sum[2u * k + 1u]);
+        words[k] = LmPackBf16Pair(sum[2u * k],sum[2u * k + 1u]);
     *(uint4 *)output = make_uint4(words[0],words[1],words[2],words[3]);
 }
 
