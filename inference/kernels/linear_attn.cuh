@@ -1,11 +1,34 @@
 #pragma once
 
 
+#include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
 #include "sparkpipe/spark_gpu.h"
+
+static __device__ __forceinline__ void LmLinearCopyAsync(void *destination, const void *source, uint32_t bytes)
+{
+#if defined(__CUDA_ARCH__)
+	const uint32_t shared = (uint32_t)__cvta_generic_to_shared(destination);
+	if ( bytes == 16u )
+		asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(shared), "l"(source) : "memory");
+	else
+		asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(shared), "l"(source) : "memory");
+#else
+	memcpy(destination,source,bytes);
+#endif
+}
+
+static __device__ __forceinline__ float LmLinearWarpSum4(float a, float b, float c, float d)
+{
+	float sum = (a + b) + (c + d);
+	#pragma unroll
+	for ( uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u )
+		sum += __shfl_xor_sync(0xffffffffu,sum,offset);
+	return(sum);
+}
 
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
@@ -277,19 +300,19 @@ static __device__ __forceinline__ void LmDeltaRuleColumnPrepare(uint32_t query_s
 	#pragma unroll
 	for ( part = 0u; part < PARTS; part++ )
 	{
-		parts[part] = LmBf16ToFloat(source[base + part * LM_WARP_LANES + lane]);
+		parts[part] = LmBf16ToFloat(__ldg(source + base + part * LM_WARP_LANES + lane));
 		squares[part] = 0.0f;
 		squares[part] += parts[part] * parts[part];
 	}
 	if ( query_side != 0u )
-		value_s[lane] = LmBf16ToFloat(value_bf16[(((uint64_t)row * key_heads * value_heads_per_key) + (uint64_t)head * value_heads_per_key) * VALUE_DIM + column + lane]);
+		value_s[lane] = LmBf16ToFloat(__ldg(value_bf16 + (((uint64_t)row * key_heads * value_heads_per_key) + (uint64_t)head * value_heads_per_key) * VALUE_DIM + column + lane));
 	else
 	{
 		#pragma unroll
 		for ( part = 0u; part < PARTS; part++ )
-			forget_s[part * LM_WARP_LANES + lane] = forget_gate[base + part * LM_WARP_LANES + lane];
+			forget_s[part * LM_WARP_LANES + lane] = __ldg(forget_gate + base + part * LM_WARP_LANES + lane);
 		if ( lane == 0u )
-			*beta_s = write_gate[(row * key_heads) + head];
+			*beta_s = __ldg(write_gate + (row * key_heads) + head);
 	}
 	inverse = rsqrtf((LmDeltaRuleWarpTotal<WARPS,PARTS>(squares,lane) + 1e-6f));
 	#pragma unroll
@@ -298,6 +321,23 @@ static __device__ __forceinline__ void LmDeltaRuleColumnPrepare(uint32_t query_s
 			query_s[part * LM_WARP_LANES + lane] = parts[part] * (inverse * rsqrtf((float)KEY_DIM));
 		else
 			key_s[part * LM_WARP_LANES + lane] = parts[part] * inverse;
+}
+
+template<uint32_t KEY_DIM>
+static __device__ __forceinline__ float LmDeltaRulePredict4(const float (&state_s)[KEY_DIM][LM_WARP_LANES], const float *key_s, const float *forget_s, uint32_t lane)
+{
+	float predicted = 0.0f;
+	#pragma unroll 4
+	for ( uint32_t index = 0u; index < KEY_DIM; index += 4u )
+	{
+		const float4 key4 = *(const float4 *)&key_s[index];
+		const float4 forget4 = *(const float4 *)&forget_s[index];
+		predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
+		predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
+		predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
+		predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
+	}
+	return(predicted);
 }
 
 #define LM_DELTA_SNAPSHOT_MAX 8u
@@ -311,7 +351,7 @@ void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byt
 		(KEY_DIM % (4u * LM_DELTA_COLUMN_WARPS)) == 0u,
 		"a lane owns one value column; the norms reduce as a REDUCE_THREADS block sum would");
 	constexpr uint32_t WARPS = REDUCE_THREADS / LM_WARP_LANES;
-	__shared__ float state_s[KEY_DIM][LM_WARP_LANES];
+	__shared__ __align__(16) float state_s[KEY_DIM][LM_WARP_LANES];
 	__shared__ __align__(16) float key_s[LM_DELTA_COLUMN_RING][KEY_DIM];
 	__shared__ __align__(16) float query_s[LM_DELTA_COLUMN_RING][KEY_DIM];
 	__shared__ __align__(16) float forget_s[LM_DELTA_COLUMN_RING][KEY_DIM];
@@ -324,16 +364,28 @@ void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byt
 	State *state;
 	if ( sequence >= sequences || head >= key_heads || column_base >= VALUE_DIM )
 		return;
+	state = (State *)(state_pool
+		+ ((uint64_t)state_index[sequence] * slot_bytes)
+		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
+	if constexpr ( sizeof(State) == sizeof(float) )
+	{
+		const uint32_t vec_col = (threadIdx.x & 7u) * 4u;
+		#pragma unroll
+		for ( index = threadIdx.x >> 3u; index < KEY_DIM; index += LM_DELTA_COLUMN_THREADS >> 3u )
+			LmLinearCopyAsync(&state_s[index][vec_col],state + (index * VALUE_DIM) + column_base + vec_col,16u);
+		asm volatile("cp.async.commit_group;\n" ::: "memory");
+	}
+	else
+	{
+		for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
+			state_s[index / LM_WARP_LANES][index % LM_WARP_LANES] = LmScalarToFloat(state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)]);
+	}
+	LmDependentRelease();
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
 	if ( sequence_row_count != 0 )
 		end = begin + sequence_row_count[sequence];
 	count = end > begin ? end - begin : 0u;
-	state = (State *)(state_pool
-		+ ((uint64_t)state_index[sequence] * slot_bytes)
-		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
-	for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
-		state_s[index / LM_WARP_LANES][index % LM_WARP_LANES] = LmScalarToFloat(state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)]);
 	for ( step = 0u; step < 2u && step < count; step++ )
 		if ( warp >= 2u )
 		{
@@ -342,118 +394,130 @@ void LmDeltaRuleColumnKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byt
 				sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal,head,key_heads,value_heads_per_key,column_base,lane,
 				key_s[step],query_s[step],forget_s[step],value_s[step],&beta_s[step]);
 		}
+	if constexpr ( sizeof(State) == sizeof(float) )
+		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 	__syncthreads();
-	if ( warp == 1u && count != 0u )
+	if ( count == 1u && state_loads == 0 && state_saves == 0 )
 	{
-		float predicted = 0.0f;
-		#pragma unroll 4
-		for ( index = 0u; index < KEY_DIM; index += 4u )
-		{
-			const float4 key4 = *(const float4 *)&key_s[0][index];
-			const float4 forget4 = *(const float4 *)&forget_s[0][index];
-			predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
-			predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
-			predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
-			predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
-		}
-		coefficient_s[lane] = beta_s[0] * (value_s[0][lane] - predicted);
-	}
-	__syncthreads();
-	for ( step = 0u; step < count; step++ )
-	{
-		const uint32_t buffer = step % LM_DELTA_COLUMN_RING, next = (step + 1u) % LM_DELTA_COLUMN_RING, ahead = (step + 2u) % LM_DELTA_COLUMN_RING;
-		const uint32_t current = sequence_row_indices != 0 ? sequence_row_indices[begin + step] : begin + step;
-		if ( state_loads != 0 && state_loads[current] != 0u )
-		{
-			const float *snapshot = snapshots + (((uint64_t)(state_loads[current] - 1u) * key_heads + head) * KEY_DIM) * VALUE_DIM + column_base;
-			for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
-				state_s[index / LM_WARP_LANES][index % LM_WARP_LANES] = snapshot[((index / LM_WARP_LANES) * VALUE_DIM) + (index % LM_WARP_LANES)];
-			__syncthreads();
-			if ( warp == 1u )
-			{
-				float predicted = 0.0f;
-				#pragma unroll 4
-				for ( index = 0u; index < KEY_DIM; index += 4u )
-				{
-					const float4 key4 = *(const float4 *)&key_s[buffer][index];
-					const float4 forget4 = *(const float4 *)&forget_s[buffer][index];
-					predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
-					predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
-					predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
-					predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
-				}
-				coefficient_s[lane] = beta_s[buffer] * (value_s[buffer][lane] - predicted);
-			}
-			__syncthreads();
-		}
-		{
-			const float coefficient = coefficient_s[lane];
-			#pragma unroll
-			for ( index = warp * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index < (warp + 1u) * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index += 4u )
-			{
-				const float4 forget4 = *(const float4 *)&forget_s[buffer][index];
-				const float4 key4 = *(const float4 *)&key_s[buffer][index];
-				state_s[index][lane] = __fmaf_rn(forget4.x,state_s[index][lane],__fmul_rn(coefficient,key4.x));
-				state_s[index + 1u][lane] = __fmaf_rn(forget4.y,state_s[index + 1u][lane],__fmul_rn(coefficient,key4.y));
-				state_s[index + 2u][lane] = __fmaf_rn(forget4.z,state_s[index + 2u][lane],__fmul_rn(coefficient,key4.z));
-				state_s[index + 3u][lane] = __fmaf_rn(forget4.w,state_s[index + 3u][lane],__fmul_rn(coefficient,key4.w));
-			}
-		}
-		__syncthreads();
 		if ( warp == 0u )
 		{
-			const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin + step] : begin + step;
+			const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[begin] : begin;
+			const float coefficient = beta_s[0] * (value_s[0][lane] - LmDeltaRulePredict4<KEY_DIM>(state_s,key_s[0],forget_s[0],lane));
 			float total = 0.0f;
 			#pragma unroll 4
 			for ( index = 0u; index < KEY_DIM; index += 4u )
 			{
-				const float4 query4 = *(const float4 *)&query_s[buffer][index];
-				total = __fmaf_rn(state_s[index][lane],query4.x,total);
-				total = __fmaf_rn(state_s[index + 1u][lane],query4.y,total);
-				total = __fmaf_rn(state_s[index + 2u][lane],query4.z,total);
-				total = __fmaf_rn(state_s[index + 3u][lane],query4.w,total);
+				const float4 forget4 = *(const float4 *)&forget_s[0][index], key4 = *(const float4 *)&key_s[0][index], query4 = *(const float4 *)&query_s[0][index];
+				const float s0 = __fmaf_rn(forget4.x,state_s[index][lane],__fmul_rn(coefficient,key4.x));
+				const float s1 = __fmaf_rn(forget4.y,state_s[index + 1u][lane],__fmul_rn(coefficient,key4.y));
+				const float s2 = __fmaf_rn(forget4.z,state_s[index + 2u][lane],__fmul_rn(coefficient,key4.z));
+				const float s3 = __fmaf_rn(forget4.w,state_s[index + 3u][lane],__fmul_rn(coefficient,key4.w));
+				total = __fmaf_rn(s0,query4.x,total);
+				total = __fmaf_rn(s1,query4.y,total);
+				total = __fmaf_rn(s2,query4.z,total);
+				total = __fmaf_rn(s3,query4.w,total);
+				if ( commit != 0u )
+				{
+					state_s[index][lane] = s0;
+					state_s[index + 1u][lane] = s1;
+					state_s[index + 2u][lane] = s2;
+					state_s[index + 3u][lane] = s3;
+				}
 			}
 			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + column_base + lane] = LmFloatToBf16(total);
 		}
-		else if ( warp == 1u && step + 1u < count )
-		{
-			float predicted = 0.0f;
-			#pragma unroll 4
-			for ( index = 0u; index < KEY_DIM; index += 4u )
-			{
-				const float4 key4 = *(const float4 *)&key_s[next][index];
-				const float4 forget4 = *(const float4 *)&forget_s[next][index];
-				predicted = __fmaf_rn(__fmul_rn(state_s[index][lane],key4.x),forget4.x,predicted);
-				predicted = __fmaf_rn(__fmul_rn(state_s[index + 1u][lane],key4.y),forget4.y,predicted);
-				predicted = __fmaf_rn(__fmul_rn(state_s[index + 2u][lane],key4.z),forget4.z,predicted);
-				predicted = __fmaf_rn(__fmul_rn(state_s[index + 3u][lane],key4.w),forget4.w,predicted);
-			}
-			coefficient_s[lane] = beta_s[next] * (value_s[next][lane] - predicted);
-		}
-		else if ( warp >= 2u && step + 2u < count )
-		{
-			ordinal = begin + step + 2u;
-			LmDeltaRuleColumnPrepare<WARPS,KEY_DIM,VALUE_DIM>(warp - 2u,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,
-				sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal,head,key_heads,value_heads_per_key,column_base,lane,
-				key_s[ahead],query_s[ahead],forget_s[ahead],value_s[ahead],&beta_s[ahead]);
-		}
+		if ( commit == 0u )
+			return;
 		__syncthreads();
-		if ( state_saves != 0 && state_saves[current] != 0u )
-		{
-			for ( uint32_t branch = 0u; branch < LM_DELTA_SNAPSHOT_MAX; branch++ )
-				if ( ((state_saves[current] >> branch) & 1u) != 0u )
-				{
-					float *snapshot = snapshots + (((uint64_t)branch * key_heads + head) * KEY_DIM) * VALUE_DIM + column_base;
-					for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
-						snapshot[((index / LM_WARP_LANES) * VALUE_DIM) + (index % LM_WARP_LANES)] = state_s[index / LM_WARP_LANES][index % LM_WARP_LANES];
-				}
-			__syncthreads();
-		}
 	}
-	if ( commit == 0u )
-		return;
-	for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
-		LmStoreState(&state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)],state_s[index / LM_WARP_LANES][index % LM_WARP_LANES]);
+	else
+	{
+		if ( warp == 1u && count != 0u )
+			coefficient_s[lane] = beta_s[0] * (value_s[0][lane] - LmDeltaRulePredict4<KEY_DIM>(state_s,key_s[0],forget_s[0],lane));
+		__syncthreads();
+		for ( step = 0u; step < count; step++ )
+		{
+			const uint32_t buffer = step % LM_DELTA_COLUMN_RING, next = (step + 1u) % LM_DELTA_COLUMN_RING, ahead = (step + 2u) % LM_DELTA_COLUMN_RING;
+			const uint32_t current = sequence_row_indices != 0 ? sequence_row_indices[begin + step] : begin + step;
+			if ( state_loads != 0 && state_loads[current] != 0u )
+			{
+				const float *snapshot = snapshots + (((uint64_t)(state_loads[current] - 1u) * key_heads + head) * KEY_DIM) * VALUE_DIM + column_base;
+				const uint32_t vec_col = (threadIdx.x & 7u) * 4u;
+				#pragma unroll
+				for ( index = threadIdx.x >> 3u; index < KEY_DIM; index += LM_DELTA_COLUMN_THREADS >> 3u )
+					LmLinearCopyAsync(&state_s[index][vec_col],snapshot + (index * VALUE_DIM) + vec_col,16u);
+				asm volatile("cp.async.commit_group;\ncp.async.wait_group 0;\n" ::: "memory");
+				__syncthreads();
+				if ( warp == 1u )
+					coefficient_s[lane] = beta_s[buffer] * (value_s[buffer][lane] - LmDeltaRulePredict4<KEY_DIM>(state_s,key_s[buffer],forget_s[buffer],lane));
+				__syncthreads();
+			}
+			{
+				const float coefficient = coefficient_s[lane];
+				#pragma unroll
+				for ( index = warp * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index < (warp + 1u) * (KEY_DIM / LM_DELTA_COLUMN_WARPS); index += 4u )
+				{
+					const float4 forget4 = *(const float4 *)&forget_s[buffer][index], key4 = *(const float4 *)&key_s[buffer][index];
+					state_s[index][lane] = __fmaf_rn(forget4.x,state_s[index][lane],__fmul_rn(coefficient,key4.x));
+					state_s[index + 1u][lane] = __fmaf_rn(forget4.y,state_s[index + 1u][lane],__fmul_rn(coefficient,key4.y));
+					state_s[index + 2u][lane] = __fmaf_rn(forget4.z,state_s[index + 2u][lane],__fmul_rn(coefficient,key4.z));
+					state_s[index + 3u][lane] = __fmaf_rn(forget4.w,state_s[index + 3u][lane],__fmul_rn(coefficient,key4.w));
+				}
+			}
+			__syncthreads();
+			if ( warp == 0u )
+			{
+				float total = 0.0f;
+				#pragma unroll 4
+				for ( index = 0u; index < KEY_DIM; index += 4u )
+				{
+					const float4 query4 = *(const float4 *)&query_s[buffer][index];
+					total = __fmaf_rn(state_s[index][lane],query4.x,total);
+					total = __fmaf_rn(state_s[index + 1u][lane],query4.y,total);
+					total = __fmaf_rn(state_s[index + 2u][lane],query4.z,total);
+					total = __fmaf_rn(state_s[index + 3u][lane],query4.w,total);
+				}
+				output_bf16[(((uint64_t)current * key_heads) + head) * VALUE_DIM + column_base + lane] = LmFloatToBf16(total);
+			}
+			else if ( warp == 1u && step + 1u < count )
+				coefficient_s[lane] = beta_s[next] * (value_s[next][lane] - LmDeltaRulePredict4<KEY_DIM>(state_s,key_s[next],forget_s[next],lane));
+			else if ( warp >= 2u && step + 2u < count )
+			{
+				ordinal = begin + step + 2u;
+				LmDeltaRuleColumnPrepare<WARPS,KEY_DIM,VALUE_DIM>(warp - 2u,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,
+					sequence_row_indices != 0 ? sequence_row_indices[ordinal] : ordinal,head,key_heads,value_heads_per_key,column_base,lane,
+					key_s[ahead],query_s[ahead],forget_s[ahead],value_s[ahead],&beta_s[ahead]);
+			}
+			__syncthreads();
+			if ( state_saves != 0 && state_saves[current] != 0u )
+			{
+				const uint32_t vec_col = (threadIdx.x & 7u) * 4u;
+				for ( uint32_t branch = 0u; branch < LM_DELTA_SNAPSHOT_MAX; branch++ )
+					if ( ((state_saves[current] >> branch) & 1u) != 0u )
+					{
+						float *snapshot = snapshots + (((uint64_t)branch * key_heads + head) * KEY_DIM) * VALUE_DIM + column_base;
+						#pragma unroll
+						for ( index = threadIdx.x >> 3u; index < KEY_DIM; index += LM_DELTA_COLUMN_THREADS >> 3u )
+							__stcs((float4 *)(snapshot + (index * VALUE_DIM) + vec_col),*(const float4 *)&state_s[index][vec_col]);
+					}
+				__syncthreads();
+			}
+		}
+		if ( commit == 0u )
+			return;
+	}
+	if constexpr ( sizeof(State) == sizeof(float) )
+	{
+		const uint32_t vec_col = (threadIdx.x & 7u) * 4u;
+		#pragma unroll
+		for ( index = threadIdx.x >> 3u; index < KEY_DIM; index += LM_DELTA_COLUMN_THREADS >> 3u )
+			__stcs((float4 *)(state + (index * VALUE_DIM) + column_base + vec_col),*(const float4 *)&state_s[index][vec_col]);
+	}
+	else
+	{
+		for ( index = threadIdx.x; index < KEY_DIM * LM_WARP_LANES; index += LM_DELTA_COLUMN_THREADS )
+			LmStoreState(&state[((index / LM_WARP_LANES) * VALUE_DIM) + column_base + (index % LM_WARP_LANES)],state_s[index / LM_WARP_LANES][index % LM_WARP_LANES]);
+	}
 }
 
 #if defined(__CUDACC__)
@@ -467,13 +531,13 @@ struct LmDeltaRuleChunkShared
 	__align__(16) float key[LM_DELTA_CHUNK][KEY_DIM + 4u];
 	__align__(16) float query[LM_DELTA_CHUNK][KEY_DIM + 4u];
 	__align__(16) float carried[LM_DELTA_CHUNK][KEY_DIM + 4u];
-	float value[LM_DELTA_CHUNK][VALUE_DIM];
+	__align__(16) float value[LM_DELTA_CHUNK][VALUE_DIM];
 	float update[LM_DELTA_CHUNK][VALUE_DIM];
 	float part[LM_DELTA_CHUNK_SPLIT][LM_DELTA_CHUNK][VALUE_DIM];
 	float tri_a[LM_DELTA_CHUNK][LM_DELTA_CHUNK + 1u];
 	float tri_m[LM_DELTA_CHUNK][LM_DELTA_CHUNK + 1u];
 	float tri_x[LM_DELTA_CHUNK][LM_DELTA_CHUNK + 1u];
-	float tail[KEY_DIM];
+	__align__(16) float tail[KEY_DIM];
 	float beta[LM_DELTA_CHUNK];
 	__align__(16) uint16_t raw_key[LM_DELTA_CHUNK][KEY_DIM];
 	__align__(16) uint16_t raw_query[LM_DELTA_CHUNK][KEY_DIM];
@@ -481,19 +545,6 @@ struct LmDeltaRuleChunkShared
 	__align__(16) float raw_forget[LM_DELTA_CHUNK][KEY_DIM];
 	__align__(16) float raw_beta[LM_DELTA_CHUNK];
 };
-
-static __device__ __forceinline__ void LmDeltaRuleChunkCopy(void *destination, const void *source, uint32_t bytes)
-{
-#if defined(__CUDA_ARCH__)
-	const uint32_t shared = (uint32_t)__cvta_generic_to_shared(destination);
-	if ( bytes == 16u )
-		asm volatile("cp.async.cg.shared.global [%0], [%1], 16;\n" :: "r"(shared), "l"(source) : "memory");
-	else
-		asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" :: "r"(shared), "l"(source) : "memory");
-#else
-	memcpy(destination,source,bytes);
-#endif
-}
 
 template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t THREADS>
 static __device__ __forceinline__ void LmDeltaRuleChunkFetch(LmDeltaRuleChunkShared<KEY_DIM,VALUE_DIM> &sh, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, const uint32_t *__restrict__ sequence_row_indices, uint32_t first_row, uint32_t rows, uint32_t head, uint32_t key_heads, uint32_t value_heads_per_key)
@@ -505,53 +556,75 @@ static __device__ __forceinline__ void LmDeltaRuleChunkFetch(LmDeltaRuleChunkSha
 		const uint32_t row = sequence_row_indices != 0 ? sequence_row_indices[first_row + t] : first_row + t;
 		const uint64_t base = (((uint64_t)row * key_heads) + head) * KEY_DIM;
 		if ( piece < KV )
-			LmDeltaRuleChunkCopy(&sh.raw_key[t][piece * 8u],key_bf16 + base + piece * 8u,16u);
+			LmLinearCopyAsync(&sh.raw_key[t][piece * 8u],key_bf16 + base + piece * 8u,16u);
 		else if ( piece < 2u * KV )
-			LmDeltaRuleChunkCopy(&sh.raw_query[t][(piece - KV) * 8u],query_bf16 + base + (piece - KV) * 8u,16u);
+			LmLinearCopyAsync(&sh.raw_query[t][(piece - KV) * 8u],query_bf16 + base + (piece - KV) * 8u,16u);
 		else if ( piece < 2u * KV + FV )
-			LmDeltaRuleChunkCopy(&sh.raw_forget[t][(piece - 2u * KV) * 4u],forget_gate + base + (piece - 2u * KV) * 4u,16u);
+			LmLinearCopyAsync(&sh.raw_forget[t][(piece - 2u * KV) * 4u],forget_gate + base + (piece - 2u * KV) * 4u,16u);
 		else if ( piece < PER - 1u )
-			LmDeltaRuleChunkCopy(&sh.raw_value[t][(piece - 2u * KV - FV) * 8u],
+			LmLinearCopyAsync(&sh.raw_value[t][(piece - 2u * KV - FV) * 8u],
 				value_bf16 + (((uint64_t)row * key_heads * value_heads_per_key) + (uint64_t)head * value_heads_per_key) * VALUE_DIM + (piece - 2u * KV - FV) * 8u,16u);
 		else
-			LmDeltaRuleChunkCopy(&sh.raw_beta[t],write_gate + (row * key_heads) + head,4u);
+			LmLinearCopyAsync(&sh.raw_beta[t],write_gate + (row * key_heads) + head,4u);
 	}
 	asm volatile("cp.async.commit_group;\n" ::: "memory");
+}
+
+template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t HALF>
+static __device__ __forceinline__ void LmDeltaRuleChunkDot2(const float (&vectors)[LM_DELTA_CHUNK][KEY_DIM + 4u], const float (&columns)[HALF], float (&part)[LM_DELTA_CHUNK_SPLIT][LM_DELTA_CHUNK][VALUE_DIM], uint32_t half, uint32_t key_first, uint32_t col)
+{
+	#pragma unroll
+	for ( uint32_t r = 0u; r < LM_DELTA_CHUNK; r += 2u )
+	{
+		float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, b0 = 0.0f, b1 = 0.0f, b2 = 0.0f, b3 = 0.0f;
+		#pragma unroll
+		for ( uint32_t index = 0u; index < HALF; index += 4u )
+		{
+			const float4 v0 = *(const float4 *)&vectors[r][key_first + index], v1 = *(const float4 *)&vectors[r + 1u][key_first + index];
+			a0 = fmaf(v0.x,columns[index],a0); b0 = fmaf(v1.x,columns[index],b0);
+			a1 = fmaf(v0.y,columns[index + 1u],a1); b1 = fmaf(v1.y,columns[index + 1u],b1);
+			a2 = fmaf(v0.z,columns[index + 2u],a2); b2 = fmaf(v1.z,columns[index + 2u],b2);
+			a3 = fmaf(v0.w,columns[index + 3u],a3); b3 = fmaf(v1.w,columns[index + 3u],b3);
+		}
+		part[half][r][col] = (a0 + a1) + (a2 + a3);
+		part[half][r + 1u][col] = (b0 + b1) + (b2 + b3);
+	}
 }
 
 template<uint32_t KEY_DIM, uint32_t VALUE_DIM, uint32_t SIZE, uint32_t LANES>
 static __device__ __forceinline__ void LmDeltaRuleChunkMerge(LmDeltaRuleChunkShared<KEY_DIM,VALUE_DIM> &sh, uint32_t rows)
 {
-	constexpr uint32_t C = LM_DELTA_CHUNK, TWICE = 2u * SIZE, PAIRS = C * SIZE / 2u, SPAN = KEY_DIM / LANES;
-	static_assert((SPAN % 4u) == 0u && PAIRS * LANES <= LM_DELTA_CHUNK_THREADS,"a lane of a pair team holds whole float4 spans");
+	constexpr uint32_t C = LM_DELTA_CHUNK, TWICE = 2u * SIZE, PAIRS = C * SIZE / 2u, VECS = (KEY_DIM / 4u) / LANES, KV4 = KEY_DIM / 4u;
+	static_assert(((KEY_DIM / LANES) % 4u) == 0u && PAIRS * LANES <= LM_DELTA_CHUNK_THREADS,"a lane of a pair team holds whole float4 spans");
 	const uint32_t pair = threadIdx.x / LANES, lane = threadIdx.x % LANES;
 	uint32_t index;
 	if ( pair < PAIRS )
 	{
 		const uint32_t block = pair / (SIZE * SIZE), at = pair % (SIZE * SIZE);
 		const uint32_t j = block * TWICE + at / SIZE, t = block * TWICE + SIZE + at % SIZE;
-		float a[4] = {0.0f,0.0f,0.0f,0.0f}, m[4] = {0.0f,0.0f,0.0f,0.0f}, sum_a, sum_m;
+		float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, m0 = 0.0f, m1 = 0.0f, m2 = 0.0f, m3 = 0.0f, sum_a, sum_m;
 		if ( t < rows )
 		{
 			#pragma unroll
-			for ( index = 0u; index < SPAN; index += 4u )
+			for ( index = 0u; index < VECS; index++ )
 			{
-				const uint32_t c = lane * SPAN + index;
+				const uint32_t c = (index * LANES + lane) * 4u;
 				const float4 w4 = *(const float4 *)&sh.carried[j][c];
 				const float4 k4 = *(const float4 *)&sh.key[t][c];
 				const float4 q4 = *(const float4 *)&sh.query[t][c];
-				a[0] = fmaf(k4.x,w4.x,a[0]);
-				a[1] = fmaf(k4.y,w4.y,a[1]);
-				a[2] = fmaf(k4.z,w4.z,a[2]);
-				a[3] = fmaf(k4.w,w4.w,a[3]);
-				m[0] = fmaf(q4.x,w4.x,m[0]);
-				m[1] = fmaf(q4.y,w4.y,m[1]);
-				m[2] = fmaf(q4.z,w4.z,m[2]);
-				m[3] = fmaf(q4.w,w4.w,m[3]);
+				a0 = fmaf(k4.x,w4.x,a0);
+				a1 = fmaf(k4.y,w4.y,a1);
+				a2 = fmaf(k4.z,w4.z,a2);
+				a3 = fmaf(k4.w,w4.w,a3);
+				m0 = fmaf(q4.x,w4.x,m0);
+				m1 = fmaf(q4.y,w4.y,m1);
+				m2 = fmaf(q4.z,w4.z,m2);
+				m3 = fmaf(q4.w,w4.w,m3);
 			}
 		}
-		sum_a = (a[0] + a[1]) + (a[2] + a[3]);
-		sum_m = (m[0] + m[1]) + (m[2] + m[3]);
+		sum_a = (a0 + a1) + (a2 + a3);
+		sum_m = (m0 + m1) + (m2 + m3);
+		#pragma unroll
 		for ( index = 1u; index < LANES; index *= 2u )
 		{
 			sum_a += __shfl_xor_sync(0xffffffffu,sum_a,index);
@@ -564,25 +637,52 @@ static __device__ __forceinline__ void LmDeltaRuleChunkMerge(LmDeltaRuleChunkSha
 		}
 	}
 	__syncthreads();
-	for ( index = threadIdx.x; index < (C / 2u) * KEY_DIM; index += LM_DELTA_CHUNK_THREADS )
+	for ( index = threadIdx.x; index < (C / 2u) * KV4; index += LM_DELTA_CHUNK_THREADS )
 	{
-		const uint32_t half = index / KEY_DIM, dim = index % KEY_DIM, first = (half / SIZE) * TWICE, left = first + half % SIZE, right = left + SIZE;
-		sh.carried[left][dim] *= sh.raw_forget[first + SIZE][dim];
-		sh.key[right][dim] *= sh.raw_forget[first][dim];
-		sh.query[right][dim] *= sh.raw_forget[first][dim];
+		const uint32_t half = index / KV4, dim = (index % KV4) * 4u, first = (half / SIZE) * TWICE, left = first + half % SIZE, right = left + SIZE;
+		const float4 fr = *(const float4 *)&sh.raw_forget[first + SIZE][dim];
+		const float4 fl = *(const float4 *)&sh.raw_forget[first][dim];
+		float4 c4 = *(const float4 *)&sh.carried[left][dim];
+		float4 k4 = *(const float4 *)&sh.key[right][dim];
+		float4 q4 = *(const float4 *)&sh.query[right][dim];
+		c4.x *= fr.x; c4.y *= fr.y; c4.z *= fr.z; c4.w *= fr.w;
+		k4.x *= fl.x; k4.y *= fl.y; k4.z *= fl.z; k4.w *= fl.w;
+		q4.x *= fl.x; q4.y *= fl.y; q4.z *= fl.z; q4.w *= fl.w;
+		*(float4 *)&sh.carried[left][dim] = c4;
+		*(float4 *)&sh.key[right][dim] = k4;
+		*(float4 *)&sh.query[right][dim] = q4;
 	}
-	__syncthreads();
-	for ( index = threadIdx.x; index < (C / TWICE) * KEY_DIM; index += LM_DELTA_CHUNK_THREADS )
-		sh.raw_forget[(index / KEY_DIM) * TWICE][index % KEY_DIM] *= sh.raw_forget[(index / KEY_DIM) * TWICE + SIZE][index % KEY_DIM];
-	__syncthreads();
+	if constexpr ( TWICE == C )
+	{
+		if ( threadIdx.x >= (C / 2u) * KV4 && threadIdx.x < (C / 2u) * KV4 + KV4 )
+		{
+			const uint32_t dim = (threadIdx.x - (C / 2u) * KV4) * 4u;
+			const float4 f0 = *(const float4 *)&sh.raw_forget[0][dim];
+			const float4 f1 = *(const float4 *)&sh.raw_forget[SIZE][dim];
+			*(float4 *)&sh.tail[dim] = {f0.x * f1.x,f0.y * f1.y,f0.z * f1.z,f0.w * f1.w};
+		}
+		__syncthreads();
+	}
+	else
+	{
+		__syncthreads();
+		for ( index = threadIdx.x; index < (C / TWICE) * KV4; index += LM_DELTA_CHUNK_THREADS )
+		{
+			const uint32_t row = (index / KV4) * TWICE, dim = (index % KV4) * 4u;
+			const float4 f0 = *(const float4 *)&sh.raw_forget[row][dim];
+			const float4 f1 = *(const float4 *)&sh.raw_forget[row + SIZE][dim];
+			*(float4 *)&sh.raw_forget[row][dim] = {f0.x * f1.x,f0.y * f1.y,f0.z * f1.z,f0.w * f1.w};
+		}
+		__syncthreads();
+	}
 }
 
 template<uint32_t REDUCE_THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
 __global__ __launch_bounds__(LM_DELTA_CHUNK_THREADS)
 void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices = 0)
 {
-	constexpr uint32_t C = LM_DELTA_CHUNK, THREADS = LM_DELTA_CHUNK_THREADS, WARPS = REDUCE_THREADS / LM_WARP_LANES, TEAM = THREADS / LM_WARP_LANES;
-	constexpr uint32_t SPLIT = LM_DELTA_CHUNK_SPLIT, HALF = KEY_DIM / SPLIT, ROWS_PER_HALF = C / SPLIT, PARTS = KEY_DIM / LM_WARP_LANES;
+	constexpr uint32_t C = LM_DELTA_CHUNK, THREADS = LM_DELTA_CHUNK_THREADS, TEAM = THREADS / LM_WARP_LANES;
+	constexpr uint32_t SPLIT = LM_DELTA_CHUNK_SPLIT, HALF = KEY_DIM / SPLIT, ROWS_PER_HALF = C / SPLIT;
 	static_assert(VALUE_DIM * SPLIT == THREADS && (KEY_DIM % (8u * SPLIT)) == 0u && (VALUE_DIM % 8u) == 0u && KEY_DIM <= THREADS && C == TEAM,
 		"a thread holds one value column of a quarter of the keys; a warp normalises one row");
 	extern __shared__ __align__(16) uint8_t lm_delta_chunk_shared[];
@@ -595,79 +695,74 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 	State *state;
 	if ( sequence >= sequences || head >= key_heads )
 		return;
+	LmDependentRelease();
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
 	if ( sequence_row_count != 0 )
 		end = begin + sequence_row_count[sequence];
 	count = end > begin ? end - begin : 0u;
 	state = (State *)(state_pool + ((uint64_t)state_index[sequence] * slot_bytes) + ((uint64_t)head * KEY_DIM * VALUE_DIM * sizeof(State)));
-	#pragma unroll
-	for ( index = 0u; index < HALF; index++ )
-		columns[index] = LmScalarToFloat(state[((key_first + index) * VALUE_DIM) + col]);
 	if ( count != 0u )
 		LmDeltaRuleChunkFetch<KEY_DIM,VALUE_DIM,THREADS>(sh,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,sequence_row_indices,begin,count < C ? count : C,head,key_heads,value_heads_per_key);
+	#pragma unroll
+	for ( index = 0u; index < HALF; index++ )
+	{
+		if constexpr ( sizeof(State) == sizeof(float) )
+			columns[index] = __ldcs((const float *)state + ((key_first + index) * VALUE_DIM) + col);
+		else
+			columns[index] = LmScalarToFloat(state[((key_first + index) * VALUE_DIM) + col]);
+	}
 	for ( first = 0u; first < count; first += C )
 	{
 		const uint32_t rows = count - first < C ? count - first : C;
 		asm volatile("cp.async.wait_group 0;\n" ::: "memory");
 		__syncthreads();
-		for ( t = warp; t < rows; t += TEAM )
 		{
-			float kept[PARTS], products[PARTS], diagonal;
-			#pragma unroll
-			for ( uint32_t side = 0u; side < 2u; side++ )
+			const uint32_t c0 = lane * 4u;
+			if ( warp < rows )
 			{
-				float parts[PARTS], squares[PARTS], inverse;
-				uint32_t part;
-				#pragma unroll
-				for ( part = 0u; part < PARTS; part++ )
+				const uint2 rk = *(const uint2 *)&sh.raw_key[warp][c0];
+				const uint2 rq = *(const uint2 *)&sh.raw_query[warp][c0];
+				const float4 fg = *(const float4 *)&sh.raw_forget[warp][c0];
+				const float ka = __uint_as_float(rk.x << 16u), kb = __uint_as_float(rk.x & 0xffff0000u);
+				const float kc = __uint_as_float(rk.y << 16u), kd = __uint_as_float(rk.y & 0xffff0000u);
+				const float qa = __uint_as_float(rq.x << 16u), qb = __uint_as_float(rq.x & 0xffff0000u);
+				const float qc = __uint_as_float(rq.y << 16u), qd = __uint_as_float(rq.y & 0xffff0000u);
+				const float kinv = rsqrtf(LmLinearWarpSum4(ka * ka,kb * kb,kc * kc,kd * kd) + 1e-6f);
+				const float qinv = rsqrtf(LmLinearWarpSum4(qa * qa,qb * qb,qc * qc,qd * qd) + 1e-6f) * rsqrtf((float)KEY_DIM);
+				const float nka = ka * kinv, nkb = kb * kinv, nkc = kc * kinv, nkd = kd * kinv;
+				const float nqa = qa * qinv, nqb = qb * qinv, nqc = qc * qinv, nqd = qd * qinv;
+				const float diag = LmLinearWarpSum4(nka * nqa,nkb * nqb,nkc * nqc,nkd * nqd);
+				*(float4 *)&sh.carried[warp][c0] = {nka,nkb,nkc,nkd};
+				*(float4 *)&sh.key[warp][c0] = {nka * fg.x,nkb * fg.y,nkc * fg.z,nkd * fg.w};
+				*(float4 *)&sh.query[warp][c0] = {nqa * fg.x,nqb * fg.y,nqc * fg.z,nqd * fg.w};
+				if ( lane == 0u )
+					sh.tri_m[warp][warp] = diag;
+				if constexpr ( VALUE_DIM == KEY_DIM )
 				{
-					parts[part] = LmBf16ToFloat(side != 0u ? sh.raw_query[t][part * LM_WARP_LANES + lane] : sh.raw_key[t][part * LM_WARP_LANES + lane]);
-					squares[part] = parts[part] * parts[part];
-				}
-				inverse = rsqrtf((LmDeltaRuleWarpTotal<WARPS,PARTS>(squares,lane) + 1e-6f));
-				#pragma unroll
-				for ( part = 0u; part < PARTS; part++ )
-				{
-					if ( side != 0u )
-					{
-						const float normal = parts[part] * (inverse * rsqrtf((float)KEY_DIM));
-						sh.query[t][part * LM_WARP_LANES + lane] = normal;
-						products[part] = normal * kept[part];
-					}
-					else
-					{
-						kept[part] = parts[part] * inverse;
-						sh.key[t][part * LM_WARP_LANES + lane] = kept[part];
-					}
+					const uint2 rv = *(const uint2 *)&sh.raw_value[warp][c0];
+					*(float4 *)&sh.value[warp][c0] = {__uint_as_float(rv.x << 16u),__uint_as_float(rv.x & 0xffff0000u),__uint_as_float(rv.y << 16u),__uint_as_float(rv.y & 0xffff0000u)};
 				}
 			}
-			diagonal = LmDeltaRuleWarpTotal<WARPS,PARTS>(products,lane);
-			if ( lane == 0u )
-				sh.tri_m[t][t] = diagonal;
+			else
+			{
+				const float4 z4 = {0.0f,0.0f,0.0f,0.0f};
+				*(float4 *)&sh.raw_forget[warp][c0] = {1.0f,1.0f,1.0f,1.0f};
+				*(float4 *)&sh.carried[warp][c0] = z4;
+				*(float4 *)&sh.key[warp][c0] = z4;
+				*(float4 *)&sh.query[warp][c0] = z4;
+			}
 		}
-		for ( index = threadIdx.x; index < rows * VALUE_DIM; index += THREADS )
-			sh.value[index / VALUE_DIM][index % VALUE_DIM] = LmBf16ToFloat(sh.raw_value[index / VALUE_DIM][index % VALUE_DIM]);
+		if constexpr ( VALUE_DIM != KEY_DIM )
+			for ( index = threadIdx.x; index < rows * VALUE_DIM; index += THREADS )
+				sh.value[index / VALUE_DIM][index % VALUE_DIM] = LmBf16ToFloat(sh.raw_value[index / VALUE_DIM][index % VALUE_DIM]);
 		if ( threadIdx.x < C )
 			sh.beta[threadIdx.x] = threadIdx.x < rows ? sh.raw_beta[threadIdx.x] : 0.0f;
-		__syncthreads();
-		for ( index = threadIdx.x; index < C * KEY_DIM; index += THREADS )
-		{
-			const uint32_t row = index / KEY_DIM, dim = index % KEY_DIM;
-			const float gate = row < rows ? sh.raw_forget[row][dim] : 1.0f;
-			sh.raw_forget[row][dim] = gate;
-			sh.carried[row][dim] = row < rows ? sh.key[row][dim] : 0.0f;
-			sh.key[row][dim] = row < rows ? sh.key[row][dim] * gate : 0.0f;
-			sh.query[row][dim] = row < rows ? sh.query[row][dim] * gate : 0.0f;
-		}
 		__syncthreads();
 		LmDeltaRuleChunkMerge<KEY_DIM,VALUE_DIM,1u,32u>(sh,rows);
 		LmDeltaRuleChunkMerge<KEY_DIM,VALUE_DIM,2u,32u>(sh,rows);
 		LmDeltaRuleChunkMerge<KEY_DIM,VALUE_DIM,4u,16u>(sh,rows);
 		LmDeltaRuleChunkMerge<KEY_DIM,VALUE_DIM,8u,8u>(sh,rows);
-		if ( threadIdx.x < KEY_DIM )
-			sh.tail[threadIdx.x] = sh.raw_forget[0][threadIdx.x];
-		__syncthreads();
 		if ( first + C < count )
 			LmDeltaRuleChunkFetch<KEY_DIM,VALUE_DIM,THREADS>(sh,key_bf16,query_bf16,value_bf16,forget_gate,write_gate,sequence_row_indices,begin + first + C,
 				count - first - C < C ? count - first - C : C,head,key_heads,value_heads_per_key);
@@ -687,28 +782,7 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 			for ( t = 0u; t < C; t++ )
 				sh.tri_x[t][lane] = x[t];
 		}
-		{
-			float partial[C];
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-				partial[r] = 0.0f;
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-			{
-				#pragma unroll
-				for ( index = 0u; index < HALF; index += 4u )
-				{
-					const float4 k4 = *(const float4 *)&sh.key[r][key_first + index];
-					partial[r] = fmaf(k4.x,columns[index],partial[r]);
-					partial[r] = fmaf(k4.y,columns[index + 1u],partial[r]);
-					partial[r] = fmaf(k4.z,columns[index + 2u],partial[r]);
-					partial[r] = fmaf(k4.w,columns[index + 3u],partial[r]);
-				}
-			}
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-				sh.part[half][r][col] = partial[r];
-		}
+		LmDeltaRuleChunkDot2<KEY_DIM,VALUE_DIM,HALF>(sh.key,columns,sh.part,half,key_first,col);
 		__syncthreads();
 		for ( r = half * ROWS_PER_HALF; r < (half + 1u) * ROWS_PER_HALF; r++ )
 			sh.value[r][col] = r < rows ? sh.value[r][col] - ((sh.part[0][r][col] + sh.part[1][r][col]) + (sh.part[2][r][col] + sh.part[3][r][col])) : 0.0f;
@@ -720,29 +794,7 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 				u = fmaf(sh.tri_x[r][j],sh.value[j][col],u);
 			sh.update[r][col] = r < rows ? u : 0.0f;
 		}
-		{
-			float partial[C];
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-				partial[r] = 0.0f;
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-			{
-				#pragma unroll
-				for ( index = 0u; index < HALF; index += 4u )
-				{
-					const float4 k4 = *(const float4 *)&sh.query[r][key_first + index];
-					partial[r] = fmaf(k4.x,columns[index],partial[r]);
-					partial[r] = fmaf(k4.y,columns[index + 1u],partial[r]);
-					partial[r] = fmaf(k4.z,columns[index + 2u],partial[r]);
-					partial[r] = fmaf(k4.w,columns[index + 3u],partial[r]);
-				}
-			}
-			__syncthreads();
-			#pragma unroll
-			for ( r = 0u; r < C; r++ )
-				sh.part[half][r][col] = partial[r];
-		}
+		LmDeltaRuleChunkDot2<KEY_DIM,VALUE_DIM,HALF>(sh.query,columns,sh.part,half,key_first,col);
 		__syncthreads();
 		for ( r = half * ROWS_PER_HALF; r < (half + 1u) * ROWS_PER_HALF && r < rows; r++ )
 		{
@@ -752,21 +804,30 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 				o = fmaf(sh.tri_m[r][j],sh.update[j][col],o);
 			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + col] = LmFloatToBf16(o);
 		}
+		if ( first + C >= count && commit == 0u )
+			break;
 		#pragma unroll
-		for ( index = 0u; index < HALF; index++ )
-			columns[index] *= sh.tail[key_first + index];
-		#pragma unroll
-		for ( r = 0u; r < C; r++ )
+		for ( index = 0u; index < HALF; index += 4u )
 		{
-			const float u = sh.update[r][col];
+			const float4 t4 = *(const float4 *)&sh.tail[key_first + index];
+			columns[index] *= t4.x;
+			columns[index + 1u] *= t4.y;
+			columns[index + 2u] *= t4.z;
+			columns[index + 3u] *= t4.w;
+		}
+		#pragma unroll
+		for ( r = 0u; r < C; r += 2u )
+		{
+			const float u0 = sh.update[r][col], u1 = sh.update[r + 1u][col];
 			#pragma unroll
 			for ( index = 0u; index < HALF; index += 4u )
 			{
-				const float4 e4 = *(const float4 *)&sh.carried[r][key_first + index];
-				columns[index] = fmaf(e4.x,u,columns[index]);
-				columns[index + 1u] = fmaf(e4.y,u,columns[index + 1u]);
-				columns[index + 2u] = fmaf(e4.z,u,columns[index + 2u]);
-				columns[index + 3u] = fmaf(e4.w,u,columns[index + 3u]);
+				const float4 e0 = *(const float4 *)&sh.carried[r][key_first + index];
+				const float4 e1 = *(const float4 *)&sh.carried[r + 1u][key_first + index];
+				columns[index] = fmaf(e1.x,u1,fmaf(e0.x,u0,columns[index]));
+				columns[index + 1u] = fmaf(e1.y,u1,fmaf(e0.y,u0,columns[index + 1u]));
+				columns[index + 2u] = fmaf(e1.z,u1,fmaf(e0.z,u0,columns[index + 2u]));
+				columns[index + 3u] = fmaf(e1.w,u1,fmaf(e0.w,u0,columns[index + 3u]));
 			}
 		}
 	}
@@ -775,7 +836,12 @@ void LmDeltaRuleChunkKernel(uint8_t *__restrict__ state_pool, uint32_t slot_byte
 		return;
 	#pragma unroll
 	for ( index = 0u; index < HALF; index++ )
-		LmStoreState(&state[((key_first + index) * VALUE_DIM) + col],columns[index]);
+	{
+		if constexpr ( sizeof(State) == sizeof(float) )
+			__stcs((float *)state + ((key_first + index) * VALUE_DIM) + col,columns[index]);
+		else
+			LmStoreState(&state[((key_first + index) * VALUE_DIM) + col],columns[index]);
+	}
 }
 
 template<uint32_t REDUCE_THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = float>
@@ -807,7 +873,7 @@ template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM, class State = f
 static inline SparkGpuError LmDeltaRuleLaunch(uint32_t rows, uint8_t *state_pool, uint32_t slot_bytes, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, const uint16_t *query_bf16, const uint16_t *key_bf16, const uint16_t *value_bf16, const float *forget_gate, const float *write_gate, uint16_t *output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, SparkGpuStream stream, const uint32_t *state_loads = 0, const uint32_t *state_saves = 0, float *snapshots = 0)
 {
 #if defined(__CUDACC__)
-	if ( commit != 0u && sequence_row_count == 0 && rows >= sequences * LM_DELTA_CHUNK && state_loads == 0 )
+	if ( commit != 0u && sequence_row_count == 0 && rows >= sequences * LM_DELTA_CHUNK && state_loads == 0 && state_saves == 0 )
 		return(LmDeltaRuleChunkLaunch<THREADS,KEY_DIM,VALUE_DIM,State>(state_pool,slot_bytes,state_index,sequence_row_begin,sequence_row_count,query_bf16,key_bf16,value_bf16,
 			forget_gate,write_gate,output_bf16,key_heads,value_heads_per_key,sequences,commit,sequence_row_indices,stream));
 #endif
