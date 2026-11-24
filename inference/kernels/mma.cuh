@@ -2,6 +2,7 @@
 
 
 #include "inference/kernels/dtype.cuh"
+#include "inference/kernels/vec.cuh"
 #include "inference/kernels/layout.cuh"
 #include <string.h>
 #include <stdint.h>
@@ -335,11 +336,6 @@ static __device__ __forceinline__ void LmStoreCodeOctet(
             (index * Format::kStoredBits);
     }
     memcpy(base + byte, &packed, Format::kStoredBits);
-}
-
-static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)
-{
-	return((uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u));
 }
 
 static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uint32_t a[4], const uint32_t b[2])

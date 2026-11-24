@@ -15,19 +15,6 @@
 #define LM_PROJECT_MMA_K 64u
 #define LM_PROJECT_MMA_PITCH (LM_PROJECT_MMA_K + 8u)
 
-static __device__ __forceinline__ float LmPerHeadDotChunk(uint4 in_v, uint4 w_v, float total)
-{
-	total = fmaf(__uint_as_float(in_v.x << 16u), __uint_as_float(w_v.x << 16u), total);
-	total = fmaf(__uint_as_float(in_v.x & 0xffff0000u), __uint_as_float(w_v.x & 0xffff0000u), total);
-	total = fmaf(__uint_as_float(in_v.y << 16u), __uint_as_float(w_v.y << 16u), total);
-	total = fmaf(__uint_as_float(in_v.y & 0xffff0000u), __uint_as_float(w_v.y & 0xffff0000u), total);
-	total = fmaf(__uint_as_float(in_v.z << 16u), __uint_as_float(w_v.z << 16u), total);
-	total = fmaf(__uint_as_float(in_v.z & 0xffff0000u), __uint_as_float(w_v.z & 0xffff0000u), total);
-	total = fmaf(__uint_as_float(in_v.w << 16u), __uint_as_float(w_v.w << 16u), total);
-	total = fmaf(__uint_as_float(in_v.w & 0xffff0000u), __uint_as_float(w_v.w & 0xffff0000u), total);
-	return total;
-}
-
 template<uint32_t IN_DIM, uint32_t OUT_DIM, uint32_t INPUT_HEAD_DIM, uint32_t INPUT_OFFSET, uint32_t OUTPUTS = LM_PROJECT_CHAIN_OUTPUTS, uint32_t MAX_ROWS = LM_PROJECT_CHAIN_ROWS, uint32_t THREADS = LM_PROJECT_CHAIN_THREADS>
 __global__ __launch_bounds__(THREADS)
 void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
@@ -58,7 +45,7 @@ void LmPerHeadProjectChainKernel(const uint16_t *__restrict__ input_bf16, const 
 	total = 0.0f;
 	#pragma unroll 4
 	for (k = 0u; k < IN_DIM; k += 8u)
-		total = LmPerHeadDotChunk(*(const uint4 *)(input_tile[row] + k), *(const uint4 *)(weight_tile[output] + k), total);
+		total = LmDotBf16x8(*(const uint4 *)(input_tile[row] + k), *(const uint4 *)(weight_tile[output] + k), total);
 	output_bf16[((uint64_t)row * heads + head) * OUT_DIM + first_output + output] = LmFloatToBf16(total);
 }
 
