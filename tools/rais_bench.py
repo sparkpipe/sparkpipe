@@ -741,7 +741,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     nonce_8k = f"pf8k-{time.time_ns()}"
     prompt_8k = build_prompt_for_tokens(plan["prefill_8k_tokens"], nonce_8k)
-    cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128 + "The primary "
+    cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128
     cold_8k_res = summarize_stream(
         do_stream({"model": model_name, "prompt": cold_8k_full, "max_tokens": plan["gate_gx_tokens"], "temperature": 0, **nospec_opt})
     )
@@ -761,7 +761,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     else:
         prefix_exact = warm_gx_res["text"] == cold_8k_res["text"]
 
-    warm_8k_turn2 = prompt_8k + FOLLOWUP_DELTA_128 + " Confirm the ordering and include one concrete metric."
+    warm_8k_turn2 = cold_8k_full + " Confirm the ordering and include one concrete metric."
     warm_8k_res = summarize_stream(
         do_stream({"model": model_name, "prompt": warm_8k_turn2, "max_tokens": 16, "temperature": 0, **nospec_opt})
     )
@@ -785,7 +785,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     long_prompt_for_decode = ""
     for target_len in plan["prefill_long_targets"]:
         nonce_l = f"pfl-{target_len}-{time.time_ns()}"
-        p_long = build_prompt_for_tokens(target_len, nonce_l) + FOLLOWUP_DELTA_128 + "The primary "
+        p_long = build_prompt_for_tokens(target_len, nonce_l)
         out_toks = plan["b1_long_tokens"] if target_len == max(plan["prefill_long_targets"]) else 1
         r_long = summarize_stream(
             do_stream({"model": model_name, "prompt": p_long, "max_tokens": out_toks, "temperature": 0, **nospec_opt})
