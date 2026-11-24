@@ -165,6 +165,7 @@ struct SparkK3ModelState
 	uint32_t *group_tile_prefix_w2;
 	uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
+	float *kda_snapshots;
 	SparkK3RunnerLane lanes[2];
 	void (*layer_collective_override)(void *context, void *stream, uint32_t layer, uint32_t phase);
 	void *layer_collective_context;
@@ -945,6 +946,7 @@ static void K3ModelClose(void *model)
 	SparkGpuFree(state->group_tile_prefix_w2);
 	SparkGpuFree(state->dense_row_offset);
 	SparkGpuFree(state->dense_tile_prefix);
+	SparkGpuFree(state->kda_snapshots);
 	K3StreamedDestroy(state->streamed);
 	free(state->rank_pack_path);
 	if ( state->dispatch.buffers != 0 )
@@ -1009,8 +1011,9 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	geometry->kv_second_layer_count = state->dispatch.mla_count;
 	geometry->kv_second_layer_page_bytes = K3IndexKv::kPageBytes;
 #endif
-	geometry->kv_shard = state->dispatch.buffers->kv_shard;
+	geometry->kv_shard = state->tp_degree > 1u ? state->dispatch.buffers->kv_shard : SparkK3KvShardContext(0u, 1u);
 	geometry->recurrent_bytes = K3ModelRecurrentBytes(state);
+	geometry->tree_verify = state->dispatch.replay_rows != 0u ? 1u : 0u;
 	geometry->experts = K3_EXPERTS;
 	geometry->top_k = K3_TOP_K;
 	geometry->expert_w1_offset = state->layer_w1_offset;
@@ -1116,7 +1119,8 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		SparkGpuMalloc(&state->group_tile_prefix_w1, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w1)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->group_tile_prefix_w2, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w2)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != SPARK_GPU_SUCCESS )
+		SparkGpuMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != SPARK_GPU_SUCCESS ||
+		(state->dispatch.replay_rows != 0u && SparkGpuMalloc(&state->kda_snapshots, LmDeltaRuleSnapshotBytes(state->dispatch.kda_rank_heads, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM)) != SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->lazy_pack = lazy_pack;
 	if ( state->streamed_config.node_rows != 0u && state->streamed_config.expert_pool_cap_bytes == 0u )
@@ -1175,8 +1179,19 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	SparkGpuStream stream = (SparkGpuStream)stream_void;
+	K3LayerBuffers *b = state->dispatch.buffers_host;
 	SparkK3StepInput in;
 	int32_t status;
+	if ( step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 || step->fork_positions == 0 ||
+		step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 || step->state_saves == 0 || state->kda_snapshots == 0) )
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
+	b->slots = step->tree != 0u ? step->slots : 0;
+	b->fork_positions = step->tree != 0u ? step->fork_positions : 0;
+	b->slot_offsets = step->tree != 0u ? step->slot_offsets : 0;
+	b->parent_rows = step->tree != 0u ? step->parent_rows : 0;
+	b->state_loads = step->tree != 0u ? step->state_loads : 0;
+	b->state_saves = step->tree != 0u ? step->state_saves : 0;
+	b->kda_snapshots = step->tree != 0u ? state->kda_snapshots : 0;
 	K3RunnerTpStepReset(state);
 	memset(&in, 0, sizeof(in));
 	in.hidden_in = step->hidden_bf16;
@@ -1311,17 +1326,38 @@ static uint32_t K3ModelGraphKey(void *model, const SparkStageRunnerStep *step)
 {
 	(void)model;
 	return step->last_rows_only == 0u && step->commit == 0u && step->sequences == 1u && step->rows > 1u &&
-		step->rows <= LM_SKINNY_ROWS_WIDE ? 2u : 1u;
+		step->rows <= SPARK_STAGE_RUNNER_GRAPH_ROWS ? 2u : 1u;
 }
 
 static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step, const uint32_t *kept, void *stream)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	SparkGpuStream gpu_stream = (SparkGpuStream)stream;
 	if ( SparkK3DispatchKeep(&state->dispatch, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
-		kept, step->sequences, step->rows, step->multiprocessors, (SparkGpuStream)stream) != SPARK_K3_DISPATCH_OK )
+		kept, step->sequences, step->rows, step->multiprocessors, gpu_stream) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: verify keep failed rows=%u sequences=%u\n", step->rows, step->sequences);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	}
+	if ( step->tree != 0u )
+	{
+		const SparkKvShard shard = state->tp_degree > 1u ? state->dispatch.buffers->kv_shard : SparkK3KvShardContext(0u, 1u);
+		if ( step->sequences != 1u || step->slots == 0 || step->sequence_of_row == 0 || step->sequence_row_indices == 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		for ( uint32_t layer = 0u; layer < state->dispatch.mla_count; ++layer )
+		{
+			const LmKvShardView mla_view = { state->dispatch.mla_cache[layer], shard };
+			LM_LAUNCH((LmKvShardPathMoveKernel<K3GlobalKv,K3_LAYER_THREADS>), step->rows, K3_LAYER_THREADS, 0, gpu_stream,
+				mla_view, step->sequence_of_row, step->sequence_row_indices, kept, step->slots, K3GlobalKv::kSlotBytes / 2u);
+			if ( state->dispatch.indexed != 0u && state->dispatch.index_cache != 0 )
+			{
+				const LmKvShardView index_view = { state->dispatch.index_cache[layer], shard };
+				LM_LAUNCH((LmKvShardPathMoveKernel<K3IndexKv,K3_LAYER_THREADS>), step->rows, K3_LAYER_THREADS, 0, gpu_stream,
+					index_view, step->sequence_of_row, step->sequence_row_indices, kept, step->slots, K3_INDEX_DIM);
+			}
+		}
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return SPARK_STATUS_OK;
 }

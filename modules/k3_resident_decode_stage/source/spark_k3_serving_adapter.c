@@ -72,6 +72,7 @@ static const SparkStageServingModel K3StageServing =
 	.expert_weight_codec = SPARK_WEIGHT_CODEC_MXFP4_E2M1,
 	.max_rows = SPARK_K3_SERVING_MAX_ROWS,
 	.verify_rows = SPARK_K3_SERVING_VERIFY_ROWS,
+	.tree_slot_grain = SPARK_K3_SERVING_TP_DEGREE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
 	.cache_block_token_count = SPARK_K3_KV_PAGE_SLOTS,
 	.cache_checkpoint_token_count = SPARK_K3_KV_CHECKPOINT_TOKENS,

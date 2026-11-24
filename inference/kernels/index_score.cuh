@@ -74,23 +74,28 @@ static __device__ __forceinline__ uint32_t LmIndexScoreKeys(const LmIndexScorePa
 }
 
 template<class Geometry>
-static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmIndexScorePackedView &view, uint32_t sequence, uint32_t key, uint32_t row)
+static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmIndexScorePackedView &view, uint32_t sequence, uint32_t key, uint32_t row, uint32_t fork = 0xffffffffu, uint32_t offset = 0u)
 {
 	(void)sequence;
 	(void)row;
+	(void)fork;
+	(void)offset;
 	return(view.keys + (uint64_t)key * Geometry::kSlotBytes);
 }
 
 template<class Geometry>
-static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmKvView &view, uint32_t sequence, uint32_t key, uint32_t row)
+static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmKvView &view, uint32_t sequence, uint32_t key, uint32_t row, uint32_t fork = 0xffffffffu, uint32_t offset = 0u)
 {
-	return(LmKvSlotRequired<Geometry>(view, sequence, key, row, LM_KV_ACCESS_READ));
+	const uint32_t position = key >= fork ? key + offset : key;
+	return(LmKvSlotRequired<Geometry>(view, sequence, position, row, LM_KV_ACCESS_READ));
 }
 
 template<class Geometry>
-static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmKvShardView &view, uint32_t sequence, uint32_t key, uint32_t row)
+static __device__ __forceinline__ const uint8_t *LmIndexScoreSlot(const LmKvShardView &view, uint32_t sequence, uint32_t key, uint32_t row, uint32_t fork = 0xffffffffu, uint32_t offset = 0u)
 {
-	return(LmKvShardSlotRequired<Geometry>(view, sequence, SparkKvShardLocalPosition(view.shard, key), row, LM_KV_ACCESS_READ));
+	const uint32_t semantic = SparkKvShardLocalPosition(view.shard, key);
+	const uint32_t position = semantic >= fork ? semantic + offset : semantic;
+	return(LmKvShardSlotRequired<Geometry>(view, sequence, position, row, LM_KV_ACCESS_READ));
 }
 
 static __device__ __forceinline__ float LmIndexScoreRoundBf16(float value)
@@ -178,7 +183,7 @@ static __device__ __forceinline__ void LmIndexScoreMatrix4(uint32_t address, uin
 
 template<class Geometry, class Pages, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, uint32_t ROWS_PER_BLOCK, bool ROUND_BF16 = false, class Weight = uint16_t>
 __global__ __launch_bounds__(LM_INDEX_SCORE_THREADS)
-void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores)
+void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, const Weight *__restrict__ head_weight, Pages index_view, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *__restrict__ scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0)
 {
 	const LmKvView &index_cache = LmIndexScorePages(index_view);
 	constexpr uint32_t HEAD_TILES = INDEX_HEADS / 16u;
@@ -227,6 +232,8 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 			weight[2u * head_tile + 1u] = LmIndexScoreWeight(head_weight[(uint64_t)row * INDEX_HEADS + head_tile * 16u + group + 8u]);
 		}
 	}
+	const uint32_t fork = valid != 0u && fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+	const uint32_t offset = valid != 0u && slot_offsets != 0 ? slot_offsets[row] : 0u;
 	for (tile = warp / ROWS_PER_BLOCK; tile < LM_INDEX_SCORE_BLOCK_TILES; tile += tile_stride)
 	{
 		const uint32_t first = blockIdx.x * LM_INDEX_SCORE_BLOCK_POSITIONS + tile * LM_INDEX_SCORE_TILE_POSITIONS;
@@ -237,7 +244,7 @@ void LmWeightedSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, 
 			break;
 		if ( valid != 0u && first < bound )
 		{
-			const uint8_t *slot = mine < bound ? LmIndexScoreSlot<Geometry>(index_view,sequence,mine,row) : 0;
+			const uint8_t *slot = mine < bound ? LmIndexScoreSlot<Geometry>(index_view,sequence,mine,row,fork,offset) : 0;
 			for (step = 0u; step < steps; step++)
 			{
 				uint32_t b[2];
@@ -838,24 +845,28 @@ void LmWeightedSparseScoreSlotsKernel(const uint16_t *__restrict__ index_query_b
 #endif
 
 template<class Geometry, uint32_t INDEX_HEADS, uint32_t INDEX_DIM, class Pages, bool ROUND_BF16 = false, class Weight = uint16_t>
-static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const Weight *head_weight, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream)
+static inline SparkGpuError LmWeightedSparseScoreLaunch(const uint16_t *index_query_bf16, const Weight *head_weight, Pages index_view, const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t rows, uint32_t score_stride, float qk_scale, float *scores, SparkGpuStream stream, const uint32_t *fork_positions = 0, const uint32_t *slot_offsets = 0)
 {
 	static_assert(LM_INDEX_SCORE_SHARED_ROWS == LM_INDEX_SCORE_WARPS, "the block-slot kernel gives every warp of a block its own row");
+	if ( (fork_positions == 0) != (slot_offsets == 0) )
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 #ifdef __CUDACC__
 	if constexpr ( LmIndexScoreStagedView<Pages>() != 0u )
 	{
+		if ( fork_positions != 0 )
+			return(SPARK_GPU_ERROR_INVALID_VALUE);
 		LM_LAUNCH((LmWeightedSparseScoreStagedKernel<Geometry,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3((score_stride + LM_INDEX_SCORE_STAGED_KEYS - 1u) / LM_INDEX_SCORE_STAGED_KEYS,
 			(rows + LM_INDEX_SCORE_STAGED_ROWS - 1u) / LM_INDEX_SCORE_STAGED_ROWS), LM_INDEX_SCORE_THREADS,
 			LM_INDEX_SCORE_STAGED_KEYS * (INDEX_DIM * (uint32_t)sizeof(uint16_t) + LM_INDEX_SCORE_STAGED_PAD), stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 		return(SparkGpuPeekAtLastError());
 	}
-	if ( LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
+	if ( fork_positions == 0 && LmIndexScoreRowsPerBlock(rows) == LM_INDEX_SCORE_SHARED_ROWS )
 		LM_LAUNCH((LmWeightedSparseScoreSlotsKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),(rows + LM_INDEX_SCORE_SHARED_ROWS - 1u) / LM_INDEX_SCORE_SHARED_ROWS), LM_INDEX_SCORE_THREADS, 0, stream,
 			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
 	else
 #endif
 		LM_LAUNCH((LmWeightedSparseScoreKernel<Geometry,Pages,INDEX_HEADS,INDEX_DIM,1u,ROUND_BF16,Weight>), dim3(LmIndexScoreBlocks(score_stride),rows), LM_INDEX_SCORE_THREADS, 0, stream,
-			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores);
+			index_query_bf16,head_weight,index_view,sequence_of_row,context_length,row_position,rows,score_stride,qk_scale,scores,fork_positions,slot_offsets);
 	return(SparkGpuPeekAtLastError());
 }

@@ -908,10 +908,10 @@ struct LmCausalConvStreams
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices)
+void LmCausalConvStreamsKernel(const __grid_constant__ LmCausalConvStreams<Weight> streams, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *__restrict__ sequence_row_indices, const uint32_t *__restrict__ parent_rows = 0)
 {
 	const uint32_t stream = blockIdx.z;
-	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices);
+	LmCausalConvBody<THREADS,KERNEL,ACTIVATION,Weight>(streams.window[stream],state_index,sequence_row_begin,sequence_row_count,streams.input_bf16[stream],streams.weight[stream],streams.output_bf16[stream],streams.channels[stream],sequences,commit,sequence_row_indices,parent_rows);
 }
 
 #define LM_CAUSAL_CONV_TILE_THREADS 256u
@@ -1016,14 +1016,14 @@ static SparkGpuError LmCausalConvLaunch(uint16_t *window, const uint32_t *state_
 }
 
 template<uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
-static SparkGpuError LmCausalConvStreamsLaunch(const LmCausalConvStreams<Weight> &streams, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, SparkGpuStream stream)
+static SparkGpuError LmCausalConvStreamsLaunch(const LmCausalConvStreams<Weight> &streams, const uint32_t *state_index, const uint32_t *sequence_row_begin, const uint32_t *sequence_row_count, uint32_t sequences, uint32_t commit, const uint32_t *sequence_row_indices, uint32_t rows, SparkGpuStream stream, const uint32_t *parent_rows = 0)
 {
 	uint32_t widest = 0u;
 	for (uint32_t index = 0u; index < LM_CAUSAL_CONV_STREAMS; ++index)
 		widest = streams.channels[index] > widest ? streams.channels[index] : widest;
-	if ( rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
+	if ( parent_rows != 0 || rows <= LM_CAUSAL_CONV_SERIAL_ROWS * sequences )
 		LM_LAUNCH((LmCausalConvStreamsKernel<LM_CAUSAL_CONV_TILE_THREADS,KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_THREADS - 1u) / LM_CAUSAL_CONV_TILE_THREADS, LM_CAUSAL_CONV_STREAMS),
-			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);
+			LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices, parent_rows);
 	else
 		LM_LAUNCH((LmCausalConvStreamsTiledKernel<KERNEL,ACTIVATION,Weight>), dim3(sequences, (widest + LM_CAUSAL_CONV_TILE_CHANNELS - 1u) / LM_CAUSAL_CONV_TILE_CHANNELS, LM_CAUSAL_CONV_STREAMS),
 		LM_CAUSAL_CONV_TILE_THREADS, 0, stream, streams, state_index, sequence_row_begin, sequence_row_count, sequences, commit, sequence_row_indices);

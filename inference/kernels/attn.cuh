@@ -94,8 +94,7 @@ void LmRopeOffsetPerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t 
 }
 
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
-__global__ __launch_bounds__(THREADS, 1)
-void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
+static __device__ __forceinline__ void LmAttentionDecodeBody(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position, const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[LATENT + ROPE];
@@ -104,6 +103,8 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	uint32_t sequence = sequence_of_row[row];
 	uint64_t query_base = ((uint64_t)row * heads + head) * (LATENT + ROPE);
 	float running_max = -INFINITY,running_sum = 0.0f;
+	const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+	const uint32_t offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
 	if ( !LmKvCheckSequence(cache,row,sequence) )
 		return;
 	for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
@@ -118,6 +119,8 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 			? selected_positions[(row * selected_count) + step] : step;
 		if ( row_position != 0 && position > row_position[row] )
 			continue;
+		if ( position >= fork )
+			position += offset;
 		const uint8_t *slot = LmKvSlotRequired<Geometry>(
 			cache,sequence,position,row,LM_KV_ACCESS_READ);
 		float score = 0.0f,scaled,previous;
@@ -146,6 +149,20 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 			output_bf16[(((uint64_t)row * heads) + head) * LATENT + element] =
 				LmFloatToBf16(accumulator[index] / fmaxf(running_sum,1.0e-20f));
 	}
+}
+
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+__global__ __launch_bounds__(THREADS, 1)
+void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
+{
+	LmAttentionDecodeBody<Geometry,THREADS,LATENT,ROPE>(query_latent_bf16,query_rope_bf16,cache,sequence_of_row,context_length,selected_positions,selected_count,heads,qk_scale,output_bf16,row_position,0,0);
+}
+
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+__global__ __launch_bounds__(THREADS, 1)
+void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position, const uint32_t *__restrict__ fork_positions, const uint32_t *__restrict__ slot_offsets)
+{
+	LmAttentionDecodeBody<Geometry,THREADS,LATENT,ROPE>(query_latent_bf16,query_rope_bf16,cache,sequence_of_row,context_length,selected_positions,selected_count,heads,qk_scale,output_bf16,row_position,fork_positions,slot_offsets);
 }
 
 #define LM_LATENT_ATTN_SPLIT_MAX_PARTITIONS 16u
