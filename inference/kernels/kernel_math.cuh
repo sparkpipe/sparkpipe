@@ -316,15 +316,13 @@ SPARK_MATH_FN float SparkMathUe8m0ToFloat(SparkMathU8 value)
 
 SPARK_MATH_FN float SparkMathUe4m3ToFloat(SparkMathU8 value)
 {
-	SparkMathU32 biased,mantissa;
-	value &= 0x7fu;
-	biased = (SparkMathU32)value >> 3u;
-	mantissa = (SparkMathU32)value & 7u;
+	const SparkMathU32 bits = (SparkMathU32)value & 0x7fu;
+	const SparkMathU32 biased = bits >> 3u, mantissa = bits & 7u;
 	if ( biased == 0u )
-		return(SPARK_MATH_LDEXP((float)mantissa,-9));
-	if ( biased == 15u && mantissa == 7u )
+		return((float)mantissa * 0.001953125f);
+	if ( bits == 0x7fu )
 		return(448.0f);
-	return(SPARK_MATH_LDEXP(1.0f + ((float)mantissa / 8.0f),(int)biased - 7));
+	return(SPARK_MATH_AS_FLOAT(((biased + 120u) << 23u) | (mantissa << 20u)));
 }
 
 SPARK_MATH_FN float SparkMathSqrtSoftplus(float value)

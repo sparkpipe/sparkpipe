@@ -11,6 +11,7 @@
 
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_weightd.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define FUZZ_MAX_RANKS SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE
 #define FUZZ_HIDDEN 64u
@@ -95,8 +96,6 @@ extern int cuda_stub_host_register_result;
 extern int cuda_stub_pageable_coherent;
 extern int cuda_stub_host_unregister_result;
 extern uint32_t spark_stub_cuda_host_registered(void *address);
-extern int cudaHostRegister(void *address,size_t bytes,unsigned int flags);
-extern int cudaHostUnregister(void *address);
 
 SparkStatus SparkWeightdClientConnect(const char *socket_path, SparkWeightdClient **client, SparkWeightdHelloResult *hello_out)
 {
@@ -876,8 +875,8 @@ static void FuzzGraphPath(void)
             CHECK(FuzzSumOk(rank,i),"graph-path output includes every current contribution");
         }
 	}
-	CHECK( cuda_stub_mesh_seq_pad_calls - pad_calls <= 1u,
-	    "pre-launch used at most one pad" );
+	CHECK( cuda_stub_mesh_seq_pad_calls - pad_calls < SPARK_WEIGHTD_MESH_SLOTS_PER_RANK,
+	    "pre-launch pads fewer sequences than a rank's slot ring holds" );
 	progress = SparkTpDeviceCollectiveGraphProgress(&g_ranks[0].collective,0);
 	CHECK( progress != 0ull, "graph progress nonzero after capture-path rounds" );
 	CHECK( SparkTpDeviceCollectiveGraphError(&g_ranks[0].collective) == 0ull,
@@ -1253,6 +1252,7 @@ static void FuzzCellInitialization(void);
 static void FuzzSessionClearsTails(void);
 static void FuzzLaneNamespace(void);
 static void FuzzMeshTopology(void);
+static void FuzzDeviceRecords(void);
 
 static void FuzzCompletionCapacity(void)
 {
@@ -1979,6 +1979,7 @@ int main(int argc, char **argv)
     FuzzLaneNamespace();
     FuzzMeshTopology();
     FuzzCellInitialization();
+    FuzzDeviceRecords();
 	if ( pthread_create(&shipper, 0, FuzzShipperMain, 0) != 0 )
 	{
 		fprintf(stderr,"shipper start failed\n");
@@ -2053,12 +2054,6 @@ static void *FuzzCollectiveCalloc(size_t count, size_t size)
     return calloc(count,size);
 }
 
-extern int cudaMalloc(void **pointer,size_t bytes);
-extern int cudaFree(void *pointer);
-extern int cudaMemset(void *pointer,int value,size_t bytes);
-extern int cudaMemsetAsync(void *pointer,int value,size_t bytes,void *stream);
-extern int cudaMemcpy(void *destination,const void *source,size_t bytes,int kind);
-extern int cudaHostAlloc(void **pointer,size_t bytes,unsigned int flags);
 extern uint32_t spark_stub_cuda_outstanding_allocs(void);
 
 static uint32_t g_init_fail_at,g_init_calls,g_init_free_mask,g_init_free_calls;
@@ -2109,13 +2104,73 @@ static int FuzzCudaHostAlloc(void **pointer,size_t bytes,unsigned int flags)
 }
 
 #define calloc FuzzCollectiveCalloc
-#define cudaMalloc FuzzCudaMalloc
-#define cudaFree FuzzCudaFree
-#define cudaMemset FuzzCudaMemset
-#define cudaMemsetAsync FuzzCudaMemsetAsync
-#define cudaMemcpy FuzzCudaMemcpy
-#define cudaHostAlloc FuzzCudaHostAlloc
+#define SparkGpuMalloc FuzzCudaMalloc
+#define SparkGpuFree FuzzCudaFree
+#define SparkGpuMemset FuzzCudaMemset
+#define SparkGpuMemsetAsync FuzzCudaMemsetAsync
+#define SparkGpuMemcpy FuzzCudaMemcpy
+#define SparkGpuHostAlloc FuzzCudaHostAlloc
 #include "../ring/transport/tp_device_collective.c"
+
+static uint32_t FuzzReportLines(SparkTpDeviceCollectiveImplementation *implementation,SparkTpMeshRoundControl *copy,char *text,size_t capacity)
+{
+    FILE *capture = tmpfile();
+    const int saved = dup(fileno(stderr));
+    size_t used = 0u;
+    if ( capture == 0 || saved < 0 )
+        return 0u;
+    fflush(stderr);
+    dup2(fileno(capture),fileno(stderr));
+    SparkTpDeviceCollectiveReportRecords(implementation,(volatile uint64_t *)(void *)copy);
+    fflush(stderr);
+    dup2(saved,fileno(stderr));
+    close(saved);
+    rewind(capture);
+    used = fread(text,1u,capacity - 1u,capture);
+    text[used] = '\0';
+    fclose(capture);
+    return 1u;
+}
+
+static void FuzzDeviceRecords(void)
+{
+    SparkTpDeviceCollectiveImplementation implementation;
+    SparkTpMeshRoundControl device,copy;
+    char text[512];
+    FuzzCase("device-records-print-once-and-clear");
+    memset(&implementation,0,sizeof(implementation));
+    memset(&device,0,sizeof(device));
+    implementation.tp_rank = 5u;
+    implementation.round_control = &device;
+    device.fault_phase = SPARK_TP_MESH_FAULT_PEER_WAIT;
+    device.fault_peer = 3u;
+    device.fault_want = 77u;
+    device.fault_seen = 70u;
+    device.fault_hits = 4u;
+    device.guard_poisons = 2u;
+    device.error_word = 77u;
+    copy = device;
+    CHECK(FuzzReportLines(&implementation,&copy,text,sizeof(text)) != 0u &&
+        strcmp(text,"MESH-ROUNDLOOP-TIMEOUT rank=5 phase=peer-wait peer=3 want=77 got=70\n"
+            "MESH-ROUNDLOOP-TIMEOUT rank=5 hits=4\n"
+            "MESH-GUARD-POISON rank=5\n"
+            "MESH-GUARD-POISON rank=5 hits=2\n") == 0,
+        "the host prints the first timeout record, the hit count above one and the guard poisons");
+    CHECK(copy.fault_phase == 0u && copy.fault_hits == 0u && copy.guard_poisons == 0u && device.fault_phase == 0u &&
+        device.fault_peer == 0u && device.fault_want == 0u && device.fault_seen == 0u && device.fault_hits == 0u &&
+        device.guard_poisons == 0u && device.error_word == 77u,
+        "printing clears the record on the host copy and on the device, and nothing else");
+    CHECK(FuzzReportLines(&implementation,&copy,text,sizeof(text)) != 0u && text[0] == '\0',"a cleared record prints nothing");
+    device.fault_phase = SPARK_TP_MESH_FAULT_SHIP_ACK;
+    device.fault_peer = 5u;
+    device.fault_want = 130713034686465u;
+    device.fault_seen = 130708739719174u;
+    device.fault_hits = 1u;
+    copy = device;
+    CHECK(FuzzReportLines(&implementation,&copy,text,sizeof(text)) != 0u &&
+        strcmp(text,"MESH-ROUNDLOOP-TIMEOUT rank=5 phase=ship-ack want=130713034686465 got=130708739719174\n") == 0,
+        "a single ship-ack timeout prints its one line with the full sequence values");
+}
 
 static void FuzzSessionClearsTails(void)
 {
@@ -2143,12 +2198,12 @@ static void FuzzSessionClearsTails(void)
         "a new session clears every slot tail of its band before its first round, so no tag of an earlier session can pass a wait");
 }
 #undef calloc
-#undef cudaMalloc
-#undef cudaFree
-#undef cudaMemset
-#undef cudaMemsetAsync
-#undef cudaMemcpy
-#undef cudaHostAlloc
+#undef SparkGpuMalloc
+#undef SparkGpuFree
+#undef SparkGpuMemset
+#undef SparkGpuMemsetAsync
+#undef SparkGpuMemcpy
+#undef SparkGpuHostAlloc
 
 static void FuzzLegacyCallbacks(uint32_t enabled)
 {
@@ -2382,13 +2437,13 @@ static void FuzzSourceLifetime(void)
     {
         uint64_t guarded[2] = {17u,29u};
         CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
-            guarded[0] == UINT64_MAX && guarded[1] == 29u,
-            "failed mesh guard poisons only the output word");
+            guarded[0] == UINT64_MAX && guarded[1] == 29u && control.guard_poisons == 1u,
+            "failed mesh guard poisons only the output word and counts the poison in the round control");
         control.error_word = 0u;
         guarded[0] = 17u;
         CHECK(SparkTpMeshLaunchersRegistered->guard(0,&control.error_word,guarded) == 0 &&
-            guarded[0] == 17u && guarded[1] == 29u,
-            "successful mesh guard preserves output");
+            guarded[0] == 17u && guarded[1] == 29u && control.guard_poisons == 1u,
+            "successful mesh guard preserves output and counts nothing");
     }
     shipped = control.round_seq;
     CHECK(SparkTpMeshLaunchersRegistered->copy_down(0,destination,source,sizeof(source),

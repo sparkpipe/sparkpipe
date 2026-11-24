@@ -176,6 +176,21 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
     environment = {"DRAFTD_UNIT": spec["unit"], "DRAFTD_LOG": spec["log"], "DRAFTD_DRAFTER": drafter, "DRAFTD_TARGET_SHARD": spec.get("target_shard", ""),
                    "DRAFTD_TAP_HOST": tap_host, "DRAFTD_TAP_PORT": tap_port, "DRAFTD_DRAFT_PORT": str(server["port"]),
                    "DRAFTD_WINDOW": str(spec["window"]), "DRAFTD_CONTEXT_BYTES": str(spec["context_bytes"]), "DRAFTD_RESTART": spec.get("restart", "no")}
+    server = spec.get("server", "block_draftd")
+    if server not in ("block_draftd", "engine"):
+        raise SystemExit(f"{record_id}: draftd server is block_draftd or engine, not {server}")
+    if "server" in spec:
+        environment["DRAFTD_SERVER"] = server
+    engine = spec.get("engine")
+    if server == "engine" and engine is None:
+        raise SystemExit(f"{record_id}: an engine draftd server needs the record's draftd.engine root, lane and units")
+    if engine is not None:
+        if not isinstance(engine, dict) or not all(isinstance(engine.get(key), str) and engine[key] for key in ("root", "lane", "unit", "weightd_unit")):
+            raise SystemExit(f"{record_id}: draftd.engine names its root, lane, unit and weightd_unit, each a non-empty string")
+        if not engine["root"].startswith(INFERENCE_ROOTS) or ".." in engine["root"].split("/"):
+            raise SystemExit(f"{record_id}: draftd engine root {engine['root']} is not on the hub's local NVMe ({', '.join(INFERENCE_ROOTS)})")
+        environment.update({"DRAFTD_ENGINE_ROOT": engine["root"], "DRAFTD_ENGINE_LANE": engine["lane"], "DRAFTD_ENGINE_UNIT": engine["unit"],
+                            "DRAFTD_WEIGHTD_UNIT": engine["weightd_unit"]})
     names = spec.get("target_names")
     if names is not None:
         if not isinstance(names, dict) or set(names) != set(TARGET_NAMES) or not all(isinstance(value, str) and value for value in names.values()):
@@ -184,6 +199,10 @@ def draftd_environment(record_id: str) -> tuple[str, dict[str, str]]:
             raise SystemExit(f"{record_id}: draftd target_names name tensors in the target shard, and the record has none")
         environment.update({f"DRAFTD_TARGET_{key.upper()}": names[key] for key in TARGET_NAMES})
     return spec["source"], environment
+
+
+def served_unit(environment: dict[str, str]) -> str:
+    return environment["DRAFTD_ENGINE_UNIT"] if environment.get("DRAFTD_SERVER") == "engine" else environment["DRAFTD_UNIT"]
 
 
 def draftd_flags(environment: dict[str, str]) -> list[str]:
@@ -299,7 +318,7 @@ def audit(selected: list[str], fleet: bool = True) -> int:
             drafters = {record_id: draftd_environment(record_id)[1] for record_id in selected if lanes[record_id].get("draftd")}
             scoped = {record_id for record_id in drafters if lanes[record_id]["draftd"].get("lifecycle") == "model"}
             hub_future = pool.submit(remote, HUB, READ, {"paths": sorted(expected_hub), "weightd": False, "prefix": prefix,
-                                                         "units": sorted(environment["DRAFTD_UNIT"] for environment in drafters.values()),
+                                                         "units": sorted(served_unit(environment) for environment in drafters.values()),
                                                          "controller": CONTROLLER if scoped else None})
             for future in futures:
                 try:
@@ -329,11 +348,11 @@ def audit(selected: list[str], fleet: bool = True) -> int:
                 if scoped and isinstance(active, dict):
                     drift.append(f"UNREACHABLE the swap controller, so the model-scoped draft servers {sorted(scoped)} cannot be checked: {active['unreachable']}")
                 for record_id, environment in sorted(drafters.items()):
-                    unit = environment["DRAFTD_UNIT"]
+                    unit = served_unit(environment)
                     shown = live.get("units", {}).get(unit, "").replace("'", "")
-                    missing = [flag for flag in draftd_flags(environment) if flag not in shown]
+                    missing = [flag for flag in draftd_flags(environment) if flag not in shown] if environment.get("DRAFTD_SERVER", "block_draftd") == "block_draftd" else []
                     if record_id in scoped and active != record_id:
-                        if shown.startswith("active") and not isinstance(active, dict):
+                        if environment.get("DRAFTD_SERVER", "block_draftd") == "block_draftd" and shown.startswith("active") and not isinstance(active, dict):
                             drift.append(f"DRIFT {record_id} {HUB}: draft server unit {unit} runs while {active} is the active model; its lifecycle is the model's")
                         continue
                     if not shown.startswith("active"):

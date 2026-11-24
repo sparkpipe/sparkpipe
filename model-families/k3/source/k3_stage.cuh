@@ -13,6 +13,8 @@
 #include "sparkpipe/spark_error_site.h"
 #include "model-families/k3/source/layer.cuh"
 #include "k3_streamed_prefill.cuh"
+#include "runtime/launch.h"
+#include "sparkpipe/spark_gpu.h"
 
 #if !defined(SPARK_K3_SERVING_INDEXER) || (SPARK_K3_SERVING_INDEXER != 0 && SPARK_K3_SERVING_INDEXER != 1)
 #error "SPARK_K3_SERVING_INDEXER must name the packs this build serves: 0 for Kimi K3, 1 for Kimi K3.1 Pro (the MLA indexer)"
@@ -57,7 +59,7 @@ typedef struct SparkK3RunnerTpContext
 	SparkK3ModelState *owner;
 	K3LayerBuffers *buffers;
 	uint16_t *fused;
-	cudaStream_t stream;
+	SparkGpuStream stream;
 	uint32_t rows;
 	uint32_t boundary;
 	uint32_t phase;
@@ -166,11 +168,11 @@ struct SparkK3ModelState
 	SparkK3RunnerTpContext tp_context_pool[K3_RUNNER_TP_CONTEXT_POOL_DEPTH];
 	uint32_t tp_context_overflow;
 	SparkK3RunnerTpContext *pending_tp;
-	cudaStream_t load_stream;
-	cudaStream_t pair_stream[2];
-	cudaEvent_t pair_fence;
-	cudaEvent_t load_fork;
-	cudaEvent_t load_join;
+	SparkGpuStream load_stream;
+	SparkGpuStream pair_stream[2];
+	SparkGpuEvent pair_fence;
+	SparkGpuEvent load_fork;
+	SparkGpuEvent load_join;
 	uint32_t rows;
 	uint32_t head_last_rows;
 	uint32_t *route_expert;
@@ -189,7 +191,7 @@ struct SparkK3ModelState
 	K3Streamed *streamed;
 	SparkWeightdLazyPack *lazy_pack;
 	char *rank_pack_path;
-	cudaStream_t execution_stream;
+	SparkGpuStream execution_stream;
 };
 
 static void K3ModelFail(SparkK3ModelState *state)
@@ -197,12 +199,12 @@ static void K3ModelFail(SparkK3ModelState *state)
 	state->services->fail(state->services->context, SPARK_STATUS_INTERNAL_ERROR);
 }
 
-static cudaError_t K3RunnerCopy(void *destination, const void *source, uint64_t bytes, cudaStream_t stream)
+static SparkGpuError K3RunnerCopy(void *destination, const void *source, uint64_t bytes, SparkGpuStream stream)
 {
-	cudaError_t error = cudaMemcpyAsync(destination, source, (size_t)bytes, cudaMemcpyDefault, stream);
-	if ( error != cudaSuccess )
+	SparkGpuError error = SparkGpuMemcpyAsync(destination, source, (size_t)bytes, SPARK_GPU_COPY_DEFAULT, stream);
+	if ( error != SPARK_GPU_SUCCESS )
 		return error;
-	return cudaStreamSynchronize(stream);
+	return SparkGpuStreamSynchronize(stream);
 }
 
 static uint64_t K3ModelRecurrentBytes(const SparkK3ModelState *state)
@@ -250,9 +252,9 @@ static void K3RunnerTpApply(SparkK3RunnerTpContext *tp)
 	uint16_t *fused = tp->fused;
 	if ( tp->phase == 2u )
 	{
-		if ( cudaMemcpyAsync(b->gate_up_bf16, fused,
+		if ( SparkGpuMemcpyAsync(b->gate_up_bf16, fused,
 			(uint64_t)tp->gate_up_elements * sizeof(*b->gate_up_bf16),
-			cudaMemcpyDeviceToDevice, tp->stream) != cudaSuccess )
+			SPARK_GPU_COPY_DEVICE_TO_DEVICE, tp->stream) != SPARK_GPU_SUCCESS )
 			tp->owner->services->fail(tp->owner->services->context, SPARK_STATUS_IO_ERROR);
 		K3RunnerTpContextRelease(tp);
 		return;
@@ -302,7 +304,7 @@ static uint32_t K3RunnerLayerCount(uint32_t stage_index)
 }
 
 
-static void K3RunnerRound(SparkK3ModelState *state, cudaStream_t stream, uint32_t rows,
+static void K3RunnerRound(SparkK3ModelState *state, SparkGpuStream stream, uint32_t rows,
 	const void *local, void *full, uint32_t row_elements, uint32_t operation, uint32_t stage)
 {
 	if ( state->has_collective == 0 )
@@ -314,7 +316,7 @@ static void K3RunnerRound(SparkK3ModelState *state, cudaStream_t stream, uint32_
 }
 
 static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
-	cudaStream_t stream, uint32_t rows, uint32_t phase)
+	SparkGpuStream stream, uint32_t rows, uint32_t phase)
 {
 	uint32_t degree = b->kv_shard.degree;
 	uint32_t partials = (phase & ~K3_COLLECTIVE_FINISH) == K3_COLLECTIVE_MLA_PARTIALS ? 1u : 0u;
@@ -389,7 +391,7 @@ static void K3RunnerShardExchange(SparkK3ModelState *state, K3LayerBuffers *b,
 		partials != 0u ? K3_RUNNER_STAGE_ALL : (phase & K3_COLLECTIVE_FINISH) != 0u ? K3_RUNNER_STAGE_FINISH : K3_RUNNER_STAGE_BEGIN);
 }
 
-static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows,
+static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, SparkGpuStream stream, uint32_t rows,
 	uint32_t with_logits, uint32_t stage)
 {
 	const uint32_t slice = K3_RANK_DIM(b, routed_down_rows, K3_ROUTED_EXPERT_HIDDEN);
@@ -406,14 +408,14 @@ static void K3RunnerGatherLatent(SparkK3ModelState *state, K3LayerBuffers *b, cu
 	if ( stage == K3_RUNNER_STAGE_BEGIN )
 		return;
 	if ( with_logits != 0u )
-		K3RunnerLatentLogitsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerLatentLogitsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + K3_EXPERTS + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, b->router_logits, rows, slice, experts, ranks);
 	else if ( rows > 1u )
-		K3RunnerLatentRowsKernel<<<dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerLatentRowsKernel), dim3((K3_ROUTED_EXPERT_HIDDEN + 255u) / 256u, rows), 256u, 0, stream,
 			gathered, b->latent_full_bf16, rows, slice, ranks);
 }
 
-static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
+static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, SparkGpuStream stream,
 	uint32_t rows, uint32_t layer, uint32_t row_offset, uint32_t share, uint32_t first, uint32_t count)
 {
 	const K3SliceState *slice = state->dispatch.slice_state;
@@ -428,11 +430,11 @@ static void K3RunnerRowShardTap(SparkK3ModelState *state, K3LayerBuffers *b, cud
 		LM_LAUNCH((LmCopyRowsStridedKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
 			state->fused_device,slice->tap_slab + (uint64_t)row_offset * slice->tap_row_stride + (uint64_t)slice->tap_output[layer] * K3_HIDDEN,
 			rows,K3_HIDDEN,slice->tap_row_stride);
-	if ( cudaPeekAtLastError() != cudaSuccess )
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		K3ModelFail(state);
 }
 
-static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream,
+static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, SparkGpuStream stream,
 	uint32_t rows, uint32_t layer, uint32_t base, uint32_t row_offset)
 {
 	const uint32_t degree = state->tp_degree;
@@ -455,14 +457,14 @@ static void K3RunnerRowShard(SparkK3ModelState *state, K3LayerBuffers *b, cudaSt
 	}
 	K3RunnerRound(state, stream, share, state->row_share_device, landing, 0u,
 		SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
-	if ( landing != b->hidden_bf16 && cudaMemcpyAsync(b->hidden_bf16, landing, (size_t)rows * K3_HIDDEN * sizeof(uint16_t),
-		cudaMemcpyDeviceToDevice, stream) != cudaSuccess )
+	if ( landing != b->hidden_bf16 && SparkGpuMemcpyAsync(b->hidden_bf16, landing, (size_t)rows * K3_HIDDEN * sizeof(uint16_t),
+		SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 		K3ModelFail(state);
 	if ( base == 1u )
 		K3RunnerRowShardTap(state, b, stream, rows, layer, row_offset, share, first, count);
 }
 
-static void K3RunnerLatentPairReduce(SparkK3ModelState *state, K3LayerBuffers *b, cudaStream_t stream, uint32_t rows)
+static void K3RunnerLatentPairReduce(SparkK3ModelState *state, K3LayerBuffers *b, SparkGpuStream stream, uint32_t rows)
 {
 	const uint32_t share = K3_ROUTED_EXPERT_HIDDEN / state->tp_degree;
 	if ( state->row_share_device == 0 ||
@@ -483,7 +485,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 	const SparkK3RunnerLane *lane = (const SparkK3RunnerLane *)context;
 	SparkK3ModelState *state = lane->state;
 	K3LayerBuffers *b = lane->index != 0u ? state->dispatch.pair_buffers : state->dispatch.buffers;
-	cudaStream_t stream = (cudaStream_t)stream_void;
+	SparkGpuStream stream = (SparkGpuStream)stream_void;
 	uint32_t rows = state->dispatch.pair_active != 0u ? state->dispatch.pair_rows[lane->index] : state->rows;
 	uint32_t boundary = (layer % K3_ATTNRES_BLOCK_SIZE) == 0u;
 	uint32_t elements = rows * K3_HIDDEN;
@@ -508,9 +510,9 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		const uint32_t degree = b->kv_shard.degree;
 		K3RunnerRound(state, stream, rows, b->latent_bf16, state->fused_device,
 			(K3_Q_LORA_RANK + K3_MLA_KV_A_DIM) / degree, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, K3_RUNNER_STAGE_ALL);
-		K3RunnerMlaDownRowsKernel<<<dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream>>>(
+		LM_LAUNCH((K3RunnerMlaDownRowsKernel), dim3((K3_Q_LORA_RANK + K3_MLA_KV_A_DIM + 255u) / 256u, rows), 256u, 0, stream,
 			state->fused_device, b->latent_bf16, b->kv_slot_bf16, rows, K3_Q_LORA_RANK / degree, K3_MLA_KV_A_DIM / degree);
-		if ( cudaPeekAtLastError() != cudaSuccess )
+		if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 			K3ModelFail(state);
 		return;
 	}
@@ -545,8 +547,8 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 		uint16_t *reduce_values = b->gate_up_bf16;
 		if ( state->has_collective != 0 )
 		{
-			K3RunnerFusedPackKernel<<<(gate_up_elements + 255u) / 256u,
-				256u, 0, stream>>>(
+			LM_LAUNCH((K3RunnerFusedPackKernel), (gate_up_elements + 255u) / 256u,
+				256u, 0, stream,
 				0, 0, reduce_values, reduce_values, state->fused_device,
 				rows, phase, 1u, gate_up_elements);
 			SparkK3RunnerTpContext *completion_context =
@@ -591,7 +593,7 @@ static void K3RunnerLayerCollective(void *context, void *stream_void,
 			K3RunnerTpApply(pending);
 		return;
 	}
-	K3RunnerFusedPackKernel<<<(elements + 255u) / 256u, 256u, 0, stream>>>(
+	LM_LAUNCH((K3RunnerFusedPackKernel), (elements + 255u) / 256u, 256u, 0, stream,
 		phase0_source,b->hidden_bf16,b->shared_out_bf16,b->gate_up_bf16,
 		state->fused_device,rows,base,segments,0u);
 	if ( (phase & K3_COLLECTIVE_ROWS) != 0u )
@@ -812,7 +814,7 @@ static int32_t K3ModelLazyAcquire(void *context, uint32_t layer, void *buffers_v
 	status = state->services->expert_weights_ahead(state->services->context, layer, state->rows * K3_TOP_K, &w1, &w2);
 	if ( status == SPARK_STATUS_PENDING )
 	{
-		if ( cudaStreamSynchronize((cudaStream_t)stream) != cudaSuccess )
+		if ( SparkGpuStreamSynchronize((SparkGpuStream)stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		status = state->services->expert_weights(state->services->context, layer, buffers->group_row_offset,
 			state->rows * K3_TOP_K, &w1, &w2);
@@ -940,28 +942,28 @@ static void K3ModelClose(void *model)
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	if ( state == 0 )
 		return;
-	cudaFree(state->fused_device);
-	cudaFree(state->row_share_device);
+	SparkGpuFree(state->fused_device);
+	SparkGpuFree(state->row_share_device);
 	if ( state->load_join != 0 )
-		(void)cudaEventDestroy(state->load_join);
+		(void)SparkGpuEventDestroy(state->load_join);
 	if ( state->load_fork != 0 )
-		(void)cudaEventDestroy(state->load_fork);
+		(void)SparkGpuEventDestroy(state->load_fork);
 	if ( state->load_stream != 0 )
-		(void)cudaStreamDestroy(state->load_stream);
+		(void)SparkGpuStreamDestroy(state->load_stream);
 	if ( state->pair_fence != 0 )
-		(void)cudaEventDestroy(state->pair_fence);
+		(void)SparkGpuEventDestroy(state->pair_fence);
 	for ( uint32_t lane = 0u; lane < 2u; ++lane )
 		if ( state->pair_stream[lane] != 0 )
-			(void)cudaStreamDestroy(state->pair_stream[lane]);
-	cudaFree(state->route_expert);
-	cudaFree(state->route_packed_row);
-	cudaFree(state->route_source_token);
-	cudaFree(state->route_weight);
-	cudaFree(state->group_row_offset);
-	cudaFree(state->group_tile_prefix_w1);
-	cudaFree(state->group_tile_prefix_w2);
-	cudaFree(state->dense_row_offset);
-	cudaFree(state->dense_tile_prefix);
+			(void)SparkGpuStreamDestroy(state->pair_stream[lane]);
+	SparkGpuFree(state->route_expert);
+	SparkGpuFree(state->route_packed_row);
+	SparkGpuFree(state->route_source_token);
+	SparkGpuFree(state->route_weight);
+	SparkGpuFree(state->group_row_offset);
+	SparkGpuFree(state->group_tile_prefix_w1);
+	SparkGpuFree(state->group_tile_prefix_w2);
+	SparkGpuFree(state->dense_row_offset);
+	SparkGpuFree(state->dense_tile_prefix);
 	K3StreamedDestroy(state->streamed);
 	free(state->rank_pack_path);
 	if ( state->dispatch.buffers != 0 )
@@ -992,7 +994,7 @@ static SparkStatus K3ModelOpen(const SparkStageRunnerModelOpen *request, void **
 	state->layer_collective_override = configuration->layer_collective_override;
 	state->layer_collective_context = configuration->layer_collective_context;
 	state->streamed_config = configuration->streamed_prefill;
-	state->execution_stream = (cudaStream_t)request->stream;
+	state->execution_stream = (SparkGpuStream)request->stream;
 	if ( state->streamed_config.node_rows != 0u && (configuration->rank_pack_path == 0 || (state->rank_pack_path = strdup(configuration->rank_pack_path)) == 0) )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->kv_page_bytes = configuration->kv_page_bytes != 0u ? configuration->kv_page_bytes :
@@ -1086,12 +1088,12 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 	state->dispatch.slice_state->collective_context = &state->lanes[0];
 	state->dispatch.slice_state->collective_pair_context = &state->lanes[1];
 	if ( state->tp_degree > 1u &&
-		(cudaStreamCreateWithFlags(&state->load_stream, cudaStreamNonBlocking) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->load_fork, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->load_join, cudaEventDisableTiming) != cudaSuccess ||
-		 cudaStreamCreateWithFlags(&state->pair_stream[0], cudaStreamNonBlocking) != cudaSuccess ||
-		 cudaStreamCreateWithFlags(&state->pair_stream[1], cudaStreamNonBlocking) != cudaSuccess ||
-		 cudaEventCreateWithFlags(&state->pair_fence, cudaEventDisableTiming) != cudaSuccess) )
+		(SparkGpuStreamCreateWithFlags(&state->load_stream, SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+		 SparkGpuEventCreateWithFlags(&state->load_fork, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS ||
+		 SparkGpuEventCreateWithFlags(&state->load_join, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS ||
+		 SparkGpuStreamCreateWithFlags(&state->pair_stream[0], SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+		 SparkGpuStreamCreateWithFlags(&state->pair_stream[1], SPARK_GPU_STREAM_NON_BLOCKING) != SPARK_GPU_SUCCESS ||
+		 SparkGpuEventCreateWithFlags(&state->pair_fence, SPARK_GPU_EVENT_DISABLE_TIMING) != SPARK_GPU_SUCCESS) )
 	{
 		fprintf(stderr, "sparkpipe_k3: the weight load stream could not be created\n");
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -1118,22 +1120,22 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 			state->tp_degree * state->tp_degree) * state->dispatch.widths.fused) * K3_HIDDEN * sizeof(uint16_t);
 		state->fused_rows = (state->dispatch.attention_rows + state->tp_degree - 1u) / state->tp_degree * state->tp_degree;
 		const uint64_t share_bytes = (uint64_t)((max_rows + state->tp_degree - 1u) / state->tp_degree) * K3_HIDDEN * sizeof(uint16_t);
-		if ( cudaMalloc(&state->fused_device, fused_bytes) != cudaSuccess ||
-			cudaMemset(state->fused_device, 0, fused_bytes) != cudaSuccess )
+		if ( SparkGpuMalloc(&state->fused_device, fused_bytes) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemset(state->fused_device, 0, fused_bytes) != SPARK_GPU_SUCCESS )
 			{ state->fused_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
-		if ( cudaMalloc(&state->row_share_device, share_bytes) != cudaSuccess ||
-			cudaMemset(state->row_share_device, 0, share_bytes) != cudaSuccess )
+		if ( SparkGpuMalloc(&state->row_share_device, share_bytes) != SPARK_GPU_SUCCESS ||
+			SparkGpuMemset(state->row_share_device, 0, share_bytes) != SPARK_GPU_SUCCESS )
 			{ state->row_share_device = 0; SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED); }
 	}
-	if ( cudaMalloc(&state->route_expert, routes * sizeof(*state->route_expert)) != cudaSuccess ||
-		cudaMalloc(&state->route_packed_row, routes * sizeof(*state->route_packed_row)) != cudaSuccess ||
-		cudaMalloc(&state->route_source_token, routes * sizeof(*state->route_source_token)) != cudaSuccess ||
-		cudaMalloc(&state->route_weight, routes * sizeof(*state->route_weight)) != cudaSuccess ||
-		cudaMalloc(&state->group_row_offset, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_row_offset)) != cudaSuccess ||
-		cudaMalloc(&state->group_tile_prefix_w1, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w1)) != cudaSuccess ||
-		cudaMalloc(&state->group_tile_prefix_w2, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w2)) != cudaSuccess ||
-		cudaMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != cudaSuccess ||
-		cudaMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != cudaSuccess )
+	if ( SparkGpuMalloc(&state->route_expert, routes * sizeof(*state->route_expert)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->route_packed_row, routes * sizeof(*state->route_packed_row)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->route_source_token, routes * sizeof(*state->route_source_token)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->route_weight, routes * sizeof(*state->route_weight)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->group_row_offset, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_row_offset)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->group_tile_prefix_w1, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w1)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->group_tile_prefix_w2, (uint64_t)(K3_EXPERTS + 1u) * sizeof(*state->group_tile_prefix_w2)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->lazy_pack = lazy_pack;
 	if ( state->streamed_config.node_rows != 0u && state->streamed_config.expert_pool_cap_bytes == 0u )
@@ -1168,7 +1170,7 @@ static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStr
 		status = K3StreamedRun(state->streamed, request, services, state->execution_stream);
 	if ( state->streamed_config.expert_pool_cap_bytes != 0u && state->streamed != 0 )
 	{
-		if ( cudaStreamSynchronize(state->execution_stream) != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess )
+		if ( SparkGpuStreamSynchronize(state->execution_stream) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		K3StreamedDestroy(state->streamed);
 		state->streamed = 0;
@@ -1176,11 +1178,11 @@ static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStr
 	return status;
 }
 
-static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step, cudaStream_t stream)
+static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
 {
-	cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+	SparkGpuCaptureStatus capture = SPARK_GPU_CAPTURE_STATUS_NONE;
 	uint32_t row, context = 0u;
-	if ( step->host_positions == 0 || cudaStreamIsCapturing(stream, &capture) != cudaSuccess || capture != cudaStreamCaptureStatusNone )
+	if ( step->host_positions == 0 || SparkGpuStreamIsCapturing(stream, &capture) != SPARK_GPU_SUCCESS || capture != SPARK_GPU_CAPTURE_STATUS_NONE )
 		return state->position_capacity;
 	for ( row = 0u; row < step->rows; row++ )
 		if ( step->host_positions[row] + 1u > context )
@@ -1191,7 +1193,7 @@ static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRu
 static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, void *stream_void)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
-	cudaStream_t stream = (cudaStream_t)stream_void;
+	SparkGpuStream stream = (SparkGpuStream)stream_void;
 	SparkK3StepInput in;
 	int32_t status;
 	K3RunnerTpStepReset(state);
@@ -1225,7 +1227,7 @@ static SparkStatus K3ModelStep(void *model, const SparkStageRunnerStep *step, vo
 	in.dense_tile_prefix = state->dense_tile_prefix;
 	state->rows = step->rows;
 	state->head_last_rows = step->last_rows_only;
-	K3RunnerDenseOffsetsKernel<<<1u, 1u, 0, stream>>>(state->dense_row_offset, step->rows);
+	LM_LAUNCH((K3RunnerDenseOffsetsKernel), 1u, 1u, 0, stream, state->dense_row_offset, step->rows);
 	in.pair_rows = state->head_last_rows != 0u && step->sequences == 1u && step->rows >= 2u * K3_RUNNER_PAIR_MIN_ROWS &&
 		state->has_collective != 0u && state->deferred != 0u ? step->rows / 2u : 0u;
 	status = SparkK3DispatchStep(&state->dispatch, &in, step->rows, step->sequences, step->commit,
@@ -1244,12 +1246,12 @@ static SparkStatus K3ModelSideband(void *model, uint32_t to_buffer, const void *
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	K3LayerBuffers *b = state->dispatch.buffers;
-	cudaStream_t stream = (cudaStream_t)stream_void;
+	SparkGpuStream stream = (SparkGpuStream)stream_void;
 	if ( to_buffer != 0u )
-		return buffer == 0 || K3RunnerCopy(buffer, b->attnres_bank_bf16, bytes, stream) != cudaSuccess ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
-	if ( buffer != 0 && K3RunnerCopy(b->attnres_bank_bf16, buffer, bytes, stream) != cudaSuccess )
+		return buffer == 0 || K3RunnerCopy(buffer, b->attnres_bank_bf16, bytes, stream) != SPARK_GPU_SUCCESS ? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
+	if ( buffer != 0 && K3RunnerCopy(b->attnres_bank_bf16, buffer, bytes, stream) != SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_IO_ERROR;
-	return K3RunnerCopy(b->attnres_partial_bf16, hidden, (uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != cudaSuccess ?
+	return K3RunnerCopy(b->attnres_partial_bf16, hidden, (uint64_t)rows * K3_HIDDEN * sizeof(uint16_t), stream) != SPARK_GPU_SUCCESS ?
 		SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
 }
 
@@ -1269,7 +1271,7 @@ static SparkStatus K3ModelRecurrentCopy(void *model, uint32_t to_buffer, uint32_
 	SparkK3KdaRankLayout layout;
 	uint8_t *pools[SPARK_K3_SLOT_POOLS], *packed = (uint8_t *)buffer;
 	uint64_t widths[SPARK_K3_SLOT_POOLS];
-	cudaError_t error = cudaSuccess;
+	SparkGpuError error = SPARK_GPU_SUCCESS;
 	uint32_t part;
 	if ( slot >= state->dispatch.sequences || bytes != K3ModelRecurrentBytes(state) ||
 		SparkK3KdaRankLayoutFor(state->dispatch.tp_degree, &layout) == 0u )
@@ -1282,20 +1284,20 @@ static SparkStatus K3ModelRecurrentCopy(void *model, uint32_t to_buffer, uint32_
 	widths[SPARK_K3_SLOT_POOL_Q_WINDOW] = layout.qk_window_slot_bytes;
 	widths[SPARK_K3_SLOT_POOL_K_WINDOW] = layout.qk_window_slot_bytes;
 	widths[SPARK_K3_SLOT_POOL_V_WINDOW] = layout.v_window_slot_bytes;
-	for ( part = 0u; part < SPARK_K3_SLOT_POOLS && error == cudaSuccess; part++ )
+	for ( part = 0u; part < SPARK_K3_SLOT_POOLS && error == SPARK_GPU_SUCCESS; part++ )
 	{
 		uint8_t *pool = pools[part] + (uint64_t)slot * widths[part];
 		size_t pitch = (size_t)(widths[part] * state->dispatch.sequences);
 		error = to_buffer != 0u ?
-			cudaMemcpy2DAsync(packed, (size_t)widths[part], pool, pitch, (size_t)widths[part], state->dispatch.kda_count, cudaMemcpyDefault, (cudaStream_t)stream) :
-			cudaMemcpy2DAsync(pool, pitch, packed, (size_t)widths[part], (size_t)widths[part], state->dispatch.kda_count, cudaMemcpyDefault, (cudaStream_t)stream);
+			SparkGpuMemcpy2DAsync(packed, (size_t)widths[part], pool, pitch, (size_t)widths[part], state->dispatch.kda_count, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream) :
+			SparkGpuMemcpy2DAsync(pool, pitch, packed, (size_t)widths[part], (size_t)widths[part], state->dispatch.kda_count, SPARK_GPU_COPY_DEFAULT, (SparkGpuStream)stream);
 		packed += widths[part] * state->dispatch.kda_count;
 	}
-	if ( error == cudaSuccess && stream == 0 )
-		error = cudaStreamSynchronize(0);
-	if ( error != cudaSuccess )
+	if ( error == SPARK_GPU_SUCCESS && stream == 0 )
+		error = SparkGpuStreamSynchronize(0);
+	if ( error != SPARK_GPU_SUCCESS )
 	{
-		fprintf(stderr, "sparkpipe_k3: KDA record copy failed slot=%u cuda=%s\n", slot, cudaGetErrorString(error));
+		fprintf(stderr, "sparkpipe_k3: KDA record copy failed slot=%u cuda=%s\n", slot, SparkGpuGetErrorString(error));
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	}
 	return SPARK_STATUS_OK;
@@ -1304,7 +1306,7 @@ static SparkStatus K3ModelRecurrentCopy(void *model, uint32_t to_buffer, uint32_
 static SparkStatus K3ModelResetSlot(void *model, uint32_t slot, void *stream)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
-	const int32_t status = SparkK3DispatchResetSlot(&state->dispatch, slot, state->tp_degree, (cudaStream_t)stream);
+	const int32_t status = SparkK3DispatchResetSlot(&state->dispatch, slot, state->tp_degree, (SparkGpuStream)stream);
 	if ( status == SPARK_K3_DISPATCH_ERR_ARGUMENT )
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	return status == SPARK_K3_DISPATCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
@@ -1335,7 +1337,7 @@ static SparkStatus K3ModelKeepRows(void *model, const SparkStageRunnerStep *step
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
 	if ( SparkK3DispatchKeep(&state->dispatch, step->sequence_row_begin, step->sequence_row_indices, step->recurrent_index,
-		kept, step->sequences, step->rows, step->multiprocessors, (cudaStream_t)stream) != SPARK_K3_DISPATCH_OK )
+		kept, step->sequences, step->rows, step->multiprocessors, (SparkGpuStream)stream) != SPARK_K3_DISPATCH_OK )
 	{
 		fprintf(stderr, "sparkpipe_k3: verify keep failed rows=%u sequences=%u\n", step->rows, step->sequences);
 		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);

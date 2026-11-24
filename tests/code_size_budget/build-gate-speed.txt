@@ -1,0 +1,2 @@
++44
+sm_121a gate: the dependent-wait audit parses each function only up to its first wait and runs one process an artifact (913 s to 11 s on lenovo8, same report); the exact-target translation units compile in parallel; each gate phase prints its wall and cpu time.

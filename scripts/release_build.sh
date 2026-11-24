@@ -14,6 +14,7 @@ SO=$(cd $S/tree-$SHA && for id in $(python3 -c "import json; print(' '.join(sort
   set -- $(python3 tools/lane_config.py release-row "$id") && echo "build/$2" || echo "RELEASE-ROW-FAILED:$id"; done | sort -u | tr '\n' ' ')
 case "$SO" in ""|*RELEASE-ROW-FAILED*) echo "release_build: could not derive every adapter from deployment/lanes.json at $SHA: $SO" >&2; exit 1 ;; esac
 echo "release_build: adapters from deployment/lanes.json at $SHA: $SO"
+KERNELS=$(for adapter in $SO; do printf '%s.kernels ' "${adapter#build/}"; done)
 ssh -o BatchMode=yes rtx5090 "mkdir -p $HUB_WORK/src $HUB_WORK/logs" < /dev/null || exit 1
 scp -q $S/src-$SHA.tar rtx5090:$HUB_WORK/src/rp-src-$SHA.tar || exit 1
 ssh -o BatchMode=yes rtx5090 "rm -rf $HUB_WORK/api-build-$SHA && mkdir $HUB_WORK/api-build-$SHA && tar -C $HUB_WORK/api-build-$SHA -xf $HUB_WORK/src/rp-src-$SHA.tar && echo $SHA > $HUB_WORK/api-build-$SHA/SOURCE_COMMIT && cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make -j16 build/sparkpipe_model_api build/sparkpipe_tokenize_prompt $SO > $HUB_WORK/logs/api-$SHA.out 2>&1; echo API-RC=\$?" < /dev/null &
@@ -23,4 +24,20 @@ ssh -o BatchMode=yes $HOST "cd ~/build-rp && rm -rf fw-$SHA-src && mkdir fw-$SHA
 wait
 ssh -o BatchMode=yes $HOST "grep -n -E ' error|Error ' ~/build-rp/fw-$SHA.out | head -5" < /dev/null
 ssh -o BatchMode=yes rtx5090 "grep -n -E ' error|Error ' $HUB_WORK/logs/api-$SHA.out | head -5; cd $HUB_WORK/api-build-$SHA/build && sha256sum sparkpipe_model_api sparkpipe_tokenize_prompt *.so runtime_libs/libsparkpipe_device_cuda.so | cut -c1-16,65- > ../SHA16" < /dev/null
-rm -rf $OUT && mkdir -p $OUT && ssh $HOST "cd ~/build-rp/fw-$SHA-src/build && tar cf - $(echo $NODE $SO | sed 's#build/##g')" < /dev/null | tar -C $OUT -xf - && echo $SHA > $OUT/SOURCE_COMMIT && (cd $OUT && shasum -a 256 $(echo $NODE $SO | sed 's#build/##g') | cut -c1-16,65- > SHA16 && shasum -a 256 $(echo $NODE $SO | sed "s#build/##g") > SHA256SUMS) && wc -l < $OUT/SHA16 && echo FW-DIR $OUT && echo APIB $HUB_WORK/api-build-$SHA/build
+HUB_FILES="build/sparkpipe_model_api build/sparkpipe_tokenize_prompt build/runtime_libs/libsparkpipe_device_cuda.so"
+FW_DIR=build
+API_DIR=build
+if [ "${HOSTED:-0}" = 1 ]; then
+  NVRM_RUNTIME="build/runtime_libs/libsparkpipe_device_nvrm.so build/runtime_libs/sparkpipe_device_kernels/tensor_map_build.cubin build/runtime_libs/sparkpipe_device_kernels/tensor_map_build.manifest build/runtime_libs/sparkpipe_device_kernels/program_ops.cubin build/runtime_libs/sparkpipe_device_kernels/program_ops.manifest"
+  CUDA_DEVICE="build/runtime_libs/libsparkpipe_device_cuda.so"
+  NODE="${NODE% $CUDA_DEVICE} $NVRM_RUNTIME"
+  HUB_FILES="${HUB_FILES% $CUDA_DEVICE} $NVRM_RUNTIME"
+  ssh -o BatchMode=yes $HOST "cd ~/build-rp/fw-$SHA-src && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$NODE $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the node files of $SHA; nothing is written to $OUT" >&2; exit 1; }
+  ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA && export PATH=/usr/local/cuda/bin:\$PATH && make hosted-release-gate HOSTED_RELEASE_FILES='$HUB_FILES $SO' HOSTED_RELEASE_GATE_FLAGS=--deploy" < /dev/null || { echo "release_build: the hosted release gate refused the hub API files of $SHA; nothing is written to $OUT" >&2; exit 1; }
+  ssh -o BatchMode=yes rtx5090 "cd $HUB_WORK/api-build-$SHA/build/hosted_release_root/build && sha256sum sparkpipe_model_api sparkpipe_tokenize_prompt *.so runtime_libs/*.so | cut -c1-16,65- > ../../../SHA16" < /dev/null || exit 1
+  FW_DIR=build/hosted_release_root/build
+  API_DIR=build/hosted_release_root/build
+fi
+MISSING=$(ssh -o BatchMode=yes $HOST "cd ~/build-rp/fw-$SHA-src/$FW_DIR && for k in $KERNELS; do ls \$k/*.cubin > /dev/null 2>&1 || echo \$k; done" < /dev/null)
+[ -z "$MISSING" ] || { echo "release_build: the adapters of $SHA were built without their kernels directories:" $MISSING "; nothing is written to $OUT" >&2; exit 1; }
+rm -rf $OUT && mkdir -p $OUT && ssh $HOST "cd ~/build-rp/fw-$SHA-src/$FW_DIR && tar cf - $(echo $NODE $SO | sed 's#build/##g') $KERNELS" < /dev/null | tar -C $OUT -xf - && echo $SHA > $OUT/SOURCE_COMMIT && (cd $OUT && FILES="$(echo $NODE $SO | sed 's#build/##g') $(find $KERNELS -type f | sort | tr '\n' ' ')" && shasum -a 256 $FILES | cut -c1-16,65- > SHA16 && shasum -a 256 $FILES > SHA256SUMS) && wc -l < $OUT/SHA16 && echo FW-DIR $OUT && echo APIB $HUB_WORK/api-build-$SHA/$API_DIR

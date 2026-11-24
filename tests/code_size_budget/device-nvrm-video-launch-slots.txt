@@ -1,0 +1,2 @@
++31
+nvrm launch slots and recorded program images in BAR1-mapped video memory on a discrete GPU, and the nvrm-chain-gap goal that reports chained-kernel gaps on both flavours.

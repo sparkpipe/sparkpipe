@@ -33,11 +33,16 @@ plus `--mesh-pair-interface … --mesh-pair-sgid-index …` on ranks that
 By default the second port is a second switched rail; an empty
 `SPARK_MESH_SECOND_RAIL` in the agent's environment selects a cable to the
 partner instead. The agent then passes
-the pair flags on every rank, plus `--mesh-second-rail`. Each link uses the
-second rail when the two ranks' parities differ, so both ends choose the same
-rail, and 8 of a node's 15 peers (its partner among them) send over the second
-port. In this mode weightd advertises no pair rank, so collectives take their
-flat routes and spread over both ports.
+the pair flags on every rank, plus `--mesh-second-rail`. weightd uses whichever
+of the two ports are active (see *Ports in use* below): with one switch every
+link shares the first port; with a second switch each link whose two ends have
+both ports up uses the second rail when the two ranks' parities differ, so both
+ends choose the same rail, and 8 of a node's 15 peers (its partner among them)
+send over the second port. In this mode weightd advertises no pair rank, so
+collectives take their flat routes and spread over both ports. The agent
+starts weightd once at least one configured port is active and holds its
+fabric address (`mesh_addresses` prints `-` for a port that is not), and
+restarts it, while no engine runs, when that set of addresses changes.
 It passes no `--device-bytes-max`, so the budget is
 `SPARK_WEIGHTD_DEVICE_BYTES_MAX_DEFAULT` (110 GiB) unless the unit environment
 sets `SPARK_WEIGHTD_DEVICE_BYTES_MAX`. It passes no `--mesh-dir`, so records live
@@ -222,11 +227,11 @@ deviation from I36 ([TECHDEBT.md](../TECHDEBT.md#mesh-collectives)).
 
 The region layout is in `include/sparkpipe/spark_weightd.h`. It has 4 lanes
 (`SPARK_WEIGHTD_MESH_MAX_LANES`, 0-3) with two bands each (GLM uses one for its
-main and one for its HC collective), 16 ranks per band and two slots per rank.
+main and one for its HC collective), 16 ranks per band and four slots per rank.
 A slot holds 32 rows of 32 KiB plus a 64-byte trailer, 1,048,640 bytes, and its
 last 8 bytes are the tail tag the receiver matches. The slot for band `b`, peer
-`p` and ring `r = (tag - 1) mod 2` is `b*32 + p*2 + r`. The slot area is
-8 bands x 32 slots x 1,048,640 bytes = 268,451,840 bytes (arithmetic, 256 MiB).
+`p` and ring `r = (tag - 1) mod 4` is `b*64 + p*4 + r`. The slot area is
+8 bands x 64 slots x 1,048,640 bytes = 536,903,680 bytes (arithmetic, 512 MiB).
 A 128 KiB area follows it with the doorbells, shipped cells and one
 128-byte hardware wait request per rank and band.
 
@@ -263,6 +268,90 @@ staging, the footprint ABI 14 had, with the 1 MiB slots kept. A node only ever
 runs one or two lanes at a time; the 16 lane numbers served as names for the
 records. The geometry differs from ABI 15's, so the record magic moved to
 `MESH0009` and the same rule holds: every node of a fleet in one window.
+
+**Slot ring depth (IPC ABI 17, record magic `MESH0010`).** A rank has four
+slots a band, eight half positions, where ABI 16 had two. A pipelined round
+may then publish three pieces before its first arrival and keep three in
+flight (`SPARK_WEIGHTD_MESH_PIPELINE_DEPTH`): a rank publishes piece `k` after
+it has read piece `k - 3` from every peer. A peer that has published piece
+`k - 3` has read piece `k - 6`, so the half position piece `k` reuses, that of
+piece `k - 8`, is free on every rank. A whole-slot round shares its slot with
+the sequence four later; inside a pipelined round that is piece 3 after a
+whole-slot round that ended just before piece 0, and piece 3 goes out only
+after piece 0 has arrived from every peer, which a peer publishes only after
+reading that round. With two slots the shared slot was two sequences later, so
+a round had to read piece 0 from every peer before it published piece 1, and
+the wire stood idle for one combine kernel at the start of every round.
+
+- Measured before the change (DeepSeek V4.1 Flash, 16 ranks, trace `zt18e`,
+  rank 0): 573 pipelined rounds, 5,078 pieces of 7.7 MB a rank. A piece took a
+  median 347 us on the wire, of which the fused publish-and-combine kernel ran
+  210 us. Rounds of 4, 5 and 6 pieces ran 501, 410 and 360 us a piece; rounds
+  of 8 or more, 345-351. The intervals above the median add to 126 ms, about
+  one combine kernel a round.
+- `tests/test_tp_mesh_pipeline_boundaries.c` models sixteen ranks with one as
+  slow as possible: three pieces in flight never overwrite unread data next to
+  whole-slot and pair-first rounds, and four do.
+- Memory: the region is 537,034,752 bytes, 256 MiB more pinned memory on every
+  node than under ABI 16; staging is unchanged at 128 MiB.
+- Compatibility: the slot index differs from ABI 16's, so the record magic
+  moved to `MESH0010`: roll every node of a fleet in one window and rebuild
+  every lane against it.
+
+**Ports in use (record magic `MESH0011`).** weightd no longer needs every
+configured port. At startup it opens `--mesh-interface` (the first port) and,
+when given, `--mesh-pair-interface` (the second) and waits for each to be
+active with an IPv4 RoCE address:
+
+- An active port gets the address wait (`WD-MESH-WAIT-ADDRESS`, 120 s). A port
+  that is not active is waited for until 10 s after another port came up, then
+  left out (`WD-MESH-PORT interface=.. : port 1 not active ..; the port is not
+  used`). A configured device that does not exist is left out at once. With no
+  port up at the address deadline, startup fails (`WD-MESH-NO-PORT`).
+- `WD-MESH-PORTS rank=R ports=..` logs the layout chosen. The lowest port that
+  is up is the home port: it holds the receive, staging and sequence
+  registrations that clients see. When both are up, the second port gets its
+  own registrations and a second queue pair set for every peer (for the partner
+  alone with a point-to-point cable).
+- The record publishes `ports` (bit 0 the first port, bit 1 the second),
+  `switched_pair` (the second port is switched) and queue pair numbers for each
+  port: `send_qpn`/`recv_qpn` on the home port, `pair_send_qpn`/`pair_recv_qpn`
+  on the second.
+- Each link takes the ports both ends have up. With both, the parity rule picks
+  one; with one, the link shares it; with none, the peer stays unwired and the
+  mesh is not ready (`WD-MESH-RECORD-INVALID .. no port in common`). Both ends
+  compute the same answer from the same two records, and a peer that restarts
+  with other ports moves its link to the other port's queue pairs, after the old
+  ones are reset.
+- A link whose ends have different ports up is degraded: one end lost a port
+  the other still has. weightd logs `WD-MESH-LAYOUT .. layout=degraded` naming
+  the rank and the missing port, sets `SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED` in
+  that peer's status flags (`SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK` marks a link
+  on the second port), adds `degraded=0x..` to `WD-MESH-STATS` and to the
+  `.ready` line (`.. ports=rocep1s0f1+roceP2p1s0f0 degraded=0x0030`), and
+  prints `WD-MESH-LAYOUT-READY` with the two-port, one-port and degraded masks
+  whenever the mesh is ready. A fleet whose nodes all have the same one port is
+  not degraded: it is a one-switch fleet.
+- Readers: `sparkpipe_mesh_status` reports `degraded_mask` and each peer's
+  `second_port` and `degraded`, and `--wait-lane-peers` exits 9 when a waited
+  rank is degraded. The fleet agent copies `mesh_ports` and `mesh_degraded`
+  from `.ready` into its heartbeat and logs each change, `tools/fleet_post_reboot.sh`
+  fails a node with degraded links, and `tools/fleet_ready_poll.sh` prints the
+  fleet's ports with `FLEET-READY` and exits 4 with `FLEET-READY-DEGRADED`
+  instead.
+- A port that comes up after startup is not adopted by the running daemon. The
+  agent sees the new address and restarts weightd while no engine runs. A fleet
+  that loses its second switch on every node looks like a one-switch fleet and
+  is not flagged degraded; `FLEET-READY` prints the ports every node uses.
+- Compatibility: the record grew, so the magic moved to `MESH0011`; roll every
+  node of a fleet in one window.
+- The streamed-prefill weight stream (`ring/transport/weight_stream.c`) applies
+  the same rule to its fabric and pair devices: it opens each device whose port
+  is active with an IPv4 RoCE gid, publishes queue pairs on every link it has
+  up in its endpoint table, and after the gather gives each peer the link both
+  ends have (the parity rule when both have both). A peer with no link in
+  common fails the open; a peer whose links differ from ours is logged as
+  degraded. Expert rotation needs an even rank count, not two devices.
 
 `tp_mesh_hardware_probe` puts up to sixteen ranks on one GPU and gives each
 rank a band of one region, so the probe and its fixture daemon build with
@@ -425,7 +514,9 @@ MASK outside the daemon's rank mask); 3 timed out with the daemon answering
 `MESH-STATUS-PEER` line per missing rank and, with `--lane`, a
 `MESH-STATUS-LANE` line); 4 mixed version (unserved or incompatible, no retry);
 5 the lane is configured for another rank set; 6 daemon absent at the deadline;
-7 mesh disabled or not built; 8 daemon unresponsive at the deadline. The tool
+7 mesh disabled or not built; 8 daemon unresponsive at the deadline; 9 met, but
+a waited rank's link is degraded (stderr starts with `MESH-STATUS-DEGRADED`
+followed by one `MESH-STATUS-DEGRADED-PEER` line per rank). The tool
 requires `ready` because the data path still gates on the global mesh state.
 The current release kit does not ship it: `scripts/release_build.sh` does not
 build `build/sparkpipe_mesh_status`, and `scripts/release_rollout.sh weightd`
@@ -462,7 +553,8 @@ manifests, receipts and the pack bytes are the same under both ABIs.
 
 **Unchanged from ABI 8:**
 - the mesh region (`SPARK_WEIGHTD_MESH_REGION_BYTES`, 268,632,064 bytes until
-  ABI 15, 1,073,938,432 under ABI 15, 268,582,912 from ABI 16);
+  ABI 15, 1,073,938,432 under ABI 15, 268,582,912 under ABI 16, 537,034,752
+  from ABI 17);
 - the slot geometry (until ABI 15), doorbells, shipped cells and wait requests;
 - the rendezvous record;
 - the FULL, SCATTER and GATHER routes.
@@ -510,9 +602,10 @@ overlap the other chunk on the wire.
     `SLOT_BYTES - 8`, which is also the whole-slot tail.
   - A whole-slot payload ends at `SLOT_BYTES - 16`, so it never touches either
     half tail.
-  - A half chunk with sequence `s` uses ring `(s - 1) mod 2` and half
-    `1 + ((s - 1) >> 1) mod 2` (`SPARK_WEIGHTD_MESH_SEQUENCE_HALF`). Four
-    consecutive chunks therefore take four distinct positions.
+  - A half chunk with sequence `s` uses ring `(s - 1) mod 4` and half
+    `1 + ((s - 1) / 4) mod 2` (`SPARK_WEIGHTD_MESH_SEQUENCE_HALF`). Eight
+    consecutive chunks therefore take eight distinct positions, and a
+    whole-slot round shares its slot with the sequences four and eight later.
 - Route: `half` (bits 58-59 of the route word) is 1 for the lower half and 2
   for the upper half. A half route is a FULL route with `slice_bytes` 0 and at
   most 524,288 bytes; weightd sends the payload from and to the half's offset
@@ -1221,6 +1314,72 @@ both mappings; `--reclaim-pack` freed exactly that arena. A deliberate write
 through the read-only mapping was not run on a node serving production,
 because it would raise a GPU fault on that node.
 
+### Held packs on a discrete GPU
+
+On a device without unified memory (no `SPARK_DEVICE_PROPERTY_UNIFIED_MEMORY`,
+the 5090 node) no video memory is shared between processes. weightd keeps each
+pack in host memory instead, and every consumer copies it into its own video
+memory once.
+
+- **HOLD (IPC kinds 61 and 62).** `SparkWeightdClientHold` sends the identity
+  and pack path. The first HOLD of an identity opens the pack, admits its bytes
+  against node memory and creates pinned host memory for it
+  (`SparkDeviceMemoryCreateHost`, see
+  [DEVICE_SHARED_MEMORY.md](DEVICE_SHARED_MEMORY.md)), rounded up to the
+  minimum granularity. It maps that memory for the CPU alone, streams the pack
+  into it through the same receipt or full-digest verification as a cold
+  attach, and unmaps it. A later HOLD of the same identity reuses the held copy
+  and never reads the pack. The reply carries an exported descriptor
+  (`SCM_RIGHTS`), the pack and pinned bytes, the held copy's generation and
+  load time, `first_hold` and the number of held packs.
+- **Lifetime.** A held pack stays until weightd exits, so a consumer restart
+  copies again from weightd's pinned memory, never from the disk. At most
+  `SPARK_WEIGHTD_HELD_PACK_COUNT_MAX` (8) packs are held; a ninth identity is
+  `CAPACITY_EXCEEDED`. A wrong digest holds nothing. A backend without
+  exportable host memory refuses HOLD with
+  `weightd hold refused: model=...: the <backend> backend has no exportable host memory`.
+- **Consumer.** `SparkWeightdLazyPackCreate` asks the device first. With
+  unified memory it attaches lazily as before; without, it takes the held path:
+  it refuses a manifest with expert ranges (`UNSUPPORTED`; a pack binds whole,
+  as its spine) and a `read_only` pack, sends HOLD, imports the descriptor,
+  maps it device-read-only, allocates the private spine and copies the spine
+  spans from the mapping with the copy engines in 1 GiB pieces, with no CPU
+  copy, then unmaps and releases the import.
+  `WD-SPINE-HELD spans= bytes= first_hold= held= hold_s= copy_s=` reports it.
+- **Older weightd.** A weightd without HOLD closes the connection on kind 61.
+  The client then fails with `weightd hold: no reply to kind 61 (HOLD)` and
+  never reads the pack itself.
+- **Frames.** `SparkWeightdIpcHold` is 1,344 bytes and
+  `SparkWeightdIpcHoldResult` 72; the existing kinds and frames are unchanged,
+  so the ABI stays 17.
+- **On the 5090 node** (2026-11-22, CUDA flavour, a user-process weightd on its
+  own socket, latch port and KV root), each drafter pack (9.1-10.6 GB):
+  - the first HOLD with a recorded receipt took 2.3-2.8 s (the stream 1.4-1.6 s,
+    the rest creating and pinning); without a receipt the full sha256 runs at
+    0.4 GB/s on that CPU, once per pack file;
+  - the copy into video memory took 0.22-0.25 s, 41.7-42.5 GB/s, which is the
+    card's pinned host-to-device rate under CUDA (`cuMemHostAlloc` copies run at
+    41.9 GB/s there; a second copy stream adds nothing);
+  - a rebind, as after a consumer restart, took 0.27-0.30 s with
+    `first_hold=0`;
+  - 100 slices of each device copy equalled the file;
+  - MemAvailable fell from 117,382,896 kB to 87,644,796 kB with all three held
+    (29.79 GB pinned) and came back when weightd exited.
+
+  Build there against a CUDA toolkit no newer than the driver's (595.84 serves
+  CUDA 13.2; `/usr/local/cuda-13.1`): the device layer loads driver entry
+  points by the runtime's version, and a 13.3 build's are missing, so weightd
+  fails to start.
+- **Test.** `tests/test_weightd_held_pack.c` runs a server and the CUDA stub as
+  a discrete GPU (`SPARK_STUB_CUDA_DISCRETE` mode reports `integrated` 0): a
+  bind copies the bytes and a rebind after the pack file is overwritten still
+  returns the held bytes with `first_hold=0`; the held descriptor imports and
+  maps device-read-only with the pack's bytes, and refuses host write without
+  host read; a wrong digest holds nothing; expert ranges are refused; a stub
+  without host-NUMA memory makes HOLD refuse with the backend's text; and a
+  stand-in weightd that closes on kind 61 makes the bind fail with the message
+  above.
+
 ### Working-set recording
 
 After every successful ACQUIRE the daemon adds the new keys to `PACK.wset`,
@@ -1333,7 +1492,8 @@ sizing; 0 means no cap), attaches lazily with that pool (or shared when
 `read_only` is 1, see "Read-only arena sharing"), creates the consumer map,
 places the spine and starts a worker thread.
 A missing or invalid manifest fails the call like any other failure, before
-the attach. The plan is kept in `pack->pool`.
+the attach. The plan is kept in `pack->pool`. On a device without unified
+memory it takes the held path instead (see "Held packs on a discrete GPU").
 
 Every input is explicit:
 

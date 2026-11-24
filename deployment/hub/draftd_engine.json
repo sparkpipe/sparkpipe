@@ -1,0 +1,72 @@
+{
+ "weightd_socket": "/srv/workspace/sparkpipe/draftd-engine/run/weightd.sock",
+ "control_socket": "/srv/workspace/sparkpipe/draftd-engine/run/draftd.sock",
+ "lanes": [
+  {
+   "name": "kimi-k3.1-pro",
+   "host": "127.0.0.1",
+   "draft_port": 7722,
+   "target_model": "kimi-k3.1-pro",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7721,
+    "model_tag": "k31_stage",
+    "hidden": 7168,
+    "entries": "o75,o79,o83,o87,o91"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/k31_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/k31dspark.bf16.tp1.rank0.sp",
+    "model": "k31dspark",
+    "revision": "6a2ef20a05ef",
+    "context_bytes": 12884901888,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "qwen3.8-27b",
+   "host": "127.0.0.1",
+   "draft_port": 7732,
+   "target_model": "qwen3.8-27b",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7731,
+    "model_tag": "qwen38_27b_stage",
+    "hidden": 5120,
+    "entries": "o1,o16,o31,o46,o61"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/qwen38_dspine_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/qwen27bdspine.bf16.tp1.rank0.sp",
+    "model": "qwen27bdspine",
+    "revision": "ac90f1df842e",
+    "context_bytes": 8589934592,
+    "wait_ms": 30
+   }
+  },
+  {
+   "name": "deepseek-v4.1-flash",
+   "host": "127.0.0.1",
+   "draft_port": 7712,
+   "target_model": "deepseek-v4.1-flash",
+   "taps": {
+    "host": "10.10.250.2",
+    "port": 7711,
+    "model_tag": "dsv41_flash_stage",
+    "hidden": 5120,
+    "entries": "o36,o37,o38"
+   },
+   "drafter": {
+    "kind": "engine",
+    "module": "/srv/workspace/sparkpipe/draftd-engine/modules/dsv41_dspark_draft_stage.so",
+    "pack": "/srv/workspace/sparkpipe/draftd-engine/packs/dsv41dspark.mxfp4.tp1.rank0.sp",
+    "model": "dsv41dspark",
+    "revision": "1017",
+    "context_bytes": 1073741824,
+    "wait_ms": 30
+   }
+  }
+ ]
+}

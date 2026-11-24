@@ -92,7 +92,7 @@ static int synth_push(SynthState *synth,uint32_t kind,uint32_t layer_index,uint3
 {
 	SparkDsv41FlashStagePackTensorShape shape;
 	SparkDsv41FlashStagePackEntry *entry;
-	if ( SparkDsv41FlashStagePackExpectedShape(kind,expert_weight_codec,tp_degree,&shape) == 0u )
+	if ( SparkDsv41FlashStagePackExpectedShape(kind,expert_weight_codec,tp_degree,0u,&shape) == 0u )
 		return(-2);
 	if ( synth->count == SYNTH_MAX_TENSORS )
 		return(-3);

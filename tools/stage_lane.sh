@@ -15,7 +15,7 @@ LAST_RANK=$((LANE_RANKS - 1))
 . "$HERE/lane_run_log.sh"
 . "$HERE/lane_weights.sh"
 HEX=0123456789abcdef
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=5"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=15 -o ConnectionAttempts=3"
 UNIT="sp-${STAGE_MODEL//_/-}-rd$STAGE_LANE"
 model_field() { python3 -c "import sys; sys.path.insert(0, '$HERE'); import stage_lane; print(stage_lane.MODELS['$STAGE_MODEL']['$1'])"; }
 ADAPTER_FILE="$(model_field adapter)"
@@ -92,15 +92,74 @@ render() {
     --weightd-socket "$STAGE_WEIGHTD_SOCKET" --output-dir "$1"
 }
 
+firmware_copy() {
+  local host="$1" destination="$2" file sources="" attempt
+  shift 2
+  for file in "$@"; do sources="$sources $STAGE_FIRMWARE/$file"; done
+  for attempt in 1 2 3 4 5; do
+    if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+      $SSH "$STAGE_FIRMWARE_HOST" "scp -q -r -o BatchMode=yes$sources $host:$destination" < /dev/null && return 0
+    else
+      scp -q -r $sources "$host:$destination" && return 0
+    fi
+    sleep $((attempt * 2))
+  done
+  return 1
+}
+
+firmware_layout() {
+  printf '%s %s\n' \
+    bin/sparkpipe_model_residentd sparkpipe_model_residentd \
+    bin/weightd_warm weightd_warm \
+    "lib/$ADAPTER_FILE" "$ADAPTER_FILE" \
+    "lib/$ADAPTER_FILE.kernels" "$ADAPTER_FILE.kernels" \
+    lib/runtime_libs/libsparkpipe_device_cuda.so runtime_libs/libsparkpipe_device_cuda.so \
+    lib/hidden_transport.so libhidden_transport_spark_host_rdma_verbs.so
+}
+
+firmware_kernels_check() {
+  local staged source missing=""
+  while read -r staged source; do
+    case "$source" in *.kernels) ;; *) continue ;; esac
+    if [ -n "${STAGE_FIRMWARE_HOST:-}" ]; then
+      $SSH "$STAGE_FIRMWARE_HOST" "test -d $STAGE_FIRMWARE/$source" < /dev/null || missing="$missing $STAGE_FIRMWARE/$source"
+    else
+      [ -d "$STAGE_FIRMWARE/$source" ] || missing="$missing $STAGE_FIRMWARE/$source"
+    fi
+  done < <(firmware_layout)
+  [ -z "$missing" ] && return 0
+  echo "stage_lane setup:$missing is missing${STAGE_FIRMWARE_HOST:+ on $STAGE_FIRMWARE_HOST}; every rank gets each module with its kernels directory, which the module's build installs beside it" >&2
+  exit 1
+}
+
+firmware_kernels_staged() {
+  local root="$1" staged source
+  while read -r staged source; do
+    case "$source" in *.kernels) printf ' %s/%s' "$root" "$staged" ;; esac
+  done < <(firmware_layout)
+}
+
+stage_local() {
+  local root="$1" staged source
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds the lane firmware that stage-local copies}"
+  firmware_kernels_check
+  mkdir -p "$root/bin" "$root/lib/runtime_libs"
+  while read -r staged source; do
+    rm -rf "${root:?}/$staged"
+    cp -R "$STAGE_FIRMWARE/$source" "$root/$staged"
+  done < <(firmware_layout)
+}
+
 setup() {
-  local generated rank host root pack state busy=""
-  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, the model adapter library, runtime_libs/libsparkpipe_device_cuda.so, libhidden_transport_spark_host_rdma_verbs.so and weightd_warm}"
+  local generated rank host root pack state staged source busy=""
+  : "${STAGE_FIRMWARE:?STAGE_FIRMWARE holds sparkpipe_model_residentd, weightd_warm, the model adapter library with its .kernels directory, runtime_libs/libsparkpipe_device_cuda.so and libhidden_transport_spark_host_rdma_verbs.so}"
   for rank in $(seq 0 $LAST_RANK); do
     host="$(host_of "$rank")"
     state="$($SSH "$host" "systemctl --user is-active $UNIT" < /dev/null || true)"
     case "$state" in active|activating|deactivating|reloading|refreshing) busy="$busy $host($state)" ;; esac
   done
   [ -z "$busy" ] || { echo "stage_lane setup: $UNIT is running on:$busy; setup rewrites the lane's pack digest and clears its KV cache, snapshots and links, so stop the lane first (stage_lane.sh stop)" >&2; exit 1; }
+  firmware_kernels_check
   generated="$(mktemp -d)"
   render "$generated" > /dev/null
   for rank in $(seq 0 $LAST_RANK); do
@@ -108,11 +167,10 @@ setup() {
     root="$(root_of "$host")"
     pack="$(pack_of "$rank")"
     (
-      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
-      scp -q "$STAGE_FIRMWARE/sparkpipe_model_residentd" "$STAGE_FIRMWARE/weightd_warm" "$host:$root/bin/"
-      scp -q "$STAGE_FIRMWARE/$ADAPTER_FILE" "$host:$root/lib/$ADAPTER_FILE"
-      scp -q "$STAGE_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so" "$host:$root/lib/runtime_libs/"
-      scp -q "$STAGE_FIRMWARE/libhidden_transport_spark_host_rdma_verbs.so" "$host:$root/lib/hidden_transport.so"
+      $SSH "$host" "$(lane_weight_check "$host" $(weight_files_of "$rank")) && mkdir -p $root && find $root -type l -delete && rm -rf$(firmware_kernels_staged "$root") && mkdir -p $root/bin $root/lib/runtime_libs $root/config $root/packs $root/kvcache $root/kvsnapshot && find $root/packs $root/kvcache $root/kvsnapshot -mindepth 1 -delete"
+      while read -r staged source; do
+        firmware_copy "$host" "$root/$staged" "$source"
+      done < <(firmware_layout)
       scp -q "$generated/deployment.json" "$host:$root/"
       scp -q "$generated/adapter.$host.json" "$host:$root/config/adapter.json"
       node_script "$rank" | $SSH "$host" "cat > $root/lane.sh && chmod +x $root/lane.sh"
@@ -146,6 +204,7 @@ api_setup() {
   $SSH "$hub" "set -e; mkdir -p $api/bin $api/runtime/lib/runtime_libs $api/runtime/tokenizer
     install -m 755 $STAGE_API_FIRMWARE/sparkpipe_model_api $STAGE_API_FIRMWARE/sparkpipe_tokenize_prompt $api/bin/
     install -m 755 $STAGE_API_FIRMWARE/$ADAPTER_FILE $api/runtime/lib/$ADAPTER_FILE
+    rm -rf $api/runtime/lib/$ADAPTER_FILE.kernels && cp -R $STAGE_API_FIRMWARE/$ADAPTER_FILE.kernels $api/runtime/lib/
     install -m 755 $STAGE_API_FIRMWARE/runtime_libs/libsparkpipe_device_cuda.so $api/runtime/lib/runtime_libs/
     $api/bin/sparkpipe_tokenize_prompt --tokenizer-json $tokenizer_json --text probe --save-compiled-tokenizer $api/runtime/tokenizer/tokenizer.compiled > /dev/null" < /dev/null
   sha="$($SSH "$hub" "sha256sum $api/runtime/tokenizer/tokenizer.compiled" < /dev/null | cut -c1-64)"
@@ -184,14 +243,27 @@ stop() {
   join_ranks stop
 }
 
+reclaim() {
+  local rank host root
+  for rank in $(seq 0 $LAST_RANK); do
+    host="$(host_of "$rank")"
+    root="$(root_of "$host")"
+    $SSH "$host" "$root/lane.sh reclaim" < /dev/null &
+    PIDS[$rank]=$!
+  done
+  join_ranks reclaim
+}
+
 case "${1:-}" in
   render) render "${2:?render OUTPUT_DIRECTORY}" ;;
   lane-scripts)
     for rank in $(seq 0 $LAST_RANK); do node_script "$rank" > "${2:?lane-scripts OUTPUT_DIRECTORY}/lane.$(host_of "$rank").sh"; done ;;
   setup) setup ;;
+  stage-local) stage_local "${2:?stage-local ROOT}" ;;
   start) start ;;
   status) status ;;
   stop) stop ;;
+  reclaim) reclaim ;;
   api-setup) api_setup ;;
-  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|start|status|stop|api-setup" >&2; exit 2 ;;
+  *) echo "usage: $0 render DIR|lane-scripts DIR|setup|stage-local ROOT|start|status|stop|reclaim|api-setup" >&2; exit 2 ;;
 esac

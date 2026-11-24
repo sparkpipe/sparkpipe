@@ -32,6 +32,7 @@
 #include "runtime/gemm.cuh"
 
 #include "sparkpipe/spark_hy4_family.h"
+#include "sparkpipe/spark_gpu.h"
 
 #define HY_THREADS 256u
 #define HY_SCALE_GROUP 32u
@@ -291,7 +292,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	struct Frame
 	{
 		const SparkStageRunnerStep *step;
-		cudaStream_t stream;
+		SparkGpuStream stream;
 	};
 
 	static const char *Tag(void)
@@ -321,20 +322,20 @@ struct HyModel : CudaStage<HyModel<G>>
 	}
 
 	static int32_t Linear(const HyScaled &weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
-		uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return LmDenseRows<LmMxfp8>(weight.weight, Scales(weight.scale, 1u, output_dimension, input_dimension), source, destination, (float *)0, rows,
 			input_dimension, output_dimension, step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
 	}
 
 	static int32_t Dense16(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
-		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, cudaStream_t stream)
+		uint32_t input_dimension, uint32_t output_dimension, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, destination_f32, rows, input_dimension, output_dimension,
 			step->commit == 0u ? 1u : 0u, step->multiprocessors, stream);
 	}
 
-	static SparkStatus Select(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, cudaStream_t stream)
+	static SparkStatus Select(State *state, const HyLayer *layer, const SparkStageRunnerStep *step, SparkGpuStream stream)
 	{
 		const uint32_t rows = step->rows;
 		const LmKvShardView *view = &state->index_views[layer->index_slot];
@@ -343,24 +344,24 @@ struct HyModel : CudaStage<HyModel<G>>
 			Linear(layer->index_k, state->normed, state->index_k, rows, G::kHidden, G::kIndexDim, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->index_weights, state->normed, (uint16_t *)0, state->index_weights, rows, G::kHidden, G::kIndexHeads, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyLayerNormKernel<HY_THREADS><<<rows, HY_THREADS, 0, stream>>>(state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kIndexNormEpsilon);
+		LM_LAUNCH((HyLayerNormKernel<HY_THREADS>), rows, HY_THREADS, 0, stream, state->index_k, layer->index_k_norm, layer->index_k_bias, G::kIndexDim, G::kIndexNormEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,G::kIndexHeads), HY_THREADS, 0, stream,
 			state->index_q, step->positions, G::kIndexHeads, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->index_k, step->positions, 1u, G::kIndexDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kIndexDim - G::kRope);
-		HyScaleRowsKernel<<<Blocks((uint64_t)rows * G::kIndexHeads), HY_THREADS, 0, stream>>>(state->index_weights, (uint64_t)rows * G::kIndexHeads,
+		LM_LAUNCH((HyScaleRowsKernel), Blocks((uint64_t)rows * G::kIndexHeads), HY_THREADS, 0, stream, state->index_weights, (uint64_t)rows * G::kIndexHeads,
 			(float)(1.0 / sqrt((double)G::kIndexHeads) / sqrt((double)G::kIndexDim)));
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::IndexKv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->index_k, step->sequence_of_row,
 			step->positions, rows, G::kIndexDim);
-		HyIndexScoreKernel<typename S::IndexKv,G::kIndexHeads,G::kIndexDim><<<dim3((state->local_capacity + HY_THREADS - 1u) / HY_THREADS, rows), HY_THREADS, 0, stream>>>(*view,
+		LM_LAUNCH((HyIndexScoreKernel<typename S::IndexKv,G::kIndexHeads,G::kIndexDim>), dim3((state->local_capacity + HY_THREADS - 1u) / HY_THREADS, rows), HY_THREADS, 0, stream, *view,
 			state->index_q, state->index_weights, step->sequence_of_row, step->context_length, step->positions, state->index_scores,
 			state->local_capacity, G::kIndexTopk);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmTopkExactLaunch<HY_THREADS>(state->index_scores, rows, state->local_capacity, G::kIndexTopk, LM_TOPK_EXACT_CHUNK,
 				LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->topk_entries,
-				state->index_local_selected, stream) != cudaSuccess ||
+				state->index_local_selected, stream) != SPARK_GPU_SUCCESS ||
 			LmIndexShardCandidatePackLaunch<HY_THREADS>(view->shard, state->index_scores, state->local_capacity, state->index_local_selected,
-				G::kIndexTopk, rows, state->index_candidates, stream) != cudaSuccess )
+				G::kIndexTopk, rows, state->index_candidates, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, S::kCandidateSplit * rows,
 			G::kIndexTopk / S::kCandidateSplit * (uint32_t)(sizeof(uint2) / sizeof(uint16_t)), state->index_candidates, state->index_gathered);
@@ -370,10 +371,10 @@ struct HyModel : CudaStage<HyModel<G>>
 		{
 			const uint32_t count = rows - first < HY_SELECT_CHUNK ? rows - first : HY_SELECT_CHUNK;
 			if ( LmIndexShardCandidateScatterLaunch<HY_THREADS>(state->index_gathered + (uint64_t)first * G::kIndexTopk, (uint64_t)rows * G::kIndexTopk,
-					state->tp_degree, G::kIndexTopk, count, state->context_capacity, state->index_full_scores, stream) != cudaSuccess ||
+					state->tp_degree, G::kIndexTopk, count, state->context_capacity, state->index_full_scores, stream) != SPARK_GPU_SUCCESS ||
 				LmTopkExactLaunch<HY_THREADS>(state->index_full_scores, count, state->context_capacity, G::kIndexTopk, LM_TOPK_EXACT_CHUNK,
 					LM_TOPK_EXACT_CHUNKED_ROWS, state->index_topk_values, state->index_topk_positions, state->topk_entries,
-					state->selected + (uint64_t)first * G::kIndexTopk, stream) != cudaSuccess )
+					state->selected + (uint64_t)first * G::kIndexTopk, stream) != SPARK_GPU_SUCCESS )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
 		return CudaStageLaunched();
@@ -383,7 +384,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	{
 		const HyLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, degree = state->tp_degree;
 		const uint64_t query_stride = (uint64_t)rows * S::kRankHeads * S::kSlot;
 		const uint64_t record_unit = G::kHidden * sizeof(uint16_t) / sizeof(float);
@@ -396,7 +397,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			Linear(layer->kv_a, state->normed, state->kv, rows, G::kHidden, S::kSlot, step, stream) != LM_LAUNCH_OK ||
 			Dense16(layer->gate, state->normed, state->gate, (float *)0, rows, G::kHidden, S::kRankHeads * G::kValueDim, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		HyRmsNormKernel<HY_THREADS,G::kQLora><<<rows, HY_THREADS, 0, stream>>>(state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kQLora>), rows, HY_THREADS, 0, stream, state->q_resid, layer->q_norm, state->q_resid, G::kQLora, G::kQLora,
 			G::kEpsilon);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->q_b, state->q_resid, state->q, rows, G::kQLora, S::kRankHeads * S::kQkDim, step, stream) != LM_LAUNCH_OK )
@@ -405,9 +406,9 @@ struct HyModel : CudaStage<HyModel<G>>
 			HY_THREADS, 0, stream, state->q, layer->uk, state->q_latent, S::kRankHeads, rows);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,S::kRankHeads), HY_THREADS, 0, stream,
 			state->q, step->positions, S::kRankHeads, S::kQkDim, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kNope);
-		HyQueryPackKernel<<<dim3(rows, S::kRankHeads), HY_THREADS, 0, stream>>>(state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
+		LM_LAUNCH((HyQueryPackKernel), dim3(rows, S::kRankHeads), HY_THREADS, 0, stream, state->q_latent, state->q, state->query, S::kRankHeads, G::kLatent,
 			G::kNope, G::kRope);
-		HyRmsNormKernel<HY_THREADS,G::kLatent><<<rows, HY_THREADS, 0, stream>>>(state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kLatent>), rows, HY_THREADS, 0, stream, state->kv, layer->kv_norm, state->kv, S::kSlot, S::kSlot, G::kEpsilon);
 		LM_LAUNCH((LmRopePerHeadKernel<HY_THREADS,LM_ROPE_INTERLEAVED,LM_ROPE_ROUNDED_TERMS>), dim3(rows,1u), HY_THREADS, 0, stream,
 			state->kv, step->positions, 1u, S::kSlot, G::kRope, G::kRopeTheta, (const float *)0, 1.0f, G::kLatent);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,HY_THREADS>), rows, HY_THREADS, 0, stream, *view, state->kv, step->sequence_of_row,
@@ -425,18 +426,18 @@ struct HyModel : CudaStage<HyModel<G>>
 			return status;
 		if ( LmLatentShardAttendLaunch<typename S::Kv,LmKvShardView,G::kLatent,G::kRope>(*view, state->gathered, query_stride, S::kRankHeads,
 				step->sequence_of_row, step->context_length, step->positions, state->selected, G::kIndexTopk, G::kIndexTopk,
-				(float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, rows, stream) != cudaSuccess )
+				(float)(1.0 / sqrt((double)S::kQkDim)), state->send, partial_stride, rows, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_TO_ALL, (uint32_t)(partial_stride / record_unit), 0u, state->send,
 			state->received);
 		if ( status != SPARK_STATUS_OK )
 			return status;
 		if ( LmLatentShardMergeLaunch<G::kLatent>(state->received, partial_stride, degree, S::kRankHeads, state->latent, rows, stream,
-				layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != cudaSuccess )
+				layer->sinks + (uint64_t)state->tp_rank * S::kRankHeads) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		LM_LAUNCH((LmPerHeadProjectSplitKernel<HY_THREADS,G::kLatent,G::kValueDim>), dim3(rows,S::kRankHeads,G::kValueDim / LM_PER_HEAD_SPLIT_OUTPUTS),
 			HY_THREADS, 0, stream, state->latent, layer->uv, state->value, S::kRankHeads, rows);
-		HySigmoidGateKernel<<<Blocks((uint64_t)rows * S::kRankHeads * G::kValueDim), HY_THREADS, 0, stream>>>(state->value, state->gate,
+		LM_LAUNCH((HySigmoidGateKernel), Blocks((uint64_t)rows * S::kRankHeads * G::kValueDim), HY_THREADS, 0, stream, state->value, state->gate,
 			(uint64_t)rows * S::kRankHeads * G::kValueDim);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->out, state->value, state->partial, rows, S::kRankHeads * G::kValueDim, G::kHidden, step, stream) != LM_LAUNCH_OK )
@@ -448,7 +449,7 @@ struct HyModel : CudaStage<HyModel<G>>
 	{
 		const HyLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows;
 		if ( Linear(layer->ffn_gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * state->ffn_rows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
@@ -463,21 +464,21 @@ struct HyModel : CudaStage<HyModel<G>>
 	{
 		const HyLayer *layer = &entry;
 		const SparkStageRunnerStep *step = frame.step;
-		cudaStream_t stream = frame.stream;
+		SparkGpuStream stream = frame.stream;
 		const uint32_t rows = step->rows, routes = rows * G::kTopK, exact = step->commit == 0u ? 1u : 0u;
 		const uint16_t *normed = state->normed;
 		LmLocalExpertRoutes expert_routes;
 		if ( Dense16(layer->router, normed, (uint16_t *)0, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK ||
 			LmTopkGroupLimitedLaunch<HY_THREADS,G::kExperts,1u,1u,G::kTopK>(rows, state->router_logits, layer->router_bias, state->route_expert,
-				state->route_weight, G::kRouteScale, step->route_fault, stream) != cudaSuccess )
+				state->route_weight, G::kRouteScale, step->route_fault, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmRouteLocalKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_expert, state->route_weight, state->route_global,
+		LM_LAUNCH((LmRouteLocalKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_expert, state->route_weight, state->route_global,
 			routes, state->expert_first, G::kLocalExperts);
 		if ( LmRouteBuild<HY_THREADS,G::kLocalExperts + 1u>(state->route_expert, rows, routes, G::kTopK, state->group_row_offset,
 			state->route_packed_row, state->route_source_token, G::kMoeInter, G::kHidden, LM_MOE_GEMM_TILE_N, state->tile_prefix_up,
 			state->tile_prefix_down, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmPackedRouteWeightKernel<<<(routes + 255u) / 256u, 256u, 0, stream>>>(state->route_packed_row, state->route_weight, state->packed_weight, routes);
+		LM_LAUNCH((LmPackedRouteWeightKernel), (routes + 255u) / 256u, 256u, 0, stream, state->route_packed_row, state->route_weight, state->packed_weight, routes);
 		expert_routes.group_row_offset = state->group_row_offset;
 		expert_routes.route_source_token = state->route_source_token;
 		expert_routes.tile_prefix_up = state->tile_prefix_up;
@@ -493,7 +494,7 @@ struct HyModel : CudaStage<HyModel<G>>
 			LmLocalExpertsUp<LmMxfp8>(expert_routes, layer->moe_w3.weight, Scales(layer->moe_w3.scale, G::kLocalExperts, G::kMoeInter, G::kHidden),
 				normed, state->expert_up, G::kHidden, G::kMoeInter, stream, exact) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmSwigluPackedKernel<<<dim3(Blocks(G::kMoeInter), routes), HY_THREADS, 0, stream>>>(state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), HY_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter, G::kSwigluLimit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			LmLocalExpertsDown<LmMxfp8>(expert_routes, layer->moe_w2.weight, Scales(layer->moe_w2.scale, G::kLocalExperts, G::kHidden, G::kMoeInter),
@@ -505,14 +506,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Linear(layer->shared_down, state->shared_act, state->shared_out, rows, state->shared_rows, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LmMoeLocalFinalizeKernel<<<dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream>>>(state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), HY_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->shared_out, state->partial, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
-		LmHcExpandFlatKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(frame.step->hidden_bf16,
+		LM_LAUNCH((LmHcExpandFlatKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, frame.step->hidden_bf16,
 			state->streams, G::kHidden);
 		return SPARK_STATUS_OK;
 	}
@@ -524,14 +525,14 @@ struct HyModel : CudaStage<HyModel<G>>
 		LmHcMix<HY_THREADS,G::kStreams,2u * G::kStreams,G::kHidden>(state->streams, ffn ? layer.mlp_hc_fn : layer.attn_hc_fn,
 			ffn ? layer.mlp_hc_scale : layer.attn_hc_scale, ffn ? layer.mlp_hc_base : layer.attn_hc_base, state->hc_partial, state->hc_post, state->mixed, rows,
 			G::kEpsilon, G::kHcEpsilon, G::kHcMagnitude, frame.stream);
-		HyRmsNormKernel<HY_THREADS,G::kHidden><<<rows, HY_THREADS, 0, frame.stream>>>(state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
+		LM_LAUNCH((HyRmsNormKernel<HY_THREADS,G::kHidden>), rows, HY_THREADS, 0, frame.stream, state->mixed, ffn ? layer.post_norm : layer.input_norm, state->normed,
 			G::kHidden, G::kHidden, G::kEpsilon);
 		return CudaStageLaunched();
 	}
 
 	static SparkStatus HyperPost(State *state, const Frame &frame)
 	{
-		LmHcPostKernel<G::kStreams><<<dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream>>>(state->streams, state->hc_post,
+		LM_LAUNCH((LmHcPostKernel<G::kStreams>), dim3(Blocks(S::kResidual), frame.step->rows), HY_THREADS, 0, frame.stream, state->streams, state->hc_post,
 			state->partial, G::kHidden);
 		return SPARK_STATUS_OK;
 	}

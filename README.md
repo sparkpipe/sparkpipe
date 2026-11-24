@@ -387,7 +387,9 @@ startup scan reads the shards on eight threads. The node's own KV on disk,
 every lane's snapshot store and every lane's spill backing, shares one
 node-wide quota of 500 GB (`SPARK_KV_NODE_QUOTA_BYTES`) kept in a ledger file
 in the user's home, `~/.sparkpipe-kv-ledger`. No lane has a maximum of its
-own. A write that would take the node past the quota evicts the node's oldest
+own. A lane whose weightd and ranks start with `SPARK_KV_NODE_ROOT` set to a
+folder keeps its own ledger there and looks at no KV outside it: a test lane
+beside a serving one uses this so that it never cuts the serving lane's files. A write that would take the node past the quota evicts the node's oldest
 snapshot file first, whichever lane holds it: the lane's own, another running
 lane's (asked through the ledger, freed within a second), or a stopped lane's
 (deleted directly). A write is refused only when nothing evictable is left,
@@ -578,13 +580,21 @@ objects with residency transitions. Kernels launch through the same layer:
 a backend loads a kernel library and launches kernels by name with
 buffer-range bindings, which the layer checks against the kernel's limits
 and keeps alive until the work that reads them completes
-([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)).
+([`docs/METAL_BACKEND.md`](docs/METAL_BACKEND.md)). Processes share device
+memory through the same layer: exported by file descriptor, mapped into each
+process's own address range, with no CPU view
+([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)). A queue
+can record a step as a program that runs again with one call, with per-step
+values patched into marked places
+([`docs/DEVICE_PROGRAMS.md`](docs/DEVICE_PROGRAMS.md)).
 
 **Topology model.** Topology is described as ranks inside islands joined by
 link classes: shared memory, peer memory, fabric RDMA and TCP. Collectives
 decompose hierarchically from that link matrix. The backends are:
 
 - CUDA (production);
+- nvrm (NVIDIA GPUs through the open kernel module, with no vendor user-space
+  library; [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md));
 - host (CI oracle);
 - Metal (Mac Studio);
 - ROCm.
@@ -629,6 +639,14 @@ missing, duplicated or misrouted rails.
 Capacity grows by adding nodes, storage and generated deployment plans,
 without changing the API, package identities, scheduler semantics or
 evidence rules.
+
+**Rented nodes.** A rented node boots SparkPipe's own minimal image. It
+contains Ubuntu with Canonical's kernel, NVIDIA's open GPU kernel module and
+its firmware, the in-tree NIC drivers and rdma-core, the node baseline, a
+release root and the node agent. It carries no NVIDIA user-space software. A
+dependency audit gates every hosted release root and image
+([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md),
+[`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)).
 
 **Hub.** One host outside the Sparks publishes release roots, collects node
 heartbeats and serves the model API. In the reference fleet it is an x86

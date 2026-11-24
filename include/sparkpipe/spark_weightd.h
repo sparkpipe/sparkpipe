@@ -15,7 +15,7 @@ extern "C" {
 
 #define SPARK_WEIGHTD_CLIENT_TIMEOUT_DEFAULT_NS UINT64_C(10000000000)
 
-#define SPARK_WEIGHTD_IPC_ABI_VERSION 16u
+#define SPARK_WEIGHTD_IPC_ABI_VERSION 17u
 #define SPARK_WEIGHTD_IPC_MAGIC UINT32_C(0x57444953)
 
 #define SPARK_WEIGHTD_ID_BYTES 64u
@@ -95,6 +95,8 @@ extern "C" {
 #define SPARK_WEIGHTD_IPC_KIND_RESIDENCY_RESULT 58u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP 59u
 #define SPARK_WEIGHTD_IPC_KIND_KV_POOL_DROP_RESULT 60u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD 61u
+#define SPARK_WEIGHTD_IPC_KIND_HOLD_RESULT 62u
 
 #include "sparkpipe/spark_weightd_mesh_lanes.h"
 #define SPARK_WEIGHTD_MESH_STATUS_LANES 16u
@@ -116,7 +118,8 @@ static inline uint32_t SparkWeightdMeshSecondRailPeers(uint32_t local_rank, uint
             peers |= 1u << (rank < local_rank ? rank : rank - 1u);
     return peers;
 }
-#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 2u
+#define SPARK_WEIGHTD_MESH_SLOTS_PER_RANK 4u
+#define SPARK_WEIGHTD_MESH_PIPELINE_DEPTH (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)
 #define SPARK_WEIGHTD_MESH_SLOTS_PER_BAND \
     (SPARK_WEIGHTD_MESH_RANKS_PER_BAND * SPARK_WEIGHTD_MESH_SLOTS_PER_RANK)
 #define SPARK_WEIGHTD_MESH_BANDS (2u * SPARK_WEIGHTD_MESH_MAX_LANES)
@@ -206,7 +209,7 @@ typedef struct SparkWeightdMeshWaitRequest
     ((half) == SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER ? (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u : \
      (uint64_t)SPARK_WEIGHTD_MESH_SLOT_BYTES - 8u)
 #define SPARK_WEIGHTD_MESH_SEQUENCE_HALF(sequence) \
-    (SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER + (uint32_t)((((sequence) - 1u) >> 1u) & 1u))
+    (SPARK_WEIGHTD_MESH_ROUTE_HALF_LOWER + (uint32_t)((((sequence) - 1u) / SPARK_WEIGHTD_MESH_SLOTS_PER_RANK) & 1u))
 #define SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET \
     (SPARK_WEIGHTD_MESH_WAIT_OFFSET + \
      (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_WAIT_ENTRY_BYTES)
@@ -352,6 +355,8 @@ _Static_assert(SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET - SPARK_WEIGHTD_MESH_DOORB
     (uint64_t)SPARK_WEIGHTD_MESH_DOORBELL_RANK_CELLS * SPARK_WEIGHTD_MESH_DOORBELL_ENTRY_BYTES <=
     SPARK_WEIGHTD_MESH_DOORBELL_BYTES && SPARK_WEIGHTD_MESH_DOORBELL_ALT_OFFSET % 8u == 0u,
     "alternate doorbell cells fit the doorbell page");
+_Static_assert((SPARK_WEIGHTD_MESH_SLOTS_PER_RANK & (SPARK_WEIGHTD_MESH_SLOTS_PER_RANK - 1u)) == 0u &&
+    SPARK_WEIGHTD_MESH_SLOTS_PER_RANK >= 4u,"a rank's slot ring is a power of two deep enough for three pipelined pieces in flight");
 _Static_assert(SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES % 16u == 0u &&
     2u * SPARK_WEIGHTD_MESH_HALF_PAYLOAD_BYTES <= SPARK_WEIGHTD_MESH_SLOT_BYTES - 16u,
     "half-slot payloads end below both half tails");
@@ -765,6 +770,7 @@ typedef struct SparkWeightdIpcMeshBroadcastResult
 #define SPARK_WEIGHTD_MESH_PEER_QP_SEND_RTS 1u
 #define SPARK_WEIGHTD_MESH_PEER_QP_RECV_RTS 2u
 #define SPARK_WEIGHTD_MESH_PEER_QP_PAIR_LINK 4u
+#define SPARK_WEIGHTD_MESH_PEER_QP_DEGRADED 8u
 #define SPARK_WEIGHTD_MESH_LANE_CONFIGURED 1u
 #define SPARK_WEIGHTD_MESH_LANE_OWNED 2u
 #define SPARK_WEIGHTD_MESH_LANE_QUARANTINED 4u
@@ -1048,6 +1054,32 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
     sizeof(SparkWeightdIpcKvPoolStatus) == 32u && sizeof(SparkWeightdIpcKvPoolStatusResult) == 64u,"kv pool frames are fixed for ABI 14");
 #endif
 
+#define SPARK_WEIGHTD_HELD_PACK_COUNT_MAX 8u
+
+typedef struct SparkWeightdIpcHold
+{
+    SparkWeightdIpcHeader header;
+    SparkWeightdIdentity identity;
+    char pack_path[SPARK_WEIGHTD_PATH_BYTES];
+} SparkWeightdIpcHold;
+
+typedef struct SparkWeightdIpcHoldResult
+{
+    SparkWeightdIpcHeader header;
+    uint64_t held_bytes;
+    uint64_t allocation_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t status;
+    uint32_t first_hold;
+    uint32_t held_count;
+    uint32_t fd_staged;
+} SparkWeightdIpcHoldResult;
+
+#if !defined(__cplusplus)
+_Static_assert(sizeof(SparkWeightdIpcHold) == 1344u && sizeof(SparkWeightdIpcHoldResult) == 72u,"hold frames are fixed for ABI 17");
+#endif
+
 #define SPARK_WEIGHTD_IPC_HEADER_BYTES ((uint32_t)sizeof(SparkWeightdIpcHeader))
 #define SPARK_WEIGHTD_IPC_HELLO_BYTES ((uint32_t)sizeof(SparkWeightdIpcHello))
 #define SPARK_WEIGHTD_IPC_HELLO_ACK_BYTES ((uint32_t)sizeof(SparkWeightdIpcHelloAck))
@@ -1065,6 +1097,8 @@ _Static_assert(sizeof(SparkWeightdIpcKvPoolAttach) == 152u && sizeof(SparkWeight
 #define SPARK_WEIGHTD_IPC_ATTACH_LAZY_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcAttachLazyResult))
 #define SPARK_WEIGHTD_IPC_ENSURE_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsure))
 #define SPARK_WEIGHTD_IPC_ENSURE_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcEnsureResult))
+#define SPARK_WEIGHTD_IPC_HOLD_BYTES ((uint32_t)sizeof(SparkWeightdIpcHold))
+#define SPARK_WEIGHTD_IPC_HOLD_RESULT_BYTES ((uint32_t)sizeof(SparkWeightdIpcHoldResult))
 
 SparkStatus SparkWeightdIdentityPrepare(SparkWeightdIdentity *identity);
 
@@ -1466,6 +1500,24 @@ SparkStatus SparkWeightdClientReclaim(SparkWeightdClient *client,
 SparkStatus SparkWeightdClientAttachLazyShared(SparkWeightdClient *client,
     const SparkWeightdLazyAttachRequest *request,
     SparkWeightdLazyAttachResult *result,
+    uint64_t timeout_nanoseconds);
+
+typedef struct SparkWeightdHoldResult
+{
+    SparkStatus status;
+    uint64_t held_bytes;
+    uint64_t allocation_bytes;
+    uint64_t generation;
+    uint64_t load_ns;
+    uint32_t first_hold;
+    uint32_t held_count;
+    int fd;
+} SparkWeightdHoldResult;
+
+SparkStatus SparkWeightdClientHold(SparkWeightdClient *client,
+    const SparkWeightdIdentity *identity,
+    const char *pack_path,
+    SparkWeightdHoldResult *result,
     uint64_t timeout_nanoseconds);
 
 

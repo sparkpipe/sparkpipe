@@ -86,7 +86,13 @@ and its engram shard whole, so its pack directory holds a zero-range
 `.experts` manifest for the pack and for the shard, and the shard, its digest
 and the engram hash tables under the names the engine opens:
 `engram.spengram`, `engram.spengram.digest`, `engram.spengram.experts` and
-`engram_tables.bin`.
+`engram_tables.bin`. A group of four (`dsv41_flash_tp4`) cannot hold the
+203 GB of engram tables in memory beside its packs, so its engine reads the
+table rows a step needs from `engram.spengram` on disk (direct reads behind
+a row cache) and loads only the shard's scales and small tensors; its pack
+directory holds the pack with a zero-range `.experts` manifest, the shard
+cut for four ranks (`tools/dsv41_flash_engram_shard.py --ranks 4`, which
+writes no manifest for it), its digest and `engram_tables.bin`.
 
 The lane root holds only small real files: binaries, the rendered
 configuration, `lane.sh`, `packs/pack.sha256` (the one digest
@@ -227,6 +233,14 @@ its KV cache, KV snapshots and links, so it refuses, before touching any node,
 while the lane's unit is active, starting or stopping on any rank: stop the
 lane first. Run `lane_config.py audit` before a setup to see what it will
 replace.
+
+A stopped lane keeps its KV pool and its pack's cold arena in each node's
+weightd, so that a restart finds them: 1.6 to 3.2 GiB a node for the
+four-rank DeepSeek V4.1 Flash lane, which the nodes' other lanes cannot use
+meanwhile. The swap controller releases them for the models it knows. For an
+experiment lane, `stage_lane.sh reclaim` after the last `stage_lane.sh stop`
+runs every rank's `lane.sh reclaim` (the pack by its digest, the KV pool by
+its label) and names the hosts that refuse.
 
 ## Changing a lane
 

@@ -1,0 +1,80 @@
+nvcc 13.3.73
+flags -O3 -gencode arch=compute_120a,code=sm_120a -cubin -Xptxas -v -I. -Iinclude -Isrc
+source tests/nvrm/fixture_kernels.cu f8dad75dbe45bfa30d9f8a426471c822d59cdd3c6b503a98db9fba0e2d06e423
+cubin 5a87efc248b96c088d3bba68286cca51a28735eae552ab4ad8fd28467ecf9fd0 160944
+kernel SparkNvrmCallStack short SparkNvrmCallStack registers 48 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0 cumulative 4200
+param SparkNvrmCallStack 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmCallStack 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmConstantTable short SparkNvrmConstantTable registers 10 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmConstantTable 0 u64 align 8 bytes 8 offset 0
+kernel SparkNvrmDeepFrame short SparkNvrmDeepFrame registers 40 barriers 0 stack 4400 spill_stores 0 spill_loads 0 smem 0 cumulative 4400
+param SparkNvrmDeepFrame 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmDeepFrame 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmFirstLight short SparkNvrmFirstLight registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmFirstLight 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmFirstLight 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmGlobalSwap short SparkNvrmGlobalSwap registers 12 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmGlobalSwap 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmGlobalSwap 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmHugeParameter short SparkNvrmHugeParameter registers 12 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmHugeParameter 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmHugeParameter 1 b8 align 4 bytes 32756 offset 8
+kernel SparkNvrmLargeParameter short SparkNvrmLargeParameter registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmLargeParameter 0 b8 align 4 bytes 4096 offset 0
+param SparkNvrmLargeParameter 1 u64 align 8 bytes 8 offset 4096
+kernel SparkNvrmLocalStack short SparkNvrmLocalStack registers 40 barriers 0 stack 256 spill_stores 0 spill_loads 0 smem 0 cumulative 256
+param SparkNvrmLocalStack 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmLocalStack 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmNoParameters short SparkNvrmNoParameters registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+kernel SparkNvrmParameterMix short SparkNvrmParameterMix registers 11 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmParameterMix 0 u8 align 1 bytes 1 offset 0
+param SparkNvrmParameterMix 1 u64 align 8 bytes 8 offset 8
+param SparkNvrmParameterMix 2 u16 align 2 bytes 2 offset 16
+param SparkNvrmParameterMix 3 b8 align 8 bytes 16 offset 24
+param SparkNvrmParameterMix 4 f32 align 4 bytes 4 offset 40
+param SparkNvrmParameterMix 5 u8 align 1 bytes 1 offset 44
+param SparkNvrmParameterMix 6 u64 align 8 bytes 8 offset 48
+bound SparkNvrmParameterMix maxntid 128
+kernel SparkNvrmProbeDimensions short SparkNvrmProbeDimensions registers 18 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmProbeDimensions 0 u64 align 8 bytes 8 offset 0
+kernel SparkNvrmStaticShared short SparkNvrmStaticShared registers 22 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 4000
+param SparkNvrmStaticShared 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmStaticShared 1 u32 align 4 bytes 4 offset 8
+kernel SparkNvrmStreamCopy short SparkNvrmStreamCopy registers 14 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmStreamCopy 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmStreamCopy 1 u64 align 8 bytes 8 offset 8
+param SparkNvrmStreamCopy 2 u64 align 8 bytes 8 offset 16
+bound SparkNvrmStreamCopy maxntid 256
+kernel SparkNvrmStreamFill short SparkNvrmStreamFill registers 14 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmStreamFill 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmStreamFill 1 u64 align 8 bytes 8 offset 8
+param SparkNvrmStreamFill 2 u32 align 4 bytes 4 offset 16
+bound SparkNvrmStreamFill maxntid 256
+kernel SparkNvrmStreamRead short SparkNvrmStreamRead registers 18 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param SparkNvrmStreamRead 0 u64 align 8 bytes 8 offset 0
+param SparkNvrmStreamRead 1 u64 align 8 bytes 8 offset 8
+param SparkNvrmStreamRead 2 u64 align 8 bytes 8 offset 16
+bound SparkNvrmStreamRead maxntid 256
+kernel _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf short _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf registers 64 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 0
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 0 u64 align 8 bytes 8 offset 0
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 1 u64 align 8 bytes 8 offset 8
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 2 u64 align 8 bytes 8 offset 16
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 3 u32 align 4 bytes 4 offset 24
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 4 u32 align 4 bytes 4 offset 28
+param _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf 5 f32 align 4 bytes 4 offset 32
+bound _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf maxntid 256
+bound _Z19LmBf16RmsNormKernelILj256EEvPKtS1_Ptjjf minnctapersm 1
+kernel _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf short LmFusedResidualRmsNormKernel_e8caf7e7161f registers 38 barriers 1 stack 0 spill_stores 0 spill_loads 0 smem 0
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 0 u64 align 8 bytes 8 offset 0
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 1 u64 align 8 bytes 8 offset 8
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 2 u64 align 8 bytes 8 offset 16
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 3 u64 align 8 bytes 8 offset 24
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 4 u64 align 8 bytes 8 offset 32
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 5 u32 align 4 bytes 4 offset 40
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 6 u32 align 4 bytes 4 offset 44
+param _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf 7 f32 align 4 bytes 4 offset 48
+bound _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf maxntid 256
+bound _Z28LmFusedResidualRmsNormKernelILj256EtLb0EEvPKtS1_PKT0_PtS5_jjf minnctapersm 1
+kernel _ZN29spark_nvrm_fixture_long_names21SparkNvrmLongTemplateINS_21SparkNvrmFixtureValueENS_24SparkNvrmFixtureTagAlphaENS_24SparkNvrmFixtureTagBravoEEEvPjT_ short SparkNvrmLongTemplate_124aba8f3d91 registers 8 barriers 0 stack 0 spill_stores 0 spill_loads 0 smem 0
+param _ZN29spark_nvrm_fixture_long_names21SparkNvrmLongTemplateINS_21SparkNvrmFixtureValueENS_24SparkNvrmFixtureTagAlphaENS_24SparkNvrmFixtureTagBravoEEEvPjT_ 0 u64 align 8 bytes 8 offset 0
+param _ZN29spark_nvrm_fixture_long_names21SparkNvrmLongTemplateINS_21SparkNvrmFixtureValueENS_24SparkNvrmFixtureTagAlphaENS_24SparkNvrmFixtureTagBravoEEEvPjT_ 1 b8 align 4 bytes 4 offset 8

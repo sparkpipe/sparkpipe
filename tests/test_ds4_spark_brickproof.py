@@ -488,7 +488,7 @@ ip() {{ echo "IP $*"; if [ "$1 $2" = "-4 -o" ]; then printf '%s' {shlex.quote(ad
 ethtool() {{ echo "ETHTOOL $*"; case "$*" in rail0) printf '\\tAuto-negotiation: {autoneg}\\n';; "--show-fec rail0") echo "Supported/Configured FEC encodings: Auto";; esac; }}
 sysctl() {{ echo "SYSCTL $*"; }}
 rdma() {{ echo "link $4 lqpn 1 type GSI state RTS comm [ib_core]"; printf '%s' {shlex.quote(queue_pairs)}; }}
-mlnx_qos() {{ echo "MLNX_QOS $*" >&2; echo "Priority trust state: dscp"; }}
+sparkpipe-dscp-trust() {{ echo "DSCP_TRUST $*" >&2; echo "$2 trusts DSCP"; }}
 dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:on 7:off"; echo "prio-buffer 0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1"; }}
 """
         harness = (f"export DS4_NODE_RANK_PATH={directory}/rank DS4_SYSFS_NET={sysfs} DS4_RAIL2_DEVICE=rail0 DS4_RAIL2_IDLE_DEVICE=idle0\n"
@@ -507,9 +507,9 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
             self.assertNotIn("IP address del 10.10.201.5/24",out)
             self.assertIn("ETHTOOL -A rail0 rx off tx off",out)
             self.assertNotIn("autoneg off",out)
-            qos = [line for line in result.stderr.splitlines() if line.startswith("MLNX_QOS -i rail0 --")]
-            self.assertEqual(qos,["MLNX_QOS -i rail0 --trust dscp","MLNX_QOS -i rail0 --pfc 0,0,0,1,0,0,1,0",
-                                  "MLNX_QOS -i rail0 --prio2buffer 1,1,1,1,1,1,1,1","MLNX_QOS -i rail0 --buffer_size 0,459360,0,0,0,0,0,0"])
+            qos = [line for line in result.stderr.splitlines() if line.startswith(("DSCP_TRUST ","DCB pfc set","DCB buffer set"))]
+            self.assertEqual(qos,["DSCP_TRUST set rail0","DCB pfc set dev rail0 prio-pfc all:off 3:on 6:on",
+                                  "DCB buffer set dev rail0 prio-buffer all:1 buffer-size all:0 1:459360","DSCP_TRUST check rail0"])
             self.assertTrue(out.endswith("rail2_fabric rank=5 device=rail0 address=10.10.201.5/24 mtu=9000 idle=idle0 forced_link=no\n"),out)
 
     def test_rail2_apply_keeps_addresses_that_live_queue_pairs_hold(self) -> None:
@@ -537,7 +537,7 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
             (sysfs / "rail0").mkdir(parents=True)
             (Path(directory) / "rank").write_text("6\n")
             harness = (f"set -euo pipefail\nexport DS4_NODE_RANK_PATH={directory}/rank DS4_SYSFS_NET={sysfs} DS4_RAIL2_DEVICE=rail0 DS4_RAIL2_IDLE_DEVICE=idle0\n"
-                       + patched + '\nip() { :; }\nethtool() { :; }\nsysctl() { :; }\nmlnx_qos() { echo "Priority trust state: dscp"; }\n'
+                       + patched + '\nip() { :; }\nethtool() { :; }\nsysctl() { :; }\nsparkpipe-dscp-trust() { echo "$2 trusts DSCP"; }\n'
                        + 'dcb() { echo "prio-pfc 3:on 6:on"; echo "prio-buffer 0:0 1:0 2:0 3:1 4:0 5:0 6:0 7:0"; }\napply_rail2\n')
             result = subprocess.run(["bash","-c",harness],capture_output=True,text=True)
             self.assertEqual(result.returncode,4,result.stdout + result.stderr)
@@ -546,7 +546,7 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
     def test_rail2_audit_reports_each_drift(self) -> None:
         healthy = {
             "ip -4 -o addr show dev enP2p1s0f0np0 scope global":"7: enP2p1s0f0np0    inet 10.10.201.6/24 brd 10.10.201.255 scope global enP2p1s0f0np0",
-            "mlnx_qos -i enP2p1s0f0np0":"Priority trust state: dscp",
+            "/usr/local/sbin/sparkpipe-dscp-trust check enP2p1s0f0np0":"enP2p1s0f0np0 trusts DSCP",
             "dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:on 7:off",
             "dcb buffer show dev enP2p1s0f0np0 prio-buffer":"prio-buffer 0:1 1:1 2:1 3:1 4:1 5:1 6:1 7:1",
         }
@@ -554,7 +554,7 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
             ({},"down",[]),
             ({"ip -4 -o addr show dev enP2p1s0f0np0 scope global":"7: enP2p1s0f0np0    inet 10.10.201.6/31 scope global enP2p1s0f0np0"},"down",["rail2-address:10.10.201.6/31"]),
             ({},"up",["rail2-idle-function:up"]),
-            ({"mlnx_qos -i enP2p1s0f0np0":"Priority trust state: pcp"},"down",["rail2-trust"]),
+            ({"/usr/local/sbin/sparkpipe-dscp-trust check enP2p1s0f0np0":""},"down",["rail2-trust"]),
             ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:off 6:on"},"down",["rail2-pfc"]),
             ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:on 6:off"},"down",["rail2-pfc"]),
             ({"dcb pfc show dev enP2p1s0f0np0 prio-pfc":"prio-pfc 3:on 4:on 6:on"},"down",["rail2-pfc"]),
@@ -574,7 +574,8 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
         self.assertEqual(MODULE.RAIL2_IDLE_INTERFACE,"enp1s0f0np0")
         self.assertEqual(MODULE.RAIL2_SPEED_MBIT,"100000")
         source = SCRIPT.read_text()
-        self.assertIn('"nvidia-smi","--query-gpu=name,temperature.gpu"',source)
+        self.assertNotIn("nvidia-smi",source)
+        self.assertIn('NVIDIA_PROC = Path("/proc/driver/nvidia")',source)
         self.assertIn('["tailscale","status","--json"]',source)
         self.assertIn('layout-root-not-writable:',source)
 
@@ -588,6 +589,19 @@ dcb() {{ echo "DCB $*" >&2; echo "prio-pfc 0:off 1:off 2:off 3:on 4:off 5:off 6:
             link = wants / unit.name
             link.symlink_to(unit)
             self.assertEqual(MODULE.persistent_unit_links(unit.name,root),[link])
+
+    def test_receipts_written_in_the_same_second_stay_separate(self) -> None:
+        moment = MODULE.datetime.datetime(2026,11,22,10,35,50,tzinfo=MODULE.datetime.timezone.utc)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(MODULE.tempfile,"tempdir",directory), mock.patch.object(MODULE.datetime,"datetime",wraps=MODULE.datetime.datetime) as clock:
+            clock.now.return_value = moment
+            first = MODULE.write_receipt("apply",[{"node":"spark23","failures":[]}])
+            second = MODULE.write_receipt("apply",[{"node":"spark28","failures":[]}])
+            self.assertNotEqual(first,second)
+            self.assertEqual(first.parent,Path(directory))
+            self.assertTrue(first.name.startswith("ds4_spark_brickproof_apply_20261122T103550Z_"))
+            self.assertEqual(json.loads(first.read_text())["nodes"][0]["node"],"spark23")
+            self.assertEqual(json.loads(second.read_text())["nodes"][0]["node"],"spark28")
+            self.assertEqual(first.stat().st_mode & 0o777,0o644)
 
 
 if __name__ == "__main__":

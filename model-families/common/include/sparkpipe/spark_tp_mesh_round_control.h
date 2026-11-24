@@ -1,8 +1,9 @@
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
-#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 40u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORDS 46u
 #define SPARK_TP_MESH_ROUND_CONTROL_BYTES \
     (SPARK_TP_MESH_ROUND_CONTROL_WORDS * sizeof(uint64_t))
 
@@ -33,6 +34,17 @@
 #define SPARK_TP_MESH_ROUND_CONTROL_PEERS 16u
 #define SPARK_TP_MESH_ROUND_CONTROL_WORD_ROUND_SEQ_PRIOR \
     (SPARK_TP_MESH_ROUND_CONTROL_WORD_PEER_ARRIVAL_NS + SPARK_TP_MESH_ROUND_CONTROL_PEERS)
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE 40u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PEER 41u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_WANT 42u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_SEEN 43u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_HITS 44u
+#define SPARK_TP_MESH_ROUND_CONTROL_WORD_GUARD_POISONS 45u
+#define SPARK_TP_MESH_ROUND_CONTROL_RECORD_WORDS 6u
+
+#define SPARK_TP_MESH_FAULT_NONE 0u
+#define SPARK_TP_MESH_FAULT_SHIP_ACK 1u
+#define SPARK_TP_MESH_FAULT_PEER_WAIT 2u
 
 typedef struct SparkTpMeshRoundControl
 {
@@ -61,7 +73,36 @@ typedef struct SparkTpMeshRoundControl
     uint64_t first_arrival_ns;
     uint64_t peer_arrival_ns[SPARK_TP_MESH_ROUND_CONTROL_PEERS];
     uint64_t round_seq_prior;
+    uint64_t fault_phase;
+    uint64_t fault_peer;
+    uint64_t fault_want;
+    uint64_t fault_seen;
+    uint64_t fault_hits;
+    uint64_t guard_poisons;
 } SparkTpMeshRoundControl;
+
+static inline uint32_t SparkTpMeshRecordPrint(FILE *out, uint32_t rank, const volatile uint64_t *words)
+{
+    const uint64_t phase = words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PHASE];
+    const uint64_t hits = words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_HITS];
+    const uint64_t poisons = words[SPARK_TP_MESH_ROUND_CONTROL_WORD_GUARD_POISONS];
+    if ( phase == SPARK_TP_MESH_FAULT_NONE && hits == 0u && poisons == 0u )
+        return 0u;
+    if ( phase == SPARK_TP_MESH_FAULT_SHIP_ACK )
+        fprintf(out,"MESH-ROUNDLOOP-TIMEOUT rank=%u phase=ship-ack want=%llu got=%llu\n",rank,
+            (unsigned long long)words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_WANT],(unsigned long long)words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_SEEN]);
+    else if ( phase == SPARK_TP_MESH_FAULT_PEER_WAIT )
+        fprintf(out,"MESH-ROUNDLOOP-TIMEOUT rank=%u phase=peer-wait peer=%u want=%u got=%u\n",rank,
+            (uint32_t)words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_PEER],(uint32_t)words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_WANT],
+            (uint32_t)words[SPARK_TP_MESH_ROUND_CONTROL_WORD_FAULT_SEEN]);
+    if ( hits > 1u )
+        fprintf(out,"MESH-ROUNDLOOP-TIMEOUT rank=%u hits=%llu\n",rank,(unsigned long long)hits);
+    if ( poisons != 0u )
+        fprintf(out,"MESH-GUARD-POISON rank=%u\n",rank);
+    if ( poisons > 1u )
+        fprintf(out,"MESH-GUARD-POISON rank=%u hits=%llu\n",rank,(unsigned long long)poisons);
+    return 1u;
+}
 
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_GO 0u
 #define SPARK_TP_MESH_ROUND_LOOP_DECISION_CANCEL 1u
@@ -141,6 +182,13 @@ static inline uint64_t SparkTpMeshPipelineEarly(uint64_t round,uint64_t rounds)
 static inline uint64_t SparkTpMeshPipelineLate(uint64_t round,uint64_t rounds)
 {
     return rounds >= 3u && round + 2u <= rounds - 2u ? round + 2u : round + 2u == rounds ? rounds - 1u : SPARK_TP_MESH_PIPELINE_NONE;
+}
+
+#define SPARK_TP_MESH_PIPELINE_MARKER_BYTES 8u
+
+static inline uint64_t SparkTpMeshPipelineTaken(uint64_t launch,uint64_t depth)
+{
+    return launch >= depth ? launch - depth : SPARK_TP_MESH_PIPELINE_NONE;
 }
 
 #define SPARK_TP_MESH_RSAG_MIN_ELEMENTS 49152u

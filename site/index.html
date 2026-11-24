@@ -81,7 +81,7 @@ h1 { max-width: 15ch; }
       <table class="day">
         <thead><tr><th scope="col">Moment</th><th scope="col">Per-token API</th><th scope="col" class="you">Your fleet, our engine</th></tr></thead>
         <tbody>
-          <tr><td>09:00 first turn</td><td data-l="Per-token API"><span>Cold: the whole context billed and prefilled again</span></td><td class="you" data-l="Your fleet, our engine"><span>Warm: your Functions refreshed it overnight</span></td></tr>
+          <tr><td>09:00 first turn</td><td data-l="Per-token API"><span>Cold: the whole context billed and prefilled again</span></td><td class="you" data-l="Your fleet, our engine"><span>Warm: your sessions were kept overnight</span></td></tr>
           <tr><td>10:45 after a meeting</td><td data-l="Per-token API"><span>Cache expired after 5 minutes: billed again</span></td><td class="you" data-l="Your fleet, our engine"><span>Warm: first token in 4.7–5.1 s at 137,700 tokens</span></td></tr>
           <tr><td>13:30 after lunch</td><td data-l="Per-token API"><span>Cold again</span></td><td class="you" data-l="Your fleet, our engine"><span>Still warm</span></td></tr>
           <tr><td>14:10 other branch</td><td data-l="Per-token API"><span>A new prefix: another cache write</span></td><td class="you" data-l="Your fleet, our engine"><span>Prefilled ahead</span></td></tr>
@@ -119,7 +119,7 @@ h1 { max-width: 15ch; }
         <tr><td>Next turn, within minutes</td><td data-l="Per-token API">A cache read, billed per token</td><td class="you" data-l="Your fleet, our engine"><b>Warm.</b> First token in 4.7–5.1 s at 137,700 tokens and 0.3–0.9 s for a short cached turn, measured, with no per-token charge</td></tr>
         <tr><td>After a break or a meeting</td><td data-l="Per-token API">Cache expired: the whole context is billed and prefilled again</td><td class="you" data-l="Your fleet, our engine"><b>Still warm.</b> The cache stays for as long as you hold the fleet</td></tr>
         <tr><td>Switching branch or module</td><td data-l="Per-token API">A new prefix: another cache write, another cold wait</td><td class="you" data-l="Your fleet, our engine"><b>Prefilled ahead,</b> overnight and between your turns</td></tr>
-        <tr><td>First turn in the morning</td><td data-l="Per-token API">Everything cold</td><td class="you" data-l="Your fleet, our engine"><b>Warm.</b> Your Functions refreshed the cache for yesterday's commits</td></tr>
+        <tr><td>First turn in the morning</td><td data-l="Per-token API">Everything cold</td><td class="you" data-l="Your fleet, our engine"><b>Warm.</b> Your sessions were kept overnight, and your Functions refreshed the cache for yesterday's commits</td></tr>
         <tr><td>Rewriting a whole file</td><td data-l="Per-token API">The provider's speed; faster tiers cost more</td><td class="you" data-l="Your fleet, our engine"><b>126 tok/s</b> on Kimi K3 with speculation, identical output, measured with our engine, at no extra charge</td></tr>
         <tr><td>Price</td><td data-l="Per-token API">Every re-read and re-write, or a subscription with quota walls</td><td class="you" data-l="Your fleet, our engine"><b><span data-week="hc">144</span> HC a week:</b> <span data-week="usd">$2,160</span>, about <span data-week="effective">$12.86</span> an hour around the clock</td></tr>
       </tbody>
@@ -163,9 +163,9 @@ h1 { max-width: 15ch; }
         <dt>Fetch</dt><dd>Downloads models, datasets and repositories from Hugging Face, S3 or HTTPS straight into your storage across the fleet's nodes, checks every file, and can pack a model when it lands. Your token stays on your machine: it comes with each download, and the fleet holds it only while that download runs.</dd>
         <dt>Ingest a repository</dt><dd>Takes your pushes as a git remote, with no token for your git host, and maps files, symbols and history.</dd>
         <dt>Build and refresh the cache</dt><dd>Prefills the parts that change least first; after each push it recomputes only what changed.</dd>
-        <dt>Anticipate tomorrow</dt><dd>Each night, builds and warms the contexts of up to 500K tokens that tomorrow's sessions are most likely to need, from your commits, your code's structure and the files your sessions used, within the budget you set. Run it on approval or automatically; the morning report shows what it built and how often it was used.</dd>
-        <dt>Prefill ahead</dt><dd>Keeps the branches and modules you name warm now, and re-warms them after any interruption.</dd>
-        <dt>Resume sessions</dt><dd>Keeps yesterday's agent sessions warm, so you pick up where they stopped.</dd>
+        <dt>Anticipate tomorrow</dt><dd>Each night, within the budget you set, rebuilds your repository cache on the day's pushes, recomputes anything an engine update invalidated, and has your recent sessions ready before your day starts. Run it on approval or automatically; the morning report shows what it kept, what was used and what yesterday's cold starts cost.</dd>
+        <dt>Prefill ahead</dt><dd>Keeps the prompts, files and branches you name ready now, and brings them back after any interruption.</dd>
+        <dt>Resume sessions</dt><dd>Keeps your agent sessions through nights, weekends, model swaps, restarts and engine updates, so you pick up where they stopped.</dd>
         <dt>Export and restore</dt><dd>Takes your storage, cache snapshots, draft model and adapters to any fleet you hold.</dd>
         <dt>Daily backup</dt><dd>One scheduled command on your own machine pulls the day's changes to your disk or bucket, with your own credentials.</dd>
       </dl></div>

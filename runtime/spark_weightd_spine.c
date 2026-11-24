@@ -5,10 +5,10 @@
 #include "sparkpipe/spark_weightd_spine.h"
 #include "sparkpipe/spark_weightd_receipt.h"
 #include "sparkpipe/spark_weightd_direct.h"
+#include "sparkpipe/spark_weightd_device.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_sha256.h"
 #include "sparkpipe/spark_ck128.h"
-#include <cuda_runtime_api.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "sparkpipe/spark_gpu.h"
 
 static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *index,const uint8_t *buffer,uint64_t offset,uint32_t bytes,uint8_t *destination,uint32_t pack_offsets)
 {
@@ -31,8 +32,12 @@ static SparkStatus spine_copy(const SparkWeightdManifest *manifest,uint32_t *ind
 		if ( end > limit )
 			end = limit;
 		placed = pack_offsets != 0u ? span->offset : span->compact_offset;
-		if ( end > start && cudaMemcpy(destination + placed + (start - span->offset),buffer + (start - offset),(size_t)(end - start),cudaMemcpyHostToDevice) != cudaSuccess )
-			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		if ( end > start )
+		{
+			const SparkStatus written = SparkWeightdDeviceWrite(destination + placed + (start - span->offset),buffer + (start - offset),end - start);
+			if ( written != SPARK_STATUS_OK )
+				SPARK_RETURN(written);
+		}
 		if ( (span->offset + span->bytes) > limit )
 			break;
 		(*index)++;

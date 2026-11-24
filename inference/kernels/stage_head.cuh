@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_lm_certified_launch.h"
 #include <stdint.h>
+#include "sparkpipe/spark_gpu.h"
 
 
 template<uint32_t THREADS>
@@ -22,11 +23,11 @@ __global__ static void LmStageEmbeddingKernel(const uint16_t *__restrict__ embed
 }
 
 static int32_t LmStageEmbedding(const uint16_t *embed_weight, const uint32_t *token_ids, uint16_t *hidden_bf16, uint32_t rows,
-	uint32_t hidden, uint32_t vocab_slice_offset, uint32_t vocab_slice_rows, cudaStream_t stream)
+	uint32_t hidden, uint32_t vocab_slice_offset, uint32_t vocab_slice_rows, SparkGpuStream stream)
 {
 	LM_LAUNCH((LmStageEmbeddingKernel<LM_STAGE_HEAD_THREADS>), dim3((hidden + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS,rows),
 		LM_STAGE_HEAD_THREADS, 0, stream, embed_weight,token_ids,hidden_bf16,hidden,vocab_slice_offset,vocab_slice_rows);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 template<uint32_t THREADS>
@@ -44,11 +45,33 @@ __global__ static void LmStageEmbeddingAliasKernel(const uint16_t *__restrict__ 
 
 static int32_t LmStageEmbeddingAlias(const uint16_t *embed_weight, const uint32_t *token_ids, uint16_t *hidden_bf16, uint32_t rows,
 	uint32_t hidden, uint32_t vocab_slice_offset, uint32_t vocab_slice_rows, uint32_t alias_first, uint32_t alias_count, uint32_t alias_row,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	LM_LAUNCH((LmStageEmbeddingAliasKernel<LM_STAGE_HEAD_THREADS>), dim3((hidden + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS,rows),
 		LM_STAGE_HEAD_THREADS, 0, stream, embed_weight,token_ids,hidden_bf16,hidden,vocab_slice_offset,vocab_slice_rows,alias_first,alias_count,alias_row);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<uint32_t THREADS>
+__global__ static void LmStageEmbeddingWholeKernel(const uint16_t *__restrict__ table, const uint32_t *__restrict__ token_ids,
+	uint16_t *__restrict__ hidden_bf16, uint32_t hidden, uint32_t vocab, uint32_t alias_first, uint32_t alias_count, uint32_t alias_row)
+{
+	const uint32_t row = blockIdx.y;
+	const uint32_t token = token_ids[row] - alias_first < alias_count ? alias_row : token_ids[row];
+	const uint16_t *source = token < vocab ? table + (uint64_t)token * hidden : 0;
+	for ( uint32_t k = blockIdx.x * THREADS + threadIdx.x; k < hidden; k += gridDim.x * THREADS )
+	{
+		const uint16_t value = source != 0 ? source[k] : 0u;
+		hidden_bf16[(uint64_t)row * hidden + k] = value == 0x8000u ? 0u : value;
+	}
+}
+
+static int32_t LmStageEmbeddingWhole(const uint16_t *table, const uint32_t *token_ids, uint16_t *hidden_bf16, uint32_t rows, uint32_t hidden,
+	uint32_t vocab, uint32_t alias_first, uint32_t alias_count, uint32_t alias_row, SparkGpuStream stream)
+{
+	LM_LAUNCH((LmStageEmbeddingWholeKernel<LM_STAGE_HEAD_THREADS>), dim3((hidden + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS,rows),
+		LM_STAGE_HEAD_THREADS, 0, stream, table,token_ids,hidden_bf16,hidden,vocab,alias_first,alias_count,alias_row);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 typedef struct LmStageHeadRows
@@ -77,7 +100,7 @@ __global__ static void LmStageHeadRankTokenKernel(uint32_t *tokens, uint32_t row
 		tokens[row] += rank_offset;
 }
 
-static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, cudaStream_t stream)
+static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, SparkGpuStream stream)
 {
 	if ( head.prenormed != 0u )
 		return(head.normed_bf16 == head.hidden_bf16 ? LM_LAUNCH_OK : LM_LAUNCH_ERR_SHAPE);
@@ -93,10 +116,10 @@ static int32_t LmStageNormRows(const LmStageHeadRows &head, uint32_t rows, cudaS
 	else
 		LM_LAUNCH((LmFusedResidualRmsNormKernel<LM_STAGE_HEAD_THREADS,uint16_t>), rows, LM_STAGE_HEAD_THREADS, (head.hidden + 8u) * sizeof(float), stream,
 			head.hidden_bf16,0,(const uint16_t *)head.norm_weight,0,head.normed_bf16,head.hidden,head.hidden,head.epsilon);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static int32_t LmStageHeadSlice(const LmStageHeadRows &head, uint32_t rows, cudaStream_t stream)
+static int32_t LmStageHeadSlice(const LmStageHeadRows &head, uint32_t rows, SparkGpuStream stream)
 {
 	const uint32_t tiles = (head.vocab_slice_rows + LM_STAGE_HEAD_TILE - 1u) / LM_STAGE_HEAD_TILE;
 	if ( LmStageNormRows(head,rows,stream) != LM_LAUNCH_OK )
@@ -105,12 +128,12 @@ static int32_t LmStageHeadSlice(const LmStageHeadRows &head, uint32_t rows, cuda
 		head.normed_bf16,(const uint16_t *)head.head_weight,0,head.candidate_score,head.candidate_token,rows,head.hidden,head.vocab_slice_rows);
 	LM_LAUNCH((LmHeadCommitKernel<LM_STAGE_HEAD_THREADS>), rows, LM_STAGE_HEAD_THREADS, 0, stream,
 		head.candidate_score,head.candidate_token,tiles,head.output_token,head.output_score,rows);
-	if ( cudaPeekAtLastError() != cudaSuccess )
+	if ( SparkGpuPeekAtLastError() != SPARK_GPU_SUCCESS )
 		return(LM_LAUNCH_ERR_LAUNCH);
 	if ( head.rank_offset == 0u || rows == 0u )
 		return(LM_LAUNCH_OK);
 	LM_LAUNCH((LmStageHeadRankTokenKernel), dim3(1u,rows), LM_STAGE_HEAD_THREADS, 0, stream, head.output_token,rows,head.rank_offset);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 __global__ static void LmStageSoftcapKernel(float *values, uint64_t count, float cap, float scale)
@@ -122,13 +145,13 @@ __global__ static void LmStageSoftcapKernel(float *values, uint64_t count, float
 	}
 }
 
-static int32_t LmStageSoftcap(float *values, uint64_t count, float cap, float scale, cudaStream_t stream)
+static int32_t LmStageSoftcap(float *values, uint64_t count, float cap, float scale, SparkGpuStream stream)
 {
 	const uint64_t blocks = (count + LM_STAGE_HEAD_THREADS - 1u) / LM_STAGE_HEAD_THREADS;
 	if ( (cap == 0.0f && scale == 0.0f) || count == 0u )
 		return LM_LAUNCH_OK;
 	LM_LAUNCH((LmStageSoftcapKernel), (uint32_t)(blocks < 4096u ? blocks : 4096u), LM_STAGE_HEAD_THREADS, 0, stream, values,count,cap,scale);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 typedef struct LmStageHeadCertified
@@ -141,7 +164,7 @@ typedef struct LmStageHeadCertified
 	uint32_t *screened;
 } LmStageHeadCertified;
 
-static int32_t LmStageHeadCertifiedSlice(const LmStageHeadRows &head, const LmStageHeadCertified &certified, uint32_t rows, cudaStream_t stream)
+static int32_t LmStageHeadCertifiedSlice(const LmStageHeadRows &head, const LmStageHeadCertified &certified, uint32_t rows, SparkGpuStream stream)
 {
 	if ( head.hidden_bf16 == 0 || head.normed_bf16 == 0 || (head.norm_weight == 0 && head.prenormed == 0u) || head.head_weight == 0 ||
 		head.output_token == 0 || head.output_score == 0 || certified.payload == 0 || certified.scale == 0 ||
@@ -151,7 +174,7 @@ static int32_t LmStageHeadCertifiedSlice(const LmStageHeadRows &head, const LmSt
 		return(LM_LAUNCH_ERR_LAUNCH);
 	return(SparkLmHostLaunchHeadCertifiedFp8RowsWithScore(stream,head.normed_bf16,head.head_weight,certified.payload,
 		certified.scale,certified.norm,certified.scratch,certified.candidates,certified.screened,head.output_token,
-		head.output_score,head.rank_offset,rows,head.vocab_slice_rows,head.hidden) == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		head.output_score,head.rank_offset,rows,head.vocab_slice_rows,head.hidden) == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 static __device__ __forceinline__ uint32_t LmStageOrderedScore(float score)
@@ -185,20 +208,20 @@ __global__ static void LmStageMaxlocUnpackKernel(const uint64_t *maxloc, uint32_
 	}
 }
 
-static int32_t LmStageMaxlocPack(const float *scores, const uint32_t *tokens, uint64_t *maxloc, uint32_t rows, cudaStream_t stream)
+static int32_t LmStageMaxlocPack(const float *scores, const uint32_t *tokens, uint64_t *maxloc, uint32_t rows, SparkGpuStream stream)
 {
 	if ( rows == 0u )
 		return LM_LAUNCH_OK;
 	LM_LAUNCH((LmStageMaxlocPackKernel), dim3(1u,rows), LM_STAGE_HEAD_THREADS, 0, stream, scores,tokens,maxloc,rows);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
-static int32_t LmStageMaxlocUnpack(const uint64_t *maxloc, uint32_t *tokens, float *scores, uint32_t rows, cudaStream_t stream)
+static int32_t LmStageMaxlocUnpack(const uint64_t *maxloc, uint32_t *tokens, float *scores, uint32_t rows, SparkGpuStream stream)
 {
 	if ( rows == 0u )
 		return LM_LAUNCH_OK;
 	LM_LAUNCH((LmStageMaxlocUnpackKernel), dim3(1u,rows), LM_STAGE_HEAD_THREADS, 0, stream, maxloc,tokens,scores,rows);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+	return(SparkGpuPeekAtLastError() == SPARK_GPU_SUCCESS ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 __global__ static void LmStageLastRowsGatherKernel(const uint32_t *row_begin, const uint32_t *row_indices,

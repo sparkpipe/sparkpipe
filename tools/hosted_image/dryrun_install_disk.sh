@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+	echo "usage: sudo dryrun_install_disk.sh --image BUILD_DIR --dir NEW_DIR" >&2
+	exit 2
+}
+fail() {
+	echo "dryrun: FAIL: $*" >&2
+	exit 1
+}
+pass() {
+	echo "dryrun: ok: $*"
+}
+
+here="$(cd "$(dirname "$0")" && pwd)"
+src="$(cd "$here/../.." && pwd)"
+image="" dir=""
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--image) image="$2"; shift 2 ;;
+		--dir) dir="$2"; shift 2 ;;
+		*) usage ;;
+	esac
+done
+[ -n "$image" ] && [ -n "$dir" ] || usage
+installer="$here/install_disk.sh"
+audit="$src/tools/hosted_dependency_audit.py"
+[ -f "$installer" ] && [ -f "$audit" ] && [ -f "$here/pins.conf" ] && [ -f "$here/owners.sh" ] || fail "$src lacks the installer, pins, ownership rule or audit"
+. "$here/owners.sh"
+[ "$(id -u)" -eq 0 ] || fail "run as root"
+[ -e /dev/loop-control ] || fail "this host has no loop device support (/dev/loop-control)"
+for tool in sgdisk losetup udevadm mkfs.vfat mkfs.ext4 e2label fatlabel blkid lsblk findmnt gcc ssh-keygen dropbearkey lsinitramfs efibootmgr python3 zstd; do
+	command -v "$tool" > /dev/null || fail "this host lacks $tool"
+done
+[ -f "$image/rootfs.tar.zst" ] && [ -f "$image/MANIFEST" ] || fail "$image is not a build directory"
+[ ! -e "$dir" ] || fail "$dir exists"
+parent="$(dirname "$dir")"
+[ "$(df --output=avail -B1G "$parent" | tail -1 | tr -d ' ')" -ge 40 ] || fail "$parent has less than 40 GiB free"
+KERNEL_RELEASE="$(sed -n 's/^KERNEL_RELEASE=//p' "$here/pins.conf")"
+[ -n "$KERNEL_RELEASE" ] || fail "no KERNEL_RELEASE in pins.conf"
+mkdir -p "$dir"
+dir="$(realpath "$dir")"
+exec > >(tee -a "$dir/dryrun.log") 2>&1
+echo "dryrun: start $(date -u +%FT%TZ) src=$src image=$image installer_sha=$(sha256sum "$installer" | cut -c1-16)"
+mkdir -p "$dir/accounts"
+tar --zstd -xf "$image/rootfs.tar.zst" -C "$dir/accounts" ./etc/passwd ./etc/group || fail "the image has no /etc/passwd and /etc/group"
+
+loop=""
+mounts=()
+cleanup() {
+	local status=$? index
+	for (( index=${#mounts[@]}-1; index>=0; index-- )); do
+		umount "${mounts[$index]}" || echo "dryrun: could not unmount ${mounts[$index]}" >&2
+	done
+	mounts=()
+	if [ -n "$loop" ]; then
+		losetup -d "$loop" || echo "dryrun: could not detach $loop" >&2
+	fi
+	echo "dryrun: mounts left under $dir: [$(under | tr '\n' ' ')]; loop devices on the image: [$(losetup -nO NAME -j "$dir/disk.img" 2>/dev/null | tr '\n' ' ')]"
+	echo "$status" > "$dir/exit"
+}
+esp_outside_own() {
+	(cd "$1" && find . -ipath ./efi/ubuntu -prune -o -type f -exec sha256sum {} + -o -print) | sort
+}
+tree_sums() {
+	(cd "$1" && find . -type f -exec sha256sum {} + -o -print) | sort
+}
+under() {
+	findmnt -rn -o TARGET | awk -v top="$dir" '$0 == top || index($0, top "/") == 1'
+}
+mount_at() {
+	mount "$@"
+	mounts+=("${*: -1}")
+}
+unmount_last() {
+	local last=$(( ${#mounts[@]} - 1 ))
+	umount "${mounts[$last]}"
+	unset "mounts[$last]"
+	mounts=("${mounts[@]}")
+}
+only_mount() {
+	[ "$(under)" = "$1" ] || fail "mounts under $dir are [$(under | tr '\n' ' ')], expected only $1"
+}
+trap cleanup EXIT
+
+touch "$dir/start"
+nvram_before="$(efibootmgr -v)"
+truncate -s 24G "$dir/disk.img"
+sgdisk -n1:0:+512M -t1:ef00 -n2:0:0 -t2:8300 "$dir/disk.img" > /dev/null
+[ "$(sgdisk -p "$dir/disk.img" | grep -cE '^ +[12] ')" = 2 ] || fail "sgdisk wrote no two-partition table"
+loop="$(losetup -P --show -f "$dir/disk.img")"
+[ "$(losetup -nO BACK-FILE "$loop")" = "$dir/disk.img" ] || fail "$loop is not backed by $dir/disk.img"
+udevadm settle
+[ -b "${loop}p1" ] && [ -b "${loop}p2" ] || fail "$loop has no p1 and p2"
+mkfs.vfat -F 32 -n EFI "${loop}p1" > /dev/null
+mkfs.ext4 -q -L root "${loop}p2"
+pass "disk image $dir/disk.img on $loop: p1 vfat EFI, p2 ext4 root"
+
+firmware="$dir/firmware"
+mkdir "$firmware"
+esp_partuuid="$(lsblk -dno PARTUUID "${loop}p1")"
+[ -n "$esp_partuuid" ] || fail "${loop}p1 has no partition UUID"
+printf 'Boot%s* dryrun\tHD(1,GPT,%s,0x800,0x100000)/File(%s)\n' FFFE "$esp_partuuid" '\EFI\ubuntu\shimaa64.efi' > "$firmware/entry"
+printf '#!/bin/bash\n[ "$*" = -v ] || { echo "dryrun: the firmware wrapper only reads with -v" >&2; exit 1; }\nlisting="$(%s -v)" || exit\nprintf "%%s\\n" "$listing" | sed "s/^BootOrder: /&FFFE,/"\ncat %s\n' "$(command -v efibootmgr)" "$firmware/entry" > "$firmware/efibootmgr"
+chmod 755 "$firmware/efibootmgr"
+[ "$(PATH="$firmware:$PATH" efibootmgr -v | grep -c "^BootOrder: FFFE,\|^BootFFFE\* dryrun")" = 2 ] || fail "the firmware wrapper does not add BootFFFE for ${loop}p1"
+pass "firmware wrapper: this host's efibootmgr -v plus an active BootFFFE in BootOrder loading \\EFI\\ubuntu\\shimaa64.efi from ${loop}p1 ($esp_partuuid)"
+
+seed="$dir/seed"
+mkdir "$seed"
+mount_at "${loop}p2" "$seed"
+mkdir -p "$seed"/{etc,usr/bin,var/log,var/lib/tailscale/files,boot/efi,root,opt/vendor,srv,tmp,home/node/sparkdata/packs,home/node/.ssh,home/node/releases/old/bin}
+chmod 1777 "$seed/tmp"
+chmod 700 "$seed/root"
+echo 'PRETTY_NAME="previous system"' > "$seed/etc/os-release"
+echo previous > "$seed/etc/hostname"
+echo previous-binary > "$seed/usr/bin/previous"
+head -c 64M /dev/zero > "$seed/swap.img"
+echo vendor > "$seed/opt/vendor/owned"
+printf '{"_machinekey":"dryrun-%s"}\n' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')" > "$seed/var/lib/tailscale/tailscaled.state"
+echo '{}' > "$seed/var/lib/tailscale/derpmap.cached.json"
+chmod 600 "$seed/var/lib/tailscale/tailscaled.state" "$seed/var/lib/tailscale/derpmap.cached.json"
+chmod 700 "$seed/var/lib/tailscale" "$seed/var/lib/tailscale/files"
+(cd "$seed/var/lib/tailscale" && find . -printf '%P %U:%G %m %s\n' | sort && find . -type f -exec sha256sum {} + | sort) > "$dir/tailscale-seed.list"
+chown -R 1000:1000 "$seed/opt/vendor"
+fsid=cd8715a1-0000-4000-8000-000000000001
+units="$seed/etc/systemd/system"
+mkdir -p "$seed"/etc/{ceph,ds4-uplink,logrotate.d,netplan,sudoers.d,sysctl.d} "$seed/var/lib/ceph/$fsid/osd.3" "$seed/var/log/ceph/$fsid" \
+	"$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin" "$seed/usr/local/sbin" "$units/ceph-$fsid@.service.d" "$units/ceph-$fsid.target.wants" \
+	"$units/ceph.target.wants" "$units/multi-user.target.wants" "$units/timers.target.wants" "$seed/home/sparkemerg/.ssh"
+printf 'root:x:0:0:root:/root:/bin/bash\nceph:x:64045:64045:Ceph storage service:/var/lib/ceph:/usr/sbin/nologin\nsparkemerg:x:1001:1002::/home/sparkemerg:/bin/bash\n' > "$seed/etc/passwd"
+printf 'root:!:20000:0:99999:7:::\nceph:!:20000::::::\nsparkemerg:$6$dryrun$hash:20000:0:99999:7:::\n' > "$seed/etc/shadow"
+printf 'root:x:0:\nceph:x:64045:\nsparkemerg:x:1002:\n' > "$seed/etc/group"
+printf 'root:*::\nceph:!::\nsparkemerg:!::\n' > "$seed/etc/gshadow"
+chmod 640 "$seed/etc/shadow" "$seed/etc/gshadow"
+printf '[global]\nfsid = %s\n' "$fsid" > "$seed/etc/ceph/ceph.conf"
+echo dryrun-client-secret > "$seed/etc/ceph/ds4warm.secret"
+chmod 600 "$seed/etc/ceph/ds4warm.secret"
+echo dryrun-keyring > "$seed/var/lib/ceph/$fsid/osd.3/keyring"
+echo '/usr/bin/podman run dryrun' > "$seed/var/lib/ceph/$fsid/osd.3/unit.run"
+echo osd-log > "$seed/var/log/ceph/$fsid/ceph-osd.3.log"
+chown -R 167:167 "$seed/var/lib/ceph/$fsid" "$seed/var/log/ceph/$fsid"
+chmod 700 "$seed/var/lib/ceph/$fsid" "$seed/var/lib/ceph/$fsid/osd.3"
+chown 64045:64045 "$seed/var/lib/ceph" "$seed/var/log/ceph"
+echo dryrun-layer > "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/ceph-osd"
+mknod "$seed/var/lib/containers/storage/overlay/l0/diff/usr/bin/removed" c 0 0
+mkdir -p "$seed/var/lib/containers/storage/overlay-containers/c0/userdata"
+mkfifo "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/ctl"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$seed/var/lib/containers/storage/overlay-containers/c0/userdata/attach"
+printf '[Unit]\nDescription=Ceph %%i for %s\n' "$fsid" > "$units/ceph-$fsid@.service"
+printf '[Unit]\nRequires=ds4-extnvme-link.service\n' > "$units/ceph-$fsid@.service.d/30-ds4-extnvme-link.conf"
+printf '[Unit]\nDescription=Ceph cluster %s\n' "$fsid" > "$units/ceph-$fsid.target"
+printf '[Unit]\nDescription=All Ceph clusters and services\n' > "$units/ceph.target"
+mkdir -p "$seed/usr/lib/systemd/system"
+printf '[Unit]\nDescription=Multi-User System\n' > "$seed/usr/lib/systemd/system/multi-user.target"
+printf '[Unit]\nDescription=Timer Units\n' > "$seed/usr/lib/systemd/system/timers.target"
+systemctl --root="$seed" add-wants "ceph-$fsid.target" "ceph-$fsid@osd.3.service" > /dev/null
+systemctl --root="$seed" add-wants ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" add-wants multi-user.target ceph.target "ceph-$fsid.target" > /dev/null
+systemctl --root="$seed" mask ceph-crash.service > /dev/null
+printf '[Service]\nExecStart=/usr/local/sbin/ds4-extnvme-link\n' > "$units/ds4-extnvme-link.service"
+printf '[Service]\nExecStart=/usr/local/sbin/ds4_spark_uplink.py monitor\n' > "$units/ds4-uplink-monitor.service"
+printf '[Timer]\nOnUnitActiveSec=15s\n' > "$units/ds4-uplink-monitor.timer"
+systemctl --root="$seed" add-wants timers.target ds4-uplink-monitor.timer > /dev/null
+printf '#!/bin/sh\nexit 0\n' > "$seed/usr/local/sbin/ds4-extnvme-link"
+printf '#!/usr/bin/env python3\n' > "$seed/usr/local/sbin/ds4_spark_uplink.py"
+chmod 755 "$seed/usr/local/sbin/ds4-extnvme-link" "$seed/usr/local/sbin/ds4_spark_uplink.py"
+echo '{"networks": ["dryrun"]}' > "$seed/etc/ds4-uplink/config.json"
+chmod 600 "$seed/etc/ds4-uplink/config.json"
+printf 'network:\n  version: 2\n' > "$seed/etc/netplan/90-NM-00000000-0000-4000-8000-000000000002.yaml"
+chmod 600 "$seed/etc/netplan/90-NM-00000000-0000-4000-8000-000000000002.yaml"
+echo 'vm.max_map_count = 262144' > "$seed/etc/sysctl.d/90-ceph-$fsid-osd.conf"
+printf '127.0.0.1 localhost\n10.10.100.3 node node-fabric\n' > "$seed/etc/hosts"
+echo "/var/log/ceph/$fsid/*.log {}" > "$seed/etc/logrotate.d/ceph-$fsid"
+echo 'sparkemerg ALL=(ALL) NOPASSWD: ALL' > "$seed/etc/sudoers.d/91-sparkemerg-emergency"
+chmod 440 "$seed/etc/sudoers.d/91-sparkemerg-emergency"
+echo "ssh-ed25519 AAAAdryrun emergency" > "$seed/home/sparkemerg/.ssh/authorized_keys"
+chown -R 1001:1002 "$seed/home/sparkemerg"
+(cd "$seed" && shopt -s nullglob && while IFS= read -r pattern; do for match in $pattern; do if [ -e "$match" ] || [ -L "$match" ]; then printf '%s\n' "$match"; fi; done; done < "$here/carry-fleet.txt") > "$dir/carried.list"
+[ "$(wc -l < "$dir/carried.list")" -ge 20 ] || fail "the carry list matches only $(wc -l < "$dir/carried.list") seeded paths"
+head -c 256M /dev/urandom > "$seed/home/node/sparkdata/packs/pack.bin"
+echo "ssh-ed25519 AAAAdryrun user" > "$seed/home/node/.ssh/authorized_keys"
+build="$dir/build-elf"
+mkdir "$build"
+echo 'int stub(void) { return 0; }' > "$build/stub.c"
+echo 'int stub(void); int main(void) { return stub(); }' > "$build/main.c"
+gcc -shared -fPIC -Wl,-soname,libcuda.so.1 -o "$build/libcuda.so.1" "$build/stub.c"
+gcc -Wl,--no-as-needed -o "$seed/home/node/releases/old/bin/engine" "$build/main.c" "$build/libcuda.so.1"
+chown -R 1000:1000 "$seed/home/node"
+chmod 700 "$seed/home/node/.ssh"
+chmod 600 "$seed/home/node/.ssh/authorized_keys"
+(cd "$seed" && find . -path ./home -prune -o -path ./lost+found -prune -o -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/seed-root.list"
+(cd "$seed/home" && find . -printf '%P %U:%G %m %s %T@\n' | sort) > "$dir/home-before.list"
+sha256sum "$seed/home/node/sparkdata/packs/pack.bin" | cut -d' ' -f1 > "$dir/pack.sha"
+unmount_last
+esp_seed="$dir/esp-seed"
+mkdir "$esp_seed"
+mount_at "${loop}p1" "$esp_seed"
+mkdir -p "$esp_seed/EFI/ubuntu" "$esp_seed/EFI/BOOT" "$esp_seed/EFI/vendor"
+echo previous-shim > "$esp_seed/EFI/ubuntu/shimaa64.efi"
+echo previous-grub > "$esp_seed/EFI/ubuntu/grubaa64.efi"
+echo previous-fallback > "$esp_seed/EFI/BOOT/BOOTAA64.EFI"
+echo previous-fallback-loader > "$esp_seed/EFI/BOOT/fbaa64.efi"
+echo vendor-loader > "$esp_seed/EFI/vendor/loader.efi"
+esp_outside_own "$esp_seed" > "$dir/esp-seed.list"
+tree_sums "$esp_seed" > "$dir/esp-seed-full.list"
+tree_sums "$esp_seed/EFI/ubuntu" > "$dir/esp-ubuntu-seed.list"
+unmount_last
+cp "$dir/seed-root.list" "$dir/previous-first.list"
+pass "seeded a previous system ($(wc -l < "$dir/seed-root.list") entries outside /home) with Tailscale state, /home/node with a 256 MiB pack and an old CUDA-linked release root, and an EFI partition with EFI/ubuntu, EFI/BOOT and EFI/vendor"
+
+bundle="$dir/bundle"
+files="$bundle/files"
+mkdir -p "$files"/etc/{ssh,dropbear/initramfs,sudoers.d,netplan} "$files/root/.ssh"
+echo node > "$files/etc/hostname"
+echo 1 > "$files/etc/ds4-node-rank"
+ssh-keygen -q -t ed25519 -N '' -C dryrun -f "$files/etc/ssh/ssh_host_ed25519_key"
+dropbearkey -t ed25519 -f "$files/etc/dropbear/initramfs/dropbear_ed25519_host_key" > /dev/null 2>&1
+echo 'node ALL=(ALL) NOPASSWD: ALL' > "$files/etc/sudoers.d/90-admins"
+chmod 440 "$files/etc/sudoers.d/90-admins"
+printf 'network:\n  version: 2\n' > "$files/etc/netplan/90-dryrun.yaml"
+chmod 600 "$files/etc/netplan/90-dryrun.yaml"
+chmod 700 "$files/root/.ssh"
+echo "ssh-ed25519 AAAAdryrun root" > "$files/root/.ssh/authorized_keys"
+chmod 600 "$files/root/.ssh/authorized_keys"
+printf 'USER_NAME=node\nUSER_UID=1000\nUSER_GID=1000\nUSER_GROUPS=sudo,adm,admins\nUSER_SHELL=/bin/bash\n' > "$bundle/user.conf"
+printf 'admins:1001\n' > "$bundle/groups.conf"
+pass "fake identity bundle with $(find "$files" -type f | wc -l) files"
+
+install_run() {
+	local name="$1" expect="$2" path="$3" message="${4:-}" status
+	local -a extra=("${@:5}")
+	echo "dryrun: == $name: install_disk.sh ${extra[*]}, expecting exit $expect"
+	set +e
+	PATH="$path" bash "$installer" --disk "$loop" --image "$image" --identity "$bundle" --work "$dir/work-$name" "${extra[@]}" 2>&1 | tee "$dir/install-$name.log"
+	status="${PIPESTATUS[0]}"
+	set -e
+	[ "$status" = "$expect" ] || fail "$name exited $status, expected $expect"
+	[ -z "$message" ] || grep -q "$message" "$dir/install-$name.log" || fail "$name did not report: $message"
+	[ -z "$(under)" ] || fail "$name left mounts: $(under | tr '\n' ' ')"
+	pass "$name exited $status and left no mount"
+}
+
+verify_install() {
+	local name="$1" tailscale="$2" check="$dir/check-$1" esp="$dir/esp-$1" aside uuid shim grub
+	[ "$(blkid -p -s LABEL -o value "${loop}p2")" = SPARKROOT ] || fail "p2 label is not SPARKROOT"
+	[ "$(blkid -p -s LABEL -o value "${loop}p1")" = SPARKESP ] || fail "p1 label is not SPARKESP"
+	uuid="$(blkid -p -s UUID -o value "${loop}p2")"
+	mkdir "$check" "$esp"
+	mount_at -o ro "${loop}p2" "$check"
+	[ "$(sha256sum "$check/home/node/sparkdata/packs/pack.bin" | cut -d' ' -f1)" = "$(cat "$dir/pack.sha")" ] || fail "the pack changed"
+	(cd "$check/home" && find . -printf '%P %U:%G %m %s %T@\n' | sort) > "$dir/home-$name.list"
+	diff "$dir/home-before.list" "$dir/home-$name.list" || fail "/home changed"
+	pass "/home is unchanged: $(wc -l < "$dir/home-$name.list") entries with owners, modes, sizes and mtimes, pack sha256 $(cut -c1-16 "$dir/pack.sha")"
+	[ "$(find "$check" -mindepth 1 -maxdepth 1 -name '.dgxos-*' | wc -l)" = 1 ] || fail "expected one .dgxos-* directory"
+	aside="$(find "$check" -mindepth 1 -maxdepth 1 -name '.dgxos-*')"
+	(cd "$aside/root" && find . -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/aside-$name.list"
+	diff "$dir/previous-$name.list" "$dir/aside-$name.list" || fail "the set-aside system differs from the previous root"
+	tree_sums "$aside/esp/EFI/ubuntu" > "$dir/aside-esp-$name.list"
+	diff "$dir/esp-ubuntu-seed.list" "$dir/aside-esp-$name.list" || fail "the saved EFI/ubuntu differs from the previous one"
+	[ "$(ls -A "$aside")" = "$(printf 'esp\nroot')" ] || fail "/${aside##*/} holds more than esp and root: $(ls -A "$aside" | tr '\n' ' ')"
+	pass "the previous root is intact in /${aside##*/}/root and the previous EFI/ubuntu in /${aside##*/}/esp"
+	grep -q 'Ubuntu 24.04' "$check/etc/os-release" || fail "the installed root is not Ubuntu 24.04"
+	[ "$(cat "$check/etc/hostname")" = node ] || fail "hostname not restored"
+	cmp -s "$check/etc/ssh/ssh_host_ed25519_key" "$files/etc/ssh/ssh_host_ed25519_key" || fail "SSH host key not restored"
+	grep -q '^node:x:1000:1000::/home/node:/bin/bash$' "$check/etc/passwd" || fail "node passwd line: $(grep '^node:' "$check/etc/passwd")"
+	grep -q '^admins:x:1001:node$' "$check/etc/group" || fail "admins group: $(grep '^admins:' "$check/etc/group")"
+	grep -q '^sudo:.*node' "$check/etc/group" || fail "node is not in sudo"
+	for entry in "etc/sudoers.d/90-admins 0:0:440" "etc/ssh/ssh_host_ed25519_key 0:0:600" "etc/netplan/90-dryrun.yaml 0:0:600" "root/.ssh 0:0:700" "root/.ssh/authorized_keys 0:0:600" ". 0:0:755"; do
+		[ "$(stat -c %u:%g:%a "$check/${entry% *}")" = "${entry#* }" ] || fail "${entry% *} is $(stat -c %u:%g:%a "$check/${entry% *}"), expected ${entry#* }"
+	done
+	pass "identity restored: hostname, host key, user 1000 with sudo and admins, file modes"
+	if [ "$tailscale" = carried ]; then
+		(cd "$check/var/lib/tailscale" && find . -printf '%P %U:%G %m %s\n' | sort && find . -type f -exec sha256sum {} + | sort) > "$dir/tailscale-$name.list"
+		diff "$dir/tailscale-seed.list" "$dir/tailscale-$name.list" || fail "the installed /var/lib/tailscale differs from the previous root's"
+		grep -q "carried the node's Tailscale state from /${aside##*/}/root/var/lib/tailscale" "$dir/install-$name.log" || fail "$name did not report the carried Tailscale state"
+		pass "Tailscale state carried from the previous root: $(wc -l < "$dir/tailscale-$name.list") entries and checksums identical, /var/lib/tailscale $(stat -c %u:%g:%a "$check/var/lib/tailscale")"
+	else
+		[ ! -e "$check/var/lib/tailscale/tailscaled.state" ] || fail "the installed root has Tailscale state the previous root did not have"
+		grep -q "the previous root has no /var/lib/tailscale" "$dir/install-$name.log" || fail "$name did not report that the previous root had no Tailscale state"
+		pass "no Tailscale state in the previous root and none in the installed root"
+	fi
+	if [ "$name" = first ]; then
+		while IFS= read -r path; do
+			[ "$(cd "$aside/root" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" = \
+				"$(cd "$check" && find "$path" -printf '%y %U:%G %m %s %l %p\n' | sort && find "$path" \( -type c -o -type b \) -exec stat -c '%t:%T %n' {} + | sort && find "$path" -type f -exec sha256sum {} + | sort)" ] || fail "/$path was not carried exactly"
+			grep -qx "install_disk: carried /$path from the previous root" "$dir/install-$name.log" || fail "$name did not report carrying /$path"
+		done < "$dir/carried.list"
+		for file in passwd shadow group gshadow; do
+			[ "$(grep '^sparkemerg:' "$check/etc/$file")" = "$(grep '^sparkemerg:' "$aside/root/etc/$file")" ] || fail "the sparkemerg line of /etc/$file was not carried"
+		done
+		grep -q "carried the account sparkemerg (uid 1001, gid 1002)" "$dir/install-$name.log" || fail "$name did not report the carried account"
+		pass "carried $(wc -l < "$dir/carried.list") node paths (Ceph state and units, the private link and uplink tools, host keys, profiles) and the sparkemerg account exactly"
+	else
+		[ ! -e "$check/etc/ceph/ds4warm.secret" ] && [ ! -e "$check/var/lib/ceph/$fsid" ] && ! grep -q '^sparkemerg:' "$check/etc/passwd" || fail "$name carried node state without a carry list"
+		! grep -q "carried /" "$dir/install-$name.log" || fail "$name reported carried paths without a carry list"
+		pass "without a carry list nothing but the Tailscale state comes from the previous root"
+	fi
+	[ "$(awk '($1 == "LABEL=SPARKROOT" && $2 == "/") || ($1 == "LABEL=SPARKESP" && $2 == "/boot/efi")' "$check/etc/fstab" | wc -l)" = 2 ] || fail "fstab does not name SPARKROOT on / and SPARKESP on /boot/efi"
+	[ -z "$(foreign_owner "$check" "$dir/accounts" \( -path "$check/home" -o -path "$aside" \) -prune -o)" ] || fail "a path outside /home belongs to a uid or gid >= 1000 that the image does not define"
+	[ "$check/boot/initrd.img-$KERNEL_RELEASE" -nt "$dir/start" ] || fail "the initramfs was not rebuilt"
+	lsinitramfs "$check/boot/initrd.img-$KERNEL_RELEASE" > "$dir/initramfs-$name.list"
+	grep -qx 'etc/dropbear/dropbear_ed25519_host_key' "$dir/initramfs-$name.list" || fail "the initramfs has no dropbear ed25519 host key"
+	grep -q "linux.*/boot/vmlinuz-$KERNEL_RELEASE root=UUID=$uuid" "$check/boot/grub/grub.cfg" || fail "grub.cfg has no $KERNEL_RELEASE entry on root UUID $uuid"
+	grep -q 'iommu.passthrough=0' "$check/boot/grub/grub.cfg" && grep -q 'initcall_blacklist=tegra234_cbb_init' "$check/boot/grub/grub.cfg" || fail "grub.cfg lacks the GB10 arguments"
+	echo "dryrun: kernel line: $(grep -m1 "linux.*vmlinuz-$KERNEL_RELEASE" "$check/boot/grub/grub.cfg" | sed 's/^[[:space:]]*//')"
+	pass "initramfs rebuilt with the dropbear key; grub.cfg boots $KERNEL_RELEASE from the root UUID with the GB10 arguments"
+	mount_at -o ro "${loop}p1" "$esp"
+	for file in shimaa64.efi grubaa64.efi grub.cfg; do
+		[ -s "$esp/EFI/ubuntu/$file" ] || fail "EFI/ubuntu/$file missing"
+	done
+	shim="$(sha256sum "$esp/EFI/ubuntu/shimaa64.efi" | cut -d' ' -f1)"
+	sha256sum "$check"/usr/lib/shim/shimaa64.efi* > "$dir/shim-$name.sums"
+	grep -q "^$shim " "$dir/shim-$name.sums" || fail "EFI/ubuntu/shimaa64.efi is not one of the image's shim builds"
+	echo "dryrun: EFI/ubuntu/shimaa64.efi, which the unchanged firmware entry loads, is $(grep "^$shim " "$dir/shim-$name.sums" | head -1 | sed "s|.*$check||")"
+	grub="$(sha256sum "$esp/EFI/ubuntu/grubaa64.efi" | cut -d' ' -f1)"
+	[ "$grub" = "$(sha256sum "$check/usr/lib/grub/arm64-efi-signed/grubaa64.efi.signed" | cut -d' ' -f1)" ] || fail "EFI/ubuntu/grubaa64.efi is not the image's signed GRUB"
+	grep -q "$uuid" "$esp/EFI/ubuntu/grub.cfg" || fail "EFI/ubuntu/grub.cfg does not search $uuid"
+	esp_outside_own "$esp" > "$dir/esp-$name.list"
+	diff "$dir/esp-seed.list" "$dir/esp-$name.list" || fail "the EFI partition changed outside EFI/ubuntu"
+	echo "dryrun: EFI/ubuntu: $(ls "$esp/EFI/ubuntu" | tr '\n' ' ')"
+	echo "dryrun: EFI/ubuntu/grub.cfg: $(tr '\n' ';' < "$esp/EFI/ubuntu/grub.cfg")"
+	pass "EFI partition: the image's signed shim and GRUB in EFI/ubuntu, the stub searches the root, EFI/BOOT and EFI/vendor byte-identical"
+	unmount_last
+	unmount_last
+}
+
+install_run no-entry 1 "$PATH" "no active firmware boot entry"
+install_run first 0 "$firmware:$PATH" "" --carry "$here/carry-fleet.txt" --carry-accounts sparkemerg
+grep -q "booted by the unchanged firmware entry BootFFFE" "$dir/install-first.log" || fail "the install did not name BootFFFE as the entry that boots it"
+verify_install first carried
+
+echo "dryrun: == rollback"
+roll="$dir/rollback"
+mkdir "$roll"
+mount_at "${loop}p2" "$roll"
+only_mount "$roll"
+aside="$(find "$roll" -mindepth 1 -maxdepth 1 -name '.dgxos-*')"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+hosted="$roll/.hosted-$stamp"
+mkdir "$hosted"
+find "$roll" -mindepth 1 -maxdepth 1 ! -name home ! -name lost+found ! -name '.dgxos-*' ! -name ".hosted-$stamp" -printf '%f\n' | while read -r entry; do mv "$roll/$entry" "$hosted/"; done
+find "$aside/root" -mindepth 1 -maxdepth 1 -printf '%f\n' | while read -r entry; do mv "$aside/root/$entry" "$roll/"; done
+rmdir "$aside/root"
+roll_esp="$dir/rollback-esp"
+mkdir "$roll_esp"
+mount_at "${loop}p1" "$roll_esp"
+mkdir -p "$hosted/esp/EFI"
+mv "$roll_esp/EFI/ubuntu" "$hosted/esp/EFI/"
+cp -r "$aside/esp/EFI/ubuntu" "$roll_esp/EFI/"
+tree_sums "$roll_esp" > "$dir/rollback-esp.list"
+diff "$dir/esp-seed-full.list" "$dir/rollback-esp.list" || fail "the rolled-back EFI partition differs from the previous one"
+unmount_last
+only_mount "$roll"
+rm -r --one-file-system "$aside"
+(cd "$roll" && find . -path ./home -prune -o -path ./lost+found -prune -o -path "./.hosted-$stamp" -prune -o -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/rollback-root.list"
+diff "$dir/seed-root.list" "$dir/rollback-root.list" || fail "the rolled-back root differs from the previous root"
+unmount_last
+e2label "${loop}p2" root
+fatlabel "${loop}p1" EFI > /dev/null
+pass "rollback restored the previous root and the whole EFI partition exactly; the image waits in /.hosted-$stamp"
+
+install_run refused 1 "$firmware:$PATH" "holds a previous aside directory"
+
+mount_at "${loop}p2" "$roll"
+only_mount "$roll"
+[ -d "$roll/.hosted-$stamp" ] || fail "no .hosted-$stamp to remove"
+rm -rf --one-file-system "$roll/.hosted-$stamp"
+rm -r --one-file-system "$roll/var/lib/tailscale"
+(cd "$roll" && find . -path ./home -prune -o -path ./lost+found -prune -o -printf '%P %U:%G %m %s\n' | grep -v '^ ' | sort) > "$dir/previous-second.list"
+awk '$1 != "var/lib/tailscale" && index($1, "var/lib/tailscale/") != 1' "$dir/seed-root.list" | diff - "$dir/previous-second.list" || fail "removing the Tailscale state changed more of the previous root"
+unmount_last
+pass "removed /.hosted-$stamp after the refusal, and the previous root's Tailscale state, so the second install meets a node that never joined"
+
+install_run second 0 "$firmware:$PATH"
+verify_install second absent
+
+echo "dryrun: == acceptance gate"
+gate="$dir/gate"
+mkdir "$gate"
+mount_at "${loop}p2" "$gate"
+only_mount "$gate"
+aside="$(find "$gate" -mindepth 1 -maxdepth 1 -name '.dgxos-*')"
+[ -n "$aside" ] || fail "no set-aside directory at the gate"
+rm -rf --one-file-system "$aside"
+pass "deleted /${aside##*/}"
+if python3 -B "$audit" image --rootfs "$gate" --release-root opt/sparkpipe/release > "$dir/gate-1.txt"; then status=0; else status=$?; fi
+cat "$dir/gate-1.txt"
+[ "$status" = 1 ] || fail "the gate with the old CUDA-linked release root in /home exited $status, expected 1"
+grep -q 'home/node/releases/old/bin/engine' "$dir/gate-1.txt" || fail "the gate did not name the old engine"
+pass "the gate refuses the node while /home holds a CUDA-linked release root"
+rm -rf --one-file-system "$gate/home/node/releases"
+if python3 -B "$audit" image --rootfs "$gate" --release-root opt/sparkpipe/release > "$dir/gate-2.txt"; then status=0; else status=$?; fi
+cat "$dir/gate-2.txt"
+[ "$status" = 0 ] || fail "the gate exited $status after the old release root went"
+pass "the gate passes over the whole installed root with no exclusion"
+unmount_last
+
+[ "$(efibootmgr -v)" = "$nvram_before" ] || fail "this host's firmware boot entries changed"
+pass "efibootmgr -v unchanged on this host"
+echo "dryrun: PASS $(date -u +%FT%TZ)"

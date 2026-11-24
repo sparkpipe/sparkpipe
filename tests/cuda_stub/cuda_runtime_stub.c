@@ -26,6 +26,8 @@ typedef struct cuda_stub_alloc_header
     uint32_t magic;
     uint32_t tracked;
     uint64_t bytes;
+    uint32_t pinned;
+    uint32_t reserved;
 } cuda_stub_alloc_header;
 
 static void *cuda_stub_tracked[CUDA_STUB_MAX_TRACKED];
@@ -62,7 +64,14 @@ static void cuda_stub_ledger_unlock(void)
     (void)pthread_mutex_unlock(&cuda_stub_ledger_mutex);
 }
 
+static cudaError_t cuda_stub_alloc_kind(void **pointer, size_t bytes, uint32_t pinned);
+
 static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
+{
+    return cuda_stub_alloc_kind(pointer, bytes, 1u);
+}
+
+static cudaError_t cuda_stub_alloc_kind(void **pointer, size_t bytes, uint32_t pinned)
 {
     cuda_stub_alloc_header *header;
     cudaError_t result;
@@ -82,6 +91,8 @@ static cudaError_t cuda_stub_alloc(void **pointer, size_t bytes)
     }
     header->magic = CUDA_STUB_ALLOC_MAGIC;
     header->bytes = bytes;
+    header->pinned = pinned;
+    header->reserved = 0u;
     if (cuda_stub_tracked_count < CUDA_STUB_MAX_TRACKED)
     {
         header->tracked = 1u;
@@ -191,9 +202,146 @@ uint32_t spark_stub_cuda_outstanding_allocs(void)
     return outstanding;
 }
 
+static void *cuda_stub_host_registered[CUDA_STUB_MAX_TRACKED];
+static size_t cuda_stub_host_registered_bytes[CUDA_STUB_MAX_TRACKED];
+static uint32_t cuda_stub_host_registered_count;
+static int cuda_stub_discrete = -1;
+
+typedef struct cuda_stub_pending
+{
+    unsigned char *destination;
+    const unsigned char *source;
+    unsigned char *staged;
+    size_t bytes;
+    int value;
+    uint32_t fill;
+} cuda_stub_pending;
+
+static cuda_stub_pending *cuda_stub_pending_ops;
+static size_t cuda_stub_pending_count, cuda_stub_pending_capacity;
+static pthread_mutex_t cuda_stub_pending_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *cuda_stub_streams[CUDA_STUB_MAX_TRACKED];
+static uint32_t cuda_stub_stream_count;
+
+void spark_stub_cuda_discrete_ordering(uint32_t enabled)
+{
+    cuda_stub_discrete = enabled != 0u ? 1 : 0;
+}
+
+static uint32_t cuda_stub_discrete_on(void)
+{
+    if (cuda_stub_discrete < 0)
+    {
+        const char *mode = getenv("SPARK_STUB_CUDA_DISCRETE");
+        cuda_stub_discrete = mode != 0 && mode[0] == '1' ? 1 : 0;
+    }
+    return cuda_stub_discrete > 0 ? 1u : 0u;
+}
+
+static uint32_t cuda_stub_pinned(const void *pointer)
+{
+    uintptr_t address = (uintptr_t)pointer;
+    uint32_t index, pinned = 0u;
+    cuda_stub_ledger_lock();
+    for (index = 0u; pinned == 0u && index < cuda_stub_tracked_count; index++)
+    {
+        const cuda_stub_alloc_header *header = ((const cuda_stub_alloc_header *)cuda_stub_tracked[index]) - 1;
+        uintptr_t first = (uintptr_t)cuda_stub_tracked[index];
+        if (header->pinned != 0u && address >= first && address < first + header->bytes)
+            pinned = 1u;
+    }
+    for (index = 0u; pinned == 0u && index < cuda_stub_host_registered_count; index++)
+    {
+        uintptr_t first = (uintptr_t)cuda_stub_host_registered[index];
+        if (address >= first && address < first + cuda_stub_host_registered_bytes[index])
+            pinned = 1u;
+    }
+    cuda_stub_ledger_unlock();
+    return pinned;
+}
+
+static uint32_t cuda_stub_stream_blocking(cudaStream_t stream)
+{
+    uint32_t index, blocking = 0u;
+    if (stream == 0)
+        return 1u;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_stream_count; index++)
+        if (cuda_stub_streams[index] == (void *)stream)
+            blocking = (*(unsigned int *)stream & cudaStreamNonBlocking) == 0u ? 1u : 0u;
+    cuda_stub_ledger_unlock();
+    return blocking;
+}
+
+static cudaError_t cuda_stub_pend(void *destination, const void *source, size_t bytes, int value, uint32_t fill, uint32_t stage)
+{
+    cuda_stub_pending op;
+    if (destination == 0 || (fill == 0u && source == 0 && bytes != 0u))
+        return cudaErrorMemoryAllocation;
+    op.destination = (unsigned char *)destination;
+    op.source = (const unsigned char *)source;
+    op.staged = 0;
+    op.bytes = bytes;
+    op.value = value;
+    op.fill = fill;
+    if (fill == 0u && stage != 0u)
+    {
+        op.staged = (unsigned char *)malloc(bytes != 0u ? bytes : 1u);
+        if (op.staged == 0)
+            return cudaErrorMemoryAllocation;
+        memcpy(op.staged, source, bytes);
+    }
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    if (cuda_stub_pending_count == cuda_stub_pending_capacity)
+    {
+        size_t capacity = cuda_stub_pending_capacity != 0u ? 2u * cuda_stub_pending_capacity : 64u;
+        cuda_stub_pending *grown = (cuda_stub_pending *)realloc(cuda_stub_pending_ops, capacity * sizeof(*grown));
+        if (grown == 0)
+        {
+            pthread_mutex_unlock(&cuda_stub_pending_mutex);
+            free(op.staged);
+            return cudaErrorMemoryAllocation;
+        }
+        cuda_stub_pending_ops = grown;
+        cuda_stub_pending_capacity = capacity;
+    }
+    cuda_stub_pending_ops[cuda_stub_pending_count++] = op;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+    return cudaSuccess;
+}
+
+static void cuda_stub_land(void)
+{
+    size_t index;
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    for (index = 0u; index < cuda_stub_pending_count; index++)
+    {
+        cuda_stub_pending *op = &cuda_stub_pending_ops[index];
+        if (op->fill != 0u)
+            memset(op->destination, op->value, op->bytes);
+        else
+            memmove(op->destination, op->staged != 0 ? op->staged : op->source, op->bytes);
+        free(op->staged);
+    }
+    cuda_stub_pending_count = 0u;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+}
+
+uint32_t spark_stub_cuda_pending_ops(void)
+{
+    size_t count;
+    pthread_mutex_lock(&cuda_stub_pending_mutex);
+    count = cuda_stub_pending_count;
+    pthread_mutex_unlock(&cuda_stub_pending_mutex);
+    return (uint32_t)count;
+}
+
 cudaError_t cudaMalloc(void **pointer, size_t bytes)
 {
-    return cuda_stub_alloc(pointer, bytes);
+    cudaError_t error = cuda_stub_alloc_kind(pointer, bytes, 0u);
+    if (error == cudaSuccess && cuda_stub_discrete_on() != 0u)
+        memset(*pointer, 0xa5, bytes);
+    return error;
 }
 
 cudaError_t cudaFree(void *pointer)
@@ -207,6 +355,8 @@ cudaError_t cudaMemset(void *pointer, int value, size_t bytes)
     {
         return cudaErrorMemoryAllocation;
     }
+    if (cuda_stub_discrete_on() != 0u && cuda_stub_pinned(pointer) == 0u)
+        return cuda_stub_pend(pointer, 0, bytes, value, 1u, 0u);
     memset(pointer, value, bytes);
     return cudaSuccess;
 }
@@ -217,8 +367,17 @@ cudaError_t cudaMemsetAsync(
     size_t bytes,
     cudaStream_t stream)
 {
-    (void)stream;
-    return cudaMemset(pointer, value, bytes);
+    if (pointer == 0 && bytes != 0u)
+        return cudaErrorMemoryAllocation;
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (stream == 0)
+            return cuda_stub_pend(pointer, 0, bytes, value, 1u, 0u);
+        if (cuda_stub_stream_blocking(stream) != 0u)
+            cuda_stub_land();
+    }
+    memset(pointer, value, bytes);
+    return cudaSuccess;
 }
 
 static uint32_t cuda_stub_sync_copy_calls;
@@ -300,6 +459,14 @@ cudaError_t cudaMemcpy(
     cudaMemcpyKind kind)
 {
     cuda_stub_count_copy(0u, kind, 0);
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (kind == cudaMemcpyHostToDevice && cuda_stub_pinned(source) == 0u)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, 1u);
+        if (kind == cudaMemcpyDeviceToDevice)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, 0u);
+        cuda_stub_land();
+    }
     return cuda_stub_copy(destination, source, bytes);
 }
 
@@ -311,6 +478,13 @@ cudaError_t cudaMemcpyAsync(
     cudaStream_t stream)
 {
     cuda_stub_count_copy(1u, kind, stream);
+    if (cuda_stub_discrete_on() != 0u)
+    {
+        if (stream == 0)
+            return cuda_stub_pend(destination, source, bytes, 0, 0u, kind == cudaMemcpyHostToDevice ? 1u : 0u);
+        if (cuda_stub_stream_blocking(stream) != 0u)
+            cuda_stub_land();
+    }
     return cuda_stub_copy(destination, source, bytes);
 }
 
@@ -348,7 +522,13 @@ cudaError_t cudaStreamCreate(cudaStream_t *stream)
         return cudaErrorMemoryAllocation;
     }
     *stream = calloc(1u, sizeof(unsigned int));
-    return *stream != 0 ? cudaSuccess : cudaErrorMemoryAllocation;
+    if (*stream == 0)
+        return cudaErrorMemoryAllocation;
+    cuda_stub_ledger_lock();
+    if (cuda_stub_stream_count < CUDA_STUB_MAX_TRACKED)
+        cuda_stub_streams[cuda_stub_stream_count++] = (void *)*stream;
+    cuda_stub_ledger_unlock();
+    return cudaSuccess;
 }
 
 cudaError_t cudaStreamCreateWithFlags(
@@ -389,15 +569,26 @@ unsigned int spark_stub_cuda_stream_flags(cudaStream_t stream)
 
 cudaError_t cudaStreamDestroy(cudaStream_t stream)
 {
+    uint32_t index;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_stream_count; index++)
+        if (cuda_stub_streams[index] == (void *)stream)
+        {
+            cuda_stub_streams[index] = cuda_stub_streams[--cuda_stub_stream_count];
+            break;
+        }
+    cuda_stub_ledger_unlock();
     free(stream);
     return cudaSuccess;
 }
 
 cudaError_t cuda_stub_stream_query_result;
+uint32_t cuda_stub_stream_query_calls;
 
 cudaError_t cudaStreamQuery(cudaStream_t stream)
 {
     (void)stream;
+    __atomic_add_fetch(&cuda_stub_stream_query_calls, 1u, __ATOMIC_RELAXED);
     return cuda_stub_stream_query_result;
 }
 
@@ -415,6 +606,8 @@ cudaError_t cudaStreamSynchronize(cudaStream_t stream)
 {
     spark_stub_cuda_sync_hook_t hook = __atomic_load_n(&cuda_stub_sync_hook, __ATOMIC_SEQ_CST);
     cuda_stub_stream_sync_calls++;
+    if (cuda_stub_discrete_on() != 0u && cuda_stub_stream_blocking(stream) != 0u)
+        cuda_stub_land();
     if (hook != 0)
         hook(__atomic_load_n(&cuda_stub_sync_hook_context, __ATOMIC_SEQ_CST), stream);
     return cudaSuccess;
@@ -434,6 +627,8 @@ cudaError_t cudaStreamWaitEvent(
 
 cudaError_t cudaDeviceSynchronize(void)
 {
+    if (cuda_stub_discrete_on() != 0u)
+        cuda_stub_land();
     return cudaSuccess;
 }
 
@@ -502,6 +697,12 @@ cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
+cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream, unsigned int flags)
+{
+    (void)flags;
+    return cudaEventRecord(event, stream);
+}
+
 cudaError_t cudaEventQuery(cudaEvent_t event)
 {
     cuda_stub_event_queries++;
@@ -529,9 +730,6 @@ cudaError_t cudaEventSynchronize(cudaEvent_t event)
     return event != 0 ? cudaSuccess : cudaErrorInvalidValue;
 }
 
-static void *cuda_stub_host_registered[CUDA_STUB_MAX_TRACKED];
-static size_t cuda_stub_host_registered_bytes[CUDA_STUB_MAX_TRACKED];
-static uint32_t cuda_stub_host_registered_count;
 uint32_t cuda_stub_host_register_calls;
 uint32_t cuda_stub_host_register_flags;
 uint32_t cuda_stub_host_unregister_calls;
@@ -687,6 +885,80 @@ cudaError_t cudaGraphDestroy(cudaGraph_t graph)
     return cudaSuccess;
 }
 
+cudaError_t cudaStreamGetCaptureInfo(cudaStream_t stream,enum cudaStreamCaptureStatus *status,unsigned long long *id,cudaGraph_t *graph,
+    const cudaGraphNode_t **dependencies,const cudaGraphEdgeData **edges,size_t *count)
+{
+    (void)stream;
+    (void)id;
+    (void)graph;
+    (void)edges;
+    if (status != 0)
+    {
+        *status = cuda_capture_depth != 0u ? cudaStreamCaptureStatusActive : cudaStreamCaptureStatusNone;
+    }
+    if (dependencies != 0)
+    {
+        *dependencies = 0;
+    }
+    if (count != 0)
+    {
+        *count = 0u;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaFuncGetParamInfo(const void *function,size_t index,size_t *offset,size_t *bytes)
+{
+    (void)function;
+    (void)index;
+    (void)offset;
+    (void)bytes;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaFuncGetName(const char **name,const void *function)
+{
+    (void)function;
+    if (name != 0)
+    {
+        *name = "stub";
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaGraphGetNodes(cudaGraph_t graph,cudaGraphNode_t *nodes,size_t *count)
+{
+    (void)graph;
+    (void)nodes;
+    if (count != 0)
+    {
+        *count = 0u;
+    }
+    return cudaSuccess;
+}
+
+cudaError_t cudaGraphNodeGetType(cudaGraphNode_t node,enum cudaGraphNodeType *type)
+{
+    (void)node;
+    (void)type;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaGraphKernelNodeGetParams(cudaGraphNode_t node,struct cudaKernelNodeParams *params)
+{
+    (void)node;
+    (void)params;
+    return cudaErrorInvalidValue;
+}
+
+cudaError_t cudaGraphExecKernelNodeSetParams(cudaGraphExec_t exec,cudaGraphNode_t node,const struct cudaKernelNodeParams *params)
+{
+    (void)exec;
+    (void)node;
+    (void)params;
+    return cudaErrorInvalidValue;
+}
+
 cudaError_t cudaHostAlloc(
     void **pointer,
     size_t bytes,
@@ -758,6 +1030,26 @@ cudaError_t cudaSetDevice(int device)
     return device == 0 ? cudaSuccess : cudaErrorInvalidDevice;
 }
 
+cudaError_t cudaMemGetInfo(size_t *free_bytes, size_t *total_bytes)
+{
+    const uint64_t total = (uint64_t)1 << 36;
+    uint64_t used = 0u;
+    uint32_t index;
+    if (free_bytes == 0 || total_bytes == 0)
+        return cudaErrorInvalidValue;
+    cuda_stub_ledger_lock();
+    for (index = 0u; index < cuda_stub_tracked_count; index++)
+    {
+        const cuda_stub_alloc_header *header = ((const cuda_stub_alloc_header *)cuda_stub_tracked[index]) - 1;
+        if (header->pinned == 0u)
+            used += header->bytes;
+    }
+    cuda_stub_ledger_unlock();
+    *total_bytes = (size_t)total;
+    *free_bytes = (size_t)(used < total ? total - used : 0u);
+    return cudaSuccess;
+}
+
 cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int device)
 {
     if (properties == 0 || device != 0)
@@ -771,7 +1063,7 @@ cudaError_t cudaGetDeviceProperties(struct cudaDeviceProp *properties, int devic
     properties->multiProcessorCount = 48;
     properties->major = 12;
     properties->minor = 1;
-    properties->integrated = 1;
+    properties->integrated = cuda_stub_discrete_on() != 0u ? 0 : 1;
     return cudaSuccess;
 }
 
@@ -829,7 +1121,9 @@ static uint8_t *cuda_stub_backing_data(cuda_stub_vmm_backing *backing)
 }
 
 #define CUDA_STUB_SHARE_MAGIC UINT32_C(0x53505846)
-#define CUDA_STUB_SHARE_VERSION 3u
+#define CUDA_STUB_SHARE_VERSION 4u
+
+static uint32_t cuda_stub_host_share = 1u;
 
 typedef struct cuda_stub_share_header
 {
@@ -838,6 +1132,8 @@ typedef struct cuda_stub_share_header
     uint64_t bytes;
     uint64_t process;
     uint64_t backing;
+    uint32_t location;
+    uint32_t reserved;
 } cuda_stub_share_header;
 
 static cuda_stub_vmm_backing *cuda_stub_backing_create(uint64_t bytes)
@@ -970,7 +1266,8 @@ CUresult cuMemGetAllocationGranularity(size_t *granularity,
 {
     if (granularity == 0 || prop == 0 ||
         prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
-        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE)
+        (prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE &&
+            prop->location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA))
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
@@ -1046,6 +1343,8 @@ CUresult cuMemExportToShareableHandle(void *shareable_handle,
     header.bytes = phys->bytes;
     header.process = (uint64_t)getpid();
     header.backing = (uint64_t)(uintptr_t)phys->backing;
+    header.location = (uint32_t)phys->prop.location.type;
+    header.reserved = 0u;
     if (pwrite(phys->backing->fd, &header, sizeof(header), (off_t)phys->bytes) != (ssize_t)sizeof(header))
         return CUDA_ERROR_OUT_OF_MEMORY;
     fd = fcntl(phys->backing->fd, F_DUPFD_CLOEXEC, 0);
@@ -1158,6 +1457,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     }
     if (header.magic != CUDA_STUB_SHARE_MAGIC ||
         header.version != CUDA_STUB_SHARE_VERSION || header.bytes == 0ull ||
+        (header.location != (uint32_t)CU_MEM_LOCATION_TYPE_DEVICE && header.location != (uint32_t)CU_MEM_LOCATION_TYPE_HOST_NUMA) ||
         (uint64_t)status.st_size != (uint64_t)sizeof(header) + header.bytes)
     {
         return CUDA_ERROR_INVALID_VALUE;
@@ -1182,7 +1482,7 @@ CUresult cuMemImportFromShareableHandle(CUmemGenericAllocationHandle *handle,
     phys->mapped_count = 0u;
     phys->bytes = header.bytes;
     phys->prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-    phys->prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+    phys->prop.location.type = (CUmemLocationType)header.location;
     phys->prop.location.id = 0;
     phys->prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
     phys->backing = backing;
@@ -1200,7 +1500,8 @@ CUresult cuMemCreate(CUmemGenericAllocationHandle *handle,
         cuda_stub_sleep_microseconds(cuda_stub_create_delay_us);
     if (handle == 0 || prop == 0 ||
         prop->type != CU_MEM_ALLOCATION_TYPE_PINNED ||
-        prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+        (prop->location.type != CU_MEM_LOCATION_TYPE_DEVICE &&
+            (prop->location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA || cuda_stub_host_share == 0u)) ||
         flags != 0ull || bytes == 0u)
     {
         return CUDA_ERROR_INVALID_VALUE;
@@ -1319,9 +1620,12 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     cuda_stub_vmm_reservation *reservation;
     CUdeviceptr span_start;
     uint64_t offset;
-    if (descriptors == 0 || descriptor_count != (size_t)1u ||
-        descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
-        (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u)
+    if (descriptors == 0 || descriptor_count == (size_t)0u || descriptor_count > (size_t)2u ||
+        (descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE && descriptors[0].location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA) ||
+        (descriptor_count == (size_t)2u && (descriptors[0].location.type != CU_MEM_LOCATION_TYPE_DEVICE ||
+            descriptors[1].location.type != CU_MEM_LOCATION_TYPE_HOST_NUMA)) ||
+        (descriptors[0].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u ||
+        (descriptor_count == (size_t)2u && (descriptors[1].flags & ~CU_MEM_ACCESS_FLAGS_PROT_READWRITE) != 0u))
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
@@ -1337,7 +1641,29 @@ CUresult cuMemSetAccess(CUdeviceptr pointer,
     {
         return CUDA_ERROR_INVALID_VALUE;
     }
-    reservation->granted_access = (unsigned int)descriptors[0].flags;
+    reservation->granted_access = descriptors[0].location.type == CU_MEM_LOCATION_TYPE_DEVICE
+        ? (unsigned int)descriptors[0].flags : reservation->granted_access;
+    return CUDA_SUCCESS;
+}
+
+void spark_stub_cuda_host_memory_share(uint32_t enabled)
+{
+    cuda_stub_host_share = enabled != 0u ? 1u : 0u;
+}
+
+CUresult cuDeviceGet(CUdevice *device, int ordinal)
+{
+    if (device == 0 || ordinal != 0)
+        return CUDA_ERROR_INVALID_DEVICE;
+    *device = ordinal;
+    return CUDA_SUCCESS;
+}
+
+CUresult cuDeviceGetAttribute(int *value, CUdevice_attribute attribute, CUdevice device)
+{
+    if (value == 0 || device != 0)
+        return CUDA_ERROR_INVALID_VALUE;
+    *value = attribute == CU_DEVICE_ATTRIBUTE_HOST_NUMA_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED ? (int)cuda_stub_host_share : 0;
     return CUDA_SUCCESS;
 }
 
@@ -1492,11 +1818,50 @@ CUresult cuMemAddressFree(CUdeviceptr pointer, size_t bytes)
     return cuda_stub_free(reservation);
 }
 
+CUresult cuTensorMapEncodeTiled(CUtensorMap *map, CUtensorMapDataType type, cuuint32_t rank, void *address,
+    const cuuint64_t *dimension, const cuuint64_t *stride, const cuuint32_t *box, const cuuint32_t *element_stride,
+    CUtensorMapInterleave interleave, CUtensorMapSwizzle swizzle, CUtensorMapL2promotion promotion,
+    CUtensorMapFloatOOBfill fill)
+{
+    cuuint32_t index;
+    (void)type;
+    (void)interleave;
+    (void)promotion;
+    (void)fill;
+    if (map == NULL || address == NULL || ((uintptr_t)address % 16u) != 0u || rank == 0u || rank > 5u ||
+        dimension == NULL || box == NULL || element_stride == NULL || (rank > 1u && stride == NULL) ||
+        (unsigned)swizzle > (unsigned)CU_TENSOR_MAP_SWIZZLE_128B)
+    {
+        return CUDA_ERROR_INVALID_VALUE;
+    }
+    for (index = 0u; index < rank; index++)
+    {
+        if (dimension[index] == 0u || box[index] == 0u || box[index] > 256u || element_stride[index] == 0u ||
+            element_stride[index] > 8u || (index + 1u < rank && (stride[index] % 16u) != 0u))
+        {
+            return CUDA_ERROR_INVALID_VALUE;
+        }
+    }
+    memset(map, 0, sizeof(*map));
+    return CUDA_SUCCESS;
+}
+
 uint32_t cuda_stub_mesh_publish_calls = 0u;
 uint32_t cuda_stub_mesh_publish_null_seq_cell = 0u;
 uint32_t cuda_stub_mesh_publish_null_epoch_cell = 0u;
 
 static uint64_t cuda_stub_roundloop_now_ns(void);
+
+static void cuda_stub_mesh_fault_record(SparkTpMeshRoundControl *control,uint64_t phase,uint64_t peer,uint64_t want,uint64_t seen)
+{
+    control->fault_hits++;
+    if ( control->fault_phase != SPARK_TP_MESH_FAULT_NONE )
+        return;
+    control->fault_phase = phase;
+    control->fault_peer = peer;
+    control->fault_want = want;
+    control->fault_seen = seen;
+}
 
 cudaError_t SparkTpLaunchMeshGuard(cudaStream_t stream,
     volatile void *error_word,void *output)
@@ -1505,7 +1870,11 @@ cudaError_t SparkTpLaunchMeshGuard(cudaStream_t stream,
     if ( error_word == NULL || output == NULL )
         return cudaErrorInvalidValue;
     if ( *(volatile uint64_t *)error_word != 0u )
+    {
+        SparkTpMeshRoundControl *control = (SparkTpMeshRoundControl *)(void *)((uintptr_t)error_word - offsetof(SparkTpMeshRoundControl,error_word));
         *(uint64_t *)output = UINT64_MAX;
+        control->guard_poisons++;
+    }
     return cudaSuccess;
 }
 
@@ -1838,13 +2207,12 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
                 }
                 if (cuda_stub_roundloop_now_ns() >= stop_at)
                 {
+                    const uint64_t seen = *shipped;
                     control->diag_word = (UINT64_C(0xa5) << 56) |
                         ((prev_tag & 0xffffull) << 16) |
-                        (*shipped & 0xffffull);
+                        (seen & 0xffffull);
+                    cuda_stub_mesh_fault_record(control,SPARK_TP_MESH_FAULT_SHIP_ACK,rank,prev_tag,seen);
                     control->error_word = prev_tag;
-                    fprintf(stderr,
-                        "MESH-ROUNDLOOP-TIMEOUT rank=%u phase=ship-ack want=%llu got=%llu\n",
-                        rank, (unsigned long long)prev_tag, (unsigned long long)*shipped);
                     failed = 1u;
                     break;
                 }
@@ -1884,15 +2252,14 @@ cudaError_t SparkTpLaunchMeshRoundLoop(cudaStream_t stream,
                 }
                 if (cuda_stub_roundloop_now_ns() >= stop_at)
                 {
+                    const uint64_t ended = *end_word;
                     control->diag_word = ((uint64_t)peer_rank << 56) |
                         ((cursor & 0xffull) << 48) |
                         (parity << 32) |
                         ((tag & 0xffffull) << 16) |
-                        (*end_word & 0xffffull);
+                        (ended & 0xffffull);
+                    cuda_stub_mesh_fault_record(control,SPARK_TP_MESH_FAULT_PEER_WAIT,peer_rank,(uint32_t)tag,(uint32_t)ended);
                     control->error_word = tag;
-                    fprintf(stderr,
-                        "MESH-ROUNDLOOP-TIMEOUT rank=%u phase=peer-wait peer=%u want=%u got=%u\n",
-                        rank, peer_rank, (uint32_t)tag, (uint32_t)*end_word);
                     failed = 1u;
                     break;
                 }
@@ -2011,4 +2378,47 @@ static const SparkTpMeshLaunchers SparkTpMeshStubLaunchers =
 __attribute__((constructor)) static void SparkTpMeshStubLaunchersInstall(void)
 {
     SparkTpDeviceCollectiveRegisterLaunchers(&SparkTpMeshStubLaunchers);
+}
+
+cudaError_t cudaGetDriverEntryPointByVersion(const char *symbol,void **function,unsigned int cuda_version,unsigned long long flags,
+    enum cudaDriverEntryPointQueryResult *status)
+{
+    static const struct
+    {
+        const char *symbol;
+        void *function;
+    } entries[] = {
+        {"cuCtxGetCurrent",(void *)cuCtxGetCurrent},
+        {"cuCtxSetCurrent",(void *)cuCtxSetCurrent},
+        {"cuMemGetAllocationGranularity",(void *)cuMemGetAllocationGranularity},
+        {"cuMemCreate",(void *)cuMemCreate},
+        {"cuMemRelease",(void *)cuMemRelease},
+        {"cuMemExportToShareableHandle",(void *)cuMemExportToShareableHandle},
+        {"cuMemImportFromShareableHandle",(void *)cuMemImportFromShareableHandle},
+        {"cuMemAddressReserve",(void *)cuMemAddressReserve},
+        {"cuMemAddressFree",(void *)cuMemAddressFree},
+        {"cuMemMap",(void *)cuMemMap},
+        {"cuMemSetAccess",(void *)cuMemSetAccess},
+        {"cuMemUnmap",(void *)cuMemUnmap},
+        {"cuTensorMapEncodeTiled",(void *)cuTensorMapEncodeTiled},
+        {"cuDeviceGet",(void *)cuDeviceGet},
+        {"cuDeviceGetAttribute",(void *)cuDeviceGetAttribute},
+    };
+    size_t index;
+    if (symbol == 0 || function == 0 || cuda_version == 0u || flags != 0ull)
+        return cudaErrorInvalidValue;
+    *function = 0;
+    if (status != 0)
+        *status = cudaDriverEntryPointSymbolNotFound;
+    for (index = 0u; index < sizeof(entries) / sizeof(entries[0]); index++)
+    {
+        if (strcmp(entries[index].symbol,symbol) == 0)
+        {
+            *function = entries[index].function;
+            if (status != 0)
+                *status = cudaDriverEntryPointSuccess;
+            break;
+        }
+    }
+    return cudaSuccess;
 }

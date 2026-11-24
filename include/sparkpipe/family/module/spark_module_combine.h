@@ -1,37 +1,38 @@
 #pragma once
+#include "sparkpipe/spark_gpu.h"
 
 static SparkStatus SPARK_FAMILY(ModuleCombineFusedBf16)(void *combine_context, void *destination_device, const void *const *source_devices, uint32_t source_count, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	(void)combine_context;
-	error = SparkTpLaunchSumRanksF32((cudaStream_t)cuda_stream,destination_device,source_devices,source_count,(uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
+	error = SparkTpLaunchSumRanksF32((SparkGpuStream)cuda_stream,destination_device,source_devices,source_count,(uint32_t)((uint64_t)active_sequence_count * hidden_dimension));
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_fused"));
 }
 
 static SparkStatus SPARK_FAMILY(ModuleCombineBf16)(void *combine_context, void *destination_device, const void *source_device, uint32_t active_sequence_count, uint32_t hidden_dimension, void *cuda_stream)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	(void)combine_context;
-	error = SparkTpLaunchAccumAdd((cudaStream_t)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
+	error = SparkTpLaunchAccumAdd((SparkGpuStream)cuda_stream,destination_device,source_device,active_sequence_count,hidden_dimension);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_sum"));
 }
 
 static SparkStatus SPARK_FAMILY(ModuleCombineU64Max)(void *combine_context, uint64_t *destination_device, const uint64_t *source_device, uint32_t element_count, void *cuda_stream)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	(void)combine_context;
-	error = SparkTpLaunchAccumU64Max((cudaStream_t)cuda_stream,destination_device,source_device,element_count);
+	error = SparkTpLaunchAccumU64Max((SparkGpuStream)cuda_stream,destination_device,source_device,element_count);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_reduce_max_u64"));
 }
 
 static SparkStatus SPARK_FAMILY(ModuleCombineGatherBf16)(void *combine_context, void *destination_device, const void *const *source_devices, uint32_t source_count, uint32_t active_sequence_count, uint32_t row_elements, void *cuda_stream)
 {
-	cudaError_t error;
+	SparkGpuError error;
 	uint64_t elements = (uint64_t)active_sequence_count * row_elements;
 	(void)combine_context;
 	if ( elements == 0u || elements > UINT32_MAX )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
-	error = SparkTpLaunchGatherRanks((cudaStream_t)cuda_stream,destination_device,source_devices,source_count,(uint32_t)elements);
+	error = SparkTpLaunchGatherRanks((SparkGpuStream)cuda_stream,destination_device,source_devices,source_count,(uint32_t)elements);
 	return(SparkStageModuleCudaStatus(SPARK_FAMILY_CONST(MODULE_TAG),error,"tp_all_gather"));
 }
 

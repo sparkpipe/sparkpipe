@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "inference/kernels/frame_error.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 static __device__ __forceinline__ uint64_t LmRowDigestMix(uint64_t value)
 {
@@ -61,34 +62,34 @@ __global__ void LmRowDigestCheckKernel(const unsigned long long *__restrict__ wo
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmRowDigestLaunch(
+static inline SparkGpuError LmRowDigestLaunch(
 	const uint16_t *rows_bf16,
 	uint32_t elements,
 	const uint32_t *position_of_row,
 	uint32_t row_count,
 	uint64_t salt,
 	unsigned long long *digest,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( rows_bf16 == 0 || position_of_row == 0 || digest == 0 || row_count == 0u || elements == 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmRowDigestKernel<THREADS>), row_count, THREADS, 0, stream, rows_bf16, elements, position_of_row, row_count, salt, digest);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
-static inline cudaError_t LmRowDigestFinishLaunch(const unsigned long long *digest, uint32_t count, unsigned long long *words, cudaStream_t stream)
+static inline SparkGpuError LmRowDigestFinishLaunch(const unsigned long long *digest, uint32_t count, unsigned long long *words, SparkGpuStream stream)
 {
 	if ( digest == 0 || words == 0 || count == 0u )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmRowDigestFinishKernel), 1, 32, 0, stream, digest, count, words);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 
-static inline cudaError_t LmRowDigestCheckLaunch(const unsigned long long *words, uint32_t count, LmFrameError *error, cudaStream_t stream)
+static inline SparkGpuError LmRowDigestCheckLaunch(const unsigned long long *words, uint32_t count, LmFrameError *error, SparkGpuStream stream)
 {
 	if ( words == 0 || count == 0u || error == 0 )
-		return(cudaErrorInvalidValue);
+		return(SPARK_GPU_ERROR_INVALID_VALUE);
 	LM_LAUNCH((LmRowDigestCheckKernel), 1, 32, 0, stream, words, count, error);
-	return(cudaPeekAtLastError());
+	return(SparkGpuPeekAtLastError());
 }
 #endif

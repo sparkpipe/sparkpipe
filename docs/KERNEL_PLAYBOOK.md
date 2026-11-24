@@ -209,9 +209,100 @@ which could be mistaken for the qualified route.
     reports `LM_FRAME_ERROR_ROUTE_MAP_OUT_OF_RANGE` through
     `LmFrameErrorReport` and stages row 0 instead. The frame fails and the
     context survives (`tests/test_kernel_frame_error_source.py`).
+- **Grouped variants never spill.** `LmSkinnyGroupedShapes<Format,NPG>`
+  names the rows and neurons a task takes in each band of routes per local
+  expert: at most 2, at most 8, and above 8. BF16, FP8 and MXFP8 take
+  4 x `NPG`, 8 x `NPG` and 16 x 2. NVFP4 takes 4 x `NPG` in every band, and
+  MXFP4 4 x `NPG` up to 8 routes and 8 x `NPG` above. An NVFP4 task
+  stages a 64-byte activation quad per row and two scales per weight chunk,
+  so its 8- and 16-row variants need more than 255 registers: ptxas spilled
+  376-700 bytes a thread at 8 rows and moved 7 KB a thread to local memory
+  at 16 rows x 2 neurons, read and written on every pass of the k loop.
+  Qwen3.8 Max's expert projections took 160-280 ms at 26-51 prompt rows
+  instead of about 1 ms. On one GB10 with every route local and 4 to 16
+  routes an expert, 4 x 4 is the fastest NVFP4 variant that does not spill,
+  except for the down projections at 16 routes an expert, where 16 x 1 is
+  2-6% faster (Qwen3.8 Max up projection at 16 routes an expert: 4 x 4
+  5.9 ms, 16 x 1 6.9 ms, 8 x 4 7.1 ms, 16 x 2 414 ms). The variants that
+  share `LANES` give the same bytes.
+  `tools/kernel_spill_audit.py` refuses an `LmSkinnyGroupedKernel`
+  instantiation with local memory or a stack frame in any serving adapter or
+  CUDA program (sm_121a compile gate, exit 10), and
+  `tests/test_grouped_experts_bands_cuda.py` runs every family that reaches
+  this kernel on both sides of each band boundary, with an L2 flush before
+  every timed call: the same bytes as a 2 x 4 reference, no call four times
+  slower than the one below the boundary, and no call slower than its band's
+  variant run on its own.
+  - The bands count every route of the step against the local experts. With
+    experts split across ranks most routes are not local (one in 16 for
+    Qwen3.8 at TP16), so a band can name more rows than an expert holds.
+    Measured cold, banding on routes per routed expert instead made MiMo 2.6
+    faster at 17-48 rows but HY4 and the BF16 down projections up to 30%
+    slower, because their batched tasks are cheap at low load and launch far
+    fewer blocks than 4 x 4 does, so the bands stay per local expert.
+  - The compile gate's spill audit runs the release toolkit, CUDA 13.0
+    (`docs/BUILD_NOTES.md`). CUDA 13.3.1 spills FP8's and MXFP8's 16 x 2
+    (424 bytes a thread) and MXFP4's 8 x 4 (296 bytes) and gives MXFP4's
+    8 x 2 an 8-byte stack, all of which 13.0 keeps in registers, so a toolkit
+    upgrade must rerun the audit and these timings.
+  - MXFP4 takes 8 x 4 above 8 routes: cold at TP16 it is 1.5-2 times as fast
+    as 16 x 2 there, and 2-14% faster than 4 x 4 on the up projections and
+    14-29% on the down projections. Between 2 and 8 routes 4 x 4 stays, being
+    up to 22% faster than 8 x 4 at the low end of that band. FP8's 16 x 2
+    above 8 routes is up to 12% faster than 8 x 4 for GLM 5.3 (6% slower on
+    the down projection at the band's first row), and MXFP8's is within 2% of
+    it for HY4.
+- **Blocks past the last batch return at once.** The grid of
+  `LmSkinnyGroupedKernel` is sized from every route of the step, but only the
+  local routes have work: at TP16 one route in 16. After its wait, a block
+  whose first item lies past the last batch (`group_row_offset[groups]`
+  local routes, plus a partial batch per expert when tasks are batched)
+  returns before it loads the offsets or scans them. Cold at TP16 this made
+  the expert projections 9-12% faster at the median for Qwen3.8, 11-17% for
+  MiMo 2.6 and 2-4% for HY4 and the BF16 families.
 - **Grouped tile scheduling.** `LmGroupOfTile` binary-searches the device
   tile prefix. `LmTotalTiles` reads the true total, so the host never
   launches empty groups on an average.
+- **Stream GEMM warp rows.** `LmStreamGemmLaunchShape` takes tiles of 16,
+  32, 64 or 128 rows, and `LmStreamWarpRows<Format,TILE_M>` sets the rows a
+  warp covers. Scaled 1-byte weights (FP8, MXFP8) take one warp row at every
+  tile, so a warp converts and scales half the weight columns that two warp
+  rows of 32 gave it. With two warp rows, each thread of MXFP8's 64-row tile
+  held the scales of four 32-wide blocks for four 8-column fragments,
+  `scale[4][4][2]`, filled by a loop CUDA 13.0 did not unroll: 128 bytes of
+  stack indexed at run time. One warp row keeps them in registers (248
+  registers, no frame). Cold on one GB10 under CUDA 13.0, at 64-4096 rows,
+  HY4's shared-expert down projection (128 inputs, 6144 outputs) took
+  0.026-0.43 ms instead of 0.036-0.69 ms, and the dense layer's (1152
+  inputs) 0.082-3.0 ms instead of 0.14-6.8 ms. FP8's 64-row tile is 1-30%
+  faster. The BF16 block-32 format (`LmBf16Block32`) keeps a total and a
+  per-block partial for every output, and takes two warp rows of 64 at the
+  128-row tile: with four warp rows of 32 its K-tail variant spilled 8 bytes
+  at 255 registers. Two warp rows keep it in registers and are 1-4% faster.
+  Its 64-row tiles and plain BF16 keep warp rows of 32; one warp row
+  measured as fast or up to 6% slower there. Every tile and warp row gives
+  the same bytes, because each output adds its K blocks in the same order
+  (`tests/test_stream_gemm_cuda.py`, `tests/test_stream_k_tail_cuda.py`).
+- **Hot-path kernels keep no frame.** `tools/kernel_spill_audit.py` reads
+  `cuobjdump -res-usage` for every serving adapter and CUDA program (sm_121a
+  compile gate, exit 10) and lists every kernel with a stack frame or local
+  memory, by family. A frame holds spilled registers or an array indexed at
+  run time; either way the kernel moves data through local memory. Skinny
+  GEMV (`LmSkinny*`), cell (`LmCell*`), stream GEMM (`LmStreamGemm*`) and
+  attention kernels run on every decode or prefill step, so the audit
+  refuses a frame in any of them. The 27 attention instantiations that kept
+  frames under CUDA 13.0 when the audit started (`D41AttendKernel`,
+  `LmLatentShardPrefillKernel`, `LmGqaShardTiledKernel`,
+  `LmAttentionBlockPartialKernel`, `LmLatentAttentionDecodeSplitKernel` and
+  the DSV4.1 window folds, 8-168 bytes) are listed in its `PENDING` with
+  their sizes. `PENDING` must match exactly, so it only shrinks: a new or
+  larger frame is refused, a smaller one fails until its entry is lowered,
+  and an entry whose kernel keeps no frame or is gone fails until it is
+  removed (`--print-pending` prints the list the artifacts carry). Frames in
+  other families are reported, not refused: the tensor-map GEMM's arrays,
+  the rank-source structs of the TP gather and sum kernels, the mesh
+  hardware piece's 8 bytes, and the DSV4.1 gate and n-gram arrays. Each is
+  fixed only where a measurement shows it costs time on a hot path.
 
 ## 2.3 MMA atoms (`mma.cuh`)
 
@@ -799,15 +890,22 @@ any two would change a served model's bits.
     streams with the new pre weights and snapshots them for the post update.
   - `LmHcSinkhornMixes<STREAMS>` (DeepSeek V4.1 Flash): eight per-warp
     partial dot products a row, from `LmHcSinkhornPartialKernel` below 32
-    rows or `LmHcSinkhornPartialRowsKernel` (four rows a block) from 32 on.
-    The two give the same bits (`tests/test_dsv41_hc_mix.cu`).
+    rows or `LmHcSinkhornPartialStagedKernel` from 32 on (four rows a block,
+    eight from 512). The staged kernel copies each 256-element step of the
+    mixer weights and the block's rows into shared memory three steps ahead
+    and splits the 25 tasks over two thread groups, so its accumulators stay
+    in registers; thread `t` of a group still sums elements `t`, `t + 256`,
+    ... in order and the warps reduce as before. The two give the same bits
+    (`tests/test_dsv41_hc_mix.cu`).
     `LmHcSinkhornKernel` then sums the partials in warp order and writes
     `pre = 1 / (1 + exp(-u)) + eps`, `post = 2 / (1 + exp(-u))` and a
     source-major combination: a softmax over each row from its maximum plus
     eps, a column normalisation, then `iterations - 1` row and column
     normalisations, each `+ eps`. The collapse runs separately, in
     `LmHcCollapseKernel` or fused into the consumer through
-    `LmHcCollapseElement`.
+    `LmHcCollapseElement`. The two kernels are wrappers around
+    `LmHcSinkhornPartialTask` and `LmHcSinkhornRow`, which a generated fused
+    kernel runs as two of its roles (section 2.9).
   - `LmHcMix<THREADS, STREAMS, MIXES, WIDTH>` (HY4): no combination. It
     writes the pre weights `sigmoid(u) + eps` and, with `2 * STREAMS` mixes,
     the post weights `magnitude * sigmoid(u) + eps`, and it collapses the
@@ -828,6 +926,76 @@ any two would change a served model's bits.
   DeepSeek V4.1 Flash layer test and `build/libdsv41_flash_kernels.so` live
   in `tests/cuda/dsv41_flash_hc_reference.cuh`. Their block sums differ from
   every production variant, and no production stage launches them.
+
+## 2.9 Fused kernels (`inference/kernels/fused/`)
+
+`tools/fused_kernels.py` writes a family's fused kernels from a plan; the
+plan format, the op catalogue and the generated bit-exact test are in
+`docs/FUSED_KERNELS.md`. The shared pieces a fused kernel is built from:
+
+- **Bodies, not kernels.** An op is the body of an existing kernel as a
+  `__device__` function that takes its row and its item as arguments, and the
+  kernel becomes a wrapper that passes its block indices. A fused block runs
+  exactly the arithmetic the kernel ran.
+- **`LmFusedLastArrival(counter, arrivals)`**: each block fences, syncs and
+  adds one to the counter; the block that completes the count resets the
+  counter to zero and fences again before it goes on. A tail that reads what
+  the other blocks wrote runs only there, so no block waits for another.
+- **`LmHcCollapseNormRow<THREADS, STREAMS, Lane>`**: the collapse of a row's
+  streams with the pre weights (or a plain input row), its RMS scale from the
+  whole row's block sum, and one slice of the normed row written in BF16 and
+  through `Lane::Apply`. Every block of a row recomputes the whole sum with
+  the same thread mapping, so the result does not depend on how the row is
+  split.
+- **Route bodies.** `LmTopkWarpsRow` (one row's top-k on `LM_TOPK_WARPS`
+  warps), `LmRouteBuildBlock` (the expert-grouped route table, one block) and
+  `LmPackedRouteWeight` (one route's packed weight) are the bodies of
+  `LmTopkWarpsKernel`, `LmRouteBuildKernel` and `LmPackedRouteWeightKernel`.
+  A fused kernel may re-read in a later phase what an earlier phase wrote, so
+  these bodies take no `__restrict__` on the arrays a router fusion writes
+  and then reads. That keeps those loads off the non-coherent path.
+
+## 2.10 What a dependent kernel may do before it waits (`dependent_launch.cuh`)
+
+A kernel launched with `LM_LAUNCH_DEPENDENT` may start while the kernel before
+it still runs, once that kernel has released its dependents
+(`LmDependentRelease`). Everything it does before `LmDependentWait` then runs
+beside that kernel.
+
+- **Before the wait, read only weights.** A dependent kernel may read, load
+  into registers or prefetch only data that no kernel of the step writes: the
+  weights and their scales. Weights do not change within a step. It reads
+  activations only after the wait, so it never sees a value the kernel before
+  it has not finished writing.
+- **Before the wait, write nothing global.** No store to global memory, no
+  atomic, no reduction and no counter before the wait, so the kernel never
+  overwrites what the kernel still running beside it reads.
+  `tools/dependent_wait_audit.py` checks the compiled code. In every function
+  that waits (`ACQBULK`), it refuses a global store, atomic or reduction before
+  the first wait. The sm_121a compile gate runs it on every serving adapter
+  and CUDA program. The mesh combines (`SparkTpMeshHardwareDirectKernel` and
+  its wide form) are its only exceptions: their one dependent predecessor is
+  the arrival kernel, which touches only the band and its control words.
+- **Skinny GEMVs release right after their wait.** Every skinny kernel calls
+  `LmDependentRelease` straight after `LmDependentWait`. The exception is
+  `LmSkinnyCellKernel`, which releases once its block has cached the group
+  offsets: placed straight after the wait, the release gave one of its
+  variants an 8-byte stack frame. The next dependent
+  GEMV's blocks therefore start as soon as the current one's blocks are all
+  resident. `LmSkinnyTask` prefetches its weight rows into L2 before its wait.
+  `LmSkinnyFrameKernel` loads its first weights and their scales into
+  registers before its wait. A kernel launched without the dependent attribute
+  still starts only after the kernel before it has finished.
+- **Measured** on one GB10 in the DeepSeek V4.1 Flash decode replay
+  (2026-11-22, 30 steps after 5), with DeepSeek V4.1 Flash's FP8 QDQ kernel
+  also made a dependent launch (wait, then release) so the projection after it
+  can start early. The final streams are the same bytes, and against the same
+  code without the early releases the step is shorter by 0.25-0.27 ms at one
+  row (27.97 to 27.72 ms), 0.27-0.38 ms at eight (66.1 to 65.8 ms) and
+  0.71-1.09 ms at sixteen (110.5 to 109.6 ms). Loading every
+  task's weights into L2 before the wait instead made the eight-row step
+  1.3 ms slower: the next kernel's whole weight read then competes with the
+  running kernel's.
 
 # Part 3 — Finding kernels and their numbers
 

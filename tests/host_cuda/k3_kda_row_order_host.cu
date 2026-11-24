@@ -38,30 +38,30 @@ std::vector<LmRecordedGemm> lm_recorded_gemms;
 #define STEPS 2u
 #define ROWS (SEQUENCES * STEPS)
 #define SLOT_BYTES ((size_t)RANK_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float))
-static uint16_t hidden[ROWS * K3_HIDDEN], normed[ROWS * K3_HIDDEN];
-static uint16_t norm_weight[K3_HIDDEN], weight_token[K3_HIDDEN];
-static uint16_t fused_qkvb[ROWS * FUSED];
-static uint16_t latent[ROWS * K3_KDA_KEY_DIM];
-static uint16_t gate[ROWS * RANK_V];
-static uint16_t query[ROWS * RANK_QK], key[ROWS * RANK_QK], value[ROWS * RANK_V];
-static uint16_t beta_logit[ROWS * RANK_HEADS];
-static uint16_t decay_logit[ROWS * RANK_QK];
-static uint16_t attention_out[ROWS * RANK_V];
-static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
-static float out_norm_weight[K3_KDA_VALUE_DIM];
-static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
-static float retention[ROWS * RANK_QK], write_gate[ROWS * RANK_HEADS];
-static uint16_t q_window[SEQUENCES * RANK_QK * K3_KDA_CONV_KERNEL];
-static uint16_t k_window[SEQUENCES * RANK_QK * K3_KDA_CONV_KERNEL];
-static uint16_t v_window[SEQUENCES * RANK_V * K3_KDA_CONV_KERNEL];
-static uint8_t state_pool[SEQUENCES * SLOT_BYTES];
-static uint32_t state_index[SEQUENCES] = { 1u, 0u };
-static uint32_t row_begin[SEQUENCES + 1u] = { 0u, STEPS, ROWS };
-static uint32_t interleaved[ROWS];
-static uint32_t dense_offsets[2], dense_tiles[2];
-static uint16_t grouped_out[ROWS * RANK_V];
-static uint8_t grouped_state[sizeof(state_pool)];
-static uint16_t grouped_q[sizeof(q_window) / 2u], grouped_k[sizeof(k_window) / 2u], grouped_v[sizeof(v_window) / 2u];
+alignas(16) static uint16_t hidden[ROWS * K3_HIDDEN], normed[ROWS * K3_HIDDEN];
+alignas(16) static uint16_t norm_weight[K3_HIDDEN], weight_token[K3_HIDDEN];
+alignas(16) static uint16_t fused_qkvb[ROWS * FUSED];
+alignas(16) static uint16_t latent[ROWS * K3_KDA_KEY_DIM];
+alignas(16) static uint16_t gate[ROWS * RANK_V];
+alignas(16) static uint16_t query[ROWS * RANK_QK], key[ROWS * RANK_QK], value[ROWS * RANK_V];
+alignas(16) static uint16_t beta_logit[ROWS * RANK_HEADS];
+alignas(16) static uint16_t decay_logit[ROWS * RANK_QK];
+alignas(16) static uint16_t attention_out[ROWS * RANK_V];
+alignas(16) static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+alignas(16) static float out_norm_weight[K3_KDA_VALUE_DIM];
+alignas(16) static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
+alignas(16) static float retention[ROWS * RANK_QK], write_gate[ROWS * RANK_HEADS];
+alignas(16) static uint16_t q_window[SEQUENCES * RANK_QK * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t k_window[SEQUENCES * RANK_QK * K3_KDA_CONV_KERNEL];
+alignas(16) static uint16_t v_window[SEQUENCES * RANK_V * K3_KDA_CONV_KERNEL];
+alignas(16) static uint8_t state_pool[SEQUENCES * SLOT_BYTES];
+alignas(16) static uint32_t state_index[SEQUENCES] = { 1u, 0u };
+alignas(16) static uint32_t row_begin[SEQUENCES + 1u] = { 0u, STEPS, ROWS };
+alignas(16) static uint32_t interleaved[ROWS];
+alignas(16) static uint32_t dense_offsets[2], dense_tiles[2];
+alignas(16) static uint16_t grouped_out[ROWS * RANK_V];
+alignas(16) static uint8_t grouped_state[sizeof(state_pool)];
+alignas(16) static uint16_t grouped_q[sizeof(q_window) / 2u], grouped_k[sizeof(k_window) / 2u], grouped_v[sizeof(v_window) / 2u];
 
 static void Bind(K3LayerBuffers *b)
 {

@@ -29,12 +29,15 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Dual-rail topology contract
 
-- The fleet is two switched rails since 2026-11-06 (CRS804 on port 1,
+- The fleet was two switched rails from 2026-11-06 (CRS804 on port 1,
   `cisco0` on port 0, [FLEET_FABRIC.md](https://github.com/sparkpipe/datacenter/blob/main/network/FLEET_FABRIC.md)); there are no
-  direct pair links. Replace the legacy ring/single-switch/dual-switch topology
-  modes with one schema for two all-to-all rails, and generate the four-,
-  eight-, and sixteen-Spark profiles and the pinned interface, address and
-  communicator tables from it.
+  direct pair links. A fleet now runs on one switch, with an optional second
+  switch on the second port, and weightd's mesh uses whichever ports are active
+  ([WEIGHTD_DESIGN.md](docs/WEIGHTD_DESIGN.md), *Ports in use*); the lanes'
+  control endpoints and tap streams use the first port alone. Replace the
+  legacy ring/single-switch/dual-switch topology modes with one schema for one
+  or two all-to-all rails, and generate the four-, eight-, and sixteen-Spark
+  profiles and the pinned interface, address and communicator tables from it.
 - weightd puts a whole peer on one rail: a link takes the second rail when the
   two ranks' parities differ (`SparkWeightdMeshSecondRailPeers`). At sixteen
   ranks that is eight peers against seven. A group of four has two of a rank's
@@ -56,8 +59,11 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 - The released agent (`c87ec35c`) defaults the rail 2 device to `rocep1s0f0`,
   which is now down. The `40-rail2.conf` drop-in sets `roceP2p1s0f0` on every
   node; release main's agent, which has that default, and drop the override.
-- The hub drafters take taps over the 10 GbE link to sparkf. Move them to the
-  hub's rail 2 address `10.10.201.250` (100G, RDMA-capable).
+- The hub drafters take taps over the 10 GbE link to sparkf (`10.10.250.2`),
+  forwarded through sparkf, because the first port is the only network every
+  fleet has. A fleet with the second switch could stream them to the hub's
+  second-port address `10.10.201.250` at 100 Gb/s; the lane records would have
+  to choose the endpoint by port state, as weightd's mesh does.
 - spark2's rail 2 link does not auto-negotiate with `cisco0` `Eth1/5`; both ends
   run forced 100G with RS-FEC (`DS4_RAIL2_FORCED_LINK_RANKS`). Try the cable in
   another switch port to find out which end is at fault.
@@ -263,6 +269,33 @@ accepted. Line citations in the 2026-10-02 entries refer to `b41ed891f`.
 
 ## Steady-state decode hot path
 
+- The attention kernels keep the stack frames recorded in `PENDING`
+  (`tools/kernel_spill_audit.py`, 27 instantiations under CUDA 13.0).
+  `D41AttendKernel` at two query tiles (DSV4.1's row-parallel attention)
+  keeps its 168-byte spill on purpose. Its ten warps (eight consumers, a
+  planner and an issuer) cap ptxas at 168 registers, against the 242 it
+  needs. Measured cold on one GB10 (CUDA 13.0, 2026-11-23, bytes identical):
+  - reloading the query fragments every tile removes the spill, but runs at
+    0.72-0.93x at 1-16 rows a rank (decode) and about even at 32-256 rows;
+  - keeping half the fragments in registers still needs about 210 registers;
+  - two one-tile launches run at 0.65-0.87x on the compressed layers (38 of
+    40), though 1.1-1.25x faster on the two window-only layers.
+
+  So the spill is the cheapest measured option at decode while the block
+  keeps its 53,760 registers and leaves room for the collectives beside it.
+  At one query tile the kernel stages the query in shared memory once a row
+  and reads it with ldmatrix, which has room only there (16 KB); its frame
+  is the 40-byte table of the precise sine and cosine slow path that the
+  RoPE epilogue calls, which runs only for huge angles.
+  `LmLatentShardPrefillKernel` (14 entries, six families) runs the same ten
+  warps and keeps its query fragments in registers for the whole row (72
+  registers at 576 dimensions). Its 32 queries (about 37 KB) do not fit in
+  the roughly 15 KB of shared memory left beside its double-buffered key
+  rows. Reloading the fragments every step only shrinks its frames (ptxas,
+  DSV4.1, CUDA 13.0: 40 to 24 bytes, still spilling, and 32 to 8 bytes) at
+  the same 168 registers. A cold timing of the latent prefill across the
+  six families comes before any change. The other entries wait for their
+  own measurement.
 - Accept each hot-path change independently: exact token parity first, then
   at least three unprofiled end-to-end cached-prefill B1 runs. Do not stack
   candidates until the preceding candidate beats the current GLM 5.3 Flash
@@ -432,17 +465,28 @@ The measure is a public four-Spark TP4 release of the same model (its
 reference build of 2026-11-07, its page read on 2026-11-12), against DeepSeek
 V4.1 Flash on our sixteen:
 
-| | Reference, 4 Sparks | SparkPipe, 16 Sparks |
-| --- | ---: | ---: |
-| Decode step | 21.05 ms | 23.5 ms (42.5-42.7 tok/s, no drafts, 1M cached context) |
-| One stream with drafts | 82.6 tok/s | 47.5-55.8 tok/s |
-| Eight streams | 207.4 tok/s | 151-153 tok/s |
-| Prefill, 131K prompt | 8,657 tok/s | 1,599 tok/s |
-| Prefill, 1M prompt | 6,012 tok/s | 1,287 tok/s (814 s) |
+| | Reference, 4 Sparks | SparkPipe, 4 Sparks | SparkPipe, 16 Sparks |
+| --- | ---: | ---: | ---: |
+| One stream, no drafts, a token | 31.79 ms prose, 34.75 ms code | 32.2-34.4 ms | 21.5-21.8 ms |
+| One stream with drafts | 82.6 tok/s | 71 tok/s over eight prompts (45 to 114) | 62-64 tok/s |
+| Eight streams | 207.4 tok/s with drafts | 94 tok/s without, 91 with (seven streams) | 151-153 tok/s with |
+| Prefill, 32K prompt | 8,508 tok/s; 8,467 on our nodes 0-3 | 4,511 tok/s | 2,373 tok/s |
+| Prefill, 131K prompt | 8,657 tok/s; 8,407 on our nodes 0-3 | 4,224 tok/s | 2,337 tok/s |
+| Prefill, 1M prompt | 6,012 tok/s | not run | 1,287 tok/s (814 s) |
 
-Ours are the 2026-10-24 batch sweep and the 2026-11-01 prefill run
-(`PERFORMANCE_STATUS.md`). The first goal is to match the reference head to
-head on one group of four Sparks; four such groups then give four times its
+The four-Spark column is the lane of 2026-11-12 after its seventh pass
+(2026-11-14), with 16,384-row waves, 1 MiB mesh slots, the row-wise work
+done once per row, native MXFP8 projections and the shared expert sent as a
+route; the README there sets one traced step against the reference's, stage
+by stage, on the same four Sparks
+(`qualification/dsv41_flash/group4-20261112/`; the first pass prefilled at
+1,897 and 1,888 tok/s and its eight streams are the figure shown), the
+sixteen-Spark column
+that day's production lane, its eight streams the 2026-10-24 sweep and its
+1M prompt the 2026-11-01 run. The reference's 21.05 ms, which an earlier
+version of this table set against our single stream, is its mean step over
+twenty batch shapes. The first goal is to match the reference head to head
+on one group of four Sparks; four such groups then give four times its
 throughput on one fleet.
 
 ### The plan
@@ -466,13 +510,16 @@ throughput on one fleet.
   V4.1 Flash, 1M tokens: about 3 GB against 814 s of prefill; Qwen 3.8 27B,
   256K tokens: about 17 GB against about 140 s). A context is replicated
   only in GPU memory, and only while several groups use it at once.
-- **The same bits at every group size.** A round today adds the sixteen
-  ranks' BF16 partials in rank order
-  (`model-families/common/include/sparkpipe/spark_tp_mesh_kernels.cuh`). A
-  wider rank keeps one BF16 partial per sixteenth and the round carries all
-  of them, so the sum is the 16-rank sum whatever the group size, and a
-  cached context is exactly reusable across sizes. The KV identity digest
-  then stops naming the shard degree (`runtime/stage_kv_binding.c`).
+- **The same bits at one group size, not across sizes.** The owner dropped
+  the goal of the same bits at every group size on 2026-11-14. A group size
+  gives the same bits on every run and for every batch, and a round adds the
+  ranks' partials in rank order; a group of another size may differ. So a
+  model may sum partial results across ranks, as the four-Spark DeepSeek V4.1
+  Flash MoE does with one reduce-scatter of partials instead of sending the
+  activations so that one rank computes each output whole (about 250 ms of a
+  16,384-row wave). A cached context is exactly reusable only at the group
+  size that made it, and the KV identity digest keeps naming the shard degree
+  (`runtime/stage_kv_binding.c`).
 - **Placement follows usage.** How many groups hold a model, and of what
   size, follows demand: a model used now and then sits on one group, a
   model many agents saturate spreads until spreading stops paying. Idle
@@ -537,16 +584,77 @@ throughput on one fleet.
    of the node's FP8 peak: the FP8 prefill kernels. Do the same for the
    other models that fit a small group. The sizes are options a user picks
    from by these figures, like precisions; none is the one right size.
-2. DeepSeek V4.1 Flash on one group of four, against the table above. Its
-   CUDA stage pins 16 ranks (`SPARK_DSV41_FLASH_STAGE_TP_DEGREE`) and
-   shards its small KV sixteen ways, which costs it two to three rounds a
-   layer; the November audit's fix is to keep a KV that small whole on each
-   rank of a group, in GPU memory only. Built for four ranks the stage
-   fails two static assertions: a rank's attention records and its index
-   query pack no longer fit a collective row of the hidden width. Both
-   belong to the exchange the whole KV removes. Its rank pack is 20.6 GB at
-   sixteen ranks, so a rank of four holds about 82 GB and the group shares
-   its nodes with no other model.
+2. DeepSeek V4.1 Flash on one group of four, against the table above. The
+   first lane runs (`dsv41_flash_tp4`, nodes 0-3; the receipt above). The
+   module takes its rank count from the build (16, 8 or 4). Under sixteen a
+   rank keeps the whole context and attends with its own heads, so the
+   query all-gather, the record exchange and the pair gather are gone: a
+   layer has the attention all-reduce and the two MoE rounds, the eight
+   index layers one more. The model with its 203 GB of engram tables is
+   larger than four Sparks' memory, so the group reads engram rows from
+   disk (`runtime/row_file.c`), as the reference does; a rank holds a
+   76 GB pack and about 83 GiB in all. What is open, in the order the
+   traces give:
+   - prefill is at 31% to 37% of the reference (22% in the first pass).
+     The second pass folds a wave's window as matrix products, sends the
+     MoE activations as FP8 codes and reads a wave's engram rows ahead; the
+     third reads them with 64 readers in batches, which ended the 44 ms a
+     table layer that ranks waited for each other's disks; the fourth lets
+     a wave hold 16,384 rows, where the framework stopped at 4,096. Only
+     the lower 20 layers run on every row of a wave; the upper 20 run on
+     the last rows every 16,384 tokens, where the recurrent state is
+     checkpointed: 490 ms each, 9% of the time, and a longer stride is an
+     option that makes a shared prefix resume further back. A wave of
+     16,384 rows takes about 5.4 s with that tail: 1.6 s in rounds (38
+     microseconds a piece of 131 KB a peer), 0.8 s in dense linears, 0.7 s
+     in the routed experts (a call reads every expert once, so the larger
+     wave pays that a quarter as often a row), 0.5 s in hyper-connection
+     mixing. A larger wave costs memory (8.5 GiB a node at 16,384 rows)
+     and makes a stream that decodes beside a prefill wait for the whole
+     wave, 6.3 s against 2.5 s; the receipt has 4,096, 8,192 and 16,384
+     rows side by side. The round pieces are the mesh's, and every model's
+     wave pays them: the 0.3 s a wave of step 1. A piece is half a mesh
+     slot. Slots of 1 MiB are their own change (weightd IPC ABI 15): on two
+     machines outside the fleet a 100G port goes from 8.4-8.7 to 11.2-11.8
+     GB/s with them; a lane cannot try them, because the layout belongs to
+     the node's released weightd. In a group of four two of a rank's three
+     peers share one port, which already runs at 10.2-10.5 GB/s, so there
+     the larger slot is bound by that port until weightd splits each peer
+     over both rails. Replaying a round as a captured graph and chaining
+     its kernels as dependent launches gave 3% each and are not in the
+     code;
+   - the wave's linears and routed experts multiply in BF16: the stream
+     GEMM and the expert cell kernel turn the FP8 and MXFP4 weights into
+     BF16 pairs for `LmMmaBf16`, at 40 to 54 TFLOPS. A node's measured
+     peaks are 90 TFLOPS in BF16 and 210 in FP8
+     ([`PERFORMANCE_STATUS.md`](PERFORMANCE_STATUS.md)), the linears'
+     weights are FP8 and their inputs block-scaled FP8, and
+     `inference/kernels/mma.cuh` has the block-scaled forms
+     (`LmMmaMxf8Mxf8`, `LmMmaMxf8Mxf4`), which no wave kernel uses. Dense
+     linears and experts are 1.5 s of a 16,384-row wave's 5.4 s. How the
+     reference spends its 1.9 s has not been measured;
+   - drafts run on the group lane by configuration (a lane record with
+     taps and a draft server, the sixteen-rank lane's drafter): one stream
+     decodes at 71 tok/s over eight prompts against 30 without, the same
+     text. A verify row costs 5.5 ms, because every rank reads its slice
+     of six more experts for it, so a drafted step takes 50 to 80 ms where
+     a plain one takes 32, and drafts stop paying by three streams (seven
+     streams: 94 tok/s without, 91 with). The lane has no record in
+     `deployment/lanes.json` yet;
+   - a step of eight streams reads up to eight times a stream's expert
+     bytes: 72 to 83 ms;
+   - a captured decode step scores the whole window's stride on every
+     rank (3 ms a step at 262,144 tokens); the scoring can be split by
+     position again while the KV stays whole;
+   - with the wave fold four ranks give the corpus token 0.84% less NLL
+     than sixteen [-1.56, -0.11] and 1.88% less than the first pass
+     [-2.70, -1.07], whose sequential fold gave 1.17% more than sixteen.
+     The wave fold rounds each window weight against the window's
+     maximum, the sequential fold against a running maximum; why the
+     model does better with the first is not established, and the
+     sixteen-rank lane still folds sequentially. Which is nearer the
+     publisher's code is not measured; the stored reference tokens and T1
+     fixtures are of an earlier checkpoint.
 3. Rank count as data for every family: the stages that refuse a degree
    other than 16, the packers, the release kit, and a record field for a
    lane's group. weightd keeps the topology a mesh lane was first given
@@ -824,15 +932,27 @@ as recorded debt for models too large for a group.
   Carry the budget in the deployment (a node field read by residentd and
   passed to the binding's ledger open), proven by a run that stays under it.
 
-- The 24-hour retention outside a running model (weightd's purge thread and
-  its release of detached KV pools, the draft servers' context expiry, the
-  batch engine's slot clearing and the prefix index's record expiry) has no
-  fleet proof yet. Proof: backdate an inactive model's snapshot store while
-  another model serves and see `weightd kv purge` empty it within a minute;
-  swap a model away and see `reason=detached_retention` an hour later; see
-  `CONTEXT-EXPIRED` and `prefix index expired` on a backdated hub. The
-  retired API directories on the hub keep prefix index files that no engine
-  opens; they need deleting by hand.
+- weightd's release of detached KV pools after an hour without an owner has
+  no fleet proof yet. Proof: swap a model away and see
+  `reason=detached_retention` an hour later, and the model's cache come back
+  from its snapshot store when it returns. The retired API directories on
+  the hub keep prefix index files that no engine opens; they need deleting
+  by hand.
+
+- Nothing deletes cached request state for its age (2026-11-21), so every
+  node's KV store fills to its quota and stays there. Open with that:
+  - the quota path has fleet proof only at 8 GiB per rank (above), and now
+    carries every eviction;
+  - a store's open scan and its index now hold a full quota of files, about
+    4.1M at fleet page sizes: measure the scan time at lane start and the
+    index memory on a full node;
+  - `DELETE /v1/cache` does not reach the engine's tiers. The serving layer
+    deletes its own stores and answers `not_deleted: engine_cache` (#1789);
+  - nothing writes the working-state directive, and nothing restores a fleet
+    to the base image when a hold ends (#1789, E19);
+  - a kept session's newest turn is still unsaved until something reads it,
+    and an engine that is killed loses it (design stage 2 in
+    `docs/PREFILL_ANTICIPATION.md`).
 
 - Left out on purpose (2026-10-04): JIT-KV W3
   (`docs/archive/JIT_KV_RESPONSE.md:47-49`) is partly done. The slot file, the
@@ -840,9 +960,10 @@ as recorded debt for models too large for a group.
   serves through the binding's two stores: the per-engine spill page store
   (`cache/kv_page_store.c`, digest-checked, quota reserved at open) and the
   persistent snapshot store (`cache/kv_snapshot.c`). A parked prefix page
-  whose entry is not yet saved queues its snapshot save when the arena parks
-  it (`SparkStageKvBindingPark`, `SparkKvPageCacheSaveParked`), and the save
-  reads the spill copy. Still left: the spill store is an `O_TMPFILE` file, so
+  whose entry a request has read and that is not yet saved queues its
+  snapshot save when the arena parks it (`SparkStageKvBindingPark`,
+  `SparkKvPageCacheSaveParked`), and the save reads the spill copy; an unread
+  prefix page is dropped instead of parked. Still left: the spill store is an `O_TMPFILE` file, so
   pages of running sequences cannot be reused after a restart.
   The NVMe tier, the topology switch and the external provider client are
   deleted. Close the rest by making the spill store write the snapshot format,
@@ -903,21 +1024,23 @@ as recorded debt for models too large for a group.
   equals the leftovers, and the resent prompt restores with tokens identical
   to an uninterrupted run.
 - Eviction now prefers entries the snapshot store already holds (or cannot
-  hold), and queues a save for the older unsaved entries it passes over
-  (`SparkKvPageCacheSelectVictim`, `cache/kv_page_cache.c`), so a saved prefix
-  evicted from the device and logical pools restores from the snapshot store.
-  When no safe entry is in the scan window the oldest unsaved entry is still
-  discarded (counted as `evicted_unsaved` in the store close line) rather than
-  stalling admission on the save thread. Close it on the fleet with a run at
-  2x device pages where `evicted_unsaved` stays zero and an evicted prompt
-  restores with `cached_tokens` covering it and tokens equal to an
+  hold, or that no request has read), and queues a save for the older read,
+  unsaved entries it passes over (`SparkKvPageCacheSelectVictim`,
+  `cache/kv_page_cache.c`), so a saved prefix evicted from the device and
+  logical pools restores from the snapshot store. When no safe entry is in the
+  scan window the oldest read, unsaved entry is still discarded (counted as
+  `evicted_unsaved` in the store close line) rather than stalling admission on
+  the save thread. Close it on the fleet with a run at 2x device pages where
+  `evicted_unsaved` stays zero and an evicted prompt that a second request
+  read restores with `cached_tokens` covering it and tokens equal to an
   uninterrupted run.
 - Spilled prefixes on the common binding reach the snapshot store: a parked
-  page of an unsaved prefix entry queues its save from the spill copy, and
-  released sequences already queue theirs. Every driver now serves through the
-  binding (`inference/runner/stage_serving_adapter.c`). Not yet fleet-proven:
-  close it with a prompt spilled before a kill -9 of residentd that hits after
-  the restart with tokens equal to an uninterrupted run.
+  page of a read, unsaved prefix entry queues its save from the spill copy,
+  and a release queues the read part of its chain. Every driver now serves
+  through the binding (`inference/runner/stage_serving_adapter.c`). Not yet
+  fleet-proven: close it with a prompt that a second request read, spilled
+  before a kill -9 of residentd, that hits after the restart with tokens equal
+  to an uninterrupted run.
 - KV eviction follows request priority and deadline.
   - Prefix-cache entries rank by the highest priority of the requests that
     published or reused them, then by whether the snapshot store holds
@@ -948,13 +1071,32 @@ as recorded debt for models too large for a group.
   it with a one-Spark run on a small backing quota where new requests wait
   and complete as running ones finish, and no running request fails.
 - KV NVMe writes are metered, not limited. Every engine on the common binding
-  counts every spill, recurrent-state and snapshot write and raises one
+  counts every spill and snapshot write to disk and raises one
   `KV-WRITE-ALERT` per hour above 20 GiB/hour
-  (`include/sparkpipe/spark_kv_write_meter.h`). The alert shows in
+  (`include/sparkpipe/spark_kv_write_meter.h`). Until 2026-11-18 the meter
+  also counted each recurrent state copied into the in-memory state store,
+  so its totals on models with recurrent layers overstated disk writes; a
+  memory-backed page store is no longer metered. The alert shows in
   `kv_store_report` and as `kv_write_alert_rank` on `/health`, but nothing
   forwards it beyond the API's `/health` yet. Close it with a Spark run that
   writes past the threshold and shows the alert line, the report fields and
   the health rank.
+- KV disk writes follow reads (2026-11-18,
+  [`docs/INTERFACE_CONTRACTS.md`](docs/INTERFACE_CONTRACTS.md#disk-writes-follow-reads)).
+  A serving engine used to save every published prefix and its newest
+  recurrent state, and to spill every prefix page the device pushed out,
+  whether or not any request would read it again. Two single-node
+  Qwen3.8-27B engines under batches of distinct long prompts wrote their KV
+  disks at 3.7 and 1.1 GB a minute and had restored no page from their
+  snapshot stores. Now a prefix reaches disk only once another request has
+  read it; an unread prefix is dropped, with a fingerprint so that its first
+  return is saved; engine close still saves everything. Host tests cover it
+  (`tests/test_kv_snapshot.c`, `tests/test_kv_cache.c`,
+  `tests/test_stage_kv_binding.c`). Not yet measured on a running engine:
+  close it with a before-and-after run of the same load on one host that
+  shows the disk write rate, `save_pages`, `spill_write_bytes`,
+  `unread_discards` and `unread_returns`, and a multi-turn conversation whose
+  turns keep `cached_tokens` covering the previous turn.
 - Recurrent state is checkpointed sparsely (`cache_checkpoint_token_count` in
   the adapter descriptor; K3 every 16384 tokens, GLM Flash every 4096). The
   engine publishes every block as KV but keeps state only at stride multiples,
@@ -1230,6 +1372,34 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Speculation
 
+- The hub's drafters still run in Python (`tools/block_draftd.py`), one
+  process per lane. `build/sparkpipe_draftd` is the C replacement: one
+  process per GPU, DFT3 and tap stream in C. It serves only the host replay
+  drafter so far. The engine drafters (the K3.1 Pro and DSV4.1 DSparks and
+  the Qwen3.8-27B DSpine, from the packs `tools/drafter_pack.py` cuts) and
+  weightd on the hub come next; K3's DFlash2 drafter retires with its lane
+  (#1910).
+- weightd's held packs bind drafters on a device without unified memory
+  through exported host memory (`SparkDeviceMemoryCreateHost`). The CUDA
+  backend has it; nvrm's, a system-memory object exported through the NV0000
+  path, is the runtime track's next item and builds on 64 KiB pages for
+  objects from 4 GiB (#2084). Until then a held bind on nvrm is refused. A
+  held pack is released only when weightd exits.
+- The K3.1 Pro DSpark module (`modules/k31_dspark_draft_stage/`) drafts in
+  5.1 ms at 100 context positions on the 5090: the block forward takes 3.5 ms
+  and the heads 1.7 ms. The forward's weights (4.52 GB) take 2.53 ms to read
+  at the card's 1.79 TB/s, so the forward runs at 1.4x its floor. Suspects:
+  - the bandwidth of the 7-row GEMMs;
+  - the query and value kernels: one 256-thread block per head, 96 blocks,
+    bound by latency;
+  - the norms, which run on 7 blocks.
+
+  Device graphs do not close the gap. Capturing the forward and the heads gave
+  byte-identical drafts at the same times (median forward 3.483 against 3.489
+  ms, draft 5.141 against 5.144 ms), because the host queues a draft's ~100
+  launches in 0.12 ms while the GPU works for 5 ms. With a busy thread
+  on the draft server's core, both builds wait the same for the wake after the
+  stream sync. The work is per-kernel time.
 - Tree frames serve only where the stage maps keys per path: Solar Open 2
   on CUDA and Qwen3.8-27B on Metal. Kimi K3, DeepSeek V4.1 Flash, GLM 5.3 and
   A.X K2 need per-path key mapping in MLA and DSA selection; K-EXAONE 2.0,
@@ -1382,6 +1552,79 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
 
 ## Runtime completion
 
+- nvrm system memory objects of 4 GiB or more in 2 MiB pages, mapped
+  through the unified-memory external range, have no GPU mapping for the
+  64 KiB at object offset 4 GiB - 64 KiB. A write there takes Xid 31
+  (`FAULT_PTE`). This was found on GB10 with open module 580.178.04.
+  - #2084 works around it: such objects take 64 KiB pages, which cost
+    nothing measurable on GB10.
+  - The cause is not known. Our calls pass 64-bit sizes, and the open
+    paths read 64-bit clean; `docs/NVRM_BACKEND.md` names the files and
+    lines.
+  - Once the cause is found, 2 MiB pages can come back for large objects.
+    `make SPARKPIPE_DEVICE=nvrm nvrm-large-transfers` checks 8, 10.5 and
+    16 GiB.
+- nvrm on a discrete GPU keeps each channel's fence in host memory. A plain
+  launch's host acquire polls it across PCIe, so plain launches on the hub's
+  RTX 5090 still leave 2.0 us between chained kernels, against CUDA's 1.0 to
+  1.1 us (dependent launches: 0.70 us).
+  - Moving the fence to BAR1-mapped video memory costs more than it saves
+    today: `NvrmSlot` reads the fence on every launch, about 3 us through
+    BAR1, and host submission of 136 launches rose from 79 to 484-565 us.
+  - First read the fence only when the slot ring needs room, or keep a copy
+    in host memory. Then move the acquire target to video memory and
+    measure with `make nvrm-chain-gap`
+    ([`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md), the hub's RTX 5090).
+- nvrm drafters on the hub's RTX 5090 still take 19% (K3.1), 24% (Qwen
+  DSpine) and 119% (DSV4.1) more time per proposal than CUDA once launch
+  slots live in video memory, with identical drafts. The gap is per-kernel
+  GPU time, which the empty-kernel chain does not show. Next to measure on
+  these kernels: the code image (constant banks beyond bank 0 included) and
+  local memory in video memory, one switch per use as for the slots.
+- K3.1 drafter ingest on nvrm copies pageable host memory through the 8 MiB
+  staging buffer, and each staged copy waits for its queue. On the hub's
+  RTX 5090 the copies cost 604 us of host time per ingest call, against 9 us
+  on CUDA. Stage without waiting for the queue, for example through a ring
+  of staging chunks that the copy engine's semaphore releases.
+- Device programs on Metal: the Metal backend refuses `SparkDeviceProgramRecord` with `SPARK_STATUS_UNSUPPORTED`
+  and clears `SPARK_DEVICE_PROPERTY_PROGRAMS`, so callers launch eagerly there. The device-layer replay the host
+  backend uses would serve Metal too, but it has not run on Metal hardware. To enable it: set the property again,
+  return `SPARK_STATUS_OK` from the Metal `SparkDeviceBackendProgramBegin`, and pass `tests/test_device_contract.c`'s
+  program sections on a Mac with Metal.
+- `tools/tp_mesh_hardware_probe.cu --reduce-scatter` (sixteen ranks in one
+  process, CPU-copy daemon) has faulted four times on GB10, on three hosts
+  (lenovo7 twice, spark1, lenovo8), with Xid 31, an MMU `FAULT_PTE` on a
+  `VIRT_WRITE` from `GPCCLIENT_T1`. The first three came while other processes
+  on the node were running GPU work; the fourth (lenovo8, open module
+  580.178.04, 2026-11-22 06:40:57Z, `GPCCLIENT_T1_7`) came with no other
+  compute process on the GPU, so concurrent work is not needed. The cause is
+  open.
+  - Each fault address lay above a 4 GiB-aligned base, outside every probe
+    allocation: `0xd0000` above it the first three times, `0xf5000` the fourth.
+    The device buffers sit in 512 MiB chunks at base + 2, 2.5 and 3 GiB.
+  - The recorded failing case, on spark1 and again on lenovo8, was the first
+    tp=16 pipelined reduce-scatter (segment = staging capacity + 148), run
+    eagerly right after a graph case.
+  - Its only kernel with local memory is `SparkTpMeshHardwarePieceKernel`: an
+    8-byte stack frame with 4 bytes of spill stores, at 128 registers under
+    `__launch_bounds__(128,4)`.
+  - With the GPU to itself, one process at a time, 63 runs were clean:
+    - 10 of the probe as built;
+    - 10 with the piece kernel at residency 3 (168 registers, no stack frame);
+    - 10 with `cudaLimitStackSize` set explicitly to its default, 1024;
+    - 5 × 20 iterations of a tp=2 then tp=16 pipelined pair;
+    - 3 × 20 iterations of the failing graph-to-eager transition;
+    - 10 beside a second process running 1 ms spin kernels;
+    - 10 beside a second process allocating, filling and freeing 1 GiB in a
+      loop.
+  - Next: loop the whole test on spark1, every mode in order as the GPU gate
+    runs it, to measure the rate; then test the piece kernel without a stack
+    frame: summing the peers in batches of four keeps residency 4 at 110
+    registers with the same summation order.
+  - Until it is fixed, `tests/test_tp_mesh_hardware_probe.py` is parked: the
+    GPU test gate leaves it out and names it on a `PARKED` line, and the test
+    skips unless `SPARK_RUN_PARKED=1` asks for it. Run it only on request, on
+    spark1.
 - A submission that fails residentd's cache validation is retried until its
   deadline, and every attempt resets the session on all ranks: on 2026-10-14
   two GLM-5.3 Full requests with a 60 s and a 3 s deadline (failing on the
@@ -1557,8 +1800,8 @@ Each needs, in order: the checkpoint contract, the driver on the common stage ru
   - the `pack.warm` notice as a webhook, which today is only a log line;
   - `/` in pack names at the gateway;
   - repository quotas (#1798).
-- Repositories and packs expire through the chat layer's working-state
-  sweep, like the replay store. `tools/working_state_scan.py` is on the
+- Repositories and packs are deleted by the chat layer's wipe mark, like
+  the replay store. `tools/working_state_scan.py` is on the
   unmerged #1692. When it lands, add the repository areas to the scan as a
   storage place (`.last-use` per area), and follow its separate
   `storage_wiped` rule for `repos/`.
@@ -1677,7 +1920,8 @@ and the multidev docs on 2026-09-28. Line numbers are in
   it: GLM 5.3's rank holds 9.75 GiB of GPU memory when idle and about 3 GiB
   more under its first long prompt, which left 0.8 GiB above `earlyoom`'s 2%
   before 2026-11-13 and nothing once the mesh region grew (IPC ABI 15). The
-  mesh is back to its old size (ABI 16); the sizing is still a guess. A rank
+  mesh went back to its old size under ABI 16 and is 256 MiB larger from ABI
+  17 (four slots a rank), so about 0.55 GiB remains; the sizing is still a guess. A rank
   should tell weightd its state budget, or touch it before the KV pool
   attaches.
 - Every mesh band is pinned at daemon start. Registering a lane's bands when
@@ -1741,6 +1985,69 @@ and the multidev docs on 2026-09-28. Line numbers are in
 
 ## Hardware independence
 
+- Rented nodes carry no NVIDIA user-space software: the engine, weightd and
+  the mesh run on a device backend over the open kernel module, on a node
+  image without NVIDIA's user-space packages.
+  [`tools/hosted_dependency_audit.py`](tools/hosted_dependency_audit.py)
+  ([`docs/HOSTED_DEPENDENCY_AUDIT.md`](docs/HOSTED_DEPENDENCY_AUDIT.md)) is
+  the gate for release roots, node images and running nodes.
+  `make hosted-release-gate` and `HOSTED=1 scripts/release_build.sh` refuse
+  a release root with any finding outside
+  [`tools/hosted_release_debt.json`](tools/hosted_release_debt.json), which
+  may only shrink and is empty, and the kit's `--deploy` run refuses a root
+  that mixes device backends. A hosted root ships the nvrm builds of
+  `sparkpipe_weightd`, `weightd_warm`, `weightdctl`,
+  `sparkpipe_model_residentd`, the RDMA transport and every serving adapter
+  under their usual paths, with the nvrm device library and the tensor map
+  build image the adapters' TMA maps need, and no CUDA library. The hub's
+  API also loads an adapter for its descriptor, so the hub ships them too.
+
+  `sparkpipe_model_api`, `sparkpipe_tokenize_prompt`,
+  `sparkpipe_model_batch`, `weightd_receipt` and the node agent link no CUDA
+  library: the global `LDFLAGS` no longer add `-lcuda`. Still to build:
+  - that device backend;
+  - a build flavour that links neither library;
+  - weightd on nvrm on a node. weightd's memory goes through the device layer
+    ([`docs/DEVICE_SHARED_MEMORY.md`](docs/DEVICE_SHARED_MEMORY.md)), and
+    the RDMA transport links the flavour's device library instead of the
+    driver.
+    - `make SPARKPIPE_DEVICE=nvrm nvrm-weightd` builds weightd's three
+      programs with no CUDA library. They have not run on a GPU yet.
+    - The nvrm flavour builds residentd, the transport and every adapter.
+      Every adapter's model kernel image loads on nvrm, but the stage
+      runner's still calls device `printf`, which only the CUDA driver
+      provides, and the stage runner's graph capture has no nvrm equivalent
+      yet, so no adapter serves on nvrm.
+- The node image ([`docs/HOSTED_NODE_IMAGE.md`](docs/HOSTED_NODE_IMAGE.md))
+  builds and passes the audit, but no node boots it yet. Still to build:
+  - a disk install that has run on a node:
+    [`install_disk.sh`](tools/hosted_image/install_disk.sh) installs onto a
+    node's disk and keeps `/home`. Its dry run, `make hosted-disk-dryrun`,
+    passes on a partitioned disk-image file: install, rollback, the refusal
+    while a set-aside directory exists, a second install and the audit gate.
+    It has not yet installed onto a node's disk, and no disk it installed
+    has booted. It carries the node's `/var/lib/tailscale`, so a reimaged
+    node rejoins the tailnet as itself; the dry run checks the copy;
+  - a new node's first tailnet login:
+    [`tools/tailscale_join.sh`](tools/tailscale_join.sh)
+    ([`docs/TAILSCALE_JOIN.md`](docs/TAILSCALE_JOIN.md)) logs a node in
+    from an auth-key file with no browser. It has run only against fake
+    commands. It needs the tailnet's tag and a reusable, pre-approved key or
+    an OAuth client before it can run on a node;
+  - proving it on a spare Spark and on a four-node group against the
+    factory OS.
+
+  These node and hub functions call `nvidia-smi` or DGX OS tools, which the
+  image does not carry, and need replacements:
+  - the hub's GPU clock cap (`nvidia-smi -lgc`) and the post-reboot clock
+    check;
+  - the baseline audit's GPU check;
+  - the node telemetry monitor;
+  - the queue's GPU process listing;
+  - GPU persistence (the factory OS runs `nvidia-persistenced`);
+  - `mlnx_qos`, which sets RoCE trust, PFC and buffers in
+    `sparkpipe-roce-qos`, the rail 2 fabric script and the agent's mesh
+    check.
 - The device API (`include/sparkpipe/spark_device.h`, `runtime/device/`)
   has buffers in the five spaces, register and map_file, queues, events and
   kernel launch, with host, CUDA and Metal backends built as one shared
@@ -1753,6 +2060,69 @@ and the multidev docs on 2026-09-28. Line numbers are in
   target can be `host.*`, `metal.*` or `rocm.*`. The CUDA backend then needs
   kernel launch (it refuses kernel libraries today) and graph capture and
   replay.
+- The nvrm backend (`runtime/device/nvrm/`,
+  [`docs/NVRM_BACKEND.md`](docs/NVRM_BACKEND.md)) has its generated headers
+  from the pinned open kernel module releases (580.178.04 for the Sparks,
+  595.84 for the hub's RTX 5090) and open-gpu-doc, the
+  `SPARKPIPE_DEVICE=cuda|nvrm` build flavour, a cubin parser and a QMD
+  version 5 packer tested on release-built kernels, device open, memory
+  and kernel launch below the backend entries, and backend entries for
+  initialization, every memory space, registered, file-backed and
+  pageable memory, copy-engine copies and fills, queues (one GPFIFO ring
+  each, compute and copy ordered on a 64-bit timeline), events, waits
+  between queues, host callbacks and timing; the device contract passes on
+  GB10 and memory bandwidth is at par with `cudaMalloc`. The barrier count a kernel needs is
+  not read from its cubin yet (the packer takes it as an input). Kernel libraries (cubins with PTX parameter
+  manifests) load and launch through the device layer with the parameter
+  block as constants. Missing: the kernel registration entry points and
+  the hosted LM_LAUNCH template that map nvcc's host stubs to those
+  kernels; command lists replacing graphs; memory shared with weightd;
+  TMA descriptors; fault reports (a hung queue is waited on forever).
+  Host-backed memory registers 4 KiB pages and reads 18% slower than
+  device memory. On the hub's RTX 5090 the backend runs the whole GPU gate
+  with device-private and shared memory in video memory, and host-pinned
+  and shared-coherent memory in write-back system memory with 2 MiB pages
+  from 2 MiB up, which the copy engine fills from video memory at
+  42.4 GB/s against 22.7 GB/s for host memory in 4 KiB pages (the link's
+  floor is 63.0 GB/s). That kind has three costs:
+  - The module maps its memory into the process with every 4 KiB page
+    present but clean (`vm_insert_page` when the process maps it), so the
+    CPU sets a page's dirty bit on the first store to it: about 0.24 us a
+    page, with no page fault (`ru_minflt` does not move). A fresh buffer's
+    first CPU pass therefore writes at about half speed (`memcpy` 11.5
+    against 21.5 GB/s in 2 MiB pages, 7.5 against 18.4 in 4 KiB pages;
+    `pread` into it 7.1 against 11.1), and later passes at full speed.
+    Every kind the module maps for the CPU pays this whatever its page
+    size or caching. Host memory does not, because the module pins it with
+    write faults, which leave each page dirty; anonymous shared memory
+    populated by reads pays the same. One store to each page (16 ms for
+    256 MiB) moves the cost but does not remove it.
+  - Allocations under 2 MiB keep 4 KiB pages. A drafter step's transfers
+    (up to 16 rows of taps, 819,200 bytes) time as before; from 2 MiB
+    pages the 16-row upload would take 20.7 us instead of 25.0.
+  - Each allocation keeps a descriptor of the control device open for its
+    CPU mapping, and the module allocates the memory without charging the
+    process's memory cgroup, so a lane's memory limit does not count its
+    host-pinned or shared-coherent buffers on a discrete GPU.
+  Production modules call the CUDA runtime directly
+  (above), so even a complete backend serves nothing until they move
+  behind the device layer or a GPU API of our own.
+- nvrm stream priorities. The nvrm GPU front reports one stream priority:
+  `SparkGpuDeviceGetStreamPriorityRange` answers 0 to 0, as CUDA does for a
+  context without priorities, and refuses any other priority. So the
+  residentd's execution stream and the stage runner's lanes run at the
+  priority of every other stream. Every queue's compute channel sits in one
+  channel group, which the GPU schedules as a whole.
+  - Real priorities would give the prioritized queues a channel group of
+    their own at a higher interleave level and timeslice, through the open
+    module's channel-group controls in `ctrl/ctrla06c.h` (open-gpu-kernel-modules
+    580.178.04): `NVA06C_CTRL_CMD_SET_INTERLEAVE_LEVEL` (`NVA06C_CTRL_INTERLEAVE_LEVEL_LOW`,
+    `_MEDIUM`, `_HIGH`) and `NVA06C_CTRL_CMD_SET_TIMESLICE` (`timesliceUs`).
+  - Whether work in two channel groups still overlaps on the compute engine,
+    or the groups take turns, is not known; the measurement must show it.
+  - Proof: at M8, decode step time on nvrm under mixed prefill and decode,
+    with the decode queues in a group of their own against today's single
+    group. If priority matters there, it becomes an M8 item.
 - The stage-runner model interface
   (`include/sparkpipe/spark_stage_runner_model.h`) still passes queues and
   device addresses type-erased: `void *stream` in `step`, `recurrent_copy`,
@@ -1993,7 +2363,7 @@ Metal backend and the single-Studio stage are in
     table over a fixed pool and no page store, so every request recomputes
     its prompt. Its pages must come from the common page cache with
     copy-on-write prefixes, and cached request state from the snapshot tiers
-    under the 24-hour retention rule;
+    under the retention invariant;
   - state save and restore: the model's `recurrent_copy` packs its recurrent
     state in the CUDA model's order, but no runner path exports or restores a
     sequence's KV pages and state, and decode after a restore has not been

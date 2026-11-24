@@ -1,6 +1,8 @@
 import base64
+import errno
 import importlib.util
 import json
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -202,6 +204,10 @@ class RemoteAuditTest(unittest.TestCase):
             (lambda n: setattr(n,"drift",["/route"]),{"asset-drift:/route"}),
             (lambda n: setattr(n,"enabled_instances",["osd.3","crash"]),{f"ceph-stray-unit:ceph-{FSID}@crash.service"}),
             (lambda n: n.unit_states.__setitem__("plymouth-quit-wait.service","static"),{"optional-boot-unit:plymouth-quit-wait.service=static"}),
+            (lambda n: n.unit_states.__setitem__("nvidia-spark-mlnx-firmware-manager.service","enabled"),{"optional-boot-unit:nvidia-spark-mlnx-firmware-manager.service=enabled"}),
+            (lambda n: n.unit_states.__setitem__("dgx-dashboard-admin.service","enabled"),{"vendor-update-service:enabled/"}),
+            (lambda n: n.commands.__setitem__("systemctl is-active dgx-dashboard-admin.service","active"),{"vendor-update-service:disabled/active"}),
+            (lambda n: setattr(n,"drift",[MODULE.VENDOR_UPDATE_GUARD]),{f"asset-drift:{MODULE.VENDOR_UPDATE_GUARD}"}),
             (lambda n: n.unit_states.__setitem__("sparkpipe-roce-qos.service","disabled"),{"sparkpipe-roce-qos.service:disabled:active"}),
             (lambda n: n.commands.__setitem__("/usr/sbin/sshd -T",SSHD_EFFECTIVE.replace("passwordauthentication no","passwordauthentication yes")),{"sshd-passwordauthentication:yes"}),
             (lambda n: n.commands.__setitem__("/usr/sbin/sshd -T",""),{"sshd-passwordauthentication:missing","sshd-kbdinteractiveauthentication:missing"}),
@@ -287,6 +293,10 @@ class RemoteAuditTest(unittest.TestCase):
             (lambda n: n.unit_states.__setitem__("spark-firewall.service","disabled"),{"spark-firewall.service:disabled:active"}),
             (lambda n: n.commands.__setitem__("journalctl -b -u spark-dma-guard.service -o cat --no-pager",""),{"dma-guard:active:no-start"}),
             (lambda n: n.unit_states.__setitem__("plymouth-quit-wait.service","static"),{"optional-boot-unit:plymouth-quit-wait.service=static"}),
+            (lambda n: n.unit_states.__setitem__("nvidia-spark-mlnx-firmware-manager.service","enabled"),{"optional-boot-unit:nvidia-spark-mlnx-firmware-manager.service=enabled"}),
+            (lambda n: n.unit_states.__setitem__("dgx-dashboard-admin.service","enabled"),{"vendor-update-service:enabled/"}),
+            (lambda n: n.commands.__setitem__("systemctl is-active dgx-dashboard-admin.service","active"),{"vendor-update-service:disabled/active"}),
+            (lambda n: setattr(n,"drift",[MODULE.VENDOR_UPDATE_GUARD]),{f"asset-drift:{MODULE.VENDOR_UPDATE_GUARD}"}),
             (lambda n: setattr(n,"drift",[MODULE.DMA_GUARD_RUNTIME]),{f"asset-drift:{MODULE.DMA_GUARD_RUNTIME}"}),
             (lambda n: setattr(n,"drift",["/a","/route"]),set()),
         )
@@ -395,6 +405,39 @@ class ControllerTest(unittest.TestCase):
             MODULE.run(["tee","x"],input_bytes=b"data")
             self.assertIsNone(call.call_args.kwargs["stdin"])
 
+    def test_a_sysfs_attribute_that_answers_einval_reads_as_absent_and_other_errors_still_raise(self) -> None:
+        def raising(code: int):
+            def read_text(path: Path, *args: object, **keywords: object) -> str:
+                raise OSError(code,os.strerror(code),str(path))
+            return(read_text)
+        with mock.patch.object(MODULE.Path,"read_text",raising(errno.EINVAL)):
+            self.assertEqual(MODULE.read_optional(Path("/sys/class/net/enp1s0f1np1/speed")),"")
+        with mock.patch.object(MODULE.Path,"read_text",raising(errno.EIO)):
+            with self.assertRaises(OSError):
+                MODULE.read_optional(Path("/sys/class/net/enp1s0f1np1/speed"))
+
+    def test_a_missing_program_is_a_failed_command_not_a_crash(self) -> None:
+        result = MODULE.run(["/nonexistent/sparkpipe-missing-tool","-i","x"],check=False)
+        self.assertEqual(result.returncode,127)
+        self.assertIn(b"command not found",result.stderr)
+        self.assertEqual(MODULE.command(["/nonexistent/sparkpipe-missing-tool"],check=False),"")
+        with self.assertRaises(MODULE.BrickproofError):
+            MODULE.run(["/nonexistent/sparkpipe-missing-tool"])
+
+    def test_a_fabric_port_without_link_is_reported_down_not_a_crash(self) -> None:
+        original = MODULE.Path.read_text
+        def read_text(path: Path, *args: object, **keywords: object) -> str:
+            if str(path).startswith("/sys/class/net/") and path.name in ("speed","duplex","carrier"):
+                raise OSError(errno.EINVAL,"Invalid argument",str(path))
+            return(original(path,*args,**keywords))
+        with mock.patch.object(MODULE.Path,"read_text",read_text), \
+                mock.patch.object(MODULE,"audit_rail2",return_value=([],{})), \
+                mock.patch.object(MODULE,"audit_gpu",return_value=([],{})), \
+                mock.patch.object(MODULE,"run",return_value=mock.Mock(returncode=0,stdout=b'{"BackendState":"Running","Self":{"Online":true,"Tags":["tag:spark"]}}',stderr=b"")):
+            failures,observations = MODULE.audit_fleet_hardware("spark1")
+        self.assertEqual(failures,[f"fabric-link:{MODULE.SWITCHED_INTERFACE}",f"fabric-link:{MODULE.RAIL2_INTERFACE}"])
+        self.assertEqual(observations[f"link:{MODULE.SWITCHED_INTERFACE}"],{"carrier":"","duplex":"","speed_mbit":""})
+
     def test_route_metric_must_be_exactly_the_uplink_metric(self) -> None:
         self.assertTrue(MODULE.uplink_default_route_present(["default via 192.168.50.1 dev enP7s7 proto static metric 10"]))
         for metric in ("100","101","1000"):
@@ -405,6 +448,52 @@ class ControllerTest(unittest.TestCase):
         with mock.patch.object(MODULE,"command",return_value=listing),mock.patch.object(MODULE,"run") as run:
             self.assertEqual(MODULE.reset_vanished_failed_units(),["snap-core22-2438.mount"])
         run.assert_called_once_with(["systemctl","reset-failed","snap-core22-2438.mount"],check=False)
+
+
+class GpuAuditTest(unittest.TestCase):
+    VERSION = "NVRM version: NVIDIA UNIX Open Kernel Module for aarch64  580.178.04  Release Build  (builder)  Tue Jul  7 13:36:23 UTC 2026\n"
+    INFORMATION = ("Model: \t\t Unknown\nGPU UUID: \t GPU-06759622-c673-b343-e038-1439403d8f57\nBus Location: \t 000f:01:00.0\n"
+                   "Device Minor: \t 0\nGPU Firmware: \t 580.178.04\nGPU Excluded:\t No\n")
+
+    def tree(self,directory: str,version: str | None = VERSION,devices: dict[str,tuple[str,str,str]] | None = None) -> tuple[Path,Path]:
+        proc = Path(directory) / "proc"
+        pci = Path(directory) / "pci"
+        (proc / "gpus").mkdir(parents=True)
+        pci.mkdir()
+        if version is not None:
+            (proc / "version").write_text(version)
+        for bus,(information,vendor,device) in (devices if devices is not None else {"000f:01:00.0":(self.INFORMATION,"0x10de","0x2e12")}).items():
+            (proc / "gpus" / bus).mkdir()
+            (proc / "gpus" / bus / "information").write_text(information)
+            (pci / bus).mkdir()
+            (pci / bus / "vendor").write_text(vendor + "\n")
+            (pci / bus / "device").write_text(device + "\n")
+        return(proc,pci)
+
+    def test_a_gb10_with_its_module_and_firmware_passes_without_nvidia_smi(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            failures,observations = MODULE.audit_gpu(*self.tree(directory))
+        self.assertEqual(failures,[])
+        self.assertEqual((observations["gpu_module"],observations["gpu_pci_id"],observations["gpu_firmware"]),("580.178.04","0x10de:0x2e12","580.178.04"))
+        self.assertEqual(observations["gpu_temperature"],"not measured: waits for the runtime's RM thermal telemetry")
+
+    def test_each_missing_or_wrong_gpu_property_is_a_finding(self) -> None:
+        cases = (
+            ({"version":None},["gpu-module-missing"]),
+            ({"devices":{}},["gpu-count:0"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION,"0x10de","0x2b85")}},["gpu-not-gb10:0x10de:0x2b85"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION.replace("GPU Excluded:\t No","GPU Excluded:\t Yes"),"0x10de","0x2e12")}},["gpu-excluded:Yes"]),
+            ({"devices":{"000f:01:00.0":(self.INFORMATION.replace("GPU Firmware: \t 580.178.04","GPU Firmware: \t 580.159.03"),"0x10de","0x2e12")}},["gpu-firmware:580.159.03!=580.178.04"]),
+        )
+        for arguments,expected in cases:
+            with self.subTest(expected=expected),tempfile.TemporaryDirectory() as directory:
+                self.assertEqual(MODULE.audit_gpu(*self.tree(directory,**arguments))[0],expected)
+
+    def test_the_audit_runs_no_gpu_user_space_tool(self) -> None:
+        with mock.patch.object(MODULE,"run") as run,mock.patch.object(MODULE,"command") as command,tempfile.TemporaryDirectory() as directory:
+            MODULE.audit_gpu(*self.tree(directory))
+        run.assert_not_called()
+        command.assert_not_called()
 
 
 if __name__ == "__main__":

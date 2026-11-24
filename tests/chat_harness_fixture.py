@@ -84,6 +84,7 @@ class Engine:
         self.hold = None
         self.early_usage = True
         self.cache_all = False
+        self.cache = None
         self.usage = []
 
     def tokens(self, text):
@@ -124,6 +125,8 @@ class Engine:
                 sent = len(ids) if last else 1
                 event["usage"] = {"prompt_tokens": len(prompt), "completion_tokens": sent, "total_tokens": len(prompt) + sent,
                                   "prompt_tokens_details": {"cached_tokens": cached}}
+                if self.cache is not None:
+                    event["cache"] = self.cache(prompt, cached)
             await response.write(("data: " + json.dumps(event) + "\n\n").encode())
         self.committed.append(list(prompt) + list(ids[:-1]))
         await response.write(b"data: [DONE]\n\n")
@@ -220,10 +223,10 @@ class Harness:
         headers.update(extra)
         return headers
 
-    def directive(self, wiped, held_until):
+    def directive(self, wiped):
         path = self.tmp / "working-state" / "directive"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"sparkpipe-working-state 1\nwiped {int(wiped)}\nheld_until {int(held_until)}\n")
+        path.write_text(f"sparkpipe-working-state 2\nwiped {int(wiped)}\n")
 
     async def post(self, path, body, **headers):
         async with self.session.post(self.base + path, json=body, headers=self.headers(**headers)) as response:

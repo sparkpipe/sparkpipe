@@ -1,4 +1,4 @@
-"""Run the stream GEMM (grouped FP8 experts, dense BF16 projections) against an fp64 reference and for row invariance, and the serving CUDA-core expert dispatch against the same bound, on an sm_121 device."""
+"""Run the stream GEMM (grouped FP8 experts, dense BF16 projections) against an fp64 reference and for row invariance, FP8 and MXFP8 across tile shapes and warp rows, and the serving CUDA-core expert dispatch against the same bound, on an sm_121 device."""
 import os
 import pathlib
 import shutil

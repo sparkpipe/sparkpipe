@@ -56,19 +56,19 @@ needle has no answer; the prefill times come from rank 0's log.
   per-pass and sequence lines, and the per-layer hidden absmax of each pass
   (identical across KQ3, KQ4, KQ6, KQ7, KQ10 and KQ11).
 - `absmax-KQ11-vs-KQ12.txt`: the FP8 index against BF16, layer by layer
-  (`absmax_compare.py`). The absmax is the largest value over rank 0's
+  (`tools/k31_prefill/absmax_compare.py`). The absmax is the largest value over rank 0's
   31,232 rows, logged to three digits: pass 1 moves at most 1.9%, pass 2
   (contexts to 1M) up to +15.1% at the last layer, so FP8 changes some rows'
   hidden states at long context; how much it changes answers needs decode.
 - `pass-KQ2-rank0-kernels.tsv`: rank 0's GPU seconds and launches by kernel
   over the KQ2 trace, the 40 largest.
 - `pass-KQ8-rank0.log`, `pass-KQ8-rank0-kernels.txt`: rank 0's lines and its
-  GPU seconds and launches by kernel over the KQ8 trace (`pass_trace.py`,
+  GPU seconds and launches by kernel over the KQ8 trace (`tools/k31_prefill/pass_trace.py`,
   run on the hub: the prefill window, GPU busy and idle time, the gaps, the
   45 largest kernels).
 - `pass-KQ8-rank0-mesh.txt`: the mesh kernels by the compute kernel before
-  them (`mesh_attr.py`) and the convolution-tail waits by shard
-  (`tail_waits.py`).
+  them (`tools/k31_prefill/mesh_attr.py`) and the convolution-tail waits by shard
+  (`tools/k31_prefill/tail_waits.py`).
 
 
 ## Mode-switch runs, 2026-11-19
@@ -109,7 +109,7 @@ The FP8 index against BF16 (KS6 against KS7, the same adapter and lane):
   FP8).
 - Prefill: 1M 440.7-446.4 s against 477.1-480.6 s (35 s, 7% less), 400K
   160.8-163.2 s against 166.7-168.9 s, 131K 109.7 s against 108.8 s.
-- Logprobs (`logprobs-KS6-vs-KS7.txt`, `logprob_compare.py`): the 400K
+- Logprobs (`logprobs-KS6-vs-KS7.txt`, `tools/k31_prefill/logprob_compare.py`): the 400K
   answer keeps the first 36 of 64 tokens; over those the chosen token's
   logprob moves 0.026 on average and at most 0.097 (its probability at most
   0.06), and the top 5 agree in order at 14 positions. Token 36 was a near

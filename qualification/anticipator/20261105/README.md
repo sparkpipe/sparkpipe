@@ -1,5 +1,7 @@
 # Anticipator plan for Customer Zero, 5 November 2026
 
+The planner this receipt records was retired on 21 November 2026, with its tool, its model table and its document: `docs/PREFILL_ANTICIPATION.md` says why and what replaces it. The receipt stays as the record of that one run.
+
 The first plan of `tools/anticipator.py` for this repository ("Customer Zero") at `13bb07a47`. It is a planning receipt for issue P11: no pack was built or warmed, and nothing ran on a fleet.
 
 ## Inputs

@@ -54,6 +54,24 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+GPU_NAMES = (
+    {"gpu": "cuda", "stream": "cudaStream_t", "non_blocking": "cudaStreamNonBlocking"},
+    {"gpu": "SparkGpu", "stream": "SparkGpuStream", "non_blocking": "SPARK_GPU_STREAM_NON_BLOCKING"},
+)
+
+
+def gpu_named(text: str, pattern: str) -> bool:
+    return any(pattern.format(**names) in text for names in GPU_NAMES)
+
+
+def gpu_index(text: str, call: str) -> int:
+    found = [text.find(names["gpu"] + call) for names in GPU_NAMES]
+    found = [index for index in found if index >= 0]
+    if not found:
+        raise ValueError("no GPU runtime call " + call)
+    return min(found)
+
+
 def main() -> int:
     for relative in NEUTRAL_FILES:
         text = (ROOT / relative).read_text(encoding="utf-8")
@@ -399,7 +417,7 @@ def main() -> int:
         "generated driver boundary does not forward neutral KV page budgets",
     )
     require(
-        "#define SPARK_MODEL_DRIVER_ABI_VERSION 20u" in driver_header
+        "#define SPARK_MODEL_DRIVER_ABI_VERSION 21u" in driver_header
         and "uint64_t submission_id;" in driver_header
         and "uint64_t control_generation;" in driver_header
         and "uint64_t transaction_id;" in driver_header
@@ -437,22 +455,21 @@ def main() -> int:
     require(
         "adapter_interface.quiesce" in resident
         and resident.index("adapter_interface.quiesce")
-        < resident.index("cudaStreamSynchronize")
+        < gpu_index(resident, "StreamSynchronize")
         < resident.index("SparkHiddenTransportClose")
         < resident.index("adapter_interface.destroy")
         < resident.index("SparkModelServingAdapterUnloadInterface"),
         "resident teardown does not quiesce CUDA and transport before unload",
     )
     require(
-        "cudaStream_t execution_stream;" in resident
-        and "cudaStream_t transport_stream;" in resident
+        gpu_named(resident, "{stream} execution_stream;")
+        and gpu_named(resident, "{stream} transport_stream;")
         and "adapter_configuration.execution_stream = runtime->execution_stream"
         in resident
         and "packet->cuda_stream = runtime->transport_stream" in resident
-        and "cudaStreamCreateWithFlags(&runtime->transport_stream,cudaStreamNonBlocking)"
-        in resident
-        and "cudaStreamSynchronize(runtime->transport_stream)" in resident
-        and "cudaStreamDestroy(runtime->transport_stream)" in resident,
+        and gpu_named(resident, "{gpu}StreamCreateWithFlags(&runtime->transport_stream,{non_blocking})")
+        and gpu_named(resident, "{gpu}StreamSynchronize(runtime->transport_stream)")
+        and gpu_named(resident, "{gpu}StreamDestroy(runtime->transport_stream)"),
         "resident does not isolate model execution from stream-ordered transport",
     )
     drain_routes = "status = SparkModelResidentdProgressRoutes(runtime,0u);"

@@ -6,6 +6,7 @@
 #include "inference/kernels/frame_error.cuh"
 #include "inference/kernels/index_shard.cuh"
 #include "inference/kernels/topk_exact.cuh"
+#include "sparkpipe/spark_gpu.h"
 
 #define LM_INDEX_SELECT_THREADS 512u
 #define LM_INDEX_SELECT_NONE 0xffffffffu
@@ -305,6 +306,7 @@ void LmIndexSelectLocalKernel(SparkKvShard shard, const float *__restrict__ scor
 	LmIndexSelectLocalRadixRow<THREADS>(shard, row_scores, local, keep, out, histogram, state, warp_totals);
 }
 
+#ifdef __CUDACC__
 template<uint32_t THREADS>
 struct LmIndexSelectSampledShared
 {
@@ -530,6 +532,7 @@ void LmIndexSelectLocalSampledKernel(SparkKvShard shard, const float *__restrict
 	}
 	LmIndexSelectSampledFinish<THREADS>(shard, row_scores, s, total, keep - s.above, out);
 }
+#endif
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
@@ -625,38 +628,40 @@ void LmIndexSelectMergeKernel(const uint2 *__restrict__ gathered, uint64_t rank_
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmIndexSelectLocalLaunch(SparkKvShard shard, const float *scores, uint32_t score_stride, const uint32_t *sequence_of_row,
+static inline SparkGpuError LmIndexSelectLocalLaunch(SparkKvShard shard, const float *scores, uint32_t score_stride, const uint32_t *sequence_of_row,
 	const uint32_t *context_length, const uint32_t *row_position, uint32_t keep, uint32_t dense_limit, uint32_t rows, uint2 *candidates, LmFrameError *error,
-	cudaStream_t stream)
+	SparkGpuStream stream)
 {
 	if ( scores == 0 || sequence_of_row == 0 || context_length == 0 || candidates == 0 || error == 0 || rows == 0u || keep == 0u ||
 		score_stride == 0u || shard.degree == 0u || shard.grain == 0u )
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
+#ifdef __CUDACC__
 	if ( score_stride >= LM_INDEX_SELECT_SAMPLED_MIN_KEYS && keep <= LM_INDEX_SELECT_SAMPLED_MAX_KEEP )
 	{
 		const uint32_t shared = (uint32_t)sizeof(LmIndexSelectSampledShared<LM_INDEX_SELECT_SAMPLED_THREADS>);
-		const cudaError_t attribute = cudaFuncSetAttribute((const void *)LmIndexSelectLocalSampledKernel<LM_INDEX_SELECT_SAMPLED_THREADS>,
-			cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-		if ( attribute != cudaSuccess )
+		const SparkGpuError attribute = SparkGpuFuncSetAttribute((const void *)LmIndexSelectLocalSampledKernel<LM_INDEX_SELECT_SAMPLED_THREADS>,
+			SPARK_GPU_FUNCTION_ATTRIBUTE_MAX_DYNAMIC_SHARED_BYTES, (int)shared);
+		if ( attribute != SPARK_GPU_SUCCESS )
 			return attribute;
 		LM_LAUNCH((LmIndexSelectLocalSampledKernel<LM_INDEX_SELECT_SAMPLED_THREADS>), rows, LM_INDEX_SELECT_SAMPLED_THREADS, shared, stream, shard, scores,
 			score_stride, sequence_of_row, context_length, row_position, keep, dense_limit, candidates, error);
 	}
 	else
+#endif
 		LM_LAUNCH((LmIndexSelectLocalKernel<THREADS>), rows, THREADS, 0, stream, shard, scores, score_stride, sequence_of_row, context_length, row_position,
 			keep, dense_limit, candidates, error);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }
 
 template<uint32_t THREADS>
-static inline cudaError_t LmIndexSelectMergeLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, SparkKvShard shard, uint32_t keep,
+static inline SparkGpuError LmIndexSelectMergeLaunch(const uint2 *gathered, uint64_t rank_stride_candidates, SparkKvShard shard, uint32_t keep,
 	const uint32_t *sequence_of_row, const uint32_t *context_length, const uint32_t *row_position, uint32_t k, uint32_t dense_limit, uint32_t rows,
-	uint32_t row_words, uint32_t *bitmaps, uint32_t *selected, LmFrameError *error, cudaStream_t stream)
+	uint32_t row_words, uint32_t *bitmaps, uint32_t *selected, LmFrameError *error, SparkGpuStream stream)
 {
 	if ( gathered == 0 || sequence_of_row == 0 || context_length == 0 || bitmaps == 0 || selected == 0 || error == 0 || rows == 0u || keep == 0u || k == 0u || shard.degree == 0u ||
 		shard.degree > SPARK_KV_SHARD_MAX_DEGREE || shard.grain == 0u || row_words == 0u || rank_stride_candidates < (uint64_t)rows * keep )
-		return cudaErrorInvalidValue;
+		return SPARK_GPU_ERROR_INVALID_VALUE;
 	LM_LAUNCH((LmIndexSelectMergeKernel<THREADS>), rows, THREADS, 0, stream, gathered, rank_stride_candidates, shard, keep, sequence_of_row, context_length,
 		row_position, k, dense_limit, row_words, bitmaps, selected, error);
-	return cudaPeekAtLastError();
+	return SparkGpuPeekAtLastError();
 }

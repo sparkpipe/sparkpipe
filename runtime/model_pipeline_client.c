@@ -359,6 +359,20 @@ static uint32_t SparkModelPipelineClientContinuesTokensOnly(
 	return(1u);
 }
 
+static uint32_t SparkModelPipelineClientSendsSpans(
+	const SparkModelServingSubmission *submission,
+	uint32_t *message_bytes)
+{
+	uint32_t full_bytes,span_bytes;
+	if ( SparkModelResidentIpcRowsAreLaneSpans(submission) == 0u ||
+		SparkModelResidentIpcCalculateSpanBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,submission->model_extension_bytes,&span_bytes) != SPARK_STATUS_OK ||
+		SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,submission->model_extension_bytes,0u,&full_bytes) != SPARK_STATUS_OK ||
+		span_bytes >= full_bytes )
+		return(0u);
+	*message_bytes = span_bytes;
+	return(1u);
+}
+
 static void SparkModelPipelineClientReportResult(
 	SparkModelPipelineClient *pipeline,
 	SparkModelPipelineTransaction *transaction)
@@ -440,7 +454,7 @@ static SparkStatus SparkModelPipelineClientResolveAdmission(
 			SparkModelPipelineClientSetFailure(pipeline,
 				(SparkStatus)transaction->status,
 				SPARK_MODEL_PIPELINE_CLIENT_INVALID_STAGE_INDEX);
-			return((SparkStatus)transaction->status);
+			SPARK_RETURN((SparkStatus)transaction->status);
 		}
 		SparkModelPipelineClientReportResult(pipeline,transaction);
 		if ( transaction->status != SPARK_STATUS_OK )
@@ -586,7 +600,7 @@ static SparkStatus SparkModelPipelineClientValidateRankCompletion(
 	status = SparkModelServingAdapterValidateStageCompletionPrevalidated(pipeline->adapter_descriptor,stage_index,transaction->work_kind,transaction->active_sequence_count,transaction->tokens_per_sequence,&transaction->residency,completion);
 	if ( status != SPARK_STATUS_OK || (transaction->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_VERIFY) == 0u || completion->status != SPARK_STATUS_OK ||
 		(completion->completion_flags & SPARK_MODEL_SERVING_COMPLETION_FLAG_TOKEN_IDS) == 0u )
-		return(status);
+		SPARK_RETURN(status);
 	if ( completion->tokens_per_sequence != transaction->tokens_per_sequence )
 		SPARK_FAIL(SPARK_STATUS_SCHEMA_ERROR);
 	for (lane=0u; lane<transaction->active_sequence_count; lane++)
@@ -748,11 +762,12 @@ static SparkStatus SparkModelPipelineClientInitializeState(
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
 	pipeline->message = (uint8_t *)calloc(1u,pipeline->message_capacity);
-	return(pipeline->clients != 0 && pipeline->rank_contexts != 0 &&
-		pipeline->transactions != 0 && pipeline->transaction_lanes != 0 &&
-		pipeline->lease_slots != 0 && pipeline->delivery != 0 &&
-		pipeline->message != 0 ? SPARK_STATUS_OK :
-		SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( pipeline->clients == 0 || pipeline->rank_contexts == 0 ||
+		pipeline->transactions == 0 || pipeline->transaction_lanes == 0 ||
+		pipeline->lease_slots == 0 || pipeline->delivery == 0 ||
+		pipeline->message == 0 )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	return(SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkModelPipelineClientConnectRank(
@@ -859,8 +874,10 @@ static SparkStatus SparkModelPipelineClientPreflight(
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 	{
 		status = SparkModelResidentClientGetView(pipeline->clients[rank],&view);
-		if ( status != SPARK_STATUS_OK || view.connected == 0u )
-			return(status != SPARK_STATUS_OK ? status : SPARK_STATUS_IO_ERROR);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_RETURN(status);
+		if ( view.connected == 0u )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 		if ( view.queued_message_count >= view.queue_capacity || view.pending_submission_count >= view.queue_capacity )
 			SPARK_FAIL(SPARK_STATUS_BUSY);
 	}
@@ -940,11 +957,11 @@ SparkStatus SparkModelPipelineClientSubmit(
 {
 	SparkModelPipelineTransaction *transaction;
 	SparkStatus status;
-	uint32_t continuation,message_bytes,rank,tokens_only;
+	uint32_t continuation,message_bytes,rank,spans,tokens_only;
 	if ( pipeline == 0 || submission == 0 )
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( pipeline->failed_status != SPARK_STATUS_OK )
-		return((SparkStatus)pipeline->failed_status);
+		SPARK_RETURN((SparkStatus)pipeline->failed_status);
 	status = SparkModelServingAdapterValidateRuntimeSubmissionPrevalidated(pipeline->adapter_descriptor,&pipeline->runtime_limits,submission);
 	if ( status != SPARK_STATUS_OK )
 		SPARK_RETURN(status);
@@ -956,11 +973,14 @@ SparkStatus SparkModelPipelineClientSubmit(
 	continuation = SparkModelPipelineClientCanContinue(pipeline,submission);
 	tokens_only = continuation != 0u ? SparkModelPipelineClientContinuesTokensOnly(pipeline,submission) : 0u;
 	message_bytes = 0u;
+	spans = tokens_only == 0u ? SparkModelPipelineClientSendsSpans(submission,&message_bytes) : 0u;
 	if ( continuation != 0u )
 	{
-		status = tokens_only != 0u ? SparkModelResidentIpcCalculateTokenContinuationBytes(submission->lane_count,&message_bytes) :
-			SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,
-			submission->model_extension_bytes,(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u,&message_bytes);
+		if ( tokens_only != 0u )
+			status = SparkModelResidentIpcCalculateTokenContinuationBytes(submission->lane_count,&message_bytes);
+		else if ( spans == 0u )
+			status = SparkModelResidentIpcCalculateSubmitBytes(submission->lane_count,submission->row_count,submission->cache_block_identity_count,
+				submission->model_extension_bytes,(submission->flags & SPARK_MODEL_SERVING_SUBMISSION_FLAG_TREE) != 0u ? submission->row_count : 0u,&message_bytes);
 		for (rank=0u; status==SPARK_STATUS_OK && rank<pipeline->rank_count;
 			rank++)
 			status = SparkModelResidentClientCanQueueEncodedContinuation(
@@ -974,6 +994,9 @@ SparkStatus SparkModelPipelineClientSubmit(
 	transaction->continued = continuation;
 	if ( tokens_only != 0u )
 		status = SparkModelResidentIpcEncodeTokenContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
+	else if ( spans != 0u )
+		status = continuation != 0u ? SparkModelResidentIpcEncodeSpanContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes) :
+			SparkModelResidentIpcEncodeSpanPreparation(submission,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
 	else
 		status = continuation != 0u ? SparkModelResidentIpcEncodeContinuation(submission,1u,1u,pipeline->message,pipeline->message_capacity,&message_bytes) :
 			SparkModelResidentIpcEncodePreparation(submission,1u,pipeline->message,pipeline->message_capacity,&message_bytes);
@@ -990,7 +1013,7 @@ SparkStatus SparkModelPipelineClientSubmit(
 				if ( rank == 0u )
 				{
 					SparkModelPipelineClientRelease(pipeline,transaction);
-					return(SPARK_STATUS_BUSY);
+					SPARK_FAIL(SPARK_STATUS_BUSY);
 				}
 				if ( continuation != 0u )
 					SparkModelPipelineClientSetFailure(pipeline,status,rank);
@@ -1139,7 +1162,7 @@ SparkStatus SparkModelPipelineClientProgress(
 		if ( pipeline->failed_status == SPARK_STATUS_OK )
 			SparkModelPipelineClientSetFailure(pipeline,status,failing_index);
 		SparkModelPipelineClientFailTransactions(pipeline,(SparkStatus)pipeline->failed_status);
-		return((SparkStatus)pipeline->failed_status);
+		SPARK_RETURN((SparkStatus)pipeline->failed_status);
 	}
 	return(SPARK_STATUS_OK);
 }
@@ -1195,7 +1218,30 @@ SparkStatus SparkModelPipelineClientCacheHint(SparkModelPipelineClient *pipeline
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	for (rank=0u; rank<pipeline->rank_count; rank++)
 		sent += SparkModelResidentClientCacheHint(pipeline->clients[rank],identity,token_count) == SPARK_STATUS_OK ? 1u : 0u;
-	return(sent == pipeline->rank_count ? SPARK_STATUS_OK : SPARK_STATUS_BUSY);
+	if ( sent != pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelPipelineClientCacheProbe(SparkModelPipelineClient *pipeline,const SparkModelServingCacheIdentity *identity,uint32_t token_count)
+{
+	uint32_t rank,sent = 0u;
+	if ( pipeline == 0 || identity == 0 || token_count == 0u )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	for (rank=0u; rank<pipeline->rank_count; rank++)
+		sent += SparkModelResidentClientCacheProbe(pipeline->clients[rank],identity,token_count) == SPARK_STATUS_OK ? 1u : 0u;
+	if ( sent != pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_BUSY);
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkModelPipelineClientGetRankCacheProbe(const SparkModelPipelineClient *pipeline,uint32_t rank_index,SparkModelResidentCacheProbeReport *report)
+{
+	if ( pipeline == 0 || report == 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( rank_index >= pipeline->rank_count )
+		SPARK_FAIL(SPARK_STATUS_NOT_FOUND);
+	return(SparkModelResidentClientGetCacheProbe(pipeline->clients[rank_index],report));
 }
 
 SparkStatus SparkModelPipelineClientGetRankStatus(

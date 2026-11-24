@@ -52,7 +52,7 @@ extern LmHostDim3 blockDim;
 extern LmHostDim3 gridDim;
 
 #define __shared__
-#define __align__(bytes) alignas(bytes)
+#define __align__(bytes) __attribute__((aligned(bytes)))
 #define LM_HOST_SHARED_BYTES 65536u
 
 #define LM_HOST_WARP_LANES 1u
@@ -174,6 +174,30 @@ static inline cudaError_t cudaMemcpy(void *destination, const void *source, size
 typedef void *cudaEvent_t;
 static inline cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t) { return cudaSuccess; }
 static inline cudaError_t cudaStreamWaitEvent(cudaStream_t, cudaEvent_t, unsigned) { return cudaSuccess; }
+
+#define SPARKPIPE_SPARK_GPU_H 1
+typedef cudaError_t SparkGpuError;
+typedef cudaStream_t SparkGpuStream;
+typedef cudaEvent_t SparkGpuEvent;
+typedef cudaMemcpyKind SparkGpuCopyKind;
+typedef cudaDeviceAttr SparkGpuDeviceAttribute;
+#define SPARK_GPU_SUCCESS cudaSuccess
+#define SPARK_GPU_ERROR_INVALID_VALUE cudaErrorInvalidValue
+#define SPARK_GPU_ERROR_NOT_SUPPORTED cudaErrorNotSupported
+#define SPARK_GPU_COPY_HOST_TO_DEVICE cudaMemcpyHostToDevice
+#define SPARK_GPU_COPY_DEVICE_TO_HOST cudaMemcpyDeviceToHost
+#define SPARK_GPU_COPY_DEVICE_TO_DEVICE cudaMemcpyDeviceToDevice
+#define SPARK_GPU_COPY_DEFAULT cudaMemcpyDefault
+#define SPARK_GPU_ATTRIBUTE_MULTIPROCESSOR_COUNT cudaDevAttrMultiProcessorCount
+#define SparkGpuGetDevice cudaGetDevice
+#define SparkGpuDeviceGetAttribute cudaDeviceGetAttribute
+#define SparkGpuOccupancyMaxActiveBlocksPerMultiprocessor cudaOccupancyMaxActiveBlocksPerMultiprocessor
+#define SparkGpuPeekAtLastError cudaPeekAtLastError
+#define SparkGpuGetLastError cudaGetLastError
+#define SparkGpuMemsetAsync cudaMemsetAsync
+#define SparkGpuMemcpy cudaMemcpy
+#define SparkGpuEventRecord cudaEventRecord
+#define SparkGpuStreamWaitEvent cudaStreamWaitEvent
 
 #define LM_UNPAREN(...) __VA_ARGS__
 #define LM_LAUNCH(kernel, grid, block, shared, stream, ...)                   \
