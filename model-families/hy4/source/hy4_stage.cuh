@@ -223,7 +223,7 @@ struct HyModel : CudaStage<HyModel<G>>
 		CudaStageKvViews<typename S::IndexKv, &State::index_views, 1u, G::kIndexLayers>>;
 	using LaneShared = CudaStageFields<&State::kv_error>;
 
-	static constexpr bool kLanes = true;
+	static constexpr bool kLanes = false;
 	static constexpr bool kKeepRows = true;
 	static constexpr uint32_t kTpDegree = G::kTpDegree;
 	static constexpr uint32_t kHidden = G::kHidden;
