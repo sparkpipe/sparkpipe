@@ -2450,7 +2450,7 @@ build/test_kv_geometry: tests/test_kv_geometry.cc inference/kernels/kv.cuh | bui
 	$(CXX) $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include -Imodel-families/glm52/include $(CXXFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_mma_fragment_mapping: tests/test_mma_fragment_mapping.c tests/host_cuda/lm_host_cuda.cuh inference/kernels/mma.cuh inference/kernels/layout.cuh inference/kernels/dtype.cuh | build
-	$(HOST_CUDA_CXX) -std=c++17 -O2 -Wall -Wextra -Werror -Wno-unused-function -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
+	$(HOST_CUDA_CXX) -std=c++17 -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-unknown-pragmas -Itests/host_cuda/shim -I. -Itests/host_cuda -Imodel-families/common/include -Iinclude -x c++ $< -o $@
 
 build/test_launch: tests/test_launch.c runtime/launch.h inference/kernels/layout.cuh | build
 	$(CXX) -x c++ -D__host__= -D__device__= $(CPPFLAGS) $(CXXFLAGS) -Wno-unused-function $< $(LDFLAGS) $(LDLIBS) -o $@

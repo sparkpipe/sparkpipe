@@ -403,7 +403,7 @@ int main(void)
 		state->deferred_first = 0u;
 		state->deferred_count = 64u;
 		state->deferred_slot = 0u;
-		Expect(StageRunnerRunDeferred(state, &dispatch) == SPARK_STATUS_INVALID_ARGUMENT, "a failed streamed prefill fails its request");
+		Expect(StageRunnerRunDeferred(state, &runner, &dispatch) == SPARK_STATUS_INVALID_ARGUMENT, "a failed streamed prefill fails its request");
 		Expect(state->deferred_active == 0u, "the failed streamed prefill gives up its deferred tokens");
 		Expect(SparkStageRunnerSubmit(&runner, &dispatch) == SPARK_STATUS_INTERNAL_ERROR, "the next submit is refused at once instead of queuing behind unfinished rounds");
 		Expect(SparkStageRunnerCheck(&runner) == SPARK_STATUS_INTERNAL_ERROR, "the lane check reports the failed streamed prefill");
