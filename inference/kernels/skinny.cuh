@@ -1932,13 +1932,15 @@ typedef struct LmSkinnyCellArguments
 }
 LmSkinnyCellArguments;
 
+template<bool GLOBAL = false>
 static __device__ __forceinline__ uint32_t LmSkinnyCellGroup(const uint32_t *offset, uint32_t groups, uint32_t row)
 {
 	uint32_t low = 0u, high = groups, middle;
 	while ( high - low > 1u )
 	{
 		middle = (low + high) / 2u;
-		if ( __ldg(offset + middle) <= row )
+		const uint32_t entry = GLOBAL ? __ldg(offset + middle) : offset[middle];
+		if ( entry <= row )
 			low = middle;
 		else
 			high = middle;
@@ -2087,7 +2089,7 @@ __global__ __launch_bounds__(WARPS * LM_WARP_LANES) void LmSkinnyCellSplitKernel
 	LmDependentRelease();
 	if ( row >= __ldg(args.group_row_offset + args.groups) )
 		return;
-	group = LmSkinnyCellGroup(args.group_row_offset,args.groups,row);
+	group = LmSkinnyCellGroup<true>(args.group_row_offset,args.groups,row);
 	start = __ldg(args.group_row_offset + group);
 	if ( row != start )
 		return;
@@ -2165,7 +2167,7 @@ __global__ __launch_bounds__(THREADS) void LmSkinnyCellKernel(const __grid_const
 	cell = task % args.cells;
 	if ( row >= offset[args.groups] )
 		return;
-	group = LmSkinnyCellGroup(offset,args.groups,row);
+	group = LmSkinnyCellGroup<!SHARED_OFFSETS>(offset,args.groups,row);
 	start = offset[group];
 	if ( row != start )
 		return;
