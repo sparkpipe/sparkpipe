@@ -1,0 +1,2 @@
++1259
+Metal sparse-attention indexer API/ops/layers and indexer support across HY4, GLM 5.3 Full / A.X K2, GLM 5.3 Flash, Qwen 3.8 Flash, DeepSeek V4.1 Flash, and Kimi K3.1 Pro (#1916)
