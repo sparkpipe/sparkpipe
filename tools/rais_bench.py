@@ -94,7 +94,6 @@ def build_prompt_for_tokens(target_tokens: int, nonce: str) -> str:
         chunks.append(line)
         total += len(line)
         step += 1
-    chunks.append(f"[Record {step:05d}] ")
     return "".join(chunks)
 
 
@@ -350,7 +349,7 @@ def run_concurrent_batch(
     def worker(idx: int) -> None:
         body = {
             "model": model,
-            "prompt": f"{prompt_base} [Stream {idx + 1}] Continuation:\n1. ",
+            "prompt": f"{prompt_base}\n[Stream {idx + 1}] Technical report:\nThe primary ",
             "max_tokens": max_tokens,
             "temperature": 0,
         }
@@ -680,7 +679,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
 
     nonce_8k = f"pf8k-{time.time_ns()}"
     prompt_8k = build_prompt_for_tokens(plan["prefill_8k_tokens"], nonce_8k)
-    cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128
+    cold_8k_full = prompt_8k + FOLLOWUP_DELTA_128 + "The primary "
     cold_8k_res = summarize_stream(
         stream_completion(
             args.base_url,
@@ -739,7 +738,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     long_prompt_for_decode = ""
     for target_len in plan["prefill_long_targets"]:
         nonce_l = f"pfl-{target_len}-{time.time_ns()}"
-        p_long = build_prompt_for_tokens(target_len, nonce_l)
+        p_long = build_prompt_for_tokens(target_len, nonce_l) + FOLLOWUP_DELTA_128 + "The primary "
         out_toks = plan["b1_long_tokens"] if target_len == max(plan["prefill_long_targets"]) else 1
         r_long = summarize_stream(
             stream_completion(
