@@ -52,6 +52,7 @@
       <a href="#models">Models</a>
       <a href="#speculation">Speculation</a>
       <a href="#prefill">Long prompts</a>
+      <a href="rais.html">RAIS v1.0</a>
       <a href="availability.html">Availability</a>
       <a href="terms.html">Terms</a>
       <a href="index.html">Home</a>
@@ -195,7 +196,7 @@
       <tr><td><b>K-EXAONE 2.0</b></td><td class="num">–</td><td class="num">–</td></tr>
     </table>
     </div>
-    <p>The memory floor is shown only where the split of active weights between formats is verified. The network floor is our estimate from each model's width and depth, calibrated on GLM 5.3's measured 2.9 s floor for an 8K prompt; models whose experts are spread differently, such as Kimi K3 and DeepSeek V4.1 Flash, are approximate. Small models such as Ling 3.0 Flash and Gemma 4 26B A4B are held back in practice by the fixed time each layer's exchange takes rather than by memory, so their memory share understates how close they are. The lowest prefill shares, Qwen 3.8 Max, MiMo and Hy4, are where our prefill work goes next.</p>
+    <p>The memory floor is shown only where the split of active weights between formats is verified. The network floor is our estimate from each model's width and depth, calibrated on GLM 5.3's measured 2.9 s floor for an 8K prompt; models whose experts are spread differently, such as Kimi K3 and DeepSeek V4.1 Flash, are approximate. Small models such as Ling 3.0 Flash and Gemma 4 26B A4B are held back in practice by the fixed time each layer's exchange takes rather than by memory, so their memory share understates how close they are. The lowest prefill shares, Qwen 3.8 Max, MiMo and Hy4, are where our prefill work goes next. For the full three-roofline (compute, memory, network) breakdown across all four serving pillars and 19 fleet models, see the <a href="rais.html">RAIS v1.0 scorecard</a>.</p>
   </section>
 
   <section id="speculation">
@@ -251,7 +252,7 @@
 <footer class="foot">
   <div class="wrap">
     <a class="maker" href="https://hyor.io/"><img src="hyor-seal.svg" width="20" height="20" alt="">© 2026 HYOR AI Tech Ltd</a>
-    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="availability.html">Availability</a><a href="market.html">Your account</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
+    <nav aria-label="Footer"><a href="index.html">Home</a><a href="fleets.html">Fleet List</a><a href="rais.html">RAIS v1.0</a><a href="availability.html">Availability</a><a href="market.html">Your account</a><a href="buy.html">Buy HC</a><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a><a href="mailto:hyor@sparkpipe.ai">hyor@sparkpipe.ai</a></nav>
   </div>
 </footer>
 <script src="pricing.js?v=3"></script>
