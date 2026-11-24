@@ -36,6 +36,7 @@ extern uint32_t cuda_stub_mesh_publish_null_seq_cell;
 extern uint32_t cuda_stub_mesh_publish_null_epoch_cell;
 
 extern uint32_t cuda_stub_mesh_hardware_calls;
+extern uint64_t cuda_stub_mesh_hardware_timeout_ns;
 extern int cuda_stub_mesh_hardware_prepare_result;
 extern int cuda_stub_mesh_hardware_launch_result;
 extern void *cuda_stub_mesh_hardware_alias;
@@ -415,6 +416,25 @@ static void TestHardwareDispatch(SparkTpDeviceCollectiveConfig config,void *mesh
                     SPARK_WEIGHTD_MESH_WAIT_ENTRY(0u,0u),
                 "hardware kernels use actual mapped device alias");
         }
+    }
+    {
+        uint32_t previous = 0u, calls = cuda_stub_mesh_hardware_calls;
+        CHECK(SparkTpDeviceCollectiveSetOperationTimeout(&collective,0u,&previous) == SPARK_STATUS_INVALID_ARGUMENT &&
+            SparkTpDeviceCollectiveSetOperationTimeout(&collective,120000u,0) == SPARK_STATUS_INVALID_ARGUMENT,
+            "a zero round budget and a missing previous budget are refused");
+        CHECK(cuda_stub_mesh_hardware_timeout_ns == (uint64_t)config.operation_timeout_milli * 1000000ull,
+            "a round waits the configured budget");
+        CHECK(SparkTpDeviceCollectiveSetOperationTimeout(&collective,120000u,&previous) == SPARK_STATUS_OK &&
+            previous == config.operation_timeout_milli && collective.operation_timeout_milli == 120000u,
+            "a new round budget reports the one it replaces");
+        CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_timeout_ns == 120000ull * 1000000ull,
+            "the next round waits the new budget");
+        CHECK(SparkTpDeviceCollectiveSetOperationTimeout(&collective,previous,&previous) == SPARK_STATUS_OK && previous == 120000u &&
+            SparkTpDeviceCollectiveEnqueue(&collective,&submission,0u) == SPARK_STATUS_OK &&
+            cuda_stub_mesh_hardware_timeout_ns == (uint64_t)config.operation_timeout_milli * 1000000ull,
+            "restoring the budget restores the rounds' wait");
+        cuda_stub_mesh_hardware_calls = calls;
     }
     submission.logical_sequence_count = 1u;
     submission.row_elements = 24u;

@@ -1,0 +1,192 @@
+spark0 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark0 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark0 STAGE-WEIGHTS whole arena in 20.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.1, warm 14.9, bind 0.0
+spark0 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.0 s
+spark0 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark0 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.9 s
+spark0 STAGE-WEIGHTS whole arena in 20.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.1, warm 14.7, bind 0.0
+spark0 STAGE-WEIGHTS whole arena rendezvous 4 waited 3.0 s
+spark0 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark0 STAGE-WEIGHTS pass pool rendezvous 5 waited 6.9 s
+spark0 STAGE-WEIGHTS whole arena in 26.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 11.7, warm 14.9, bind 0.0
+spark0 STAGE-WEIGHTS whole arena rendezvous 6 waited 3.5 s
+spark1 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark1 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark1 STAGE-WEIGHTS whole arena in 20.0 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.7, warm 15.0, bind 0.0
+spark1 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.4 s
+spark1 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark1 STAGE-WEIGHTS pass pool rendezvous 3 waited 1.0 s
+spark1 STAGE-WEIGHTS whole arena in 19.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.6, warm 14.9, bind 0.0
+spark1 STAGE-WEIGHTS whole arena rendezvous 4 waited 3.3 s
+spark1 STAGE-WEIGHTS pass pool in 6.8 s: sync 0.0, leases 0.0, unmap 1.0, detach 2.6, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark1 STAGE-WEIGHTS pass pool rendezvous 5 waited 4.1 s
+spark1 STAGE-WEIGHTS whole arena in 20.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.7, warm 15.1, bind 0.0
+spark1 STAGE-WEIGHTS whole arena rendezvous 6 waited 10.3 s
+spark2 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark2 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark2 STAGE-WEIGHTS whole arena in 19.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.6, warm 15.0, bind 0.0
+spark2 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.4 s
+spark2 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark2 STAGE-WEIGHTS pass pool rendezvous 3 waited 1.0 s
+spark2 STAGE-WEIGHTS whole arena in 19.7 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.6, warm 14.8, bind 0.0
+spark2 STAGE-WEIGHTS whole arena rendezvous 4 waited 3.4 s
+spark2 STAGE-WEIGHTS pass pool in 3.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.0, warm 0.0, bind 0.0
+spark2 STAGE-WEIGHTS pass pool rendezvous 5 waited 7.1 s
+spark2 STAGE-WEIGHTS whole arena in 20.0 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.6, warm 15.1, bind 0.0
+spark2 STAGE-WEIGHTS whole arena rendezvous 6 waited 10.4 s
+spark3 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark3 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark3 STAGE-WEIGHTS whole arena in 19.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.6, warm 15.0, bind 0.0
+spark3 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.4 s
+spark3 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark3 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.9 s
+spark3 STAGE-WEIGHTS whole arena in 20.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.0, warm 14.8, bind 0.0
+spark3 STAGE-WEIGHTS whole arena rendezvous 4 waited 3.0 s
+spark3 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.0, warm 0.0, bind 0.0
+spark3 STAGE-WEIGHTS pass pool rendezvous 5 waited 7.1 s
+spark3 STAGE-WEIGHTS whole arena in 27.6 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 12.1, warm 15.1, bind 0.0
+spark3 STAGE-WEIGHTS whole arena rendezvous 6 waited 2.8 s
+spark4 STAGE-WEIGHTS pass pool in 4.5 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark4 STAGE-WEIGHTS pass pool rendezvous 1 waited 0.3 s
+spark4 STAGE-WEIGHTS whole arena in 22.5 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.4, warm 16.8, bind 0.0
+spark4 STAGE-WEIGHTS whole arena rendezvous 2 waited 0.9 s
+spark4 STAGE-WEIGHTS pass pool in 4.6 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.9, warm 0.0, bind 0.0
+spark4 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.2 s
+spark4 STAGE-WEIGHTS whole arena in 23.0 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.8, warm 16.9, bind 0.0
+spark4 STAGE-WEIGHTS whole arena rendezvous 4 waited 0.1 s
+spark4 STAGE-WEIGHTS pass pool in 7.1 s: sync 0.0, leases 0.0, unmap 1.2, detach 2.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark4 STAGE-WEIGHTS pass pool rendezvous 5 waited 3.7 s
+spark4 STAGE-WEIGHTS whole arena in 23.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.8, warm 17.0, bind 0.0
+spark4 STAGE-WEIGHTS whole arena rendezvous 6 waited 7.3 s
+spark5 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+spark5 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark5 STAGE-WEIGHTS whole arena in 19.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.6, warm 14.9, bind 0.0
+spark5 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.5 s
+spark5 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.1, warm 0.0, bind 0.0
+spark5 STAGE-WEIGHTS pass pool rendezvous 3 waited 1.0 s
+spark5 STAGE-WEIGHTS whole arena in 20.0 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.9, warm 14.8, bind 0.0
+spark5 STAGE-WEIGHTS whole arena rendezvous 4 waited 3.2 s
+spark5 STAGE-WEIGHTS pass pool in 3.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.0, warm 0.0, bind 0.0
+spark5 STAGE-WEIGHTS pass pool rendezvous 5 waited 7.1 s
+spark5 STAGE-WEIGHTS whole arena in 19.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 4.6, warm 15.0, bind 0.0
+spark5 STAGE-WEIGHTS whole arena rendezvous 6 waited 10.5 s
+spark6 STAGE-WEIGHTS pass pool in 4.5 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark6 STAGE-WEIGHTS pass pool rendezvous 1 waited 0.3 s
+spark6 STAGE-WEIGHTS whole arena in 23.0 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.7, warm 17.0, bind 0.0
+spark6 STAGE-WEIGHTS whole arena rendezvous 2 waited 0.4 s
+spark6 STAGE-WEIGHTS pass pool in 4.6 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+spark6 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.2 s
+spark6 STAGE-WEIGHTS whole arena in 22.6 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.4, warm 17.0, bind 0.0
+spark6 STAGE-WEIGHTS whole arena rendezvous 4 waited 0.6 s
+spark6 STAGE-WEIGHTS pass pool in 5.0 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.1, attach 3.0, warm 0.0, bind 0.0
+spark6 STAGE-WEIGHTS pass pool rendezvous 5 waited 5.9 s
+spark6 STAGE-WEIGHTS whole arena in 22.7 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.5, warm 17.0, bind 0.0
+spark6 STAGE-WEIGHTS whole arena rendezvous 6 waited 7.7 s
+spark7 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark7 STAGE-WEIGHTS pass pool rendezvous 1 waited 1.0 s
+spark7 STAGE-WEIGHTS whole arena in 20.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.7, warm 15.2, bind 0.0
+spark7 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.2 s
+spark7 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark7 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.9 s
+spark7 STAGE-WEIGHTS whole arena in 20.6 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.1, warm 15.2, bind 0.0
+spark7 STAGE-WEIGHTS whole arena rendezvous 4 waited 2.5 s
+spark7 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark7 STAGE-WEIGHTS pass pool rendezvous 5 waited 7.0 s
+spark7 STAGE-WEIGHTS whole arena in 20.8 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.0, warm 15.5, bind 0.0
+spark7 STAGE-WEIGHTS whole arena rendezvous 6 waited 9.6 s
+spark8 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark8 STAGE-WEIGHTS pass pool rendezvous 1 waited 0.9 s
+spark8 STAGE-WEIGHTS whole arena in 20.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.7, warm 15.2, bind 0.0
+spark8 STAGE-WEIGHTS whole arena rendezvous 2 waited 3.1 s
+spark8 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark8 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.9 s
+spark8 STAGE-WEIGHTS whole arena in 20.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.0, warm 15.0, bind 0.0
+spark8 STAGE-WEIGHTS whole arena rendezvous 4 waited 2.8 s
+spark8 STAGE-WEIGHTS pass pool in 4.1 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.1, attach 2.2, warm 0.0, bind 0.0
+spark8 STAGE-WEIGHTS pass pool rendezvous 5 waited 6.8 s
+spark8 STAGE-WEIGHTS whole arena in 20.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.6, warm 15.2, bind 0.0
+spark8 STAGE-WEIGHTS whole arena rendezvous 6 waited 10.2 s
+spark9 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark9 STAGE-WEIGHTS pass pool rendezvous 1 waited 0.9 s
+spark9 STAGE-WEIGHTS whole arena in 20.7 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.1, warm 15.2, bind 0.0
+spark9 STAGE-WEIGHTS whole arena rendezvous 2 waited 2.7 s
+spark9 STAGE-WEIGHTS pass pool in 3.9 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.2, warm 0.0, bind 0.0
+spark9 STAGE-WEIGHTS pass pool rendezvous 3 waited 0.9 s
+spark9 STAGE-WEIGHTS whole arena in 20.5 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.1, warm 15.1, bind 0.0
+spark9 STAGE-WEIGHTS whole arena rendezvous 4 waited 2.7 s
+spark9 STAGE-WEIGHTS pass pool in 3.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.1, warm 0.0, bind 0.0
+spark9 STAGE-WEIGHTS pass pool rendezvous 5 waited 7.1 s
+spark9 STAGE-WEIGHTS whole arena in 20.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 4.8, warm 15.3, bind 0.0
+spark9 STAGE-WEIGHTS whole arena rendezvous 6 waited 10.0 s
+sparka STAGE-WEIGHTS pass pool in 4.6 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+sparka STAGE-WEIGHTS pass pool rendezvous 1 waited 0.2 s
+sparka STAGE-WEIGHTS whole arena in 22.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.6, warm 17.0, bind 0.0
+sparka STAGE-WEIGHTS whole arena rendezvous 2 waited 0.5 s
+sparka STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparka STAGE-WEIGHTS pass pool rendezvous 3 waited 0.1 s
+sparka STAGE-WEIGHTS whole arena in 23.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.9, warm 16.9, bind 0.0
+sparka STAGE-WEIGHTS whole arena rendezvous 4 waited 0.0 s
+sparka STAGE-WEIGHTS pass pool in 4.9 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.1, attach 2.9, warm 0.0, bind 0.0
+sparka STAGE-WEIGHTS pass pool rendezvous 5 waited 6.0 s
+sparka STAGE-WEIGHTS whole arena in 23.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 6.0, warm 16.9, bind 0.0
+sparka STAGE-WEIGHTS whole arena rendezvous 6 waited 7.2 s
+sparkb STAGE-WEIGHTS pass pool in 4.5 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 0.9, attach 2.9, warm 0.0, bind 0.0
+sparkb STAGE-WEIGHTS pass pool rendezvous 1 waited 0.3 s
+sparkb STAGE-WEIGHTS whole arena in 22.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.5, warm 17.1, bind 0.0
+sparkb STAGE-WEIGHTS whole arena rendezvous 2 waited 0.5 s
+sparkb STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkb STAGE-WEIGHTS pass pool rendezvous 3 waited 0.1 s
+sparkb STAGE-WEIGHTS whole arena in 22.8 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.5, warm 17.1, bind 0.0
+sparkb STAGE-WEIGHTS whole arena rendezvous 4 waited 0.4 s
+sparkb STAGE-WEIGHTS pass pool in 4.9 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.1, attach 3.0, warm 0.0, bind 0.0
+sparkb STAGE-WEIGHTS pass pool rendezvous 5 waited 5.9 s
+sparkb STAGE-WEIGHTS whole arena in 23.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 6.1, warm 17.0, bind 0.0
+sparkb STAGE-WEIGHTS whole arena rendezvous 6 waited 7.0 s
+sparkc STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkc STAGE-WEIGHTS pass pool rendezvous 1 waited 0.1 s
+sparkc STAGE-WEIGHTS whole arena in 22.7 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.5, warm 17.0, bind 0.0
+sparkc STAGE-WEIGHTS whole arena rendezvous 2 waited 0.6 s
+sparkc STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkc STAGE-WEIGHTS pass pool rendezvous 3 waited 0.1 s
+sparkc STAGE-WEIGHTS whole arena in 23.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.9, warm 16.9, bind 0.0
+sparkc STAGE-WEIGHTS whole arena rendezvous 4 waited 0.0 s
+sparkc STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 2.9, warm 0.0, bind 0.0
+sparkc STAGE-WEIGHTS pass pool rendezvous 5 waited 6.2 s
+sparkc STAGE-WEIGHTS whole arena in 29.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 12.7, warm 16.9, bind 0.0
+sparkc STAGE-WEIGHTS whole arena rendezvous 6 waited 0.5 s
+sparkd STAGE-WEIGHTS pass pool in 4.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.1, warm 0.0, bind 0.0
+sparkd STAGE-WEIGHTS pass pool rendezvous 1 waited 0.0 s
+sparkd STAGE-WEIGHTS whole arena in 23.3 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.9, warm 17.0, bind 0.0
+sparkd STAGE-WEIGHTS whole arena rendezvous 2 waited 0.1 s
+sparkd STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkd STAGE-WEIGHTS pass pool rendezvous 3 waited 0.1 s
+sparkd STAGE-WEIGHTS whole arena in 22.9 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.6, warm 17.0, bind 0.0
+sparkd STAGE-WEIGHTS whole arena rendezvous 4 waited 0.2 s
+sparkd STAGE-WEIGHTS pass pool in 4.8 s: sync 0.0, leases 0.0, unmap 0.8, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkd STAGE-WEIGHTS pass pool rendezvous 5 waited 6.0 s
+sparkd STAGE-WEIGHTS whole arena in 23.2 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.9, warm 17.0, bind 0.0
+sparkd STAGE-WEIGHTS whole arena rendezvous 6 waited 7.1 s
+sparke STAGE-WEIGHTS pass pool in 4.7 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparke STAGE-WEIGHTS pass pool rendezvous 1 waited 0.1 s
+sparke STAGE-WEIGHTS whole arena in 23.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.9, warm 16.9, bind 0.0
+sparke STAGE-WEIGHTS whole arena rendezvous 2 waited 0.3 s
+sparke STAGE-WEIGHTS pass pool in 4.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparke STAGE-WEIGHTS pass pool rendezvous 3 waited 0.1 s
+sparke STAGE-WEIGHTS whole arena in 22.7 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 5.5, warm 16.9, bind 0.0
+sparke STAGE-WEIGHTS whole arena rendezvous 4 waited 0.4 s
+sparke STAGE-WEIGHTS pass pool in 6.3 s: sync 0.0, leases 0.0, unmap 1.0, detach 1.2, destroy 0.0, reclaim 1.1, attach 3.1, warm 0.0, bind 0.0
+sparke STAGE-WEIGHTS pass pool rendezvous 5 waited 4.5 s
+sparke STAGE-WEIGHTS whole arena in 23.3 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 6.0, warm 17.0, bind 0.0
+sparke STAGE-WEIGHTS whole arena rendezvous 6 waited 7.1 s
+sparkf STAGE-WEIGHTS pass pool in 4.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.1, warm 0.0, bind 0.0
+sparkf STAGE-WEIGHTS pass pool rendezvous 1 waited 0.0 s
+sparkf STAGE-WEIGHTS whole arena in 23.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 6.0, warm 17.0, bind 0.0
+sparkf STAGE-WEIGHTS whole arena rendezvous 2 waited 0.0 s
+sparkf STAGE-WEIGHTS pass pool in 4.8 s: sync 0.0, leases 0.0, unmap 0.7, detach 0.0, destroy 0.0, reclaim 1.0, attach 3.1, warm 0.0, bind 0.0
+sparkf STAGE-WEIGHTS pass pool rendezvous 3 waited 0.0 s
+sparkf STAGE-WEIGHTS whole arena in 23.1 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.2, attach 5.8, warm 17.0, bind 0.0
+sparkf STAGE-WEIGHTS whole arena rendezvous 4 waited 0.1 s
+sparkf STAGE-WEIGHTS pass pool in 10.8 s: sync 0.0, leases 0.0, unmap 1.0, detach 5.8, destroy 0.0, reclaim 1.0, attach 3.0, warm 0.0, bind 0.0
+sparkf STAGE-WEIGHTS pass pool rendezvous 5 waited 0.0 s
+sparkf STAGE-WEIGHTS whole arena in 30.4 s: sync 0.0, leases 0.0, unmap 0.0, detach 0.0, destroy 0.1, reclaim 0.1, attach 13.0, warm 17.1, bind 0.0
+sparkf STAGE-WEIGHTS whole arena rendezvous 6 waited 0.0 s

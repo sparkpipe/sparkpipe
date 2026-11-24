@@ -1,0 +1,2 @@
++975
+K3.1 pass-engine mode switch and long-prompt evaluation suite: expert-pool switching, post-switch collective rendezvous, KV pool growth hold across weight switches (inference/runner/stage_runner.cu, inference/runner/stage_serving_adapter.c, model-families/k3/source/k3_stage.cuh, runtime/spark_weightd_lazy_pack.c, runtime/stage_kv_binding.c, ring/transport/tp_device_collective.c, headers), plus tools/long_prompt_suite.py and tools/k31_prefill/logprob_compare.py.

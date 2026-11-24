@@ -189,6 +189,7 @@ struct SparkK3ModelState
 	void *layer_collective_context;
 	SparkStageRunnerStreamedPrefillConfig streamed_config;
 	K3Streamed *streamed;
+	SparkWeightdLazyPack *lazy_pack;
 	char *rank_pack_path;
 	SparkGpuStream execution_stream;
 };
@@ -1044,6 +1045,17 @@ static SparkStatus K3ModelManifestCheck(void *model, const SparkWeightdManifest 
 	return SparkK3ManifestCheck(manifest, &check);
 }
 
+static SparkStatus K3ModelCreateStreamed(SparkK3ModelState *state)
+{
+	uint64_t vocab_offset = 0u, vocab_bytes = 0u;
+	uint32_t vocab_rows = 0u;
+	SparkStatus status = K3ModelEntry(state, "model.embed_tokens.weight", &vocab_offset, &vocab_bytes, &vocab_rows);
+	if ( status == SPARK_STATUS_OK )
+		status = K3StreamedCreate(&state->streamed_config, &state->dispatch, &state->module, state->rank_pack_path, state->lazy_pack, state->tp_rank, vocab_offset,
+			vocab_bytes, vocab_rows, &state->streamed);
+	return status;
+}
+
 static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, SparkStageRunnerModelGeometry *geometry)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
@@ -1125,29 +1137,45 @@ static SparkStatus K3ModelBind(void *model, SparkWeightdLazyPack *lazy_pack, Spa
 		SparkGpuMalloc(&state->dense_row_offset, 2u * sizeof(*state->dense_row_offset)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->dense_tile_prefix, 2u * sizeof(*state->dense_tile_prefix)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
-	if ( state->streamed_config.node_rows != 0u )
-	{
-		uint64_t vocab_offset = 0u, vocab_bytes = 0u;
-		uint32_t vocab_rows = 0u;
-		SparkStatus status = K3ModelEntry(state, "model.embed_tokens.weight", &vocab_offset, &vocab_bytes, &vocab_rows);
-		if ( status == SPARK_STATUS_OK )
-			status = K3StreamedCreate(&state->streamed_config, &state->dispatch, &state->module, state->rank_pack_path, lazy_pack, state->tp_rank, vocab_offset, vocab_bytes, vocab_rows,
-				&state->streamed);
-		if ( status != SPARK_STATUS_OK )
-			return status;
-	}
+	state->lazy_pack = lazy_pack;
+	if ( state->streamed_config.node_rows != 0u && state->streamed_config.expert_pool_cap_bytes == 0u )
+		return K3ModelCreateStreamed(state);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus K3ModelRebind(void *model, SparkWeightdLazyPack *lazy_pack)
+{
+	SparkK3ModelState *state = (SparkK3ModelState *)model;
+	if ( state == 0 || lazy_pack == 0 || state->streamed != 0 )
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( SparkK3DispatchBindWeights(&state->dispatch, &state->module.pack, state->module.bound, state->module.bound_count,
+		lazy_pack) != SPARK_K3_DISPATCH_OK )
+		SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
+	state->lazy_pack = lazy_pack;
 	return SPARK_STATUS_OK;
 }
 
 static SparkStatus K3ModelStreamedPrefill(void *model, const SparkStageRunnerStreamedPrefill *request, const SparkStageRunnerServices *services)
 {
 	SparkK3ModelState *state = (SparkK3ModelState *)model;
-	if ( state->streamed == 0 )
+	SparkStatus status = SPARK_STATUS_OK;
+	if ( state->streamed_config.node_rows == 0u )
 	{
 		fprintf(stderr, "sparkpipe_k3: streamed prefill is not configured for this lane (stage config streamed_prefill)\n");
 		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	}
-	return K3StreamedRun(state->streamed, request, services, state->execution_stream);
+	if ( state->streamed == 0 )
+		status = K3ModelCreateStreamed(state);
+	if ( status == SPARK_STATUS_OK )
+		status = K3StreamedRun(state->streamed, request, services, state->execution_stream);
+	if ( state->streamed_config.expert_pool_cap_bytes != 0u && state->streamed != 0 )
+	{
+		if ( SparkGpuStreamSynchronize(state->execution_stream) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		K3StreamedDestroy(state->streamed);
+		state->streamed = 0;
+	}
+	return status;
 }
 
 static uint32_t K3StepContext(const SparkK3ModelState *state, const SparkStageRunnerStep *step, SparkGpuStream stream)
@@ -1377,5 +1405,6 @@ static const SparkStageRunnerModelInterface spark_k3_stage_model =
 	0,
 	0,
 	0u,
-	0u
+	0u,
+	K3ModelRebind
 };

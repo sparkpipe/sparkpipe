@@ -6,6 +6,8 @@
 #include <cstring>
 #include <ctime>
 #include <pthread.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_head_screen.h"
 #include "sparkpipe/spark_stage_runner.h"
@@ -35,6 +37,8 @@
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
 #define STAGE_RUNNER_ROUND_MARKS 512u
+#define STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI 120000u
+#define STAGE_RUNNER_SWITCH_TOKEN_WORDS 16u
 
 typedef struct SparkStageRunnerState SparkStageRunnerState;
 
@@ -255,6 +259,15 @@ typedef struct SparkStageRunnerState
 	void *lease_address;
 	const void *resident_base;
 	uint32_t resident;
+	SparkStageRunnerWeights weights;
+	const char *rank_pack_path;
+	uint64_t pass_pool_cap_bytes;
+	SparkStatus (*kv_pool_hold)(void *context, uint32_t hold);
+	void *kv_pool_context;
+	void *mesh_mapping;
+	uint64_t mesh_mapping_bytes;
+	uint64_t switch_count;
+	uint64_t *switch_tokens;
 	uint32_t *group_offset_host;
 	uint32_t tp_rank;
 	uint32_t tp_degree;
@@ -929,36 +942,59 @@ static SparkStatus StageRunnerSlice(SparkStageRunnerState *state, uint64_t offse
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageRunnerAttachWeights(SparkStageRunnerState *state, const SparkStageRunnerConfiguration *configuration)
+static SparkStatus StageRunnerAttachRequest(const SparkStageRunnerState *state, SparkWeightdLazyAttachRequest *request)
 {
-	SparkWeightdLazyAttachRequest request;
-	SparkWeightdLazyPackOptions options;
-	SparkStatus status;
-	memset(&request, 0, sizeof(request));
-	if ( strlen(configuration->weights.pack_sha256) != SPARK_STAGE_RUNNER_DIGEST_HEX ||
-		strlen(configuration->rank_pack_path) >= sizeof(request.pack_path) ||
-		configuration->weights.socket_path == 0 || configuration->weights.socket_path[0] == '\0' || configuration->weights.read_only > 1u )
+	memset(request, 0, sizeof(*request));
+	if ( strlen(state->weights.pack_sha256) != SPARK_STAGE_RUNNER_DIGEST_HEX || state->rank_pack_path == 0 ||
+		strlen(state->rank_pack_path) >= sizeof(request->pack_path) ||
+		state->weights.socket_path == 0 || state->weights.socket_path[0] == '\0' || state->weights.read_only > 1u )
 	{
 		fprintf(stderr, "sparkpipe_stage_runner: weightd attach needs the pack digest and the weightd socket\n");
 		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	}
-	memcpy(request.identity.pack_sha256, configuration->weights.pack_sha256, SPARK_STAGE_RUNNER_DIGEST_HEX);
-	snprintf(request.identity.model, sizeof(request.identity.model), "%s", state->model_interface->weightd_model);
-	snprintf(request.identity.revision, sizeof(request.identity.revision), "%s", state->model_interface->weightd_revision);
-	request.identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
-	request.identity.arena_bytes = state->geometry.pack_bytes;
-	request.identity.topology = configuration->tp_degree;
-	memcpy(request.pack_path, configuration->rank_pack_path, strlen(configuration->rank_pack_path) + 1u);
+	memcpy(request->identity.pack_sha256, state->weights.pack_sha256, SPARK_STAGE_RUNNER_DIGEST_HEX);
+	snprintf(request->identity.model, sizeof(request->identity.model), "%s", state->model_interface->weightd_model);
+	snprintf(request->identity.revision, sizeof(request->identity.revision), "%s", state->model_interface->weightd_revision);
+	request->identity.abi_version = SPARK_WEIGHTD_IPC_ABI_VERSION;
+	request->identity.arena_bytes = state->geometry.pack_bytes;
+	request->identity.topology = state->tp_degree;
+	memcpy(request->pack_path, state->rank_pack_path, strlen(state->rank_pack_path) + 1u);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerAttachPack(SparkStageRunnerState *state, uint64_t cap)
+{
+	SparkWeightdLazyAttachRequest request;
+	SparkWeightdLazyPackOptions options;
+	SparkStatus status = StageRunnerAttachRequest(state, &request);
+	if ( status != SPARK_STATUS_OK )
+		return status;
 	memset(&options, 0, sizeof(options));
-	options.expert_pool_cap_bytes = configuration->weights.expert_pool_cap_bytes;
+	options.expert_pool_cap_bytes = cap;
 	options.timeout_nanoseconds = SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS;
-	options.read_only = configuration->weights.read_only;
+	options.read_only = state->weights.read_only;
 	options.manifest_check = StageRunnerManifestCheck;
 	options.manifest_check_context = state;
-	status = SparkWeightdLazyPackCreate(configuration->weights.socket_path, &request, &options, &state->lazy_pack);
+	status = SparkWeightdLazyPackCreate(state->weights.socket_path, &request, &options, &state->lazy_pack);
 	if ( status != SPARK_STATUS_OK )
 		fprintf(stderr, "sparkpipe_stage_runner: lazy startup failed status=%d (fail-closed, no eager fallback)\n", (int)status);
 	return status;
+}
+
+static SparkStatus StageRunnerAttachWeights(SparkStageRunnerState *state, const SparkStageRunnerConfiguration *configuration)
+{
+	state->weights = configuration->weights;
+	state->rank_pack_path = configuration->rank_pack_path;
+	state->pass_pool_cap_bytes = configuration->streamed_prefill.expert_pool_cap_bytes;
+	state->kv_pool_hold = configuration->kv_pool_hold;
+	state->kv_pool_context = configuration->kv_pool_context;
+	if ( state->pass_pool_cap_bytes != 0u && state->weights.expert_pool_cap_bytes != 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: a lane that switches to a %llu-byte expert pool for its streamed prefills starts with the whole arena, not a %llu-byte cap\n",
+			(unsigned long long)state->pass_pool_cap_bytes, (unsigned long long)state->weights.expert_pool_cap_bytes);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return StageRunnerAttachPack(state, state->weights.expert_pool_cap_bytes);
 }
 
 static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, const SparkStageRunnerConfiguration *configuration)
@@ -1006,9 +1042,8 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	return status;
 }
 
-static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const SparkStageRunner *runner)
+static SparkStatus StageRunnerSliceHead(SparkStageRunnerState *state, const SparkStageRunner *runner)
 {
-	const uint64_t shard_rows = state->vocab_slice_rows, dim = state->geometry.hidden;
 	if ( runner->owns_embedding != 0u &&
 		StageRunnerSlice(state, state->geometry.embed_offset, state->geometry.embed_bytes, &state->embed_weight) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
@@ -1018,6 +1053,16 @@ static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const Spa
 			StageRunnerSlice(state, state->geometry.head_norm_offset, state->geometry.head_norm_bytes, &state->head_norm_weight) != SPARK_STATUS_OK) ||
 		StageRunnerSlice(state, state->geometry.head_offset, state->geometry.head_bytes, &state->head_weight) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerCreateHead(SparkStageRunnerState *state, const SparkStageRunner *runner)
+{
+	const uint64_t shard_rows = state->vocab_slice_rows, dim = state->geometry.hidden;
+	if ( StageRunnerSliceHead(state, runner) != SPARK_STATUS_OK )
+		SPARK_FAIL(SPARK_STATUS_PARSE_ERROR);
+	if ( runner->owns_final_head == 0u )
+		return SPARK_STATUS_OK;
 	if ( SparkGpuMalloc(&state->head_certified_fp8_payload, shard_rows * dim) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_certified_fp8_scale_f32, shard_rows * (dim / 32u) * sizeof(float)) != SPARK_GPU_SUCCESS ||
 		SparkGpuMalloc(&state->head_certified_fp8_norm_f32, shard_rows * (dim / 32u) * sizeof(float)) != SPARK_GPU_SUCCESS ||
@@ -2597,10 +2642,205 @@ static SparkStatus StageRunnerDefer(SparkStageRunner *runner, SparkStageRunnerSt
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunnerDispatch *dispatch)
+static SparkStatus StageRunnerDropLeases(SparkStageRunnerState *state)
+{
+	SparkStatus status;
+	if ( state->lease_sets != 0 )
+	{
+		status = SparkStageRunnerReleaseLease(state);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkWeightdLeaseSetsDestroy(state->lease_sets);
+		if ( status != SPARK_STATUS_OK )
+			SPARK_FAIL(status);
+		state->lease_sets = 0;
+	}
+	free(state->lease_keys);
+	free(state->group_offset_host);
+	state->lease_keys = 0;
+	state->group_offset_host = 0;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerReclaimPack(SparkStageRunnerState *state)
+{
+	char digest[SPARK_STAGE_RUNNER_DIGEST_HEX + 1u];
+	SparkWeightdReclaimResult result;
+	SparkWeightdClient *client = 0;
+	SparkStatus status = SparkWeightdClientConnect(state->weights.socket_path, &client, 0);
+	memcpy(digest, state->weights.pack_sha256, sizeof(digest));
+	digest[SPARK_STAGE_RUNNER_DIGEST_HEX] = '\0';
+	memset(&result, 0, sizeof(result));
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdClientReclaimPack(client, digest, &result, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( client != 0 )
+		SparkWeightdClientClose(client);
+	if ( status == SPARK_STATUS_OK && result.status != SPARK_STATUS_OK )
+		status = result.status;
+	if ( status == SPARK_STATUS_OK && result.busy_arena_count != 0u )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: weightd reclaimed %u arenas of the lane's pack and %u stay busy; a pool switch needs the lane's own arena cold\n",
+			result.reclaimed_arena_count, result.busy_arena_count);
+		status = SPARK_STATUS_BUSY;
+	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerWarmPack(SparkStageRunnerState *state)
+{
+	const SparkWeightdManifest *manifest = &state->lazy_pack->manifest;
+	SparkWeightdExpertKey keys[SPARK_WEIGHTD_LEASE_GROUPS_MAX];
+	SparkWeightdLazyAttachRequest request;
+	SparkWeightdLazyAttachResult attached;
+	SparkWeightdWorkingSetResult result;
+	SparkWeightdClient *client = 0;
+	uint32_t first, index, count;
+	SparkStatus status = StageRunnerAttachRequest(state, &request);
+	request.expert_pool_bytes = state->lazy_pack->pool.request_bytes;
+	memset(&attached, 0, sizeof(attached));
+	attached.pool_fd = -1;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdClientConnect(state->weights.socket_path, &client, 0);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdClientAttachLazyShared(client, &request, &attached, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	if ( status == SPARK_STATUS_OK && attached.status != SPARK_STATUS_OK )
+		status = attached.status;
+	for ( first = 0u; status == SPARK_STATUS_OK && first < manifest->group_count; first = index )
+	{
+		for ( index = first, count = 0u; index < manifest->group_count && count < SPARK_WEIGHTD_LEASE_GROUPS_MAX &&
+			manifest->groups[index].layer == manifest->groups[first].layer; index++, count++ )
+		{
+			keys[count].layer = manifest->groups[index].layer;
+			keys[count].expert = manifest->groups[index].expert;
+		}
+		memset(&result, 0, sizeof(result));
+		status = SparkWeightdClientAcquire(client, attached.arena_generation, keys, count, &result, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+		if ( status == SPARK_STATUS_OK && result.status == SPARK_STATUS_OK )
+			status = SparkWeightdClientRelease(client, attached.arena_generation, result.lease_identifier, &result, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+		if ( status == SPARK_STATUS_OK && result.status != SPARK_STATUS_OK )
+			status = result.status;
+	}
+	if ( attached.pool_fd >= 0 )
+		(void)close(attached.pool_fd);
+	if ( attached.mesh_mapping != 0 )
+		(void)munmap(attached.mesh_mapping, (size_t)attached.mesh_send_buffer_bytes);
+	if ( client != 0 )
+		SparkWeightdClientClose(client);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerSwitchRendezvous(SparkStageRunnerState *state, const char *mode)
+{
+	const uint64_t began = SparkMonotonicNs();
+	const uint64_t row_bytes = STAGE_RUNNER_SWITCH_TOKEN_WORDS * sizeof(uint64_t);
+	uint64_t token[STAGE_RUNNER_SWITCH_TOKEN_WORDS], gathered[SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE * STAGE_RUNNER_SWITCH_TOKEN_WORDS];
+	uint32_t previous = 0u, restored = 0u, rank, late = UINT32_MAX;
+	SparkStatus status;
+	if ( state->device_collective_created == 0 || state->tp_degree <= 1u )
+		return SPARK_STATUS_OK;
+	if ( state->tp_degree > SPARK_TP_DEVICE_COLLECTIVE_MAX_DEGREE )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( state->switch_tokens == 0 && SparkGpuMalloc((void **)&state->switch_tokens, (size_t)(row_bytes * (1u + state->tp_degree))) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	memset(token, 0, sizeof(token));
+	token[0] = ++state->switch_count;
+	token[1] = state->tp_rank;
+	if ( SparkGpuMemcpyAsync(state->switch_tokens, token, (size_t)row_bytes, SPARK_GPU_COPY_HOST_TO_DEVICE, state->stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemsetAsync(state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS, 0, (size_t)(row_bytes * state->tp_degree), state->stream) != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	status = SparkTpDeviceCollectiveSetOperationTimeout(&state->device_collective, STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI, &previous);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	status = StageRunnerMeshRound(state, 0u, state->stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, SPARK_STAGE_RUNNER_ROUND_ALL, 1u,
+		(uint32_t)(row_bytes / sizeof(uint16_t)), state->switch_tokens, state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS);
+	if ( status == SPARK_STATUS_OK && (SparkGpuMemcpyAsync(gathered, state->switch_tokens + STAGE_RUNNER_SWITCH_TOKEN_WORDS, (size_t)(row_bytes * state->tp_degree), SPARK_GPU_COPY_DEVICE_TO_HOST, state->stream) != SPARK_GPU_SUCCESS ||
+		SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS) )
+		status = SPARK_STATUS_IO_ERROR;
+	if ( SparkTpDeviceCollectiveSetOperationTimeout(&state->device_collective, previous, &restored) != SPARK_STATUS_OK && status == SPARK_STATUS_OK )
+		status = SPARK_STATUS_INTERNAL_ERROR;
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	for (rank = 0u; rank < state->tp_degree && late == UINT32_MAX; rank++)
+		if ( gathered[rank * STAGE_RUNNER_SWITCH_TOKEN_WORDS] != token[0] || gathered[rank * STAGE_RUNNER_SWITCH_TOKEN_WORDS + 1u] != rank )
+			late = rank;
+	if ( late != UINT32_MAX )
+	{
+		fprintf(stderr, "sparkpipe_stage_runner: rank %u did not reach weight switch %llu within %u s, so the ranks cannot start their next collective work together\n",
+			late, (unsigned long long)token[0], STAGE_RUNNER_SWITCH_RENDEZVOUS_MILLI / 1000u);
+		SPARK_FAIL(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	fprintf(stderr, "STAGE-WEIGHTS %s rendezvous %llu waited %.1f s\n", mode, (unsigned long long)token[0], (double)(SparkMonotonicNs() - began) / 1e9);
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus StageRunnerSwitchWeights(SparkStageRunnerState *state, const SparkStageRunner *runner, uint64_t cap)
+{
+	const uint64_t began = SparkMonotonicNs();
+	uint64_t synced, dropped = 0u, unmapped = 0u, released = 0u, detached, reclaimed, attached, warmed;
+	SparkStatus status;
+	if ( state->lazy_pack == 0 || SparkGpuStreamSynchronize(state->stream) != SPARK_GPU_SUCCESS || SparkGpuDeviceSynchronize() != SPARK_GPU_SUCCESS )
+		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	synced = SparkMonotonicNs();
+	StageRunnerGraphDrop(state);
+	status = StageRunnerDropLeases(state);
+	if ( status == SPARK_STATUS_OK && state->mesh_mapping == 0 )
+		status = SparkWeightdLazyPackTakeMeshMapping(state->lazy_pack, &state->mesh_mapping, &state->mesh_mapping_bytes);
+	dropped = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackUnmap(state->lazy_pack);
+	unmapped = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackDetach(state->lazy_pack, SPARK_WEIGHTD_ATTACH_TIMEOUT_DEFAULT_NS);
+	released = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = SparkWeightdLazyPackDestroy(state->lazy_pack);
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	state->lazy_pack = 0;
+	state->resident = 0u;
+	state->resident_base = 0;
+	detached = SparkMonotonicNs();
+	status = StageRunnerReclaimPack(state);
+	reclaimed = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerAttachPack(state, cap);
+	attached = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK && cap == 0u )
+		status = StageRunnerWarmPack(state);
+	warmed = SparkMonotonicNs();
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerSliceHead(state, runner);
+	if ( status == SPARK_STATUS_OK && state->model_interface->rebind != 0 )
+		status = state->model_interface->rebind(state->model, state->lazy_pack);
+	if ( status == SPARK_STATUS_OK )
+		status = StageRunnerCreateLeases(state);
+	if ( status == SPARK_STATUS_OK && cap == 0u )
+	{
+		status = StageRunnerCheckResident(state);
+		if ( status == SPARK_STATUS_OK && state->resident == 0u && state->geometry.experts != 0u )
+		{
+			fprintf(stderr, "sparkpipe_stage_runner: the whole arena is attached and warmed but weightd does not report every expert group present\n");
+			status = SPARK_STATUS_VALIDATION_FAILED;
+		}
+	}
+	if ( status != SPARK_STATUS_OK )
+		SPARK_FAIL(status);
+	fprintf(stderr, "STAGE-WEIGHTS %s in %.1f s: sync %.1f, leases %.1f, unmap %.1f, detach %.1f, destroy %.1f, reclaim %.1f, attach %.1f, warm %.1f, bind %.1f\n",
+		cap != 0u ? "pass pool" : "whole arena", (double)(SparkMonotonicNs() - began) / 1e9, (double)(synced - began) / 1e9,
+		(double)(dropped - synced) / 1e9, (double)(unmapped - dropped) / 1e9, (double)(released - unmapped) / 1e9,
+		(double)(detached - released) / 1e9, (double)(reclaimed - detached) / 1e9, (double)(attached - reclaimed) / 1e9,
+		(double)(warmed - attached) / 1e9, (double)(SparkMonotonicNs() - warmed) / 1e9);
+	return StageRunnerSwitchRendezvous(state, cap != 0u ? "pass pool" : "whole arena");
+}
+
+static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const SparkStageRunner *runner, const SparkStageRunnerDispatch *dispatch)
 {
 	SparkStageRunnerStreamedPrefill request;
-	SparkStatus status;
+	SparkStatus status, released;
+	uint32_t held = 0u;
 	if ( state->deferred_active == 0u )
 		return SPARK_STATUS_OK;
 	if ( dispatch->host_positions == 0 || dispatch->host_sequence_of_row == 0 || dispatch->host_sequence_of_row[0] != state->deferred_slot ||
@@ -2620,7 +2860,24 @@ static SparkStatus StageRunnerRunDeferred(SparkStageRunnerState *state, const Sp
 	request.multiprocessors = state->multiprocessors;
 	request.route_fault = state->route_fault;
 	state->sum_flags = state->deferred_flags;
-	status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
+	status = SPARK_STATUS_OK;
+	if ( state->pass_pool_cap_bytes != 0u && state->kv_pool_hold != 0 )
+	{
+		status = state->kv_pool_hold(state->kv_pool_context, 1u);
+		held = status == SPARK_STATUS_OK ? 1u : 0u;
+	}
+	if ( status == SPARK_STATUS_OK && state->pass_pool_cap_bytes != 0u )
+		status = StageRunnerSwitchWeights(state, runner, state->pass_pool_cap_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = state->model_interface->streamed_prefill(state->model, &request, &state->services);
+	if ( status == SPARK_STATUS_OK && state->pass_pool_cap_bytes != 0u )
+		status = StageRunnerSwitchWeights(state, runner, state->weights.expert_pool_cap_bytes);
+	if ( held != 0u )
+	{
+		released = state->kv_pool_hold(state->kv_pool_context, 0u);
+		if ( status == SPARK_STATUS_OK )
+			status = released;
+	}
 	state->sum_flags = 0u;
 	StageRunnerSumReport(state, state->deferred_flags, state->deferred_count);
 	state->deferred_active = 0u;
@@ -2792,7 +3049,7 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 		state->logical_sequence_count = dispatch->active_sequence_count;
 		exchange_status = StageRunnerChainBegin(state, dispatch->request_id);
 		if ( exchange_status == SPARK_STATUS_OK )
-			exchange_status = StageRunnerRunDeferred(state, dispatch);
+			exchange_status = StageRunnerRunDeferred(state, runner, dispatch);
 		if ( exchange_status == SPARK_STATUS_OK )
 			exchange_status = StageRunnerTakeFailure(state);
 		if ( exchange_status == SPARK_STATUS_OK )
@@ -3338,6 +3595,10 @@ void SparkStageRunnerDestroy(SparkStageRunner *runner)
 			return;
 		state->lazy_pack = 0;
 	}
+	if ( state->mesh_mapping != 0 && munmap(state->mesh_mapping, (size_t)state->mesh_mapping_bytes) == 0 )
+		state->mesh_mapping = 0;
+	if ( state->switch_tokens != 0 && SparkGpuFree(state->switch_tokens) == SPARK_GPU_SUCCESS )
+		state->switch_tokens = 0;
 	if ( state->model != 0 )
 		state->model_interface->close(state->model);
 	state->model = 0;

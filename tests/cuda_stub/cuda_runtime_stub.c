@@ -2316,6 +2316,7 @@ uint64_t cuda_stub_mesh_hardware_elements;
 uint32_t cuda_stub_mesh_hardware_operation;
 uint32_t cuda_stub_mesh_hardware_logical_rows;
 uint32_t cuda_stub_mesh_hardware_slice_routes;
+uint64_t cuda_stub_mesh_hardware_timeout_ns;
 
 cudaError_t SparkTpMeshHardwarePrepare(void *host,void **device)
 {
@@ -2340,7 +2341,8 @@ cudaError_t SparkTpLaunchMeshHardware(cudaStream_t stream,void *band,
     (void)stage;
     cuda_stub_mesh_hardware_slice_routes = slice_routes;
     (void)round_control;
-    (void)scratch;(void)rounds;(void)timeout_ns;
+    (void)scratch;(void)rounds;
+    cuda_stub_mesh_hardware_timeout_ns = timeout_ns;
     cuda_stub_mesh_hardware_calls++;
     cuda_stub_mesh_hardware_band = band;
     cuda_stub_mesh_hardware_gate = gate;

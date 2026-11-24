@@ -1,0 +1,1 @@
+{"logprobs": null, "text": ".\n\n**`sparkpipe_mesh_status`.** `make build/sparkpipe_mesh_status` builds it from\n`tools/mesh_status.c` and the weightd sources. It takes `--socket PATH`\n(default `/tmp/spark_weightd.sock`), `--timeout SECONDS` (default 5, 0.1"}

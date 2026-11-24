@@ -177,6 +177,7 @@ struct SparkStageRunnerModelInterface
 	SparkStatus (*end)(void *model, void *frame, SparkStatus status, void *queue);
 	uint32_t frame_bytes;
 	uint32_t chunk_rows;
+	SparkStatus (*rebind)(void *model, struct SparkWeightdLazyPack *lazy_pack);
 };
 
 #ifdef __cplusplus

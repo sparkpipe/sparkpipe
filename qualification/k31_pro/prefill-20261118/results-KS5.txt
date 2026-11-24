@@ -1,0 +1,2 @@
+{"label": "KS5", "kind": "answer", "offset": 0, "tokens": 400000, "generated": 64, "wall_s": 198.95, "sha256": "f9a76a31ef6f53c2", "text_sha256": "1a95afa58bd438bf", "text": ".\n\n**`sparkpipe_mesh_status`.** `make build/sparkpipe_mesh_s"}
+{"units": 41600, "depth": 0.5, "key": "44560", "prompt_tokens": 998469, "seconds": 489.1, "answer": "44560", "found": true, "utc": "2026-11-19T11:40:53Z"}

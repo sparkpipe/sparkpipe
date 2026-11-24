@@ -1,0 +1,1615 @@
+{
+ "suite_file": "suite-20261121.jsonl",
+ "suite_sha256": "74db13395b9b1bd9c0d6e1eb8f576ffd65ff8dcf2b1c1add826fd07e03c4470f",
+ "haystack_sha256": "7589a8d07d7658cb2a86be05f3aa97077b13e0f7b18a8e7fa4d07fd8a352a347",
+ "haystack_files": 395,
+ "haystack_source": "every .md file of c2b714343 in git ls-tree order, each followed by a blank line",
+ "build": {
+  "format": "sparkpipe-long-prompt-suite-v1",
+  "seed": 20261121,
+  "lengths": [
+   131000,
+   458000,
+   1000000
+  ],
+  "prompts": [
+   2,
+   2,
+   1
+  ],
+  "families": [
+   "mk",
+   "mv",
+   "mk3",
+   "vt"
+  ],
+  "tokenizer_sha256": "b6c497a7469b33ced9c38afb1ad6e47f03f5e5dc05f15930799210ec050c5103",
+  "haystack": "haystack-c2b714343.md",
+  "haystack_sha256": "7589a8d07d7658cb2a86be05f3aa97077b13e0f7b18a8e7fa4d07fd8a352a347",
+  "haystack_tokens": 1259041,
+  "prompt_ids": [
+   "mk-131k-0",
+   "mv-131k-0",
+   "mk3-131k-0",
+   "vt-131k-0",
+   "mk-131k-1",
+   "mv-131k-1",
+   "mk3-131k-1",
+   "vt-131k-1",
+   "mk-458k-0",
+   "mv-458k-0",
+   "mk3-458k-0",
+   "vt-458k-0",
+   "mk-458k-1",
+   "mv-458k-1",
+   "mk3-458k-1",
+   "vt-458k-1",
+   "mk-1000k-0",
+   "mv-1000k-0",
+   "mk3-1000k-0",
+   "vt-1000k-0"
+  ]
+ },
+ "prompts": [
+  {
+   "id": "mk-131k-0",
+   "family": "mk",
+   "length": 131000,
+   "copy": 0,
+   "task": "86dcf0480ff9",
+   "content_tokens": 130971,
+   "max_tokens": 192,
+   "content_sha256": "960767efa3f4f173a2b8d78fd8802e64e11100751913740e78cb543509e91e7f",
+   "items": [
+    {
+     "n": 1,
+     "key": "balloon",
+     "gold": [
+      "7728789"
+     ],
+     "depth": 0.3531
+    },
+    {
+     "n": 2,
+     "key": "umbrella",
+     "gold": [
+      "9779522"
+     ],
+     "depth": 0.0283
+    },
+    {
+     "n": 3,
+     "key": "jackal",
+     "gold": [
+      "2530969"
+     ],
+     "depth": 0.0124
+    },
+    {
+     "n": 4,
+     "key": "chestnut",
+     "gold": [
+      "3468726"
+     ],
+     "depth": 0.8033
+    },
+    {
+     "n": 5,
+     "key": "tamarind",
+     "gold": [
+      "7637381"
+     ],
+     "depth": 0.5884
+    },
+    {
+     "n": 6,
+     "key": "tapir",
+     "gold": [
+      "8663041"
+     ],
+     "depth": 0.0756
+    },
+    {
+     "n": 7,
+     "key": "puffin",
+     "gold": [
+      "6254393"
+     ],
+     "depth": 0.9362
+    },
+    {
+     "n": 8,
+     "key": "flannel",
+     "gold": [
+      "2517021"
+     ],
+     "depth": 0.1902
+    }
+   ]
+  },
+  {
+   "id": "mv-131k-0",
+   "family": "mv",
+   "length": 131000,
+   "copy": 0,
+   "task": "47ea2cb6916d",
+   "content_tokens": 130971,
+   "max_tokens": 384,
+   "content_sha256": "5444e2b12a835a94f51b0bcd7113b3f7cdff1321c037c149f1954d09569b04eb",
+   "items": [
+    {
+     "n": 1,
+     "key": "foxglove",
+     "gold": [
+      "7665411",
+      "4608567",
+      "1752865",
+      "4181055"
+     ],
+     "depth": 0.3682
+    },
+    {
+     "n": 2,
+     "key": "nectarine",
+     "gold": [
+      "6046185",
+      "3908420",
+      "3210981",
+      "9201778"
+     ],
+     "depth": 0.6023
+    },
+    {
+     "n": 3,
+     "key": "crocus",
+     "gold": [
+      "1176744",
+      "2258131",
+      "1772199",
+      "8137436"
+     ],
+     "depth": 0.6366
+    },
+    {
+     "n": 4,
+     "key": "papaya",
+     "gold": [
+      "2620108",
+      "3746105",
+      "7700891",
+      "7216487"
+     ],
+     "depth": 0.5011
+    },
+    {
+     "n": 5,
+     "key": "pebble",
+     "gold": [
+      "7061401",
+      "2624610",
+      "1057799",
+      "1553611"
+     ],
+     "depth": 0.4915
+    },
+    {
+     "n": 6,
+     "key": "pepper",
+     "gold": [
+      "4296331",
+      "8640130",
+      "6053997",
+      "1991430"
+     ],
+     "depth": 0.5079
+    },
+    {
+     "n": 7,
+     "key": "banjo",
+     "gold": [
+      "9556588",
+      "3104547",
+      "5500756",
+      "2651402"
+     ],
+     "depth": 0.5887
+    },
+    {
+     "n": 8,
+     "key": "mongoose",
+     "gold": [
+      "9192664",
+      "8970315",
+      "6578410",
+      "6276412"
+     ],
+     "depth": 0.7649
+    }
+   ]
+  },
+  {
+   "id": "mk3-131k-0",
+   "family": "mk3",
+   "length": 131000,
+   "copy": 0,
+   "task": "ca11593942a4",
+   "content_tokens": 131003,
+   "max_tokens": 448,
+   "content_sha256": "fbc61cf82c4c497d60c17fb44256a9e4622930b4553cc4ddcfa01ec62b9c46c0",
+   "items": [
+    {
+     "n": 1,
+     "key": "00385940-90d3-45fb-b5ab-05a03c402e5b",
+     "gold": [
+      "c4edcc78-4038-4f7e-a8a4-1ec5cadd1bea"
+     ],
+     "depth": 0.8146
+    },
+    {
+     "n": 2,
+     "key": "b5c47472-b327-4cf8-b679-57cb501c90c7",
+     "gold": [
+      "57ae1bbb-f8ae-4c8f-ad81-f0b3cf0b7102"
+     ],
+     "depth": 0.9495
+    },
+    {
+     "n": 3,
+     "key": "ec2ad634-bf57-4d2d-8c3b-e54e625b9288",
+     "gold": [
+      "193c9013-2a3a-4ce7-b3ac-a576d128f6c4"
+     ],
+     "depth": 0.9635
+    },
+    {
+     "n": 4,
+     "key": "746a0dc1-3c8b-4f3d-9f37-dc012f0ad862",
+     "gold": [
+      "fc4cb764-8d73-4724-986b-b5edbc3bbff4"
+     ],
+     "depth": 0.7931
+    },
+    {
+     "n": 5,
+     "key": "a0df22ed-e1fb-4cff-b82b-b734dfccbff8",
+     "gold": [
+      "9f9eca55-bb2b-487d-aeb2-62d1af465b44"
+     ],
+     "depth": 0.3361
+    },
+    {
+     "n": 6,
+     "key": "5a72a265-0039-47f1-8922-84e5ad8bd11c",
+     "gold": [
+      "b1fa17ed-d2ae-4a78-aa29-5acba44c1791"
+     ],
+     "depth": 0.7728
+    },
+    {
+     "n": 7,
+     "key": "3b4e6ac8-3711-40bc-bbe2-7fbfab751a4e",
+     "gold": [
+      "f735add5-6213-4547-8cbf-f81ca015aa4c"
+     ],
+     "depth": 0.3533
+    },
+    {
+     "n": 8,
+     "key": "47c46327-29fe-4063-9abf-825d4ab69b1e",
+     "gold": [
+      "85c8cdba-547c-4cbc-90e9-f13e93768d73"
+     ],
+     "depth": 0.4047
+    }
+   ]
+  },
+  {
+   "id": "vt-131k-0",
+   "family": "vt",
+   "length": 131000,
+   "copy": 0,
+   "task": "15099bf13331",
+   "content_tokens": 130984,
+   "max_tokens": 192,
+   "content_sha256": "121389bbc034ca0e6bb5e72f30702c8b0e2c396060cf1698f9699fdc0ccbc756",
+   "items": [
+    {
+     "n": 1,
+     "key": "78364",
+     "gold": [
+      "OLBYI",
+      "OEJYB",
+      "GGPBI",
+      "UWGNC",
+      "BZVKP"
+     ],
+     "depth": 0.6736
+    },
+    {
+     "n": 2,
+     "key": "28495",
+     "gold": [
+      "XBSBV",
+      "VZSPA",
+      "SSNVF",
+      "QGOGH",
+      "BPNDS"
+     ],
+     "depth": 0.4249
+    },
+    {
+     "n": 3,
+     "key": "59721",
+     "gold": [
+      "TVTFN",
+      "SCTUP",
+      "TQBFJ",
+      "BYFMT",
+      "IIQZK"
+     ],
+     "depth": 0.6919
+    },
+    {
+     "n": 4,
+     "key": "23568",
+     "gold": [
+      "DXMIX",
+      "MNOTN",
+      "KTPED",
+      "TNCEF",
+      "KTSIH"
+     ],
+     "depth": 0.4535
+    }
+   ]
+  },
+  {
+   "id": "mk-131k-1",
+   "family": "mk",
+   "length": 131000,
+   "copy": 1,
+   "task": "12e156670b14",
+   "content_tokens": 130971,
+   "max_tokens": 192,
+   "content_sha256": "d54ebf655ce7d4cf2d4c38f891e32118f4ef3da685e86c61383f08610732cff6",
+   "items": [
+    {
+     "n": 1,
+     "key": "harpoon",
+     "gold": [
+      "1523737"
+     ],
+     "depth": 0.9039
+    },
+    {
+     "n": 2,
+     "key": "vulture",
+     "gold": [
+      "8680927"
+     ],
+     "depth": 0.1852
+    },
+    {
+     "n": 3,
+     "key": "robin",
+     "gold": [
+      "3229194"
+     ],
+     "depth": 0.8345
+    },
+    {
+     "n": 4,
+     "key": "kiwi",
+     "gold": [
+      "3844334"
+     ],
+     "depth": 0.1043
+    },
+    {
+     "n": 5,
+     "key": "weasel",
+     "gold": [
+      "1306343"
+     ],
+     "depth": 0.4931
+    },
+    {
+     "n": 6,
+     "key": "kangaroo",
+     "gold": [
+      "5229849"
+     ],
+     "depth": 0.9588
+    },
+    {
+     "n": 7,
+     "key": "sequoia",
+     "gold": [
+      "6372990"
+     ],
+     "depth": 0.989
+    },
+    {
+     "n": 8,
+     "key": "hamster",
+     "gold": [
+      "6836281"
+     ],
+     "depth": 0.906
+    }
+   ]
+  },
+  {
+   "id": "mv-131k-1",
+   "family": "mv",
+   "length": 131000,
+   "copy": 1,
+   "task": "f5ec01088475",
+   "content_tokens": 130970,
+   "max_tokens": 384,
+   "content_sha256": "f84ab3aea1f128190e84986e35ad115fc56c9f04d7cff4199d33b74e710144ee",
+   "items": [
+    {
+     "n": 1,
+     "key": "giraffe",
+     "gold": [
+      "5571411",
+      "2961684",
+      "7260105",
+      "4686651"
+     ],
+     "depth": 0.7273
+    },
+    {
+     "n": 2,
+     "key": "radish",
+     "gold": [
+      "7148514",
+      "5175397",
+      "6330056",
+      "4867961"
+     ],
+     "depth": 0.5011
+    },
+    {
+     "n": 3,
+     "key": "porcupine",
+     "gold": [
+      "2159781",
+      "6201867",
+      "1532546",
+      "5737145"
+     ],
+     "depth": 0.644
+    },
+    {
+     "n": 4,
+     "key": "barnacle",
+     "gold": [
+      "5693185",
+      "9939891",
+      "4977634",
+      "7119635"
+     ],
+     "depth": 0.4762
+    },
+    {
+     "n": 5,
+     "key": "meerkat",
+     "gold": [
+      "8875121",
+      "1910414",
+      "9459045",
+      "1254292"
+     ],
+     "depth": 0.3614
+    },
+    {
+     "n": 6,
+     "key": "zucchini",
+     "gold": [
+      "3705464",
+      "9710076",
+      "1902603",
+      "7206730"
+     ],
+     "depth": 0.3674
+    },
+    {
+     "n": 7,
+     "key": "eggplant",
+     "gold": [
+      "3675711",
+      "3982896",
+      "7570924",
+      "7189048"
+     ],
+     "depth": 0.4993
+    },
+    {
+     "n": 8,
+     "key": "strudel",
+     "gold": [
+      "3251366",
+      "6743283",
+      "4883968",
+      "6789800"
+     ],
+     "depth": 0.4087
+    }
+   ]
+  },
+  {
+   "id": "mk3-131k-1",
+   "family": "mk3",
+   "length": 131000,
+   "copy": 1,
+   "task": "29092e416788",
+   "content_tokens": 131000,
+   "max_tokens": 448,
+   "content_sha256": "da8a97f7591b19194c8b554e91fe1b01fc75b7a6c9fc9732ec78bba26811010c",
+   "items": [
+    {
+     "n": 1,
+     "key": "d3f5ee6b-0071-4028-a407-b939295bee74",
+     "gold": [
+      "4942391b-9f14-4d0c-8a99-5a6d5ef1c85a"
+     ],
+     "depth": 0.946
+    },
+    {
+     "n": 2,
+     "key": "495e2b72-54ce-435e-b577-ea7f61894488",
+     "gold": [
+      "6ca6a6c0-7596-48f2-92f6-5da34d144565"
+     ],
+     "depth": 0.4014
+    },
+    {
+     "n": 3,
+     "key": "00576b37-8313-4aef-a52f-5319d3d192d1",
+     "gold": [
+      "9fcc3562-e131-405d-bd9b-65fe4328da08"
+     ],
+     "depth": 0.4466
+    },
+    {
+     "n": 4,
+     "key": "e4e7737e-d67c-4b57-9127-7a095438ab51",
+     "gold": [
+      "16513a4f-8556-44d0-8b69-838f196f46c2"
+     ],
+     "depth": 0.5753
+    },
+    {
+     "n": 5,
+     "key": "5f53ef33-9f2f-486d-b8f8-e175207e353d",
+     "gold": [
+      "2096b895-7972-4df5-82a4-39830909893d"
+     ],
+     "depth": 0.0408
+    },
+    {
+     "n": 6,
+     "key": "a9d90c8c-0ad8-46fb-9435-f721bbfca0cf",
+     "gold": [
+      "0f46651d-6bde-40e8-b765-71c344223b0d"
+     ],
+     "depth": 0.6522
+    },
+    {
+     "n": 7,
+     "key": "c06b6975-f05f-41c6-8925-8738bc3e8bf5",
+     "gold": [
+      "1c036a3f-3e06-4495-97da-92f02993c5c9"
+     ],
+     "depth": 0.0189
+    },
+    {
+     "n": 8,
+     "key": "4c308f9d-4fd0-476d-8585-f8e6de71f87a",
+     "gold": [
+      "f5c64b99-1ad7-41a8-8ec8-e577734db505"
+     ],
+     "depth": 0.4796
+    }
+   ]
+  },
+  {
+   "id": "vt-131k-1",
+   "family": "vt",
+   "length": 131000,
+   "copy": 1,
+   "task": "59ba5c906158",
+   "content_tokens": 130985,
+   "max_tokens": 192,
+   "content_sha256": "5a252731641c60b63297aade2b4854c539f6b7906efe7ea6c9613105a1d66cb7",
+   "items": [
+    {
+     "n": 1,
+     "key": "15454",
+     "gold": [
+      "DPOOX",
+      "FTBHM",
+      "MWWZH",
+      "KAUOS",
+      "LNFWA"
+     ],
+     "depth": 0.6695
+    },
+    {
+     "n": 2,
+     "key": "25957",
+     "gold": [
+      "VDBJE",
+      "WHVEW",
+      "ZHQHO",
+      "JSDZG",
+      "GTCCD"
+     ],
+     "depth": 0.3725
+    },
+    {
+     "n": 3,
+     "key": "78724",
+     "gold": [
+      "MPZYX",
+      "OLUOJ",
+      "RJMPK",
+      "HWDEA",
+      "FERME"
+     ],
+     "depth": 0.3875
+    },
+    {
+     "n": 4,
+     "key": "15813",
+     "gold": [
+      "TRNUE",
+      "ZMZXA",
+      "FTXFE",
+      "PNXIO",
+      "DDPEE"
+     ],
+     "depth": 0.4581
+    }
+   ]
+  },
+  {
+   "id": "mk-458k-0",
+   "family": "mk",
+   "length": 458000,
+   "copy": 0,
+   "task": "2a092bb29976",
+   "content_tokens": 457971,
+   "max_tokens": 192,
+   "content_sha256": "c69b11921de139cef0e02cc1928e857e70d2ac6c0a2832b92ed48c84f8da38a0",
+   "items": [
+    {
+     "n": 1,
+     "key": "llama",
+     "gold": [
+      "1457489"
+     ],
+     "depth": 0.896
+    },
+    {
+     "n": 2,
+     "key": "walnut",
+     "gold": [
+      "7347456"
+     ],
+     "depth": 0.1971
+    },
+    {
+     "n": 3,
+     "key": "coconut",
+     "gold": [
+      "1109467"
+     ],
+     "depth": 0.1165
+    },
+    {
+     "n": 4,
+     "key": "cactus",
+     "gold": [
+      "2875744"
+     ],
+     "depth": 0.7253
+    },
+    {
+     "n": 5,
+     "key": "nectarine",
+     "gold": [
+      "2805751"
+     ],
+     "depth": 0.8035
+    },
+    {
+     "n": 6,
+     "key": "flannel",
+     "gold": [
+      "3687985"
+     ],
+     "depth": 0.6784
+    },
+    {
+     "n": 7,
+     "key": "juniper",
+     "gold": [
+      "1503700"
+     ],
+     "depth": 0.1065
+    },
+    {
+     "n": 8,
+     "key": "crumpet",
+     "gold": [
+      "8636480"
+     ],
+     "depth": 0.6006
+    }
+   ]
+  },
+  {
+   "id": "mv-458k-0",
+   "family": "mv",
+   "length": 458000,
+   "copy": 0,
+   "task": "5d32985fb4e7",
+   "content_tokens": 457973,
+   "max_tokens": 384,
+   "content_sha256": "7de8b2342a0a087d8de368465f74bc8f6f068a1061da36467ba27e189f612a76",
+   "items": [
+    {
+     "n": 1,
+     "key": "gondola",
+     "gold": [
+      "7538214",
+      "1459677",
+      "4181016",
+      "8863397"
+     ],
+     "depth": 0.5666
+    },
+    {
+     "n": 2,
+     "key": "kangaroo",
+     "gold": [
+      "1203961",
+      "2356954",
+      "1681834",
+      "9087411"
+     ],
+     "depth": 0.4032
+    },
+    {
+     "n": 3,
+     "key": "barnacle",
+     "gold": [
+      "4227401",
+      "9194744",
+      "7083636",
+      "3750960"
+     ],
+     "depth": 0.2219
+    },
+    {
+     "n": 4,
+     "key": "harmonica",
+     "gold": [
+      "3678893",
+      "8254664",
+      "4620366",
+      "5618111"
+     ],
+     "depth": 0.6642
+    },
+    {
+     "n": 5,
+     "key": "paddle",
+     "gold": [
+      "4670439",
+      "8938689",
+      "7907811",
+      "2635519"
+     ],
+     "depth": 0.306
+    },
+    {
+     "n": 6,
+     "key": "buffalo",
+     "gold": [
+      "9516526",
+      "7553396",
+      "3846609",
+      "8397847"
+     ],
+     "depth": 0.5997
+    },
+    {
+     "n": 7,
+     "key": "cricket",
+     "gold": [
+      "8058459",
+      "7982850",
+      "6982044",
+      "9274976"
+     ],
+     "depth": 0.2189
+    },
+    {
+     "n": 8,
+     "key": "leopard",
+     "gold": [
+      "3561973",
+      "3583335",
+      "1289676",
+      "5268605"
+     ],
+     "depth": 0.506
+    }
+   ]
+  },
+  {
+   "id": "mk3-458k-0",
+   "family": "mk3",
+   "length": 458000,
+   "copy": 0,
+   "task": "59e264c7a500",
+   "content_tokens": 457986,
+   "max_tokens": 448,
+   "content_sha256": "c556652117dbe59de2fe78293ff0f992ff7b35e14f40e6d262759f61df2223dd",
+   "items": [
+    {
+     "n": 1,
+     "key": "dc7a6fa7-a57c-4cf3-bdde-ca63dac883d5",
+     "gold": [
+      "97a64080-8612-4986-8e84-251f6c25fb77"
+     ],
+     "depth": 0.7064
+    },
+    {
+     "n": 2,
+     "key": "6f2fa6c6-8cbc-43a1-9a88-8d7292562075",
+     "gold": [
+      "a4106168-936a-48a2-9167-6384a704e569"
+     ],
+     "depth": 0.2844
+    },
+    {
+     "n": 3,
+     "key": "77e90fba-90cd-403a-adff-d9096540fc4f",
+     "gold": [
+      "00f9c44c-ab62-4a30-95de-a470cb88d245"
+     ],
+     "depth": 0.7214
+    },
+    {
+     "n": 4,
+     "key": "80e96014-685e-49a8-a88f-aa8ed3a1e6c4",
+     "gold": [
+      "84d14dac-ceba-405d-95e5-be19f026e284"
+     ],
+     "depth": 0.7348
+    },
+    {
+     "n": 5,
+     "key": "06b0976f-eac1-4010-aca8-41faf125f37f",
+     "gold": [
+      "702d753c-bd78-4d8f-bc3e-8f7bba9d783c"
+     ],
+     "depth": 0.5755
+    },
+    {
+     "n": 6,
+     "key": "b71ac95e-c404-4c10-9734-35386279fed0",
+     "gold": [
+      "bd0e3a11-0af4-4062-9e2d-7fa5829c4956"
+     ],
+     "depth": 0.7623
+    },
+    {
+     "n": 7,
+     "key": "2c410878-f797-4aec-9dce-076a57de97d5",
+     "gold": [
+      "5a2ca2bc-556b-45b9-9eb5-a40d9a04de2d"
+     ],
+     "depth": 0.5531
+    },
+    {
+     "n": 8,
+     "key": "b5ef1ff7-e0e3-4bf4-955f-56da24369111",
+     "gold": [
+      "df7c9e0d-1f6c-4785-8dad-812dd0309ffa"
+     ],
+     "depth": 0.7637
+    }
+   ]
+  },
+  {
+   "id": "vt-458k-0",
+   "family": "vt",
+   "length": 458000,
+   "copy": 0,
+   "task": "9a1e58151a99",
+   "content_tokens": 457986,
+   "max_tokens": 192,
+   "content_sha256": "63944bf0f6cca7bc9132b865f35dd7f933e04607627d48f613defbdfb1126e18",
+   "items": [
+    {
+     "n": 1,
+     "key": "78635",
+     "gold": [
+      "QKNVF",
+      "ZHRKH",
+      "QOFKN",
+      "ZVUZJ",
+      "JZXRT"
+     ],
+     "depth": 0.4899
+    },
+    {
+     "n": 2,
+     "key": "71487",
+     "gold": [
+      "XDNAQ",
+      "YZURI",
+      "QDHUM",
+      "PAFRE",
+      "GPKMB"
+     ],
+     "depth": 0.6154
+    },
+    {
+     "n": 3,
+     "key": "39878",
+     "gold": [
+      "TNVRJ",
+      "MQQYW",
+      "RVKKY",
+      "SESIZ",
+      "GNVKO"
+     ],
+     "depth": 0.5525
+    },
+    {
+     "n": 4,
+     "key": "61116",
+     "gold": [
+      "VRKJH",
+      "KJNLZ",
+      "AKTHD",
+      "HRRTW",
+      "KXEIB"
+     ],
+     "depth": 0.3835
+    }
+   ]
+  },
+  {
+   "id": "mk-458k-1",
+   "family": "mk",
+   "length": 458000,
+   "copy": 1,
+   "task": "1d8ae693ae2d",
+   "content_tokens": 457973,
+   "max_tokens": 192,
+   "content_sha256": "551073fe613d736af080afcdcb41c1dea0b8ed4fc875b5d69e1a934961777090",
+   "items": [
+    {
+     "n": 1,
+     "key": "tapir",
+     "gold": [
+      "8385932"
+     ],
+     "depth": 0.0816
+    },
+    {
+     "n": 2,
+     "key": "penguin",
+     "gold": [
+      "1873459"
+     ],
+     "depth": 0.2419
+    },
+    {
+     "n": 3,
+     "key": "hamster",
+     "gold": [
+      "4238829"
+     ],
+     "depth": 0.9286
+    },
+    {
+     "n": 4,
+     "key": "cobbler",
+     "gold": [
+      "4519477"
+     ],
+     "depth": 0.4069
+    },
+    {
+     "n": 5,
+     "key": "honeydew",
+     "gold": [
+      "3228089"
+     ],
+     "depth": 0.2861
+    },
+    {
+     "n": 6,
+     "key": "geranium",
+     "gold": [
+      "2132414"
+     ],
+     "depth": 0.4058
+    },
+    {
+     "n": 7,
+     "key": "biscuit",
+     "gold": [
+      "6600161"
+     ],
+     "depth": 0.7339
+    },
+    {
+     "n": 8,
+     "key": "hyacinth",
+     "gold": [
+      "8059672"
+     ],
+     "depth": 0.3375
+    }
+   ]
+  },
+  {
+   "id": "mv-458k-1",
+   "family": "mv",
+   "length": 458000,
+   "copy": 1,
+   "task": "68b43eaabe17",
+   "content_tokens": 457971,
+   "max_tokens": 384,
+   "content_sha256": "b9cc82d7d1406b7ee3d471d962ddbc71585eb9493b914a9d1d4f644c77972485",
+   "items": [
+    {
+     "n": 1,
+     "key": "barnacle",
+     "gold": [
+      "7721032",
+      "7984199",
+      "9853287",
+      "2301330"
+     ],
+     "depth": 0.446
+    },
+    {
+     "n": 2,
+     "key": "peony",
+     "gold": [
+      "9139015",
+      "1788730",
+      "5086829",
+      "1041988"
+     ],
+     "depth": 0.6157
+    },
+    {
+     "n": 3,
+     "key": "llama",
+     "gold": [
+      "6938831",
+      "9029627",
+      "9452872",
+      "6723771"
+     ],
+     "depth": 0.7952
+    },
+    {
+     "n": 4,
+     "key": "cinnamon",
+     "gold": [
+      "7380869",
+      "8782686",
+      "6341144",
+      "6199428"
+     ],
+     "depth": 0.5683
+    },
+    {
+     "n": 5,
+     "key": "fiddle",
+     "gold": [
+      "5813423",
+      "9457385",
+      "4285609",
+      "6985368"
+     ],
+     "depth": 0.412
+    },
+    {
+     "n": 6,
+     "key": "hyacinth",
+     "gold": [
+      "5047510",
+      "3715996",
+      "8105084",
+      "5815416"
+     ],
+     "depth": 0.443
+    },
+    {
+     "n": 7,
+     "key": "mandolin",
+     "gold": [
+      "5907684",
+      "2532158",
+      "3428736",
+      "7496509"
+     ],
+     "depth": 0.4153
+    },
+    {
+     "n": 8,
+     "key": "flannel",
+     "gold": [
+      "5770503",
+      "8447455",
+      "5525337",
+      "8538657"
+     ],
+     "depth": 0.63
+    }
+   ]
+  },
+  {
+   "id": "mk3-458k-1",
+   "family": "mk3",
+   "length": 458000,
+   "copy": 1,
+   "task": "13e7eb04b39b",
+   "content_tokens": 458014,
+   "max_tokens": 448,
+   "content_sha256": "c68623b9c2a6a27aadc65a17eba18cd20eb209d8c3d0bf76ba2a83d058c1a594",
+   "items": [
+    {
+     "n": 1,
+     "key": "4ad3cd89-38b7-48ff-bfd6-9f615d213693",
+     "gold": [
+      "1a5137d1-3412-4a21-8442-5933e9c96d61"
+     ],
+     "depth": 0.5374
+    },
+    {
+     "n": 2,
+     "key": "15943398-90a5-4f27-95c1-5b8a64c2d807",
+     "gold": [
+      "6109f68d-64ab-4d96-8baa-968709c49fd3"
+     ],
+     "depth": 0.6712
+    },
+    {
+     "n": 3,
+     "key": "ecb48968-7206-401d-9b2e-6f499ee667db",
+     "gold": [
+      "07cd7908-d691-44cc-ac7d-eb8d26c347d4"
+     ],
+     "depth": 0.2677
+    },
+    {
+     "n": 4,
+     "key": "6fdab660-71ae-40c4-9e9d-98698db4efc3",
+     "gold": [
+      "a34dfd11-fa95-4b40-9fd2-8f56dc0b09a6"
+     ],
+     "depth": 0.6826
+    },
+    {
+     "n": 5,
+     "key": "4b2f0b20-e635-4fcf-83f5-3e2db4a5238c",
+     "gold": [
+      "9b18d551-6d78-42a6-91e5-ee1c5e8f991b"
+     ],
+     "depth": 0.6252
+    },
+    {
+     "n": 6,
+     "key": "40685a06-47d9-4613-b2a5-ba9dd46d0a10",
+     "gold": [
+      "f883290e-442e-44a0-94f2-18a5135c9d6f"
+     ],
+     "depth": 0.9248
+    },
+    {
+     "n": 7,
+     "key": "7a441649-f752-463e-a35b-a2cabdb493f4",
+     "gold": [
+      "e3fe2324-0cb1-4350-b369-3ee87e4674d1"
+     ],
+     "depth": 0.2539
+    },
+    {
+     "n": 8,
+     "key": "a5da105f-d7a6-4115-a0cb-7700a15a2271",
+     "gold": [
+      "3cbfaa8a-aa4c-4737-a343-665105e308ed"
+     ],
+     "depth": 0.5365
+    }
+   ]
+  },
+  {
+   "id": "vt-458k-1",
+   "family": "vt",
+   "length": 458000,
+   "copy": 1,
+   "task": "142c78068577",
+   "content_tokens": 457976,
+   "max_tokens": 192,
+   "content_sha256": "318ec502721b2cd3774aa8a054c5097222e7a6bdd251aaea560ce7966a781b34",
+   "items": [
+    {
+     "n": 1,
+     "key": "18476",
+     "gold": [
+      "RTICT",
+      "NEXHO",
+      "QWWKO",
+      "SXNMR",
+      "FACAW"
+     ],
+     "depth": 0.6799
+    },
+    {
+     "n": 2,
+     "key": "52376",
+     "gold": [
+      "FMCBS",
+      "JVEHM",
+      "TGVPD",
+      "ZFJOB",
+      "VQGYO"
+     ],
+     "depth": 0.4412
+    },
+    {
+     "n": 3,
+     "key": "25245",
+     "gold": [
+      "IQPFV",
+      "BTFUQ",
+      "WXUWK",
+      "FSUXZ",
+      "PKQUO"
+     ],
+     "depth": 0.2919
+    },
+    {
+     "n": 4,
+     "key": "52036",
+     "gold": [
+      "CTUHF",
+      "VRDTK",
+      "CRNHN",
+      "GVJBE",
+      "ASCPP"
+     ],
+     "depth": 0.5053
+    }
+   ]
+  },
+  {
+   "id": "mk-1000k-0",
+   "family": "mk",
+   "length": 1000000,
+   "copy": 0,
+   "task": "260d53fe2e85",
+   "content_tokens": 999972,
+   "max_tokens": 192,
+   "content_sha256": "fe7247aaa6408d11a2d5cb196b16042875993471ff454d1e77573b127fd11a30",
+   "items": [
+    {
+     "n": 1,
+     "key": "violet",
+     "gold": [
+      "3132253"
+     ],
+     "depth": 0.0305
+    },
+    {
+     "n": 2,
+     "key": "penguin",
+     "gold": [
+      "9332589"
+     ],
+     "depth": 0.6698
+    },
+    {
+     "n": 3,
+     "key": "lagoon",
+     "gold": [
+      "4271933"
+     ],
+     "depth": 0.9193
+    },
+    {
+     "n": 4,
+     "key": "olive",
+     "gold": [
+      "3074602"
+     ],
+     "depth": 0.4073
+    },
+    {
+     "n": 5,
+     "key": "guava",
+     "gold": [
+      "4742145"
+     ],
+     "depth": 0.5543
+    },
+    {
+     "n": 6,
+     "key": "tortoise",
+     "gold": [
+      "1862797"
+     ],
+     "depth": 0.6199
+    },
+    {
+     "n": 7,
+     "key": "raven",
+     "gold": [
+      "1187316"
+     ],
+     "depth": 0.3665
+    },
+    {
+     "n": 8,
+     "key": "lynx",
+     "gold": [
+      "9867263"
+     ],
+     "depth": 0.828
+    }
+   ]
+  },
+  {
+   "id": "mv-1000k-0",
+   "family": "mv",
+   "length": 1000000,
+   "copy": 0,
+   "task": "3b04178854f2",
+   "content_tokens": 999972,
+   "max_tokens": 384,
+   "content_sha256": "24d6547588abbf8605851e6fba36add4564b6f2efcf94fc239417c27529876c9",
+   "items": [
+    {
+     "n": 1,
+     "key": "cinnamon",
+     "gold": [
+      "1918757",
+      "7623043",
+      "1331597",
+      "2558334"
+     ],
+     "depth": 0.2998
+    },
+    {
+     "n": 2,
+     "key": "goblet",
+     "gold": [
+      "7776806",
+      "5834896",
+      "4753350",
+      "9716123"
+     ],
+     "depth": 0.4239
+    },
+    {
+     "n": 3,
+     "key": "koala",
+     "gold": [
+      "2538404",
+      "3472300",
+      "2582795",
+      "1629921"
+     ],
+     "depth": 0.3595
+    },
+    {
+     "n": 4,
+     "key": "peacock",
+     "gold": [
+      "2778220",
+      "3573221",
+      "7231199",
+      "6544898"
+     ],
+     "depth": 0.7296
+    },
+    {
+     "n": 5,
+     "key": "harpoon",
+     "gold": [
+      "5296825",
+      "5574916",
+      "2826145",
+      "4640628"
+     ],
+     "depth": 0.3678
+    },
+    {
+     "n": 6,
+     "key": "falcon",
+     "gold": [
+      "8779380",
+      "2099303",
+      "9421639",
+      "5398013"
+     ],
+     "depth": 0.4167
+    },
+    {
+     "n": 7,
+     "key": "mandolin",
+     "gold": [
+      "4530542",
+      "3687367",
+      "2277306",
+      "5850369"
+     ],
+     "depth": 0.5284
+    },
+    {
+     "n": 8,
+     "key": "mulberry",
+     "gold": [
+      "7866386",
+      "2316396",
+      "6027827",
+      "9899209"
+     ],
+     "depth": 0.6139
+    }
+   ]
+  },
+  {
+   "id": "mk3-1000k-0",
+   "family": "mk3",
+   "length": 1000000,
+   "copy": 0,
+   "task": "35c7add9ca88",
+   "content_tokens": 1000004,
+   "max_tokens": 448,
+   "content_sha256": "59ffd098662f80340d9864cd642ea000538cb88a31a46c28e613fe8e4e4615d6",
+   "items": [
+    {
+     "n": 1,
+     "key": "5fc0b36d-d474-44a5-94c3-5c6da4ccc357",
+     "gold": [
+      "b724e46c-461a-41d5-b336-122d3c0221d1"
+     ],
+     "depth": 0.4843
+    },
+    {
+     "n": 2,
+     "key": "4b0f30af-eee5-4b94-821a-5883a00fd029",
+     "gold": [
+      "d205a245-c6fd-4617-837a-a90d2588cace"
+     ],
+     "depth": 0.6329
+    },
+    {
+     "n": 3,
+     "key": "ad430d0b-ce99-4ebe-bd89-d1a5ddb28d27",
+     "gold": [
+      "c48347e3-0ced-452f-a11b-0d77a2b45dd4"
+     ],
+     "depth": 0.9501
+    },
+    {
+     "n": 4,
+     "key": "c739173a-5bc4-442f-8754-f71af778d696",
+     "gold": [
+      "eeedde5f-ac6c-4e89-a5c4-5c68d1284deb"
+     ],
+     "depth": 0.5437
+    },
+    {
+     "n": 5,
+     "key": "3d90e0d1-3033-4657-833c-6250dabc18e0",
+     "gold": [
+      "1c9caa30-80aa-4c6e-a4f6-28662a0d06d5"
+     ],
+     "depth": 0.5993
+    },
+    {
+     "n": 6,
+     "key": "0c912e3e-5e5b-4671-a48c-e0ff96cc6a68",
+     "gold": [
+      "4a4e2290-202b-48c1-a929-272d79d486a7"
+     ],
+     "depth": 0.9794
+    },
+    {
+     "n": 7,
+     "key": "c113b7f8-e7fb-4f5e-9fb6-a37a95e789a9",
+     "gold": [
+      "d9097149-9f9b-4cfb-84c0-e370d7a21431"
+     ],
+     "depth": 0.4901
+    },
+    {
+     "n": 8,
+     "key": "3cc862dd-5848-4937-8b8c-289344f8bf61",
+     "gold": [
+      "d813c9e2-ca18-4c68-8619-3fb93fedb18a"
+     ],
+     "depth": 0.4504
+    }
+   ]
+  },
+  {
+   "id": "vt-1000k-0",
+   "family": "vt",
+   "length": 1000000,
+   "copy": 0,
+   "task": "00a15ed8abcc",
+   "content_tokens": 999975,
+   "max_tokens": 192,
+   "content_sha256": "f67d35efec86edddc40fef4df6f8d0a7b631148402974f9d0d5a9d1bca4cbff5",
+   "items": [
+    {
+     "n": 1,
+     "key": "89256",
+     "gold": [
+      "URADK",
+      "TPAAU",
+      "RQLYJ",
+      "UDKFW",
+      "OFGDG"
+     ],
+     "depth": 0.7123
+    },
+    {
+     "n": 2,
+     "key": "79952",
+     "gold": [
+      "LSAZH",
+      "XLROQ",
+      "LJGJT",
+      "OUPQN",
+      "ILIUO"
+     ],
+     "depth": 0.4123
+    },
+    {
+     "n": 3,
+     "key": "81642",
+     "gold": [
+      "ABSQB",
+      "VRGCK",
+      "OCHFH",
+      "HYQZH",
+      "JVZUZ"
+     ],
+     "depth": 0.5346
+    },
+    {
+     "n": 4,
+     "key": "97336",
+     "gold": [
+      "GPNAF",
+      "ZJYFZ",
+      "MCBZW",
+      "WHUPE",
+      "LQUEV"
+     ],
+     "depth": 0.2951
+    }
+   ]
+  }
+ ]
+}

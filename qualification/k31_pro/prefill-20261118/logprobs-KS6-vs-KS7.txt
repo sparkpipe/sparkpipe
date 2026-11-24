@@ -1,0 +1,13 @@
+BF16 (KS6) against the FP8 index (KS7), greedy, logprobs 5, the same lane and adapter
+
+400,000-token corpus prompt at offset 0, 64 tokens:
+generated 64 and 64 tokens; the first 36 are identical
+over those: the chosen token's logprob moves 0.0258 on average, at most 0.0971 (position 33); its probability moves at most 0.0595; the top-5 tokens and their order agree at 14 of 36 positions
+position 36: reference picks 39957 (top 2: 39957 -1.828, 6795 -1.890), candidate picks 6795 (top 2: 6795 -1.856, 39957 -1.930)
+the reference's margin between its first and second token there is 0.0615
+
+131,072-token corpus prompt at offset 300,000, 32 tokens:
+generated 32 and 32 tokens; the first 26 are identical
+over those: the chosen token's logprob moves 0.0759 on average, at most 0.3005 (position 1); its probability moves at most 0.0483; the top-5 tokens and their order agree at 12 of 26 positions
+position 26: reference picks 2687 (top 2: 2687 -2.027, 28903 -2.082), candidate picks 28903 (top 2: 28903 -2.104, 2687 -2.133)
+the reference's margin between its first and second token there is 0.0550

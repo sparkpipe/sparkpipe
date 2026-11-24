@@ -2447,6 +2447,21 @@ uint64_t SparkTpDeviceCollectiveRoundIndex(
     return(implementation->round_index);
 }
 
+SparkStatus SparkTpDeviceCollectiveSetOperationTimeout(
+    SparkTpDeviceCollective *collective,
+    uint32_t timeout_milli,
+    uint32_t *previous_milli)
+{
+    SparkTpDeviceCollectiveImplementation *implementation;
+    if ( collective == 0 || collective->implementation == 0 || timeout_milli == 0u || previous_milli == 0 )
+        SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+    implementation = collective->implementation;
+    *previous_milli = collective->operation_timeout_milli;
+    collective->operation_timeout_milli = timeout_milli;
+    implementation->round_timeout_ns = (uint64_t)timeout_milli * 1000000ull;
+    return(SPARK_STATUS_OK);
+}
+
 void SparkTpDeviceCollectiveBroadcastCancel(
     SparkTpDeviceCollective *collective)
 {

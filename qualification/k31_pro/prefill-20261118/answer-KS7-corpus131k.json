@@ -1,0 +1,1 @@
+{"logprobs": null, "text": " or adopts a daemon. It does not kill a\nshared daemon during teardown. The daemon's own lifetime and crash semantics\nremain governed by its service owner.\n\n"}

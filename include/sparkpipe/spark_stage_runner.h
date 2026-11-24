@@ -68,6 +68,7 @@ typedef struct SparkStageRunnerStreamedPrefillConfig
 	uint32_t dense_buffers;
 	uint32_t expert_slots;
 	uint32_t index_fp8;
+	uint64_t expert_pool_cap_bytes;
 	const char *partner_pack_path;
 	const char *fabric_device;
 	const char *pair_device;
@@ -101,6 +102,8 @@ typedef struct SparkStageRunnerConfiguration
 	uint32_t head_row_capacity;
 	uint32_t output_vocabulary;
 	SparkStageRunnerStreamedPrefillConfig streamed_prefill;
+	SparkStatus (*kv_pool_hold)(void *context, uint32_t hold);
+	void *kv_pool_context;
 } SparkStageRunnerConfiguration;
 
 typedef struct SparkStageRunnerDispatch
