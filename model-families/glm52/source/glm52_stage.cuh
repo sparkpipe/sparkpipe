@@ -2436,9 +2436,9 @@ struct GlmModel : CudaStage<GlmModel<G>>
 		BindLayer(state, wave, layer, frame.hidden, frame.positions, frame.slots, b);
 		if ( frame.step->tree != 0u )
 		{
-			b->slots = frame.step->slots;
-			b->fork_positions = frame.step->fork_positions;
-			b->slot_offsets = frame.step->slot_offsets;
+			b->slots = frame.step->slots + wave->first;
+			b->fork_positions = frame.step->fork_positions + wave->first;
+			b->slot_offsets = frame.step->slot_offsets + wave->first;
 		}
 		uint32_t index_k_done = 0u;
 		b->prenormed = sharded != 0u && layer != 0u ? 1u : 0u;

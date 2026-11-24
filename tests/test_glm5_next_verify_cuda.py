@@ -35,5 +35,5 @@ with tempfile.TemporaryDirectory(prefix="glm5-next-verify-cuda-") as directory:
     subprocess.run([NVCC, "-O3", "-std=c++17", "-gencode", "arch=compute_121a,code=sm_121a",
                     "-I.", "-Iinclude", "-Isrc", "-Imodel-families/glm5_next/source", "-Imodel-families/glm5_next/include",
                     "-Imodel-families/common/include", "-Imodules/glm53_flash_tp16_resident_decode_stage/include",
-                    "tests/cuda/glm5_next_verify_cuda.cu", "-o", binary, "-lcuda"], cwd=ROOT, check=True)
+                    "tests/cuda/glm5_next_verify_cuda.cu", "src/spark_speculation_tree_frame.c", "-o", binary, "-lcuda"], cwd=ROOT, check=True)
     subprocess.run([binary], check=True, timeout=900)

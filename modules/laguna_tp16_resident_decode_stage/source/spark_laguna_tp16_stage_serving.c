@@ -65,6 +65,7 @@ static const SparkStageServingModel LagunaTp16StageServing =
 	.max_rows = SPARK_LAGUNA_TP16_MAX_ROWS,
 	.verify_rows = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE,
 	.speculative_tokens = SPARK_MODEL_SERVING_ADAPTER_MAX_VERIFY_TOKENS_PER_SEQUENCE - 1u,
+	.tree_slot_grain = SPARK_LAGUNA_TP16_STAGE_TP_DEGREE,
 	.cache_block_token_count = SPARK_LAGUNA_TP16_STAGE_PAGE_SLOTS,
 	.cache_checkpoint_token_count = SPARK_LAGUNA_TP16_CHECKPOINT_TOKENS,
 	.kv_layout = LagunaTp16ServingKvLayout,

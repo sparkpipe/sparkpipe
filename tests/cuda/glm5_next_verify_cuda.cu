@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "sparkpipe/spark_glm53_flash_tp16_stage_model.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 #include "glm5_next_stage.cuh"
 
 #define REQUIRE(condition) do { if ( !(condition) ) { fprintf(stderr, "FAIL %s:%d %s\n", __FILE__, __LINE__, #condition); exit(1); } } while ( 0 )
@@ -126,6 +127,7 @@ struct Probe
 	uint64_t recurrent_bytes;
 	uint16_t *inputs;
 	uint16_t *drafts;
+	uint16_t *variants;
 	uint8_t *dump;
 };
 
@@ -133,6 +135,7 @@ struct Frame
 {
 	SparkStageRunnerStep step;
 	uint32_t *metadata;
+	uint32_t *tree_meta;
 	uint16_t *hidden;
 };
 
@@ -318,8 +321,10 @@ static void ProbeOpen(Probe *probe)
 	probe->recurrent_bytes = (uint64_t)G5N_KDA_LAYERS * (state->kda_state_slot_bytes + 3u * state->kda_window_slot_bytes);
 	probe->inputs = (uint16_t *)Device((uint64_t)PROBE_POSITIONS * G5N_HIDDEN * 2u);
 	probe->drafts = (uint16_t *)Device((uint64_t)PROBE_POSITIONS * G5N_HIDDEN * 2u);
+	probe->variants = (uint16_t *)Device(32u * (uint64_t)G5N_HIDDEN * 2u);
 	FillBf16(probe->inputs, (uint64_t)PROBE_POSITIONS * G5N_HIDDEN, 1u, 0.0f, 1.7f);
 	FillBf16(probe->drafts, (uint64_t)PROBE_POSITIONS * G5N_HIDDEN, 2u, 0.0f, 1.7f);
+	FillBf16(probe->variants, 32u * (uint64_t)G5N_HIDDEN, 3u, 0.0f, 1.7f);
 	probe->dump = (uint8_t *)Device((uint64_t)PROBE_POSITIONS * Glm5NextKv::kSlotBytes);
 	probe->state = state;
 }
@@ -327,6 +332,7 @@ static void ProbeOpen(Probe *probe)
 static void FrameOpen(Frame *frame, const Probe *probe)
 {
 	frame->metadata = (uint32_t *)Device((4u * PROBE_ROWS + 8u) * sizeof(uint32_t));
+	frame->tree_meta = (uint32_t *)Device(6u * PROBE_ROWS * sizeof(uint32_t));
 	frame->hidden = (uint16_t *)Device((uint64_t)PROBE_ROWS * G5N_HIDDEN * 2u);
 	memset(&frame->step, 0, sizeof(frame->step));
 	frame->step.hidden_bf16 = frame->hidden;
@@ -489,6 +495,263 @@ static void Rejection(Probe *probe, Frame *verify, Frame *decode, void *start, v
 	Recurrent(probe, 0u, start);
 }
 
+static void RunVariant(Probe *probe, Frame *frame, uint32_t position, uint32_t variant)
+{
+	std::vector<uint32_t> metadata(4u * PROBE_ROWS + 8u, 0u);
+	metadata[0] = position;
+	metadata[2u * PROBE_ROWS] = 0u;
+	metadata[3u * PROBE_ROWS] = position + 1u;
+	metadata[3u * PROBE_ROWS + 3u] = 1u;
+	metadata[3u * PROBE_ROWS + 4u] = PROBE_SLOT;
+	CUDA(cudaMemcpyAsync(frame->metadata, metadata.data(), metadata.size() * sizeof(uint32_t), cudaMemcpyHostToDevice, probe->stream));
+	CUDA(cudaMemcpyAsync(frame->hidden, probe->variants + (uint64_t)variant * G5N_HIDDEN, G5N_HIDDEN * 2u, cudaMemcpyDeviceToDevice, probe->stream));
+	frame->step.rows = 1u;
+	frame->step.commit = 1u;
+	frame->step.gather_context = 0u;
+	frame->step.tree = 0u;
+	frame->step.slots = 0;
+	frame->step.fork_positions = 0;
+	frame->step.slot_offsets = 0;
+	frame->step.parent_rows = 0;
+	frame->step.state_loads = 0;
+	frame->step.state_saves = 0;
+	REQUIRE(Stage::Step(probe->state, &frame->step, probe->stream) == SPARK_STATUS_OK);
+	CUDA(cudaStreamSynchronize(probe->stream));
+	CUDA(cudaGetLastError());
+	REQUIRE(Finite(Host(frame->hidden, (uint64_t)G5N_HIDDEN * 2u)) != 0u);
+}
+
+static void UploadTree(Probe *probe, Frame *frame, uint32_t first, const uint32_t *parents, const uint32_t *variants, uint32_t rows)
+{
+	std::vector<uint32_t> metadata(4u * PROBE_ROWS + 8u, 0u);
+	std::vector<uint32_t> tree_meta(6u * PROBE_ROWS, 0u);
+	SparkSpeculationTreeLayout layout;
+	const uint32_t slot_grain = G5N_KPOOL * PROBE_DEGREE;
+	REQUIRE(SparkSpeculationTreeLayoutBuild(parents, variants, rows, first, slot_grain, &layout) == SPARK_STATUS_OK);
+	for ( uint32_t row = 0u; row < rows; ++row )
+	{
+		metadata[row] = layout.anchor_position + layout.row[row].depth;
+		metadata[2u * PROBE_ROWS + row] = row;
+		tree_meta[row] = layout.row[row].slot;
+		tree_meta[PROBE_ROWS + row] = layout.row[row].fork_position;
+		tree_meta[2u * PROBE_ROWS + row] = layout.row[row].slot_offset;
+		tree_meta[3u * PROBE_ROWS + row] = parents[row];
+		tree_meta[4u * PROBE_ROWS + row] = row != 0u && layout.row[row].branch != layout.row[parents[row]].branch ? layout.row[row].branch : 0u;
+		CUDA(cudaMemcpyAsync(frame->hidden + (uint64_t)row * G5N_HIDDEN, probe->variants + (uint64_t)variants[row] * G5N_HIDDEN,
+			G5N_HIDDEN * 2u, cudaMemcpyDeviceToDevice, probe->stream));
+	}
+	for ( uint32_t row = 1u; row < rows; ++row )
+		if ( tree_meta[4u * PROBE_ROWS + row] != 0u )
+			tree_meta[5u * PROBE_ROWS + parents[row]] |= 1u << (tree_meta[4u * PROBE_ROWS + row] - 1u);
+	metadata[3u * PROBE_ROWS] = layout.context;
+	metadata[3u * PROBE_ROWS + 3u] = rows;
+	metadata[3u * PROBE_ROWS + 4u] = PROBE_SLOT;
+	CUDA(cudaMemcpyAsync(frame->metadata, metadata.data(), metadata.size() * sizeof(uint32_t), cudaMemcpyHostToDevice, probe->stream));
+	CUDA(cudaMemcpyAsync(frame->tree_meta, tree_meta.data(), tree_meta.size() * sizeof(uint32_t), cudaMemcpyHostToDevice, probe->stream));
+	frame->step.rows = rows;
+	frame->step.commit = 0u;
+	frame->step.gather_context = layout.context;
+	frame->step.tree = 1u;
+	frame->step.slots = frame->tree_meta;
+	frame->step.fork_positions = frame->tree_meta + PROBE_ROWS;
+	frame->step.slot_offsets = frame->tree_meta + 2u * PROBE_ROWS;
+	frame->step.parent_rows = frame->tree_meta + 3u * PROBE_ROWS;
+	frame->step.state_loads = frame->tree_meta + 4u * PROBE_ROWS;
+	frame->step.state_saves = frame->tree_meta + 5u * PROBE_ROWS;
+}
+
+static void KeepPath(Probe *probe, Frame *frame, const uint32_t *path, uint32_t length)
+{
+	uint32_t begin[2] = { 0u, length };
+	uint32_t *kept_device = frame->metadata + 3u * PROBE_ROWS + 6u;
+	CUDA(cudaMemcpyAsync(frame->metadata + 2u * PROBE_ROWS, path, length * sizeof(uint32_t), cudaMemcpyHostToDevice, probe->stream));
+	CUDA(cudaMemcpyAsync(frame->metadata + 3u * PROBE_ROWS + 2u, begin, sizeof(begin), cudaMemcpyHostToDevice, probe->stream));
+	CUDA(cudaMemcpyAsync(kept_device, &length, sizeof(length), cudaMemcpyHostToDevice, probe->stream));
+	REQUIRE(Stage::KeepRows(probe->state, &frame->step, kept_device, probe->stream) == SPARK_STATUS_OK);
+	CUDA(cudaStreamSynchronize(probe->stream));
+	CUDA(cudaGetLastError());
+}
+
+static void TreeSweep(Probe *probe, Frame *verify, Frame *decode, void *start, void *scratch, uint32_t first, uint32_t test_graph)
+{
+	static const uint32_t kTreeRows = 8u;
+	static const uint32_t parents_a[kTreeRows] = { SPARK_SPECULATION_TREE_FRAME_NO_ROW, 0u, 1u, 2u, 3u, 1u, 5u, 0u };
+	static const uint32_t variants_a[kTreeRows] = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u };
+	static const uint32_t parents_b[kTreeRows] = { SPARK_SPECULATION_TREE_FRAME_NO_ROW, 0u, 1u, 2u, 2u, 4u, 0u, 6u };
+	static const uint32_t variants_b[kTreeRows] = { 8u, 9u, 10u, 11u, 12u, 13u, 14u, 15u };
+	static const uint32_t paths[3][5] = { { 0u, 1u, 2u, 3u, 4u }, { 0u, 1u, 5u, 6u, 0u }, { 0u, 7u, 0u, 0u, 0u } };
+	static const uint32_t lengths[3] = { 5u, 4u, 2u };
+	const uint64_t row_bytes = (uint64_t)G5N_HIDDEN * 2u;
+	const std::vector<uint8_t> prefix_latent = Host(probe->latent_pool, probe->latent_bytes * G5N_DSA_LAYERS);
+	const std::vector<uint8_t> prefix_index = Host(probe->index_pool, probe->index_bytes * G5N_DSA_LAYERS);
+	std::vector<uint8_t> seq_out[3];
+	for ( uint32_t path = 0u; path < 3u; ++path )
+	{
+		CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		for ( uint32_t k = 0u; k < lengths[path]; ++k )
+		{
+			RunVariant(probe, decode, first + k, variants_a[paths[path][k]]);
+			std::vector<uint8_t> row = Host(decode->hidden, row_bytes);
+			seq_out[path].insert(seq_out[path].end(), row.begin(), row.end());
+		}
+	}
+	CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+	CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+	Recurrent(probe, 0u, start);
+	UploadTree(probe, verify, first, parents_a, variants_a, kTreeRows);
+	REQUIRE(Stage::Step(probe->state, &verify->step, probe->stream) == SPARK_STATUS_OK);
+	CUDA(cudaStreamSynchronize(probe->stream));
+	CUDA(cudaGetLastError());
+	const std::vector<uint8_t> tree_out = Host(verify->hidden, kTreeRows * row_bytes);
+	REQUIRE(Finite(tree_out) != 0u);
+	Mismatch(Differ(RecurrentHost(probe, scratch), Host(start, probe->recurrent_bytes)), "tree verify moved recurrent state", kTreeRows, first, 0u);
+	const std::vector<uint8_t> after_tree_latent = Host(probe->latent_pool, probe->latent_bytes * G5N_DSA_LAYERS);
+	const std::vector<uint8_t> after_tree_index = Host(probe->index_pool, probe->index_bytes * G5N_DSA_LAYERS);
+	for ( uint32_t path = 0u; path < 3u; ++path )
+		for ( uint32_t k = 0u; k < lengths[path]; ++k )
+			Mismatch(memcmp(tree_out.data() + (uint64_t)paths[path][k] * row_bytes, seq_out[path].data() + (uint64_t)k * row_bytes, row_bytes) != 0 ? 1u : 0u,
+				"tree node differs from its sequential one-row decode", kTreeRows, first, paths[path][k]);
+	REQUIRE(memcmp(tree_out.data() + 5u * row_bytes, tree_out.data() + 2u * row_bytes, row_bytes) != 0);
+	for ( uint32_t path = 0u; path < 3u; ++path )
+	{
+		const uint32_t length = lengths[path];
+		std::vector<uint8_t> plain, speculated;
+		CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		for ( uint32_t k = 0u; k < length; ++k )
+			RunVariant(probe, decode, first + k, variants_a[paths[path][k]]);
+		const std::vector<uint8_t> ref_rec = RecurrentHost(probe, scratch);
+		const std::vector<uint8_t> ref_kv = KvPrefix(probe, first + length);
+		for ( uint32_t step = 0u; step < 2u; ++step )
+		{
+			RunVariant(probe, decode, first + length + step, 16u + step);
+			std::vector<uint8_t> row = Host(decode->hidden, row_bytes);
+			plain.insert(plain.end(), row.begin(), row.end());
+		}
+		const std::vector<uint8_t> plain_rec = RecurrentHost(probe, scratch);
+		const std::vector<uint8_t> plain_kv = KvPrefix(probe, first + length + 2u);
+		CUDA(cudaMemcpy(probe->latent_pool, after_tree_latent.data(), after_tree_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, after_tree_index.data(), after_tree_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		KeepPath(probe, verify, paths[path], length);
+		Mismatch(Differ(RecurrentHost(probe, scratch), ref_rec), "KeepRows tree path recurrent state differs", kTreeRows, first, path);
+		Mismatch(Differ(KvPrefix(probe, first + length), ref_kv), "KeepRows tree path relocated KV differs", kTreeRows, first, path);
+		for ( uint32_t step = 0u; step < 2u; ++step )
+		{
+			RunVariant(probe, decode, first + length + step, 16u + step);
+			std::vector<uint8_t> row = Host(decode->hidden, row_bytes);
+			speculated.insert(speculated.end(), row.begin(), row.end());
+		}
+		Mismatch(Differ(speculated, plain), "follow-up decodes after tree KeepRows differ", kTreeRows, first, path);
+		Mismatch(Differ(RecurrentHost(probe, scratch), plain_rec), "follow-up recurrent state after tree KeepRows differs", kTreeRows, first, path);
+		Mismatch(Differ(KvPrefix(probe, first + length + 2u), plain_kv), "follow-up KV after tree KeepRows differs", kTreeRows, first, path);
+	}
+	if ( test_graph != 0u )
+	{
+		cudaGraph_t graph = 0;
+		cudaGraphExec_t exec = 0;
+		CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		UploadTree(probe, verify, first, parents_b, variants_b, kTreeRows);
+		REQUIRE(Stage::Step(probe->state, &verify->step, probe->stream) == SPARK_STATUS_OK);
+		CUDA(cudaStreamSynchronize(probe->stream));
+		const std::vector<uint8_t> eager_b = Host(verify->hidden, kTreeRows * row_bytes);
+		CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		UploadTree(probe, verify, first, parents_a, variants_a, kTreeRows);
+		CUDA(cudaStreamSynchronize(probe->stream));
+		CUDA(cudaStreamBeginCapture(probe->stream, cudaStreamCaptureModeThreadLocal));
+		REQUIRE(Stage::Step(probe->state, &verify->step, probe->stream) == SPARK_STATUS_OK);
+		CUDA(cudaStreamEndCapture(probe->stream, &graph));
+		CUDA(cudaGraphInstantiate(&exec, graph, 0, 0, 0));
+		CUDA(cudaGraphLaunch(exec, probe->stream));
+		CUDA(cudaStreamSynchronize(probe->stream));
+		Mismatch(Differ(Host(verify->hidden, kTreeRows * row_bytes), tree_out), "tree verify CUDA graph A differs from eager", kTreeRows, first, 0u);
+		CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+		CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+		Recurrent(probe, 0u, start);
+		UploadTree(probe, verify, first, parents_b, variants_b, kTreeRows);
+		CUDA(cudaGraphLaunch(exec, probe->stream));
+		CUDA(cudaStreamSynchronize(probe->stream));
+		Mismatch(Differ(Host(verify->hidden, kTreeRows * row_bytes), eager_b), "tree verify CUDA graph B replay differs from eager", kTreeRows, first, 1u);
+		CUDA(cudaGraphExecDestroy(exec));
+		CUDA(cudaGraphDestroy(graph));
+	}
+	CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+	CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+	Recurrent(probe, 0u, start);
+	verify->step.tree = 0u;
+	verify->step.slots = 0;
+	verify->step.fork_positions = 0;
+	verify->step.slot_offsets = 0;
+	verify->step.parent_rows = 0;
+	verify->step.state_loads = 0;
+	verify->step.state_saves = 0;
+	printf("tree verify at position %u: 8-node multi-branch tree, all 3 KeepRows paths + 2 post-decodes%s bit-exact\n", first,
+		test_graph != 0u ? ", and 2-topology CUDA graph replay" : "");
+}
+
+static void LargeTreeCheck(Probe *probe, Frame *verify, Frame *decode, void *start, uint32_t first)
+{
+	static const uint32_t kRows = 128u, kTrunk = 65u;
+	const uint64_t row_bytes = (uint64_t)G5N_HIDDEN * 2u;
+	const std::vector<uint8_t> prefix_latent = Host(probe->latent_pool, probe->latent_bytes * G5N_DSA_LAYERS);
+	const std::vector<uint8_t> prefix_index = Host(probe->index_pool, probe->index_bytes * G5N_DSA_LAYERS);
+	std::vector<uint32_t> parents(kRows), variants(kRows);
+	parents[0] = SPARK_SPECULATION_TREE_FRAME_NO_ROW;
+	variants[0] = 0u;
+	for ( uint32_t row = 1u; row < kTrunk; ++row )
+	{
+		parents[row] = row - 1u;
+		variants[row] = row % 16u;
+	}
+	parents[kTrunk] = 0u;
+	variants[kTrunk] = 17u;
+	for ( uint32_t row = kTrunk + 1u; row < kRows; ++row )
+	{
+		parents[row] = row - 1u;
+		variants[row] = 16u + (row % 16u);
+	}
+	CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+	CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+	Recurrent(probe, 0u, start);
+	UploadTree(probe, verify, first, parents.data(), variants.data(), kRows);
+	REQUIRE(Stage::Step(probe->state, &verify->step, probe->stream) == SPARK_STATUS_OK);
+	CUDA(cudaStreamSynchronize(probe->stream));
+	CUDA(cudaGetLastError());
+	const std::vector<uint8_t> tree_out = Host(verify->hidden, kRows * row_bytes);
+	REQUIRE(Finite(tree_out) != 0u);
+	CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+	CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+	Recurrent(probe, 0u, start);
+	RunVariant(probe, decode, first, variants[0]);
+	Mismatch(memcmp(Host(decode->hidden, row_bytes).data(), tree_out.data(), row_bytes) != 0 ? 1u : 0u,
+		"128-row tree root differs from sequential decode", kRows, first, 0u);
+	for ( uint32_t step = 0u; step < 3u; ++step )
+	{
+		const uint32_t row = kTrunk + step;
+		RunVariant(probe, decode, first + 1u + step, variants[row]);
+		Mismatch(memcmp(Host(decode->hidden, row_bytes).data(), tree_out.data() + (uint64_t)row * row_bytes, row_bytes) != 0 ? 1u : 0u,
+			"128-row tree branch row differs from sequential decode", kRows, first, row);
+	}
+	CUDA(cudaMemcpy(probe->latent_pool, prefix_latent.data(), prefix_latent.size(), cudaMemcpyHostToDevice));
+	CUDA(cudaMemcpy(probe->index_pool, prefix_index.data(), prefix_index.size(), cudaMemcpyHostToDevice));
+	Recurrent(probe, 0u, start);
+	verify->step.tree = 0u;
+	verify->step.slots = 0;
+	verify->step.fork_positions = 0;
+	verify->step.slot_offsets = 0;
+	verify->step.parent_rows = 0;
+	verify->step.state_loads = 0;
+	verify->step.state_saves = 0;
+	printf("large tree verify at position %u: 128-row multi-branch tree bit-exact\n", first);
+}
+
 static void Prefill(Probe *probe, Frame *frame, uint32_t first, uint32_t end)
 {
 	for ( ; first < end; first += PROBE_ROWS )
@@ -515,6 +778,11 @@ int main(void)
 		Sweep(&probe, &verify, &decode, start, scratch, current, PROBE_PREFIX, rows);
 	Rejection(&probe, &verify, &decode, start, scratch, 16u, 5u);
 	Rejection(&probe, &verify, &decode, start, scratch, PROBE_ROWS, 0u);
+	TreeSweep(&probe, &verify, &decode, start, scratch, PROBE_PREFIX, 1u);
+	LargeTreeCheck(&probe, &verify, &decode, start, PROBE_PREFIX);
+	Prefill(&probe, &decode, PROBE_PREFIX, PROBE_PREFIX + 14u);
+	Recurrent(&probe, 1u, start);
+	TreeSweep(&probe, &verify, &decode, start, scratch, PROBE_PREFIX + 14u, 0u);
 	printf("PASS glm5_next verify: frames of 1, 2, 7, 16 and %u rows, and a 16-row frame entering the top-k regime, equal one-row decode steps "
 		"bit for bit in every row, in the recurrent state left by every keep and in the cache rows; a rejected tail leaves no trace\n", PROBE_ROWS);
 	return 0;

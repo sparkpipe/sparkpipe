@@ -734,7 +734,7 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
 			step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 ||
 			(step->commit == 0u && rows > state->verify_rows) ||
-			(step->tree != 0u && (step->commit != 0u || step->sequences != 1u || rows >= G5N_POOL_ROWS_MIN || step->slots == 0 ||
+			(step->tree != 0u && (step->commit != 0u || step->sequences != 1u || step->slots == 0 ||
 				step->fork_positions == 0 || step->slot_offsets == 0 || step->parent_rows == 0 || step->state_loads == 0 ||
 				step->state_saves == 0 || state->kda_snapshots == 0)) )
 		{

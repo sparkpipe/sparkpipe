@@ -5,6 +5,7 @@
 #include "modules/kexaone2_tp16_resident_decode_stage/source/spark_kexaone2_tp16_stage_model.cu"
 
 #include "sparkpipe/spark_model_serving_adapter.h"
+#include "sparkpipe/spark_speculation_tree_frame.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,8 +110,10 @@ struct VfRig
 	uint32_t multiprocessors;
 	uint8_t *kv;
 	uint32_t *page_table, *positions, *context, *sequence_of_row;
+	uint32_t *tree_slots, *forks, *offsets, *row_indices, *kept;
 	uint16_t *hidden;
 	uint32_t host_context[VF_SLOTS];
+	SparkStageRunnerStep last;
 
 	void Layer(GemmaLayer *layer, uint32_t index)
 	{
@@ -182,6 +185,11 @@ struct VfRig
 			cudaMalloc((void **)&page_table, table.size() * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&positions, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&sequence_of_row, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&tree_slots, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&forks, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&offsets, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&row_indices, VF_MAX_FRAME * sizeof(uint32_t)) != cudaSuccess ||
+			cudaMalloc((void **)&kept, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&context, VF_SLOTS * sizeof(uint32_t)) != cudaSuccess ||
 			cudaMalloc((void **)&hidden, (uint64_t)VF_MAX_FRAME * G::kHidden * sizeof(uint16_t)) != cudaSuccess )
 			return 0;
@@ -257,6 +265,76 @@ struct VfRig
 		return 1;
 	}
 
+	int UploadTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, uint32_t slot_grain, SparkStageRunnerStep *step_out)
+	{
+		std::vector<uint16_t> input((uint64_t)count * G::kHidden);
+		std::vector<uint32_t> position(count), sequence(count, rows[0].sequence), slot_table(count), fork_table(count), offset_table(count), tok(count);
+		SparkSpeculationTreeLayout layout;
+		SparkStageRunnerStep step;
+		for ( uint32_t row = 0u; row < count; ++row )
+			tok[row] = rows[row].variant;
+		if ( count > VF_MAX_FRAME || SparkSpeculationTreeLayoutBuild(parent_rows, tok.data(), count, rows[0].position, slot_grain, &layout) != SPARK_STATUS_OK )
+			return 0;
+		for ( uint32_t row = 0u; row < count; ++row )
+		{
+			Input(rows[row], input.data() + (uint64_t)row * G::kHidden);
+			position[row] = layout.anchor_position + layout.row[row].depth;
+			if ( position[row] != rows[row].position )
+				return 0;
+			slot_table[row] = layout.row[row].slot;
+			fork_table[row] = layout.row[row].fork_position;
+			offset_table[row] = layout.row[row].slot_offset;
+		}
+		host_context[rows[0].sequence] = layout.context;
+		memset(&step, 0, sizeof(step));
+		step.hidden_bf16 = hidden;
+		step.positions = positions;
+		step.context_length = context;
+		step.sequence_of_row = sequence_of_row;
+		step.sequence_row_indices = row_indices;
+		step.rows = count;
+		step.sequences = 1u;
+		step.commit = 0u;
+		step.context = VF_PAGES * G::kPageSlots;
+		step.multiprocessors = multiprocessors;
+		step.route_fault = VfRouteFault();
+		step.tree = 1u;
+		step.slots = tree_slots;
+		step.fork_positions = forks;
+		step.slot_offsets = offsets;
+		last = step;
+		*step_out = step;
+		return cudaMemcpyAsync(hidden, input.data(), input.size() * sizeof(uint16_t), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(positions, position.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(sequence_of_row, sequence.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(context, host_context, sizeof(host_context), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(tree_slots, slot_table.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(forks, fork_table.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess &&
+			cudaMemcpyAsync(offsets, offset_table.data(), count * sizeof(uint32_t), cudaMemcpyHostToDevice, stream) == cudaSuccess ? 1 : 0;
+	}
+
+	int RunTree(const VfRow *rows, const uint32_t *parent_rows, uint32_t count, uint32_t slot_grain, std::vector<uint16_t> *output)
+	{
+		SparkStageRunnerStep step;
+		if ( UploadTree(rows, parent_rows, count, slot_grain, &step) == 0 || M::Step(state, &step, stream) != SPARK_STATUS_OK || cudaStreamSynchronize(stream) != cudaSuccess )
+			return 0;
+		if ( output != 0 )
+		{
+			const uint64_t offset = output->size(), elems = (uint64_t)count * G::kHidden;
+			output->resize(offset + elems);
+			if ( cudaMemcpy(output->data() + offset, hidden, elems * sizeof(uint16_t), cudaMemcpyDeviceToHost) != cudaSuccess )
+				return 0;
+		}
+		return 1;
+	}
+
+	int KeepPath(const uint32_t *path, uint32_t length)
+	{
+		return cudaMemcpy(row_indices, path, length * sizeof(uint32_t), cudaMemcpyHostToDevice) == cudaSuccess &&
+			cudaMemcpy(kept, &length, sizeof(uint32_t), cudaMemcpyHostToDevice) == cudaSuccess &&
+			M::KeepRows(state, &last, kept, stream) == SPARK_STATUS_OK && cudaStreamSynchronize(stream) == cudaSuccess ? 1 : 0;
+	}
+
 	int Decode(uint32_t sequence, uint32_t position, uint32_t variant, std::vector<uint16_t> *output)
 	{
 		const VfRow row = { sequence, position, variant };
@@ -313,11 +391,29 @@ struct VfRig
 		cudaFree(page_table);
 		cudaFree(positions);
 		cudaFree(sequence_of_row);
+		cudaFree(tree_slots);
+		cudaFree(forks);
+		cudaFree(offsets);
+		cudaFree(row_indices);
+		cudaFree(kept);
 		cudaFree(context);
 		cudaFree(hidden);
 		cudaStreamDestroy(stream);
 	}
 };
+
+static float RelativeRowDistance(const std::vector<uint16_t> &a, uint32_t a_row, const std::vector<uint16_t> &b, uint32_t b_row, uint32_t width)
+{
+	float worst = 0.0f, scale = 1.0f;
+	for ( uint32_t index = 0u; index < width; ++index )
+	{
+		const float va = VfFloat(a[(uint64_t)a_row * width + index]), vb = VfFloat(b[(uint64_t)b_row * width + index]);
+		const float diff = fabsf(va - vb), mag = fabsf(vb);
+		worst = diff > worst ? diff : worst;
+		scale = mag > scale ? mag : scale;
+	}
+	return worst / scale;
+}
 
 template<class G>
 static void Check(void)
@@ -410,6 +506,126 @@ static void Check(void)
 		Require(FirstDifference(verified, decoded, G::kHidden) == UINT32_MAX, model,
 			"every row of a two-sequence verify frame equals its one-row decode (first differing row)", FirstDifference(verified, decoded, G::kHidden), 0u, 0u);
 		Require(rig.KvMatches(rig.Save(), after_decode, UINT32_MAX) != 0u, model, "a two-sequence verify frame leaves the decodes' KV", 0u, 0u, 0u);
+	}
+	{
+		static const uint32_t kTreeRows = 8u;
+		static const uint32_t parents_a[kTreeRows] = { SPARK_SPECULATION_TREE_FRAME_NO_ROW, 0u, 1u, 2u, 3u, 1u, 5u, 0u };
+		static const uint32_t depths_a[kTreeRows] = { 0u, 1u, 2u, 3u, 4u, 2u, 3u, 1u };
+		static const uint32_t variants_a[kTreeRows] = { 10u, 11u, 12u, 13u, 14u, 25u, 26u, 37u };
+		static const uint32_t parents_b[kTreeRows] = { SPARK_SPECULATION_TREE_FRAME_NO_ROW, 0u, 1u, 2u, 2u, 4u, 0u, 6u };
+		static const uint32_t depths_b[kTreeRows] = { 0u, 1u, 2u, 3u, 3u, 4u, 1u, 2u };
+		static const uint32_t paths[3][5] = { { 0u, 1u, 2u, 3u, 4u }, { 0u, 1u, 5u, 6u, 0u }, { 0u, 7u, 0u, 0u, 0u } };
+		static const uint32_t lengths[3] = { 5u, 4u, 2u };
+		VfRow tree_a[kTreeRows], tree_b[kTreeRows];
+		std::vector<uint16_t> tree_out, seq_out[3], eager_b;
+		std::vector<uint16_t> graph_a((uint64_t)kTreeRows * G::kHidden), graph_b((uint64_t)kTreeRows * G::kHidden);
+		std::vector<uint8_t> after_tree;
+		SparkStageRunnerStep tree_step, step_a, step_b;
+		cudaGraph_t graph = 0;
+		cudaGraphExec_t exec = 0;
+		for ( uint32_t row = 0u; row < kTreeRows; ++row )
+		{
+			tree_a[row] = { 0u, VF_PREFIX + depths_a[row], variants_a[row] };
+			tree_b[row] = { 0u, VF_PREFIX + depths_b[row], 70u + row };
+		}
+		for ( uint32_t path = 0u; path < 3u; ++path )
+		{
+			rig.Load(prefix);
+			for ( uint32_t k = 0u; k < lengths[path]; ++k )
+				Require(rig.Decode(0u, VF_PREFIX + k, variants_a[paths[path][k]], &seq_out[path]) != 0, model, "tree path sequential decode runs", path, k, 0u);
+		}
+		rig.Load(prefix);
+		Require(rig.RunTree(tree_a, parents_a, kTreeRows, 16u, &tree_out) != 0, model, "multi-branch tree verify runs", 0u, 0u, 0u);
+		after_tree = rig.Save();
+		tree_step = rig.last;
+		Require(Finite(tree_out) != 0u, model, "tree verify rows are finite and not constant", 0u, 0u, 0u);
+		for ( uint32_t path = 0u; path < 3u; ++path )
+			for ( uint32_t k = 0u; k < lengths[path]; ++k )
+			{
+				if ( path == 0u )
+					Require(memcmp(tree_out.data() + (uint64_t)paths[path][k] * G::kHidden, seq_out[path].data() + (uint64_t)k * G::kHidden,
+							G::kHidden * sizeof(uint16_t)) == 0, model, "trunk tree node equals its sequential decode bit for bit (path, depth, row)",
+						path, k, paths[path][k]);
+				else
+				{
+					const float dist = RelativeRowDistance(tree_out, paths[path][k], seq_out[path], k, G::kHidden);
+					Require(dist < 0.02f, model, "branch tree node matches sequential decode up to tiled GQA summation order (path, row, rel x 1e6)",
+						path, paths[path][k], (uint32_t)(dist * 1.0e6f));
+				}
+			}
+		Require(RelativeRowDistance(tree_out, 5u, tree_out, 2u, G::kHidden) >= 0.1f,
+			model, "branch siblings at the same depth differ", 0u, 0u, 0u);
+		for ( uint32_t path = 0u; path < 3u; ++path )
+		{
+			const uint32_t length = lengths[path], limit = VF_PREFIX + length + 2u;
+			std::vector<uint16_t> plain, speculated, unused;
+			std::vector<uint8_t> reference, plain_kv, speculated_kv;
+			rig.Load(prefix);
+			for ( uint32_t k = 0u; k < length; ++k )
+				Require(rig.Decode(0u, VF_PREFIX + k, variants_a[paths[path][k]], &unused) != 0, model, "tree keep reference decode runs", path, k, 0u);
+			reference = rig.Save();
+			Require(rig.Decode(0u, VF_PREFIX + length, 1u, &plain) != 0 && rig.Decode(0u, VF_PREFIX + length + 1u, 2u, &plain) != 0,
+				model, "plain follow-up decodes run", path, 0u, 0u);
+			plain_kv = rig.Save();
+			rig.Load(after_tree);
+			rig.last = tree_step;
+			Require(rig.KeepPath(paths[path], length) != 0, model, "KeepRows relocates accepted tree path KV", path, 0u, 0u);
+			if ( path == 0u )
+				Require(rig.KvMatches(rig.Save(), reference, VF_PREFIX + length) != 0u, model,
+					"relocated trunk KV matches sequential decode bit for bit", path, 0u, 0u);
+			else
+			{
+				const std::vector<uint8_t> kept_kv = rig.Save();
+				if constexpr ( !GemmaShape<G>::Full(0u) )
+					Require(VfRig<G>::template RegionMatches<typename GemmaShape<G>::SlidingKvGeometry>(kept_kv.data(), reference.data(), 1u, VF_PREFIX + length) != 0u,
+						model, "layer-0 relocated branch KV matches sequential decode bit for bit", path, 0u, 0u);
+				else
+					Require(VfRig<G>::template RegionMatches<typename GemmaShape<G>::FullKvGeometry>(kept_kv.data() + VfRig<G>::kSlidingRegion,
+							reference.data() + VfRig<G>::kSlidingRegion, 1u, VF_PREFIX + length) != 0u,
+						model, "layer-0 relocated branch KV matches sequential decode bit for bit", path, 0u, 0u);
+			}
+			Require(rig.Decode(0u, VF_PREFIX + length, 1u, &speculated) != 0 && rig.Decode(0u, VF_PREFIX + length + 1u, 2u, &speculated) != 0,
+				model, "follow-up decodes after tree KeepRows run", path, 0u, 0u);
+			speculated_kv = rig.Save();
+			if ( path == 0u )
+			{
+				Require(FirstDifference(speculated, plain, G::kHidden) == UINT32_MAX, model,
+					"follow-up decodes after trunk KeepRows equal plain run bit for bit (path, first differing step)", path, FirstDifference(speculated, plain, G::kHidden), 0u);
+				Require(rig.KvMatches(speculated_kv, plain_kv, limit) != 0u, model,
+					"follow-up KV after trunk KeepRows equals plain run bit for bit", path, 0u, 0u);
+			}
+			else
+				for ( uint32_t s = 0u; s < 2u; ++s )
+				{
+					const float dist = RelativeRowDistance(speculated, s, plain, s, G::kHidden);
+					Require(dist < 0.02f, model,
+						"follow-up decodes after branch KeepRows match plain run up to tiled GQA summation order (path, step, rel x 1e6)",
+						path, s, (uint32_t)(dist * 1.0e6f));
+				}
+		}
+		rig.Load(prefix);
+		Require(rig.RunTree(tree_b, parents_b, kTreeRows, 16u, &eager_b) != 0, model, "eager tree B runs for graph check", 0u, 0u, 0u);
+		rig.Load(prefix);
+		Require(rig.UploadTree(tree_a, parents_a, kTreeRows, 16u, &step_a) != 0 &&
+			cudaStreamSynchronize(rig.stream) == cudaSuccess &&
+			cudaStreamBeginCapture(rig.stream, cudaStreamCaptureModeThreadLocal) == cudaSuccess &&
+			GemmaModel<G>::Step(rig.state, &step_a, rig.stream) == SPARK_STATUS_OK &&
+			cudaStreamEndCapture(rig.stream, &graph) == cudaSuccess &&
+			cudaGraphInstantiate(&exec, graph, 0, 0, 0) == cudaSuccess, model, "tree verify CUDA graph captures cleanly", 0u, 0u, 0u);
+		Require(cudaGraphLaunch(exec, rig.stream) == cudaSuccess && cudaStreamSynchronize(rig.stream) == cudaSuccess &&
+			cudaMemcpy(graph_a.data(), rig.hidden, graph_a.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess,
+			model, "tree verify CUDA graph launches for tree A", 0u, 0u, 0u);
+		Require(FirstDifference(graph_a, tree_out, G::kHidden) == UINT32_MAX, model,
+			"tree verify CUDA graph A equals eager bit for bit", FirstDifference(graph_a, tree_out, G::kHidden), 0u, 0u);
+		rig.Load(prefix);
+		Require(rig.UploadTree(tree_b, parents_b, kTreeRows, 16u, &step_b) != 0 &&
+			cudaGraphLaunch(exec, rig.stream) == cudaSuccess && cudaStreamSynchronize(rig.stream) == cudaSuccess &&
+			cudaMemcpy(graph_b.data(), rig.hidden, graph_b.size() * sizeof(uint16_t), cudaMemcpyDeviceToHost) == cudaSuccess,
+			model, "tree verify CUDA graph replays tree B with 0 recaptures", 0u, 0u, 0u);
+		Require(FirstDifference(graph_b, eager_b, G::kHidden) == UINT32_MAX, model,
+			"tree verify CUDA graph B equals eager bit for bit", FirstDifference(graph_b, eager_b, G::kHidden), 0u, 0u);
+		cudaGraphExecDestroy(exec);
+		cudaGraphDestroy(graph);
 	}
 	Require(rig.KvClean() != 0u, model, "no step reported a KV access error", 0u, 0u, 0u);
 	printf("%s %s: frames of 1-%u rows, %u rejection points\n", vf_failures == 0 ? "ok" : "checked", model, VF_MAX_FRAME, checked);
