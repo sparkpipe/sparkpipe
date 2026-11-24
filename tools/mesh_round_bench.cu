@@ -3,8 +3,9 @@
 #include "sparkpipe/spark_weightd.h"
 #include "sparkpipe/spark_tp_device_collective.h"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "sparkpipe/spark_gpu.h"
+#include "runtime/launch.h"
 #include <poll.h>
-#include <cuda_runtime.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,12 +13,12 @@
 #include <time.h>
 #include <unistd.h>
 
-static SparkStatus SparkStageModuleCudaStatus(const char *module_tag, cudaError_t error, const char *site)
+static SparkStatus SparkStageModuleCudaStatus(const char *module_tag, SparkGpuError error, const char *site)
 {
-	if ( error == cudaSuccess )
+	if ( error == SPARK_GPU_SUCCESS )
 		return SPARK_STATUS_OK;
-	fprintf(stderr, "%s cuda_error site=%s error=%s\n", module_tag, site, cudaGetErrorString(error));
-	return error == cudaErrorMemoryAllocation ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_INTERNAL_ERROR;
+	fprintf(stderr, "%s gpu_error site=%s error=%s\n", module_tag, site, SparkGpuGetErrorString(error));
+	return error == SPARK_GPU_ERROR_MEMORY_ALLOCATION ? SPARK_STATUS_CAPACITY_EXCEEDED : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 #define SPARK_FAMILY_CAMEL MeshBench
@@ -62,14 +63,14 @@ static void bench_start_at(uint64_t start_ms)
     }
 }
 
-static void bench_wait_stream(cudaStream_t stream)
+static void bench_wait_stream(SparkGpuStream stream)
 {
     uint64_t deadline = bench_now_ns() + BENCH_WAIT_NS;
     for (;;)
     {
-        cudaError_t status = cudaStreamQuery(stream);
-        if (status == cudaSuccess) return;
-        bench_require(status == cudaErrorNotReady && bench_now_ns() < deadline,"stream-terminal");
+        SparkGpuError status = SparkGpuStreamQuery(stream);
+        if (status == SPARK_GPU_SUCCESS) return;
+        bench_require(status == SPARK_GPU_ERROR_NOT_READY && bench_now_ns() < deadline,"stream-terminal");
     }
 }
 
@@ -121,9 +122,9 @@ int main(int count,char **arguments)
     SparkTpDeviceCollectiveSubmission submission = {};
     SparkWeightdMeshTopology topology = {};
     SparkWeightdClient *owner = 0;
-    cudaGraph_t graph = 0;
-    cudaGraphExec_t executable = 0;
-    cudaStream_t stream = 0;
+    SparkGpuGraph graph = 0;
+    SparkGpuGraphExec executable = 0;
+    SparkGpuStream stream = 0;
     uint16_t *local = 0,*output = 0;
     uint32_t *work = 0,*sink = 0;
     uint32_t acquired = SPARK_WEIGHTD_LANE_NONE;
@@ -152,20 +153,20 @@ int main(int count,char **arguments)
         }
     }
     bench_status(SparkTpDeviceCollectiveMeshTopology(rank,degree,config.mesh_ranks,&topology),"topology");
-    bench_require(cudaFree(0) == cudaSuccess,"cuda-init");
+    bench_require(SparkGpuSetDevice(0) == SPARK_GPU_SUCCESS,"device-init");
     bench_status(SparkWeightdClientConnect(socket_path,&owner,0),"connect");
     bench_status(SparkWeightdClientLaneAcquire(owner,lane,&topology,&acquired,BENCH_WAIT_NS),"lane-acquire");
     bench_require(acquired == lane,"exact-lane");
-    bench_require(cudaMalloc((void **)&local,local_elements * 2u) == cudaSuccess &&
-        cudaMalloc((void **)&output,output_elements * 2u + 256u) == cudaSuccess &&
-        cudaStreamCreateWithFlags(&stream,cudaStreamNonBlocking) == cudaSuccess,"cuda-allocation");
-    bench_require(work_words == 0u || (cudaMalloc((void **)&work,(size_t)rounds * work_words * sizeof(*work)) == cudaSuccess && cudaMalloc((void **)&sink,sizeof(*sink)) == cudaSuccess &&
-        cudaMemset(work,1,(size_t)rounds * work_words * sizeof(*work)) == cudaSuccess && cudaMemset(sink,0,sizeof(*sink)) == cudaSuccess),"work-allocation");
+    bench_require(SparkGpuMalloc((void **)&local,local_elements * 2u) == SPARK_GPU_SUCCESS &&
+        SparkGpuMalloc((void **)&output,output_elements * 2u + 256u) == SPARK_GPU_SUCCESS &&
+        SparkGpuStreamCreateWithFlags(&stream,SPARK_GPU_STREAM_NON_BLOCKING) == SPARK_GPU_SUCCESS,"device-allocation");
+    bench_require(work_words == 0u || (SparkGpuMalloc((void **)&work,(size_t)rounds * work_words * sizeof(*work)) == SPARK_GPU_SUCCESS && SparkGpuMalloc((void **)&sink,sizeof(*sink)) == SPARK_GPU_SUCCESS &&
+        SparkGpuMemset(work,1,(size_t)rounds * work_words * sizeof(*work)) == SPARK_GPU_SUCCESS && SparkGpuMemset(sink,0,sizeof(*sink)) == SPARK_GPU_SUCCESS),"work-allocation");
     {
         uint16_t *host = (uint16_t *)malloc(local_elements * 2u);
         for (size_t i = 0u; i < local_elements; i++)
             host[i] = bench_bf16(bench_value(rank,(uint32_t)i));
-        bench_require(cudaMemcpy(local,host,local_elements * 2u,cudaMemcpyHostToDevice) == cudaSuccess,"input");
+        bench_require(SparkGpuMemcpy(local,host,local_elements * 2u,SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_SUCCESS,"input");
         free(host);
     }
     config.abi_version = SPARK_TP_DEVICE_COLLECTIVE_ABI_VERSION;
@@ -187,7 +188,16 @@ int main(int count,char **arguments)
     bench_status(SparkTpDeviceCollectiveCreate(&config,&collective),"collective-create");
     void *mapping = 0;
     bench_status(SparkWeightdClientMeshMap(owner,&mapping,BENCH_WAIT_NS),"mesh-map");
-    bench_status(SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mapping,0u,0u,0u,0),"mesh-prepare");
+    {
+        const uint64_t until = bench_now_ns() + BENCH_WAIT_NS;
+        SparkStatus prepared = SparkTpDeviceCollectivePrepareReceiveBf16(&collective,mapping,0u,0u,0u,0);
+        while (prepared == SPARK_STATUS_BUSY && bench_now_ns() < until)
+        {
+            usleep(20000u);
+            prepared = SparkTpDeviceCollectiveReady(&collective);
+        }
+        bench_status(prepared,"mesh-prepare");
+    }
     printf("BENCH-READY rank=%u lane=%u operation=%u rows=%u row_elements=%u rounds=%u\n",rank,lane,operation,rows,row_elements,rounds);
     fflush(stdout);
     bench_start_at(start_ms);
@@ -213,25 +223,25 @@ int main(int count,char **arguments)
     if (prefetch != 0u)
     {
         plan.host = (LmWeightPrefetchGroup *)calloc(LM_WEIGHT_PREFETCH_GROUPS,sizeof(LmWeightPrefetchGroup));
-        bench_require(plan.host != 0 && cudaMalloc((void **)&plan.device,(size_t)LM_WEIGHT_PREFETCH_GROUPS * sizeof(LmWeightPrefetchGroup)) == cudaSuccess,"prefetch-plan");
+        bench_require(plan.host != 0 && SparkGpuMalloc((void **)&plan.device,(size_t)LM_WEIGHT_PREFETCH_GROUPS * sizeof(LmWeightPrefetchGroup)) == SPARK_GPU_SUCCESS,"prefetch-plan");
         plan.capacity = LM_WEIGHT_PREFETCH_GROUPS;
         LmWeightPrefetchArm(&plan,stream);
     }
-    bench_require(cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) == cudaSuccess,"capture-begin");
+    bench_require(SparkGpuStreamBeginCapture(stream,SPARK_GPU_CAPTURE_MODE_THREAD_LOCAL) == SPARK_GPU_SUCCESS,"capture-begin");
     for (uint32_t r = 0u; r < rounds; r++)
     {
         if (work_words != 0u)
         {
             LmWeightPrefetchNote(stream,work + (uint64_t)r * work_words,work_words * sizeof(*work));
-            BenchWorkKernel<<<96u,256u,0,stream>>>((const uint4 *)(work + (uint64_t)r * work_words),work_words / 4u,sink);
+            LM_LAUNCH((BenchWorkKernel),96u,256u,0,stream,(const uint4 *)(work + (uint64_t)r * work_words),work_words / 4u,sink);
         }
         submission.ordinal = ordinal++;
         bench_status(SparkTpDeviceCollectiveEnqueue(&collective,&submission,operation),"capture-enqueue");
     }
-    bench_require(cudaStreamEndCapture(stream,&graph) == cudaSuccess && graph != 0,"capture-end");
-    bench_require(LmWeightPrefetchDisarm(&plan,1u) == cudaSuccess && plan.dropped == 0u,"prefetch-publish");
+    bench_require(SparkGpuStreamEndCapture(stream,&graph) == SPARK_GPU_SUCCESS && graph != 0,"capture-end");
+    bench_require(LmWeightPrefetchDisarm(&plan,1u) == SPARK_GPU_SUCCESS && plan.dropped == 0u,"prefetch-publish");
     bench_status(SparkTpDeviceCollectiveDisarmCapture(&collective),"capture-disarm");
-    bench_require(cudaGraphInstantiate(&executable,graph,0) == cudaSuccess,"graph-instantiate");
+    bench_require(SparkGpuGraphInstantiate(&executable,graph,0) == SPARK_GPU_SUCCESS,"graph-instantiate");
     SparkTpDeviceCollectiveHardwareTiming before = {},after = {};
     bench_status(SparkTpDeviceCollectiveHardwareStats(&collective,&before),"stats-before");
     for (uint32_t rep = 0u; rep < reps; rep++)
@@ -239,7 +249,7 @@ int main(int count,char **arguments)
         bench_status(SparkTpDeviceCollectiveGraphCancelSeed(&collective,stream),"graph-cancel-seed");
         bench_status(SparkTpDeviceCollectiveGraphPreLaunch(&collective,stream),"graph-prelaunch");
         uint64_t started = bench_now_ns();
-        bench_require(cudaGraphLaunch(executable,stream) == cudaSuccess,"graph-launch");
+        bench_require(SparkGpuGraphLaunch(executable,stream) == SPARK_GPU_SUCCESS,"graph-launch");
         bench_wait_stream(stream);
         timed[rep] = (double)(bench_now_ns() - started) / 1000.0 / rounds;
         bench_require(SparkTpDeviceCollectiveGraphError(&collective) == 0u,"collective-error");
@@ -247,8 +257,9 @@ int main(int count,char **arguments)
     bench_status(SparkTpDeviceCollectiveHardwareStats(&collective,&after),"stats-after");
     {
         uint16_t *host = (uint16_t *)malloc(output_elements * 2u);
+        uint64_t digest = UINT64_C(1469598103934665603);
         uint32_t bad = 0u;
-        bench_require(cudaMemcpy(host,output + 64u,output_elements * 2u,cudaMemcpyDeviceToHost) == cudaSuccess,"readback");
+        bench_require(SparkGpuMemcpy(host,output + 64u,output_elements * 2u,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS,"readback");
         for (size_t i = 0u; i < output_elements; i++)
         {
             float expected = 0.0f;
@@ -264,8 +275,10 @@ int main(int count,char **arguments)
                     expected += bench_value(peer,(uint32_t)(operation == 1u || operation == SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_ALL_REDUCE_SUM_BF16 ?
                         i : rank * output_elements + i));
             bad += host[i] != bench_bf16(expected) ? 1u : 0u;
+            digest = (digest ^ host[i]) * UINT64_C(1099511628211);
         }
         free(host);
+        printf("BENCH-OUTPUT rank=%u elements=%llu digest=%016llx mismatches=%u\n",rank,(unsigned long long)output_elements,(unsigned long long)digest,bad);
         bench_require(bad == 0u,"result-mismatch");
     }
     qsort(timed,reps,sizeof(double),bench_compare);
@@ -282,15 +295,15 @@ int main(int count,char **arguments)
     fflush(stdout);
     sleep(5u);
     bench_status(SparkTpDeviceCollectiveEndChain(&collective,stream),"chain-end");
-    bench_require(cudaGraphExecDestroy(executable) == cudaSuccess && cudaGraphDestroy(graph) == cudaSuccess,"graph-destroy");
+    bench_require(SparkGpuGraphExecDestroy(executable) == SPARK_GPU_SUCCESS && SparkGpuGraphDestroy(graph) == SPARK_GPU_SUCCESS,"graph-destroy");
     SparkTpDeviceCollectiveDestroy(&collective);
-    cudaFree(local);
-    cudaFree(output);
-    cudaFree(work);
-    cudaFree(sink);
-    cudaFree(plan.device);
+    (void)SparkGpuFree(local);
+    (void)SparkGpuFree(output);
+    if (work != 0) (void)SparkGpuFree(work);
+    if (sink != 0) (void)SparkGpuFree(sink);
+    if (plan.device != 0) (void)SparkGpuFree(plan.device);
     free(plan.host);
-    cudaStreamDestroy(stream);
+    (void)SparkGpuStreamDestroy(stream);
     SparkWeightdClientClose(owner);
     return 0;
 }

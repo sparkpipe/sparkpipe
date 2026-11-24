@@ -1,6 +1,8 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include "sparkpipe/spark_device.h"
@@ -221,6 +223,60 @@ static void TestMappedCopies(SparkGpuStream stream)
 	free(target);
 }
 
+static void TestRegistration(void)
+{
+	const size_t bytes = (size_t)2u << 20;
+	const unsigned int flags = SPARK_GPU_HOST_REGISTER_PORTABLE | SPARK_GPU_HOST_REGISTER_MAPPED;
+	const int file = memfd_create("nvrm-identity",0);
+	uint8_t *shared = MAP_FAILED,*device = 0,*back = (uint8_t *)malloc(bytes);
+	void *alias = 0,*held;
+	CHECK(file >= 0 && ftruncate(file,(off_t)bytes) == 0 && back != 0,"make a 2 MiB shared memory file");
+	if ( file >= 0 )
+		shared = (uint8_t *)mmap(0,bytes,PROT_READ | PROT_WRITE,MAP_SHARED,file,0);
+	CHECK(shared != MAP_FAILED && SparkGpuMalloc((void **)&device,bytes) == SPARK_GPU_SUCCESS,"map the file and allocate device memory");
+	if ( shared == MAP_FAILED || device == 0 || back == 0 )
+	{
+		free(back);
+		if ( file >= 0 )
+			close(file);
+		return;
+	}
+	Fill(shared,bytes,31u);
+	CHECK(SparkGpuHostRegister(shared,bytes,flags) == SPARK_GPU_SUCCESS,"register the shared mapping");
+	CHECK(SparkGpuHostGetDevicePointer(&alias,shared,0u) == SPARK_GPU_SUCCESS && alias == (void *)shared &&
+		SparkGpuHostGetDevicePointer(&alias,shared + 4097u,0u) == SPARK_GPU_SUCCESS && alias == (void *)(shared + 4097u),
+		"a registered range's device address is its host address, at the start and inside it");
+	CHECK(SparkGpuMemcpy(device,shared,bytes,SPARK_GPU_COPY_DEVICE_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(back,device,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS && Wrong(back,bytes,31u) == 0u,
+		"the GPU reads the registered range at its host address");
+	Fill(back,bytes,47u);
+	CHECK(SparkGpuMemcpy(device,back,bytes,SPARK_GPU_COPY_HOST_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+		SparkGpuMemcpy(shared,device,bytes,SPARK_GPU_COPY_DEVICE_TO_DEVICE) == SPARK_GPU_SUCCESS && Wrong(shared,bytes,47u) == 0u,
+		"the GPU writes the registered range at its host address");
+	CHECK(SparkGpuHostRegister(shared + 8192u,4096u,flags) != SPARK_GPU_SUCCESS && strstr(SparkDeviceLastError()->text,"overlaps the registered range") != 0,
+		"a registration that overlaps a live one is refused, naming it");
+	(void)SparkGpuGetLastError();
+	held = mmap((void *)(uintptr_t)0x100000000ull,4096u,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,-1,0);
+	CHECK(held == MAP_FAILED && errno == EEXIST,"the CPU side of GSP's split address range is reserved, so no host memory can be registered there");
+	if ( held != MAP_FAILED )
+		munmap(held,4096u);
+	CHECK(SparkGpuHostUnregister(shared) == SPARK_GPU_SUCCESS && munmap(shared,bytes) == 0,"unregister, then unmap");
+	held = mmap(shared,bytes,PROT_READ | PROT_WRITE,MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE,-1,0);
+	CHECK(held == (void *)shared,"map new memory at the same address");
+	if ( held == (void *)shared )
+	{
+		Fill(shared,bytes,59u);
+		CHECK(SparkGpuHostRegister(shared,bytes,flags) == SPARK_GPU_SUCCESS &&
+			SparkGpuMemcpy(device,shared,bytes,SPARK_GPU_COPY_DEVICE_TO_DEVICE) == SPARK_GPU_SUCCESS &&
+			SparkGpuMemcpy(back,device,bytes,SPARK_GPU_COPY_DEVICE_TO_HOST) == SPARK_GPU_SUCCESS && Wrong(back,bytes,59u) == 0u,
+			"registered again, the GPU reads the new memory at that address, not the old");
+		CHECK(SparkGpuHostUnregister(shared) == SPARK_GPU_SUCCESS && munmap(shared,bytes) == 0,"unregister and unmap the new memory");
+	}
+	CHECK(SparkGpuFree(device) == SPARK_GPU_SUCCESS,"free the device memory");
+	free(back);
+	close(file);
+}
+
 int main(void)
 {
 	SparkGpuStream stream = 0;
@@ -237,6 +293,7 @@ int main(void)
 	TestMappedCopies(stream);
 	TestStreamsAndEvents();
 	TestDevice();
+	TestRegistration();
 	CHECK(SparkGpuStreamDestroy(stream) == SPARK_GPU_SUCCESS,"destroy the stream");
 	CHECK(SparkNvrmGpuRelease() == SPARK_GPU_SUCCESS && SparkDeviceShutdown() == SPARK_STATUS_OK,"release the default queue and staging, then shut down");
 	if ( failures != 0 )
@@ -244,6 +301,6 @@ int main(void)
 		printf("\nFAIL (%d)\n",failures);
 		return(1);
 	}
-	printf("PASS spark_gpu.h over nvrm: every space, staged pageable copies, 2D copies and fills, copies through device mappings, streams, events, host functions and device queries\n");
+	printf("PASS spark_gpu.h over nvrm: every space, staged pageable copies, 2D copies and fills, copies through device mappings, streams, events, host functions, device queries, and registered memory at its host address\n");
 	return(0);
 }

@@ -1393,8 +1393,12 @@ build/tp_mesh_hardware_probe: tools/tp_mesh_hardware_probe.cu tests/fixtures/tp_
 build/tp_f32_arithmetic: tools/hardware/tp_f32_arithmetic.cu inference/kernels/tp_reduce.cuh inference/kernels/dtype.cuh $(CUDA_HEADER_DEPS) | build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) -I. $< -o $@
 
-build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(CUDA_HEADER_DEPS) | build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS),$^) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
+build/mesh_round_bench: tools/mesh_round_bench.cu $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(RUNTIME_LIBRARY) $(DEVICE_CUDA_LIBRARY) $(CUDA_HEADER_DEPS) | build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $(filter-out $(CUDA_HEADER_DEPS) $(DEVICE_CUDA_LIBRARY),$^) $(DEVICE_CUDA_NVCC_LINK) -L$(CUDA_HOME)/lib64 -lcuda -ldl -lcudart -o $@
+
+$(call NVRM_TWIN,build/mesh_round_bench): tools/mesh_round_bench.cu $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(DEVICE_NVRM_LIBRARY) | build
+	@mkdir -p $(dir $@)
+	$(call nvcc_module,-std=c++17 -cudart none -DSPARKPIPE_DEVICE_NVRM $(MODEL_COMMON_INCLUDE_FLAGS) -Xcompiler=-pthread $< $(NVRM_MODEL_COMMON_LIBRARY) $(NVRM_RUNTIME_LIBRARY) $(CORE_LIBRARY) $(NVRM_NVCC_DEVICE_LINK) -ldl)
 
 hardware_handoff: hardware_tools
 	python3 tests/test_hardware_probe_coverage.py

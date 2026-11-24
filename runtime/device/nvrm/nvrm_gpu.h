@@ -59,6 +59,16 @@ typedef struct SparkNvrmRange
 	uint64_t bytes;
 } SparkNvrmRange;
 
+#define SPARK_NVRM_KEEP_OUTS 3u
+
+typedef struct SparkNvrmKeepOut
+{
+	uint64_t base;
+	uint64_t bytes;
+	uint32_t reserved;
+	const char *name;
+} SparkNvrmKeepOut;
+
 typedef struct SparkNvrmSegment
 {
 	uint64_t start;
@@ -78,6 +88,7 @@ typedef struct SparkNvrmMemory
 	uint32_t dma_mapped;
 	uint32_t uvm_range;
 	uint32_t virtual_reserved;
+	uint32_t identity;
 	int map_fd;
 } SparkNvrmMemory;
 
@@ -144,7 +155,6 @@ typedef struct SparkNvrmGpu
 	uint32_t integrated;
 	uint32_t device;
 	uint32_t subdevice;
-	uint32_t virtual_memory;
 	uint32_t vaspace;
 	uint32_t channel_group;
 	uint32_t channel_group_scheduled;
@@ -176,6 +186,10 @@ typedef struct SparkNvrmGpu
 	uint32_t free_count;
 	uint32_t free_capacity;
 	uint32_t virtual_live;
+	SparkNvrmKeepOut keep_outs[SPARK_NVRM_KEEP_OUTS];
+	SparkNvrmRange *identity_ranges;
+	uint32_t identity_count;
+	uint32_t identity_capacity;
 	uint32_t host_handle_next;
 	uint32_t uvm_registered;
 	uint32_t vaspace_registered;
@@ -193,6 +207,8 @@ uint32_t SparkNvrmGpuIntegrated(uint32_t gpu_flags);
 SparkStatus SparkNvrmGpuOpen(SparkNvrmGpu *gpu, uint32_t ordinal, SparkNvrmMemoryKind control_kind, const char *owner);
 SparkStatus SparkNvrmAddressOpen(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes, const char *owner);
 void SparkNvrmAddressClose(SparkNvrmGpu *gpu);
+SparkStatus SparkNvrmIdentityTake(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes, const char *owner);
+void SparkNvrmIdentityGive(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes);
 SparkStatus SparkNvrmVirtual(SparkNvrmGpu *gpu, uint64_t bytes, uint64_t align, uint64_t *address, const char *owner);
 void SparkNvrmVirtualRelease(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes);
 void SparkNvrmReserveCpu(SparkNvrmGpu *gpu, uint64_t address, uint64_t bytes);

@@ -129,6 +129,12 @@ SparkStatus SparkTpDeviceCollectiveSetOperationTimeout(SparkTpDeviceCollective *
 	return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkTpDeviceCollectiveReady(SparkTpDeviceCollective *collective)
+{
+	(void)collective;
+	return SPARK_STATUS_OK;
+}
+
 }
 
 __global__ static void FailedSpinKernel(uint64_t nanoseconds)

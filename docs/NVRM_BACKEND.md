@@ -259,9 +259,9 @@ module's device files:
    both list all four. The device's compute units are the SMs the module
    reports enabled (`NV2080_CTRL_CMD_GR_GET_SM_TO_GPC_TPC_MAPPINGS`): the
    RTX 5090 has 170 of the 192 its GPC, TPC and SM limits allow.
-4. **Address space.** Allocate a virtual memory object, map the usermode
-   page (the doorbell), and allocate a GPU address space owned by unified
-   memory. Register the GPU and the address space with `/dev/nvidia-uvm`.
+4. **Address space.** Map the usermode page (the doorbell), and allocate a
+   GPU address space owned by unified memory. Register the GPU and the
+   address space with `/dev/nvidia-uvm`.
 5. **Channel.** Allocate a channel group and a context share. Build one
    compute channel from a 1024-entry GPFIFO ring and its USERD page, an
    error notifier, a 1 MiB push buffer and a fence semaphore. Read its
@@ -309,6 +309,24 @@ Memory comes in seven kinds:
 - **Read-only user memory.** The same for a file mapping
   (`SparkDeviceMapFile`): pinned without write access, and mapped into
   the GPU read-only.
+- **Registered at its own address.** Both kinds are mapped into the GPU at
+  their host address, so a registered pointer is its own device pointer, as
+  with CUDA on GB10. Code that hands kernels the host address of registered
+  memory, such as weightd's mesh region and staging export, works unchanged.
+  - The backend reserves, with no CPU access, every range a host mapping
+    must not use: its own device range, GSP's split address range
+    (`[0x1_0000_0000, 0x1_2000_0000)`, where the module's GSP firmware maps its
+    own buffers in every client address space) and the shader local and
+    shared memory windows (4 GiB each at the addresses the channels set).
+    Each channel's RM resources sit in a span of the device range that the
+    backend hands to unified memory when it registers the channel.
+  - A registration that overlaps one of those ranges, or a live
+    registration, is refused, and the refusal names both ranges. If a range
+    could not be reserved at open because something already mapped it, open
+    says so and the overlap is still refused.
+  - Contract, as with CUDA: unregister a range before the CPU unmaps or
+    remaps it. The GPU mapping holds the pinned pages, not whatever the
+    address points to later.
 
 `nvrm_submit.c` writes push-buffer methods, GPFIFO entries, GPPut and the
 doorbell, host semaphore releases and acquires, and waits on a semaphore
@@ -1035,11 +1053,12 @@ like this:
   whole number of 2 MiB pages.
 - **Reserve.** A span of the backend's own device address range, 2 MiB
   aligned. The CPU side of that range stays reserved with no access.
-- **Map** (`SparkNvrmGpuMap`). A unified-memory external range, an RM
-  mapping of the object at the address with the offset and length asked
-  for, then the unified-memory external mapping, read-only or read-write.
-  Each step that fails undoes the steps before it, so a failed map leaves
-  nothing mapped.
+- **Map** (`SparkNvrmGpuMap`). A unified-memory external range at the
+  address, then the unified-memory external mapping of the object with the
+  offset and length asked for, read-only or read-write. Channels run in the
+  unified-memory address space, so this is the only GPU mapping; the
+  backend makes no RM mapping in the device's default address space. A map
+  that fails frees its external range, so it leaves nothing mapped.
 - **Host access.** Only on host memory this process created; any other
   handle is refused with `host access maps only host memory`. The CPU
   mapping comes first (`SparkNvrmSystemMapToCpu`): `NV_ESC_RM_MAP_MEMORY`
@@ -1047,9 +1066,9 @@ like this:
   for, then `mmap` of that descriptor over the reserved CPU range at the
   same address, read-only without host write. Device access then maps
   the same address as above, so the CPU and the GPU use one address.
-- **Unmap** (`SparkNvrmGpuUnmap`). Frees the external range and the RM
-  mapping of each whole mapping in the span, puts the no-access CPU
-  reservation back over a CPU mapping, and closes its descriptor.
+- **Unmap** (`SparkNvrmGpuUnmap`). Frees the external range of each whole
+  mapping in the span, puts the no-access CPU reservation back over a CPU
+  mapping, and closes its descriptor.
 
 Host memory rests on these open-gpu-kernel-modules 580.178.04 paths:
 

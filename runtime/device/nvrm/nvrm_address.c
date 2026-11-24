@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -22,7 +23,99 @@
 		SPARK_FAIL(address_status); \
 	} while (0)
 
+#define ADDRESS_SERVER_BASE 0x100000000ull
+#define ADDRESS_SERVER_BYTES 0x20000000ull
+#define ADDRESS_WINDOW_BYTES 0x100000000ull
+#define ADDRESS_GPU_LIMIT 0x1fffffb001000ull
+
 static pthread_mutex_t address_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void AddressKeepOut(SparkNvrmGpu *gpu, uint32_t index, uint64_t base, uint64_t bytes, const char *name)
+{
+	SparkNvrmKeepOut *keep = &gpu->keep_outs[index];
+	void *reserved;
+	if ( base == 0u || bytes == 0u )
+		return;
+	reserved = mmap((void *)(uintptr_t)base,(size_t)bytes,PROT_NONE,ADDRESS_FIRST_FLAGS,-1,0);
+	keep->base = base;
+	keep->bytes = bytes;
+	keep->name = name;
+	keep->reserved = reserved == (void *)(uintptr_t)base ? 1u : 0u;
+	if ( reserved != MAP_FAILED && reserved != (void *)(uintptr_t)base )
+		munmap(reserved,(size_t)bytes);
+	if ( keep->reserved == 0u )
+		fprintf(stderr,"nvrm: %s [0x%llx, 0x%llx) is already mapped in this process; registrations that overlap it are refused\n",
+			name,(unsigned long long)base,(unsigned long long)(base + bytes));
+}
+
+static SparkStatus AddressOverlapRefusal(uint64_t base, uint64_t bytes, uint64_t other_base, uint64_t other_bytes, const char *other,
+	const char *advice, const char *owner)
+{
+	char text[SPARK_DEVICE_ERROR_TEXT_BYTES];
+	snprintf(text,sizeof(text),"the host range [0x%llx, 0x%llx) overlaps %s [0x%llx, 0x%llx); %s",(unsigned long long)base,
+		(unsigned long long)(base + bytes),other,(unsigned long long)other_base,(unsigned long long)(other_base + other_bytes),advice);
+	return(SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"register",owner,0,text));
+}
+
+static uint32_t AddressOverlaps(uint64_t base, uint64_t bytes, uint64_t other_base, uint64_t other_bytes)
+{
+	return(other_bytes != 0u && base < other_base + other_bytes && other_base < base + bytes ? 1u : 0u);
+}
+
+SparkStatus SparkNvrmIdentityTake(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes, const char *owner)
+{
+	SparkStatus status = SPARK_STATUS_OK;
+	uint32_t index;
+	pthread_mutex_lock(&address_lock);
+	if ( bytes == 0u || base + bytes < base || base < 0x1000u || base + bytes > ADDRESS_GPU_LIMIT )
+		status = SparkDeviceRecordError(SPARK_STATUS_INVALID_ARGUMENT,"register",owner,0,
+			"a registered range is mapped at its own address, so it must lie inside the GPU address space");
+	else if ( AddressOverlaps(base,bytes,gpu->reserved_base,gpu->reserved_bytes) != 0u )
+		status = AddressOverlapRefusal(base,bytes,gpu->reserved_base,gpu->reserved_bytes,"the backend's device range",
+			"host memory there is not the device's to map",owner);
+	for (index = 0u; status == SPARK_STATUS_OK && index < SPARK_NVRM_KEEP_OUTS; index++)
+		if ( AddressOverlaps(base,bytes,gpu->keep_outs[index].base,gpu->keep_outs[index].bytes) != 0u )
+			status = AddressOverlapRefusal(base,bytes,gpu->keep_outs[index].base,gpu->keep_outs[index].bytes,gpu->keep_outs[index].name,
+				"a registered range is mapped at its own address and cannot share GPU addresses with it",owner);
+	for (index = 0u; status == SPARK_STATUS_OK && index < gpu->identity_count; index++)
+		if ( AddressOverlaps(base,bytes,gpu->identity_ranges[index].base,gpu->identity_ranges[index].bytes) != 0u )
+			status = AddressOverlapRefusal(base,bytes,gpu->identity_ranges[index].base,gpu->identity_ranges[index].bytes,"the registered range",
+				"unregister it before registering memory there again",owner);
+	if ( status == SPARK_STATUS_OK && gpu->identity_count == gpu->identity_capacity )
+	{
+		const uint32_t capacity = gpu->identity_capacity != 0u ? 2u * gpu->identity_capacity : ADDRESS_RANGES;
+		SparkNvrmRange *grown = (SparkNvrmRange *)realloc(gpu->identity_ranges,(size_t)capacity * sizeof(*grown));
+		if ( grown == 0 )
+			status = SparkDeviceRecordError(SPARK_STATUS_CAPACITY_EXCEEDED,"register",owner,0,"out of host memory for the registered ranges");
+		else
+		{
+			gpu->identity_ranges = grown;
+			gpu->identity_capacity = capacity;
+		}
+	}
+	if ( status == SPARK_STATUS_OK )
+	{
+		gpu->identity_ranges[gpu->identity_count].base = base;
+		gpu->identity_ranges[gpu->identity_count].bytes = bytes;
+		gpu->identity_count++;
+	}
+	pthread_mutex_unlock(&address_lock);
+	return(status);
+}
+
+void SparkNvrmIdentityGive(SparkNvrmGpu *gpu, uint64_t base, uint64_t bytes)
+{
+	uint32_t index;
+	pthread_mutex_lock(&address_lock);
+	for (index = 0u; index < gpu->identity_count; index++)
+		if ( gpu->identity_ranges[index].base == base && gpu->identity_ranges[index].bytes == bytes )
+		{
+			gpu->identity_ranges[index] = gpu->identity_ranges[gpu->identity_count - 1u];
+			gpu->identity_count--;
+			break;
+		}
+	pthread_mutex_unlock(&address_lock);
+}
 
 static SparkStatus AddressRoom(SparkNvrmGpu *gpu, uint32_t needed, const char *owner)
 {
@@ -64,13 +157,25 @@ SparkStatus SparkNvrmAddressOpen(SparkNvrmGpu *gpu, uint64_t base, uint64_t byte
 	gpu->free_ranges[0].bytes = bytes;
 	gpu->free_count = 1u;
 	gpu->virtual_live = 0u;
+	AddressKeepOut(gpu,0u,ADDRESS_SERVER_BASE,ADDRESS_SERVER_BYTES,"GSP's split address range");
+	AddressKeepOut(gpu,1u,gpu->local_window,ADDRESS_WINDOW_BYTES,"the shader local-memory window");
+	AddressKeepOut(gpu,2u,gpu->shared_window,ADDRESS_WINDOW_BYTES,"the shader shared-memory window");
 	return(SPARK_STATUS_OK);
 }
 
 void SparkNvrmAddressClose(SparkNvrmGpu *gpu)
 {
+	uint32_t index;
 	if ( gpu->reserved_bytes != 0u )
 		munmap((void *)(uintptr_t)gpu->reserved_base,(size_t)gpu->reserved_bytes);
+	for (index = 0u; index < SPARK_NVRM_KEEP_OUTS; index++)
+		if ( gpu->keep_outs[index].reserved != 0u )
+			munmap((void *)(uintptr_t)gpu->keep_outs[index].base,(size_t)gpu->keep_outs[index].bytes);
+	memset(gpu->keep_outs,0,sizeof(gpu->keep_outs));
+	free(gpu->identity_ranges);
+	gpu->identity_ranges = 0;
+	gpu->identity_count = 0u;
+	gpu->identity_capacity = 0u;
 	free(gpu->free_ranges);
 	gpu->free_ranges = 0;
 	gpu->free_count = 0u;
