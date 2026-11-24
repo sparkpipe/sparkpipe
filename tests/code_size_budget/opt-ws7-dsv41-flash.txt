@@ -1,0 +1,2 @@
++197
+Vectorized 16-byte fast paths (with exact scalar fallbacks) for 10 hot dsv41_flash BF16/F32 kernels and warp-shuffle prefix max for D41WindowFoldWholeKernel and D41WindowFoldClusterKernel.
