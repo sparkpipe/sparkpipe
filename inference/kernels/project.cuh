@@ -19,59 +19,63 @@ struct LmQkvLayout
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale)
+void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale, bool key_is_value = false)
 {
-	uint32_t row = blockIdx.x,index;
-	uint32_t total = layout.query_dimension + layout.key_dimension + layout.value_dimension;
-	uint64_t base = (uint64_t)row * total;
-	const bool fused_vec = LmIsAligned16(fused_bf16) && ((total & 7u) == 0u);
+	const uint32_t row = blockIdx.x;
 	if ( row >= rows )
 		return;
-	if ( fused_vec && ((layout.query_dimension & 7u) == 0u) && LmIsAligned16(query_bf16) )
+	const uint32_t total = layout.query_dimension + layout.key_dimension + (key_is_value ? 0u : layout.value_dimension);
+	const uint16_t *src = fused_bf16 + (uint64_t)row * total;
+	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * layout.query_dimension, layout.query_dimension);
+	LmCopySliceBf16<THREADS>(src + layout.query_dimension, key_bf16 + (uint64_t)row * layout.key_dimension, layout.key_dimension);
+	const uint16_t *vsrc = src + layout.query_dimension + (key_is_value ? 0u : layout.key_dimension);
+	uint16_t *vdst = value_bf16 + (uint64_t)row * layout.value_dimension;
+	if ( value_scale == 1.0f )
 	{
-		for (index = threadIdx.x * 8u; index < layout.query_dimension; index += THREADS * 8u)
-			*(uint4 *)(query_bf16 + ((uint64_t)row * layout.query_dimension) + index) =
-				*(const uint4 *)(fused_bf16 + base + index);
+		LmCopySliceBf16<THREADS>(vsrc, vdst, layout.value_dimension);
+		return;
 	}
-	else
+	if ( ((layout.value_dimension & 7u) == 0u) && LmIsAligned16(vsrc) && LmIsAligned16(vdst) )
 	{
-		for (index = threadIdx.x; index < layout.query_dimension; index += THREADS)
-			query_bf16[((uint64_t)row * layout.query_dimension) + index] = fused_bf16[base + index];
-	}
-	if ( fused_vec && ((layout.query_dimension & 7u) == 0u) && ((layout.key_dimension & 7u) == 0u) && LmIsAligned16(key_bf16) )
-	{
-		for (index = threadIdx.x * 8u; index < layout.key_dimension; index += THREADS * 8u)
-			*(uint4 *)(key_bf16 + ((uint64_t)row * layout.key_dimension) + index) =
-				*(const uint4 *)(fused_bf16 + base + layout.query_dimension + index);
-	}
-	else
-	{
-		for (index = threadIdx.x; index < layout.key_dimension; index += THREADS)
-			key_bf16[((uint64_t)row * layout.key_dimension) + index] =
-				fused_bf16[base + layout.query_dimension + index];
-	}
-	if ( fused_vec && (((layout.query_dimension + layout.key_dimension) & 7u) == 0u) &&
-		((layout.value_dimension & 7u) == 0u) && LmIsAligned16(value_bf16) )
-	{
-		for (index = threadIdx.x * 8u; index < layout.value_dimension; index += THREADS * 8u)
+		for (uint32_t index = threadIdx.x * 8u; index < layout.value_dimension; index += THREADS * 8u)
 		{
-			uint16_t bits[8];
 			float out_f[8];
-			LmUnpackUint4Bf16(*(const uint4 *)(fused_bf16 + base + layout.query_dimension + layout.key_dimension + index), bits);
+			LmLoadBf16x8AsFloat(*(const uint4 *)(vsrc + index), out_f);
 			#pragma unroll
 			for (uint32_t k = 0u; k < 8u; ++k)
-				out_f[k] = LmBf16ToFloat(bits[k]) * value_scale;
-			*(uint4 *)(value_bf16 + ((uint64_t)row * layout.value_dimension) + index) = LmPackUint4FloatToBf16(out_f);
+				out_f[k] *= value_scale;
+			*(uint4 *)(vdst + index) = LmPackUint4FloatToBf16(out_f);
 		}
+		return;
 	}
-	else
-	{
-		for (index = threadIdx.x; index < layout.value_dimension; index += THREADS)
-			value_bf16[((uint64_t)row * layout.value_dimension) + index] =
-				LmFloatToBf16(LmBf16ToFloat(
-					fused_bf16[base + layout.query_dimension + layout.key_dimension + index])
-					* value_scale);
-	}
+	for (uint32_t index = threadIdx.x; index < layout.value_dimension; index += THREADS)
+		vdst[index] = LmFloatToBf16(LmBf16ToFloat(vsrc[index]) * value_scale);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplit2RowsKernel(const uint16_t *__restrict__ fused_bf16, uint16_t *__restrict__ first_bf16, uint16_t *__restrict__ second_bf16, uint32_t rows, uint32_t first_width, uint32_t second_width = 0u)
+{
+	const uint32_t row = blockIdx.x, w2 = second_width != 0u ? second_width : first_width;
+	if ( row >= rows )
+		return;
+	const uint16_t *src = fused_bf16 + (uint64_t)row * (first_width + w2);
+	LmCopySliceBf16<THREADS>(src, first_bf16 + (uint64_t)row * first_width, first_width);
+	LmCopySliceBf16<THREADS>(src + first_width, second_bf16 + (uint64_t)row * w2, w2);
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplitQkvbKernel(const uint16_t *__restrict__ qkvb_bf16, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint16_t *__restrict__ beta_bf16, uint32_t rows, uint32_t qk_dim, uint32_t v_dim, uint32_t heads, uint32_t fused_rows)
+{
+	const uint32_t row = blockIdx.x;
+	if ( row >= rows )
+		return;
+	const uint16_t *src = qkvb_bf16 + (uint64_t)row * fused_rows;
+	LmCopySliceBf16<THREADS>(src, query_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + qk_dim, key_bf16 + (uint64_t)row * qk_dim, qk_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim, value_bf16 + (uint64_t)row * v_dim, v_dim);
+	LmCopySliceBf16<THREADS>(src + 2u * qk_dim + v_dim, beta_bf16 + (uint64_t)row * heads, heads);
 }
 
 template<uint32_t THREADS>

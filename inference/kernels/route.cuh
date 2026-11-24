@@ -228,3 +228,12 @@ static int32_t LmRouteBuild(
 		output_dimension_up,output_dimension_down,tile_n,tile_n,
 		tile_prefix_up,tile_prefix_down,stream));
 }
+
+static __global__ void LmDenseRowOffsetsKernel(uint32_t *__restrict__ offsets, uint32_t rows)
+{
+	if ( threadIdx.x == 0u )
+	{
+		offsets[0] = 0u;
+		offsets[1] = rows;
+	}
+}
