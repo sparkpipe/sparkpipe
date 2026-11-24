@@ -106,7 +106,7 @@
     "restart": "on-failure",
     "log": "/srv/workspace/sparkpipe/logs/draftd-k31.log",
     "lifecycle": "model",
-    "server": "block_draftd",
+    "server": "engine",
     "engine": {
      "root": "/srv/workspace/sparkpipe/draftd-engine",
      "lane": "kimi-k3.1-pro",
@@ -159,7 +159,7 @@
     "restart": "on-failure",
     "log": "/srv/workspace/sparkpipe/logs/draftd-q27.log",
     "lifecycle": "model",
-    "server": "block_draftd",
+    "server": "engine",
     "engine": {
      "root": "/srv/workspace/sparkpipe/draftd-engine",
      "lane": "qwen3.8-27b",
@@ -226,7 +226,7 @@
     "restart": "no",
     "log": "/srv/workspace/sparkpipe/logs/draftd-dsv41.log",
     "lifecycle": "model",
-    "server": "block_draftd",
+    "server": "engine",
     "engine": {
      "root": "/srv/workspace/sparkpipe/draftd-engine",
      "lane": "deepseek-v4.1-flash",
