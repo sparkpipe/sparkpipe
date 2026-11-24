@@ -797,7 +797,8 @@ struct K3Device
 			0,
 			0,
 			0u,
-			0u
+			0u,
+			0
 		};
 		return &interface_table;
 	}
