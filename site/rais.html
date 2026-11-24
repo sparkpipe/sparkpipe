@@ -140,7 +140,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <a class="btn" href="#reproduce">Run on your engine</a>
         <a class="btn" href="https://github.com/sparkpipe/sparkpipe/blob/main/docs/RAIS_BENCHMARK.md">Read full spec</a>
       </div>
-      <p class="note">Reference scorer: <span class="mono">tools/rais_score.py</span> · Reference OpenAI-compatible runner: <span class="mono">tools/rais_bench.py</span>. Every number on this page comes from committed qualification receipts; models awaiting a full 12-submetric sweep are explicitly badged.</p>
+      <p class="note">Reference scorer: <span class="mono">tools/rais_score.py</span> · Reference OpenAI-compatible runner: <span class="mono">tools/rais_bench.py</span>. Live 16× DGX Spark (<span class="mono">16x-gb10-1x100g</span>) sweep published below: <b>18 / 19 canonical models certified VALID</b> (97.5% fleet weight, <b>46.1</b> Valid Fleet RAIS, <b>44.9</b> strict) from verbatim receipts in <span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>.</p>
     </div>
     <figure class="screen">
       <div class="screen-bar"><span><b>RAIS v1.0</b> · Physical Law</span><span>0–100 scale</span></div>
@@ -288,7 +288,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
   </div>
   <div class="sec-body">
     <h2>Fleet scorecard and hardware rooflines.</h2>
-    <p class="prose">Generated directly via <span class="mono">python3 tools/rais_score.py score --format html-data</span> from committed qualification receipts (<span class="mono">qualification/releases/c2b714343/</span>, <span class="mono">qualification/batch-sweep-20261018/</span>, <span class="mono">qualification/batch-sweep-20261024/</span>, and <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>). Unmeasured sub-metrics and pending full RAIS sweeps are never interpolated or fabricated.</p>
+    <p class="prose">Generated directly via <span class="mono">python3 tools/rais_score.py score --format html-data</span> from verbatim live 16× DGX Spark receipts (<span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>). 18 of 19 canonical models (97.5% fleet weight, including all 5 Tier 1 flagships and all 7 Tier 2 workhorses) pass every binary gate (<span class="mono">VALID</span>) at <b>46.1</b> Valid Fleet RAIS (<b>44.9</b> strict). <span class="mono">qwen3.8-flash</span> is transparently marked <span class="mono">INVALID</span> after an immediate-EOS stop on a raw completion batch probe; unmeasured sub-metrics and pending hardware profiles are never interpolated.</p>
 
     <div class="rais-toolbar">
       <div class="rais-control">
@@ -315,8 +315,8 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
         <span class="label">Coverage</span>
         <div class="rais-pills" role="group" aria-label="Filter by sweep status">
           <button type="button" class="rais-pill" data-rais-filter="all" aria-pressed="true">All</button>
-          <button type="button" class="rais-pill" data-rais-filter="multi" aria-pressed="false">Multi-pillar</button>
-          <button type="button" class="rais-pill" data-rais-filter="measured" aria-pressed="false">Any receipt</button>
+          <button type="button" class="rais-pill" data-rais-filter="multi" aria-pressed="false">Certified VALID</button>
+          <button type="button" class="rais-pill" data-rais-filter="measured" aria-pressed="false">Swept</button>
           <button type="button" class="rais-pill" data-rais-filter="pending" aria-pressed="false">Pending only</button>
         </div>
       </div>
@@ -368,7 +368,7 @@ td.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabu
       </table>
     </div>
 
-    <p class="caption">Partial scores reflect only committed receipts on the selected profile: missing sub-metrics contribute 0 until measured by <span class="mono">tools/rais_bench.py</span>. Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> and <span class="mono">ling-3.0-flash-fin</span>) score standalone with their exact geometry and fold into their canonical model without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
+    <p class="caption">Scores reflect verbatim live receipts on the selected profile: missing sub-metrics (such as B=8 batched speculation on non-B8-spec lanes) contribute 0 until measured by <span class="mono">tools/rais_bench.py</span>, and scores marked with <span class="mono">*</span> failed a binary gate (<span class="mono">INVALID</span>). Two variant lanes (<span class="mono">qwen3.8-27b-fp8</span> at 42.0 VALID and <span class="mono">ling-3.0-flash-fin</span> at 44.4 VALID) are included in the receipt file and score standalone without double-counting in the 19-model fleet aggregate. See also the <a href="fleets.html">Fleet List</a> for per-model licenses and served context windows.</p>
   </div>
 </section>
 

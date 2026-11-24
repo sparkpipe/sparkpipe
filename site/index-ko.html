@@ -328,7 +328,7 @@ curl $OPENAI_BASE_URL/chat/completions \
       <div class="bar top"><span>K3, 추측</span><i style="--w: 100%"></i><b>126.4</b></div>
       <div class="bars-scale"><span></span><span><em>0</em><em>tok/s, 단일 요청</em><em>126</em></span><span></span></div>
     </div>
-    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 방법과 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)에, 루프라인 기준 벤치마크 표준은 <a href="rais-ko.html">RAIS v1.0 스코어카드</a>에 공개되어 있습니다.</p>
+    <p class="caption">새로 쓰는 코드는 오늘 기준 Kimi K3가 단일 요청 16.2 tok/s로 디코딩합니다. 고객의 코드로 학습시킨 드래프트 모델이 저희 엔진을 거기서 더 빠르게 만드는 방법입니다. 공개 3대 루프라인 표준인 <a href="rais-ko.html">RAIS v1.0 스코어카드</a> 기준 DGX Spark 16대 플릿에서 19개 모델 중 18종(플릿 비중 97.5%)이 VALID 인증을 통과해 <b>인증 플릿 RAIS 46.1 / 100</b>을 기록했습니다(K-EXAONE 2.0 <b>57.0</b>, Kimi K3.1 Pro <b>54.7</b>, Kimi K3 <b>54.3</b>, Solar Open 2 <b>50.9</b>, Qwen 3.8 Max <b>50.2</b>, DeepSeek V4.1 Flash <b>48.2</b>·콜드 프리필 10.7k–18.2k tok/s). 모든 수치는 플릿 1에서 저희 엔진으로 측정했으며, 근거는 <a href="https://github.com/sparkpipe/sparkpipe/blob/main/PERFORMANCE_STATUS.md">PERFORMANCE_STATUS.md</a>(영문)와 <span class="mono">qualification/releases/07a6e6bcd/rais-fleet-16x-gb10-1x100g.jsonl</span>에 공개되어 있습니다.</p>
   </div>
 </section>
 

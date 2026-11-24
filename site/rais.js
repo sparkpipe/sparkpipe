@@ -13,15 +13,16 @@
       PENDING: "전체 RAIS 스윕 대기"
     },
     sweepBadge: function (m) {
-      if (m.status === "VALID") return "인증 완료 (12/12)";
-      if (m.status === "INVALID") return "무효";
+      if (m.status === "VALID") return "인증 완료 (" + (m.measured_count || 11) + "/12)";
+      if (m.status === "INVALID") return "무효 (" + ((m.failed_gates && m.failed_gates.length) ? m.failed_gates.join(", ") : "게이트 실패") + ")";
       if (m.sweep_state === "partial_multi") return "부분 실측 " + m.measured_count + "/12 · 전체 RAIS 스윕 대기";
       if (m.sweep_state === "partial_qual") return "릴리스 검증 " + m.measured_count + "/12 · 전체 RAIS 스윕 대기";
       return "전체 RAIS 스윕 대기";
     },
     kpiHw: "선택한 하드웨어",
-    kpiCoverage: "실측된 플릿 비중",
-    kpiRais: "부분 RAIS (미인증)",
+    kpiCoverage: "인증된 플릿 모델",
+    kpiRais: "플릿 RAIS (인증 모델)",
+    kpiRaisPending: "부분 RAIS (미인증)",
     kpiRoi: "최우선 최적화 여지",
     pendingShort: "스윕 대기",
     pendingCell: "–",
@@ -86,15 +87,16 @@
       PENDING: "Pending full RAIS sweep"
     },
     sweepBadge: function (m) {
-      if (m.status === "VALID") return "VALID (12/12)";
-      if (m.status === "INVALID") return "INVALID";
+      if (m.status === "VALID") return "VALID (" + (m.measured_count || 11) + "/12)";
+      if (m.status === "INVALID") return "INVALID (" + ((m.failed_gates && m.failed_gates.length) ? m.failed_gates.join(", ") : "gate failed") + ")";
       if (m.sweep_state === "partial_multi") return "Partial " + m.measured_count + "/12 · Pending full RAIS sweep";
       if (m.sweep_state === "partial_qual") return "Qual " + m.measured_count + "/12 · Pending full RAIS sweep";
       return "Pending full RAIS sweep";
     },
     kpiHw: "Selected hardware",
-    kpiCoverage: "Receipted fleet weight",
-    kpiRais: "Partial RAIS (unverified)",
+    kpiCoverage: "Certified fleet models",
+    kpiRais: "Valid Fleet RAIS",
+    kpiRaisPending: "Partial RAIS (unverified)",
     kpiRoi: "Top ROI headroom",
     pendingShort: "Pending sweep",
     pendingCell: "–",
@@ -171,7 +173,7 @@
   }
 
   var DATA = null;
-  var state = { hw: "16x-gb10-1x100g", tier: "all", filter: "all", selected: "kimi-k3" };
+  var state = { hw: "16x-gb10-1x100g", tier: "all", filter: "all", selected: "kimi-k3.1-pro" };
 
   function currentProfile() {
     if (!DATA) return null;
@@ -189,7 +191,7 @@
   function filteredModels(prof) {
     return prof.models.filter(function (m) {
       if (state.tier !== "all" && String(m.tier) !== state.tier) return false;
-      if (state.filter === "multi" && m.sweep_state !== "partial_multi") return false;
+      if (state.filter === "multi" && m.status !== "VALID" && m.sweep_state !== "partial_multi") return false;
       if (state.filter === "measured" && m.sweep_state === "pending") return false;
       if (state.filter === "pending" && m.sweep_state !== "pending") return false;
       return true;
@@ -203,12 +205,18 @@
     if (!kpi) return;
     kpi.textContent = "";
     var measuredModels = prof.models.filter(function (m) { return m.sweep_state !== "pending"; });
+    var validModels = prof.models.filter(function (m) { return m.status === "VALID"; });
     var topRoi = prof.roi_top && prof.roi_top.length ? prof.roi_top[0] : null;
+    var hasValid = validModels.length > 0 && prof.fleet.rais_covered != null;
+    var covVal = hasValid ? (validModels.length + " / " + prof.models.length + " VALID") : (measuredModels.length + " / " + prof.models.length);
+    var covSub = hasValid ? ((prof.fleet.valid_weight_pct != null ? prof.fleet.valid_weight_pct.toFixed(1) : prof.fleet.coverage_pct.toFixed(1)) + (ko ? "% 플릿 비중 인증 · 19/19 실측" : "% fleet weight certified · 19/19 swept")) : (T.statusLabels[prof.fleet.status] || prof.fleet.status);
+    var raisLbl = hasValid ? T.kpiRais : T.kpiRaisPending;
+    var raisNum = hasValid ? (prof.fleet.rais_covered.toFixed(1) + " / 100") : (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) + " / 100" : T.pendingCell);
+    var raisSub = hasValid ? ((ko ? "엄격 플릿 " : "Strict fleet ") + (prof.fleet.rais_strict != null ? prof.fleet.rais_strict.toFixed(1) : "–") + (ko ? " · 19종 원시 " : " · 19-model raw ") + (prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) : "–")) : (prof.fleet.coverage_pct > 0 ? (prof.fleet.coverage_pct.toFixed(1) + "% weight covered") : T.pendingShort);
     var items = [
       [T.kpiHw, prof.hardware.name, prof.hardware.description],
-      [T.kpiCoverage, measuredModels.length + " / " + prof.models.length, T.statusLabels[prof.fleet.status] || prof.fleet.status],
-      [T.kpiRais, prof.fleet.rais_raw_covered != null ? prof.fleet.rais_raw_covered.toFixed(1) + " / 100" : T.pendingCell,
-        prof.fleet.coverage_pct > 0 ? (prof.fleet.coverage_pct.toFixed(1) + "% weight covered") : T.pendingShort],
+      [T.kpiCoverage, covVal, covSub],
+      [raisLbl, raisNum, raisSub],
       [T.kpiRoi, topRoi ? ("+" + topRoi.fleet_headroom_pts.toFixed(2) + " pts") : T.pendingCell,
         topRoi ? (topRoi.model + " · " + (T.submetricLabels[topRoi.submetric] || topRoi.label)) : T.pendingShort]
     ];
@@ -325,22 +333,23 @@
       tr.appendChild(tdModel);
 
       var tdStatus = mk("td");
-      var badgeCls = m.status === "VALID" ? "rais-badge valid" : (m.sweep_state === "partial_multi" ? "rais-badge partial" : "rais-badge pending");
+      var badgeCls = m.status === "VALID" ? "rais-badge valid" : ((m.status === "INVALID" || m.sweep_state === "partial_multi") ? "rais-badge partial" : "rais-badge pending");
       tdStatus.appendChild(mk("span", badgeCls, T.sweepBadge(m)));
       tr.appendChild(tdStatus);
 
       var hasScore = m.sweep_state !== "pending" && m.raw_rais != null;
-      tr.appendChild(mk("td", "num rais-score-cell", hasScore ? fmtScore(m.raw_rais) : T.pendingCell));
+      tr.appendChild(mk("td", "num rais-score-cell", hasScore ? (m.status === "INVALID" ? (fmtScore(m.raw_rais) + "*") : fmtScore(m.raw_rais)) : T.pendingCell));
       tr.appendChild(mk("td", "num", hasScore ? fmtScore(m.base_r) : T.pendingCell));
       tr.appendChild(mk("td", "num", hasScore ? fmtScore(m.pillars[0]) : T.pendingCell));
 
       var p2Text = T.pendingCell;
-      if (hasScore && m.spec && m.spec.alpha != null && m.spec.alpha > 1.001) {
+      var p2HasSpec = hasScore && m.spec && m.spec.alpha != null && m.spec.alpha > 1.001;
+      if (p2HasSpec) {
         p2Text = fmtScore(m.pillars[1]) + " (" + m.spec.alpha.toFixed(2) + " / " + m.spec.inv_v_b1.toFixed(2) + ")";
       } else if (hasScore) {
         p2Text = T.pendingShort;
       }
-      tr.appendChild(mk("td", "num muted", p2Text));
+      tr.appendChild(mk("td", p2HasSpec ? "num" : "num muted", p2Text));
       var hasP3 = hasScore && (m.measured_submetrics || []).some(function (k) { return k.indexOf("p3") === 0; });
       tr.appendChild(mk("td", "num", hasP3 ? fmtScore(m.pillars[2]) : T.pendingCell));
       tr.appendChild(mk("td", "num", hasScore ? fmtScore(m.pillars[3]) : T.pendingCell));
