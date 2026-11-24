@@ -5,11 +5,7 @@
 #include "sparkpipe/spark_glm5_next_model.h"
 #include "sparkpipe/spark_kv_shard.h"
 
-#if defined(__CUDACC__)
-#define SPARK_GLM5_NEXT_INDEX_CP_FN static inline __host__ __device__
-#else
 #define SPARK_GLM5_NEXT_INDEX_CP_FN static inline
-#endif
 
 #define SPARK_GLM5_NEXT_INDEX_CP_SEQUENCE_FLOATS \
 	(SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION / 2u)

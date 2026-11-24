@@ -5,6 +5,7 @@
 
 #include "inference/runner/device_layers.h"
 #include "inference/runner/device_stage_runner.h"
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_glm52_device_stage.h"
 #include "sparkpipe/spark_glm52_family.h"
 #include "sparkpipe/spark_glm52_model.h"
@@ -248,7 +249,7 @@ struct Glm52Device
 		SparkStatus status;
 		*out = state;
 		if ( state == 0 )
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+			SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 		Shapes(state);
 		const SparkDeviceStageConfigValue config[] =
 		{

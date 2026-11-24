@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_glm5_next_graph_regime.h"
 #include "sparkpipe/spark_status.h"
 
@@ -42,10 +43,10 @@ static inline SparkStatus SparkGlm5NextVerifyRowsParse(const char *text,uint32_t
 	if ( text == 0 )
 		return(SPARK_STATUS_OK);
 	if ( text[0] < '0' || text[0] > '9' || text[1] != '\0' )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	rows = (uint32_t)(text[0] - '0');
 	if ( rows != 0u && (rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || rows > SPARK_GLM5_NEXT_VERIFY_ROWS_MAX) )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	*rows_out = rows;
 	return(SPARK_STATUS_OK);
 }
@@ -55,9 +56,13 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 	*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_NONE;
 	*path_out = 0;
 	if ( rows == 0u )
-		return(text == 0 ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	{
+		if ( text != 0 )
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
+		return(SPARK_STATUS_OK);
+	}
 	if ( text == 0 )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( strcmp(text,"lookup") == 0 )
 	{
 		*kind_out = SPARK_GLM5_NEXT_VERIFY_DRAFTER_LOOKUP;
@@ -91,7 +96,7 @@ static inline SparkStatus SparkGlm5NextVerifyDrafterParse(const char *text,uint3
 		*path_out = text + sizeof(SPARK_GLM5_NEXT_VERIFY_RECORDED_PREFIX) - 1u;
 		return(SPARK_STATUS_OK);
 	}
-	return(SPARK_STATUS_INVALID_ARGUMENT);
+	SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static inline uint32_t SparkGlm5NextVerifyDrafterUsesMtp(uint32_t kind)
@@ -108,10 +113,10 @@ static inline SparkStatus SparkGlm5NextMtpPackPath(const char *directory,uint32_
 {
 	int written;
 	if ( directory == 0 || directory[0] == '\0' || path == 0 || path_bytes == 0u || tp_degree == 0u || tp_rank >= tp_degree )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	written = snprintf(path,path_bytes,"%s/" SPARK_GLM5_NEXT_VERIFY_MTP_PACK_PREFIX "%u.rank%u.g5nsp",directory,tp_degree,tp_rank);
 	if ( written < 0 || (uint32_t)written >= path_bytes )
-		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
 	return(SPARK_STATUS_OK);
 }
 
@@ -152,7 +157,7 @@ static inline SparkStatus SparkGlm5NextVerifyRowsAgree(uint32_t rows,const uint3
 	uint32_t row;
 	for (row=1u; row<rows; row++)
 		if ( resident_slots[row] != resident_slots[0] || positions[row] != positions[0] + row )
-			return(SPARK_STATUS_INVALID_ARGUMENT);
+			SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 
@@ -171,13 +176,13 @@ static inline uint32_t SparkGlm5NextVerifyDepth(uint32_t budget,uint32_t produce
 static inline SparkStatus SparkGlm5NextVerifyWaveCheck(uint32_t rows,uint32_t rows_max,uint32_t first_row,uint32_t active_sequences,uint32_t sampled,const uint32_t *resident_slots,const uint32_t *positions,uint32_t split_threshold,uint32_t max_positions)
 {
 	if ( rows_max == 0u || sampled != 0u )
-		return(SPARK_STATUS_UNSUPPORTED);
+		SPARK_FAIL(SPARK_STATUS_UNSUPPORTED);
 	if ( rows < SPARK_GLM5_NEXT_VERIFY_ROWS_MIN || rows > rows_max || first_row != 0u || active_sequences != 1u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkGlm5NextVerifyRowsAgree(rows,resident_slots,positions) != SPARK_STATUS_OK )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( SparkGlm5NextVerifyRowsFit(positions[0],rows,split_threshold,max_positions) != rows )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
+		SPARK_FAIL(SPARK_STATUS_INVALID_ARGUMENT);
 	return(SPARK_STATUS_OK);
 }
 

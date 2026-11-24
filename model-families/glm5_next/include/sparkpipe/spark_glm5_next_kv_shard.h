@@ -6,11 +6,7 @@
 #include "sparkpipe/spark_kv_shard.h"
 #include "sparkpipe/spark_tp_mesh_round_control.h"
 
-#if defined(__CUDACC__)
-#define SPARK_GLM5_NEXT_KV_SHARD_FN static inline __host__ __device__
-#else
 #define SPARK_GLM5_NEXT_KV_SHARD_FN static inline
-#endif
 
 #define SPARK_GLM5_NEXT_KV_SHARD_QUERY_UNIT SPARK_GLM5_NEXT_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM5_NEXT_KV_SHARD_PARTIAL_WIDE_UNIT \

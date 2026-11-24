@@ -5,11 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/attn_shard_prefill.cuh"
+#include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/hc.cuh"
@@ -17,7 +17,6 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/kernels/kv_shard.cuh"
 #include "inference/kernels/linear_attn.cuh"
-#include "inference/kernels/moe_experts.cuh"
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/project_chain.cuh"
@@ -81,8 +80,6 @@
 
 #define G5N_THREADS 256u
 #define G5N_TILE_N 128u
-#define G5N_STAGES 2u
-#define G5N_WARPS 8u
 #define G5N_STREAM_EXPERT_ROWS 256u
 #define G5N_KDA_DELTA_COLUMNS 16u
 #define G5N_POOL_BLOCK_POOLS 32u
@@ -173,8 +170,6 @@ typedef struct Glm5NextLayerWeights
 
 struct Glm5NextLayerBuffers
 {
-	const uint32_t *dense_row_offset;
-	uint32_t *dense_tile_prefix;
 	const Glm5NextLayerWeights *w;
 	uint32_t layer_index;
 	uint32_t tp_rank;
@@ -261,70 +256,33 @@ struct Glm5NextLayerBuffers
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
+	const uint32_t *slots;
+	const uint32_t *fork_positions;
+	const uint32_t *slot_offsets;
+	const uint32_t *parent_rows;
+	const uint32_t *state_loads;
+	const uint32_t *state_saves;
+	float *kda_snapshots;
 	uint32_t index_owner_rank;
 	uint32_t index_owner_degree;
 	float *index_local_scores;
 	const float *index_gathered_scores;
 };
 
-static int32_t Glm5NextSkinny(const Glm5NextLayerBuffers *b, const void *weight, const uint16_t *activation, uint16_t *output_bf16, float *output_f32,
-	uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, SparkGpuStream stream)
-{
-	LmSkinnyArguments args;
-	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
-		return LmSkinnyDense<LmBf16Format>(weight, activation, output_bf16, output_f32, rows, input_dimension, output_dimension, output_dimension, 0u,
-			stream);
-	memset(&args, 0, sizeof(args));
-	args.weight = (const uint8_t *)weight;
-	args.activation = activation;
-	args.output_bf16 = output_bf16;
-	args.output_f32 = output_f32;
-	args.scale = LmScaleTensorNone();
-	args.rows = rows;
-	args.input_dimension = input_dimension;
-	args.output_dimension = output_dimension;
-	return LmSkinnyLaunch<LmBf16Format>(&args, stream, 1u);
-}
-
 static int32_t Glm5NextSkinnyMulti(const Glm5NextLayerBuffers *b, const LmSkinnyDenseTarget *targets, uint32_t count, const uint16_t *activation,
 	uint32_t rows, uint32_t input_dimension, SparkGpuStream stream)
 {
-	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant == 0u )
-		return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream);
-	return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream, 1u);
+	return LmSkinnyDenseMulti<LmBf16Format>(targets, count, activation, rows, input_dimension, stream,
+		rows > LM_SKINNY_ROWS_WIDE && b->row_invariant != 0u ? 1u : 0u);
 }
 
 static int32_t Glm5NextLinear(const Glm5NextLayerBuffers *b, const uint16_t *activation, const void *weight, uint16_t *output, uint32_t rows,
 	uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 {
-	LmGemmArguments gemm;
-	int32_t status;
-	if ( activation == 0 || weight == 0 || output == 0 || b->dense_row_offset == 0 || b->dense_tile_prefix == 0 || rows == 0u ||
-		input_dimension == 0u || output_dimension == 0u || multiprocessors == 0u )
-		LM_LAUNCH_REFUSE("glm5 linear: %u rows of a %u x %u projection came with a missing operand, dense tile table or multiprocessor count\n", rows,
-			output_dimension, input_dimension);
-	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
-	{
-		status = Glm5NextSkinny(b, weight, activation, output, (float *)0, rows, input_dimension, output_dimension, stream);
-		if ( status != LM_LAUNCH_ERR_SHAPE )
-			return status;
-		LM_LAUNCH_REFUSE("glm5 linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows and row-invariant waves run on "
-			"it, so the weight and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension,
-			LM_SKINNY_ROWS_WIDE);
-	}
-	status = LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, (float *)0, rows, input_dimension, output_dimension,
-		output_dimension, 0u, multiprocessors, stream);
-	if ( status != LM_LAUNCH_ERR_SHAPE )
-		return status;
-	memset(&gemm, 0, sizeof(gemm));
-	gemm.scale_a = LmScaleTensorNone();
-	gemm.scale_b = LmScaleTensorNone();
-	gemm.group_row_offset = b->dense_row_offset;
-	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = output;
-	gemm.output_row_stride = output_dimension;
-	return LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, activation, weight, rows, rows,
-		1u, 1u, input_dimension, output_dimension, multiprocessors, false, stream);
+	if ( multiprocessors == 0u )
+		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
+	return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), activation, output, (float *)0, rows, input_dimension, output_dimension,
+		b->row_invariant, multiprocessors, stream);
 }
 
 static int32_t Glm5NextLaunched(void)
@@ -367,13 +325,44 @@ static __device__ __forceinline__ float Glm5NextPoolKeyElement(const uint16_t *c
 	return key;
 }
 
+static __device__ __forceinline__ uint32_t Glm5NextPoolGlobal(uint32_t local, uint32_t rank, uint32_t degree) { return degree <= 1u ? local : local * degree + rank; }
+static __device__ __forceinline__ uint32_t Glm5NextPoolOwner(uint32_t pool, uint32_t degree) { return degree <= 1u ? 0u : pool % degree; }
+static __device__ __forceinline__ uint32_t Glm5NextPoolLocal(uint32_t pool, uint32_t degree) { return degree <= 1u ? pool : pool / degree; }
+
+static __device__ __forceinline__ void Glm5NextLoadBf16x4(const uint16_t *__restrict__ source, float values[4])
+{
+	const uint2 packed = *(const uint2 *)source;
+	values[0] = __uint_as_float(packed.x << 16u);
+	values[1] = __uint_as_float(packed.x & 0xffff0000u);
+	values[2] = __uint_as_float(packed.y << 16u);
+	values[3] = __uint_as_float(packed.y & 0xffff0000u);
+}
+
+static __device__ __forceinline__ float Glm5NextPoolHeadDot(const float q[4], float4 k, float softmax_scale, float head_weight, float head_scale)
+{
+	float score = fmaf(q[0], k.x, fmaf(q[1], k.y, fmaf(q[2], k.z, q[3] * k.w)));
+	#pragma unroll
+	for ( uint32_t offset = LM_WARP_LANES / 2u; offset > 0u; offset >>= 1u )
+		score += __shfl_down_sync(0xffffffffu, score, offset);
+	score *= softmax_scale;
+	return (score > 0.0f ? score : 0.0f) * head_weight * head_scale;
+}
+
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1) void Glm5NextIndexPackKernel(const uint16_t *__restrict__ key_bf16,
 	const uint16_t *__restrict__ gate_bf16, uint16_t *__restrict__ packed_bf16, uint32_t dimension)
 {
+	const uint16_t *key_row = key_bf16 + (uint64_t)blockIdx.x * dimension;
+	const uint16_t *gate_row = gate_bf16 + (uint64_t)blockIdx.x * dimension;
 	uint16_t *packed_row = packed_bf16 + (uint64_t)blockIdx.x * (2u * dimension + 1u);
-	LmCopySliceBf16<THREADS>(key_bf16 + (uint64_t)blockIdx.x * dimension, packed_row, dimension);
-	LmCopySliceBf16<THREADS>(gate_bf16 + (uint64_t)blockIdx.x * dimension, packed_row + dimension, dimension);
+	if ( ((dimension & 7u) == 0u) && LmIsAligned16(key_row) && LmIsAligned16(gate_row) && LmIsAligned16(packed_row) )
+	{
+		LmCopySliceBf16<THREADS>(key_row, packed_row, dimension);
+		LmCopySliceBf16<THREADS>(gate_row, packed_row + dimension, dimension);
+	}
+	else
+		for ( uint32_t index = threadIdx.x; index < 2u * dimension; index += THREADS )
+			packed_row[index] = index < dimension ? key_row[index] : gate_row[index - dimension];
 	if ( threadIdx.x == 0u )
 		packed_row[2u * dimension] = 0x3F80u;
 }
@@ -383,15 +372,18 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 	const uint16_t *__restrict__ head_weight_bf16, LmKvShardView index_cache, const uint32_t *__restrict__ sequence_of_row,
 	const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ row_positions, const float *__restrict__ compress_ape_f32,
 	uint32_t pools, uint32_t owner_rank, uint32_t owner_degree, uint32_t local_stride, float softmax_scale, float head_scale,
-	float *__restrict__ pool_scores)
+	float *__restrict__ pool_scores, const uint32_t *__restrict__ fork_positions = 0, const uint32_t *__restrict__ slot_offsets = 0)
 {
-	__shared__ float pool_key[DIM];
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
-	const uint32_t local = blockIdx.x, pool = SparkGlm5NextIndexCpGlobalPool(local, owner_rank, owner_degree), row = blockIdx.y;
+	static_assert(DIM == 4u * LM_WARP_LANES && HEADS % (THREADS / LM_WARP_LANES) == 0u, "each warp scores whole heads over four elements per lane");
+	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
+	__shared__ __align__(16) float pool_key[DIM];
+	__shared__ const uint16_t *pool_slots[KPOOL];
+	__shared__ uint32_t pool_ready;
+	__shared__ float contribution[HEADS];
+	const uint32_t local = blockIdx.x, pool = Glm5NextPoolGlobal(local, owner_rank, owner_degree), row = blockIdx.y;
 	const uint32_t sequence = sequence_of_row[row];
 	const uint32_t context = context_length[sequence] < row_positions[row] + 1u ? context_length[sequence] : row_positions[row] + 1u;
 	const uint32_t first = pool * KPOOL;
-	uint32_t index, slot_in_pool, head;
 	if ( local >= local_stride )
 		return;
 	if ( pool >= pools || first + KPOOL > context )
@@ -400,35 +392,50 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreKernel(const uint
 			pool_scores[(uint64_t)row * local_stride + local] = -INFINITY;
 		return;
 	}
-	for ( index = threadIdx.x; index < DIM; index += THREADS )
+	if ( threadIdx.x == 0u )
 	{
-		const uint16_t *slots[KPOOL];
-		for ( slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
+		const uint32_t fork = fork_positions != 0 ? fork_positions[row] : 0xffffffffu;
+		const uint32_t slot_offset = slot_offsets != 0 ? slot_offsets[row] : 0u;
+		uint32_t ready = 1u;
+		for ( uint32_t slot_in_pool = 0u; slot_in_pool < KPOOL; ++slot_in_pool )
 		{
-			slots[slot_in_pool] = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence, first + slot_in_pool, row, LM_KV_ACCESS_READ);
-			if ( slots[slot_in_pool] == 0 )
-				return;
+			const uint32_t pos = first + slot_in_pool;
+			const uint16_t *slot = (const uint16_t *)LmKvShardSlotRequired<Glm5NextIndexKv>(index_cache, sequence,
+				pos >= fork ? pos + slot_offset : pos, row, LM_KV_ACCESS_READ);
+			pool_slots[slot_in_pool] = slot;
+			if ( slot == 0 )
+			{
+				ready = 0u;
+				break;
+			}
 		}
-		pool_key[index] = Glm5NextPoolKeyElement<DIM, KPOOL>(slots, compress_ape_f32, index);
+		pool_ready = ready;
 	}
 	__syncthreads();
-	float total = 0.0f;
-	for ( head = 0u; head < HEADS; ++head )
+	if ( pool_ready == 0u )
+		return;
+	for ( uint32_t index = threadIdx.x; index < DIM; index += THREADS )
+		pool_key[index] = Glm5NextPoolKeyElement<DIM, KPOOL>(pool_slots, compress_ape_f32, index);
+	__syncthreads();
+	const uint32_t warp = threadIdx.x / LM_WARP_LANES, lane = threadIdx.x % LM_WARP_LANES;
+	const float4 k = *(const float4 *)(pool_key + lane * 4u);
+	for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
 	{
-		float score = 0.0f;
-		for ( index = threadIdx.x; index < DIM; index += THREADS )
-			score += LmBf16ToFloat(query_bf16[((uint64_t)row * HEADS + head) * DIM + index]) * pool_key[index];
-		score = LmBlockSum<THREADS>(score, reduction) * softmax_scale;
-		__syncthreads();
-		if ( score < 0.0f )
-			score = 0.0f;
-		if ( threadIdx.x == 0u )
-			reduction[0] = score * LmBf16ToFloat(head_weight_bf16[(uint64_t)row * HEADS + head]) * head_scale;
-		__syncthreads();
-		total += reduction[0];
+		const uint32_t head = warp + slot * WARPS;
+		float q[4];
+		Glm5NextLoadBf16x4(query_bf16 + ((uint64_t)row * HEADS + head) * DIM + lane * 4u, q);
+		const float contrib = Glm5NextPoolHeadDot(q, k, softmax_scale, LmBf16ToFloat(head_weight_bf16[(uint64_t)row * HEADS + head]), head_scale);
+		if ( lane == 0u )
+			contribution[head] = contrib;
 	}
+	__syncthreads();
 	if ( threadIdx.x == 0u )
+	{
+		float total = 0.0f;
+		for ( uint32_t head = 0u; head < HEADS; ++head )
+			total += contribution[head];
 		pool_scores[(uint64_t)row * local_stride + local] = total;
+	}
 }
 
 template<uint32_t THREADS, uint32_t DIM, uint32_t KPOOL, uint32_t HEADS, uint32_t POOLS, uint32_t ROWS>
@@ -438,15 +445,15 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 	uint32_t pools, uint32_t owner_rank, uint32_t owner_degree, uint32_t local_stride, float softmax_scale, float head_scale,
 	float *__restrict__ pool_scores, uint32_t rows)
 {
-	static_assert(THREADS == 8u * LM_WARP_LANES && DIM == 4u * LM_WARP_LANES, "the score tree replays an eight-warp block sum over 128 elements");
+	static_assert(THREADS == 8u * LM_WARP_LANES && DIM == 4u * LM_WARP_LANES, "each warp scores whole heads over four elements per lane");
 	static_assert(HEADS % (THREADS / LM_WARP_LANES) == 0u, "every warp scores the same number of heads");
 	constexpr uint32_t WARPS = THREADS / LM_WARP_LANES, PER_WARP = HEADS / WARPS;
-	__shared__ float pool_key[POOLS][DIM];
+	__shared__ __align__(16) float pool_key[POOLS][DIM];
 	__shared__ const uint16_t *pool_slots[POOLS][KPOOL];
 	__shared__ uint32_t pool_ready[POOLS];
 	__shared__ float contribution[POOLS][HEADS];
 	const uint32_t first_local = blockIdx.x * POOLS, first_row = blockIdx.y * ROWS, warp = threadIdx.x / LM_WARP_LANES;
-	const uint32_t lane = threadIdx.x % LM_WARP_LANES, part = lane / 8u, member = lane % 8u;
+	const uint32_t lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t cached = 0xffffffffu;
 	for ( uint32_t offset = 0u; offset < ROWS && first_row + offset < rows; ++offset )
 	{
@@ -456,7 +463,7 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 			__syncthreads();
 			for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
 			{
-				const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+				const uint32_t pool = Glm5NextPoolGlobal(first_local + local, owner_rank, owner_degree);
 				uint32_t ready = first_local + local < local_stride && pool < pools && pool * KPOOL + KPOOL <= context_length[sequence] ? 1u : 0u;
 				if ( ready != 0u )
 				{
@@ -490,41 +497,25 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolScoreRowsKernel(const 
 		for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
 		{
 			const uint32_t head = warp + slot * WARPS;
-			for ( uint32_t k = 0u; k < 4u; ++k )
-				query[slot][k] = LmBf16ToFloat(query_bf16[((uint64_t)row * HEADS + head) * DIM + part * LM_WARP_LANES + member + 8u * k]);
+			Glm5NextLoadBf16x4(query_bf16 + ((uint64_t)row * HEADS + head) * DIM + lane * 4u, query[slot]);
 			weight[slot] = LmBf16ToFloat(head_weight_bf16[(uint64_t)row * HEADS + head]);
 		}
 		for ( uint32_t local = 0u; local < POOLS; ++local )
 		{
-			float key[4];
 			if ( pool_ready[local] == 0u )
 				continue;
-			for ( uint32_t k = 0u; k < 4u; ++k )
-				key[k] = pool_key[local][part * LM_WARP_LANES + member + 8u * k];
+			const float4 k = *(const float4 *)(pool_key[local] + lane * 4u);
 			for ( uint32_t slot = 0u; slot < PER_WARP; ++slot )
 			{
-				float x[4], tree, score;
-				for ( uint32_t k = 0u; k < 4u; ++k )
-				{
-					x[k] = 0.0f;
-					x[k] += query[slot][k] * key[k];
-				}
-				tree = (x[0] + x[2]) + (x[1] + x[3]);
-				tree += __shfl_down_sync(0xffffffffu, tree, 4u, 8);
-				tree += __shfl_down_sync(0xffffffffu, tree, 2u, 8);
-				tree += __shfl_down_sync(0xffffffffu, tree, 1u, 8);
-				const float second = __shfl_sync(0xffffffffu, tree, 8u), third = __shfl_sync(0xffffffffu, tree, 16u), fourth = __shfl_sync(0xffffffffu, tree, 24u);
-				score = (((tree + 0.0f) + (third + 0.0f)) + ((second + 0.0f) + (fourth + 0.0f))) * softmax_scale;
-				if ( score < 0.0f )
-					score = 0.0f;
+				const float contrib = Glm5NextPoolHeadDot(query[slot], k, softmax_scale, weight[slot], head_scale);
 				if ( lane == 0u )
-					contribution[local][warp + slot * WARPS] = score * weight[slot] * head_scale;
+					contribution[local][warp + slot * WARPS] = contrib;
 			}
 		}
 		__syncthreads();
 		for ( uint32_t local = threadIdx.x; local < POOLS; local += THREADS )
 		{
-			const uint32_t pool = SparkGlm5NextIndexCpGlobalPool(first_local + local, owner_rank, owner_degree);
+			const uint32_t pool = Glm5NextPoolGlobal(first_local + local, owner_rank, owner_degree);
 			float total = 0.0f;
 			if ( first_local + local >= local_stride )
 				continue;
@@ -549,8 +540,8 @@ __global__ __launch_bounds__(THREADS, 1) void Glm5NextPoolPermuteKernel(const fl
 {
 	const uint32_t row = blockIdx.x;
 	for ( uint32_t pool = threadIdx.x; pool < pools; pool += THREADS )
-		pool_scores[(uint64_t)row * pools + pool] = gathered[(uint64_t)SparkGlm5NextIndexCpOwner(pool, degree) * peer_stride +
-			(uint64_t)row * local_stride + SparkGlm5NextIndexCpLocalPool(pool, degree)];
+		pool_scores[(uint64_t)row * pools + pool] = gathered[(uint64_t)Glm5NextPoolOwner(pool, degree) * peer_stride +
+			(uint64_t)row * local_stride + Glm5NextPoolLocal(pool, degree)];
 }
 
 template<uint32_t THREADS, uint32_t KPOOL, uint32_t TOPK, uint32_t WIDTH>
@@ -654,13 +645,14 @@ static int32_t Glm5NextKdaRecur(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 	conv.channels[0] = conv.channels[1] = rank_qk;
 	conv.channels[2] = rank_v;
 	if ( LmCausalConvStreamsLaunch<G5N_KDA_CONV, LM_CONV_SWISH, uint16_t>(conv, b->kda_state_index, b->sequence_row_begin, kept, sequences, commit,
-		b->sequence_row_indices, rows, stream) != SPARK_GPU_SUCCESS )
+		b->sequence_row_indices, rows, stream, commit == 0u ? b->parent_rows : (const uint32_t *)0) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	if constexpr ( LM_WARP_LANES == 32u )
 	{
 		if ( LmDeltaRuleLaunch<G5N_THREADS, G5N_KDA_KEY, G5N_KDA_VALUE, float>(rows, b->kda_state_pool, b->kda_state_slot_bytes, b->kda_state_index,
 				b->sequence_row_begin, kept, b->q_bf16, b->kv_slot_bf16, b->gate_up_bf16, b->kda_retention, b->kda_write_gate, b->attention_out_bf16, heads, 1u,
-				sequences, commit, b->sequence_row_indices, stream) != SPARK_GPU_SUCCESS )
+				sequences, commit, b->sequence_row_indices, stream, commit == 0u ? b->state_loads : (const uint32_t *)0,
+				commit == 0u ? b->state_saves : (const uint32_t *)0, commit == 0u ? b->kda_snapshots : (float *)0) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	}
 	else
@@ -757,7 +749,7 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	LM_LAUNCH((Glm5NextIndexPackKernel<G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_key_bf16, b->index_gate_bf16, b->index_packed_bf16,
 		G5N_INDEX_DIM);
 	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextIndexKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->index_cache, b->index_packed_bf16,
-		b->sequence_of_row, b->positions, rows, G5N_INDEX_PACKED);
+		b->sequence_of_row, b->slots != 0 ? b->slots : b->positions, rows, G5N_INDEX_PACKED);
 	if ( rows >= G5N_POOL_ROWS_MIN )
 		LM_LAUNCH((Glm5NextPoolScoreRowsKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS, G5N_POOL_BLOCK_POOLS, G5N_POOL_BLOCK_ROWS>),
 			dim3((local_stride + G5N_POOL_BLOCK_POOLS - 1u) / G5N_POOL_BLOCK_POOLS, (rows + G5N_POOL_BLOCK_ROWS - 1u) / G5N_POOL_BLOCK_ROWS), G5N_THREADS, 0,
@@ -768,7 +760,7 @@ static int32_t Glm5NextIndexScore(const Glm5NextLayerBuffers *b, uint32_t rows, 
 		LM_LAUNCH((Glm5NextPoolScoreKernel<G5N_THREADS, G5N_INDEX_DIM, G5N_KPOOL, G5N_INDEX_HEADS>), dim3(local_stride, rows), G5N_THREADS, 0, stream,
 			b->index_query_bf16, b->index_head_weight_bf16, b->index_cache, b->sequence_of_row, b->context_length, b->positions,
 			(const float *)w->index_compress_ape, pools, b->index_owner_rank, degree, local_stride, SPARK_GLM5_NEXT_MODEL_INDEX_SOFTMAX_SCALE,
-			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores);
+			SPARK_GLM5_NEXT_MODEL_INDEX_HEAD_WEIGHT_SCALE, b->index_local_scores, b->fork_positions, b->slot_offsets);
 	return Glm5NextLaunched();
 }
 
@@ -834,7 +826,7 @@ static int32_t Glm5NextAttentionHead(const Glm5NextLayerBuffers *b, uint32_t row
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_LATENT + 8u) * sizeof(float), stream, b->kv_slot_bf16,
 		(const uint16_t *)w->kv_a_norm, b->kv_slot_bf16, G5N_LATENT, G5N_LATENT, G5N_EPS);
 	LM_LAUNCH((LmKvShardStoreKernel<Glm5NextKv, G5N_THREADS>), rows, G5N_THREADS, 0, stream, b->cache, b->kv_slot_bf16, b->sequence_of_row,
-		b->positions, rows, G5N_LATENT);
+		b->slots != 0 ? b->slots : b->positions, rows, G5N_LATENT);
 	status = Glm5NextIndexScore(b, rows, context, sms, projected, stream);
 	return status == LM_LAUNCH_OK ? Glm5NextIndexCandidatePack(b, rows, context, stream) : status;
 }
@@ -875,7 +867,7 @@ static int32_t Glm5NextAttentionTail(const Glm5NextLayerBuffers *b, uint32_t row
 
 static int32_t Glm5NextAttentionPartial(const Glm5NextLayerBuffers *b, uint32_t rows, SparkGpuStream stream)
 {
-	if ( !(LmLatentShardAttendLaunch<Glm5NextKv, LmKvShardView, G5N_LATENT, 0u>(b->cache, b->shard_query_gathered_bf16, b->shard_query_stride, b->attn_heads, b->sequence_of_row, b->context_length, b->positions, b->selected_positions, G5N_INDEX_WIDTH, G5N_SELECTED, G5N_QK_SCALE, b->shard_partials_f32, b->shard_partial_stride, rows, stream) == SPARK_GPU_SUCCESS) )
+	if ( !(LmLatentShardAttendLaunch<Glm5NextKv, LmKvShardView, G5N_LATENT, 0u>(b->cache, b->shard_query_gathered_bf16, b->shard_query_stride, b->attn_heads, b->sequence_of_row, b->context_length, b->positions, b->selected_positions, G5N_INDEX_WIDTH, G5N_SELECTED, G5N_QK_SCALE, b->shard_partials_f32, b->shard_partial_stride, rows, stream, b->fork_positions, b->slot_offsets) == SPARK_GPU_SUCCESS) )
 		SPARK_FAIL(LM_LAUNCH_ERR_LAUNCH);
 	return LM_LAUNCH_OK;
 }
@@ -911,35 +903,13 @@ static int32_t Glm5NextMoeRoute(const Glm5NextLayerBuffers *b, uint32_t rows, ui
 {
 	const Glm5NextLayerWeights *w = b->w;
 	const uint32_t packed_rows = rows * G5N_TOP_K;
-	LmGemmArguments gemm;
 	int32_t status;
 	if ( w->post_attn_norm == 0 || w->router == 0 || w->router_correction == 0 || w->shared_gate_up == 0 || w->shared_down == 0 )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
 	LM_LAUNCH((LmBf16RmsNormKernel<G5N_THREADS>), rows, G5N_THREADS, (G5N_HIDDEN + 8u) * sizeof(float), stream, b->hc_collapsed_bf16,
 		(const uint16_t *)w->post_attn_norm, b->normed_bf16, G5N_HIDDEN, G5N_HIDDEN, G5N_EPS);
-	if ( rows <= LM_SKINNY_ROWS_WIDE || b->row_invariant != 0u )
-	{
-		status = Glm5NextSkinny(b, w->router, b->normed_bf16, 0, b->router_logits, rows, G5N_HIDDEN, G5N_EXPERTS, stream);
-		if ( status == LM_LAUNCH_ERR_SHAPE )
-			LM_LAUNCH_REFUSE("glm5 router: the skinny kernel refused %u rows of the %u x %u router; waves of up to %u rows and row-invariant waves "
-				"run on it, so the router weight and the normed rows need 16-byte alignment\n", rows, G5N_EXPERTS, G5N_HIDDEN, LM_SKINNY_ROWS_WIDE);
-	}
-	else
-	{
-		status = LmStreamGemmDense<LmBf16Format>(w->router, LmScaleTensorNone(), b->normed_bf16, (uint16_t *)0, b->router_logits, rows,
-			G5N_HIDDEN, G5N_EXPERTS, G5N_EXPERTS, 0u, sms, stream);
-		if ( status == LM_LAUNCH_ERR_SHAPE )
-		{
-			memset(&gemm, 0, sizeof(gemm));
-			gemm.scale_a = LmScaleTensorNone();
-			gemm.scale_b = LmScaleTensorNone();
-			gemm.group_row_offset = b->dense_row_offset;
-			gemm.group_tile_prefix = b->dense_tile_prefix;
-			gemm.output_f32 = b->router_logits;
-			status = LmGemmLaunch<LmBf16Format, G5N_TILE_N, LmBf16Format::kTileK, G5N_STAGES, G5N_WARPS>(&gemm, b->normed_bf16, w->router, rows, rows,
-				1u, 1u, G5N_HIDDEN, G5N_EXPERTS, sms, false, stream);
-		}
-	}
+	status = LmDenseRows<LmBf16Format>(w->router, LmScaleTensorNone(), b->normed_bf16, (uint16_t *)0, b->router_logits, rows, G5N_HIDDEN,
+		G5N_EXPERTS, b->row_invariant, sms, stream);
 	if ( status != LM_LAUNCH_OK )
 		return status;
 	if ( LmTopkRouteLaunch<G5N_THREADS, G5N_TOP_K, true, LM_TOPK_SCORE_SIGMOID>(rows, b->router_logits, G5N_EXPERTS, b->route_expert,
@@ -978,17 +948,15 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	static_assert(G5N_HIDDEN % LM_MOE_FINALIZE_ADD_ELEMENTS == 0u, "the expert combine reads whole 16-byte words of a row");
 	const uint32_t packed_rows = rows * G5N_TOP_K;
 	const uint32_t pairwise = rows == 1u ? 1u : 0u;
-	LmGemmArguments gemm;
+	LmScaleTensor scale_b;
 	int32_t status;
 	if ( b->expert_w1_weight == 0 || b->expert_w2_weight == 0 ||
 		(LmWeightCodec<ExpertCodec>::kScaleEncoding != LM_SCALE_ENCODING_NONE && (b->expert_w1_scale == 0 || b->expert_w2_scale == 0)) )
 		SPARK_FAIL(LM_LAUNCH_ERR_SHAPE);
-	memset(&gemm, 0, sizeof(gemm));
-	gemm.scale_a = LmScaleTensorNone();
-	gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w1_scale, G5N_EXPERTS, b->expert_w1_rows, G5N_HIDDEN);
+	scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w1_scale, G5N_EXPERTS, b->expert_w1_rows, G5N_HIDDEN);
 	if ( Glm5NextStreamExperts<ExpertFormat>(b, rows) != 0u )
 	{
-		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w1_weight, scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
 			b->route_source_token, G5N_EXPERTS, packed_rows, G5N_HIDDEN, b->expert_w1_rows, sms, stream);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE("grouped stream GEMM", "w1", rows, packed_rows, b->expert_w1_rows, G5N_HIDDEN);
@@ -996,10 +964,10 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	else
 	{
 		if ( pairwise != 0u )
-			status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w1_weight, scale_b, b->normed_bf16, b->gate_up_bf16, b->route_expert,
 				b->route_packed_row, packed_rows, G5N_TOP_K, 0u, G5N_HIDDEN, b->expert_w1_rows, stream);
 		else
-			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, gemm.scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
+			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w1_weight, scale_b, b->normed_bf16, b->gate_up_bf16, b->group_row_offset,
 				b->route_source_token, G5N_EXPERTS, packed_rows, 0u, G5N_HIDDEN, b->expert_w1_rows, stream, b->row_invariant);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w1", rows, packed_rows, b->expert_w1_rows,
@@ -1009,12 +977,10 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 		return status;
 	LM_LAUNCH((LmClampedUpGateKernel<G5N_THREADS>), packed_rows, G5N_THREADS, 0, stream, b->gate_up_bf16, b->intermediate_bf16,
 		b->expert_intermediate, G5N_SWIGLU_LIMIT);
-	memset(&gemm, 0, sizeof(gemm));
-	gemm.scale_a = LmScaleTensorNone();
-	gemm.scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w2_scale, G5N_EXPERTS, G5N_HIDDEN, b->expert_intermediate);
+	scale_b = LmWeightCodecScaleTensor<ExpertCodec>(b->expert_w2_scale, G5N_EXPERTS, G5N_HIDDEN, b->expert_intermediate);
 	if ( Glm5NextStreamExperts<ExpertFormat>(b, rows) != 0u )
 	{
-		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
+		status = LmStreamGemmGrouped<ExpertFormat>(b->expert_w2_weight, scale_b, b->intermediate_bf16, b->expert_out_bf16,
 			b->group_row_offset, 0, G5N_EXPERTS, packed_rows, b->expert_intermediate, G5N_HIDDEN, sms, stream);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE("grouped stream GEMM", "w2", rows, packed_rows, G5N_HIDDEN, b->expert_intermediate);
@@ -1022,10 +988,10 @@ static int32_t Glm5NextMoeExperts(const Glm5NextLayerBuffers *b, uint32_t rows, 
 	else
 	{
 		if ( pairwise != 0u )
-			status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
+			status = LmSkinnyExperts<ExpertFormat>(b->expert_w2_weight, scale_b, b->intermediate_bf16, b->expert_out_bf16, b->route_expert,
 				b->route_packed_row, packed_rows, G5N_TOP_K, 1u, b->expert_intermediate, G5N_HIDDEN, stream);
 		else
-			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, gemm.scale_b, b->intermediate_bf16, b->expert_out_bf16,
+			status = LmSkinnyGroupedExperts<ExpertFormat>(b->expert_w2_weight, scale_b, b->intermediate_bf16, b->expert_out_bf16,
 				b->group_row_offset, b->route_source_token, G5N_EXPERTS, packed_rows, 1u, b->expert_intermediate, G5N_HIDDEN, stream, b->row_invariant);
 		if ( status == LM_LAUNCH_ERR_SHAPE )
 			G5N_EXPERTS_REFUSE(pairwise != 0u ? "per-pair skinny kernel" : "grouped skinny kernel", "w2", rows, packed_rows, G5N_HIDDEN,
