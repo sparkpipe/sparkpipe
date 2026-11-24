@@ -718,6 +718,8 @@ struct Glm5NextStage : CudaStage<Glm5NextStage<G>>
 		frame->stream = (SparkGpuStream)stream_void;
 		frame->context = step->commit != 0u && step->gather_context != 0u && step->gather_context <= state->context_capacity ? step->gather_context :
 			state->context_capacity;
+		if ( frame->context < G5N_KPOOL )
+			frame->context = G5N_KPOOL;
 		if ( state->kv_attached == 0u || rows == 0u || rows > state->max_rows || step->sequences == 0u || step->sequences > state->slots ||
 			step->recurrent_index == 0 || step->sequence_row_begin == 0 || step->sequence_row_indices == 0 ||
 			(step->commit == 0u && rows > state->verify_rows) )

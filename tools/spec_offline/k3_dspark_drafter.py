@@ -165,7 +165,7 @@ class K3DsparkDrafter(LatentBlockDrafter):
         edges = torch.index_select(self.markov_next, 0, candidates.view(-1)).view(y.shape[0], count, -1).float()
         hidden = y.float()
         previous = torch.as_tensor(anchor_token, device=y.device).view(())
-        tokens, scores = [], []
+        tokens, scores, alternates, alternate_scores = [], [], [], []
         for step in range(self.block):
             vector = torch.index_select(self.markov_previous, 0, previous.view(1))[0].float()
             row = unary[step] + edges[step] @ vector
@@ -175,11 +175,15 @@ class K3DsparkDrafter(LatentBlockDrafter):
                 picked = coupled_candidates(values, torch.index_select(candidates[step], 0, order), sampling, position + step)
                 slot = torch.where(sampled, torch.index_select(order, 0, picked.view(1))[0], slot)
             choice = torch.index_select(candidates[step], 0, slot.view(1))[0]
+            runner = torch.argmax(torch.where(torch.arange(row.shape[0], device=row.device) == slot, torch.full_like(row, float("-inf")), row)).view(1)
+            normalizer = torch.logsumexp(row, -1)
             features = torch.cat((hidden[step], vector))
             scores.append(torch.sigmoid(self.confidence_weight @ features + self.confidence_bias).view(1))
             tokens.append(choice.view(1))
+            alternates.append(torch.index_select(candidates[step], 0, runner))
+            alternate_scores.append(torch.exp(torch.index_select(row, 0, runner) - normalizer))
             previous = choice
-        return torch.cat(tokens), torch.cat(scores)
+        return torch.cat(tokens), torch.cat(scores), torch.cat(alternates), torch.cat(alternate_scores)
 
     def slot_logits(self, y, slot, previous):
         vector = self.markov_previous[int(previous)].float()
@@ -187,13 +191,13 @@ class K3DsparkDrafter(LatentBlockDrafter):
 
     def sequential(self, y, base, anchor_token, slots):
         with torch.no_grad():
-            tokens, scores = self.propose(y, int(anchor_token))
+            tokens, scores, _, _ = self.propose(y, int(anchor_token))
         chosen = list(slots)
         return tokens[chosen].tolist(), scores[chosen].tolist()
 
     def sequential_sampled(self, y, base, anchor_token, slots, sampling, position):
         with torch.no_grad():
-            tokens, _ = self.propose(y, int(anchor_token), sampling, torch.tensor(int(position), device=self.device), torch.tensor(True, device=self.device))
+            tokens, _, _, _ = self.propose(y, int(anchor_token), sampling, torch.tensor(int(position), device=self.device), torch.tensor(True, device=self.device))
         return tokens[list(slots)].tolist()
 
 

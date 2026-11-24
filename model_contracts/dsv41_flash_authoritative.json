@@ -44,7 +44,7 @@
   "hf_repo": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017",
   "hf_revision": "1bae0e1088993b9b82de08f59de5be5a34e42170",
   "published_at": "2026-10-17T05:46:55Z",
-  "warm_path": "/mnt/model-warm/deepseek-v4.1-flash-1017 (ceph /models, mounted on every Spark)",
+  "warm_path": "/mnt/model-warm/deepseek-v4.1-flash (ceph /models, mounted on every Spark)",
   "verification": "Hugging Face LFS SHA-256 oids per shard; warm/cold per-file equality receipt required before any pack build",
   "pinned_files": {
    "config.json": {
