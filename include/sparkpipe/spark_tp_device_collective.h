@@ -304,6 +304,7 @@ typedef int (*SparkTpMeshHardwarePrepareFunction)(void *host,void **device);
 #define SPARK_TP_MESH_STAGE_ALL 0u
 #define SPARK_TP_MESH_STAGE_PUBLISH 1u
 #define SPARK_TP_MESH_STAGE_COMPLETE 2u
+#define SPARK_TP_MESH_ROUTES_PAIR_ONLY 16u
 
 typedef int (*SparkTpMeshHardwareFunction)(void *stream,void *band,uint64_t slot_bytes,uint64_t slots_per_rank,volatile void *entry,
     void *gate,void *round_control,uint32_t rank,uint32_t degree,const void *local,void *output,void *scratch,uint64_t elements,
@@ -434,6 +435,12 @@ SparkStatus SparkTpDeviceCollectiveDisarmCapture(
 SparkStatus SparkTpDeviceCollectiveGraphSettle(
     SparkTpDeviceCollective *collective,void *stream,uint64_t *error_out);
 
+SparkStatus SparkTpDeviceCollectiveGraphSettleBegin(
+    SparkTpDeviceCollective *collective,void *queue);
+
+SparkStatus SparkTpDeviceCollectiveGraphSettleFinish(
+    SparkTpDeviceCollective *collective,uint64_t *error_out);
+
 uint64_t SparkTpDeviceCollectiveGraphProgress(
     SparkTpDeviceCollective *collective,
     uint64_t *cell_out);
@@ -466,6 +473,10 @@ void SparkTpDeviceCollectiveBroadcastCancel(
 SparkStatus SparkTpDeviceCollectiveChainKey(
     SparkTpDeviceCollective *collective,
     uint64_t request_id);
+SparkStatus SparkTpDeviceCollectiveChainKeyQueue(
+    SparkTpDeviceCollective *collective,
+    uint64_t request_id,
+    void *queue);
 SparkStatus SparkTpDeviceCollectiveEndChain(
     SparkTpDeviceCollective *collective,
     void *cuda_stream);

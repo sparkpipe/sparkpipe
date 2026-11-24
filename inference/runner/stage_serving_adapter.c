@@ -1155,7 +1155,7 @@ static void StageServingBufferPlan(SparkStageServingState *state, SparkStageServ
 		{ &state->loads_device, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->saves_host, SPARK_DEVICE_SPACE_HOST_PINNED, rows * sizeof(uint32_t) },
 		{ &state->saves_device, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
-		{ &state->output_tokens, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
+		{ &state->output_tokens, SPARK_DEVICE_SPACE_HOST_PINNED, rows * sizeof(uint32_t) },
 		{ &state->output_scores, SPARK_DEVICE_SPACE_DEVICE_PRIVATE, rows * sizeof(uint32_t) },
 		{ &state->tokens_host, SPARK_DEVICE_SPACE_HOST_PINNED, (uint64_t)SPARK_STAGE_SERVING_MAX_ROWS * sizeof(uint32_t) },
 	};
@@ -1737,6 +1737,11 @@ static SparkStatus StageServingReadTokens(SparkStageServingState *state, SparkDe
 	const uint64_t bytes = (uint64_t)rows * steps * sizeof(uint32_t);
 	if ( bytes > state->tokens_host.bytes )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( StageServingOwnPack(state->implementation_flags) == 0u && state->output_tokens.host != 0 )
+	{
+		memcpy(state->tokens_host.host, state->output_tokens.host, (size_t)bytes);
+		return SPARK_STATUS_OK;
+	}
 	if ( SparkDeviceCopy(queue, tokens, output, bytes) != SPARK_STATUS_OK )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	return SPARK_STATUS_OK;
@@ -1921,7 +1926,12 @@ static SparkStatus StageServingSubmit(void *adapter_state,
 		status = StageServingReadTokens(state, queue, rows, steps);
 	marks[3] = SparkMonotonicNs();
 	if ( status == SPARK_STATUS_OK )
-		status = StageServingDeviceWait(state, queue, "step");
+	{
+		const uint32_t wait_step = StageServingOwnPack(state->implementation_flags) != 0u || state->output_tokens.host == 0 ||
+			((dispatch.flags & SPARK_STAGE_RUNNER_DISPATCH_FLAG_DEFER) == 0u && SparkStageRunnerRecurrentBytes(&state->runner) != 0u) ? 1u : 0u;
+		if ( wait_step != 0u )
+			status = StageServingDeviceWait(state, queue, "step");
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageRunnerCheck(&state->runner);
 	marks[4] = SparkMonotonicNs();

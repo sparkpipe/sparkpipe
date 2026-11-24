@@ -18,6 +18,7 @@
 #include "sparkpipe/spark_weightd_lease_sets.h"
 #include "sparkpipe/spark_error_site.h"
 #include "sparkpipe/spark_tp_mesh_kernels.cuh"
+#include "inference/runner/mesh_fast_kernels.cuh"
 #include "sparkpipe/spark_tp_mesh_register.h"
 #include "inference/kernels/sample.cuh"
 #include "inference/kernels/stage_head.cuh"
@@ -324,6 +325,7 @@ typedef struct SparkStageRunnerState
 	float *output_score_host;
 	uint32_t *token_ids_host;
 	uint32_t *chain_step_device;
+	uint32_t chain_step_dirty;
 	uint32_t *distribution_rows_host;
 	uint32_t *distribution_positions_host;
 	SparkRowSampling *distribution_rules_host;
@@ -1045,6 +1047,7 @@ static SparkStatus StageRunnerCreateCollective(SparkStageRunnerState *state, con
 	status = SparkTpDeviceCollectiveCreate(&device_config, &state->device_collective);
 	if ( status != SPARK_STATUS_OK )
 		return status;
+	SparkTpMeshFastLaunchersInstall();
 	state->device_collective_created = 1;
 	state->device_collective_deferred = device_config.wait_mode == SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE ? 1u : 0u;
 	if ( state->lazy_pack != 0 && state->lazy_pack->attached.mesh_send_buffer_addr != 0 )
@@ -1137,8 +1140,10 @@ static SparkStatus StageRunnerCreateBuffers(SparkStageRunnerState *state, const 
 	if ( SparkGpuHostAlloc((void **)&state->output_token_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuHostAlloc((void **)&state->output_score_host, rows * sizeof(float), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
 		SparkGpuHostAlloc((void **)&state->token_ids_host, rows * sizeof(uint32_t), SPARK_GPU_HOST_ALLOC_DEFAULT) != SPARK_GPU_SUCCESS ||
-		SparkGpuMalloc(&state->chain_step_device, sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
+		SparkGpuMalloc(&state->chain_step_device, sizeof(uint32_t)) != SPARK_GPU_SUCCESS ||
+		SparkGpuMemset(state->chain_step_device, 0, sizeof(uint32_t)) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_CAPACITY_EXCEEDED);
+	state->chain_step_dirty = 0u;
 	state->mark_count = state->geometry.total_layers + 1u;
 	state->layer_event = (SparkGpuEvent *)calloc(state->mark_count, sizeof(SparkGpuEvent));
 	state->layer_host_ns = (uint64_t *)calloc(state->mark_count, sizeof(uint64_t));
@@ -1621,7 +1626,7 @@ static SparkStatus StageRunnerChainBegin(SparkStageRunnerState *state, uint64_t 
 {
 	SparkStatus status = StageRunnerVerifyCollectives(state, state->stream);
 	if ( status == SPARK_STATUS_OK && state->device_collective_created != 0 )
-		status = SparkTpDeviceCollectiveChainKey(&state->device_collective, request_id);
+		status = SparkTpDeviceCollectiveChainKeyQueue(&state->device_collective, request_id, (void *)state->stream);
 	return status;
 }
 
@@ -2476,7 +2481,14 @@ static SparkStatus StageRunnerGraphLaunch(SparkStageRunnerState *state, SparkDev
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus StageRunnerGraphSettle(SparkStageRunnerState *state, SparkGpuStream stream)
+static SparkStatus StageRunnerGraphSettleBegin(SparkStageRunnerState *state, SparkGpuStream stream)
+{
+	if ( state->graph_launched == 0u || state->device_collective_created == 0 )
+		return SPARK_STATUS_OK;
+	return SparkTpDeviceCollectiveGraphSettleBegin(&state->device_collective, (void *)stream);
+}
+
+static SparkStatus StageRunnerGraphSettleFinish(SparkStageRunnerState *state)
 {
 	uint64_t collective_error = 0ull;
 	SparkStatus status;
@@ -2485,7 +2497,7 @@ static SparkStatus StageRunnerGraphSettle(SparkStageRunnerState *state, SparkGpu
 	state->graph_launched = 0u;
 	if ( state->device_collective_created == 0 )
 		return SPARK_STATUS_OK;
-	status = SparkTpDeviceCollectiveGraphSettle(&state->device_collective, stream, &collective_error);
+	status = SparkTpDeviceCollectiveGraphSettleFinish(&state->device_collective, &collective_error);
 	if ( status == SPARK_STATUS_OK && collective_error != 0ull )
 		status = SPARK_STATUS_INTERNAL_ERROR;
 	if ( status != SPARK_STATUS_OK )
@@ -3136,8 +3148,14 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 	phase_marks[1] = SparkMonotonicNs();
 	state->step_dispatch = dispatch;
 	state->graph_launched = 0u;
-	if ( SparkGpuMemsetAsync(state->chain_step_device, 0, sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
-		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+	if ( state->chain_step_dirty != 0u )
+	{
+		if ( SparkGpuMemsetAsync(state->chain_step_device, 0, sizeof(uint32_t), stream) != SPARK_GPU_SUCCESS )
+			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
+		state->chain_step_dirty = 0u;
+	}
+	if ( steps > 1u )
+		state->chain_step_dirty = 1u;
 	exchange_status = StageRunnerDistributionUpload(state, dispatch, stream);
 	if ( exchange_status != SPARK_STATUS_OK )
 		return exchange_status;
@@ -3180,11 +3198,14 @@ static SparkStatus StageRunnerSubmitBody(SparkStageRunner *runner, const SparkSt
 		(dispatch->distribution_logprobs != 0 && SparkGpuMemcpyAsync(dispatch->distribution_logprobs, state->distribution_logprobs,
 			(uint64_t)dispatch->distribution_count * SPARK_SAMPLING_MAX_LOGPROBS * sizeof(SparkSamplingLogprob), SPARK_GPU_COPY_DEVICE_TO_HOST, stream) != SPARK_GPU_SUCCESS)) )
 		state->copy_failed = 1u;
+	exchange_status = StageRunnerGraphSettleBegin(state, stream);
+	if ( exchange_status != SPARK_STATUS_OK )
+		return exchange_status;
 	if ( SparkGpuStreamSynchronize(stream) != SPARK_GPU_SUCCESS )
 		SPARK_FAIL(SPARK_STATUS_IO_ERROR);
 	state->dispatch_queued = 0u;
 	StageRunnerSumReport(state, dispatch->flags, rows);
-	exchange_status = StageRunnerGraphSettle(state, stream);
+	exchange_status = StageRunnerGraphSettleFinish(state);
 	if ( exchange_status == SPARK_STATUS_OK )
 		exchange_status = StageRunnerVerifyCollectives(state, stream);
 	if ( exchange_status == SPARK_STATUS_OK )
