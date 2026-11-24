@@ -31,9 +31,9 @@
 #define STAGE_RUNNER_GRAPH_ROWS SPARK_STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_SPLIT_SUM_ROWS 256u
 #define STAGE_RUNNER_SPLIT_SUM_MIN_DEGREE 4u
-#define STAGE_RUNNER_GRAPH_KEYS 2u
+#define STAGE_RUNNER_GRAPH_KEYS 3u
 #define STAGE_RUNNER_GRAPH_SLOTS (4u * STAGE_RUNNER_GRAPH_KEYS * STAGE_RUNNER_GRAPH_ROWS)
-#define STAGE_RUNNER_WIDE_ROWS 16u
+#define STAGE_RUNNER_WIDE_ROWS STAGE_RUNNER_GRAPH_ROWS
 #define STAGE_RUNNER_LEASE_AHEAD_ROUTES 4u
 #define STAGE_RUNNER_LEASE_SETS 2u
 #define STAGE_RUNNER_ROUND_MARKS 512u
@@ -2268,6 +2268,11 @@ static SparkStatus StageRunnerStepBody(SparkStageRunnerState *state, const Spark
 	return status;
 }
 
+static uint32_t StageRunnerGraphSlotKey(const SparkStageRunnerStep *in)
+{
+	return in->graph_key == 2u && in->tree != 0u ? 3u : in->graph_key;
+}
+
 static uint32_t StageRunnerGraphSlot(uint32_t key, uint32_t rows, uint32_t sampled, uint32_t last_rows)
 {
 	return (((last_rows != 0u ? 2u : 0u) + (sampled != 0u ? 1u : 0u)) * STAGE_RUNNER_GRAPH_KEYS + key - 1u) * STAGE_RUNNER_GRAPH_ROWS + rows - 1u;
@@ -2370,7 +2375,8 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	const SparkStageRunnerStep *in, SparkGpuStream stream)
 {
 	const uint64_t started = SparkMonotonicNs();
-	const uint32_t rows = in->rows, slot = StageRunnerGraphSlot(in->graph_key, in->rows, StageRunnerStepSampled(state), in->last_rows_only);
+	const uint32_t rows = in->rows, slot_key = StageRunnerGraphSlotKey(in);
+	const uint32_t slot = StageRunnerGraphSlot(slot_key, in->rows, StageRunnerStepSampled(state), in->last_rows_only);
 	SparkDeviceProgram *program = 0;
 	SparkDeviceProgramInfo info;
 	SparkStatus finished = SPARK_STATUS_OK;
@@ -2399,7 +2405,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	if ( status != SPARK_STATUS_OK || program == 0 || prefetch->dropped != 0u )
 	{
 		fprintf(stderr, "STAGE-PROGRAM-RECORD-FAILED key=%u rows=%u status=%d device=%s prefetch_dropped=%u: fatal, a decode row count has no complete program\n",
-			in->graph_key, rows, (int)status, SparkDeviceLastError()->text, prefetch != 0 ? prefetch->dropped : 0u);
+			slot_key, rows, (int)status, SparkDeviceLastError()->text, prefetch != 0 ? prefetch->dropped : 0u);
 		abort();
 	}
 	state->graph_program[slot] = program;
@@ -2411,7 +2417,7 @@ static void StageRunnerGraphCapture(SparkStageRunnerState *state, const SparkSta
 	uint64_t prefetch_bytes = 0u;
 	for ( uint32_t group = 0u; group < prefetch->groups; ++group )
 		prefetch_bytes += prefetch->host[group].total;
-	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%u kernels=%u capture_ms=%.1f prefetch_groups=%u prefetch_mib=%.1f prefetch_dropped=%u\n", in->graph_key,
+	fprintf(stderr, "STAGE-GRAPH-CAPTURE key=%u rows=%u nodes=%u kernels=%u capture_ms=%.1f prefetch_groups=%u prefetch_mib=%.1f prefetch_dropped=%u\n", slot_key,
 		rows, info.nodes, info.kernels, (double)(SparkMonotonicNs() - started) / 1e6, prefetch->groups, (double)prefetch_bytes / 1048576.0, prefetch->dropped);
 }
 
@@ -2525,10 +2531,11 @@ static SparkStatus StageRunnerStep(SparkStageRunnerState *state, const SparkStag
 		if ( gathered != SPARK_STATUS_OK )
 			return gathered;
 	}
-	if ( in->graph_key != 0u && in->graph_key <= STAGE_RUNNER_GRAPH_KEYS && dispatch != 0 &&
+	const uint32_t slot_key = StageRunnerGraphSlotKey(in);
+	if ( slot_key != 0u && slot_key <= STAGE_RUNNER_GRAPH_KEYS && dispatch != 0 &&
 		StageRunnerGraphEligible(state, runner, in->graph_key, rows, in->sequences) != 0u )
 	{
-		const uint32_t slot = StageRunnerGraphSlot(in->graph_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
+		const uint32_t slot = StageRunnerGraphSlot(slot_key, rows, StageRunnerStepSampled(state), in->last_rows_only);
 		StageRunnerGraphIdentity(in, state->geometry.graph_ignores_gather, &identity);
 		if ( state->graph_program[slot] != 0 && (memcmp(&state->graph_input[slot], &identity, sizeof(identity)) != 0 ||
 			state->graph_token_out[slot] != dispatch->output_token_ids || state->graph_score_out[slot] != dispatch->output_scores ||

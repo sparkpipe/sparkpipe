@@ -20,7 +20,7 @@
 #include "sparkpipe/spark_speculation_lookup_draft.h"
 #include "sparkpipe/spark_speculation_tree_frame.h"
 
-#define SPARK_MODEL_BATCH_VERIFY_LANES 4u
+#define SPARK_MODEL_BATCH_VERIFY_LANES 8u
 #define SPARK_MODEL_BATCH_MODEL_DRAFT_LANES 2u
 #define SPARK_MODEL_BATCH_DEFER_POLL_NS UINT64_C(20000000)
 #define SPARK_MODEL_BATCH_CHAIN_BUDGET_NS 1000000000.0f
