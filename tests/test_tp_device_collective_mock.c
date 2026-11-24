@@ -1358,6 +1358,82 @@ static void TestSharedLanes(SparkTpDeviceCollectiveConfig config,void *mesh)
         "paired owner closes after both borrowed collectives release");
 }
 
+static void TestFastB1CollectiveHostPaths(SparkTpDeviceCollectiveConfig config,void *mesh)
+{
+    SparkTpDeviceCollective collective;
+    SparkTpDeviceCollectiveSubmission submission;
+    SparkTpDeviceCollectiveHardwareTiming timing;
+    SparkTpMeshRoundControl *control;
+    uint16_t local[256] = {0},output[512] = {0};
+    uint64_t graph_error = 5u;
+    uint32_t syncs;
+    if ( PairCollective(config,mesh,4u,0u,2u,64u,SPARK_TP_DEVICE_COLLECTIVE_WAIT_HARDWARE,&collective) == 0u )
+    {
+        CHECK(0,"fast B1 collective setup");
+        return;
+    }
+    TestDeferredSubmission(&submission,local,output);
+    submission.active_sequence_count = 1u;
+    submission.logical_sequence_count = 1u;
+    submission.row_elements = 64u;
+    CHECK(SparkTpDeviceCollectiveChainKeyQueue(&collective,8800u,(void *)1) == SPARK_STATUS_OK,
+        "chain key queue seeds epoch on the execution stream");
+    CHECK(SparkTpDeviceCollectiveArmCapture(&collective) == SPARK_STATUS_OK,
+        "arm capture for pair-only streak checks");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_OK &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_ONLY) != 0u,
+        "first pair gather sets pair-only route");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_OK &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR) != 0u &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_ONLY) == 0u,
+        "second consecutive pair gather falls back to full-cluster barrier");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_OK &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_ONLY) != 0u,
+        "third pair gather re-enables pair-only after full-cluster sync");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_REDUCE_SUM_BF16) == SPARK_STATUS_OK,
+        "full-cluster allreduce resets pair-only streak");
+    CHECK(SparkTpDeviceCollectiveEnqueue(&collective,&submission,SPARK_TP_DEVICE_COLLECTIVE_OPERATION_PAIR_GATHER) == SPARK_STATUS_OK &&
+        (cuda_stub_mesh_hardware_slice_routes & SPARK_TP_MESH_ROUTES_PAIR_ONLY) != 0u,
+        "pair gather after allreduce gets pair-only route");
+    control = (SparkTpMeshRoundControl *)cuda_stub_mesh_hardware_control;
+    CHECK(control != 0,"fast B1 collective has control record");
+    if ( control != 0 )
+    {
+        control->cancel_expected = 999u;
+        CHECK(SparkTpDeviceCollectiveGraphCancelSeed(&collective,(void *)1) == SPARK_STATUS_OK &&
+            control->cancel_expected == 999u,
+            "unchanged cancel state skips redundant cancel seed copy");
+        SparkTpDeviceCollectiveBroadcastCancel(&collective);
+        CHECK(SparkTpDeviceCollectiveGraphCancelSeed(&collective,(void *)1) == SPARK_STATUS_OK &&
+            control->cancel_expected != 999u,
+            "cancel epoch change re-seeds device cancel expected word");
+        control->seq = 77u;
+        control->error_word = 0u;
+        control->source_wait_ns = 11u;
+        control->peer_wait_ns = 22u;
+        control->copy_ns = 33u;
+        control->combine_ns = 44u;
+        control->first_arrival_ns = 55u;
+        syncs = cuda_stub_stream_sync_calls;
+        CHECK(SparkTpDeviceCollectiveGraphSettleBegin(&collective,(void *)1) == SPARK_STATUS_OK &&
+            SparkTpDeviceCollectiveGraphSettleFinish(&collective,&graph_error) == SPARK_STATUS_OK &&
+            graph_error == 0u && cuda_stub_stream_sync_calls == syncs,
+            "split graph settle reads control without adding a second stream sync");
+        control->combine_ns = 9999u;
+        cuda_stub_stream_query_result = cudaErrorNotReady;
+        CHECK(SparkTpDeviceCollectiveHardwareStats(&collective,&timing) == SPARK_STATUS_BUSY,
+            "cached hardware stats still refuse an active stream");
+        cuda_stub_stream_query_result = cudaSuccess;
+        memset(&timing,0,sizeof(timing));
+        CHECK(SparkTpDeviceCollectiveHardwareStats(&collective,&timing) == SPARK_STATUS_OK &&
+            timing.source_wait_ns == 11u && timing.peer_wait_ns == 22u &&
+            timing.copy_ns == 33u && timing.combine_ns == 44u && timing.first_arrival_ns == 55u,
+            "hardware stats after graph settle reuse cached round control snapshot");
+    }
+    SparkTpDeviceCollectiveDestroy(&collective);
+}
+
 int main(void)
 {
 	SparkTpDeviceCollectiveConfig config;
@@ -1467,6 +1543,7 @@ int main(void)
 	TestPairAllReduce(config,mesh_buffer);
 	TestSpinSingleSequenceWave(config,mesh_buffer);
 	TestDeferredRounds(config,mesh_buffer);
+	TestFastB1CollectiveHostPaths(config,mesh_buffer);
 	TestSharedLanes(config,mesh_buffer);
 	TestOwnedMesh(config);
 	TestRestartEpoch(config,mesh_buffer);

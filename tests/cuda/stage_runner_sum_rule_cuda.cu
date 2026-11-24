@@ -130,6 +130,18 @@ SparkStatus SparkTpDeviceCollectiveGraphSettle(SparkTpDeviceCollective *collecti
 	return SPARK_STATUS_UNSUPPORTED;
 }
 
+SparkStatus SparkTpDeviceCollectiveGraphSettleBegin(SparkTpDeviceCollective *collective, void *queue)
+{
+	(void)collective; (void)queue;
+	return SPARK_STATUS_UNSUPPORTED;
+}
+
+SparkStatus SparkTpDeviceCollectiveGraphSettleFinish(SparkTpDeviceCollective *collective, uint64_t *error_out)
+{
+	(void)collective; (void)error_out;
+	return SPARK_STATUS_UNSUPPORTED;
+}
+
 SparkStatus SparkTpDeviceCollectiveGraphPreLaunch(SparkTpDeviceCollective *collective, void *stream)
 {
 	(void)collective; (void)stream;
@@ -151,6 +163,12 @@ SparkStatus SparkTpDeviceCollectiveEndChain(SparkTpDeviceCollective *collective,
 SparkStatus SparkTpDeviceCollectiveChainKey(SparkTpDeviceCollective *collective, uint64_t request_id)
 {
 	(void)collective; (void)request_id;
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkTpDeviceCollectiveChainKeyQueue(SparkTpDeviceCollective *collective, uint64_t request_id, void *queue)
+{
+	(void)collective; (void)request_id; (void)queue;
 	return SPARK_STATUS_OK;
 }
 

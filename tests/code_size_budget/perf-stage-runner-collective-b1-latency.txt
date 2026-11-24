@@ -1,0 +1,2 @@
++864
+B1 decode collective and host-GPU sync optimizations: adds fast TP16 B1 mesh kernels (true pair-only pair-gather, 2-kernel fused peer all-to-all, streaming bitwise-exact BF16 all-reduce, streaming all-gather, and ordered-release publish in inference/runner/mesh_fast_kernels.cuh) plus async epoch seeding, cancel-seed deduplication, split overlapped graph settle, cached hardware stats, and host-pinned output token readback.
