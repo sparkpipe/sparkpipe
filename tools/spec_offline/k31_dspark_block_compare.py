@@ -166,9 +166,9 @@ def compare_drafts(d, path, y, anchor, position):
             if inverse_temperature > 0.0:
                 rule = (torch.tensor(seed, device="cuda"), torch.tensor(np.float32(inverse_temperature), device="cuda"),
                         torch.tensor(np.float32(nucleus), device="cuda"), torch.tensor(top_k, device="cuda"))
-                python_tokens, python_scores = d.propose(y, anchor, rule, torch.tensor(position, device="cuda"), torch.tensor(True, device="cuda"))
+                python_tokens, python_scores, _, _ = d.propose(y, anchor, rule, torch.tensor(position, device="cuda"), torch.tensor(True, device="cuda"))
             else:
-                python_tokens, python_scores = d.propose(y, anchor)
+                python_tokens, python_scores, _, _ = d.propose(y, anchor)
         python_tokens, python_scores = python_tokens.cpu().numpy(), python_scores.float().cpu().numpy()
         equal = int((tokens == python_tokens).sum())
         worst = float(np.abs(scores - python_scores).max())

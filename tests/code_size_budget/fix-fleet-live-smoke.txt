@@ -1,0 +1,2 @@
++6
+Clamp glm5_next short-context pools, return alternates in k3_dspark_drafter.propose, fix sm_120a LmMxfp8 skinny spill, and align dsv41 contract warm_path
