@@ -1,0 +1,2 @@
++97
+perf/state-record-start-cost: use spark_ck128 fast checksum for in-memory KV page stores and add SparkKvPageStoreRecordDigest (cache/kv_page_store.c, include/sparkpipe/spark_kv_page_store.h), skip state-store readback when a resident lane already holds the matching page/generation/digest (runtime/stage_kv_binding.c, include/sparkpipe/spark_stage_kv_binding.h), and report recurrent state restore/skip/capture counters on STAGE-WAVE-HOST (inference/runner/stage_serving_adapter.c).
