@@ -111,259 +111,46 @@ struct GemmaState : CudaStagePackState
 	LmKvShardView full_views[GemmaShape<G>::kFullLayers];
 };
 
-__global__ static void GemmaScaleRowsKernel(uint16_t *rows, uint64_t elements, float scale)
+struct GemmaPostNormAddOp
 {
-	if ( (elements & 7u) == 0u && LmIsAligned16(rows) )
+	float multiplier;
+	bool has_scalar;
+	__device__ __forceinline__ float operator()(float x, float scale, float w, float t, bool) const
 	{
-		const uint64_t chunks = elements >> 3u;
-		uint4 *r4 = (uint4 *)rows;
-		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
-		{
-			uint16_t bits[8];
-			float out[8];
-			LmUnpackUint4Bf16(r4[c], bits);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(bits[k]) * scale;
-			r4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
+		const float added = SparkMathRoundBf16(t + SparkMathRoundBf16(x * scale * w));
+		return has_scalar ? added * multiplier : added;
 	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
-		rows[index] = LmFloatToBf16(LmBf16ToFloat(rows[index]) * scale);
-}
+};
 
-__global__ static void GemmaGatherRowsKernel(const uint16_t *gathered, uint16_t *full, uint32_t rows, uint32_t width, uint32_t ranks)
+struct GemmaRouterInputOp
 {
-	const uint32_t row = blockIdx.y;
-	if ( (width & 7u) == 0u && LmIsAligned16(gathered) && LmIsAligned16(full) )
+	float root;
+	__device__ __forceinline__ float operator()(float x, float inverse, float sc, float, bool) const
 	{
-		const uint32_t width_c = width >> 3u, total_c = width_c * ranks;
-		uint4 *f4 = (uint4 *)full + (uint64_t)row * total_c;
-		const uint4 *g4 = (const uint4 *)gathered;
-		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < total_c; c += gridDim.x * blockDim.x )
-			f4[c] = g4[((uint64_t)(c / width_c) * rows + row) * width_c + c % width_c];
-		return;
+		return SparkMathRoundBf16(SparkMathRoundBf16(x * inverse) * sc) * root;
 	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width * ranks; index += gridDim.x * blockDim.x )
-		full[(uint64_t)row * width * ranks + index] = gathered[((uint64_t)(index / width) * rows + row) * width + index % width];
-}
+};
 
-__global__ static void GemmaSplitKernel(const uint16_t *full, uint16_t *query, uint16_t *key, uint16_t *value, uint32_t fused, uint32_t q_width,
-	uint32_t kv_width, uint32_t key_is_value)
+struct GemmaGeluTanhOp
 {
-	const uint32_t row = blockIdx.y;
-	const uint16_t *source = full + (uint64_t)row * fused;
-	if ( (fused & 7u) == 0u && (q_width & 7u) == 0u && (kv_width & 7u) == 0u &&
-		LmIsAligned16(full) && LmIsAligned16(query) && LmIsAligned16(key) && LmIsAligned16(value) )
+	__device__ __forceinline__ float operator()(float g, float u) const
 	{
-		const uint32_t q_c = q_width >> 3u, kv_c = kv_width >> 3u, total_c = q_c + 2u * kv_c;
-		const uint4 *src4 = (const uint4 *)source;
-		uint4 *q4 = (uint4 *)query + (uint64_t)row * q_c;
-		uint4 *k4 = (uint4 *)key + (uint64_t)row * kv_c;
-		uint4 *v4 = (uint4 *)value + (uint64_t)row * kv_c;
-		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < total_c; c += gridDim.x * blockDim.x )
-		{
-			if ( c < q_c )
-				q4[c] = src4[c];
-			else if ( c < q_c + kv_c )
-				k4[c - q_c] = src4[c];
-			else
-				v4[c - q_c - kv_c] = src4[key_is_value != 0u ? c - kv_c : c];
-		}
-		return;
+		return SparkMathRoundBf16(SparkMathGeluTanh(g)) * u;
 	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < q_width + 2u * kv_width; index += gridDim.x * blockDim.x )
-	{
-		if ( index < q_width )
-			query[(uint64_t)row * q_width + index] = source[index];
-		else if ( index < q_width + kv_width )
-			key[(uint64_t)row * kv_width + index - q_width] = source[index];
-		else
-			value[(uint64_t)row * kv_width + index - q_width - kv_width] = source[key_is_value != 0u ? index - kv_width : index];
-	}
-}
-
-__global__ static void GemmaPackSlotKernel(const uint16_t *key, const uint16_t *value, uint16_t *slot, uint32_t width)
-{
-	const uint32_t row = blockIdx.y;
-	if ( (width & 7u) == 0u && LmIsAligned16(key) && LmIsAligned16(value) && LmIsAligned16(slot) )
-	{
-		const uint32_t chunks = width >> 3u;
-		uint4 *s4 = (uint4 *)slot + (uint64_t)row * 2u * chunks;
-		const uint4 *k4 = (const uint4 *)key + (uint64_t)row * chunks;
-		const uint4 *v4 = (const uint4 *)value + (uint64_t)row * chunks;
-		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < 2u * chunks; c += gridDim.x * blockDim.x )
-			s4[c] = c < chunks ? k4[c] : v4[c - chunks];
-		return;
-	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < 2u * width; index += gridDim.x * blockDim.x )
-		slot[(uint64_t)row * 2u * width + index] = index < width ? key[(uint64_t)row * width + index] : value[(uint64_t)row * width + index - width];
-}
-
-__global__ static void GemmaHeadSoftplusGateKernel(uint16_t *values, const uint16_t *gate_logits, uint32_t heads, uint32_t head_dim, uint32_t gate_stride)
-{
-	const uint32_t row = blockIdx.y, head = blockIdx.x;
-	const float gate = SparkMathSoftplusGate(LmBf16ToFloat(gate_logits[(uint64_t)row * gate_stride + head]));
-	uint16_t *base = values + ((uint64_t)row * heads + head) * head_dim;
-	if ( (head_dim & 7u) == 0u && LmIsAligned16(base) )
-	{
-		const uint32_t chunks = head_dim >> 3u;
-		uint4 *v4 = (uint4 *)base;
-		for ( uint32_t c = threadIdx.x; c < chunks; c += blockDim.x )
-		{
-			uint16_t bits[8];
-			float out[8];
-			LmUnpackUint4Bf16(v4[c], bits);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(bits[k]) * gate;
-			v4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < head_dim; index += blockDim.x )
-		base[index] = LmFloatToBf16(LmBf16ToFloat(base[index]) * gate);
-}
-
-__global__ static void GemmaAddRowsKernel(uint16_t *residual, const uint16_t *partial, uint64_t count)
-{
-	if ( (count & 7u) == 0u && LmIsAligned16(residual) && LmIsAligned16(partial) )
-	{
-		const uint64_t chunks = count >> 3u;
-		uint4 *r4 = (uint4 *)residual;
-		const uint4 *p4 = (const uint4 *)partial;
-		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
-		{
-			uint16_t rb[8], pb[8];
-			float out[8];
-			LmUnpackUint4Bf16(r4[c], rb);
-			LmUnpackUint4Bf16(p4[c], pb);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(rb[k]) + LmBf16ToFloat(pb[k]);
-			r4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
-		residual[index] = LmFloatToBf16(LmBf16ToFloat(residual[index]) + LmBf16ToFloat(partial[index]));
-}
-
-__global__ static void GemmaWidenKernel(const uint16_t *source, float *target, uint64_t count)
-{
-	if ( (count & 7u) == 0u && LmIsAligned16(source) && LmIsAligned16(target) )
-	{
-		const uint64_t chunks = count >> 3u;
-		const uint4 *s4 = (const uint4 *)source;
-		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
-		{
-			uint16_t bits[8];
-			float out[8];
-			LmUnpackUint4Bf16(s4[c], bits);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(bits[k]);
-			LmStoreFloat8(target + (c << 3u), out);
-		}
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
-		target[index] = LmBf16ToFloat(source[index]);
-}
-
-__global__ static void GemmaSigmoidGateKernel(uint16_t *values, const uint16_t *gate_logits, uint64_t count)
-{
-	if ( (count & 7u) == 0u && LmIsAligned16(values) && LmIsAligned16(gate_logits) )
-	{
-		const uint64_t chunks = count >> 3u;
-		uint4 *v4 = (uint4 *)values;
-		const uint4 *g4 = (const uint4 *)gate_logits;
-		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
-		{
-			uint16_t vb[8], gb[8];
-			float out[8];
-			LmUnpackUint4Bf16(v4[c], vb);
-			LmUnpackUint4Bf16(g4[c], gb);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gb[k]))));
-				out[k] = LmBf16ToFloat(vb[k]) * gate;
-			}
-			v4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < count; index += (uint64_t)gridDim.x * blockDim.x )
-	{
-		const float gate = LmBf16ToFloat(LmFloatToBf16(SparkMathSigmoid(LmBf16ToFloat(gate_logits[index]))));
-		values[index] = LmFloatToBf16(LmBf16ToFloat(values[index]) * gate);
-	}
-}
-
-static __device__ __forceinline__ float GemmaSumSq8(uint4 v)
-{
-	uint16_t bits[8];
-	float total = 0.0f;
-	LmUnpackUint4Bf16(v, bits);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k )
-	{
-		const float value = LmBf16ToFloat(bits[k]);
-		total += value * value;
-	}
-	return total;
-}
-
-static __device__ __forceinline__ void GemmaPostNormAdd8(uint4 src_vec, uint16_t *target, const float *weight, uint32_t offset, float scale,
-	float multiplier, bool has_scalar)
-{
-	uint16_t sb[8], tb[8];
-	float w[8], out[8];
-	LmUnpackUint4Bf16(src_vec, sb);
-	LmUnpackUint4Bf16(*(const uint4 *)(target + offset), tb);
-	LmLoadFloat8(weight + offset, w);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(sb[k]) * scale * w[k]));
-		const float added = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(tb[k]) + normed));
-		out[k] = has_scalar ? added * multiplier : added;
-	}
-	*(uint4 *)(target + offset) = LmPackUint4FloatToBf16(out);
-}
-
-static __device__ __forceinline__ void GemmaRouterInput8(uint4 src_vec, const float *scale, uint16_t *target, uint32_t offset, float inverse, float root)
-{
-	uint16_t sb[8];
-	float sc[8], out[8];
-	LmUnpackUint4Bf16(src_vec, sb);
-	LmLoadFloat8(scale + offset, sc);
-	#pragma unroll
-	for ( uint32_t k = 0u; k < 8u; ++k )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(sb[k]) * inverse));
-		out[k] = LmBf16ToFloat(LmFloatToBf16(normed * sc[k])) * root;
-	}
-	*(uint4 *)(target + offset) = LmPackUint4FloatToBf16(out);
-}
+};
 
 static __device__ __forceinline__ float GemmaMoeCombineMix8(uint4 d_vec, uint4 m_vec, const float *dense_norm, const float *moe_norm,
 	float *combined_out, uint32_t offset, float dense_scale, float moe_scale)
 {
-	uint16_t db[8], mb[8];
-	float dn[8], mn[8], comb[8], total = 0.0f;
-	LmUnpackUint4Bf16(d_vec, db);
-	LmUnpackUint4Bf16(m_vec, mb);
+	float dv[8], mv[8], dn[8], mn[8], comb[8], total = 0.0f;
+	LmLoadBf16x8AsFloat(d_vec, dv);
+	LmLoadBf16x8AsFloat(m_vec, mv);
 	LmLoadFloat8(dense_norm + offset, dn);
 	LmLoadFloat8(moe_norm + offset, mn);
 	#pragma unroll
 	for ( uint32_t k = 0u; k < 8u; ++k )
 	{
-		const float d = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(db[k]) * dense_scale * dn[k]));
-		const float m = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(mb[k]) * moe_scale * mn[k]));
-		const float combined = LmBf16ToFloat(LmFloatToBf16(d + m));
+		const float combined = SparkMathRoundBf16(SparkMathRoundBf16(dv[k] * dense_scale * dn[k]) + SparkMathRoundBf16(mv[k] * moe_scale * mn[k]));
 		comb[k] = combined;
 		total += combined * combined;
 	}
@@ -374,18 +161,13 @@ static __device__ __forceinline__ float GemmaMoeCombineMix8(uint4 d_vec, uint4 m
 static __device__ __forceinline__ void GemmaMoeCombineOut8(const float *combined_in, const float *post_norm, uint16_t *res_row, uint32_t offset,
 	float scale, float multiplier)
 {
-	uint16_t rb[8];
-	float comb[8], pn[8], out[8];
+	float comb[8], pn[8], rv[8], out[8];
 	LmLoadFloat8(combined_in + offset, comb);
 	LmLoadFloat8(post_norm + offset, pn);
-	LmUnpackUint4Bf16(*(const uint4 *)(res_row + offset), rb);
+	LmLoadBf16x8AsFloat(*(const uint4 *)(res_row + offset), rv);
 	#pragma unroll
 	for ( uint32_t k = 0u; k < 8u; ++k )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(comb[k] * scale * pn[k]));
-		const float added = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(rb[k]) + normed));
-		out[k] = added * multiplier;
-	}
+		out[k] = SparkMathRoundBf16(rv[k] + SparkMathRoundBf16(comb[k] * scale * pn[k])) * multiplier;
 	*(uint4 *)(res_row + offset) = LmPackUint4FloatToBf16(out);
 }
 
@@ -393,149 +175,26 @@ template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void GemmaPostNormAddKernel(uint16_t *residual, const uint16_t *partial, const float *weight, const float *scalar, uint32_t width, float epsilon)
 {
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
-	const uint32_t row = blockIdx.x;
-	const uint16_t *source = partial + (uint64_t)row * width;
-	uint16_t *target = residual + (uint64_t)row * width;
+	const uint64_t base = (uint64_t)blockIdx.x * width;
 	const bool has_scalar = scalar != 0;
-	float total = 0.0f;
-	if ( (width & 7u) == 0u && LmIsAligned16(source) && LmIsAligned16(target) && LmIsAligned16(weight) )
-	{
-		if ( width <= THREADS * 32u )
-		{
-			uint4 staged[4];
-			#pragma unroll
-			for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			{
-				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
-				if ( offset < width )
-				{
-					staged[slot] = *(const uint4 *)(source + offset);
-					total += GemmaSumSq8(staged[slot]);
-				}
-			}
-			const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-			const float multiplier = has_scalar ? scalar[0] : 1.0f;
-			#pragma unroll
-			for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			{
-				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
-				if ( offset < width )
-					GemmaPostNormAdd8(staged[slot], target, weight, offset, scale, multiplier, has_scalar);
-			}
-			return;
-		}
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
-			total += GemmaSumSq8(*(const uint4 *)(source + offset));
-		const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-		const float multiplier = has_scalar ? scalar[0] : 1.0f;
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
-			GemmaPostNormAdd8(*(const uint4 *)(source + offset), target, weight, offset, scale, multiplier, has_scalar);
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-	{
-		const float value = LmBf16ToFloat(source[index]);
-		total += value * value;
-	}
-	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-	const float multiplier = has_scalar ? scalar[0] : 1.0f;
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(source[index]) * scale * weight[index]));
-		const float added = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(target[index]) + normed));
-		target[index] = LmFloatToBf16(has_scalar ? added * multiplier : added);
-	}
+	LmRmsNormSmallBody<THREADS, 4u>(partial + base, residual + base, weight, residual + base, width, epsilon,
+		GemmaPostNormAddOp{has_scalar ? scalar[0] : 1.0f, has_scalar});
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void GemmaGeluTanhMulKernel(const uint16_t *gate_up, uint16_t *output, uint32_t width)
 {
-	const uint32_t row = blockIdx.y;
-	if ( (width & 7u) == 0u && LmIsAligned16(gate_up) && LmIsAligned16(output) )
-	{
-		const uint32_t chunks = width >> 3u;
-		const uint4 *g4 = (const uint4 *)(gate_up + (uint64_t)row * 2u * width);
-		const uint4 *u4 = g4 + chunks;
-		uint4 *o4 = (uint4 *)(output + (uint64_t)row * width);
-		for ( uint32_t c = blockIdx.x * THREADS + threadIdx.x; c < chunks; c += gridDim.x * THREADS )
-		{
-			uint16_t gb[8], ub[8];
-			float out[8];
-			LmUnpackUint4Bf16(g4[c], gb);
-			LmUnpackUint4Bf16(u4[c], ub);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-			{
-				const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathGeluTanh(LmBf16ToFloat(gb[k]))));
-				out[k] = activated * LmBf16ToFloat(ub[k]);
-			}
-			o4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint32_t index = blockIdx.x * THREADS + threadIdx.x; index < width; index += gridDim.x * THREADS )
-	{
-		const float gate = LmBf16ToFloat(gate_up[(uint64_t)row * 2u * width + index]);
-		const float up = LmBf16ToFloat(gate_up[(uint64_t)row * 2u * width + width + index]);
-		const float activated = LmBf16ToFloat(LmFloatToBf16(SparkMathGeluTanh(gate)));
-		output[(uint64_t)row * width + index] = LmFloatToBf16(activated * up);
-	}
+	const uint64_t base = (uint64_t)blockIdx.y * 2u * width;
+	LmBinaryBf16GridBody<THREADS>(gate_up + base, gate_up + base + width, output + (uint64_t)blockIdx.y * width, width, GemmaGeluTanhOp{});
 }
 
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void GemmaRouterInputKernel(const uint16_t *residual, const float *scale, uint16_t *output, uint32_t width, float epsilon, float root)
 {
-	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	const uint64_t base = (uint64_t)blockIdx.x * width;
-	const uint16_t *source = residual + base;
-	uint16_t *target = output + base;
-	float total = 0.0f;
-	if ( (width & 7u) == 0u && LmIsAligned16(source) && LmIsAligned16(scale) && LmIsAligned16(target) )
-	{
-		if ( width <= THREADS * 32u )
-		{
-			uint4 staged[4];
-			#pragma unroll
-			for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			{
-				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
-				if ( offset < width )
-				{
-					staged[slot] = *(const uint4 *)(source + offset);
-					total += GemmaSumSq8(staged[slot]);
-				}
-			}
-			const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-			#pragma unroll
-			for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			{
-				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
-				if ( offset < width )
-					GemmaRouterInput8(staged[slot], scale, target, offset, inverse, root);
-			}
-			return;
-		}
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
-			total += GemmaSumSq8(*(const uint4 *)(source + offset));
-		const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
-			GemmaRouterInput8(*(const uint4 *)(source + offset), scale, target, offset, inverse, root);
-		return;
-	}
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-	{
-		const float value = LmBf16ToFloat(source[index]);
-		total += value * value;
-	}
-	const float inverse = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(source[index]) * inverse));
-		target[index] = LmFloatToBf16(LmBf16ToFloat(LmFloatToBf16(normed * scale[index])) * root);
-	}
+	LmRmsNormSmallBody<THREADS, 4u>(residual + base, (const uint16_t *)0, scale, output + base, width, epsilon, GemmaRouterInputOp{root});
 }
 
 __global__ static void GemmaExpertScaleKernel(const uint32_t *route_expert, float *route_weight, const float *expert_scale, uint32_t routes)
@@ -551,7 +210,7 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 	const float *post_norm, const float *scalar, uint32_t width, float epsilon)
 {
 	extern __shared__ float gemma_combined[];
-	__shared__ float reduction[2u * (THREADS / LM_WARP_LANES)];
+	__shared__ float reduction[2u * LmBlockWarps<THREADS>()];
 	const uint64_t base = (uint64_t)blockIdx.x * width;
 	const uint16_t *dense_row = dense + base, *moe_row = moe + base;
 	uint16_t *res_row = residual + base;
@@ -570,8 +229,8 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 				{
 					d_staged[slot] = *(const uint4 *)(dense_row + offset);
 					m_staged[slot] = *(const uint4 *)(moe_row + offset);
-					dense_total += GemmaSumSq8(d_staged[slot]);
-					moe_total += GemmaSumSq8(m_staged[slot]);
+					dense_total = LmSumSqBf16x8(d_staged[slot], dense_total);
+					moe_total = LmSumSqBf16x8(m_staged[slot], moe_total);
 				}
 			}
 			LmBlockSum2Once<THREADS>(&dense_total, &moe_total, reduction);
@@ -585,29 +244,22 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 				if ( offset < width )
 					total += GemmaMoeCombineMix8(d_staged[slot], m_staged[slot], dense_norm, moe_norm, gemma_combined, offset, dense_scale, moe_scale);
 			}
-			const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
-			const float multiplier = scalar[0];
-			#pragma unroll
-			for ( uint32_t slot = 0u; slot < 4u; ++slot )
-			{
-				const uint32_t offset = (slot * THREADS + threadIdx.x) * 8u;
-				if ( offset < width )
-					GemmaMoeCombineOut8(gemma_combined, post_norm, res_row, offset, scale, multiplier);
-			}
-			return;
 		}
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
+		else
 		{
-			dense_total += GemmaSumSq8(*(const uint4 *)(dense_row + offset));
-			moe_total += GemmaSumSq8(*(const uint4 *)(moe_row + offset));
+			for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
+			{
+				dense_total = LmSumSqBf16x8(*(const uint4 *)(dense_row + offset), dense_total);
+				moe_total = LmSumSqBf16x8(*(const uint4 *)(moe_row + offset), moe_total);
+			}
+			LmBlockSum2Once<THREADS>(&dense_total, &moe_total, reduction);
+			__syncthreads();
+			const float dense_scale = SparkMathRmsScale(dense_total, (float)width, epsilon);
+			const float moe_scale = SparkMathRmsScale(moe_total, (float)width, epsilon);
+			for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
+				total += GemmaMoeCombineMix8(*(const uint4 *)(dense_row + offset), *(const uint4 *)(moe_row + offset), dense_norm, moe_norm, gemma_combined,
+					offset, dense_scale, moe_scale);
 		}
-		LmBlockSum2Once<THREADS>(&dense_total, &moe_total, reduction);
-		__syncthreads();
-		const float dense_scale = SparkMathRmsScale(dense_total, (float)width, epsilon);
-		const float moe_scale = SparkMathRmsScale(moe_total, (float)width, epsilon);
-		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
-			total += GemmaMoeCombineMix8(*(const uint4 *)(dense_row + offset), *(const uint4 *)(moe_row + offset), dense_norm, moe_norm, gemma_combined,
-				offset, dense_scale, moe_scale);
 		const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
 		const float multiplier = scalar[0];
 		for ( uint32_t offset = threadIdx.x * 8u; offset < width; offset += THREADS * 8u )
@@ -626,20 +278,15 @@ void GemmaMoeCombineKernel(uint16_t *residual, const uint16_t *dense, const uint
 	const float moe_scale = SparkMathRmsScale(moe_total, (float)width, epsilon);
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 	{
-		const float d = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(dense_row[index]) * dense_scale * dense_norm[index]));
-		const float m = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(moe_row[index]) * moe_scale * moe_norm[index]));
-		const float combined = LmBf16ToFloat(LmFloatToBf16(d + m));
+		const float combined = SparkMathRoundBf16(SparkMathRoundBf16(LmBf16ToFloat(dense_row[index]) * dense_scale * dense_norm[index]) +
+			SparkMathRoundBf16(LmBf16ToFloat(moe_row[index]) * moe_scale * moe_norm[index]));
 		gemma_combined[index] = combined;
 		total += combined * combined;
 	}
 	const float scale = SparkMathRmsScale(LmBlockSumOnce<THREADS>(total, reduction), (float)width, epsilon);
 	const float multiplier = scalar[0];
 	for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
-	{
-		const float normed = LmBf16ToFloat(LmFloatToBf16(gemma_combined[index] * scale * post_norm[index]));
-		const float added = LmBf16ToFloat(LmFloatToBf16(LmBf16ToFloat(res_row[index]) + normed));
-		res_row[index] = LmFloatToBf16(added * multiplier);
-	}
+		res_row[index] = LmFloatToBf16(SparkMathRoundBf16(LmBf16ToFloat(res_row[index]) + SparkMathRoundBf16(gemma_combined[index] * scale * post_norm[index])) * multiplier);
 }
 
 template<class G>
@@ -680,17 +327,6 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static const char *WeightdModel(void)
 	{
 		return G::Name();
-	}
-
-	static uint32_t Blocks(uint64_t elements)
-	{
-		const uint64_t blocks = (elements + GM_THREADS - 1u) / GM_THREADS;
-		return (uint32_t)(blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u);
-	}
-
-	static uint32_t VecBlocks(uint64_t elements)
-	{
-		return Blocks((elements + 7u) >> 3u);
 	}
 
 	static int32_t Project(const uint16_t *weight, const uint16_t *source, uint16_t *destination, float *destination_f32, uint32_t rows,
@@ -758,9 +394,9 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		status = CudaStageRound(state, stream, SPARK_TP_DEVICE_COLLECTIVE_OPERATION_ALL_GATHER, rows, local_rows, state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((GemmaGatherRowsKernel), dim3(VecBlocks(FUSED), rows), GM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
-		LM_LAUNCH((GemmaSplitKernel), dim3(VecBlocks(QW + 2u * KVW), rows), GM_THREADS, 0, stream, state->attn_full, state->query, state->key, state->value, FUSED,
-			QW, KVW, FULL && G::kKeyIsValue ? 1u : 0u);
+		LM_LAUNCH((LmRankMajorRowsKernel<GM_THREADS>), dim3(LmVecBlocks<GM_THREADS>(FUSED), rows), GM_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, local_rows, degree);
+		LM_LAUNCH((LmSplitQkvKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, state->attn_full, LmQkvLayout{QW, KVW, KVW, 0u, HD}, state->query, state->key,
+			state->value, rows, 1.0f, FULL && G::kKeyIsValue);
 		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), dim3(HEADS,rows), GM_THREADS, 0, stream,
 			state->query, G::kQkNormWeighted ? layer->q_norm : (const float *)0, state->query, rows, HEADS, HD, G::kNormEpsilon, G::kQueryMultiply);
 		LM_LAUNCH((LmHeadRmsNormKernel<GM_THREADS,float,G::kNormRoundFirst>), dim3(KVH,rows), GM_THREADS, 0, stream,
@@ -777,7 +413,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 				state->key, step->positions, KVH, HD, FULL ? S::kFullRopeWidth : HD, FULL ? G::kFullTheta : G::kSlidingTheta,
 				FULL ? state->full_inv_freq : (const float *)0, FULL ? G::kFullRopeScale : 1.0f, 0u);
 		}
-		LM_LAUNCH((GemmaPackSlotKernel), dim3(VecBlocks(2u * KVW), rows), GM_THREADS, 0, stream, state->key, state->value, state->slot, KVW);
+		LM_LAUNCH((LmConcatRowsKernel), dim3(LmVecBlocks<GM_THREADS>(2u * KVW), rows), GM_THREADS, 0, stream, state->key, state->value, state->slot, KVW, KVW);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<Kv,GM_THREADS>), rows, GM_THREADS, 0, stream, *view, state->slot, step->sequence_of_row, step->positions,
 			rows, 2u * KVW);
@@ -795,7 +431,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		{
 			if ( Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, width, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((GemmaSigmoidGateKernel), VecBlocks((uint64_t)rows * width), GM_THREADS, 0, stream, state->merged, state->gate_logits, (uint64_t)rows * width);
+			LM_LAUNCH((LmOutputGateKernel<GM_THREADS, true>), rows, GM_THREADS, 0, stream, state->merged, state->gate_logits, width);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -804,7 +440,8 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			constexpr uint32_t GATE_ROWS = FULL ? S::kFullGateRows : S::kSlidingGateRows;
 			if ( Linear(layer->gate, state->normed, state->gate_logits, rows, G::kHidden, GATE_ROWS, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((GemmaHeadSoftplusGateKernel), dim3(width / HD, rows), 128u, 0, stream, state->merged, state->gate_logits, width / HD, HD, GATE_ROWS);
+			LM_LAUNCH((LmHeadGateBroadcastKernel<128u, LM_GATE_SOFTPLUS, true>), dim3(rows, width / HD), 128u, 0, stream, state->merged, state->gate_logits,
+				width / HD, HD, GATE_ROWS);
 			if ( CudaStageLaunched() != SPARK_STATUS_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		}
@@ -822,7 +459,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		if ( Linear(layer->gate_up, state->normed, state->gate_up, rows, G::kHidden, 2u * ffn_rows, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
 		if constexpr ( G::kGeluMlp )
-			LM_LAUNCH((GemmaGeluTanhMulKernel<GM_THREADS>), dim3(VecBlocks(ffn_rows), rows), GM_THREADS, 0, stream, state->gate_up, state->intermediate, ffn_rows);
+			LM_LAUNCH((GemmaGeluTanhMulKernel<GM_THREADS>), dim3(LmVecBlocks<GM_THREADS>(ffn_rows), rows), GM_THREADS, 0, stream, state->gate_up, state->intermediate, ffn_rows);
 		else if ( layer->swiglu_limit != INFINITY )
 			LM_LAUNCH((LmSiluMulGateLimitKernel<GM_THREADS>), rows, GM_THREADS, 0, stream, state->gate_up, state->intermediate, ffn_rows,
 				layer->swiglu_limit);
@@ -864,12 +501,12 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			ExpertProjection(expert_routes, layer->moe_w1, state->moe_normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, state->moe_normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmGeluTanhPackedKernel), dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmGeluTanhPackedKernel), dim3(LmGridBlocks<GM_THREADS>(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmGridBlocks<GM_THREADS>(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, (const uint16_t *)0, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -889,7 +526,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 		{
 			if ( Linear(layer->router_proj, normed, state->router_logits, rows, G::kHidden, G::kExperts, step, stream) != LM_LAUNCH_OK )
 				SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-			LM_LAUNCH((GemmaWidenKernel), VecBlocks((uint64_t)rows * G::kExperts), GM_THREADS, 0, stream, state->router_logits, state->router_probs,
+			LM_LAUNCH((LmWidenBf16ToF32Kernel), LmVecBlocks<GM_THREADS>((uint64_t)rows * G::kExperts), GM_THREADS, 0, stream, state->router_logits, state->router_probs,
 				(uint64_t)rows * G::kExperts);
 		}
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -908,12 +545,12 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 			ExpertProjection(expert_routes, layer->moe_w1, normed, state->expert_gate, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK ||
 			ExpertProjection(expert_routes, layer->moe_w3, normed, state->expert_up, 0u, G::kHidden, G::kMoeInter, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(LmGridBlocks<GM_THREADS>(G::kMoeInter), routes), GM_THREADS, 0, stream, state->expert_gate, state->expert_up, state->packed_weight,
 			state->expert_act, G::kMoeInter, layer->swiglu_limit);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			ExpertProjection(expert_routes, layer->moe_w2, state->expert_act, state->expert_out, 1u, G::kMoeInter, G::kHidden, step, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmGridBlocks<GM_THREADS>(G::kHidden), rows), GM_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->partial, output, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -946,7 +583,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
 		(void)state;
-		LM_LAUNCH((GemmaScaleRowsKernel), VecBlocks(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, width, scale);
+		LM_LAUNCH((LmScaleElementsKernel<uint16_t>), LmVecBlocks<GM_THREADS>(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, width, scale);
 		return SPARK_STATUS_OK;
 	}
 
@@ -991,7 +628,7 @@ struct GemmaModel : CudaStage<GemmaModel<G>>
 	static SparkStatus AddRows(State *state, const Frame &frame, GemmaBranch branch)
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
-		LM_LAUNCH((GemmaAddRowsKernel), VecBlocks(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, BranchRows(state, frame, branch), width);
+		LM_LAUNCH((LmAddElementsKernel), LmVecBlocks<GM_THREADS>(width), GM_THREADS, 0, frame.stream, frame.step->hidden_bf16, BranchRows(state, frame, branch), width);
 		return SPARK_STATUS_OK;
 	}
 

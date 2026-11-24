@@ -230,30 +230,6 @@ struct QwenHybridState : CudaStagePackState
 	LmKvShardView kv_views[QwenHybridShape<G>::kAttnLayers];
 };
 
-__global__ static void QwenHybridAddRowsKernel(uint16_t *hidden, const uint16_t *addend, uint64_t elements)
-{
-	if ( (elements & 7u) == 0u && LmIsAligned16(hidden) && LmIsAligned16(addend) )
-	{
-		const uint64_t chunks = elements >> 3u;
-		uint4 *h4 = (uint4 *)hidden;
-		const uint4 *a4 = (const uint4 *)addend;
-		for ( uint64_t c = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += (uint64_t)gridDim.x * blockDim.x )
-		{
-			uint16_t hb[8], ab[8];
-			float out[8];
-			LmUnpackUint4Bf16(h4[c], hb);
-			LmUnpackUint4Bf16(a4[c], ab);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(hb[k]) + LmBf16ToFloat(ab[k]);
-			h4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint64_t index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x; index < elements; index += (uint64_t)gridDim.x * blockDim.x )
-		hidden[index] = LmFloatToBf16(LmBf16ToFloat(hidden[index]) + LmBf16ToFloat(addend[index]));
-}
-
 template<class G>
 __global__ static void QwenHybridSplitAttentionKernel(const uint16_t *full, uint16_t *query, uint16_t *gate, uint16_t *key, uint16_t *value)
 {
@@ -318,130 +294,28 @@ __global__ static void QwenHybridSplitAttentionKernel(const uint16_t *full, uint
 	}
 }
 
-template<class G>
-__global__ static void QwenHybridPackSlotKernel(const uint16_t *key, const uint16_t *value, uint16_t *slot)
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void QwenHybridRowDotKernel(const uint16_t *rows_bf16, const uint16_t *weight, uint16_t *output, uint32_t width)
 {
-	constexpr uint32_t width = QwenHybridShape<G>::kKvWidth;
-	const uint32_t row = blockIdx.y;
-	if constexpr ( (width & 7u) == 0u )
-	{
-		if ( LmIsAligned16(key) && LmIsAligned16(value) && LmIsAligned16(slot) )
-		{
-			constexpr uint32_t chunks = width >> 3u;
-			uint4 *s4 = (uint4 *)slot + (uint64_t)row * 2u * chunks;
-			const uint4 *k4 = (const uint4 *)key + (uint64_t)row * chunks;
-			const uint4 *v4 = (const uint4 *)value + (uint64_t)row * chunks;
-			for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < 2u * chunks; c += gridDim.x * blockDim.x )
-				s4[c] = c < chunks ? k4[c] : v4[c - chunks];
-			return;
-		}
-	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < 2u * width; index += gridDim.x * blockDim.x )
-		slot[(uint64_t)row * 2u * width + index] = index < width ? key[(uint64_t)row * width + index] : value[(uint64_t)row * width + index - width];
-}
-
-__global__ static void QwenHybridRowDotKernel(const uint16_t *rows_bf16, const uint16_t *weight, uint16_t *output, uint32_t width)
-{
-	__shared__ float reduce[QH_THREADS / 32u];
-	const uint32_t row = blockIdx.x, lane = threadIdx.x & 31u, warp = threadIdx.x >> 5u, warps = blockDim.x >> 5u;
+	__shared__ float reduce[LmBlockWarps<THREADS>()];
+	const uint32_t row = blockIdx.x;
 	const uint16_t *row_ptr = rows_bf16 + (uint64_t)row * width;
 	float sum = 0.0f;
 	if ( (width & 7u) == 0u && LmIsAligned16(row_ptr) && LmIsAligned16(weight) )
-	{
-		const uint32_t chunks = width >> 3u;
-		const uint4 *r4 = (const uint4 *)row_ptr, *w4 = (const uint4 *)weight;
-		for ( uint32_t c = threadIdx.x; c < chunks; c += blockDim.x )
-		{
-			const uint4 rv = r4[c], wv = w4[c];
-			sum = fmaf(__uint_as_float(rv.x << 16u), __uint_as_float(wv.x << 16u), sum);
-			sum = fmaf(__uint_as_float(rv.x & 0xffff0000u), __uint_as_float(wv.x & 0xffff0000u), sum);
-			sum = fmaf(__uint_as_float(rv.y << 16u), __uint_as_float(wv.y << 16u), sum);
-			sum = fmaf(__uint_as_float(rv.y & 0xffff0000u), __uint_as_float(wv.y & 0xffff0000u), sum);
-			sum = fmaf(__uint_as_float(rv.z << 16u), __uint_as_float(wv.z << 16u), sum);
-			sum = fmaf(__uint_as_float(rv.z & 0xffff0000u), __uint_as_float(wv.z & 0xffff0000u), sum);
-			sum = fmaf(__uint_as_float(rv.w << 16u), __uint_as_float(wv.w << 16u), sum);
-			sum = fmaf(__uint_as_float(rv.w & 0xffff0000u), __uint_as_float(wv.w & 0xffff0000u), sum);
-		}
-	}
+		for ( uint32_t c = threadIdx.x; c < (width >> 3u); c += THREADS )
+			sum = LmDotBf16x8(((const uint4 *)row_ptr)[c], ((const uint4 *)weight)[c], sum);
 	else
-	{
-		for ( uint32_t index = threadIdx.x; index < width; index += blockDim.x )
+		for ( uint32_t index = threadIdx.x; index < width; index += THREADS )
 			sum += LmBf16ToFloat(row_ptr[index]) * LmBf16ToFloat(weight[index]);
-	}
-	#pragma unroll
-	for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-		sum += __shfl_down_sync(0xffffffffu, sum, offset);
-	if ( lane == 0u )
-		reduce[warp] = sum;
-	__syncthreads();
-	if ( warp == 0u )
-	{
-		float total = lane < warps ? reduce[lane] : 0.0f;
-		#pragma unroll
-		for ( uint32_t offset = 16u; offset > 0u; offset >>= 1u )
-			total += __shfl_down_sync(0xffffffffu, total, offset);
-		if ( lane == 0u )
-			output[row] = LmFloatToBf16(total);
-	}
+	sum = LmBlockSumOnce<THREADS>(sum, reduce);
+	if ( threadIdx.x == 0u )
+		output[row] = LmFloatToBf16(sum);
 }
 
 __global__ static void QwenHybridSigmoidGateRowsKernel(uint16_t *rows_bf16, const uint16_t *logit, uint32_t width)
 {
-	const uint32_t row = blockIdx.y;
-	const float gate = SparkMathSigmoid(LmBf16ToFloat(logit[row]));
-	uint16_t *row_ptr = rows_bf16 + (uint64_t)row * width;
-	if ( (width & 7u) == 0u && LmIsAligned16(row_ptr) )
-	{
-		const uint32_t chunks = width >> 3u;
-		uint4 *r4 = (uint4 *)row_ptr;
-		for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += gridDim.x * blockDim.x )
-		{
-			uint16_t bits[8];
-			float out[8];
-			LmUnpackUint4Bf16(r4[c], bits);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				out[k] = LmBf16ToFloat(bits[k]) * gate;
-			r4[c] = LmPackUint4FloatToBf16(out);
-		}
-		return;
-	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
-		row_ptr[index] = LmFloatToBf16(LmBf16ToFloat(row_ptr[index]) * gate);
-}
-
-template<class G>
-__global__ static void QwenIndexSplitKernel(const uint16_t *qk, uint16_t *query, uint16_t *key)
-{
-	constexpr uint32_t width = QwenHybridShape<G>::kIndexWidth, query_width = G::kIndexHeads * G::kIndexDim;
-	const uint32_t row = blockIdx.y;
-	if constexpr ( (width & 7u) == 0u && (query_width & 7u) == 0u && (G::kIndexDim & 7u) == 0u )
-	{
-		if ( LmIsAligned16(qk) && LmIsAligned16(query) && LmIsAligned16(key) )
-		{
-			constexpr uint32_t chunks = width >> 3u, query_chunks = query_width >> 3u, key_chunks = G::kIndexDim >> 3u;
-			const uint4 *src4 = (const uint4 *)qk + (uint64_t)row * chunks;
-			uint4 *q4 = (uint4 *)query + (uint64_t)row * query_chunks;
-			uint4 *k4 = (uint4 *)key + (uint64_t)row * key_chunks;
-			for ( uint32_t c = blockIdx.x * blockDim.x + threadIdx.x; c < chunks; c += gridDim.x * blockDim.x )
-			{
-				const uint4 value = src4[c];
-				if ( c < query_chunks )
-					q4[c] = value;
-				else
-					k4[c - query_chunks] = value;
-			}
-			return;
-		}
-	}
-	for ( uint32_t index = blockIdx.x * blockDim.x + threadIdx.x; index < width; index += gridDim.x * blockDim.x )
-	{
-		const uint16_t value = qk[(uint64_t)row * width + index];
-		if ( index < query_width )
-			query[(uint64_t)row * query_width + index] = value;
-		else
-			key[(uint64_t)row * G::kIndexDim + index - query_width] = value;
-	}
+	LmUnaryBf16GridBody<QH_THREADS>(rows_bf16 + (uint64_t)blockIdx.y * width, width, LmScaleOp{SparkMathSigmoid(LmBf16ToFloat(logit[blockIdx.y]))});
 }
 
 template<class G>
@@ -491,19 +365,7 @@ __global__ static void QwenIndexStoreKernel(LmKvShardView view, const uint16_t *
 		LM_KV_ACCESS_WRITE);
 	if ( slot == 0 )
 		return;
-	const uint16_t *source = block + (uint64_t)row * G::kIndexDim;
-	if constexpr ( (G::kIndexDim & 7u) == 0u )
-	{
-		if ( LmIsAligned16(slot) && LmIsAligned16(source) )
-		{
-			constexpr uint32_t chunks = G::kIndexDim >> 3u;
-			for ( uint32_t c = threadIdx.x; c < chunks; c += blockDim.x )
-				((uint4 *)slot)[c] = ((const uint4 *)source)[c];
-			return;
-		}
-	}
-	for ( uint32_t d = threadIdx.x; d < G::kIndexDim; d += blockDim.x )
-		slot[d] = source[d];
+	LmCopySliceBf16<G::kIndexDim>(block + (uint64_t)row * G::kIndexDim, slot, G::kIndexDim);
 }
 
 template<class G>
@@ -548,12 +410,8 @@ __global__ static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *
 		const uint4 *q4 = (const uint4 *)row_query;
 		for ( uint32_t c = threadIdx.x; c < q_chunks; c += blockDim.x )
 		{
-			uint16_t qb[8];
 			float qf[8];
-			LmUnpackUint4Bf16(q4[c], qb);
-			#pragma unroll
-			for ( uint32_t k = 0u; k < 8u; ++k )
-				qf[k] = LmBf16ToFloat(qb[k]);
+			LmLoadBf16x8AsFloat(q4[c], qf);
 			LmStoreFloat8(shared_query + (c << 3u), qf);
 		}
 	}
@@ -584,26 +442,17 @@ __global__ static void QwenIndexScoreKernel(LmKvShardView view, const uint16_t *
 						const uint4 *k4 = (const uint4 *)key;
 						for ( uint32_t c = 0u; c < chunks; ++c )
 						{
-							const uint4 kv = __ldg(&k4[c]);
-							const float k0 = __uint_as_float(kv.x << 16u), k1 = __uint_as_float(kv.x & 0xffff0000u);
-							const float k2 = __uint_as_float(kv.y << 16u), k3 = __uint_as_float(kv.y & 0xffff0000u);
-							const float k4f = __uint_as_float(kv.z << 16u), k5 = __uint_as_float(kv.z & 0xffff0000u);
-							const float k6 = __uint_as_float(kv.w << 16u), k7 = __uint_as_float(kv.w & 0xffff0000u);
+							float kv[8];
+							LmLoadBf16x8AsFloat(__ldg(&k4[c]), kv);
 							const uint32_t d_base = c << 3u;
 							#pragma unroll
 							for ( uint32_t head = 0u; head < H; ++head )
 							{
-								const float4 q0 = *(const float4 *)(shared_query + head * D + d_base);
-								const float4 q1 = *(const float4 *)(shared_query + head * D + d_base + 4u);
-								float acc = dots[head];
-								acc = fmaf(q0.x, k0, acc);
-								acc = fmaf(q0.y, k1, acc);
-								acc = fmaf(q0.z, k2, acc);
-								acc = fmaf(q0.w, k3, acc);
-								acc = fmaf(q1.x, k4f, acc);
-								acc = fmaf(q1.y, k5, acc);
-								acc = fmaf(q1.z, k6, acc);
-								acc = fmaf(q1.w, k7, acc);
+								float qv[8], acc = dots[head];
+								LmLoadFloat8(shared_query + head * D + d_base, qv);
+								#pragma unroll
+								for ( uint32_t k = 0u; k < 8u; ++k )
+									acc = fmaf(qv[k], kv[k], acc);
 								dots[head] = acc;
 							}
 						}
@@ -716,17 +565,6 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		return G::Name();
 	}
 
-	static uint32_t Blocks(uint64_t elements)
-	{
-		const uint64_t blocks = (elements + QH_THREADS - 1u) / QH_THREADS;
-		return (uint32_t)(blocks < 1024u ? (blocks == 0u ? 1u : blocks) : 1024u);
-	}
-
-	static uint32_t VecBlocks(uint64_t elements)
-	{
-		return Blocks((elements + 7u) >> 3u);
-	}
-
 	template<class Format>
 	static int32_t Project(const void *weight, const float *scale_rows, const uint16_t *source, uint16_t *destination,
 		uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t exact, uint32_t multiprocessors, SparkGpuStream stream)
@@ -827,7 +665,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		if ( Project<LmBf16Format>(layer->index_qk, 0, state->normed, state->index_qk, rows, G::kHidden, S::kIndexWidth, Exact(step), sms, stream) !=
 			LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((QwenIndexSplitKernel<G>), dim3(VecBlocks(S::kIndexWidth), rows), QH_THREADS, 0, stream, state->index_qk, state->index_query, state->index_key);
+		LM_LAUNCH((LmSplit2RowsKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->index_qk, state->index_query, state->index_key, rows,
+			G::kIndexHeads * G::kIndexDim, G::kIndexDim);
 		if ( step->commit == 0u && SparkGpuMemcpyAsync(state->replay_index + (uint64_t)layer->kv_index * G::kVerifyRows * G::kIndexDim, state->index_key,
 			(uint64_t)rows * G::kIndexDim * sizeof(uint16_t), SPARK_GPU_COPY_DEVICE_TO_DEVICE, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_IO_ERROR);
@@ -902,8 +741,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->attn_local, state->attn_gathered);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((LmRankMajorRowsKernel<QH_THREADS>), dim3(Blocks(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
-		LM_LAUNCH((QwenHybridSplitAttentionKernel<G>), dim3(VecBlocks(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_full, state->attn_query,
+		LM_LAUNCH((LmRankMajorRowsKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_gathered, state->attn_full, rows, state->attn_rows, degree);
+		LM_LAUNCH((QwenHybridSplitAttentionKernel<G>), dim3(LmVecBlocks<QH_THREADS>(S::kQkvWidth),rows), QH_THREADS, 0, stream, state->attn_full, state->attn_query,
 			state->attn_gate, state->attn_key, state->attn_value);
 		LM_LAUNCH((LmHeadRmsNormKernel<QH_THREADS,float>), dim3(G::kHeads,rows), QH_THREADS, 0, stream,
 			state->attn_query, layer->q_norm, state->attn_query, rows, G::kHeads, G::kHeadDim, QH_EPSILON, 1.0f);
@@ -913,7 +752,8 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			state->attn_query, step->positions, G::kHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
 		LM_LAUNCH((LmRopePerHeadKernel<QH_THREADS,LM_ROPE_HALF_SPLIT,G::kRopeRoundedTerms ? LM_ROPE_ROUNDED_TERMS : LM_ROPE_FP32>), dim3(rows,G::kKvHeads), QH_THREADS, 0, stream,
 			state->attn_key, step->positions, G::kKvHeads, G::kHeadDim, G::kRopeDim, G::kRopeTheta, (const float *)0, 1.0f, 0u);
-		LM_LAUNCH((QwenHybridPackSlotKernel<G>), dim3(VecBlocks(2u * S::kKvWidth),rows), QH_THREADS, 0, stream, state->attn_key, state->attn_value, state->attn_slot);
+		LM_LAUNCH((LmConcatRowsKernel), dim3(LmVecBlocks<QH_THREADS>(2u * S::kKvWidth),rows), QH_THREADS, 0, stream, state->attn_key, state->attn_value,
+			state->attn_slot, S::kKvWidth, S::kKvWidth);
 		CudaStageRowState(state, layer->kv_index, SPARK_STAGE_RUNNER_ROW_STATE_READ);
 		LM_LAUNCH((LmKvShardStoreKernel<typename S::Kv,QH_THREADS>), rows, QH_THREADS, 0, stream,
 			*view, state->attn_slot, step->sequence_of_row, step->positions, rows, 2u * S::kKvWidth);
@@ -938,7 +778,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			return status;
 		if ( LmGqaShardMergeLaunch<G::kHeadDim>(state->received, stride, degree, G::kHeads, state->tp_rank, state->merged, rows, stream) != SPARK_GPU_SUCCESS )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSliceColumnsKernel<QH_THREADS>), dim3(Blocks(state->attn_width),rows), QH_THREADS, 0, stream, state->attn_gate, state->merged_gate,
+		LM_LAUNCH((LmSliceColumnsKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(state->attn_width),rows), QH_THREADS, 0, stream, state->attn_gate, state->merged_gate,
 			S::kQWidth, state->tp_rank * state->attn_width, state->attn_width);
 		LM_LAUNCH((LmOutputGateKernel<QH_THREADS,true>), rows, QH_THREADS, 0, stream, state->merged, state->merged_gate, state->attn_width);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
@@ -994,7 +834,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 				state->expert_up, G::kHidden, G::kMoeInter, stream, exact);
 		if ( launch != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmSwigluPackedKernel), dim3(Blocks(G::kMoeInter), routes), QH_THREADS, 0, stream, state->expert_gate, state->expert_up,
+		LM_LAUNCH((LmSwigluPackedKernel), dim3(LmGridBlocks<QH_THREADS>(G::kMoeInter), routes), QH_THREADS, 0, stream, state->expert_gate, state->expert_up,
 			state->packed_weight, state->expert_act, G::kMoeInter, INFINITY);
 		launch = LmLocalExpertsDown<ExpertFormat>(expert_routes, layer->moe_w2, w2_scale, state->expert_act, state->expert_out, G::kMoeInter, G::kHidden,
 			stream, exact);
@@ -1002,14 +842,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			Project<LmBf16Format>(layer->moe_shared_gate_up, 0, normed, state->shared_gate_up, rows, G::kHidden, 2u * G::kSharedRows, exact, sms, stream) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((QwenHybridRowDotKernel), rows, QH_THREADS, 0, stream, normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
+		LM_LAUNCH((QwenHybridRowDotKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, normed, layer->moe_shared_gate, state->shared_logit, G::kHidden);
 		LM_LAUNCH((LmSiluMulKernel<QH_THREADS>), rows, QH_THREADS, 0, stream, state->shared_gate_up, state->shared_act, G::kSharedRows, true);
 		if ( CudaStageLaunched() != SPARK_STATUS_OK ||
 			Project<LmBf16Format>(layer->moe_shared_down, 0, state->shared_act, state->shared_out, rows, G::kSharedRows, G::kHidden, exact, sms, stream) !=
 				LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((QwenHybridSigmoidGateRowsKernel), dim3(VecBlocks(G::kHidden), rows), QH_THREADS, 0, stream, state->shared_out, state->shared_logit, G::kHidden);
-		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream, state->expert_out, state->route_packed_row,
+		LM_LAUNCH((QwenHybridSigmoidGateRowsKernel), dim3(LmVecBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream, state->shared_out, state->shared_logit, G::kHidden);
+		LM_LAUNCH((LmMoeLocalFinalizeKernel), dim3(LmGridBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream, state->expert_out, state->route_packed_row,
 			state->route_expert, state->shared_out, state->partial + (uint64_t)first * G::kHidden, G::kTopK, G::kLocalExperts, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -1076,11 +916,11 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 			G::kStreams, G::kHidden, QH_EPSILON);
 		if ( Project<LmBf16Format>(down, 0, state->hc_normed, state->hc_low, rows, S::kResidual, G::kHcLowRank, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmHyperGateKernel<QH_THREADS>), Blocks((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream, state->hc_low,
+		LM_LAUNCH((LmHyperGateKernel<QH_THREADS>), LmGridBlocks<QH_THREADS>((uint64_t)rows * G::kHcLowRank), QH_THREADS, 0, stream, state->hc_low,
 			(uint64_t)rows * G::kHcLowRank, (float)G::kStreams);
 		if ( Project<LmBf16Format>(up, 0, state->hc_low, state->hc_up, rows, G::kHcLowRank, S::kResidual, exact, sms, stream) != LM_LAUNCH_OK )
 			SPARK_FAIL(SPARK_STATUS_INTERNAL_ERROR);
-		LM_LAUNCH((LmHyperMixKernel<QH_THREADS>), dim3(Blocks(G::kHidden), rows), QH_THREADS, 0, stream, state->hc_up, state->hc_normed, mixed,
+		LM_LAUNCH((LmHyperMixKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(G::kHidden), rows), QH_THREADS, 0, stream, state->hc_up, state->hc_normed, mixed,
 			G::kStreams, G::kHidden);
 		if ( inject != 0 )
 			LmHyperInjectWeightsLaunch<QH_THREADS, G::kStreams>(rows, stream, state->hc_normed, inject, state->hc_inject, G::kHidden);
@@ -1089,7 +929,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 
 	static SparkStatus HcInject(State *state, uint32_t rows, SparkGpuStream stream)
 	{
-		LM_LAUNCH((LmHyperInjectKernel<QH_THREADS>), dim3(Blocks(S::kResidual), rows), QH_THREADS, 0, stream, state->residual, state->partial,
+		LM_LAUNCH((LmHyperInjectKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(S::kResidual), rows), QH_THREADS, 0, stream, state->residual, state->partial,
 			state->hc_inject, G::kStreams, G::kHidden);
 		return CudaStageLaunched();
 	}
@@ -1150,7 +990,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		status = PleRecur(state, step, state->ple_conv_in, (const uint32_t *)0, step->commit, stream);
 		if ( status != SPARK_STATUS_OK )
 			return status;
-		LM_LAUNCH((LmHyperAddKernel<QH_THREADS>), Blocks(elements), QH_THREADS, 0, stream, state->residual, state->ple_gated, state->ple_conv_out, elements);
+		LM_LAUNCH((LmHyperAddKernel<QH_THREADS>), LmGridBlocks<QH_THREADS>(elements), QH_THREADS, 0, stream, state->residual, state->ple_gated, state->ple_conv_out, elements);
 		CudaStageRowState(state, G::kPleLayer, SPARK_STAGE_RUNNER_ROW_STATE_WRITTEN);
 		return CudaStageLaunched();
 	}
@@ -1207,7 +1047,7 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 		}
 		if ( status == SPARK_STATUS_OK && state->tap_slab != 0 && state->tap_output[index] >= 0 )
 		{
-			LM_LAUNCH((LmAddRowsStridedKernel<QH_THREADS>), dim3(Blocks(G::kHidden), frame.step->rows), QH_THREADS, 0, frame.stream,
+			LM_LAUNCH((LmAddRowsStridedKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(G::kHidden), frame.step->rows), QH_THREADS, 0, frame.stream,
 				frame.step->hidden_bf16, state->partial, state->tap_slab + (uint64_t)frame.step->dispatch_row_offset * state->tap_stride +
 				(uint64_t)state->tap_output[index] * G::kHidden, frame.step->rows, G::kHidden, state->tap_stride);
 			status = CudaStageLaunched();
@@ -1220,14 +1060,14 @@ struct QwenHybridModel : CudaStage<QwenHybridModel<G>>
 	static SparkStatus AddRows(State *state, const Frame &frame)
 	{
 		const uint64_t width = (uint64_t)frame.step->rows * G::kHidden;
-		LM_LAUNCH((QwenHybridAddRowsKernel), VecBlocks(width), QH_THREADS, 0, frame.stream, frame.step->hidden_bf16, state->partial, width);
+		LM_LAUNCH((LmAddElementsKernel), LmVecBlocks<QH_THREADS>(width), QH_THREADS, 0, frame.stream, frame.step->hidden_bf16, state->partial, width);
 		return SPARK_STATUS_OK;
 	}
 
 	static SparkStatus HyperBegin(State *state, const Frame &frame)
 	{
 		const SparkStageRunnerStep *step = frame.step;
-		LM_LAUNCH((LmHyperExpandKernel<QH_THREADS>), dim3(Blocks(S::kResidual), step->rows), QH_THREADS, 0, frame.stream, step->hidden_bf16, state->residual,
+		LM_LAUNCH((LmHyperExpandKernel<QH_THREADS>), dim3(LmGridBlocks<QH_THREADS>(S::kResidual), step->rows), QH_THREADS, 0, frame.stream, step->hidden_bf16, state->residual,
 			G::kStreams, G::kHidden);
 		if constexpr ( S::kPle || S::kIndexer )
 			LM_LAUNCH((LmRowLanesKernel), step->sequences, QH_THREADS, 0, frame.stream, step->sequence_row_begin, step->sequence_row_indices, state->row_lane,

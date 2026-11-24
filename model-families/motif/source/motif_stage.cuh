@@ -9,6 +9,7 @@
 #include "runtime/launch.h"
 #include "inference/kernels/attn_shard.cuh"
 #include "inference/kernels/attn_shard_prefill.cuh"
+#include "inference/kernels/dense_rows.cuh"
 #include "inference/kernels/dependent_launch.cuh"
 #include "inference/kernels/diff_attn.cuh"
 #include "inference/kernels/formats/bf16.cuh"
@@ -58,16 +59,7 @@ static_assert(MO_HEAD == MO_NOPE + MO_ROPE && MO_SLOT == MO_LATENT + MO_ROPE, "a
 static_assert(SPARK_MOTIF_MODEL_HC_STREAMS == LM_HC_SITE_STREAMS && SPARK_MOTIF_MODEL_HC_MIX_DIMENSION == LM_HC_SITE_MIX, "four mHC streams");
 static_assert(MO_THREADS == LM_HC_SITE_THREADS, "the HC site runs the stage block size");
 
-struct MotifKv
-{
-	static constexpr uint32_t kSlotBytes = SPARK_MOTIF_MODEL_LATENT_ROW_BYTES;
-	static constexpr uint32_t kPageSlots = SPARK_MOTIF_MODEL_KV_PAGE_SLOTS;
-	static constexpr uint32_t kPageBytes = kSlotBytes * kPageSlots;
-	static constexpr bool kGrows = true;
-	static __host__ __device__ constexpr uint32_t PageOf(uint32_t position) { return position / kPageSlots; }
-	static __host__ __device__ constexpr uint32_t SlotInPage(uint32_t position) { return position % kPageSlots; }
-	static __host__ __device__ constexpr uint64_t PagesForTokens(uint64_t tokens) { return (tokens + kPageSlots - 1u) / kPageSlots; }
-};
+using MotifKv = LmKvGeometry<SPARK_MOTIF_MODEL_LATENT_ROW_BYTES, SPARK_MOTIF_MODEL_KV_PAGE_SLOTS, true>;
 
 struct MotifHcPolicy
 {
@@ -100,28 +92,6 @@ struct MotifHcPolicy
 			comb_out[cell] = value;
 	}
 };
-
-__global__ static void MotifQueryPackKernel(const uint16_t *__restrict__ latent, const uint16_t *__restrict__ query, uint16_t *__restrict__ packed,
-	uint32_t heads)
-{
-	const uint32_t row = blockIdx.x, head = blockIdx.y;
-	const uint64_t pair = (uint64_t)row * heads + head;
-	if constexpr ( ((MO_LATENT | MO_NOPE | MO_HEAD | MO_SLOT) & 7u) == 0u )
-	{
-		if ( LmIsAligned16(latent) && LmIsAligned16(query) && LmIsAligned16(packed) )
-		{
-			constexpr uint32_t LATENT_VECS = MO_LATENT >> 3u, SLOT_VECS = MO_SLOT >> 3u;
-			const uint4 *lat4 = (const uint4 *)(latent + pair * MO_LATENT);
-			const uint4 *rope4 = (const uint4 *)(query + pair * MO_HEAD + MO_NOPE);
-			uint4 *out4 = (uint4 *)(packed + pair * MO_SLOT);
-			for ( uint32_t vector = threadIdx.x; vector < SLOT_VECS; vector += blockDim.x )
-				out4[vector] = vector < LATENT_VECS ? lat4[vector] : rope4[vector - LATENT_VECS];
-			return;
-		}
-	}
-	for ( uint32_t element = threadIdx.x; element < MO_SLOT; element += blockDim.x )
-		packed[pair * MO_SLOT + element] = element < MO_LATENT ? latent[pair * MO_LATENT + element] : query[pair * MO_HEAD + MO_NOPE + element - MO_LATENT];
-}
 
 __global__ static void MotifWindowListKernel(const uint32_t *__restrict__ positions, uint32_t *__restrict__ list, uint32_t rows)
 {
@@ -235,49 +205,15 @@ struct MotifStage : CudaStage<MotifStage<G>>
 	static int32_t Linear(const uint16_t *weight, const uint16_t *source, uint16_t *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 	{
-		if ( rows <= LM_SKINNY_ROWS_WIDE )
-		{
-			LmSkinnyArguments args;
-			memset(&args, 0, sizeof(args));
-			args.weight = (const uint8_t *)weight;
-			args.activation = source;
-			args.output_bf16 = destination;
-			args.scale = LmScaleTensorNone();
-			args.rows = rows;
-			args.input_dimension = input_dimension;
-			args.output_dimension = output_dimension;
-			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
-			if ( status != LM_LAUNCH_ERR_SHAPE )
-				return status;
-			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
-				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
-		}
-		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
-			0u, 0u, multiprocessors, stream);
+		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, destination, (float *)0, rows, input_dimension, output_dimension,
+			0u, multiprocessors, stream);
 	}
 
 	static int32_t LinearFloat(const uint16_t *weight, const uint16_t *source, float *destination, uint32_t rows, uint32_t input_dimension,
 		uint32_t output_dimension, uint32_t multiprocessors, SparkGpuStream stream)
 	{
-		if ( rows <= LM_SKINNY_ROWS_WIDE )
-		{
-			LmSkinnyArguments args;
-			memset(&args, 0, sizeof(args));
-			args.weight = (const uint8_t *)weight;
-			args.activation = source;
-			args.output_f32 = destination;
-			args.scale = LmScaleTensorNone();
-			args.rows = rows;
-			args.input_dimension = input_dimension;
-			args.output_dimension = output_dimension;
-			const int32_t status = LmSkinnyLaunch<LmBf16Format>(&args, stream);
-			if ( status != LM_LAUNCH_ERR_SHAPE )
-				return status;
-			LM_LAUNCH_REFUSE("motif linear: the skinny kernel refused %u rows of a %u x %u projection; waves of up to %u rows run on it, so the weight "
-				"and activation need 16-byte alignment and an input that is a multiple of 8\n", rows, output_dimension, input_dimension, LM_SKINNY_ROWS_WIDE);
-		}
-		return LmStreamGemmDense<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
-			0u, 0u, multiprocessors, stream);
+		return LmDenseRows<LmBf16Format>(weight, LmScaleTensorNone(), source, (uint16_t *)0, destination, rows, input_dimension, output_dimension,
+			0u, multiprocessors, stream);
 	}
 
 	template<bool ROUND_FIRST>
@@ -401,7 +337,7 @@ struct MotifStage : CudaStage<MotifStage<G>>
 		if ( LmPerHeadProjectChainLaunch<MO_THREADS, MO_NOPE, MO_LATENT, MO_HEAD, 0u>(state->q, w->uk, state->q_latent, kHeads, rows, stream,
 				step->commit == 0u ? 1u : 0u) != SPARK_GPU_SUCCESS )
 			return Check(LM_LAUNCH_ERR_LAUNCH, "query absorb", layer);
-		LM_LAUNCH((MotifQueryPackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads);
+		LM_LAUNCH((LmQueryRopePackKernel), dim3(rows, kHeads), MO_THREADS, 0, stream, state->q_latent, state->q, state->query, kHeads, MO_LATENT, MO_NOPE, MO_ROPE);
 		LM_LAUNCH((LmKvShardStoreKernel<MotifKv, MO_THREADS>), rows, MO_THREADS, 0, stream, state->views[layer], state->slot, step->sequence_of_row,
 			step->positions, rows, MO_SLOT);
 		if ( window )
