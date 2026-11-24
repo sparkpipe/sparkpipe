@@ -1,0 +1,2 @@
++714
+Combined authored line budget for parallel performance wave PRs #2190 (fleet B=8 batched speculation & rais_bench), #2191 (K3 odd-row paired prefill alignment fix and fused B1/prefill kernels), and #2192 (Metal 4.0 M5 Ultra GEMV/MoE/GEMM/attention kernels), plus registering test_k3_oddrow_prefill_cuda.py in Makefile.
