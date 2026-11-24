@@ -1,0 +1,2 @@
++266
+GB10 Tensor Core prefill and high-batch GEMM kernel optimizations across mx_gemm.cuh, cell_mx.cuh, cell_mma.cuh, and stream_gemm.cuh: vectorized uint4/uint32 __ldg scale caching with double-buffered shared scratch, 128x128 cell_mx tile with ldmatrix.x4 and warp-shuffle E2M1 K-order permutation, zero-spill pair-unrolled MMA loops, incremental cell_mma staging with 6-chunk tier, and ldmatrix.x2/x4 + packed UE8M0 scale streaming for FP8/MXFP8 stream GEMMs.
